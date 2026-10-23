@@ -21,8 +21,8 @@
 //!   2. Each runs off the UI thread; what came of it is shown, in words.
 //!   3. A restore is shown before it is done (the backup proven, what it
 //!      would do), and done only for that backup, at that head.
-//!   4. Without an owner (the viewer on its own, older books dirs, the
-//!      demo) the menu isn't there.
+//!   4. Without an owner (the viewer on its own, books outside a data
+//!      root: the demo) the menu isn't there.
 //!   5. Books waiting for a format upgrade show a standing notice above
 //!      every page, and the go-ahead is asked once each time the viewer
 //!      opens them: the owner passphrase, typed here and handed to the
@@ -109,7 +109,7 @@ fn owner() -> Option<Arc<dyn Owner>> {
 }
 
 /// The id of books of the data root (their folder's name), or None for
-/// an older books dir (INVARIANT 4).
+/// books outside one, the demo's (INVARIANT 4).
 pub fn book_id(books: &Books) -> Option<String> {
     ledger_store::root::inside_a_root(&books.data_dir)
         .then(|| books.data_dir.file_name()?.to_str().map(str::to_string))

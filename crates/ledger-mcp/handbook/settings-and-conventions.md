@@ -11,17 +11,6 @@ The books keep their own record of how they are kept. Every agent, anywhere, rea
 - policy.require_tax_category is warn (unset: a revenue or expense account without a tax category is created, and the result and Needs attention say so) or refuse (books.add_account, books.import_chart_csv and books.set_tax_category won't leave one without; the accounts invoices, bills and payroll create are never refused, and their results name them). Before setting refuse, categorize with the human every account books.digest lists in uncategorized_accounts.
 - books.export_settings writes the settings out as a settings file (TOML), each with who decided it. It is a copy: editing it changes nothing.
 
-## Books that still read a settings file
-
-If books.settings says source "file", these books predate settings in the books and still read the settings file books.settings names. Move it in once, with the human:
-
-1. Read that file's text, whole and unedited, and pass it to books.import_settings as toml_text (and, if books.settings shows config_json_present, the receipt policy as config_json_text: {"receipt_policy": {"require_receipts_above", "receipt_required_accounts", "receipt_exempt_accounts"}} from books.settings). The import is refused unless the text is the file the server reads.
-2. Show the human the preview: every change, the notes (what isn't a books setting and where it goes), anything unknown, and the file's comments, which are not imported: record what matters in them (where a value came from, a discrepancy, something pending) as a decision, an open item or a convention.
-3. Confirm with confirmed: true, decided_by the human. The import is refused if any setting would read differently afterwards.
-4. If the file named the vault's key file ([vault] key_file), the server must already be started naming the same file, and the viewer too, or the vault won't open: tell the human before the import.
-
-From then on no file is read; books.set_setting changes settings. Until then, that file is the one local file you may edit, and books.set_setting is refused (it would drop the rest of the file).
-
 ## Conventions
 
 How this company keeps its books, as the owners decided, is recorded as conventions (books.set_convention, read with books.conventions; books.start lists them):

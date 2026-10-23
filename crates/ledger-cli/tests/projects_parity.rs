@@ -12,8 +12,8 @@ use ledger_gui::pages::projects::{Snap, page_figures};
 use ledger_gui::{Source, data};
 use rust_decimal::Decimal;
 use serde_json::{Value, json};
-use std::io::{BufRead, BufReader, Write};
-use std::process::{Command, Stdio};
+
+mod common;
 
 fn d(y: i32, m: u32, day: u32) -> NaiveDate {
     NaiveDate::from_ymd_opt(y, m, day).unwrap()
@@ -28,89 +28,39 @@ fn s(v: Decimal) -> String {
     format!("{v:.2}")
 }
 
-/// The books server over stdio (`wanderbooks dev-stdio`), one request at
-/// a time.
+/// The settings both tests' books keep.
+const SETTINGS: &str = "[company]\nname = \"Fernhill Labs\"\nfiscal_year_start = \"01-01\"\n\
+     [books]\nreceipt_threshold = \"1000000.00\"\ncash_accounts = [\"1000\"]\n";
+
+/// A session with the books server (common.rs), one request at a time.
 struct Server {
-    child: std::process::Child,
-    stdin: std::process::ChildStdin,
-    stdout: BufReader<std::process::ChildStdout>,
-    id: u64,
+    wire: common::Wire,
 }
 
 impl Server {
-    fn start(data: &std::path::Path) -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_wanderbooks"))
-            .arg("dev-stdio")
-            .arg("--data-dir")
-            .arg(data)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn wanderbooks dev-stdio");
-        let stdin = child.stdin.take().unwrap();
-        let stdout = BufReader::new(child.stdout.take().unwrap());
-        let mut s = Server {
-            child,
-            stdin,
-            stdout,
-            id: 0,
-        };
-        s.ask(
-            "initialize",
-            json!({"protocolVersion": "2025-06-18", "capabilities": {},
-                   "clientInfo": {"name": "projects-parity", "version": "0"}}),
-        );
-        writeln!(
-            s.stdin,
-            "{}",
-            json!({"jsonrpc": "2.0", "method": "notifications/initialized"})
-        )
-        .unwrap();
-        s
-    }
-
-    fn ask(&mut self, method: &str, params: Value) -> Value {
-        self.id += 1;
-        let msg = json!({"jsonrpc": "2.0", "id": self.id, "method": method, "params": params});
-        writeln!(self.stdin, "{msg}").unwrap();
-        self.stdin.flush().unwrap();
-        let mut line = String::new();
-        self.stdout.read_line(&mut line).expect("a response");
-        let resp: Value = serde_json::from_str(&line).expect("JSON");
-        assert_eq!(resp["id"], self.id, "{resp}");
-        resp
+    /// Start `place`'s server on the books the test wrote in its root,
+    /// with [`SETTINGS`], and a session with them.
+    fn start(place: &common::Place) -> Self {
+        let mut wire = place.start(Some(SETTINGS));
+        wire.initialize("projects-parity");
+        Server { wire }
     }
 
     /// A tool's structured result.
     fn tool(&mut self, name: &str, args: Value) -> Value {
-        let r = self.ask("tools/call", json!({"name": name, "arguments": args}));
+        let r = self.wire.call(name, args);
         let out = &r["result"];
         assert_ne!(out["isError"], true, "{name}: {r}");
         out["structuredContent"].clone()
     }
 }
 
-impl Drop for Server {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
 #[test]
 fn a_projects_snapshot_is_the_same_in_the_viewer_and_from_the_server() {
-    let dir = tempfile::Builder::new()
-        .prefix("wb-projects-parity-")
-        .tempdir()
-        .unwrap();
-    let data = dir.path().join("books-data");
-    std::fs::write(
-        dir.path().join("wanderbooks.toml"),
-        "[company]\nname = \"Fernhill Labs\"\nfiscal_year_start = \"01-01\"\n\
-         [books]\nreceipt_threshold = \"1000000.00\"\ncash_accounts = [\"1000\"]\n",
-    )
-    .unwrap();
+    // The books written in a data root by the store itself, then served
+    // there.
+    let place = common::Place::new("projects-parity");
+    let data = place.books_data();
     let today = d(2026, 10, 15);
     let id = {
         let mut st = ledger_store::Store::create(&data, Currency::USD).unwrap();
@@ -162,12 +112,12 @@ fn a_projects_snapshot_is_the_same_in_the_viewer_and_from_the_server() {
             .unwrap();
         id
     };
+    let mut server = Server::start(&place);
     let b = data::load_once(&Source {
         data_dir: data.clone(),
         today: Some(today),
     })
     .unwrap();
-    let mut server = Server::start(&data);
 
     // To date, and by month over the viewer's chart span.
     let page = page_figures(&b, id, Some(d(2025, 11, 1)), false);
@@ -264,24 +214,15 @@ fn a_projects_snapshot_is_the_same_in_the_viewer_and_from_the_server() {
 /// project) and from the server (books.project, books.get_entry).
 #[test]
 fn invoiced_and_billed_project_figures_are_the_same_in_the_viewer_and_from_the_server() {
-    let dir = tempfile::Builder::new()
-        .prefix("wb-projects-parity-docs-")
-        .tempdir()
-        .unwrap();
-    let data = dir.path().join("books-data");
-    std::fs::write(
-        dir.path().join("wanderbooks.toml"),
-        "[company]\nname = \"Fernhill Labs\"\nfiscal_year_start = \"01-01\"\n\
-         [books]\nreceipt_threshold = \"1000000.00\"\ncash_accounts = [\"1000\"]\n",
-    )
-    .unwrap();
+    let place = common::Place::new("projects-parity-docs");
+    let data = place.books_data();
     let today = d(2026, 10, 15);
     {
         let mut st = ledger_store::Store::create(&data, Currency::USD).unwrap();
         st.add_account("1000", "Cash", AccountType::Asset, None, false)
             .unwrap();
     }
-    let mut server = Server::start(&data);
+    let mut server = Server::start(&place);
     server.tool(
         "books.add_project",
         json!({"name": "Kestrel", "kind": "client", "started_on": "2026-01-05"}),

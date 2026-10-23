@@ -27,17 +27,12 @@
 //!      2026-10-16: bank exports are filed for reconciliation).
 //! ```
 
-use rmcp::ServiceExt;
-use rmcp::model::{CallToolRequestParams, ClientConfig};
-use rmcp::service::{RoleClient, RunningService};
-use rmcp::transport::StreamableHttpClientTransport;
+use common::{Client, call};
 use serde_json::{Value, json};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
 
-type Client = RunningService<RoleClient, ClientConfig>;
+mod common;
 
 const SSN: &str = "291-12-2846";
 const MEMBER_SSN: &str = "830-83-5531";
@@ -51,123 +46,49 @@ const TIN_PROBE: &str = "more than two numbers shaped like a TIN";
 /// The refusal for text holding a number printed as an SSN or EIN is.
 const TIN_PRINTED: &str = "printed the way an SSN or EIN is";
 
-struct Server(Child);
-impl Drop for Server {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
-
-/// The books dir, a folder for files on their way in, a folder outside
-/// both, and the settings (a member, so the CPA package has a K-1
-/// worksheet).
+/// The test's books (common.rs: a home, its server, the books in its
+/// root), their folder, a folder for files on their way in, and one
+/// outside the root for files saved; the settings: a member, so the CPA
+/// package has a K-1 worksheet.
 struct Books {
+    served: common::Books,
     dir: PathBuf,
     inbox: PathBuf,
     out: PathBuf,
-    toml: PathBuf,
-}
-
-/// The books dir and the folders beside it go when the test ends, pass or
-/// panic.
-impl Drop for Books {
-    fn drop(&mut self) {
-        if let Some(base) = self.dir.parent() {
-            let _ = std::fs::remove_dir_all(base);
-        }
-    }
 }
 
 fn books(tag: &str) -> Books {
-    let base =
-        std::env::temp_dir().join(format!("ledger-mcp-tin-files-{}-{tag}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&base);
-    let dir = base.join("books");
-    let inbox = base.join("inbox");
-    let out = base.join("out");
-    for d in [&dir, &inbox, &out, &base.join("config")] {
+    let tag = tag.to_string();
+    // Made on a thread of its own: the settings go in through a session
+    // with a runtime of its own (common.rs), never inside the test's.
+    let served = std::thread::spawn(move || {
+        common::Books::with(
+            &format!("tin-files-{tag}"),
+            "USD",
+            Some(
+                "[company]\nname = \"Tin Co\"\n[books]\nreceipt_threshold = \"0.00\"\ncash_accounts = [\"1000\"]\n\
+                 [[company.members]]\nname = \"Mo\"\nshare = \"100%\"\ncapital_account = \"3000\"\n",
+            ),
+        )
+    })
+    .join()
+    .unwrap();
+    let base = served.home.dir.path().to_path_buf();
+    let (inbox, out) = (base.join("inbox"), base.join("out"));
+    for d in [&inbox, &out] {
         std::fs::create_dir_all(d).unwrap();
     }
-    let toml = dir.join("wanderbooks.toml");
-    std::fs::write(
-        &toml,
-        format!(
-            "[company]\nname = \"Tin Co\"\n[books]\nreceipt_threshold = \"0.00\"\ncash_accounts = [\"1000\"]\n\
-             [[company.members]]\nname = \"Mo\"\nshare = \"100%\"\ncapital_account = \"3000\"\n\
-             [vault]\nkey_file = \"{}\"\n",
-            base.join("config/vault.key").display()
-        ),
-    )
-    .unwrap();
     Books {
-        dir,
+        dir: served.dir(),
+        served,
         inbox,
         out,
-        toml,
     }
 }
 
-fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-}
-
-/// Start the server over HTTP on these books; every client is a session
-/// of its own.
-fn serve(b: &Books) -> (Server, String) {
-    let addr = format!("127.0.0.1:{}", free_port());
-    let base = b.dir.parent().unwrap();
-    let child = Command::new(env!("CARGO_BIN_EXE_ledger-mcp"))
-        .arg("--data-dir")
-        .arg(b.dir.join("books-data"))
-        .arg("--books-toml")
-        .arg(&b.toml)
-        .arg("--http")
-        .arg(&addr)
-        .env("XDG_CONFIG_HOME", base.join("config"))
-        .env("XDG_RUNTIME_DIR", base.join("config"))
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    (Server(child), format!("http://{addr}/mcp"))
-}
-
-async fn connect(url: &str) -> Client {
-    let deadline = Instant::now() + Duration::from_secs(30);
-    loop {
-        let transport = StreamableHttpClientTransport::from_uri(url.to_string());
-        match ClientConfig::default().serve(transport).await {
-            Ok(c) => return c,
-            Err(e) if Instant::now() > deadline => panic!("connect: {e}"),
-            Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
-        }
-    }
-}
-
-/// Call a tool: Ok(structured result) or Err(the tool's error text).
-async fn call(c: &Client, tool: &str, args: Value) -> Result<Value, String> {
-    let args = args.as_object().cloned().unwrap_or_default();
-    let r = c
-        .call_tool(CallToolRequestParams::new(tool.to_string()).with_arguments(args))
-        .await
-        .map_err(|e| format!("protocol: {e}"))?;
-    let text = r
-        .content
-        .iter()
-        .find_map(|c| c.as_text().map(|t| t.text.clone()))
-        .unwrap_or_default();
-    if r.is_error == Some(true) {
-        Err(text)
-    } else {
-        Ok(r.structured_content
-            .unwrap_or_else(|| serde_json::from_str(&text).unwrap()))
-    }
+/// A new session with the books.
+async fn connect(b: &Books) -> Client {
+    common::connect(&b.served.home, common::BOOK).await.unwrap()
 }
 
 async fn ok(c: &Client, tool: &str, args: Value) -> Value {
@@ -185,22 +106,11 @@ fn inline(bytes: &[u8]) -> (String, String) {
     )
 }
 
-/// The bytes of a file a tool handed over (a `HandedFile`): inline, as on
-/// books served from a --data-dir, matching the size and SHA-256 it
-/// states.
-fn handed(file: &Value) -> Vec<u8> {
-    use base64::Engine;
-    assert!(file.get("download").is_none(), "{file}");
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(file["content_base64"].as_str().expect("content_base64"))
-        .unwrap();
-    assert_eq!(file["size_bytes"], json!(bytes.len()), "{file}");
-    assert_eq!(
-        file["sha256"],
-        json!(ledger_store::journal::sha256_hex(&bytes)),
-        "{file}"
-    );
-    bytes
+/// The bytes of a file a tool handed over (a `HandedFile`): fetched by its
+/// download, matching the size and SHA-256 it states.
+async fn handed(b: &Books, file: &Value) -> Vec<u8> {
+    let token = b.served.home.token(common::BOOK);
+    common::fetch_export(&b.served.home, common::BOOK, &token, file).await
 }
 
 /// Every way the file at `path` (named `name`) could enter the books is
@@ -214,7 +124,7 @@ async fn refused_everywhere(
 ) -> Vec<String> {
     let bytes = std::fs::read(path).unwrap();
     let (content, sha) = inline(&bytes);
-    let journal = b.dir.join("books-data").join(ledger_store::JOURNAL_FILE);
+    let journal = b.dir.join(ledger_store::JOURNAL_FILE);
     let before = std::fs::read(&journal).unwrap();
     let mut refusals = Vec::new();
     for (tool, args) in [
@@ -257,8 +167,7 @@ async fn a_tin_bearing_file_is_refused_from_every_session_and_after_a_restart() 
     )
     .unwrap();
     let (w9_content, w9_sha) = inline(&std::fs::read(&w9).unwrap());
-    let (server, url) = serve(&b);
-    let one = connect(&url).await;
+    let one = connect(&b).await;
     for (code, name, ty) in [
         ("1000", "Cash", "asset"),
         ("3000", "Capital", "equity"),
@@ -303,7 +212,7 @@ async fn a_tin_bearing_file_is_refused_from_every_session_and_after_a_restart() 
     // outside the books as the human would save it.
     let copy = b.out.join("w9-copy.pdf");
     let got = ok(&one, "books.get_w9", json!({"party": "Acme"})).await;
-    std::fs::write(&copy, handed(&got["file"])).unwrap();
+    std::fs::write(&copy, handed(&b, &got["file"]).await).unwrap();
     let csv = b.out.join("1099.csv");
     let got = ok(
         &one,
@@ -311,7 +220,7 @@ async fn a_tin_bearing_file_is_refused_from_every_session_and_after_a_restart() 
         json!({"year": 2026, "include_tins": true, "csv": true}),
     )
     .await;
-    std::fs::write(&csv, handed(&got["csv"])).unwrap();
+    std::fs::write(&csv, handed(&b, &got["csv"]).await).unwrap();
     let zip = b.out.join("cpa.zip");
     let got = ok(
         &one,
@@ -320,7 +229,7 @@ async fn a_tin_bearing_file_is_refused_from_every_session_and_after_a_restart() 
     )
     .await;
     assert_eq!(got["tins_included"], true, "{got}");
-    std::fs::write(&zip, handed(&got["file"])).unwrap();
+    std::fs::write(&zip, handed(&b, &got["file"]).await).unwrap();
     let k1 = b.out.join("k1-members.csv");
     {
         let mut archive = zip::ZipArchive::new(std::fs::File::open(&zip).unwrap()).unwrap();
@@ -341,7 +250,7 @@ async fn a_tin_bearing_file_is_refused_from_every_session_and_after_a_restart() 
         (k1.clone(), "k1-members.csv"),
     ];
     // A second session refuses each.
-    let two = connect(&url).await;
+    let two = connect(&b).await;
     for (path, name) in &files {
         refused_everywhere(&two, &b, path, name, TIN_FILE).await;
     }
@@ -372,11 +281,10 @@ async fn a_tin_bearing_file_is_refused_from_every_session_and_after_a_restart() 
     }
     accepted_everywhere(&two, "statement-again.csv", BANK_CSV).await;
     drop((one, two));
-    drop(server);
+    b.served.restart();
 
     // A server started afresh on the same books refuses them all too.
-    let (_server, url) = serve(&b);
-    let three = connect(&url).await;
+    let three = connect(&b).await;
     for (path, name) in &files {
         refused_everywhere(&three, &b, path, name, TIN_FILE).await;
     }
@@ -404,8 +312,7 @@ async fn a_refused_set_w9_never_marks_its_file() {
     std::fs::write(&w9, &w9_bytes).unwrap();
     let notes = b.inbox.join("notes.txt");
     std::fs::write(&notes, b"Acme sent their W-9 on the 3rd.\n").unwrap();
-    let (_server, url) = serve(&b);
-    let c = connect(&url).await;
+    let c = connect(&b).await;
     for (code, name, ty) in [("1000", "Cash", "asset"), ("3000", "Capital", "equity")] {
         ok(
             &c,
@@ -512,8 +419,7 @@ Date,Description,Amount,Balance,Reference
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn text_with_a_vault_tin_or_a_printed_one_is_refused_and_a_bank_export_is_not() {
     let b = books("text");
-    let (server, url) = serve(&b);
-    let c = connect(&url).await;
+    let c = connect(&b).await;
     ok(
         &c,
         "books.add_party",
@@ -549,14 +455,14 @@ async fn text_with_a_vault_tin_or_a_printed_one_is_refused_and_a_bank_export_is_
     }
     accepted_everywhere(&c, "bank.csv", BANK_CSV).await;
     drop(c);
-    drop(server);
 
     // The vault locked (its key gone): the printed shapes are still
     // refused, and the bank export still goes in; the vault's TIN written
     // bare is no longer recognized.
-    std::fs::remove_file(b.dir.parent().unwrap().join("config/vault.key")).unwrap();
-    let (_server, url) = serve(&b);
-    let c = connect(&url).await;
+    b.served.stop();
+    std::fs::remove_file(b.dir.join("keys/legacy.key")).unwrap();
+    b.served.start();
+    let c = connect(&b).await;
     let path = b.out.join("payees-0.csv");
     refused_everywhere(&c, &b, &path, "payees-0.csv", TIN_PRINTED).await;
     let path = b.out.join("members-1.csv");
@@ -577,18 +483,15 @@ async fn text_with_a_vault_tin_or_a_printed_one_is_refused_and_a_bank_export_is_
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_company_s_own_ein_goes_in_and_no_other() {
     let b = books("own-ein");
-    let toml = std::fs::read_to_string(&b.toml).unwrap();
-    std::fs::write(
-        &b.toml,
-        toml.replacen(
-            "name = \"Tin Co\"\n",
-            "name = \"Tin Co\"\nein = \"12-3456789\"\n",
-            1,
-        ),
+    let c = connect(&b).await;
+    call(
+        &c,
+        "books.set_setting",
+        json!({"changes": [{"key": "company.ein", "value": "12-3456789"}],
+               "decided_by": "Test Owner"}),
     )
+    .await
     .unwrap();
-    let (_server, url) = serve(&b);
-    let c = connect(&url).await;
     accepted_everywhere(
         &c,
         "plan.md",
@@ -616,8 +519,7 @@ async fn the_company_s_own_ein_goes_in_and_no_other() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn utf16_text_without_a_byte_order_mark_is_scanned_either_way_round() {
     let b = books("utf16");
-    let (_server, url) = serve(&b);
-    let c = connect(&url).await;
+    let c = connect(&b).await;
     ok(
         &c,
         "books.add_party",
@@ -662,8 +564,7 @@ async fn utf16_text_without_a_byte_order_mark_is_scanned_either_way_round() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn text_probing_for_a_tin_is_refused_alike_by_every_filing_tool() {
     let b = books("probe");
-    let (server, url) = serve(&b);
-    let c = connect(&url).await;
+    let c = connect(&b).await;
     ok(
         &c,
         "books.add_party",
@@ -719,12 +620,12 @@ async fn text_probing_for_a_tin_is_refused_alike_by_every_filing_tool() {
     accepted_everywhere(&c, "one.csv", &std::fs::read_to_string(&one).unwrap()).await;
     accepted_everywhere(&c, "bank.csv", BANK_CSV).await;
     drop(c);
-    drop(server);
 
     // The vault locked: the same refusals, word for word.
-    std::fs::remove_file(b.dir.parent().unwrap().join("config/vault.key")).unwrap();
-    let (_server, url) = serve(&b);
-    let c = connect(&url).await;
+    b.served.stop();
+    std::fs::remove_file(b.dir.join("keys/legacy.key")).unwrap();
+    b.served.start();
+    let c = connect(&b).await;
     assert_eq!(
         probes(&c).await,
         open,

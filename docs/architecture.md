@@ -114,12 +114,13 @@ engine keeps them beside the ledger (`ledger_core::settings::Settings`,
 its replay and the viewer's `Snapshot` share one reading; `Ledger::
 differs_from` and `verify` compare them, and the projection has a table
 for each (schema v12). `ledger-config` is the codec between them and a
-`wanderbooks.toml` (`codec::import`, `codec::export`) and still reads the
-file for books that predate P1 (the "file" source, until
-`books.import_settings`). The server (`settings::Live`) takes the books'
-settings whenever their last `settings.set` changes (on every lock of the
-store) and then never reads a file; "today" is the company's time zone's,
-set per request. Rule: `docs/spec/rules.md` B-29.
+`wanderbooks.toml` (`codec::import`, `codec::export`): adoption (`wanderbooks
+books adopt`) moves an older books dir's file in through it, once, and
+`books.export_settings` writes the books' settings out as one. The books
+are their settings' only source (D-44): the server (`settings::Live`)
+takes them whenever their last `settings.set` changes (on every lock of
+the store), the viewer reads them from the journal it shows, and neither
+reads a file; "today" is the company's time zone's, set per request. Rule: `docs/spec/rules.md` B-29.
 
 ## The MCP server's store lock (`ledger-mcp`, P0)
 

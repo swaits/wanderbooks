@@ -17,17 +17,17 @@
 //!   2. begin_upload makes nothing for a receipt or document whose bytes
 //!      are stored already: it names the attachment (not withdrawn) that
 //!      holds them.
-//!   3. Uploads exist only for books served from the data root (the
-//!      server's socket carries the bytes); over stdio, only inline.
+//!   3. An upload is kept for the token that began it, and so is an
+//!      export: a call with no token (never one the books server lets
+//!      through) begins and takes none.
 //!   4. An upload is filed only by a tool of the purpose it was begun for
 //!      (a receipt or document, a CSV import, a W-9); another tool's
 //!      refusal leaves it for the right one.
 //!   5. Inline text longer than INLINE_MAX bytes' base64 is refused
 //!      before it is decoded.
 //!   6. A file the books make for an agent (D-29) is handed over as an
-//!      export the caller's token fetches with `wanderbooks download`
-//!      (books served from the data root), or over stdio inline; never
-//!      by a path.
+//!      export the caller's token fetches with `wanderbooks download`;
+//!      never inline, never by a path.
 //! ```
 
 use super::*;
@@ -37,8 +37,10 @@ use serde::{Deserialize, Serialize};
 /// The most bytes given inline (plan 2.1: 256 KiB).
 pub(crate) const INLINE_MAX: usize = 256 * 1024;
 
-/// Why an upload is refused on a connection that has none (INVARIANT 3).
-const STDIO_ONLY_INLINE: &str = "this connection takes files inline only (content_base64 with its sha256, at most 256 KiB): a larger one needs these books served by `wanderbooks mcp`; tell the human";
+/// Why a call with no token begins, takes or is handed no file
+/// (INVARIANT 3).
+const NO_CALLER: &str =
+    "this call came without a token for these books: a file is kept only for the token that asked";
 
 /// What the bytes of a file a tool files came as (INVARIANT 1), and the
 /// upload purposes the tool takes (INVARIANT 4).
@@ -146,7 +148,7 @@ fn plain_file_name(name: &str) -> String {
 
 impl BooksServer {
     /// Hand `bytes` over as `file_name` (INVARIANT 6): kept as an export
-    /// for the caller's token, or inline over stdio.
+    /// for the caller's token.
     pub(crate) fn hand_over(
         &self,
         book: &str,
@@ -160,23 +162,9 @@ impl BooksServer {
             None => file_name.to_string(),
             Some(_) => plain_file_name(file_name),
         };
-        let mut out = HandedFile {
-            file_name: file_name.clone(),
-            mime_type: mime.to_string(),
-            size_bytes: bytes.len() as u64,
-            sha256: ledger_store::journal::sha256_hex(&bytes),
-            download: None,
-            expires_at: None,
-            content_base64: None,
-        };
-        let (Some(exports), Some(token)) = (&self.exports, self.caller_token()) else {
-            out.content_base64 = Some(base64::Engine::encode(
-                &base64::engine::general_purpose::STANDARD,
-                &bytes,
-            ));
-            return Ok(out);
-        };
-        let kept = exports
+        let token = self.caller_token().ok_or(NO_CALLER)?;
+        let kept = self
+            .exports
             .put(
                 &token,
                 &file_name,
@@ -185,14 +173,22 @@ impl BooksServer {
                 chrono::Utc::now().timestamp(),
             )
             .map_err(|e| e.to_string())?;
-        out.download = Some(format!(
-            "wanderbooks download --book {book}{} {} --to <a folder>",
-            token_flag(),
-            kept.id
-        ));
-        out.expires_at = chrono::DateTime::from_timestamp(kept.expires, 0)
-            .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
-        Ok(out)
+        // Always a real time: a kept export expires EXPORT_TTL from now.
+        let expires_at = chrono::DateTime::from_timestamp(kept.expires, 0)
+            .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+            .ok_or("the file's expiry is past the calendar")?;
+        Ok(HandedFile {
+            download: format!(
+                "wanderbooks download --book {book}{} {} --to <a folder>",
+                token_flag(),
+                kept.id
+            ),
+            expires_at,
+            size_bytes: bytes.len() as u64,
+            sha256: ledger_store::journal::sha256_hex(&bytes),
+            file_name,
+            mime_type: mime.to_string(),
+        })
     }
 
     /// The token of the call running on this thread (its id), if any.
@@ -210,10 +206,9 @@ impl BooksServer {
             ),
             (Some(id), None) => {
                 // INVARIANT 3.
-                let (Some(uploads), Some(token)) = (&self.uploads, self.caller_token()) else {
-                    return Err(STDIO_ONLY_INLINE.into());
-                };
-                let got = uploads
+                let token = self.caller_token().ok_or(NO_CALLER)?;
+                let got = self
+                    .uploads
                     .take(id.trim(), &token, chrono::Utc::now().timestamp())
                     .map_err(|e| e.to_string())?;
                 // INVARIANT 4: dropped, the claim gives it back.
@@ -268,7 +263,7 @@ impl BooksServer {
     #[tool(
         name = "books.begin_upload",
         title = "Begin an upload",
-        description = "Send a file of up to 25 MiB (books served by `wanderbooks mcp`; elsewhere only inline) without its bytes passing through you: give its sha256 (sha256sum), size, type, name and purpose; run the command returned with the file's path; then name the upload_id in books.attach_receipt, books.file_document, books.set_w9, books.import_bank_csv or books.import_chart_csv. Purpose: receipt or document (those two tools), import (the CSV imports), w9. If a receipt's or document's bytes are stored already, existing_attachment_id names them: link that instead. An upload lasts 15 minutes and is used once.",
+        description = "Send a file of up to 25 MiB without its bytes passing through you: give its sha256 (sha256sum), size, type, name and purpose; run the command returned with the file's path; then name the upload_id in books.attach_receipt, books.file_document, books.set_w9, books.import_bank_csv or books.import_chart_csv. Purpose: receipt or document (those two tools), import (the CSV imports), w9. If a receipt's or document's bytes are stored already, existing_attachment_id names them: link that instead. An upload lasts 15 minutes and is used once.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -313,11 +308,10 @@ impl BooksServer {
                 existing_attachment_id: Some(id),
             }));
         }
-        let (Some(uploads), Some(token)) = (&self.uploads, self.caller_token()) else {
-            return Err(STDIO_ONLY_INLINE.into());
-        };
+        let token = self.caller_token().ok_or(NO_CALLER)?;
         let now = chrono::Utc::now();
-        let grant = uploads
+        let grant = self
+            .uploads
             .grant(
                 &token,
                 &sha,
@@ -328,9 +322,10 @@ impl BooksServer {
                 now.timestamp(),
             )
             .map_err(|e| e.to_string())?;
+        // Always a real time: a grant lapses UPLOAD_TTL from now.
         let expires = chrono::DateTime::from_timestamp(grant.expires, 0)
             .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
-            .unwrap_or_default();
+            .ok_or("the upload's expiry is past the calendar")?;
         Ok(Json(BeginUploadOut {
             command: Some(format!(
                 "wanderbooks upload --book {book}{} {} -- <the file's path>",

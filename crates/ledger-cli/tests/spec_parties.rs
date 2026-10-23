@@ -1,5 +1,6 @@
-//! Spec-blind tests for the party directory tools of `ledger-mcp`, driven
-//! over stdio against the real binary.
+//! Spec-blind tests for the party directory tools of the books server,
+//! driven through a real `wanderbooks server` as an agent reaches it
+//! (common.rs).
 //!
 //! Expected behavior comes only from the tool descriptions and parameter /
 //! result doc comments in `src/server.rs` and `src/types.rs` (the declared
@@ -10,16 +11,15 @@
 //! `journal.jsonl` byte-identical (server invariant 2: a refused call
 //! changes nothing).
 
+use common::{Place, Wire};
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::time::Duration;
 
-const TIMEOUT: Duration = Duration::from_secs(180);
+mod common;
+
+const TIMEOUT: Duration = common::TIMEOUT;
 
 // ---------------------------------------------------------------- harness
 
@@ -44,57 +44,20 @@ impl Out {
 }
 
 struct Mcp {
-    stdin: ChildStdin,
-    rx: Receiver<String>,
-    child: Child,
+    wire: Wire,
     next_id: u64,
     data: PathBuf,
     validators: HashMap<String, jsonschema::Validator>,
-    /// The books dir when the server owns it: removed after the server
-    /// stops (fields drop after `Drop::drop`).
+    /// The test's place, when the session owns it (its server is closed
+    /// and its home removed after the session).
     books_dir: Option<TestDir>,
 }
 
-impl Drop for Mcp {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-static DIR_SEQ: AtomicU64 = AtomicU64::new(0);
-
-/// A test's dir, removed when the test ends, pass or panic.
-struct TestDir(PathBuf);
-
-impl std::ops::Deref for TestDir {
-    type Target = std::path::Path;
-    fn deref(&self) -> &std::path::Path {
-        &self.0
-    }
-}
-
-impl AsRef<std::path::Path> for TestDir {
-    fn as_ref(&self) -> &std::path::Path {
-        &self.0
-    }
-}
-
-impl Drop for TestDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
+/// A test's place (common.rs): its home, its server, its books.
+type TestDir = Place;
 
 fn test_dir(name: &str) -> TestDir {
-    let n = DIR_SEQ.fetch_add(1, Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!(
-        "ledger-mcp-spec-parties-{}-{name}-{n}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    TestDir(dir)
+    Place::new(name)
 }
 
 /// `wanderbooks.toml` with a company name and extra `[books]` TOML. The
@@ -113,38 +76,13 @@ fn books_toml(dir: &Path, company: &str, books_extra: &str) -> PathBuf {
 }
 
 impl Mcp {
-    fn start(dir: &Path, toml: &Path) -> Self {
-        let run = dir.join("run");
-        std::fs::create_dir_all(&run).unwrap();
-        let mut child = Command::new(env!("CARGO_BIN_EXE_ledger-mcp"))
-            .arg("--data-dir")
-            .arg(dir.join("books-data"))
-            .arg("--books-toml")
-            .arg(toml)
-            .env("XDG_RUNTIME_DIR", &run)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn ledger-mcp");
-        let stdin = child.stdin.take().unwrap();
-        let stdout = BufReader::new(child.stdout.take().unwrap());
-        let (tx, rx) = channel();
-        std::thread::spawn(move || {
-            for line in stdout.lines() {
-                let Ok(line) = line else { break };
-                if tx.send(line).is_err() {
-                    break;
-                }
-            }
-        });
+    fn start(dir: &TestDir, toml: &Path) -> Self {
+        let wire = dir.start(Some(&std::fs::read_to_string(toml).unwrap()));
         let mut mcp = Self {
             books_dir: None,
-            stdin,
-            rx,
-            child,
+            wire,
             next_id: 1,
-            data: dir.join("books-data"),
+            data: dir.books_data(),
             validators: HashMap::new(),
         };
         let init = mcp.rpc(
@@ -191,24 +129,11 @@ impl Mcp {
     }
 
     fn send_line(&mut self, line: &str) {
-        writeln!(self.stdin, "{line}").unwrap();
-        self.stdin.flush().unwrap();
+        self.wire.send_line(line);
     }
 
     fn recv(&mut self) -> Option<Value> {
-        loop {
-            match self.rx.recv_timeout(TIMEOUT) {
-                Ok(line) => {
-                    let v: Value = serde_json::from_str(&line)
-                        .unwrap_or_else(|e| panic!("server wrote non-JSON {line:?}: {e}"));
-                    if v.get("id").is_none() && v.get("method").is_some() {
-                        continue;
-                    }
-                    return Some(v);
-                }
-                Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => return None,
-            }
-        }
+        self.wire.recv(TIMEOUT)
     }
 
     fn rpc(&mut self, method: &str, params: Value) -> Value {
@@ -1721,22 +1646,18 @@ fn a_posted_derived_split_survives_settings_changes_and_archiving() {
         both(),
         &[("2100", "debit", "100.00"), ("1000", "credit", "100.00")],
     );
-    // The members' split changes to 60/40.
-    let toml = m.data.parent().unwrap().join("wanderbooks.toml");
+    // The members' split changes to 60/40, as an agent changes it.
+    let toml = m.books_dir.as_ref().unwrap().join("wanderbooks.toml");
     let text = std::fs::read_to_string(&toml).unwrap();
     let changed = text
         .replacen("share = \"50%\"", "share = \"60%\"", 1)
         .replacen("share = \"50%\"", "share = \"40%\"", 1);
-    std::fs::write(&toml, changed).unwrap();
-    // The server reloads it on change: wait until the draft reads 60/40.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    let d = loop {
-        let d = m.ok("books.post_entry", json!({"entry_id": draft}));
-        if resolved(&d)[0].1 == "60.00" || std::time::Instant::now() > deadline {
-            break d;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    };
+    m.ok(
+        "books.set_setting",
+        json!({"changes": common::settings_changes(&changed, None, "USD"),
+               "decided_by": "Test Owner"}),
+    );
+    let d = m.ok("books.post_entry", json!({"entry_id": draft}));
     assert_eq!(
         resolved(&d),
         [

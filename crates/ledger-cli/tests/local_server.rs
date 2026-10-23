@@ -4,12 +4,8 @@
 //! finishes, every writer lock is released").
 #![cfg(unix)]
 
+use common::{Client, Home, Server, call, connect, connect_with, mcp_http, mcp_http_for};
 use ledger_mcp::admin::{self, Request, Response};
-use rmcp::ServiceExt;
-use rmcp::model::{CallToolRequestParams, ClientConfig};
-use rmcp::service::{RoleClient, RunningService};
-use rmcp::transport::StreamableHttpClientTransport;
-use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader};
 use std::os::unix::fs::PermissionsExt;
@@ -17,190 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-type Client = RunningService<RoleClient, ClientConfig>;
-
-/// A home with a data root made by `wanderbooks setup`.
-struct Home {
-    dir: tempfile::TempDir,
-    /// A token for each book, made on first use (all scopes).
-    tokens: std::sync::Mutex<std::collections::HashMap<String, String>>,
-}
-
-impl Home {
-    fn new(tag: &str) -> Self {
-        let dir = tempfile::Builder::new()
-            .prefix(&format!("wb-srv-{tag}-"))
-            .tempdir()
-            .unwrap();
-        let out = Command::new(env!("CARGO_BIN_EXE_wanderbooks"))
-            .args(["setup", "--home"])
-            .arg(dir.path())
-            .env_remove("XDG_DATA_HOME")
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "{out:?}");
-        Self {
-            dir,
-            tokens: Default::default(),
-        }
-    }
-
-    /// The token tests use for `book`, made through the admin socket the
-    /// first time.
-    fn token(&self, book: &str) -> String {
-        let mut tokens = self.tokens.lock().unwrap();
-        if let Some(t) = tokens.get(book) {
-            return t.clone();
-        }
-        let text = match self.admin(Request::TokenCreate {
-            book: book.into(),
-            name: "test".into(),
-            scopes: ["read", "write", "post", "admin"]
-                .map(String::from)
-                .to_vec(),
-            replace: true,
-        }) {
-            Response::TokenCreated { text, .. } => text.0,
-            other => panic!("{other:?}"),
-        };
-        tokens.insert(book.to_string(), text.clone());
-        text
-    }
-
-    fn root(&self) -> PathBuf {
-        self.dir.path().join(".local/share/wanderbooks")
-    }
-
-    fn run(&self) -> PathBuf {
-        self.root().join("run")
-    }
-
-    fn admin(&self, request: Request) -> Response {
-        admin::call(&self.run().join("admin.sock"), request).unwrap()
-    }
-
-    /// The text of every answer must not name the root (local.rs
-    /// INVARIANT 7).
-    fn assert_hidden(&self, text: &str) {
-        let root = self.root().display().to_string();
-        assert!(!text.contains(&root), "names the data root: {text}");
-        assert!(
-            !text.contains(&self.dir.path().display().to_string()),
-            "names the home: {text}"
-        );
-    }
-
-    fn create(&self, id: &str, currency: &str) {
-        match self.admin(Request::Create {
-            id: id.into(),
-            currency: currency.into(),
-        }) {
-            Response::Created { id: made, problem } => {
-                assert_eq!(made, id);
-                assert_eq!(problem, None);
-            }
-            other => panic!("{other:?}"),
-        }
-    }
-}
-
-/// A running `wanderbooks server`, ended (kill) when dropped.
-struct Server {
-    child: Child,
-}
-
-impl Server {
-    /// Start one and wait for its ready line.
-    fn start(home: &Home) -> Self {
-        // Its environment is the test home's alone: the default import
-        // folder and vault key are there, never the real ones.
-        let mut child = Command::new(env!("CARGO_BIN_EXE_wanderbooks"))
-            .arg("server")
-            .arg("--root")
-            .arg(home.root())
-            .env_clear()
-            .env("PATH", "/usr/bin:/bin")
-            .env("HOME", home.dir.path())
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
-        let mut line = String::new();
-        BufReader::new(child.stdout.take().unwrap())
-            .read_line(&mut line)
-            .unwrap();
-        assert_eq!(line, "ready\n", "the server didn't say ready");
-        Self { child }
-    }
-
-    /// Close it as the host does (stdin ends) and wait for it to exit.
-    fn close(mut self) -> std::process::ExitStatus {
-        drop(self.child.stdin.take());
-        let deadline = Instant::now() + Duration::from_secs(30);
-        loop {
-            if let Some(status) = self.child.try_wait().unwrap() {
-                return status;
-            }
-            assert!(Instant::now() < deadline, "the server didn't close");
-            std::thread::sleep(Duration::from_millis(20));
-        }
-    }
-}
-
-impl Drop for Server {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-/// An HTTP client for the server's MCP socket.
-fn mcp_http(home: &Home) -> reqwest::Client {
-    mcp_http_builder(home).build().unwrap()
-}
-
-fn mcp_http_builder(home: &Home) -> reqwest::ClientBuilder {
-    // The short path is good in this process only, while it lives: kept.
-    let short = ledger_store::root::SocketPath::new(&home.run(), "mcp.sock").unwrap();
-    let path = short.path().to_path_buf();
-    std::mem::forget(short);
-    reqwest::Client::builder().unix_socket(path)
-}
-
-/// An HTTP client for the server's MCP socket that sends `book`'s token
-/// on every request.
-fn mcp_http_for(home: &Home, book: &str) -> reqwest::Client {
-    let mut headers = reqwest::header::HeaderMap::new();
-    headers.insert(
-        reqwest::header::AUTHORIZATION,
-        format!("Bearer {}", home.token(book)).parse().unwrap(),
-    );
-    mcp_http_builder(home)
-        .default_headers(headers)
-        .build()
-        .unwrap()
-}
-
-async fn connect(home: &Home, book: &str) -> Result<Client, String> {
-    let token = home.token(book);
-    connect_with(home, book, Some(token)).await
-}
-
-/// [`connect`], with this token (or none).
-async fn connect_with(home: &Home, book: &str, token: Option<String>) -> Result<Client, String> {
-    let http = mcp_http(home);
-    let mut config =
-        StreamableHttpClientTransportConfig::with_uri(format!("http://localhost/b/{book}/mcp"));
-    if let Some(token) = token {
-        config = config.auth_header(token);
-    }
-    let transport = StreamableHttpClientTransport::with_client(http, config);
-    ClientConfig::default()
-        .serve(transport)
-        .await
-        .map_err(|e| e.to_string())
-}
+mod common;
 
 /// Name cash 1000 the books' cash account (adding it if the chart lacks
 /// it): the 1099 worksheet counts payments out of the books' cash
@@ -219,31 +32,6 @@ async fn name_cash(c: &Client) {
     )
     .await
     .unwrap();
-}
-
-/// Call a tool: Ok(structured result) or Err(the error text).
-async fn call(c: &Client, tool: &str, args: Value) -> Result<Value, String> {
-    let args = args.as_object().cloned().unwrap_or_default();
-    // A client whose server went away may wait forever: a call that
-    // takes this long counts as refused.
-    let r = tokio::time::timeout(
-        Duration::from_secs(20),
-        c.call_tool(CallToolRequestParams::new(tool.to_string()).with_arguments(args)),
-    )
-    .await
-    .map_err(|_| "no answer".to_string())?
-    .map_err(|e| format!("protocol: {e}"))?;
-    let text = r
-        .content
-        .iter()
-        .find_map(|c| c.as_text().map(|t| t.text.clone()))
-        .unwrap_or_default();
-    if r.is_error == Some(true) {
-        Err(text)
-    } else {
-        Ok(r.structured_content
-            .unwrap_or_else(|| serde_json::from_str(&text).unwrap_or(Value::String(text))))
-    }
 }
 
 async fn chart(c: &Client) {
@@ -1165,25 +953,6 @@ fn adoption_checks_the_vault_key_and_the_settings_file() {
 
 // P2 slice 4: tokens, scopes and the access log (local.rs INVARIANT 8,
 // ledger-mcp access.rs, scopes.rs; ledger-store auth.rs, access.rs).
-
-impl Home {
-    /// A token for `book` named `name` with `scopes`, made (or remade).
-    fn token_with(&self, book: &str, name: &str, scopes: &[&str]) -> String {
-        match self.admin(Request::TokenCreate {
-            book: book.into(),
-            name: name.into(),
-            scopes: scopes.iter().map(|s| s.to_string()).collect(),
-            replace: true,
-        }) {
-            Response::TokenCreated { text, .. } => text.0,
-            other => panic!("{other:?}"),
-        }
-    }
-
-    fn book_dir(&self, book: &str) -> PathBuf {
-        self.root().join("books").join(book)
-    }
-}
 
 /// A raw initialize on `book`'s route with `bearer` (if any): its status,
 /// its refusal header, its session id and its body.
@@ -2523,7 +2292,10 @@ async fn a_w9_and_a_file_holding_a_tin_go_by_upload_only_where_they_belong() {
         .await
         .unwrap();
     assert_eq!(got["file"]["file_name"], json!("payee-w9.pdf"));
-    assert_eq!(fetch_export(&home, &token, &got["file"]).await, w9);
+    assert_eq!(
+        common::fetch_export(&home, "acme", &token, &got["file"]).await,
+        w9
+    );
     // The W-9's upload is gone; the refused file's waits to lapse.
     let left: Vec<String> = std::fs::read_dir(home.book_dir("acme").join("uploads"))
         .unwrap()
@@ -2609,32 +2381,6 @@ async fn an_mcp_request_is_at_most_a_mebibyte() {
     assert!(server.close().success());
 }
 
-/// Fetch the export a tool handed over in `file` (its `download`
-/// command's id) with `token`: its bytes, checked against its sha256.
-async fn fetch_export(home: &Home, token: &str, file: &Value) -> Vec<u8> {
-    let command = file["download"]
-        .as_str()
-        .unwrap_or_else(|| panic!("{file}"));
-    let id = command
-        .split(' ')
-        .find(|w| w.starts_with("ex_"))
-        .unwrap_or_else(|| panic!("{command}"));
-    let r = mcp_http(home)
-        .get(format!("http://localhost/b/acme/x/{id}"))
-        .bearer_auth(token)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(r.status().as_u16(), 200, "{:?}", r.headers());
-    let bytes = r.bytes().await.unwrap().to_vec();
-    assert_eq!(
-        file["sha256"],
-        json!(ledger_store::journal::sha256_hex(&bytes))
-    );
-    assert_eq!(file["size_bytes"], json!(bytes.len()));
-    bytes
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_file_the_books_make_is_fetched_by_its_own_token() {
     let home = Home::new("exports");
@@ -2689,9 +2435,9 @@ async fn a_file_the_books_make_is_fetched_by_its_own_token() {
     );
     assert!(file["expires_at"].as_str().unwrap().ends_with('Z'));
     // Fetched whole, as often as needed while it's kept.
-    let zip = fetch_export(&home, &token, file).await;
+    let zip = common::fetch_export(&home, "acme", &token, file).await;
     assert!(zip.starts_with(b"PK"), "a zip");
-    assert_eq!(fetch_export(&home, &token, file).await, zip);
+    assert_eq!(common::fetch_export(&home, "acme", &token, file).await, zip);
     let id = command.split(' ').find(|w| w.starts_with("ex_")).unwrap();
     let get = |bearer: Option<String>, what: String| {
         let http = mcp_http(&home);
@@ -2730,7 +2476,7 @@ async fn a_file_the_books_make_is_fetched_by_its_own_token() {
     let w = call(&ca, "books.vendor_1099", json!({"year": 2026, "csv": true}))
         .await
         .unwrap();
-    let csv = fetch_export(&home, &admin, &w["csv"]).await;
+    let csv = common::fetch_export(&home, "acme", &admin, &w["csv"]).await;
     assert!(csv.starts_with(b"vendor_id,name,"));
     drop(ca);
     // Each fetch is in the access log as an export, under its id.

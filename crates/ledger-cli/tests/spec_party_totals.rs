@@ -1,8 +1,9 @@
-//! P3 defects 14 and 24 through the MCP, over stdio against the real
-//! binary: each party's part of an entry (`books.get_entry` `resolved`,
-//! `direction`, `cash`, `in_kind`), party totals on a basis
-//! (`books.party`, `books.parties` `basis`), and a party named the
-//! creditor of a liability (`books.update_party` `creditor_of`).
+//! P3 defects 14 and 24 through the MCP, through a real books server as
+//! an agent reaches it (common.rs): each party's part of an entry
+//! (`books.get_entry` `resolved`, `direction`, `cash`, `in_kind`), party
+//! totals on a basis (`books.party`, `books.parties` `basis`), and a
+//! party named the creditor of a liability (`books.update_party`
+//! `creditor_of`).
 //!
 //! Expected behavior comes only from the tool descriptions and parameter /
 //! result doc comments in `src/server.rs` and `src/types.rs` (as
@@ -11,16 +12,15 @@
 //! every success validates against the tool's `outputSchema`, and every
 //! refusal leaves `journal.jsonl` byte-identical.
 
+use common::{Place, Wire};
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::time::Duration;
 
-const TIMEOUT: Duration = Duration::from_secs(180);
+mod common;
+
+const TIMEOUT: Duration = common::TIMEOUT;
 
 // ---------------------------------------------------------------- harness
 
@@ -45,57 +45,20 @@ impl Out {
 }
 
 struct Mcp {
-    stdin: ChildStdin,
-    rx: Receiver<String>,
-    child: Child,
+    wire: Wire,
     next_id: u64,
     data: PathBuf,
     validators: HashMap<String, jsonschema::Validator>,
-    /// The books dir when the server owns it: removed after the server
-    /// stops (fields drop after `Drop::drop`).
+    /// The test's place, when the session owns it (its server is closed
+    /// and its home removed after the session).
     books_dir: Option<TestDir>,
 }
 
-impl Drop for Mcp {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-static DIR_SEQ: AtomicU64 = AtomicU64::new(0);
-
-/// A test's dir, removed when the test ends, pass or panic.
-struct TestDir(PathBuf);
-
-impl std::ops::Deref for TestDir {
-    type Target = std::path::Path;
-    fn deref(&self) -> &std::path::Path {
-        &self.0
-    }
-}
-
-impl AsRef<std::path::Path> for TestDir {
-    fn as_ref(&self) -> &std::path::Path {
-        &self.0
-    }
-}
-
-impl Drop for TestDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
+/// A test's place (common.rs): its home, its server, its books.
+type TestDir = Place;
 
 fn test_dir(name: &str) -> TestDir {
-    let n = DIR_SEQ.fetch_add(1, Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!(
-        "ledger-mcp-spec-party-totals-{}-{name}-{n}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    TestDir(dir)
+    Place::new(name)
 }
 
 /// `wanderbooks.toml` with a company name and extra `[books]` TOML. The
@@ -114,38 +77,13 @@ fn books_toml(dir: &Path, company: &str, books_extra: &str) -> PathBuf {
 }
 
 impl Mcp {
-    fn start(dir: &Path, toml: &Path) -> Self {
-        let run = dir.join("run");
-        std::fs::create_dir_all(&run).unwrap();
-        let mut child = Command::new(env!("CARGO_BIN_EXE_ledger-mcp"))
-            .arg("--data-dir")
-            .arg(dir.join("books-data"))
-            .arg("--books-toml")
-            .arg(toml)
-            .env("XDG_RUNTIME_DIR", &run)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn ledger-mcp");
-        let stdin = child.stdin.take().unwrap();
-        let stdout = BufReader::new(child.stdout.take().unwrap());
-        let (tx, rx) = channel();
-        std::thread::spawn(move || {
-            for line in stdout.lines() {
-                let Ok(line) = line else { break };
-                if tx.send(line).is_err() {
-                    break;
-                }
-            }
-        });
+    fn start(dir: &TestDir, toml: &Path) -> Self {
+        let wire = dir.start(Some(&std::fs::read_to_string(toml).unwrap()));
         let mut mcp = Self {
             books_dir: None,
-            stdin,
-            rx,
-            child,
+            wire,
             next_id: 1,
-            data: dir.join("books-data"),
+            data: dir.books_data(),
             validators: HashMap::new(),
         };
         let init = mcp.rpc(
@@ -192,24 +130,11 @@ impl Mcp {
     }
 
     fn send_line(&mut self, line: &str) {
-        writeln!(self.stdin, "{line}").unwrap();
-        self.stdin.flush().unwrap();
+        self.wire.send_line(line);
     }
 
     fn recv(&mut self) -> Option<Value> {
-        loop {
-            match self.rx.recv_timeout(TIMEOUT) {
-                Ok(line) => {
-                    let v: Value = serde_json::from_str(&line)
-                        .unwrap_or_else(|e| panic!("server wrote non-JSON {line:?}: {e}"));
-                    if v.get("id").is_none() && v.get("method").is_some() {
-                        continue;
-                    }
-                    return Some(v);
-                }
-                Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => return None,
-            }
-        }
+        self.wire.recv(TIMEOUT)
     }
 
     fn rpc(&mut self, method: &str, params: Value) -> Value {
@@ -371,7 +296,7 @@ fn books_in(name: &str, p2: bool) -> Mcp {
     let dir = test_dir(name);
     if p2 {
         ledger_store::Store::create_in_format(
-            &dir.join("books-data"),
+            &dir.books_data(),
             ledger_core::Currency::USD,
             &ledger_store::JournalFormat {
                 format: 2,
@@ -404,7 +329,8 @@ impl Mcp {
     fn upgraded(mut self) -> Mcp {
         let dir = self.books_dir.take().expect("books_dir");
         drop(self);
-        ledger_store::Store::open(&dir.join("books-data"))
+        dir.stop();
+        ledger_store::Store::open(&dir.books_data())
             .unwrap()
             .upgrade_format()
             .unwrap()

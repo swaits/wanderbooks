@@ -16,8 +16,10 @@ through MCP. Self-hosted, no rent.
   append-only, hash-chained JSONL journal; SQLite is a disposable
   projection rebuilt from it; receipts live in a content-addressed blob
   store. Drafts are durable, corrupt projections self-heal.
-- **`ledger-mcp`** — the AI-first interface. 64 MCP tools over stdio or
-  Streamable HTTP: draft → preview → post workflow, server-side receipt
+- **`ledger-mcp`** — the AI-first interface. 118 MCP tools, served by the
+  books server (`wanderbooks server`) on the data root's local sockets and
+  reached through the agents' bridge (`wanderbooks mcp --book ID`): draft →
+  preview → post workflow, server-side receipt
   policy (>$25), anti-splitting detection, asset management, digest for
   human review, plus read-only resources for dashboards.
 - **`ledger-import`** — QuickBooks interop. Import bank/credit-card CSVs
@@ -38,7 +40,8 @@ This is the storytold way applied to accounting: agents verify against
 oracles, never ship what they haven't demonstrated.
 
 - 190+ workspace tests: invariant tests encoding accounting law, golden-file
-  report snapshots, property tests (proptest), end-to-end MCP stdio tests.
+  report snapshots, property tests (proptest), end-to-end MCP tests through
+  a real books server.
 - **Formal proofs of the accounting laws** (`just prove`,
   `docs/verification.md`). Kani model-checks the engine's arithmetic
   kernel exhaustively within bounds. Lean 4 proves that, after any
@@ -68,9 +71,8 @@ See [`plan/STATUS.md`](plan/STATUS.md) for where things stand and
 ## Quickstart
 
 ```bash
-cargo test          # whole suite
-cargo run -p ledger-mcp -- --data-dir /tmp/books   # MCP server over stdio
-cargo run -p ledger-gui -- --demo                   # the viewer, on a demo company
+cargo test                         # whole suite
+cargo run -p ledger-gui -- --demo  # the viewer, on a demo company
 ```
 New books, one command (installs Rust and wanderbooks if needed, makes the
 books' private folder, starts books called `acme` and lets Claude Code reach
@@ -100,7 +102,7 @@ just          # lists the recipes: check, build, prove, demo, ...
 ```
 crates/ledger-core/    # engine: money, accounts, journal, ledger, reports
 crates/ledger-store/   # journal + SQLite projection + blob store
-crates/ledger-mcp/     # MCP server: 119 tools, resources, handbook, receipt policy
+crates/ledger-mcp/     # MCP server: 118 tools, resources, handbook, receipt policy
 crates/ledger-import/  # QBO CSV import, IIF/XLSX export
 crates/ledger-config/  # wanderbooks.toml company settings
 crates/ledger-cli/     # `wanderbooks`: the one executable (every mode)

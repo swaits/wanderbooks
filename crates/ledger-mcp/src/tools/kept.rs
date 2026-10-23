@@ -1,7 +1,7 @@
 //! How the books are kept, through the server: `books.start`, settings
-//! (`books.settings`, `books.set_setting`, `books.import_settings`,
-//! `books.export_settings`), conventions, decisions, open items, drafts
-//! from posting templates, and approvals (plan/served.md P1, 4.2, 4.9).
+//! (`books.settings`, `books.set_setting`, `books.export_settings`),
+//! conventions, decisions, open items, drafts from posting templates,
+//! and approvals (plan/served.md P1, 4.2, 4.9).
 //!
 //! ```text
 //! GOAL: an agent anywhere learns how these books are kept from the books
@@ -12,17 +12,14 @@
 //! INVARIANTS:
 //!   1. Every change names who decided it and when (decided_by;
 //!      decided_on defaults to today in the company's time zone).
-//!   2. A settings file is never half moved in: books.set_setting refuses
-//!      while the books still read a settings file (import it first), and
-//!      books.import_settings is refused unless, after it, the server
-//!      reads every setting as it does now (company, receipt rule, cash
-//!      flow roles, asset tag prefix, parties, time zone, vault key).
+//!   2. The books keep their own settings, and only books.set_setting
+//!      changes them (old books' settings file is read once, by
+//!      `wanderbooks books adopt`).
 //!   3. Identity values (the company's EIN) leave the server masked.
 //!   4. books.start is read-only and at most START_MAX bytes.
 //! ```
 
 use super::*;
-use crate::settings::Settings as Live;
 use ledger_core::conventions::{ConventionKind, NewConvention, NewDecision, NewOpenItem};
 use ledger_core::settings::{self as core_settings, Change, KEYS, Sensitivity, Source};
 use schemars::JsonSchema;
@@ -242,10 +239,6 @@ pub struct StartOut {
     pub head: HeadOut,
     /// needs_onboarding (no chart of accounts yet) or active.
     pub state: String,
-    /// Where the settings come from: "books" (journaled, the books' own)
-    /// or "file" (these books still read a settings file: import it with
-    /// books.import_settings).
-    pub settings_source: String,
     /// The rules in force.
     pub rules: RulesOut,
     /// Every setting set, with who set it.
@@ -322,54 +315,12 @@ pub struct SetSettingOut {
     pub problems: Vec<String>,
 }
 
-/// Parameters for `books.import_settings`.
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct ImportSettingsParams {
-    /// The settings file's text (wanderbooks.toml), as written.
-    pub toml_text: String,
-    /// The receipt policy file's text ({"receipt_policy": {...}}), when
-    /// books.settings says the server reads one (config_json_present):
-    /// rebuild it from books.settings' receipt rule and account lists.
-    #[serde(default)]
-    pub config_json_text: Option<String>,
-    /// Without true: a preview of every change, note and unknown entry;
-    /// nothing is recorded.
-    #[serde(default)]
-    pub confirmed: bool,
-    /// Import even though the file holds entries the books don't know
-    /// (listed in the preview as unknown; they are not imported).
-    #[serde(default)]
-    pub skip_unknown: bool,
-    /// Who decided to move the settings in, and when.
-    #[serde(flatten)]
-    pub source: SourceIn,
-}
-
-/// Result of `books.import_settings`.
-#[derive(Debug, Serialize, JsonSchema)]
-pub struct ImportSettingsOut {
-    /// "preview" or "imported".
-    pub status: String,
-    /// The changes that make the books' settings what the file says.
-    pub changes: Vec<ChangeOut>,
-    /// What the file says that isn't a books setting, and where it goes.
-    pub notes: Vec<String>,
-    /// Entries the books don't know: not imported (confirm with
-    /// skip_unknown, or record them as conventions first).
-    pub unknown: Vec<String>,
-    /// The file's comments, in order. They are not settings and are not
-    /// imported: record what matters in them (a value's source, a
-    /// discrepancy, something pending) as a decision, an open item, a
-    /// convention, or a setting's note, before or after confirming.
-    pub comments: Vec<String>,
-}
-
 /// Result of `books.export_settings`.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ExportSettingsOut {
     /// The settings as a settings file (TOML), each with who decided it
     /// as a comment; identity values masked. A copy: editing it changes
-    /// nothing until imported.
+    /// nothing.
     pub toml_text: String,
 }
 
@@ -740,51 +691,12 @@ fn open_item_out(i: &ledger_core::conventions::OpenItem) -> OpenItemOut {
     }
 }
 
-/// Where two server readings of the settings differ (INVARIANT 2).
-fn reads_differently(a: &Live, b: &Live) -> Vec<&'static str> {
-    let threshold = |s: &Live| ledger_config::decimal(s.policy.require_receipts_above.trim());
-    [
-        ("company", a.company.name == b.company.name),
-        (
-            "fiscal year",
-            a.company.fiscal_year_start == b.company.fiscal_year_start,
-        ),
-        ("members", a.company.members == b.company.members),
-        ("basis", a.company.basis == b.company.basis),
-        ("tax form", a.company.tax_form == b.company.tax_form),
-        ("close target", a.company.close_into == b.company.close_into),
-        (
-            "close sweep",
-            a.company.close_sweep == b.company.close_sweep,
-        ),
-        ("receipt threshold", threshold(a) == threshold(b)),
-        (
-            "receipt required accounts",
-            a.policy.receipt_required_accounts == b.policy.receipt_required_accounts,
-        ),
-        (
-            "receipt exempt accounts",
-            a.policy.receipt_exempt_accounts == b.policy.receipt_exempt_accounts,
-        ),
-        ("cash accounts", a.roles.cash == b.roles.cash),
-        ("financing accounts", a.roles.financing == b.roles.financing),
-        ("investing accounts", a.roles.investing == b.roles.investing),
-        ("asset tag prefix", a.tag_prefix() == b.tag_prefix()),
-        ("parties", a.parties == b.parties),
-        ("time zone", a.timezone == b.timezone),
-    ]
-    .into_iter()
-    .filter(|(_, same)| !same)
-    .map(|(n, _)| n)
-    .collect()
-}
-
 impl BooksServer {
     /// The books' `books.start` (INVARIANT 4).
     fn start_out(&self, store: &Store, focus: Option<&str>) -> StartOut {
         let cfg = self.settings();
         let ledger = store.ledger();
-        let kept = self.settings_as_kept(store);
+        let kept = store.ledger().settings().clone();
         let books = &kept;
         let today = today();
         let (fy_start, fy_end) = cfg.company.fiscal_year_containing(today);
@@ -843,7 +755,6 @@ impl BooksServer {
         projects.sort_by_key(|a| (a.name.to_lowercase(), a.id));
         let mut p_cut = projects.len().saturating_sub(START_PROJECTS);
         projects.truncate(START_PROJECTS);
-        let journaled = cfg.journaled;
         let focus = focus.unwrap_or("daily");
         let step = |tool: &str, args: Option<serde_json::Value>, why: &str| NextStepOut {
             tool: tool.into(),
@@ -860,15 +771,6 @@ impl BooksServer {
                 "books.handbook",
                 Some(serde_json::json!({"section": "format-upgrade"})),
                 "Tell the human first: these books wait for a format upgrade, which only the owner can agree to (in the app, which asks when it opens the books, or `wanderbooks books upgrade` at a terminal, with the owner passphrase; a verified backup is made first). Until then they work on their old format and refuse what needs the new one (format_upgrade_pending). No tool can upgrade them.",
-            ));
-        }
-        // Books that read a settings file move it in before anything else
-        // changes a setting (books.set_setting refuses until then).
-        if !journaled {
-            next_steps.push(step(
-                "books.import_settings",
-                None,
-                "These books still read a settings file. Move it into the books (preview, show the human, confirm), so every agent sees one record and no file is read.",
             ));
         }
         if onboarding || focus == "onboarding" {
@@ -893,8 +795,8 @@ impl BooksServer {
         }
         // The books' backups (backup.rs): none set up, or one behind or
         // failing.
-        if let Some(b) = &self.backups {
-            let st = b.standing(store);
+        {
+            let st = self.backups.standing(store);
             if st.note.is_some() {
                 next_steps.push(step(
                     "books.backup",
@@ -958,12 +860,10 @@ impl BooksServer {
                 "active"
             }
             .into(),
-            settings_source: if journaled { "books" } else { "file" }.into(),
             rules: RulesOut {
                 evidence: cfg.policy.rule(self.currency()),
                 parties: cfg.parties.key().into(),
-                // What the server enforces: the books' own setting (a
-                // settings file's is never enforced).
+                // What the server enforces: the books' own setting.
                 approval_rules: match ledger.settings().approval_rules() {
                     core_settings::ApprovalMode::Off => "off",
                     core_settings::ApprovalMode::Enforce => "enforce",
@@ -1047,19 +947,6 @@ impl BooksServer {
         out
     }
 
-    /// Refuse a settings change while the books still read a settings
-    /// file that sets something (INVARIANT 2): it would drop the rest.
-    fn ensure_settings_in_books(&self) -> Result<(), String> {
-        let status = self.live().status();
-        if !status.journaled && (status.books_toml_exists || status.config_json_present) {
-            return Err(
-                "these books still read their settings file: move it in with books.import_settings first (preview, then confirm), so no setting is lost; then change settings here"
-                    .into(),
-            );
-        }
-        Ok(())
-    }
-
     /// The settings in force after a settings change: take the books'.
     fn sync_settings(&self, store: &Store) {
         self.live().sync(store.ledger().settings(), self.currency());
@@ -1090,7 +977,7 @@ impl BooksServer {
     #[tool(
         name = "books.set_setting",
         title = "Change settings",
-        description = "Change one or more settings, together or not at all, recording who decided and when. Each change is {key, value}: value as the key takes it (books.settings lists every key and what it takes), or null to clear it back to its default. Values are checked and kept in one spelling; a change to the value already set changes nothing. Refused while the books still read a settings file: import it first (books.import_settings).",
+        description = "Change one or more settings, together or not at all, recording who decided and when. Each change is {key, value}: value as the key takes it (books.settings lists every key and what it takes), or null to clear it back to its default. Values are checked and kept in one spelling; a change to the value already set changes nothing.",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -1104,7 +991,6 @@ impl BooksServer {
     ) -> Result<Json<SetSettingOut>, String> {
         let p = params.0;
         let source = p.source.source()?;
-        self.ensure_settings_in_books()?;
         if p.changes.is_empty() {
             return Err("changes is empty: pass at least one {key, value}".into());
         }
@@ -1134,172 +1020,15 @@ impl BooksServer {
     }
 
     #[tool(
-        name = "books.import_settings",
-        title = "Move a settings file into the books",
-        description = "Move a settings file (its TOML text, and the receipt policy file's text if the server reads one) into the books, after which no file is read. Without confirmed: a preview of every change, what the file says that isn't a books setting (notes), and entries the books don't know (unknown). Show it to the human; confirm with confirmed: true. Refused if afterwards any setting would read differently than now.",
-        annotations(
-            read_only_hint = false,
-            destructive_hint = true,
-            idempotent_hint = true,
-            open_world_hint = false
-        )
-    )]
-    async fn import_settings(
-        &self,
-        params: Parameters<ImportSettingsParams>,
-    ) -> Result<Json<ImportSettingsOut>, String> {
-        let p = params.0;
-        let source = p.source.source()?;
-        let mut store = self.lock()?;
-        let status = self.live().status();
-        if let Some(e) = &status.error {
-            return Err(format!(
-                "the settings file doesn't load ({e}): fix it first, so the import moves in the settings in force"
-            ));
-        }
-        let current = store.ledger().settings().clone();
-        let import = ledger_config::codec::import(
-            &p.toml_text,
-            p.config_json_text.as_deref(),
-            &current,
-            self.currency(),
-        )?;
-        let differing = |theirs: &[Change]| -> Vec<String> {
-            let mut keys: Vec<String> = import
-                .changes
-                .iter()
-                .filter(|c| !theirs.contains(c))
-                .chain(theirs.iter().filter(|c| !import.changes.contains(c)))
-                .map(|c| c.key.clone())
-                .collect();
-            keys.sort();
-            keys.dedup();
-            keys
-        };
-        if status.journaled {
-            // The books keep their own settings: an import may only confirm
-            // them (INVARIANT 2); changes go through books.set_setting.
-            let differs = differing(&[]);
-            if !differs.is_empty() {
-                return Err(format!(
-                    "these books keep their own settings, and this text differs from them in {}: change settings with books.set_setting (the books record who decided each change)",
-                    differs.join(", ")
-                ));
-            }
-        } else if let Some((toml, json)) = self.live().file_texts() {
-            // INVARIANT 2: the text is the file the server reads, exactly:
-            // its import is the server's own reading of its files.
-            let own = ledger_config::codec::import(
-                toml.as_deref().unwrap_or(""),
-                json.as_deref(),
-                &current,
-                self.currency(),
-            )?;
-            let differs = differing(&own.changes);
-            if !differs.is_empty() {
-                return Err(format!(
-                    "this text isn't the settings the server reads now: it differs in {}. Pass the settings file books.settings names, whole, as toml_text{}",
-                    differs.join(", "),
-                    if json.is_some() {
-                        ", and the receipt policy as config_json_text: {\"receipt_policy\": {...}} with books.settings' threshold and its required and exempt account lists"
-                    } else {
-                        ""
-                    }
-                ));
-            }
-        }
-        // And, after it, the server reads every setting as now (the
-        // company, the receipt rule, the cash flow roles, the asset tag
-        // prefix, parties, the time zone, approvals).
-        let mut after = current.clone();
-        after
-            .apply(&import.changes, &source, u64::MAX)
-            .map_err(bad)?;
-        let now = self.settings();
-        let then = Live::from_books(&after, self.currency());
-        let differs = reads_differently(&now, &then);
-        if !differs.is_empty() {
-            return Err(format!(
-                "after this import the server would read these settings differently than it does now: {}",
-                differs.join(", ")
-            ));
-        }
-        if !status.journaled && after.approval_rules() != ledger_core::settings::ApprovalMode::Off {
-            return Err(
-                "the server doesn't enforce approval rules for books that read a settings file: take approval_rules out of the file, import it, then set policy.approval_rules with books.set_setting"
-                    .into(),
-            );
-        }
-        // The vault key the server uses now, and after: the books never
-        // keep its path, so a file's [vault] key_file has to come from the
-        // command line from then on (settings INVARIANT 5).
-        let key_now = now.key_file();
-        let key_then = self
-            .live()
-            .vault_key_override()
-            .unwrap_or_else(ledger_vault::default_key_file);
-        if key_now != key_then {
-            return Err(
-                "the settings file names the vault's key file ([vault] key_file), which the books don't keep: start the server with --vault-key-file naming that same file before moving the settings in, or the vault would stop opening"
-                    .into(),
-            );
-        }
-        let changes = |list: &[Change]| -> Vec<ChangeOut> {
-            list.iter()
-                .map(|c| ChangeOut {
-                    key: c.key.clone(),
-                    was: shown(&c.key, current.get(&c.key).map(|r| &r.value)),
-                    value: shown(&c.key, c.value.as_ref()),
-                })
-                .collect()
-        };
-        // The preview refuses what the import would: the same checks.
-        store
-            .ledger()
-            .check_settings_adopting(&import.changes, &source, true)
-            .map_err(bad)?;
-        let mut out = ImportSettingsOut {
-            status: "preview".into(),
-            changes: changes(&import.changes),
-            notes: import.notes.clone(),
-            unknown: import.unknown.clone(),
-            comments: import.comments.clone(),
-        };
-        if !p.confirmed {
-            return Ok(Json(out));
-        }
-        if !import.unknown.is_empty() && !p.skip_unknown {
-            return Err(format!(
-                "the file holds entries the books don't know ({}): they would not be imported. Show them to the human; record any that matter as conventions (books.set_convention), then confirm with skip_unknown: true",
-                import.unknown.join(", ")
-            ));
-        }
-        let made = store
-            .adopt_settings(&import.changes, &source)
-            .map_err(bad)?;
-        self.sync_settings(&store);
-        out.status = "imported".into();
-        out.changes = changes(&made);
-        Ok(Json(out))
-    }
-
-    #[tool(
         name = "books.export_settings",
         title = "Settings as a file",
-        description = "The books' settings as settings-file text (TOML), each with who decided it and when as a comment, identity values masked. A copy for reading or for other books: editing it changes nothing here until imported.",
+        description = "The books' settings as settings-file text (TOML), each with who decided it and when as a comment, identity values masked. A copy for reading: editing it changes nothing here.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn export_settings(&self) -> Result<Json<ExportSettingsOut>, String> {
         let store = self.lock()?;
+        // The books' own: the defaults until the first is set.
         let s = store.ledger().settings();
-        // Books in the data root read no file: theirs are the defaults
-        // until the first is set.
-        if !s.is_journaled() && !self.live().status().journaled {
-            return Err(
-                "these books still read their settings file, which is the copy: move it in with books.import_settings first"
-                    .into(),
-            );
-        }
         Ok(Json(ExportSettingsOut {
             toml_text: ledger_config::codec::export(s, self.currency()),
         }))
@@ -1655,8 +1384,7 @@ pub(super) fn keys_out(books: &core_settings::Settings) -> Vec<SettingKeyOut> {
                 identity: k.sensitivity == Sensitivity::Identity,
                 value: r.map(|r| core_settings::display(k, &r.value, false)),
                 set_by: r.map(|r| source_out(&r.source)),
-                // Seq 0: read from the settings file, not journaled.
-                seq: r.map(|r| r.seq).filter(|q| *q > 0),
+                seq: r.map(|r| r.seq),
             }
         })
         .collect()

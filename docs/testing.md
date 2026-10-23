@@ -14,7 +14,7 @@ promise.
 |---|---|---|---|---|---|
 | Spec-derived examples | written specs with sources (1) | `tests/spec_*.rs`, `invariants.rs`, `statements.rs`, `assets.rs`, ...; the store's `tests/spec_store.rs` (written blind, from its specs only) | `just check` | seconds | every change |
 | Regressions | the bug, named (1) | beside the code they cover, `*_regression`/named for the defect | `just check` | seconds | every change |
-| Compatibility contracts | journals written under older rules must open, and replay to the figures their version computed (1) | `ledger-store/tests/store.rs` (`books_written_under_older_rules_still_open`; `books_an_earlier_version_wrote_open_to_its_figures` over `tests/fixtures/old-books`: books main 188c90ea wrote, with main's own figures in `expected.json`, in the writer and the viewer; `every_figure_over_old_books_is_computed_or_refused`); `ledger-mcp/tests/hostile_args.rs` `old_books_answer_every_tool`; `ledger-gui/tests/old_books.rs` | `just check` | ~30s | every change |
+| Compatibility contracts | journals written under older rules must open, and replay to the figures their version computed (1) | `ledger-store/tests/store.rs` (`books_written_under_older_rules_still_open`; `books_an_earlier_version_wrote_open_to_its_figures` over `tests/fixtures/old-books`: books main 188c90ea wrote, with main's own figures in `expected.json`, in the writer and the viewer; `every_figure_over_old_books_is_computed_or_refused`); `ledger-cli/tests/hostile_args.rs` `old_books_answer_every_tool`; `ledger-gui/tests/old_books.rs` | `just check` | ~30s | every change |
 | Properties | laws over all inputs (2) | `properties.rs`, `spec_*.rs`, `kernel_bridge.rs` | `just check` | seconds | every change |
 | Metamorphic | scaling, reversal, ordering invariance (2) | `spec_reports.rs` | `just check` | seconds | every change |
 | Refusal law (store) | a refused command never reaches the journal, an accepted one always does; the live ledger equals its journal's replay in every part, and the books reopen to it (2, 3) | `store.rs` `refused_commands_never_reach_the_journal` | `just check` (`STORE_CASES=5000` deeper) | ~20s | every change |
@@ -56,26 +56,26 @@ that would fail if it broke:
 
 | Law | Test |
 |---|---|
-| Books from a newer wanderbooks are "newer", never "corrupt", from the writer, the viewer and the server; damage stays corruption (rules.md B-27) | `ledger-store` `tests/format.rs` (`old_reader_gets_newer_journal`, `damaged_journals_are_still_corrupt`); `ledger-gui` `tests/newer_journal.rs`; `ledger-mcp` `tests/startup.rs` |
+| Books from a newer wanderbooks are "newer", never "corrupt", from the writer, the viewer and the server; damage stays corruption (rules.md B-27) | `ledger-store` `tests/format.rs` (`old_reader_gets_newer_journal`, `damaged_journals_are_still_corrupt`); `ledger-gui` `tests/newer_journal.rs`; `ledger-cli` `tests/startup.rs` |
 | A line the gate refuses is called newer only once the next line's `prev` checks its hash; a last line is "newer or damaged" | `a_damaged_line_that_looks_newer_is_corrupt_when_the_next_line_checks_it`, `an_unreadable_last_line_is_reported_as_newer_or_damaged`, `a_newer_line_the_next_line_chains_onto_is_newer_and_intact` (the message vouches for that line only) |
 | The envelope and its hash are frozen across formats: a next line in a newer format (a float, a string seq, keys of its own) settles by its `prev` alone, never as corrupt; a key beside the envelope is newer, never dropped, and still checked through; a refused line followed by an unreadable one is "newer or damaged" | `format.rs` `a_newer_format_frames_its_lines_its_own_way`, `an_unknown_envelope_key_is_newer_and_checked_through`, `a_refused_line_followed_by_a_garbled_line_is_unverified` |
 | The writer and the viewer read bytes alike: a line that isn't UTF-8 is corrupt to both; an older version never repairs (truncates) newer books | `a_line_that_is_not_utf8_is_corrupt_for_the_viewer_and_the_writer`, `an_old_reader_never_repairs_newer_books` |
 | A newer format is newer whatever its features look like; a blank line is damage to the viewer as to the writer | `format.rs` `a_newer_format_is_newer_whatever_its_features_look_like`; `a_blank_line_is_corrupt_for_the_viewer_and_the_writer` |
 | A request that panics stops the server: every later request, on every session, is refused | `server.rs` `a_request_that_panics_stops_the_server` |
-| No input reaches a panic (each would stop the server for every session): every tool with arguments generated from its schema and made hostile (wrong types, u64::MAX, decimals of 30+ digits or absurd exponents, dates like 0000-00-00, 99999-12-31, +262142-12-31, 2026-02-30, periods like 999999-01, control and format characters, long strings), every resource URI generated; the inputs that once panicked, pinned; after each property the server restarts and the books reopen (a call a command accepts but replay refuses would brick them); every tool and resource over every old book (rules.md B-28) | `ledger-mcp` `tests/hostile_args.rs` `hostile_tool_arguments_never_stop_the_server` (with a floor: most calls reach a tool, some succeed), `hostile_resource_uris_never_stop_the_server`, `inputs_that_once_panicked_are_refused_or_answered`, `old_books_answer_every_tool`; `MCP_CASES` and `OLD_BOOKS_CASES` (default 3 per tool per book) set the cases |
+| No input reaches a panic (each would stop the server for every session): every tool with arguments generated from its schema and made hostile (wrong types, u64::MAX, decimals of 30+ digits or absurd exponents, dates like 0000-00-00, 99999-12-31, +262142-12-31, 2026-02-30, periods like 999999-01, control and format characters, long strings), every resource URI generated; the inputs that once panicked, pinned; after each property the server restarts and the books reopen (a call a command accepts but replay refuses would brick them); every tool and resource over every old book (rules.md B-28) | `ledger-cli` `tests/hostile_args.rs` `hostile_tool_arguments_never_stop_the_server` (with a floor: most calls reach a tool, some succeed), `hostile_resource_uris_never_stop_the_server`, `inputs_that_once_panicked_are_refused_or_answered`, `old_books_answer_every_tool`; `MCP_CASES` and `OLD_BOOKS_CASES` (default 3 per tool per book) set the cases |
 | Dates are in 0001-01-01 through 9999-12-31 and amounts at most a line's, for every new command; replay accepts every line an earlier version accepted (each bound has its pair: the command refuses past it, the replayed old line is accepted); a figure derived past exact arithmetic or chrono's calendar is refused, never a panic; a recurring run makes at most 1,000 drafts (rules.md B-28) | `ledger-core` `tests/spec_bounds.rs`, `calendar.rs` tests, `plans_at_the_edges_are_computed_or_refused`, `intervals_reach_chronos_last_day`, `a_vendor_part_is_scaled_exactly_or_refused`, the `share_property` cases; `ledger-store` `tests/bounds.rs`, `tests/store.rs` (the old-books tests); `server.rs` `periods_are_a_year_and_a_month`, `dates_are_four_digit_years_and_real_days` |
 | Opening the books changes nothing until every complete line passes in memory (chain, gate, first line, replay); the viewer applies the writer's first-line rule (rules.md B-27) | `format.rs` `a_bad_complete_line_before_a_torn_tail_leaves_the_journal_as_it_was`, `the_first_line_is_store_created_for_the_viewer_and_the_writer`; `fuzz_store_replay` (the first line varies) |
 | UTF-16 text without a byte-order mark is scanned like any text; a refused `books.set_w9` marks no file; a refused resource read never echoes a TIN | `tin_files.rs` (tests) `utf16_text_without_a_byte_order_mark_is_scanned_either_way_round`, `a_refused_set_w9_never_marks_its_file`, unit test `only_nul_interleaved_bytes_read_as_utf16_without_a_mark`; `spec_vault.rs` `resource_refusals_never_echo_a_tin` |
 | idempotentHint only where a repeat with the same arguments leaves the journal and the vault as they were; every tool's hints pinned in one table | `spec_vault.rs` `idempotent_tools_change_nothing_when_repeated`; `annotations_complete` |
-| books.settings lists every receipt-required and exempt account, uncut; a fresh company is "a new company"; the lint catches `just` however it ends and where the books are | `mcp_stdio.rs` `every_receipt_account_left_out_of_the_connect_text_is_in_books_settings`; `handbook.rs` `a_fresh_company_is_a_new_company`; `tool_text_lint_catches_helpers_and_locations` |
-| A file with full TINs is never written to a path (handed over instead, D-29), and never filed into the books: every file the server read or wrote with TINs (from any session, after a restart, out of a CPA package), by every filing tool | `mcp_stdio.rs` `tin_bearing_files_are_refused_when_given_back_to_be_filed`; `spec_vault.rs` `a_package_is_handed_over_and_never_written`; `tin_files.rs` (tests) `a_tin_bearing_file_is_refused_from_every_session_and_after_a_restart`; unit test `a_recorded_tin_file_is_refused_by_every_reader_of_the_registry` |
+| books.settings lists every receipt-required and exempt account, uncut; a fresh company is "a new company"; the lint catches `just` however it ends and where the books are | `mcp_journeys.rs` `every_receipt_account_left_out_of_the_connect_text_is_in_books_settings`; `handbook.rs` `a_fresh_company_is_a_new_company`; `tool_text_lint_catches_helpers_and_locations` |
+| A file with full TINs is never written to a path (handed over instead, D-29), and never filed into the books: every file the server read or wrote with TINs (from any session, after a restart, out of a CPA package), by every filing tool | `mcp_journeys.rs` `tin_bearing_files_are_refused_when_given_back_to_be_filed`; `spec_vault.rs` `a_package_is_handed_over_and_never_written`; `tin_files.rs` (tests) `a_tin_bearing_file_is_refused_from_every_session_and_after_a_restart`; unit test `a_recorded_tin_file_is_refused_by_every_reader_of_the_registry` |
 | Text filed into the books is refused when it holds a TIN the vault keeps (nine digits, 3-2-4 by hyphen, space or dot, 2-7 by hyphen or space, anywhere) or a stand-alone printed SSN or EIN (123-45-6789, 12-3456789), and only then: a bank export (routing numbers, long references, a date next to an amount) and a longer number holding an SSN shape go in; a locked vault leaves the printed shapes (rules.md B-26) | `tin_files.rs` (tests) `text_with_a_vault_tin_or_a_printed_one_is_refused_and_a_bank_export_is_not`; unit tests `text_holding_a_vault_tin_is_refused_in_every_rendering`, `a_printed_ssn_or_ein_is_refused`, `a_longer_number_holding_a_tin_shape_passes`, `an_ordinary_bank_export_passes`, `binary_bytes_are_not_scanned` |
 | Filing is no TIN oracle: text with more than two TIN-shaped numbers ending in a known TIN's last four (the books' TIN and W-9 facts, then the vault's own) is refused before the vault is opened, byte for byte alike whether one is the vault's TIN or none is, the vault open or locked, by every filing tool; one or two such numbers are compared against the vault, one number written many ways counts once, and other last fours never count (rules.md B-26) | `tin_files.rs` (tests) `text_probing_for_a_tin_is_refused_alike_by_every_filing_tool`; unit tests `text_probing_for_a_tin_is_refused_alike_whether_or_not_it_holds_it` (the vault never opened for a probe), `one_or_two_candidates_are_compared_against_the_vault` |
 | The connect text fits its budgets, its lead stands alone, it states the receipt rule enforced (exact threshold in the base currency, required and exempt accounts, reversals) and the parties rule in force, and the company name can't break it (control and format characters) | `handbook.rs` `instructions_budget`, `a_typical_company_gets_the_whole_connect_text`, `the_company_name_is_one_plain_line`; `receipt_policy.rs` `the_rule_told_is_the_rule_enforced`, `a_long_or_odd_account_list_stays_short_and_plain`; a new session is told the settings in force: `a_new_session_is_told_the_settings_in_force` |
 | No text the agent is given (whole tool JSON, resources, connect text, handbook, every error template and refusal) points at files, git, GitHub, repo docs, flags or helper commands; descriptions fit 700 characters (listed exceptions, P5; and what git itself said of a failed backup, which `books.backup` passes on to the human as git said it, its paths hidden) | `tool_text_lint`, `tool_descriptions_fit_700_characters`; `ledger-core` `an_unknown_year_threshold_is_never_guessed` |
-| Every tool is annotated (openWorldHint false on all but `books.back_up_now`), and the read-only hint is true in behaviour (journal, every data-dir file's contents but `ops/`, the viewer's side channel for `books.show`, which is not the books; the database's rows, the vault and the settings unchanged) | `annotations_complete`; `spec_mcp.rs` `read_only_tools_change_nothing` (checked on every call in `Mcp::tool`) |
-| A bare (or empty-`since`) digest covers this month so far, on any day of it, as the server counts it (the stdio test reads the server's own month, and starts over if it turns) | `a_bare_digest_covers_this_month_so_far`; `mcp_stdio.rs` `digest_resource_bare_reads` |
-| The handbook: every section, "all" in order, the schema names every id | `handbook_sections_render_the_rule_in_force`, `the_whole_handbook_is_every_section_in_order`, `mcp_stdio.rs` `handbook_tool_and_resources_over_stdio` |
+| Every tool is annotated (openWorldHint false on all but `books.back_up_now`), and the read-only hint is true in behaviour (journal, every file of the books' folder but what every call writes by design: the access log, `ops/` (the viewer's side channel for `books.show`, which is not the books), the books' own backup and the files handed over; the database's rows and the vault unchanged) | `annotations_complete`; `spec_mcp.rs` `read_only_tools_change_nothing` (checked on every call in `Mcp::tool`) |
+| A bare (or empty-`since`) digest covers this month so far, on any day of it, as the server counts it (the end-to-end test reads the server's own month, and starts over if it turns) | `a_bare_digest_covers_this_month_so_far`; `mcp_journeys.rs` `digest_resource_bare_reads` |
+| The handbook: every section, "all" in order, the schema names every id | `handbook_sections_render_the_rule_in_force`, `the_whole_handbook_is_every_section_in_order`, `mcp_journeys.rs` `handbook_tool_and_resources` |
 
 ## P0 mutation testing (2026-10-16)
 
@@ -105,9 +105,9 @@ config and 1 in the viewer. Each was killed by a test of the law it
 broke, removed by simpler code, or is equivalent:
 
 - **Killed (MCP).** A section's title is its heading
-  (`a_title_is_the_heading_text`; over stdio the handbook tool titles a
+  (`a_title_is_the_heading_text`; through the server the handbook tool titles a
   section by its heading and "all" as the whole handbook,
-  `handbook_tool_and_resources_over_stdio`). A `.jpg` or `.jpeg` W-9
+  `handbook_tool_and_resources`). A `.jpg` or `.jpeg` W-9
   was taken (`every_w9_file_type_is_taken`); P2 slice 5 judges the W-9
   by its first bytes, not its name, so that mutant's code is gone (the
   test now checks each type by its bytes). The waker wakes: a request pending until another thread wakes it completes
@@ -116,9 +116,9 @@ broke, removed by simpler code, or is equivalent:
   root dropped, never fatal; a folder swapped for a link or a pipe never
   walked through; a read failure naming its kind, never the path): P2
   slice 5 removed `books.import_local_file` and the import roots, and
-  those tests with them. `resolved` follows 40 links, as the kernel
-  does, and no more
-  (`resolved_follows_forty_links_and_no_more`). A file is saved only to
+  those tests with them. `resolved` followed 40 links, as the kernel
+  does, and no more (`resolved_follows_forty_links_and_no_more`): it went
+  with ledger-mcp's `paths.rs`, and that test with it, in D-44. A file is saved only to
   a new file in a folder that exists, and a missing folder or a taken
   file is refused as such, never as a failed write
   (a CPA package test, and
@@ -285,11 +285,11 @@ since `asset_long_life` alone takes three minutes a run):
 |---|---|
 | Replay is pure: after any sequence of settings, convention, decision, open-item, template and approval commands, valid or refused, the live store, the store reopened from its journal and the viewer's snapshot hold the same settings and conventions, and the store verifies (database row for row) | `ledger-store` `tests/settings.rs` `settings_replay_is_pure` (proptest, 512 cases per check; 2,000 by hand, release, passed) |
 | Settings need journal format 2: books this version made declared it as they were created, so a change journals only itself; a change to what is set journals nothing; books in format 1 refuse a change (nothing journaled) until their format upgrade, then make it after the one declaration; refused changes journal nothing | `a_change_needs_journal_format_2`, `refused_changes_journal_nothing` |
-| Approval rules block nothing until enforced; then an entry a rule covers posts only once its approver approved it as it stands | `approval_rules_off_by_default`; `ledger-mcp` `spec_kept.rs` `approval_rules_through_the_server` |
+| Approval rules block nothing until enforced; then an entry a rule covers posts only once its approver approved it as it stands | `approval_rules_off_by_default`; `ledger-cli` `spec_kept.rs` `approval_rules_through_the_server` |
 | A template drafts exactly, odd cents by largest remainder, its slots named by each draft, all or nothing | `templates_draft_exactly_or_not_at_all`, `template_slots_take_the_account_each_draft_names`, `templates_draft_through_the_server`, core `splits_are_exact` |
 | Books written under P1 open to the same record forever | `books_written_under_p1_open_to_their_record` (fixture `old-books/p1_record`, also in every old-books test of the store, the viewer and the server) |
 | A settings file imports exactly, reads as it did, and an export round-trips; a masked EIN never imports | `ledger-config` codec unit tests, `tests/codec_props.rs` `exports_round_trip` (512 cases), `ledger-cli` `the_toml_and_its_examples_import_and_round_trip` |
-| Moving settings in: set refused before, the preview records nothing, the file never read after (not even to start), an import that reads differently or loses the vault key refused, the EIN only ever masked | `spec_kept.rs` `a_settings_file_moves_into_the_books`, `an_import_that_reads_differently_is_refused`, `an_import_needs_the_vault_key_on_the_command_line` |
+| The books keep their settings: changed only with books.set_setting, the EIN only ever masked, read from the books after a restart; no tool imports a settings file (D-44: no settings file is read, books.import_settings is gone, and the file-moving tests went with it) | `spec_kept.rs` `settings_live_in_the_books_and_the_ein_leaves_masked`, `books_keeping_their_settings_take_no_settings_file` |
 | books.start fits in 8 KB and says what it cut | `start_fits_in_8_kb` |
 | Values are canonical; no full TIN but the company's EIN; settings hold together; replay takes shapes | core `settings::tests` |
 | Every new tool on the happy path, schema-checked; read-only tools change nothing; idempotent tools repeat as no-ops | `spec_mcp.rs` `inv1_*`, `read_only_tools_change_nothing`; `spec_vault.rs` `idempotent_tools_change_nothing_when_repeated` |
@@ -333,18 +333,19 @@ the law it broke:
   strings, an escaped quote), comments carried by an import, a masked
   EIN matching, not matching and into empty books, an empty list
   changing nothing, `differences` naming each field, the export's
-  provenance lines, `effective_receipt_policy` with and without
-  `config.json` (`tests/effective_policy.rs`).
-- **MCP.** `Live::journaled` reads no file, `sync` reloads once per
-  change; the books://start, settings and conventions resources; a
+  provenance lines, the receipt policy with and without `config.json`
+  (`tests/effective_policy.rs`, on its text since D-44).
+- **MCP.** `sync` takes the books' settings once per change
+  (`books_take_their_own_settings_once_per_change`); the books://start, settings and conventions resources; a
   renumber names exactly the conventions that name the old code.
 - **Viewer.** The Company page's cards (`tests/kept.rs`): live
   conventions and not retired ones, standing decisions and not
   superseded ones, open items and not resolved ones, who decided each
   and when, a late item saying so in words ("overdue since", added for
   this: colour alone told only the sighted), and the empty-profile copy
-  of books that keep their settings. `--vault-key-file` wins over the
-  settings and an unknown argument exits 2 (`tests/vault_key_flag.rs`).
+  of books that keep their settings. An unknown argument exits 2
+  (`tests/command_line.rs`; until D-44 it also checked the vault key
+  flag, gone with the viewer's loose-books-folder mode).
   The first run's 12 timeouts were builds slowed by parallel work: the
   rerun caught them all.
 
@@ -367,9 +368,10 @@ two-place share to two places changes nothing).
 
 ## P2 slice 1: one executable (2026-10-18)
 
-`wanderbooks dev-stdio` and `wanderbooks gui` run the server and the
+The development stdio mode (gone since D-44: books are served by
+`wanderbooks server` alone) and `wanderbooks gui` ran the server and the
 viewer from the one executable (plan D-22); `tests/one_executable.rs`
-drives both, and `just server-only` builds, clippies and tests the build
+drove both, and `just server-only` builds, clippies and tests the build
 without the viewer and fails if it links a window library. Mutation on
 the diff, two jobs, the viewer left out (owner, 2026-10-18): the server's
 `run` against the server's tests, 14 mutants, 12 caught or unviable, the
@@ -692,8 +694,8 @@ a close to retained earnings; it opens to main's figures in
 `books_an_earlier_version_wrote_open_to_its_figures`, R-2); `format.rs`
 `an_older_reader_stops_at_the_members_cumulative_feature`.
 
-**MCP and viewer**: `ledger-mcp` `close_period_shows_each_members_running_split`
-(`tests/mcp_stdio.rs`: the preview's `members` is the confirmed one; after
+**MCP and viewer**: `ledger-cli` `close_period_shows_each_members_running_split`
+(`tests/mcp_journeys.rs`: the preview's `members` is the confirmed one; after
 a restart, `list_periods`' `close_rule` and the statement of members'
 equity); `old_books_name_each_closes_rule_and_true_up_at_the_next_close`
 (the old-books fixture `x_member_closes` through the server: every
@@ -824,7 +826,7 @@ cases: random books with reversals and closed months, random as_of; the
 file's entries and balances against the trial balance without the
 closes).
 
-**End to end.** `ledger-mcp` `oracle_mcp.rs`:
+**End to end.** `ledger-cli` `oracle_mcp.rs`:
 `iif_declares_accounts_by_role_and_balances_every_transaction` (as_of,
 DOCNUM the ids, the warnings exact: the fixture's line-broken memo and
 the engine's own "Depreciation — Laptop — 2025-03" memos, the alias, a
@@ -832,7 +834,7 @@ range refused), `iif_without_as_of_is_as_of_today_and_ties_to_the_trial_balance`
 (review R5), `cpa_package_holds_the_year_and_its_evidence` (the IIF from
 the prior year's sale through as_of; a payment after as_of to the
 contractor left out of the 1099 worksheet; the note's count);
-`mcp_stdio.rs` (a Chinese account name over stdio: ASCII text, CR LF,
+`mcp_journeys.rs` (a Chinese account name through the server: ASCII text, CR LF,
 `warnings`); `spec_mcp.rs` (iif with as_of); `ledger-gui`
 `tests/exports.rs` (the README's IIF line names the as_of).
 
@@ -1052,7 +1054,7 @@ the end.
   the CPA package's statement with both schedules
   (`the_cash_flow_carries_both_schedules`); the MCP tool and its exports
   field for field against the core (`cash_flow_exports_equal_the_core_statement`),
-  the CSV's warnings, the settings' roles and a member-paid expense over stdio
+  the CSV's warnings, the settings' roles and a member-paid expense through the server
   (`cash_flow_reads_its_account_roles_from_the_books_settings`), refusals
   naming the setting (`cash_flow_refuses_contradictory_roles`), the
   settings' problems from the same check; the viewer's statement as the
@@ -1083,7 +1085,7 @@ Every fixture is fictional (Fernhill Labs LLC, its members and vendors);
 no mutation run (D-33): the targets are listed for P12 below.
 
 **Named regressions**, from the brief's reproductions:
-- `ledger-mcp` `tests/oracle_mcp.rs`: `show_refuses_start_after_end_defect_15`
+- `ledger-cli` `tests/oracle_mcp.rs`: `show_refuses_start_after_end_defect_15`
   (1.1.1-1.1.2: refused, nothing reaches the viewer),
   `show_refuses_a_derived_inverted_range_defect_15` (1.1.3: a start after
   today with no end, the message saying the end was defaulted),
@@ -1092,7 +1094,7 @@ no mutation run (D-33): the targets are listed for P12 below.
   `shown` names), `show_refuses_options_its_target_ignores_defect_15`, and
   `show_writes_the_viewer_command_for_each_target` (resolved dates; a
   split never compared).
-- `ledger-mcp` `tests/mcp_stdio.rs`: `one_default_period_everywhere_defect_16`
+- `ledger-cli` `tests/mcp_journeys.rs`: `one_default_period_everywhere_defect_16`
   (a July fiscal year, a first entry the year before: P&L, by class, cash
   flow, the exported tax summary, members' equity, general ledger and
   journal (csv, json: the period's entries only) and the CPA package all
@@ -1100,10 +1102,10 @@ no mutation run (D-33): the targets are listed for P12 below.
   gives today's fiscal year to date, the clock read before and after, R14),
   `rename_account_end_to_end_defect_15` (the chart, a past period's P&L,
   the IIF's full names, verify, two journal lines, refusals write nothing,
-  a restart keeps the name); `mcp_period_statements_over_stdio`'s old pin
+  a restart keeps the name); `mcp_period_statements`'s old pin
   (no start = the first entry) now pins the fiscal year (02-01) that holds
   the end.
-- `ledger-mcp` `tests/spec_tax_policy.rs`: `add_account_warns_without_tax_category_defect_8`
+- `ledger-cli` `tests/spec_tax_policy.rs`: `add_account_warns_without_tax_category_defect_8`
   (1.4.1), `require_tax_category_refuses_defect_8` (refused without,
   created with, the import refused whole, clearing refused, a bill's 6999
   created and named in its warnings and the digest),
@@ -1159,7 +1161,7 @@ parameter is the shared constant; "all time", "beginning of time" and
 "first entry" are gone from every tool and schema; the resources say
 their period) and `show_reads_each_reports_dates_as_the_viewer_does`;
 `handbook.rs` (the period rule rendered from the same constant);
-`hostile_args.rs` `hostile_renames_ranges_and_categories_are_answered`.
+`ledger-cli` `hostile_args.rs` `hostile_renames_ranges_and_categories_are_answered`.
 
 Test fixtures that gave two accounts one name under one parent
 (`ledger-core` `invariants.rs` and `spec_roles.rs`, the store's refusal
@@ -1173,7 +1175,7 @@ uncategorized expense account is listed.
 before its fix (checked by breaking the code and watching it fail):
 - `ledger-core` `tests/tax.rs` `a_gain_on_business_property_is_figured_on_form_4797_on_every_return`,
   `ledger-import` `tests/spec_import.rs` `tax_summary_lists_form_4797_apart`,
-  `ledger-mcp` `tests/spec_tax_policy.rs` `a_gain_on_business_property_is_exported_apart`:
+  `ledger-cli` `tests/spec_tax_policy.rs` `a_gain_on_business_property_is_exported_apart`:
   a `form_4797_gain_loss` amount was ordinary income on every return
   (Schedule C included, whose instructions send it to Form 4797; on a
   partnership net section 1231 gain is Schedule K line 10), its Tax column
@@ -1187,10 +1189,10 @@ before its fix (checked by breaking the code and watching it fail):
 - `ledger-gui` `tests/view_model.rs` `all_dates_holds_an_entry_dated_after_today`:
   "Show all dates" and "All time" ended today, leaving out entries dated
   after it.
-- `ledger-mcp` `tests/oracle_mcp.rs` `show_refuses_options_its_target_ignores_defect_15`
+- `ledger-cli` `tests/oracle_mcp.rs` `show_refuses_options_its_target_ignores_defect_15`
   (a split past 240 columns): `books.show` sent a split the viewer shows
   as one total.
-- `ledger-mcp` `tests/mcp_stdio.rs` `rename_says_what_the_new_name_moves_defect_15`:
+- `ledger-cli` `tests/mcp_journeys.rs` `rename_says_what_the_new_name_moves_defect_15`:
   the notes for the name-picked cash and card sets and conventions had no
   test of their own.
 - `ledger-store` `tests/store.rs` `rename_account_changes_only_the_name_defect_15`
@@ -1200,7 +1202,7 @@ before its fix (checked by breaking the code and watching it fail):
 
 **Landing on main (2026-10-21),** beside odd cents, the IIF and the
 cash flow statement:
-- `ledger-mcp` `tests/mcp_stdio.rs` `the_default_period_never_shortens_the_iif_or_the_package`:
+- `ledger-cli` `tests/mcp_journeys.rs` `the_default_period_never_shortens_the_iif_or_the_package`:
   on a July fiscal year with entries before it, the general journal asked
   without dates is the fiscal year to date, while the IIF without dates
   holds every posted entry from the first through today under
@@ -1287,8 +1289,8 @@ no mutation run here; what P12 must cover is at the end.
 | Decimal and i64 agree on party_target and reverse_target | `kernel_bridge.rs` `party_target_agrees` | the bridge |
 | Kani: the direction is the sign, the target is odd, reverse_target an involution | `proofs.rs` `party_target_direction_is_its_sign`, `party_target_is_odd`, `reverse_target_is_an_involution` | the kernel spec |
 | The journal: party.creditor_set one line each, under the feature the books declared when created; in books an older version wrote, refused (FormatUpgradePending, nothing journaled) until the format upgrade; refusals journal nothing; books without creditors never change, in either format; corrupt lines refused | `ledger-store/tests/party_creditors.rs` | the format gate |
-| Over the MCP: get_entry's direction, cash, in_kind; party totals by basis, echoed, others refused; basis all equals members' equity; creditor_of round trips and a card fee isn't a payment; the post_entry preview's parts are what it posts | `ledger-mcp/tests/spec_party_totals.rs` | the tool docs |
-| Defect 11 over the MCP: a member's TIN last four in the directory, a W-9's, none, after a purge | `ledger-mcp/tests/spec_vault.rs` `defect11_the_directory_shows_a_members_tin_last4` | B-26 |
+| Over the MCP: get_entry's direction, cash, in_kind; party totals by basis, echoed, others refused; basis all equals members' equity; creditor_of round trips and a card fee isn't a payment; the post_entry preview's parts are what it posts | `ledger-cli/tests/spec_party_totals.rs` | the tool docs |
+| Defect 11 over the MCP: a member's TIN last four in the directory, a W-9's, none, after a purge | `ledger-cli/tests/spec_vault.rs` `defect11_the_directory_shows_a_members_tin_last4` | B-26 |
 | The viewer shows the tools' numbers, labelled cash basis, with the in-kind line; its what-for reads a reversal as `parties::flow` does | `ledger-gui/tests/parties.rs` `the_party_page_shows_the_basis_and_in_kind`, `a_reversed_member_card_payment_is_nothing_on_the_issuers_page` | `activity_with`, `flow` |
 | bookspec | `bookspec/examples/p3-party-*.toml` | the same cases, by hand |
 
@@ -1323,7 +1325,7 @@ mutation run (D-33); the list P12 must cover is at the end.
 | Law (rules.md B-19) | Tests |
 |---|---|
 | Undecided is not "not reportable" (defect 18) | `undecided_is_not_not_reportable` |
-| "No 1099" is a decision with who and when; "none" refused (defect 23) | `a_vendor_marked_no_1099_is_not_undecided`, `the_cutovers_reasons_are_recorded_as_given`, `set_vendor_1099_says_what_a_decision_needs` (`ledger-mcp` `spec_1099.rs`) |
+| "No 1099" is a decision with who and when; "none" refused (defect 23) | `a_vendor_marked_no_1099_is_not_undecided`, `the_cutovers_reasons_are_recorded_as_given`, `set_vendor_1099_says_what_a_decision_needs` (`ledger-cli` `spec_1099.rs`) |
 | A member's card is excluded, their check counts, unknown is undetermined (defect 12) | `a_members_personal_card_payment_is_not_a_1099_payment`, `payments_come_from_cash_and_financing_only` |
 | Card-account payments are listed, not dropped | `card_account_payments_are_listed_not_dropped` |
 | A bank payment counts unless tagged with a card (D-40) | `a_debit_card_payment_from_the_bank_is_excluded_when_tagged` |
@@ -1342,9 +1344,9 @@ mutation run (D-33); the list P12 must cover is at the end.
 | Journal: lines written only under their features (refused, nothing journaled, in books an older version wrote until the format upgrade; never declared on the way); replay and projection exact; refusals and no-ops journal nothing; newer values newer; old books as they always meant | `ledger-store` `tests/form1099.rs` (`each_feature_waits_for_the_upgrade_and_is_never_declared_on_the_way`, `decisions_and_methods_replay_and_project`, `refusals_and_no_ops_journal_nothing`, `an_unknown_1099_value_is_newer_not_corrupt`, `books_written_before_decisions_read_as_they_always_meant`), unit tests in `ledger-store` `form1099.rs`, the op model (`refused_commands_never_reach_the_journal` with `SetVendor1099`, `SetW9Flag`, `AddInstrument`, `SetEntryInstrument`; an accepted command journals or changes nothing), `books_an_earlier_version_wrote_open_to_its_figures` (fixture `p2_vendor_1099`) |
 | Records change no entry (verification 13a) | `decision_and_method_records_change_no_entry` |
 | The quieter untagged note (R7) | `the_untagged_note_counts_only_money_out` (`ledger-package`) |
-| One builder: the package CSV is the worksheet CSV for the package's accounts; README wording | `ledger-package` `tests/package.rs` (the zip's CSV equals `vendor_1099_csv` for the request's accounts, else the settings', through as_of: `payments_to_a_vendor_come_from_the_packages_accounts`, `one_list_of_cash_accounts_per_package`, `the_1099_worksheet_stops_at_as_of`; the README line pinned); over the MCP, the package's CSV is `books.vendor_1099`'s for the same `cash_accounts`, `financing_accounts` and `through` (`ledger-mcp` `oracle_mcp.rs` `cpa_package_holds_the_year_and_its_evidence`) |
+| One builder: the package CSV is the worksheet CSV for the package's accounts; README wording | `ledger-package` `tests/package.rs` (the zip's CSV equals `vendor_1099_csv` for the request's accounts, else the settings', through as_of: `payments_to_a_vendor_come_from_the_packages_accounts`, `one_list_of_cash_accounts_per_package`, `the_1099_worksheet_stops_at_as_of`; the README line pinned); over the MCP, the package's CSV is `books.vendor_1099`'s for the same `cash_accounts`, `financing_accounts` and `through` (`ledger-cli` `oracle_mcp.rs` `cpa_package_holds_the_year_and_its_evidence`) |
 | The viewer counts as the server does (brief 1.4) | `the_viewer_counts_the_1099_as_the_server_does` (`ledger-gui` `tests/parties.rs`) |
-| End to end, restarting between steps | `payment_methods_round_trip_and_classify_payments` (`spec_1099.rs`), `mcp_vendor_1099_over_stdio`, `spec_mcp.rs` (every tool exercised and schema-checked, `books.instruments` read-only) |
+| End to end, restarting between steps | `payment_methods_round_trip_and_classify_payments` (`spec_1099.rs`), `mcp_vendor_1099`, `spec_mcp.rs` (every tool exercised and schema-checked, `books.instruments` read-only) |
 | bookspec | `bookspec/examples/1099-*.toml` |
 
 **For P12 (mutation targets, none run):** `ledger-core` `form1099.rs`
@@ -1382,8 +1384,8 @@ must cover is at the end.
 | One rule for what a card is: the recorded business cards' liabilities, else (none recorded) liabilities named "card", not "gift"; never a member's card, a member's check or a platform; a debit card on the bank is none; money follows it | `ledger-core` `tests/spec_party_totals.rs` `a_card_is_a_recorded_business_card_else_a_liability_named_card` | B-35 item 5, `parties::card_accounts` INVARIANTS 1-4 |
 | Party totals and the 1099 worksheet never contradict: paid less received is the worksheet's paid + excluded_card + undetermined + not_reportable plus its other receipts, for a vendor named alone, whatever the methods, refunds and reversals | property `party_totals_are_the_1099s_buckets` (`ledger-core` `tests/form1099.rs`; `PROPTEST_CASES`, default 256; 2,000 run clean; dropping a bucket from the sum fails at once) | B-35 item 9, by hand |
 | The same, one year by hand: a member's check, a member's card, a member's payment of unknown method, a company card charge and a company check to one contractor, then the member reimbursed | `bookspec/examples/1099-and-party-totals-for-a-members-payment.toml` | B-35 item 9; Treas. Reg. §1.6041-1(e)(1), (a)(1)(iv) |
-| The CPA package's 1099 worksheet is `books.vendor_1099`'s CSV for the package's accounts (the request's, else the settings', R18) through its as_of, byte for byte; without `through` the files differ; a `through` outside the year and an unknown account are refused | `ledger-mcp` `oracle_mcp.rs` `cpa_package_holds_the_year_and_its_evidence`; `ledger-package` `tests/package.rs` `payments_to_a_vendor_come_from_the_packages_accounts`, `one_list_of_cash_accounts_per_package`, `the_1099_worksheet_stops_at_as_of` | B-33; mcp-interface.md |
-| A feature is asked for before a command's first line: `books.update_party` with a field and the first creditor, in P2's books waiting for their format upgrade, is refused whole (nothing journaled, never the field without the creditor); once upgraded, as in books this version made, it journals the field, then the creditor, declaring nothing | `ledger-mcp` `tests/spec_party_totals.rs` `update_party_asks_for_the_creditor_feature_before_its_first_line` | B-27 |
+| The CPA package's 1099 worksheet is `books.vendor_1099`'s CSV for the package's accounts (the request's, else the settings', R18) through its as_of, byte for byte; without `through` the files differ; a `through` outside the year and an unknown account are refused | `ledger-cli` `oracle_mcp.rs` `cpa_package_holds_the_year_and_its_evidence`; `ledger-package` `tests/package.rs` `payments_to_a_vendor_come_from_the_packages_accounts`, `one_list_of_cash_accounts_per_package`, `the_1099_worksheet_stops_at_as_of` | B-33; mcp-interface.md |
+| A feature is asked for before a command's first line: `books.update_party` with a field and the first creditor, in P2's books waiting for their format upgrade, is refused whole (nothing journaled, never the field without the creditor); once upgraded, as in books this version made, it journals the field, then the creditor, declaring nothing | `ledger-cli` `tests/spec_party_totals.rs` `update_party_asks_for_the_creditor_feature_before_its_first_line` | B-27 |
 | One bookspec loader for every example, the parties' and the 1099s' with them: `setup.parties`, `setup.members` (`distributions_account`), `setup.payees` (a party's vendor record), `setup.status_changes`, `setup.instruments`, events' `parties` and `instrument`, and the queries `vendor_1099`, `k1`, `party_part`, `party_totals`, `party_tin_last4`; refused: a party or payment method not in the setup, a reversal naming parties, party totals without a basis, a 1099 line leaving a figure out, a wrong direction or status | `ledger-core` `tests/bookspec.rs` (`every_bookspec_example_holds`, `a_party_not_in_the_setup_is_refused`, `a_party_parts_direction_is_checked`, `a_reversal_naming_parties_is_refused`, `party_totals_without_a_basis_are_refused`, `a_vendor_1099_line_leaving_a_figure_out_is_refused`, `a_vendor_1099_status_is_checked`, `a_payment_method_not_in_the_setup_is_refused`) | bookspec/README.md |
 
 **For P12 (mutation targets, none run, D-33):** `parties::card_accounts`
@@ -1406,9 +1408,9 @@ a bookspec example (`bookspec/examples/`, P13, D-34).
 |---|---|
 | Through a day of the life's final month, depreciation is prorated by days, never plugged (repro A: December 483.87, accumulated 11,483.87) | `ledger-core` `spec_assets_payroll.rs` `defect22_depreciation_through_mid_final_month_is_prorated_not_plugged`; `spec_asset_tags.rs` `register_as_of_a_day_before_a_same_month_disposal_is_prorated` |
 | A mid-month life's drift is spread over the final month's days (repro D: through Apr 13, 920.00; Apr 14, 930.00) | `defect22_final_month_drift_is_spread_by_days`; `spec_replayed_extremes.rs` `depreciation_reaches_chronos_last_month` (1,185.92 through Dec 10 of year 262142) |
-| A disposed asset's schedule stops at its disposal day, held, and equals what the disposal took (repro B) | `defect22_a_disposed_assets_schedule_stops_at_its_disposal_day`, property `prop_disposed_schedule_equals_what_disposal_computed`; `ledger-mcp` `spec_assets.rs` `a_disposed_asset_lists_what_it_depreciated_through_its_disposal` |
+| A disposed asset's schedule stops at its disposal day, held, and equals what the disposal took (repro B) | `defect22_a_disposed_assets_schedule_stops_at_its_disposal_day`, property `prop_disposed_schedule_equals_what_disposal_computed`; `ledger-cli` `spec_assets.rs` `a_disposed_asset_lists_what_it_depreciated_through_its_disposal` |
 | A disposal in the final month posts depreciation by days (repro C: 322.58, gain 322.58) | `ledger-store` `tests/assets.rs` `defect22_a_disposal_in_the_final_month_posts_depreciation_by_days` |
-| A disposal inside a month already run takes back the days after it (R2: excess 500.00, book value 6,500.00) | `defect22_a_disposal_inside_a_posted_month_takes_back_the_extra_days` (store and `ledger-mcp` `spec_assets.rs`) |
+| A disposal inside a month already run takes back the days after it (R2: excess 500.00, book value 6,500.00) | `defect22_a_disposal_inside_a_posted_month_takes_back_the_extra_days` (store and `ledger-cli` `spec_assets.rs`) |
 | A month skipped is caught up in the month the run is made; a later run for it posts nothing (settled in design, P3) | core `a_skipped_month_is_caught_up_in_the_month_run`, store `a_skipped_month_is_caught_up_in_the_month_run`, MCP `a_skipped_month_is_caught_up_and_said` |
 | A reversed run is un-posted and runs again (feature month_reposting); re-instating a run whose month ran again is refused; a disposal, and a run its disposal took as final, can't be reversed; a reversed run before a disposal leaves nothing behind (R3) | store `a_reversed_depreciation_month_can_be_run_again`, `a_disposal_entry_cannot_be_reversed`, `a_reversed_run_before_a_disposal_leaves_nothing_behind`; core `a_reversed_schedule_month_is_due_again` |
 | What the books carry is read entry by entry, each in its own month: a run reversed after its month ended isn't run twice (its month posts nothing; the reversal's month catches it up), for depreciation; a schedule month reversed after it ended is left for a human, listed with why (P3 review) | store `a_run_reversed_after_its_month_is_caught_up_in_the_reversals_month`; GUI `a_run_reversed_after_its_month_leaves_the_reversals_month_due`; core `schedules.rs` `a_schedule_month_reversed_after_it_ended_is_left_for_a_human`; store `format.rs` `a_schedule_month_posted_again_waits_for_month_reposting_and_replays` |
@@ -1420,7 +1422,7 @@ a bookspec example (`bookspec/examples/`, P13, D-34).
 | The final month is C + (D − C) × k / d, rounded half up, against arithmetic written in the test (P3 review) | property `prop_the_final_month_takes_the_remainder_by_its_days` (500 cases) |
 | A month that rounds to nothing posts and journals nothing (R10) | store `run_depreciation_posts_nothing_for_a_month_that_rounds_to_nothing`, MCP `run_depreciation_skips_a_month_that_rounds_to_nothing` |
 | Depreciation and daily schedules round to the currency's minor unit (R1: yen, dinars) | `jpy_depreciation_posts_whole_yen`, store `jpy_depreciation_runs_post_whole_yen`, `schedules.rs` `a_jpy_daily_schedule_posts_whole_yen`, `a_kwd_daily_schedule_rounds_to_the_fils`; `money.rs` `steps_are_the_currencys_minor_unit` |
-| A new schedule spreads by the day (1,200.00 from March 15: 54.84, eleven 100.00, 45.16); deferred revenue is earned by the day (290.32, 333.34, 333.33, 43.01) | `schedules.rs` `defect9_a_new_schedule_spreads_by_the_day`, `defect9_deferred_revenue_daily_is_earned_to_the_cent`; `schedules.rs` unit `a_daily_plan_spreads_by_the_day`; `ledger-mcp` `mcp_stdio.rs` `mcp_daily_schedule_over_stdio` |
+| A new schedule spreads by the day (1,200.00 from March 15: 54.84, eleven 100.00, 45.16); deferred revenue is earned by the day (290.32, 333.34, 333.33, 43.01) | `schedules.rs` `defect9_a_new_schedule_spreads_by_the_day`, `defect9_deferred_revenue_daily_is_earned_to_the_cent`; `schedules.rs` unit `a_daily_plan_spreads_by_the_day`; `ledger-cli` `mcp_journeys.rs` `mcp_daily_schedule` |
 | Schedules from before P3 stay equal months, forever | `defect9_legacy_schedules_stay_monthly_even`, property `prop_monthly_even_plan_is_unchanged`; every old-books fixture (`books_an_earlier_version_wrote_open_to_its_figures`) |
 | An equal-months schedule starts on the 1st (D-37); a daily one's last day is in the calendar | `an_equal_months_schedule_starts_on_the_first`, `spec_bounds.rs` `a_daily_schedule_whose_last_day_passes_9999_is_refused` |
 | chrono's month-end clamping is pinned for daily plans (Jan 29, 30, 31; Feb 29) | `schedules.rs` unit `daily_plans_pin_month_end_clamping` |
@@ -1588,7 +1590,7 @@ basis. Mutation runs wait for P12 (D-33); none was run.
 
 - **Named regressions** (the brief's reproductions, anonymized):
   `list_assets_book_value_is_what_the_books_carry` and
-  `a_reversed_run_is_not_posted` (`ledger-mcp/tests/spec_assets.rs`),
+  `a_reversed_run_is_not_posted` (`ledger-cli/tests/spec_assets.rs`),
   `an_asset_bought_before_it_is_in_service_is_on_the_register_from_acquisition`,
   `personal_use_contribution_keeps_its_723_basis_apart_from_depreciable_basis`,
   `built_in_gain_is_fixed_at_contribution_not_book_cost`
@@ -1664,7 +1666,7 @@ basis. Mutation runs wait for P12 (D-33); none was run.
   v9 and v10 databases under this version's name rebuilt). The old books
   (`books_an_earlier_version_wrote_open_to_its_figures`) open to exactly
   their figures.
-- **ledger-mcp:** `spec_assets.rs` (the aliases `purchase_date`,
+- **ledger-cli:** `spec_assets.rs` (the aliases `purchase_date`,
   `in_service`, `tax_basis_rule`, `contributor_basis` and the old rule
   names, noted, and refused when they disagree; the acquired date from the
   acquisition entry; a value at contribution required; every refusal
@@ -1737,8 +1739,8 @@ rules.md says why not. Mutation runs wait for P12 (D-33).
 - **Viewer** (`ledger-gui/tests/p3_seams.rs`): its capital statements,
   party money, cash flow, register and 1099 worksheet, read from the
   books' folder and settings file as it opens them, are the engine's.
-- **Tools** (`ledger-mcp/tests/p3_seams.rs`, the real binary over
-  stdio): `books.cash_flow` line by line, `books.profit_and_loss`,
+- **Tools** (`ledger-cli/tests/p3_seams.rs`, the books adopted into a
+  data root and served by a real books server): `books.cash_flow` line by line, `books.profit_and_loss`,
   `books.export` members_equity and iif, `books.list_assets`,
   `books.vendor_1099` through each date, `books.party` on both bases.
 - **Found and fixed** (each test fails before its fix): a distribution
@@ -1870,7 +1872,7 @@ P12 (D-33); none was run.
   `prop_project_set_round_trips`); `tests/format.rs`
   `p3_features_wait_for_the_upgrade_and_are_declared_once` gains
   `projects` and a `project.set`.
-- **ledger-mcp:** `tests/spec_projects.rs`
+- **ledger-cli:** `tests/spec_projects.rs`
   (`add_project_then_project_returns_its_facts_and_figures`,
   `a_name_only_project_journals_only_class_added`,
   `update_project_checks_every_field_before_writing`,
@@ -1894,7 +1896,7 @@ P12 (D-33); none was run.
   `books.projects` among the read-only calls; `spec_vault.rs`'s idempotent
   list gains `books.update_project`; the unit tables (`annotations_complete`,
   scopes' table) list 119 tools, `period_tools_describe_the_one_default`
-  checks the period tools' wording, and `mcp_stdio.rs`'s `tools/list`
+  checks the period tools' wording, and `mcp_journeys.rs`'s `tools/list`
   shows 116; `every_tool_is_documented_and_every_documented_tool_exists`
   holds with the four new tools (on the rebase onto the surface review it
   caught `books.list_classes` written mid-line and a `books.set_line_class`
@@ -1990,7 +1992,7 @@ fail.
   sign, and `project_figures`' to-date is `project_to_date`'s).
   `project_figures` takes the net before its first month from to date
   less the months (one scan fewer); the proptest pins it.
-- **ledger-mcp:** `tests/spec_projects.rs`
+- **ledger-cli:** `tests/spec_projects.rs`
   `project_snapshot_margin_by_account_and_running_net` (the period's and
   to date's margin_pct, to_date.by_account, the 12 months' net_to_date
   opening on the December deposit and ending on to_date.net, a loss's
@@ -2001,7 +2003,7 @@ fail.
 - **viewer and server on one book:** ledger-cli
   `tests/projects_parity.rs`
   `a_projects_snapshot_is_the_same_in_the_viewer_and_from_the_server`
-  (`wanderbooks dev-stdio`'s `books.project` against the viewer's
+  (the books server's `books.project` against the viewer's
   `page_figures` and `Snap` on the same books: to date's revenue,
   expenses, net, margin_pct, unrecovered cost and by_account, every
   month's figures and net_to_date over the chart's span, and the fiscal
@@ -2104,7 +2106,7 @@ receivable or payable and the payments untagged; journaled as the line's
   `a_reversed_tagged_invoice_replays_with_its_projects_at_zero`: one
   `entry.reversed`, its replay tagged as live); `format.rs`
   `document_line_projects_is_its_own_feature`.
-- **ledger-mcp:** `tests/spec_projects.rs`
+- **ledger-cli:** `tests/spec_projects.rs`
   (`invoice_and_bill_lines_count_toward_their_projects`: by name, id and
   any capitals; `books.get_entry`'s line `project` and `class_id`;
   payments untagged;
@@ -2256,6 +2258,130 @@ fails; rounding toward zero fails both `cashflow::tests`; without the
 tax-category route `operating_classes_follow_asc_230_10_45_25`, the
 second test and the example fail.
 
+## One way to serve books (D-44, 2026-10-23)
+
+The stdio server and its binary are gone, and with them the second
+harness: every suite that drove it moved to
+`crates/ledger-cli/tests/` and drives a real `wanderbooks server` on a
+data root of its own, reached as an agent reaches it.
+
+- **The harness** (`tests/common/mod.rs`, `mod common;` in each file):
+  `Home` (a `wb-` temp home made by `wanderbooks setup --home`, its admin
+  socket, tokens with every scope, `adopt`), `Server` (the server on that
+  root with an empty environment but PATH, and HOME and XDG_CONFIG_HOME in
+  the home; ended by its own PID), `Wire` (one MCP session, synchronous:
+  a message POSTed to `/b/{book}/mcp` with the bearer token, session and
+  protocol headers the bridge sends; `fetch` takes a handed file by its
+  download and checks its size and SHA-256), `Books` and `Place` (a home,
+  its server and the books `acme`; `Place` starts the server again on
+  each start, as a new server process read the same books, and lets a
+  test write books into the root before the first), the async rmcp
+  `connect` and `call`, and `book_files` (the books' files but what every
+  call writes by design: the access log, `ops/`, `archive.git/`,
+  `exports/`, `uploads/`, SQLite's -wal and -shm). Settings a test gives
+  as a settings file's text are set as an agent sets them: the changes
+  `ledger_config::codec::import` reads from it, by `books.set_setting`.
+- **Moved, every assertion kept:** `mcp_journeys.rs` (was
+  `mcp_stdio.rs`), `spec_mcp.rs`, `spec_vault.rs`, `spec_kept.rs`,
+  `spec_attachments.rs`, `spec_parties.rs`, `spec_projects.rs`,
+  `spec_assets.rs`, `spec_party_totals.rs`, `spec_1099.rs`,
+  `spec_tax_policy.rs`, `oracle_mcp.rs`, `hostile_args.rs`,
+  `tin_files.rs`, `http_concurrency.rs`, `p3_seams.rs`, `startup.rs`;
+  `projects_parity.rs` and `one_executable.rs` drive the server too.
+  Files the books make are checked by their download; restarts are the
+  server closed and started again on the same root; old books are put in
+  the root (or adopted with their settings file, as the owner moves old
+  books in); the JSON-RPC framing tests check the server's door (a 4xx,
+  and any error it carries -32700 or -32600; an agent's malformed lines
+  are the bridge's, `the_agents_input_is_read_message_by_message`).
+- **Retargeted:** a held lock and newer books (`startup.rs`) are now a
+  book the server reports not open, with why, on its route and in its
+  list, while the others are served; a bad receipt threshold is refused
+  as it is set (`inv5_bad_threshold_refused_when_set`); a changed and a
+  lowered setting take effect on the next call
+  (`a_changed_setting_is_read_on_the_next_call`,
+  `a_lowered_threshold_is_enforced`); `get_receipt` above 256 KiB gives
+  its download (`get_receipt_gives_bytes_up_to_256_kib_and_a_download_above`);
+  an unknown tool is a protocol error (`jsonrpc_unknown_tool_is_a_protocol_error`,
+  now true of the server itself).
+- **Deleted, for what they tested is gone:** startup's
+  `help_names_the_options`, `the_default_data_dir_is_under_home`,
+  `the_import_root_flag_is_refused_as_unknown`,
+  `the_settings_beside_the_books_are_read` and
+  `the_cash_roles_beside_the_books_are_read` (the stdio binary's flags and
+  its settings file; the rules stay covered by
+  `mcp_receipts_always_required_when_threshold_is_zero` and
+  `cash_flow_reads_its_account_roles_from_the_books_settings`);
+  `a_restarted_server_waits_for_the_old_one_to_let_go` (its lock wait;
+  the server's is `local_server.rs` `a_second_server_waits_for_the_first`);
+  spec_vault's `a_key_file_inside_the_books_is_refused` and
+  `books_in_git_must_ignore_the_vault` (a books dir's key and git; a book
+  in the root keeps its own: `a_book_in_the_root_keeps_its_vault_and_key_inside_its_own_folder`);
+  spec_kept's `an_import_that_reads_differently_is_refused`,
+  `an_import_needs_the_vault_key_on_the_command_line` and the settings
+  file's half of the others; spec_mcp's `a_broken_edit_keeps_the_last_good_settings`
+  (a settings file's reload); `dev_stdio_is_the_books_server` (the
+  command is gone, no name kept: it is an unknown mode, as any other
+  word is); the unit tests of `wire.rs`, of
+  `paths.rs` (the key-inside-the-books check's path resolution) and of
+  the settings file's watching in `settings.rs`.
+- **The owner's three decisions (2026-10-23).** (a) `books.import_settings`
+  is gone: deleted spec_kept's import half of
+  `books_keeping_their_settings_take_no_settings_file` (now: the tool is
+  not listed, and a call to it is a protocol error), the import calls in
+  spec_mcp's every-tool walk and spec_vault's idempotent list, and the
+  scope rule's unit test of imports (`scopes.rs`); ledger-config's
+  `load_missing_path_errors` and `load_matches_parse` (`load` is gone:
+  adoption reads the file's text), `tests/effective_policy.rs` now on
+  `config.json`'s text. `books.chart_template` gives its settings as
+  changes, which `mcp_journeys.rs` sets by `books.set_setting`.
+  (b) The viewer's loose-books-folder mode is gone: deleted `live.rs`
+  `a_settings_file_made_later_is_followed` (replaced by
+  `a_setting_changed_while_it_runs_is_followed`: a journaled change is
+  followed, a file beside the books never read),
+  `vault_key_flag.rs` `the_key_named_on_the_command_line_wins` (the file
+  is `command_line.rs`: an unknown argument, and each gone flag, exits
+  2), `tin_copy.rs` `a_key_inside_the_books_is_refused` (a book keeps its
+  key inside its own folder), `old_books.rs`
+  `books_that_keep_no_settings_read_their_file_only_outside_a_root` and
+  `an_older_books_dirs_config_json_sets_its_receipt_rule` (now one test,
+  `books_that_keep_no_settings_read_no_file_beside_them`), and
+  `exports.rs` `the_menu_reads_an_older_books_dirs_settings_file` (now
+  `the_menu_reads_the_books_own_settings`). The TIN tests open the
+  vault where a book of the data root keeps it; `one_executable.rs`'s
+  windowless viewer opens empty books in a root and home of its own. (c) `wanderbooks dev-stdio` has no
+  stub: it is an unknown command.
+- **Review of the move (2026-10-23).** The windowless viewer opened the
+  demo, whose build alone took over its minute under load: it opens
+  empty books in a data root of the test's own, with an empty
+  environment but PATH and a temp HOME, as `ledger-gui`'s
+  `command_line.rs` now runs too (neither can reach this account's
+  books or preferences). `old_books_name_each_closes_rule_and_true_up_at_the_next_close`
+  had lost the refusal it was written for: its books are now P1's
+  journal in P2's format (declared offline, as P2's upgrade did), so
+  the close names `members_cumulative` in its `format_upgrade_pending`
+  refusal, and closes once the owner upgrades. `hostile_args.rs`'s old
+  books take the fixture company's settings only where their format
+  keeps settings: each change must be taken, or refused as
+  `format_upgrade_pending` (all of them, then, and the books are served
+  on the defaults), or, for the fiscal year, refused under periods
+  already closed on the calendar year; any other answer fails when the
+  books are first served. spec_vault's full-TIN scans
+  skip only the bytes of the exports the test was handed (their
+  records are scanned, and nothing else may be in `exports/`). The
+  harness fails on a stream line or JSON body from the server that
+  isn't JSON, instead of dropping it. `settings_live_in_the_books_and_the_ein_leaves_masked`
+  reads the timezone and the new EIN back after its restart, and
+  `inv5_bad_threshold_refused_when_set` compares the journal itself.
+- **Unit tests** of the tools build their server the one way the books
+  server does (`Served::open` on books in a data root of their own), with
+  any settings they need journaled first as `books.set_setting` journals
+  them (`Store::change_settings`), so no test-only serving mode or
+  settings are left.
+- **Time:** `just server-only` runs the one executable's own suites; the
+  tool suites run once, in `check`. Mutation of `ledger-mcp` runs the
+  ledger-cli suites too, without the viewer (`just mutants-mcp`).
+
 ## Benchmarks (baseline 2026-10-13)
 
 No budget, by decision (the owner, 2026-10-13: the books do little work
@@ -2319,7 +2445,7 @@ B-14) are the first.
 |---|---|---|
 | Fault injection | SKIP for the core (no I/O, clock, or network); DONE for the store's journal (full disk, cut-off append) | the first I/O or clock in `ledger-core` |
 | Integration | SKIP for the core (no collaborators) | the core gains one; covered at the store and MCP layers |
-| End-to-end | SKIP for the core (a library) | MCP stdio tests cover the journeys |
+| End-to-end | SKIP for the core (a library) | the MCP tests through a real books server (ledger-cli) cover the journeys |
 | Security properties | SKIP for the core (no roles, no secrets) | the first permission concept, or a secret-bearing field |
 | Concurrency stress | SKIP for the core (no shared state); DONE for the store's writer + viewer (found the false "differs") | the first `Arc`, atomic, or lock in the core; the MCP server's HTTP transport shares one store across sessions (next) |
 | Lean: apportion's sum law for any n | DONE (2026-10-14) | verify/lean/Wanderbooks/Apportion.lean: ranks are a permutation of 0..n-1 (strict total order + pigeonhole, core Lean only), so exactly u parts get a unit and one the fraction; `apportion_sum` and `apportion_sum_of_shortfall`, standard axioms only |

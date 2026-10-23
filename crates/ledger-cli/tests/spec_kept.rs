@@ -1,59 +1,24 @@
-//! P1 through the real server: settings moving into the books, the books'
-//! own settings, conventions, approvals, books.start (plan/served.md P1).
-//! Drives the real `ledger-mcp` binary over stdio with raw JSON-RPC.
+//! P1 through the real server: the books' own settings, conventions,
+//! approvals, books.start (plan/served.md P1). Drives a real `wanderbooks
+//! server` with raw JSON-RPC, as an agent reaches it (common.rs).
 
+use common::{Books, Wire};
 use serde_json::{Value, json};
-use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdin, Command, Stdio};
 
+mod common;
+
+/// One agent's session with the test's books (common.rs).
 struct Mcp {
-    stdin: ChildStdin,
-    stdout: BufReader<std::process::ChildStdout>,
+    wire: Wire,
     next_id: u64,
-    child: Child,
-}
-
-/// Closing stdin ends the server; wait for it to exit, so the next server
-/// on the same books never races it for the writer lock.
-impl Drop for Mcp {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
 }
 
 impl Mcp {
-    fn spawn(data_dir: &std::path::Path) -> Self {
-        Self::spawn_with(data_dir, &[])
-    }
-
-    fn spawn_with(data_dir: &std::path::Path, extra: &[&std::ffi::OsStr]) -> Self {
-        Self::spawn_env(data_dir, extra, &[])
-    }
-
-    fn spawn_env(
-        data_dir: &std::path::Path,
-        extra: &[&std::ffi::OsStr],
-        env: &[(&str, &std::path::Path)],
-    ) -> Self {
-        let bin = env!("CARGO_BIN_EXE_ledger-mcp");
-        let mut child = Command::new(bin)
-            .arg("--data-dir")
-            .arg(data_dir)
-            .args(extra)
-            .envs(env.iter().map(|(k, v)| (*k, v.as_os_str())))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn ledger-mcp");
-        let stdin = child.stdin.take().unwrap();
-        let stdout = BufReader::new(child.stdout.take().unwrap());
+    /// A new session with `books` (initialized by the test).
+    fn spawn(books: &Books) -> Self {
         Self {
-            stdin,
-            stdout,
+            wire: books.wire(),
             next_id: 1,
-            child,
         }
     }
 
@@ -61,13 +26,11 @@ impl Mcp {
         let id = self.next_id;
         self.next_id += 1;
         let msg = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
-        writeln!(self.stdin, "{msg}").unwrap();
-        self.stdin.flush().unwrap();
-        let mut line = String::new();
-        self.stdout
-            .read_line(&mut line)
-            .expect("read response line");
-        let resp: Value = serde_json::from_str(&line).expect("parse response");
+        self.wire.send(&msg);
+        let resp = self
+            .wire
+            .recv(common::TIMEOUT)
+            .unwrap_or_else(|| panic!("no answer to {method}: {:?}", self.wire.refused));
         assert_eq!(resp["id"], id, "id mismatch in {resp}");
         assert!(
             resp.get("error").is_none(),
@@ -78,9 +41,8 @@ impl Mcp {
     }
 
     fn notify(&mut self, method: &str) {
-        let msg = json!({"jsonrpc": "2.0", "method": method, "params": {}});
-        writeln!(self.stdin, "{msg}").unwrap();
-        self.stdin.flush().unwrap();
+        self.wire
+            .send(&json!({"jsonrpc": "2.0", "method": method, "params": {}}));
     }
 
     /// Call a tool; panic on tool error. Returns structuredContent.
@@ -110,35 +72,6 @@ impl Mcp {
         );
         result["content"][0]["text"].as_str().unwrap().to_string()
     }
-}
-
-/// A test's dir, removed when the test ends, pass or panic.
-struct TestDir(std::path::PathBuf);
-
-impl std::ops::Deref for TestDir {
-    type Target = std::path::Path;
-    fn deref(&self) -> &std::path::Path {
-        &self.0
-    }
-}
-
-impl AsRef<std::path::Path> for TestDir {
-    fn as_ref(&self) -> &std::path::Path {
-        &self.0
-    }
-}
-
-impl Drop for TestDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-fn test_dir(name: &str) -> TestDir {
-    let dir = std::env::temp_dir().join(format!("ledger-mcp-test-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    TestDir(dir)
 }
 
 fn init(m: &mut Mcp) -> String {
@@ -191,78 +124,21 @@ fn chart(m: &mut Mcp) {
     }
 }
 
-/// A settings file moves into the books, once, with the human's go: set
-/// is refused before (it would drop the rest of the file); the preview
-/// changes nothing; after, the file is never read, even to start, and the
-/// company's EIN only ever leaves the server masked.
+/// Books keep their settings, changed through the tools with who decided
+/// and when; the company's EIN only ever leaves the server masked (in
+/// books.settings, books.set_setting, books.export_settings and
+/// books.start); and a restarted server reads them from the books.
 #[test]
-fn a_settings_file_moves_into_the_books() {
-    let dir = test_dir("kept-move");
-    let data = dir.join("books-data");
-    std::fs::write(dir.join("wanderbooks.toml"), TOML).unwrap();
-    let mut m = Mcp::spawn(&data);
+fn settings_live_in_the_books_and_the_ein_leaves_masked() {
+    let books = Books::with("kept-ein", "USD", Some(TOML));
+    let mut m = Mcp::spawn(&books);
     let told = init(&mut m);
     assert!(told.contains("books.start"), "{told}");
-    assert!(
-        told.contains("the settings file books.settings names"),
-        "{told}"
-    );
     chart(&mut m);
-    assert_eq!(m.call("books.settings", json!({}))["source"], "file");
-    let start = m.call("books.start", json!({}));
-    assert_eq!(start["settings_source"], "file");
-    assert!(
-        start["next_steps"]
-            .to_string()
-            .contains("books.import_settings")
-    );
-    let refused = m.call_err(
-        "books.set_setting",
-        json!({"changes": [{"key": "company.cpa", "value": "Casey"}], "decided_by": "A"}),
-    );
-    assert!(refused.contains("books.import_settings"), "{refused}");
-    // Nor is there an export yet: the file is the copy.
-    let refused = m.call_err("books.export_settings", json!({}));
-    assert!(
-        refused.contains("still read their settings file")
-            && refused.contains("books.import_settings"),
-        "{refused}"
-    );
-    // The preview records nothing.
-    let head = |m: &mut Mcp| m.call("books.start", json!({}))["head"]["seq"].clone();
-    let before = head(&mut m);
-    let preview = m.call(
-        "books.import_settings",
-        json!({"toml_text": TOML, "decided_by": "A", "note": "Moving in."}),
-    );
-    assert_eq!(preview["status"], "preview");
-    assert_eq!(head(&mut m), before);
-    assert!(
-        preview["notes"].to_string().contains("data_dir"),
-        "{preview}"
-    );
-    assert!(
-        preview["unknown"].as_array().unwrap().is_empty(),
-        "{preview}"
-    );
-    // The file's comments are listed, never dropped unseen.
-    assert_eq!(
-        preview["comments"],
-        json!(["Form 1065; a Schedule K-1 per member"]),
-        "{preview}"
-    );
-    let shown = preview.to_string();
-    assert!(!shown.contains("2215893"), "the EIN is masked: {shown}");
-    assert!(shown.contains("**-***5893"), "{shown}");
-    let done = m.call(
-        "books.import_settings",
-        json!({"toml_text": TOML, "decided_by": "A", "confirmed": true}),
-    );
-    assert_eq!(done["status"], "imported");
     let settings = m.call("books.settings", json!({}));
-    assert_eq!(settings["source"], "books");
-    assert_eq!(settings["books_toml"], Value::Null);
     assert_eq!(settings["parties"], "require");
+    let shown = settings.to_string();
+    assert!(!shown.contains("8525893"), "the EIN is masked: {shown}");
     let ein = settings["keys"]
         .as_array()
         .unwrap()
@@ -271,12 +147,10 @@ fn a_settings_file_moves_into_the_books() {
         .unwrap()
         .clone();
     assert_eq!(ein["value"], "**-***5893");
-    assert_eq!(ein["set_by"]["decided_by"], "A");
-    // The file is no longer read: an edit changes nothing.
-    std::fs::write(dir.join("wanderbooks.toml"), TOML.replace("0.00", "99.00")).unwrap();
-    let rule = m.call("books.settings", json!({}))["receipt_rule"].clone();
+    assert_eq!(ein["set_by"]["decided_by"], "Test Owner");
+    let rule = settings["receipt_rule"].clone();
     assert!(rule.as_str().unwrap().contains("every entry"), "{rule}");
-    // Settings change through the tools now.
+    // Settings change through the tools.
     let set = m.call(
         "books.set_setting",
         json!({"changes": [{"key": "company.timezone", "value": "America/Denver"},
@@ -289,88 +163,41 @@ fn a_settings_file_moves_into_the_books() {
     assert!(text.contains("timezone = \"America/Denver\""), "{text}");
     assert!(!text.contains("3456789"), "{text}");
     let start = m.call("books.start", json!({}));
-    assert_eq!(start["settings_source"], "books");
     assert_eq!(start["book"]["timezone"], "America/Denver");
     assert!(!start.to_string().contains("3456789"));
     drop(m);
-    // A broken settings file beside books that keep their own can't stop
-    // the server: it is never read.
-    std::fs::write(dir.join("wanderbooks.toml"), "[books\nthis is not toml").unwrap();
-    let mut m = Mcp::spawn(&data);
+    books.restart();
+    let mut m = Mcp::spawn(&books);
     let told = init(&mut m);
     assert!(
         told.contains("Settings and conventions live in the books"),
         "{told}"
     );
-    assert!(!told.contains("local file you may edit"), "{told}");
     assert!(told.contains("Kept Co LLC"), "{told}");
-    assert_eq!(m.call("books.settings", json!({}))["source"], "books");
+    // What was set before the restart, read back from the books: the
+    // timezone, and the new EIN, still masked.
+    let start = m.call("books.start", json!({}));
+    assert_eq!(start["book"]["timezone"], "America/Denver");
+    let settings = m.call("books.settings", json!({}));
+    let ein = settings["keys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|k| k["key"] == "company.ein")
+        .unwrap()
+        .clone();
+    assert_eq!(ein["value"], "**-***6789");
+    assert_eq!(ein["set_by"]["decided_by"], "B");
+    assert!(!settings.to_string().contains("3456789"), "{settings}");
     assert_eq!(m.call("books.verify", json!({}))["status"], "ok");
-}
-
-/// INVARIANT 2 (tools/kept.rs): an import that would read any setting
-/// differently than the server does now is refused. Here the server reads
-/// its receipt policy from config.json, which the import must carry.
-#[test]
-fn an_import_that_reads_differently_is_refused() {
-    let dir = test_dir("kept-differs");
-    let data = dir.join("books-data");
-    std::fs::create_dir_all(&data).unwrap();
-    std::fs::write(dir.join("wanderbooks.toml"), TOML).unwrap();
-    let policy = r#"{"receipt_policy": {"require_receipts_above": "10.00", "receipt_exempt_accounts": ["6999"]}}"#;
-    std::fs::write(data.join("config.json"), policy).unwrap();
-    let mut m = Mcp::spawn(&data);
-    init(&mut m);
-    let e = m.call_err(
-        "books.import_settings",
-        json!({"toml_text": TOML, "decided_by": "A", "confirmed": true}),
-    );
-    assert!(e.contains("policy.evidence.threshold"), "{e}");
-    assert!(e.contains("config_json_text"), "{e}");
-    assert_eq!(m.call("books.settings", json!({}))["source"], "file");
-    m.call(
-        "books.import_settings",
-        json!({"toml_text": TOML, "decided_by": "A", "confirmed": true,
-               "config_json_text": policy}),
-    );
-    let s = m.call("books.settings", json!({}));
-    assert_eq!(s["source"], "books");
-    assert_eq!(s["receipt_exempt_accounts"], json!(["6999"]));
-}
-
-/// The vault key a settings file names must come from the command line
-/// before the settings move in, or the vault would stop opening.
-#[test]
-fn an_import_needs_the_vault_key_on_the_command_line() {
-    let dir = test_dir("kept-vault");
-    let data = dir.join("books-data");
-    let key = dir.join("elsewhere").join("vault.key");
-    let toml = format!("{TOML}\n[vault]\nkey_file = \"{}\"\n", key.display());
-    std::fs::write(dir.join("wanderbooks.toml"), &toml).unwrap();
-    let mut m = Mcp::spawn(&data);
-    init(&mut m);
-    let e = m.call_err(
-        "books.import_settings",
-        json!({"toml_text": toml, "decided_by": "A", "confirmed": true}),
-    );
-    assert!(e.contains("--vault-key-file"), "{e}");
-    drop(m);
-    let mut m = Mcp::spawn_with(&data, &["--vault-key-file".as_ref(), key.as_os_str()]);
-    init(&mut m);
-    m.call(
-        "books.import_settings",
-        json!({"toml_text": toml, "decided_by": "A", "confirmed": true}),
-    );
-    assert_eq!(m.call("books.settings", json!({}))["source"], "books");
 }
 
 /// Approval rules through the server: enforced, a covered post is refused
 /// until its approver approves, then posts; off, they block nothing.
 #[test]
 fn approval_rules_through_the_server() {
-    let dir = test_dir("kept-approvals");
-    let data = dir.join("books-data");
-    let mut m = Mcp::spawn(&data);
+    let books = Books::new("kept-approvals");
+    let mut m = Mcp::spawn(&books);
     init(&mut m);
     chart(&mut m);
     m.call(
@@ -431,9 +258,8 @@ fn approval_rules_through_the_server() {
 /// A posting template drafts through the server, to the cent.
 #[test]
 fn templates_draft_through_the_server() {
-    let dir = test_dir("kept-template");
-    let data = dir.join("books-data");
-    let mut m = Mcp::spawn(&data);
+    let books = Books::new("kept-template");
+    let mut m = Mcp::spawn(&books);
     init(&mut m);
     chart(&mut m);
     m.call(
@@ -492,9 +318,8 @@ fn templates_draft_through_the_server() {
 /// it left out.
 #[test]
 fn start_fits_in_8_kb() {
-    let dir = test_dir("kept-start");
-    let data = dir.join("books-data");
-    let mut m = Mcp::spawn(&data);
+    let books = Books::new("kept-start");
+    let mut m = Mcp::spawn(&books);
     init(&mut m);
     let body =
         "A first line long enough to fill its summary to the brim, and then some more words. "
@@ -528,17 +353,14 @@ fn start_fits_in_8_kb() {
     assert_eq!(start["isolation"], "same_user (advisory)");
 }
 
-/// Review of P1 (2026-10-17): the text imported is the file the server
-/// reads, whole; books that keep their own settings take no import that
-/// changes them; a settings file never turns approvals on; after the
-/// move, a broken config.json can't stop the server; and books.settings
-/// shows a file's values before the move.
+/// Review of P1 (2026-10-17) and D-44 (owner, 2026-10-23: the import
+/// tool goes): books keep their own settings and take no settings file;
+/// books.settings shows each value (an identity value masked), and
+/// books.import_settings is no tool (an unknown tool: a protocol error).
 #[test]
-fn an_import_is_the_file_the_server_reads() {
-    let dir = test_dir("kept-whole");
-    let data = dir.join("books-data");
-    std::fs::write(dir.join("wanderbooks.toml"), TOML).unwrap();
-    let mut m = Mcp::spawn(&data);
+fn books_keeping_their_settings_take_no_settings_file() {
+    let books = Books::with("kept-whole", "USD", Some(TOML));
+    let mut m = Mcp::spawn(&books);
     init(&mut m);
     let keys = m.call("books.settings", json!({}))["keys"].clone();
     let ein = keys
@@ -548,48 +370,20 @@ fn an_import_is_the_file_the_server_reads() {
         .find(|k| k["key"] == "company.ein")
         .unwrap()
         .clone();
-    assert_eq!(ein["value"], "**-***5893", "the file's value, masked");
-    // A text that leaves the EIN out is not the file.
-    let short = TOML.replace("ein = \"28-8525893\"\n", "");
-    let e = m.call_err(
-        "books.import_settings",
-        json!({"toml_text": short, "decided_by": "A", "confirmed": true}),
+    assert_eq!(ein["value"], "**-***5893", "the value, masked");
+    let tools = m.request("tools/list", json!({}))["result"]["tools"].clone();
+    assert!(
+        !tools.to_string().contains("books.import_settings"),
+        "{tools}"
     );
-    assert!(e.contains("company.ein"), "{e}");
-    // Approval rules never come in from a file.
-    std::fs::write(
-        dir.join("wanderbooks.toml"),
-        format!("{TOML}approval_rules = \"enforce\"\n")
-            .replace("[viewer]\nopen_at_start = \"ask\"\n", ""),
-    )
-    .unwrap();
-    let with_rules = std::fs::read_to_string(dir.join("wanderbooks.toml")).unwrap();
-    let e = m.call_err(
-        "books.import_settings",
-        json!({"toml_text": with_rules, "decided_by": "A", "confirmed": true}),
-    );
-    assert!(e.contains("approval"), "{e}");
-    std::fs::write(dir.join("wanderbooks.toml"), TOML).unwrap();
-    m.call(
-        "books.import_settings",
-        json!({"toml_text": TOML, "decided_by": "A", "confirmed": true}),
-    );
-    // Imported books: the same text again is no change; another is refused.
-    let again = m.call(
-        "books.import_settings",
-        json!({"toml_text": TOML, "decided_by": "A", "confirmed": true}),
-    );
-    assert!(again["changes"].as_array().unwrap().is_empty(), "{again}");
-    let e = m.call_err(
-        "books.import_settings",
-        json!({"toml_text": short, "decided_by": "A", "confirmed": true}),
-    );
-    assert!(e.contains("books.set_setting"), "{e}");
-    drop(m);
-    std::fs::write(data.join("config.json"), "{ not json").unwrap();
-    let mut m = Mcp::spawn(&data);
-    init(&mut m);
-    assert_eq!(m.call("books.settings", json!({}))["source"], "books");
+    let id = m.next_id;
+    m.next_id += 1;
+    m.wire
+        .send(&json!({"jsonrpc": "2.0", "id": id, "method": "tools/call",
+        "params": {"name": "books.import_settings",
+                   "arguments": {"toml_text": TOML, "decided_by": "A", "confirmed": true}}}));
+    let resp = m.wire.recv(common::TIMEOUT).expect("an answer");
+    assert!(resp.get("error").is_some(), "{resp}");
 }
 
 /// A convention that names an account is listed when that account is
@@ -597,9 +391,8 @@ fn an_import_is_the_file_the_server_reads() {
 /// chart.
 #[test]
 fn renumbering_names_the_conventions_to_revise() {
-    let dir = test_dir("kept-renumber");
-    let data = dir.join("books-data");
-    let mut m = Mcp::spawn(&data);
+    let books = Books::new("kept-renumber");
+    let mut m = Mcp::spawn(&books);
     init(&mut m);
     chart(&mut m);
     m.call(
@@ -632,9 +425,8 @@ fn renumbering_names_the_conventions_to_revise() {
 /// tools do.
 #[test]
 fn the_kept_resources_read() {
-    let dir = test_dir("kept-resources");
-    let data = dir.join("books-data");
-    let mut m = Mcp::spawn(&data);
+    let books = Books::new("kept-resources");
+    let mut m = Mcp::spawn(&books);
     init(&mut m);
     chart(&mut m);
     m.call(
@@ -651,22 +443,19 @@ fn the_kept_resources_read() {
     assert_eq!(start["state"], "active", "{start}");
     assert_eq!(start["conventions"][0]["id"], "software", "{start}");
     let settings = read(&mut m, "books://settings");
-    assert_eq!(settings["source"], "file", "{settings}");
+    assert_eq!(settings, m.call("books.settings", json!({})), "{settings}");
     let conventions = read(&mut m, "books://conventions");
     assert_eq!(
         conventions["conventions"][0]["id"], "software",
         "{conventions}"
     );
-    drop(m);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A renumber lists exactly the conventions naming the old code.
 #[test]
 fn renumbering_lists_only_the_conventions_naming_it() {
-    let dir = test_dir("kept-renumber-only");
-    let data = dir.join("books-data");
-    let mut m = Mcp::spawn(&data);
+    let books = Books::new("kept-renumber-only");
+    let mut m = Mcp::spawn(&books);
     init(&mut m);
     chart(&mut m);
     for (id, dr, cr) in [("software", "6000", "1000"), ("deposit", "1000", "3000")] {
@@ -696,6 +485,4 @@ fn renumbering_lists_only_the_conventions_naming_it() {
         ["convention software (revise it with books.set_convention)"],
         "{out}"
     );
-    drop(m);
-    let _ = std::fs::remove_dir_all(&dir);
 }

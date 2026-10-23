@@ -1,6 +1,6 @@
 //! The P3 seam review's books (shared by `ledger-package`'s
 //! `tests/p3_seams.rs`, `ledger-gui`'s `tests/p3_seams.rs` and
-//! `ledger-mcp`'s `tests/p3_seams.rs`, which include this file): one year
+//! `ledger-cli`'s `tests/p3_seams.rs`, which include this file): one year
 //! of fictional books for a two-member LLC, Ana Example and Ben Example,
 //! 50/50, built through the real [`Store`], with the settings the server
 //! and the viewer read written beside them (`wanderbooks.toml`). Every
@@ -124,9 +124,10 @@ fn both(s: &mut Store, e: u64, ana: PartyId, ben: PartyId, each: &str) -> u64 {
     done(s, e)
 }
 
-/// The settings the server and the viewer read for these books (beside
-/// `books-data`, as an older books dir keeps them): [`company`] and the
-/// account roles, the receipt threshold high so no entry needs a receipt.
+/// The settings of these books, written beside `books-data` as an older
+/// books dir keeps them (adoption reads them once; a test that opens the
+/// books itself journals them): [`company`] and the account roles, the
+/// receipt threshold high so no entry needs a receipt.
 pub const SETTINGS_TOML: &str = "[company]
 name = \"Example Trails LLC\"
 basis = \"Cash\"

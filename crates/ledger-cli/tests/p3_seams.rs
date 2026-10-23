@@ -1,7 +1,8 @@
 //! P3's seams through the tools: on the seam review's books (a year of a
 //! two-member LLC, `ledger-package`'s `tests/seams/books.rs`), built
-//! in-process with the real `Store`, closed, then served by the real
-//! binary over stdio from the same folder and its settings file, every
+//! in-process with the real `Store`, closed, then adopted with its
+//! settings file into a data root and served by a real `wanderbooks
+//! server` (common.rs), every
 //! figure a tool reports is the engine's for the same accounts and dates,
 //! and the tools agree with each other: the cash flow statement, party
 //! totals on both bases, the 1099 worksheet as of a day, the fixed
@@ -11,101 +12,27 @@
 mod books;
 
 use books::{books, d, dec};
+use common::{Books, Wire};
 use serde_json::{Value, json};
-use std::io::{BufRead, BufReader, Write};
-use std::path::Path;
-use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::mpsc::{Receiver, channel};
-use std::time::Duration;
 
-const TIMEOUT: Duration = Duration::from_secs(180);
+mod common;
+
 const START: &str = "2026-01-01";
 
 struct Mcp {
-    stdin: ChildStdin,
-    rx: Receiver<String>,
-    child: Child,
-    next_id: u64,
-}
-
-impl Drop for Mcp {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
+    wire: Wire,
 }
 
 impl Mcp {
-    fn start(dir: &Path) -> Self {
-        let run = dir.join("run");
-        std::fs::create_dir_all(&run).unwrap();
-        let mut child = Command::new(env!("CARGO_BIN_EXE_ledger-mcp"))
-            .arg("--data-dir")
-            .arg(dir.join("books-data"))
-            .arg("--books-toml")
-            .arg(dir.join("wanderbooks.toml"))
-            .env("XDG_RUNTIME_DIR", &run)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn ledger-mcp");
-        let stdin = child.stdin.take().unwrap();
-        let stdout = BufReader::new(child.stdout.take().unwrap());
-        let (tx, rx) = channel();
-        std::thread::spawn(move || {
-            for line in stdout.lines() {
-                let Ok(line) = line else { break };
-                if tx.send(line).is_err() {
-                    break;
-                }
-            }
-        });
-        let mut mcp = Mcp {
-            stdin,
-            rx,
-            child,
-            next_id: 1,
-        };
-        let init = mcp.rpc(
-            "initialize",
-            json!({
-                "protocolVersion": "2025-06-18",
-                "capabilities": {},
-                "clientInfo": {"name": "p3-seams", "version": "0.1.0"},
-            }),
-        );
-        assert!(init.get("result").is_some(), "initialize failed: {init}");
-        writeln!(
-            mcp.stdin,
-            "{}",
-            json!({"jsonrpc": "2.0", "method": "notifications/initialized"})
-        )
-        .unwrap();
-        mcp
-    }
-
-    fn rpc(&mut self, method: &str, params: Value) -> Value {
-        let id = self.next_id;
-        self.next_id += 1;
-        let msg = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
-        writeln!(self.stdin, "{msg}").unwrap();
-        self.stdin.flush().unwrap();
-        loop {
-            let line = self
-                .rx
-                .recv_timeout(TIMEOUT)
-                .unwrap_or_else(|_| panic!("no response to {method}"));
-            let v: Value = serde_json::from_str(&line).unwrap();
-            if v.get("id") == Some(&json!(id)) {
-                return v;
-            }
-        }
+    fn start(books: &Books) -> Self {
+        let mut wire = books.wire();
+        wire.initialize("p3-seams");
+        Mcp { wire }
     }
 
     /// A tool's structured result; a refusal fails the test.
     fn ok(&mut self, name: &str, args: Value) -> Value {
-        let resp = self.rpc("tools/call", json!({"name": name, "arguments": args}));
+        let resp = self.wire.call(name, args.clone());
         let r = &resp["result"];
         assert!(
             resp.get("error").is_none() && r.get("isError") != Some(&json!(true)),
@@ -199,7 +126,13 @@ fn the_tools_figures_are_the_engines_on_every_date() {
         .collect();
     drop(b);
 
-    let mut mcp = Mcp::start(dir.path());
+    let settings_toml = std::fs::read_to_string(dir.path().join("wanderbooks.toml")).unwrap();
+    let served = Books::adopted(
+        "p3-seams",
+        &dir.path().join("books-data"),
+        Some(&settings_toml),
+    );
+    let mut mcp = Mcp::start(&served);
     for x in &expected {
         let end = x.end.as_str();
         // The cash flow statement: every line, kind and reconciling item.

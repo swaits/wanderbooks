@@ -1,5 +1,6 @@
 //! Spec-blind tests for the attachment-link, statement, and reconciliation
-//! tools of `ledger-mcp`, driven over stdio against the real binary.
+//! tools of the books server, driven through a real `wanderbooks server`
+//! as an agent reaches it (common.rs).
 //!
 //! Expected behavior comes only from the tool descriptions and parameter /
 //! result doc comments in `src/server.rs` and `src/types.rs` (the declared
@@ -10,16 +11,15 @@
 //! against the tool's `outputSchema`, and every refusal leaves
 //! `journal.jsonl` byte-identical (server invariant 2).
 
+use common::{Place, Wire};
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::time::Duration;
 
-const TIMEOUT: Duration = Duration::from_secs(180);
+mod common;
+
+const TIMEOUT: Duration = common::TIMEOUT;
 
 // ---------------------------------------------------------------- harness
 
@@ -44,82 +44,33 @@ impl Out {
 }
 
 struct Mcp {
-    stdin: ChildStdin,
-    rx: Receiver<String>,
-    child: Child,
+    wire: Wire,
     next_id: u64,
     data: PathBuf,
     validators: HashMap<String, jsonschema::Validator>,
     /// Every response line the server wrote, with the tool it answered.
     transcript: Vec<(String, String)>,
-    /// The books dir when the server owns it: removed after the server
-    /// stops (fields drop after `Drop::drop`).
+    /// The test's place, when the session owns it (its server is closed
+    /// and its home removed after the session).
     books_dir: Option<TestDir>,
 }
 
-impl Drop for Mcp {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-static DIR_SEQ: AtomicU64 = AtomicU64::new(0);
-
-/// A test's dir and the folder beside it (`-outside`),
-/// removed when the test ends, pass or panic.
-struct TestDir(PathBuf);
-
-impl std::ops::Deref for TestDir {
-    type Target = std::path::Path;
-    fn deref(&self) -> &std::path::Path {
-        &self.0
-    }
-}
-
-impl AsRef<std::path::Path> for TestDir {
-    fn as_ref(&self) -> &std::path::Path {
-        &self.0
-    }
-}
-
-impl Drop for TestDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-        let _ = std::fs::remove_dir_all(format!("{}-outside", self.0.display()));
-    }
-}
+/// A test's place (common.rs): its home, its server, its books.
+type TestDir = Place;
 
 fn test_dir(name: &str) -> TestDir {
-    let n = DIR_SEQ.fetch_add(1, Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!(
-        "ledger-mcp-spec-attachments-{}-{name}-{n}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    TestDir(dir)
-}
-
-/// A directory beside the books dir `dir`, outside it: the vault key,
-/// files the tests hand the server, files it writes, its stderr.
-fn outside(dir: &Path) -> PathBuf {
-    let d = PathBuf::from(format!("{}-outside", dir.display()));
-    std::fs::create_dir_all(&d).unwrap();
-    d
+    Place::new(name)
 }
 
 /// `wanderbooks.toml` with a company name, the receipt threshold, and
-/// extra `[books]` TOML; the vault key file is outside the books dir.
+/// extra `[books]` TOML.
 fn books_toml(dir: &Path, threshold: &str, books_extra: &str) -> PathBuf {
     let path = dir.join("wanderbooks.toml");
     std::fs::write(
         &path,
         format!(
             "[company]\nname = \"Spec Co\"\nfiscal_year_start = \"01-01\"\n\
-             [books]\nreceipt_threshold = \"{threshold}\"\ncash_accounts = [\"1000\"]\n{books_extra}\n\
-             [vault]\nkey_file = \"{}\"\n",
-            outside(dir).join("vault.key").display()
+             [books]\nreceipt_threshold = \"{threshold}\"\ncash_accounts = [\"1000\"]\n{books_extra}\n"
         ),
     )
     .unwrap();
@@ -127,43 +78,13 @@ fn books_toml(dir: &Path, threshold: &str, books_extra: &str) -> PathBuf {
 }
 
 impl Mcp {
-    fn start(dir: &Path, toml: &Path) -> Self {
-        let run = dir.join("run");
-        std::fs::create_dir_all(&run).unwrap();
-        let mut child = Command::new(env!("CARGO_BIN_EXE_ledger-mcp"))
-            .arg("--data-dir")
-            .arg(dir.join("books-data"))
-            .arg("--books-toml")
-            .arg(toml)
-            .env("XDG_RUNTIME_DIR", &run)
-            // Never the user's real vault key (the default key file is
-            // under XDG_CONFIG_HOME); the tests name theirs anyway.
-            .env("XDG_CONFIG_HOME", outside(dir).join("config"))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::from(
-                std::fs::File::create(outside(dir).join("stderr.log")).unwrap(),
-            ))
-            .spawn()
-            .expect("spawn ledger-mcp");
-        let stdin = child.stdin.take().unwrap();
-        let stdout = BufReader::new(child.stdout.take().unwrap());
-        let (tx, rx) = channel();
-        std::thread::spawn(move || {
-            for line in stdout.lines() {
-                let Ok(line) = line else { break };
-                if tx.send(line).is_err() {
-                    break;
-                }
-            }
-        });
+    fn start(dir: &TestDir, toml: &Path) -> Self {
+        let wire = dir.start(Some(&std::fs::read_to_string(toml).unwrap()));
         let mut mcp = Self {
             books_dir: None,
-            stdin,
-            rx,
-            child,
+            wire,
             next_id: 1,
-            data: dir.join("books-data"),
+            data: dir.books_data(),
             validators: HashMap::new(),
             transcript: Vec::new(),
         };
@@ -211,24 +132,11 @@ impl Mcp {
     }
 
     fn send_line(&mut self, line: &str) {
-        writeln!(self.stdin, "{line}").unwrap();
-        self.stdin.flush().unwrap();
+        self.wire.send_line(line);
     }
 
     fn recv(&mut self) -> Option<Value> {
-        loop {
-            match self.rx.recv_timeout(TIMEOUT) {
-                Ok(line) => {
-                    let v: Value = serde_json::from_str(&line)
-                        .unwrap_or_else(|e| panic!("server wrote non-JSON {line:?}: {e}"));
-                    if v.get("id").is_none() && v.get("method").is_some() {
-                        continue;
-                    }
-                    return Some(v);
-                }
-                Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => return None,
-            }
-        }
+        self.wire.recv(TIMEOUT)
     }
 
     fn rpc(&mut self, method: &str, params: Value) -> Value {
@@ -1282,7 +1190,6 @@ fn a_mis_recorded_statement_is_voided_and_recorded_again() {
 /// of the package entirely.
 #[test]
 fn the_cpa_package_carries_receipts_linked_to_entries() {
-    use base64::Engine as _;
     let mut m = books_at("cpa-linked", "0.00", "");
     let receipt = m.receipt(None, b"%PDF linked receipt");
     let e = m.draft(
@@ -1305,14 +1212,8 @@ fn the_cpa_package_carries_receipts_linked_to_entries() {
         "books.export_cpa_package",
         json!({"as_of": "2026-12-31", "cash_accounts": ["1000"], "include_tins": false}),
     );
-    // The zip comes back inline over stdio, as stated (D-29).
-    let file = &pkg["file"];
-    assert!(file.get("download").is_none(), "{file}");
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(file["content_base64"].as_str().unwrap())
-        .unwrap();
-    assert_eq!(file["size_bytes"], json!(bytes.len()), "{file}");
-    assert_eq!(file["sha256"], json!(sha(&bytes)), "{file}");
+    // The zip is handed over by its download, as stated (D-29).
+    let bytes = m.wire.fetch(&pkg["file"]);
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
     let names: Vec<String> = (0..zip.len())
         .map(|i| zip.by_index(i).unwrap().name().unwrap().to_string())

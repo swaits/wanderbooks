@@ -3,7 +3,7 @@
 # wanderbooks: P3 defect 8 (an account made without a tax category went
 # unnoticed); rules.md B-32; regression tests
 # `add_account_warns_without_tax_category_defect_8` and
-# `require_tax_category_refuses_defect_8` (ledger-mcp
+# `require_tax_category_refuses_defect_8` (ledger-cli
 # tests/spec_tax_policy.rs), `prop_tax_policy_refuses_exactly` (ledger-store
 # tests/store.rs), `needs_attention_flags_every_uncategorized_pl_account_defect_8`
 # (ledger-gui tests/view_model.rs).

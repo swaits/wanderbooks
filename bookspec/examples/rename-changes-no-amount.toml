@@ -3,7 +3,7 @@
 # wanderbooks: P3 defect 15 (an account could not be renamed); rules.md
 # B-8, B-31; regression tests `rename_account_changes_only_the_name_defect_15`
 # and `prop_rename_changes_no_figure` (ledger-store tests/store.rs),
-# `rename_account_end_to_end_defect_15` (ledger-mcp tests/mcp_stdio.rs).
+# `rename_account_end_to_end_defect_15` (ledger-cli tests/mcp_journeys.rs).
 # The journal's record of the old name beside the new (`account.renamed`)
 # is the store's, checked there.
 #

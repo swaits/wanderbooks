@@ -21,12 +21,14 @@ check: sweep-test-tmp
     @just sweep-test-tmp
 
 # The server-only build (plan D-22, for another machine) builds, passes
-# clippy and its tests, and links no window libraries
+# clippy and the one executable's own tests, and links no window libraries.
+# The books server's tool suites (mcp_journeys, spec_*, oracle_mcp,
+# hostile_args, ...: the same binary's server, D-44) run once, in `check`.
 server-only:
     #!/usr/bin/env bash
     set -euo pipefail
     cargo clippy -p ledger-cli --no-default-features --all-targets -- -D warnings
-    cargo test -p ledger-cli --no-default-features
+    cargo test -p ledger-cli --no-default-features --bins --test one_executable --test setup --test local_server --test open_while_held --test backups --test format_upgrade --test startup
     tree=$(cargo tree -p ledger-cli --no-default-features -e normal)
     if grep -qiE '\b(eframe|egui|winit|wgpu|glow|ledger-gui)\b' <<<"$tree"; then
         echo "the server-only build links a window library" >&2
@@ -196,11 +198,12 @@ mutants-config shard="0/1": sweep-test-tmp
     PROPTEST_MAX_SHRINK_ITERS=0 TMPDIR={{mutants_tmp}} cargo mutants -p ledger-config --test-package ledger-config -j 4 --timeout-multiplier 3 --minimum-test-timeout 120 --shard {{shard}} -o mutants-config
     @just sweep-test-tmp
 
-# Mutation testing of the MCP server (every mutant runs the stdio suites;
-# fewer random cases each, as for the store).
+# Mutation testing of the MCP server: every mutant runs its unit tests and
+# the suites that drive a real books server (ledger-cli's tests, D-44),
+# built without the viewer; fewer random cases each, as for the store.
 mutants-mcp shard="0/1": sweep-test-tmp
     mkdir -p {{mutants_tmp}}
-    MCP_CASES=16 PROPTEST_MAX_SHRINK_ITERS=0 TMPDIR={{mutants_tmp}} cargo mutants -p ledger-mcp --test-package ledger-mcp -j 4 --timeout-multiplier 3 --minimum-test-timeout 600 --shard {{shard}} -o mutants-mcp
+    MCP_CASES=16 PROPTEST_MAX_SHRINK_ITERS=0 TMPDIR={{mutants_tmp}} cargo mutants -p ledger-mcp --test-package ledger-mcp --test-package ledger-cli --no-default-features -j 4 --timeout-multiplier 3 --minimum-test-timeout 600 --shard {{shard}} -o mutants-mcp
     @just sweep-test-tmp
 
 # No mutation runs on the viewer (owner, 2026-10-18: they crushed the
@@ -215,13 +218,14 @@ bench:
     cargo bench -p ledger-core --bench books
     cargo bench -p ledger-store --bench store
 
-# Build the release binaries (CLI, MCP server, GUI)
+# Build the release binaries (`wanderbooks`, the one executable, and the
+# viewer's own)
 build:
-    cargo build --release -p ledger-cli -p ledger-mcp -p ledger-gui
+    cargo build --release -p ledger-cli -p ledger-gui
 
 # Install the binaries from this checkout into ~/.cargo/bin
 install:
-    for c in ledger-cli ledger-mcp ledger-gui; do cargo install --locked --path crates/$c; done
+    for c in ledger-cli ledger-gui; do cargo install --locked --path crates/$c; done
 
 # Open the GUI on the demo company
 demo:

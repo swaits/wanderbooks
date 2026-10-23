@@ -151,9 +151,8 @@ impl Job {
         let snap = ledger_store::Snapshot::load(&books.data_dir).map_err(|e| e.to_string())?;
         let ledger = snap.ledger();
         // The settings the rest of the viewer shows, read as the server
-        // reads them (data::settings: an older books dir that keeps none
-        // in its journal reads its settings file).
-        let st = &crate::data::settings_of(&books.data_dir, &snap)?;
+        // reads them (data::settings).
+        let st = &crate::data::settings(&snap);
         let settings = ledger_package::Settings {
             company: &st.company,
             cash_accounts: &st.cash_accounts,

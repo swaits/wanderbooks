@@ -1,8 +1,8 @@
 //! The viewer's Books menu (owner.rs, plan P2 "Viewer menu", D-32): each
 //! item hands its work to the owner the program gives the viewer, off the
 //! UI thread, and says what came of it; a restore is previewed first; the
-//! viewer itself writes nothing of the books; without an owner, or for an
-//! older books dir, the menu isn't there.
+//! viewer itself writes nothing of the books; without an owner, or for
+//! books outside a data root (the demo's), the menu isn't there.
 
 use chrono::NaiveDate;
 use egui_kittest::Harness;
@@ -102,7 +102,7 @@ fn today() -> NaiveDate {
 }
 
 /// Books in a data root (`root`: a folder holding the root's marker), or
-/// an older books dir's.
+/// outside one (as the demo's are).
 fn books(root: bool) -> (tempfile::TempDir, PathBuf, Books) {
     let dir = tempfile::Builder::new()
         .prefix("wb-gui-owner-")

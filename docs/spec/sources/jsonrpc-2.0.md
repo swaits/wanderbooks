@@ -1,7 +1,8 @@
 # JSON-RPC 2.0 Specification (jsonrpc.org/specification)
 
-Governs `ledger-mcp`'s wire protocol (MCP is JSON-RPC 2.0). Fetched
-2026-10-14.
+Governs the wire protocol of the books server (`ledger-mcp`) and of the
+agents' bridge, which frames each message an agent sends as one line
+(`ledger-host` bridge.rs) (MCP is JSON-RPC 2.0). Fetched 2026-10-14.
 
 **5 Response object**
 

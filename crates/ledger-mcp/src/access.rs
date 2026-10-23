@@ -1,5 +1,5 @@
 //! Who is calling, what their token allows, and the record of each call
-//! (plan 3.3, I-9), for books served from the data root.
+//! (plan 3.3, I-9), for every book the books server serves.
 //!
 //! ```text
 //! GOAL: a call reaches a book only with a token for that book and for
@@ -9,8 +9,7 @@
 //!         logged, and logging fails closed"), section 7's record.
 //! INVARIANTS:
 //!   1. The HTTP door (local.rs) puts a Caller on every request it lets
-//!      through; a call that reaches a book with an access log and has no
-//!      Caller is refused.
+//!      through; a call that reaches a book with no Caller is refused.
 //!   2. A call runs only if its Caller's token has the scope it needs
 //!      (scopes.rs); otherwise it is refused, unrun.
 //!   3. Every call, run or refused, gets one record, written before its

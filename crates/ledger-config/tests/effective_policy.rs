@@ -1,56 +1,28 @@
-//! The receipt policy in force when the settings come from files:
-//! config.json's when it sets one, else the settings file's threshold.
+//! The receipt policy an older books dir's files set, as adoption moves it
+//! in: config.json's when it sets one, else the settings file's threshold.
 
-use ledger_config::{BooksSettings, effective_receipt_policy};
-
-/// A test's dir, removed when the test ends, pass or panic.
-struct TestDir(std::path::PathBuf);
-
-impl std::ops::Deref for TestDir {
-    type Target = std::path::Path;
-    fn deref(&self) -> &std::path::Path {
-        &self.0
-    }
-}
-
-impl Drop for TestDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-fn dir(tag: &str) -> TestDir {
-    let d = std::env::temp_dir().join(format!("ledger-config-policy-{}-{tag}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    TestDir(d)
-}
+use ledger_config::{BooksSettings, effective_receipt_policy_text};
 
 #[test]
 fn config_json_wins_else_the_settings_file() {
-    let d = dir("files");
-    let json = d.join("config.json");
     let settings = BooksSettings {
         receipt_threshold: Some("0.00".into()),
         ..BooksSettings::default()
     };
     // No config.json: the settings file's threshold.
-    let p = effective_receipt_policy(&json, &settings).unwrap();
+    let p = effective_receipt_policy_text(None, &settings).unwrap();
     assert_eq!(p.require_receipts_above, "0.00");
     // config.json's policy, whole.
-    std::fs::write(
-        &json,
-        r#"{"receipt_policy": {"require_receipts_above": "10.00", "receipt_exempt_accounts": ["6999"]}}"#,
+    let p = effective_receipt_policy_text(
+        Some(
+            r#"{"receipt_policy": {"require_receipts_above": "10.00", "receipt_exempt_accounts": ["6999"]}}"#,
+        ),
+        &settings,
     )
     .unwrap();
-    let p = effective_receipt_policy(&json, &settings).unwrap();
     assert_eq!(p.require_receipts_above, "10.00");
     assert_eq!(p.receipt_exempt_accounts, ["6999"]);
-    // A broken one is refused, by name.
-    std::fs::write(&json, "{ not json").unwrap();
-    let err = effective_receipt_policy(&json, &settings).unwrap_err();
-    assert!(
-        err.starts_with(&format!("bad config {}", json.display())),
-        "{err}"
-    );
+    // A broken one is refused.
+    let err = effective_receipt_policy_text(Some("{ not json"), &settings).unwrap_err();
+    assert!(err.starts_with("bad config"), "{err}");
 }

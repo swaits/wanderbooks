@@ -272,7 +272,7 @@ pub fn default_root(home: &Path) -> PathBuf {
 
 /// Whether `path` is a data root or inside one (any folder above it, or
 /// it, holds the marker `setup` leaves). Books there belong to the books
-/// server alone (plan 3.1: `dev-stdio` refuses them).
+/// server alone (plan 3.1); the viewer reads no settings file beside them.
 pub fn inside_a_root(path: &Path) -> bool {
     // From here (a path that is already absolute stays as it is).
     let path = std::env::current_dir()

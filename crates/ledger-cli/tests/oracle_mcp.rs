@@ -1,4 +1,5 @@
-//! Oracle tests for `ledger-mcp`, driven over stdio against the real binary.
+//! Oracle tests for the books server's tools, driven through a real
+//! `wanderbooks server` as an agent reaches it (common.rs).
 //!
 //! Every number a tool reports is checked against what `ledger-core` (or
 //! `ledger-store`) computes for the same books, computed here from their
@@ -7,10 +8,12 @@
 //! JSON deserializes, zips and XLSX unzip, IIF splits into its records.
 //!
 //! The books are mostly built in-process with [`Store`] (fast, and the
-//! oracle sees exactly the books the server will open), then the store is
-//! closed and the server started on the same data directory.
+//! oracle sees exactly the books the server will open), in the books'
+//! folder of a data root of the test's own; then the store is closed and
+//! the server started on that root.
 
 use base64::Engine as _;
+use common::{Place, Wire};
 use ledger_core::{
     AccountId, AccountType, CashFlowParams, Currency, EntryStatus, Form1099, Ledger, MemberCapital,
     Money, NewAsset, Side, depreciation_schedule, reports,
@@ -20,15 +23,11 @@ use ledger_store::ops::{ViewerCommand, ViewerTarget};
 use rust_decimal::Decimal;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap};
-use std::io::{BufRead, BufReader, Read, Write};
-use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::io::{Read, Write};
+use std::path::PathBuf;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, channel};
-use std::time::Duration;
 
-const TIMEOUT: Duration = Duration::from_secs(180);
+mod common;
 
 // ---------------------------------------------------------------- harness
 
@@ -40,110 +39,47 @@ enum Out {
 }
 
 struct Mcp {
-    stdin: ChildStdin,
-    rx: Receiver<String>,
-    child: Child,
+    wire: Wire,
     next_id: u64,
-    run: PathBuf,
+    /// The books' folder in the data root.
+    data: PathBuf,
 }
 
-impl Drop for Mcp {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-static DIR_SEQ: AtomicU64 = AtomicU64::new(0);
-
-/// A test's dir, removed when the test ends, pass or panic.
-struct TestDir(PathBuf);
-
-impl std::ops::Deref for TestDir {
-    type Target = std::path::Path;
-    fn deref(&self) -> &std::path::Path {
-        &self.0
-    }
-}
-
-impl AsRef<std::path::Path> for TestDir {
-    fn as_ref(&self) -> &std::path::Path {
-        &self.0
-    }
-}
-
-impl Drop for TestDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
+/// A test's place (common.rs): its home, its server, its books.
+type TestDir = Place;
 
 fn test_dir(name: &str) -> TestDir {
-    let n = DIR_SEQ.fetch_add(1, Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!(
-        "ledger-mcp-oracle-{}-{name}-{n}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    TestDir(dir)
+    Place::new(&format!("oracle-{name}"))
 }
 
 /// `wanderbooks.toml` for two 50/50 members on 3000/3001, cash 1000,
 /// financing 2100, with the given receipt threshold.
-fn books_toml(dir: &Path, threshold: &str) -> PathBuf {
-    let path = dir.join(format!("wanderbooks-{threshold}.toml"));
-    std::fs::write(
-        &path,
-        format!(
-            "[company]\nname = \"Oracle Co\"\nfiscal_year_start = \"01-01\"\n\
-             [[company.members]]\nname = \"A\"\nshare = \"50%\"\ncapital_account = \"3000\"\n\
-             [[company.members]]\nname = \"B\"\nshare = \"50%\"\ncapital_account = \"3001\"\n\
-             [books]\nreceipt_threshold = \"{threshold}\"\ncash_accounts = [\"1000\"]\n\
-             financing_accounts = [\"2100\"]\n"
-        ),
+fn books_toml(threshold: &str) -> String {
+    format!(
+        "[company]\nname = \"Oracle Co\"\nfiscal_year_start = \"01-01\"\n\
+         [[company.members]]\nname = \"A\"\nshare = \"50%\"\ncapital_account = \"3000\"\n\
+         [[company.members]]\nname = \"B\"\nshare = \"50%\"\ncapital_account = \"3001\"\n\
+         [books]\nreceipt_threshold = \"{threshold}\"\ncash_accounts = [\"1000\"]\n\
+         financing_accounts = [\"2100\"]\n"
     )
-    .unwrap();
-    path
 }
 
-fn data_dir(dir: &Path) -> PathBuf {
-    dir.join("books-data")
+/// The books' folder in `dir`'s data root, where the oracle writes the
+/// books the server then opens.
+fn data_dir(dir: &TestDir) -> PathBuf {
+    dir.books_data()
 }
 
 impl Mcp {
-    fn start(dir: &Path, threshold: &str) -> Self {
-        let toml = books_toml(dir, threshold);
-        let run = dir.join("run");
-        std::fs::create_dir_all(&run).unwrap();
-        let mut child = Command::new(env!("CARGO_BIN_EXE_ledger-mcp"))
-            .arg("--data-dir")
-            .arg(data_dir(dir))
-            .arg("--books-toml")
-            .arg(&toml)
-            .env("XDG_RUNTIME_DIR", &run)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn ledger-mcp");
-        let stdin = child.stdin.take().unwrap();
-        let stdout = BufReader::new(child.stdout.take().unwrap());
-        let (tx, rx) = channel();
-        std::thread::spawn(move || {
-            for line in stdout.lines() {
-                let Ok(line) = line else { break };
-                if tx.send(line).is_err() {
-                    break;
-                }
-            }
-        });
+    /// Start (or restart) `dir`'s server, and a session whose books keep
+    /// [`books_toml`]'s settings with this receipt threshold (set as an
+    /// agent sets them: a value already set changes nothing).
+    fn start(dir: &TestDir, threshold: &str) -> Self {
+        let wire = dir.start(None);
         let mut m = Self {
-            stdin,
-            rx,
-            child,
+            wire,
             next_id: 1,
-            run,
+            data: dir.books_data(),
         };
         let init = m.rpc(
             "initialize",
@@ -152,12 +88,16 @@ impl Mcp {
         );
         assert!(init.get("result").is_some(), "initialize failed: {init}");
         m.send(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}).to_string());
+        m.ok(
+            "books.set_setting",
+            json!({"changes": common::settings_changes(&books_toml(threshold), None, "USD"),
+                   "decided_by": "Test Owner"}),
+        );
         m
     }
 
     fn send(&mut self, line: &str) {
-        writeln!(self.stdin, "{line}").unwrap();
-        self.stdin.flush().unwrap();
+        self.wire.send_line(line);
     }
 
     fn rpc(&mut self, method: &str, params: Value) -> Value {
@@ -166,18 +106,12 @@ impl Mcp {
         self.send(
             &json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}).to_string(),
         );
-        loop {
-            let line = self
-                .rx
-                .recv_timeout(TIMEOUT)
-                .unwrap_or_else(|_| panic!("no response to {method}"));
-            let v: Value = serde_json::from_str(&line).expect("server wrote JSON");
-            if v.get("id").is_none() {
-                continue;
-            }
-            assert_eq!(v["id"], json!(id));
-            return v;
-        }
+        let v = self
+            .wire
+            .recv(common::TIMEOUT)
+            .unwrap_or_else(|| panic!("no response to {method}: {:?}", self.wire.refused));
+        assert_eq!(v["id"], json!(id));
+        v
     }
 
     fn tool(&mut self, name: &str, args: Value) -> Out {
@@ -236,14 +170,16 @@ impl Mcp {
     }
 
     /// The viewer command the last `books.show` wrote, in the books' own
-    /// `ops/` (nothing in the runtime folder).
+    /// `ops/`.
     fn viewer_command(&self) -> ViewerCommand {
-        let books = self.run.parent().unwrap();
-        assert!(
-            !self.run.join("wanderbooks").exists(),
-            "nothing written in the runtime folder"
-        );
-        ledger_store::ops::read(&data_dir(books)).expect("a show request")
+        ledger_store::ops::read(&self.data).expect("a show request")
+    }
+
+    /// The bytes of a file a tool handed over (a `HandedFile`): fetched by
+    /// its download, matching the size and SHA-256 it states.
+    fn handed(&mut self, file: &Value) -> Vec<u8> {
+        assert!(file["expires_at"].is_string(), "{file}");
+        self.wire.fetch(file)
     }
 }
 
@@ -261,18 +197,6 @@ fn b64d(s: &str) -> Vec<u8> {
 
 fn sha256(bytes: &[u8]) -> String {
     ledger_store::journal::sha256_hex(bytes)
-}
-
-/// The bytes of a file a tool handed over (a `HandedFile`): over stdio
-/// they come inline, with no download command, and match the size and
-/// SHA-256 it states.
-fn handed(file: &Value) -> Vec<u8> {
-    assert!(file.get("download").is_none(), "{file}");
-    assert!(file.get("expires_at").is_none(), "{file}");
-    let bytes = b64d(file["content_base64"].as_str().expect("content_base64"));
-    assert_eq!(file["size_bytes"], json!(bytes.len()), "{file}");
-    assert_eq!(file["sha256"], json!(sha256(&bytes)), "{file}");
-    bytes
 }
 
 fn d(s: &str) -> chrono::NaiveDate {
@@ -441,7 +365,7 @@ const CHART: &[(&str, &str, AccountType)] = &[
     ("7100", "Gain or Loss on Disposal", AccountType::Expense),
 ];
 
-fn new_store(dir: &Path) -> Store {
+fn new_store(dir: &TestDir) -> Store {
     let mut s = Store::create(&data_dir(dir), Currency::USD).unwrap();
     for (code, name, ty) in CHART {
         s.add_account(code, name, *ty, None, false).unwrap();
@@ -1993,6 +1917,7 @@ fn dispose_asset_previews_equal_the_store_and_gate_receipts_on_debits() {
     assert_eq!(out["status"], "posted");
     let entry = out["entry_id"].as_u64().unwrap();
     drop(m);
+    dir.stop();
     let s = Store::open(&data_dir(&dir)).unwrap();
     let l = s.ledger();
     assert_eq!(
@@ -2121,6 +2046,7 @@ fn remit_payroll_total_is_what_payroll_withheld_and_owed() {
     assert_eq!(jamt(&out["total"]), owed);
     let entry = out["entry_id"].as_u64().unwrap();
     drop(m);
+    dir.stop();
     let s = Store::open(&data_dir(&dir)).unwrap();
     let e = s.ledger().get_entry(entry).unwrap();
     let cash = id_of(&s, "1000");
@@ -2316,6 +2242,7 @@ fn digest_reports_journal_repairs_since_the_date() {
     let out = m.ok("books.digest", json!({"since": "2025-01-01"}));
     let repairs = out["journal_repairs"].as_array().unwrap();
     drop(m);
+    dir.stop();
     let s = Store::open(&data_dir(&dir)).unwrap();
     let want = s.tail_repairs().unwrap();
     drop(s);
@@ -2485,8 +2412,7 @@ fn show_writes_the_viewer_command_for_each_target() {
 
 /// The command `books.show` last wrote, or None before any.
 fn last_show(m: &Mcp) -> Option<ledger_store::ops::ViewerCommand> {
-    let books = m.run.parent().unwrap().to_path_buf();
-    ledger_store::ops::read(&data_dir(&books))
+    ledger_store::ops::read(&m.data)
 }
 
 /// Defect 15, repros 1.1.1 and 1.1.2: a start after the end, given, is
@@ -3032,11 +2958,12 @@ fn inline_files_up_to_256_kib_are_accepted_and_no_more() {
 /// or an upload; never both, never neither. A sha256 missing, or not the
 /// bytes' own (a byte lost on the way), or base64 that isn't, is refused
 /// (guard base64_corrupt); inline bytes need their file_name and
-/// mime_type. Over stdio there are no uploads: an upload_id is refused,
-/// and books.begin_upload answers only for bytes stored already (the
-/// attachment holding them). Every refusal stores nothing.
+/// mime_type. An upload_id that names no upload is refused, and
+/// books.begin_upload names the attachment for bytes stored already, and
+/// begins an upload for new ones (journaling nothing). Every refusal
+/// stores nothing.
 #[test]
-fn inline_bytes_come_with_their_own_sha256_and_uploads_need_the_server() {
+fn inline_bytes_come_with_their_own_sha256_or_as_an_upload() {
     let dir = test_dir("inline");
     let s = new_store(&dir);
     drop(s);
@@ -3083,8 +3010,11 @@ fn inline_bytes_come_with_their_own_sha256_and_uploads_need_the_server() {
                 with(json!({"content_base64": "!!not base64", "sha256": sha256(bytes)})),
                 "base64_corrupt",
             ),
-            // An upload, over stdio.
-            (with(json!({"upload_id": "u1"})), "takes files inline only"),
+            // An upload there is none of.
+            (
+                with(json!({"upload_id": "u1"})),
+                "there is no upload \"u1\"",
+            ),
         ] {
             let why = m.refuse(tool, args.clone());
             assert!(why.contains(said), "{tool} {args}: {why}");
@@ -3109,7 +3039,7 @@ fn inline_bytes_come_with_their_own_sha256_and_uploads_need_the_server() {
     let id = out["attachment_id"].as_u64().unwrap();
     assert_ne!(journal(), before);
     // begin_upload: the bytes stored already name their attachment; new
-    // ones need the books server.
+    // ones begin an upload.
     let up = |sha: String| {
         json!({"sha256": sha, "size": bytes.len(), "mime_type": "application/pdf",
                "file_name": "r.pdf", "purpose": "receipt"})
@@ -3121,10 +3051,11 @@ fn inline_bytes_come_with_their_own_sha256_and_uploads_need_the_server() {
     let got = m.ok("books.begin_upload", up(sha256(bytes).to_ascii_uppercase()));
     assert_eq!(got["existing_attachment_id"], json!(id), "{got}");
     let stored = journal();
-    let why = m.refuse("books.begin_upload", up(sha256(other)));
-    assert!(why.contains("takes files inline only"), "{why}");
+    let begun = m.ok("books.begin_upload", up(sha256(other)));
+    assert!(begun["upload_id"].is_string(), "{begun}");
+    assert_eq!(journal(), stored, "beginning an upload journals nothing");
     // The CSV imports take csv_text or an upload, never both, never
-    // neither; an upload over stdio is refused.
+    // neither; an upload there is none of is refused.
     for (tool, base) in [
         (
             "books.import_bank_csv",
@@ -3135,7 +3066,7 @@ fn inline_bytes_come_with_their_own_sha256_and_uploads_need_the_server() {
         for (extra, said) in [
             (json!({}), "csv_text"),
             (json!({"csv_text": "a,b\n", "upload_id": "u1"}), "not both"),
-            (json!({"upload_id": "u1"}), "takes files inline only"),
+            (json!({"upload_id": "u1"}), "there is no upload \"u1\""),
         ] {
             let mut args = base.clone();
             for (k, v) in extra.as_object().unwrap() {
@@ -3148,11 +3079,12 @@ fn inline_bytes_come_with_their_own_sha256_and_uploads_need_the_server() {
     assert_eq!(journal(), stored, "a refusal stored something");
 }
 
-/// books.get_receipt's view bytes gives the bytes of a file of at most
-/// 256 KiB; a larger one (filed before, or by an upload) is refused over
-/// stdio, where there is no download, while its meta view still answers.
+/// books.get_receipt with view "bytes" gives a file's bytes inline up to
+/// 256 KiB; a larger one, its download (a stored file, fetched with
+/// books:read by `GET /b/{book}/a/{id}`: those very bytes), never its
+/// bytes inline.
 #[test]
-fn get_receipt_gives_bytes_up_to_256_kib_over_stdio() {
+fn get_receipt_gives_bytes_up_to_256_kib_and_a_download_above() {
     const LIMIT: usize = 256 * 1024;
     let dir = test_dir("get-bytes");
     let mut s = new_store(&dir);
@@ -3171,17 +3103,22 @@ fn get_receipt_gives_bytes_up_to_256_kib_over_stdio() {
         json!({"attachment_id": at_id, "view": "bytes"}),
     );
     assert_eq!(b64d(got["content_base64"].as_str().unwrap()), at);
-    assert!(got.get("download").is_none(), "{got}");
-    let why = m.refuse(
+    let big = m.ok(
         "books.get_receipt",
         json!({"attachment_id": over_id, "view": "bytes"}),
     );
-    assert!(why.contains(&(LIMIT + 1).to_string()), "{why}");
+    assert!(big.get("content_base64").is_none(), "{big}");
+    let download = big["download"].as_str().unwrap_or_else(|| panic!("{big}"));
+    assert!(download.contains(&format!(" {over_id} ")), "{download}");
+    assert_eq!(big["size_bytes"], json!(LIMIT + 1));
+    assert_eq!(big["sha256"], sha256(&over));
+    let (status, bytes) = m.wire.get(&format!("a/{over_id}"));
+    assert_eq!(status, 200);
+    assert_eq!(bytes, over);
     let meta = m.ok("books.get_receipt", json!({"attachment_id": over_id}));
     assert_eq!(meta["size_bytes"], json!(LIMIT + 1));
     assert_eq!(meta["sha256"], sha256(&over));
     assert!(meta.get("content_base64").is_none(), "{meta}");
-    assert!(meta.get("download").is_none(), "{meta}");
 }
 
 /// Bank CSV import: money in debits the bank, money out credits it; the
@@ -3533,7 +3470,7 @@ fn cpa_package_holds_the_year_and_its_evidence() {
     );
     assert_eq!(out["file"]["file_name"], format!("cpa-package-{END}.zip"));
     assert_eq!(out["file"]["mime_type"], "application/zip");
-    let files = unzip(&handed(&out["file"]));
+    let files = unzip(&m.handed(&out["file"]));
     let names: Vec<&str> = files.keys().map(String::as_str).collect();
 
     let mut want = vec![
@@ -3703,7 +3640,7 @@ fn cpa_package_holds_the_year_and_its_evidence() {
     // payment after as_of counts, and the files differ.
     let mut tool_csv = |args: Value| {
         let out = m.ok("books.vendor_1099", args);
-        handed(&out["csv"])
+        m.handed(&out["csv"])
     };
     let same =
         tool_csv(json!({"year": 2025, "csv": true, "cash_accounts": ["1000"], "through": END}));
@@ -3735,7 +3672,7 @@ fn cpa_package_holds_the_year_and_its_evidence() {
         "books.export_cpa_package",
         json!({"as_of": END, "cash_accounts": ["1000"], "include_receipts": false, "include_tins": false}),
     );
-    let files = unzip(&handed(&out["file"]));
+    let files = unzip(&m.handed(&out["file"]));
     assert!(
         !files
             .keys()

@@ -1,5 +1,5 @@
-//! Spec-blind tests for `ledger-mcp`, driven over stdio against the real
-//! binary.
+//! Spec-blind tests for the books server, driven through a real
+//! `wanderbooks server` as an agent reaches it (common.rs).
 //!
 //! Expected behavior comes only from the GOAL/SOURCE/INVARIANTS blocks of
 //! `src/server.rs` and `src/policy.rs`, the server's connect text and handbook,
@@ -19,20 +19,19 @@
 //! files under the data dir as they were, success or refusal (plan 4.9,
 //! "Annotations (P0)": the hint is true in behaviour).
 
+use common::{Place, Wire};
 use proptest::prelude::*;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::time::Duration;
+
+mod common;
 
 /// How long any single response may take before the server counts as hung.
 /// Long enough for a server's first answer while a mutation run's jobs
 /// contend for the disk (every journal append is synced).
-const TIMEOUT: Duration = Duration::from_secs(180);
+const TIMEOUT: Duration = common::TIMEOUT;
 
 /// Random cases for the state machine: 64 on every check; `MCP_CASES`
 /// sets fewer for a mutation run, more for a deeper one.
@@ -146,9 +145,7 @@ impl Out {
 }
 
 struct Mcp {
-    stdin: ChildStdin,
-    rx: Receiver<String>,
-    child: Child,
+    wire: Wire,
     next_id: u64,
     data: PathBuf,
     schemas: HashMap<String, Value>,
@@ -159,64 +156,16 @@ struct Mcp {
     read_only_checked: BTreeSet<String>,
     /// Invariant 3 (amounts out) violations: `tool: path = value`.
     money_violations: Vec<String>,
-    /// The books dir when the server owns it: removed after the server
-    /// stops (fields drop after `Drop::drop`).
+    /// The test's place, when the session owns it (its server is closed
+    /// and its home removed after the session).
     books_dir: Option<TestDir>,
 }
 
-impl Drop for Mcp {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
+/// A test's place (common.rs): its home, its server, its books.
+type TestDir = Place;
 
-static DIR_SEQ: AtomicU64 = AtomicU64::new(0);
-
-/// A test's dir and the folders beside it (`.inbox`, `-outside`),
-/// removed when the test ends, pass or panic.
-struct TestDir(PathBuf);
-
-impl std::ops::Deref for TestDir {
-    type Target = std::path::Path;
-    fn deref(&self) -> &std::path::Path {
-        &self.0
-    }
-}
-
-impl AsRef<std::path::Path> for TestDir {
-    fn as_ref(&self) -> &std::path::Path {
-        &self.0
-    }
-}
-
-impl Drop for TestDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-        for beside in [".inbox", "-outside"] {
-            let p = PathBuf::from(format!("{}{beside}", self.0.display()));
-            let _ = std::fs::remove_dir_all(&p);
-            let _ = std::fs::remove_file(&p);
-        }
-    }
-}
-
-/// A fresh, empty per-test directory under the system temp dir.
 fn test_dir(name: &str) -> TestDir {
-    let n = DIR_SEQ.fetch_add(1, Ordering::Relaxed);
-    let dir =
-        std::env::temp_dir().join(format!("ledger-mcp-spec-{}-{name}-{n}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    TestDir(dir)
-}
-
-/// A directory beside the books dir `dir`, outside it (vault keys, files
-/// with TINs).
-fn outside(dir: &Path) -> PathBuf {
-    let d = PathBuf::from(format!("{}-outside", dir.display()));
-    std::fs::create_dir_all(&d).unwrap();
-    d
+    Place::new(name)
 }
 
 /// Write a `wanderbooks.toml` with the given receipt threshold and extra
@@ -234,56 +183,16 @@ fn books_toml(dir: &Path, threshold: &str, extra: &str) -> PathBuf {
     path
 }
 
-fn spawn_child(dir: &Path, toml: &Path) -> Child {
-    let run = dir.join("run");
-    std::fs::create_dir_all(&run).unwrap();
-    Command::new(env!("CARGO_BIN_EXE_ledger-mcp"))
-        .arg("--data-dir")
-        .arg(dir.join("books-data"))
-        .arg("--books-toml")
-        .arg(toml)
-        // A settings file naming the vault's key (the happy path's) names
-        // it on the command line too, as books that move their settings
-        // in must.
-        .args(
-            std::fs::read_to_string(toml)
-                .is_ok_and(|t| t.contains("[vault]"))
-                .then(|| ["--vault-key-file".into(), outside(dir).join("vault.key")])
-                .into_iter()
-                .flatten(),
-        )
-        // The TIN vault's default key file is under XDG_CONFIG_HOME: never
-        // the user's real one (the happy path names its own anyway).
-        .env("XDG_CONFIG_HOME", outside(dir).join("config"))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn ledger-mcp")
-}
-
 impl Mcp {
-    /// Spawn on `dir` with `toml`, initialize, and load `tools/list`.
-    fn start(dir: &Path, toml: &Path) -> Self {
-        let mut child = spawn_child(dir, toml);
-        let stdin = child.stdin.take().unwrap();
-        let stdout = BufReader::new(child.stdout.take().unwrap());
-        let (tx, rx) = channel();
-        std::thread::spawn(move || {
-            for line in stdout.lines() {
-                let Ok(line) = line else { break };
-                if tx.send(line).is_err() {
-                    break;
-                }
-            }
-        });
+    /// Start `dir`'s server with `toml`'s settings, initialize, and load
+    /// `tools/list`.
+    fn start(dir: &TestDir, toml: &Path) -> Self {
+        let wire = dir.start(Some(&std::fs::read_to_string(toml).unwrap()));
         let mut mcp = Self {
             books_dir: None,
-            stdin,
-            rx,
-            child,
+            wire,
             next_id: 1,
-            data: dir.join("books-data"),
+            data: dir.books_data(),
             schemas: HashMap::new(),
             validators: HashMap::new(),
             exercised: BTreeSet::new(),
@@ -319,45 +228,28 @@ impl Mcp {
         std::fs::read(self.data.join("journal.jsonl")).unwrap_or_default()
     }
 
-    /// What a read-only tool must leave as it was: every file under the
-    /// data dir, the books dir's vault/ and its settings file, by path,
-    /// each with the SHA-256 of its contents. The database is compared by
-    /// what it holds (every row of every table, in order: SQLite moves
-    /// pages between the file and its write-ahead log on its own, and a
-    /// reader writes its read marks into the shared-memory file), so the
-    /// -wal and -shm files are left out.
+    /// What a read-only tool must leave as it was: every file of the books
+    /// (their folder in the data root, the vault in it), by path, each with
+    /// the SHA-256 of its contents; but what every call writes by design
+    /// (common.rs `book_files`: the access log, the viewer's side channel,
+    /// the books' own backup, files handed over or on their way in). The
+    /// database is compared by what it holds (every row of every table, in
+    /// order: SQLite moves pages between the file and its write-ahead log
+    /// on its own, and a reader writes its read marks into the
+    /// shared-memory file), so the -wal and -shm files are left out.
     fn data_files(&self) -> BTreeMap<PathBuf, String> {
-        fn walk(dir: &Path, out: &mut BTreeMap<PathBuf, String>) {
-            for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-                let p = e.path();
-                let name = p.file_name().unwrap().to_string_lossy().into_owned();
-                // The viewer's side channel (books.show's requests) is not
-                // the books: never journaled (ledger_store::ops).
-                if p.is_dir() && name == ledger_store::ops::OPS_DIR {
-                    continue;
-                }
-                if p.is_dir() {
-                    walk(&p, out);
-                } else if name.ends_with("-wal") || name.ends_with("-shm") {
-                    continue;
-                } else if ledger_store::is_database_file(&name) {
-                    out.insert(p.clone(), db_digest(&p));
+        common::book_files(&self.data)
+            .into_iter()
+            .map(|(rel, sha)| {
+                let p = self.data.join(&rel);
+                let name = rel.file_name().unwrap().to_string_lossy().into_owned();
+                if ledger_store::is_database_file(&name) {
+                    (p.clone(), db_digest(&p))
                 } else {
-                    let bytes = std::fs::read(&p).unwrap_or_default();
-                    out.insert(p, ledger_store::journal::sha256_hex(&bytes));
+                    (p, sha)
                 }
-            }
-        }
-        let mut out = BTreeMap::new();
-        walk(&self.data, &mut out);
-        let books = self.data.parent().unwrap();
-        walk(&books.join("vault"), &mut out);
-        let toml = books.join("wanderbooks.toml");
-        out.insert(
-            toml.clone(),
-            ledger_store::journal::sha256_hex(&std::fs::read(&toml).unwrap_or_default()),
-        );
-        out
+            })
+            .collect()
     }
 
     fn read_only(&self, name: &str) -> bool {
@@ -367,26 +259,13 @@ impl Mcp {
     }
 
     fn send_line(&mut self, line: &str) {
-        writeln!(self.stdin, "{line}").unwrap();
-        self.stdin.flush().unwrap();
+        self.wire.send_line(line);
     }
 
     /// The next JSON-RPC response (messages without an id, i.e. server
-    /// notifications, are skipped). `None` on timeout or EOF.
+    /// notifications, are skipped). `None` when the server sent none.
     fn recv(&mut self, timeout: Duration) -> Option<Value> {
-        loop {
-            match self.rx.recv_timeout(timeout) {
-                Ok(line) => {
-                    let v: Value = serde_json::from_str(&line)
-                        .unwrap_or_else(|e| panic!("server wrote non-JSON {line:?}: {e}"));
-                    if v.get("id").is_none() && v.get("method").is_some() {
-                        continue;
-                    }
-                    return Some(v);
-                }
-                Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => return None,
-            }
-        }
+        self.wire.recv(timeout)
     }
 
     /// Send a request and return its response, checking JSON-RPC 2.0 §5:
@@ -480,7 +359,21 @@ impl Mcp {
         );
         let mut bad = Vec::new();
         money_walk(&sc, "$", None, &mut bad);
+        // A key the tool's outputSchema declares an integer is a count,
+        // not money (books.access_log's `total`).
+        let counts: Vec<String> = self.schemas[name]["outputSchema"]["properties"]
+            .as_object()
+            .map(|p| {
+                p.iter()
+                    .filter(|(_, s)| s["type"] == "integer")
+                    .map(|(k, _)| format!("$.{k} "))
+                    .collect()
+            })
+            .unwrap_or_default();
         for b in bad {
+            if counts.iter().any(|c| b.starts_with(c.as_str())) {
+                continue;
+            }
             self.money_violations.push(format!("{name}: {b}"));
         }
         self.exercised.insert(name.to_string());
@@ -696,13 +589,9 @@ fn happy_path(name: &str) -> Mcp {
     let toml = books_toml(
         &dir,
         "1000000.00",
-        &format!(
-            "financing_accounts = [\"2100\"]\n\
+        "financing_accounts = [\"2100\"]\n\
          [[company.members]]\nname = \"A\"\nshare = \"50%\"\ncapital_account = \"3000\"\n\
-         [[company.members]]\nname = \"B\"\nshare = \"50%\"\ncapital_account = \"3001\"\n\
-         [vault]\nkey_file = \"{}\"\n",
-            outside(&dir).join("vault.key").display()
-        ),
+         [[company.members]]\nname = \"B\"\nshare = \"50%\"\ncapital_account = \"3001\"\n",
     );
     let mut m = Mcp::start(&dir, &toml);
 
@@ -940,7 +829,7 @@ fn happy_path(name: &str) -> Mcp {
         json!({"attachment_id": filed, "subject": {"kind": "company"}, "reason": "a lease, not a formation document"}),
     );
     // An upload of bytes already stored: begin_upload names the
-    // attachment that holds them (over stdio, the only upload answered).
+    // attachment that holds them.
     let local = m.attach(None, b"a local receipt");
     let up = m.ok(
         "books.begin_upload",
@@ -1217,15 +1106,6 @@ fn happy_path(name: &str) -> Mcp {
         json!({"id": item, "resolution": "Mailed.", "decided_by": "A"}),
     );
     m.ok("books.open_items", json!({"include_resolved": true}));
-    let toml_text = std::fs::read_to_string(&toml).unwrap();
-    m.ok(
-        "books.import_settings",
-        json!({"toml_text": toml_text, "decided_by": "A"}),
-    );
-    m.ok(
-        "books.import_settings",
-        json!({"toml_text": toml_text, "decided_by": "A", "confirmed": true}),
-    );
     m.ok(
         "books.set_setting",
         json!({"changes": [{"key": "company.timezone", "value": "America/Denver"}],
@@ -1310,6 +1190,12 @@ fn happy_path(name: &str) -> Mcp {
         "books.export_cpa_package",
         json!({"as_of": "2026-12-31", "include_receipts": false}),
     );
+
+    // The access log, the backups' status, and a backup now (none is set
+    // up: it says so).
+    m.ok("books.access_log", json!({}));
+    m.ok("books.backup", json!({}));
+    m.ok("books.back_up_now", json!({}));
 
     m.books_dir = Some(dir);
     m
@@ -2053,56 +1939,26 @@ fn inv5_reversals_are_exempt() {
 }
 
 /// Policy invariant 4: a threshold that isn't a decimal, or is below
-/// zero, is refused at startup.
+/// zero, is refused. The books keep their settings, so it is refused as it
+/// is set (books.set_setting), journaling nothing, and the rule in force
+/// stays.
 #[test]
-fn inv5_bad_threshold_refused_at_startup() {
+fn inv5_bad_threshold_refused_when_set() {
+    let dir = test_dir("inv5-set");
+    let toml = books_toml(&dir, "25.00", "");
+    let mut m = Mcp::start(&dir, &toml);
+    let before = m.journal();
+    assert!(!before.is_empty(), "the books keep a journal");
     for bad in ["-1", "abc", "-0.01", "", "1,000", "ten"] {
-        let dir = test_dir("inv5-startup");
-        let toml = books_toml(&dir, bad, "");
-        let mut child = spawn_child(&dir, &toml);
-        let mut stdin = child.stdin.take().unwrap();
-        let stdout = child.stdout.take().unwrap();
-        let init = json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
-            "protocolVersion": "2025-06-18", "capabilities": {},
-            "clientInfo": {"name": "spec-test", "version": "0.1.0"}}});
-        let _ = writeln!(stdin, "{init}");
-        let _ = stdin.flush();
-        let (tx, rx) = channel();
-        std::thread::spawn(move || {
-            let mut line = String::new();
-            let _ = BufReader::new(stdout).read_line(&mut line);
-            let _ = tx.send(line);
-        });
-        let line = rx.recv_timeout(TIMEOUT).unwrap_or_default();
-        let answered = serde_json::from_str::<Value>(&line)
-            .ok()
-            .is_some_and(|v| v.get("result").is_some());
-        drop(stdin);
-        let status = wait_with_timeout(&mut child, TIMEOUT);
-        assert!(
-            !answered,
-            "threshold {bad:?}: server completed initialize: {line}"
-        );
-        assert!(
-            status.is_some_and(|s| !s.success()),
-            "threshold {bad:?}: server did not exit nonzero ({status:?})"
+        m.refuse(
+            "books.set_setting",
+            json!({"changes": [{"key": "policy.evidence.threshold", "value": bad}],
+                   "decided_by": "Test Owner"}),
         );
     }
-}
-
-fn wait_with_timeout(child: &mut Child, timeout: Duration) -> Option<std::process::ExitStatus> {
-    let start = std::time::Instant::now();
-    loop {
-        if let Ok(Some(s)) = child.try_wait() {
-            return Some(s);
-        }
-        if start.elapsed() > timeout {
-            let _ = child.kill();
-            let _ = child.wait();
-            return None;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    assert_eq!(m.journal(), before, "a refused threshold journals nothing");
+    let rule = m.ok("books.settings", json!({}))["receipt_rule"].clone();
+    assert!(rule.as_str().unwrap().contains("25.00"), "{rule}");
 }
 
 // --------------------------------------- invariant 6: ambiguous references
@@ -2230,8 +2086,8 @@ fn inv6_ambiguous_class_reference_refused() {
 /// Books an earlier version wrote holding these classes, in id order: a
 /// name of digits only can't be added now (it would read as an id), so
 /// only old books hold the id/name pairs invariant 6 refuses.
-fn old_classes(dir: &Path, names: &[&str]) {
-    let books = dir.join("books-data");
+fn old_classes(dir: &TestDir, names: &[&str]) {
+    let books = dir.books_data();
     drop(ledger_store::Store::create(&books, ledger_core::Currency::USD).unwrap());
     let mut w = ledger_store::JournalWriter::open(&books.join(ledger_store::JOURNAL_FILE)).unwrap();
     for (i, n) in names.iter().enumerate() {
@@ -2321,23 +2177,37 @@ fn jsonrpc_unknown_method_is_32601() {
     m.ok("books.chart", json!({}));
 }
 
-/// jsonrpc-2.0.md §5 and §5.1: invalid JSON → a response with code
-/// -32700 and id null; the server keeps serving.
+/// jsonrpc-2.0.md §5 and §5.1: invalid JSON is refused, never run, and
+/// the server keeps serving. Over the server's Streamable HTTP door
+/// (mcp-transports: "the server MUST return an HTTP error status code";
+/// its body MAY be a JSON-RPC error with no id) that is a 4xx, and any
+/// error it carries is -32700 with id null. (An agent's malformed line is
+/// answered -32700 by its bridge: ledger-host bridge.rs,
+/// the_agents_input_is_read_message_by_message.)
 #[test]
-fn jsonrpc_parse_error_is_32700_with_null_id() {
+fn jsonrpc_parse_error_is_refused_with_32700() {
     let dir = test_dir("rpc-parse");
     let toml = books_toml(&dir, "25.00", "");
     let mut m = Mcp::start(&dir, &toml);
     m.send_line("{\"jsonrpc\": \"2.0\", \"id\": 99, \"method\": ");
-    let resp = m.recv(Duration::from_secs(5));
-    let resp = resp.expect("no response to a malformed JSON line");
-    check_response_shape(&resp);
-    assert_eq!(resp["error"]["code"], -32700, "{resp}");
-    assert_eq!(resp["id"], Value::Null, "{resp}");
+    let status = m.wire.status;
+    assert!(
+        (400..500).contains(&status),
+        "{status} {:?}",
+        m.wire.refused
+    );
+    if let Some(resp) = m.recv(Duration::from_secs(5)) {
+        check_response_shape(&resp);
+        assert_eq!(resp["error"]["code"], -32700, "{resp}");
+        assert_eq!(resp["id"], Value::Null, "{resp}");
+    }
+    m.ok("books.chart", json!({}));
 }
 
-/// jsonrpc-2.0.md §5: `id` is REQUIRED in every response; when it can't
-/// be detected (Invalid Request) it MUST be null, else the request's.
+/// jsonrpc-2.0.md §5: an Invalid Request is refused; an answer to it
+/// carries an `id`, the request's when it can be read, else null. Over the
+/// server's door (as above) that is a 4xx, with any error it carries
+/// -32600.
 #[test]
 fn jsonrpc_invalid_request_response_has_id() {
     let dir = test_dir("rpc-invalid");
@@ -2348,15 +2218,23 @@ fn jsonrpc_invalid_request_response_has_id() {
         ("{\"jsonrpc\": \"2.0\", \"id\": 98}", json!(98)),
     ] {
         m.send_line(junk);
-        let resp = m.recv(Duration::from_secs(5)).expect("no response");
-        assert_eq!(resp["error"]["code"], -32600, "{resp}");
+        let status = m.wire.status;
         assert!(
-            resp.get("id").is_some(),
-            "{junk}: response has no id: {resp}"
+            (400..500).contains(&status),
+            "{junk}: {status} {:?}",
+            m.wire.refused
         );
-        // A detectable id should be echoed; Null when it isn't.
-        assert!(resp["id"] == id || resp["id"].is_null(), "{junk}: {resp}");
+        if let Some(resp) = m.recv(Duration::from_secs(5)) {
+            assert_eq!(resp["error"]["code"], -32600, "{resp}");
+            assert!(
+                resp.get("id").is_some(),
+                "{junk}: response has no id: {resp}"
+            );
+            // A detectable id should be echoed; Null when it isn't.
+            assert!(resp["id"] == id || resp["id"].is_null(), "{junk}: {resp}");
+        }
     }
+    m.ok("books.chart", json!({}));
 }
 
 /// Whatever the server does with a malformed line, it keeps serving
@@ -2431,36 +2309,32 @@ fn helpers_self_check() {
     assert_eq!(bad.len(), 2, "{bad:?}");
 }
 
-// ------------------------------------- settings reload (settings.rs spec)
+// ------------------------------------------- settings (the books keep them)
 
-/// INVARIANT 1: a call after an edit sees it, with no restart, and two
-/// same-size edits in a row are both seen (compared by content).
+/// A setting changed (books.set_setting) is read by the next call, with no
+/// restart, and two changes in a row are both seen.
 #[test]
-fn settings_reload_on_the_next_call() {
-    let dir = test_dir("reload");
+fn a_changed_setting_is_read_on_the_next_call() {
+    let dir = test_dir("reread");
     let toml = books_toml(&dir, "25.00", "");
     let mut m = Mcp::start(&dir, &toml);
     let s = m.ok("books.settings", json!({}));
     assert_eq!(s["company"], "Spec Co");
-    assert_eq!(s["loads"], 1);
     for name in ["Aaaa Co", "Bbbb Co"] {
-        let text = std::fs::read_to_string(&toml)
-            .unwrap()
-            .replace("Spec Co", name)
-            .replace("Aaaa Co", name);
-        std::fs::write(&toml, text).unwrap();
+        m.ok(
+            "books.set_setting",
+            json!({"changes": [{"key": "company.name", "value": name}],
+                   "decided_by": "Test Owner"}),
+        );
         let s = m.ok("books.settings", json!({}));
         assert_eq!(s["company"], name);
-        assert_eq!(s["reload_error"], Value::Null);
     }
-    assert_eq!(m.ok("books.settings", json!({}))["loads"], 3);
 }
 
-/// INVARIANT 1, enforced: a lowered receipt threshold refuses the next
-/// post without a receipt.
+/// A lowered receipt threshold refuses the next post without a receipt.
 #[test]
-fn a_reloaded_threshold_is_enforced() {
-    let dir = test_dir("reload-threshold");
+fn a_lowered_threshold_is_enforced() {
+    let dir = test_dir("lowered-threshold");
     let toml = books_toml(&dir, "1000.00", "");
     let mut m = Mcp::start(&dir, &toml);
     m.accounts(BASE_CHART);
@@ -2470,10 +2344,11 @@ fn a_reloaded_threshold_is_enforced() {
         &[("6000", "debit", "1.00"), ("1000", "credit", "1.00")],
     );
     m.post(first).ok("under the threshold");
-    let text = std::fs::read_to_string(&toml)
-        .unwrap()
-        .replace("\"1000.00\"", "\"0.00\"");
-    std::fs::write(&toml, text).unwrap();
+    m.ok(
+        "books.set_setting",
+        json!({"changes": [{"key": "policy.evidence.threshold", "value": "0.00"}],
+               "decided_by": "Test Owner"}),
+    );
     let second = m.draft(
         "2026-03-02",
         "small",
@@ -2482,46 +2357,6 @@ fn a_reloaded_threshold_is_enforced() {
     let out = m.post(second);
     assert!(out.err_text().contains("receipt_required"), "{out:?}");
     assert_eq!(m.entry_status(second), "draft");
-}
-
-/// INVARIANTS 2 and 3: a broken edit, and a named file gone missing, keep
-/// the last good settings and say why; fixing it loads again.
-#[test]
-fn a_broken_edit_keeps_the_last_good_settings() {
-    let dir = test_dir("reload-broken");
-    let toml = books_toml(&dir, "25.00", "");
-    let good = std::fs::read_to_string(&toml).unwrap();
-    let mut m = Mcp::start(&dir, &toml);
-    std::fs::write(
-        &toml,
-        good.replace("Spec Co", "Next Co")
-            .replace("[books]", "[books"),
-    )
-    .unwrap();
-    let s = m.ok("books.settings", json!({}));
-    assert_eq!(s["company"], "Spec Co");
-    assert!(s["reload_error"].is_string(), "{s}");
-    let digest = m.ok("books.digest", json!({"since": "2026-01-01"}));
-    assert!(
-        digest["settings_problems"][0]
-            .as_str()
-            .unwrap()
-            .contains("didn't load"),
-        "{digest}"
-    );
-    std::fs::remove_file(&toml).unwrap();
-    let s = m.ok("books.settings", json!({}));
-    assert!(
-        s["reload_error"].is_string(),
-        "a named file gone missing: {s}"
-    );
-    assert_eq!(s["books_toml_exists"], false);
-    assert_eq!(s["company"], "Spec Co");
-    std::fs::write(&toml, good.replace("Spec Co", "Fixed Co")).unwrap();
-    let s = m.ok("books.settings", json!({}));
-    assert_eq!(s["company"], "Fixed Co");
-    assert_eq!(s["reload_error"], Value::Null);
-    assert_eq!(s["loads"], 2);
 }
 
 /// books.settings and the digest list settings that disagree with the
@@ -2545,27 +2380,31 @@ fn settings_that_disagree_with_the_chart_are_problems() {
         .collect();
     assert_eq!(problems.len(), 1, "{problems:?}");
     assert!(
-        problems[0].contains("[books] financing_accounts lists 6000"),
+        problems[0].contains("books.financing_accounts lists 6000"),
         "{problems:?}"
     );
-    assert!(problems[0].ends_with("remove it from [books] financing_accounts in the settings"));
-    let text = std::fs::read_to_string(&toml)
-        .unwrap()
-        .replace("cash_accounts = [\"1000\"]", "cash_accounts = [\"1010\"]")
-        .replace("close_into = \"3000\"", "close_into = \"4000\"");
-    std::fs::write(&toml, text).unwrap();
+    assert!(
+        problems[0].ends_with("remove it from books.financing_accounts with books.set_setting"),
+        "{problems:?}"
+    );
+    m.ok(
+        "books.set_setting",
+        json!({"changes": [{"key": "books.cash_accounts", "value": ["1010"]},
+                           {"key": "books.close_into", "value": "4000"}],
+               "decided_by": "Test Owner"}),
+    );
     let digest = m.ok("books.digest", json!({"since": "2026-01-01"}));
     let problems = digest["settings_problems"].to_string();
     assert!(
-        problems.contains("[books] cash_accounts names 1010, which isn't in the chart"),
+        problems.contains("books.cash_accounts names 1010, which isn't in the chart"),
         "{problems}"
     );
     assert!(
-        problems.contains("[books] close_into names 4000"),
+        problems.contains("books.close_into names 4000"),
         "{problems}"
     );
     assert!(
-        problems.contains("[books] financing_accounts lists 6000"),
+        problems.contains("books.financing_accounts lists 6000"),
         "{problems}"
     );
 }

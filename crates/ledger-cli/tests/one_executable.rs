@@ -1,102 +1,18 @@
 //! One executable (plan D-22): `wanderbooks` runs the books server
-//! (`dev-stdio`) and the viewer (`gui`) as modes of itself, each with its
-//! own flags, and the server-only build has no viewer.
+//! (`server`) and the viewer (`gui`) as modes of itself, each with its own
+//! flags, and the server-only build has no viewer.
 
-use serde_json::{Value, json};
-use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
+
+#[cfg(all(feature = "gui", target_os = "linux"))]
+mod common;
 
 fn wanderbooks() -> Command {
     Command::new(env!("CARGO_BIN_EXE_wanderbooks"))
 }
 
-/// One JSON-RPC request over the child's stdio, its response parsed.
-fn ask(
-    stdin: &mut std::process::ChildStdin,
-    stdout: &mut BufReader<std::process::ChildStdout>,
-    id: u64,
-    method: &str,
-    params: Value,
-) -> Value {
-    let msg = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
-    writeln!(stdin, "{msg}").unwrap();
-    stdin.flush().unwrap();
-    let mut line = String::new();
-    stdout.read_line(&mut line).expect("read a response");
-    let resp: Value = serde_json::from_str(&line).expect("parse the response");
-    assert_eq!(resp["id"], id, "{resp}");
-    resp
-}
-
-#[test]
-fn dev_stdio_is_the_books_server() {
-    let dir = tempfile::Builder::new()
-        .prefix("wb-one-exe-")
-        .tempdir()
-        .unwrap();
-    let data = dir.path().join("books").join("books-data");
-    let mut child = wanderbooks()
-        .arg("dev-stdio")
-        .arg("--data-dir")
-        .arg(&data)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn wanderbooks dev-stdio");
-    let mut stdin = child.stdin.take().unwrap();
-    let mut stdout = BufReader::new(child.stdout.take().unwrap());
-    let init = ask(
-        &mut stdin,
-        &mut stdout,
-        1,
-        "initialize",
-        json!({"protocolVersion": "2025-06-18", "capabilities": {},
-               "clientInfo": {"name": "one-executable", "version": "0"}}),
-    );
-    assert!(init["result"]["serverInfo"].is_object(), "{init}");
-    writeln!(
-        stdin,
-        "{}",
-        json!({"jsonrpc": "2.0", "method": "notifications/initialized"})
-    )
-    .unwrap();
-    let tools = ask(&mut stdin, &mut stdout, 2, "tools/list", json!({}));
-    let names: Vec<&str> = tools["result"]["tools"]
-        .as_array()
-        .expect("a tool list")
-        .iter()
-        .filter_map(|t| t["name"].as_str())
-        .collect();
-    assert!(names.contains(&"books.start"), "{names:?}");
-    // The books it serves are real books: a fresh store was created.
-    let tb = ask(
-        &mut stdin,
-        &mut stdout,
-        3,
-        "tools/call",
-        json!({"name": "books.trial_balance", "arguments": {}}),
-    );
-    assert!(tb.get("error").is_none(), "{tb}");
-    assert!(data.join("journal.jsonl").is_file());
-    drop(stdin);
-    let status = child.wait().unwrap();
-    assert!(status.success(), "{status}");
-}
-
 #[test]
 fn each_mode_names_itself_in_its_usage() {
-    let out = wanderbooks()
-        .args(["dev-stdio", "--help"])
-        .output()
-        .unwrap();
-    assert!(out.status.success());
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        err.contains("usage: wanderbooks dev-stdio [--data-dir PATH]"),
-        "{err}"
-    );
-
     let out = wanderbooks().args(["server", "--help"]).output().unwrap();
     assert!(out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
@@ -107,11 +23,7 @@ fn each_mode_names_itself_in_its_usage() {
 
     let out = wanderbooks().arg("--help").output().unwrap();
     let err = String::from_utf8_lossy(&out.stderr);
-    for line in [
-        "wanderbooks gui [BOOK",
-        "wanderbooks dev-stdio",
-        "dev-stdio  run the books server",
-    ] {
+    for line in ["wanderbooks gui [BOOK", "wanderbooks mcp --book ID"] {
         assert!(err.contains(line), "{line:?} missing from {err}");
     }
 }
@@ -131,9 +43,9 @@ fn the_viewer_names_itself_in_its_usage() {
 #[test]
 fn a_mode_refuses_what_it_does_not_know() {
     let modes: &[&str] = if cfg!(feature = "gui") {
-        &["dev-stdio", "gui", "server"]
+        &["gui", "server"]
     } else {
-        &["dev-stdio", "server"]
+        &["server"]
     };
     for &mode in modes {
         let out = wanderbooks()
@@ -143,10 +55,7 @@ fn a_mode_refuses_what_it_does_not_know() {
         assert_eq!(out.status.code(), Some(2), "{mode}: {out:?}");
     }
     // A mode's flags are its own: the CLI's `--force` means nothing there.
-    let out = wanderbooks()
-        .args(["dev-stdio", "--force"])
-        .output()
-        .unwrap();
+    let out = wanderbooks().args(["server", "--force"]).output().unwrap();
     assert_eq!(out.status.code(), Some(2), "{out:?}");
 }
 
@@ -166,7 +75,7 @@ fn the_books_folder_scaffold_is_gone_and_says_so() {
 
 #[test]
 fn a_mode_comes_first() {
-    for mode in ["gui", "dev-stdio", "server"] {
+    for mode in ["gui", "server"] {
         let out = wanderbooks().args(["--codex", mode]).output().unwrap();
         assert_eq!(out.status.code(), Some(2), "{mode}: {out:?}");
         let err = String::from_utf8_lossy(&out.stderr);
@@ -177,13 +86,10 @@ fn a_mode_comes_first() {
 #[test]
 fn a_server_that_cannot_start_says_why_and_exits_1() {
     // A flag missing its value is an error, not a usage slip (exit 2).
-    let out = wanderbooks()
-        .args(["dev-stdio", "--data-dir"])
-        .output()
-        .unwrap();
+    let out = wanderbooks().args(["server", "--root"]).output().unwrap();
     assert_eq!(out.status.code(), Some(1), "{out:?}");
     let err = String::from_utf8_lossy(&out.stderr);
-    assert!(err.contains("error: --data-dir needs a path"), "{err}");
+    assert!(err.contains("error: --root needs a folder"), "{err}");
 }
 
 /// With no display to open a window on, the viewer fails and says so
@@ -192,28 +98,33 @@ fn a_server_that_cannot_start_says_why_and_exits_1() {
 #[cfg(all(feature = "gui", target_os = "linux"))]
 #[test]
 fn a_viewer_that_cannot_open_a_window_exits_1() {
-    let dir = tempfile::Builder::new()
-        .prefix("wb-one-exe-")
-        .tempdir()
-        .unwrap();
+    // Empty books in a data root of the test's own, and a home of its
+    // own: the viewer opens no loose books folder (D-44), and it reads its
+    // preferences from the home, never this account's.
+    let home = common::Home::new("one-exe");
+    let server = common::Server::start(&home);
+    home.create(common::BOOK, "USD");
+    assert!(server.close().success());
     let mut child = wanderbooks()
-        .args(["gui", "--data-dir"])
-        .arg(dir.path().join("books-data"))
-        .env_remove("DISPLAY")
-        .env_remove("WAYLAND_DISPLAY")
-        .env_remove("WAYLAND_SOCKET")
+        .args(["gui", "--root"])
+        .arg(home.root())
+        .args(["--book", common::BOOK])
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", home.dir.path())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let deadline = std::time::Instant::now() + common::TIMEOUT;
     let status = loop {
         if let Some(status) = child.try_wait().unwrap() {
             break status;
         }
         if std::time::Instant::now() > deadline {
             let _ = child.kill();
-            panic!("the viewer neither opened nor failed within a minute");
+            let _ = child.wait();
+            panic!("the viewer neither opened nor failed in time");
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     };
@@ -235,50 +146,10 @@ fn the_server_only_build_has_no_viewer() {
     );
 }
 
-/// Books in the data root are the books server's alone (plan 3.1): the
-/// test server refuses them, and the books server needs a root.
+/// The books server needs a data root: with none, it says to run setup.
 #[cfg(unix)]
 #[test]
-fn dev_stdio_refuses_books_in_the_private_folder() {
-    let home = tempfile::Builder::new()
-        .prefix("wb-one-root-")
-        .tempdir()
-        .unwrap();
-    let out = wanderbooks()
-        .args(["setup", "--home"])
-        .arg(home.path())
-        .env_remove("XDG_DATA_HOME")
-        .output()
-        .unwrap();
-    assert!(out.status.success(), "{out:?}");
-    let root = home.path().join(".local/share/wanderbooks");
-    for inside in [
-        root.join("books/acme"),
-        root.clone(),
-        root.join("books/a/b"),
-    ] {
-        let out = wanderbooks()
-            .args(["dev-stdio", "--data-dir"])
-            .arg(&inside)
-            .stdin(std::process::Stdio::null())
-            .output()
-            .unwrap();
-        assert_eq!(out.status.code(), Some(2), "{inside:?}: {out:?}");
-        let err = String::from_utf8_lossy(&out.stderr);
-        assert!(err.contains("only the books server opens"), "{err}");
-        assert!(!inside.join("journal.jsonl").exists(), "{inside:?}");
-    }
-    assert!(!root.join("books/acme").exists());
-    // A relative path, from inside the root.
-    let out = wanderbooks()
-        .args(["dev-stdio", "--data-dir", "acme"])
-        .current_dir(root.join("books"))
-        .stdin(std::process::Stdio::null())
-        .output()
-        .unwrap();
-    assert_eq!(out.status.code(), Some(2), "{out:?}");
-    assert!(!root.join("books/acme").exists());
-
+fn the_books_server_needs_a_root() {
     // No root yet: the books server says to run setup.
     let empty = tempfile::Builder::new()
         .prefix("wb-one-noroot-")

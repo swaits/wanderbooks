@@ -169,19 +169,12 @@ pub fn show(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                     |_| {},
                     |ui| {
                         let kept = b.ledger.settings();
-                        // Where the settings shown come from: a settings
-                        // file only for an older books dir that keeps none
-                        // in its journal and has one (data::settings).
-                        let from_file =
-                            !kept.is_journaled() && crate::data::legacy_toml(&b.data_dir).is_some();
                         // The currency is always known: facts are the rest.
                         if c.profile.iter().all(|(k, _)| k == "base_currency") {
                             ui.label(
-                                RichText::new(if from_file {
-                                    "No company facts in the settings file yet: the agent records them as you give them."
-                                } else {
-                                    "No company facts set yet: the agent records them as you give them."
-                                })
+                                RichText::new(
+                                    "No company facts set yet: the agent records them as you give them.",
+                                )
                                 .color(p.muted),
                             );
                         }
@@ -204,11 +197,9 @@ pub fn show(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                             kv(ui, "Time zone", z);
                         }
                         ui.label(
-                            RichText::new(if from_file {
-                                "Read from the settings file: the agent can move it into the books."
-                            } else {
-                                "Kept in the books: the agent changes settings, with who decided and when."
-                            })
+                            RichText::new(
+                                "Kept in the books: the agent changes settings, with who decided and when.",
+                            )
                             .font(theme::regular(12.0))
                             .color(p.muted),
                         );

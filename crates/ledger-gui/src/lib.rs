@@ -29,21 +29,6 @@ pub use data::Source;
 
 use std::path::PathBuf;
 
-/// The vault key file named on the command line (`--vault-key-file`),
-/// which wins over a settings file's `[vault] key_file`, as it does for
-/// the server: books that keep their own settings never name it.
-static VAULT_KEY_FILE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
-
-/// Name the vault key file (once, at start).
-pub fn set_vault_key_file(path: std::path::PathBuf) {
-    let _ = VAULT_KEY_FILE.set(path);
-}
-
-/// The vault key file named on the command line, if one was.
-pub fn vault_key_file() -> Option<std::path::PathBuf> {
-    VAULT_KEY_FILE.get().cloned()
-}
-
 /// How [`run`] stops when it can't go on: the reason is already printed
 /// on stderr, and the number is the process's exit code (2: a bad argument; 1: the demo books couldn't be built). A
 /// library never ends the process itself, so the books it opened are
@@ -64,14 +49,12 @@ impl std::error::Error for Exit {}
 /// `wanderbooks gui`). It opens the books read-only and returns when the
 /// window closes. An unknown argument returns [`Exit`] (code 2).
 ///
-/// `ledger-gui [--root PATH] [--book ID] [--data-dir PATH [--books-toml PATH] [--vault-key-file PATH]] [--today YYYY-MM-DD] [--demo]`:
-/// a book of the data root (plan 3.6): `--root`, else the root `wanderbooks
-/// setup` made, never the current directory or a settings file; `--book`
-/// names one, else the root's only one (or the first, by id).
-/// `--data-dir` opens an older books dir's `books-data` instead (its
-/// settings file `--books-toml`, read while its journal keeps none, else
-/// the `wanderbooks.toml` beside it; its vault key `--vault-key-file`);
-/// `--demo` builds a demo company in a temp directory and opens that.
+/// `ledger-gui [--root PATH] [--book ID] [--today YYYY-MM-DD] [--demo]`:
+/// a book of the data root (plan 3.6), the only books it opens (D-44):
+/// `--root`, else the root `wanderbooks setup` made, never the current
+/// directory or a settings file; `--book` names one, else the root's only
+/// one (or the first, by id). `--demo` builds a demo company in a temp
+/// directory and opens that.
 pub fn run(
     prog: &str,
     args: impl IntoIterator<Item = String>,
@@ -82,28 +65,11 @@ pub fn run(
     let mut today = None;
     let mut demo = false;
     let mut args = args.into_iter();
-    let usage = || {
-        format!(
-            "usage: {prog} [--root PATH] [--book ID] [--data-dir PATH [--books-toml PATH] [--vault-key-file PATH]] [--today YYYY-MM-DD] [--demo]"
-        )
-    };
+    let usage = || format!("usage: {prog} [--root PATH] [--book ID] [--today YYYY-MM-DD] [--demo]");
     while let Some(a) = args.next() {
         match a.as_str() {
             "--root" => root = args.next().map(PathBuf::from),
             "--book" => book = args.next(),
-            "--data-dir" => data_dir = args.next().map(PathBuf::from),
-            // An older books dir's settings file, read only while its
-            // books keep no settings of their own (data::legacy_toml).
-            "--books-toml" => {
-                if let Some(t) = args.next() {
-                    crate::data::set_legacy_toml(PathBuf::from(t));
-                }
-            }
-            "--vault-key-file" => {
-                if let Some(k) = args.next() {
-                    crate::set_vault_key_file(PathBuf::from(k));
-                }
-            }
             "--today" => today = args.next().and_then(|d| d.parse().ok()),
             "--demo" => demo = true,
             "-h" | "--help" => {

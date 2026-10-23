@@ -6,7 +6,7 @@
 //! silent, nothing is asserted.
 
 use chrono::{Datelike, Months, NaiveDate};
-use ledger_config::{BooksSettings, load, parse};
+use ledger_config::{BooksSettings, parse};
 use ledger_core::TaxForm;
 use proptest::prelude::*;
 use rust_decimal::Decimal;
@@ -715,31 +715,6 @@ fn real_demo_file() {
     assert_eq!(s.company.close_sweep, vec!["3100"]);
     assert_eq!(s.cash_accounts, vec!["1000", "1010"]);
     assert_eq!(dec(s.receipt_threshold.as_deref().unwrap()), dec("25"));
-}
-
-// ---------------------------------------------------------------------------
-// load.
-// ---------------------------------------------------------------------------
-
-/// `load` on a missing path is an error.
-#[test]
-fn load_missing_path_errors() {
-    let dir = tempfile::tempdir().unwrap();
-    assert!(load(&dir.path().join("nope/wanderbooks.toml")).is_err());
-}
-
-/// `load` reads a file the same as `parse` reads its text, refusals
-/// included.
-#[test]
-fn load_matches_parse() {
-    let dir = tempfile::tempdir().unwrap();
-    let p = dir.path().join("wanderbooks.toml");
-    for text in [FERNHILL, DEMO, ""] {
-        std::fs::write(&p, text).unwrap();
-        assert_eq!(load(&p), parse(text));
-    }
-    std::fs::write(&p, two_members("50%", "49%")).unwrap();
-    assert!(load(&p).is_err());
 }
 
 // ---------------------------------------------------------------------------

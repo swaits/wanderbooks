@@ -7,9 +7,7 @@
 //! SOURCE: plan 3.7 ("books.backup {status|run} reports it": two tools,
 //!         one read-only), D-30.
 //! INVARIANTS:
-//!   1. Only books served from the data root are backed up: over stdio
-//!      both tools are hidden, and refuse.
-//!   2. A status reads the backup record only; a run makes and pushes a
+//!   1. A status reads the backup record only; a run makes and pushes a
 //!      backup (backup.rs) and answers the status after it.
 //! ```
 
@@ -86,14 +84,6 @@ impl From<crate::backup::Status> for BackupOut {
     }
 }
 
-impl BooksServer {
-    fn backups(&self) -> Result<&std::sync::Arc<crate::backup::Backups>, String> {
-        self.backups.as_ref().ok_or_else(|| {
-            "these books aren't backed up by this server: only books kept in the books' own private folder are".to_string()
-        })
-    }
-}
-
 #[tool_router(router = backup_router, vis = "pub(super)")]
 impl BooksServer {
     #[tool(
@@ -103,7 +93,7 @@ impl BooksServer {
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn backup(&self, _params: Parameters<BackupParams>) -> Result<Json<BackupOut>, String> {
-        Ok(Json(self.backups()?.status().await.into()))
+        Ok(Json(self.backups.status().await.into()))
     }
 
     #[tool(
@@ -121,7 +111,11 @@ impl BooksServer {
         &self,
         params: Parameters<BackUpNowParams>,
     ) -> Result<Json<BackupOut>, String> {
-        let b = self.backups()?;
-        Ok(Json(b.run_with("asked", params.0.new_disk).await?.into()))
+        Ok(Json(
+            self.backups
+                .run_with("asked", params.0.new_disk)
+                .await?
+                .into(),
+        ))
     }
 }

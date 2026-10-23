@@ -21,7 +21,7 @@ use ledger_gui::nav::Route;
 use ledger_gui::{App, Source, data};
 use ledger_store::Store;
 use ledger_vault::{Tin, Vault};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 const SSN: &str = "123-45-6789";
 
@@ -38,17 +38,19 @@ impl Drop for Fixture {
     }
 }
 
-/// Books with one member whose SSN is in the vault; the key lives outside
-/// the books dir, as the server requires.
+/// Books with one member whose SSN is in the vault, the vault and its key
+/// where a book of the data root keeps them (its own `vault/` and
+/// `keys/`).
 fn fixture(tag: &str) -> Fixture {
     let root = std::env::temp_dir().join(format!("ledger-gui-tin-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let books = root.join("books");
-    let key = root.join("keys/vault.key");
-    std::fs::create_dir_all(&books).unwrap();
-    let mut s = Store::create(&books.join("books-data"), ledger_core::Currency::USD).unwrap();
+    let key = books
+        .join(ledger_store::root::KEYS_DIR)
+        .join(ledger_store::root::LEGACY_KEY_FILE);
+    let mut s = Store::create(&books, ledger_core::Currency::USD).unwrap();
     let party = s.add_party("Pat Lee", &[Role::Member]).unwrap();
-    let v = Vault::open(&books.join("vault"), &key, true).unwrap();
+    let v = Vault::open(&books.join(ledger_store::root::VAULT_DIR), &key, true).unwrap();
     let hash = v
         .put_tin(party, &Tin::new(SSN, ledger_vault::TinType::Ssn).unwrap())
         .unwrap();
@@ -70,14 +72,12 @@ fn fixture(tag: &str) -> Fixture {
     }
 }
 
-fn load(f: &Fixture, key: Option<&Path>) -> Books {
-    let mut b = data::load_once(&Source {
-        data_dir: f.books.join("books-data"),
+fn load(f: &Fixture) -> Books {
+    data::load_once(&Source {
+        data_dir: f.books.clone(),
         today: Some(chrono::NaiveDate::from_ymd_opt(2026, 10, 16).unwrap()),
     })
-    .unwrap();
-    b.settings.vault_key_file = key.map(Path::to_path_buf);
-    b
+    .unwrap()
 }
 
 fn copied(h: &Harness<'_, App>) -> Vec<String> {
@@ -102,7 +102,7 @@ fn no_digits(s: &str) {
 #[test]
 fn reads_the_vault_with_the_key_in_force() {
     let f = fixture("read");
-    let b = load(&f, Some(&f.key));
+    let b = load(&f);
     assert_eq!(b.tin_from_vault(f.party).unwrap(), SSN);
     let e = b.tin_from_vault(f.party + 1).unwrap_err();
     assert!(e.contains("Not in the vault"), "{e}");
@@ -112,22 +112,12 @@ fn reads_the_vault_with_the_key_in_force() {
 #[test]
 fn a_missing_key_is_locked_and_never_created() {
     let f = fixture("locked");
-    let gone = f.root.join("elsewhere/vault.key");
-    let b = load(&f, Some(&gone));
+    std::fs::remove_file(&f.key).unwrap();
+    let b = load(&f);
     let e = b.tin_from_vault(f.party).unwrap_err();
     assert!(e.contains("locked"), "{e}");
     no_digits(&e);
-    assert!(!gone.exists(), "reading must never create a key");
-}
-
-/// INVARIANT 3: a key file inside the books dir is refused.
-#[test]
-fn a_key_inside_the_books_is_refused() {
-    let f = fixture("inside");
-    let inside = f.books.join("vault.key");
-    std::fs::copy(&f.key, &inside).unwrap();
-    let e = load(&f, Some(&inside)).tin_from_vault(f.party).unwrap_err();
-    assert!(e.contains("inside the books folder"), "{e}");
+    assert!(!f.key.exists(), "reading must never create a key");
 }
 
 /// INVARIANT 4: a tampered record is unreadable, and says nothing of it.
@@ -139,7 +129,7 @@ fn a_bad_record_is_an_error_without_digits() {
     let last = raw.len() - 1;
     raw[last] ^= 1;
     std::fs::write(&rec, raw).unwrap();
-    let e = load(&f, Some(&f.key)).tin_from_vault(f.party).unwrap_err();
+    let e = load(&f).tin_from_vault(f.party).unwrap_err();
     no_digits(&e);
 }
 
@@ -156,7 +146,7 @@ fn party_page(b: Books, party: PartyId) -> Harness<'static, App> {
 fn clicking_the_masked_tin_copies_the_full_number() {
     let f = fixture("click");
     let shown = "TIN on file ••••6789 (SSN)";
-    let mut h = party_page(load(&f, Some(&f.key)), f.party);
+    let mut h = party_page(load(&f), f.party);
     assert!(
         h.query_by_label_contains("12345").is_none(),
         "the full number is never drawn"
@@ -168,8 +158,8 @@ fn clicking_the_masked_tin_copies_the_full_number() {
     assert!(h.query_by_label_contains("12345").is_none());
 
     // Locked: nothing copied; the reason shows beside it.
-    let gone = f.root.join("elsewhere/vault.key");
-    let mut h = party_page(load(&f, Some(&gone)), f.party);
+    std::fs::remove_file(&f.key).unwrap();
+    let mut h = party_page(load(&f), f.party);
     h.get_by_label(shown).click();
     h.step();
     assert!(copied(&h).is_empty());

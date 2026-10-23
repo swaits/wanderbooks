@@ -1,14 +1,17 @@
-//! Company settings from the books dir's `wanderbooks.toml`.
+//! Company settings as an older books dir's `wanderbooks.toml` holds them.
 //!
-//! An older books dir keeps that file next to `books-data/` until
-//! `books.import_settings` moves it into the journal (books of the data
-//! root never read one). The server reads the company name (report headers),
-//! the fiscal year start (fiscal-year-to-date reports), the members of a
-//! multi-member LLC (`[[company.members]]`: name, share, capital account —
-//! for the statement of members' equity), `[books] accounting_basis`
-//! (report footers), and `[books] receipt_threshold` (the receipt policy,
-//! unless `config.json` sets one). The fiscal year *end* is never stored: it is the day before
-//! the next start, so the two can't disagree.
+//! Nothing that serves or shows books reads that file (D-44): the books
+//! keep their own settings in their journal. The file is read once, when
+//! `wanderbooks books adopt` brings an older books dir in whole (`codec`
+//! moves its settings, and its `config.json`'s receipt policy, into the
+//! journal), and `books.export_settings` writes the books' settings out as
+//! one. It holds the company name (report headers), the fiscal year start
+//! (fiscal-year-to-date reports), the members of a multi-member LLC
+//! (`[[company.members]]`: name, share, capital account — for the
+//! statement of members' equity), `[books] accounting_basis` (report
+//! footers), and `[books] receipt_threshold` (the receipt policy, unless
+//! the books dir's `config.json` sets one). The fiscal year *end* is never
+//! stored: it is the day before the next start, so the two can't disagree.
 
 pub mod codec;
 pub mod receipt_policy;
@@ -17,9 +20,9 @@ pub use receipt_policy::ReceiptPolicy;
 
 use rust_decimal::Decimal;
 use serde::Deserialize;
-use std::path::Path;
 
-/// What the server takes from `wanderbooks.toml`.
+/// What a `wanderbooks.toml` says, read (`parse`); and the books' own
+/// settings in the same shape (`codec::books_settings`).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct BooksSettings {
     /// `[company]`.
@@ -52,9 +55,6 @@ pub struct BooksSettings {
     /// `[books] parties`: how hard the agent asks for each entry's
     /// counterparty. Unset: [`PartyPolicy::Suggest`].
     pub parties: PartyPolicy,
-    /// `[vault] key_file`: the TIN vault's key file. Unset: the vault's
-    /// default (`~/.config/wanderbooks/vault.key`).
-    pub vault_key_file: Option<std::path::PathBuf>,
     /// `[company] timezone`: the company's time zone (an IANA name), what
     /// "today" means for the books. Unset: the computer's.
     pub timezone: Option<String>,
@@ -210,32 +210,10 @@ fn codes(key: &str, list: Vec<String>) -> Result<Vec<String>, String> {
         .collect()
 }
 
-/// The receipt policy in force: `config_json`'s `receipt_policy` when the
-/// file sets one, else `[books] receipt_threshold`, else the default
-/// ($25.00); validated (crate::receipt_policy INVARIANT 4). The server and
-/// the viewer both call this, so they enforce and show one rule.
-pub fn effective_receipt_policy(
-    config_json: &Path,
-    settings: &BooksSettings,
-) -> Result<ReceiptPolicy, String> {
-    let raw = if config_json.exists() {
-        Some(
-            std::fs::read_to_string(config_json)
-                .map_err(|e| format!("{}: {e}", config_json.display()))?,
-        )
-    } else {
-        None
-    };
-    effective_receipt_policy_text(raw.as_deref(), settings).map_err(|e| {
-        e.replace(
-            "bad config",
-            &format!("bad config {}", config_json.display()),
-        )
-    })
-}
-
-/// [`effective_receipt_policy`] from `config.json`'s text (`None`: no
-/// such file).
+/// The receipt policy in force: `config_json`'s `receipt_policy` (the
+/// text of an older books dir's `config.json`; `None`: no such file) when
+/// it sets one, else `[books] receipt_threshold`, else the default
+/// ($25.00); validated (crate::receipt_policy INVARIANT 4).
 pub fn effective_receipt_policy_text(
     config_json: Option<&str>,
     settings: &BooksSettings,
@@ -448,6 +426,11 @@ pub fn parse(text: &str) -> Result<BooksSettings, String> {
             })
             .collect();
     }
+    // The key file is no books setting (`codec` notes it), but an empty
+    // one is still a broken file.
+    if raw.vault.key_file.is_some_and(|p| p.trim().is_empty()) {
+        return Err("[vault] key_file is empty".into());
+    }
     let timezone = match raw.company.timezone {
         Some(z) => {
             let key = ledger_core::settings::key("company.timezone").expect("a known key");
@@ -471,16 +454,6 @@ pub fn parse(text: &str) -> Result<BooksSettings, String> {
         cash_accounts: codes("cash_accounts", raw.books.cash_accounts)?,
         financing_accounts: codes("financing_accounts", raw.books.financing_accounts)?,
         investing_accounts: codes("investing_accounts", raw.books.investing_accounts)?,
-        vault_key_file: match raw.vault.key_file {
-            Some(p) if p.trim().is_empty() => {
-                return Err("[vault] key_file is empty".into());
-            }
-            Some(p) => Some(std::path::PathBuf::from(match p.strip_prefix("~/") {
-                Some(rest) => format!("{}/{rest}", std::env::var("HOME").unwrap_or_default()),
-                None => p,
-            })),
-            None => None,
-        },
         asset_tag_prefix: match raw.books.asset_tag_prefix {
             Some(p)
                 if !p.is_empty()
@@ -511,12 +484,6 @@ pub fn parse(text: &str) -> Result<BooksSettings, String> {
 
 fn toml_json(s: &str) -> serde_json::Value {
     serde_json::Value::String(s.to_string())
-}
-
-/// Load `wanderbooks.toml` from a path.
-pub fn load(path: &Path) -> Result<BooksSettings, String> {
-    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    parse(&text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 #[cfg(test)]

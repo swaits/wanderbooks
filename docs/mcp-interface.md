@@ -53,18 +53,15 @@ one return, a fiscal year that doesn't move under a closed period). No
 setting holds nine digits that read as an SSN or EIN (bare, or printed
 3-2-4 or 2-7) except `company.ein` and `company.duns`.
 
-Books from before P1 hold no `settings.set` and still read the books dir's
-`wanderbooks.toml` (default: next to `--data-dir`; `--books-toml PATH`)
-and `config.json`'s `receipt_policy`, reloaded whenever either changes, as
-before. `books.import_settings` moves them in once; from then on no file
-is read, not even at start (a broken file beside the books can't stop the
-server). A vault key file is never a books setting: `--vault-key-file PATH`
-names it to the server and the viewer (it wins over a file's `[vault]
-key_file`).
+No settings file is ever read (plan D-44): books keep their own settings,
+the defaults until the first is set. Books from before P1, which kept
+theirs in a `wanderbooks.toml`, bring it in as they are adopted into the
+data root (`wanderbooks books adopt`, plan 5.5). A vault key file is never
+a books setting: a book in the data root keeps its own (`keys/legacy.key`
+in its folder).
 
-- `books.settings {}` → `{ source ("books" or "file"), timezone, today,
+- `books.settings {}` → `{ timezone, today,
   approval_rules, keys: [{ key, doc, identity, value, set_by, seq }],
-  books_toml, books_toml_exists, config_json_present, reload_error, loads,
   company, fiscal_year_start, tax_form, basis, receipt_rule,
   receipt_required_accounts, receipt_exempt_accounts, parties, members,
   cash_accounts, financing_accounts, investing_accounts, close_into,
@@ -73,39 +70,18 @@ key_file`).
   `problems`, settings that disagree with the chart, each saying what to
   change (conventions naming an account no longer in the chart among
   them); `books.digest` repeats them as `settings_problems`. Settings are
-  named by key for books that keep their own, as the file spells them for
-  books that still read one; for those, `keys` shows the file's values,
-  with no journal line.
+  named by key.
 - `books.set_setting { changes: [{ key, value }], decided_by, decided_on?,
   citation?, note? }` → `{ changed: [{ key, was, value }], problems }`: one
   or more changes, together or not at all (`value` null clears a key back to
   its default; a value already set changes nothing, idempotent;
-  destructive, since it can clear or switch off a setting). Refused while
-  the books still read a settings file (or `config.json`): import it first,
-  so no setting is lost.
-- `books.import_settings { toml_text, config_json_text?, confirmed?,
-  skip_unknown?, decided_by, decided_on?, citation?, note? }` → `{ status
-  ("preview" or "imported"), changes, notes, unknown, comments }`: exactly
-  the changes
-  that make the books' settings what the file (and `config.json`'s
-  `receipt_policy`, which wins as it does for the server) says. `notes` are
-  what isn't a books setting and where it goes (`[books] data_dir`, `[vault]
-  key_file`, `[viewer]`, `base_currency`); `unknown` are entries the books
-  don't know, not imported (confirm with `skip_unknown`); `comments` are
-  the file's comments, in order, which are not settings and are not
-  imported (record what matters in them as a decision, open item,
-  convention or a setting's note). The text must be
-  the file the server reads, whole (its import is compared with the
-  server's own reading of its files, key by key), and the server must read
-  every setting afterwards as it does now; the vault key must then come
-  from `--vault-key-file` (on the viewer too). A file never turns approval
-  rules on. Books that keep their own settings take no import that changes
-  them (an identical one is no change). Without `confirmed`, a preview that
-  records nothing. An identity value exported masked imports as
-  "unchanged".
+  destructive, since it can clear or switch off a setting).
 - `books.export_settings {}` → `{ toml_text }`: the settings as a settings
-  file, each with who decided it as a comment, the EIN masked; a copy, and
-  importing it back changes nothing (`ledger_config::codec`).
+  file, each with who decided it as a comment, the EIN masked; a copy:
+  editing it changes nothing (`ledger_config::codec`). No tool reads a
+  settings file: old books bring theirs in once, whole, when the owner
+  adopts them (`wanderbooks books adopt`), and only `books.set_setting`
+  changes the books' settings after that.
 
 The accounts invoices, bills, payroll, and closes post to are not settings:
 they are control roles in the journal (rules.md B-23).
@@ -128,7 +104,7 @@ settings-and-conventions section says how to use them.
 
 - `books.start { focus? }` (read-only, at most 8 KB) → `{ book: { name,
   timezone, today, fiscal_year, base_currency, basis }, head: { seq, hash },
-  state ("needs_onboarding" or "active"), settings_source, rules: {
+  state ("needs_onboarding" or "active"), rules: {
   evidence, parties, approval_rules }, settings_summary: [{ key, value,
   set_by, seq }], conventions: [{ id, kind, title, summary }], open_items:
   [{ id, title, due }], projects: [{ id, name, status, kind? }],
@@ -144,8 +120,7 @@ settings-and-conventions section says how to use them.
   to fit say so in `truncated` ("conventions: 4 more (books.conventions)").
   `projects` lists the active and paused projects by name, at most 20
   ("projects: N more (books.projects)" past that).
-  `next_steps`, in order: the format upgrade's (when waiting);
-  `books.import_settings` (books that still read a settings file); the
+  `next_steps`, in order: the format upgrade's (when waiting); the
   onboarding step (`books.handbook {section: "contract"}`, when the chart
   is empty or `focus` is `onboarding`); `books.open_items` (an item due
   within 30 days or overdue); `books.backup` (none set up, or one stale,
@@ -224,20 +199,12 @@ as it is made.
 
 ## Transports
 
-- **stdio** (default): `ledger-mcp --data-dir PATH`. For Claude Code,
-  Claude Desktop and other local agents. No auth: the OS user boundary is
-  the only boundary.
-- **Streamable HTTP**: `ledger-mcp --data-dir PATH --http 127.0.0.1:8080`.
-  Serves MCP at `http://127.0.0.1:8080/mcp` via rmcp's tower integration.
-  **There is no authentication on this transport today**: no token and
-  no Origin check. The only guard is rmcp's default `Host` check, which
-  accepts `localhost`, `127.0.0.1` and `::1`. Any local process that can
-  reach the port can read and change the books. Bind it to loopback only;
-  binding a LAN, tailnet or public interface is an explicit human
-  decision, never a default. Auth, scopes and Origin validation arrive
-  with the served books (`plan/served.md`, P2).
+Books are served one way (plan D-44): by the books server, which agents
+reach through the bridge.
+
 - **Served books** (`wanderbooks server`, started by the host; an agent
-  connects with `wanderbooks mcp --book ID`, a stdio bridge): every book
+  connects with `wanderbooks mcp --book ID`, the bridge: stdio to the
+  agent, the server's socket upstream): every book
   in the data root, on a socket in the root's private `run/` folder that
   only this account can connect to. Every request carries a bearer token
   live for that book (refused 401 without one, 403 with another book's).
@@ -305,8 +272,9 @@ as it is made.
 
 The MCP `initialize` response carries an `instructions` string, the
 **connect text** (`ledger-mcp/src/handbook.rs`), composed in `get_info`
-from the settings in force when the client connects (the settings are
-re-read first, so a client connecting after an edit is told the new rule).
+from the settings in force when the client connects (the books' settings
+are taken first, so a client connecting after a change is told the new
+rule).
 It is short on purpose: clients cut long instructions (one cut the old
 text at 4,096 characters), so it is at most **1,400 characters**, and its
 first paragraph, at most **512**, stands alone: the entry point
@@ -327,9 +295,7 @@ the books); that the invoice, bill, payment and payroll tools post at
 once, unchecked (in those words, naming no tool); TINs
 only into the vault; show the numbers, and after posting check
 `books.digest` and offer it to the human; and where settings live: in the
-books, changed only through the tools, or, for books that still read a
-settings file, that file, the one local file the agent may edit until
-`books.import_settings` moves it in. When a long rule (many
+books, changed only through the tools. When a long rule (many
 accounts, a huge threshold, a long name) would push it past 1,400
 characters, it drops the tracing hint first (the handbook's
 tracing-figures section has it), then the reasons in parentheses, then the
@@ -368,17 +334,15 @@ path, the data dir or its flag, the old import-root flag, a file of the books
 (`.jsonl`, the database, `vault.key`, `.gitignore`), git, GitHub, a pull
 request, a repo doc (`docs/`, `.md`), or tells the agent to read the
 books' files; no tool title or description, connect text or handbook
-section names `wanderbooks.toml` (the input and output schemas name it by
-design, for `books.settings`' `books_toml`) (`tool_text_lint`). A rule set by law that the books
+section names `wanderbooks.toml` (`tool_text_lint`). A rule set by law that the books
 don't know for a year names its official source (the statute or
 publication, with its address) and says to tell the human.
 Tool descriptions are at most 700 characters; eight longer ones are listed
 in `tool_descriptions_fit_700_characters`, to be shortened in P5.
 
 **Annotations.** Every tool has a `title` and a `readOnlyHint`; every tool
-that changes anything also has a `destructiveHint`, true for these 29:
-`books.post_entry`, `books.reverse_entry`, `books.import_settings`,
-`books.set_setting`, `books.retire_convention`, `books.unlink_receipt`,
+that changes anything also has a `destructiveHint`, true for these 28:
+`books.post_entry`, `books.reverse_entry`, `books.set_setting`, `books.retire_convention`, `books.unlink_receipt`,
 `books.unlink_attachment`, `books.withdraw_attachment`,
 `books.correct_asset`, `books.dispose_asset`, `books.run_depreciation`,
 `books.run_schedules`, `books.run_recurring`, `books.renumber_account`,
@@ -388,11 +352,10 @@ that changes anything also has a `destructiveHint`, true for these 29:
 `books.set_tin` (both overwrite a vault record), `books.purge_tin`,
 `books.create_invoice`, `books.create_bill`, `books.receive_payment`,
 `books.pay_bill`, `books.run_payroll`, `books.remit_payroll_taxes`; and an
-`idempotentHint` on the eleven that a repeat with the same arguments leaves
+`idempotentHint` on the ten that a repeat with the same arguments leaves
 the journal and the vault as they were: `books.verify`,
 `books.run_depreciation`, `books.run_schedules`, `books.run_recurring`,
-`books.set_party_roles`, `books.set_setting`, `books.import_settings`,
-`books.set_vendor_1099`, `books.set_entry_instrument`,
+`books.set_party_roles`, `books.set_setting`, `books.set_vendor_1099`, `books.set_entry_instrument`,
 `books.update_project` and
 `books.back_up_now` (a setter such as `books.update_party`,
 `books.set_fx_rate` or `books.set_tin` journals a line, and `books.set_tin`
@@ -407,11 +370,12 @@ ones with TINs, so they are not read-only. No tool carries
 `requiresUserInteraction` (owner decision
 2026-10-16: no added prompts). `annotations_complete` pins all of this.
 The read-only hint is true in behaviour: `spec_mcp` checks, on every call,
-that a read-only tool leaves the journal, the contents of every file under
-the data dir (the database by every row of every table; SQLite's -wal and
--shm files, which move pages and hold read marks on their own, aside),
-the vault and the settings file as they were
-(`read_only_tools_change_nothing`). `books.show` is read-only though it
+that a read-only tool leaves the journal and the contents of every file of
+the books (their folder, its vault, the database by every row of every
+table; SQLite's -wal and -shm files, which move pages and hold read marks
+on their own, aside, and what every call writes by design: the access
+log, the viewer's side channel, the books' own backup, files handed over)
+as they were (`read_only_tools_change_nothing`). `books.show` is read-only though it
 writes the viewer's request into the books' `ops/` folder: that folder
 is a side channel, never journaled, and moves only the view.
 
@@ -927,12 +891,11 @@ through the policy.
   `error` or `refused` (anything else is refused). `total` counts the
   whole log; `more` says older records match too. The log is read whole
   and its chain checked first: a damaged log is reported, never shown in
-  part. Books served over stdio keep no access log: the tool is not
-  offered there (and is refused if called).
+  part.
 
 ## Tools — backups
 
-Books served from the data root back themselves up (plan 3.7, D-30,
+Books back themselves up (plan 3.7, D-30,
 D-31): each keeps `archive.git`, a bare repository whose commits are its
 journal, stored files, vault, keys and access log as they were (one
 commit per backup, made under the store's lock, its message
@@ -968,10 +931,9 @@ minutes, then tried again, written to or not; the other targets don't
 wait for it. Every
 commit, push and drill is a record in the book's `ops/backup.jsonl` (a
 chain log; a backup never moves the books' head), each target's records
-keyed by the target itself. Setting `backup.*` (books.set_setting, or
-books.import_settings with a `[backup]` table) needs books:admin, as
+keyed by the target itself. Setting `backup.*` (books.set_setting) needs
+books:admin, as
 backing up does: a backup is the whole book, its vault and key included.
-Over stdio neither tool is offered.
 
 - `books.backup {}` (books:read) → `{ head_seq, targets: [{ target:
   "repository" | "folder", at, last_ok_at, through_seq, stale,
@@ -1175,7 +1137,7 @@ first entry's).
   the package's `as_of`; so `books.vendor_1099` given the package's
   `cash_accounts`, `financing_accounts` and `through` = `as_of` (and its
   `include_tins`) hands over the package's `1099-worksheet-<year>.csv`
-  byte for byte (the tool names one with TINs `-with-tins`; checked by `ledger-mcp` `oracle_mcp.rs`
+  byte for byte (the tool names one with TINs `-with-tins`; checked by `ledger-cli` `oracle_mcp.rs`
   `cpa_package_holds_the_year_and_its_evidence`).
 
 ## Tools — parties
@@ -1420,8 +1382,8 @@ and the CPA package carries them.
   missing.
 - **Never out:** no tool output, error, or log holds more than a TIN's
   last four, except `books.vendor_1099 { include_tins: true }`; the CPA
-  package carries them only in its zip, handed over as an export (or
-  inline over stdio), never written to a path.
+  package carries them only in its zip, handed over as an export, never
+  written to a path.
   The tool arguments that take a TIN never echo it, even when refused.
 - **TIN facts:** any party (any role) may have `tin` facts:
   `{ tin_type: "ssn" | "ein" | "itin", last4, vault_record?, purged? }`,
@@ -1460,13 +1422,12 @@ and the CPA package carries them.
 - **Handed files** (D-29): no tool takes a path. A file the books make
   for an agent (`books.get_w9`'s form, `books.vendor_1099`'s `csv`,
   `books.export_cpa_package`'s zip) comes back as a `HandedFile {
-  file_name, mime_type, size_bytes, sha256, download?, expires_at?,
-  content_base64? }`. On books served by `wanderbooks mcp` it is an
+  file_name, mime_type, size_bytes, sha256, download, expires_at }`: an
   export, kept 15 minutes for the token that asked (at most 16 per
   token, swept like uploads), and `download` is the command that saves
   it in a folder the human names: `wanderbooks download --book B
   [--token NAME] ex_… --to <a folder>` (`GET /b/{book}/x/{export}`,
-  "Transports"). Over stdio it comes back inline as `content_base64`.
+  "Transports"). Its bytes never come back inline (D-44).
   A file with full TINs never goes into the books: the server keeps, beside the vault, the SHA-256 of every
   file it read or wrote with full TINs (the W-9 `books.set_w9` reads,
   recorded once the call has passed every check, just before the vault
@@ -1544,9 +1505,7 @@ never pass through the agent), or `content_base64` with its `sha256`
 (at most 256 KiB decoded; longer text is refused before it is decoded).
 Never both, never neither. Inline bytes that aren't base64, or whose
 SHA-256 isn't the one given, are refused (guard `base64_corrupt`): send
-the file as an upload. Uploads exist only for books served from the
-data root (the server's socket carries the bytes); over stdio, only
-inline, and the refusal says so and to tell the human. On the socket an
+the file as an upload. An upload is kept for the token that began it. An
 MCP request is at most 1 MiB. A file's name and type are checked when
 it is filed (every filing tool, `books.begin_upload`, and the W-9's
 name): a name of 1 to 255 bytes, with no `/` or `\`, not `.` or `..`,
@@ -1617,8 +1576,7 @@ and no control or invisible (Unicode format) characters; a MIME type
   `download`, the command `wanderbooks download --book B <id> --to <a
   folder>` (with `--token NAME` when the caller's token isn't the
   default `agent`; `GET /b/{book}/a/{attachment}`, "Transports"), which
-  saves a copy as a new file in that folder. Over stdio there is no
-  download: a larger file is refused.
+  saves a copy as a new file in that folder.
 - `books.file_document { category: "formation" | "legal" | "tax" |
   "accounting" | "statement" | "contract" | "photo" | "warranty" |
   "import_source" | "other", file_name?, mime_type?, upload_id? |
@@ -1641,8 +1599,7 @@ posting.
   (account codes whose entries always need one, e.g. meals and travel)
   and `policy.evidence.exempt_accounts` (e.g. automated bank fees; an
   entry is exempt only when every line is in one). Changed with
-  `books.set_setting`; books from before P1 read `config.json`'s
-  `receipt_policy`.
+  `books.set_setting`.
 - **Preview.** Every `post_entry` preview includes the receipt checklist
   (`receipts: [...]`, `receipt_required: bool`, `receipt_missing: bool`,
   `split_detected: [...]`), so the human sees it before confirming. A
@@ -1759,16 +1716,17 @@ posting.
 
 ## Tools — chart templates
 
-- `books.chart_template { entity_type, owners? }` → `{ csv, settings_toml,
+- `books.chart_template { entity_type, owners? }` → `{ csv, settings,
   notes }`: a starter chart for a sole proprietorship (incl. single-member
   LLC), partnership (incl. multi-member LLC), S corporation, or C
   corporation — the equity and owner-pay accounts that entity needs (owner's
   capital and draws; per-partner capital and distributions plus guaranteed
   payments; officer compensation and shareholder distributions; dividends
   and income tax expense), common income and expense accounts with tax
-  categories, and `settings_toml`, the settings that go with it (tax form,
-  members, where closes go) as settings-file TOML for
-  `books.import_settings`. A proposal: review with the human, then `books.import_chart_csv`.
+  categories, and `settings`, the settings that go with it (tax form,
+  members, where closes go) as `[{ key, value }]` changes for
+  `books.set_setting`. A proposal: review with the human, then
+  `books.import_chart_csv` and `books.set_setting`.
 
 ## Tools — tax categories
 
@@ -1877,7 +1835,8 @@ Hand-rolled on `ServerHandler` (rmcp 3.x has no resource macros):
   view `meta`; no bytes)
 
 Resources exist so read-only clients (dashboards, the viewer,
-auditors) never need tool credentials. Tested end-to-end over stdio.
+auditors) never need tool credentials. Tested end to end through a real
+books server (ledger-cli's tests).
 
 ## The agent operating contract
 

@@ -3,7 +3,7 @@
 # wanderbooks: rules.md B-37 item 8 (journal feature
 # `document_line_projects`); regression tests in ledger-core
 # `tests/spec_document_projects.rs`, ledger-store
-# `tests/document_projects.rs`, ledger-mcp `tests/spec_projects.rs`
+# `tests/document_projects.rs`, ledger-cli `tests/spec_projects.rs`
 # (`invoice_and_bill_lines_count_toward_their_projects`).
 #
 # Expected values worked by hand. Invoice 1 bills 3,000.00 + 500.00 of

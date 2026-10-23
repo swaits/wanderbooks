@@ -42,6 +42,7 @@ docs/specification/2025-06-18/server/tools.mdx (MIT). Fetched 2026-10-14.
 >    - Rate limit tool invocations
 >    - Sanitize tool outputs
 
-(A local stdio server for one bookkeeper: access control is the file
-system's, and rate limiting has no one to limit; wanderbooks takes
-"validate all tool inputs" and "sanitize tool outputs" as binding.)
+(A local books server for one company's agents: access control is the
+bearer tokens and their scopes on the data root's private sockets, and
+rate limiting has no one to limit; wanderbooks takes "validate all tool
+inputs" and "sanitize tool outputs" as binding.)

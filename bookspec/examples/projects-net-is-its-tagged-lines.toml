@@ -2,7 +2,7 @@
 #
 # wanderbooks: rules.md B-37 (projects); regression tests
 # `project_figures_are_its_tagged_lines` (ledger-core tests/spec_projects.rs),
-# `project_figures_match_profit_and_loss_by_class` (ledger-mcp
+# `project_figures_match_profit_and_loss_by_class` (ledger-cli
 # tests/spec_projects.rs).
 #
 # Expected values worked by hand: Alpha earns 5,000.00 and costs 1,800.00

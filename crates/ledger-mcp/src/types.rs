@@ -536,13 +536,13 @@ pub struct Vendor1099Params {
     #[serde(default)]
     pub csv: bool,
     /// The cash account codes payments are counted out of, e.g.
-    /// `["1000"]`. Defaults to `[books] cash_accounts`, as the CPA
+    /// `["1000"]`. Defaults to `books.cash_accounts`, as the CPA
     /// package's do: one or the other is required.
     #[serde(default)]
     pub cash_accounts: Vec<String>,
     /// The financing liability codes (what the members advanced, loans)
-    /// payments are counted out of. Defaults to `[books]
-    /// financing_accounts`, as the CPA package's do.
+    /// payments are counted out of. Defaults to
+    /// `books.financing_accounts`, as the CPA package's do.
     #[serde(default)]
     pub financing_accounts: Vec<String>,
     /// Count only the payments dated on or before this day of `year`
@@ -782,11 +782,21 @@ pub struct ChartTemplateOut {
     /// Chart CSV (code,name,type,parent_code,tax_category) for
     /// `books.import_chart_csv`, after review.
     pub csv: String,
-    /// The settings that go with it, as settings-file TOML for
-    /// `books.import_settings`: tax form, owners, where period closes go.
-    pub settings_toml: String,
+    /// The settings that go with it, as changes for `books.set_setting`
+    /// (after review, with who decided): tax form, owners, where period
+    /// closes go.
+    pub settings: Vec<TemplateSettingOut>,
     /// What to decide or know.
     pub notes: Vec<String>,
+}
+
+/// One setting a chart template goes with.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct TemplateSettingOut {
+    /// The key.
+    pub key: String,
+    /// Its value, as `books.set_setting` takes it.
+    pub value: serde_json::Value,
 }
 
 /// Parameters for `books.renumber_account`.
@@ -807,10 +817,9 @@ pub struct RenumberAccountOut {
     pub previous_code: String,
     /// The code it has now.
     pub code: String,
-    /// Settings that still name the old code (as books.set_setting keys,
-    /// or the settings file's labels for books whose settings are in a
-    /// file), and conventions whose template or approval rule names it:
-    /// change each (books.set_setting, books.set_convention).
+    /// Settings that still name the old code (as books.set_setting keys),
+    /// and conventions whose template or approval rule names it: change
+    /// each (books.set_setting, books.set_convention).
     pub config_mentions: Vec<String>,
 }
 
@@ -832,10 +841,6 @@ pub struct MemberSettingOut {
 /// Result of `books.settings`.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct SettingsOut {
-    /// Where the settings come from: "books" (the books keep them; change
-    /// them with books.set_setting) or "file" (a settings file these books
-    /// still read: move it in with books.import_settings).
-    pub source: String,
     /// The company's time zone (IANA), or null: the computer's.
     pub timezone: Option<String>,
     /// Today, in that time zone.
@@ -845,27 +850,14 @@ pub struct SettingsOut {
     /// Every setting the books know: what it takes, its value (null:
     /// unset, its default applies), and who set it.
     pub keys: Vec<crate::server::SettingKeyOut>,
-    /// The wanderbooks.toml the server reads (null: the books keep their
-    /// own settings, or settings built in).
-    pub books_toml: Option<String>,
-    /// Whether that file exists (absent: the defaults apply).
-    pub books_toml_exists: bool,
-    /// Whether the server reads a receipt policy from a configuration
-    /// file of its own.
-    pub config_json_present: bool,
-    /// Why the last edit failed to load, or null. While set, the settings
-    /// below are the last ones that loaded: fix the file.
-    pub reload_error: Option<String>,
-    /// How many times the settings have loaded (the first included); it
-    /// goes up each time an edit loads.
-    pub loads: u64,
-    /// `[company] name`.
+    /// `company.name`.
     pub company: String,
-    /// `[company] fiscal_year_start`, "MM-DD".
+    /// `company.fiscal_year_start`, "MM-DD".
     pub fiscal_year_start: String,
-    /// The return filed (`tax_form`, or from `tax_classification`), or null.
+    /// The return filed (`company.tax_form`, or from
+    /// `company.tax_classification`), or null.
     pub tax_form: Option<String>,
-    /// `[books] accounting_basis`.
+    /// `books.accounting_basis`.
     pub basis: String,
     /// The receipt rule in force (it shows a few account codes of each
     /// kind, shortened; the two lists below hold them all).
@@ -877,22 +869,22 @@ pub struct SettingsOut {
     /// every line is in one needs none): the policy's whole list, as
     /// written.
     pub receipt_exempt_accounts: Vec<String>,
-    /// `[books] parties`: "off", "suggest", or "require".
+    /// `policy.parties`: "off", "suggest", or "require".
     pub parties: String,
-    /// `[[company.members]]`.
+    /// `company.members`.
     pub members: Vec<MemberSettingOut>,
-    /// `[books] cash_accounts`.
+    /// `books.cash_accounts`.
     pub cash_accounts: Vec<String>,
-    /// `[books] financing_accounts`.
+    /// `books.financing_accounts`.
     pub financing_accounts: Vec<String>,
-    /// `[books] investing_accounts`.
+    /// `books.investing_accounts`.
     pub investing_accounts: Vec<String>,
-    /// `[books] close_into`.
+    /// `books.close_into`.
     pub close_into: Option<String>,
-    /// `[books] close_sweep`.
+    /// `books.close_sweep`.
     pub close_sweep: Vec<String>,
-    /// Settings that disagree with the books, each saying what to change in
-    /// wanderbooks.toml (or the chart). Empty: nothing to fix.
+    /// Settings that disagree with the books, each saying what to change
+    /// (with books.set_setting, or in the chart). Empty: nothing to fix.
     pub problems: Vec<String>,
 }
 
@@ -1415,7 +1407,7 @@ pub struct DraftEntryParams {
     /// `vendor`, both must name the same vendor.
     pub party: Option<String>,
     /// Why the entry has no counterparty (a transfer between the company's
-    /// own accounts, an accrual), when `[books] parties = "require"` and
+    /// own accounts, an accrual), when `policy.parties = "require"` and
     /// none applies. Not with `party`, `parties`, or `vendor`.
     pub no_party_reason: Option<String>,
     /// Several parties, each with their share (as `books.set_entry_party`
@@ -1605,7 +1597,7 @@ pub struct PostEntryOut {
     /// receipt threshold (same date, description, and debit accounts).
     /// Empty when no split is detected.
     pub split_detected: Vec<u64>,
-    /// `[books] parties`: "off", "suggest", or "require".
+    /// `policy.parties`: "off", "suggest", or "require".
     pub party_policy: String,
     /// The entry's counterparty, when it names exactly one.
     pub party_id: Option<u64>,
@@ -2089,11 +2081,11 @@ pub struct DigestOut {
     /// lost; tell the human, and if they had asked for a change moments before,
     /// check it is there and redo it if not.
     pub journal_repairs: Vec<JournalRepair>,
-    /// Settings in wanderbooks.toml that need changing: an edit that
-    /// didn't load, or a setting that disagrees with the chart. Fix each
-    /// with the human, then check books.settings.
+    /// Settings that need changing: a setting that disagrees with the
+    /// chart. Fix each with the human (books.set_setting), then check
+    /// books.settings.
     pub settings_problems: Vec<String>,
-    /// Cash and card accounts (`[books] cash_accounts`, and liabilities
+    /// Cash and card accounts (`books.cash_accounts`, and liabilities
     /// with a recorded statement) with activity not reconciled through the
     /// end of last month: record each statement and reconcile it.
     pub unreconciled_accounts: Vec<UnreconciledAccountOut>,
@@ -2167,17 +2159,17 @@ pub struct ExportParams {
     #[schemars(description = export_as_of_doc())]
     pub as_of: Option<String>,
     /// Cash account codes for cash_flow, and for iif its BANK accounts.
-    /// Defaults to `[books] cash_accounts`; one or the other is required
+    /// Defaults to `books.cash_accounts`; one or the other is required
     /// for cash_flow.
     #[serde(default)]
     pub cash_accounts: Vec<String>,
     /// Liability account codes treated as financing for cash_flow.
-    /// Defaults to `[books] financing_accounts`, else empty.
+    /// Defaults to `books.financing_accounts`, else empty.
     #[serde(default)]
     pub financing_accounts: Vec<String>,
     /// Asset account codes treated as investing for cash_flow: loans the
     /// company makes, investments it buys (ASC 230-10-20). Defaults to
-    /// `[books] investing_accounts`.
+    /// `books.investing_accounts`.
     #[serde(default)]
     pub investing_accounts: Vec<String>,
 }
@@ -2261,8 +2253,8 @@ pub struct RegisterAssetParams {
     /// Depreciation expense account, id or code.
     pub expense_account: String,
     /// The asset tag for its label (letters, digits, - _ . /; at most 32).
-    /// Omit to generate the next one ("FA-0001", from `[books]
-    /// asset_tag_prefix` or the company's initials).
+    /// Omit to generate the next one ("FA-0001", from
+    /// `books.asset_tag_prefix` or the company's initials).
     pub tag: Option<String>,
     /// The manufacturer's serial number, if known.
     pub serial: Option<String>,
@@ -2750,7 +2742,7 @@ pub struct DisposeAssetParams {
     /// receipt policy applies.
     pub receipt_attachment_ids: Option<Vec<u64>>,
     /// The buyer (party id or name), named on the disposal entry. Under
-    /// `[books] parties = "require"` a sale with proceeds needs one; a
+    /// `policy.parties = "require"` a sale with proceeds needs one; a
     /// retirement with no proceeds and no buyer is marked as having no
     /// counterparty.
     #[serde(default)]
@@ -3266,7 +3258,7 @@ pub struct RemitPayrollTaxesParams {
     /// Cash account id or code the remittance comes from.
     pub cash_account: String,
     /// The tax agency paid (party id or name, e.g. the IRS), named on the
-    /// remittance entry. Required under `[books] parties = "require"`.
+    /// remittance entry. Required under `policy.parties = "require"`.
     #[serde(default)]
     pub agency: Option<String>,
 }
@@ -3640,17 +3632,17 @@ pub struct ExportCpaPackageParams {
     #[schemars(description = AS_OF_DOC)]
     pub as_of: Option<String>,
     /// Cash account codes the cash flow statement reconciles to, e.g.
-    /// `["1000"]`. Defaults to `[books] cash_accounts`; one or the other
+    /// `["1000"]`. Defaults to `books.cash_accounts`; one or the other
     /// is required.
     #[serde(default)]
     pub cash_accounts: Vec<String>,
-    /// Liability account codes treated as financing. Defaults to `[books]
-    /// financing_accounts`, else empty.
+    /// Liability account codes treated as financing. Defaults to
+    /// `books.financing_accounts`, else empty.
     #[serde(default)]
     pub financing_accounts: Vec<String>,
     /// Asset account codes treated as investing for cash_flow: loans the
     /// company makes, investments it buys (ASC 230-10-20). Defaults to
-    /// `[books] investing_accounts`.
+    /// `books.investing_accounts`.
     #[serde(default)]
     pub investing_accounts: Vec<String>,
     /// Include every receipt for the year's entries (every current file
@@ -3895,16 +3887,11 @@ pub struct HandedFile {
     pub size_bytes: u64,
     /// Its SHA-256, hex.
     pub sha256: String,
-    /// The command that saves it in a folder you name (run it; books
-    /// served by `wanderbooks mcp`). Kept 15 minutes.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub download: Option<String>,
-    /// When it lapses (UTC), with `download`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub expires_at: Option<String>,
-    /// Over stdio: its bytes, base64.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub content_base64: Option<String>,
+    /// The command that saves it in a folder you name (run it). Kept 15
+    /// minutes.
+    pub download: String,
+    /// When it lapses (UTC).
+    pub expires_at: String,
 }
 
 /// Result of `books.get_w9`: the W-9 file, handed over.
@@ -4026,7 +4013,7 @@ pub struct SetEntryPartyParams {
     /// shares that don't add up to what it moved.
     pub parties: Option<Vec<PartyShareParam>>,
     /// With `party` null: mark the entry as having no counterparty, with
-    /// why (journaled as `entry.no_party`). Satisfies `[books] parties =
+    /// why (journaled as `entry.no_party`). Satisfies `policy.parties =
     /// "require"`.
     pub no_party_reason: Option<String>,
 }
@@ -4159,12 +4146,11 @@ pub struct ListPartiesOut {
 /// reversal counts on its original's side and nets it to zero. (Not the
 /// books' accounting method.)
 ///
-/// Money is what left or reached the `[books] cash_accounts` (every asset
+/// Money is what left or reached the `books.cash_accounts` (every asset
 /// account but receivables when none are set), the cards (the
 /// business-card payment methods' liabilities, `books.instruments`; while
 /// none is recorded, liabilities whose names say "card", not "gift
-/// card"), and the `[books]
-/// financing_accounts` (what the members
+/// card"), and the `books.financing_accounts` (what the members
 /// advanced, loans): a card charge or a member paying for the company is
 /// paid to the payee then; cash that pays one of these down is paid to
 /// its creditor (a reimbursement to the members, a card payment to the

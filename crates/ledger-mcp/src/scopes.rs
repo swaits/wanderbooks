@@ -25,9 +25,8 @@
 //!      the one there) needs books:post (review of slice 4).
 //!   6. Where the books' backups go is books:admin's, as backing up is
 //!      (a backup is the whole book, its vault and key included):
-//!      setting a `backup.*` key, or importing settings that hold one,
-//!      needs books:admin; other settings books:post as before (review of
-//!      slice 7).
+//!      setting a `backup.*` key needs books:admin; other settings
+//!      books:post as before (review of slice 7).
 //! ```
 
 use ledger_store::auth::Scope;
@@ -46,14 +45,9 @@ pub enum Needs {
     /// books:admin for a change to a `backup.*` setting, books:post for
     /// any other (INVARIANT 6).
     AdminForBackupSettings,
-    /// As PostWhenConfirmed, and books:admin when the settings imported
-    /// hold a `[backup]` table (INVARIANT 6).
-    ImportSettings,
 }
 
-use Needs::{
-    AdminForBackupSettings, Always, ImportSettings, PostForApprovalRules, PostWhenConfirmed,
-};
+use Needs::{AdminForBackupSettings, Always, PostForApprovalRules, PostWhenConfirmed};
 const R: Needs = Always(Scope::Read);
 const W: Needs = Always(Scope::Write);
 const P: Needs = Always(Scope::Post);
@@ -62,12 +56,11 @@ const C: Needs = PostWhenConfirmed;
 const K: Needs = PostForApprovalRules;
 
 /// Every tool and what it needs (INVARIANT 1).
-pub const TABLE: [(&str, Needs); 119] = [
+pub const TABLE: [(&str, Needs); 118] = [
     ("books.handbook", R),
     ("books.start", R),
     // Settings are committed at once: the settings commit of the plan.
     ("books.set_setting", AdminForBackupSettings),
-    ("books.import_settings", ImportSettings),
     ("books.export_settings", R),
     ("books.conventions", R),
     ("books.set_convention", K),
@@ -220,20 +213,6 @@ pub fn needs(
                 });
             if backup { Scope::Admin } else { Scope::Post }
         }
-        ImportSettings => {
-            let backup = args
-                .and_then(|a| a.get("toml_text"))
-                .and_then(serde_json::Value::as_str)
-                .and_then(|t| t.parse::<toml::Table>().ok())
-                .is_some_and(|t| t.contains_key("backup"));
-            if backup {
-                Scope::Admin
-            } else if confirmed(args) {
-                Scope::Post
-            } else {
-                Scope::Write
-            }
-        }
         PostForApprovalRules => {
             let kind = args
                 .and_then(|a| a.get("kind"))
@@ -259,7 +238,7 @@ fn confirmed(args: Option<&serde_json::Map<String, serde_json::Value>>) -> bool 
 pub fn shown(tool: &str, scopes: &std::collections::BTreeSet<Scope>) -> bool {
     match TABLE.iter().find(|(name, _)| *name == tool) {
         Some((_, Always(scope))) => scopes.contains(scope),
-        Some((_, PostWhenConfirmed | PostForApprovalRules | ImportSettings)) => {
+        Some((_, PostWhenConfirmed | PostForApprovalRules)) => {
             scopes.contains(&Scope::Write) || scopes.contains(&Scope::Post)
         }
         Some((_, AdminForBackupSettings)) => {
@@ -333,25 +312,6 @@ mod tests {
         );
         assert_eq!(set(&[" Backup.Folder"]), Some(Scope::Admin));
         assert_eq!(needs("books.set_setting", None), Some(Scope::Post));
-        let import = |text: &str, confirmed: bool| {
-            needs(
-                "books.import_settings",
-                args(json!({"toml_text": text, "confirmed": confirmed})).as_ref(),
-            )
-        };
-        assert_eq!(
-            import("[company]\nname = \"A\"\n", false),
-            Some(Scope::Write)
-        );
-        assert_eq!(import("[company]\nname = \"A\"\n", true), Some(Scope::Post));
-        assert_eq!(
-            import("[backup]\nfolder = \"/x\"\n", false),
-            Some(Scope::Admin)
-        );
-        assert_eq!(
-            import("[backup]\nfolder = \"/x\"\n", true),
-            Some(Scope::Admin)
-        );
         // Shown to whoever can set some setting.
         let post: std::collections::BTreeSet<Scope> = [Scope::Post].into();
         let write: std::collections::BTreeSet<Scope> = [Scope::Write].into();
@@ -359,7 +319,6 @@ mod tests {
         assert!(shown("books.set_setting", &post));
         assert!(shown("books.set_setting", &admin));
         assert!(!shown("books.set_setting", &write));
-        assert!(shown("books.import_settings", &write));
     }
 
     #[test]
@@ -372,7 +331,7 @@ mod tests {
                 .and_then(|p| p.as_object())
                 .is_some_and(|p| p.contains_key("confirmed"));
             let (_, needs) = TABLE.iter().find(|(n, _)| *n == tool.name).unwrap();
-            assert_eq!(takes, matches!(*needs, C | ImportSettings), "{}", tool.name);
+            assert_eq!(takes, *needs == C, "{}", tool.name);
             let takes_kind = tool
                 .input_schema
                 .get("properties")

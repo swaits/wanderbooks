@@ -1,7 +1,8 @@
 //! P3's seams in the viewer: on the seam review's books (a year of a
 //! two-member LLC, `ledger-package`'s `tests/seams/books.rs`), the
 //! viewer's figures, read through its own [`Books`] from the books' folder
-//! and settings file as it opens them, are the engine's (the server's
+//! as it opens them (their settings journaled, as the books keep them:
+//! D-44), are the engine's (the server's
 //! tools make theirs with the same calls and settings): each member's
 //! capital statement, party money, the cash flow statement, the fixed
 //! asset register and the 1099 worksheet, on several dates.
@@ -9,7 +10,7 @@
 #[path = "../../ledger-package/tests/seams/books.rs"]
 mod books;
 
-use books::{books, d};
+use books::{SETTINGS_TOML, books, d};
 use chrono::NaiveDate;
 use ledger_gui::books::Books as Viewer;
 use ledger_gui::{Source, data};
@@ -27,7 +28,23 @@ fn viewer(dir: &std::path::Path, today: NaiveDate) -> Viewer {
 #[test]
 fn the_viewers_figures_are_the_engines_on_every_date() {
     let dir = tempfile::tempdir().unwrap();
-    let b = books(dir.path());
+    let mut b = books(dir.path());
+    // The settings in the books, where the viewer reads them (it reads no
+    // file beside them).
+    let import =
+        ledger_config::codec::import(SETTINGS_TOML, None, b.store.ledger().settings(), "USD")
+            .unwrap();
+    b.store
+        .change_settings(
+            &import.changes,
+            &ledger_core::settings::Source {
+                decided_by: "the test".into(),
+                decided_on: d(START),
+                citation: None,
+                note: None,
+            },
+        )
+        .unwrap();
     let l = b.store.ledger();
     let cash: Vec<_> = b
         .cash

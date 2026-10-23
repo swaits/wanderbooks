@@ -480,62 +480,32 @@ fn books_that_keep_their_settings_show_them() {
     }
 }
 
-/// Books that keep no settings in their journal are read as their server
-/// reads them (plan 3.6): an older books dir from its settings file; a
-/// book of the data root never from a file, so with the defaults.
+/// Books that keep no settings in their journal show the defaults, as
+/// their server reads them (plan 3.6, D-44): no settings file or
+/// `config.json` beside them is read, in a data root or not.
 #[test]
-fn books_that_keep_no_settings_read_their_file_only_outside_a_root() {
+fn books_that_keep_no_settings_read_no_file_beside_them() {
     let from = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../ledger-store/tests/fixtures/old-books")
         .join("shares_big");
-    // An older books dir: its server reads wanderbooks.toml, so the viewer
-    // does too.
-    let t = temp("said-file");
-    copy_books(&from, &t.0.join("books-data"));
-    std::fs::write(t.0.join("wanderbooks.toml"), SETTINGS).unwrap();
-    let b = load(&t);
-    assert_eq!(b.settings.company.name, "Old Books Co");
-    assert!(!b.settings.company.members.is_empty());
-    // The same books in a data root: no file is read, whatever lies
-    // beside them; they show the defaults until their settings are in
-    // their journal.
-    let t = temp("said-defaults");
-    std::fs::write(t.0.join(ledger_store::root::MARKER_FILE), b"").unwrap();
-    copy_books(&from, &t.0.join("books-data"));
-    std::fs::write(t.0.join("wanderbooks.toml"), SETTINGS).unwrap();
-    let b = load(&t);
-    assert_eq!(
-        b.settings,
-        ledger_config::codec::books_settings(&ledger_core::settings::Settings::default(), "USD")
-    );
-}
-
-/// An older books dir with no settings file but a `config.json`: its
-/// receipt rule is the server's, from that file (the regression round 2
-/// of slice 6's review found).
-#[test]
-fn an_older_books_dirs_config_json_sets_its_receipt_rule() {
-    let from = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../ledger-store/tests/fixtures/old-books")
-        .join("shares_big");
-    let t = temp("said-config");
-    copy_books(&from, &t.0.join("books-data"));
-    std::fs::write(
-        t.0.join("books-data/config.json"),
-        r#"{"receipt_policy": {"require_receipts_above": "0.00"}}"#,
-    )
-    .unwrap();
-    assert_eq!(load(&t).receipt_threshold, rust_decimal::Decimal::ZERO);
-    // In a data root, no file: the books' own rule (the default).
-    let t = temp("said-config-root");
-    std::fs::write(t.0.join(ledger_store::root::MARKER_FILE), b"").unwrap();
-    copy_books(&from, &t.0.join("books-data"));
-    std::fs::write(
-        t.0.join("books-data/config.json"),
-        r#"{"receipt_policy": {"require_receipts_above": "0.00"}}"#,
-    )
-    .unwrap();
-    assert_ne!(load(&t).receipt_threshold, rust_decimal::Decimal::ZERO);
+    let defaults =
+        ledger_config::codec::books_settings(&ledger_core::settings::Settings::default(), "USD");
+    for (tag, in_root) in [("said-file", false), ("said-root", true)] {
+        let t = temp(tag);
+        if in_root {
+            std::fs::write(t.0.join(ledger_store::root::MARKER_FILE), b"").unwrap();
+        }
+        copy_books(&from, &t.0.join("books-data"));
+        std::fs::write(t.0.join("wanderbooks.toml"), SETTINGS).unwrap();
+        std::fs::write(
+            t.0.join("books-data/config.json"),
+            r#"{"receipt_policy": {"require_receipts_above": "0.00"}}"#,
+        )
+        .unwrap();
+        let b = load(&t);
+        assert_eq!(b.settings, defaults, "{tag}");
+        assert_ne!(b.receipt_threshold, rust_decimal::Decimal::ZERO, "{tag}");
+    }
 }
 
 /// rules.md B-37: the classes an earlier version wrote read as projects

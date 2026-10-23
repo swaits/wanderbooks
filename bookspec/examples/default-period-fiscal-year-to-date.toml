@@ -3,9 +3,9 @@
 # wanderbooks: P3 defect 16 (the report tools, books.show and the viewer
 # each read omitted dates their own way); rules.md B-30; regression tests
 # `prop_period_defaults_resolve` (ledger-core tests/properties.rs),
-# `one_default_period_everywhere_defect_16` (ledger-mcp
-# tests/mcp_stdio.rs), `show_sends_the_dates_it_names_defect_16` and
-# `show_refuses_start_after_end_defect_15` (ledger-mcp tests/oracle_mcp.rs).
+# `one_default_period_everywhere_defect_16` (ledger-cli
+# tests/mcp_journeys.rs), `show_sends_the_dates_it_names_defect_16` and
+# `show_refuses_start_after_end_defect_15` (ledger-cli tests/oracle_mcp.rs).
 #
 # Expected values (bookspec/README.md): `period` gives the dates a period
 # report asked with these dates covers, `day` the day a report as of a day

@@ -1,7 +1,7 @@
 # P3 defect 11 (audit finding F28): the directory showed a member's TIN as
 # missing because it read W-9 facts only. Regression tests: ledger-core
 # tests/spec_party_totals.rs
-# defect11_a_partys_tin_last4_is_its_tin_facts_else_its_w9s; ledger-mcp
+# defect11_a_partys_tin_last4_is_its_tin_facts_else_its_w9s; ledger-cli
 # tests/spec_vault.rs defect11_the_directory_shows_a_members_tin_last4.
 # The shape: bookspec/README.md.
 

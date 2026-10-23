@@ -4,14 +4,10 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "MCP server for wanderbooks: the AI-first bookkeeping interface over ledger-store."
+description = "The books server's MCP tools for wanderbooks: the AI-first bookkeeping interface over ledger-store."
 
 [lib]
 path = "src/lib.rs"
-
-[[bin]]
-name = "ledger-mcp"
-path = "src/main.rs"
 
 [dependencies]
 ledger-core = { path = "../ledger-core" }
@@ -25,9 +21,8 @@ ledger-package = { path = "../ledger-package" }
 base64 = "0.22"
 # A download's Repr-Digest (local.rs).
 sha2 = "0.10"
-mime_guess = "2"
 rust_decimal = "1"
-rmcp = { version = "3", features = ["server", "transport-io", "schemars", "transport-streamable-http-server"] }
+rmcp = { version = "3", features = ["server", "schemars", "transport-streamable-http-server"] }
 axum = "0.8"
 http-body-util = "0.1"
 tower = "0.5"
@@ -36,7 +31,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = "0.4"
 thiserror = "2"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "io-std", "sync", "net", "signal", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "sync", "net", "signal", "time"] }
 tokio-util = { version = "0.7", features = ["rt", "io", "io-util"] }
 # A call that panics is recorded before the panic goes on (access.rs).
 futures-util = "0.3"
@@ -54,12 +49,8 @@ libc = "0.2"
 workspace = true
 
 [dev-dependencies]
-# The tests open the CPA package.
-zip = "9.0.1"
+# The unit tests drive the tools as a client would (the integration tests,
+# through a real books server, are ledger-cli's: plan D-44).
 tokio = { version = "1", features = ["time", "macros", "rt-multi-thread"] }
 rmcp = { version = "3", features = ["client", "transport-streamable-http-client-reqwest"] }
-jsonschema = { version = "0.58", default-features = false }
-proptest = "1"
 tempfile = "3"
-# read_only_tools_change_nothing compares the database by its rows (spec_mcp.rs).
-rusqlite = { version = "0.32", features = ["bundled"] }

@@ -219,9 +219,6 @@ fn a_book_in_the_root_reads_its_own_vault() {
     );
     let e = b.w9_file(f.member).unwrap_err();
     assert!(e.contains("no W-9 file"), "{e}");
-    // Its key is the book's own: one named on the command line is never
-    // used for it (none is named here, and none is needed).
-    assert!(ledger_gui::vault_key_file().is_none());
 }
 
 #[test]
@@ -465,12 +462,13 @@ fn the_menus_1099_worksheet_carries_a_payees_full_tin() {
 }
 
 /// The menu reads settings as the rest of the viewer and the server do:
-/// an older books dir that keeps none in its journal, from its file.
+/// the books' own, from their journal; a settings file beside them is
+/// never read (D-44).
 #[test]
-fn the_menu_reads_an_older_books_dirs_settings_file() {
+fn the_menu_reads_the_books_own_settings() {
     downloads();
     let dir = tempfile::Builder::new()
-        .prefix("wb-gui-older-")
+        .prefix("wb-gui-kept-")
         .tempdir()
         .unwrap();
     let data = dir.path().join("books-data");
@@ -482,14 +480,33 @@ fn the_menu_reads_an_older_books_dirs_settings_file() {
         ] {
             s.add_account(code, name, ty, None, false).unwrap();
         }
+        s.change_settings(
+            &[
+                ledger_core::settings::Change {
+                    key: "company.name".into(),
+                    value: Some(serde_json::json!("Journal Kept Co")),
+                },
+                ledger_core::settings::Change {
+                    key: "books.cash_accounts".into(),
+                    value: Some(serde_json::json!(["1000"])),
+                },
+            ],
+            &ledger_core::settings::Source {
+                decided_by: "Tobin Harlow".into(),
+                decided_on: today(),
+                citation: None,
+                note: None,
+            },
+        )
+        .unwrap();
     }
     std::fs::write(
         dir.path().join("wanderbooks.toml"),
-        "[company]\nname = \"File Kept Co\"\n[books]\ncash_accounts = [\"1000\"]\n",
+        "[company]\nname = \"File Beside Co\"\n",
     )
     .unwrap();
     let b = load(&data);
-    assert_eq!(b.settings.company.name, "File Kept Co");
+    assert_eq!(b.settings.company.name, "Journal Kept Co");
     let (path, _) = Job::Package.run(&b).unwrap();
     let mut zip = zip::ZipArchive::new(std::fs::File::open(&path).unwrap()).unwrap();
     let mut readme = String::new();
@@ -497,7 +514,7 @@ fn the_menu_reads_an_older_books_dirs_settings_file() {
         .unwrap()
         .read_to_string(&mut readme)
         .unwrap();
-    assert!(readme.starts_with("File Kept Co"), "{readme}");
+    assert!(readme.starts_with("Journal Kept Co"), "{readme}");
 }
 
 /// The worksheet says when a reportable payee's TIN isn't in it (the

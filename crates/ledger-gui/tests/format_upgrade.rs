@@ -3,8 +3,8 @@
 //! and the go-ahead is asked as the viewer opens them, with the owner
 //! passphrase, handed to the owner the program gives the viewer (the
 //! server checks it). "Not now" changes nothing; a refusal is said in the
-//! dialog, which stays; books this version made, and older books dirs,
-//! are never asked; the viewer writes nothing of the books.
+//! dialog, which stays; books this version made, and books outside a
+//! data root (the demo's), are never asked; the viewer writes nothing of the books.
 
 use chrono::NaiveDate;
 use egui_kittest::Harness;
@@ -95,7 +95,7 @@ fn asked(f: &Fake) -> Vec<String> {
     f.asked.lock().unwrap().clone()
 }
 
-/// Books `acme`: in a data root (`root`) or an older books dir, in journal
+/// Books `acme`: in a data root (`root`) or outside one, in journal
 /// format 1 (as an older version wrote them) or this version's (`old`).
 fn books(root: bool, old: bool) -> (tempfile::TempDir, PathBuf, Books) {
     let dir = tempfile::Builder::new()
@@ -320,11 +320,11 @@ fn an_upgrade_that_ends_without_an_answer_never_holds_the_window() {
     assert!(h.query_by_label(ASKS).is_none(), "and closes");
 }
 
-/// Books this version made wait for nothing, and older books dirs (no
-/// owner's server for them) are never asked: no notice, no dialog, no
+/// Books this version made wait for nothing, and books outside a data
+/// root (no owner's server for them) are never asked: no notice, no dialog, no
 /// menu item.
 #[test]
-fn books_in_this_versions_format_and_older_books_dirs_are_never_asked() {
+fn books_in_this_versions_format_and_books_outside_a_root_are_never_asked() {
     let _alone = alone();
     let _ = fake();
     for (root, old) in [(true, false), (false, true), (false, false)] {

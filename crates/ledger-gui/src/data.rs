@@ -16,45 +16,15 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::time::Duration;
 
-/// Where the books come from: their folder (a book of the data root, or
-/// an older books dir's `books-data`). Their settings are their own, in
-/// their journal (plan 3.6); only an older books dir whose journal keeps
-/// none is read as its server reads it, from its settings file (see
-/// `settings`).
+/// Where the books come from: their folder, a book of the data root
+/// (`wanderbooks gui ID`; D-44). Their settings are their own, in their
+/// journal (plan 3.6), read as the server reads them.
 #[derive(Clone, Debug)]
 pub struct Source {
     /// The books' folder (journal and blobs).
     pub data_dir: PathBuf,
     /// Fix "today" (tests, screenshots); otherwise the local date.
     pub today: Option<NaiveDate>,
-}
-
-/// The settings file an older books dir's server reads when the books
-/// keep no settings of their own: `wanderbooks.toml` beside `books-data`,
-/// or the one named with `--books-toml`. Never for a book of the data
-/// root.
-pub fn legacy_toml(data_dir: &std::path::Path) -> Option<PathBuf> {
-    legacy_toml_path(data_dir).filter(|p| p.is_file())
-}
-
-/// Where an older books dir's settings file is, whether or not it is
-/// there yet (a file made later is followed, as the server follows it).
-fn legacy_toml_path(data_dir: &std::path::Path) -> Option<PathBuf> {
-    if ledger_store::root::inside_a_root(data_dir) {
-        return None;
-    }
-    if let Some(named) = LEGACY_TOML.get() {
-        return Some(named.clone());
-    }
-    Some(data_dir.parent()?.join("wanderbooks.toml"))
-}
-
-/// `--books-toml`, for an older books dir (once, at start).
-static LEGACY_TOML: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-
-/// Name an older books dir's settings file (`--books-toml`).
-pub fn set_legacy_toml(path: PathBuf) {
-    let _ = LEGACY_TOML.set(path);
 }
 
 pub enum Update {
@@ -109,7 +79,7 @@ pub fn load_once(source: &Source) -> Result<Books, String> {
         })
     })?;
     let integrity = Integrity::check(&snap, &mut HashSet::new());
-    let settings = settings(source, &snap)?;
+    let settings = settings(&snap);
     let today = today(source, &settings);
     Books::build(&snap, settings, today, None, integrity)
 }
@@ -139,26 +109,13 @@ fn today(source: &Source, settings: &BooksSettings) -> NaiveDate {
         .unwrap_or_else(|| ledger_core::settings::today_in(settings.timezone.as_deref()))
 }
 
-/// The settings, as the server reads them: the books' own, from their
-/// journal; for an older books dir that keeps none, its settings file
-/// (else the defaults). A book of the data root reads no file.
-fn settings(source: &Source, snap: &Snapshot) -> Result<BooksSettings, String> {
-    settings_of(&source.data_dir, snap)
-}
-
-/// `settings` for the books in `data_dir`, as `snap` holds them.
-pub fn settings_of(data_dir: &std::path::Path, snap: &Snapshot) -> Result<BooksSettings, String> {
-    let books = snap.ledger().settings();
-    if !books.is_journaled()
-        && let Some(toml) = legacy_toml(data_dir)
-        && toml.is_file()
-    {
-        return ledger_config::load(&toml);
-    }
-    Ok(ledger_config::codec::books_settings(
-        books,
+/// The settings: the books' own, from their journal, as the server reads
+/// them (the defaults until the first is set).
+pub fn settings(snap: &Snapshot) -> BooksSettings {
+    ledger_config::codec::books_settings(
+        snap.ledger().settings(),
         snap.ledger().base_currency().code(),
-    ))
+    )
 }
 
 fn run(
@@ -191,30 +148,14 @@ fn run(
     let mut build = |snap: &Snapshot, prev: Option<u64>| -> (Update, ledger_store::DiskCheck) {
         let integrity = Integrity::check(snap, &mut verified);
         let disk = integrity.disk.clone();
-        let update = match settings(&source, snap).and_then(|s| {
-            let today = today(&source, &s);
-            Books::build(snap, s, today, prev, integrity)
-        }) {
+        let s = settings(snap);
+        let today = today(&source, &s);
+        let update = match Books::build(snap, s, today, prev, integrity) {
             Ok(b) => Update::Books(Arc::new(b)),
             Err(e) => Update::Error(e),
         };
         (update, disk)
     };
-    // An older books dir's settings file, followed as its server follows
-    // it (only read while the books keep no settings of their own).
-    // And its config.json, whose receipt rule the server reads too.
-    let toml = legacy_toml_path(&source.data_dir);
-    let config = (!ledger_store::root::inside_a_root(&source.data_dir))
-        .then(|| source.data_dir.join("config.json"));
-    let mtime = |t: &Option<PathBuf>| {
-        t.as_ref()
-            .and_then(|p| std::fs::metadata(p).ok())
-            .and_then(|m| m.modified().ok())
-    };
-    let toml_mtime = |t: &Option<PathBuf>| (mtime(t), mtime(&config));
-    // Taken before the first build, so a file written while it is being
-    // built is a change, never part of the starting state.
-    let mut toml_seen = toml_mtime(&toml);
     let (first, disk) = build(&snap, None);
     let mut last_disk = Some(disk);
     send(first);
@@ -267,15 +208,8 @@ fn run(
         }
     };
     look_at_ops(&mut watcher);
-    let day_now = |snap: &Snapshot| {
-        settings(&source, snap)
-            .map(|s| today(&source, &s))
-            .unwrap_or_else(|_| today(&source, &BooksSettings::default()))
-    };
+    let day_now = |snap: &Snapshot| today(&source, &settings(snap));
     let mut day = day_now(&snap);
-    if let (Some(w), Some(dir)) = (watcher.as_mut(), toml.as_ref().and_then(|t| t.parent())) {
-        let _ = w.watch(dir, RecursiveMode::NonRecursive);
-    }
     loop {
         if gone() {
             return;
@@ -302,7 +236,6 @@ fn run(
             }
         };
         look_at_ops(&mut watcher);
-        let toml_now = toml_mtime(&toml);
         let new_day = day_now(&snap);
         // The writer journals first and updates its database right after:
         // a "behind" database usually catches up a moment later, so look
@@ -311,9 +244,8 @@ fn run(
             && last_disk
                 .as_ref()
                 .is_some_and(|d| *d != ledger_store::DiskCheck::Matches && snap.check_disk() != *d);
-        if grew || disk_changed || new_day != day || toml_now != toml_seen {
+        if grew || disk_changed || new_day != day {
             day = new_day;
-            toml_seen = toml_now;
             let (update, disk) = build(&snap, grew.then_some(before));
             last_disk = Some(disk);
             send(update);

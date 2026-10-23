@@ -19,11 +19,9 @@
 //!      ReceiptPolicy::rule), never a fixed one; the connect text states
 //!      the parties rule in force too.
 //!   3. No connect text or handbook section names a filesystem path, a
-//!      helper command, a pull request, or where the books are; none
-//!      names the settings file, which is the one books.settings names.
-//!      Books that keep their own settings are told no local file is
-//!      theirs to edit; books that still read a settings file, that it is
-//!      the one they may edit, until it is imported.
+//!      helper command, a pull request, or where the books are; the books
+//!      keep their own settings, and the agent is told no local file is
+//!      its to edit.
 //!   4. The connect text's first paragraph stands alone: the entry
 //!      point, the local-files rule, decimal strings, and the entry flow.
 //!   5. The company's name is shown as one line of plain text (no
@@ -246,23 +244,9 @@ pub fn connect_text(settings: &Settings, currency: &str) -> String {
     // (with the hint back), then the hint and the account codes the rule
     // lists (counted, with books.settings listing them), and last the
     // words that only help.
-    // Where settings live: in the books (changed through the tools), or,
-    // for books that still read a settings file, that one file.
-    let settings_rule = |why: bool| {
-        if settings.journaled {
-            " Settings and conventions live in the books: change them only with these tools."
-                .to_string()
-        } else {
-            format!(
-                " The only local file you may edit is the settings file books.settings names{}.",
-                if why {
-                    " (until books.import_settings)"
-                } else {
-                    ""
-                }
-            )
-        }
-    };
+    // Where settings live: in the books, changed through the tools.
+    let settings_rule =
+        " Settings and conventions live in the books: change them only with these tools.";
     let rest = |why: bool, codes: usize, trace: bool, terse: bool| {
         let rule = settings.policy.rule_listing(currency, codes);
         let because = |s: &'static str| if why { s } else { "" };
@@ -287,7 +271,7 @@ pub fn connect_text(settings: &Settings, currency: &str) -> String {
             } else {
                 ""
             },
-            settings_rule(why),
+            settings_rule,
         )
     };
     let mut text = String::new();
@@ -358,13 +342,7 @@ mod tests {
             longest_rule(&long, PartyPolicy::Suggest),
             longest_rule(&long, PartyPolicy::Off),
         ];
-        // Each as books still reading a settings file, and as books that
-        // keep their own settings.
-        let journaled = every.clone().map(|mut s| {
-            s.journaled = true;
-            s
-        });
-        for s in every.into_iter().chain(journaled) {
+        for s in every {
             let text = connect_text(&s, "USD");
             let chars = text.chars().count();
             assert!(chars <= CONNECT_MAX, "{chars} chars: {text}");
@@ -391,8 +369,8 @@ mod tests {
                     .any(|&n| text.contains(&s.policy.rule_listing("USD", n))),
                 "{text}"
             );
-            // What every entry must be, and where settings live: the one
-            // file the agent may edit, or none.
+            // What every entry must be, and where settings live: in the
+            // books.
             for must in [
                 "balances exactly",
                 "real account from books.chart",
@@ -401,14 +379,8 @@ mod tests {
             ] {
                 assert!(text.contains(must), "lacks {must:?}: {text}");
             }
-            assert_eq!(
-                text.contains("the settings file books.settings names"),
-                !s.journaled,
-                "{text}"
-            );
-            assert_eq!(
+            assert!(
                 text.contains("Settings and conventions live in the books"),
-                s.journaled,
                 "{text}"
             );
             // The parties rule in force (INVARIANT 2), and only it.
@@ -611,22 +583,10 @@ mod tests {
         for why in [
             "(their schedules are the evidence)",
             "(derived from the books)",
-            "(until books.import_settings)",
-            "(the parties setting requires it)",
-        ] {
-            assert!(text.contains(why), "{} chars: {text}", text.chars().count());
-        }
-        // The same company once its settings are in the books.
-        s.journaled = true;
-        let text = connect_text(&s, "USD");
-        assert!(text.chars().count() <= CONNECT_MAX);
-        for why in [
-            "(their schedules are the evidence)",
             "(the parties setting requires it)",
             "Settings and conventions live in the books",
         ] {
             assert!(text.contains(why), "{} chars: {text}", text.chars().count());
         }
-        assert!(!text.contains("local file you may edit"), "{text}");
     }
 }

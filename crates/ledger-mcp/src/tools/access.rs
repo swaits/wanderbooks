@@ -66,9 +66,6 @@ impl BooksServer {
         params: Parameters<AccessLogParams>,
     ) -> Result<Json<AccessLogOut>, String> {
         let p = params.0;
-        if self.access.is_none() {
-            return Err("these books keep no access log: only books served from the books' private folder do".into());
-        }
         let limit = p.limit.unwrap_or(DEFAULT_RECORDS);
         if limit == 0 || limit > MAX_RECORDS {
             return Err(format!("limit is 1 to {MAX_RECORDS}"));

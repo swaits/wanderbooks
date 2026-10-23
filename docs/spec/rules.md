@@ -757,7 +757,7 @@ shapes), `prop_pure_entries_sections_are_movements`; regressions
 (`crates/ledger-core/tests/spec_cash_flow.rs`); the seam review's year
 of books (`ledger-package` `tests/p3_seams.rs`, its books
 `tests/seams/books.rs`; the viewer's `ledger-gui` `tests/p3_seams.rs`;
-the tools' `ledger-mcp` `tests/p3_seams.rs`).
+the tools' `ledger-cli` `tests/p3_seams.rs`).
 
 ## B-15 Depreciation: straight line, salvage never depreciated, partial months by days
 
@@ -943,7 +943,7 @@ dates, `accumulated_posted` and its edges,
 `a_reinstated_run_counts_and_is_live`); `ledger-store`
 `tests/asset_tags.rs` (`runs_replay_reload_and_verify_catches_a_tampered_run`,
 `the_viewer_and_writer_agree_on_a_bad_depreciation_posted_payload`);
-`ledger-mcp` `tests/spec_assets.rs` (`a_reversed_run_is_not_posted`,
+`ledger-cli` `tests/spec_assets.rs` (`a_reversed_run_is_not_posted`,
 `list_assets_book_value_is_what_the_books_carry`).
 
 ## B-16 Prepaid expenses and deferred revenue are recognized over the period benefited or earned
@@ -1003,8 +1003,8 @@ B-16 cites them (P3 depreciation review R7).
 `a_schedule_month_posted_again_waits_for_month_reposting_and_replays`,
 `daily_plans_pin_month_end_clamping`,
 `prop_daily_plan_sums_exactly_and_lands_on_month_ends`,
-`prop_monthly_even_plan_is_unchanged`; `ledger-mcp`
-`mcp_daily_schedule_over_stdio`.
+`prop_monthly_even_plan_is_unchanged`; `ledger-cli`
+`mcp_daily_schedule`.
 
 ## B-17 Platform payouts are recorded gross when the business is the principal
 
@@ -1256,7 +1256,7 @@ bucket table is `kernel::payment_bucket` (Kani `payment_bucket_is_the_table`,
 (ledger-core `tests/form1099.rs`);
 `the_untagged_note_counts_only_money_out`,
 `the_other_receipts_note_says_what_each_entry_did` (ledger-package); the
-MCP stdio tests; bookspec
+MCP tests through a real books server (ledger-cli); bookspec
 `bookspec/examples/1099-*.toml`.
 
 ## B-20 Every transaction has supporting documents; records are kept
@@ -1341,7 +1341,7 @@ the books' figure, never the schedule's (P3, defect 13).
 **Enforced:** `Ledger::set_asset_tag` / `check_asset_tag_for`,
 `assets::check_asset_tag`, `assets::check_serial`. **Checked:**
 `ledger-core` `tests/spec_asset_tags.rs`; `ledger-store`
-`tests/asset_tags.rs`; `ledger-mcp` `tests/spec_assets.rs`.
+`tests/asset_tags.rs`; `ledger-cli` `tests/spec_assets.rs`.
 
 ## B-25 Tax figures beside book value: the §723 basis, the depreciable basis, the §704(c) built-in gain
 
@@ -1418,7 +1418,7 @@ non-negative, in cents, at most one quadrillion) and its replay pairs
 never assumed). **Checked:** `ledger-core` `tests/spec_asset_basis.rs`,
 `tests/kernel_bridge.rs` (`basis_figures_agree`), `tests/properties.rs`
 (`prop_basis_figures_laws`); `ledger-store` `tests/asset_tags.rs`;
-`ledger-mcp` `tests/spec_assets.rs`.
+`ledger-cli` `tests/spec_assets.rs`.
 
 ## B-26 Parties: one directory, no full TIN in the books
 
@@ -1447,8 +1447,9 @@ plain rule: a nine-digit job or PO number is written by its last four,
 as everywhere else in the books.
 
 The full TIN, when the books need it for the 1099 worksheet, lives in the
-TIN vault (`vault/` in the books dir, git-ignored; encrypted under a key
-file outside the books dir): `books.set_w9` `tin` writes it there and
+TIN vault (`vault/` in the book's own folder in the data root, encrypted
+under the book's own key, `keys/legacy.key` beside it): `books.set_w9`
+`tin` writes it there and
 journals only the last four and the vault record's hash; the signed W-9
 goes there too, never to the attachment store. Any party may have its
 TIN in the vault, whatever its roles: every member's (for their K-1) and
@@ -1472,7 +1473,7 @@ don't count toward the three: `sources/unicode-tin-text.md`, Unicode
 worksheets carry every member's and payee's TIN by default) are never
 written to a path: no tool takes one (D-29, P2 slice 6). Each is handed
 over as an export the asking token fetches with `wanderbooks download`
-(kept 15 minutes), or inline over stdio. (Until slice 6 they were
+(kept 15 minutes), never inline (D-44). (Until slice 6 they were
 written only outside the books dir: DECISION, P0 review, 2026-10-16, so
 none could be filed back in as a receipt and read out again.) No file
 holding a full TIN is filed into the books
@@ -1547,16 +1548,17 @@ W-9 facts agree), `set_entry_party`, `validate_payroll`; `ledger-core`
 `k1` (the K-1 worksheet); `ledger-vault` (Tin::new, the encrypted
 records, records_held, purge_records); `ledger-mcp` `books.set_w9`,
 `books.set_tin`, `books.get_w9`, `books.purge_tin`, `books.vendor_1099`,
-`books.export_cpa_package` (open_vault refuses a key file in the books
-dir; outside_books for files with a TIN; vault_tin checks the vault
-against the books); `ledger-mcp` `tin_files` (the registry, the text
+`books.export_cpa_package` (open_vault opens the book's own key;
+vault_tin checks the vault against the books); `ledger-mcp` `tin_files`
+(the registry, the text
 scan and its probe bound, on every filing tool; `known_tin_last4` gives
 the books' last fours).
 **Checked:** `ledger-core` `tests/spec_parties.rs`; `ledger-store`
-`tests/parties.rs`; `ledger-vault` `tests/vault.rs`; `ledger-mcp`
-`tests/spec_parties.rs`, `tests/spec_vault.rs` (every response, the log,
-and every file in the books dir outside `vault/` scanned for the TINs in
-any formatting), `tests/tin_files.rs`
+`tests/parties.rs`; `ledger-vault` `tests/vault.rs`; `ledger-cli`
+`tests/spec_parties.rs`, `tests/spec_vault.rs` (every response, every
+file handed over, the server's log, and every file in the books' folder
+outside `vault/` and the files kept for their download scanned for the
+TINs in any formatting), `tests/tin_files.rs`
 (`a_tin_bearing_file_is_refused_from_every_session_and_after_a_restart`,
 `text_with_a_vault_tin_or_a_printed_one_is_refused_and_a_bank_export_is_not`,
 `text_probing_for_a_tin_is_refused_alike_by_every_filing_tool`), and the
@@ -1738,7 +1740,7 @@ ledger-gui `owner.rs` (the notice and the dialog).
 `an_old_reader_never_repairs_newer_books`,
 `a_blank_line_is_corrupt_for_the_viewer_and_the_writer`,
 `damaged_journals_are_still_corrupt`) and the unit tests in `format.rs`;
-`ledger-gui` `tests/newer_journal.rs`; `ledger-mcp` `tests/startup.rs`;
+`ledger-gui` `tests/newer_journal.rs`; `ledger-cli` `tests/startup.rs`;
 the `fuzz_store_replay` target (the writer and the viewer agree on newer
 versus bad). The upgrade: `ledger-store` `tests/format_upgrade.rs` (new
 books in this version's format, a change waiting for the upgrade, every
@@ -1866,7 +1868,7 @@ replay pair), `calendar.rs`, the unit tests of `amortization_plan`,
 `tests/fixtures/old-books`, written by main 188c90ea, opens in the writer
 and the viewer and replays to exactly the figures main computed) and
 `every_figure_over_old_books_is_computed_or_refused`, `tests/bounds.rs`;
-`ledger-mcp` `tests/hostile_args.rs` (every tool with generated hostile
+`ledger-cli` `tests/hostile_args.rs` (every tool with generated hostile
 arguments and every resource with generated URIs: the server never
 stops, and the books reopen after; the inputs that once panicked,
 pinned; every tool over every old book) and `server.rs`
@@ -1887,8 +1889,7 @@ kept in the journal like every other fact, each with who decided it and
 when (journal format 2: `settings.set`, `convention.set`,
 `convention.retired`, `decision.recorded`, `open_item.raised`,
 `open_item.resolved`, `entry.approved`). A settings file is only text to
-import from or export to; books that keep their own settings never read
-one.
+import from or export to; no server reads one (D-44).
 
 - A setting is one of the known keys, checked by its key and kept in one
   spelling; a change is all or nothing, and the settings after it hold
@@ -1905,9 +1906,9 @@ one.
   fiscal year, the cash flow roles, the members) present them by the
   settings in force; the fiscal year can't move once a period is closed
   under it (a changed tax year needs the IRS's consent, Form 1128).
-- Moving a settings file in reads every setting exactly as the server read
-  the file: the text must be the file the server reads, and books that
-  keep their own settings take no import that changes them.
+- Books keep their own settings, and only `books.set_setting` changes
+  them; old books bring their settings file in once, whole, as they are
+  adopted (`wanderbooks books adopt`), and nothing reads one after.
 - A setting key or convention kind this version doesn't know is a newer
   version's: the books are "newer", never "damaged" (B-27).
 - A posting template's lines split the amount exactly on each side, odd
@@ -1933,8 +1934,9 @@ one.
 (format 2 declared before the first such line); `ledger_config::codec`
 (`import`, `export`); `Store::post_entry` and `approval_gate`
 (`ApprovalRequired`, `ApprovalNeedsDraft`), `check_renumber_account`;
-`ledger-mcp` `books.import_settings` (the file the server reads, whole),
-`books.post_entry` (`approval_required`).
+`ledger-mcp` adoption (`local.rs` `settings_to_move`: a settings file,
+whole, through `codec::import`), `books.post_entry`
+(`approval_required`).
 **Checked:** `ledger-core` settings and conventions unit tests;
 `ledger-store` `tests/settings.rs` (`settings_replay_is_pure`, 256 cases
 per check, 2,000 by hand, with posts between records and every record
@@ -1943,7 +1945,7 @@ checked to change no figure or entry; `approval_rules_off_by_default`,
 `a_newer_key_or_kind_is_newer`;
 `books_written_under_p1_open_to_their_record`, fixture
 `old-books/p1_record`); `ledger-config` `tests/codec_props.rs`
-(`exports_round_trip`) and codec unit tests; `ledger-mcp`
+(`exports_round_trip`) and codec unit tests; `ledger-cli`
 `tests/spec_kept.rs`; Lean `Step.record_changes_no_figure`,
 `Reachable.records`; fuzz `fuzz_settings_replay`.
 
@@ -2008,8 +2010,8 @@ generated descriptions (`described`) and parameter docs; `ledger-gui`
 `Books::periods`, `default_period`, `fiscal_ytd`, `App::show`,
 `RegisterRange`. **Checked:** `ledger-core` `calendar.rs` unit tests and
 `tests/properties.rs` `prop_period_defaults_resolve`; `ledger-mcp`
-`server.rs` `period_tools_describe_the_one_default`, `tests/mcp_stdio.rs`
-`one_default_period_everywhere_defect_16` and
+`server.rs` `period_tools_describe_the_one_default`; `ledger-cli`
+`tests/mcp_journeys.rs` `one_default_period_everywhere_defect_16` and
 `the_default_period_never_shortens_the_iif_or_the_package`,
 `tests/oracle_mcp.rs`
 `show_sends_the_dates_it_names_defect_16`,
@@ -2072,7 +2074,7 @@ books declare before their first rename, B-27); `books.rename_account` (scope
 (`Cmd::Rename`); `ledger-store` `tests/store.rs`
 (`rename_account_changes_only_the_name_defect_15`,
 `prop_rename_changes_no_figure`, `a_journaled_rename_replays_past_the_command_rules`),
-`tests/format.rs`; `ledger-mcp` `tests/mcp_stdio.rs`
+`tests/format.rs`; `ledger-cli` `tests/mcp_journeys.rs`
 (`rename_account_end_to_end_defect_15`), `tests/hostile_args.rs`;
 `ledger-core` `tests/spec_ledger.rs`
 (`a_new_name_is_one_trimmed_line_of_bounded_length`), `ledger-store`
@@ -2135,7 +2137,7 @@ their first `settings.set` naming the key, B-27); `ledger-mcp` `books.add_accoun
 (Info under warn, Todo under refuse). **Checked:** `ledger-core`
 `tests/tax.rs`; `ledger-store` `tests/store.rs`
 (`prop_tax_policy_refuses_exactly`, `a_journaled_clear_replays_under_refuse`);
-`ledger-mcp` `tests/spec_tax_policy.rs`; `ledger-gui` `tests/view_model.rs`
+`ledger-cli` `tests/spec_tax_policy.rs`; `ledger-gui` `tests/view_model.rs`
 (`needs_attention_flags_every_uncategorized_pl_account_defect_8`);
 bookspec `examples/tax-category-required.toml`.
 
@@ -2188,7 +2190,7 @@ fixed asset register, mid-year and at year end; `as_of_package_iif_stops_at_as_o
 `the_1099_worksheet_stops_at_as_of`,
 `one_list_of_cash_accounts_per_package`,
 `payments_to_a_vendor_come_from_the_packages_accounts`; the property
-`iif_ties_to_the_trial_balance_as_of`, 2,000 cases); `ledger-mcp`
+`iif_ties_to_the_trial_balance_as_of`, 2,000 cases); `ledger-cli`
 `oracle_mcp.rs` (`cpa_package_holds_the_year_and_its_evidence`: the
 package's CSV is the tool's for the same accounts and `through`); the
 bookspec examples `bookspec/examples/as-of-package-stops-at-as-of.toml`
@@ -2349,10 +2351,10 @@ pinned); `tests/spec_import.rs` (`iif_docnum_is_the_entry_id`,
 `the_bookspec_iif_example_matches_the_engine`, and B-33's); the bookspec
 example `bookspec/examples/iif-quickbooks-journal-file.toml` (formats
 appendix: the file line by line and its changes, derived by hand);
-`ledger-mcp` `oracle_mcp.rs`
+`ledger-cli` `oracle_mcp.rs`
 (`iif_declares_accounts_by_role_and_balances_every_transaction`,
 `iif_without_as_of_is_as_of_today_and_ties_to_the_trial_balance`),
-`mcp_stdio.rs` (`mcp_import_export_over_stdio`,
+`mcp_journeys.rs` (`mcp_import_export`,
 `the_default_period_never_shortens_the_iif_or_the_package`).
 
 ## B-35 A party's part of an entry, and a party's totals
@@ -2582,7 +2584,7 @@ distributions declared or of depreciated property, the properties), Kani
 `reverse_target_is_an_involution`, bridge `party_target_agrees`; Lean
 `reverseTarget_involutive`, `capitalTarget_odd`, `partyTarget_odd`,
 `sumOver_movement_reversal`; `ledger-store` `tests/party_creditors.rs`;
-`ledger-mcp` `tests/spec_party_totals.rs`; `ledger-gui` `tests/parties.rs`.
+`ledger-cli` `tests/spec_party_totals.rs`; `ledger-gui` `tests/parties.rs`.
 
 ## B-36 The K-1 worksheet reports tax-basis capital beside book capital
 
@@ -2835,7 +2837,7 @@ period_margin_pct, period_lines}`, `kernel::unrecovered_cost`;
 an invoice's or bill's page (each line's project).
 **Checked:** `ledger-core` `tests/spec_projects.rs` and
 `tests/spec_document_projects.rs`, `ledger-store` `tests/projects.rs` and
-`tests/document_projects.rs`, `ledger-mcp` `tests/spec_projects.rs`,
+`tests/document_projects.rs`, `ledger-cli` `tests/spec_projects.rs`,
 `ledger-gui` `tests/projects.rs`, `ledger-cli` `tests/projects_parity.rs`
 and `tests/format_upgrade.rs` (`books_p2_served_cut_over_whole`); bookspec
 `projects-net-is-its-tagged-lines`,

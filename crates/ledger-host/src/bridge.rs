@@ -9,7 +9,10 @@
 //!         no data-dir flag); the plan's tests bridge_opens_closed_books,
 //!         bridge_survives_server_restart, bridge_initializes_during_cold_start,
 //!         no_local_agent_tcp, close_now_ends_every_lease (in
-//!         ledger-cli's open_while_held.rs, under names of their own).
+//!         ledger-cli's open_while_held.rs, under names of their own);
+//!         docs/spec/sources/jsonrpc-2.0.md (the agent's lines: a parse
+//!         error is -32700, an invalid request -32600, with its id when
+//!         it has one, null when not: INVARIANT 7).
 //! INVARIANTS:
 //!   1. It holds a lease for the whole session, and talks only to the
 //!      root's lease and MCP sockets: never TCP, never the books' files.

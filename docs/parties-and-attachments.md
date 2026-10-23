@@ -304,8 +304,7 @@ damn CPA package."
   `books.export_cpa_package` (its K-1 worksheet, `k1-members.csv`, and its
   1099 worksheet; `include_tins` defaults to true there) decrypt them.
   The package is handed over as a file (an export the asking token
-  fetches with `wanderbooks download`, or inline over stdio); no tool
-  takes a path. The MCP server
+  fetches with `wanderbooks download`); no tool takes a path. The MCP server
   never returns a TIN in any other tool, log, or error. Tests check that
   no other output contains a nine-digit run.
 - **Books without a vault** (another machine, books adopted without
@@ -331,10 +330,11 @@ damn CPA package."
   is the one tool output with full TINs (with a warning; `csv: true`
   also hands the worksheet over as a CSV file);
   `books.export_cpa_package` carries them in its zip, handed over the
-  same way. A key file inside the books dir is
-  refused. `tests/spec_vault.rs` scans every tool response, the server's
-  log, and every file in the books dir outside `vault/` for the TINs in
-  any formatting.
+  same way. The key is the book's own (`keys/legacy.key` in its folder in
+  the data root). `tests/spec_vault.rs` (ledger-cli) scans every tool
+  response, every file handed over, the server's log, and every file in
+  the books' folder outside `vault/` (and the files handed over, kept for
+  their download) for the TINs in any formatting.
 
 ## Attachments
 

@@ -1,49 +1,19 @@
-//! Concurrency over HTTP: several agents at once against one store.
+//! Concurrency: several agents at once against one book's store.
 //!
-//! In `--http` mode every connection gets its own server over one shared,
-//! locked store (main.rs `serve_http`). Oracle (server.rs INVARIANTS 2 and
+//! The books server gives every session its own service over the book's
+//! one shared, locked store (ledger-mcp local.rs INVARIANT 4). Oracle (server.rs INVARIANTS 2 and
 //! 5, under contention): clients posting at the same time leave books
 //! that verify, a trial balance that balances, every posted entry with
 //! its receipt (threshold 0.00), and each draft posted exactly once even
 //! when two clients race to post it; a restart replays the same books.
 
-use rmcp::ServiceExt;
-use rmcp::model::{CallToolRequestParams, ClientConfig};
-use rmcp::service::{RoleClient, RunningService};
-use rmcp::transport::StreamableHttpClientTransport;
-use serde_json::{Value, json};
-use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
+use common::{Client, call};
+use serde_json::json;
 
-type Client = RunningService<RoleClient, ClientConfig>;
+mod common;
 
 const CLIENTS: usize = 6;
 const ENTRIES: usize = 12;
-
-struct Server(Child);
-impl Drop for Server {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
-
-/// A test's dir, removed when the test ends, pass or panic.
-struct TestDir(std::path::PathBuf);
-
-impl Drop for TestDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-}
 
 fn b64(bytes: &[u8]) -> String {
     const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -61,38 +31,6 @@ fn b64(bytes: &[u8]) -> String {
         }
     }
     out
-}
-
-async fn connect(url: &str) -> Client {
-    let deadline = Instant::now() + Duration::from_secs(30);
-    loop {
-        let transport = StreamableHttpClientTransport::from_uri(url.to_string());
-        match ClientConfig::default().serve(transport).await {
-            Ok(c) => return c,
-            Err(e) if Instant::now() > deadline => panic!("connect: {e}"),
-            Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
-        }
-    }
-}
-
-/// Call a tool: Ok(structured result) or Err(the tool's error text).
-async fn call(c: &Client, tool: &str, args: Value) -> Result<Value, String> {
-    let args = args.as_object().cloned().unwrap_or_default();
-    let r = c
-        .call_tool(CallToolRequestParams::new(tool.to_string()).with_arguments(args))
-        .await
-        .map_err(|e| format!("protocol: {e}"))?;
-    let text = r
-        .content
-        .iter()
-        .find_map(|c| c.as_text().map(|t| t.text.clone()))
-        .unwrap_or_default();
-    if r.is_error == Some(true) {
-        Err(text)
-    } else {
-        Ok(r.structured_content
-            .unwrap_or_else(|| serde_json::from_str(&text).unwrap()))
-    }
 }
 
 async fn draft(c: &Client, tag: &str, cents: u64, with_receipt: bool) -> u64 {
@@ -130,33 +68,24 @@ async fn draft(c: &Client, tag: &str, cents: u64, with_receipt: bool) -> u64 {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn agents_posting_at_once_leave_whole_books() {
-    let dir = std::env::temp_dir().join(format!("ledger-mcp-http-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    // Declared before the server, so dropped after it: pass or panic.
-    let _cleanup = TestDir(dir.clone());
-    let toml = dir.join("wanderbooks.toml");
-    std::fs::write(&toml, "[books]\nreceipt_threshold = \"0.00\"\n").unwrap();
-    let data = dir.join("books-data");
-    let port = free_port();
-    let addr = format!("127.0.0.1:{port}");
-    let bin = env!("CARGO_BIN_EXE_ledger-mcp");
-    let server = Server(
-        Command::new(bin)
-            .arg("--data-dir")
-            .arg(&data)
-            .arg("--books-toml")
-            .arg(&toml)
-            .arg("--http")
-            .arg(&addr)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap(),
-    );
-    let url = format!("http://{addr}/mcp");
-    let setup = connect(&url).await;
+    // Made on a thread of its own: the settings go in through a session
+    // with a runtime of its own (common.rs), never inside the test's.
+    let books = std::thread::spawn(|| {
+        common::Books::with(
+            "http-concurrency",
+            "USD",
+            Some("[books]\nreceipt_threshold = \"0.00\"\n"),
+        )
+    })
+    .join()
+    .unwrap();
+    let (run, token) = (books.home.run(), books.home.token(common::BOOK));
+    let connect = |run: std::path::PathBuf, token: String| async move {
+        common::connect_at(&run, common::BOOK, Some(token))
+            .await
+            .unwrap()
+    };
+    let setup = connect(run.clone(), token.clone()).await;
     for (code, name, ty) in [
         ("1000", "Cash", "asset"),
         ("3000", "Capital", "equity"),
@@ -178,10 +107,10 @@ async fn agents_posting_at_once_leave_whole_books() {
 
     let mut tasks = Vec::new();
     for n in 0..CLIENTS {
-        let url = url.clone();
+        let (run, token) = (run.clone(), token.clone());
         let contested = contested.clone();
         tasks.push(tokio::spawn(async move {
-            let c = connect(&url).await;
+            let c = connect(run, token).await;
             let (mut posted, mut refused, mut won) = (0usize, 0usize, 0usize);
             for (k, &race) in contested.iter().enumerate() {
                 // A receipted entry posts; a bare one is refused.
@@ -256,26 +185,10 @@ async fn agents_posting_at_once_leave_whole_books() {
     }
     let head = v["head"].clone();
     let _ = setup.cancel().await;
-    drop(server);
 
     // A restart replays the same books.
-    let port = free_port();
-    let addr = format!("127.0.0.1:{port}");
-    let _server = Server(
-        Command::new(bin)
-            .arg("--data-dir")
-            .arg(&data)
-            .arg("--books-toml")
-            .arg(&toml)
-            .arg("--http")
-            .arg(&addr)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap(),
-    );
-    let c = connect(&format!("http://{addr}/mcp")).await;
+    books.restart();
+    let c = connect(run.clone(), token.clone()).await;
     let v2 = call(&c, "books.verify", json!({})).await.unwrap();
     assert_eq!(v2["status"], "ok");
     assert_eq!(
@@ -283,5 +196,4 @@ async fn agents_posting_at_once_leave_whole_books() {
         "the restarted server sees the same journal"
     );
     let _ = c.cancel().await;
-    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -32,14 +32,11 @@
 //! ```
 
 use crate::handbook;
-use crate::paths::resolved;
 use crate::policy::ReceiptPolicy;
 use crate::settings::{Live, Settings};
 use crate::tin_files;
 use crate::types::*;
 use chrono::NaiveDate;
-#[cfg(test)]
-use ledger_config::Company;
 use ledger_core::{
     AccountId, AccountType, AssetStatus, Currency, DocumentLine, DocumentStatus, JournalEntry,
     Ledger, Money, NewAsset, PeriodStatus, Side, depreciation_schedule, reports,
@@ -62,69 +59,78 @@ use std::sync::{Arc, Mutex};
 /// is single-writer by construction. Tool bodies (synchronous disk and
 /// SQLite work) run on tokio's blocking threads, never on the async
 /// workers, so a long call can't stall the transport ([`run_blocking`]).
+/// Built only from a book as the books server serves it ([`Served`]): the
+/// one way books are served (plan D-44).
 #[derive(Clone)]
 pub struct BooksServer {
     store: Arc<SharedStore>,
     settings: Arc<Mutex<Live>>,
-    layout: Arc<Layout>,
-    /// The book's access log, for books served from the data root: every
-    /// call is then checked against its caller's token and recorded
-    /// (access.rs). None for a books dir served over stdio.
-    access: Option<Arc<ledger_store::access::AccessLog>>,
-    /// The book's uploads (books served from the data root; none over
-    /// stdio, where no bytes can be sent but inline).
-    uploads: Option<ledger_store::uploads::Uploads>,
-    /// The files the books made for agents, waiting to be fetched (books
-    /// served from the data root; over stdio a file comes back inline).
-    exports: Option<ledger_store::exports::Exports>,
-    /// The books' backups (books served from the data root; none over
-    /// stdio).
-    backups: Option<Arc<crate::backup::Backups>>,
+    /// The book's access log: every call is checked against its caller's
+    /// token and recorded (access.rs).
+    access: Arc<ledger_store::access::AccessLog>,
+    /// The book's uploads (`books.begin_upload`).
+    uploads: ledger_store::uploads::Uploads,
+    /// The files the books made for agents, waiting to be fetched.
+    exports: ledger_store::exports::Exports,
+    /// The books' backups (backup.rs).
+    backups: Arc<crate::backup::Backups>,
 }
 
-/// Where a book's own files live around its data dir.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Layout {
-    /// A books dir, as before P2: the data dir is `books-data/` in a
-    /// project folder (the books dir), which holds `vault/`, the settings
-    /// file and perhaps git; the vault's key lives outside it.
-    BooksDir,
-    /// A book in the data root (plan 3.4): the data dir is `books/<id>/`,
-    /// holding its own `vault/` and its v1 key in `keys/legacy.key`. The
-    /// root (the path given) plays the books dir's part: nothing in it is
-    /// ever read or written through a path a tool names.
-    Root(std::path::PathBuf),
+/// One book as the books server serves it (local.rs), shared by every
+/// session with it: its one store, the settings in force, its access
+/// log, uploads, exports and backups. Each session's [`BooksServer`] is
+/// made from it ([`BooksServer::new`]).
+#[derive(Clone)]
+pub(crate) struct Served {
+    pub(crate) store: Arc<SharedStore>,
+    pub(crate) settings: Arc<Mutex<Live>>,
+    pub(crate) access: Arc<ledger_store::access::AccessLog>,
+    pub(crate) uploads: ledger_store::uploads::Uploads,
+    pub(crate) exports: ledger_store::exports::Exports,
+    pub(crate) backups: Arc<crate::backup::Backups>,
 }
 
-impl Layout {
-    /// What a tool never reads or writes through a path: the books dir,
-    /// or the whole data root.
-    fn books_dir(&self, store: &Store) -> std::path::PathBuf {
-        match self {
-            Layout::BooksDir => books_dir(store),
-            Layout::Root(root) => root.clone(),
-        }
-    }
-
-    /// The TIN vault's folder.
-    fn vault_dir(&self, store: &Store) -> std::path::PathBuf {
-        match self {
-            Layout::BooksDir => books_dir(store).join("vault"),
-            Layout::Root(_) => store.data_dir().join("vault"),
-        }
-    }
-
-    /// The vault's key file: in the data root always the book's own
-    /// `keys/legacy.key`, whatever a setting says; in a books dir the one
-    /// in force (`[vault] key_file`, else the default outside the books).
-    fn key_file(&self, store: &Store, settings: &Settings) -> std::path::PathBuf {
-        match self {
-            Layout::BooksDir => settings.key_file(),
-            Layout::Root(_) => store
-                .data_dir()
-                .join(ledger_store::root::KEYS_DIR)
-                .join(ledger_store::root::LEGACY_KEY_FILE),
-        }
+impl Served {
+    /// What serving the books `store` holds needs, opened beside them:
+    /// the settings in force (the books' own), the access log, the uploads
+    /// and exports, the viewer's side channel, and the backups. The books
+    /// server opens every book this way (local.rs), the only way books are
+    /// served (plan D-44).
+    pub(crate) fn open(store: Store) -> Result<Self, String> {
+        let mut live = Live::own();
+        live.sync(store.ledger().settings(), store.base_currency().code());
+        let access = Arc::new(
+            ledger_store::access::AccessLog::open(store.data_dir())
+                .map_err(|e| format!("its access log can't be used: {e}"))?,
+        );
+        let uploads =
+            ledger_store::uploads::Uploads::open(store.data_dir(), chrono::Utc::now().timestamp())
+                .map_err(|e| e.to_string())?;
+        let exports =
+            ledger_store::exports::Exports::open(store.data_dir(), chrono::Utc::now().timestamp())
+                .map_err(|e| e.to_string())?;
+        // The viewer's side channel, made by the server (ops.rs INVARIANT 2):
+        // a viewer can show its presence from the start.
+        ledger_store::ops::prepare(store.data_dir()).map_err(|e| e.to_string())?;
+        let book_dir = store.data_dir().to_path_buf();
+        let book_id = book_dir
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let store = SharedStore::new(store);
+        let backups = Arc::new(crate::backup::Backups::open(
+            &book_id,
+            &book_dir,
+            store.clone(),
+        )?);
+        Ok(Self {
+            store,
+            settings: Arc::new(Mutex::new(live)),
+            access,
+            uploads,
+            exports,
+            backups,
+        })
     }
 }
 
@@ -329,13 +335,6 @@ fn named(
 /// INVARIANT 2).
 pub(crate) const STOPPED: &str = "the books server stopped taking requests after an internal error, to protect the books: ask the human to restart the books server (the books are checked again when it starts)";
 
-/// Why the vault won't open with a key file inside the books.
-const KEY_IN_BOOKS: &str = "the TIN vault's key file is inside the books' folder, beside the records it unlocks: ask the human to move it out of the books and set [vault] key_file in the settings";
-
-/// Why the vault won't store into books whose version history would keep
-/// its records.
-const VAULT_IN_HISTORY: &str = "the TIN vault can't store anything here yet: the books' folder is kept under version history that doesn't leave the vault out, so its records would be kept forever. Ask the human to leave the vault folder out of that history, then try again";
-
 /// The store, locked for one stretch of synchronous work. Not `Send`, so
 /// the compiler refuses any tool future that would hold it across an
 /// `.await` (tool futures must be `Send`): the lock is never held while a
@@ -481,9 +480,6 @@ fn not_run_closing() -> rmcp::ErrorData {
     )
 }
 
-#[cfg(test)]
-pub use crate::settings::CashRoles;
-
 /// Likely counterparties for an entry, best first (at most three): parties
 /// named in its description, then in its receipts' names and
 /// descriptions, then the party of an earlier entry with the same
@@ -595,51 +591,33 @@ fn vendor_1099_report(
 }
 
 impl BooksServer {
-    /// The settings that name account `code`, by key (or, for books
-    /// that still read a settings file, as the file spells them).
+    /// The settings that name account `code`, by key.
     fn config_mentions(&self, code: &str) -> Vec<String> {
         let mut out = Vec::new();
         let settings = self.settings();
-        for (key, in_file, codes) in [
-            (
-                "books.cash_accounts",
-                "[books] cash_accounts",
-                &settings.roles.cash,
-            ),
-            (
-                "books.financing_accounts",
-                "[books] financing_accounts",
-                &settings.roles.financing,
-            ),
-            (
-                "books.investing_accounts",
-                "[books] investing_accounts",
-                &settings.roles.investing,
-            ),
-            (
-                "books.close_sweep",
-                "[books] close_sweep",
-                &settings.company.close_sweep,
-            ),
+        for (key, codes) in [
+            ("books.cash_accounts", &settings.roles.cash),
+            ("books.financing_accounts", &settings.roles.financing),
+            ("books.investing_accounts", &settings.roles.investing),
+            ("books.close_sweep", &settings.company.close_sweep),
             (
                 "policy.evidence.required_accounts",
-                "receipt_required_accounts",
                 &settings.policy.receipt_required_accounts,
             ),
             (
                 "policy.evidence.exempt_accounts",
-                "receipt_exempt_accounts",
                 &settings.policy.receipt_exempt_accounts,
             ),
         ] {
             if codes.iter().any(|c| c == code) {
-                out.push(self.setting_label(key, in_file));
+                out.push(key.to_string());
             }
         }
         if settings.company.close_into.as_deref() == Some(code) {
-            out.push(self.setting_label("books.close_into", "[books] close_into"));
+            out.push("books.close_into".to_string());
         }
-        let members = self.setting_label("company.members", "[[company.members]]");
+        let members = "company.members";
+
         for m in &settings.company.members {
             if m.capital_account == code {
                 out.push(format!("{members} {} capital_account", m.name));
@@ -651,130 +629,22 @@ impl BooksServer {
         out
     }
 
-    /// Build the server around an open store.
-    pub fn new(store: Store, policy: ReceiptPolicy) -> Self {
-        Self::new_shared(SharedStore::new(store), policy)
-    }
-
-    /// Build the server around a shared store (for HTTP: each connection
-    /// gets a handle to the same store).
-    pub fn new_shared(store: Arc<SharedStore>, policy: ReceiptPolicy) -> Self {
+    /// A session's server for the book `served` serves.
+    pub(crate) fn new(served: &Served) -> Self {
         Self {
-            store,
-            settings: Arc::new(Mutex::new(Live::fixed(Settings {
-                policy,
-                ..Settings::default()
-            }))),
-            layout: Arc::new(Layout::BooksDir),
-            access: None,
-            uploads: None,
-            exports: None,
-            backups: None,
+            store: served.store.clone(),
+            settings: served.settings.clone(),
+            access: served.access.clone(),
+            uploads: served.uploads.clone(),
+            exports: served.exports.clone(),
+            backups: served.backups.clone(),
         }
-    }
-
-    /// Take uploaded files from `uploads` (`books.begin_upload`).
-    pub fn with_uploads(mut self, uploads: ledger_store::uploads::Uploads) -> Self {
-        self.uploads = Some(uploads);
-        self
-    }
-
-    /// Hand the files the books make to agents through `exports`.
-    pub fn with_exports(mut self, exports: ledger_store::exports::Exports) -> Self {
-        self.exports = Some(exports);
-        self
-    }
-
-    /// Back the books up through `backups` (backup.rs).
-    pub fn with_backups(mut self, backups: Arc<crate::backup::Backups>) -> Self {
-        self.backups = Some(backups);
-        self
-    }
-
-    /// Check every call against its caller's token, and record it in
-    /// `log` (access.rs).
-    pub fn with_access(mut self, log: Arc<ledger_store::access::AccessLog>) -> Self {
-        self.access = Some(log);
-        self
-    }
-
-    /// Serve a book kept in the data root (`Layout::Root`) rather than
-    /// in a books dir.
-    pub fn with_layout(mut self, layout: Layout) -> Self {
-        self.layout = Arc::new(layout);
-        self
-    }
-
-    /// Take the settings from files, reloading them whenever they change
-    /// (crate::settings), shared with the other sessions holding `live`.
-    pub fn with_live_settings(mut self, live: Arc<Mutex<Live>>) -> Self {
-        self.settings = live;
-        self
-    }
-
-    /// Set the company (name for report headers, fiscal year).
-    #[cfg(test)]
-    pub fn with_company(self, company: Company) -> Self {
-        self.live().edit(|s| s.company = company);
-        self
-    }
-
-    /// Set the `[books]` cash flow account roles.
-    #[cfg(test)]
-    pub fn with_cash_roles(self, roles: CashRoles) -> Self {
-        self.live().edit(|s| s.roles = roles);
-        self
     }
 
     fn live(&self) -> std::sync::MutexGuard<'_, Live> {
         // A panic while holding it can't leave the settings half-written
         // (they're swapped whole), so a poisoned lock is still good.
         self.settings.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    /// The settings in force as the books would keep them: the books' own,
-    /// or, for books that still read a settings file, that file's reading
-    /// (no source: the file is the source).
-    fn settings_as_kept(&self, store: &Store) -> ledger_core::settings::Settings {
-        let books = store.ledger().settings();
-        if books.is_journaled() {
-            return books.clone();
-        }
-        let Some((toml, json)) = self.live().file_texts() else {
-            return books.clone();
-        };
-        let empty = ledger_core::settings::Settings::default();
-        match ledger_config::codec::import(
-            toml.as_deref().unwrap_or(""),
-            json.as_deref(),
-            &empty,
-            self.currency(),
-        ) {
-            Ok(i) => {
-                let mut s = empty;
-                let file = ledger_core::settings::Source {
-                    decided_by: "the settings file".into(),
-                    decided_on: today(),
-                    citation: None,
-                    note: None,
-                };
-                match s.apply(&i.changes, &file, 0) {
-                    Ok(()) => s,
-                    Err(_) => books.clone(),
-                }
-            }
-            Err(_) => books.clone(),
-        }
-    }
-
-    /// How a message names a setting: by its key when the books keep
-    /// their own settings, else as the settings file spells it.
-    fn setting_label(&self, key: &str, in_file: &str) -> String {
-        if self.settings().journaled {
-            key.to_string()
-        } else {
-            in_file.to_string()
-        }
     }
 
     /// Every tool the server serves.
@@ -788,8 +658,8 @@ impl BooksServer {
             + Self::projects_router()
     }
 
-    /// The settings in force for this request (reloaded at its start, in
-    /// `call_tool` and `read_resource`, if their files changed).
+    /// The settings in force for this request: the books' own, taken from
+    /// their journal whenever the store is held (settings.rs INVARIANT 1).
     fn settings(&self) -> Arc<Settings> {
         self.live().current()
     }
@@ -896,15 +766,15 @@ impl BooksServer {
     /// statement of members' equity.
     fn member_capitals(&self, ledger: &Ledger) -> Result<Vec<ledger_core::MemberCapital>, String> {
         if self.settings().company.members.is_empty() {
-            return Err(format!(
-                "no members configured: set {} (name, share, capital_account for each)",
-                self.setting_label("company.members", "[[company.members]] in the settings")
-            ));
+            return Err(
+                "no members configured: set company.members (name, share, capital_account for each)"
+                    .to_string(),
+            );
         }
         ledger_package::member_capitals(ledger, &self.settings().company.members)
     }
 
-    /// Where a period close goes, from wanderbooks.toml: members' capital
+    /// Where a period close goes, from the settings: members' capital
     /// accounts by share (with their distribution accounts swept in) for a
     /// partnership; else `close_into` (Retained Earnings when unset or
     /// `3999`) with `close_sweep` zeroed into it.
@@ -1006,10 +876,18 @@ impl BooksServer {
         Ok(out)
     }
 
-    /// The TIN vault's directory: `vault/` in the books dir (git-ignored),
-    /// or in the book's own folder in the data root.
+    /// The TIN vault's directory: `vault/` in the book's own folder in
+    /// the data root.
     fn vault_dir(&self, store: &Store) -> std::path::PathBuf {
-        self.layout.vault_dir(store)
+        store.data_dir().join(ledger_store::root::VAULT_DIR)
+    }
+
+    /// The vault's key file: the book's own `keys/legacy.key`.
+    fn key_file(&self, store: &Store) -> std::path::PathBuf {
+        store
+            .data_dir()
+            .join(ledger_store::root::KEYS_DIR)
+            .join(ledger_store::root::LEGACY_KEY_FILE)
     }
 
     /// Refuse bytes on their way into the books (books.attach_receipt,
@@ -1135,55 +1013,29 @@ impl BooksServer {
         tin_files::record(&self.tin_record_dir(store)?, bytes)
     }
 
-    /// Where records of files with TINs go: the vault's folder, in the
-    /// data root made private first, as the vault itself makes it.
+    /// Where records of files with TINs go: the vault's folder, made
+    /// private first, as the vault itself makes it.
     fn tin_record_dir(&self, store: &Store) -> Result<std::path::PathBuf, String> {
-        if let Layout::Root(_) = *self.layout {
-            ledger_store::root::private_book_folder(
-                store.data_dir(),
-                ledger_store::root::VAULT_DIR,
-            )
+        ledger_store::root::private_book_folder(store.data_dir(), ledger_store::root::VAULT_DIR)
             .map_err(|e| format!("the TIN vault can't be written: {e}"))?;
-        }
         Ok(self.vault_dir(store))
     }
 
-    /// Open the TIN vault with the key file in force (`[vault] key_file`,
-    /// else `~/.config/wanderbooks/vault.key`), creating the key only when
-    /// `create` (storing a TIN); reading never creates one. A key file
-    /// inside the books dir is refused: git would keep it beside the
-    /// records it unlocks. Storing into books kept in git is refused
-    /// unless their `.gitignore` lists `vault/`.
+    /// Open the TIN vault with the book's own key file, creating the key
+    /// only when `create` (storing a TIN); reading never creates one.
     fn open_vault(&self, store: &Store, create: bool) -> Result<ledger_vault::Vault, String> {
-        let key = self.layout.key_file(store, &self.settings());
-        // In the data root the key is the book's own `keys/legacy.key`;
-        // its folder and the vault's are made private when a TIN is first
+        let key = self.key_file(store);
+        // Its folder and the vault's are made private when a TIN is first
         // stored.
-        if let Layout::Root(_) = *self.layout {
-            if create {
-                for folder in [ledger_store::root::KEYS_DIR, "vault"] {
-                    ledger_store::root::private_book_folder(store.data_dir(), folder)
-                        .map_err(|e| format!("the TIN vault can't store anything yet: {e}"))?;
-                }
-            }
-        } else if is_inside(&books_dir(store), &key) {
-            return Err(KEY_IN_BOOKS.to_string());
-        }
-        // Writing: a git repository must ignore the vault, or its records
-        // would be committed (and could never be purged).
-        let books = self.layout.books_dir(store);
-        if create && books.join(".git").exists() {
-            let ignored = std::fs::read_to_string(books.join(".gitignore"))
-                .unwrap_or_default()
-                .lines()
-                .any(|l| matches!(l.trim(), "vault/" | "/vault/" | "vault" | "/vault"));
-            if !ignored {
-                return Err(VAULT_IN_HISTORY.to_string());
+        if create {
+            for folder in [ledger_store::root::KEYS_DIR, ledger_store::root::VAULT_DIR] {
+                ledger_store::root::private_book_folder(store.data_dir(), folder)
+                    .map_err(|e| format!("the TIN vault can't store anything yet: {e}"))?;
             }
         }
         // No message names the key file or the books' folders.
         ledger_vault::Vault::open(&self.vault_dir(store), &key, create).map_err(|e| match e {
-            ledger_vault::Error::NoKey(_) => "the TIN vault is locked: its key file is missing (restore it from the human's password manager, or set [vault] key_file in the settings)".to_string(),
+            ledger_vault::Error::NoKey(_) => "the TIN vault is locked: its key file is missing (restore it from the human's password manager)".to_string(),
             ledger_vault::Error::BadKey(_) => "the TIN vault's key file is not a vault key (64 hex digits): restore it from the human's password manager".to_string(),
             ledger_vault::Error::Io(e) => format!("the TIN vault can't be read: {}", e.kind()),
             other => other.to_string(),
@@ -1335,31 +1187,25 @@ fn convention_codes(ledger: &Ledger) -> Vec<(String, String)> {
 
 fn settings_problems(ledger: &Ledger, cfg: &Settings) -> Vec<String> {
     let mut out = Vec::new();
-    // Named as the books keep them, or as the settings file spells them.
-    let label =
-        |key: &'static str, in_file: &'static str| if cfg.journaled { key } else { in_file };
-    let how = if cfg.journaled {
-        " with books.set_setting"
-    } else {
-        " in the settings"
-    };
+    // Named as the books keep them.
+    let how = " with books.set_setting";
     // The cash flow roles: codes the chart lacks here; the rest is the
     // engine's own check, the one the statement refuses on (rules.md B-14
     // rule 2), so the two never disagree.
     let lists = [
         (
             ledger_core::RoleList::Cash,
-            label("books.cash_accounts", "[books] cash_accounts"),
+            "books.cash_accounts",
             &cfg.roles.cash,
         ),
         (
             ledger_core::RoleList::Financing,
-            label("books.financing_accounts", "[books] financing_accounts"),
+            "books.financing_accounts",
             &cfg.roles.financing,
         ),
         (
             ledger_core::RoleList::Investing,
-            label("books.investing_accounts", "[books] investing_accounts"),
+            "books.investing_accounts",
             &cfg.roles.investing,
         ),
     ];
@@ -1402,39 +1248,23 @@ fn settings_problems(ledger: &Ledger, cfg: &Settings) -> Vec<String> {
     let c = &cfg.company;
     for m in &c.members {
         check(
-            &format!(
-                "{} {} capital_account",
-                label("company.members", "[[company.members]]"),
-                m.name
-            ),
+            &format!("{} {} capital_account", "company.members", m.name),
             &m.capital_account,
             &[Equity],
         );
         if let Some(d) = &m.distribution_account {
             check(
-                &format!(
-                    "{} {} distribution_account",
-                    label("company.members", "[[company.members]]"),
-                    m.name
-                ),
+                &format!("{} {} distribution_account", "company.members", m.name),
                 d,
                 &[Equity],
             );
         }
     }
     if let Some(code) = &c.close_into {
-        check(
-            label("books.close_into", "[books] close_into"),
-            code,
-            &[Equity],
-        );
+        check("books.close_into", code, &[Equity]);
     }
     for code in &c.close_sweep {
-        check(
-            label("books.close_sweep", "[books] close_sweep"),
-            code,
-            &[Equity],
-        );
+        check("books.close_sweep", code, &[Equity]);
     }
     // Conventions naming an account no longer in the chart (renumbered or
     // never there): a template can't draft, a rule covers nothing.
@@ -2172,14 +2002,6 @@ fn reconcile_line(
     }
 }
 
-/// The books dir: the data dir's parent, where wanderbooks.toml, the git
-/// repository, and `vault/` live.
-fn books_dir(store: &Store) -> std::path::PathBuf {
-    let d = store.data_dir();
-    let d = d.canonicalize().unwrap_or_else(|_| d.to_path_buf());
-    d.parent().map(std::path::Path::to_path_buf).unwrap_or(d)
-}
-
 /// The last four digits of every TIN the books know of, from the journal
 /// (each party's TIN and W-9 facts), never the vault: the filing scan's
 /// probe bound (tin_files.rs INVARIANT 4).
@@ -2196,11 +2018,6 @@ fn known_tin_last4(store: &Store) -> Vec<u32> {
         .flatten()
         .filter_map(|l| l.parse().ok())
         .collect()
-}
-
-/// Whether `path` is `dir` or inside it.
-fn is_inside(dir: &std::path::Path, path: &std::path::Path) -> bool {
-    resolved(path).starts_with(resolved(dir))
 }
 
 /// A TIN type from a tool: ssn, ein, or itin.
@@ -3589,9 +3406,8 @@ impl BooksServer {
             return Err(serde_json::json!({
                 "code": "party_required",
                 "message": format!(
-                    "entry {} names no counterparty, and these books require one ({} = \"require\"). Tag it with books.set_entry_party (add the party with books.add_party first if it's new), or, if it truly has none, call books.set_entry_party with party null and no_party_reason.{}",
+                    "entry {} names no counterparty, and these books require one (policy.parties = \"require\"). Tag it with books.set_entry_party (add the party with books.add_party first if it's new), or, if it truly has none, call books.set_entry_party with party null and no_party_reason.{}",
                     p.entry_id,
-                    self.setting_label("policy.parties", "[books] parties"),
                     if names.is_empty() { String::new() } else { format!(" Likely: {}.", names.join("; ")) }
                 ),
                 "entry_id": p.entry_id,
@@ -4074,7 +3890,7 @@ impl BooksServer {
     #[tool(
         name = "books.get_receipt",
         title = "Get a receipt",
-        description = "A receipt or document: what it is and everything it is linked to. view bytes adds its bytes, base64 and hash-verified, for a file of at most 256 KiB; a larger one gives the command (wanderbooks download) that saves a copy in a folder you name (books served by `wanderbooks mcp`; elsewhere a larger file doesn't come back).",
+        description = "A receipt or document: what it is and everything it is linked to. view bytes adds its bytes, base64 and hash-verified, for a file of at most 256 KiB; a larger one gives the command (wanderbooks download) that saves a copy in a folder you name.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn get_receipt(
@@ -4111,23 +3927,14 @@ impl BooksServer {
         } else {
             None
         };
-        // Too large to come back here: the command that saves a copy (books
-        // served from the data root; over stdio there is none).
-        let download = (bytes_wanted && !fits && self.uploads.is_some()).then(|| {
+        // Too large to come back here: the command that saves a copy.
+        let download = (bytes_wanted && !fits).then(|| {
             format!(
                 "wanderbooks download --book {book}{} {} --to <a folder>",
                 files::token_flag(),
                 meta.id
             )
         });
-        if bytes_wanted && !fits && download.is_none() {
-            return Err(format!(
-                "attachment {} is {} bytes; at most {} come back on this connection (a larger file needs these books served by `wanderbooks mcp`)",
-                meta.id,
-                meta.size_bytes,
-                files::INLINE_MAX
-            ));
-        }
         Ok(Json(GetReceiptOut {
             download,
             links: links_out(&store, meta.id)?,
@@ -4698,18 +4505,7 @@ impl BooksServer {
             totals_by_account: totals,
             stale_rules,
             journal_repairs,
-            settings_problems: {
-                let mut problems = settings_problems(store.ledger(), &self.settings());
-                if let Some(e) = self.live().status().error {
-                    problems.insert(
-                        0,
-                        format!(
-                            "the settings didn't load (the last good settings are in force): {e}"
-                        ),
-                    );
-                }
-                problems
-            },
+            settings_problems: settings_problems(store.ledger(), &self.settings()),
         }))
     }
 
@@ -5468,7 +5264,7 @@ impl BooksServer {
     #[tool(
         name = "books.chart_template",
         title = "Starter chart of accounts",
-        description = "A starter chart of accounts for a kind of business (sole proprietorship, partnership or multi-member LLC, S corporation, C corporation): the right equity and owner-pay accounts (draws; per-partner capital and distributions plus guaranteed payments; officer compensation and distributions; dividends and income tax), common income and expense accounts with tax categories assigned, and the settings that go with it. A proposal: review it with the human, adjust, then books.import_chart_csv.",
+        description = "A starter chart of accounts for a kind of business (sole proprietorship, partnership or multi-member LLC, S corporation, C corporation): the right equity and owner-pay accounts (draws; per-partner capital and distributions plus guaranteed payments; officer compensation and distributions; dividends and income tax), common income and expense accounts with tax categories assigned, and the settings that go with it (changes for books.set_setting). A proposal: review it with the human, adjust, then books.import_chart_csv and books.set_setting.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn chart_template(
@@ -5483,9 +5279,26 @@ impl BooksServer {
             )
         })?;
         let t = ledger_import::chart_template(entity, &p.owners)?;
+        // The template's settings, as the changes that set them in new
+        // books (the one way settings change: books.set_setting).
+        let settings = ledger_config::codec::import(
+            &t.settings_toml,
+            None,
+            &ledger_core::settings::Settings::default(),
+            self.currency(),
+        )?
+        .changes
+        .into_iter()
+        .filter_map(|c| {
+            Some(TemplateSettingOut {
+                value: c.value?,
+                key: c.key,
+            })
+        })
+        .collect();
         Ok(Json(ChartTemplateOut {
             csv: t.csv(),
-            settings_toml: t.settings_toml,
+            settings,
             notes: t.notes,
         }))
     }
@@ -5926,18 +5739,16 @@ impl BooksServer {
     #[tool(
         name = "books.settings",
         title = "Settings in force",
-        description = "The settings in force (company, fiscal year, tax form, members, basis, receipt rule with every account it requires or exempts, cash flow roles, close target, time zone, approval rules), every key the books know with its value and who set it, where they come from (source: \"books\", changed with books.set_setting; or \"file\", a settings file still read, reloaded on change: reload_error says why an edit didn't load), and problems: settings or conventions that disagree with the chart, each saying what to change.",
+        description = "The settings in force (company, fiscal year, tax form, members, basis, receipt rule with every account it requires or exempts, cash flow roles, close target, time zone, approval rules), every key the books know with its value and who set it (change them with books.set_setting), and problems: settings or conventions that disagree with the chart, each saying what to change.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn settings_tool(&self) -> Result<Json<SettingsOut>, String> {
         // The books first: their settings sync as they lock, so the
-        // status and the settings read after are one version.
+        // settings read after are theirs.
         let store = self.lock()?;
-        let status = self.live().status();
         let cfg = self.settings();
         let c = &cfg.company;
         Ok(Json(SettingsOut {
-            source: if status.journaled { "books" } else { "file" }.to_string(),
             timezone: cfg.timezone.clone(),
             today: today().to_string(),
             approval_rules: match store.ledger().settings().approval_rules() {
@@ -5945,12 +5756,7 @@ impl BooksServer {
                 ledger_core::settings::ApprovalMode::Enforce => "enforce",
             }
             .to_string(),
-            keys: kept::keys_out(&self.settings_as_kept(&store)),
-            books_toml: status.books_toml.map(|p| p.display().to_string()),
-            books_toml_exists: status.books_toml_exists,
-            config_json_present: status.config_json_present,
-            reload_error: status.error,
-            loads: status.loads,
+            keys: kept::keys_out(&store.ledger().settings().clone()),
             company: c.name.clone(),
             fiscal_year_start: format!("{:02}-{:02}", c.fiscal_year_start.0, c.fiscal_year_start.1),
             tax_form: c.tax_form.map(|f| f.label().to_string()),
@@ -7727,10 +7533,11 @@ impl BooksServer {
     ///         Treas. Reg. §301.6109-4 (truncated TINs); DECISION (owner,
     ///         2026-10-15): full TINs only in the encrypted vault.
     /// INVARIANTS:
-    ///   1. A full TIN goes only to the vault (`vault/` in the books dir,
-    ///      key outside it, created on first use); the facts journaled
-    ///      (`party.w9_set`) carry its last four and the vault record's
-    ///      hash. The output never holds more than the last four.
+    ///   1. A full TIN goes only to the vault (`vault/` in the book's own
+    ///      folder, its key in `keys/` beside it, created on first use);
+    ///      the facts journaled (`party.w9_set`) carry its last four and
+    ///      the vault record's hash. The output never holds more than the
+    ///      last four.
     ///   2. The W-9 file goes only to the vault, never the attachment store.
     ///   3. The facts are checked (on a copy of the ledger) before the vault
     ///      is written; a refusal journals nothing and writes no record.
@@ -7748,7 +7555,7 @@ impl BooksServer {
     #[tool(
         name = "books.set_w9",
         title = "Record W-9 facts",
-        description = "Record what a contractor's or landlord's W-9 says, or clear it (clear: true alone): the date received (received_on), line 3 entity type, line 4 exempt payee and FATCA codes, the TIN's last four digits, and where the form is kept. Give the full TIN as tin with tin_type (ssn, ein, itin) and it goes only to the encrypted TIN vault (its key kept outside the books, created on first use): the books keep its last four (tin_last4 is then optional, and refused if it disagrees) and a hash of the vault record, in the W-9 facts and the party's TIN facts alike (party.tin_set, as books.set_tin), and kept_at defaults to \"wanderbooks vault\". The CPA package carries the full TIN to the CPA. Give the signed form (a PDF, PNG, or JPEG) as w9_upload_id (books.begin_upload), or w9_content_base64 with w9_sha256 when at most 256 KiB, and it goes to the vault too, never to the receipts and documents; read it back with books.get_w9. Never put a TIN in any other field, note, description, or file: the engine refuses any nine-digit number, and no tool output echoes one. The party needs a 1099 role (contractor or landlord: books.set_party_roles). Record it before paying them. A party with a vendor record also gets its W-9 marked on file there (books.vendor_1099 missing_w9). Clearing W-9 facts whose TIN is in the vault needs books.purge_tin first. Journaled as party.w9_set. Returns the party (the TIN's last four only).",
+        description = "Record what a contractor's or landlord's W-9 says, or clear it (clear: true alone): the date received (received_on), line 3 entity type, line 4 exempt payee and FATCA codes, the TIN's last four digits, and where the form is kept. Give the full TIN as tin with tin_type (ssn, ein, itin) and it goes only to the encrypted TIN vault (its key kept apart from it, created on first use): the books keep its last four (tin_last4 is then optional, and refused if it disagrees) and a hash of the vault record, in the W-9 facts and the party's TIN facts alike (party.tin_set, as books.set_tin), and kept_at defaults to \"wanderbooks vault\". The CPA package carries the full TIN to the CPA. Give the signed form (a PDF, PNG, or JPEG) as w9_upload_id (books.begin_upload), or w9_content_base64 with w9_sha256 when at most 256 KiB, and it goes to the vault too, never to the receipts and documents; read it back with books.get_w9. Never put a TIN in any other field, note, description, or file: the engine refuses any nine-digit number, and no tool output echoes one. The party needs a 1099 role (contractor or landlord: books.set_party_roles). Record it before paying them. A party with a vendor record also gets its W-9 marked on file there (books.vendor_1099 missing_w9). Clearing W-9 facts whose TIN is in the vault needs books.purge_tin first. Journaled as party.w9_set. Returns the party (the TIN's last four only).",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -7912,14 +7719,10 @@ impl BooksServer {
                         None => w9_hash,
                     }
                 } else if held_tin {
-                    ledger_vault::Vault::open(
-                        &vault_dir,
-                        &self.layout.key_file(&store, &self.settings()),
-                        false,
-                    )
-                    .ok()
-                    .and_then(|v| v.record_hash(id).ok().flatten())
-                    .or_else(|| existing.as_ref().and_then(|e| e.vault_record.clone()))
+                    ledger_vault::Vault::open(&vault_dir, &self.key_file(&store), false)
+                        .ok()
+                        .and_then(|v| v.record_hash(id).ok().flatten())
+                        .or_else(|| existing.as_ref().and_then(|e| e.vault_record.clone()))
                 } else if held_w9 {
                     existing.as_ref().and_then(|e| e.vault_record.clone())
                 } else {
@@ -8060,10 +7863,10 @@ impl BooksServer {
     /// SOURCE: docs/parties-and-attachments.md "The TIN vault"; D-29.
     /// INVARIANTS:
     ///   1. The file is handed over (tools/files.rs INVARIANT 6: an export
-    ///      for the caller's token, or inline over stdio), never written
-    ///      to a path; a name kept before names were checked is made
-    ///      plain, never refused. It is recorded (tin_files.rs) first, so
-    ///      it is never filed back into the books.
+    ///      for the caller's token), never written to a path; a name kept
+    ///      before names were checked is made plain, never refused. It is
+    ///      recorded (tin_files.rs) first, so it is never filed back into
+    ///      the books.
     ///   2. Nothing is journaled.
     /// SCENARIOS:
     ///   1. IF the vault is locked or holds no W-9 file for the party:
@@ -8072,7 +7875,7 @@ impl BooksServer {
     #[tool(
         name = "books.get_w9",
         title = "Write out a W-9",
-        description = "A party's signed W-9 file from the TIN vault, for the CPA or the human: run the download command it returns to save it in a folder (books served by `wanderbooks mcp`; over stdio it comes back inline). Never file it into the books (it shows the full TIN). Nothing is journaled.",
+        description = "A party's signed W-9 file from the TIN vault, for the CPA or the human: run the download command it returns to save it in a folder. Never file it into the books (it shows the full TIN). Nothing is journaled.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -9120,10 +8923,10 @@ impl BooksServer {
     ///         2026-10-15): "it needs to be in the damn CPA package."
     /// INVARIANTS:
     ///   1. The zip is handed over (tools/files.rs INVARIANT 6: an export
-    ///      the caller fetches, or inline over stdio), never written to a
-    ///      path; with include_tins (the default) it and each file in it
-    ///      holding a TIN are recorded (tin_files.rs), so none is filed back
-    ///      in. include_tins false: last fours only.
+    ///      the caller fetches), never written to a path; with include_tins
+    ///      (the default) it and each file in it holding a TIN are recorded
+    ///      (tin_files.rs), so none is filed back in. include_tins false:
+    ///      last fours only.
     ///   2. With members, k1-members.csv has one row per [[company.members]]
     ///      member: name, party, share, capital account, TIN and type, and
     ///      the K-1 worksheet's capital figures (ledger_core::k1) for the
@@ -9138,7 +8941,7 @@ impl BooksServer {
     #[tool(
         name = "books.export_cpa_package",
         title = "CPA handoff package",
-        description = "Build the CPA handoff package as a zip: the profit and loss, balance sheet, cash flow (direct method, with its reconciliation and noncash schedules), statement of changes in members' equity (multi-member LLCs), tax summary, and trial balance, each as PDF and XLSX; the fixed asset register as PDF and XLSX when an asset was acquired by as_of; the general ledger (by account) and general journal (entry by entry) as XLSX; the journal through as_of as IIF (imports into QuickBooks Desktop; plain ASCII within its limits: warnings says what is written differently from the books, and so does the README); the 1099 worksheet as CSV (payments from January 1 through as_of); with members, the K-1 worksheet (k1-members.csv: per member their party, share, capital account, TIN, and beginning capital, contributions in cash and in property, share of income, distributions, and ending capital for the fiscal year to date) and its tax-basis capital beside the book figures (k1-tax-basis-capital.csv: Schedule K-1 Item L on the tax basis, property at its §723 basis, with the reconciliation; what only the CPA can supply, like tax depreciation, left open and named); every receipt behind the year's entries, filed on them or linked to them (receipts/, with an index.csv tying each file to its entry) and the company's documents (documents/), unless include_receipts is false; and a README with the journal's verified hash. By default (include_tins) the K-1 and 1099 worksheets carry every member's and payee's full TIN from the TIN vault; include_tins: false, last fours only. The zip is handed over: run its download command to save it in a folder (books served by `wanderbooks mcp`; over stdio it comes back inline). Never file it into the books. A locked vault or a missing TIN doesn't stop the package: tin_gaps lists each one (collect them with books.set_tin or books.set_w9 and export again). cash_accounts (e.g. [\"1000\"]) is required: the cash flow statement reconciles to them. as_of defaults to today; period reports cover the fiscal year to date.",
+        description = "Build the CPA handoff package as a zip: the profit and loss, balance sheet, cash flow (direct method, with its reconciliation and noncash schedules), statement of changes in members' equity (multi-member LLCs), tax summary, and trial balance, each as PDF and XLSX; the fixed asset register as PDF and XLSX when an asset was acquired by as_of; the general ledger (by account) and general journal (entry by entry) as XLSX; the journal through as_of as IIF (imports into QuickBooks Desktop; plain ASCII within its limits: warnings says what is written differently from the books, and so does the README); the 1099 worksheet as CSV (payments from January 1 through as_of); with members, the K-1 worksheet (k1-members.csv: per member their party, share, capital account, TIN, and beginning capital, contributions in cash and in property, share of income, distributions, and ending capital for the fiscal year to date) and its tax-basis capital beside the book figures (k1-tax-basis-capital.csv: Schedule K-1 Item L on the tax basis, property at its §723 basis, with the reconciliation; what only the CPA can supply, like tax depreciation, left open and named); every receipt behind the year's entries, filed on them or linked to them (receipts/, with an index.csv tying each file to its entry) and the company's documents (documents/), unless include_receipts is false; and a README with the journal's verified hash. By default (include_tins) the K-1 and 1099 worksheets carry every member's and payee's full TIN from the TIN vault; include_tins: false, last fours only. The zip is handed over: run its download command to save it in a folder. Never file it into the books. A locked vault or a missing TIN doesn't stop the package: tin_gaps lists each one (collect them with books.set_tin or books.set_w9 and export again). cash_accounts (e.g. [\"1000\"]) is required: the cash flow statement reconciles to them. as_of defaults to today; period reports cover the fiscal year to date.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -10011,10 +9814,7 @@ impl ServerHandler for BooksServer {
     ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
         use crate::access::{self, Call};
         use ledger_store::access::Outcome;
-        let mut call = self
-            .access
-            .as_ref()
-            .map(|log| Call::new(log, &context, "tool", &request.name));
+        let mut call = Call::new(&self.access, &context, "tool", &request.name);
         let outcome_of = |out: &Result<rmcp::model::CallToolResponse, rmcp::ErrorData>| match out {
             Ok(rmcp::model::CallToolResponse::Complete(r)) if r.is_error != Some(true) => {
                 Outcome::Ok
@@ -10032,65 +9832,59 @@ impl ServerHandler for BooksServer {
         // Closing: refused as a protocol error, so a client knows it
         // didn't run (SharedStore INVARIANT 3).
         if self.store.closing() {
-            if let Some(c) = &mut call {
-                c.digested(refused_digest(request.arguments.clone()).await);
-            }
+            call.digested(refused_digest(request.arguments.clone()).await);
             return self
-                .refuse(call.as_ref(), access::CLOSING, Err(not_run_closing()))
+                .refuse(&call, access::CLOSING, Err(not_run_closing()))
                 .await;
         }
         if self.store.stopped() {
-            if let Some(c) = &mut call {
-                c.digested(refused_digest(request.arguments.clone()).await);
-            }
+            call.digested(refused_digest(request.arguments.clone()).await);
             return self
-                .refuse(
-                    call.as_ref(),
-                    access::STOPPED,
-                    Ok(tool_error(STOPPED.to_string())),
-                )
+                .refuse(&call, access::STOPPED, Ok(tool_error(STOPPED.to_string())))
                 .await;
         }
         let needs = crate::scopes::needs(&request.name, request.arguments.as_ref());
         // access.rs INVARIANTS 1, 2.
-        if let Some(call) = &mut call {
-            let refusal = match (call.caller(), needs) {
-                (None, _) => Some((
-                    access::UNAUTHORIZED,
+        let refusal = match (call.caller(), needs) {
+            (None, _) => Some((
+                access::UNAUTHORIZED,
+                Ok(tool_error(
                     "this call came without a token for these books".to_string(),
                 )),
-                // A tool no table names isn't run (fail closed).
-                (Some(_), None) => Some((
-                    "unknown_tool",
+            )),
+            // A tool no table names isn't run (fail closed): a protocol
+            // error, as for any unknown tool (mcp-tools.md).
+            (Some(_), None) => Some((
+                "unknown_tool",
+                Err(rmcp::ErrorData::invalid_params(
                     format!(
                         "there is no tool {:?}",
                         request.name.chars().take(64).collect::<String>()
                     ),
+                    None,
                 )),
-                (Some(caller), Some(scope)) if !caller.may(scope) => Some((
-                    access::INSUFFICIENT_SCOPE,
-                    format!(
-                        "this agent's token can't do that: {} needs {scope}, and its token ({:?}) has {}. Only the human can give a token more (`wanderbooks token create`).",
-                        request.name,
-                        caller.token.name,
-                        caller
-                            .token
-                            .scopes
-                            .iter()
-                            .map(|s| s.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ),
-                )),
-                _ => None,
-            };
-            if let Some((code, text)) = refusal {
-                call.digested(refused_digest(request.arguments.clone()).await);
-                return self.refuse(Some(call), code, Ok(tool_error(text))).await;
-            }
+            )),
+            (Some(caller), Some(scope)) if !caller.may(scope) => Some((
+                access::INSUFFICIENT_SCOPE,
+                Ok(tool_error(format!(
+                    "this agent's token can't do that: {} needs {scope}, and its token ({:?}) has {}. Only the human can give a token more (`wanderbooks token create`).",
+                    request.name,
+                    caller.token.name,
+                    caller
+                        .token
+                        .scopes
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ))),
+            )),
+            _ => None,
+        };
+        if let Some((code, answer)) = refusal {
+            call.digested(refused_digest(request.arguments.clone()).await);
+            return self.refuse(&call, code, answer).await;
         }
-        // Pick up an edited settings file before the tool runs.
-        self.live().refresh();
         let timezone = self.settings().timezone.clone();
         let server = self.clone();
         // The journal's head once a call that may change the books has
@@ -10100,23 +9894,16 @@ impl ServerHandler for BooksServer {
         // INVARIANT 3).
         let running_call = call.clone();
         // Kept for the record of a call the server stopped before running.
-        let request_args = if call.is_some() {
-            request.arguments.clone()
-        } else {
-            None
-        };
+        let request_args = request.arguments.clone();
         let result = run_blocking(&self.store, move || {
             Box::pin(async move {
                 WROTE.with(|w| w.borrow_mut().take());
-                let caller = running_call.as_ref().and_then(|c| {
-                    c.caller()
-                        .map(|c| (c.token.id.clone(), c.token.name.clone()))
-                });
+                let caller = running_call
+                    .caller()
+                    .map(|c| (c.token.id.clone(), c.token.name.clone()));
                 CALLER.with(|c| *c.borrow_mut() = caller);
                 // Counted as running by now (run_blocking): hashed here.
-                let digest = running_call
-                    .as_ref()
-                    .and_then(|_| Call::digest_of(request.arguments.as_ref()));
+                let digest = Call::digest_of(request.arguments.as_ref());
                 let tcc =
                     rmcp::handler::server::tool::ToolCallContext::new(&server, request, context);
                 let router = Self::tool_router();
@@ -10137,25 +9924,22 @@ impl ServerHandler for BooksServer {
                         // with what it wrote, while still counted as
                         // running; then the panic goes on and stops the
                         // server (SharedStore INVARIANT 1).
-                        if let Some(mut c) = running_call {
-                            c.digested(digest);
-                            let _ = c.record_blocking(Outcome::Error, wrote);
-                        }
+                        let mut c = running_call;
+                        c.digested(digest);
+                        let _ = c.record_blocking(Outcome::Error, wrote);
                         std::panic::resume_unwind(panic)
                     }
                 };
-                let recorded = running_call.map(|mut c| {
-                    c.digested(digest);
-                    c.record_blocking(outcome_of(&out), wrote)
-                });
+                let mut c = running_call;
+                c.digested(digest);
+                let recorded = c.record_blocking(outcome_of(&out), wrote);
                 (out, recorded)
             })
         })
         .await;
         match result {
-            Ok((out, None)) => redact_refusal(out),
-            Ok((out, Some(Ok(())))) => redact_refusal(out),
-            Ok((_, Some(Err(())))) => {
+            Ok((out, Ok(()))) => redact_refusal(out),
+            Ok((_, Err(()))) => {
                 // access.rs INVARIANT 3.
                 self.store.stop();
                 Ok(tool_error(crate::access::RAN_NOT_RECORDED.to_string()))
@@ -10164,19 +9948,13 @@ impl ServerHandler for BooksServer {
             // the client knows (SharedStore INVARIANT 3). (Its arguments
             // went with the request: no digest.)
             Err(e) if e.code.0 == NOT_RUN_CLOSING_CODE => {
-                self.refuse(call.as_ref(), access::CLOSING, Err(e)).await
+                self.refuse(&call, access::CLOSING, Err(e)).await
             }
             // Not run: the server had stopped by the time it would have.
             Err(e) if e.code.0 == NOT_RUN_STOPPED_CODE => {
-                if let Some(c) = &mut call {
-                    c.digested(refused_digest(request_args.clone()).await);
-                }
-                self.refuse(
-                    call.as_ref(),
-                    access::STOPPED,
-                    Ok(tool_error(STOPPED.to_string())),
-                )
-                .await
+                call.digested(refused_digest(request_args.clone()).await);
+                self.refuse(&call, access::STOPPED, Ok(tool_error(STOPPED.to_string())))
+                    .await
             }
             // It panicked part way (recorded as it went): a plain refusal,
             // redacted like every other.
@@ -10192,18 +9970,10 @@ impl ServerHandler for BooksServer {
         let mut tools = Self::tool_router().list_all();
         // A token is shown what it can call (scopes.rs); the list then
         // differs by caller, so it may be cached only for this one.
-        if self.access.is_some() {
-            let scopes = crate::access::caller(&context)
-                .map(|c| c.token.scopes)
-                .unwrap_or_default();
-            tools.retain(|t| crate::scopes::shown(&t.name, &scopes));
-        } else {
-            // Books served over stdio keep no access log and aren't backed
-            // up here: not offered.
-            tools.retain(|t| {
-                !["books.access_log", "books.backup", "books.back_up_now"].contains(&&*t.name)
-            });
-        }
+        let scopes = crate::access::caller(&context)
+            .map(|c| c.token.scopes)
+            .unwrap_or_default();
+        tools.retain(|t| crate::scopes::shown(&t.name, &scopes));
         let hints = context
             .protocol_version()
             .is_some_and(|v| v >= rmcp::model::ProtocolVersion::V_2026_07_28);
@@ -10218,17 +9988,15 @@ impl ServerHandler for BooksServer {
     }
 
     fn get_info(&self) -> ServerConfig {
-        // A client connecting after a settings change sees the change:
-        // the books' own when they keep them (never waiting for the books
-        // here; a request holding them syncs them when it locks), else the
-        // files'.
+        // A client connecting after a settings change sees the change
+        // (never waiting for the books here; a request holding them syncs
+        // them when it locks).
         if let Ok(store) = self.store.store.try_lock()
             && let Some(store) = store.as_ref()
         {
             self.live()
                 .sync(store.ledger().settings(), self.store.currency.code());
         }
-        self.live().refresh();
         ServerConfig::new(crate::opening::capabilities())
             // The rules in brief, with the policy these books actually use;
             // the rest is in the handbook.
@@ -10256,12 +10024,9 @@ impl ServerHandler for BooksServer {
         use ledger_store::access::Outcome;
         // Reading a resource is reading the books: books:read, recorded
         // (access.rs).
-        let call = self
-            .access
-            .as_ref()
-            .map(|log| Call::new(log, &context, "resource", &request.uri));
-        let result = self.resource(request, call.as_ref()).await;
-        if let Some(call) = &call {
+        let call = Call::new(&self.access, &context, "resource", &request.uri);
+        let result = self.resource(request, &call).await;
+        {
             let outcome = match &result {
                 Ok(_) => Outcome::Ok,
                 Err(e) if e.code.0 == NOT_RUN_CLOSING_CODE => {
@@ -10297,15 +10062,14 @@ impl BooksServer {
     /// INVARIANT 3).
     async fn refuse(
         &self,
-        call: Option<&crate::access::Call>,
+        call: &crate::access::Call,
         code: &str,
         answer: Result<rmcp::model::CallToolResponse, rmcp::ErrorData>,
     ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
-        if let Some(call) = call
-            && call
-                .record(ledger_store::access::Outcome::Refused(code.into()), None)
-                .await
-                .is_err()
+        if call
+            .record(ledger_store::access::Outcome::Refused(code.into()), None)
+            .await
+            .is_err()
         {
             self.store.stop();
             // A call refused as not run stays so (the bridge sends it
@@ -10326,26 +10090,23 @@ impl BooksServer {
     async fn resource(
         &self,
         request: ReadResourceRequestParams,
-        call: Option<&crate::access::Call>,
+        call: &crate::access::Call,
     ) -> Result<ReadResourceResponse, rmcp::ErrorData> {
-        if let Some(call) = call {
-            match call.caller() {
-                None => {
-                    return Err(rmcp::ErrorData::invalid_request(
-                        crate::access::UNAUTHORIZED,
-                        None,
-                    ));
-                }
-                Some(c) if !c.may(ledger_store::auth::Scope::Read) => {
-                    return Err(rmcp::ErrorData::invalid_request(
-                        crate::access::INSUFFICIENT_SCOPE,
-                        None,
-                    ));
-                }
-                Some(_) => {}
+        match call.caller() {
+            None => {
+                return Err(rmcp::ErrorData::invalid_request(
+                    crate::access::UNAUTHORIZED,
+                    None,
+                ));
             }
+            Some(c) if !c.may(ledger_store::auth::Scope::Read) => {
+                return Err(rmcp::ErrorData::invalid_request(
+                    crate::access::INSUFFICIENT_SCOPE,
+                    None,
+                ));
+            }
+            Some(_) => {}
         }
-        self.live().refresh();
         let timezone = self.settings().timezone.clone();
         let uri = request.uri.clone();
         let server = self.clone();
@@ -10380,7 +10141,6 @@ impl BooksServer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ledger_config::Member;
     use std::str::FromStr;
 
     fn d(y: i32, m: u32, day: u32) -> NaiveDate {
@@ -10391,25 +10151,36 @@ mod tests {
         Money::new(Decimal::from_str(s).unwrap(), Currency::USD)
     }
 
-    /// A test's books dir, removed when the test ends, pass or panic.
-    struct TestDir(std::path::PathBuf);
+    /// A test's books' folder (`.0`) in a data root of its own, under a
+    /// home (`.1`) removed when the test ends, pass or panic.
+    struct TestDir(std::path::PathBuf, std::path::PathBuf);
 
     impl Drop for TestDir {
         fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
+            let _ = std::fs::remove_dir_all(&self.1);
         }
     }
 
     fn unit_dir(tag: &str) -> TestDir {
-        let dir =
+        let home =
             std::env::temp_dir().join(format!("ledger-mcp-unit-{}-{tag}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        TestDir(dir)
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        let (root, _) =
+            ledger_store::root::Root::setup(&home, Some(&home.join("root")), None).unwrap();
+        TestDir(root.path().join("books").join("acme"), home)
     }
 
     /// New books in `dir`, which outlives them.
     fn store(dir: &TestDir) -> Store {
         Store::create(&dir.0, Currency::USD).unwrap()
+    }
+
+    /// A session's server for the books `store` holds, made as the books
+    /// server makes every one (Served::open): driven here without a
+    /// transport.
+    fn served(store: Store) -> BooksServer {
+        BooksServer::new(&Served::open(store).expect("the books are served"))
     }
 
     /// lines_settled: posted, or a draft with lines whose debits equal its
@@ -10466,26 +10237,38 @@ mod tests {
         e
     }
 
-    fn members() -> Company {
-        Company {
-            members: vec![
-                Member {
-                    name: "Ada".into(),
-                    share: Decimal::new(5, 1),
-                    capital_account: "3000".into(),
-                    distribution_account: Some("3100".into()),
-                    files_jointly_with: None,
-                },
-                Member {
-                    name: "Bo".into(),
-                    share: Decimal::new(5, 1),
-                    capital_account: "3001".into(),
-                    distribution_account: None,
-                    files_jointly_with: None,
-                },
-            ],
-            ..Company::default()
-        }
+    /// `store` with `changes` journaled, as `books.set_setting` journals
+    /// them: a session's server reads its settings only from there.
+    fn settled(mut store: Store, changes: &[(&str, serde_json::Value)]) -> Store {
+        let changes: Vec<_> = changes
+            .iter()
+            .map(|(key, value)| ledger_core::settings::Change {
+                key: (*key).to_string(),
+                value: Some(value.clone()),
+            })
+            .collect();
+        let source = ledger_core::settings::Source {
+            decided_by: "Morgan Ellis".into(),
+            decided_on: d(2026, 1, 1),
+            citation: None,
+            note: None,
+        };
+        store
+            .change_settings(&changes, &source)
+            .expect("the settings are taken");
+        store
+    }
+
+    /// Two members, Ada (with a distributions account) and Bo.
+    fn members() -> (&'static str, serde_json::Value) {
+        (
+            "company.members",
+            serde_json::json!([
+                {"name": "Ada", "share": "0.5", "capital_account": "3000",
+                 "distribution_account": "3100"},
+                {"name": "Bo", "share": "0.5", "capital_account": "3001"},
+            ]),
+        )
     }
 
     /// An upload's limit, 25 MiB exactly; inline, 256 KiB (plan 2.1, 4.7).
@@ -10540,50 +10323,44 @@ mod tests {
     #[test]
     fn config_mentions_finds_every_setting_naming_a_code() {
         let books = unit_dir("mentions");
-        let server = BooksServer::new(store(&books), ReceiptPolicy::default())
-            .with_company(members())
-            .with_cash_roles(CashRoles {
-                cash: vec!["1000".into()],
-                financing: vec!["2100".into()],
-                investing: vec!["1400".into()],
-            });
-        assert_eq!(server.config_mentions("1000"), ["[books] cash_accounts"]);
-        assert_eq!(
-            server.config_mentions("2100"),
-            ["[books] financing_accounts"]
-        );
-        assert_eq!(
-            server.config_mentions("1400"),
-            ["[books] investing_accounts"]
-        );
+        let server = served(settled(
+            store(&books),
+            &[
+                members(),
+                ("books.cash_accounts", serde_json::json!(["1000"])),
+                ("books.financing_accounts", serde_json::json!(["2100"])),
+                ("books.investing_accounts", serde_json::json!(["1400"])),
+            ],
+        ));
+        assert_eq!(server.config_mentions("1000"), ["books.cash_accounts"]);
+        assert_eq!(server.config_mentions("2100"), ["books.financing_accounts"]);
+        assert_eq!(server.config_mentions("1400"), ["books.investing_accounts"]);
         assert_eq!(
             server.config_mentions("3000"),
-            ["[[company.members]] Ada capital_account"]
+            ["company.members Ada capital_account"]
         );
         assert_eq!(
             server.config_mentions("3001"),
-            ["[[company.members]] Bo capital_account"]
+            ["company.members Bo capital_account"]
         );
         assert_eq!(
             server.config_mentions("3100"),
-            ["[[company.members]] Ada distribution_account"]
+            ["company.members Ada distribution_account"]
         );
         assert!(server.config_mentions("6000").is_empty());
         let books = unit_dir("mentions-solo");
-        let solo =
-            BooksServer::new(store(&books), ReceiptPolicy::default()).with_company(Company {
-                close_into: Some("3000".into()),
-                ..Company::default()
-            });
-        assert_eq!(solo.config_mentions("3000"), ["[books] close_into"]);
+        let solo = served(settled(
+            store(&books),
+            &[("books.close_into", serde_json::json!("3000"))],
+        ));
+        assert_eq!(solo.config_mentions("3000"), ["books.close_into"]);
     }
 
     /// Reports name each member with their accounts, in order.
     #[test]
     fn report_members_carry_names_and_accounts() {
         let books = unit_dir("members");
-        let server =
-            BooksServer::new(store(&books), ReceiptPolicy::default()).with_company(members());
+        let server = served(settled(store(&books), &[members()]));
         let m = server.report_members();
         assert_eq!(m.len(), 2);
         assert_eq!(
@@ -10619,7 +10396,7 @@ mod tests {
         post(&mut s, d(2026, 1, 20), rent, cash, "300.00");
         post(&mut s, d(2026, 2, 5), cash, sales, "50.00");
         post(&mut s, d(2026, 2, 6), rent, cash, "20.00");
-        let server = BooksServer::new(s, ReceiptPolicy::default());
+        let server = served(s);
         let as_of = d(2026, 2, 28);
         {
             let store = server.lock().unwrap();
@@ -10666,7 +10443,7 @@ mod tests {
         post(&mut s, d(2026, 1, 10), cash, sales, "1000.00");
         s.create_period("2026-01", d(2026, 1, 1), d(2026, 1, 31))
             .unwrap();
-        let server = BooksServer::new(s, ReceiptPolicy::default());
+        let server = served(s);
         let as_of = d(2026, 2, 28);
         let thousand = Decimal::from_str("1000.00").unwrap();
         {
@@ -10704,11 +10481,10 @@ mod tests {
         s.add_line(draft, cash, Side::Credit, usd("10.00")).unwrap();
         let posted = post(&mut s, d(2026, 3, 2), rent, cash, "10.00");
         let reversal = s.reverse_entry(posted, d(2026, 3, 3), "undo").unwrap();
-        let every = ReceiptPolicy {
-            require_receipts_above: "0.00".into(),
-            ..ReceiptPolicy::default()
-        };
-        let server = BooksServer::new(s, every);
+        let server = served(settled(
+            s,
+            &[("policy.evidence.threshold", serde_json::json!("0.00"))],
+        ));
         let store = server.lock().unwrap();
         assert!(
             server.ensure_receipt_not_required(&store, draft).is_ok(),
@@ -10745,11 +10521,10 @@ mod tests {
         const D: Hints = (Some(false), Some(true), None);
         const WI: Hints = (Some(false), Some(false), Some(true));
         const DI: Hints = (Some(false), Some(true), Some(true));
-        let table: [(&str, Hints); 119] = [
+        let table: [(&str, Hints); 118] = [
             ("books.handbook", R),
             ("books.start", R),
             ("books.set_setting", DI),
-            ("books.import_settings", DI),
             ("books.export_settings", R),
             ("books.conventions", R),
             ("books.set_convention", W),
@@ -10904,8 +10679,8 @@ mod tests {
                 "{name}: openWorldHint"
             );
         }
-        // docs/mcp-interface.md names the 29 destructive tools.
-        assert_eq!(table.iter().filter(|(_, h)| h.1 == Some(true)).count(), 29);
+        // docs/mcp-interface.md names the 28 destructive tools.
+        assert_eq!(table.iter().filter(|(_, h)| h.1 == Some(true)).count(), 28);
     }
 
     /// Every refusal an agent can be given whose text is fixed here, or
@@ -11008,8 +10783,6 @@ mod tests {
         ));
         for (what, text) in [
             ("STOPPED", STOPPED),
-            ("KEY_IN_BOOKS", KEY_IN_BOOKS),
-            ("VAULT_IN_HISTORY", VAULT_IN_HISTORY),
             ("tin_files::TIN_FILE", tin_files::TIN_FILE),
             ("tin_files::TIN_HELD", tin_files::TIN_HELD),
             ("tin_files::TIN_PROBE", tin_files::TIN_PROBE),
@@ -11281,7 +11054,10 @@ mod tests {
             .map(|t| t.name.to_string())
             .collect();
         let mut unknown: Vec<String> = Vec::new();
-        // (Settings keys, `books.cash_accounts`, are named like tools.)
+        // Settings keys (`books.cash_accounts`) are named like tools: a
+        // name that is one is a setting, not a tool.
+        let keys: std::collections::HashSet<&str> =
+            ledger_core::settings::KEYS.iter().map(|k| k.name).collect();
         for (what, text) in texts
             .iter()
             .filter(|(w, _)| !w.contains("settings literal"))
@@ -11302,7 +11078,7 @@ mod tests {
                 if before.is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '/') {
                     continue;
                 }
-                if !tools.contains(name) {
+                if !tools.contains(name) && !keys.contains(name) {
                     unknown.push(format!("{what}: {name}"));
                 }
             }
@@ -11719,7 +11495,8 @@ mod tests {
         ];
         for (how, body) in bodies {
             let books = unit_dir("stops");
-            let server = BooksServer::new(store(&books), ReceiptPolicy::default());
+            let parts = Served::open(store(&books)).unwrap();
+            let server = BooksServer::new(&parts);
             rt.block_on(async {
                 let seq: Body = |s| s.lock().map(|st| st.journal_seq());
                 // New books: store.created, then their journal format.
@@ -11729,8 +11506,8 @@ mod tests {
                 // Every later request is refused, before it runs.
                 let after = run(&server, seq).await.unwrap_err();
                 assert_eq!(after.message, STOPPED, "{how}");
-                // So is any session sharing the store (HTTP).
-                let other = BooksServer::new_shared(server.store.clone(), ReceiptPolicy::default());
+                // So is any other session with the books.
+                let other = BooksServer::new(&parts);
                 assert_eq!(run(&other, seq).await.unwrap_err().message, STOPPED);
             });
             // And the lock itself, from any thread.
@@ -11743,7 +11520,7 @@ mod tests {
 
         // A guard dropped by a panic on a thread of its own stops it too.
         let books = unit_dir("stops-thread");
-        let server = BooksServer::new(store(&books), ReceiptPolicy::default());
+        let server = served(store(&books));
         let s = server.clone();
         let died = std::thread::spawn(move || {
             let _store = s.lock().unwrap();
@@ -11799,47 +11576,39 @@ mod tests {
     }
 
     /// A client that connects after the settings changed is told the rule
-    /// now in force (plan P0, "get_info calls refresh()"): the connect text
-    /// is composed from the settings as they are at initialize, not as
-    /// they were when the server started.
+    /// now in force (plan P0): the connect text is composed from the
+    /// books' settings as they are at initialize, not as they were when
+    /// the server started.
     #[test]
     fn a_new_session_is_told_the_settings_in_force() {
-        let dir = std::env::temp_dir().join(format!(
-            "ledger-mcp-unit-{}-info-settings",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let _cleanup = TestDir(dir.clone());
-        let toml = dir.join("wanderbooks.toml");
-        let threshold = |t: &str| {
-            std::fs::write(
-                &toml,
-                format!("[company]\nname = \"Info Co\"\n[books]\nreceipt_threshold = \"{t}\"\n"),
-            )
-            .unwrap();
-        };
-        threshold("25.00");
-        let live = crate::settings::Live::watching(crate::settings::Source {
-            books_toml: toml.clone(),
-            required: true,
-            config_json: dir.join("config.json"),
-        })
-        .unwrap();
         let books = unit_dir("info");
-        let server = BooksServer::new(store(&books), ReceiptPolicy::default())
-            .with_live_settings(Arc::new(Mutex::new(live)));
+        let server = served(store(&books));
         let told = |s: &BooksServer| rmcp::ServerHandler::get_info(s).instructions.unwrap();
         let before = told(&server);
         assert!(before.contains("more than 25.00 USD in debits"), "{before}");
-        threshold("0.00");
+        {
+            let mut store = server.lock().unwrap();
+            store
+                .change_settings(
+                    &[ledger_core::settings::Change {
+                        key: "policy.evidence.threshold".into(),
+                        value: Some(serde_json::json!("0.00")),
+                    }],
+                    &ledger_core::settings::Source {
+                        decided_by: "Test Owner".into(),
+                        decided_on: d(2026, 10, 23),
+                        citation: None,
+                        note: None,
+                    },
+                )
+                .unwrap();
+        }
         let after = told(&server);
         assert!(
             after.contains("every entry needs at least one receipt"),
             "{after}"
         );
         assert!(!after.contains("25.00"), "{after}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A bare books://digest, or one with an empty since=, covers this
@@ -11881,7 +11650,7 @@ mod tests {
     async fn session(tag: &str) -> Session {
         use rmcp::ServiceExt;
         let books = unit_dir(&format!("{tag}-peer"));
-        let server = BooksServer::new(store(&books), ReceiptPolicy::default());
+        let server = served(store(&books));
         let (a, b) = tokio::io::duplex(1 << 16);
         let served = tokio::spawn(async move { server.serve(a).await });
         let client = ().serve(b).await.unwrap();
@@ -11924,13 +11693,11 @@ mod tests {
         ledger_store::auth::Scope::Admin,
     ];
 
-    /// Books served from the data root: calls are checked against their
-    /// caller's token and recorded in the access log beside them.
+    /// Books as the books server serves them: calls are checked against
+    /// their caller's token and recorded in the access log beside them.
     fn logged(tag: &str) -> (BooksServer, TestDir) {
         let books = unit_dir(tag);
-        let store = store(&books);
-        let log = ledger_store::access::AccessLog::open(&books.0).unwrap();
-        let server = BooksServer::new(store, ReceiptPolicy::default()).with_access(Arc::new(log));
+        let server = served(store(&books));
         (server, books)
     }
 
@@ -11953,9 +11720,8 @@ mod tests {
             drop(std::fs::OpenOptions::new().write(true).open(&path).unwrap());
             drop(std::fs::File::open(&path).unwrap());
         });
-        let log = ledger_store::access::AccessLog::open(&books.0).unwrap();
+        let server = served(store);
         other_end.join().unwrap();
-        let server = BooksServer::new(store, ReceiptPolicy::default()).with_access(Arc::new(log));
         (server, books)
     }
 
@@ -12027,11 +11793,14 @@ mod tests {
                 answer(server.call_tool(add(), context(&s.peer, None)).await).unwrap();
             assert!(refusal, "{text}");
             assert!(text.contains("without a token"), "{text}");
+            // An unknown tool is a protocol error (mcp-tools.md), never run.
             let unknown = tool_call("books.no_such_tool", serde_json::json!({}));
-            let (refusal, text) =
-                answer(server.call_tool(unknown, context(&s.peer, Some(ALL))).await).unwrap();
-            assert!(refusal, "{text}");
-            assert!(text.contains("there is no tool"), "{text}");
+            let err = server
+                .call_tool(unknown, context(&s.peer, Some(ALL)))
+                .await
+                .unwrap_err();
+            assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS, "{err:?}");
+            assert!(err.message.contains("there is no tool"), "{err:?}");
             // Neither ran: the account isn't there.
             let chart = tool_call("books.chart", serde_json::json!({}));
             let (refusal, text) =
@@ -12223,14 +11992,14 @@ mod tests {
             // Any other answer refused unrun becomes the words alone.
             let (server, _books) = unwritable("unrecorded-refusal");
             let call = crate::access::Call::new(
-                server.access.as_ref().unwrap(),
+                &server.access,
                 &context(&s.peer, Some(ALL)),
                 "tool",
                 "books.chart",
             );
             let out = server
                 .refuse(
-                    Some(&call),
+                    &call,
                     crate::access::STOPPED,
                     Err(rmcp::ErrorData::internal_error("not run", None)),
                 )
@@ -12301,12 +12070,12 @@ mod tests {
         rt().block_on(async {
             let s = session("hints").await;
             let books = unit_dir("hints");
-            let server = BooksServer::new(store(&books), ReceiptPolicy::default());
+            let server = served(store(&books));
             for (version, hinted) in [
                 (rmcp::model::ProtocolVersion::V_2026_07_28, true),
                 (rmcp::model::ProtocolVersion::V_2025_11_25, false),
             ] {
-                let mut cx = context(&s.peer, None);
+                let mut cx = context(&s.peer, Some(ALL));
                 cx.meta.set_protocol_version(version.clone());
                 let list = server.list_tools(None, cx).await.unwrap();
                 assert!(!list.tools.is_empty());

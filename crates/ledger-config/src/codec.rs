@@ -44,8 +44,9 @@ pub struct Import {
     pub notes: Vec<String>,
     /// Entries the books don't know: not imported (INVARIANT 3).
     pub unknown: Vec<String>,
-    /// `[vault] key_file`, if the file sets one: the server's to use
-    /// (`--vault-key-file`), not a books setting.
+    /// `[vault] key_file`, if the file sets one: not a books setting (a
+    /// book in the data root keeps its own key: `books adopt --vault-key`
+    /// brings it in).
     pub vault_key_file: Option<String>,
     /// The file's comments, in order: a settings file's notes (where a
     /// value came from, what it waits on) are not settings, so they are
@@ -151,7 +152,7 @@ pub fn import(
                 ("vault", "key_file") => {
                     out.vault_key_file = v.as_str().map(str::to_string);
                     out.notes.push(
-                        "[vault] key_file: the server's to know (start it with --vault-key-file), not a books setting; dropped".into(),
+                        "[vault] key_file: not a books setting (a book in the data root keeps its own key: adopt with --vault-key naming that file); dropped".into(),
                     );
                 }
                 ("viewer", n) => out.notes.push(format!(
@@ -332,7 +333,6 @@ pub fn books_settings(s: &Settings, base_currency: &str) -> BooksSettings {
         investing_accounts: s.investing_accounts(),
         asset_tag_prefix: s.asset_tag_prefix().map(str::to_string),
         parties: s.parties(),
-        vault_key_file: None,
         timezone: s.timezone().map(str::to_string),
     }
 }
@@ -395,7 +395,7 @@ pub fn export(s: &Settings, base_currency: &str) -> String {
             .unwrap_or_default()
     );
     out.push_str(
-        "# The books keep their own settings: this file is a copy, and editing it\n# changes nothing until it is imported (books.import_settings).\n",
+        "# The books keep their own settings: this file is a copy, and editing it\n# changes nothing (books.set_setting changes them).\n",
     );
     for table in ["company", "books"] {
         let _ = write!(out, "\n[{table}]\n");

@@ -1,73 +1,30 @@
-//! End-to-end smoke test: drive the real `ledger-mcp` binary over stdio
-//! with raw JSON-RPC, exercising draft → preview → receipt policy → post.
+//! End-to-end journeys: drive a real `wanderbooks server` with raw
+//! JSON-RPC, as an agent reaches it (common.rs), exercising draft →
+//! preview → receipt policy → post, and the rest of an agent's day.
 
+use common::{Books, Wire};
 use serde_json::{Value, json};
-use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdin, Command, Stdio};
 
+mod common;
+
+/// One agent's session with the test's books, over the books server's
+/// socket (common.rs).
 struct Mcp {
-    stdin: ChildStdin,
-    stdout: BufReader<std::process::ChildStdout>,
+    wire: Wire,
     next_id: u64,
-    child: Child,
-}
-
-/// Closing stdin ends the server; wait for it to exit, so the next server
-/// on the same books never races it for the writer lock.
-impl Drop for Mcp {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
 }
 
 impl Mcp {
-    fn spawn(data_dir: &std::path::Path) -> Self {
-        Self::spawn_with(data_dir, &[])
-    }
-
-    fn spawn_with(data_dir: &std::path::Path, extra: &[&std::ffi::OsStr]) -> Self {
-        Self::spawn_env(data_dir, extra, &[])
-    }
-
-    fn spawn_env(
-        data_dir: &std::path::Path,
-        extra: &[&std::ffi::OsStr],
-        env: &[(&str, &std::path::Path)],
-    ) -> Self {
-        let bin = env!("CARGO_BIN_EXE_ledger-mcp");
-        let mut child = Command::new(bin)
-            .arg("--data-dir")
-            .arg(data_dir)
-            .args(extra)
-            .envs(env.iter().map(|(k, v)| (*k, v.as_os_str())))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn ledger-mcp");
-        let stdin = child.stdin.take().unwrap();
-        let stdout = BufReader::new(child.stdout.take().unwrap());
+    /// A new session with `books` (initialized by the test itself).
+    fn spawn(books: &Books) -> Self {
         Self {
-            stdin,
-            stdout,
+            wire: books.wire(),
             next_id: 1,
-            child,
         }
     }
 
     fn request(&mut self, method: &str, params: Value) -> Value {
-        let id = self.next_id;
-        self.next_id += 1;
-        let msg = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
-        writeln!(self.stdin, "{msg}").unwrap();
-        self.stdin.flush().unwrap();
-        let mut line = String::new();
-        self.stdout
-            .read_line(&mut line)
-            .expect("read response line");
-        let resp: Value = serde_json::from_str(&line).expect("parse response");
-        assert_eq!(resp["id"], id, "id mismatch in {resp}");
+        let resp = self.request_raw(method, params);
         assert!(
             resp.get("error").is_none(),
             "JSON-RPC error for {method}: {}",
@@ -80,21 +37,18 @@ impl Mcp {
         let id = self.next_id;
         self.next_id += 1;
         let msg = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
-        writeln!(self.stdin, "{msg}").unwrap();
-        self.stdin.flush().unwrap();
-        let mut line = String::new();
-        self.stdout
-            .read_line(&mut line)
-            .expect("read response line");
-        let resp: Value = serde_json::from_str(&line).expect("parse response");
+        self.wire.send(&msg);
+        let resp = self
+            .wire
+            .recv(common::TIMEOUT)
+            .unwrap_or_else(|| panic!("no answer to {method}: {:?}", self.wire.refused));
         assert_eq!(resp["id"], id, "id mismatch in {resp}");
         resp
     }
 
     fn notify(&mut self, method: &str) {
-        let msg = json!({"jsonrpc": "2.0", "method": method, "params": {}});
-        writeln!(self.stdin, "{msg}").unwrap();
-        self.stdin.flush().unwrap();
+        self.wire
+            .send(&json!({"jsonrpc": "2.0", "method": method, "params": {}}));
     }
 
     /// Call a tool; panic on tool error. Returns structuredContent.
@@ -124,41 +78,19 @@ impl Mcp {
         );
         result["content"][0]["text"].as_str().unwrap().to_string()
     }
-}
 
-/// A test's dir, removed when the test ends, pass or panic.
-struct TestDir(std::path::PathBuf);
-
-impl std::ops::Deref for TestDir {
-    type Target = std::path::Path;
-    fn deref(&self) -> &std::path::Path {
-        &self.0
+    /// The bytes of a file a tool handed over (a `HandedFile`): fetched by
+    /// its download, matching the size and SHA-256 it states.
+    fn handed(&mut self, file: &Value) -> Vec<u8> {
+        assert!(file["expires_at"].is_string(), "{file}");
+        self.wire.fetch(file)
     }
-}
-
-impl AsRef<std::path::Path> for TestDir {
-    fn as_ref(&self) -> &std::path::Path {
-        &self.0
-    }
-}
-
-impl Drop for TestDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-fn test_dir(name: &str) -> TestDir {
-    let dir = std::env::temp_dir().join(format!("ledger-mcp-test-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    TestDir(dir)
 }
 
 #[test]
-fn mcp_end_to_end_over_stdio() {
-    let dir = test_dir("main");
-    let mut mcp = Mcp::spawn(&dir);
+fn mcp_end_to_end() {
+    let books = Books::new("main");
+    let mut mcp = Mcp::spawn(&books);
 
     // Initialize: the server identifies itself and delivers the contract.
     let init = mcp.request(
@@ -178,7 +110,7 @@ fn mcp_end_to_end_over_stdio() {
     // Tool listing: the narrow tools; chart is read-only.
     let list = mcp.request("tools/list", json!({}));
     let tools = list["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 116, "expected 116 tools, got {}", tools.len());
+    assert_eq!(tools.len(), 118, "expected 118 tools, got {}", tools.len());
     // Files come in as tool input: books.begin_upload, never a local path.
     assert!(tools.iter().any(|t| t["name"] == "books.begin_upload"));
     assert!(!tools.iter().any(|t| t["name"] == "books.import_local_file"));
@@ -330,9 +262,9 @@ fn mcp_end_to_end_over_stdio() {
 }
 
 #[test]
-fn mcp_assets_end_to_end_over_stdio() {
-    let dir = test_dir("assets");
-    let mut mcp = Mcp::spawn(&dir);
+fn mcp_assets_end_to_end() {
+    let books = Books::new("assets");
+    let mut mcp = Mcp::spawn(&books);
     let init = mcp.request(
         "initialize",
         json!({
@@ -501,8 +433,8 @@ fn mcp_assets_end_to_end_over_stdio() {
 
 #[test]
 fn mcp_receipt_policy_rejects_split_entries() {
-    let dir = test_dir("split");
-    let mut mcp = Mcp::spawn(&dir);
+    let books = Books::new("split");
+    let mut mcp = Mcp::spawn(&books);
     let init = mcp.request(
         "initialize",
         json!({
@@ -592,9 +524,9 @@ fn mcp_receipt_policy_rejects_split_entries() {
 }
 
 #[test]
-fn mcp_receipt_corrections_over_stdio() {
-    let dir = test_dir("receipt-corrections");
-    let mut mcp = Mcp::spawn(&dir);
+fn mcp_receipt_corrections() {
+    let books = Books::new("receipt-corrections");
+    let mut mcp = Mcp::spawn(&books);
     mcp.request(
         "initialize",
         json!({
@@ -729,9 +661,9 @@ fn mcp_receipt_corrections_over_stdio() {
 }
 
 #[test]
-fn mcp_resources_over_stdio() {
-    let dir = test_dir("resources");
-    let mut mcp = Mcp::spawn(&dir);
+fn mcp_resources() {
+    let books = Books::new("resources");
+    let mut mcp = Mcp::spawn(&books);
     let init = mcp.request(
         "initialize",
         json!({
@@ -805,16 +737,9 @@ fn init(mcp: &mut Mcp) -> Value {
 /// books.get_receipt (S7 of the P0 review, 2026-10-16).
 #[test]
 fn tin_bearing_files_are_refused_when_given_back_to_be_filed() {
-    let dir = test_dir("tin-files");
-    let books = dir.join("books");
-    let config = dir.join("config");
-    std::fs::create_dir_all(&config).unwrap();
+    let books = Books::new("tin-files");
     let w9 = b"%PDF-1.4 W-9 TIN 291-12-2846";
-    let mut mcp = Mcp::spawn_env(
-        &books.join("books-data"),
-        &[],
-        &[("XDG_CONFIG_HOME", &config)],
-    );
+    let mut mcp = Mcp::spawn(&books);
     init(&mut mcp);
     mcp.call(
         "books.add_account",
@@ -835,9 +760,9 @@ fn tin_bearing_files_are_refused_when_given_back_to_be_filed() {
                "tin": "291-12-2846", "tin_type": "ssn",
                "w9_content_base64": base64_like(w9), "w9_sha256": sha(w9)}),
     );
-    // Each comes back inline over stdio.
+    // Each comes back by its download.
     let got = mcp.call("books.get_w9", json!({"party": "Acme"}));
-    let w9_back = handed(&got["file"]);
+    let w9_back = mcp.handed(&got["file"]);
     assert_eq!(w9_back, w9, "the W-9 file, as stored");
     let ws = mcp.call(
         "books.vendor_1099",
@@ -849,10 +774,10 @@ fn tin_bearing_files_are_refused_when_given_back_to_be_filed() {
         json!({"cash_accounts": ["1000"]}),
     );
     assert_eq!(pkg["tins_included"], true);
-    let handed_over = [w9_back, handed(&ws["csv"]), handed(&pkg["file"])];
+    let handed_over = [w9_back, mcp.handed(&ws["csv"]), mcp.handed(&pkg["file"])];
     // Given back, each is refused by its bytes, by every way a file is
     // filed.
-    let journal = std::fs::read(books.join("books-data").join(ledger_store::JOURNAL_FILE)).unwrap();
+    let journal = books.journal();
     for (n, bytes) in handed_over.iter().enumerate() {
         for (tool, args) in [
             (
@@ -876,17 +801,13 @@ fn tin_bearing_files_are_refused_when_given_back_to_be_filed() {
             );
         }
     }
-    assert_eq!(
-        std::fs::read(books.join("books-data").join(ledger_store::JOURNAL_FILE)).unwrap(),
-        journal,
-        "a refusal stored something"
-    );
+    assert_eq!(books.journal(), journal, "a refusal stored something");
     // Without TINs, the 1099 worksheet is an ordinary file: it may be
     // filed like any other.
     let plain = mcp.call("books.vendor_1099", json!({"year": 2026, "csv": true}));
     assert!(plain["warning"].is_null(), "{plain}");
     assert_eq!(plain["csv"]["file_name"], "1099-worksheet-2026.csv");
-    let bytes = handed(&plain["csv"]);
+    let bytes = mcp.handed(&plain["csv"]);
     mcp.call(
         "books.file_document",
         json!({"category": "statement", "file_name": "plain.csv", "mime_type": "text/csv",
@@ -899,20 +820,21 @@ fn tin_bearing_files_are_refused_when_given_back_to_be_filed() {
 /// uncut, so no account the rule names is out of the agent's reach.
 #[test]
 fn every_receipt_account_left_out_of_the_connect_text_is_in_books_settings() {
-    let dir = test_dir("receipt-accounts");
     let long = "6000-A-CODE-LONGER-THAN-ANY-RULE-SHOWS-IT";
     let required: Vec<String> = std::iter::once(long.to_string())
         .chain((1..20).map(|i| format!("{}", 6000 + i)))
         .collect();
     let exempt: Vec<String> = (0..12).map(|i| format!("{}", 1100 + i)).collect();
-    std::fs::write(
-        dir.join("config.json"),
-        json!({"receipt_policy": {"require_receipts_above": "0.00",
-               "receipt_required_accounts": required, "receipt_exempt_accounts": exempt}})
-        .to_string(),
-    )
-    .unwrap();
-    let mut mcp = Mcp::spawn(&dir);
+    let books = Books::new("receipt-accounts");
+    books.settle_with(
+        "",
+        Some(
+            &json!({"receipt_policy": {"require_receipts_above": "0.00",
+                   "receipt_required_accounts": required, "receipt_exempt_accounts": exempt}})
+            .to_string(),
+        ),
+    );
+    let mut mcp = Mcp::spawn(&books);
     let init = mcp.request(
         "initialize",
         json!({
@@ -973,8 +895,8 @@ fn digest_resource_bare_reads() {
 /// One run of `digest_resource_bare_reads`: false if the server's month
 /// turned during it (nothing is checked then).
 fn digest_bare_reads_once(attempt: u32) -> bool {
-    let dir = test_dir(&format!("digest-bare-{attempt}"));
-    let mut mcp = Mcp::spawn(&dir.join("books-data"));
+    let books = Books::new(&format!("digest-bare-{attempt}"));
+    let mut mcp = Mcp::spawn(&books);
     mcp.request(
         "initialize",
         json!({
@@ -1042,9 +964,9 @@ fn digest_bare_reads_once(attempt: u32) -> bool {
 /// The handbook is one tool and one resource per section, with the
 /// receipt rule in force rendered in; the connect text points to it.
 #[test]
-fn handbook_tool_and_resources_over_stdio() {
-    let dir = test_dir("handbook");
-    let mut mcp = Mcp::spawn(&dir.join("books-data"));
+fn handbook_tool_and_resources() {
+    let books = Books::new("handbook");
+    let mut mcp = Mcp::spawn(&books);
     let init = mcp.request(
         "initialize",
         json!({
@@ -1159,25 +1081,10 @@ fn base64_like(bytes: &[u8]) -> String {
     out
 }
 
-/// The bytes of a file a tool handed over (a `HandedFile`): over stdio
-/// they come inline, with no download command, and match the size and
-/// SHA-256 it states.
-fn handed(file: &Value) -> Vec<u8> {
-    use base64::Engine;
-    assert!(file.get("download").is_none(), "{file}");
-    assert!(file.get("expires_at").is_none(), "{file}");
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(file["content_base64"].as_str().expect("content_base64"))
-        .unwrap();
-    assert_eq!(file["size_bytes"], json!(bytes.len()), "{file}");
-    assert_eq!(file["sha256"], json!(sha(&bytes)), "{file}");
-    bytes
-}
-
 #[test]
-fn mcp_import_export_over_stdio() {
-    let dir = test_dir("import_export");
-    let mut mcp = Mcp::spawn(&dir);
+fn mcp_import_export() {
+    let books = Books::new("import_export");
+    let mut mcp = Mcp::spawn(&books);
     mcp.request(
         "initialize",
         json!({
@@ -1221,11 +1128,11 @@ fn mcp_import_export_over_stdio() {
 }
 
 #[test]
-fn mcp_statement_pdfs_and_cpa_package_over_stdio() {
+fn mcp_statement_pdfs_and_cpa_package() {
     use base64::Engine;
     let b64 = base64::engine::general_purpose::STANDARD;
-    let dir = test_dir("statement-pdfs");
-    let mut mcp = Mcp::spawn(&dir);
+    let books = Books::new("statement-pdfs");
+    let mut mcp = Mcp::spawn(&books);
     mcp.request(
         "initialize",
         json!({
@@ -1317,7 +1224,7 @@ fn mcp_statement_pdfs_and_cpa_package_over_stdio() {
     assert_eq!(pkg["file"]["file_name"], "cpa-package-2026-10-31.zip");
     assert_eq!(pkg["file"]["mime_type"], "application/zip");
     assert_eq!(pkg["tins_included"], false);
-    let zip_bytes = handed(&pkg["file"]);
+    let zip_bytes = mcp.handed(&pkg["file"]);
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(zip_bytes)).unwrap();
     let mut names: Vec<String> = (0..zip.len())
         .map(|i| zip.by_index(i).unwrap().name().unwrap().to_string())
@@ -1369,26 +1276,22 @@ fn mcp_statement_pdfs_and_cpa_package_over_stdio() {
         "books.export_cpa_package",
         json!({"as_of": "2026-10-31", "cash_accounts": ["1000"], "include_receipts": false, "include_tins": false}),
     );
-    let light = zip::ZipArchive::new(std::io::Cursor::new(handed(&light["file"]))).unwrap();
+    let light = zip::ZipArchive::new(std::io::Cursor::new(mcp.handed(&light["file"]))).unwrap();
     assert_eq!(light.len(), rest.len());
 }
 
 #[test]
-fn mcp_period_statements_over_stdio() {
-    let dir = test_dir("period-statements");
+fn mcp_period_statements() {
     // A rejected receipt policy would show up as a failed post below: the
-    // toml lowers the threshold from 25.00 to 5.00.
-    let toml = dir.join("wanderbooks.toml");
-    std::fs::write(
-        &toml,
-        "[company]\nname = \"Test Co\"\nfiscal_year_start = \"02-01\"\ntax_classification = \"partnership\"\n[[company.members]]\nname = \"Owner\"\nshare = \"100%\"\ncapital_account = \"3000\"\n[books]\nreceipt_threshold = \"5.00\"\n",
-    )
-    .unwrap();
-    let data = dir.join("books-data");
-    let mut mcp = Mcp::spawn_with(
-        &data,
-        &[std::ffi::OsStr::new("--books-toml"), toml.as_os_str()],
+    // settings lower the threshold from 25.00 to 5.00.
+    let books = Books::with(
+        "period-statements",
+        "USD",
+        Some(
+            "[company]\nname = \"Test Co\"\nfiscal_year_start = \"02-01\"\ntax_classification = \"partnership\"\n[[company.members]]\nname = \"Owner\"\nshare = \"100%\"\ncapital_account = \"3000\"\n[books]\nreceipt_threshold = \"5.00\"\n",
+        ),
     );
+    let mut mcp = Mcp::spawn(&books);
     mcp.request(
         "initialize",
         json!({
@@ -1608,7 +1511,7 @@ fn mcp_period_statements_over_stdio() {
 }
 
 #[test]
-fn mcp_partnership_from_template_over_stdio() {
+fn mcp_partnership_from_template() {
     let init = |mcp: &mut Mcp| {
         mcp.request(
             "initialize",
@@ -1621,31 +1524,42 @@ fn mcp_partnership_from_template_over_stdio() {
         mcp.notify("notifications/initialized");
     };
     // 1. Ask for a template (any server will do).
-    let dir = test_dir("template");
-    let mut scratch = Mcp::spawn(&dir.join("scratch"));
+    let scratch_books = Books::new("template-scratch");
+    let mut scratch = Mcp::spawn(&scratch_books);
     init(&mut scratch);
     let t = scratch.call(
         "books.chart_template",
         json!({"entity_type": "multi-member LLC", "owners": ["Ann", "Bo"]}),
     );
-    let settings = t["settings_toml"].as_str().unwrap();
-    assert!(settings.contains("distribution_account = \"3101\""));
+    let settings = t["settings"].clone();
+    let members = settings
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["key"] == "company.members")
+        .unwrap_or_else(|| panic!("{settings}"));
+    assert_eq!(
+        members["value"][1]["distribution_account"],
+        json!("3101"),
+        "{settings}"
+    );
     let err = scratch.call_err("books.chart_template", json!({"entity_type": "LLC"}));
     assert!(err.contains("entity_type"), "{err}");
 
-    // 2. Its settings become the company config; its chart, the chart.
-    let toml = dir.join("wanderbooks.toml");
-    std::fs::write(
-        &toml,
-        format!("{settings}\n[books]\nreceipt_threshold = \"10000\"\n"),
-    )
-    .unwrap();
-    let mut mcp = Mcp::spawn_with(
-        &dir.join("books-data"),
-        &[std::ffi::OsStr::new("--books-toml"), toml.as_os_str()],
+    // 2. Its chart becomes the chart; its settings, the company's
+    // (books.set_setting, the one way settings change).
+    let books = Books::with(
+        "template",
+        "USD",
+        Some("[books]\nreceipt_threshold = \"10000\"\n"),
     );
+    let mut mcp = Mcp::spawn(&books);
     init(&mut mcp);
     mcp.call("books.import_chart_csv", json!({"csv_text": t["csv"]}));
+    mcp.call(
+        "books.set_setting",
+        json!({"changes": settings, "decided_by": "Ann"}),
+    );
     let post = |mcp: &mut Mcp, date: &str, dr: &str, cr: &str, amount: &str| {
         let e = mcp.call(
             "books.draft_entry",
@@ -1730,30 +1644,29 @@ fn mcp_partnership_from_template_over_stdio() {
 /// 0.01 each.
 #[test]
 fn close_period_shows_each_members_running_split() {
-    let dir = test_dir("members-split");
-    let mut scratch = Mcp::spawn(&dir.join("scratch"));
+    let scratch_books = Books::new("members-split-scratch");
+    let mut scratch = Mcp::spawn(&scratch_books);
     init(&mut scratch);
     let t = scratch.call(
         "books.chart_template",
         json!({"entity_type": "multi-member LLC", "owners": ["Ann", "Bo"]}),
     );
-    let settings = t["settings_toml"].as_str().unwrap().to_string();
-    let toml = dir.join("wanderbooks.toml");
-    std::fs::write(
-        &toml,
-        format!("{settings}\n[books]\nreceipt_threshold = \"10000\"\n"),
-    )
-    .unwrap();
-    let spawn = || {
-        let mut mcp = Mcp::spawn_with(
-            &dir.join("books-data"),
-            &[std::ffi::OsStr::new("--books-toml"), toml.as_os_str()],
-        );
+    let books = Books::with(
+        "members-split",
+        "USD",
+        Some("[books]\nreceipt_threshold = \"10000\"\n"),
+    );
+    let spawn = |books: &Books| {
+        let mut mcp = Mcp::spawn(books);
         init(&mut mcp);
         mcp
     };
-    let mut mcp = spawn();
+    let mut mcp = spawn(&books);
     mcp.call("books.import_chart_csv", json!({"csv_text": t["csv"]}));
+    mcp.call(
+        "books.set_setting",
+        json!({"changes": t["settings"], "decided_by": "Ann"}),
+    );
     let sale = |mcp: &mut Mcp, date: &str| {
         let e = mcp.call(
             "books.draft_entry",
@@ -1825,7 +1738,8 @@ fn close_period_shows_each_members_running_split() {
     );
     drop(mcp);
 
-    let mut mcp = spawn();
+    books.restart();
+    let mut mcp = spawn(&books);
     assert_eq!(mcp.call("books.verify", json!({}))["status"], "ok");
     let periods = mcp.call("books.list_periods", json!({}));
     let rules: Vec<&Value> = periods["periods"]
@@ -1855,35 +1769,36 @@ fn close_period_shows_each_members_running_split() {
 /// old-books fixture x_member_closes (two members at 50%, A with a
 /// distributions account; three closes untagged, three
 /// "largest_remainder", then "cumulative" broken by a close to retained
-/// earnings), opened by the server. list_periods names each close's rule;
-/// December's first close under the rule since P3 counts from close 1
-/// and carries the true-up, the same in the preview as once confirmed.
+/// earnings), left in a data root in P2's format. list_periods names each
+/// close's rule; December's first close under the rule since P3 counts
+/// from close 1 and carries the true-up, refused (naming its feature)
+/// until the owner upgrades the books, then the same as previewed.
 /// By hand (the fixture's writer): the members closed 0.12, A 0.07 and B
 /// 0.05 of it (exact 0.06 each). December earns 0.02: the running 0.14
 /// splits 0.07 each, less 0.07 / 0.05 given, so Ann gets 0.00 and Bo
 /// 0.02, both at their exact 0.07.
 #[test]
 fn old_books_name_each_closes_rule_and_true_up_at_the_next_close() {
-    let dir = test_dir("members-old");
+    // Books P1 kept, which P2 moved to its journal format (format 2, none
+    // of the features since), left in a data root, with their members set
+    // as an agent sets them: books waiting for their format upgrade.
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../ledger-store/tests/fixtures/old-books/x_member_closes/journal.jsonl");
-    let books = dir.join("books-data");
-    std::fs::create_dir_all(&books).unwrap();
-    std::fs::copy(&fixture, books.join("journal.jsonl")).unwrap();
-    let toml = dir.join("wanderbooks.toml");
-    std::fs::write(
-        &toml,
+        .join("../ledger-store/tests/fixtures/old-books/x_member_closes");
+    let books = Books::placed("members-old", &fixture);
+    books.stop();
+    ledger_store::Store::open(&books.dir())
+        .unwrap()
+        .declare_journal_format(2, &[])
+        .unwrap();
+    books.start();
+    books.settle(
         "[company]\ntax_form = \"1065\"\n\n\
          [[company.members]]\nname = \"Ann\"\nshare = \"50%\"\ncapital_account = \"3000\"\n\
          distribution_account = \"3100\"\n\n\
          [[company.members]]\nname = \"Bo\"\nshare = \"50%\"\ncapital_account = \"3001\"\n\n\
          [books]\nreceipt_threshold = \"10000\"\n",
-    )
-    .unwrap();
-    let mut mcp = Mcp::spawn_with(
-        &books,
-        &[std::ffi::OsStr::new("--books-toml"), toml.as_os_str()],
     );
+    let mut mcp = Mcp::spawn(&books);
     init(&mut mcp);
     let rules = |mcp: &mut Mcp| -> Vec<Value> {
         mcp.call("books.list_periods", json!({}))["periods"]
@@ -1956,18 +1871,17 @@ fn old_books_name_each_closes_rule_and_true_up_at_the_next_close() {
         "{refused}"
     );
     // The owner's go-ahead, as the app gives it (ledger-gui owner.rs, after
-    // the passphrase and a verified backup): the books move to this
-    // version's format.
+    // the passphrase and a verified backup): the server stopped, the books
+    // moved to this version's format, and served again.
     drop(mcp);
-    ledger_store::Store::open(&books)
+    books.stop();
+    ledger_store::Store::open(&books.dir())
         .unwrap()
         .upgrade_format()
         .unwrap()
         .expect("old books wait for the upgrade");
-    let mut mcp = Mcp::spawn_with(
-        &books,
-        &[std::ffi::OsStr::new("--books-toml"), toml.as_os_str()],
-    );
+    books.start();
+    let mut mcp = Mcp::spawn(&books);
     init(&mut mcp);
     let closed = mcp.call(
         "books.close_period",
@@ -1981,8 +1895,8 @@ fn old_books_name_each_closes_rule_and_true_up_at_the_next_close() {
 }
 
 #[test]
-fn mcp_schedules_and_recurring_over_stdio() {
-    let dir = test_dir("schedules");
+fn mcp_schedules_and_recurring() {
+    let books = Books::new("schedules");
     let init = |mcp: &mut Mcp| {
         mcp.request(
             "initialize",
@@ -1994,7 +1908,7 @@ fn mcp_schedules_and_recurring_over_stdio() {
         );
         mcp.notify("notifications/initialized");
     };
-    let mut mcp = Mcp::spawn(&dir);
+    let mut mcp = Mcp::spawn(&books);
     init(&mut mcp);
     for (code, name, typ) in [
         ("1000", "Bank", "asset"),
@@ -2088,7 +2002,8 @@ fn mcp_schedules_and_recurring_over_stdio() {
     drop(mcp);
 
     // Restart: everything replays from the journal.
-    let mut mcp = Mcp::spawn(&dir);
+    books.restart();
+    let mut mcp = Mcp::spawn(&books);
     init(&mut mcp);
     let list = mcp.call("books.list_schedules", json!({}));
     assert_eq!(list["schedules"][0]["remaining"], "333.34");
@@ -2102,9 +2017,9 @@ fn mcp_schedules_and_recurring_over_stdio() {
 }
 
 #[test]
-fn mcp_payout_gross_up_over_stdio() {
-    let dir = test_dir("payout");
-    let mut mcp = Mcp::spawn(&dir);
+fn mcp_payout_gross_up() {
+    let books = Books::new("payout");
+    let mut mcp = Mcp::spawn(&books);
     mcp.request(
         "initialize",
         json!({
@@ -2206,8 +2121,8 @@ fn mcp_payout_gross_up_over_stdio() {
 }
 
 #[test]
-fn mcp_vendor_1099_over_stdio() {
-    let dir = test_dir("form1099");
+fn mcp_vendor_1099() {
+    let books = Books::new("form1099");
     let init = |mcp: &mut Mcp| {
         mcp.request(
             "initialize",
@@ -2219,7 +2134,7 @@ fn mcp_vendor_1099_over_stdio() {
         );
         mcp.notify("notifications/initialized");
     };
-    let mut mcp = Mcp::spawn(&dir);
+    let mut mcp = Mcp::spawn(&books);
     init(&mut mcp);
     for (code, name, typ) in [
         ("1000", "Bank", "asset"),
@@ -2298,7 +2213,8 @@ fn mcp_vendor_1099_over_stdio() {
     );
     drop(mcp);
 
-    let mut mcp = Mcp::spawn(&dir);
+    books.restart();
+    let mut mcp = Mcp::spawn(&books);
     init(&mut mcp);
     let r = mcp.call("books.vendor_1099", json!({"year": 2026}));
     assert_eq!(r["vendors"][0]["paid"], "2500.00");
@@ -2327,13 +2243,13 @@ fn mcp_vendor_1099_over_stdio() {
     assert_eq!(vendors["vendors"][0]["tin_on_file"], true);
     // The server made the books' ops/ as they opened: a viewer open from
     // before the first books.show is seen by it.
-    let viewer = ledger_store::ops::Presence::hold(&dir).expect("ops/ made at start");
+    let viewer = ledger_store::ops::Presence::hold(&books.dir()).expect("ops/ made at start");
     // Show the entry in the viewer: a request in the books' ops/, never
     // journaled.
     let shown = mcp.call("books.show", json!({"entry_id": id}));
     assert!(shown["shown"].as_str().unwrap().contains(&format!("#{id}")));
     assert_eq!(shown["viewer_open"], true);
-    let cmd = ledger_store::ops::read(&dir).expect("request written");
+    let cmd = ledger_store::ops::read(&books.dir()).expect("request written");
     assert_eq!(
         cmd.target,
         ledger_store::ops::ViewerTarget::Entry { entry_id: id }
@@ -2356,13 +2272,12 @@ fn mcp_vendor_1099_over_stdio() {
 
 #[test]
 fn mcp_receipts_always_required_when_threshold_is_zero() {
-    let dir = test_dir("always-receipts");
-    let toml = dir.join("wanderbooks.toml");
-    std::fs::write(&toml, "[books]\nreceipt_threshold = \"0.00\"\n").unwrap();
-    let mut mcp = Mcp::spawn_with(
-        &dir.join("books-data"),
-        &[std::ffi::OsStr::new("--books-toml"), toml.as_os_str()],
+    let books = Books::with(
+        "always-receipts",
+        "USD",
+        Some("[books]\nreceipt_threshold = \"0.00\"\n"),
     );
+    let mut mcp = Mcp::spawn(&books);
     let init = mcp.request(
         "initialize",
         json!({
@@ -2405,32 +2320,6 @@ fn mcp_receipts_always_required_when_threshold_is_zero() {
     );
 }
 
-/// A client reconnecting starts a new server while the old one still has
-/// the books: the new one waits for the lock instead of dying.
-#[test]
-fn a_restarted_server_waits_for_the_old_one_to_let_go() {
-    let dir = test_dir("restart-race");
-    let init = |mcp: &mut Mcp| {
-        mcp.request(
-            "initialize",
-            json!({
-                "protocolVersion": "2025-06-18",
-                "capabilities": {},
-                "clientInfo": {"name": "smoke-test", "version": "0.1.0"},
-            }),
-        );
-        mcp.notify("notifications/initialized");
-    };
-    let mut old = Mcp::spawn(&dir);
-    init(&mut old);
-    let mut new = Mcp::spawn(&dir);
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    drop(old);
-    init(&mut new);
-    let chart = new.call("books.chart", json!({}));
-    assert!(chart.is_object());
-}
-
 /// `books.cash_flow` with no accounts passed reads the roles from
 /// `[books]` in wanderbooks.toml (rules.md B-14): the expense the owners
 /// paid through 2100 is borrowed from them and spent on its date, each
@@ -2439,17 +2328,14 @@ fn a_restarted_server_waits_for_the_old_one_to_let_go() {
 /// method's, and it foots.
 #[test]
 fn cash_flow_reads_its_account_roles_from_the_books_settings() {
-    let dir = test_dir("cash-roles");
-    let toml = dir.join("wanderbooks.toml");
-    std::fs::write(
-        &toml,
-        "[books]\nreceipt_threshold = \"1000000.00\"\ncash_accounts = [\"1000\"]\nfinancing_accounts = [\"2100\"]\ninvesting_accounts = [\"1400\"]\n",
-    )
-    .unwrap();
-    let mut mcp = Mcp::spawn_with(
-        &dir.join("books-data"),
-        &[std::ffi::OsStr::new("--books-toml"), toml.as_os_str()],
+    let books = Books::with(
+        "cash-roles",
+        "USD",
+        Some(
+            "[books]\nreceipt_threshold = \"1000000.00\"\ncash_accounts = [\"1000\"]\nfinancing_accounts = [\"2100\"]\ninvesting_accounts = [\"1400\"]\n",
+        ),
     );
+    let mut mcp = Mcp::spawn(&books);
     mcp.request(
         "initialize",
         json!({
@@ -2547,8 +2433,8 @@ fn cash_flow_reads_its_account_roles_from_the_books_settings() {
 /// naming the setting and the fix, never a statement on a wrong partition.
 #[test]
 fn cash_flow_refuses_contradictory_roles() {
-    let dir = test_dir("cash-refuse");
-    let mut mcp = Mcp::spawn(&dir);
+    let books = Books::new("cash-refuse");
+    let mut mcp = Mcp::spawn(&books);
     mcp.request(
         "initialize",
         json!({
@@ -2594,8 +2480,8 @@ fn cash_flow_refuses_contradictory_roles() {
 /// parent listed after its child).
 #[test]
 fn a_chart_file_with_a_bad_row_imports_nothing() {
-    let dir = test_dir("chart-atomic");
-    let mut mcp = Mcp::spawn(&dir);
+    let books = Books::new("chart-atomic");
+    let mut mcp = Mcp::spawn(&books);
     mcp.request(
         "initialize",
         json!({
@@ -2636,8 +2522,8 @@ fn a_chart_file_with_a_bad_row_imports_nothing() {
 /// transaction that can't become a draft refuses the whole file.
 #[test]
 fn bank_import_reads_dates_rules_and_files_whole() {
-    let dir = test_dir("bank-import");
-    let mut mcp = Mcp::spawn(&dir);
+    let books = Books::new("bank-import");
+    let mut mcp = Mcp::spawn(&books);
     mcp.request(
         "initialize",
         json!({
@@ -2699,7 +2585,7 @@ fn bank_import_reads_dates_rules_and_files_whole() {
         ),
     );
     assert!(err.contains("closed"), "{err}");
-    let journal = std::fs::read_to_string(dir.join(ledger_store::JOURNAL_FILE)).unwrap();
+    let journal = String::from_utf8(books.journal()).unwrap();
     assert!(
         !journal.contains("2026-06-01"),
         "the first row was journaled"
@@ -2711,17 +2597,12 @@ fn bank_import_reads_dates_rules_and_files_whole() {
 /// and settings naming the old code are listed.
 #[test]
 fn renumbering_an_account_keeps_its_history() {
-    let dir = test_dir("renumber");
-    let toml = dir.join("wanderbooks.toml");
-    std::fs::write(
-        &toml,
-        "[books]\nreceipt_threshold = \"1000000.00\"\ncash_accounts = [\"1000\"]\n",
-    )
-    .unwrap();
-    let mut mcp = Mcp::spawn_with(
-        &dir.join("books-data"),
-        &[std::ffi::OsStr::new("--books-toml"), toml.as_os_str()],
+    let books = Books::with(
+        "renumber",
+        "USD",
+        Some("[books]\nreceipt_threshold = \"1000000.00\"\ncash_accounts = [\"1000\"]\n"),
     );
+    let mut mcp = Mcp::spawn(&books);
     mcp.request(
         "initialize",
         json!({
@@ -2793,16 +2674,17 @@ fn renumbering_an_account_keeps_its_history() {
             .iter()
             .any(|a| a["code"] == "6100")
     );
-    // The cash account is named in wanderbooks.toml: listed.
+    // The cash account is named in the books' settings: listed.
     let out = mcp.call(
         "books.renumber_account",
         json!({"account": "1000", "code": "1010"}),
     );
-    assert_eq!(out["config_mentions"], json!(["[books] cash_accounts"]));
+    assert_eq!(out["config_mentions"], json!(["books.cash_accounts"]));
     drop(mcp);
 
     // A restart replays the journal to the same chart.
-    let mut mcp = Mcp::spawn(&dir.join("books-data"));
+    books.restart();
+    let mut mcp = Mcp::spawn(&books);
     mcp.request(
         "initialize",
         json!({
@@ -2829,19 +2711,15 @@ fn renumbering_an_account_keeps_its_history() {
     );
 }
 
-/// A server on books whose settings come from `toml`, initialized.
-fn served(dir: &std::path::Path, toml: &str) -> Mcp {
-    let path = dir.join("wanderbooks.toml");
-    std::fs::write(&path, toml).unwrap();
-    let mut mcp = Mcp::spawn_with(
-        &dir.join("books-data"),
-        &[std::ffi::OsStr::new("--books-toml"), path.as_os_str()],
-    );
+/// A session with `books`, settings set from `toml` first, initialized.
+fn served(books: &Books, toml: &str) -> Mcp {
+    books.settle(toml);
+    let mut mcp = Mcp::spawn(books);
     init(&mut mcp);
     mcp
 }
 
-/// Post one balanced two-line entry over stdio.
+/// Post one balanced two-line entry.
 fn post_pair(mcp: &mut Mcp, date: &str, dr: &str, cr: &str, amount: &str) -> u64 {
     let e = mcp.call(
         "books.draft_entry",
@@ -2873,9 +2751,9 @@ fn post_pair(mcp: &mut Mcp, date: &str, dr: &str, cr: &str, amount: &str) -> u64
 /// after, so midnight can't fail it).
 #[test]
 fn one_default_period_everywhere_defect_16() {
-    let dir = test_dir("one-default");
+    let books = Books::new("one-default");
     let mut mcp = served(
-        &dir,
+        &books,
         "[company]\nname = \"Fernhill Labs LLC\"\nfiscal_year_start = \"07-01\"\ntax_classification = \"partnership\"\n[[company.members]]\nname = \"A\"\nshare = \"50%\"\ncapital_account = \"3000\"\n[[company.members]]\nname = \"B\"\nshare = \"50%\"\ncapital_account = \"3001\"\n[books]\nreceipt_threshold = \"1000000.00\"\ncash_accounts = [\"1000\"]\n",
     );
     mcp.call(
@@ -2941,7 +2819,7 @@ fn one_default_period_everywhere_defect_16() {
         "books.export_cpa_package",
         json!({"as_of": "2026-03-31", "include_receipts": false, "include_tins": false}),
     );
-    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(handed(&pkg["file"]))).unwrap();
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(mcp.handed(&pkg["file"]))).unwrap();
     let mut readme = String::new();
     std::io::Read::read_to_string(&mut zip.by_name("README.txt").unwrap(), &mut readme).unwrap();
     assert!(
@@ -3003,9 +2881,9 @@ fn iif_docnums(iif: &str) -> Vec<u64> {
 /// one before its fiscal year included.
 #[test]
 fn the_default_period_never_shortens_the_iif_or_the_package() {
-    let dir = test_dir("default-vs-iif");
+    let books = Books::new("default-vs-iif");
     let mut mcp = served(
-        &dir,
+        &books,
         "[company]\nname = \"Fernhill Labs LLC\"\nfiscal_year_start = \"07-01\"\n[books]\nreceipt_threshold = \"1000000.00\"\ncash_accounts = [\"1000\"]\n",
     );
     mcp.call(
@@ -3080,7 +2958,7 @@ fn the_default_period_never_shortens_the_iif_or_the_package() {
         "books.export_cpa_package",
         json!({"as_of": "2026-03-31", "include_receipts": false, "include_tins": false}),
     );
-    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(handed(&pkg["file"]))).unwrap();
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(mcp.handed(&pkg["file"]))).unwrap();
     let mut read = |name: &str| {
         let mut text = String::new();
         std::io::Read::read_to_string(&mut zip.by_name(name).unwrap(), &mut text).unwrap();
@@ -3103,9 +2981,9 @@ fn the_default_period_never_shortens_the_iif_or_the_package() {
 /// a restarted server reads the new name back.
 #[test]
 fn rename_account_end_to_end_defect_15() {
-    let dir = test_dir("rename-e2e");
+    let books = Books::new("rename-e2e");
     let mut mcp = served(
-        &dir,
+        &books,
         "[company]\nname = \"Fernhill Labs LLC\"\n[books]\nreceipt_threshold = \"1000000.00\"\ncash_accounts = [\"1000\"]\n",
     );
     mcp.call(
@@ -3191,7 +3069,8 @@ fn rename_account_end_to_end_defect_15() {
     );
     assert!(!out["notes"].to_string().contains("cash account"), "{out}");
     drop(mcp);
-    let mut mcp = Mcp::spawn(&dir.join("books-data"));
+    books.restart();
+    let mut mcp = Mcp::spawn(&books);
     init(&mut mcp);
     let chart = mcp.call("books.chart", json!({}));
     let names: Vec<(String, String)> = chart["accounts"]
@@ -3228,9 +3107,9 @@ fn rename_account_end_to_end_defect_15() {
 /// name is listed, and one that doesn't isn't.
 #[test]
 fn rename_says_what_the_new_name_moves_defect_15() {
-    let dir = test_dir("rename-sets");
+    let books = Books::new("rename-sets");
     let mut mcp = served(
-        &dir,
+        &books,
         "[company]\nname = \"Fernhill Labs LLC\"\n[books]\nreceipt_threshold = \"1000000.00\"\n",
     );
     mcp.call(
@@ -3292,9 +3171,9 @@ fn rename_says_what_the_new_name_moves_defect_15() {
 /// 12 months: March 100 × 17/31 = 54.84, then 100.00 a month, the last
 /// March 45.16; through April 30, 154.84 posted, 1,045.16 left.
 #[test]
-fn mcp_daily_schedule_over_stdio() {
-    let dir = test_dir("daily-schedule");
-    let mut mcp = Mcp::spawn(&dir);
+fn mcp_daily_schedule() {
+    let books = Books::new("daily-schedule");
+    let mut mcp = Mcp::spawn(&books);
     init(&mut mcp);
     for (code, name, typ) in [
         ("1300", "Prepaid Expenses", "asset"),
@@ -3350,13 +3229,7 @@ fn mcp_daily_schedule_over_stdio() {
     assert_eq!(one["next"], "2026-05-31");
     assert_eq!(one["remaining"], "1045.16");
 
-    // The books take their settings in (there was no file: the defaults),
-    // then new schedules are set to equal months.
-    let done = mcp.call(
-        "books.import_settings",
-        json!({"toml_text": "", "decided_by": "Owner", "confirmed": true}),
-    );
-    assert_eq!(done["status"], "imported");
+    // New schedules are set to equal months.
     mcp.call(
         "books.set_setting",
         json!({"changes": [{"key": "books.schedule_convention", "value": "monthly_even"}],

@@ -60,9 +60,7 @@
 //! ```
 
 use crate::admin::{self, Request, Response};
-use crate::policy::ReceiptPolicy;
-use crate::server::{BooksServer, Layout, SharedStore};
-use crate::settings::Live;
+use crate::server::{BooksServer, Served, SharedStore};
 use ledger_store::Store;
 use ledger_store::access::{Access, AccessLog, Outcome, Principal};
 use ledger_store::auth::{Principals, Scope, Token};
@@ -294,61 +292,30 @@ impl Books {
                 self.hide(why.clone())
             );
         }
-        let mut live = Live::own();
-        live.sync(store.ledger().settings(), store.base_currency().code());
         let waiting = Arc::new(Mutex::new(store.journal_format().upgrade()));
         let database = (store.database_file(), store.other_databases());
-        let layout = Layout::Root(self.root.path().to_path_buf());
-        let access = Arc::new(
-            AccessLog::open(store.data_dir())
-                .map_err(|e| format!("its access log can't be used: {e}"))?,
-        );
-        let uploads =
-            ledger_store::uploads::Uploads::open(store.data_dir(), chrono::Utc::now().timestamp())
-                .map_err(|e| self.hide(e.to_string()))?;
-        let server_uploads = uploads.clone();
-        let exports =
-            ledger_store::exports::Exports::open(store.data_dir(), chrono::Utc::now().timestamp())
-                .map_err(|e| self.hide(e.to_string()))?;
-        let server_exports = exports.clone();
-        // The viewer's side channel, made by the server (ops.rs
-        // INVARIANT 2): a viewer can show its presence from the start.
-        ledger_store::ops::prepare(store.data_dir()).map_err(|e| self.hide(e.to_string()))?;
-        let live = Arc::new(Mutex::new(live));
-        let book_dir = store.data_dir().to_path_buf();
-        let book_id = book_dir
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let store = SharedStore::new(store);
-        let backups = Arc::new(
-            crate::backup::Backups::open(&book_id, &book_dir, store.clone())
-                .map_err(|e| self.hide(e))?,
-        );
-        let server_backups = backups.clone();
-        let log = access.clone();
-        let shared = store.clone();
+        let served = Served::open(store).map_err(|e| self.hide(e))?;
         let config = StreamableHttpServerConfig::default()
             .with_json_response(true)
             .with_legacy_session_mode(true)
             .with_max_request_body_bytes(MAX_BODY)
             .enforce_origin_validation()
             .with_cancellation_token(self.sessions.child_token());
+        let parts = served.clone();
+        // Every session's server is made the one way (server.rs Served).
         let service = StreamableHttpService::new(
-            move || {
-                Ok(
-                    BooksServer::new_shared(store.clone(), ReceiptPolicy::default())
-                        .with_live_settings(live.clone())
-                        .with_layout(layout.clone())
-                        .with_access(log.clone())
-                        .with_uploads(server_uploads.clone())
-                        .with_exports(server_exports.clone())
-                        .with_backups(server_backups.clone()),
-                )
-            },
+            move || Ok(BooksServer::new(&parts)),
             Arc::new(sessions()),
             config,
         );
+        let Served {
+            store: shared,
+            access,
+            uploads,
+            exports,
+            backups,
+            ..
+        } = served;
         Ok(Book::Open {
             service: Box::new(service),
             store: shared,
@@ -884,9 +851,9 @@ impl Books {
     }
 }
 
-/// The settings a settings file moves in at adoption, checked as
-/// `books.import_settings` checks them: they parse, they apply, and the
-/// vault key file it names (which the books don't keep) is the one given.
+/// The settings a settings file moves in at adoption, checked: they
+/// parse, they apply, and the vault key file it names (which the books
+/// don't keep) is the one given.
 fn settings_to_move(
     toml: &str,
     config_json: Option<&str>,

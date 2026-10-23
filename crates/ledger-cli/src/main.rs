@@ -1,9 +1,10 @@
 //! `wanderbooks`: the one executable (plan D-22). Its modes are the
-//! viewer (`gui`), the books server (`server`, and `dev-stdio` over stdio),
-//! the host and the agents' bridge (`host`, `mcp`), and the owner's
-//! commands (`setup`, `books`, `connect`, `token`, `passphrase`, `serve`,
-//! `close`, `doctor`, `upload`, `download`). A build without the `gui`
-//! feature (the server-only build for another machine) has no viewer.
+//! viewer (`gui`), the books server (`server`: the one way books are
+//! served, D-44), the host and the agents' bridge (`host`, `mcp`), and the
+//! owner's commands (`setup`, `books`, `connect`, `token`, `passphrase`,
+//! `serve`, `close`, `doctor`, `upload`, `download`). A build without the
+//! `gui` feature (the server-only build for another machine) has no
+//! viewer.
 //!
 //! From nothing to the first post: `wanderbooks setup`, `wanderbooks books
 //! create ID`, `wanderbooks connect claude --book ID` (then talk to the
@@ -14,7 +15,7 @@ use std::path::PathBuf;
 
 fn print_usage() {
     eprintln!("usage: wanderbooks setup [--root PATH] [--home DIR]");
-    eprintln!("       wanderbooks gui [BOOK | --root PATH --book ID | --data-dir PATH ...]");
+    eprintln!("       wanderbooks gui [BOOK | --root PATH --book ID]");
     eprintln!(
         "       wanderbooks books list | create ID | adopt DATA-DIR --id ID | restore BACKUP | back-up ID | upgrade ID | put-aside ID DATA-DIR [PATH...]"
     );
@@ -27,7 +28,6 @@ fn print_usage() {
     eprintln!("       wanderbooks upload --book ID [--token NAME] UPLOAD [--] FILE");
     eprintln!("       wanderbooks download --book ID [--token NAME] ATTACHMENT --to FOLDER");
     eprintln!("       wanderbooks serve | close | doctor");
-    eprintln!("       wanderbooks dev-stdio [--data-dir PATH ...]");
     eprintln!();
     eprintln!("  setup      make the books' private folder (only your account can open it)");
     eprintln!("  gui        open the live, read-only view of the books (a book of the data root)");
@@ -43,7 +43,6 @@ fn print_usage() {
     eprintln!("  serve      hold the books open until Ctrl-C");
     eprintln!("  close      close the books now: everything holding them lets go");
     eprintln!("  doctor     whether the books are open, what holds them, what went wrong");
-    eprintln!("  dev-stdio  run the books server over stdio (`dev-stdio --help` for its flags)");
 }
 
 /// The viewer's arguments for `wanderbooks gui ARGS` (plan 3.6): a lone
@@ -135,8 +134,8 @@ fn run_gui(args: Vec<String>) -> i32 {
                 .cloned()
         };
         // Only the viewer's own flags for books of the data root, each with
-        // its value: anything else (help, a mistake, an older books dir,
-        // the demo) holds nothing.
+        // its value: anything else (help, a mistake, the demo) holds
+        // nothing.
         let mut known = true;
         let mut rest = args.iter();
         while let Some(a) = rest.next() {
@@ -300,20 +299,6 @@ fn owner_passphrase(_root: &ledger_store::root::Root) -> i32 {
     0
 }
 
-/// `wanderbooks dev-stdio`: the books server over stdio, in this process.
-fn run_dev_stdio(args: Vec<String>) -> i32 {
-    match ledger_mcp::run("wanderbooks dev-stdio", args) {
-        Ok(()) => 0,
-        Err(e) => match e.downcast_ref::<ledger_mcp::Exit>() {
-            Some(exit) => exit.0,
-            None => {
-                eprintln!("error: {e}");
-                1
-            }
-        },
-    }
-}
-
 /// `wanderbooks server`: the books server for the data root, on its
 /// local sockets (plan 3.9). The host starts it.
 #[cfg(unix)]
@@ -420,7 +405,6 @@ fn main() {
     let mut all = words.clone().into_iter();
     match all.next().as_deref() {
         Some("gui") => std::process::exit(run_gui(all.collect())),
-        Some("dev-stdio") => std::process::exit(run_dev_stdio(all.collect())),
         Some("setup") => std::process::exit(run_setup(all.collect())),
         Some("server") => std::process::exit(run_server(all.collect())),
         Some(
@@ -450,8 +434,8 @@ fn main() {
         .find(|w| !w.starts_with('-'))
     {
         Some(
-            mode @ ("gui" | "dev-stdio" | "setup" | "server" | "host" | "mcp" | "serve" | "connect"
-            | "close" | "books" | "doctor" | "token" | "passphrase" | "upload" | "download"),
+            mode @ ("gui" | "setup" | "server" | "host" | "mcp" | "serve" | "connect" | "close"
+            | "books" | "doctor" | "token" | "passphrase" | "upload" | "download"),
         ) => {
             eprintln!("`{mode}` must come first: wanderbooks {mode} [its own flags]");
             std::process::exit(2);
@@ -482,7 +466,7 @@ mod gui_args_tests {
     fn flags_and_anything_else_pass_as_they_are() {
         for args in [
             v(&["--demo"]),
-            v(&["--data-dir", "x"]),
+            v(&["--root", "x"]),
             v(&["a", "b"]),
             v(&["--help"]),
         ] {

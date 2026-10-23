@@ -1,4 +1,4 @@
-//! Live updates: a change written to the books (by the MCP server, in
+//! Live updates: a change written to the books (by the books server, in
 //! practice) reaches the GUI's view model on its own, without a restart,
 //! and the changed entry is marked fresh; a show request reaches it, and
 //! while it runs it holds the books' viewer presence.
@@ -121,16 +121,21 @@ fn a_change_in_another_process_shows_up_live() {
     );
 }
 
-/// An older books dir that keeps no settings in its journal and has no
-/// settings file: one written while the viewer runs is followed, as its
-/// server follows it.
+/// A setting the server journals while the viewer runs is followed (the
+/// books' own settings, the only ones the viewer reads: D-44); a settings
+/// file beside the books is never read.
 #[test]
-fn a_settings_file_made_later_is_followed() {
-    let dir = std::env::temp_dir().join(format!("ledger-gui-live-toml-{}", std::process::id()));
+fn a_setting_changed_while_it_runs_is_followed() {
+    let dir = std::env::temp_dir().join(format!("ledger-gui-live-set-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let _cleanup = TestDir(dir.clone());
     let data = dir.join("books-data");
     drop(Store::create(&data, Currency::USD).unwrap());
+    std::fs::write(
+        dir.join("wanderbooks.toml"),
+        "[company]\nname = \"Beside Co\"\n",
+    )
+    .unwrap();
     let loader = Loader::spawn(
         Source {
             data_dir: data.clone(),
@@ -139,23 +144,31 @@ fn a_settings_file_made_later_is_followed() {
         egui::Context::default(),
     );
     match loader.wait(Duration::from_secs(10)) {
-        Some(Update::Books(b)) => assert_ne!(b.settings.company.name, "Made Later Co"),
+        Some(Update::Books(b)) => assert_ne!(b.settings.company.name, "Beside Co"),
         _ => panic!("no initial load"),
     }
-    std::fs::write(
-        dir.join("wanderbooks.toml"),
-        "[company]\nname = \"Made Later Co\"\n",
-    )
-    .unwrap();
+    let mut store = Store::open(&data).unwrap();
+    store
+        .change_settings(
+            &[ledger_core::settings::Change {
+                key: "company.name".into(),
+                value: Some(serde_json::json!("Made Later Co")),
+            }],
+            &ledger_core::settings::Source {
+                decided_by: "Tobin Harlow".into(),
+                decided_on: NaiveDate::from_ymd_opt(2026, 10, 12).unwrap(),
+                citation: None,
+                note: None,
+            },
+        )
+        .unwrap();
+    drop(store);
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        assert!(
-            Instant::now() < deadline,
-            "the new settings file was never read"
-        );
+        assert!(Instant::now() < deadline, "the new setting was never read");
         match loader.wait(Duration::from_millis(200)) {
             Some(Update::Books(b)) if b.settings.company.name == "Made Later Co" => break,
-            Some(Update::Error(e)) => panic!("the settings file didn't load: {e}"),
+            Some(Update::Error(e)) => panic!("the books didn't load: {e}"),
             _ => {}
         }
     }

@@ -1,5 +1,5 @@
-//! Spec-blind tests for the TIN vault tools of `ledger-mcp`, driven over
-//! stdio against the real binary.
+//! Spec-blind tests for the TIN vault tools of the books server, driven
+//! through a real `wanderbooks server` as an agent reaches it (common.rs).
 //!
 //! Expected behavior comes only from the tool descriptions and parameter /
 //! result doc comments in `src/server.rs` and `src/types.rs`,
@@ -10,22 +10,21 @@
 //! worksheet for the CPA when asked (`books.vendor_1099` with
 //! `include_tins`); and the vault holds everyone's, members included, for
 //! the CPA package, which carries them only in the zip it hands over,
-//! never kept in the books dir (DECISION, owner, 2026-10-15: "In the vault, that's the
+//! never kept in the books' folder but as the file handed over (DECISION, owner, 2026-10-15: "In the vault, that's the
 //! WHOLE reason we built it. And it needs to be in the damn CPA
 //! package."). The harness is `tests/spec_parties.rs`'s, with a
-//! transcript of every response and the server's stderr kept, and the vault
-//! key in a temp file outside the books dir (never `~/.config`).
+//! transcript of every response and the server's stderr kept; the vault's
+//! key is the book's own `keys/legacy.key` in the test's data root.
 
+use common::{Place, Wire};
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::time::Duration;
 
-const TIMEOUT: Duration = Duration::from_secs(180);
+mod common;
+
+const TIMEOUT: Duration = common::TIMEOUT;
 
 // ---------------------------------------------------------------- harness
 
@@ -50,69 +49,15 @@ impl Out {
 }
 
 struct Mcp {
-    stdin: ChildStdin,
-    rx: Receiver<String>,
-    child: Child,
+    wire: Wire,
     next_id: u64,
     data: PathBuf,
     validators: HashMap<String, jsonschema::Validator>,
     /// Every response line the server wrote, with the tool it answered.
     transcript: Vec<(String, String)>,
-    /// The books dir when the server owns it: removed after the server
-    /// stops (fields drop after `Drop::drop`).
+    /// The test's place, when the session owns it (its server is closed
+    /// and its home removed after the session).
     books_dir: Option<TestDir>,
-}
-
-impl Drop for Mcp {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-static DIR_SEQ: AtomicU64 = AtomicU64::new(0);
-
-/// A test's dir and the folder beside it (`-outside`),
-/// removed when the test ends, pass or panic.
-struct TestDir(PathBuf);
-
-impl std::ops::Deref for TestDir {
-    type Target = std::path::Path;
-    fn deref(&self) -> &std::path::Path {
-        &self.0
-    }
-}
-
-impl AsRef<std::path::Path> for TestDir {
-    fn as_ref(&self) -> &std::path::Path {
-        &self.0
-    }
-}
-
-impl Drop for TestDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-        let _ = std::fs::remove_dir_all(format!("{}-outside", self.0.display()));
-    }
-}
-
-fn test_dir(name: &str) -> TestDir {
-    let n = DIR_SEQ.fetch_add(1, Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!(
-        "ledger-mcp-spec-vault-{}-{name}-{n}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    TestDir(dir)
-}
-
-/// A directory beside the books dir `dir`, outside it: the vault key,
-/// files the tests hand the server, files it writes, its stderr.
-fn outside(dir: &Path) -> PathBuf {
-    let d = PathBuf::from(format!("{}-outside", dir.display()));
-    std::fs::create_dir_all(&d).unwrap();
-    d
 }
 
 /// `bytes` as a tool takes them inline: base64.
@@ -126,17 +71,22 @@ fn sha(bytes: &[u8]) -> String {
     ledger_store::journal::sha256_hex(bytes)
 }
 
+/// A test's place (common.rs): its home, its server, its books.
+type TestDir = Place;
+
+fn test_dir(name: &str) -> TestDir {
+    Place::new(name)
+}
+
 /// `wanderbooks.toml` with a company name, the receipt threshold, and
-/// extra `[books]` TOML; the vault key file is outside the books dir.
+/// extra `[books]` TOML.
 fn books_toml(dir: &Path, threshold: &str, books_extra: &str) -> PathBuf {
     let path = dir.join("wanderbooks.toml");
     std::fs::write(
         &path,
         format!(
             "[company]\nname = \"Spec Co\"\nfiscal_year_start = \"01-01\"\n\
-             [books]\nreceipt_threshold = \"{threshold}\"\ncash_accounts = [\"1000\"]\n{books_extra}\n\
-             [vault]\nkey_file = \"{}\"\n",
-            outside(dir).join("vault.key").display()
+             [books]\nreceipt_threshold = \"{threshold}\"\ncash_accounts = [\"1000\"]\n{books_extra}\n"
         ),
     )
     .unwrap();
@@ -144,59 +94,13 @@ fn books_toml(dir: &Path, threshold: &str, books_extra: &str) -> PathBuf {
 }
 
 impl Mcp {
-    fn start(dir: &Path, toml: &Path) -> Self {
-        let run = dir.join("run");
-        std::fs::create_dir_all(&run).unwrap();
-        let mut child = Command::new(env!("CARGO_BIN_EXE_ledger-mcp"))
-            .arg("--data-dir")
-            .arg(dir.join("books-data"))
-            .arg("--books-toml")
-            .arg(toml)
-            // A settings file naming the usual key outside the books: the
-            // command line names it too, as books that move their settings
-            // in must (a test naming another key keeps only the file's).
-            .args({
-                let key = outside(dir).join("vault.key");
-                std::fs::read_to_string(toml)
-                    .is_ok_and(|t| t.contains(&format!("key_file = \"{}\"", key.display())))
-                    .then(|| {
-                        [
-                            std::ffi::OsString::from("--vault-key-file"),
-                            key.into_os_string(),
-                        ]
-                    })
-                    .into_iter()
-                    .flatten()
-            })
-            .env("XDG_RUNTIME_DIR", &run)
-            // Never the user's real vault key (the default key file is
-            // under XDG_CONFIG_HOME); the tests name theirs anyway.
-            .env("XDG_CONFIG_HOME", outside(dir).join("config"))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::from(
-                std::fs::File::create(outside(dir).join("stderr.log")).unwrap(),
-            ))
-            .spawn()
-            .expect("spawn ledger-mcp");
-        let stdin = child.stdin.take().unwrap();
-        let stdout = BufReader::new(child.stdout.take().unwrap());
-        let (tx, rx) = channel();
-        std::thread::spawn(move || {
-            for line in stdout.lines() {
-                let Ok(line) = line else { break };
-                if tx.send(line).is_err() {
-                    break;
-                }
-            }
-        });
+    fn start(dir: &TestDir, toml: &Path) -> Self {
+        let wire = dir.start(Some(&std::fs::read_to_string(toml).unwrap()));
         let mut mcp = Self {
             books_dir: None,
-            stdin,
-            rx,
-            child,
+            wire,
             next_id: 1,
-            data: dir.join("books-data"),
+            data: dir.books_data(),
             validators: HashMap::new(),
             transcript: Vec::new(),
         };
@@ -244,24 +148,11 @@ impl Mcp {
     }
 
     fn send_line(&mut self, line: &str) {
-        writeln!(self.stdin, "{line}").unwrap();
-        self.stdin.flush().unwrap();
+        self.wire.send_line(line);
     }
 
     fn recv(&mut self) -> Option<Value> {
-        loop {
-            match self.rx.recv_timeout(TIMEOUT) {
-                Ok(line) => {
-                    let v: Value = serde_json::from_str(&line)
-                        .unwrap_or_else(|e| panic!("server wrote non-JSON {line:?}: {e}"));
-                    if v.get("id").is_none() && v.get("method").is_some() {
-                        continue;
-                    }
-                    return Some(v);
-                }
-                Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => return None,
-            }
-        }
+        self.wire.recv(TIMEOUT)
     }
 
     fn rpc(&mut self, method: &str, params: Value) -> Value {
@@ -456,57 +347,36 @@ fn unzip(bytes: &[u8]) -> HashMap<String, Vec<u8>> {
     out
 }
 
-/// The bytes of a file a tool handed over (a `HandedFile`, D-29): over
-/// stdio they come inline, with no download command, and match the size
-/// and SHA-256 it states.
-fn handed(file: &Value) -> Vec<u8> {
-    use base64::Engine as _;
-    assert!(file.get("download").is_none(), "{file}");
-    assert!(file.get("expires_at").is_none(), "{file}");
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(file["content_base64"].as_str().expect("content_base64"))
-        .unwrap();
-    assert_eq!(file["size_bytes"], json!(bytes.len()), "{file}");
-    assert_eq!(file["sha256"], json!(sha(&bytes)), "{file}");
-    bytes
-}
-
-/// `v` with every file's inline bytes (`content_base64`) taken out, each
-/// pushed to `files` decoded, with its `file_name`: what a tool said, apart
-/// from the files it handed over.
-fn take_files(v: &Value, files: &mut Vec<(String, Vec<u8>)>) -> Value {
-    use base64::Engine as _;
+/// Every file a tool handed over in `v` (a `HandedFile`: an object with
+/// its `download`), with its `file_name`, fetched by its download.
+fn take_files(m: &mut Mcp, v: &Value, files: &mut Vec<(String, Vec<u8>)>) {
     match v {
         Value::Object(o) => {
-            if let Some(b) = o.get("content_base64").and_then(Value::as_str) {
+            if o.get("download").is_some_and(Value::is_string) {
                 let name = o["file_name"].as_str().unwrap_or_default().to_string();
-                let bytes = base64::engine::general_purpose::STANDARD
-                    .decode(b)
-                    .unwrap_or_else(|e| panic!("{name}: {e}"));
-                files.push((name, bytes));
+                files.push((name, m.handed(v)));
             }
-            Value::Object(
-                o.iter()
-                    .filter(|(k, _)| k.as_str() != "content_base64")
-                    .map(|(k, v)| (k.clone(), take_files(v, files)))
-                    .collect(),
-            )
+            for v in o.values() {
+                take_files(m, v, files);
+            }
         }
-        Value::Array(a) => Value::Array(a.iter().map(|v| take_files(v, files)).collect()),
-        other => other.clone(),
+        Value::Array(a) => {
+            for v in a {
+                take_files(m, v, files);
+            }
+        }
+        _ => {}
     }
 }
 
-/// `v` without the bytes of the files it hands over.
-fn said(v: &Value) -> String {
-    take_files(v, &mut Vec::new()).to_string()
-}
-
-/// The paths of every file under `dir` but the vault's: what a tool
-/// wrote, compared before and after.
+/// The paths of every file under `dir` but the vault's, and but what
+/// every call writes by design (common.rs `book_files`: the access log,
+/// the viewer's side channel, the books' own backup, the files handed over
+/// for their download): what a tool wrote, compared before and after.
 fn paths_outside_vault(m: &Mcp, dir: &Path) -> std::collections::BTreeSet<PathBuf> {
-    files_under(dir)
-        .into_iter()
+    common::book_files(dir)
+        .into_keys()
+        .map(|f| dir.join(f))
         .filter(|f| !f.starts_with(m.vault()))
         .collect()
 }
@@ -544,17 +414,43 @@ fn csv_rows(bytes: &[u8]) -> Vec<HashMap<String, String>> {
 }
 
 impl Mcp {
+    /// The books' folder in the data root.
     fn books_dir(&self) -> PathBuf {
-        self.data.parent().unwrap().to_path_buf()
+        self.data.clone()
     }
-    fn outside(&self) -> PathBuf {
-        outside(&self.books_dir())
+    /// Every file in the test's home outside the data root but the
+    /// server's log: what the server must never write.
+    fn outside_files(&self) -> Vec<PathBuf> {
+        let home = self.books_dir.as_ref().expect("the place");
+        let root = home.home.root();
+        let log = home.join("server.log");
+        files_under(home)
+            .into_iter()
+            .filter(|f| !f.starts_with(&root) && *f != log)
+            .collect()
+    }
+    /// The server's log (its stderr).
+    fn server_log(&self) -> Vec<u8> {
+        std::fs::read(
+            self.books_dir
+                .as_ref()
+                .expect("the place")
+                .join("server.log"),
+        )
+        .unwrap_or_default()
     }
     fn vault(&self) -> PathBuf {
         self.books_dir().join("vault")
     }
+    /// The vault's key: in the data root, the book's own.
     fn key(&self) -> PathBuf {
-        self.outside().join("vault.key")
+        self.books_dir().join("keys").join("legacy.key")
+    }
+    /// The bytes of a file a tool handed over (a `HandedFile`, D-29):
+    /// fetched by its download, matching the size and SHA-256 it states.
+    fn handed(&mut self, file: &Value) -> Vec<u8> {
+        assert!(file["expires_at"].is_string(), "{file}");
+        self.wire.fetch(file)
     }
     fn party_id(&mut self, name: &str) -> u64 {
         self.party(name, 2026)["party"]["party_id"]
@@ -623,6 +519,41 @@ fn files_under(dir: &Path) -> Vec<PathBuf> {
         }
     }
     out
+}
+
+/// The files a test was handed, in the books' `exports/` (D-29): every
+/// export id the session's answers named (`ex_` and 32 letters `a` to
+/// `p`, in each handed file's `download`). Checks that nothing else sits
+/// there but each one's bytes and its record (`.bin`, `.json`), and
+/// returns the bytes' paths: what a scan of the books' folder may skip,
+/// their contents having been checked through their downloads. The
+/// records are scanned like any other file.
+fn handed_exports(m: &Mcp) -> Vec<PathBuf> {
+    let mut ids = std::collections::BTreeSet::new();
+    for (_, resp) in &m.transcript {
+        let mut rest = resp.as_str();
+        while let Some(at) = rest.find("ex_") {
+            let id: String = rest[at..].chars().take(35).collect();
+            if ledger_store::exports::is_id(&id) {
+                ids.insert(id);
+            }
+            rest = &rest[at + 3..];
+        }
+    }
+    assert!(!ids.is_empty(), "the test was handed no file");
+    let dir = m.books_dir().join(ledger_store::exports::EXPORTS_DIR);
+    let mut bins = Vec::new();
+    for f in files_under(&dir) {
+        let name = f.file_name().unwrap().to_string_lossy().into_owned();
+        let handed = ids
+            .iter()
+            .find(|id| name == format!("{id}.bin") || name == format!("{id}.json"));
+        assert!(handed.is_some(), "{name} in exports/ wasn't handed over");
+        if name.ends_with(".bin") {
+            bins.push(f);
+        }
+    }
+    bins
 }
 
 // ------------------------------------------------- books.set_w9 with a TIN
@@ -748,7 +679,7 @@ fn set_w9_refusals_write_nothing_anywhere() {
             json!({"w9_content_base64": long, "w9_sha256": sha(&big)}),
             "inline is at most",
         ),
-        (json!({"w9_upload_id": "u1"}), "takes files inline only"),
+        (json!({"w9_upload_id": "u1"}), "there is no upload \"u1\""),
         (
             json!({"w9_upload_id": "u1", "w9_content_base64": b64(&pdf), "w9_sha256": sha(&pdf)}),
             "not both",
@@ -839,21 +770,19 @@ fn the_w9_file_goes_to_the_vault_never_the_documents() {
         docs["receipts"].as_array().unwrap().is_empty(),
         "not a document: {docs}"
     );
-    // Read back: the bytes, handed over (inline over stdio), named for
+    // Read back: the bytes, handed over by their download, named for
     // their type; nothing written anywhere, and the output shows no TIN
     // but in the file itself.
-    let (books_before, outside_before) = (
-        paths_outside_vault(&m, &m.books_dir()),
-        files_under(&m.outside()),
-    );
+    let (books_before, outside_before) =
+        (paths_outside_vault(&m, &m.books_dir()), m.outside_files());
     let out = m.ok("books.get_w9", json!({"party": "Acme Design"}));
     assert_eq!(out["party_id"], json!(acme));
     assert_eq!(out["file"]["file_name"], "w9.pdf");
     assert_eq!(out["file"]["mime_type"], "application/pdf");
-    assert_eq!(handed(&out["file"]), src);
-    assert!(!holds_tin(said(&out).as_bytes(), SSN_DIGITS), "{out}");
+    assert_eq!(m.handed(&out["file"]), src);
+    assert!(!holds_tin(out.to_string().as_bytes(), SSN_DIGITS), "{out}");
     assert_eq!(paths_outside_vault(&m, &m.books_dir()), books_before);
-    assert_eq!(files_under(&m.outside()), outside_before);
+    assert_eq!(m.outside_files(), outside_before);
     // A party with no W-9 file in the vault.
     m.w9("Rent Co", json!({"tin": EIN, "tin_type": "ein"}));
     let why = m.refuse("books.get_w9", json!({"party": "Rent Co"}));
@@ -896,7 +825,7 @@ fn every_w9_file_type_is_taken() {
         assert_eq!(p["w9"]["in_vault"], true, "{name}");
         let out = m.ok("books.get_w9", json!({"party": party}));
         assert_eq!(out["file"]["file_name"], *name);
-        assert_eq!(handed(&out["file"]), *bytes);
+        assert_eq!(m.handed(&out["file"]), *bytes);
     }
     // Its own name, when given; given alone, a name is refused.
     m.add_party("Payee N", &["contractor"]);
@@ -910,7 +839,7 @@ fn every_w9_file_type_is_taken() {
     };
     let out = m.ok("books.get_w9", json!({"party": "Payee N"}));
     assert_eq!(out["file"]["file_name"], "payee-n-w9.pdf");
-    assert_eq!(handed(&out["file"]), bytes);
+    assert_eq!(m.handed(&out["file"]), bytes);
     let why = m
         .w9(
             "Payee N",
@@ -985,30 +914,6 @@ fn a_locked_vault_says_so_and_never_guesses() {
     assert_eq!(v["vendors"][0]["tin"], SSN);
 }
 
-#[test]
-fn a_key_file_inside_the_books_is_refused() {
-    let dir = test_dir("key-inside");
-    let toml = dir.join("wanderbooks.toml");
-    std::fs::write(
-        &toml,
-        format!(
-            "[company]\nname = \"Spec Co\"\n[books]\nreceipt_threshold = \"1000000.00\"\n\
-             [vault]\nkey_file = \"{}\"\n",
-            dir.join("vault.key").display()
-        ),
-    )
-    .unwrap();
-    let mut m = Mcp::start(&dir, &toml);
-    m.accounts(CHART);
-    m.add_party("Acme Design", &["contractor"]);
-    let why = m
-        .w9("Acme Design", json!({"tin": SSN, "tin_type": "ssn"}))
-        .err_text();
-    assert!(why.contains("inside the books' folder"), "{why}");
-    assert!(!dir.join("vault.key").exists());
-    assert!(!dir.join("vault").exists());
-}
-
 // ------------------------------------------------- books.vendor_1099
 
 #[test]
@@ -1070,7 +975,7 @@ fn the_1099_worksheet_carries_full_tins_only_when_asked() {
     );
     assert_eq!(out["csv"]["file_name"], "1099-worksheet-2026-with-tins.csv");
     assert_eq!(out["csv"]["mime_type"], "text/csv");
-    let text = String::from_utf8(handed(&out["csv"])).unwrap();
+    let text = String::from_utf8(m.handed(&out["csv"])).unwrap();
     assert!(text.contains(SSN), "{text}");
     assert!(text.starts_with(
         "vendor_id,name,decision_1099,form_1099,reason_kind,reason,decided_by,decided_on,effective,decisions_in_year,paid,excluded_card,undetermined,not_reportable,status,reportable,w9_on_file,tin_last4,tin,tin_type,tin_note\n"
@@ -1085,7 +990,7 @@ fn the_1099_worksheet_carries_full_tins_only_when_asked() {
     // Without TINs: last fours only, and no TIN columns.
     let out = m.read_only("books.vendor_1099", json!({"year": 2026, "csv": true}));
     assert_eq!(out["csv"]["file_name"], "1099-worksheet-2026.csv");
-    let bytes = handed(&out["csv"]);
+    let bytes = m.handed(&out["csv"]);
     assert!(!holds_tin(&bytes, SSN_DIGITS));
     let text = String::from_utf8(bytes).unwrap();
     assert!(
@@ -1293,7 +1198,7 @@ fn no_full_tin_leaves_the_vault_except_the_worksheet_when_asked() {
         "books.vendor_1099",
         json!({"year": 2026, "include_tins": true, "csv": true}),
     );
-    let csv = handed(&csv["csv"]);
+    let csv = m.handed(&csv["csv"]);
     assert!(holds_tin(&csv, SSN_DIGITS) && holds_tin(&csv, EIN_DIGITS));
     // The package, TINs included (the default).
     let pkg = m.read_only(
@@ -1301,7 +1206,7 @@ fn no_full_tin_leaves_the_vault_except_the_worksheet_when_asked() {
         json!({"as_of": "2026-12-31", "cash_accounts": ["1000"]}),
     );
     assert_eq!(pkg["tins_included"], true);
-    let pkg = unzip(&handed(&pkg["file"]));
+    let pkg = unzip(&m.handed(&pkg["file"]));
     let holds_any = |b: &[u8]| {
         holds_tin(b, SSN_DIGITS) || holds_tin(b, EIN_DIGITS) || holds_tin(b, MEMBER_SSN_DIGITS)
     };
@@ -1310,9 +1215,11 @@ fn no_full_tin_leaves_the_vault_except_the_worksheet_when_asked() {
     // (D-29): the W-9 file, the worksheet CSV with TINs, the package with
     // them (a zip's files read out of it).
     let (mut leaks, mut scanned): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
-    for (tool, resp) in &m.transcript {
+    for (tool, resp) in m.transcript.clone() {
         let mut files = Vec::new();
-        let rest = take_files(&serde_json::from_str(resp).unwrap(), &mut files).to_string();
+        let resp: Value = serde_json::from_str(&resp).unwrap();
+        take_files(&mut m, &resp, &mut files);
+        let rest = resp.to_string();
         let worksheet =
             tool == "books.vendor_1099" && rest.contains("\"warning\":\"This worksheet");
         if !worksheet && holds_any(rest.as_bytes()) {
@@ -1342,7 +1249,7 @@ fn no_full_tin_leaves_the_vault_except_the_worksheet_when_asked() {
     assert_eq!(scanned.len(), 4, "{scanned:?}");
     assert!(m.transcript.len() > 40, "the session used the books");
     // The server's log.
-    let log = std::fs::read(m.outside().join("stderr.log")).unwrap();
+    let log = m.server_log();
     assert!(!holds_tin(&log, SSN_DIGITS) && !holds_tin(&log, EIN_DIGITS));
     assert!(!holds_tin(&log, MEMBER_SSN_DIGITS));
     // The package carries them all: the member's in the K-1 worksheet,
@@ -1360,12 +1267,16 @@ fn no_full_tin_leaves_the_vault_except_the_worksheet_when_asked() {
             );
         }
     }
-    // Every byte in the books dir outside the vault: the journal, the
-    // database (and its WAL), the stored files, the settings.
+    // Every byte in the books' folder outside the vault: the journal, the
+    // database (and its WAL), the stored files, the access log, the books'
+    // own backup, the handed files' records; but the handed files' bytes,
+    // kept for their download (D-29: the package and worksheet with TINs,
+    // for the CPA, by design) and scanned above through it.
     let books = m.books_dir();
+    let handed = handed_exports(&m);
     let mut seen = Vec::new();
     for f in files_under(&books) {
-        if f.starts_with(m.vault()) {
+        if f.starts_with(m.vault()) || handed.contains(&f) {
             continue;
         }
         let bytes = std::fs::read(&f).unwrap();
@@ -1394,32 +1305,6 @@ fn no_full_tin_leaves_the_vault_except_the_worksheet_when_asked() {
             f.display()
         );
     }
-}
-
-/// Books kept in git must ignore the vault before a TIN is stored.
-#[test]
-fn books_in_git_must_ignore_the_vault() {
-    let mut m = books("git");
-    let books = m.books_dir();
-    std::fs::create_dir_all(books.join(".git")).unwrap();
-    std::fs::write(books.join(".gitignore"), "books-data/wanderbooks.db\n").unwrap();
-    let why = m
-        .w9("Acme Design", json!({"tin": SSN, "tin_type": "ssn"}))
-        .err_text();
-    assert!(
-        why.contains("version history") && why.contains("Ask the human"),
-        "{why}"
-    );
-    assert!(!m.vault().exists() && !m.key().exists());
-    std::fs::write(
-        books.join(".gitignore"),
-        "books-data/wanderbooks.db\nvault/\n",
-    )
-    .unwrap();
-    assert!(
-        !m.w9("Acme Design", json!({"tin": SSN, "tin_type": "ssn"}))
-            .refused()
-    );
 }
 
 // ------------------------------------------------- books.set_tin, any role
@@ -1722,9 +1607,9 @@ fn the_cpa_package_carries_the_k1_and_1099_worksheets_with_tins() {
         .collect();
     assert_eq!(gaps.len(), 1, "{gaps:?}");
     assert!(gaps[0].contains("Mo Example") && gaps[0].contains("TIN not in the vault"));
-    assert!(!holds_tin(said(&out).as_bytes(), MEMBER_SSN_DIGITS));
-    assert!(!holds_tin(said(&out).as_bytes(), EIN_DIGITS));
-    let pkg = unzip(&handed(&out["file"]));
+    assert!(!holds_tin(out.to_string().as_bytes(), MEMBER_SSN_DIGITS));
+    assert!(!holds_tin(out.to_string().as_bytes(), EIN_DIGITS));
+    let pkg = unzip(&m.handed(&out["file"]));
     let k1 = csv_rows(&pkg["k1-members.csv"]);
     assert_eq!(k1.len(), 3, "two members and their total");
     let (tobin, mo) = (&k1[0], &k1[1]);
@@ -1815,9 +1700,12 @@ fn the_cpa_package_carries_the_k1_and_1099_worksheets_with_tins() {
         "{readme}"
     );
     assert!(!holds_tin(readme.as_bytes(), MEMBER_SSN_DIGITS));
-    // Nothing of it in the books dir.
-    for f in files_under(&m.books_dir()) {
-        if f.starts_with(m.vault()) {
+    // Nothing of it in the books' folder, but the file handed over, kept
+    // for its download (D-29), and nothing in exports/ but what was handed.
+    let books = m.books_dir();
+    let handed = handed_exports(&m);
+    for f in files_under(&books) {
+        if f.starts_with(m.vault()) || handed.contains(&f) {
             continue;
         }
         let b = std::fs::read(&f).unwrap();
@@ -1837,12 +1725,12 @@ fn the_cpa_package_carries_the_k1_and_1099_worksheets_with_tins() {
     assert_eq!(out["tins_included"], false);
     assert_eq!(out["note"], "The package, with last fours only.");
     assert!(out["tin_gaps"].as_array().unwrap().is_empty(), "{out}");
-    let plain = unzip(&handed(&out["file"]));
+    let plain = unzip(&m.handed(&out["file"]));
     let k1 = csv_rows(&plain["k1-members.csv"]);
     assert_eq!(k1[0]["tin_last4"], "4915");
     assert!(!k1[0].contains_key("tin"));
     assert_eq!(k1[0]["ending_capital"], "950.00");
-    // "50%" in the settings file prints by its value, at two places, as
+    // "50%" in the settings prints by its value, at two places, as
     // it would had the books kept it as "0.5".
     assert_eq!(k1[0]["share"], "0.50");
     assert_eq!(k1[1]["share"], "0.50");
@@ -1852,15 +1740,15 @@ fn the_cpa_package_carries_the_k1_and_1099_worksheets_with_tins() {
     }
 }
 
-/// The package, with TINs or without, is handed over (inline over stdio,
-/// D-29) and never written: no file appears in the books dir outside the
-/// vault, or anywhere else.
+/// The package, with TINs or without, is handed over (by its download,
+/// D-29) and never written: no file appears in the books' folder outside
+/// the vault (but the file handed over, kept for its download), or
+/// anywhere else.
 #[test]
 fn a_package_is_handed_over_and_never_written() {
     let mut m = k1_books("k1-handed");
     let books = m.books_dir();
-    let (books_before, outside_before) =
-        (paths_outside_vault(&m, &books), files_under(&m.outside()));
+    let (books_before, outside_before) = (paths_outside_vault(&m, &books), m.outside_files());
     for tins in [true, false] {
         let out = m.read_only(
             "books.export_cpa_package",
@@ -1868,7 +1756,7 @@ fn a_package_is_handed_over_and_never_written() {
         );
         assert_eq!(out["tins_included"], tins);
         assert_eq!(out["file"]["file_name"], "cpa-package-2026-12-31.zip");
-        let pkg = unzip(&handed(&out["file"]));
+        let pkg = unzip(&m.handed(&out["file"]));
         assert!(pkg.contains_key("README.txt"), "include_tins {tins}");
         assert_eq!(
             holds_tin(&pkg["k1-members.csv"], MEMBER_SSN_DIGITS),
@@ -1877,7 +1765,7 @@ fn a_package_is_handed_over_and_never_written() {
         );
     }
     assert_eq!(paths_outside_vault(&m, &books), books_before);
-    assert_eq!(files_under(&m.outside()), outside_before);
+    assert_eq!(m.outside_files(), outside_before);
 }
 
 /// A locked vault never fails the package: every TIN row says why, and
@@ -1898,7 +1786,7 @@ fn a_locked_vault_still_builds_the_package() {
         "{gaps:?}"
     );
     assert!(!m.key().exists(), "reading never makes a key");
-    let pkg = unzip(&handed(&out["file"]));
+    let pkg = unzip(&m.handed(&out["file"]));
     let k1 = csv_rows(&pkg["k1-members.csv"]);
     let members: Vec<_> = k1
         .iter()
@@ -2011,7 +1899,7 @@ fn a_k1_row_never_carries_another_partys_tin() {
     );
     let gaps = out["tin_gaps"].to_string();
     assert!(gaps.contains("member Mo Example"), "{gaps}");
-    let pkg = unzip(&handed(&out["file"]));
+    let pkg = unzip(&m.handed(&out["file"]));
     let k1 = csv_rows(&pkg["k1-members.csv"]);
     let mo = k1.iter().find(|r| r["member"] == "Mo Example").unwrap();
     assert_eq!(mo["tin"], "", "{mo:?}");
@@ -2035,7 +1923,7 @@ fn joint_filers_are_noted_in_the_package() {
         "books.export_cpa_package",
         json!({"as_of": "2026-12-31", "cash_accounts": ["1000"]}),
     );
-    let pkg = unzip(&handed(&out["file"]));
+    let pkg = unzip(&m.handed(&out["file"]));
     let readme = String::from_utf8(pkg["README.txt"].clone()).unwrap();
     let note = "Tobin Example and Mo Example file a joint individual return: each receives their own Schedule K-1; both are reported on the one Form 1040 (Schedule E, Part II).";
     assert_eq!(readme.matches(note).count(), 1, "once per pair: {readme}");
@@ -2101,18 +1989,13 @@ fn idempotent_tools_change_nothing_when_repeated() {
         .as_str()
         .unwrap()
         .to_string();
-    let settings_file =
-        std::fs::read_to_string(m.data.parent().unwrap().join("wanderbooks.toml")).unwrap();
     m.ok(
         "books.add_instrument",
         json!({"kind": "member_card", "label": "Riley's Visa", "account": "1000"}),
     );
     let calls: Vec<(&str, Value)> = vec![
         ("books.verify", json!({"blobs": true})),
-        (
-            "books.import_settings",
-            json!({"toml_text": settings_file, "decided_by": "Owner", "confirmed": true}),
-        ),
+        ("books.back_up_now", json!({})),
         (
             "books.set_setting",
             json!({"changes": [{"key": "company.timezone", "value": "America/Denver"}],

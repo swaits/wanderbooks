@@ -23,21 +23,23 @@
 //!      books.chart and books.verify (P0 review round 4: a call a command
 //!      accepts but replay refuses would brick the books).
 //!   5. Books an earlier version wrote (ledger-store's old-books fixtures)
-//!      open, and every tool and resource answers over them.
+//!      open, and every tool and resource answers over them: with the
+//!      fixture company's settings where their format keeps settings, on
+//!      the defaults where they wait for their format upgrade.
 //! ```
 //!
 //! Against a small fixture company with every kind of record, so ids and
 //! names the generator picks often exist. `MCP_CASES` sets the number of
 //! cases (default 256).
 
+use common::{Place, Wire};
 use proptest::prelude::*;
 use proptest::test_runner::{Config, TestCaseError, TestRunner};
 use serde_json::{Map, Value, json};
-use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::mpsc::{Receiver, channel};
 use std::time::Duration;
+
+mod common;
 
 /// The longest any one call may take: a call that hangs is a denial of
 /// service too.
@@ -53,68 +55,42 @@ fn cases() -> u32 {
         .unwrap_or(256)
 }
 
+/// One session with the books (common.rs).
 struct Mcp {
-    stdin: ChildStdin,
-    rx: Receiver<String>,
-    child: Child,
+    wire: Wire,
     next_id: u64,
 }
 
-impl Drop for Mcp {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
+/// The settings the fixture company keeps.
+const SETTINGS: &str = "[company]\nname = \"Hostile Co\"\nfiscal_year_start = \"07-01\"\ntax_form = \"1065\"\n\
+     [[company.members]]\nname = \"Member A\"\nshare = \"50%\"\ncapital_account = \"3000\"\n\
+     [[company.members]]\nname = \"Member B\"\nshare = \"50%\"\ncapital_account = \"3001\"\n\
+     [books]\nreceipt_threshold = \"25.00\"\ncash_accounts = [\"1000\"]\nparties = \"suggest\"\n";
 
-/// The places one run uses: the books, the vault key, a folder of files on
-/// their way in (as a downloads folder), the folder the server runs in
-/// (where a relative path lands).
+/// The places one run uses: the test's home and its books (common.rs), a
+/// folder of files on their way in (as a downloads folder), and the
+/// folder the server runs in (where a relative path lands), both in the
+/// home and outside the data root.
 struct Places {
-    base: PathBuf,
+    place: Place,
+    /// The books' folder in the data root.
     books: PathBuf,
     inbox: PathBuf,
     sandbox: PathBuf,
 }
 
-/// The places go when the test ends, pass or panic.
-impl Drop for Places {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.base);
-    }
-}
-
 fn places(tag: &str) -> Places {
-    let base =
-        std::env::temp_dir().join(format!("ledger-mcp-hostile-{}-{tag}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&base);
+    let place = Place::new(&format!("hostile-{tag}"));
     let p = Places {
-        books: base.join("books"),
-        inbox: base.join("inbox"),
-        sandbox: base.join("sandbox"),
-        base,
+        books: place.books_data(),
+        inbox: place.join("inbox"),
+        sandbox: place.join("sandbox"),
+        place,
     };
-    for d in [
-        &p.books,
-        &p.inbox,
-        &p.sandbox.join("out"),
-        &p.base.join("home"),
-        &p.base.join("config"),
-    ] {
+    for d in [&p.inbox, &p.sandbox.join("out")] {
         std::fs::create_dir_all(d).unwrap();
     }
-    std::fs::write(
-        p.books.join("wanderbooks.toml"),
-        format!(
-            "[company]\nname = \"Hostile Co\"\nfiscal_year_start = \"07-01\"\ntax_form = \"1065\"\n\
-             [[company.members]]\nname = \"Member A\"\nshare = \"50%\"\ncapital_account = \"3000\"\n\
-             [[company.members]]\nname = \"Member B\"\nshare = \"50%\"\ncapital_account = \"3001\"\n\
-             [books]\nreceipt_threshold = \"25.00\"\ncash_accounts = [\"1000\"]\nparties = \"suggest\"\n\
-             [vault]\nkey_file = \"{}\"\n",
-            p.base.join("config/vault.key").display()
-        ),
-    )
-    .unwrap();
+    p.place.run_in(&p.sandbox);
     std::fs::write(p.inbox.join("receipt.pdf"), b"%PDF-1.4 a receipt\n%%EOF\n").unwrap();
     std::fs::write(
         p.inbox.join("bank.csv"),
@@ -125,53 +101,70 @@ fn places(tag: &str) -> Places {
 }
 
 impl Mcp {
+    /// Start (or restart) the books' server, and a session with it.
     fn start(p: &Places) -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_ledger-mcp"))
-            .arg("--data-dir")
-            .arg(p.books.join("books-data"))
-            .arg("--books-toml")
-            .arg(p.books.join("wanderbooks.toml"))
-            .current_dir(&p.sandbox)
-            .env("HOME", p.base.join("home"))
-            .env("XDG_CONFIG_HOME", p.base.join("config"))
-            .env("XDG_RUNTIME_DIR", p.base.join("config"))
-            .env_remove("XDG_DOWNLOAD_DIR")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::from(
-                std::fs::File::create(p.base.join("stderr.log")).unwrap(),
-            ))
-            .spawn()
-            .expect("spawn ledger-mcp");
-        let stdin = child.stdin.take().unwrap();
-        let stdout = BufReader::new(child.stdout.take().unwrap());
-        let (tx, rx) = channel();
-        std::thread::spawn(move || {
-            for line in stdout.lines() {
-                let Ok(line) = line else { break };
-                if tx.send(line).is_err() {
-                    break;
+        Self::session(p.place.start(Some(SETTINGS)))
+    }
+
+    /// Start (or restart) the server on books an earlier version wrote,
+    /// with the fixture company's settings set as an agent sets them, one
+    /// at a time. Books in a journal format before 2 keep no settings
+    /// until the owner's format upgrade (rules.md B-27, D-39): each change
+    /// is refused as `format_upgrade_pending`, and those books are served
+    /// on the defaults (no members, no 1065, no cash accounts), as they
+    /// would be in a data root. Books with periods closed under the
+    /// calendar year keep it (a changed tax year needs the IRS's consent,
+    /// rules.md B-29), whatever their format. Any other answer fails the
+    /// test when the books are first served (`first`); on a restart,
+    /// after hostile calls that may have changed a setting and closed
+    /// periods under it, the books may refuse a change for what they now
+    /// hold, as they would any agent.
+    fn start_old(p: &Places, first: bool) -> Self {
+        let mut m = Self::session(p.place.start(None));
+        let changes = common::settings_changes(SETTINGS, None, "USD");
+        let mut refused = Vec::new();
+        let mut held = 0;
+        for change in changes.as_array().unwrap() {
+            let r = m.rpc(
+                "tools/call",
+                json!({"name": "books.set_setting",
+                       "arguments": {"changes": [change], "decided_by": "Test Owner"}}),
+            );
+            assert!(r.get("error").is_none(), "{change}: {r}");
+            if first && r["result"]["isError"] == json!(true) {
+                let why = r["result"]["content"][0]["text"]
+                    .as_str()
+                    .unwrap_or_default();
+                if change["key"] == "company.fiscal_year_start"
+                    && why.contains("periods are closed under it")
+                {
+                    held += 1;
+                    continue;
                 }
+                assert!(
+                    why.starts_with("format_upgrade_pending:"),
+                    "{change}: {why}"
+                );
+                refused.push(change["key"].clone());
             }
-        });
-        let mut m = Self {
-            stdin,
-            rx,
-            child,
-            next_id: 1,
-        };
+        }
+        assert!(
+            refused.is_empty() || refused.len() + held == changes.as_array().unwrap().len(),
+            "books that take some settings take them all: {refused:?} refused"
+        );
+        m
+    }
+
+    fn session(wire: Wire) -> Self {
+        let mut m = Self { wire, next_id: 1 };
         let init = m.rpc(
             "initialize",
             json!({"protocolVersion": "2025-06-18", "capabilities": {},
                    "clientInfo": {"name": "hostile", "version": "0"}}),
         );
         assert!(init.get("result").is_some(), "{init}");
-        writeln!(
-            m.stdin,
-            "{}",
-            json!({"jsonrpc": "2.0", "method": "notifications/initialized"})
-        )
-        .unwrap();
+        m.wire
+            .send(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
         m
     }
 
@@ -185,18 +178,17 @@ impl Mcp {
         let id = self.next_id;
         self.next_id += 1;
         let msg = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
-        writeln!(self.stdin, "{msg}").map_err(|e| format!("write: {e}"))?;
-        self.stdin.flush().map_err(|e| format!("flush: {e}"))?;
-        loop {
-            let line = self
-                .rx
-                .recv_timeout(TIMEOUT)
-                .map_err(|_| format!("no answer within {TIMEOUT:?} (or the server died)"))?;
-            let v: Value =
-                serde_json::from_str(&line).map_err(|e| format!("non-JSON {line:?}: {e}"))?;
-            if v.get("id") == Some(&json!(id)) {
-                return Ok(v);
-            }
+        self.wire.send(&msg);
+        let v = self.wire.recv(TIMEOUT).ok_or_else(|| {
+            format!(
+                "no answer within {TIMEOUT:?} (or the server died): {:?}",
+                self.wire.refused
+            )
+        })?;
+        if v.get("id") == Some(&json!(id)) {
+            Ok(v)
+        } else {
+            Err(format!("an answer to another request: {v}"))
         }
     }
 
@@ -209,6 +201,20 @@ impl Mcp {
         );
         r["result"]["structuredContent"].clone()
     }
+}
+
+/// Every file under `dir`, with its bytes.
+fn files_in(dir: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+    let mut out = std::collections::BTreeMap::new();
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            out.extend(files_in(&p));
+        } else {
+            out.insert(p.clone(), std::fs::read(&p).unwrap_or_default());
+        }
+    }
+    out
 }
 
 /// A small company with one of everything, so generated ids and names
@@ -518,10 +524,9 @@ fn hostile_paths(p: &Places) -> Vec<String> {
         s(&p.inbox.join("x.zip")),
         format!("{}/../inbox/receipt.pdf", s(&p.inbox)),
         format!("{}/./receipt.pdf", s(&p.inbox)),
-        s(&p.books.join("wanderbooks.toml")),
-        s(&p.books.join("books-data/journal.jsonl")),
+        s(&p.books.join("journal.jsonl")),
         s(&p.books.join("out.zip")),
-        s(&p.base.join("config/vault.key")),
+        s(&p.books.join("keys/legacy.key")),
         "relative.pdf".into(),
         "out/rel.zip".into(),
         String::new(),
@@ -813,6 +818,9 @@ fn hostile_tool_arguments_never_stop_the_server() {
     let p = places("tools");
     let mut m = Mcp::start(&p);
     fixture(&mut m, &p);
+    // The files on their way in, and the folder the server runs in: no
+    // call writes or changes one.
+    let outside = (files_in(&p.inbox), files_in(&p.sandbox));
     let list = m.rpc("tools/list", json!({}));
     let tools: Vec<(String, Value)> = list["result"]["tools"]
         .as_array()
@@ -882,8 +890,11 @@ fn hostile_tool_arguments_never_stop_the_server() {
         let r = m.try_rpc("tools/call", json!({"name": tool, "arguments": args}));
         check_answer(&mut m, &what, r).unwrap();
     }
+    assert!(
+        outside == (files_in(&p.inbox), files_in(&p.sandbox)),
+        "a call wrote outside the books"
+    );
     reopens(m, &p, "every tool");
-    let _ = std::fs::remove_dir_all(&p.base);
 }
 
 /// INVARIANT 4: whatever the calls journaled, the books open again. A
@@ -1219,7 +1230,6 @@ fn inputs_that_once_panicked_are_refused_or_answered() {
     ] {
         pinned(&mut m, tool, args);
     }
-    let _ = std::fs::remove_dir_all(&p.base);
 }
 
 /// INVARIANT 3: resources/read with generated URIs.
@@ -1280,7 +1290,6 @@ fn hostile_resource_uris_never_stop_the_server() {
         })
         .unwrap();
     reopens(m.into_inner(), &p, "the resources");
-    let _ = std::fs::remove_dir_all(&p.base);
 }
 
 fn b64(bytes: &[u8]) -> String {
@@ -1492,8 +1501,9 @@ fn old_book_answers_every_tool(dir: &Path, per_tool: usize) -> Vec<String> {
     let mut failures: Vec<String> = Vec::new();
     let name = dir.file_name().unwrap().to_string_lossy().to_string();
     let p = places(&format!("old-{name}"));
-    copy_books(dir, &p.books.join("books-data"));
-    let mut m = Mcp::start(&p);
+    // As an earlier version left them in the data root.
+    copy_books(dir, &p.books);
+    let mut m = Mcp::start_old(&p, true);
     let list = m.rpc("tools/list", json!({}));
     let tools: Vec<(String, Value)> = list["result"]["tools"]
         .as_array()
@@ -1526,7 +1536,7 @@ fn old_book_answers_every_tool(dir: &Path, per_tool: usize) -> Vec<String> {
         if let Err(e) = check_answer(&mut m, &what, r) {
             failures.push(e.to_string());
             drop(m);
-            m = Mcp::start(&p);
+            m = Mcp::start_old(&p, false);
         }
     }
     for uri in [
@@ -1540,12 +1550,12 @@ fn old_book_answers_every_tool(dir: &Path, per_tool: usize) -> Vec<String> {
         if let Err(e) = check_answer(&mut m, &format!("{name}: {uri}"), r) {
             failures.push(e.to_string());
             drop(m);
-            m = Mcp::start(&p);
+            m = Mcp::start_old(&p, false);
         }
     }
     // Whatever the calls wrote, the books reopen.
     drop(m);
-    let mut m = Mcp::start(&p);
+    let mut m = Mcp::start_old(&p, false);
     let r = m.try_rpc(
         "tools/call",
         json!({"name": "books.chart", "arguments": {}}),
@@ -1554,7 +1564,6 @@ fn old_book_answers_every_tool(dir: &Path, per_tool: usize) -> Vec<String> {
         failures.push(e.to_string());
     }
     drop(m);
-    let _ = std::fs::remove_dir_all(&p.base);
     failures
 }
 

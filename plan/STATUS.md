@@ -35,8 +35,8 @@ settings: 1,396 characters.
 conventions (posting templates, approval rules, policies, close steps,
 calendar, mappings, notes), decisions, open items and approvals are
 journal events (format 2); books that keep their settings never read
-`wanderbooks.toml` or `config.json`, and `books.import_settings` moves a
-file in exactly once. Two review rounds (all findings fixed), `just
+`wanderbooks.toml` or `config.json`, and adoption moves a file in
+exactly once (`books.import_settings` did too, until D-44). Two review rounds (all findings fixed), `just
 check`, `just prove` (Kani 20/20, Lean 31 theorems, standard axioms
 only), and mutation on the whole diff (956 mutants; every survivor
 killed by a test but two equivalent: `docs/testing.md`). **Live on the
@@ -181,6 +181,27 @@ byte as before. Late-tag notes as `books.add_line`'s; `books.get_entry`
 shows a line's project; the viewer's invoice and bill pages list the
 document's lines, each project a link; the demo's "Client work" carries
 its invoices. The handbook's caveat is gone for books with the feature.
+
+**One way to serve books (2026-10-23, D-44).** The owner: "We should
+probably just delete the stdio path altogether. THere's no point in that.
+And it sitting there unused will just lead to bitrot. Nuke it?" Gone:
+`wanderbooks dev-stdio`, the `ledger-mcp` binary and `ledger_mcp::run`
+(stdio and `--http` over a bare data dir), with what only it had: files
+the books make coming back inline (every handed file is a download now),
+books with no access log or backups, the settings file read and reloaded
+(`legacy_files`), the vault key named by a file or `--vault-key-file`.
+`BooksServer` is built one way, from a book as the books server serves it
+(`Served`); an unknown tool is a protocol error. Every suite that drove
+the stdio server moved to `crates/ledger-cli/tests/` and drives a real
+`wanderbooks server` on a data root of its own (`tests/common`), files by
+their download. Inline file input is unchanged. The owner then decided
+(2026-10-23, the question tool): `books.import_settings` goes (118
+tools; old books come in whole by `books adopt`; `books.chart_template`
+gives its settings as `books.set_setting` changes); the viewer's
+loose-books-folder mode goes (`--data-dir`, `--books-toml`,
+`--vault-key-file`, the settings file followed): it opens only books of
+the data root; and `wanderbooks dev-stdio` goes with no stub, an unknown
+command like any other.
 
 **Still open after P3 (each for the phase named, or the lead):**
 - Invoices and bills take a project now (above), behind the new journal
@@ -386,6 +407,9 @@ interface is MCP, not a cloned GUI. The first storage + MCP slice is done
 
 ## Decisions log
 
+- 2026-10-23: D-44, one way to serve books: the stdio server, its inline
+  file outputs and its settings-file mode are gone; tests drive a real
+  books server (plan/served.md D-44).
 - 2026-10-13: Formal methods are part of the bar (the owner: "This shit is
   fucking GOLD"). Money arithmetic lives in `kernel.rs` with Kani
   harnesses; accounting laws get Lean theorems; `just prove` stays green.

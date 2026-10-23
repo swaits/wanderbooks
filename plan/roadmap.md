@@ -14,7 +14,8 @@ The primary interface is MCP, not a cloned GUI (the owner's call, 2026-10-10).
 - `ledger-store`: append-only hash-chained JSONL journal (source of truth),
   SQLite as disposable projection with auto-rebuild, content-addressed
   blob store, durable drafts.
-- `ledger-mcp`: 27 tools over stdio and Streamable HTTP, preview-before-post,
+- `ledger-mcp`: 27 tools (then over stdio and Streamable HTTP; since D-44
+  served only by the books server), preview-before-post,
   server-side receipt policy (>$25) with anti-splitting, asset management,
   digest for human review, read-only resources.
 - `ledger-import`: QuickBooks CSV import (bank, chart), IIF and XLSX export.

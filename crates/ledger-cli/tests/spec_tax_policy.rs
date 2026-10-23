@@ -1,5 +1,6 @@
 //! Tax categories at account creation, and `policy.require_tax_category`
-//! (P3, defect 8; rules.md B-32), through the real server over stdio.
+//! (P3, defect 8; rules.md B-32), through a real books server as an
+//! agent reaches it (common.rs).
 //!
 //! ```text
 //! GOAL: every revenue and expense account maps to a line of the return,
@@ -12,51 +13,30 @@
 //!
 //! Fixtures are fictional (Fernhill Labs LLC).
 
+use common::{Books, Wire};
 use serde_json::{Value, json};
-use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdin, Command, Stdio};
+
+mod common;
 
 struct Mcp {
-    stdin: ChildStdin,
-    stdout: BufReader<std::process::ChildStdout>,
+    wire: Wire,
     next_id: u64,
-    child: Child,
-}
-
-impl Drop for Mcp {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
 }
 
 impl Mcp {
-    /// A server on books that keep their own settings, initialized.
-    fn spawn(data_dir: &std::path::Path) -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_ledger-mcp"))
-            .arg("--data-dir")
-            .arg(data_dir)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn ledger-mcp");
-        let stdin = child.stdin.take().unwrap();
-        let stdout = BufReader::new(child.stdout.take().unwrap());
+    /// A session with books that keep their own settings, initialized.
+    fn spawn(books: &Books) -> Self {
         let mut m = Self {
-            stdin,
-            stdout,
+            wire: books.wire(),
             next_id: 1,
-            child,
         };
         m.request(
             "initialize",
             json!({"protocolVersion": "2025-06-18", "capabilities": {},
                    "clientInfo": {"name": "spec-tax-policy", "version": "0"}}),
         );
-        let msg = json!({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}});
-        writeln!(m.stdin, "{msg}").unwrap();
-        m.stdin.flush().unwrap();
+        m.wire
+            .send(&json!({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}));
         m
     }
 
@@ -64,13 +44,11 @@ impl Mcp {
         let id = self.next_id;
         self.next_id += 1;
         let msg = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
-        writeln!(self.stdin, "{msg}").unwrap();
-        self.stdin.flush().unwrap();
-        let mut line = String::new();
-        self.stdout
-            .read_line(&mut line)
-            .expect("read response line");
-        let resp: Value = serde_json::from_str(&line).expect("parse response");
+        self.wire.send(&msg);
+        let resp = self
+            .wire
+            .recv(common::TIMEOUT)
+            .unwrap_or_else(|| panic!("no answer to {method}: {:?}", self.wire.refused));
         assert_eq!(resp["id"], id, "id mismatch in {resp}");
         assert!(resp.get("error").is_none(), "{method}: {}", resp["error"]);
         resp
@@ -121,22 +99,6 @@ impl Mcp {
     }
 }
 
-/// A test's dir, removed when the test ends, pass or panic.
-struct TestDir(std::path::PathBuf);
-
-impl Drop for TestDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-fn test_dir(name: &str) -> TestDir {
-    let dir = std::env::temp_dir().join(format!("ledger-mcp-tax-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    TestDir(dir)
-}
-
 fn add(m: &mut Mcp, args: Value) -> Value {
     m.call("books.add_account", args)
 }
@@ -158,8 +120,8 @@ fn chart_codes(m: &mut Mcp) -> Vec<String> {
 /// a category.
 #[test]
 fn add_account_warns_without_tax_category_defect_8() {
-    let dir = test_dir("warn");
-    let mut m = Mcp::spawn(&dir.0.join("books-data"));
+    let books = Books::new("warn");
+    let mut m = Mcp::spawn(&books);
     let out = add(
         &mut m,
         json!({"code": "6150", "name": "Software", "account_type": "expense"}),
@@ -238,8 +200,8 @@ fn add_account_warns_without_tax_category_defect_8() {
 /// warning.
 #[test]
 fn require_tax_category_refuses_defect_8() {
-    let dir = test_dir("refuse");
-    let mut m = Mcp::spawn(&dir.0.join("books-data"));
+    let books = Books::new("refuse");
+    let mut m = Mcp::spawn(&books);
     add(
         &mut m,
         json!({"code": "1000", "name": "Business Checking", "account_type": "asset"}),
@@ -349,8 +311,8 @@ fn require_tax_category_refuses_defect_8() {
 /// free.
 #[test]
 fn a_new_account_named_like_a_sibling_is_refused() {
-    let dir = test_dir("names");
-    let mut m = Mcp::spawn(&dir.0.join("books-data"));
+    let books = Books::new("names");
+    let mut m = Mcp::spawn(&books);
     add(
         &mut m,
         json!({"code": "6000", "name": "Operating", "account_type": "expense", "placeholder": true}),
@@ -399,8 +361,8 @@ fn a_new_account_named_like_a_sibling_is_refused() {
 /// summary could place).
 #[test]
 fn a_gain_on_business_property_is_exported_apart() {
-    let dir = test_dir("form4797");
-    let mut m = Mcp::spawn(&dir.0.join("books-data"));
+    let books = Books::new("form4797");
+    let mut m = Mcp::spawn(&books);
     for args in [
         json!({"code": "1000", "name": "Business Checking", "account_type": "asset"}),
         json!({"code": "4000", "name": "Sales", "account_type": "revenue", "tax_category": "gross_receipts"}),

@@ -1030,7 +1030,8 @@ type KindOrder = (u8, u8, String);
 /// that part, equipment first, to its payables lines and to its payments,
 /// so the payment is an investing outflow (ASC 230-10-45-13(c)). A bill
 /// posts to the general-expenses control today, so this is empty until a
-/// bill can carry an equipment line.
+/// bill can carry an equipment line (P4b S4). A bill's payments are the
+/// entries whose payables line carries it (rules.md B-38).
 #[derive(Default)]
 struct BillSplits {
     /// By (entry, line index): the investing part of that payables line,
@@ -1077,15 +1078,20 @@ fn bill_splits(roles: &Roles<'_>, chains: &Chains) -> Result<BillSplits, LedgerE
                 left -= part;
             }
         }
-        // Each payment pays the equipment part first, as the bill records
-        // them, in order: the part its payables carried (none when the
-        // payable is financing: its payments are repayments already).
-        // A payment's own amount bounds what it paid of this bill. A
-        // reversed payment still counts against what later payments carry
-        // (the bill keeps it as paid), but not against what is unpaid at a
-        // period's end after the reversal.
+        // Each payment pays the equipment part first, in the order paid:
+        // the part its payables carried (none when the payable is
+        // financing: its payments are repayments already). A payment's
+        // own amount bounds what it paid of this bill. A reversed payment
+        // paid nothing for good: its reversal unpays it on the reversal's
+        // date, and it leaves the equipment part for the payment that
+        // stands (P4b.2 gap 6: it used to keep it, as the bill did).
         let mut owed = equipment - left;
-        for &(pay, amount) in ledger.bill_payments(bill.id) {
+        let payments = ledger
+            .doc_lines(crate::DocRef::Bill(bill.id))
+            .into_iter()
+            .filter(|l| l.movement == crate::Movement::Payment && !l.reversal);
+        for pl in payments {
+            let (pay, amount) = (pl.entry, -pl.amount);
             let Some(p) = ledger.get_entry(pay) else {
                 continue;
             };
@@ -1111,7 +1117,9 @@ fn bill_splits(roles: &Roles<'_>, chains: &Chains) -> Result<BillSplits, LedgerE
                         undo = -undo;
                         cur = r;
                     }
-                    owed -= part;
+                    if ledger.in_effect(p.id()) {
+                        owed -= part;
+                    }
                     this -= part;
                 }
             }

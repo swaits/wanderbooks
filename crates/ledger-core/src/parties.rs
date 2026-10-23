@@ -512,6 +512,14 @@ pub fn replaying<T>(f: impl FnOnce() -> T) -> T {
     f()
 }
 
+/// Whether a journaled line is being replayed now ([`replaying`]): the
+/// rules a later version added that refuse new work (the control guard,
+/// a document's bounds, rules.md B-38) never refuse a line an earlier
+/// version accepted (B-28).
+pub fn is_replaying() -> bool {
+    REPLAYING.with(std::cell::Cell::get)
+}
+
 /// The separators P2 (and every version before P3) read between a TIN's
 /// digits: space, hyphen, dot, slash, underscore, the no-break space and
 /// the dashes U+2010 to U+2014 and U+2212.

@@ -714,7 +714,11 @@ fn parties(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                         let owed = (1..b.ledger.next_invoice_id())
                             .filter_map(|i| b.ledger.get_invoice(i))
                             .filter(|i| i.customer_id == c.id)
-                            .try_fold(Decimal::ZERO, |t, i| t.checked_add(i.balance().ok()?));
+                            .try_fold(Decimal::ZERO, |t, i| {
+                                t.checked_add(
+                                    b.owed_today(ledger_core::DocRef::Invoice(i.id)).ok()?,
+                                )
+                            });
                         ui.horizontal_wrapped(|ui| {
                             name(ui, &c.name, b.ledger.party_of_customer(c.id));
                             ui.with_layout(

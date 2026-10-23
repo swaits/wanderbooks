@@ -5,7 +5,7 @@
 //! is the current version.
 
 /// Current schema version.
-pub const SCHEMA_VERSION: u32 = 14;
+pub const SCHEMA_VERSION: u32 = 15;
 
 /// Migrations, in order. `MIGRATIONS[i]` migrates from version `i` to `i+1`.
 pub const MIGRATIONS: &[&str] = &[
@@ -385,5 +385,16 @@ INSERT INTO asset_depreciation_v13(asset_id, period, entry_id, amount)
   SELECT asset_id, period, entry_id, amount FROM asset_depreciation;
 DROP TABLE asset_depreciation;
 ALTER TABLE asset_depreciation_v13 RENAME TO asset_depreciation;
+"#,
+    r#"
+-- v15: a document keeps no figure of its own (plan P4b S1, D-45; rules.md
+-- B-38): what an invoice or bill has been paid, and its status, are read
+-- from the ledger lines tagged with it, as of any date, and a reversed
+-- payment no longer counts. The columns that summed its payment events
+-- (and so went on counting a reversed one) go.
+ALTER TABLE invoices DROP COLUMN amount_paid;
+ALTER TABLE invoices DROP COLUMN status;
+ALTER TABLE bills DROP COLUMN amount_paid;
+ALTER TABLE bills DROP COLUMN status;
 "#,
 ];

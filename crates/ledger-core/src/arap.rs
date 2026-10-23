@@ -4,8 +4,16 @@
 //!
 //! * `create_invoice`: Dr `1200` Accounts Receivable, Cr `4000` Revenue.
 //! * `create_bill`: Dr `6999` General Expenses, Cr `2000` Accounts Payable.
-//! * `receive_payment`: Dr Cash, Cr A/R. Updates the invoice's paid amount.
-//! * `pay_bill`: Dr A/P, Cr Cash. Updates the bill's paid amount.
+//! * `receive_payment`: Dr Cash, Cr A/R.
+//! * `pay_bill`: Dr A/P, Cr Cash.
+//!
+//! A document keeps no figure of its own (plan P4b, D-45; rules.md B-38):
+//! every ledger line on a receivables or payables account carries the
+//! document it belongs to ([`DocTag`]), and what is paid and still owed,
+//! and the document's status, are read from those lines that stand
+//! ([`DocState`], `Ledger::doc_state`), as of any date. A reversal, a void
+//! or a bounced payment is therefore right by construction, and the
+//! control accounts always equal their documents.
 //!
 //! The control accounts (`1200`, `2000`) and the default revenue/expense
 //! accounts (`4000`, `6999`) are created on demand if missing. Invoices and
@@ -71,7 +79,10 @@ impl Vendor {
     }
 }
 
-/// Payment status of an invoice or bill.
+/// Payment status of an invoice or bill, in the three words the
+/// documents' records carried before their figures were derived
+/// ([`Invoice::status`]). The full status, a void or a write-off
+/// included, is [`DocStatus`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum DocumentStatus {
     /// Nothing paid yet.
@@ -80,6 +91,320 @@ pub enum DocumentStatus {
     Partial,
     /// Fully paid.
     Paid,
+}
+
+/// A document: an invoice or a bill, the two kinds whose ledger lines
+/// carry their document ([`DocTag`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "id", rename_all = "snake_case")]
+pub enum DocRef {
+    /// A sales invoice (receivables).
+    Invoice(InvoiceId),
+    /// A vendor bill (payables).
+    Bill(BillId),
+}
+
+impl std::fmt::Display for DocRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DocRef::Invoice(id) => write!(f, "invoice {id}"),
+            DocRef::Bill(id) => write!(f, "bill {id}"),
+        }
+    }
+}
+
+impl DocRef {
+    /// The side that counts plus for this kind of document: a debit to
+    /// receivables raises what an invoice is owed, a credit to payables
+    /// what a bill is owed.
+    pub fn owed_side(self) -> crate::Side {
+        match self {
+            DocRef::Invoice(_) => crate::Side::Debit,
+            DocRef::Bill(_) => crate::Side::Credit,
+        }
+    }
+
+    /// A line's amount as this document counts it: plus on
+    /// [`Self::owed_side`], minus on the other.
+    pub fn counted(self, side: crate::Side, amount: Decimal) -> Decimal {
+        if side == self.owed_side() {
+            amount
+        } else {
+            -amount
+        }
+    }
+}
+
+/// Why a ledger line carries its document: what it does to what is owed.
+/// Only `Origin` and `Payment` are written today (P4b S1); the rest are
+/// the movements later slices write (P4b.6), named here so a tag's kind
+/// never changes meaning.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Movement {
+    /// The document's own control line: what it is for.
+    Origin,
+    /// Cash paid against it.
+    Payment,
+    /// An early-payment discount taken (S6).
+    Discount,
+    /// A bad debt written off (S7).
+    WriteOff,
+    /// A legacy hand line adopted as the document (S7).
+    Adopted,
+    /// The balance moved with its control role (S7).
+    RoleMove,
+}
+
+/// A ledger line's document tag: which document the line belongs to, and
+/// how ([`crate::Ledger::line_doc`]). Kept beside the line, like its
+/// cleared flag: the line and its hash never change.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct DocTag {
+    /// The document.
+    pub doc: DocRef,
+    /// What the line does to it.
+    pub movement: Movement,
+}
+
+/// A document's status as of a date ([`DocState`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DocStatus {
+    /// Nothing paid, discounted or written off.
+    Open,
+    /// Some of it settled, some still owed.
+    Partial,
+    /// Nothing owed, and some of it paid or discounted.
+    Paid,
+    /// Nothing owed, the last of it written off (S7).
+    WrittenOff,
+    /// Its own entry doesn't stand: reversed (B-9), number kept.
+    Void,
+    /// Less than nothing owed: more paid against it than it is for, a
+    /// credit balance owed back (to the customer on an invoice, by the
+    /// vendor on a bill). Only in books an earlier version left out of
+    /// bounds (B-38 INVARIANT 2); never a receivable or a payable, so
+    /// never aged.
+    Overpaid,
+    /// Its own entry stands but carries no line tagged with it (an older
+    /// version's entry replay couldn't match): its figures can't be read
+    /// from the ledger, and the control check lists it.
+    Unattached,
+}
+
+impl DocStatus {
+    /// Its wire name: `open`, `partial`, `paid`, `written_off`, `void`.
+    pub fn key(self) -> &'static str {
+        match self {
+            DocStatus::Open => "open",
+            DocStatus::Partial => "partial",
+            DocStatus::Paid => "paid",
+            DocStatus::WrittenOff => "written_off",
+            DocStatus::Void => "void",
+            DocStatus::Overpaid => "overpaid",
+            DocStatus::Unattached => "unattached",
+        }
+    }
+
+    /// Its label for people: `Open`, `Partly paid`, `Paid`, `Written
+    /// off`, `Void`, `Overpaid`, `Not in the ledger`.
+    pub fn label(self) -> &'static str {
+        match self {
+            DocStatus::Open => "Open",
+            DocStatus::Partial => "Partly paid",
+            DocStatus::Paid => "Paid",
+            DocStatus::WrittenOff => "Written off",
+            DocStatus::Void => "Void",
+            DocStatus::Overpaid => "Overpaid",
+            DocStatus::Unattached => "Not in the ledger",
+        }
+    }
+}
+
+/// What a document is, as of a date, read from the ledger lines tagged
+/// with it ([`crate::Ledger::doc_state`]); never stored.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct DocState {
+    /// The sum of its lines.
+    pub total: Decimal,
+    /// Cash paid against it that stands.
+    pub paid: Decimal,
+    /// Discounts taken that stand.
+    pub discounted: Decimal,
+    /// Amounts written off that stand.
+    pub written_off: Decimal,
+    /// What is still owed: the signed sum of every line tagged with it.
+    pub outstanding: Decimal,
+    /// Its status.
+    pub status: DocStatus,
+    /// Days past its due date while something is owed; 0 otherwise.
+    pub overdue_days: i64,
+}
+
+impl DocState {
+    /// It owes less than nothing or more than its total: books an earlier
+    /// version left out of bounds (B-38 INVARIANT 2; plan P4b.14 item 3),
+    /// which the control check lists for attention.
+    pub fn out_of_bounds(&self) -> bool {
+        self.outstanding < Decimal::ZERO || self.outstanding > self.total
+    }
+}
+
+/// A document's status from its figures ([`DocState`]; plan P4b.3).
+///
+/// ```text
+/// GOAL: one status from the ledger's figures, whatever happened to the
+///       document, its payments and their reversals.
+/// SOURCE: docs/spec/rules.md B-38; plan/served.md P4b.3 ("Status as of D");
+///         ASC 310-10 (a credit balance is not a receivable).
+/// INVARIANTS:
+///   1. Void exactly when its own entry doesn't stand (`origin_stands`
+///      false), whatever else is tagged.
+///   2. Otherwise Unattached when its own control line carries no tag
+///      (`origin_tagged` false): nothing about it can be read.
+///   3. Otherwise: Overpaid when less than nothing is owed; Written off
+///      when nothing is owed and something was written off; Paid when
+///      nothing is owed; Partial when less than the total is owed; Open
+///      when the whole total, or more (DocState::out_of_bounds), is.
+///   4. A pure function of its arguments.
+/// ```
+pub fn doc_status(
+    origin_stands: bool,
+    origin_tagged: bool,
+    total: Decimal,
+    outstanding: Decimal,
+    written_off: Decimal,
+) -> DocStatus {
+    if !origin_stands {
+        DocStatus::Void
+    } else if !origin_tagged {
+        DocStatus::Unattached
+    } else if outstanding < Decimal::ZERO {
+        DocStatus::Overpaid
+    } else if outstanding.is_zero() && written_off > Decimal::ZERO {
+        DocStatus::WrittenOff
+    } else if outstanding.is_zero() {
+        DocStatus::Paid
+    } else if outstanding < total {
+        DocStatus::Partial
+    } else {
+        DocStatus::Open
+    }
+}
+
+/// One posted ledger line tagged with a document ([`crate::Ledger::doc_lines`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct DocLine {
+    /// The entry.
+    pub entry: crate::EntryId,
+    /// The line's index in it.
+    pub line: usize,
+    /// The entry's date.
+    pub date: NaiveDate,
+    /// The account the line is on.
+    pub account: crate::AccountId,
+    /// What it does to the document.
+    pub movement: Movement,
+    /// Its amount as the document counts it ([`DocRef::counted`]): plus
+    /// raises what is owed.
+    pub amount: Decimal,
+    /// The entry reverses another (it is the mirror of a line).
+    pub reversal: bool,
+}
+
+/// A line on a control account that carries no document: one written by
+/// hand before the control guard, or by an older version (plan P4b.3,
+/// "unattached").
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct UnattachedLine {
+    /// The entry.
+    pub entry: crate::EntryId,
+    /// The line's index in it.
+    pub line: usize,
+    /// The entry's date.
+    pub date: NaiveDate,
+    /// Its amount as the control account counts it (plus raises the
+    /// receivable or the payable).
+    pub amount: Decimal,
+}
+
+/// One control account's tie-out as of a date ([`crate::Ledger::control_check`]).
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct ControlCheck {
+    /// The role whose documents the account holds: `receivables` or
+    /// `payables`.
+    pub role: String,
+    /// The account.
+    pub account: crate::AccountId,
+    /// Its balance in the general ledger, on its normal side.
+    pub balance: Decimal,
+    /// The sum of what its documents still owe on it.
+    pub documents_total: Decimal,
+    /// The lines on it that carry no document, which still stand.
+    pub unattached: Vec<UnattachedLine>,
+    /// balance - documents_total - the unattached lines: always zero (both
+    /// sides sum the same lines); anything else is an engine error.
+    pub difference: Decimal,
+    /// The role's documents needing attention as of the day: out of
+    /// bounds ([`DocState::out_of_bounds`]: a credit balance, which aging
+    /// leaves out, or more owed than the total) or unattached
+    /// ([`DocStatus::Unattached`]). Listed on the role's first account.
+    pub attention: Vec<DocAttention>,
+}
+
+/// A document the control check lists for attention ([`ControlCheck::attention`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct DocAttention {
+    /// The document.
+    pub doc: DocRef,
+    /// Its status as of the day.
+    pub status: DocStatus,
+    /// Its total.
+    pub total: Decimal,
+    /// What it owes as of the day.
+    pub outstanding: Decimal,
+}
+
+/// How a payment is recorded beyond its amount (plan P4b.6, D-40): the
+/// payment method it moved through, tagged on its entry in the same call
+/// (so a card-paid bill is left out of 1099-NEC without a second call),
+/// and the processor's or bank's own reference (a charge id, a trace or
+/// check number), carried in the entry's description.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PaymentDetails {
+    /// The payment method, when known.
+    pub instrument: Option<crate::InstrumentId>,
+    /// The reference, when there is one: one line of text.
+    pub reference: Option<String>,
+}
+
+/// The longest payment reference taken, in characters.
+pub const MAX_REFERENCE_CHARS: usize = 200;
+
+impl PaymentDetails {
+    /// The payment entry's description: `base`, then the reference when
+    /// there is one (`base (ref R)`).
+    pub fn description(&self, base: &str) -> String {
+        match self.reference.as_deref().map(str::trim) {
+            Some(r) if !r.is_empty() => format!("{base} (ref {r})"),
+            _ => base.to_string(),
+        }
+    }
+
+    /// Refuse a reference that isn't one line of at most
+    /// [`MAX_REFERENCE_CHARS`] characters. A blank one is none. (A bank
+    /// trace number is fifteen digits, so no nine-digit scan here.)
+    pub fn check(&self) -> Result<(), LedgerError> {
+        if let Some(r) = &self.reference
+            && (r.contains(['\n', '\r']) || r.chars().count() > MAX_REFERENCE_CHARS)
+        {
+            return Err(LedgerError::InvalidPayment(format!(
+                "a payment's reference is one line of at most {MAX_REFERENCE_CHARS} characters"
+            )));
+        }
+        Ok(())
+    }
 }
 
 /// One line on an invoice or bill.
@@ -111,9 +436,22 @@ pub struct Invoice {
     pub due_date: NaiveDate,
     /// Line items.
     pub lines: Vec<DocumentLine>,
-    /// How much has been paid.
+    /// What was settled on it at the end of the books: paid, discounted
+    /// and written off, as they stand ([`crate::Ledger::doc_state`] as of
+    /// the last day). Derived from the lines tagged with it and refreshed
+    /// by the ledger with every change (reversals included); never
+    /// journaled, never state of its own. A void settles nothing, so a
+    /// voided document never reads as paid.
     pub amount_paid: Decimal,
-    /// Derived from amount_paid vs total.
+    /// What is still owed on it at the end of the books (`doc_state`'s
+    /// outstanding as of the last day), derived with
+    /// [`Self::amount_paid`]: [`Self::balance`]. Nothing for a void.
+    /// Never serialized: a figure, not part of the record.
+    #[serde(skip)]
+    pub owed: Decimal,
+    /// The three-word status of [`Self::amount_paid`]; derived with it
+    /// (Open for a void: nothing was paid). The full status (a void, a
+    /// write-off) is `doc_state`'s.
     pub status: DocumentStatus,
     /// The auto-posted journal entry.
     pub entry_id: u64,
@@ -168,26 +506,18 @@ pub fn document_parts(
         .collect()
 }
 
-/// What is still owed on a document: its total less what was paid.
-fn document_balance(total: Decimal, paid: Decimal, what: &str) -> Result<Decimal, LedgerError> {
-    total
-        .checked_sub(paid)
-        .ok_or_else(|| LedgerError::TooLargeToCompute(format!("{what}'s balance")))
-}
-
 impl Invoice {
     /// Total of all lines ([`document_total`]).
     pub fn total(&self) -> Result<Decimal, LedgerError> {
         document_total(&self.lines, &format!("invoice {}", self.id))
     }
 
-    /// Amount still owed.
+    /// Amount still owed at the end of the books ([`Self::owed`]); as
+    /// of a date, `Ledger::doc_state`. Refused (TooLargeToCompute) when
+    /// its total can't be summed.
     pub fn balance(&self) -> Result<Decimal, LedgerError> {
-        document_balance(
-            self.total()?,
-            self.amount_paid,
-            &format!("invoice {}", self.id),
-        )
+        self.total()?;
+        Ok(self.owed)
     }
 }
 
@@ -204,9 +534,22 @@ pub struct Bill {
     pub due_date: NaiveDate,
     /// Line items.
     pub lines: Vec<DocumentLine>,
-    /// How much has been paid.
+    /// What was settled on it at the end of the books: paid, discounted
+    /// and written off, as they stand ([`crate::Ledger::doc_state`] as of
+    /// the last day). Derived from the lines tagged with it and refreshed
+    /// by the ledger with every change (reversals included); never
+    /// journaled, never state of its own. A void settles nothing, so a
+    /// voided document never reads as paid.
     pub amount_paid: Decimal,
-    /// Derived from amount_paid vs total.
+    /// What is still owed on it at the end of the books (`doc_state`'s
+    /// outstanding as of the last day), derived with
+    /// [`Self::amount_paid`]: [`Self::balance`]. Nothing for a void.
+    /// Never serialized: a figure, not part of the record.
+    #[serde(skip)]
+    pub owed: Decimal,
+    /// The three-word status of [`Self::amount_paid`]; derived with it
+    /// (Open for a void: nothing was paid). The full status (a void, a
+    /// write-off) is `doc_state`'s.
     pub status: DocumentStatus,
     /// The auto-posted journal entry.
     pub entry_id: u64,
@@ -218,13 +561,12 @@ impl Bill {
         document_total(&self.lines, &format!("bill {}", self.id))
     }
 
-    /// Amount still owed.
+    /// Amount still owed at the end of the books ([`Self::owed`]); as
+    /// of a date, `Ledger::doc_state`. Refused (TooLargeToCompute) when
+    /// its total can't be summed.
     pub fn balance(&self) -> Result<Decimal, LedgerError> {
-        document_balance(
-            self.total()?,
-            self.amount_paid,
-            &format!("bill {}", self.id),
-        )
+        self.total()?;
+        Ok(self.owed)
     }
 }
 
@@ -263,7 +605,8 @@ pub fn validate_due_date(date: NaiveDate, due_date: NaiveDate) -> Result<(), Led
     Ok(())
 }
 
-/// Derive status from paid vs total.
+/// The three-word status from what is settled vs the total
+/// ([`DocumentStatus`]).
 pub fn derive_status(paid: Decimal, total: Decimal) -> DocumentStatus {
     if paid.is_zero() {
         DocumentStatus::Open

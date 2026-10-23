@@ -28,7 +28,7 @@ fn usd(c: i64) -> Money {
     Money::new(cents(c), Currency::USD)
 }
 
-/// Cash 1000, equipment 1200, revenue 4000, contractors 6000, rent 6200.
+/// Cash 1000, equipment 1500, revenue 4000, contractors 6000, rent 6200.
 struct Books {
     l: Ledger,
     cash: u64,
@@ -42,7 +42,7 @@ fn books() -> Books {
     let mut l = Ledger::new(Currency::USD);
     let mut add = |code: &str, t| l.add_account(code, code, t, None, false).unwrap();
     let cash = add("1000", AccountType::Asset);
-    let equipment = add("1200", AccountType::Asset);
+    let equipment = add("1500", AccountType::Asset);
     let revenue = add("4000", AccountType::Revenue);
     let contractors = add("6000", AccountType::Expense);
     let rent = add("6200", AccountType::Expense);

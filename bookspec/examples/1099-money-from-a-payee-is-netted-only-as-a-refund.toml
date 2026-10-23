@@ -63,6 +63,7 @@ lines = [
 [[events]]
 date = "2026-03-01"
 description = "Dana Studio pays the company's invoice"
+older = true
 payee = "Dana Studio"
 lines = [
   { account = "1000", side = "debit", amount = "450.00" },

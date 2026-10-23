@@ -89,3 +89,10 @@ open Wanderbooks
 #print axioms Prorate.chargeLast_mono
 #print axioms Prorate.kernel_parts_total
 #print axioms Prorate.kernel_parts_nonneg
+#print axioms Documents.control_agrees
+#print axioms Documents.control_agrees_through
+#print axioms Documents.Step.document_unattached
+#print axioms Documents.Step.reverse_moves
+#print axioms Documents.reverse_twice
+#print axioms Documents.Reachable.unattached_zero
+#print axioms Documents.Reachable.control_is_documents

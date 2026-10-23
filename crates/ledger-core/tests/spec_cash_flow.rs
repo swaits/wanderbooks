@@ -50,15 +50,21 @@ impl Books {
     }
 
     fn post(&mut self, date: NaiveDate, desc: &str, lines: &[(&str, Side, &str)]) -> EntryId {
-        let e = self.l.create_entry(date, desc);
-        for &(code, side, amount) in lines {
-            let a = self.id(code);
-            self.l
-                .add_line(e, a, side, Money::new(x(amount), Currency::USD))
-                .unwrap();
-        }
-        self.l.post_entry(e).unwrap();
-        e
+        // As replay posts it: these books hold hand lines on receivables
+        // or payables (1200, 2000), which books an earlier version wrote
+        // still hold and every report must read; the control guard
+        // (rules.md B-38) refuses them as new work.
+        ledger_core::parties::replaying(|| {
+            let e = self.l.create_entry(date, desc);
+            for &(code, side, amount) in lines {
+                let a = self.id(code);
+                self.l
+                    .add_line(e, a, side, Money::new(x(amount), Currency::USD))
+                    .unwrap();
+            }
+            self.l.post_entry(e).unwrap();
+            e
+        })
     }
 
     fn reverse(&mut self, e: EntryId, date: NaiveDate) -> EntryId {

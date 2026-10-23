@@ -176,6 +176,7 @@ lines = [
 [[events]]
 date = "2026-10-20"
 description = "Bill"
+older = true
 parties = [{ party = "Northwind Filings" }]
 lines = [
   { account = "6000", side = "debit", amount = "80.00" },
@@ -192,6 +193,7 @@ reverses = 7
 [[events]]
 date = "2026-10-20"
 description = "Invoice"
+older = true
 parties = [{ party = "Riley Chen" }]
 lines = [
   { account = "1200", side = "debit", amount = "120.00" },

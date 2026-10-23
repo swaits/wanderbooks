@@ -1512,6 +1512,118 @@ pub fn unrecovered_cost<T: Amount>(revenue: T, expenses: T) -> Option<T> {
     Some(if gap > T::ZERO { gap } else { T::ZERO })
 }
 
+/// Where a document's running balance first leaves `0 ..= total`, if it
+/// ever does ([`running_bounds`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Bounds {
+    /// Every running balance is within `0 ..= total`.
+    Within,
+    /// After step `i` (0-based) the balance is below zero: more paid than
+    /// the document is for, or a void under a payment that stands.
+    Below(usize),
+    /// After step `i` the balance is above the total: more owed than the
+    /// document is for (a payment's reversal re-instating its document's
+    /// origin beside another).
+    Above(usize),
+    /// A running balance can't be represented exactly.
+    Overflow,
+}
+
+/// A document's bounds over time: `deltas` are what each date moves its
+/// outstanding balance by, in date order (one per date, that date's
+/// movements summed), starting from nothing owed.
+///
+/// ```text
+/// GOAL: one definition of "a document is never overpaid and never owes
+///       more than it is for", at every date, not only at the end.
+/// SOURCE: docs/spec/rules.md B-38 INVARIANT 2 (0 <= outstanding(d, D)
+///         <= total(d) at every D); plan/served.md P4b.3 (Bounds).
+/// INVARIANTS:
+///   1. Within exactly when every prefix sum of `deltas` is within
+///      0 ..= total; else the first prefix that isn't: Below when it is
+///      under zero, Above when it is over the total.
+///   2. NEVER wraps: Overflow when a prefix sum can't be represented.
+///   3. Empty `deltas` is Within (nothing owed, nothing paid).
+/// ```
+pub fn running_bounds<T: Amount>(total: T, deltas: &[T]) -> Bounds {
+    let mut running = T::ZERO;
+    for (i, &d) in deltas.iter().enumerate() {
+        running = match running.checked_add(d) {
+            Some(r) => r,
+            None => return Bounds::Overflow,
+        };
+        if running < T::ZERO {
+            return Bounds::Below(i);
+        }
+        if running > total {
+            return Bounds::Above(i);
+        }
+    }
+    Bounds::Within
+}
+
+/// How far a running balance is outside `0 ..= total` (zero inside), and
+/// whether below; `None` when that can't be represented.
+fn out_of_bounds<T: Amount>(total: T, running: T) -> Option<(T, bool)> {
+    if running < T::ZERO {
+        Some((running.checked_neg()?, true))
+    } else if running > total {
+        Some((running.checked_sub(total)?, false))
+    } else {
+        Some((T::ZERO, false))
+    }
+}
+
+/// Whether moving a document from `before` to `after` keeps its bounds:
+/// both are its movements by date over the same dates (a date with
+/// nothing moving is zero). At every date, `after` must be within
+/// `0 ..= total`, or no further outside than `before` was there.
+///
+/// ```text
+/// GOAL: a command never puts a document out of bounds, yet books an
+///       earlier version left out of bounds (a void under a payment that
+///       stands) take the step that mends them.
+/// SOURCE: docs/spec/rules.md B-38 INVARIANT 2, B-28 (replay accepts what
+///         was written; the bound is the commands'); plan/served.md
+///         P4b.14 item 3 (the remedy: reverse the payment).
+/// INVARIANTS:
+///   1. When `before` is within bounds at every date (running_bounds is
+///      Within), the result is running_bounds(total, after): the
+///      definition exactly.
+///   2. Within means no prefix of `after` is further outside 0 ..= total
+///      than the same prefix of `before`; else the first prefix that is,
+///      Below or Above by where it went. Only the distance counts, not
+///      the side: books out of bounds below (overpaid by 5) may take a
+///      step that leaves them above by 3 (over-owed), nearer the range.
+///      Intended: any step that mends is taken, and these commands
+///      never write a book out of bounds in the first place (INVARIANT 1).
+///   3. NEVER wraps: Overflow when a prefix can't be represented.
+///   4. Slices of different lengths: the missing movements are zero.
+/// ```
+pub fn bounds_kept<T: Amount>(total: T, before: &[T], after: &[T]) -> Bounds {
+    let (mut was, mut now) = (T::ZERO, T::ZERO);
+    for i in 0..before.len().max(after.len()) {
+        let step = |r: T, d: Option<&T>| r.checked_add(d.copied().unwrap_or(T::ZERO));
+        let (Some(w), Some(n)) = (step(was, before.get(i)), step(now, after.get(i))) else {
+            return Bounds::Overflow;
+        };
+        (was, now) = (w, n);
+        let (Some((by_was, _)), Some((by_now, below))) =
+            (out_of_bounds(total, was), out_of_bounds(total, now))
+        else {
+            return Bounds::Overflow;
+        };
+        if by_now > by_was {
+            return if below {
+                Bounds::Below(i)
+            } else {
+                Bounds::Above(i)
+            };
+        }
+    }
+    Bounds::Within
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

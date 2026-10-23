@@ -283,22 +283,43 @@ fn a_draft_of_decimals_largest_is_refused_where_summed() {
     assert!(why.contains("too large to compute"), "{why}");
 }
 
-/// A document is restored as journaled: its total and balance are exact,
-/// or refused past exact arithmetic; aging sums by party, checked.
+/// A document is restored as journaled: its total is exact, or refused
+/// past exact arithmetic; what it owes is what the ledger lines tagged
+/// with it carry (rules.md B-38), exact, whatever the journal held (paid
+/// above its total included); aging refuses a document whose total it
+/// can't compute.
 #[test]
 fn documents_and_aging_are_exact_or_refused() {
     let mut l = Ledger::new(Currency::USD);
+    let ar = l
+        .add_account("1200", "Receivables", AccountType::Asset, None, false)
+        .unwrap();
+    let revenue = l
+        .add_account("4000", "Revenue", AccountType::Revenue, None, false)
+        .unwrap();
+    let cash = l
+        .add_account("1000", "Cash", AccountType::Asset, None, false)
+        .unwrap();
     let customer = l.add_customer("Client").unwrap();
     let line = |a: Decimal| DocumentLine {
         description: "x".into(),
         amount: a,
         class_id: None,
     };
+    // An entry as replay rebuilds it: Dr `dr` / Cr `cr` for `a`.
+    let replayed = |l: &mut Ledger, dr, cr, a: Decimal| {
+        let e = l.create_entry(d(2026, 3, 1), "replayed");
+        l.replay_add_line(e, dr, Side::Debit, usd(a)).unwrap();
+        l.replay_add_line(e, cr, Side::Credit, usd(a)).unwrap();
+        l.replay_post_entry(e).unwrap();
+        e
+    };
     let fine = vec![
         line(Decimal::new(1, 11)),
         line("9.99999999999".parse().unwrap()),
     ];
-    l.replay_invoice(1, customer, d(2026, 3, 1), d(2026, 3, 31), fine, 1)
+    let e1 = replayed(&mut l, ar, revenue, Decimal::TEN);
+    l.replay_invoice(1, customer, d(2026, 3, 1), d(2026, 3, 31), fine, e1)
         .unwrap();
     let inv = l.get_invoice(1).unwrap();
     assert_eq!(inv.total(), Ok(Decimal::TEN));
@@ -307,8 +328,9 @@ fn documents_and_aging_are_exact_or_refused() {
     // 62 days past due on June 1st: 61-90.
     assert_eq!(rows[0].days_90, Decimal::TEN);
     assert_eq!(rows[0].total(), Ok(Decimal::TEN));
-    // Two documents of half Decimal's largest each: each is exact, the
-    // party's aging bucket is not.
+    // Two documents of half Decimal's largest each, their totals exact; no
+    // line carries them (no entry could), so they owe nothing and age
+    // nowhere.
     let half = Decimal::MAX / Decimal::TWO;
     for id in [2, 3] {
         l.replay_invoice(
@@ -317,40 +339,44 @@ fn documents_and_aging_are_exact_or_refused() {
             d(2026, 3, 1),
             d(2026, 3, 31),
             vec![line(half)],
-            id,
+            100 + id,
         )
         .unwrap();
         assert_eq!(l.get_invoice(id).unwrap().total(), Ok(half));
+        let st = l.invoice_state(id, d(2026, 6, 1)).unwrap().unwrap();
+        assert_eq!(st.outstanding, Decimal::ZERO);
     }
-    assert!(too_large(l.ar_aging(d(2026, 6, 1))));
+    assert_eq!(
+        l.ar_aging(d(2026, 6, 1)).unwrap()[0].total(),
+        Ok(Decimal::TEN)
+    );
     // Paid more than its total, as journaled: a negative balance, exact.
-    l.replay_invoice_payment(1, Decimal::from(11), 9).unwrap();
+    let p = replayed(&mut l, cash, ar, Decimal::from(11));
+    l.replay_invoice_payment(1, Decimal::from(11), p).unwrap();
     assert_eq!(l.get_invoice(1).unwrap().balance(), Ok(-Decimal::ONE));
-    // A total of lines that overflow, and its balance.
+    let st = l.invoice_state(1, d(2026, 6, 1)).unwrap().unwrap();
+    assert_eq!(
+        (st.paid, st.outstanding),
+        (Decimal::from(11), -Decimal::ONE)
+    );
+    // A payment event naming an amount no line of its entry carries tags
+    // nothing, and is refused nothing (B-28).
+    l.replay_invoice_payment(1, -Decimal::ONE, p).unwrap();
+    assert_eq!(l.get_invoice(1).unwrap().balance(), Ok(-Decimal::ONE));
+    // A total of lines that overflow, and its balance; aging refuses it.
     l.replay_invoice(
         4,
         customer,
         d(2026, 3, 1),
         d(2026, 3, 31),
         vec![line(Decimal::MAX), line(Decimal::MAX)],
-        4,
+        104,
     )
     .unwrap();
     assert!(too_large(l.get_invoice(4).unwrap().total()));
     assert!(too_large(l.get_invoice(4).unwrap().balance()));
-    // A balance past exact arithmetic: a total of Decimal's largest paid
-    // a negative amount.
-    l.replay_invoice(
-        5,
-        customer,
-        d(2026, 3, 1),
-        d(2026, 3, 31),
-        vec![line(Decimal::MAX)],
-        5,
-    )
-    .unwrap();
-    l.replay_invoice_payment(5, -Decimal::ONE, 10).unwrap();
-    assert!(too_large(l.get_invoice(5).unwrap().balance()));
+    assert!(too_large(l.ar_aging(d(2026, 6, 1))));
+    assert!(too_large(l.invoice_state(4, d(2026, 6, 1))));
     // Bills alike.
     let vendor = l.add_vendor("Supplier").unwrap();
     l.replay_bill(
@@ -359,7 +385,7 @@ fn documents_and_aging_are_exact_or_refused() {
         d(2026, 3, 1),
         d(2026, 3, 31),
         vec![line(Decimal::MAX), line(Decimal::ONE)],
-        6,
+        106,
     )
     .unwrap();
     assert!(too_large(l.get_bill(1).unwrap().total()));

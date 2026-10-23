@@ -1807,6 +1807,91 @@ fn unrecovered_cost_laws() {
     kani::cover!(u == 0 && revenue > expenses, "repaid, and more");
 }
 
+/// `kernel::running_bounds` (rules.md B-38 INVARIANT 2; the bounds every
+/// document command and reversal checks), for every total and every
+/// sequence of up to `N` dated movements a line could carry: it says
+/// Within exactly when every running balance is in `0 ..= total`, and
+/// otherwise names the first one that isn't, and which way it left.
+#[kani::proof]
+#[kani::unwind(6)]
+fn bounds_check_matches_definition() {
+    let total = any_amount();
+    kani::assume(total > 0);
+    let deltas: [i64; N] = core::array::from_fn(|_| any_amount());
+    let n = any_len();
+    let got = kernel::running_bounds(total, &deltas[..n]);
+    // The definition, in wide arithmetic: amounts are at most 2^40 and at
+    // most N are summed, so no prefix overflows (got is never Overflow).
+    let mut running = 0i64;
+    let mut first: Option<(usize, bool)> = None;
+    for (i, &d) in deltas[..n].iter().enumerate() {
+        running += d;
+        if first.is_none() && (running < 0 || running > total) {
+            first = Some((i, running < 0));
+        }
+    }
+    match first {
+        None => assert_eq!(got, kernel::Bounds::Within),
+        Some((i, true)) => assert_eq!(got, kernel::Bounds::Below(i)),
+        Some((i, false)) => assert_eq!(got, kernel::Bounds::Above(i)),
+    }
+    kani::cover!(
+        got == kernel::Bounds::Within && n == N,
+        "a whole history in bounds"
+    );
+    kani::cover!(matches!(got, kernel::Bounds::Below(_)), "overpaid");
+    kani::cover!(
+        matches!(got, kernel::Bounds::Above(_)),
+        "owes more than its total"
+    );
+}
+
+/// `kernel::bounds_kept` (the check every document command and reversal
+/// runs, rules.md B-38 INVARIANT 2): on books in bounds at every date it
+/// is the definition (`running_bounds` of the books after the step); and
+/// whenever it says Within, no running balance after the step is further
+/// outside `0 ..= total` than before it, so a step that mends books an
+/// earlier version left out of bounds is taken and none makes them worse.
+#[kani::proof]
+#[kani::unwind(6)]
+fn bounds_kept_is_the_definition_on_books_in_bounds() {
+    let total = any_amount();
+    kani::assume(total > 0);
+    let before: [i64; N] = core::array::from_fn(|_| any_amount());
+    let after: [i64; N] = core::array::from_fn(|_| any_amount());
+    let n = any_len();
+    let got = kernel::bounds_kept(total, &before[..n], &after[..n]);
+    let out = |r: i64| {
+        if r < 0 {
+            -r
+        } else if r > total {
+            r - total
+        } else {
+            0
+        }
+    };
+    let was_within = kernel::running_bounds(total, &before[..n]) == kernel::Bounds::Within;
+    if was_within {
+        assert_eq!(got, kernel::running_bounds(total, &after[..n]));
+    }
+    if got == kernel::Bounds::Within {
+        let (mut was, mut now) = (0i64, 0i64);
+        for i in 0..n {
+            was += before[i];
+            now += after[i];
+            assert!(out(now) <= out(was));
+        }
+    }
+    kani::cover!(
+        got == kernel::Bounds::Within && !was_within,
+        "a step that mends out-of-bounds books"
+    );
+    kani::cover!(
+        matches!(got, kernel::Bounds::Below(_)),
+        "a step that overpays"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // The checker itself
 // ---------------------------------------------------------------------------

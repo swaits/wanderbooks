@@ -1035,13 +1035,18 @@ repayment terms." A document due today is not yet past due: DECISION
 (the owner, 2026-10-13). Aging as of a date shows only documents issued by
 then, less only payments made by then; and a payment never predates its
 invoice or bill (a real prepayment is a deposit): DECISIONS (the owner,
-2026-10-13).
+2026-10-13). What a document owes as of a date is read from its ledger
+lines that stand then (B-38): a void invoice is in no bucket, a payment
+reversed by then no longer counts, one reversed later still does; the
+buckets partition what the documents owe, exactly.
 
-**Enforced:** `arap::aging_bucket`, `Ledger::ar_aging`/`ap_aging`,
-`receive_payment`/`pay_bill` (`PaymentBeforeDocument`). **Checked:**
+**Enforced:** `arap::aging_bucket`, `Ledger::ar_aging`/`ap_aging`
+(through `Ledger::doc_state`), `receive_payment`/`pay_bill`
+(`PaymentBeforeDocument`). **Checked:**
 `aging_boundaries`, `aging_is_exclusive_and_only_ages`,
 `aging_as_of_a_date_sees_only_what_existed_then`,
-`a_payment_never_predates_its_document`.
+`a_payment_never_predates_its_document`, `aging_as_of_ignores_a_later_reversal`,
+`a_voided_invoice_never_ages`, `status_is_a_function_of_journal_and_date`.
 
 ## B-19 1099 reporting thresholds, payment methods, and decisions
 
@@ -1311,13 +1316,26 @@ the chart (DECISION, 2026-10-13). No account fills two roles. A
 receivables, payables, withholding, or retained earnings account must keep
 agreeing with what it controls (open invoices, open bills, taxes withheld,
 closed earnings): such a role moves only when its account holds no
-balance, so the bookkeeper first moves the balance with an entry, which
-the journal shows. Revenue and expense roles move at any time; earlier
-postings stay where they are.
+balance. For a withholding or retained earnings role the bookkeeper
+first moves the balance with an entry, which the journal shows. Revenue
+and expense roles move at any time; earlier postings stay where they
+are. Receivables and payables are different (B-38, 2026-10-23): their
+documents read their figures from their lines, so their control accounts
+take no line by hand and equal their documents by construction. Their
+balance moves with its documents only (plan P4b S7); until then a
+receivables or payables role whose control account holds a balance stays
+where it is, and the refusal says so (it names no hand entry, which the
+control guard would refuse). Such a role also never moves onto an
+account holding a line that is no document's, and the account it leaves
+stays guarded while it holds its documents' lines. The account at a
+role's default code is the role's control account only once a document
+posts there (or the role is assigned to it): before that, a chart's own
+1200 Equipment or a card at 2000 is the chart's.
 
 **Enforced:** `Ledger::check_controls`, `Ledger::assign_role` /
 `check_assign_role`, `Ledger::check_renumber_account` (an assigned role
-frees its code). **Checked:** `ledger-core` `tests/spec_roles.rs`;
+frees its code); the control guard and `Ledger::control_check` (B-38).
+**Checked:** `ledger-core` `tests/spec_roles.rs`, `tests/spec_documents.rs`;
 `ledger-store` replay of `role.assigned`.
 
 ## B-24 Asset tags: one label per asset, never reused
@@ -2847,3 +2865,153 @@ and `tests/format_upgrade.rs` (`books_p2_served_cut_over_whole`); bookspec
 proptests `prop_project_nets_partition_the_pnl`,
 `prop_project_set_round_trips`, `prop_project_contribution_is_the_net_to_date`
 (core) and `prop_snapshot_contribution_is_the_net_to_date` (viewer).
+
+## B-38 A document's figures are its ledger lines that stand; a control account is its documents
+
+**Status:** DECISION (the owner, 2026-10-23, plan D-45: "we kinda need
+stronger invoice support. Like make it a first class citizen"; hand
+entries to receivables and payables refused, the owner's answer 5);
+CONVENTION (a control account agrees with its subledger, as B-23; the
+subledger tie-out is the first thing a CPA checks); sources cited and not
+yet vendored, so this rule keeps the CONVENTION label (the Open list in
+`README.md`): ASC 310-10 (receivables), ASC 405-20-40-1 (a liability is
+removed only when paid or released), ASC 606-10-45-4 (a receivable is a
+right to consideration that is unconditional).
+
+1. **Tags.** Every ledger line on the receivables or payables control
+   account carries the document it belongs to (an invoice or a bill) and
+   what it does to it: its origin, a payment (later: a discount, a
+   write-off, an adoption, a role move). The tag lives beside the line,
+   like its cleared flag; the line and its hash never change (B-8). The
+   document commands write it in the step that posts the line; replay
+   derives it from the document events already journaled (an invoice's
+   or bill's own entry: its one line on the role's account as the role
+   stood at that point of the journal; a payment: its first untagged
+   control line for the payment's amount, so several payment events
+   naming one entry tag its lines in order), each on the side its
+   movement posts (an origin on the owed side, a payment on the other, so
+   an older payment deposited into receivables itself pays with its
+   credit); a reversal's mirror line carries its original's.
+2. **Figures.** What a document owes as of a day is the signed sum of
+   the lines tagged with it dated on or before that day (a debit to
+   receivables counts plus for an invoice, a credit to payables for a
+   bill); what it was paid is minus the same sum over its payment lines.
+   Its status: Void when its own entry doesn't stand on that day (B-9;
+   an entry stands while an even number of the reversals after it in its
+   chain are dated by then, counted in chain order: a reversal counts
+   only once what it reverses does), else Unattached when its own entry's
+   control line carries no tag (an older entry replay couldn't match),
+   else Overpaid when it owes less than nothing (a credit balance, owed
+   back: never a receivable or payable, ASC 310-10), else Written off,
+   Paid, Partly paid or Open by what it owes. Overdue is a flag (owed past
+   the due date), not a status. No figure is stored: a reversal, a void
+   or a bounced payment is right by construction, and the aging as of a
+   day (B-18) shows what was owed then; it leaves out a document owing
+   less than nothing, which the control check lists with the unattached
+   ones for attention.
+3. **The control guard.** A control account is one the receivables or
+   payables role is assigned to, or one holding a line of one of the
+   role's documents (the role's default code once a document posted
+   there; an account the role moved off). A line on one that carries no
+   document is refused, when added and when posted, whatever writes it
+   (a hand entry, a template, a recurring entry); a recurring template
+   naming one is refused when registered. The one exception is the
+   mirror of an untagged line in a reversal that takes the line off the
+   books (the hand line itself, or a re-instatement of it, reversed):
+   reversing an old hand line is how it is cleaned up, and reversing that
+   cleanup, which would put it back, is refused. The role never moves
+   onto an account holding an untagged line (B-23). Replay never refuses
+   (B-28). A chart's own account at a default code (1200 Equipment, a
+   card at 2000) takes hand lines until a document posts there; lines it
+   held before are listed as unattached from then on.
+4. **Bounds.** At every day, 0 ≤ owed ≤ total, for every document
+   written under these rules. A payment can't exceed what is owed on any
+   day from its date on; a reversal that would break the bound where it
+   held (a void under a payment that stands; re-instating a payment
+   beside its replacement) is refused, naming what to reverse first;
+   reversing a payment is always taken. Books an earlier version left out
+   of bounds take any step that makes no day worse, so the remedy is
+   accepted (a step may carry a day across the range, overpaid to
+   over-owed, so long as it lands nearer the range). A reversal of a
+   document's entry is never dated before that entry.
+5. **Payments.** The deposit or payer account is a postable asset or
+   liability that holds no role: a bank, a card, a member's payable. A
+   control account (item 3) holds its role; another role is held by its
+   assigned account, or by the account at its code of its type.
+   The payment method and the processor's reference go on the payment's
+   entry in the same step (B-19, D-40).
+6. **Voids.** Voiding a document reverses its own entry, described
+   "Void invoice 7: reason"; it keeps its id (and number), and reversing
+   the void re-instates it (B-10).
+7. **Journal.** A payment accepted only because an earlier payment on
+   its document was reversed needs the journal feature
+   `document_standing` (B-27): an older version, which adds every
+   payment event to the document's paid amount (its line tagged or not),
+   would show it paid above its total. Everything else is journaled as before, and a void is the
+   `entry.reversed` it is.
+
+```text
+GOAL: invoices and bills are the subledgers of the receivables and
+      payables control accounts; every figure about a document is read
+      from the ledger lines tagged with it.
+INVARIANTS:
+  1. For every control account A and day D:
+     GL(A, D) = Σ_docs outstanding(d, D) + unattached(A, D).
+     No command adds an untagged control line; unattached changes only by
+     reversing (or, later, adopting) a legacy line.
+  2. 0 ≤ outstanding(d, D) ≤ total(d) at every D for every document
+     written under these rules; replay accepts what was written.
+  3. Reversing a tagged entry changes outstanding by exactly the opposite
+     of its tagged lines, from the reversal's day; reversing that
+     reversal restores it.
+  4. A document's state is a function of (the journal, the day).
+  5. Aging as of D partitions Σ outstanding(·, D) over the documents
+     owing something; a credit balance (only in books an earlier version
+     left out of bounds) is left out and listed by the control check.
+  6. Every refusal leaves the books and the journal unchanged; NEVER panics.
+SCENARIOS:
+  1. Invoice 100, payment 100, payment reversed: Open, owing 100, A/R 100.
+  2. Invoice reversed with nothing paid: Void, not in aging, id kept.
+  3. Void with a payment standing: SHOULD refuse, naming the payment.
+  4. As of a day between a payment and its reversal: counted as paid.
+  5. Wrong payment reversed, right one recorded: accepted (feature
+     document_standing declared first).
+  6. Hand Dr 1200 / Cr 4000: SHOULD refuse with the document tools
+     named; reversing a legacy hand line on 1200: accepted, unattached
+     shrinks.
+  7. (S7) Half paid, rest written off: Written off, 50 paid / 50 written off.
+  8. receive_payment into 1200 or 4000: SHOULD refuse.
+```
+
+**Enforced:** `ledger_core::arap::{DocRef, DocTag, Movement, DocState,
+DocStatus, doc_status, PaymentDetails, ControlCheck}`,
+`kernel::{running_bounds, bounds_kept}`, `Ledger::{line_doc, doc_lines,
+doc_state, invoice_state, bill_state, stands_on, in_effect,
+control_role_of, control_check, payments_recorded, standing_payments,
+receive_payment_with, pay_bill_with, void_document, check_void_document,
+check_reversal, replay_reverse_entry, ar_aging, ap_aging}` (the guard in
+`add_line`, `add_line_fx`, `post_entry` and `register_recurring`);
+`Store::{receive_payment_with, pay_bill_with, void_document}` (feature
+`document_standing`); `Ledger::check_assign_role` (B-23); the projection
+(schema 15) keeps no document figure; the viewer reads what a document
+owes and whether it is late from `doc_state` (as of today, or of its own
+date when it is dated ahead).
+**Checked:** `ledger-core` `tests/spec_documents.rs` (a test per
+scenario and finding of its reviews; proptests
+`subledger_equals_control`, `aging_partitions_what_documents_owe`,
+`reversal_twice_restores_state`); `ledger-store`
+`tests/arap_standing.rs` (the fixture an earlier version wrote, its
+golden figures adjudicated; the feature gate; replay equals live),
+`tests/arap_props.rs` (proptest `status_is_a_function_of_journal_and_date`:
+live, replayed and snapshot books agree at every date, closed months
+included), the store fuzz test's voids and payments with details;
+Kani `bounds_check_matches_definition`, `bounds_kept_is_the_definition_on_books_in_bounds`;
+Lean `Documents.control_agrees`, `Documents.Step.document_unattached`,
+`Documents.Step.reverse_moves`, `Documents.Reachable.unattached_zero`
+(through role assignments and releases),
+`Documents.Reachable.control_is_documents`. The model's limits: it
+starts from empty books (legacy lines are covered by the identity
+`control_agrees` alone), it names documents by one id space (an injective
+coding of `DocRef`), and an account becoming a control account by its
+first document, holding lines from before, is outside it (those lines are
+listed as unattached).

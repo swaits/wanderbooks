@@ -32,11 +32,17 @@ fn usd(amount: u64) -> Money {
 /// Post a balanced entry in one call. Panics on programmer error: fixtures
 /// must be valid by construction.
 fn post(ledger: &mut Ledger, date: NaiveDate, description: &str, lines: &[(AccountId, Side, u64)]) {
-    let id = ledger.create_entry(date, description);
-    for (account, side, amount) in lines {
-        ledger.add_line(id, *account, *side, usd(*amount)).unwrap();
-    }
-    ledger.post_entry(id).unwrap();
+    // As replay posts it: these books hold hand lines on receivables or
+    // payables (1200, 2000), which books an earlier version wrote still
+    // hold and every report must read; the control guard (rules.md B-38)
+    // refuses them as new work.
+    ledger_core::parties::replaying(|| {
+        let id = ledger.create_entry(date, description);
+        for (account, side, amount) in lines {
+            ledger.add_line(id, *account, *side, usd(*amount)).unwrap();
+        }
+        ledger.post_entry(id).unwrap();
+    })
 }
 
 struct Company {
@@ -649,21 +655,26 @@ fn random_balanced_journals_preserve_invariants() {
         c.rent,
     ];
 
-    for i in 0..300u32 {
-        let total = rng.next(100_000) + 100;
-        let nd = (rng.next(3) + 1) as usize;
-        let nc = (rng.next(3) + 1) as usize;
-        let id = ledger.create_entry(date(21), &format!("random {i}"));
-        for part in split_total(&mut rng, total, nd) {
-            let acct = accounts[rng.next(accounts.len() as u64) as usize];
-            ledger.add_line(id, acct, Side::Debit, usd(part)).unwrap();
+    // As replay posts them: random lines land on receivables and
+    // payables by hand, as books an earlier version wrote can hold them
+    // (the control guard, rules.md B-38, refuses them as new work).
+    ledger_core::parties::replaying(|| {
+        for i in 0..300u32 {
+            let total = rng.next(100_000) + 100;
+            let nd = (rng.next(3) + 1) as usize;
+            let nc = (rng.next(3) + 1) as usize;
+            let id = ledger.create_entry(date(21), &format!("random {i}"));
+            for part in split_total(&mut rng, total, nd) {
+                let acct = accounts[rng.next(accounts.len() as u64) as usize];
+                ledger.add_line(id, acct, Side::Debit, usd(part)).unwrap();
+            }
+            for part in split_total(&mut rng, total, nc) {
+                let acct = accounts[rng.next(accounts.len() as u64) as usize];
+                ledger.add_line(id, acct, Side::Credit, usd(part)).unwrap();
+            }
+            ledger.post_entry(id).unwrap();
         }
-        for part in split_total(&mut rng, total, nc) {
-            let acct = accounts[rng.next(accounts.len() as u64) as usize];
-            ledger.add_line(id, acct, Side::Credit, usd(part)).unwrap();
-        }
-        ledger.post_entry(id).unwrap();
-    }
+    });
 
     // Every invariant still holds after 300 random balanced entries.
     let tb = trial_balance(&ledger);
@@ -1484,27 +1495,61 @@ fn a_period_ending_inside_a_closed_period_cannot_close() {
 }
 
 /// Replay (for journaling stores) rebuilds invoice and bill records
-/// exactly: ids follow the allocator, payments accumulate, vendors tag
-/// the entries. A record replayed out of order is refused.
+/// exactly: ids follow the allocator, each record tags its entry's control
+/// line and each payment its entry's (rules.md B-38), vendors tag the
+/// entries. A record replayed out of order is refused.
 #[test]
 fn replayed_documents_and_payments_rebuild_the_records() {
     use ledger_core::DocumentStatus;
     let mut l = books_with("2000", "Accounts Payable", AccountType::Liability, false);
+    let cash = l.chart().find_by_code("1000").unwrap().id;
+    let ap = l.chart().find_by_code("2000").unwrap().id;
+    let ar = l
+        .add_account(
+            "1200",
+            "Accounts Receivable",
+            AccountType::Asset,
+            None,
+            false,
+        )
+        .unwrap();
+    let revenue = l
+        .add_account("4000", "Revenue", AccountType::Revenue, None, false)
+        .unwrap();
+    let expense = l
+        .add_account(
+            "6999",
+            "General Expenses",
+            AccountType::Expense,
+            None,
+            false,
+        )
+        .unwrap();
+    // An entry as replay rebuilds it from its own events.
+    let entry = |l: &mut Ledger, dr, cr, n: u64| {
+        let e = l.create_entry(date(5), "replayed");
+        l.replay_add_line(e, dr, Side::Debit, usd(n)).unwrap();
+        l.replay_add_line(e, cr, Side::Credit, usd(n)).unwrap();
+        l.replay_post_entry(e).unwrap();
+        e
+    };
     let c = l.add_customer("Acme").unwrap();
     let v = l.add_vendor("Vend").unwrap();
 
     let inv = l.next_invoice_id();
+    let e = entry(&mut l, ar, revenue, 100);
     assert_eq!(
-        l.replay_invoice(inv + 1, c, date(5), date(30), doc(100), 10),
+        l.replay_invoice(inv + 1, c, date(5), date(30), doc(100), e),
         Err(LedgerError::ReplayIdMismatch(inv + 1, inv))
     );
-    l.replay_invoice(inv, c, date(5), date(30), doc(100), 10)
+    l.replay_invoice(inv, c, date(5), date(30), doc(100), e)
         .unwrap();
     // Each later record replays at the id the allocator now predicts.
     let mut ids = vec![inv];
-    for entry in [13, 14] {
+    for _ in 0..2 {
         let next = l.next_invoice_id();
-        l.replay_invoice(next, c, date(5), date(30), doc(1), entry)
+        let e = entry(&mut l, ar, revenue, 1);
+        l.replay_invoice(next, c, date(5), date(30), doc(1), e)
             .unwrap();
         ids.push(next);
     }
@@ -1512,38 +1557,52 @@ fn replayed_documents_and_payments_rebuild_the_records() {
     ids.dedup();
     assert_eq!(ids.len(), 3);
     assert!(ids.iter().all(|&i| l.get_invoice(i).is_some()));
-    l.replay_invoice_payment(inv, Decimal::from(30), 11)
-        .unwrap();
-    l.replay_invoice_payment(inv, Decimal::from(20), 12)
-        .unwrap();
+    for n in [30, 20] {
+        let p = entry(&mut l, cash, ar, n);
+        l.replay_invoice_payment(inv, Decimal::from(n), p).unwrap();
+        assert_eq!(
+            l.line_doc(p, 1).map(|t| t.doc),
+            Some(ledger_core::DocRef::Invoice(inv))
+        );
+    }
     let i = l.get_invoice(inv).unwrap();
     assert_eq!(i.amount_paid, Decimal::from(50));
     assert_eq!(i.balance().unwrap(), Decimal::from(50));
     assert_eq!(i.status, DocumentStatus::Partial);
+    let st = l.invoice_state(inv, date(31)).unwrap().unwrap();
+    assert_eq!(
+        (st.paid, st.outstanding),
+        (Decimal::from(50), Decimal::from(50))
+    );
 
     let bill = l.next_bill_id();
+    let e = entry(&mut l, expense, ap, 100);
     assert_eq!(
-        l.replay_bill(bill + 1, v, date(5), date(30), doc(100), 20),
+        l.replay_bill(bill + 1, v, date(5), date(30), doc(100), e),
         Err(LedgerError::ReplayIdMismatch(bill + 1, bill))
     );
-    assert_eq!(l.entry_vendor(20), None);
-    l.replay_bill(bill, v, date(5), date(30), doc(100), 20)
+    assert_eq!(l.entry_vendor(e), None);
+    l.replay_bill(bill, v, date(5), date(30), doc(100), e)
         .unwrap();
-    assert_eq!(l.entry_vendor(20), Some(v));
+    assert_eq!(l.entry_vendor(e), Some(v));
     let mut ids = vec![bill];
-    for entry in [23, 24] {
+    for _ in 0..2 {
         let next = l.next_bill_id();
-        l.replay_bill(next, v, date(5), date(30), doc(1), entry)
+        let e = entry(&mut l, expense, ap, 1);
+        l.replay_bill(next, v, date(5), date(30), doc(1), e)
             .unwrap();
         ids.push(next);
     }
     ids.sort();
     ids.dedup();
     assert_eq!(ids.len(), 3);
-    l.replay_bill_payment(bill, Decimal::from(30), 21).unwrap();
-    l.replay_bill_payment(bill, Decimal::from(70), 22).unwrap();
+    let mut last = 0;
+    for n in [30, 70] {
+        last = entry(&mut l, ap, cash, n);
+        l.replay_bill_payment(bill, Decimal::from(n), last).unwrap();
+    }
     let b = l.get_bill(bill).unwrap();
     assert_eq!(b.amount_paid, Decimal::from(100));
     assert_eq!(b.status, DocumentStatus::Paid);
-    assert_eq!(l.entry_vendor(22), Some(v));
+    assert_eq!(l.entry_vendor(last), Some(v));
 }

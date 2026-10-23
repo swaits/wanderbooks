@@ -201,10 +201,15 @@ fn reversing_a_tagged_document_takes_its_projects_to_zero() {
         (t.revenue, t.expenses)
     };
     assert_eq!(to_date(&b.l, z), (cents(300_000), cents(120_000)));
-    b.l.receive_payment(inv, d(2026, 3, 20), cents(100_000), b.cash)
-        .unwrap();
+    let pay =
+        b.l.receive_payment(inv, d(2026, 3, 20), cents(100_000), b.cash)
+            .unwrap();
     assert_eq!(to_date(&b.l, z), (cents(300_000), cents(120_000)));
     assert_eq!(to_date(&b.l, h), (cents(20_000), Decimal::ZERO));
+    // The payment first: a void waits on the payments that stand (B-38
+    // scenario 3); its reversal moves no project figure either.
+    b.l.reverse_entry(pay, d(2026, 3, 30), "Bounced").unwrap();
+    assert_eq!(to_date(&b.l, z), (cents(300_000), cents(120_000)));
     for e in [
         b.l.get_invoice(inv).unwrap().entry_id,
         b.l.get_bill(bill).unwrap().entry_id,

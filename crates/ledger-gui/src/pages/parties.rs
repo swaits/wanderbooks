@@ -1400,13 +1400,15 @@ fn documents_card(ui: &mut Ui, b: &Books, info: &PartyInfo, go: &mut Option<Rout
                     .iter()
                     .filter_map(|i| b.ledger.get_invoice(*i))
                     .map(|i| {
+                        let state = b.doc_today(ledger_core::DocRef::Invoice(i.id));
+                        let owed = crate::books::owed_of(&state);
                         (
                             format!("Invoice {}", i.id),
                             i.date,
                             i.due_date,
-                            i.status,
+                            state,
                             i.total().ok(),
-                            i.balance().ok(),
+                            owed,
                             i.entry_id,
                         )
                     });
@@ -1415,20 +1417,33 @@ fn documents_card(ui: &mut Ui, b: &Books, info: &PartyInfo, go: &mut Option<Rout
                     .iter()
                     .filter_map(|i| b.ledger.get_bill(*i))
                     .map(|i| {
+                        let state = b.doc_today(ledger_core::DocRef::Bill(i.id));
+                        let owed = crate::books::owed_of(&state);
                         (
                             format!("Bill {}", i.id),
                             i.date,
                             i.due_date,
-                            i.status,
+                            state,
                             i.total().ok(),
-                            i.balance().ok(),
+                            owed,
                             i.entry_id,
                         )
                     });
                 let mut docs: Vec<_> = invoices.chain(bills).collect();
                 docs.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-                for (name, date, due, status, total, balance, entry) in docs {
-                    let late = !balance.is_some_and(|x| x.is_zero()) && due < b.today;
+                for (name, date, due, state, total, balance, entry) in docs {
+                    // Late and its status as of today, from the ledger
+                    // lines tagged with it (rules.md B-38; P4b.2 gap 10):
+                    // a reversed payment makes it owed again, a void
+                    // never late.
+                    let late = matches!(state, Ok(Some(st)) if st.overdue_days > 0);
+                    let status = match state {
+                        // Read as of its own date (Books::doc_today).
+                        Ok(Some(_)) if date > b.today => "Dated ahead",
+                        Ok(Some(st)) => st.status.label(),
+                        Ok(None) => "Unknown",
+                        Err(_) => "Can't compute",
+                    };
                     let resp = row(
                         ui,
                         w,
@@ -1441,7 +1456,7 @@ fn documents_card(ui: &mut Ui, b: &Books, info: &PartyInfo, go: &mut Option<Rout
                                 false,
                                 if late { p.warning } else { p.text },
                             ),
-                            (fmt::words(&format!("{status:?}")), 90.0, false, p.muted),
+                            (status.to_string(), 90.0, false, p.muted),
                             (fmt::money_or(total), amt, true, p.text),
                             (fmt::money_or(balance), amt, true, p.text),
                         ],

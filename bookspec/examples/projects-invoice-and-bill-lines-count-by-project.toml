@@ -95,6 +95,7 @@ bill = { vendor = "Dana Illustration", lines = [
 [[events]]
 date = "2026-03-20"
 description = "Cedar pays invoice 1"
+older = true
 lines = [
   { account = "1000", side = "debit", amount = "3800.00" },
   { account = "1200", side = "credit", amount = "3800.00" },
@@ -103,6 +104,7 @@ lines = [
 [[events]]
 date = "2026-03-30"
 description = "Pay Dana's bill"
+older = true
 payee = "Dana Illustration"
 lines = [
   { account = "2000", side = "debit", amount = "1250.00" },

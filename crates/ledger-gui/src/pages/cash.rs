@@ -328,7 +328,10 @@ fn coming_up(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
         let Some(inv) = b.ledger.get_invoice(id) else {
             continue;
         };
-        let balance = inv.balance().ok();
+        // As of today, from the lines tagged with it (rules.md B-38): a
+        // reversed payment reopens it, a void closes it.
+        let state = b.doc_today(ledger_core::DocRef::Invoice(id));
+        let balance = crate::books::owed_of(&state);
         if balance.is_some_and(|x| x.is_zero()) {
             continue;
         }
@@ -337,7 +340,7 @@ fn coming_up(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
             .get_customer(inv.customer_id)
             .map(|c| c.name.clone())
             .unwrap_or_default();
-        let late = inv.due_date < b.today;
+        let late = matches!(state, Ok(Some(st)) if st.overdue_days > 0);
         items.push(Upcoming {
             date: inv.due_date,
             label: format!(
@@ -352,7 +355,7 @@ fn coming_up(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
         let Some(bill) = b.ledger.get_bill(id) else {
             continue;
         };
-        let balance = bill.balance().ok();
+        let balance = crate::books::owed_of(&b.doc_today(ledger_core::DocRef::Bill(id)));
         if balance.is_some_and(|x| x.is_zero()) {
             continue;
         }
@@ -645,7 +648,7 @@ mod tests {
         let mut b = Build::new("coming-up");
         let (cash, capital, rent) = (b.cash, b.capital, b.rent);
         let accrued =
-            b.s.add_account("2000", "Accrued", AccountType::Liability, None, false)
+            b.s.add_account("2100", "Accrued", AccountType::Liability, None, false)
                 .unwrap();
         b.post(d(2026, 1, 2), cash, capital, 1_000_000);
         let usd = |c: i64| Money::new(cents(c), Currency::USD);

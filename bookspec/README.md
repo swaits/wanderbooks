@@ -251,6 +251,11 @@ the side gives the direction.
 - `instrument` on an event: the payment method (a `setup.instruments`
   label) the entry was paid with. Neither `parties` nor `instrument` on a
   reversal, which takes its original's, nor on a command.
+- `older = true` on an entry (`lines`): the entry as an earlier version
+  could write it, which this version's commands refuse: a line by hand
+  on a receivables or payables account, where only an invoice, a bill or
+  their payments post now (rules.md B-38, the control guard). Books that
+  hold one must still read right, so the books take it as replay does.
 - `close = { start, to, rounding? }` as an event: closes the period from
   `start` through the event's `date` (rules.md B-11, B-13), `to`
   `"members"` (split by share, in the order listed) or

@@ -179,9 +179,10 @@ pub fn period_month(period: &str) -> Option<(i32, u32)> {
 ///   3. invoiced_ytd = Σ Invoice::total() over its customer record's
 ///      invoices dated in the year; billed_ytd the same for its vendor
 ///      record's bills.
-///   4. open_invoices = Σ Invoice::balance() over its customer record's
-///      invoices; open_bills = Σ Bill::balance() over its vendor record's
-///      bills (any date: what is still owed today).
+///   4. open_invoices = Σ what each of its customer record's invoices
+///      owes today (Books::owed_today: read from the ledger lines tagged
+///      with it, so a reversed payment or a void counts as it should,
+///      rules.md B-38); open_bills the same for its vendor record's bills.
 ///   4a. Each of 3 and 4 is None when it can't be summed exactly (a
 ///      document is restored as an earlier version journaled it, of any
 ///      size: rules.md B-28), never a wrong number.
@@ -1138,7 +1139,10 @@ impl Books {
                 .and_then(|p| out.get_mut(&p))
             {
                 info.invoices.push(id);
-                add(&mut info.open_invoices, inv.balance());
+                add(
+                    &mut info.open_invoices,
+                    self.owed_today(ledger_core::DocRef::Invoice(id)),
+                );
                 if in_year(inv.date) {
                     add(&mut info.invoiced_ytd, inv.total());
                 }
@@ -1151,7 +1155,10 @@ impl Books {
                 .and_then(|p| out.get_mut(&p))
             {
                 info.bills.push(id);
-                add(&mut info.open_bills, bill.balance());
+                add(
+                    &mut info.open_bills,
+                    self.owed_today(ledger_core::DocRef::Bill(id)),
+                );
                 if in_year(bill.date) {
                     add(&mut info.billed_ytd, bill.total());
                 }
@@ -1307,6 +1314,38 @@ impl Books {
             .filter(|a| a.withdrawn_at.is_none())
             .filter(|a| self.links_of(a.id).iter().any(|s| subjects.contains(s)))
             .collect()
+    }
+
+    /// A document as of today: what it is, read from the ledger lines
+    /// tagged with it (ledger_core::Ledger::doc_state, rules.md B-38), the
+    /// figures books.ar_aging and books.party read. One dated after today
+    /// (a post-dated bill) is read as of its own date: what it will owe
+    /// when it is issued, so the forward-looking views keep it; it is
+    /// never late. `Ok(None)` only for an unknown document.
+    pub fn doc_today(
+        &self,
+        doc: ledger_core::DocRef,
+    ) -> Result<Option<ledger_core::DocState>, ledger_core::LedgerError> {
+        let date = match doc {
+            ledger_core::DocRef::Invoice(id) => self.ledger.get_invoice(id).map(|i| i.date),
+            ledger_core::DocRef::Bill(id) => self.ledger.get_bill(id).map(|b| b.date),
+        };
+        let Some(date) = date else {
+            return Ok(None);
+        };
+        self.ledger.doc_state(doc, self.today.max(date))
+    }
+
+    /// What a document owes today ([`Self::doc_today`]: one dated after
+    /// today, what it will owe on its date); refused when it can't be
+    /// computed (shown as such, never as a wrong number).
+    pub fn owed_today(
+        &self,
+        doc: ledger_core::DocRef,
+    ) -> Result<Decimal, ledger_core::LedgerError> {
+        Ok(self
+            .doc_today(doc)?
+            .map_or(Decimal::ZERO, |st| st.outstanding))
     }
 
     /// The subjects whose documents an entry's page shows: the entry, and
@@ -2191,6 +2230,18 @@ fn disposal_true_up(
     }
     ledger_core::accumulated_scheduled_through(asset, NaiveDate::MAX)
         .map_or(Decimal::ZERO, |t| t - runs)
+}
+
+/// What a document's state ([`Books::doc_today`]) says it owes, read once
+/// for both the row and its flags: `None` when it can't be computed
+/// (shown as such, never as a wrong number); nothing for an unknown one.
+pub fn owed_of(
+    state: &Result<Option<ledger_core::DocState>, ledger_core::LedgerError>,
+) -> Option<Decimal> {
+    match state {
+        Ok(st) => Some(st.map_or(Decimal::ZERO, |st| st.outstanding)),
+        Err(_) => None,
+    }
 }
 
 /// Entry ids a journal line refers to.

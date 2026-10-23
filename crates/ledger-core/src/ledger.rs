@@ -263,10 +263,30 @@ pub struct Ledger {
     next_instrument_id: crate::InstrumentId,
     /// The payment method each entry was paid with, for 1099 reporting.
     entry_instruments: HashMap<EntryId, crate::InstrumentId>,
-    /// Each invoice's payments (entry, amount), for aging as of a date.
-    invoice_payments: HashMap<InvoiceId, Vec<(EntryId, Decimal)>>,
-    /// Each bill's payments (entry, amount), for aging as of a date.
-    bill_payments: HashMap<BillId, Vec<(EntryId, Decimal)>>,
+    /// The document each receivables or payables line belongs to, by
+    /// (entry, line index) (rules.md B-38, plan P4b.3): written by the
+    /// document commands in the step that posts the line, derived on
+    /// replay from the document events, and copied onto a reversal's
+    /// mirror line. Every figure about a document is read from these.
+    line_docs: std::collections::BTreeMap<(EntryId, usize), arap::DocTag>,
+    /// Every payment event recorded against a document, each amount once,
+    /// whether its entry stands and whether its line could be tagged:
+    /// what a version before document standing counts as paid
+    /// (`payments_recorded`; plan P4b.7, `document_standing`).
+    payment_events: std::collections::BTreeMap<arap::DocRef, Vec<Decimal>>,
+    /// Indexes derived from the fields above, kept as they change so the
+    /// figures read from them stay linear (none is state of its own):
+    /// each document's tagged lines (`line_docs` by document)...
+    doc_index:
+        std::collections::BTreeMap<arap::DocRef, std::collections::BTreeSet<(EntryId, usize)>>,
+    /// ... the accounts holding a document's line, and whether an
+    /// invoice's (receivables) or a bill's (payables)...
+    doc_accounts: std::collections::BTreeSet<(AccountId, bool)>,
+    /// ... each posted entry's place in `order`...
+    order_pos: HashMap<EntryId, usize>,
+    /// ... and the posted entry reversing each reversed entry (the first
+    /// posted, as `reversal_chain` reads it).
+    reversed_by: HashMap<EntryId, EntryId>,
     /// Control roles assigned an account ([`Ledger::assign_role`]), by
     /// [`ControlAccount::key`]. A role not here uses its code.
     roles: std::collections::BTreeMap<&'static str, AccountId>,
@@ -329,8 +349,12 @@ impl Ledger {
             instruments: std::collections::BTreeMap::new(),
             next_instrument_id: 1,
             entry_instruments: HashMap::new(),
-            invoice_payments: HashMap::new(),
-            bill_payments: HashMap::new(),
+            line_docs: std::collections::BTreeMap::new(),
+            payment_events: std::collections::BTreeMap::new(),
+            doc_index: std::collections::BTreeMap::new(),
+            doc_accounts: std::collections::BTreeSet::new(),
+            order_pos: HashMap::new(),
+            reversed_by: HashMap::new(),
             roles: std::collections::BTreeMap::new(),
             asset_tags: std::collections::BTreeMap::new(),
             asset_runs: std::collections::BTreeMap::new(),
@@ -531,9 +555,22 @@ impl Ledger {
         Ok(entry)
     }
 
-    /// Register a recurring entry. Returns its id.
+    /// Register a recurring entry. Returns its id. A template naming a
+    /// receivables or payables account is refused (UntaggedControlLine,
+    /// the control guard: plan P4b.3), since every draft it made would be.
     pub fn register_recurring(&mut self, new: NewRecurring) -> Result<RecurringId, LedgerError> {
         schedules::validate_recurring(&new, &self.chart)?;
+        if let Some((i, (account, ..))) = new
+            .lines
+            .iter()
+            .enumerate()
+            .find(|(_, (a, ..))| self.control_role_of(*a).is_some())
+        {
+            return Err(LedgerError::UntaggedControlLine {
+                account: self.account_label(*account),
+                at: format!("line {i} of the recurring template"),
+            });
+        }
         self.insert_recurring(new)
     }
 
@@ -723,11 +760,11 @@ impl Ledger {
                 "entry_instruments",
                 self.entry_instruments == other.entry_instruments,
             ),
+            ("line_docs", self.line_docs == other.line_docs),
             (
-                "invoice_payments",
-                self.invoice_payments == other.invoice_payments,
+                "payment_events",
+                self.payment_events == other.payment_events,
             ),
-            ("bill_payments", self.bill_payments == other.bill_payments),
             ("roles", self.roles == other.roles),
             ("asset_tags", self.asset_tags == other.asset_tags),
             ("asset_runs", self.asset_runs == other.asset_runs),
@@ -1245,8 +1282,23 @@ impl Ledger {
     ///      controls (open invoices, bills, taxes withheld); move the
     ///      balance with an entry first. Revenue and expense roles move
     ///      freely.
+    ///      - For receivables and payables: DocumentRoleHoldsBalance
+    ///        instead, which names no hand entry (the control guard
+    ///        refuses one, B-38): their balance moves with its documents,
+    ///        a later command (plan P4b S7). Only on their control account
+    ///        (Self::control_role_of): the account at the default code,
+    ///        before any document posted there, is the chart's own, and
+    ///        its balance no document's.
     ///   5. IF the role already resolves to that account: SHOULD accept
     ///      (the assignment is recorded).
+    ///   6. IF the role is receivables or payables and the account it
+    ///      would move to holds a posted line that is no document's:
+    ///      - SHOULD refuse (RoleAccountHasHandLines), naming the entry
+    ///      - NEVER make a hand line a control account's
+    ///      BECAUSE no command adds an untagged control line (B-38
+    ///      INVARIANT 1). Replay never refuses (B-28).
+    ///   An account the role moves off keeps its documents' lines, and
+    ///   stays guarded while it holds them (Self::control_role_of).
     /// ```
     pub fn assign_role(
         &mut self,
@@ -1295,14 +1347,53 @@ impl Ledger {
             }
         }
         let now = self.role_account(c);
+        let documents = c.key == RECEIVABLES.key || c.key == PAYABLES.key;
+        // SCENARIO 6: the new account's lines must all be documents'.
+        if documents
+            && !crate::parties::is_replaying()
+            && let Some(a) = target
+            && now != Some(a.id)
+            && let Some(entry) = self.posted_entries().find_map(|e| {
+                e.lines()
+                    .iter()
+                    .enumerate()
+                    .any(|(i, l)| l.account == a.id && !self.line_docs.contains_key(&(e.id(), i)))
+                    .then_some(e.id())
+            })
+        {
+            return Err(LedgerError::RoleAccountHasHandLines {
+                role: c.role.to_string(),
+                code: a.code.clone(),
+                name: a.name.clone(),
+                entry,
+            });
+        }
         let balance_sheet = !matches!(c.account_type, AccountType::Revenue | AccountType::Expense);
+        // A document role's balance is its documents' only on its control
+        // account (Self::control_role_of): the account at its default
+        // code before any document posted there is a chart's own.
+        let controls = |current: AccountId| {
+            !documents
+                || self
+                    .control_role_of(current)
+                    .is_some_and(|r| r.key == c.key)
+        };
         if let Some(current) = now
             && balance_sheet
             && now != target.map(|a| a.id)
+            && controls(current)
         {
             let balance = self.account_balance(current).unwrap_or(Decimal::ZERO);
             if !balance.is_zero() {
                 let a = self.chart.get(current).expect("a role's account exists");
+                if documents {
+                    return Err(LedgerError::DocumentRoleHoldsBalance {
+                        role: c.role.to_string(),
+                        code: a.code.clone(),
+                        name: a.name.clone(),
+                        balance,
+                    });
+                }
                 return Err(LedgerError::RoleHoldsBalance {
                     role: c.role.to_string(),
                     code: a.code.clone(),
@@ -1448,11 +1539,171 @@ impl Ledger {
         bounded: bool,
     ) -> Result<(), LedgerError> {
         self.check_line_account(account)?;
+        self.check_hand_line(entry, account)?;
         check_minor_units(amount)?;
         if bounded {
             check_line_size(amount.amount)?;
         }
         self.replay_add_line(entry, account, side, amount)
+    }
+
+    /// The document role an account is the control account of, if any:
+    /// receivables or payables (rules.md B-23, B-38; a later control role
+    /// joins them). An account is one when the role is assigned to it
+    /// ([`Self::assign_role`]), or when it holds a line of one of the
+    /// role's documents (the role's default code, once a document has
+    /// posted there; an account the role has moved off, whose documents'
+    /// lines stay on it).
+    ///
+    /// ```text
+    /// GOAL: guard exactly the accounts whose balance is documents, and
+    ///       no other: a chart's own account at a role's default code
+    ///       (1200 Equipment, a card at 2000) is anyone's until a document
+    ///       posts there.
+    /// SOURCE: docs/spec/rules.md B-23, B-38 INVARIANT 1.
+    /// INVARIANTS:
+    ///   1. Some(role) when the role is assigned to the account, or the
+    ///      account holds a line tagged with one of the role's documents
+    ///      (an invoice's for receivables, a bill's for payables).
+    ///   2. None for every other account, the default code's included.
+    /// ```
+    pub fn control_role_of(&self, account: AccountId) -> Option<&'static ControlAccount> {
+        [(&RECEIVABLES, true), (&PAYABLES, false)]
+            .into_iter()
+            .find(|&(c, invoices)| {
+                self.roles.get(c.key) == Some(&account)
+                    || self.doc_accounts.contains(&(account, invoices))
+            })
+            .map(|(c, _)| c)
+    }
+
+    /// The accounts that are a document role's control accounts
+    /// ([`Self::control_role_of`]), in account order.
+    fn document_role_accounts(&self, c: &ControlAccount) -> Vec<AccountId> {
+        let invoices = c.key == RECEIVABLES.key;
+        let mut out: Vec<AccountId> = self
+            .doc_accounts
+            .iter()
+            .filter(|&&(_, i)| i == invoices)
+            .map(|&(a, _)| a)
+            .collect();
+        if let Some(&a) = self.roles.get(c.key)
+            && !out.contains(&a)
+        {
+            out.push(a);
+            out.sort_unstable();
+        }
+        out
+    }
+
+    /// Refuse a line by hand on a control account (the control guard,
+    /// plan P4b.3): such a line is the document commands' alone, so the
+    /// account always equals its documents. Replay never refuses (B-28).
+    fn check_hand_line(&self, entry: EntryId, account: AccountId) -> Result<(), LedgerError> {
+        if crate::parties::is_replaying() || self.control_role_of(account).is_none() {
+            return Ok(());
+        }
+        let line = self.entries.get(&entry).map_or(0, |e| e.lines().len());
+        Err(LedgerError::UntaggedControlLine {
+            account: self.account_label(account),
+            at: format!("line {line} of entry {entry}"),
+        })
+    }
+
+    /// An account as a refusal names it: `1200 "Accounts Receivable"`.
+    fn account_label(&self, account: AccountId) -> String {
+        self.chart.get(account).map_or_else(
+            || account.to_string(),
+            |a| format!("{} \"{}\"", a.code, a.name),
+        )
+    }
+
+    /// A document command's line on a control account: [`Self::add_line`]'s
+    /// checks but the control guard's, then tagged with its document in
+    /// the same step (so the guard at the post finds it tagged).
+    fn add_tagged_line(
+        &mut self,
+        entry: EntryId,
+        account: AccountId,
+        side: Side,
+        amount: Money,
+        tag: arap::DocTag,
+    ) -> Result<(), LedgerError> {
+        self.check_line_account(account)?;
+        check_minor_units(amount)?;
+        check_line_size(amount.amount)?;
+        self.replay_add_line(entry, account, side, amount)?;
+        let idx = self.entries[&entry].lines().len() - 1;
+        self.tag_line(entry, idx, tag);
+        Ok(())
+    }
+
+    /// Tag a ledger line with its document, keeping the indexes read from
+    /// the tags (`doc_index`, `doc_accounts`) in step. The only way a tag
+    /// is written; tags are never removed (a refused command's are rolled
+    /// back with the rest of the ledger by [`Self::atomically`]).
+    fn tag_line(&mut self, entry: EntryId, idx: usize, tag: arap::DocTag) {
+        if let Some(l) = self.entries.get(&entry).and_then(|e| e.lines().get(idx)) {
+            self.doc_accounts
+                .insert((l.account, matches!(tag.doc, arap::DocRef::Invoice(_))));
+        }
+        self.doc_index
+            .entry(tag.doc)
+            .or_default()
+            .insert((entry, idx));
+        self.line_docs.insert((entry, idx), tag);
+    }
+
+    /// The control guard at the post (plan P4b.3): every line of `entry` on
+    /// a receivables or payables account carries its document, but the
+    /// mirror of an untagged line in a reversal that takes it off the
+    /// books (reversing an old hand line is how it is cleaned up).
+    /// Replay never refuses (B-28).
+    ///
+    /// ```text
+    /// GOAL: no command adds a line on a control account that is no
+    ///       document's; one only takes a legacy one away.
+    /// SOURCE: docs/spec/rules.md B-38 INVARIANT 1 and item 3 (the
+    ///         exemption).
+    /// INVARIANTS:
+    ///   1. A tagged line passes.
+    ///   2. An untagged line passes only as the mirror of an untagged line
+    ///      on the same account in the entry it reverses, when that entry
+    ///      stands at an even place in its reversal chain (the hand line
+    ///      itself, or a reversal of its reversal): the mirror removes the
+    ///      line. Reversing the hand line's reversal would put it back, and
+    ///      is refused.
+    /// ```
+    fn check_control_lines(&self, entry: &JournalEntry) -> Result<(), LedgerError> {
+        if crate::parties::is_replaying() {
+            return Ok(());
+        }
+        for (i, l) in entry.lines().iter().enumerate() {
+            if self.control_role_of(l.account).is_none()
+                || self.line_docs.contains_key(&(entry.id(), i))
+            {
+                continue;
+            }
+            let removes_untagged = entry.reversal_of().is_some_and(|o| {
+                self.entries
+                    .get(&o)
+                    .and_then(|o| o.lines().get(i))
+                    .is_some_and(|ol| ol.account == l.account)
+                    && !self.line_docs.contains_key(&(o, i))
+                    && self
+                        .reversal_chain(o)
+                        .iter()
+                        .position(|&e| e == o)
+                        .is_some_and(|at| at % 2 == 0)
+            });
+            if !removes_untagged {
+                return Err(LedgerError::UntaggedControlLine {
+                    account: self.account_label(l.account),
+                    at: format!("line {i} of entry {}", entry.id()),
+                });
+            }
+        }
+        Ok(())
     }
 
     /// A line's account must exist and take postings, checked when the
@@ -1528,6 +1779,7 @@ impl Ledger {
         fx_rate: Decimal,
     ) -> Result<(), LedgerError> {
         self.check_line_account(account)?;
+        self.check_hand_line(entry, account)?;
         if foreign_amount <= Decimal::ZERO {
             return Err(LedgerError::InvalidDocumentLineAmount(foreign_amount));
         }
@@ -1624,11 +1876,23 @@ impl Ledger {
     ///      BECAUSE a ledger in one money holds no fractions of its
     ///      smallest unit (B-3); found when a payroll run posted $65.27794
     ///      (the store's refusal property in CI, 2026-10-13).
+    ///   6. IF a line is on a receivables or payables account (the role's
+    ///      account now) and carries no document:
+    ///      - SHOULD refuse (UntaggedControlLine), naming the document
+    ///        tools
+    ///      - NEVER refuse the mirror of an untagged line in a reversal
+    ///        BECAUSE a control account must equal its documents (B-23,
+    ///        B-38): only the document commands post there, and reversing
+    ///        an old hand line is how it is cleaned up. Replay never
+    ///        refuses (B-28).
     /// ```
     pub fn post_entry(&mut self, entry: EntryId) -> Result<(), LedgerError> {
         if let Some(e) = self.entries.get(&entry) {
             for line in e.lines() {
                 check_minor_units(line.amount)?;
+            }
+            if e.status() == EntryStatus::Draft {
+                self.check_control_lines(e)?;
             }
         }
         self.replay_post_entry(entry)
@@ -1656,7 +1920,11 @@ impl Ledger {
             .get_mut(&entry)
             .ok_or(LedgerError::UnknownEntry(entry))?
             .mark_posted();
+        self.order_pos.insert(entry, self.order.len());
         self.order.push(entry);
+        if let Some(o) = snapshot.reversal_of() {
+            self.reversed_by.entry(o).or_insert(entry);
+        }
         Ok(())
     }
 
@@ -1700,6 +1968,22 @@ impl Ledger {
     ///      - NEVER recognize one month of a schedule twice
     ///      BECAUSE a reversed month is due again and may have been run
     ///      again (P3 depreciation review R3).
+    ///   6. IF the entry carries a document's lines (an invoice's or a
+    ///      bill's own entry, a payment, or a reversal of one) and `date`
+    ///      is before the entry's own date:
+    ///      - SHOULD refuse (DocumentReversalBeforeOriginal)
+    ///      BECAUSE a correction comes after what it corrects (B-9; plan
+    ///      P4b.3, "Dating rules").
+    ///   7. IF reversing it would leave a document it carries owing less
+    ///      than nothing or more than its total at some date (a void
+    ///      under a payment that stands; re-instating a payment beside
+    ///      another), where it didn't before:
+    ///      - SHOULD refuse (DocumentBounds), naming the entries to
+    ///        reverse first
+    ///      - NEVER refuse reversing a payment, which only reopens its
+    ///        document
+    ///      BECAUSE 0 <= outstanding <= total at every date (B-38
+    ///      INVARIANT 2). Replay never refuses (B-28).
     /// ```
     pub fn check_reversal(&self, entry: EntryId, date: NaiveDate) -> Result<(), LedgerError> {
         let original = self
@@ -1709,11 +1993,8 @@ impl Ledger {
         if original.status() != EntryStatus::Posted {
             return Err(LedgerError::EntryNotPosted(entry));
         }
-        if let Some(by) = self
-            .posted_entries()
-            .find(|e| e.reversal_of() == Some(entry))
-        {
-            return Err(LedgerError::EntryAlreadyReversed(entry, by.id()));
+        if let Some(&by) = self.reversed_by.get(&entry) {
+            return Err(LedgerError::EntryAlreadyReversed(entry, by));
         }
         if self.closing_entry_ids().contains(&entry) {
             return Err(LedgerError::ClosingEntryIrreversible(entry));
@@ -1734,6 +2015,44 @@ impl Ledger {
                 "reversing entry {entry} would post schedule {}'s {month} a second time: entry {now} posts it now (reverse that one instead)",
                 s.id
             )));
+        }
+        if !crate::parties::is_replaying() {
+            self.check_document_reversal(original, date)?;
+        }
+        Ok(())
+    }
+
+    /// [`Self::check_reversal`] SCENARIOS 6 and 7: a reversal of an entry
+    /// carrying documents' lines.
+    fn check_document_reversal(
+        &self,
+        original: &JournalEntry,
+        date: NaiveDate,
+    ) -> Result<(), LedgerError> {
+        let mut moves: Vec<(arap::DocRef, Decimal)> = Vec::new();
+        for (i, l) in original.lines().iter().enumerate() {
+            if let Some(tag) = self.line_docs.get(&(original.id(), i)) {
+                // The mirror moves the document by the opposite.
+                let by = -tag.doc.counted(l.side, l.amount.amount);
+                match moves.iter_mut().find(|(d, _)| *d == tag.doc) {
+                    Some((_, m)) => *m += by,
+                    None => moves.push((tag.doc, by)),
+                }
+            }
+        }
+        let Some(&(first, _)) = moves.first() else {
+            return Ok(());
+        };
+        if date < original.date() {
+            return Err(LedgerError::DocumentReversalBeforeOriginal {
+                entry: original.id(),
+                document: first.to_string(),
+                original: original.date(),
+                date,
+            });
+        }
+        for (doc, by) in moves {
+            self.check_item_bounds(doc, &[(date, by)])?;
         }
         Ok(())
     }
@@ -1759,18 +2078,51 @@ impl Ledger {
     ///         reversal re-instates it).
     /// ```
     pub fn in_effect(&self, entry: EntryId) -> bool {
+        self.stands_on(entry, NaiveDate::MAX)
+    }
+
+    /// Whether a posted entry's effect stands as of a day: it is dated on
+    /// or before `as_of`, and of the reversals after it in its chain, an
+    /// even number are dated on or before `as_of` (none, or one reversed
+    /// again, and so on). A draft or an unknown id stands for nothing.
+    ///
+    /// ```text
+    /// GOAL: say whether an entry counts on a given day, so a document's
+    ///       status (a void) and its aging are right as of any date.
+    /// SOURCE: docs/spec/rules.md B-9, B-10, B-38; plan/served.md P4b.3
+    ///         ("Standing as of a date").
+    /// INVARIANTS:
+    ///   1. stands_on(e, NaiveDate::MAX) is in_effect(e).
+    ///   2. NEVER true for an entry dated after `as_of`, a draft, or an
+    ///      unknown id.
+    ///   3. A reversal dated after `as_of` doesn't count against it, nor
+    ///      does any later link of its chain (a re-reversal an older
+    ///      journal dated before the reversal it undoes counts from that
+    ///      reversal's date).
+    /// SCENARIOS:
+    ///   1. IF a payment is reversed on the 25th: SHOULD stand as of the
+    ///      22nd, and not as of the 31st.
+    /// ```
+    pub fn stands_on(&self, entry: EntryId, as_of: NaiveDate) -> bool {
         if self
             .entries
             .get(&entry)
-            .is_none_or(|e| e.status() != EntryStatus::Posted)
+            .is_none_or(|e| e.status() != EntryStatus::Posted || e.date() > as_of)
         {
             return false;
         }
         let chain = self.reversal_chain(entry);
-        chain
+        let Some(i) = chain.iter().position(|&e| e == entry) else {
+            return false;
+        };
+        // A reversal counts only once what it reverses counts: an older
+        // journal may date a re-reversal before the reversal it undoes,
+        // and it can't undo what hasn't happened yet.
+        chain[i + 1..]
             .iter()
-            .position(|&e| e == entry)
-            .is_some_and(|i| (chain.len() - 1 - i).is_multiple_of(2))
+            .take_while(|r| self.entries.get(r).is_some_and(|r| r.date() <= as_of))
+            .count()
+            .is_multiple_of(2)
     }
 
     /// The schedule and month an entry posted, if it posted one (a
@@ -1801,6 +2153,19 @@ impl Ledger {
         self.atomically(|l| l.reverse_entry_steps(entry, date, description))
     }
 
+    /// [`Self::reverse_entry`] as a journal recorded it: without the
+    /// checks later versions added for documents (a reversal's date, a
+    /// document's bounds, the control guard), for replaying journals
+    /// written before them (rules.md B-28). Never for new work.
+    pub fn replay_reverse_entry(
+        &mut self,
+        entry: EntryId,
+        date: NaiveDate,
+        description: &str,
+    ) -> Result<EntryId, LedgerError> {
+        crate::parties::replaying(|| self.reverse_entry(entry, date, description))
+    }
+
     /// The steps of [`Self::reverse_entry`], run inside [`Self::atomically`].
     fn reverse_entry_steps(
         &mut self,
@@ -1816,11 +2181,19 @@ impl Ledger {
             .clone();
         let id = self.create_entry(date, description);
         for (idx, line) in original.lines().iter().enumerate() {
-            self.add_line(id, line.account, kernel::flip(line.side), line.amount)?;
+            // The mirror of each line, whatever its account: the control
+            // guard at the post below exempts the mirror of an untagged
+            // control line, and a tagged one carries its tag.
+            self.check_line_account(line.account)?;
+            self.replay_add_line(id, line.account, kernel::flip(line.side), line.amount)?;
             // The reversal offsets the original line for line: carry the
-            // class so divisional P&L nets correctly.
+            // class so divisional P&L nets correctly, and the document so
+            // it moves by exactly the opposite (B-38 INVARIANT 3).
             if line.class_id.is_some() {
                 self.set_line_class(id, idx, line.class_id)?;
+            }
+            if let Some(tag) = self.line_docs.get(&(entry, idx)).copied() {
+                self.tag_line(id, idx, tag);
             }
         }
         self.entries
@@ -1860,6 +2233,7 @@ impl Ledger {
                 s.posted.remove(&month);
             }
         }
+        self.refresh_docs_of(id);
         Ok(id)
     }
 
@@ -4014,11 +4388,7 @@ impl Ledger {
         }
         let mut chain = vec![top];
         let mut cur = top;
-        while let Some(r) = self
-            .posted_entries()
-            .find(|e| e.reversal_of() == Some(cur))
-            .map(JournalEntry::id)
-        {
+        while let Some(&r) = self.reversed_by.get(&cur) {
             if chain.contains(&r) {
                 break;
             }
@@ -4931,14 +5301,15 @@ impl Ledger {
     /// GOAL: bill a customer and recognize the revenue (accrual basis).
     /// SOURCE: IRS Pub. 538, accrual method (docs/spec/sources/irs-periods-and-methods.md:
     ///         "report income in the year it is earned"); ASC 606-10-25-23;
-    ///         control accounts: Ledger::check_controls.
+    ///         control accounts: Ledger::check_controls; rules.md B-38.
     /// INVARIANTS:
     ///   1. MUST post one balanced entry: Dr 1200 receivables, Cr 4000 revenue,
     ///      for the sum of the lines, dated the invoice date: one revenue
     ///      line per project the lines name, the untagged lines' as one
     ///      (arap::document_parts), each tagged with its project; the
     ///      receivable line never (rules.md B-37 item 8).
-    ///   2. The invoice MUST start open, with nothing paid.
+    ///   2. The receivable line MUST carry the invoice (Origin), in the
+    ///      step that posts it: the invoice starts Open, owing its total.
     ///   3. A refusal MUST leave the books unchanged.
     /// SCENARIOS:
     ///   1. IF the customer is unknown, a line amount isn't positive, the due
@@ -4972,21 +5343,25 @@ impl Ledger {
         if let Some(pid) = self.closed_period_containing(date) {
             return Err(LedgerError::ClosedPeriod(pid, date.to_string()));
         }
-        let total: Decimal = lines.iter().map(|l| l.amount).sum();
+        let total = arap::document_total(&lines, "the invoice")?;
         let parts = arap::document_parts(&lines, "the invoice")?;
         self.check_controls(&[RECEIVABLES, REVENUE])?;
         let ar = self.ensure_control(&RECEIVABLES);
         let revenue = self.ensure_control(&REVENUE);
-        let entry = self.create_entry(date, &format!("Invoice {}", self.next_invoice_id));
-        self.add_line(
+        let id = self.next_invoice_id;
+        let entry = self.create_entry(date, &format!("Invoice {id}"));
+        self.add_tagged_line(
             entry,
             ar,
             Side::Debit,
             Money::new(total, self.base_currency),
+            arap::DocTag {
+                doc: arap::DocRef::Invoice(id),
+                movement: arap::Movement::Origin,
+            },
         )?;
         self.add_document_parts(entry, revenue, Side::Credit, &parts)?;
         self.post_entry(entry)?;
-        let id = self.next_invoice_id;
         self.next_invoice_id += 1;
         self.invoices.insert(
             id,
@@ -4997,11 +5372,13 @@ impl Ledger {
                 due_date,
                 lines,
                 amount_paid: Decimal::ZERO,
+                owed: Decimal::ZERO,
                 status: DocumentStatus::Open,
                 entry_id: entry,
             },
         );
         self.tag_customer(entry, customer_id);
+        self.refresh_doc(arap::DocRef::Invoice(id));
         Ok(id)
     }
 
@@ -5012,7 +5389,8 @@ impl Ledger {
     /// ```text
     /// GOAL: record a vendor's bill as an expense owed (accrual basis).
     /// SOURCE: IRS Pub. 538, accrual method ("deduct ... expenses in the year
-    ///         incurred"); control accounts: Ledger::check_controls.
+    ///         incurred"); control accounts: Ledger::check_controls;
+    ///         rules.md B-38.
     /// INVARIANTS:
     ///   1. MUST post one balanced entry: Dr 6999 general expenses, Cr 2000
     ///      payables, for the sum of the lines, dated the bill date, tagged
@@ -5020,7 +5398,9 @@ impl Ledger {
     ///      name, the untagged lines' as one (arap::document_parts), each
     ///      tagged with its project; the payable line never (rules.md B-37
     ///      item 8).
-    ///   2. A refusal MUST leave the books unchanged.
+    ///   2. The payable line MUST carry the bill (Origin), in the step that
+    ///      posts it.
+    ///   3. A refusal MUST leave the books unchanged.
     /// SCENARIOS:
     ///   1. IF the vendor is unknown, a line amount isn't positive, the due date
     ///      is before the bill date, a line names a project the books don't
@@ -5052,21 +5432,25 @@ impl Ledger {
         if let Some(pid) = self.closed_period_containing(date) {
             return Err(LedgerError::ClosedPeriod(pid, date.to_string()));
         }
-        let total: Decimal = lines.iter().map(|l| l.amount).sum();
+        let total = arap::document_total(&lines, "the bill")?;
         let parts = arap::document_parts(&lines, "the bill")?;
         self.check_controls(&[GENERAL_EXPENSES, PAYABLES])?;
         let expense = self.ensure_control(&GENERAL_EXPENSES);
         let ap = self.ensure_control(&PAYABLES);
-        let entry = self.create_entry(date, &format!("Bill {}", self.next_bill_id));
+        let id = self.next_bill_id;
+        let entry = self.create_entry(date, &format!("Bill {id}"));
         self.add_document_parts(entry, expense, Side::Debit, &parts)?;
-        self.add_line(
+        self.add_tagged_line(
             entry,
             ap,
             Side::Credit,
             Money::new(total, self.base_currency),
+            arap::DocTag {
+                doc: arap::DocRef::Bill(id),
+                movement: arap::Movement::Origin,
+            },
         )?;
         self.post_entry(entry)?;
-        let id = self.next_bill_id;
         self.next_bill_id += 1;
         self.bills.insert(
             id,
@@ -5077,11 +5461,13 @@ impl Ledger {
                 due_date,
                 lines,
                 amount_paid: Decimal::ZERO,
+                owed: Decimal::ZERO,
                 status: DocumentStatus::Open,
                 entry_id: entry,
             },
         );
         self.tag_vendor(entry, vendor_id);
+        self.refresh_doc(arap::DocRef::Bill(id));
         Ok(id)
     }
 
@@ -5109,32 +5495,355 @@ impl Ledger {
         v
     }
 
-    /// An invoice's payments: `(payment entry, amount)`, in order received.
-    pub fn invoice_payments(&self, id: InvoiceId) -> &[(EntryId, Decimal)] {
-        self.invoice_payments.get(&id).map_or(&[], Vec::as_slice)
+    /// Every document: the invoices by id, then the bills by id.
+    pub fn documents(&self) -> Vec<arap::DocRef> {
+        self.invoices()
+            .into_iter()
+            .map(|i| arap::DocRef::Invoice(i.id))
+            .chain(self.bills().into_iter().map(|b| arap::DocRef::Bill(b.id)))
+            .collect()
     }
 
-    /// A bill's payments: `(payment entry, amount)`, in order paid.
-    pub fn bill_payments(&self, id: BillId) -> &[(EntryId, Decimal)] {
-        self.bill_payments.get(&id).map_or(&[], Vec::as_slice)
+    /// The document a ledger line belongs to, if it carries one (rules.md
+    /// B-38): `(entry, line index)`.
+    pub fn line_doc(&self, entry: EntryId, line: usize) -> Option<arap::DocTag> {
+        self.line_docs.get(&(entry, line)).copied()
+    }
+
+    /// A document's date, due date, own entry and total; refused for an
+    /// unknown document (UnknownInvoice, UnknownBill) or a total past
+    /// exact arithmetic.
+    fn doc_header(
+        &self,
+        doc: arap::DocRef,
+    ) -> Result<(NaiveDate, NaiveDate, EntryId, Decimal), LedgerError> {
+        match doc {
+            arap::DocRef::Invoice(id) => {
+                let i = self
+                    .invoices
+                    .get(&id)
+                    .ok_or(LedgerError::UnknownInvoice(id))?;
+                Ok((i.date, i.due_date, i.entry_id, i.total()?))
+            }
+            arap::DocRef::Bill(id) => {
+                let b = self.bills.get(&id).ok_or(LedgerError::UnknownBill(id))?;
+                Ok((b.date, b.due_date, b.entry_id, b.total()?))
+            }
+        }
+    }
+
+    /// Every posted ledger line tagged with `doc`, in date order (posting
+    /// order within a day): its origin, payments, and the mirrors of any
+    /// of them reversed.
+    pub fn doc_lines(&self, doc: arap::DocRef) -> Vec<arap::DocLine> {
+        let Some(tagged) = self.doc_index.get(&doc) else {
+            return Vec::new();
+        };
+        let mut out: Vec<arap::DocLine> = tagged
+            .iter()
+            .filter_map(|&(entry, line)| {
+                let e = self.entries.get(&entry)?;
+                if e.status() != EntryStatus::Posted {
+                    return None;
+                }
+                let l = e.lines().get(line)?;
+                Some(arap::DocLine {
+                    entry,
+                    line,
+                    date: e.date(),
+                    account: l.account,
+                    movement: self.line_docs.get(&(entry, line))?.movement,
+                    amount: doc.counted(l.side, l.amount.amount),
+                    reversal: e.reversal_of().is_some(),
+                })
+            })
+            .collect();
+        out.sort_by_key(|l| (l.date, self.order_pos.get(&l.entry).copied(), l.line));
+        out
+    }
+
+    /// What a document is as of a day, read from the ledger lines tagged
+    /// with it (rules.md B-38; plan P4b.3, "Derived figures"). `None` for
+    /// a document dated after `as_of` (it wasn't issued yet).
+    ///
+    /// ```text
+    /// GOAL: every figure about a document (paid, outstanding, status,
+    ///       overdue) is read from its tagged lines, so a reversal, a void
+    ///       or a bounced payment is right by construction.
+    /// SOURCE: docs/spec/rules.md B-38 (INVARIANTS 1-4), B-9, B-10, B-18;
+    ///         ASC 310-10 (receivables), ASC 405-20-40-1 (payables).
+    /// INVARIANTS:
+    ///   1. outstanding = the signed sum of every posted line tagged with
+    ///      it dated on or before `as_of` (a debit to receivables counts
+    ///      plus for an invoice; a credit to payables for a bill): the
+    ///      very lines the control account sums.
+    ///   2. paid (discounted, written off) = minus the same sum over its
+    ///      Payment (Discount, WriteOff) lines: a reversed payment counts
+    ///      from its reversal's date, never after.
+    ///   3. status = arap::doc_status(its own entry stands on `as_of`, its
+    ///      own entry's control line carries it, ...).
+    ///   4. overdue_days > 0 only while something is owed past the due date.
+    ///   5. A pure function of (the books, as_of); NEVER panics:
+    ///      TooLargeToCompute past exact arithmetic.
+    /// SCENARIOS:
+    ///   1. IF an invoice of 100 was paid 100 and the payment reversed:
+    ///      SHOULD be Open, owing 100 (scenario 1 of B-38).
+    ///   2. IF its own entry was reversed with nothing paid: SHOULD be Void,
+    ///      owing nothing.
+    ///   3. IF asked between a payment and its reversal: SHOULD be Paid.
+    /// ```
+    pub fn doc_state(
+        &self,
+        doc: arap::DocRef,
+        as_of: NaiveDate,
+    ) -> Result<Option<arap::DocState>, LedgerError> {
+        let (date, due_date, entry, total) = self.doc_header(doc)?;
+        if date > as_of {
+            return Ok(None);
+        }
+        let too_large = || LedgerError::TooLargeToCompute(format!("{doc}'s figures"));
+        let add = |a: Decimal, b: Decimal| a.checked_add(b).ok_or_else(too_large);
+        let (mut outstanding, mut paid, mut discounted, mut written_off) =
+            (Decimal::ZERO, Decimal::ZERO, Decimal::ZERO, Decimal::ZERO);
+        let lines = self.doc_lines(doc);
+        let origin_tagged = lines
+            .iter()
+            .any(|l| l.entry == entry && l.movement == arap::Movement::Origin);
+        for l in lines.into_iter().filter(|l| l.date <= as_of) {
+            outstanding = add(outstanding, l.amount)?;
+            match l.movement {
+                arap::Movement::Payment => paid = add(paid, -l.amount)?,
+                arap::Movement::Discount => discounted = add(discounted, -l.amount)?,
+                arap::Movement::WriteOff => written_off = add(written_off, -l.amount)?,
+                arap::Movement::Origin | arap::Movement::Adopted | arap::Movement::RoleMove => {}
+            }
+        }
+        let status = arap::doc_status(
+            self.stands_on(entry, as_of),
+            origin_tagged,
+            total,
+            outstanding,
+            written_off,
+        );
+        let overdue_days = if outstanding > Decimal::ZERO && as_of > due_date {
+            (as_of - due_date).num_days()
+        } else {
+            0
+        };
+        Ok(Some(arap::DocState {
+            total,
+            paid,
+            discounted,
+            written_off,
+            outstanding,
+            status,
+            overdue_days,
+        }))
+    }
+
+    /// [`Self::doc_state`] of an invoice.
+    pub fn invoice_state(
+        &self,
+        id: InvoiceId,
+        as_of: NaiveDate,
+    ) -> Result<Option<arap::DocState>, LedgerError> {
+        self.doc_state(arap::DocRef::Invoice(id), as_of)
+    }
+
+    /// [`Self::doc_state`] of a bill.
+    pub fn bill_state(
+        &self,
+        id: BillId,
+        as_of: NaiveDate,
+    ) -> Result<Option<arap::DocState>, LedgerError> {
+        self.doc_state(arap::DocRef::Bill(id), as_of)
+    }
+
+    /// The payments a document's events recorded, each once, standing or
+    /// not, tagged or not: every `invoice.payment_received` or `bill.paid`
+    /// naming it (live or replayed). What a version before document
+    /// standing (plan P4b S1) counts as paid, so the store knows when a
+    /// payment needs that feature. Refused (TooLargeToCompute), never a
+    /// panic, past exact arithmetic: replayed amounts are any size (B-28).
+    pub fn payments_recorded(&self, doc: arap::DocRef) -> Result<Decimal, LedgerError> {
+        self.payment_events
+            .get(&doc)
+            .map_or(&[][..], Vec::as_slice)
+            .iter()
+            .try_fold(Decimal::ZERO, |sum, &a| sum.checked_add(a))
+            .ok_or_else(|| LedgerError::TooLargeToCompute(format!("{doc}'s payments")))
+    }
+
+    /// The payment entries that stand against a document now: each
+    /// payment (an entry reversing nothing) that isn't reversed, once, in
+    /// entry order. What a void waits on, and what a bounds refusal names
+    /// to reverse first; never a payment's reversal, which stands too but
+    /// re-instating the payment is not the remedy.
+    pub fn standing_payments(&self, doc: arap::DocRef) -> Vec<EntryId> {
+        let mut out: Vec<EntryId> = self
+            .doc_lines(doc)
+            .iter()
+            .filter(|l| {
+                l.movement == arap::Movement::Payment && !l.reversal && self.in_effect(l.entry)
+            })
+            .map(|l| l.entry)
+            .collect();
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
+    /// A document's movements by date, `extra` ones added: `(date, the
+    /// day's movements summed)`, in date order, over the dates in `grid`
+    /// (each date once; a date with nothing moving is zero).
+    fn doc_deltas(
+        &self,
+        doc: arap::DocRef,
+        extra: &[(NaiveDate, Decimal)],
+        grid: &[NaiveDate],
+    ) -> Result<Vec<Decimal>, LedgerError> {
+        let mut by_date: std::collections::BTreeMap<NaiveDate, Decimal> =
+            grid.iter().map(|&d| (d, Decimal::ZERO)).collect();
+        let too_large = || LedgerError::TooLargeToCompute(format!("{doc}'s figures"));
+        let moves = self
+            .doc_lines(doc)
+            .into_iter()
+            .map(|l| (l.date, l.amount))
+            .chain(extra.iter().copied());
+        for (date, amount) in moves {
+            let day = by_date.entry(date).or_default();
+            *day = day.checked_add(amount).ok_or_else(too_large)?;
+        }
+        Ok(by_date.into_values().collect())
+    }
+
+    /// Refuse a step that would move `doc` by `extra` (dated movements)
+    /// if, at some date, it would then owe less than nothing or more than
+    /// its total where it didn't before ([`kernel::bounds_kept`]; rules.md
+    /// B-38 INVARIANT 2). Books an earlier version left out of bounds
+    /// (a void under a payment that stands) take any step that makes no
+    /// date worse, so the remedy (reversing the payment) is accepted.
+    fn check_item_bounds(
+        &self,
+        doc: arap::DocRef,
+        extra: &[(NaiveDate, Decimal)],
+    ) -> Result<(), LedgerError> {
+        let (_, _, _, total) = self.doc_header(doc)?;
+        let mut grid: Vec<NaiveDate> = self
+            .doc_lines(doc)
+            .iter()
+            .map(|l| l.date)
+            .chain(extra.iter().map(|&(d, _)| d))
+            .collect();
+        grid.sort();
+        grid.dedup();
+        let before = self.doc_deltas(doc, &[], &grid)?;
+        let after = self.doc_deltas(doc, extra, &grid)?;
+        let (i, below) = match kernel::bounds_kept(total, &before, &after) {
+            kernel::Bounds::Within => return Ok(()),
+            kernel::Bounds::Below(i) => (i, true),
+            kernel::Bounds::Above(i) => (i, false),
+            kernel::Bounds::Overflow => {
+                return Err(LedgerError::TooLargeToCompute(format!("{doc}'s figures")));
+            }
+        };
+        let owed: Decimal = after[..=i].iter().sum();
+        let on = grid[i];
+        let payments: Vec<String> = self
+            .standing_payments(doc)
+            .iter()
+            .map(|e| format!("entry {e}"))
+            .collect();
+        let standing = if payments.is_empty() {
+            String::new()
+        } else {
+            format!(" (payments standing: {})", payments.join(", "))
+        };
+        Err(LedgerError::DocumentBounds(if below {
+            format!(
+                "{doc} would owe {owed} on {on}, less than nothing: more would be paid against it than it is for{standing}. Reverse the payment first (books.reverse_entry)"
+            )
+        } else {
+            format!(
+                "{doc} would owe {owed} on {on}, more than its total {total}{standing}: reverse the other payment first (books.reverse_entry), then this one's reversal"
+            )
+        }))
+    }
+
+    /// What can still be paid on `doc` by a payment dated `date`: the
+    /// least it owes on any day from then on (from its own date, for a
+    /// payment dated before it), so no later day is overpaid.
+    fn payment_room(&self, doc: arap::DocRef, date: NaiveDate) -> Result<Decimal, LedgerError> {
+        let (doc_date, ..) = self.doc_header(doc)?;
+        let from = date.max(doc_date);
+        let lines = self.doc_lines(doc);
+        let too_large = || LedgerError::TooLargeToCompute(format!("{doc}'s figures"));
+        let mut running = Decimal::ZERO;
+        for l in lines.iter().filter(|l| l.date <= from) {
+            running = running.checked_add(l.amount).ok_or_else(too_large)?;
+        }
+        let mut room = running;
+        for l in lines.iter().filter(|l| l.date > from) {
+            running = running.checked_add(l.amount).ok_or_else(too_large)?;
+            room = room.min(running);
+        }
+        Ok(room)
+    }
+
+    /// A payment's deposit or payer account: a postable asset or liability
+    /// that holds no role (a bank, a card, a member's payable), never a
+    /// control, revenue or expense account (plan P4b.3, "Payment
+    /// accounts"). Receivables and payables are held as the control guard
+    /// reads them ([`Self::control_role_of`]); the other roles by
+    /// [`Self::holds_role`], so a chart's own card at 2000, or a bank at a
+    /// payroll role's code, pays.
+    fn check_payment_account(&self, account: AccountId) -> Result<(), LedgerError> {
+        self.check_line_account(account)?;
+        let a = self.chart.get(account).expect("checked above");
+        let refuse = |why: String| {
+            Err(LedgerError::PaymentAccount {
+                code: a.code.clone(),
+                name: a.name.clone(),
+                why,
+            })
+        };
+        if !matches!(a.account_type, AccountType::Asset | AccountType::Liability) {
+            return refuse(format!(
+                "it is {} account, not cash, a card or a payable",
+                match a.account_type {
+                    AccountType::Equity => "an equity",
+                    AccountType::Revenue => "a revenue",
+                    _ => "an expense",
+                }
+            ));
+        }
+        if let Some(c) = self.control_role_of(account).or_else(|| {
+            control_accounts().find(|c| {
+                c.key != RECEIVABLES.key && c.key != PAYABLES.key && self.holds_role(c, account)
+            })
+        }) {
+            return refuse(format!("it holds the {} role", c.role));
+        }
+        Ok(())
+    }
+
+    /// Whether `account` fills role `c`: assigned to it, or (unassigned)
+    /// the account at the role's code, of the role's type and postable,
+    /// so the commands posting the role post there. An account of
+    /// another type at the code fills nothing (the commands refuse it:
+    /// [`Self::check_controls`]).
+    fn holds_role(&self, c: &ControlAccount, account: AccountId) -> bool {
+        match self.roles.get(c.key) {
+            Some(&a) => a == account,
+            None => self.chart.find_by_code(c.code).is_some_and(|a| {
+                a.id == account && a.account_type == c.account_type && !a.placeholder
+            }),
+        }
     }
 
     /// Record a customer payment against an invoice. Posts: Dr Cash,
-    /// Cr A/R. Updates the invoice's paid amount and status.
-    ///
-    /// ```text
-    /// GOAL: record a customer's payment against an invoice.
-    /// SOURCE: IRS Pub. 538 (accrual); CONVENTION (A/R workflow).
-    /// INVARIANTS:
-    ///   1. MUST post Dr cash, Cr 1200 receivables, for the amount.
-    ///   2. The invoice's paid amount MUST rise by the amount; it is Paid
-    ///      exactly when fully paid, Partial when partly.
-    /// SCENARIOS:
-    ///   1. IF the amount isn't positive: SHOULD refuse.
-    ///   2. IF it exceeds what's still owed:
-    ///      - SHOULD refuse (Overpayment)
-    ///      - NEVER let paid exceed the total
-    /// ```
+    /// Cr A/R ([`Self::receive_payment_with`], with no payment method or
+    /// reference).
     pub fn receive_payment(
         &mut self,
         invoice_id: InvoiceId,
@@ -5142,77 +5851,62 @@ impl Ledger {
         amount: Decimal,
         cash_account: AccountId,
     ) -> Result<EntryId, LedgerError> {
-        self.atomically(|l| l.receive_payment_steps(invoice_id, date, amount, cash_account))
+        self.receive_payment_with(
+            invoice_id,
+            date,
+            amount,
+            cash_account,
+            &arap::PaymentDetails::default(),
+        )
     }
 
-    /// The steps of [`Self::receive_payment`], run inside [`Self::atomically`].
-    fn receive_payment_steps(
+    /// Record a customer payment against an invoice, with its payment
+    /// method and reference. Posts: Dr the deposit account, Cr A/R.
+    ///
+    /// ```text
+    /// GOAL: record a customer's payment against an invoice.
+    /// SOURCE: IRS Pub. 538 (accrual); CONVENTION (A/R workflow); rules.md
+    ///         B-38; plan/served.md P4b.3 ("Payment accounts"), P4b.6.
+    /// INVARIANTS:
+    ///   1. MUST post Dr the deposit account, Cr 1200 receivables, for the
+    ///      amount; the receivables line carries the invoice (Payment), so
+    ///      what it owes falls by the amount from the payment's date.
+    ///   2. The payment method, when given, tags the entry in the same
+    ///      step (D-40); the reference is in its description.
+    ///   3. A refusal MUST leave the books unchanged.
+    /// SCENARIOS:
+    ///   1. IF the amount isn't positive: SHOULD refuse.
+    ///   2. IF it exceeds what's still owed on any day from its date on:
+    ///      - SHOULD refuse (Overpayment), saying what can be paid
+    ///      - NEVER let a standing payment exceed the total
+    ///      - a reversed payment no longer counts, so the right one is
+    ///        accepted after the wrong one is reversed (B-38 scenario 5)
+    ///   3. IF the deposit account is a control, revenue, expense or
+    ///      equity account, or holds any role: SHOULD refuse
+    ///      (PaymentAccount; B-38 scenario 8).
+    ///   4. IF dated before the invoice: SHOULD refuse (PaymentBeforeDocument).
+    /// ```
+    pub fn receive_payment_with(
         &mut self,
         invoice_id: InvoiceId,
         date: NaiveDate,
         amount: Decimal,
         cash_account: AccountId,
+        details: &arap::PaymentDetails,
     ) -> Result<EntryId, LedgerError> {
-        if amount <= Decimal::ZERO {
-            return Err(LedgerError::InvalidPaymentAmount(amount));
-        }
-        let invoice = self
-            .invoices
-            .get(&invoice_id)
-            .ok_or(LedgerError::UnknownInvoice(invoice_id))?
-            .clone();
-        let total = invoice.total()?;
-        let balance = invoice.balance()?;
-        if amount > balance {
-            return Err(LedgerError::Overpayment(amount, balance));
-        }
-        if let Some(pid) = self.closed_period_containing(date) {
-            return Err(LedgerError::ClosedPeriod(pid, date.to_string()));
-        }
-        if date < invoice.date {
-            return Err(LedgerError::PaymentBeforeDocument {
+        self.atomically(|l| {
+            l.payment_steps(
+                arap::DocRef::Invoice(invoice_id),
                 date,
-                document_date: invoice.date,
-            });
-        }
-        self.check_controls(&[RECEIVABLES])?;
-        // Every check before the entry exists: a refusal leaves no draft.
-        self.check_line_account(cash_account)?;
-        let ar = self.ensure_control(&RECEIVABLES);
-        let entry = self.create_entry(date, &format!("Payment on invoice {}", invoice_id));
-        let money = Money::new(amount, self.base_currency);
-        self.add_line(entry, cash_account, Side::Debit, money)?;
-        self.add_line(entry, ar, Side::Credit, money)?;
-        self.post_entry(entry)?;
-        let inv = self.invoices.get_mut(&invoice_id).expect("invoice exists");
-        // At most the balance: the sum is at most the total.
-        inv.amount_paid += amount;
-        inv.status = arap::derive_status(inv.amount_paid, total);
-        let customer = inv.customer_id;
-        self.invoice_payments
-            .entry(invoice_id)
-            .or_default()
-            .push((entry, amount));
-        self.tag_customer(entry, customer);
-        Ok(entry)
+                amount,
+                cash_account,
+                details,
+            )
+        })
     }
 
-    /// Pay a vendor bill. Posts: Dr A/P, Cr Cash. Updates the bill's paid
-    /// amount and status.
-    ///
-    /// ```text
-    /// GOAL: record paying a vendor's bill.
-    /// SOURCE: IRS Pub. 538 (accrual); CONVENTION (A/P workflow).
-    /// INVARIANTS:
-    ///   1. MUST post Dr 2000 payables, Cr cash, for the amount, tagged with
-    ///      the vendor.
-    ///   2. The bill's paid amount MUST rise by the amount.
-    /// SCENARIOS:
-    ///   1. IF the amount isn't positive, or exceeds what's still owed: SHOULD
-    ///      refuse.
-    ///   2. IF dated before the bill: SHOULD refuse (PaymentBeforeDocument);
-    ///      the bill's own date is fine (DECISION, owner 2026-10-13).
-    /// ```
+    /// Pay a vendor bill. Posts: Dr A/P, Cr Cash ([`Self::pay_bill_with`],
+    /// with no payment method or reference).
     pub fn pay_bill(
         &mut self,
         bill_id: BillId,
@@ -5220,64 +5914,458 @@ impl Ledger {
         amount: Decimal,
         cash_account: AccountId,
     ) -> Result<EntryId, LedgerError> {
-        self.atomically(|l| l.pay_bill_steps(bill_id, date, amount, cash_account))
+        self.pay_bill_with(
+            bill_id,
+            date,
+            amount,
+            cash_account,
+            &arap::PaymentDetails::default(),
+        )
     }
 
-    /// The steps of [`Self::pay_bill`], run inside [`Self::atomically`].
-    fn pay_bill_steps(
+    /// Pay a vendor bill, with its payment method and reference. Posts:
+    /// Dr A/P, Cr the payer account.
+    ///
+    /// ```text
+    /// GOAL: record paying a vendor's bill.
+    /// SOURCE: IRS Pub. 538 (accrual); CONVENTION (A/P workflow); rules.md
+    ///         B-38; plan/served.md P4b.3, P4b.6.
+    /// INVARIANTS:
+    ///   1. MUST post Dr 2000 payables, Cr the payer account, for the
+    ///      amount, tagged with the vendor; the payables line carries the
+    ///      bill (Payment).
+    ///   2. The payment method, when given, tags the entry in the same
+    ///      step (a card-paid bill is left out of 1099-NEC, D-40).
+    ///   3. A refusal MUST leave the books unchanged.
+    /// SCENARIOS:
+    ///   1. IF the amount isn't positive, or exceeds what's still owed on
+    ///      any day from its date on: SHOULD refuse.
+    ///   2. IF dated before the bill: SHOULD refuse (PaymentBeforeDocument);
+    ///      the bill's own date is fine (DECISION, owner 2026-10-13).
+    ///   3. IF the payer account isn't a bank, card or payable that holds
+    ///      no role: SHOULD refuse (PaymentAccount).
+    /// ```
+    pub fn pay_bill_with(
         &mut self,
         bill_id: BillId,
         date: NaiveDate,
         amount: Decimal,
         cash_account: AccountId,
+        details: &arap::PaymentDetails,
+    ) -> Result<EntryId, LedgerError> {
+        self.atomically(|l| {
+            l.payment_steps(
+                arap::DocRef::Bill(bill_id),
+                date,
+                amount,
+                cash_account,
+                details,
+            )
+        })
+    }
+
+    /// The steps of a payment ([`Self::receive_payment_with`],
+    /// [`Self::pay_bill_with`]), run inside [`Self::atomically`].
+    fn payment_steps(
+        &mut self,
+        doc: arap::DocRef,
+        date: NaiveDate,
+        amount: Decimal,
+        account: AccountId,
+        details: &arap::PaymentDetails,
     ) -> Result<EntryId, LedgerError> {
         if amount <= Decimal::ZERO {
             return Err(LedgerError::InvalidPaymentAmount(amount));
         }
-        let bill = self
-            .bills
-            .get(&bill_id)
-            .ok_or(LedgerError::UnknownBill(bill_id))?
-            .clone();
-        let total = bill.total()?;
-        let balance = bill.balance()?;
-        if amount > balance {
-            return Err(LedgerError::Overpayment(amount, balance));
+        let (doc_date, ..) = self.doc_header(doc)?;
+        let room = self.payment_room(doc, date)?;
+        if amount > room {
+            return Err(LedgerError::Overpayment(amount, room));
         }
         if let Some(pid) = self.closed_period_containing(date) {
             return Err(LedgerError::ClosedPeriod(pid, date.to_string()));
         }
-        if date < bill.date {
+        if date < doc_date {
             return Err(LedgerError::PaymentBeforeDocument {
                 date,
-                document_date: bill.date,
+                document_date: doc_date,
             });
         }
-        self.check_controls(&[PAYABLES])?;
+        details.check()?;
+        if let Some(i) = details.instrument
+            && !self.instruments.contains_key(&i)
+        {
+            return Err(LedgerError::UnknownInstrument(i));
+        }
+        let role = match doc {
+            arap::DocRef::Invoice(_) => RECEIVABLES,
+            arap::DocRef::Bill(_) => PAYABLES,
+        };
+        self.check_controls(&[role])?;
         // Every check before the entry exists: a refusal leaves no draft.
-        self.check_line_account(cash_account)?;
-        let ap = self.ensure_control(&PAYABLES);
-        let entry = self.create_entry(date, &format!("Payment on bill {}", bill_id));
+        self.check_payment_account(account)?;
+        let control = self.ensure_control(&role);
         let money = Money::new(amount, self.base_currency);
-        self.add_line(entry, ap, Side::Debit, money)?;
-        self.add_line(entry, cash_account, Side::Credit, money)?;
+        let tag = arap::DocTag {
+            doc,
+            movement: arap::Movement::Payment,
+        };
+        let entry = match doc {
+            arap::DocRef::Invoice(id) => {
+                let entry = self.create_entry(
+                    date,
+                    &details.description(&format!("Payment on invoice {id}")),
+                );
+                self.add_line(entry, account, Side::Debit, money)?;
+                self.add_tagged_line(entry, control, Side::Credit, money, tag)?;
+                entry
+            }
+            arap::DocRef::Bill(id) => {
+                let entry =
+                    self.create_entry(date, &details.description(&format!("Payment on bill {id}")));
+                self.add_tagged_line(entry, control, Side::Debit, money, tag)?;
+                self.add_line(entry, account, Side::Credit, money)?;
+                entry
+            }
+        };
         self.post_entry(entry)?;
-        let b = self.bills.get_mut(&bill_id).expect("bill exists");
-        b.amount_paid += amount;
-        b.status = arap::derive_status(b.amount_paid, total);
-        self.bill_payments
-            .entry(bill_id)
-            .or_default()
-            .push((entry, amount));
-        self.tag_vendor(entry, bill.vendor_id);
+        match doc {
+            arap::DocRef::Invoice(id) => {
+                let customer = self.invoices[&id].customer_id;
+                self.tag_customer(entry, customer);
+            }
+            arap::DocRef::Bill(id) => {
+                let vendor = self.bills[&id].vendor_id;
+                self.tag_vendor(entry, vendor);
+            }
+        }
+        if details.instrument.is_some() {
+            self.set_entry_instrument(entry, details.instrument)?;
+        }
+        self.payment_events.entry(doc).or_default().push(amount);
+        self.refresh_doc(doc);
         Ok(entry)
+    }
+
+    /// Void a document: reverse its own entry (B-9), described "Void
+    /// invoice 7: reason". It keeps its id (and, later, its number); its
+    /// status as of the void's date on is Void. Plain
+    /// [`Self::reverse_entry`] of the same entry gives the same result.
+    ///
+    /// ```text
+    /// GOAL: a document that should never have existed (a duplicate, the
+    ///       wrong customer) is undone by an opposite entry, never erased.
+    /// SOURCE: docs/spec/rules.md B-9, B-10, B-12, B-38 (scenarios 2, 3);
+    ///         plan/served.md P4b.5, P4b.6; ASC 250 (an immaterial error is
+    ///         corrected in the period found).
+    /// INVARIANTS:
+    ///   1. MUST post exactly the reversal reverse_entry would, of the
+    ///      entry whose reversal voids it (its own entry, or the last
+    ///      reversal in its chain when it was voided and re-instated).
+    ///   2. A refusal MUST leave the books unchanged.
+    /// SCENARIOS:
+    ///   1. IF the reason is blank, more than one line, or longer than 200
+    ///      characters: SHOULD refuse (InvalidVoid).
+    ///   2. IF it is void already: SHOULD refuse (InvalidVoid), naming the
+    ///      reversal (reverse that to re-instate it).
+    ///   3. IF a payment stands against it: SHOULD refuse (DocumentBounds),
+    ///      naming the payment to reverse first.
+    ///   4. IF dated before the document, or in a closed period: SHOULD
+    ///      refuse (check_reversal).
+    /// ```
+    pub fn void_document(
+        &mut self,
+        doc: arap::DocRef,
+        date: NaiveDate,
+        reason: &str,
+    ) -> Result<EntryId, LedgerError> {
+        let (target, description) = self.check_void_document(doc, date, reason)?;
+        self.reverse_entry(target, date, &description)
+    }
+
+    /// Every refusal of [`Self::void_document`], without touching the
+    /// books: the entry to reverse and the reversal's description.
+    pub fn check_void_document(
+        &self,
+        doc: arap::DocRef,
+        date: NaiveDate,
+        reason: &str,
+    ) -> Result<(EntryId, String), LedgerError> {
+        let reason = reason.trim();
+        if reason.is_empty()
+            || reason.contains(['\n', '\r'])
+            || reason.chars().count() > arap::MAX_REFERENCE_CHARS
+        {
+            return Err(LedgerError::InvalidVoid(format!(
+                "a void needs its reason: one line of at most {} characters",
+                arap::MAX_REFERENCE_CHARS
+            )));
+        }
+        let (_, _, origin, _) = self.doc_header(doc)?;
+        let chain = self.reversal_chain(origin);
+        let target = *chain.last().unwrap_or(&origin);
+        if !self.in_effect(origin) {
+            return Err(LedgerError::InvalidVoid(format!(
+                "{doc} is void already: entry {target} reversed it (reverse that entry to re-instate it)"
+            )));
+        }
+        self.check_reversal(target, date)?;
+        Ok((target, format!("Void {doc}: {reason}")))
+    }
+
+    /// The control accounts' tie-out as of a day (plan P4b.10,
+    /// `books.control_check`): for each control account
+    /// ([`Self::control_role_of`]: assigned receivables or payables, or
+    /// holding a document's lines), its balance, what its documents owe
+    /// on it, its lines that carry no document, and (on the role's first
+    /// account) the role's documents needing attention.
+    ///
+    /// ```text
+    /// GOAL: show that receivables and payables equal their documents, and
+    ///       list every line that is no document's.
+    /// SOURCE: docs/spec/rules.md B-23, B-38 INVARIANT 1:
+    ///         GL(A, D) = Σ_docs outstanding(d, D) + unattached(A, D).
+    /// INVARIANTS:
+    ///   1. balance sums every posted line on the account dated on or
+    ///      before `as_of`; documents_total sums the tagged ones through
+    ///      their documents (Self::doc_lines); unattached lists the rest,
+    ///      each reversal chain once, at what its lines net to as of the
+    ///      day (a reversed hand line nets to nothing and is not listed).
+    ///   2. difference = balance - documents_total - Σ unattached is zero
+    ///      in every books (an identity: both sides sum the same lines).
+    ///   3. attention lists each document of the role issued by `as_of`
+    ///      whose state then is out of bounds (a credit balance, which
+    ///      aging leaves out, or more owed than its total) or Unattached:
+    ///      what books an earlier version wrote can hold (plan P4b.14
+    ///      item 3), never what these commands write.
+    ///   4. NEVER panics: TooLargeToCompute past exact arithmetic.
+    /// ```
+    pub fn control_check(&self, as_of: NaiveDate) -> Result<Vec<arap::ControlCheck>, LedgerError> {
+        let too_large = || LedgerError::TooLargeToCompute("a control account's balance".into());
+        // Each control account (Self::control_role_of), and the role
+        // whose documents it holds: a debit counts plus on receivables, a
+        // credit on payables.
+        let mut accounts: Vec<(AccountId, &'static ControlAccount)> = [&RECEIVABLES, &PAYABLES]
+            .into_iter()
+            .flat_map(|c| {
+                self.document_role_accounts(c)
+                    .into_iter()
+                    .map(move |a| (a, c))
+            })
+            .collect();
+        let mut doc_totals: HashMap<AccountId, Decimal> = HashMap::new();
+        let mut attention: HashMap<&'static str, Vec<arap::DocAttention>> = HashMap::new();
+        for doc in self.documents() {
+            let role = match doc {
+                arap::DocRef::Invoice(_) => &RECEIVABLES,
+                arap::DocRef::Bill(_) => &PAYABLES,
+            };
+            for l in self.doc_lines(doc).into_iter().filter(|l| l.date <= as_of) {
+                let t = doc_totals.entry(l.account).or_default();
+                *t = t.checked_add(l.amount).ok_or_else(too_large)?;
+            }
+            if let Some(st) = self.doc_state(doc, as_of)?
+                && (st.out_of_bounds() || st.status == arap::DocStatus::Unattached)
+            {
+                attention
+                    .entry(role.key)
+                    .or_default()
+                    .push(arap::DocAttention {
+                        doc,
+                        status: st.status,
+                        total: st.total,
+                        outstanding: st.outstanding,
+                    });
+            }
+        }
+        // A role whose documents carry no line anywhere (each unattached)
+        // still gets its row, on the account the role posts to now.
+        for c in [&RECEIVABLES, &PAYABLES] {
+            if attention.contains_key(c.key)
+                && !accounts.iter().any(|&(_, r)| r.key == c.key)
+                && let Some(a) = self.role_account(c)
+            {
+                accounts.push((a, c));
+            }
+        }
+        let counted = |role: &ControlAccount, side: Side, amount: Decimal| {
+            let plus = if role.key == RECEIVABLES.key {
+                Side::Debit
+            } else {
+                Side::Credit
+            };
+            if side == plus { amount } else { -amount }
+        };
+        let mut out = Vec::new();
+        for (account, role) in accounts {
+            let mut balance = Decimal::ZERO;
+            let mut tops: Vec<(EntryId, usize)> = Vec::new();
+            for e in self.posted_entries().filter(|e| e.date() <= as_of) {
+                for (i, l) in e.lines().iter().enumerate() {
+                    if l.account != account {
+                        continue;
+                    }
+                    balance = balance
+                        .checked_add(counted(role, l.side, l.amount.amount))
+                        .ok_or_else(too_large)?;
+                    if !self.line_docs.contains_key(&(e.id(), i)) {
+                        let top = self.reversal_chain(e.id())[0];
+                        if !tops.contains(&(top, i)) {
+                            tops.push((top, i));
+                        }
+                    }
+                }
+            }
+            let mut unattached = Vec::new();
+            let mut unattached_sum = Decimal::ZERO;
+            for (top, i) in tops {
+                // The chain's lines dated by `as_of`, each the mirror of
+                // the one before: they net to k times the top's line.
+                let mut net = Decimal::ZERO;
+                for (n, e) in self.reversal_chain(top).into_iter().enumerate() {
+                    let Some(e) = self.entries.get(&e).filter(|e| e.date() <= as_of) else {
+                        continue;
+                    };
+                    let Some(l) = e.lines().get(i) else {
+                        continue;
+                    };
+                    debug_assert!(n == 0 || e.reversal_of().is_some());
+                    net = net
+                        .checked_add(counted(role, l.side, l.amount.amount))
+                        .ok_or_else(too_large)?;
+                }
+                if !net.is_zero() {
+                    unattached_sum = unattached_sum.checked_add(net).ok_or_else(too_large)?;
+                    unattached.push(arap::UnattachedLine {
+                        entry: top,
+                        line: i,
+                        date: self.entries[&top].date(),
+                        amount: net,
+                    });
+                }
+            }
+            let documents_total = doc_totals.get(&account).copied().unwrap_or_default();
+            let difference = balance
+                .checked_sub(documents_total)
+                .and_then(|d| d.checked_sub(unattached_sum))
+                .ok_or_else(too_large)?;
+            out.push(arap::ControlCheck {
+                role: role.key.to_string(),
+                account,
+                balance,
+                documents_total,
+                unattached,
+                difference,
+                attention: attention.remove(role.key).unwrap_or_default(),
+            });
+        }
+        Ok(out)
+    }
+
+    /// Refresh a document's record figures ([`Invoice::amount_paid`],
+    /// [`Invoice::owed`], [`Invoice::status`]) from its tagged lines as of
+    /// the end of the books: what was settled (paid, discounted, written
+    /// off, as they stand), what is owed, and the three-word status of
+    /// what was settled. A void settles nothing, so it never reads as
+    /// paid. Never refuses: a document whose figures can't be computed
+    /// keeps the last ones (its state refuses them, `doc_state`).
+    fn refresh_doc(&mut self, doc: arap::DocRef) {
+        let Ok(Some(st)) = self.doc_state(doc, NaiveDate::MAX) else {
+            return;
+        };
+        let Some(settled) = st
+            .paid
+            .checked_add(st.discounted)
+            .and_then(|s| s.checked_add(st.written_off))
+        else {
+            return;
+        };
+        // Nothing settled is zero as the record always started it (a
+        // sum's scale would show as "0.00"); what is owed keeps the
+        // lines' scale, as the total less the settled did ("0.00").
+        let settled = if settled.is_zero() {
+            Decimal::ZERO
+        } else {
+            settled
+        };
+        let owed = st.outstanding;
+        let status = arap::derive_status(settled, st.total);
+        match doc {
+            arap::DocRef::Invoice(id) => {
+                if let Some(i) = self.invoices.get_mut(&id) {
+                    (i.amount_paid, i.owed, i.status) = (settled, owed, status);
+                }
+            }
+            arap::DocRef::Bill(id) => {
+                if let Some(b) = self.bills.get_mut(&id) {
+                    (b.amount_paid, b.owed, b.status) = (settled, owed, status);
+                }
+            }
+        }
+    }
+
+    /// [`Self::refresh_doc`] for every document `entry`'s lines carry.
+    fn refresh_docs_of(&mut self, entry: EntryId) {
+        let docs: Vec<arap::DocRef> = self
+            .line_docs
+            .range((entry, 0)..(entry + 1, 0))
+            .map(|(_, t)| t.doc)
+            .collect();
+        for d in docs {
+            self.refresh_doc(d);
+        }
+    }
+
+    /// On replay, tag a document's control line in `entry` (plan P4b.3,
+    /// "How tags get set"): the first line, in line order, on the role's
+    /// account as the role stands at this point of the journal, on the
+    /// side the movement posts (the owed side for the document's own
+    /// line, the other for a payment), that carries no document yet and
+    /// is for `amount` (any amount when `None`: a document's own entry
+    /// has one such line). An entry with
+    /// no such line stays untagged, and its line is listed by
+    /// [`Self::control_check`]: replay never refuses (B-28).
+    fn tag_replayed(
+        &mut self,
+        entry: EntryId,
+        role: &ControlAccount,
+        amount: Option<Decimal>,
+        tag: arap::DocTag,
+    ) {
+        let (Some(account), Some(e)) = (self.role_account(role), self.entries.get(&entry)) else {
+            return;
+        };
+        // The side the movement posts: a document's own line raises what
+        // it owes, a payment lowers it. An older payment deposited into
+        // the control account itself (Dr 1200 / Cr 1200, plan P4b.2 gap
+        // 5) has a line on each side; only the right one is the payment.
+        let side = match tag.movement {
+            arap::Movement::Origin => tag.doc.owed_side(),
+            _ => kernel::flip(tag.doc.owed_side()),
+        };
+        let at = e.lines().iter().enumerate().position(|(i, l)| {
+            l.account == account
+                && l.side == side
+                && !self.line_docs.contains_key(&(entry, i))
+                && amount.is_none_or(|a| a == l.amount.amount)
+        });
+        if let Some(i) = at {
+            // A document's own entry has one control line: two would be no
+            // entry an earlier version wrote, so neither is tagged.
+            let lines_on = e.lines().iter().filter(|l| l.account == account).count();
+            if amount.is_some() || lines_on == 1 {
+                self.tag_line(entry, i, tag);
+            }
+        }
     }
 
     /// Record an invoice without posting: replay support for journaling
     /// stores. The invoice's entry was already rebuilt from its own
     /// `entry.created` / `entry.line_added` / `entry.posted` events; this
-    /// only restores the invoice record. The id must be the next invoice
-    /// id — anything else means the journal and the allocator disagree.
+    /// restores the invoice record and tags its receivable line (the one
+    /// line on the receivables role's account as it stands at this point
+    /// of the journal). The id must be the next invoice id — anything else
+    /// means the journal and the allocator disagree.
     #[doc(hidden)]
     pub fn replay_invoice(
         &mut self,
@@ -5304,11 +6392,23 @@ impl Ledger {
                 due_date,
                 lines,
                 amount_paid: Decimal::ZERO,
+                owed: Decimal::ZERO,
                 status: DocumentStatus::Open,
                 entry_id,
             },
         );
         self.tag_customer(entry_id, customer_id);
+        let doc = arap::DocRef::Invoice(id);
+        self.tag_replayed(
+            entry_id,
+            &RECEIVABLES,
+            None,
+            arap::DocTag {
+                doc,
+                movement: arap::Movement::Origin,
+            },
+        );
+        self.refresh_doc(doc);
         Ok(())
     }
 
@@ -5340,19 +6440,32 @@ impl Ledger {
                 due_date,
                 lines,
                 amount_paid: Decimal::ZERO,
+                owed: Decimal::ZERO,
                 status: DocumentStatus::Open,
                 entry_id,
             },
         );
         self.tag_vendor(entry_id, vendor_id);
+        let doc = arap::DocRef::Bill(id);
+        self.tag_replayed(
+            entry_id,
+            &PAYABLES,
+            None,
+            arap::DocTag {
+                doc,
+                movement: arap::Movement::Origin,
+            },
+        );
+        self.refresh_doc(doc);
         Ok(())
     }
 
     /// Apply an invoice payment without posting: replay support for
     /// journaling stores. The payment entry was already rebuilt from its
-    /// own entry events; this only moves the invoice's paid amount and
-    /// status. `entry_id` is the journaled payment entry, carried for
-    /// audit; the invoice does not link payment entries.
+    /// own entry events; this tags its receivables line with the invoice
+    /// (the first untagged one for `amount`, so several payment events
+    /// naming one entry tag its lines in order: the ordinal rule, plan
+    /// P4b.3). Nothing is bounded on replay (rules.md B-28).
     #[doc(hidden)]
     pub fn replay_invoice_payment(
         &mut self,
@@ -5360,24 +6473,24 @@ impl Ledger {
         amount: Decimal,
         entry_id: EntryId,
     ) -> Result<(), LedgerError> {
-        let inv = self
+        let customer = self
             .invoices
-            .get_mut(&invoice_id)
-            .ok_or(LedgerError::UnknownInvoice(invoice_id))?;
-        // No bound on a journaled payment (rules.md B-28); a sum past exact
-        // arithmetic is refused, never wrapped, before anything changes.
-        let total = inv.total()?;
-        inv.amount_paid = inv
-            .amount_paid
-            .checked_add(amount)
-            .ok_or_else(|| LedgerError::TooLargeToCompute("the invoice's paid amount".into()))?;
-        self.invoice_payments
-            .entry(invoice_id)
-            .or_default()
-            .push((entry_id, amount));
-        inv.status = arap::derive_status(inv.amount_paid, total);
-        let customer = inv.customer_id;
+            .get(&invoice_id)
+            .ok_or(LedgerError::UnknownInvoice(invoice_id))?
+            .customer_id;
+        let doc = arap::DocRef::Invoice(invoice_id);
+        self.tag_replayed(
+            entry_id,
+            &RECEIVABLES,
+            Some(amount),
+            arap::DocTag {
+                doc,
+                movement: arap::Movement::Payment,
+            },
+        );
         self.tag_customer(entry_id, customer);
+        self.payment_events.entry(doc).or_default().push(amount);
+        self.refresh_doc(doc);
         Ok(())
     }
 
@@ -5390,24 +6503,24 @@ impl Ledger {
         amount: Decimal,
         entry_id: EntryId,
     ) -> Result<(), LedgerError> {
-        let bill = self
+        let vendor = self
             .bills
-            .get_mut(&bill_id)
-            .ok_or(LedgerError::UnknownBill(bill_id))?;
-        // No bound on a journaled payment (rules.md B-28); a sum past exact
-        // arithmetic is refused, never wrapped, before anything changes.
-        let total = bill.total()?;
-        bill.amount_paid = bill
-            .amount_paid
-            .checked_add(amount)
-            .ok_or_else(|| LedgerError::TooLargeToCompute("the bill's paid amount".into()))?;
-        bill.status = arap::derive_status(bill.amount_paid, total);
-        self.bill_payments
-            .entry(bill_id)
-            .or_default()
-            .push((entry_id, amount));
-        let vendor = bill.vendor_id;
+            .get(&bill_id)
+            .ok_or(LedgerError::UnknownBill(bill_id))?
+            .vendor_id;
+        let doc = arap::DocRef::Bill(bill_id);
+        self.tag_replayed(
+            entry_id,
+            &PAYABLES,
+            Some(amount),
+            arap::DocTag {
+                doc,
+                movement: arap::Movement::Payment,
+            },
+        );
         self.tag_vendor(entry_id, vendor);
+        self.payment_events.entry(doc).or_default().push(amount);
+        self.refresh_doc(doc);
         Ok(())
     }
 
@@ -5415,91 +6528,73 @@ impl Ledger {
     /// balance, bucketed by days past due. Refused (TooLargeToCompute),
     /// never a panic, when a sum is past exact arithmetic: documents are
     /// restored as journaled (rules.md B-28).
+    ///
+    /// ```text
+    /// GOAL: what each customer owes as of a day, by how overdue.
+    /// SOURCE: docs/spec/rules.md B-18, B-38 INVARIANT 5.
+    /// INVARIANTS:
+    ///   1. Each invoice issued by `as_of` that owes something then
+    ///      (Self::doc_state's outstanding) is in exactly one bucket, at
+    ///      that amount: the buckets partition what the invoices owe.
+    ///   2. A void invoice, a paid one, and one dated after `as_of` are
+    ///      left out; a payment reversed after `as_of` still counts as
+    ///      paid, one reversed by then doesn't.
+    ///   3. One owing less than nothing (a credit balance, in books an
+    ///      earlier version left out of bounds) is left out too: it is
+    ///      owed back, not receivable (ASC 310-10), and
+    ///      Self::control_check lists it. So the buckets sum to what the
+    ///      invoices owing something owe: the documents' total less those
+    ///      credit balances.
+    /// ```
     pub fn ar_aging(&self, as_of: NaiveDate) -> Result<Vec<AgingRow>, LedgerError> {
-        let mut by_customer: HashMap<CustomerId, AgingRow> = HashMap::new();
-        for inv in self.invoices.values() {
-            // Only what existed by `as_of`: issued by then, less payments
-            // made by then (owner, 2026-10-13).
-            if inv.date > as_of {
+        self.aging(as_of, true)
+    }
+
+    /// A/P aging as of a date: one row per vendor with an outstanding
+    /// balance, bucketed by days past due; as [`Self::ar_aging`] is.
+    pub fn ap_aging(&self, as_of: NaiveDate) -> Result<Vec<AgingRow>, LedgerError> {
+        self.aging(as_of, false)
+    }
+
+    /// [`Self::ar_aging`] (`invoices`) or [`Self::ap_aging`].
+    fn aging(&self, as_of: NaiveDate, invoices: bool) -> Result<Vec<AgingRow>, LedgerError> {
+        let mut by_party: HashMap<u64, AgingRow> = HashMap::new();
+        for doc in self.documents() {
+            let (party, name) = match doc {
+                arap::DocRef::Invoice(id) if invoices => {
+                    let c = self.invoices[&id].customer_id;
+                    (c, self.customers.get(&c).map(|c| c.name.clone()))
+                }
+                arap::DocRef::Bill(id) if !invoices => {
+                    let v = self.bills[&id].vendor_id;
+                    (v, self.vendors.get(&v).map(|v| v.name.clone()))
+                }
+                _ => continue,
+            };
+            let Some(st) = self.doc_state(doc, as_of)? else {
+                continue;
+            };
+            // Nothing owed, or a credit balance (Overpaid, or a void under
+            // a payment that stands): no receivable or payable to age; the
+            // control check lists the credit balances.
+            if st.outstanding <= Decimal::ZERO {
                 continue;
             }
-            let paid = self.paid_by(self.invoice_payments.get(&inv.id), as_of)?;
-            let balance = inv.total()?.checked_sub(paid).ok_or_else(|| {
-                LedgerError::TooLargeToCompute(format!("invoice {}'s balance", inv.id))
-            })?;
-            if balance.is_zero() {
-                continue;
-            }
-            let row = arap::aging_bucket(inv.due_date, as_of, balance);
-            let entry = by_customer
-                .entry(inv.customer_id)
+            let (_, due_date, ..) = self.doc_header(doc)?;
+            let row = arap::aging_bucket(due_date, as_of, st.outstanding);
+            by_party
+                .entry(party)
                 .or_insert_with(|| AgingRow {
-                    name: self
-                        .customers
-                        .get(&inv.customer_id)
-                        .map(|c| c.name.clone())
-                        .unwrap_or_default(),
+                    name: name.unwrap_or_default(),
                     current: Decimal::ZERO,
                     days_30: Decimal::ZERO,
                     days_60: Decimal::ZERO,
                     days_90: Decimal::ZERO,
                     days_90_plus: Decimal::ZERO,
-                });
-            entry.add(&row)?;
+                })
+                .add(&row)?;
         }
-        let mut rows: Vec<AgingRow> = by_customer.into_values().collect();
-        rows.sort_by(|a, b| a.name.cmp(&b.name));
-        Ok(rows)
-    }
-
-    /// What a document's payments add up to through `as_of`: payments are
-    /// posted entries, dated.
-    fn paid_by(
-        &self,
-        payments: Option<&Vec<(EntryId, Decimal)>>,
-        as_of: NaiveDate,
-    ) -> Result<Decimal, LedgerError> {
-        payments
-            .into_iter()
-            .flatten()
-            .filter(|(e, _)| self.get_entry(*e).is_some_and(|e| e.date() <= as_of))
-            .try_fold(Decimal::ZERO, |sum, (_, amount)| sum.checked_add(*amount))
-            .ok_or_else(|| LedgerError::TooLargeToCompute("a document's payments".into()))
-    }
-
-    /// A/P aging as of a date: one row per vendor with an outstanding
-    /// balance, bucketed by days past due; refused as
-    /// [`Self::ar_aging`] is.
-    pub fn ap_aging(&self, as_of: NaiveDate) -> Result<Vec<AgingRow>, LedgerError> {
-        let mut by_vendor: HashMap<VendorId, AgingRow> = HashMap::new();
-        for bill in self.bills.values() {
-            // Only what existed by `as_of` (see `ar_aging`).
-            if bill.date > as_of {
-                continue;
-            }
-            let paid = self.paid_by(self.bill_payments.get(&bill.id), as_of)?;
-            let balance = bill.total()?.checked_sub(paid).ok_or_else(|| {
-                LedgerError::TooLargeToCompute(format!("bill {}'s balance", bill.id))
-            })?;
-            if balance.is_zero() {
-                continue;
-            }
-            let row = arap::aging_bucket(bill.due_date, as_of, balance);
-            let entry = by_vendor.entry(bill.vendor_id).or_insert_with(|| AgingRow {
-                name: self
-                    .vendors
-                    .get(&bill.vendor_id)
-                    .map(|v| v.name.clone())
-                    .unwrap_or_default(),
-                current: Decimal::ZERO,
-                days_30: Decimal::ZERO,
-                days_60: Decimal::ZERO,
-                days_90: Decimal::ZERO,
-                days_90_plus: Decimal::ZERO,
-            });
-            entry.add(&row)?;
-        }
-        let mut rows: Vec<AgingRow> = by_vendor.into_values().collect();
+        let mut rows: Vec<AgingRow> = by_party.into_values().collect();
         rows.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(rows)
     }

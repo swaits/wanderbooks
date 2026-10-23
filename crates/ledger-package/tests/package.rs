@@ -1920,33 +1920,39 @@ fn the_readme_names_the_entries_on_receivables_and_payables() {
     ] {
         s.add_account(code, name, ty, None, false).unwrap();
     }
-    let invoiced = post(
-        &mut s,
-        "2026-04-01",
-        "Invoice 7",
-        &[
-            ("1200", Side::Debit, "500.00"),
-            ("4000", Side::Credit, "500.00"),
-        ],
-    );
-    let billed = post(
-        &mut s,
-        "2026-04-02",
-        "Bill 3",
-        &[
-            ("6000", Side::Debit, "80.00"),
-            ("2000", Side::Credit, "80.00"),
-        ],
-    );
-    let netted = post(
-        &mut s,
-        "2026-04-03",
-        "Netted",
-        &[
-            ("2000", Side::Debit, "80.00"),
-            ("1200", Side::Credit, "80.00"),
-        ],
-    );
+    // Hand lines on receivables and payables, as books an earlier version
+    // wrote hold them (the control guard, rules.md B-38, refuses them as
+    // new work): posted as replay posts them.
+    let (invoiced, billed, netted) = ledger_core::parties::replaying(|| {
+        let invoiced = post(
+            &mut s,
+            "2026-04-01",
+            "Invoice 7",
+            &[
+                ("1200", Side::Debit, "500.00"),
+                ("4000", Side::Credit, "500.00"),
+            ],
+        );
+        let billed = post(
+            &mut s,
+            "2026-04-02",
+            "Bill 3",
+            &[
+                ("6000", Side::Debit, "80.00"),
+                ("2000", Side::Credit, "80.00"),
+            ],
+        );
+        let netted = post(
+            &mut s,
+            "2026-04-03",
+            "Netted",
+            &[
+                ("2000", Side::Debit, "80.00"),
+                ("1200", Side::Credit, "80.00"),
+            ],
+        );
+        (invoiced, billed, netted)
+    });
     let company = company(false);
     let cash = cash();
     let p = build_package(&s, &settings(&company, &cash), &request(false, None)).unwrap();
@@ -1985,15 +1991,17 @@ fn the_readme_names_the_entries_on_receivables_and_payables() {
         false,
     )
     .unwrap();
-    let one = post(
-        &mut s,
-        "2026-04-01",
-        "Owed",
-        &[
-            ("1200", Side::Debit, "5.00"),
-            ("1000", Side::Credit, "5.00"),
-        ],
-    );
+    let one = ledger_core::parties::replaying(|| {
+        post(
+            &mut s,
+            "2026-04-01",
+            "Owed",
+            &[
+                ("1200", Side::Debit, "5.00"),
+                ("1000", Side::Credit, "5.00"),
+            ],
+        )
+    });
     let p = build_package(&s, &settings(&company, &cash), &request(false, None)).unwrap();
     assert!(text(&p, "README.txt").contains(&format!(
         "lines to accounts receivable or payable, in entry {one}: "
@@ -2037,7 +2045,7 @@ fn random_ledger(
     for (code, name, ty) in [
         ("1000", "Checking", AccountType::Asset),
         ("1100", "Receivables", AccountType::Asset),
-        ("2000", "Card", AccountType::Liability),
+        ("2050", "Card", AccountType::Liability),
         ("3000", "Capital", AccountType::Equity),
         ("4000", "Sales", AccountType::Revenue),
         ("6000", "Rent", AccountType::Expense),

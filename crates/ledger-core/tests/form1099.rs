@@ -114,11 +114,17 @@ fn pay(
     cr: AccountId,
     amt: &str,
 ) -> EntryId {
-    let e = l.create_entry(date, "payment");
-    let m = Money::new(dec(amt), Currency::USD);
-    l.add_line(e, dr, Side::Debit, m).unwrap();
-    l.add_line(e, cr, Side::Credit, m).unwrap();
-    l.post_entry(e).unwrap();
+    // As replay posts it: money from a vendor on receivables (1200) by
+    // hand, as books an earlier version wrote can hold it; the control
+    // guard (rules.md B-38) refuses that as new work.
+    let e = ledger_core::parties::replaying(|| {
+        let e = l.create_entry(date, "payment");
+        let m = Money::new(dec(amt), Currency::USD);
+        l.add_line(e, dr, Side::Debit, m).unwrap();
+        l.add_line(e, cr, Side::Credit, m).unwrap();
+        l.post_entry(e).unwrap();
+        e
+    });
     if let Some(v) = vendor {
         l.set_entry_vendor(e, Some(v)).unwrap();
     }
@@ -2433,11 +2439,15 @@ proptest! {
             if dr == cr {
                 continue;
             }
-            let e = l.create_entry(d(2026, month, 10), "generated");
-            let m = Money::new(Decimal::new(i64::from(cents), 2), Currency::USD);
-            l.add_line(e, accounts[dr], Side::Debit, m).unwrap();
-            l.add_line(e, accounts[cr], Side::Credit, m).unwrap();
-            l.post_entry(e).unwrap();
+            // As replay posts it (a hand line on receivables: see `pay`).
+            let e = ledger_core::parties::replaying(|| {
+                let e = l.create_entry(d(2026, month, 10), "generated");
+                let m = Money::new(Decimal::new(i64::from(cents), 2), Currency::USD);
+                l.add_line(e, accounts[dr], Side::Debit, m).unwrap();
+                l.add_line(e, accounts[cr], Side::Credit, m).unwrap();
+                l.post_entry(e).unwrap();
+                e
+            });
             l.set_entry_vendor(e, Some(vendors[v])).unwrap();
             if let Some(i) = methods[method % methods.len()] {
                 l.set_entry_instrument(e, Some(i)).unwrap();

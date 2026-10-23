@@ -3079,9 +3079,9 @@ impl Store {
         Ok(live)
     }
 
-    /// Record a customer payment against an invoice. The payment entry (Dr
-    /// cash, Cr A/R) is journaled through the standard entry flow first,
-    /// then `invoice.payment_received`.
+    /// Record a customer payment against an invoice
+    /// ([`Self::receive_payment_with`], with no payment method or
+    /// reference).
     pub fn receive_payment(
         &mut self,
         invoice_id: InvoiceId,
@@ -3089,15 +3089,56 @@ impl Store {
         amount: Decimal,
         cash_account: AccountId,
     ) -> Result<EntryId, StoreError> {
-        self.rehearse(|l| l.receive_payment(invoice_id, date, amount, cash_account))?;
+        self.receive_payment_with(
+            invoice_id,
+            date,
+            amount,
+            cash_account,
+            &ledger_core::PaymentDetails::default(),
+        )
+    }
+
+    /// Record a customer payment against an invoice, with its payment
+    /// method and reference ([`Ledger::receive_payment_with`]). The
+    /// payment entry (Dr the deposit account, Cr A/R) is journaled through
+    /// the standard entry flow first (the reference in its description),
+    /// then `invoice.payment_received`, then the payment method as
+    /// `entry.instrument_set` (feature `payment_instruments`).
+    ///
+    /// ```text
+    /// GOAL: a payment is journaled once and replays to the same figures,
+    ///       in any version that can open the books.
+    /// SOURCE: docs/spec/rules.md B-27, B-38; plan/served.md P4b.7
+    ///         (document_standing).
+    /// SCENARIOS:
+    ///   1. IF the engine refuses it (overpaid, before the invoice, a
+    ///      deposit account that isn't cash): SHOULD refuse, journaling
+    ///      nothing.
+    ///   2. IF it is accepted only because a payment on the invoice was
+    ///      reversed (an older version, which counts every payment event,
+    ///      would see it paid above its total): SHOULD need the journal
+    ///      feature document_standing, refused (FormatUpgradePending) in
+    ///      books that haven't declared it, journaling nothing.
+    ///   3. IF it names a payment method: SHOULD need payment_instruments.
+    /// ```
+    pub fn receive_payment_with(
+        &mut self,
+        invoice_id: InvoiceId,
+        date: NaiveDate,
+        amount: Decimal,
+        cash_account: AccountId,
+        details: &ledger_core::PaymentDetails,
+    ) -> Result<EntryId, StoreError> {
+        self.rehearse(|l| l.receive_payment_with(invoice_id, date, amount, cash_account, details))?;
         self.approval_gate(
-            |l| l.receive_payment(invoice_id, date, amount, cash_account),
+            |l| l.receive_payment_with(invoice_id, date, amount, cash_account, details),
             false,
         )?;
         // The rehearsal above is the whole check: hand-written mirrors of
         // the engine's refusals drift from it (and were never reached).
+        self.ensure_payment_features(ledger_core::DocRef::Invoice(invoice_id), amount, details)?;
         let ar = self.ensure_control_account(&ledger_core::RECEIVABLES)?;
-        let description = format!("Payment on invoice {invoice_id}");
+        let description = details.description(&format!("Payment on invoice {invoice_id}"));
         let (entry_id, mut journaled) =
             self.journal_auto_entry(date, &description, cash_account, ar, amount)?;
         journaled.push(self.append_journal(
@@ -3110,9 +3151,15 @@ impl Store {
                 "entry_id": entry_id,
             }),
         )?);
-        let live = self
-            .ledger
-            .receive_payment(invoice_id, date, amount, cash_account)?;
+        if details.instrument.is_some() {
+            journaled.push(self.append_journal(
+                "entry.instrument_set",
+                crate::form1099::entry_instrument_set(entry_id, details.instrument),
+            )?);
+        }
+        let live =
+            self.ledger
+                .receive_payment_with(invoice_id, date, amount, cash_account, details)?;
         debug_assert_eq!(live, entry_id, "id allocator diverged from journal");
         for line in &journaled {
             apply_line_to_sqlite(&self.conn, line)?;
@@ -3120,8 +3167,8 @@ impl Store {
         Ok(live)
     }
 
-    /// Pay a vendor bill. The payment entry (Dr A/P, Cr cash) is journaled
-    /// through the standard entry flow first, then `bill.paid`.
+    /// Pay a vendor bill ([`Self::pay_bill_with`], with no payment method
+    /// or reference).
     pub fn pay_bill(
         &mut self,
         bill_id: BillId,
@@ -3129,10 +3176,36 @@ impl Store {
         amount: Decimal,
         cash_account: AccountId,
     ) -> Result<EntryId, StoreError> {
-        self.rehearse(|l| l.pay_bill(bill_id, date, amount, cash_account))?;
-        self.approval_gate(|l| l.pay_bill(bill_id, date, amount, cash_account), false)?;
+        self.pay_bill_with(
+            bill_id,
+            date,
+            amount,
+            cash_account,
+            &ledger_core::PaymentDetails::default(),
+        )
+    }
+
+    /// Pay a vendor bill, with its payment method and reference
+    /// ([`Ledger::pay_bill_with`]). The payment entry (Dr A/P, Cr the
+    /// payer account) is journaled through the standard entry flow first,
+    /// then `bill.paid`, then the payment method as `entry.instrument_set`;
+    /// as [`Self::receive_payment_with`] (its SCENARIOS too).
+    pub fn pay_bill_with(
+        &mut self,
+        bill_id: BillId,
+        date: NaiveDate,
+        amount: Decimal,
+        cash_account: AccountId,
+        details: &ledger_core::PaymentDetails,
+    ) -> Result<EntryId, StoreError> {
+        self.rehearse(|l| l.pay_bill_with(bill_id, date, amount, cash_account, details))?;
+        self.approval_gate(
+            |l| l.pay_bill_with(bill_id, date, amount, cash_account, details),
+            false,
+        )?;
+        self.ensure_payment_features(ledger_core::DocRef::Bill(bill_id), amount, details)?;
         let ap = self.ensure_control_account(&ledger_core::PAYABLES)?;
-        let description = format!("Payment on bill {bill_id}");
+        let description = details.description(&format!("Payment on bill {bill_id}"));
         let (entry_id, mut journaled) =
             self.journal_auto_entry(date, &description, ap, cash_account, amount)?;
         journaled.push(self.append_journal(
@@ -3145,12 +3218,65 @@ impl Store {
                 "entry_id": entry_id,
             }),
         )?);
-        let live = self.ledger.pay_bill(bill_id, date, amount, cash_account)?;
+        if details.instrument.is_some() {
+            journaled.push(self.append_journal(
+                "entry.instrument_set",
+                crate::form1099::entry_instrument_set(entry_id, details.instrument),
+            )?);
+        }
+        let live = self
+            .ledger
+            .pay_bill_with(bill_id, date, amount, cash_account, details)?;
         debug_assert_eq!(live, entry_id, "id allocator diverged from journal");
         for line in &journaled {
             apply_line_to_sqlite(&self.conn, line)?;
         }
         Ok(live)
+    }
+
+    /// The journal features a payment of `amount` on `doc` needs
+    /// ([`Self::receive_payment_with`] SCENARIOS 2 and 3): document_standing
+    /// when more than an older version thinks is still owed (the
+    /// document's total less every payment event it recorded, reversed
+    /// or not, its line tagged or not: `Ledger::payments_recorded`),
+    /// payment_instruments when it names a payment method.
+    fn ensure_payment_features(
+        &self,
+        doc: ledger_core::DocRef,
+        amount: Decimal,
+        details: &ledger_core::PaymentDetails,
+    ) -> Result<(), StoreError> {
+        let total = match doc {
+            ledger_core::DocRef::Invoice(id) => self.ledger.get_invoice(id).map(|i| i.total()),
+            ledger_core::DocRef::Bill(id) => self.ledger.get_bill(id).map(|b| b.total()),
+        };
+        if let Some(total) = total {
+            let older_owed = total?.checked_sub(self.ledger.payments_recorded(doc)?);
+            if older_owed.is_none_or(|owed| amount > owed) {
+                self.ensure_feature(crate::format::DOCUMENT_STANDING)?;
+            }
+        }
+        if details.instrument.is_some() {
+            self.ensure_feature(crate::format::PAYMENT_INSTRUMENTS)?;
+        }
+        Ok(())
+    }
+
+    /// Void an invoice or bill: reverse its own entry, described "Void
+    /// invoice 7: reason" ([`Ledger::void_document`]), journaled as the
+    /// reversal it is (`entry.reversed`: a void writes no event of its
+    /// own, plan P4b.7). Refused, journaling nothing, as
+    /// [`Ledger::check_void_document`] and [`Self::check_reverse_entry`]
+    /// refuse it (a payment standing on it, void already, a date before
+    /// it). Returns the reversal's entry.
+    pub fn void_document(
+        &mut self,
+        doc: ledger_core::DocRef,
+        date: NaiveDate,
+        reason: &str,
+    ) -> Result<EntryId, StoreError> {
+        let (target, description) = self.ledger.check_void_document(doc, date, reason)?;
+        self.reverse_entry(target, date, &description)
     }
 
     // ------------------------------------------------------------------
@@ -5137,7 +5263,7 @@ impl Store {
                 Some(orig) => {
                     // Reversals allocate the next id; replayed in id order the
                     // allocator is in sync, so the id must match the row.
-                    let got = ledger.reverse_entry(orig as u64, date, &description)?;
+                    let got = ledger.replay_reverse_entry(orig as u64, date, &description)?;
                     if got != id as u64 {
                         return Err(StoreError::ReplayMismatch(format!(
                             "reversal id: sqlite says {id}, replay got {got}"
@@ -5809,7 +5935,9 @@ fn replay_line(
         "entry.reversed" => {
             let want = get_u64(p, "id")?;
             let orig = get_u64(p, "reverses")?;
-            let got = ledger.reverse_entry(
+            // As journaled: a reversal later rules would refuse (a void
+            // under a payment that stands) replays (rules.md B-28).
+            let got = ledger.replay_reverse_entry(
                 orig,
                 parse_date(get_str(p, "date")?)?,
                 get_str(p, "description")?,
@@ -6385,54 +6513,11 @@ fn replay_line(
     Ok(())
 }
 
-/// Apply a payment to an invoice or bill row in the SQLite projection:
-/// bump `amount_paid` and re-derive the status. Amounts are TEXT in
-/// SQLite, so the math happens here in Rust with exact Decimals.
-/// `table` is `invoices` or `bills`; an internal constant, never user input.
-fn apply_document_payment(
-    conn: &Connection,
-    table: &str,
-    id: u64,
-    amount: Decimal,
-) -> Result<(), StoreError> {
-    let (paid_str, lines_json): (String, String) = conn.query_row(
-        &format!("SELECT amount_paid, lines_json FROM {table} WHERE id = ?"),
-        params![id as i64],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    )?;
-    let paid: Decimal = paid_str
-        .parse()
-        .map_err(|_| StoreError::JournalCorrupt(format!("bad amount_paid {paid_str}")))?;
-    let too_large = || StoreError::JournalCorrupt(format!("{table} {id}: amounts too large"));
-    let new_paid = paid.checked_add(amount).ok_or_else(too_large)?;
-    let lines: Vec<Value> = serde_json::from_str(&lines_json)
-        .map_err(|_| StoreError::JournalCorrupt("bad lines_json".into()))?;
-    let mut total = Decimal::ZERO;
-    for l in &lines {
-        let amount = get_str(l, "amount")?
-            .parse::<Decimal>()
-            .map_err(|_| StoreError::JournalCorrupt("bad line amount".into()))?;
-        total = total.checked_add(amount).ok_or_else(too_large)?;
-    }
-    let status = if new_paid.is_zero() {
-        "open"
-    } else if new_paid >= total {
-        "paid"
-    } else {
-        "partial"
-    };
-    conn.execute(
-        &format!("UPDATE {table} SET amount_paid = ?, status = ? WHERE id = ?"),
-        params![new_paid.to_string(), status, id as i64],
-    )?;
-    Ok(())
-}
-
 /// Apply one journal line to the SQLite projection: INSERTs plus the events
 /// mirror, then advance `last_applied_seq`. The applier is a pure function
 /// of the journal line: INSERTs for new facts, targeted UPDATEs/DELETEs
 /// for lifecycle changes (receipt linking, disposal, period close,
-/// cleared flags, document payments, fx rate updates).
+/// cleared flags, fx rate updates).
 /// The close target recorded in a `period.closed` line. Absent or
 /// `"retained_earnings"`: Retained Earnings with no sweeps (every journal
 /// written before targets existed).
@@ -7219,15 +7304,13 @@ fn apply_line_rows(conn: &Connection, line: &JournalLine) -> Result<(), StoreErr
                 StoreError::JournalCorrupt("invoice.created without lines".into())
             })?;
             conn.execute(
-                "INSERT INTO invoices(id, customer_id, date, due_date, lines_json, amount_paid, status, entry_id) VALUES (?,?,?,?,?,?,?,?)",
+                "INSERT INTO invoices(id, customer_id, date, due_date, lines_json, entry_id) VALUES (?,?,?,?,?,?)",
                 params![
                     get_u64(p, "id")? as i64,
                     get_u64(p, "customer_id")? as i64,
                     get_str(p, "date")?,
                     get_str(p, "due_date")?,
                     lines.to_string(),
-                    "0",
-                    "open",
                     get_u64(p, "entry_id")? as i64,
                 ],
             )?;
@@ -7237,15 +7320,13 @@ fn apply_line_rows(conn: &Connection, line: &JournalLine) -> Result<(), StoreErr
                 .get("lines")
                 .ok_or_else(|| StoreError::JournalCorrupt("bill.created without lines".into()))?;
             conn.execute(
-                "INSERT INTO bills(id, vendor_id, date, due_date, lines_json, amount_paid, status, entry_id) VALUES (?,?,?,?,?,?,?,?)",
+                "INSERT INTO bills(id, vendor_id, date, due_date, lines_json, entry_id) VALUES (?,?,?,?,?,?)",
                 params![
                     get_u64(p, "id")? as i64,
                     get_u64(p, "vendor_id")? as i64,
                     get_str(p, "date")?,
                     get_str(p, "due_date")?,
                     lines.to_string(),
-                    "0",
-                    "open",
                     get_u64(p, "entry_id")? as i64,
                 ],
             )?;
@@ -7257,17 +7338,10 @@ fn apply_line_rows(conn: &Connection, line: &JournalLine) -> Result<(), StoreErr
                 ],
             )?;
         }
-        "invoice.payment_received" => {
-            let amount: Decimal = get_str(p, "amount")?
-                .parse()
-                .map_err(|_| StoreError::JournalCorrupt("bad amount".into()))?;
-            apply_document_payment(conn, "invoices", get_u64(p, "invoice_id")?, amount)?;
-        }
+        // A payment moves no document row: what a document is paid is read
+        // from the ledger lines tagged with it (schema v15, rules.md B-38).
+        "invoice.payment_received" => {}
         "bill.paid" => {
-            let amount: Decimal = get_str(p, "amount")?
-                .parse()
-                .map_err(|_| StoreError::JournalCorrupt("bad amount".into()))?;
-            apply_document_payment(conn, "bills", get_u64(p, "bill_id")?, amount)?;
             conn.execute(
                 "INSERT OR REPLACE INTO entry_vendors(entry_id, vendor_id) \
                  SELECT ?, vendor_id FROM bills WHERE id = ?",

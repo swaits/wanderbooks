@@ -370,8 +370,9 @@ mod tests {
 
     /// Hand-worked: A contributes 300 cash and a 700 laptop in one entry
     /// (Dr 1000 300, Dr 1500 700 / Cr 3000 1000); B contributes a 200
-    /// receivable-backed promise (Dr 1200 200 / Cr 3001 200, cash by
-    /// INVARIANT 3) and pays a 50 expense (Dr 6999 50 / Cr 3001 50).
+    /// receivable-backed promise (Dr 1200 200 / Cr 3001 200, as an earlier
+    /// version could write it; cash by INVARIANT 3) and pays a 50 expense
+    /// (Dr 6999 50 / Cr 3001 50).
     #[test]
     fn contributions_split_into_cash_and_property() {
         let mut l = Ledger::new(Currency::USD);
@@ -402,7 +403,9 @@ mod tests {
             (equip, Side::Debit, "700"),
             (a, Side::Credit, "1000"),
         ]);
-        post(&[(ar, Side::Debit, "200"), (b, Side::Credit, "200")]);
+        // A hand line on receivables: only books an earlier version wrote
+        // hold one now (the control guard, rules.md B-38), so replayed.
+        crate::parties::replaying(|| post(&[(ar, Side::Debit, "200"), (b, Side::Credit, "200")]));
         post(&[(exp, Side::Debit, "50"), (b, Side::Credit, "50")]);
         let members = [
             MemberCapital {

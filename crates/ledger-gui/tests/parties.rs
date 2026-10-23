@@ -2060,3 +2060,49 @@ fn the_journal_says_what_each_1099_record_did() {
         ]
     );
 }
+
+/// A document dated after today is read as of its own date (Books::doc_today):
+/// a post-dated bill still owes its total in the party's open bills (and
+/// in Cash's "Coming up"), and is never late; one dated today or before
+/// reads as of today (review of P4b S1: the viewer dropped post-dated
+/// documents).
+#[test]
+fn a_post_dated_bill_still_shows_what_it_will_owe() {
+    let dir = TempDir::new("post-dated");
+    let data = dir.0.join("books-data");
+    let mut s = Store::create(&data, Currency::USD).unwrap();
+    let bank = s
+        .add_account("1000", "Checking", AccountType::Asset, None, false)
+        .unwrap();
+    let vendor = s.add_vendor("Tobin Harlow Supply").unwrap();
+    let later = s
+        .create_bill(vendor, d(2026, 11, 1), d(2026, 12, 1), doc(45_000))
+        .unwrap();
+    let now = s
+        .create_bill(vendor, d(2026, 9, 1), d(2026, 9, 30), doc(10_000))
+        .unwrap();
+    s.pay_bill(now, d(2026, 9, 10), cents(4_000), bank).unwrap();
+    drop(s);
+    let b = load(&dir.0);
+    let ahead = b
+        .doc_today(ledger_core::DocRef::Bill(later))
+        .unwrap()
+        .expect("read as of its own date");
+    assert_eq!((ahead.outstanding, ahead.overdue_days), (cents(45_000), 0));
+    let late = b
+        .doc_today(ledger_core::DocRef::Bill(now))
+        .unwrap()
+        .unwrap();
+    assert_eq!(late.outstanding, cents(6_000));
+    assert!(late.overdue_days > 0, "{late:?}");
+    let party = b
+        .ledger
+        .party_of_vendor(vendor)
+        .and_then(|p| b.party(p).cloned())
+        .unwrap();
+    assert_eq!(party.open_bills, Some(cents(51_000)));
+    assert_eq!(
+        b.owed_today(ledger_core::DocRef::Bill(later)),
+        Ok(cents(45_000))
+    );
+}

@@ -360,7 +360,10 @@ impl Model {
 // Commands
 // ---------------------------------------------------------------------------
 
-const CODES: [&str; 7] = ["1000", "2000", "3000", "3999", "4000", "6000", "1900"];
+// No 1200 or 2000: a line by hand on a receivables or payables account is
+// refused (the control guard, rules.md B-38), which this model leaves to
+// spec_arap.rs.
+const CODES: [&str; 7] = ["1000", "2100", "3000", "3999", "4000", "6000", "1900"];
 /// New names: a free one, its own in other capitals and spacing, a
 /// sibling's (the accounts are named for their codes), blank, nine
 /// digits, the engine's own name for retained earnings.

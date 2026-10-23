@@ -1006,6 +1006,12 @@ mod refusals {
         Bill(u64, u32, u32, i64),
         ReceivePayment(u64, u32, i64, u64),
         PayBill(u64, u32, i64, u64),
+        /// A payment with its method and reference (plan P4b S1): an
+        /// invoice's (true) or a bill's, id, day, cents, account, payment
+        /// method (maybe unknown), reference (none, a good one, two lines).
+        PayWith(bool, u64, u32, i64, u64, Option<u64>, u8),
+        /// Void an invoice (true) or a bill: id, day, reason (good, blank).
+        Void(bool, u64, u32, bool),
         AddClass(u8),
         SetLineClass(u64, usize, Option<u32>),
         SetEntryVendor(u64, Option<u64>),
@@ -1101,6 +1107,18 @@ mod refusals {
                 .prop_map(|(i, d, a, c)| Op::ReceivePayment(i, d, a, c)),
             (0u64..4, 0u32..120, arb_cents(), 0u64..10)
                 .prop_map(|(b, d, a, c)| Op::PayBill(b, d, a, c)),
+            (
+                any::<bool>(),
+                0u64..4,
+                0u32..120,
+                arb_cents(),
+                0u64..10,
+                prop::option::of(0u64..4),
+                0u8..3
+            )
+                .prop_map(|(k, i, d, a, c, m, r)| Op::PayWith(k, i, d, a, c, m, r)),
+            (any::<bool>(), 0u64..4, 0u32..120, any::<bool>())
+                .prop_map(|(k, i, d, r)| Op::Void(k, i, d, r)),
             (0u8..3).prop_map(Op::AddClass),
             (id.clone(), 0usize..4, prop::option::of(0u32..4))
                 .prop_map(|(e, i, c)| Op::SetLineClass(e, i, c)),
@@ -1286,6 +1304,32 @@ mod refusals {
                 .receive_payment(i, day(d), Decimal::new(a, 2), c)
                 .map(drop),
             Op::PayBill(b, d, a, c) => store.pay_bill(b, day(d), Decimal::new(a, 2), c).map(drop),
+            Op::PayWith(invoice, i, d, a, c, m, r) => {
+                let details = ledger_core::PaymentDetails {
+                    instrument: m,
+                    reference: [None, Some("ch_3Nx 0042"), Some("two\nlines")][r as usize]
+                        .map(str::to_string),
+                };
+                if invoice {
+                    store
+                        .receive_payment_with(i, day(d), Decimal::new(a, 2), c, &details)
+                        .map(drop)
+                } else {
+                    store
+                        .pay_bill_with(i, day(d), Decimal::new(a, 2), c, &details)
+                        .map(drop)
+                }
+            }
+            Op::Void(invoice, i, d, reason) => {
+                let doc = if invoice {
+                    ledger_core::DocRef::Invoice(i)
+                } else {
+                    ledger_core::DocRef::Bill(i)
+                };
+                store
+                    .void_document(doc, day(d), if reason { "duplicate" } else { " " })
+                    .map(drop)
+            }
             Op::AddClass(n) => store.add_class(["A", "B", ""][n as usize]).map(drop),
             Op::SetLineClass(e, i, c) => store.set_line_class(e, i, c),
             Op::SetEntryVendor(e, v) => store.set_entry_vendor(e, v),
@@ -2762,8 +2806,10 @@ fn searching_entries_filters_and_pages() {
     );
 }
 
-/// The database's invoice row follows its payments: amount paid and
-/// open / partial / paid, matching the ledger.
+/// The database's invoice row keeps no figure of its own (schema 15,
+/// rules.md B-38): what it has been paid is the ledger's, read from the
+/// lines tagged with it, so a reversed payment no longer counts; the row
+/// is the same before and after each payment, and verify agrees.
 #[test]
 fn the_database_tracks_what_an_invoice_has_been_paid() {
     use ledger_core::arap::DocumentLine;
@@ -2784,24 +2830,37 @@ fn the_database_tracks_what_an_invoice_has_been_paid() {
             }],
         )
         .unwrap();
-    let row = |dir: &std::path::Path| -> (String, String) {
+    let row = |dir: &std::path::Path| -> String {
         let conn = rusqlite::Connection::open(dir.join(ledger_store::db_file())).unwrap();
-        conn.query_row(
-            "SELECT amount_paid, status FROM invoices WHERE id = ?",
-            [inv as i64],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
+        conn.query_row("SELECT * FROM invoices WHERE id = ?", [inv as i64], |r| {
+            Ok(format!(
+                "{:?}",
+                (0..6)
+                    .map(|i| r.get_ref(i).map(|v| format!("{v:?}")))
+                    .collect::<Vec<_>>()
+            ))
+        })
         .unwrap()
     };
-    assert_eq!(row(&dir).1, "open");
-    store
+    let before = row(&dir);
+    let paid = |s: &Store| {
+        s.ledger()
+            .invoice_state(inv, day(31))
+            .unwrap()
+            .unwrap()
+            .paid
+    };
+    let p = store
         .receive_payment(inv, day(10), Decimal::from(40), cash)
         .unwrap();
-    assert_eq!(row(&dir), ("40".into(), "partial".into()));
+    assert_eq!(paid(&store), Decimal::from(40));
+    store.reverse_entry(p, day(12), "Bounced").unwrap();
+    assert_eq!(paid(&store), Decimal::ZERO);
     store
         .receive_payment(inv, day(20), Decimal::from(60), cash)
         .unwrap();
-    assert_eq!(row(&dir), ("100".into(), "paid".into()));
+    assert_eq!(paid(&store), Decimal::from(60));
+    assert_eq!(row(&dir), before, "the row holds no figure");
     store.verify().unwrap();
 }
 

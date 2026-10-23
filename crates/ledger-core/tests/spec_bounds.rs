@@ -605,9 +605,10 @@ fn replayed_bases_and_shares_past_the_limit_are_accepted() {
     );
 }
 
-/// A replayed payment is as journaled: no bound but exact arithmetic (a
-/// paid amount past it is refused, never wrapped). The command's bound is
-/// the balance (Overpayment).
+/// A replayed payment is as journaled: no bound (rules.md B-28), and no
+/// refusal: it tags the line of its entry that carries it, or (an entry
+/// it doesn't match) nothing. The command's bound is what the invoice
+/// owes (Overpayment).
 #[test]
 fn replayed_payments_are_as_journaled() {
     let mut b = books();
@@ -630,24 +631,19 @@ fn replayed_payments_are_as_journaled() {
             .receive_payment(invoice, d(2026, 1, 15), too_big(), b.cash),
         Err(LedgerError::Overpayment(..))
     ));
+    let before = b.ledger.clone();
     b.ledger
         .replay_invoice_payment(invoice, too_big(), 98)
         .unwrap();
     b.ledger
         .replay_invoice_payment(invoice, Decimal::MAX - too_big(), 99)
         .unwrap();
+    // No entry 98 or 99 carries them: nothing is tagged, nothing paid.
+    let doc = ledger_core::DocRef::Invoice(invoice);
+    assert_eq!(b.ledger.doc_lines(doc), before.doc_lines(doc));
     assert_eq!(
-        b.ledger.get_invoice(invoice).unwrap().amount_paid,
-        Decimal::MAX
-    );
-    assert!(matches!(
-        b.ledger.replay_invoice_payment(invoice, Decimal::ONE, 100),
-        Err(LedgerError::TooLargeToCompute(_))
-    ));
-    // Refused before anything changed.
-    assert_eq!(
-        b.ledger.get_invoice(invoice).unwrap().amount_paid,
-        Decimal::MAX
+        b.ledger.get_invoice(invoice).unwrap().balance(),
+        Ok(Decimal::new(10000, 2))
     );
 }
 

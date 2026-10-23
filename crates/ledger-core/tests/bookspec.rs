@@ -383,6 +383,12 @@ struct Event {
     /// The payment method (an `setup.instruments` label) it was paid with.
     #[serde(default)]
     instrument: Option<String>,
+    /// An entry as an earlier version could write it and this version's
+    /// commands refuse: a line by hand on a receivables or payables
+    /// account (the control guard, rules.md B-38). Posted as replay posts
+    /// it, since books that hold it must still read right.
+    #[serde(default)]
+    older: bool,
 }
 
 /// A depreciation run of `asset` for `period` ("YYYY-MM"): what is due
@@ -1316,6 +1322,10 @@ impl<'a> Books<'a> {
             }
         );
         assert!(
+            !e.older || kind == "lines",
+            "{ex} event {n}: older is an entry's lines, as an earlier version wrote them"
+        );
+        assert!(
             e.payee.is_none() || kind == "lines",
             "{ex} event {n}: a payee is an entry's: a reversal takes its original's, a bill names its vendor, an invoice its customer, a close and a command have none"
         );
@@ -1471,25 +1481,32 @@ impl<'a> Books<'a> {
         let day = || when.expect("checked: dated");
         match kind {
             "lines" => {
-                let entry = self.store.create_entry(day(), description)?;
-                for (i, line) in e.lines.iter().enumerate() {
-                    let side = match line.side.as_str() {
-                        "debit" => Side::Debit,
-                        "credit" => Side::Credit,
-                        other => panic!("{what}: side {other:?}"),
-                    };
-                    let amount = Money::new(money(&line.amount), self.currency);
-                    let account = self.id(&line.account);
-                    self.store.add_line(entry, account, side, amount)?;
-                    // Tagged as books.add_line tags it: after the line.
-                    if let Some(p) = &line.project {
-                        let class = *self.projects.get(p).unwrap_or_else(|| {
-                            panic!("{what}: project {p:?} not in setup.projects")
-                        });
-                        self.store.set_line_class(entry, i, Some(class))?;
+                let post = |this: &mut Self| -> Result<(), StoreError> {
+                    let entry = this.store.create_entry(day(), description)?;
+                    for (i, line) in e.lines.iter().enumerate() {
+                        let side = match line.side.as_str() {
+                            "debit" => Side::Debit,
+                            "credit" => Side::Credit,
+                            other => panic!("{what}: side {other:?}"),
+                        };
+                        let amount = Money::new(money(&line.amount), this.currency);
+                        let account = this.id(&line.account);
+                        this.store.add_line(entry, account, side, amount)?;
+                        // Tagged as books.add_line tags it: after the line.
+                        if let Some(p) = &line.project {
+                            let class = *this.projects.get(p).unwrap_or_else(|| {
+                                panic!("{what}: project {p:?} not in setup.projects")
+                            });
+                            this.store.set_line_class(entry, i, Some(class))?;
+                        }
                     }
+                    this.store.post_entry(entry)
+                };
+                if e.older {
+                    ledger_core::parties::replaying(|| post(self))
+                } else {
+                    post(self)
                 }
-                self.store.post_entry(entry)
             }
             "reverses" => {
                 let of = e.reverses.expect("checked: a reversal");

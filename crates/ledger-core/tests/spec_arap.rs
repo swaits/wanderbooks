@@ -173,9 +173,10 @@ fn net_for(lines: &[(AccountId, Side, Decimal)], account: AccountId) -> Decimal 
 // ------------------------------------------------- Invoice / Bill methods
 
 /// Oracle: Invoice doc: total() is "Total of all lines", balance() is
-/// "Amount still owed" = total - amount_paid.
+/// "Amount still owed" (its `owed`, derived by the ledger beside
+/// amount_paid: total - amount_paid while it stands).
 #[test]
-fn invoice_total_is_sum_of_lines_and_balance_is_total_minus_paid() {
+fn invoice_total_is_sum_of_lines_and_balance_is_what_is_owed() {
     let inv = Invoice {
         id: 7,
         customer_id: 1,
@@ -183,6 +184,7 @@ fn invoice_total_is_sum_of_lines_and_balance_is_total_minus_paid() {
         due_date: d(2026, 3, 31),
         lines: vec![line("a", "100.10"), line("b", "0.05"), line("c", "49.85")],
         amount_paid: dec("60.00"),
+        owed: dec("90.00"),
         status: DocumentStatus::Partial,
         entry_id: 1,
     };
@@ -190,9 +192,9 @@ fn invoice_total_is_sum_of_lines_and_balance_is_total_minus_paid() {
     assert_eq!(inv.balance().unwrap(), dec("90.00"));
 }
 
-/// Oracle: Bill doc: total() is the sum of lines, balance() total - paid.
+/// Oracle: Bill doc: total() is the sum of lines, balance() what is owed.
 #[test]
-fn bill_total_is_sum_of_lines_and_balance_is_total_minus_paid() {
+fn bill_total_is_sum_of_lines_and_balance_is_what_is_owed() {
     let bill = Bill {
         id: 3,
         vendor_id: 2,
@@ -200,6 +202,7 @@ fn bill_total_is_sum_of_lines_and_balance_is_total_minus_paid() {
         due_date: d(2026, 3, 1),
         lines: vec![line("x", "19.99"), line("y", "0.01")],
         amount_paid: dec("20.00"),
+        owed: Decimal::ZERO,
         status: DocumentStatus::Paid,
         entry_id: 9,
     };

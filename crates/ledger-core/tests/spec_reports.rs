@@ -40,12 +40,18 @@ fn usd(cents: i64) -> Money {
 }
 
 fn post(l: &mut Ledger, date: NaiveDate, desc: &str, lines: &[(AccountId, Side, i64)]) -> EntryId {
-    let e = l.create_entry(date, desc);
-    for &(a, s, cents) in lines {
-        l.add_line(e, a, s, usd(cents)).unwrap();
-    }
-    l.post_entry(e).unwrap();
-    e
+    // As replay posts it: these books hold hand lines on receivables or
+    // payables (1200, 2000), which books an earlier version wrote still
+    // hold and every report must read; the control guard (rules.md B-38)
+    // refuses them as new work.
+    ledger_core::parties::replaying(|| {
+        let e = l.create_entry(date, desc);
+        for &(a, s, cents) in lines {
+            l.add_line(e, a, s, usd(cents)).unwrap();
+        }
+        l.post_entry(e).unwrap();
+        e
+    })
 }
 
 fn draft(l: &mut Ledger, date: NaiveDate, lines: &[(AccountId, Side, i64)]) -> EntryId {
@@ -1784,22 +1790,28 @@ fn build_ordered(gens: &[Gen], scale: i64, order: &[usize], tag: bool) -> Books 
     let class_a = l.add_class("Alpha").unwrap();
     let class_b = l.add_class("Beta").unwrap();
     let mut entries = Vec::new();
-    for g in gens {
-        let e = l.create_entry(g.date(), "gen");
-        for (n, (i, side, cents)) in g.legs(scale).into_iter().enumerate() {
-            l.add_line(e, ids[i], side, usd(cents)).unwrap();
-            if tag {
-                let k = match g.classes[n] {
-                    1 => Some(class_a),
-                    2 => Some(class_b),
-                    _ => None,
-                };
-                l.set_line_class(e, n, k).unwrap();
+    // As replay posts it: these books hold hand lines on receivables or
+    // payables (1200, 2000), which books an earlier version wrote still
+    // hold and every report must read; the control guard (rules.md B-38)
+    // refuses them as new work.
+    ledger_core::parties::replaying(|| {
+        for g in gens {
+            let e = l.create_entry(g.date(), "gen");
+            for (n, (i, side, cents)) in g.legs(scale).into_iter().enumerate() {
+                l.add_line(e, ids[i], side, usd(cents)).unwrap();
+                if tag {
+                    let k = match g.classes[n] {
+                        1 => Some(class_a),
+                        2 => Some(class_b),
+                        _ => None,
+                    };
+                    l.set_line_class(e, n, k).unwrap();
+                }
             }
+            l.post_entry(e).unwrap();
+            entries.push(e);
         }
-        l.post_entry(e).unwrap();
-        entries.push(e);
-    }
+    });
     Books {
         l,
         ids,
@@ -2000,12 +2012,15 @@ proptest! {
         let mut b = build(&gens);
         let tb0 = tb_lines(&trial_balance_as_of(&b.l, day(as_of)));
         let pl0 = pnl_key(&profit_and_loss_for_period(&b.l, d(2026, 1, 1), day(as_of), None).unwrap());
-        let e = b.l.create_entry(extra.date(), "extra");
-        for (i, side, cents) in extra.legs(1) {
-            b.l.add_line(e, b.ids[i], side, usd(cents)).unwrap();
-        }
-        b.l.post_entry(e).unwrap();
-        b.l.reverse_entry(e, extra.date(), "undo").unwrap();
+        // As replay posts it (hand lines on 1200 or 2000: see `post`).
+        ledger_core::parties::replaying(|| {
+            let e = b.l.create_entry(extra.date(), "extra");
+            for (i, side, cents) in extra.legs(1) {
+                b.l.add_line(e, b.ids[i], side, usd(cents)).unwrap();
+            }
+            b.l.post_entry(e).unwrap();
+            b.l.reverse_entry(e, extra.date(), "undo").unwrap();
+        });
         prop_assert_eq!(tb_lines(&trial_balance_as_of(&b.l, day(as_of))), tb0);
         let pl1 = profit_and_loss_for_period(&b.l, d(2026, 1, 1), day(as_of), None).unwrap();
         prop_assert_eq!(sl_nonzero(&pl1.revenue), pl0.0.into_iter().filter(|x| !x.1.is_zero()).collect::<Vec<_>>());
@@ -2027,13 +2042,16 @@ proptest! {
         let gl = gl_key(&general_ledger(&b.l, s0, e0).unwrap());
         let cf = cf_key(&cash_flow(&b.l, &cfp).unwrap());
         let snap = snapshot(&b.l).unwrap();
-        for g in &drafts {
-            let id = b.l.create_entry(g.date(), "draft");
-            for (n, (i, side, cents)) in g.legs(1).into_iter().enumerate() {
-                if g.mode == 0 && n == 1 { continue; } // some drafts unbalanced
-                b.l.add_line(id, b.ids[i], side, usd(cents)).unwrap();
+        // As replay adds them (hand lines on 1200 or 2000: see `post`).
+        ledger_core::parties::replaying(|| {
+            for g in &drafts {
+                let id = b.l.create_entry(g.date(), "draft");
+                for (n, (i, side, cents)) in g.legs(1).into_iter().enumerate() {
+                    if g.mode == 0 && n == 1 { continue; } // some drafts unbalanced
+                    b.l.add_line(id, b.ids[i], side, usd(cents)).unwrap();
+                }
             }
-        }
+        });
         prop_assert_eq!(tb_lines(&trial_balance_as_of(&b.l, e0)), tb);
         prop_assert_eq!(pnl_key(&profit_and_loss_for_period(&b.l, s0, e0, None).unwrap()), pl);
         prop_assert_eq!(bs_key(&balance_sheet_as_of(&b.l, e0).unwrap()), bs);

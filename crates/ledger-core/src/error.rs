@@ -228,9 +228,10 @@ pub enum LedgerError {
         role: String,
     },
 
-    /// A balance sheet role (receivables, payables, withholdings, retained
-    /// earnings) can't move while its account holds a balance: the control
-    /// account must keep agreeing with what it controls.
+    /// A balance sheet role (withholdings, retained earnings) can't move
+    /// while its account holds a balance: the control account must keep
+    /// agreeing with what it controls. Receivables and payables refuse
+    /// with [`Self::DocumentRoleHoldsBalance`] instead.
     #[error(
         "{role} is in account {code} \"{name}\", which holds {balance}; move that balance to the \
          new account with a journal entry first, then assign the role"
@@ -607,6 +608,105 @@ pub enum LedgerError {
     /// Payment exceeds the remaining balance.
     #[error("payment of {0} exceeds remaining balance of {1}")]
     Overpayment(Decimal, Decimal),
+
+    /// A payment's details were refused (its reference): the message says
+    /// why.
+    #[error("{0}")]
+    InvalidPayment(String),
+
+    /// Receivables or payables can't move while their account holds a
+    /// balance (rules.md B-23, B-38): that balance is the documents', and
+    /// a hand entry moving it is refused by the control guard; it moves
+    /// with its documents (plan P4b S7).
+    #[error(
+        "{role} is in account {code} \"{name}\", which holds {balance} owed on its documents; \
+         the role can't move until that is settled (paid or voided) or until moving a balance \
+         with its documents is built: a hand entry to the account is refused"
+    )]
+    DocumentRoleHoldsBalance {
+        /// The role, e.g. "accounts receivable".
+        role: String,
+        /// The code of the account filling it now.
+        code: String,
+        /// That account's name.
+        name: String,
+        /// Its balance.
+        balance: rust_decimal::Decimal,
+    },
+
+    /// Receivables or payables can't move to an account holding lines
+    /// that are no document's (rules.md B-38 INVARIANT 1): they would
+    /// become hand lines on a control account.
+    #[error(
+        "account {code} \"{name}\" holds lines no invoice or bill carries (entry {entry} first), \
+         so it can't take the {role} role: give the role an account of its own"
+    )]
+    RoleAccountHasHandLines {
+        /// The role, e.g. "accounts receivable".
+        role: String,
+        /// The account's code.
+        code: String,
+        /// Its name.
+        name: String,
+        /// The first posted entry with such a line.
+        entry: u64,
+    },
+
+    /// A payment's deposit or payer account must be a postable asset or
+    /// liability that holds no role: a bank, a card, a member's payable
+    /// (plan P4b.3, "Payment accounts").
+    #[error(
+        "account {code} \"{name}\" can't take a payment: {why}; pay into or from a bank or card account (or a member's payable)"
+    )]
+    PaymentAccount {
+        /// The account's code.
+        code: String,
+        /// Its name.
+        name: String,
+        /// Why not, e.g. "it holds the accounts receivable role".
+        why: String,
+    },
+
+    /// A line on a receivables or payables control account carries no
+    /// document (rules.md B-23, B-38): the control account must always
+    /// equal its documents, so only the document commands post there.
+    #[error(
+        "account {account} is a control account (its balance is its invoices or bills): {at} can't be posted there by hand. Use books.create_invoice, books.receive_payment, books.create_bill or books.pay_bill; to void a document, books.reverse_entry of its entry"
+    )]
+    UntaggedControlLine {
+        /// The account's code and name, e.g. `1200 "Accounts Receivable"`.
+        account: String,
+        /// Which line, e.g. "line 1 of entry 14", "line 0 of the
+        /// recurring template".
+        at: String,
+    },
+
+    /// A reversal or payment would leave a document owing less than nothing
+    /// or more than its total at some date (rules.md B-38 INVARIANT 2): the
+    /// message says which document, when, and what to reverse first.
+    #[error("{0}")]
+    DocumentBounds(String),
+
+    /// A reversal of an entry an invoice or bill owns is dated before that
+    /// entry (rules.md B-9, B-38): a correction comes after what it
+    /// corrects.
+    #[error(
+        "entry {entry} belongs to {document} and is dated {original}: its reversal can't be dated before it, on {date}"
+    )]
+    DocumentReversalBeforeOriginal {
+        /// The entry reversed.
+        entry: u64,
+        /// The document, e.g. "invoice 7".
+        document: String,
+        /// The entry's date.
+        original: chrono::NaiveDate,
+        /// The reversal's date.
+        date: chrono::NaiveDate,
+    },
+
+    /// A document can't be voided as asked: the message says why.
+    #[error("{0}")]
+    InvalidVoid(String),
 
     /// Invoice/bill due date is before its date.
     #[error("due date {0} is before document date")]

@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 704ab49c9bea84359475c3afa56c3354275a353670fc71156fba151f846f4f73 # shrinks to first = [Create(false, 0, 1), Create(false, 0, 1)], then = [Close(1), Hand(false, 1)]

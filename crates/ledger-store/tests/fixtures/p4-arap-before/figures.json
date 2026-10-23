@@ -1,0 +1,96 @@
+{
+  "at": {
+    "2026-01-22": {
+      "ap_aging": [],
+      "ar_aging": []
+    },
+    "2026-01-31": {
+      "ap_aging": [],
+      "ar_aging": []
+    },
+    "2026-03-31": {
+      "ap_aging": [
+        {
+          "current": "0",
+          "days_30": "40",
+          "days_60": "0",
+          "days_90": "0",
+          "days_90_plus": "0",
+          "name": "Tobin Harlow Supply"
+        }
+      ],
+      "ar_aging": [
+        {
+          "current": "180",
+          "days_30": "200",
+          "days_60": "0",
+          "days_90": "0",
+          "days_90_plus": "0",
+          "name": "Morgan Ellis Studio"
+        }
+      ]
+    }
+  },
+  "bills": [
+    {
+      "balance": "0",
+      "id": 1,
+      "status": "Paid"
+    },
+    {
+      "balance": "40",
+      "id": 2,
+      "status": "Open"
+    }
+  ],
+  "invoices": [
+    {
+      "balance": "0",
+      "id": 1,
+      "status": "Paid"
+    },
+    {
+      "balance": "200",
+      "id": 2,
+      "status": "Open"
+    },
+    {
+      "balance": "180",
+      "id": 3,
+      "status": "Partial"
+    }
+  ],
+  "trial_balance": [
+    {
+      "code": "1000",
+      "credit": "0",
+      "debit": "1120"
+    },
+    {
+      "code": "1200",
+      "credit": "0",
+      "debit": "305"
+    },
+    {
+      "code": "2000",
+      "credit": "120",
+      "debit": "0"
+    },
+    {
+      "code": "3000",
+      "credit": "1000",
+      "debit": "0"
+    },
+    {
+      "code": "4000",
+      "credit": "425",
+      "debit": "0"
+    },
+    {
+      "code": "6999",
+      "credit": "0",
+      "debit": "120"
+    }
+  ],
+  "written_by": "wanderbooks main 0df7f52a, before P4b S1"
+}

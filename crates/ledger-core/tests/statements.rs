@@ -9,9 +9,9 @@
 //! | Jan 2  | owner contributes 10,000      | 1000 Cash     | 3000 Capital  |
 //! | Jan 15 | client pays 2,500             | 1000 Cash     | 4000 Revenue  |
 //! | Jan 20 | rent 800                      | 6100 Rent     | 1000 Cash     |
-//! | Feb 3  | software 120 on the card      | 6000 Software | 2000 Card     |
+//! | Feb 3  | software 120 on the card      | 6000 Software | 2050 Card     |
 //! | Feb 10 | client pays 1,000             | 1000 Cash     | 4000 Revenue  |
-//! | Feb 25 | pay the card 120              | 2000 Card     | 1000 Cash     |
+//! | Feb 25 | pay the card 120              | 2050 Card     | 1000 Cash     |
 
 use chrono::NaiveDate;
 use ledger_core::reports::{
@@ -57,7 +57,7 @@ fn books(close_january: bool) -> Books {
         .add_account("1000", "Cash", AccountType::Asset, None, false)
         .unwrap();
     let card = l
-        .add_account("2000", "Card", AccountType::Liability, None, false)
+        .add_account("2050", "Card", AccountType::Liability, None, false)
         .unwrap();
     let capital = l
         .add_account("3000", "Capital", AccountType::Equity, None, false)
@@ -160,7 +160,7 @@ fn balance_sheet_is_as_of_the_date() {
     // Feb 15: cash 12,700; the card owes 120; earnings 1,700 + 880.
     let mid = balance_sheet_as_of(&b.ledger, d(2, 15)).unwrap();
     assert_eq!(mid.total_assets, dec(12_700));
-    assert_eq!(mid.liabilities, vec![line("2000", "Card", 120)]);
+    assert_eq!(mid.liabilities, vec![line("2050", "Card", 120)]);
     assert_eq!(mid.current_earnings, dec(2_580));
     assert_eq!(mid.total_liabilities + mid.total_equity, dec(12_700));
 
@@ -307,7 +307,7 @@ fn general_ledger_runs_balances_by_account() {
     let gl = general_ledger(&b.ledger, d(2, 1), d(2, 28)).unwrap();
     let codes: Vec<&str> = gl.accounts.iter().map(|a| a.code.as_str()).collect();
     // Every account with a beginning balance or February activity, by code.
-    assert_eq!(codes, ["1000", "2000", "3000", "4000", "6000", "6100"]);
+    assert_eq!(codes, ["1000", "2050", "3000", "4000", "6000", "6100"]);
 
     let cash = &gl.accounts[0];
     assert_eq!(cash.beginning_balance, dec(11_700));
@@ -320,7 +320,7 @@ fn general_ledger_runs_balances_by_account() {
         p,
         [
             (dec(1_000), dec(0), "4000 Revenue", dec(12_700)),
-            (dec(0), dec(120), "2000 Card", dec(12_580)),
+            (dec(0), dec(120), "2050 Card", dec(12_580)),
         ]
     );
     assert_eq!(cash.ending_balance, dec(12_580));
@@ -354,7 +354,7 @@ fn general_ledger_marks_compound_entries_as_split() {
         .add_account("1000", "Cash", AccountType::Asset, None, false)
         .unwrap();
     let card = l
-        .add_account("2000", "Card", AccountType::Liability, None, false)
+        .add_account("2050", "Card", AccountType::Liability, None, false)
         .unwrap();
     let soft = l
         .add_account("6000", "Software", AccountType::Expense, None, false)
@@ -373,7 +373,7 @@ fn general_ledger_marks_compound_entries_as_split() {
     // The debit side has two other accounts; each credit has one.
     assert_eq!(split_of("6000"), ("-Split-".to_string(), e));
     assert_eq!(split_of("1000"), ("6000 Software".to_string(), e));
-    assert_eq!(split_of("2000"), ("6000 Software".to_string(), e));
+    assert_eq!(split_of("2050"), ("6000 Software".to_string(), e));
 }
 
 /// Two members, 50/50: Alice and Bob. January: Alice puts in 600, Bob 400;
@@ -1087,7 +1087,7 @@ fn cash_flow_labels_say_which_way_each_balance_moved() {
         .add_account("1100", "Receivable", AccountType::Asset, None, false)
         .unwrap();
     let ap = l
-        .add_account("2000", "Payable", AccountType::Liability, None, false)
+        .add_account("2010", "Payable", AccountType::Liability, None, false)
         .unwrap();
     let loan = l
         .add_account("2500", "Loan", AccountType::Liability, None, false)
@@ -1144,7 +1144,7 @@ fn cash_flow_labels_say_which_way_each_balance_moved() {
         rec(&feb),
         [
             (s("Increase in 1100 Receivable"), dec(-100)),
-            (s("Increase in 2000 Payable"), dec(50)),
+            (s("Increase in 2010 Payable"), dec(50)),
         ]
     );
     assert_eq!(
@@ -1167,7 +1167,7 @@ fn cash_flow_labels_say_which_way_each_balance_moved() {
         rec(&mar),
         [
             (s("Decrease in 1100 Receivable"), dec(100)),
-            (s("Decrease in 2000 Payable"), dec(-50)),
+            (s("Decrease in 2010 Payable"), dec(-50)),
         ]
     );
     assert_eq!(

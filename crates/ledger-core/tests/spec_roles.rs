@@ -99,14 +99,20 @@ fn bal(l: &Ledger, id: AccountId) -> Decimal {
     l.account_balance(id).expect("known account")
 }
 
-/// Draft, add lines, post. Panics on any refusal (setup only).
+/// Draft, add lines, post. Panics on any refusal (setup only). Posted as
+/// replay posts it: these books hold hand lines on receivables or payables
+/// (moving a role's balance by hand, B-23's path before documents read
+/// their lines), which books an earlier version wrote still hold; the
+/// control guard (rules.md B-38) refuses them as new work.
 fn post(l: &mut Ledger, date: NaiveDate, lines: &[(AccountId, Side, &str)]) -> EntryId {
-    let id = l.try_create_entry(date, "test entry").unwrap();
-    for (a, s, amt) in lines {
-        l.add_line(id, *a, *s, usd(amt)).unwrap();
-    }
-    l.post_entry(id).unwrap();
-    id
+    ledger_core::parties::replaying(|| {
+        let id = l.try_create_entry(date, "test entry").unwrap();
+        for (a, s, amt) in lines {
+            l.add_line(id, *a, *s, usd(amt)).unwrap();
+        }
+        l.post_entry(id).unwrap();
+        id
+    })
 }
 
 /// The (code, side, amount) lines of an entry, sorted.
@@ -788,7 +794,7 @@ fn receivables_cannot_move_while_holding_a_balance_but_can_once_moved_out() {
     let old = acct(&l, "1200").expect("1200 created by the invoice");
     let new = add(&mut l, "1100", "Trade Receivables", AccountType::Asset);
     match refuses(&mut l, "receivables", Some(new)) {
-        LedgerError::RoleHoldsBalance {
+        LedgerError::DocumentRoleHoldsBalance {
             role,
             code,
             balance,
@@ -798,15 +804,29 @@ fn receivables_cannot_move_while_holding_a_balance_but_can_once_moved_out() {
             assert_eq!(code, "1200");
             assert_eq!(balance, dec("120.00"));
         }
-        other => panic!("expected RoleHoldsBalance, got {other:?}"),
+        other => panic!("expected DocumentRoleHoldsBalance, got {other:?}"),
     }
-    // Move the balance with an entry, then the role may move.
+    // Moving the balance by hand is refused now (the control guard,
+    // rules.md B-38): until a role's balance moves with its documents
+    // (plan P4b S7), a receivables role holding a balance stays put.
+    let e = l.try_create_entry(d(2026, 3, 2), "move").unwrap();
+    assert!(matches!(
+        l.add_line(e, old, Side::Credit, usd("120.00")),
+        Err(LedgerError::UntaggedControlLine { .. })
+    ));
+    // Books an earlier version wrote can hold such a move, and the
+    // assignment after it (replayed: today 1100's hand line refuses it,
+    // RoleAccountHasHandLines): then the documents follow the role.
     post(
         &mut l,
         d(2026, 3, 2),
         &[(new, Side::Debit, "120.00"), (old, Side::Credit, "120.00")],
     );
-    l.assign_role("receivables", Some(new)).unwrap();
+    assert!(matches!(
+        refuses(&mut l, "receivables", Some(new)),
+        LedgerError::RoleAccountHasHandLines { .. }
+    ));
+    ledger_core::parties::replaying(|| l.assign_role("receivables", Some(new))).unwrap();
     assert_eq!(l.role_account(&RECEIVABLES), Some(new));
     // The open invoice is now controlled by 1100: its payment credits it.
     let p = l
@@ -845,6 +865,21 @@ fn every_balance_sheet_role_holds_while_its_account_has_a_balance() {
             &format!("Target {i}"),
             c.account_type,
         );
+        if c.key == RECEIVABLES.key || c.key == PAYABLES.key {
+            // No document posted there: the balance is the chart's own,
+            // so the role moves (B-38); it can't come back to an account
+            // holding hand lines.
+            l.assign_role(c.key, Some(target)).unwrap();
+            assert!(
+                matches!(
+                    refuses(&mut l, c.key, Some(*cur)),
+                    LedgerError::RoleAccountHasHandLines { .. }
+                ),
+                "{}",
+                c.key
+            );
+            continue;
+        }
         assert!(
             matches!(
                 refuses(&mut l, c.key, Some(target)),
@@ -877,7 +912,7 @@ fn none_is_refused_while_the_assigned_balance_sheet_account_holds_a_balance() {
         .unwrap();
     assert!(matches!(
         refuses(&mut l, "payables", None),
-        LedgerError::RoleHoldsBalance { .. }
+        LedgerError::DocumentRoleHoldsBalance { .. }
     ));
     let _ = cash;
 }
@@ -1121,7 +1156,7 @@ fn pool_books() -> (Ledger, Vec<AccountId>) {
 }
 
 /// The reasons the spec gives to refuse an assignment, worked from the
-/// current books (assign_role SCENARIOS 1–5).
+/// current books (assign_role SCENARIOS 1–6).
 fn predicted_refusals(
     l: &Ledger,
     c: &ControlAccount,
@@ -1142,10 +1177,27 @@ fn predicted_refusals(
     }
     let now = l.role_account(c);
     let next = target.map(|a| a.id);
+    // SCENARIO 6: a document role never moves onto hand lines.
+    let documents = c.key == RECEIVABLES.key || c.key == PAYABLES.key;
+    if documents
+        && let Some(a) = target
+        && next != now
+        && l.posted_entries().any(|e| {
+            e.lines()
+                .iter()
+                .enumerate()
+                .any(|(i, x)| x.account == a.id && l.line_doc(e.id(), i).is_none())
+        })
+    {
+        why.push("handlines");
+    }
+    // SCENARIO 4: a document role's balance holds only on its control
+    // account (assigned there, or holding its documents' lines).
     if balance_sheet(c)
         && next != now
         && let Some(cur) = now
         && !bal(l, cur).is_zero()
+        && (!documents || l.control_role_of(cur).is_some_and(|r| r.key == c.key))
     {
         why.push("balance");
     }
@@ -1156,7 +1208,10 @@ fn reason(e: &LedgerError) -> &'static str {
     match e {
         LedgerError::ControlAccountMismatch { .. } => "mismatch",
         LedgerError::RoleTaken { .. } => "taken",
-        LedgerError::RoleHoldsBalance { .. } => "balance",
+        LedgerError::RoleHoldsBalance { .. } | LedgerError::DocumentRoleHoldsBalance { .. } => {
+            "balance"
+        }
+        LedgerError::RoleAccountHasHandLines { .. } => "handlines",
         _ => "other",
     }
 }

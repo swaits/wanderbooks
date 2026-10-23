@@ -61,6 +61,7 @@ pub const KNOWN_FEATURES: &[&str] = &[
     DEPRECIATION_CATCH_UP,
     PROJECTS,
     DOCUMENT_LINE_PROJECTS,
+    DOCUMENT_STANDING,
 ];
 
 /// Feature: `period.closed` closes to members with `"rounding":
@@ -162,6 +163,16 @@ pub const PROJECTS: &str = "projects";
 /// `projects`': books that consented to projects before it existed must
 /// consent again before a document names one.
 pub const DOCUMENT_LINE_PROJECTS: &str = "document_line_projects";
+
+/// Feature: an `invoice.payment_received` or `bill.paid` accepted only
+/// because an earlier payment on its document was reversed (plan P4b S1,
+/// D-45; rules.md B-38): this version reads a document's figures from the
+/// ledger lines that stand, so a reversed payment no longer counts and the
+/// right one is taken. An older version adds every payment event to the
+/// document's paid amount, standing or not: it would replay the new
+/// payment on top of the reversed one, paid above the total, silently.
+/// Every other payment is written as before and needs no feature.
+pub const DOCUMENT_STANDING: &str = "document_standing";
 
 /// The line type that declares the journal format.
 pub const FORMAT_SET: &str = "journal.format_set";
@@ -786,6 +797,41 @@ mod tests {
             up.adds(),
             vec!["the journal feature document_line_projects"]
         );
+    }
+
+    /// The version before P4b S1 (every feature through
+    /// `document_line_projects`) stops at a declaration of
+    /// `document_standing` as newer, never adding a payment taken after a
+    /// reversal on top of the reversed one; and books that declared every
+    /// earlier feature still wait for it (B-27, D-39).
+    #[test]
+    fn document_standing_is_its_own_feature() {
+        assert!(KNOWN_FEATURES.contains(&DOCUMENT_STANDING));
+        let before: Vec<&str> = KNOWN_FEATURES
+            .iter()
+            .copied()
+            .filter(|f| *f != DOCUMENT_STANDING)
+            .collect();
+        let l = line(
+            FORMAT_SET,
+            json!({"format": 2, "features": [DOCUMENT_LINE_PROJECTS, DOCUMENT_STANDING]}),
+        );
+        match declared_knowing(&l, &before) {
+            Err(StoreError::NewerJournal { need, .. }) => {
+                assert_eq!(need, "journal features document_standing")
+            }
+            other => panic!("expected NewerJournal, got {other:?}"),
+        }
+        let older = JournalFormat {
+            format: 2,
+            features: before.iter().map(|f| f.to_string()).collect(),
+        };
+        assert!(matches!(
+            older.require_feature(DOCUMENT_STANDING),
+            Err(StoreError::FormatUpgradePending { .. })
+        ));
+        let up = older.upgrade().expect("waits for it");
+        assert_eq!(up.adds(), vec!["the journal feature document_standing"]);
     }
 
     /// This version's format: the newest it reads, every feature it

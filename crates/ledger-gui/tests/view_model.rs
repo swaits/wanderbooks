@@ -82,13 +82,19 @@ fn build(plan: &Plan, tag: &str) -> (TestDir, Source, ledger_core::Ledger) {
         .iter()
         .map(|(c, n, t)| s.add_account(c, n, *t, None, false).unwrap())
         .collect();
-    for &(back, dr, cr, cents) in &plan.entries {
-        let e = s.create_entry(plan.today - Days::new(back), "x").unwrap();
-        let m = Money::new(Decimal::new(cents, 2), Currency::USD);
-        s.add_line(e, ids[dr], Side::Debit, m).unwrap();
-        s.add_line(e, ids[cr], Side::Credit, m).unwrap();
-        s.post_entry(e).unwrap();
-    }
+    // As replay posts them: random lines land on receivables and payables
+    // by hand, as books an earlier version wrote can hold them (the
+    // control guard, rules.md B-38, refuses them as new work), and the
+    // overview must still read them.
+    ledger_core::parties::replaying(|| {
+        for &(back, dr, cr, cents) in &plan.entries {
+            let e = s.create_entry(plan.today - Days::new(back), "x").unwrap();
+            let m = Money::new(Decimal::new(cents, 2), Currency::USD);
+            s.add_line(e, ids[dr], Side::Debit, m).unwrap();
+            s.add_line(e, ids[cr], Side::Credit, m).unwrap();
+            s.post_entry(e).unwrap();
+        }
+    });
     journal_settings(
         &mut s,
         &format!(

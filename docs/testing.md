@@ -2453,3 +2453,114 @@ B-14) are the first.
 | GnuCash's own close | OPEN | the oracle books closes as ordinary entries; comparing GnuCash's Close Book needs its Scheme API |
 | Import: spec-blind suite, footing properties, mutation | DONE | sources vendored (Intuit bank CSV and IIF, ECMA-376/Excel numbers, IRS form lines); specs on every module; tests/spec_import.rs (spec-blind, footing and round-trip properties, XLSX read back from its XML, layout and styles); fuzz_import_csv; templates checked against the engine's control accounts; mutation one equivalent left |
 | MCP, config, GUI crates | DONE (2026-10-14) | the same playbook: sourced module specs (config: Pub 538, Treas. Reg. 301.7701-3; MCP: the MCP tool spec and JSON-RPC 2.0); spec-blind suites `spec_config.rs`, `spec_mcp.rs`, `spec_gui.rs`; the MCP oracle `oracle_mcp.rs` (every export against ledger-core); startup, HTTP concurrency, and the viewer's read-only promise (`read_only.rs`) tested; `fuzz_config_parse`; mutation above |
+
+## P4b S1, part A: documents read their figures from standing lines (2026-10-23)
+
+rules.md B-38 (plan P4b, D-45): every line on receivables or payables
+carries its document (`Ledger.line_docs`); what a document owes, was paid
+and is (Open, Partly paid, Paid, Void) is read from those lines as of a
+day; hand lines on the control accounts are refused; a reversal is
+bounded so no document is overpaid or owes more than its total; a void is
+the reversal of its entry; a payment carries its method and reference;
+`Ledger::control_check` ties each control account to its documents. The
+journal feature `document_standing` marks a payment accepted only because
+an earlier one was reversed. The MCP layer (`books.void_document`,
+`books.control_check`, the payment tools' `instrument` and `reference`,
+the wiring into verify, the digest and Needs attention) is part B.
+
+- **Goldens first.** `ledger-store/tests/fixtures/p4-arap-before`: books
+  written by main at 0df7f52a (before S1) through the store's commands,
+  with `figures.json`, what that version reported for them (agings at
+  Jan 22, Jan 31 and Mar 31; each document's balance and status; the
+  trial balance). `arap_standing.rs` `write_the_p4_arap_fixture` is how
+  (only a version before S1 can: S1 refuses its hand line). Adjudicated
+  in `legacy_reversal_now_counts`: the trial balance is the golden's
+  line for line; Jan 22 unchanged; Jan 31 Fernhill owes 100.00 and Tobin
+  80.00 again (their payments' reversals); Mar 31 the voided invoice
+  leaves the aging and the reopened ones age at 31-60.
+- **ledger-core:** `tests/spec_documents.rs`, one test per B-38 scenario
+  (`reversing_a_payment_reopens_the_invoice`,
+  `a_voided_invoice_never_ages`, `void_refused_while_paid`,
+  `aging_as_of_ignores_a_later_reversal`,
+  `a_corrected_payment_after_reversing_the_wrong_one`,
+  `hand_line_on_control_refused`, `reversing_a_legacy_hand_line_is_allowed`,
+  `deposit_account_must_be_cash_like`), and
+  `reinstating_a_payment_beside_its_replacement_is_refused`,
+  `reversal_before_original_refused_for_documents`,
+  `a_payment_carries_its_method_and_reference`, `status_follows_the_figures`,
+  `a_document_after_the_day_has_no_state`,
+  `role_reassigned_mid_stream_tags_the_role_then`,
+  `several_payment_events_on_one_entry_tag_its_lines_in_order`; from the
+  reviews of part A, `standing_payments_never_names_a_reversal`,
+  `a_payment_into_the_control_account_tags_its_credit`,
+  `a_void_never_reads_as_paid_in_the_record`,
+  `moving_a_document_role_keeps_the_guard`,
+  `a_chart_whose_1200_is_not_receivables`,
+  `out_of_bounds_documents_are_listed_not_aged`,
+  `putting_back_a_removed_hand_line_is_refused`,
+  `a_void_of_a_closed_periods_invoice_lands_in_the_open_period`,
+  `payments_recorded_counts_every_event`, `a_chain_counts_in_order`;
+  proptests `subledger_equals_control` (random creates, payments, voids,
+  reversals of any entry and refused hand lines: at every day no
+  difference, nothing unattached, 0 <= owed <= total, every refusal
+  changes nothing), `aging_partitions_what_documents_owe`,
+  `reversal_twice_restores_state` (the move is read from the entry
+  reversed, not its mirror, so a lost tag copy is caught; reversing a
+  standing payment must be accepted, so the property is never vacuous
+  there). `spec_roles.rs` models assign_role SCENARIO 6 (a document role
+  never moves onto hand lines) and the narrowed balance rule. Tests
+  whose fixtures post by hand to 1200 or 2000 (report, cash flow, 1099,
+  role and K-1 fixtures, the bookspec examples marked `older = true`)
+  post those lines as replay does (`parties::replaying`): books an
+  earlier version wrote hold such lines, and every report must still
+  read them; where the code was incidental (a card at 2000, equipment at
+  1200) the account was renumbered instead.
+- **ledger-store:** `tests/arap_standing.rs`
+  (`legacy_reversal_now_counts`,
+  `repaying_after_a_reversal_waits_for_document_standing`: refused,
+  journaling nothing, until the upgrade; replay equals live after;
+  `the_store_refuses_hand_lines_and_a_void_under_a_payment`,
+  `a_void_is_journaled_as_its_reversal`,
+  `a_payment_journals_its_method_and_reference` (a plain payment's
+  payload field for field as before), `legacy_documents_replay_with_tags`);
+  `tests/arap_props.rs` `status_is_a_function_of_journal_and_date` (B-38
+  INVARIANT 4: random invoices, bills, payments with and without a
+  method and reference, voids, reversals of any entry, closed months and
+  refused hand lines through `Store`; at half time and at the end the
+  books are reopened and read by a `Snapshot`, and `differs_from`, every
+  document's state, the control check and both agings agree at every
+  date); the store fuzz test (`tests/store.rs`, refusals journal nothing)
+  gains `void_document` and the payments with details;
+  `format.rs` `document_standing_is_its_own_feature`. Schema 15 drops the
+  projection's `amount_paid` and `status` (they summed payment events, a
+  reversed one included); `verify` compares the rest.
+- **Kani:** `bounds_check_matches_definition` (`kernel::running_bounds`
+  is the definition), `bounds_kept_is_the_definition_on_books_in_bounds`
+  (the command's check is the definition on books in bounds, and never
+  lets a day get worse on books out of bounds).
+- **Lean:** `Wanderbooks/Documents.lean`: `control_agrees` (GL = Σ docs
+  + unattached, for any lines, and through any day), `Step.document_unattached`,
+  `Step.reverse_moves`, `reverse_twice`, `Reachable.unattached_zero`,
+  `Reachable.control_is_documents`. The steps include assigning a
+  document role (only onto an account whose lines are all documents',
+  `check_assign_role` SCENARIO 6) and releasing an account no document
+  posted to. What the model leaves out, so the proofs aren't read as
+  covering it: it starts from empty books, so legacy hand lines (and the
+  reversal-mirror exemption that cleans them up) are covered only by the
+  identity `control_agrees`; documents are one `Nat` id space (an
+  injective coding of `DocRef`); an account that becomes a control
+  account by its first document (the default code), holding lines from
+  before, is outside it (`control_check` lists those lines).
+
+**For P12 (mutation targets):** `stands_on`'s count and its in-order
+`take_while`;
+`doc_state`'s movement arms and `overdue_days`; `doc_status`'s order;
+`check_hand_line`/`check_control_lines` (the reversal-mirror exemption);
+`control_role_of`'s two clauses and the exemption's even-depth test;
+`check_assign_role`'s SCENARIO 6 and its `controls` filter;
+`standing_payments`' `!reversal`; `holds_role`'s type check;
+`bounds_kept`'s `>`; `payment_room`'s `from`; `tag_replayed`'s side,
+amount match and one-line rule; `refresh_doc`'s settled sum;
+`doc_status`'s Overpaid and Unattached arms; the aging's `<= 0`;
+`ensure_payment_features`' comparison; `check_document_reversal`'s date
+check; `control_check`'s chain netting.

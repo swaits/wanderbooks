@@ -77,4 +77,8 @@ issue costs, cited by B-14 rule 11) is in neither list above; ASC
 606-10-25-31, 25-32 and 55-20 (B-16's over-time method) are not yet read;
 B-15 rule 6 cites ASC 250 with no paragraph; B-17's 606-10-55-39 is in
 neither list. Each is to be read in the ASC basic view and listed in
-`sources/fasb-asc.md` before it is relied on further.
+`sources/fasb-asc.md` before it is relied on further. Also open (plan
+P4b, 2026-10-23): B-38 cites ASC 310-10, 405-20-40-1 and 606-10-45-4,
+none yet read in the ASC basic view; B-38 keeps the CONVENTION label
+until they are vendored with a SHA-256, as P4b.16 lists with the sources
+B-39 to B-41 will need.

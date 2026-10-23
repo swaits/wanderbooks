@@ -67,7 +67,7 @@ fn fixture(tag: &str) -> Fixture {
     let mut s = Store::create(&data_dir, Currency::USD).unwrap();
     let mut add = |code: &str, name: &str, ty| s.add_account(code, name, ty, None, false).unwrap();
     let cash = add("1000", "Cash", AccountType::Asset);
-    let devices = add("1200", "Equipment", AccountType::Asset);
+    let devices = add("1500", "Equipment", AccountType::Asset);
     let revenue = add("4000", "Design Services", AccountType::Revenue);
     let contractors = add("6000", "Contractors", AccountType::Expense);
     let rent = add("6200", "Rent", AccountType::Expense);

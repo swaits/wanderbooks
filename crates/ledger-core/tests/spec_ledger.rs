@@ -2468,7 +2468,7 @@ proptest! {
         let mut l = Ledger::new(Currency::USD);
         let ids: Vec<_> = [
             ("1000", AccountType::Asset),
-            ("2000", AccountType::Liability),
+            ("2100", AccountType::Liability),
             ("4000", AccountType::Revenue),
             ("6100", AccountType::Expense),
         ]
@@ -2564,7 +2564,7 @@ proptest! {
         let mut l = Ledger::new(Currency::USD);
         let ids: Vec<_> = [
             ("1000", AccountType::Asset),
-            ("2000", AccountType::Liability),
+            ("2100", AccountType::Liability),
             ("4000", AccountType::Revenue),
             ("6100", AccountType::Expense),
         ]

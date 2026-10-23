@@ -1,7 +1,9 @@
 //! Rendering receipts and documents to textures, off the UI thread.
 //!
 //! PDFs are rasterized with `hayro` (pure Rust), images decoded with
-//! `image`. Results are cached by blob hash: the same bytes never render
+//! `image`; Markdown and plain text are read as UTF-8 and drawn as text
+//! (Markdown by `egui_commonmark`), so they follow the theme and select
+//! like any text. Results are cached by blob hash: the same bytes never render
 //! twice, and a hash is the content, so the cache never goes stale. Bytes
 //! are read through the verifying blob store: a corrupt blob shows as an
 //! error, never as a picture.
@@ -15,8 +17,23 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 pub enum State {
     Loading,
     Ready(Vec<TextureHandle>),
+    /// A text file: its UTF-8 text, and whether it is Markdown.
+    Text {
+        text: String,
+        markdown: bool,
+    },
     Failed(String),
 }
+
+/// What a render made: pages as pictures, or a text file's text.
+enum Rendered {
+    Pages(Vec<ColorImage>),
+    Text { text: String, markdown: bool },
+}
+
+/// The largest text file shown as text: past it the viewer says so
+/// rather than lay out megabytes of text every frame.
+pub const MAX_TEXT_BYTES: usize = 2 * 1024 * 1024;
 
 struct Job {
     sha: String,
@@ -26,11 +43,13 @@ struct Job {
 
 struct Done {
     sha: String,
-    result: Result<Vec<ColorImage>, String>,
+    result: Result<Rendered, String>,
 }
 
 pub struct Receipts {
     cache: HashMap<String, State>,
+    /// egui_commonmark's layout cache, shared by every Markdown file.
+    pub markdown: egui_commonmark::CommonMarkCache,
     jobs: Sender<Job>,
     done: Receiver<Done>,
 }
@@ -68,6 +87,7 @@ impl Receipts {
         }
         Self {
             cache: HashMap::new(),
+            markdown: egui_commonmark::CommonMarkCache::default(),
             jobs,
             done,
         }
@@ -95,7 +115,8 @@ impl Receipts {
 
     fn accept(&mut self, ctx: &Context, done: Done) {
         let state = match done.result {
-            Ok(images) => State::Ready(
+            Ok(Rendered::Text { text, markdown }) => State::Text { text, markdown },
+            Ok(Rendered::Pages(images)) => State::Ready(
                 images
                     .into_iter()
                     .enumerate()
@@ -129,19 +150,57 @@ impl Receipts {
     }
 }
 
-fn render(job: &Job) -> Result<Vec<ColorImage>, String> {
+fn render(job: &Job) -> Result<Rendered, String> {
     let bytes = BlobStore::open_read_only(&job.root)
         .get(&job.sha)
         .map_err(|e| e.to_string())?;
     let is_pdf = job.mime == "application/pdf" || bytes.starts_with(b"%PDF");
     if is_pdf {
-        render_pdf(bytes)
+        render_pdf(bytes).map(Rendered::Pages)
     } else if job.mime.starts_with("image/") {
         let img = image::load_from_memory(&bytes).map_err(|e| e.to_string())?;
-        Ok(vec![to_color_image(img.to_rgba8())])
+        Ok(Rendered::Pages(vec![to_color_image(img.to_rgba8())]))
+    } else if let Some(markdown) = text_kind(&job.mime) {
+        let text = text_of(bytes)?;
+        Ok(Rendered::Text { text, markdown })
     } else {
         Err(format!("{} can't be previewed", job.mime))
     }
+}
+
+/// Whether a media type is text the viewer shows as text: `Some(true)`
+/// for Markdown (`text/markdown`, RFC 7763, and the older
+/// `text/x-markdown`), `Some(false)` for other `text/*` types, `None`
+/// otherwise. Parameters (`; charset=utf-8`) and case are ignored.
+pub fn text_kind(mime: &str) -> Option<bool> {
+    let essence = mime
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    match essence.as_str() {
+        "text/markdown" | "text/x-markdown" => Some(true),
+        t if t.starts_with("text/") => Some(false),
+        _ => None,
+    }
+}
+
+/// A text file's text: UTF-8 (a leading byte-order mark dropped), at most
+/// [`MAX_TEXT_BYTES`]; anything else is refused with why, never shown
+/// half-decoded.
+pub fn text_of(bytes: Vec<u8>) -> Result<String, String> {
+    if bytes.len() > MAX_TEXT_BYTES {
+        return Err(format!(
+            "the text is {} bytes, more than the {MAX_TEXT_BYTES} shown",
+            bytes.len()
+        ));
+    }
+    let mut text = String::from_utf8(bytes).map_err(|_| "the text isn't UTF-8".to_string())?;
+    if text.starts_with('\u{feff}') {
+        text.drain(..'\u{feff}'.len_utf8());
+    }
+    Ok(text)
 }
 
 fn render_pdf(bytes: Vec<u8>) -> Result<Vec<ColorImage>, String> {

@@ -157,6 +157,18 @@ fn tile(
                     .image(tex.id(), img_rect, uv, egui::Color32::WHITE);
             }
         }
+        Render::Text { text, .. } => {
+            // The first lines of the text, as written, clipped to the thumb.
+            let head: String = text.lines().take(14).collect::<Vec<_>>().join("\n");
+            let galley =
+                ui.painter()
+                    .layout(head, theme::regular(10.5), p.muted, thumb.width() - 16.0);
+            ui.painter().with_clip_rect(thumb.shrink(4.0)).galley(
+                thumb.min + vec2(8.0, 8.0),
+                galley,
+                p.muted,
+            );
+        }
         Render::Loading => {
             ui.painter().text(
                 thumb.center(),
@@ -273,7 +285,7 @@ fn detail(ui: &mut Ui, b: &Books, a: &Attachment, shell: &mut Shell<'_>) {
                     ui.label(fmt::timestamp(&a.created_at));
                     ui.end_row();
                     k(ui, "SHA-256");
-                    widgets::copyable(
+                    widgets::copyable_truncated(
                         ui,
                         RichText::new(&a.blob_sha).monospace().size(11.5),
                         &a.blob_sha,

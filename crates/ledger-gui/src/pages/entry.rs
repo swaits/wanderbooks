@@ -631,6 +631,30 @@ pub fn render(ui: &mut Ui, b: &Books, a: &Attachment, shell: &mut Shell<'_>, wid
                     .color(p.negative),
             );
         }
+        Render::Text { text, markdown } => {
+            let (text, markdown) = (text.clone(), *markdown);
+            egui::Frame::new()
+                .fill(p.surface)
+                .stroke(Stroke::new(1.0, p.border))
+                .corner_radius(CornerRadius::same(6))
+                .inner_margin(egui::Margin::same(14))
+                .show(ui, |ui| {
+                    ui.set_width(width - 30.0);
+                    if markdown {
+                        egui_commonmark::CommonMarkViewer::new()
+                            .max_image_width(Some((width - 30.0) as usize))
+                            .show(ui, &mut shell.receipts.markdown, &text);
+                    } else {
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(text).font(egui::FontId::monospace(12.0)),
+                            )
+                            .selectable(true)
+                            .wrap(),
+                        );
+                    }
+                });
+        }
         Render::Ready(pages) => {
             for (i, tex) in pages.iter().enumerate() {
                 let size = tex.size_vec2();

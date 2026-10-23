@@ -39,9 +39,21 @@ server-only:
 # until 2026-10-17 many were removed only on pass, or never: 117,000 piled
 # up). A run killed mid-test (a mutant's timeout, ^C) runs no destructor,
 # so this sweep removes this user's test book dirs older than an hour; a
-# run in progress elsewhere keeps its own.
+# run in progress elsewhere keeps its own. Such a run can also leave its
+# processes behind: a wanderbooks process whose `--root` is a test dir
+# (a `wb-*` dir) that no longer exists is ended, woken first (a test may
+# have stopped it with SIGSTOP; 2026-10-23, one sat stopped for a day).
+# Only such a process: the live books' processes have no test `--root`.
 sweep-test-tmp:
-    @find "${TMPDIR:-/tmp}" /tmp -maxdepth 1 -user "$(id -u)" -type d -mmin +60 \( -name 'wb-*' -o -name 'wanderbooks-*' -o -name 'ledger-*' \) -exec rm -rf {} + 2>/dev/null || true
+    #!/usr/bin/env bash
+    find "${TMPDIR:-/tmp}" /tmp -maxdepth 1 -user "$(id -u)" -type d -mmin +60 \( -name 'wb-*' -o -name 'wanderbooks-*' -o -name 'ledger-*' \) -exec rm -rf {} + 2>/dev/null || true
+    for pid in $(pgrep -u "$(id -u)" -x wanderbooks; pgrep -u "$(id -u)" -f '^wanderbooks (server|host|mcp|serve) '); do
+        root=$(tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null | sed -n '/^--root$/{n;p;q}')
+        case "$root" in
+            */wb-*/*|*/wb-*) [ -e "$root" ] || { kill -CONT "$pid"; kill -KILL "$pid"; } 2>/dev/null ;;
+        esac
+    done
+    true
 
 # The Kani harnesses `prove` leaves to `prove-slow`: each takes four to
 # twenty minutes alone on a busy machine, and with them the suite (about

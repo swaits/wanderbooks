@@ -253,23 +253,44 @@ async fn closing_during_a_burst_of_posts_loses_nothing() {
     let setup = connect(&home, "acme").await.unwrap();
     chart(&setup).await;
     drop(setup);
+    // How many each client has posted: the close comes once every one has
+    // posted, not after a fixed time (under load a fixed 1.5 s once left
+    // a client with nothing posted).
+    let counts: std::sync::Arc<[std::sync::atomic::AtomicUsize; 4]> =
+        std::sync::Arc::new(Default::default());
     let mut tasks = Vec::new();
     for n in 0..4u64 {
         let c = connect(&home, "acme").await.unwrap();
         let (run, token) = (home.run(), home.token("acme"));
+        let counts = counts.clone();
         tasks.push(tokio::spawn(async move {
             // Until the close turns it away: it can't finish first.
             let mut posted = Vec::new();
             for k in 0.. {
                 match post_one(&c, (&run, &token), n * 100_000 + k).await {
-                    Ok(id) => posted.push(id),
+                    Ok(id) => {
+                        posted.push(id);
+                        counts[n as usize].fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    }
                     Err(why) => return (posted, why),
                 }
             }
             unreachable!()
         }));
     }
-    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    while counts
+        .iter()
+        .any(|c| c.load(std::sync::atomic::Ordering::SeqCst) == 0)
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "a client posted nothing within a minute"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    // Then a little more, so the close lands mid-burst.
+    tokio::time::sleep(Duration::from_millis(300)).await;
     let closed = tokio::task::spawn_blocking(move || server.close())
         .await
         .unwrap();

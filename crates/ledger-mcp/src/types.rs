@@ -3127,6 +3127,140 @@ pub struct PaymentOut {
     pub status: String,
 }
 
+/// Parameters for `books.documents`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DocumentsParams {
+    /// "invoices" or "bills".
+    pub kind: String,
+    /// Which: open (default: anything still owed, partly paid and
+    /// overdue included), overdue, paid, void, written_off, overpaid, or
+    /// all.
+    #[serde(default)]
+    pub status: Option<String>,
+    /// Only this customer's or vendor's (party or customer/vendor name, or
+    /// id).
+    #[serde(default)]
+    pub party: Option<String>,
+    /// Only those due on or before this day, YYYY-MM-DD.
+    #[serde(default)]
+    pub due_by: Option<String>,
+    /// As of this day ([`AS_OF_DOC`]).
+    #[serde(default)]
+    #[schemars(description = AS_OF_DOC)]
+    pub as_of: Option<String>,
+}
+
+/// One document in a list.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DocumentRowOut {
+    /// "invoice:7" or "bill:12": what books.document takes.
+    pub r#ref: String,
+    /// The customer or vendor.
+    pub party: String,
+    /// Its date.
+    pub date: String,
+    /// When payment is due.
+    pub due_date: String,
+    /// The sum of its lines.
+    pub total: String,
+    /// What it still owes as of the day.
+    pub outstanding: String,
+    /// open, partial, paid, written_off, void, overpaid, or unattached.
+    pub status: String,
+    /// Days past due while something is owed; 0 otherwise.
+    pub overdue_days: i64,
+}
+
+/// Output of `books.documents`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DocumentsOut {
+    /// The day.
+    pub as_of: String,
+    /// "invoices" or "bills".
+    pub kind: String,
+    /// Due date first, then number.
+    pub documents: Vec<DocumentRowOut>,
+    /// What the listed documents still owe, together.
+    pub outstanding_total: String,
+}
+
+/// Parameters for `books.document`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DocumentParams {
+    /// "invoice:7" or "bill:12".
+    pub r#ref: String,
+    /// As of this day ([`AS_OF_DOC`]).
+    #[serde(default)]
+    #[schemars(description = AS_OF_DOC)]
+    pub as_of: Option<String>,
+}
+
+/// One line of a document.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DocumentLineOut {
+    /// What it is for.
+    pub description: String,
+    /// Its amount.
+    pub amount: String,
+    /// The project it belongs to, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+}
+
+/// One event in a document's life: a ledger line tagged with it.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DocumentEventOut {
+    /// The entry's date.
+    pub date: String,
+    /// The entry.
+    pub entry_id: u64,
+    /// What it is: origin (the document itself), payment, discount,
+    /// write_off, adopted, or role_move.
+    pub kind: String,
+    /// What it did to what is owed (plus raises it).
+    pub amount: String,
+    /// The entry reverses another (this line undoes an earlier one).
+    pub reversal: bool,
+    /// Whether its entry still stands as of the day: a payment that was
+    /// reversed doesn't; its reversal does, and the two net to nothing.
+    pub stands: bool,
+}
+
+/// Output of `books.document`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DocumentOut {
+    /// "invoice:7" or "bill:12".
+    pub r#ref: String,
+    /// The customer or vendor.
+    pub party: String,
+    /// Its date.
+    pub date: String,
+    /// When payment is due.
+    pub due_date: String,
+    /// The entry that recorded it.
+    pub entry_id: u64,
+    /// Its lines.
+    pub lines: Vec<DocumentLineOut>,
+    /// The sum of its lines.
+    pub total: String,
+    /// Cash paid against it that stands.
+    pub paid: String,
+    /// Discounts taken that stand.
+    pub discounted: String,
+    /// Amounts written off that stand.
+    pub written_off: String,
+    /// What it still owes as of the day.
+    pub outstanding: String,
+    /// Its status as of the day.
+    pub status: String,
+    /// Days past due while something is owed; 0 otherwise.
+    pub overdue_days: i64,
+    /// Every ledger line tagged with it, in posting order.
+    pub timeline: Vec<DocumentEventOut>,
+}
+
 /// Parameters for `books.void_document`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

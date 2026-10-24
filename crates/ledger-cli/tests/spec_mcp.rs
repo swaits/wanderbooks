@@ -891,6 +891,11 @@ fn happy_path(name: &str) -> Mcp {
         json!({"kind": "invoice", "id": dup, "date": "2026-02-02", "reason": "entered twice"}),
     );
     m.ok("books.control_check", json!({"as_of": "2026-06-30"}));
+    m.ok(
+        "books.documents",
+        json!({"kind": "invoices", "status": "all"}),
+    );
+    m.ok("books.document", json!({"ref": format!("invoice:{inv}")}));
 
     // Fixed assets.
     let registered = m.ok(
@@ -2615,5 +2620,122 @@ fn documents_void_and_tie_out_over_the_wire() {
             .unwrap()
             .starts_with("receivables and payables equal")),
         "{verified}"
+    );
+}
+
+/// P4b S2 over the real server: books.documents lists what is owed, due
+/// date first, and books.document shows one with its timeline; a
+/// reversed payment shows twice (the payment, which no longer stands,
+/// and its reversal, which does: the two net to nothing), and the invoice
+/// owes its whole total again.
+#[test]
+fn documents_list_and_timeline_over_the_wire() {
+    let dir = test_dir("p4b_s2");
+    let toml = books_toml(&dir, "600.00", "");
+    let mut m = Mcp::start(&dir, &toml);
+    m.accounts(BASE_CHART);
+    let customer = m.ok("books.add_customer", json!({"name": "Client"}))["id"]
+        .as_u64()
+        .unwrap();
+    let invoice = |m: &mut Mcp, date: &str, due: &str, amount: &str| {
+        m.ok(
+            "books.create_invoice",
+            json!({"party_id": customer, "date": date, "due_date": due,
+                   "lines": [{"description": "Consulting", "amount": amount}]}),
+        )["id"]
+            .as_u64()
+            .unwrap()
+    };
+    let late = invoice(&mut m, "2026-02-01", "2026-03-01", "500.00");
+    let later = invoice(&mut m, "2026-02-05", "2026-04-30", "80.00");
+    let pay = m.ok(
+        "books.receive_payment",
+        json!({"document_id": late, "date": "2026-02-10", "amount": "200.00", "cash_account": "1000"}),
+    )["entry_id"]
+        .as_u64()
+        .unwrap();
+    m.ok(
+        "books.reverse_entry",
+        json!({"entry_id": pay, "date": "2026-02-12", "description": "the transfer bounced", "confirmed": true}),
+    );
+
+    let open = m.ok(
+        "books.documents",
+        json!({"kind": "invoices", "as_of": "2026-03-15"}),
+    );
+    let refs: Vec<&str> = open["documents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["ref"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        refs,
+        [format!("invoice:{late}"), format!("invoice:{later}")],
+        "{open}"
+    );
+    assert_eq!(open["outstanding_total"], "580.00", "{open}");
+    assert_eq!(open["documents"][0]["overdue_days"], 14, "{open}");
+    let overdue = m.ok(
+        "books.documents",
+        json!({"kind": "invoices", "status": "overdue", "as_of": "2026-03-15"}),
+    );
+    assert_eq!(
+        overdue["documents"].as_array().unwrap().len(),
+        1,
+        "{overdue}"
+    );
+    let due_soon = m.ok(
+        "books.documents",
+        json!({"kind": "invoices", "due_by": "2026-03-31", "as_of": "2026-03-15"}),
+    );
+    assert_eq!(
+        due_soon["documents"].as_array().unwrap().len(),
+        1,
+        "{due_soon}"
+    );
+    assert_eq!(
+        m.ok("books.documents", json!({"kind": "bills"}))["documents"],
+        json!([])
+    );
+
+    let one = m.ok(
+        "books.document",
+        json!({"ref": format!("invoice:{late}"), "as_of": "2026-03-15"}),
+    );
+    assert_eq!(one["outstanding"], "500.00", "{one}");
+    assert_eq!(one["paid"], "0.00", "{one}");
+    assert_eq!(one["status"], "open", "{one}");
+    let moves: Vec<(String, bool, bool)> = one["timeline"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| {
+            (
+                e["kind"].as_str().unwrap().to_string(),
+                e["reversal"].as_bool().unwrap(),
+                e["stands"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        moves,
+        [
+            ("origin".to_string(), false, true),
+            ("payment".to_string(), false, false),
+            ("payment".to_string(), true, true),
+        ],
+        "{one}"
+    );
+    assert!(
+        m.tool("books.document", json!({"ref": "invoice"}))
+            .refused()
+    );
+    assert!(
+        m.tool(
+            "books.documents",
+            json!({"kind": "invoices", "status": "late"})
+        )
+        .refused()
     );
 }

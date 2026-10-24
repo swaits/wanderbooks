@@ -2019,6 +2019,21 @@ accounting only: the caller supplies every figure), tax filing.
   number and reads `void`. Refused while a payment stands on it (the
   refusal names the payment entry to reverse first), when void already,
   before its date or in a closed period (P4b S1, B-38).
+- `books.documents { kind, status?, party?, due_by?, as_of? }` → `{ as_of,
+  kind, documents: [{ ref, party, date, due_date, total, outstanding,
+  status, overdue_days }], outstanding_total }`. Invoices (`kind`
+  `invoices`) or bills (`bills`), due date first, every figure derived
+  from the document's lines that stand (B-38). `status` `open` (default:
+  anything still owed), `overdue`, `paid`, `void`, `written_off`,
+  `overpaid` or `all`; `party` (a customer's or vendor's name or id) and
+  `due_by` narrow the list (P4b S2).
+- `books.document { ref, as_of? }` → `{ ref, party, date, due_date,
+  entry_id, lines: [{ description, amount, project? }], total, paid,
+  discounted, written_off, outstanding, status, overdue_days, timeline:
+  [{ date, entry_id, kind, amount, reversal, stands }] }`. `ref` is
+  `invoice:N` or `bill:N`; the timeline is every ledger line tagged with
+  the document in posting order, each saying whether its entry still
+  stands as of the day (P4b S2).
 - `books.control_check { as_of? }` → `{ as_of, agrees, accounts: [{ role,
   code, name, balance, documents_total, unattached: [{ entry_id, line,
   date, amount }], difference, attention: [{ kind, id, status, total,

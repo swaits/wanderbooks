@@ -1578,6 +1578,42 @@ fn doc_ref(kind: &str, id: u64) -> Result<ledger_core::DocRef, String> {
     }
 }
 
+/// A document's id.
+fn doc_id(doc: ledger_core::DocRef) -> u64 {
+    match doc {
+        ledger_core::DocRef::Invoice(id) | ledger_core::DocRef::Bill(id) => id,
+    }
+}
+
+/// A document as books.documents and books.document name it
+/// ("invoice:7", "bill:12").
+fn doc_ref_text(doc: ledger_core::DocRef) -> String {
+    match doc {
+        ledger_core::DocRef::Invoice(id) => format!("invoice:{id}"),
+        ledger_core::DocRef::Bill(id) => format!("bill:{id}"),
+    }
+}
+
+/// "invoice:7" or "bill:12" as a document.
+fn parse_doc_ref(r: &str) -> Result<ledger_core::DocRef, String> {
+    let bad = || format!("bad ref {r:?}: expected invoice:N or bill:N (from books.documents)");
+    let (kind, id) = r.trim().split_once(':').ok_or_else(bad)?;
+    let id = id.trim().parse::<u64>().map_err(|_| bad())?;
+    doc_ref(kind, id).map_err(|_| bad())
+}
+
+/// A tagged line's movement on the wire.
+fn movement_key(m: ledger_core::Movement) -> &'static str {
+    match m {
+        ledger_core::Movement::Origin => "origin",
+        ledger_core::Movement::Payment => "payment",
+        ledger_core::Movement::Discount => "discount",
+        ledger_core::Movement::WriteOff => "write_off",
+        ledger_core::Movement::Adopted => "adopted",
+        ledger_core::Movement::RoleMove => "role_move",
+    }
+}
+
 /// A document's kind and id for people ("invoice 7").
 fn doc_label(doc: ledger_core::DocRef) -> String {
     match doc {
@@ -8672,6 +8708,206 @@ impl BooksServer {
     }
 
     #[tool(
+        name = "books.documents",
+        title = "List invoices or bills",
+        description = described(
+            "List invoices (kind invoices: money owed to the company) or bills (kind bills: money it owes), due date first: each with its ref (for books.document), party, dates, total, what it still owes and its status, all derived from its ledger lines that stand. status: open (default: anything still owed), overdue, paid, void, written_off, overpaid, or all; party and due_by narrow it (due_by: what is due by a day, e.g. what to pay this week).",
+            ledger_core::calendar::PeriodKind::AsOf
+        ),
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    async fn documents(
+        &self,
+        params: Parameters<DocumentsParams>,
+    ) -> Result<Json<DocumentsOut>, String> {
+        let p = params.0;
+        let as_of = self.as_of(p.as_of.as_deref())?;
+        let due_by = p.due_by.as_deref().map(parse_date).transpose()?;
+        let invoices = match p.kind.trim().to_ascii_lowercase().as_str() {
+            "invoices" | "invoice" => true,
+            "bills" | "bill" => false,
+            other => return Err(format!("bad kind {other:?}: expected invoices or bills")),
+        };
+        let want = p
+            .status
+            .as_deref()
+            .unwrap_or("open")
+            .trim()
+            .to_ascii_lowercase();
+        if !matches!(
+            want.as_str(),
+            "open" | "overdue" | "paid" | "void" | "written_off" | "overpaid" | "all"
+        ) {
+            return Err(format!(
+                "bad status {want:?}: expected open, overdue, paid, void, written_off, overpaid or all"
+            ));
+        }
+        let store = self.lock()?;
+        let ledger = store.ledger();
+        let docs: Vec<(ledger_core::DocRef, String, NaiveDate, NaiveDate)> = if invoices {
+            ledger
+                .invoices()
+                .into_iter()
+                .map(|i| {
+                    let who = ledger
+                        .get_customer(i.customer_id)
+                        .map(|c| c.name.clone())
+                        .unwrap_or_default();
+                    (ledger_core::DocRef::Invoice(i.id), who, i.date, i.due_date)
+                })
+                .collect()
+        } else {
+            ledger
+                .bills()
+                .into_iter()
+                .map(|b| {
+                    let who = ledger
+                        .get_vendor(b.vendor_id)
+                        .map(|v| v.name.clone())
+                        .unwrap_or_default();
+                    (ledger_core::DocRef::Bill(b.id), who, b.date, b.due_date)
+                })
+                .collect()
+        };
+        let party = p.party.as_deref().map(|s| s.trim().to_lowercase());
+        let mut rows = Vec::new();
+        let mut owed = Decimal::ZERO;
+        for (doc, who, date, due) in docs {
+            if let Some(want_party) = &party
+                && who.to_lowercase() != *want_party
+                && doc_id(doc).to_string() != *want_party
+            {
+                continue;
+            }
+            if due_by.is_some_and(|d| due > d) {
+                continue;
+            }
+            let Some(st) = ledger.doc_state(doc, as_of).map_err(|e| e.to_string())? else {
+                continue;
+            };
+            let key = st.status.key();
+            let keep = match want.as_str() {
+                "all" => true,
+                "open" => !st.outstanding.is_zero() && key != "void",
+                "overdue" => st.overdue_days > 0,
+                other => key == other,
+            };
+            if !keep {
+                continue;
+            }
+            owed = owed
+                .checked_add(st.outstanding)
+                .ok_or("the total is too large to compute")?;
+            rows.push((
+                due,
+                doc_id(doc),
+                DocumentRowOut {
+                    r#ref: doc_ref_text(doc),
+                    party: who,
+                    date: date.to_string(),
+                    due_date: due.to_string(),
+                    total: money(st.total),
+                    outstanding: money(st.outstanding),
+                    status: key.to_string(),
+                    overdue_days: st.overdue_days,
+                },
+            ));
+        }
+        rows.sort_by_key(|r| (r.0, r.1));
+        Ok(Json(DocumentsOut {
+            as_of: as_of.to_string(),
+            kind: if invoices { "invoices" } else { "bills" }.to_string(),
+            documents: rows.into_iter().map(|r| r.2).collect(),
+            outstanding_total: money(owed),
+        }))
+    }
+
+    #[tool(
+        name = "books.document",
+        title = "An invoice or bill",
+        description = described(
+            "One invoice or bill (ref \"invoice:7\" or \"bill:12\", from books.documents): party, dates, lines with their projects, total, what was paid, discounted and written off, what it still owes and its status, all as of a day; and its timeline: every ledger line tagged with it in posting order (its own entry, each payment, each reversal), each saying whether its entry still stands. A reversed payment shows twice: the payment (no longer standing) and its reversal (standing), which net to nothing.",
+            ledger_core::calendar::PeriodKind::AsOf
+        ),
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    async fn document(
+        &self,
+        params: Parameters<DocumentParams>,
+    ) -> Result<Json<DocumentOut>, String> {
+        let p = params.0;
+        let as_of = self.as_of(p.as_of.as_deref())?;
+        let doc = parse_doc_ref(&p.r#ref)?;
+        let store = self.lock()?;
+        let ledger = store.ledger();
+        let (who, date, due, entry_id, lines) = match doc {
+            ledger_core::DocRef::Invoice(id) => {
+                let i = ledger
+                    .get_invoice(id)
+                    .ok_or_else(|| format!("no invoice {id}: see books.documents"))?;
+                let who = ledger
+                    .get_customer(i.customer_id)
+                    .map(|c| c.name.clone())
+                    .unwrap_or_default();
+                (who, i.date, i.due_date, i.entry_id, i.lines.clone())
+            }
+            ledger_core::DocRef::Bill(id) => {
+                let b = ledger
+                    .get_bill(id)
+                    .ok_or_else(|| format!("no bill {id}: see books.documents"))?;
+                let who = ledger
+                    .get_vendor(b.vendor_id)
+                    .map(|v| v.name.clone())
+                    .unwrap_or_default();
+                (who, b.date, b.due_date, b.entry_id, b.lines.clone())
+            }
+        };
+        let st = ledger
+            .doc_state(doc, as_of)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("{} is dated after {as_of}", doc_ref_text(doc)))?;
+        let timeline = ledger
+            .doc_lines(doc)
+            .into_iter()
+            .filter(|l| l.date <= as_of)
+            .map(|l| DocumentEventOut {
+                date: l.date.to_string(),
+                entry_id: l.entry,
+                kind: movement_key(l.movement).to_string(),
+                amount: money(l.amount),
+                reversal: l.reversal,
+                stands: ledger.stands_on(l.entry, as_of),
+            })
+            .collect();
+        Ok(Json(DocumentOut {
+            r#ref: doc_ref_text(doc),
+            party: who,
+            date: date.to_string(),
+            due_date: due.to_string(),
+            entry_id,
+            lines: lines
+                .iter()
+                .map(|l| DocumentLineOut {
+                    description: l.description.clone(),
+                    amount: money(l.amount),
+                    project: l
+                        .class_id
+                        .and_then(|c| ledger.get_class(c))
+                        .map(|c| c.name.clone()),
+                })
+                .collect(),
+            total: money(st.total),
+            paid: money(st.paid),
+            discounted: money(st.discounted),
+            written_off: money(st.written_off),
+            outstanding: money(st.outstanding),
+            status: st.status.key().to_string(),
+            overdue_days: st.overdue_days,
+            timeline,
+        }))
+    }
+
+    #[tool(
         name = "books.control_check",
         title = "Receivables and payables agree",
         description = described(
@@ -10708,7 +10944,7 @@ mod tests {
         const D: Hints = (Some(false), Some(true), None);
         const WI: Hints = (Some(false), Some(false), Some(true));
         const DI: Hints = (Some(false), Some(true), Some(true));
-        let table: [(&str, Hints); 120] = [
+        let table: [(&str, Hints); 122] = [
             ("books.handbook", R),
             ("books.start", R),
             ("books.set_setting", DI),
@@ -10812,6 +11048,8 @@ mod tests {
             ("books.pay_bill", D),
             ("books.void_document", D),
             ("books.control_check", R),
+            ("books.documents", R),
+            ("books.document", R),
             ("books.ar_aging", R),
             ("books.ap_aging", R),
             ("books.set_fx_rate", W),
@@ -11491,6 +11729,16 @@ mod tests {
             ),
             (
                 "books.control_check",
+                PeriodKind::AsOf,
+                &[("as_of", AS_OF_DOC)][..],
+            ),
+            (
+                "books.documents",
+                PeriodKind::AsOf,
+                &[("as_of", AS_OF_DOC)][..],
+            ),
+            (
+                "books.document",
                 PeriodKind::AsOf,
                 &[("as_of", AS_OF_DOC)][..],
             ),

@@ -25,6 +25,7 @@
 
 mod books;
 mod iif;
+mod invoice;
 mod k1_tax;
 mod package;
 mod reports;
@@ -34,6 +35,7 @@ mod vendor_1099;
 
 pub use books::PackageBooks;
 pub use iif::export_iif;
+pub use invoice::invoice_document;
 pub use k1_tax::{open_text, tax_basis_csv};
 pub use package::{Package, PackageRequest, build_package, package_file_name};
 pub use reports::{

@@ -8826,7 +8826,7 @@ impl BooksServer {
         name = "books.document",
         title = "An invoice or bill",
         description = described(
-            "One invoice or bill (ref \"invoice:7\" or \"bill:12\", from books.documents): party, dates, lines with their projects, total, what was paid, discounted and written off, what it still owes and its status, all as of a day; and its timeline: every ledger line tagged with it in posting order (its own entry, each payment, each reversal), each saying whether its entry still stands. A reversed payment shows twice: the payment (no longer standing) and its reversal (standing), which net to nothing.",
+            "One invoice or bill (ref \"invoice:7\" or \"bill:12\", from books.documents) as of a day: party, dates, lines with projects, total, paid, discounted, written off, still owed, status; and its timeline, every ledger line tagged with it in posting order, each saying whether its entry still stands (a reversed payment shows as the payment, not standing, and its reversal, standing: they net to nothing). pdf: true also hands over an invoice's PDF to download, re-created from the books.",
             ledger_core::calendar::PeriodKind::AsOf
         ),
         annotations(read_only_hint = true, open_world_hint = false)
@@ -8866,6 +8866,33 @@ impl BooksServer {
             .doc_state(doc, as_of)
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("{} is dated after {as_of}", doc_ref_text(doc)))?;
+        let pdf = match (p.pdf, doc) {
+            (false, _) => None,
+            (true, ledger_core::DocRef::Bill(_)) => {
+                return Err(
+                    "a bill is the vendor's document: its PDF is the file filed with it (books.list_receipts)"
+                        .into(),
+                );
+            }
+            (true, ledger_core::DocRef::Invoice(id)) => {
+                let settings = self.settings();
+                let printed = ledger_package::invoice_document(
+                    ledger,
+                    &settings.company,
+                    id,
+                    as_of,
+                    today(),
+                )?;
+                let bytes =
+                    ledger_import::invoice_pdf::invoice_pdf(&printed).map_err(|e| e.to_string())?;
+                Some(self.hand_over(
+                    &book_name(&store),
+                    &format!("invoice-{id}.pdf"),
+                    "application/pdf",
+                    bytes,
+                )?)
+            }
+        };
         let timeline = ledger
             .doc_lines(doc)
             .into_iter()
@@ -8904,6 +8931,7 @@ impl BooksServer {
             status: st.status.key().to_string(),
             overdue_days: st.overdue_days,
             timeline,
+            pdf,
         }))
     }
 

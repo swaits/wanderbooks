@@ -235,7 +235,15 @@ tie-out in `books.verify` and `control_problems` in `books.digest`; the
 over-the-wire test `documents_void_and_tie_out_over_the_wire`. Still for
 later slices: the processor fee on a payment (S6, with multi-document
 payments and discounts), Needs attention in the viewer for the control
-check, and S2 to S7.
+check, and S2 to S7. S2 (2026-10-24): `books.documents`,
+`books.document`, and the viewer's Invoices & Bills (Money in, Money out,
+a document's page, overview tiles). S3 (2026-10-24): the invoice PDF
+(`ledger-import` `invoice_pdf`, `templates/invoice.typ`; `ledger-package`
+`invoice_document`): re-created from the books, each payment on its own
+line with its date, method and reference, stamped PAID with the day,
+PARTIALLY PAID, PAST DUE or VOID (DRAFT, gray, for S4's preview); by
+download from `books.document pdf`, and Save invoice PDF in the viewer.
+The copy issued is kept from S4 on and never changes.
 **Still open after P3 (each for the phase named, or the lead):**
 - Invoices and bills take a project now (above), behind the new journal
   feature `document_line_projects`: the first company's books declared

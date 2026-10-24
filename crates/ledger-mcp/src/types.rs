@@ -3195,6 +3195,10 @@ pub struct DocumentParams {
     #[serde(default)]
     #[schemars(description = AS_OF_DOC)]
     pub as_of: Option<String>,
+    /// For an invoice: also hand over its PDF (as of the day, re-created
+    /// from the books) to download.
+    #[serde(default)]
+    pub pdf: bool,
 }
 
 /// One line of a document.
@@ -3259,6 +3263,9 @@ pub struct DocumentOut {
     pub overdue_days: i64,
     /// Every ledger line tagged with it, in posting order.
     pub timeline: Vec<DocumentEventOut>,
+    /// The invoice's PDF, handed over (with `pdf`): run its download.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pdf: Option<HandedFile>,
 }
 
 /// Parameters for `books.void_document`.

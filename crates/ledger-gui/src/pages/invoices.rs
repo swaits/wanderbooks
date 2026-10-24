@@ -599,6 +599,10 @@ pub fn show_doc(ui: &mut Ui, b: &Books, doc: DocRef, shell: &mut Shell<'_>) {
             },
         );
         ui.add_space(8.0);
+        if let DocRef::Invoice(id) = doc {
+            pdf_actions(ui, b, id);
+            ui.add_space(4.0);
+        }
         if ui
             .link(format!(
                 "{} Open the entry that recorded it (#{entry})",
@@ -611,6 +615,51 @@ pub fn show_doc(ui: &mut Ui, b: &Books, doc: DocRef, shell: &mut Shell<'_>) {
     });
     if let Some(r) = go {
         shell.go(r);
+    }
+}
+
+/// "Save invoice PDF" and "Open": the invoice as of today, re-created
+/// from the books (ledger_package::invoice_document, the same data the
+/// server prints), saved in Downloads. Writes nothing to the books.
+fn pdf_actions(ui: &mut Ui, b: &Books, id: ledger_core::InvoiceId) {
+    let p = pal(ui.ctx());
+    let said = ui.id().with(("invoice-pdf-said", id));
+    ui.horizontal(|ui| {
+        let save = ui
+            .button(format!("{} Save invoice PDF", icon::FILE_PDF))
+            .on_hover_text("As of today, in your Downloads folder");
+        let open = ui
+            .button(format!("{} Open", icon::ARROW_SQUARE_OUT))
+            .on_hover_text("As of today, in your Downloads folder, opened with its app");
+        if save.clicked() || open.clicked() {
+            let result = ledger_package::invoice_document(
+                &b.ledger,
+                &b.settings.company,
+                id,
+                b.today,
+                b.today,
+            )
+            .and_then(|doc| {
+                ledger_import::invoice_pdf::invoice_pdf(&doc).map_err(|e| e.to_string())
+            })
+            .and_then(|bytes| {
+                let stem = format!("invoice-{id}");
+                if open.clicked() {
+                    crate::export::save_and_open(&stem, "pdf", &bytes)
+                } else {
+                    crate::export::save(&stem, "pdf", &bytes)
+                }
+            })
+            .map(|path| path.display().to_string());
+            ui.data_mut(|d| d.insert_temp(said, result));
+        }
+    });
+    if let Some(result) = ui.data(|d| d.get_temp::<Result<String, String>>(said)) {
+        let (text, color) = match result {
+            Ok(path) => (format!("Saved {path}"), p.muted),
+            Err(why) => (format!("Couldn't save it: {why}"), p.warning),
+        };
+        ui.add(egui::Label::new(egui::RichText::new(text).size(12.0).color(color)).wrap());
     }
 }
 

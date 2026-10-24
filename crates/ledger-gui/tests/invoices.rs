@@ -175,6 +175,8 @@ fn a_documents_page_shows_its_timeline() {
     );
     // Received: nothing stands.
     assert!(h.query_by_label("$0.00").is_some());
+    // An invoice can be saved as PDF (a bill can't: it is the vendor's).
+    assert!(h.query_by_label_contains("Save invoice PDF").is_some());
     // A timeline row opens its entry.
     h.get_by_label_contains(&format!("Payment (reversed later), entry #{pay},"))
         .click();

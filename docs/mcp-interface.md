@@ -2027,13 +2027,17 @@ accounting only: the caller supplies every figure), tax filing.
   anything still owed), `overdue`, `paid`, `void`, `written_off`,
   `overpaid` or `all`; `party` (a customer's or vendor's name or id) and
   `due_by` narrow the list (P4b S2).
-- `books.document { ref, as_of? }` → `{ ref, party, date, due_date,
+- `books.document { ref, as_of?, pdf? }` → `{ ref, party, date, due_date,
   entry_id, lines: [{ description, amount, project? }], total, paid,
   discounted, written_off, outstanding, status, overdue_days, timeline:
   [{ date, entry_id, kind, amount, reversal, stands }] }`. `ref` is
   `invoice:N` or `bill:N`; the timeline is every ledger line tagged with
   the document in posting order, each saying whether its entry still
-  stands as of the day (P4b S2).
+  stands as of the day (P4b S2). With `pdf: true` an invoice's PDF comes
+  back as a handed file (`pdf`: run its download): re-created from the
+  books as of the day, each standing payment on its own line with its
+  date, method and reference, stamped PAID (with the day), PARTIALLY
+  PAID, PAST DUE or VOID (P4b S3); refused for a bill.
 - `books.control_check { as_of? }` → `{ as_of, agrees, accounts: [{ role,
   code, name, balance, documents_total, unattached: [{ entry_id, line,
   date, amount }], difference, attention: [{ kind, id, status, total,

@@ -2727,6 +2727,18 @@ fn documents_list_and_timeline_over_the_wire() {
         ],
         "{one}"
     );
+    // Its PDF, by download (P4b S3): re-created from the books.
+    let with_pdf = m.ok(
+        "books.document",
+        json!({"ref": format!("invoice:{late}"), "as_of": "2026-03-15", "pdf": true}),
+    );
+    let bytes = m.wire.fetch(&with_pdf["pdf"]);
+    assert!(bytes.starts_with(b"%PDF"), "{with_pdf}");
+    assert_eq!(with_pdf["pdf"]["file_name"], format!("invoice-{late}.pdf"));
+    assert!(
+        m.tool("books.document", json!({"ref": "bill:1", "pdf": true}))
+            .refused()
+    );
     assert!(
         m.tool("books.document", json!({"ref": "invoice"}))
             .refused()

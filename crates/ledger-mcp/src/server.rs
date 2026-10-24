@@ -1535,6 +1535,135 @@ fn resolve_account(store: &Store, account: &str) -> Result<AccountId, String> {
     }
 }
 
+/// A payment's method and reference from its parameters (the method by
+/// id or label, books.instruments).
+fn payment_details(
+    store: &Store,
+    p: &PaymentParams,
+) -> Result<ledger_core::PaymentDetails, String> {
+    Ok(ledger_core::PaymentDetails {
+        instrument: p
+            .instrument
+            .as_deref()
+            .map(|r| instruments::resolve_instrument(store, r))
+            .transpose()?,
+        reference: p.reference.clone(),
+    })
+}
+
+/// What a payment tool answers: the document's figures after it, derived
+/// from its lines that stand (rules.md B-38), as of the end of the books.
+fn payment_out(
+    ledger: &Ledger,
+    doc: ledger_core::DocRef,
+    entry_id: u64,
+) -> Result<Json<PaymentOut>, String> {
+    let st = ledger
+        .doc_state(doc, chrono::NaiveDate::MAX)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("{} not found", doc_label(doc)))?;
+    Ok(Json(PaymentOut {
+        entry_id,
+        remaining: money(st.outstanding),
+        status: st.status.key().to_string(),
+    }))
+}
+
+/// "invoice" or "bill" and an id, as a document.
+fn doc_ref(kind: &str, id: u64) -> Result<ledger_core::DocRef, String> {
+    match kind.trim().to_ascii_lowercase().as_str() {
+        "invoice" => Ok(ledger_core::DocRef::Invoice(id)),
+        "bill" => Ok(ledger_core::DocRef::Bill(id)),
+        other => Err(format!("bad kind {other:?}: expected invoice or bill")),
+    }
+}
+
+/// A document's kind and id for people ("invoice 7").
+fn doc_label(doc: ledger_core::DocRef) -> String {
+    match doc {
+        ledger_core::DocRef::Invoice(id) => format!("invoice {id}"),
+        ledger_core::DocRef::Bill(id) => format!("bill {id}"),
+    }
+}
+
+/// What the digest lists from the control check: each line on a control
+/// account that is no document's, and each document needing attention.
+fn control_problems(out: &ControlCheckOut) -> Vec<String> {
+    let mut v = Vec::new();
+    for a in &out.accounts {
+        for u in &a.unattached {
+            v.push(format!(
+                "{} {}: entry {} line {} ({}, {}) is no invoice's or bill's",
+                a.code, a.name, u.entry_id, u.line, u.date, u.amount
+            ));
+        }
+        for d in &a.attention {
+            v.push(format!(
+                "{} {}: {} {} is {} (total {}, owes {})",
+                a.code, a.name, d.kind, d.id, d.status, d.total, d.outstanding
+            ));
+        }
+    }
+    v
+}
+
+/// The control check as `books.control_check` answers it.
+fn control_check_out(
+    ledger: &Ledger,
+    as_of: chrono::NaiveDate,
+    checks: &[ledger_core::ControlCheck],
+) -> ControlCheckOut {
+    let accounts: Vec<ControlCheckRowOut> = checks
+        .iter()
+        .map(|c| {
+            let acct = ledger.chart().get(c.account);
+            ControlCheckRowOut {
+                role: c.role.clone(),
+                code: acct.map(|a| a.code.clone()).unwrap_or_default(),
+                name: acct.map(|a| a.name.clone()).unwrap_or_default(),
+                balance: money(c.balance),
+                documents_total: money(c.documents_total),
+                unattached: c
+                    .unattached
+                    .iter()
+                    .map(|u| UnattachedLineOut {
+                        entry_id: u.entry,
+                        line: u.line,
+                        date: u.date.to_string(),
+                        amount: money(u.amount),
+                    })
+                    .collect(),
+                difference: money(c.difference),
+                attention: c
+                    .attention
+                    .iter()
+                    .map(|a| {
+                        let (kind, id) = match a.doc {
+                            ledger_core::DocRef::Invoice(id) => ("invoice", id),
+                            ledger_core::DocRef::Bill(id) => ("bill", id),
+                        };
+                        DocAttentionOut {
+                            kind: kind.to_string(),
+                            id,
+                            status: a.status.key().to_string(),
+                            total: money(a.total),
+                            outstanding: money(a.outstanding),
+                        }
+                    })
+                    .collect(),
+            }
+        })
+        .collect();
+    let agrees = checks
+        .iter()
+        .all(|c| c.difference.is_zero() && c.unattached.is_empty() && c.attention.is_empty());
+    ControlCheckOut {
+        as_of: as_of.to_string(),
+        agrees,
+        accounts,
+    }
+}
+
 /// Resolve a vendor by id or name (case-insensitive); a number that is
 /// one vendor's id and another's name is refused (INVARIANT 6).
 fn resolve_vendor(store: &Store, vendor: &str) -> Result<u64, String> {
@@ -4363,6 +4492,24 @@ impl BooksServer {
         if let Some(n) = blobs {
             checked.push(format!("{n} stored files match their SHA-256"));
         }
+        // Receivables and payables equal their documents (rules.md B-38
+        // INVARIANT 1): an identity, so a difference is an engine error.
+        let checks = store
+            .ledger()
+            .control_check(chrono::NaiveDate::MAX)
+            .map_err(|e| e.to_string())?;
+        if let Some(c) = checks.iter().find(|c| !c.difference.is_zero()) {
+            return Err(format!(
+                "{}: its balance {} is not its documents' {} plus its other lines: an engine error, report it",
+                c.role,
+                money(c.balance),
+                money(c.documents_total)
+            ));
+        }
+        checked.push(format!(
+            "receivables and payables equal their documents and other lines ({} control accounts)",
+            checks.len()
+        ));
         Ok(Json(VerifyOut {
             status: if report.healed.is_some() {
                 "healed"
@@ -4383,7 +4530,7 @@ impl BooksServer {
     #[tool(
         name = "books.digest",
         title = "Activity digest",
-        description = "What changed since a date: entries posted, per-account movement, and receipt coverage; plus what needs doing: rules due for review, settings problems, cash and card accounts not reconciled through the end of last month (unreconciled_accounts), and revenue and expense accounts with no tax category (uncategorized_accounts). Built for human review.",
+        description = "What changed since a date: entries posted, per-account movement, and receipt coverage; plus what needs doing: rules due for review, settings problems, cash and card accounts not reconciled through the end of last month (unreconciled_accounts), revenue and expense accounts with no tax category (uncategorized_accounts), and receivables or payables lines that are no document's or documents needing attention (control_problems, books.control_check). Built for human review.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn digest(&self, params: Parameters<DigestParams>) -> Result<Json<DigestOut>, String> {
@@ -4457,9 +4604,15 @@ impl BooksServer {
             .into_iter()
             .map(|a| format!("{} {}", a.code, a.name))
             .collect();
+        let control_problems = control_problems(&control_check_out(
+            ledger,
+            today,
+            &ledger.control_check(today).map_err(|e| e.to_string())?,
+        ));
         Ok(Json(DigestOut {
             unreconciled_accounts,
             uncategorized_accounts,
+            control_problems,
             since: since.to_string(),
             entries,
             totals_by_account: totals,
@@ -8421,7 +8574,7 @@ impl BooksServer {
     #[tool(
         name = "books.receive_payment",
         title = "Receive an invoice payment",
-        description = "Record a customer payment against an invoice. Posts Dr Cash / Cr A/R.",
+        description = "Record a customer payment against an invoice. Posts Dr Cash / Cr A/R, the receivable line tagged with the invoice (its figures are derived from its lines that stand: a reversed payment no longer counts). Name instrument (how the money moved, books.instruments) and the processor's or bank's reference when known. The books record payments; they never collect them (D-45). Refused above what it owes, before its date, or into an account that isn't cash.",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -8435,33 +8588,27 @@ impl BooksServer {
         let p = params.0;
         let mut store = self.lock()?;
         let cash = resolve_account(&store, &p.cash_account)?;
+        let details = payment_details(&store, &p)?;
         let entry_id = store
-            .receive_payment(
+            .receive_payment_with(
                 p.document_id,
                 parse_date(&p.date)?,
                 parse_amount(&p.amount)?,
                 cash,
+                &details,
             )
             .map_err(|e| e.to_string())?;
-        let inv = store
-            .ledger()
-            .get_invoice(p.document_id)
-            .ok_or_else(|| format!("invoice {} not found", p.document_id))?;
-        Ok(Json(PaymentOut {
+        payment_out(
+            store.ledger(),
+            ledger_core::DocRef::Invoice(p.document_id),
             entry_id,
-            remaining: inv.balance().map_err(|e| e.to_string())?.to_string(),
-            status: match inv.status {
-                DocumentStatus::Open => "open".to_string(),
-                DocumentStatus::Partial => "partial".to_string(),
-                DocumentStatus::Paid => "paid".to_string(),
-            },
-        }))
+        )
     }
 
     #[tool(
         name = "books.pay_bill",
         title = "Pay a bill",
-        description = "Pay a vendor bill. Posts Dr A/P / Cr Cash.",
+        description = "Record a payment of a vendor bill. Posts Dr A/P / Cr Cash, the payable line tagged with the bill (its figures are derived from its lines that stand: a reversed payment no longer counts). Name instrument (how the money moved, books.instruments: a card payment is left out of 1099-NEC) and the payment's reference when known. The books record payments; they never make them (D-45). Refused above what it owes, before its date, or from an account that isn't cash.",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -8475,27 +8622,74 @@ impl BooksServer {
         let p = params.0;
         let mut store = self.lock()?;
         let cash = resolve_account(&store, &p.cash_account)?;
+        let details = payment_details(&store, &p)?;
         let entry_id = store
-            .pay_bill(
+            .pay_bill_with(
                 p.document_id,
                 parse_date(&p.date)?,
                 parse_amount(&p.amount)?,
                 cash,
+                &details,
             )
             .map_err(|e| e.to_string())?;
-        let bill = store
-            .ledger()
-            .get_bill(p.document_id)
-            .ok_or_else(|| format!("bill {} not found", p.document_id))?;
-        Ok(Json(PaymentOut {
+        payment_out(
+            store.ledger(),
+            ledger_core::DocRef::Bill(p.document_id),
             entry_id,
-            remaining: bill.balance().map_err(|e| e.to_string())?.to_string(),
-            status: match bill.status {
-                DocumentStatus::Open => "open".to_string(),
-                DocumentStatus::Partial => "partial".to_string(),
-                DocumentStatus::Paid => "paid".to_string(),
-            },
+        )
+    }
+
+    #[tool(
+        name = "books.void_document",
+        title = "Void an invoice or bill",
+        description = "Void an invoice or bill that should never have existed (a duplicate, the wrong customer or vendor): reverses its own entry, dated as given, with the reason. It keeps its number and shows as void; nothing is deleted. Refused while a payment stands on it (reverse that payment first: the refusal names it), when it is void already, before its date, or in a closed period. To lower a valid document, not void it: a credit memo (later). Posts at once.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn void_document(
+        &self,
+        params: Parameters<VoidDocumentParams>,
+    ) -> Result<Json<VoidDocumentOut>, String> {
+        let p = params.0;
+        let doc = doc_ref(&p.kind, p.id)?;
+        let date = parse_date(&p.date)?;
+        let mut store = self.lock()?;
+        let entry_id = store
+            .void_document(doc, date, &p.reason)
+            .map_err(|e| e.to_string())?;
+        let status = store
+            .ledger()
+            .doc_state(doc, date)
+            .map_err(|e| e.to_string())?
+            .map_or("void", |st| st.status.key());
+        Ok(Json(VoidDocumentOut {
+            entry_id,
+            status: status.to_string(),
         }))
+    }
+
+    #[tool(
+        name = "books.control_check",
+        title = "Receivables and payables agree",
+        description = described(
+            "Check that Accounts Receivable and Accounts Payable equal their documents as of a day: for each control account, its ledger balance, what its open invoices or bills still owe on it, every line on it that is no document's (a hand entry or an older version's), the difference (always 0.00), and the documents needing attention (overpaid, or not in the ledger). agrees is true when there is nothing to look at. The first thing a CPA ties out.",
+            ledger_core::calendar::PeriodKind::AsOf
+        ),
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    async fn control_check(
+        &self,
+        params: Parameters<AgingParams>,
+    ) -> Result<Json<ControlCheckOut>, String> {
+        let p = params.0;
+        let as_of = self.as_of(p.as_of.as_deref())?;
+        let store = self.lock()?;
+        let ledger = store.ledger();
+        let checks = ledger.control_check(as_of).map_err(|e| e.to_string())?;
+        Ok(Json(control_check_out(ledger, as_of, &checks)))
     }
 
     #[tool(
@@ -10514,7 +10708,7 @@ mod tests {
         const D: Hints = (Some(false), Some(true), None);
         const WI: Hints = (Some(false), Some(false), Some(true));
         const DI: Hints = (Some(false), Some(true), Some(true));
-        let table: [(&str, Hints); 118] = [
+        let table: [(&str, Hints); 120] = [
             ("books.handbook", R),
             ("books.start", R),
             ("books.set_setting", DI),
@@ -10616,6 +10810,8 @@ mod tests {
             ("books.create_bill", D),
             ("books.receive_payment", D),
             ("books.pay_bill", D),
+            ("books.void_document", D),
+            ("books.control_check", R),
             ("books.ar_aging", R),
             ("books.ap_aging", R),
             ("books.set_fx_rate", W),
@@ -10672,8 +10868,8 @@ mod tests {
                 "{name}: openWorldHint"
             );
         }
-        // docs/mcp-interface.md names the 28 destructive tools.
-        assert_eq!(table.iter().filter(|(_, h)| h.1 == Some(true)).count(), 28);
+        // docs/mcp-interface.md names the 29 destructive tools.
+        assert_eq!(table.iter().filter(|(_, h)| h.1 == Some(true)).count(), 29);
     }
 
     /// Every refusal an agent can be given whose text is fixed here, or
@@ -11290,6 +11486,11 @@ mod tests {
             ),
             (
                 "books.balance_sheet",
+                PeriodKind::AsOf,
+                &[("as_of", AS_OF_DOC)][..],
+            ),
+            (
+                "books.control_check",
                 PeriodKind::AsOf,
                 &[("as_of", AS_OF_DOC)][..],
             ),

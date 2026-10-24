@@ -2079,6 +2079,10 @@ pub struct DigestOut {
     /// shows. Propose a category for each from books.tax_categories and
     /// set it with books.set_tax_category once the human agrees.
     pub uncategorized_accounts: Vec<String>,
+    /// Receivables and payables lines that are no document's, and
+    /// documents needing attention (overpaid, not in the ledger), as of
+    /// today (books.control_check): look at each with the human.
+    pub control_problems: Vec<String>,
 }
 
 /// An account due for reconciliation (`books.digest`).
@@ -3098,6 +3102,16 @@ pub struct PaymentParams {
     pub amount: String,
     /// Cash account id or code.
     pub cash_account: String,
+    /// How the money moved: a payment method's id or label
+    /// (`books.instruments`), tagged on the payment's entry in the same
+    /// call (D-40: a card payment is left out of 1099-NEC).
+    #[serde(default)]
+    pub instrument: Option<String>,
+    /// The processor's or bank's own reference for this payment (a charge
+    /// id, a trace or check number): one line, at most 200 characters,
+    /// carried in the entry's description (D-45).
+    #[serde(default)]
+    pub reference: Option<String>,
 }
 
 /// Output of `books.receive_payment` / `books.pay_bill`.
@@ -3105,10 +3119,98 @@ pub struct PaymentParams {
 pub struct PaymentOut {
     /// The payment journal entry's id.
     pub entry_id: u64,
-    /// Remaining balance, decimal string.
+    /// What the document still owes after it, decimal string (derived
+    /// from its lines that stand).
     pub remaining: String,
-    /// "open", "partial", or "paid".
+    /// The document's status after it: open, partial, paid, written_off,
+    /// void, overpaid, or unattached.
     pub status: String,
+}
+
+/// Parameters for `books.void_document`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct VoidDocumentParams {
+    /// "invoice" or "bill".
+    pub kind: String,
+    /// The invoice's or bill's id.
+    pub id: u64,
+    /// The void's date, YYYY-MM-DD: on or after the document's, in an
+    /// open period.
+    pub date: String,
+    /// Why it should never have existed (a duplicate, the wrong
+    /// customer): one line, at most 200 characters.
+    pub reason: String,
+}
+
+/// Output of `books.void_document`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct VoidDocumentOut {
+    /// The reversal entry that voids it.
+    pub entry_id: u64,
+    /// The document's status now ("void").
+    pub status: String,
+}
+
+/// One line on a control account that is no document's.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct UnattachedLineOut {
+    /// The entry.
+    pub entry_id: u64,
+    /// The line's index in it.
+    pub line: usize,
+    /// The entry's date.
+    pub date: String,
+    /// Its amount as the control account counts it (plus raises it).
+    pub amount: String,
+}
+
+/// A document the control check lists for attention.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DocAttentionOut {
+    /// "invoice" or "bill".
+    pub kind: String,
+    /// Its id.
+    pub id: u64,
+    /// Its status as of the day (overpaid, unattached, ...).
+    pub status: String,
+    /// Its total.
+    pub total: String,
+    /// What it owes as of the day.
+    pub outstanding: String,
+}
+
+/// One control account's tie-out.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ControlCheckRowOut {
+    /// "receivables" or "payables".
+    pub role: String,
+    /// The account's code.
+    pub code: String,
+    /// The account's name.
+    pub name: String,
+    /// Its general-ledger balance on its normal side.
+    pub balance: String,
+    /// What its documents still owe on it.
+    pub documents_total: String,
+    /// Its lines that are no document's (hand or older lines).
+    pub unattached: Vec<UnattachedLineOut>,
+    /// balance - documents_total - the unattached lines: always "0.00".
+    pub difference: String,
+    /// The role's documents needing attention.
+    pub attention: Vec<DocAttentionOut>,
+}
+
+/// Output of `books.control_check`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ControlCheckOut {
+    /// The day.
+    pub as_of: String,
+    /// True when every control account equals its documents (no
+    /// unattached line, nothing needing attention, no difference).
+    pub agrees: bool,
+    /// One row per control account.
+    pub accounts: Vec<ControlCheckRowOut>,
 }
 
 /// Parameters for `books.ar_aging` / `books.ap_aging`.

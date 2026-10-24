@@ -342,7 +342,7 @@ Tool descriptions are at most 700 characters; eight longer ones are listed
 in `tool_descriptions_fit_700_characters`, to be shortened in P5.
 
 **Annotations.** Every tool has a `title` and a `readOnlyHint`; every tool
-that changes anything also has a `destructiveHint`, true for these 28:
+that changes anything also has a `destructiveHint`, true for these 29:
 `books.post_entry`, `books.reverse_entry`, `books.set_setting`, `books.retire_convention`, `books.unlink_receipt`,
 `books.unlink_attachment`, `books.withdraw_attachment`,
 `books.correct_asset`, `books.dispose_asset`, `books.run_depreciation`,
@@ -352,7 +352,8 @@ that changes anything also has a `destructiveHint`, true for these 28:
 `books.void_statement`, `books.void_reconciliation`, `books.set_w9`,
 `books.set_tin` (both overwrite a vault record), `books.purge_tin`,
 `books.create_invoice`, `books.create_bill`, `books.receive_payment`,
-`books.pay_bill`, `books.run_payroll`, `books.remit_payroll_taxes`; and an
+`books.pay_bill`, `books.void_document`, `books.run_payroll`,
+`books.remit_payroll_taxes`; and an
 `idempotentHint` on the ten that a repeat with the same arguments leaves
 the journal and the vault as they were: `books.verify`,
 `books.run_depreciation`, `books.run_schedules`, `books.run_recurring`,
@@ -1997,13 +1998,35 @@ accounting only: the caller supplies every figure), tax filing.
   never tagged; `notes` as for invoices, but none for an on-spec project
   (a cost of on-spec work is an expense like any other); the feature as
   for invoices.
-- `books.receive_payment { document_id, date, amount, cash_account }` →
-  `{ entry_id, remaining, status }`. Posts Dr Cash / Cr A/R, neither line
-  tagged with a project (balance-sheet only: the invoice's lines carry
-  its projects).
-- `books.pay_bill { document_id, date, amount, cash_account }` →
-  `{ entry_id, remaining, status }`. Posts Dr A/P / Cr Cash, neither line
-  tagged with a project.
+- `books.receive_payment { document_id, date, amount, cash_account,
+  instrument?, reference? }` → `{ entry_id, remaining, status }`. Posts
+  Dr Cash / Cr A/R, the receivable line tagged with the invoice (B-38),
+  neither line tagged with a project (balance-sheet only: the invoice's
+  lines carry its projects). `instrument` (id or label) is tagged on the
+  entry in the same call; `reference` (one line, at most 200 characters:
+  a charge id, a trace number) goes into its description. `remaining`
+  and `status` (open, partial, paid, written_off, void, overpaid,
+  unattached) are the invoice's derived figures after it. The books
+  record payments; they never collect them (D-45).
+- `books.pay_bill { document_id, date, amount, cash_account, instrument?,
+  reference? }` → `{ entry_id, remaining, status }`. Posts Dr A/P / Cr
+  Cash, the payable line tagged with the bill, neither line tagged with a
+  project; `instrument` and `reference` as for `receive_payment` (a card
+  payment is left out of 1099-NEC, D-40).
+- `books.void_document { kind, id, date, reason }` → `{ entry_id, status }`.
+  Voids an invoice or bill (`kind` `invoice` or `bill`) that should never
+  have existed by reversing its own entry with the reason; it keeps its
+  number and reads `void`. Refused while a payment stands on it (the
+  refusal names the payment entry to reverse first), when void already,
+  before its date or in a closed period (P4b S1, B-38).
+- `books.control_check { as_of? }` → `{ as_of, agrees, accounts: [{ role,
+  code, name, balance, documents_total, unattached: [{ entry_id, line,
+  date, amount }], difference, attention: [{ kind, id, status, total,
+  outstanding }] }] }`. Receivables and payables tied to their documents
+  (B-23, B-38 INVARIANT 1): `difference` is always `0.00`; `agrees` when
+  there is no unattached line and nothing needing attention.
+  `books.verify` checks the same identity and `books.digest` lists its
+  problems (`control_problems`).
 - `books.ar_aging { as_of? }` → `{ as_of, rows: [{ name, current, days_30,
   days_60, days_90, days_90_plus, total }] }` (`as_of` omitted: today).
 - `books.ap_aging { as_of? }` → same, per vendor (`as_of` omitted: today).

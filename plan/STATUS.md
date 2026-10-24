@@ -221,6 +221,21 @@ token keeps up to 64 handed files (was 16). The tests file by upload
 (`tests/common`: `Wire::upload`, `upload_on`) and read every file by its
 download (`docs/testing.md`, "D-46").
 
+**P4b slice S1, receivables and payables read their figures from the
+ledger (2026-10-24, D-45).** Part A (ledger-core, store, viewer, Lean
+`control_agrees`, Kani bounds): an invoice's or bill's paid, outstanding
+and status are derived from its tagged lines that still stand, so a
+reversed payment no longer counts and a void is exact; accounts in the
+receivables or payables role (or holding document lines) refuse hand
+lines; format feature `document_standing` (the owner upgraded
+2026-10-24). Part B (MCP): `books.void_document`, `books.control_check`,
+`instrument` and `reference` on `books.receive_payment` and
+`books.pay_bill` (status and remaining from the derived figures), the
+tie-out in `books.verify` and `control_problems` in `books.digest`; the
+over-the-wire test `documents_void_and_tie_out_over_the_wire`. Still for
+later slices: the processor fee on a payment (S6, with multi-document
+payments and discounts), Needs attention in the viewer for the control
+check, and S2 to S7.
 **Still open after P3 (each for the phase named, or the lead):**
 - Invoices and bills take a project now (above), behind the new journal
   feature `document_line_projects`: the first company's books declared

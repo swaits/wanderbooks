@@ -878,6 +878,19 @@ fn happy_path(name: &str) -> Mcp {
     );
     m.ok("books.ar_aging", json!({"as_of": "2026-06-30"}));
     m.ok("books.ap_aging", json!({"as_of": "2026-06-30"}));
+    // P4b S1: a document voided, and the control accounts' tie-out.
+    let dup = m.ok(
+        "books.create_invoice",
+        json!({"party_id": customer, "date": "2026-02-02", "due_date": "2026-03-02",
+               "lines": [{"description": "Consulting, entered twice", "amount": "500.00"}]}),
+    )["id"]
+        .as_u64()
+        .unwrap();
+    m.ok(
+        "books.void_document",
+        json!({"kind": "invoice", "id": dup, "date": "2026-02-02", "reason": "entered twice"}),
+    );
+    m.ok("books.control_check", json!({"as_of": "2026-06-30"}));
 
     // Fixed assets.
     let registered = m.ok(
@@ -2502,4 +2515,105 @@ fn db_digest(path: &Path) -> String {
         }
     }
     ledger_store::journal::sha256_hex(dump.as_bytes())
+}
+
+/// P4b S1 over the real server (rules.md B-38, D-45): a payment carries
+/// its method and reference and answers with the invoice's derived
+/// figures; an invoice with a payment standing can't be voided (the
+/// refusal names the payment); one entered twice is voided and shows as
+/// void; a hand line to receivables is refused; and the control check
+/// ties receivables to the open invoices, with nothing for the digest.
+#[test]
+fn documents_void_and_tie_out_over_the_wire() {
+    let dir = test_dir("p4b_s1");
+    let toml = books_toml(&dir, "600.00", "");
+    let mut m = Mcp::start(&dir, &toml);
+    m.accounts(BASE_CHART);
+    let customer = m.ok("books.add_customer", json!({"name": "Client"}))["id"]
+        .as_u64()
+        .unwrap();
+    m.ok(
+        "books.add_instrument",
+        json!({"kind": "bank", "label": "Harbor checking", "last4": "1234", "account": "1000"}),
+    );
+    let inv = m.ok(
+        "books.create_invoice",
+        json!({"party_id": customer, "date": "2026-02-01", "due_date": "2026-03-01",
+               "lines": [{"description": "Consulting", "amount": "500.00"}]}),
+    )["id"]
+        .as_u64()
+        .unwrap();
+    let paid = m.ok(
+        "books.receive_payment",
+        json!({"document_id": inv, "date": "2026-02-10", "amount": "200.00",
+               "cash_account": "1000", "instrument": "Harbor checking", "reference": "tr_8812"}),
+    );
+    assert_eq!(paid["remaining"], "300.00", "{paid}");
+    assert_eq!(paid["status"], "partial", "{paid}");
+    let payment = paid["entry_id"].as_u64().unwrap();
+    let entry = m.ok("books.get_entry", json!({"entry_id": payment}));
+    assert!(
+        entry["description"].as_str().unwrap().contains("tr_8812"),
+        "{entry}"
+    );
+    assert_eq!(entry["instrument"], "Harbor checking", "{entry}");
+
+    let why = m
+        .tool(
+            "books.void_document",
+            json!({"kind": "invoice", "id": inv, "date": "2026-02-11", "reason": "wrong client"}),
+        )
+        .err_text();
+    assert!(why.contains(&format!("entry {payment}")), "{why}");
+
+    let dup = m.ok(
+        "books.create_invoice",
+        json!({"party_id": customer, "date": "2026-02-02", "due_date": "2026-03-02",
+               "lines": [{"description": "Consulting, entered twice", "amount": "500.00"}]}),
+    )["id"]
+        .as_u64()
+        .unwrap();
+    let void = m.ok(
+        "books.void_document",
+        json!({"kind": "invoice", "id": dup, "date": "2026-02-02", "reason": "entered twice"}),
+    );
+    assert_eq!(void["status"], "void", "{void}");
+
+    let e = m.ok(
+        "books.draft_entry",
+        json!({"date": "2026-02-15", "description": "By hand", "no_party_reason": "test"}),
+    )["entry_id"]
+        .as_u64()
+        .unwrap();
+    assert!(
+        m.tool(
+            "books.add_line",
+            json!({"entry_id": e, "account": "1200", "side": "debit", "amount": "50.00"}),
+        )
+        .refused()
+    );
+
+    let check = m.ok("books.control_check", json!({"as_of": "2026-06-30"}));
+    assert_eq!(check["agrees"], true, "{check}");
+    let ar = check["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["role"] == "receivables")
+        .cloned()
+        .unwrap();
+    assert_eq!(ar["code"], "1200", "{check}");
+    assert_eq!(ar["balance"], "300.00", "{check}");
+    assert_eq!(ar["documents_total"], "300.00", "{check}");
+    assert_eq!(ar["difference"], "0.00", "{check}");
+    let digest = m.ok("books.digest", json!({"since": "2026-01-01"}));
+    assert_eq!(digest["control_problems"], json!([]), "{digest}");
+    let verified = m.ok("books.verify", json!({}));
+    assert!(
+        verified["checked"].as_array().unwrap().iter().any(|c| c
+            .as_str()
+            .unwrap()
+            .starts_with("receivables and payables equal")),
+        "{verified}"
+    );
 }

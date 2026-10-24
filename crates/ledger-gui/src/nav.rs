@@ -74,6 +74,14 @@ pub enum Route {
     Projects,
     /// One project.
     Project(ledger_core::ClassId),
+    /// Invoices: what customers owe the company (money in).
+    Receivables,
+    /// Bills: what the company owes vendors (money out).
+    Payables,
+    /// One invoice.
+    Invoice(ledger_core::InvoiceId),
+    /// One bill.
+    Bill(ledger_core::BillId),
     Documents,
     Document(u64),
     Company,
@@ -94,6 +102,9 @@ impl Route {
             Route::Assets | Route::Asset(_) => Section::Assets,
             Route::Parties | Route::Party(_) => Section::Parties,
             Route::Projects | Route::Project(_) => Section::Projects,
+            Route::Receivables | Route::Payables | Route::Invoice(_) | Route::Bill(_) => {
+                Section::Invoices
+            }
             Route::Documents | Route::Document(_) => Section::Documents,
             Route::Company => Section::Company,
             Route::Journal | Route::JournalEvent(_) => Section::Journal,
@@ -112,13 +123,14 @@ pub enum Section {
     Assets,
     Parties,
     Projects,
+    Invoices,
     Documents,
     Company,
     Journal,
 }
 
 impl Section {
-    pub const ALL: [Section; 12] = [
+    pub const ALL: [Section; 13] = [
         Section::Overview,
         Section::Cash,
         Section::Profit,
@@ -128,6 +140,7 @@ impl Section {
         Section::Assets,
         Section::Parties,
         Section::Projects,
+        Section::Invoices,
         Section::Documents,
         Section::Company,
         Section::Journal,
@@ -144,6 +157,7 @@ impl Section {
             Section::Assets => "Assets",
             Section::Parties => "Parties",
             Section::Projects => "Projects",
+            Section::Invoices => "Invoices & Bills",
             Section::Documents => "Documents",
             Section::Company => "Company",
             Section::Journal => "Journal",
@@ -162,6 +176,7 @@ impl Section {
             Section::Assets => i::PACKAGE,
             Section::Parties => i::ADDRESS_BOOK,
             Section::Projects => i::BRIEFCASE,
+            Section::Invoices => i::RECEIPT,
             Section::Documents => i::FILES,
             Section::Company => i::BUILDINGS,
             Section::Journal => i::SCROLL,
@@ -179,6 +194,7 @@ impl Section {
             Section::Assets => Route::Assets,
             Section::Parties => Route::Parties,
             Section::Projects => Route::Projects,
+            Section::Invoices => Route::Receivables,
             Section::Documents => Route::Documents,
             Section::Company => Route::Company,
             Section::Journal => Route::Journal,

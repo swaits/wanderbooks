@@ -24,6 +24,7 @@ pub struct PageState {
     pub parties: pages::parties::State,
     pub projects: pages::projects::State,
     pub documents: pages::documents::State,
+    pub invoices: pages::invoices::State,
     pub journal: pages::journal::State,
 }
 
@@ -1039,7 +1040,9 @@ const SIDEBAR_ROWS: Rows = Rows {
     n: Section::ALL.len(),
     row: 32.0,
     gap: 6.0,
-    row_min: 24.0,
+    // 22, not 24, since Invoices & Bills made 13 links (2026-10-24): so
+    // they still fit the owner's 1479x519 window unscrolled.
+    row_min: 22.0,
     head_gap: 18.0,
     foldable: true,
 };
@@ -1049,8 +1052,8 @@ const RAIL_ROWS: Rows = Rows {
     row: 36.0,
     gap: 6.0,
     // As low as the sidebar's: at 28 the rail scrolled in the owner's
-    // window (review, 2026-10-22).
-    row_min: 24.0,
+    // window (review, 2026-10-22), and at 24 once there were 13 links.
+    row_min: 22.0,
     head_gap: 18.0,
     foldable: false,
 };
@@ -1733,18 +1736,36 @@ mod tests {
 
     #[test]
     fn the_sidebar_gives_way_in_order() {
+        // The links' height at a row and gap, however many sections there
+        // are (12 until 2026-10-24, when Invoices & Bills made 13).
+        let links = |row: f32, gap: f32| SIDEBAR_ROWS.height(row, gap);
         // Card folds first.
-        let f = fit(18.0 + 450.0 + 8.0 + 147.0, FOOTER, &SIDEBAR_ROWS, 0.5);
+        let f = fit(
+            18.0 + links(32.0, 6.0) + 8.0 + 147.0,
+            FOOTER,
+            &SIDEBAR_ROWS,
+            0.5,
+        );
         assert!(f.folded && !f.tight && f.row == 32.0 && f.gap == 6.0);
         // Then the spacing goes, before the rows.
-        let f = fit(8.0 + 410.0 + 8.0 + 112.0, FOOTER, &SIDEBAR_ROWS, 0.5);
+        let f = fit(
+            8.0 + links(32.0, 4.0) + 8.0 + 112.0,
+            FOOTER,
+            &SIDEBAR_ROWS,
+            0.5,
+        );
         assert!(f.folded && f.tight && f.row == 32.0 && f.gap < 6.0 && f.gap >= GAP_MIN);
         // Then the rows, down to their least.
-        let f = fit(8.0 + 330.0 + 8.0 + 112.0, FOOTER, &SIDEBAR_ROWS, 0.5);
-        assert!(f.tight && !f.scroll && f.gap == GAP_MIN && f.row < 32.0 && f.row >= 24.0);
+        let f = fit(
+            8.0 + links(28.0, GAP_MIN) + 8.0 + 112.0,
+            FOOTER,
+            &SIDEBAR_ROWS,
+            0.5,
+        );
+        assert!(f.tight && !f.scroll && f.gap == GAP_MIN && f.row < 32.0 && f.row >= 22.0);
         // Then they scroll.
         let f = fit(300.0, FOOTER, &SIDEBAR_ROWS, 0.5);
-        assert!(f.scroll && f.row == 24.0 && f.gap == GAP_MIN);
+        assert!(f.scroll && f.row == 22.0 && f.gap == GAP_MIN);
     }
 
     #[test]

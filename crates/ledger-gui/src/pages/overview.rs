@@ -148,7 +148,7 @@ fn kpis(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
         ),
     };
     let ytd = b.fiscal_ytd();
-    let tiles: Vec<(Kpi, Route)> = vec![
+    let mut tiles: Vec<(Kpi, Route)> = vec![
         (
             Kpi {
                 label: "Cash on hand",
@@ -222,6 +222,42 @@ fn kpis(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
             Route::Cash,
         ),
     ];
+    // Invoices and bills, once the books have any (P4b S2).
+    if let Some((owed, late, _)) = super::invoices::summary(b, false) {
+        tiles.push((
+            Kpi {
+                label: "Owed to you",
+                value: fmt::dollars(owed),
+                sub: Some(if late > 0 {
+                    (
+                        fmt::count(late, "invoice overdue", "invoices overdue"),
+                        p.warning,
+                    )
+                } else {
+                    ("none overdue".into(), p.muted)
+                }),
+                spark: None,
+                how: "What customers' open invoices still owe, read from the ledger.",
+            },
+            Route::Receivables,
+        ));
+    }
+    if let Some((owed, late, soon)) = super::invoices::summary(b, true) {
+        tiles.push((
+            Kpi {
+                label: "You owe on bills",
+                value: fmt::dollars(owed),
+                sub: Some(if late > 0 {
+                    (fmt::count(late, "bill overdue", "bills overdue"), p.warning)
+                } else {
+                    (format!("{} due this week", soon), p.muted)
+                }),
+                spark: None,
+                how: "What vendors' open bills still owe, read from the ledger.",
+            },
+            Route::Payables,
+        ));
+    }
     super::grid(ui, tiles.len(), 150.0, 6, |i, ui| {
         let (tile, route) = &tiles[i];
         let r = widgets::kpi(

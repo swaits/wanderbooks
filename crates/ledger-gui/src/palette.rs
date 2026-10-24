@@ -533,6 +533,16 @@ pub fn describe(b: &Books, r: &Route) -> String {
             .map(|a| a.file_name.clone())
             .unwrap_or_default(),
         Route::Asset(id) => b.asset_label(*id),
+        Route::Invoice(id) => b
+            .ledger
+            .get_invoice(*id)
+            .map(|_| format!("Invoice {id}"))
+            .unwrap_or_default(),
+        Route::Bill(id) => b
+            .ledger
+            .get_bill(*id)
+            .map(|_| format!("Bill {id}"))
+            .unwrap_or_default(),
         Route::Party(id) => b.party_label(*id),
         Route::Project(id) => b.project_label(*id),
         Route::Reconciliation(id) => b.subject_label(ledger_store::Subject::Reconciliation(*id)),

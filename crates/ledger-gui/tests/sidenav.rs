@@ -423,7 +423,8 @@ fn at_1479x519_every_link_shows_unscrolled() {
                 "{footer:?}: {} at {r:?} isn't whole in {view:?}",
                 s.title()
             );
-            assert!(r.height() >= 24.0, "{footer:?}: {} too tight", s.title());
+            // 22: the rows' least since there are 13 links (2026-10-24).
+            assert!(r.height() >= 22.0, "{footer:?}: {} too tight", s.title());
         }
         assert_clear(&h, Pane::Sidebar, &format!("{footer:?}"));
         // Nothing moves when the last link is asked into view.

@@ -7,6 +7,7 @@ pub mod cash;
 pub mod company;
 pub mod documents;
 pub mod entry;
+pub mod invoices;
 pub mod journal;
 pub mod overview;
 pub mod parties;
@@ -64,6 +65,10 @@ pub fn show(ui: &mut Ui, b: &Books, route: &Route, shell: &mut Shell<'_>) {
         Route::Party(id) => parties::show_party(ui, b, *id, shell),
         Route::Projects => projects::show_list(ui, b, shell),
         Route::Project(id) => projects::show_project(ui, b, *id, shell),
+        Route::Receivables => invoices::show_list(ui, b, false, shell),
+        Route::Payables => invoices::show_list(ui, b, true, shell),
+        Route::Invoice(id) => invoices::show_doc(ui, b, ledger_core::DocRef::Invoice(*id), shell),
+        Route::Bill(id) => invoices::show_doc(ui, b, ledger_core::DocRef::Bill(*id), shell),
         Route::Documents => documents::show(ui, b, None, shell),
         Route::Document(id) => documents::show(ui, b, Some(*id), shell),
         Route::Company => company::show(ui, b, shell),

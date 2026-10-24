@@ -352,7 +352,8 @@ fn a_very_short_window_keeps_one_link() {
         h.run_steps(4);
         let first = sidebar_link(&h, "Overview");
         assert!(
-            first.height() >= 23.0 && first.bottom() <= h_px,
+            // 22: the rows' least since there are 13 links (2026-10-24).
+            first.height() >= 22.0 && first.bottom() <= h_px,
             "{tag}: Overview at {first:?}"
         );
         if let Some(status) = h.query_by_label_contains("event ") {

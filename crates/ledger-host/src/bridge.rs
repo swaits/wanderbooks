@@ -66,8 +66,8 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{Notify, mpsc, watch};
 use tokio::time::Instant;
 
-/// The longest message the agent may send (a file bigger than a call
-/// takes inline goes by an upload).
+/// The longest message the agent may send (a file never comes in one: it
+/// goes by an upload, D-46).
 const MAX_MESSAGE: usize = ledger_mcp::local::MAX_BODY;
 /// The bridge's own request ids upstream start so.
 const OWN_ID: &str = "wanderbooks-bridge-";

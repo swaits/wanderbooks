@@ -1271,16 +1271,16 @@ pub struct CashFlowOut {
     pub warnings: Vec<CashFlowWarningOut>,
 }
 
-/// Parameters for `books.import_bank_csv`.
+/// Parameters for `books.import_bank_csv`. No other argument is taken: a
+/// file's text never comes as one (D-46).
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ImportBankCsvParams {
-    /// The CSV text (QBO bank upload layout: Date,Description,Amount, or
-    /// Date,Description, money out, money in)…
-    #[serde(default)]
-    pub csv_text: Option<String>,
-    /// …or an upload of it made with books.begin_upload (purpose import).
-    #[serde(default)]
-    pub upload_id: Option<String>,
+    /// The CSV (QBO bank upload layout: Date,Description,Amount, or
+    /// Date,Description, money out, money in): its upload, made with
+    /// books.begin_upload (purpose import) and `wanderbooks upload`. A
+    /// file never passes through the agent (D-46).
+    pub upload_id: String,
     /// Account code for the bank account (the offset side of each entry).
     pub bank_account_code: String,
     /// Account code for the default offset (e.g. an expense account).
@@ -1331,15 +1331,15 @@ pub struct ImportBankCsvOut {
     pub source_linked: bool,
 }
 
-/// Parameters for `books.import_chart_csv`.
+/// Parameters for `books.import_chart_csv`. No other argument is taken: a
+/// file's text never comes as one (D-46).
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ImportChartCsvParams {
-    /// The CSV text: code,name,type,parent_code with a header row…
-    #[serde(default)]
-    pub csv_text: Option<String>,
-    /// …or an upload of it made with books.begin_upload (purpose import).
-    #[serde(default)]
-    pub upload_id: Option<String>,
+    /// The CSV (code,name,type,parent_code,tax_category with a header
+    /// row): its upload, made with books.begin_upload (purpose import) and
+    /// `wanderbooks upload`. A file never passes through the agent (D-46).
+    pub upload_id: String,
 }
 
 /// Result of `books.import_chart_csv`.
@@ -1679,8 +1679,10 @@ pub struct ReverseEntryOut {
 // Receipts and documents
 // ---------------------------------------------------------------------------
 
-/// Parameters for `books.attach_receipt`.
+/// Parameters for `books.attach_receipt`. No other argument is taken: a
+/// file's bytes never come as one (D-46).
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct AttachReceiptParams {
     /// Entry id to attach to. Omit to file unlinked, then link later with
     /// `books.link_receipt`.
@@ -1692,16 +1694,9 @@ pub struct AttachReceiptParams {
     /// MIME type, e.g. "image/png" (an upload's own, if not given).
     #[serde(default)]
     pub mime_type: Option<String>,
-    /// The file's bytes: an upload made with books.begin_upload (its id)…
-    #[serde(default)]
-    pub upload_id: Option<String>,
-    /// …or, for a file of at most 256 KiB, its bytes base64-encoded, with
-    /// sha256.
-    #[serde(default)]
-    pub content_base64: Option<String>,
-    /// The SHA-256 of the bytes in content_base64, hex.
-    #[serde(default)]
-    pub sha256: Option<String>,
+    /// The file: its upload, made with books.begin_upload and `wanderbooks
+    /// upload` (its id). A file never passes through the agent (D-46).
+    pub upload_id: String,
     /// Optional description.
     pub description: Option<String>,
     /// More subjects to link it to in the same call (each journaled as its
@@ -1724,8 +1719,10 @@ pub struct AttachReceiptOut {
     pub links: Vec<SubjectOut>,
 }
 
-/// Parameters for `books.file_document`.
+/// Parameters for `books.file_document`. No other argument is taken: a
+/// file's bytes never come as one (D-46).
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct FileDocumentParams {
     /// One of: formation, legal, tax, accounting, statement, contract,
     /// photo, warranty, import_source, other.
@@ -1736,16 +1733,9 @@ pub struct FileDocumentParams {
     /// MIME type (an upload's own, if not given).
     #[serde(default)]
     pub mime_type: Option<String>,
-    /// The file's bytes: an upload made with books.begin_upload (its id)…
-    #[serde(default)]
-    pub upload_id: Option<String>,
-    /// …or, for a file of at most 256 KiB, its bytes base64-encoded, with
-    /// sha256.
-    #[serde(default)]
-    pub content_base64: Option<String>,
-    /// The SHA-256 of the bytes in content_base64, hex.
-    #[serde(default)]
-    pub sha256: Option<String>,
+    /// The file: its upload, made with books.begin_upload and `wanderbooks
+    /// upload` (its id). A file never passes through the agent (D-46).
+    pub upload_id: String,
     /// Optional description.
     pub description: Option<String>,
     /// Subjects to link it to in the same call (each journaled as its own
@@ -1860,15 +1850,14 @@ pub struct GetReceiptParams {
     /// Attachment id.
     pub attachment_id: u64,
     /// What to return: "meta" (default: what it is and what it's linked
-    /// to), or "bytes" (also its bytes, base64, for a file of at most
-    /// 256 KiB; a larger one comes with `wanderbooks download`).
+    /// to), or "bytes" (also the file, handed over: the command that
+    /// saves a copy, never its bytes; D-46).
     #[serde(default)]
     pub view: Option<String>,
 }
 
 /// Result of `books.get_receipt`: what it is and what it's linked to, and
-/// with view `bytes`, its bytes (hash-verified on read) or the command that
-/// saves a copy.
+/// with view `bytes`, the file handed over (read hash-verified).
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct GetReceiptOut {
     /// Attachment id.
@@ -1889,14 +1878,10 @@ pub struct GetReceiptOut {
     pub description: Option<String>,
     /// Everything it is linked to (the entry it is filed on first).
     pub links: Vec<SubjectOut>,
-    /// Its bytes, base64-encoded: with view `bytes`, for a file of at most
-    /// 256 KiB.
+    /// With view `bytes`: the file, handed over: run its `download` to
+    /// save a copy in a folder you name.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub content_base64: Option<String>,
-    /// With view `bytes`, for a file too large to come back here: the
-    /// command that saves a copy in a folder you name.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub download: Option<String>,
+    pub file: Option<HandedFile>,
 }
 
 // ---------------------------------------------------------------------------
@@ -2140,8 +2125,8 @@ pub struct StaleRule {
 /// Parameters for `books.export`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ExportParams {
-    /// "csv", "json", "xlsx", "pdf", or "iif". XLSX and PDF are
-    /// base64-encoded; PDF covers every report but general_ledger and
+    /// "csv", "json", "xlsx", "pdf", or "iif": the file is handed over,
+    /// never its bytes (D-46). PDF covers every report but general_ledger and
     /// general_journal; IIF (plain ASCII text) is only valid with report
     /// "general_journal" (alias "journal").
     pub format: String,
@@ -2203,12 +2188,9 @@ pub struct ExportOut {
     pub format: String,
     /// The requested report.
     pub report: String,
-    /// The exported content. Base64-encoded when `content_encoding` is
-    /// "base64" (XLSX, PDF); otherwise raw text.
-    pub content: String,
-    /// "base64" for XLSX and PDF, otherwise absent.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub content_encoding: Option<String>,
+    /// The exported file, handed over: run its `download` to save it in a
+    /// folder you name. Never its bytes (D-46).
+    pub file: HandedFile,
     /// IIF: what the file writes differently from the books to fit
     /// QuickBooks Desktop (plain ASCII; account names at most 31
     /// characters a level, numbers 7, memos 4,095; no two names or numbers
@@ -2546,11 +2528,10 @@ pub struct AssetLabelsParams {
 /// Result of `books.asset_labels`.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct AssetLabelsOut {
-    /// A file name for the sheet.
-    pub file_name: String,
-    /// The label sheet as PDF, base64. Avery 5160/8160 (US letter, 30
-    /// labels of 1" x 2-5/8"); print at 100% scale, not "fit to page".
-    pub content_base64: String,
+    /// The label sheet, a PDF, handed over: run its `download` to save it.
+    /// Avery 5160/8160 (US letter, 30 labels of 1" x 2-5/8"); print at
+    /// 100% scale, not "fit to page".
+    pub file: HandedFile,
     /// The tags printed, in order.
     pub tags: Vec<String>,
 }
@@ -3752,8 +3733,10 @@ pub struct SetPartyRolesParams {
 }
 
 /// Parameters for `books.set_w9`: what a W-9 said, never the number
-/// itself. Either `clear: true` alone, or every required fact.
+/// itself. Either `clear: true` alone, or every required fact. No other
+/// argument is taken: the form's bytes never come as one (D-46).
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SetW9Params {
     /// The party: id or name. Needs a 1099 role (contractor or landlord).
     pub party: String,
@@ -3784,19 +3767,13 @@ pub struct SetW9Params {
     /// The TIN's type: ssn, ein, or itin. Required with tin.
     pub tin_type: Option<String>,
     /// The signed W-9 itself (a PDF, PNG, or JPEG): an upload made with
-    /// books.begin_upload. Stored only in the vault (it shows the full
-    /// TIN), never with the receipts and documents.
+    /// books.begin_upload purpose w9 and `wanderbooks upload` (its id; a
+    /// file never passes through the agent, D-46). Stored only in the
+    /// vault (it shows the full TIN), never with the receipts and
+    /// documents.
     #[serde(default)]
     pub w9_upload_id: Option<String>,
-    /// …or, for one of at most 256 KiB, its bytes base64-encoded, with
-    /// w9_sha256.
-    #[serde(default)]
-    pub w9_content_base64: Option<String>,
-    /// The SHA-256 of the bytes in w9_content_base64, hex.
-    #[serde(default)]
-    pub w9_sha256: Option<String>,
-    /// The W-9 file's name (default: the upload's, else w9.pdf, w9.png
-    /// or w9.jpg by its type).
+    /// The W-9 file's name (default: the upload's).
     #[serde(default)]
     pub w9_file_name: Option<String>,
 }

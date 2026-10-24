@@ -1,19 +1,20 @@
-//! Files in (plan 4.7, P2 slice 5, D-28): `books.begin_upload`, and the
-//! bytes a tool is given, as an upload or inline.
+//! Files in and out (plan 4.7, P2 slice 5, D-28, D-29, D-46):
+//! `books.begin_upload`, the upload a tool is given, and the files the
+//! books hand over.
 //!
 //! ```text
-//! GOAL: an agent files a document of any size up to the limit without
-//!       its bytes passing through its context, and a small one inline,
-//!       both exactly as the agent declared them.
-//! SOURCE: plan 4.7 (begin_upload; "content_base64 (≤256 KiB + required
-//!         sha256)"; guard base64_corrupt), 2.1 ("256 KiB with a mandatory
-//!         matching sha256"), D-28 (the agent does it all).
+//! GOAL: an agent files a document of any size up to the limit, and takes
+//!       away any file the books make, without the file's bytes passing
+//!       through its context, in either direction (D-46).
+//! SOURCE: plan 4.7 (begin_upload), D-28 (the agent does it all), D-29
+//!         (files the books make are handed over by `wanderbooks
+//!         download`), D-46 ("files never pass through an agent's context,
+//!         in either direction": uploads only, no inline bytes).
 //! INVARIANTS:
-//!   1. A tool's bytes are an upload made by the same token, or inline
-//!      base64 of at most INLINE_MAX bytes whose SHA-256 is the one given;
-//!      never both, never neither. An upload is used up only by the call
-//!      that files it (TakenFile::filed); a call that fails leaves it for
-//!      the next.
+//!   1. A tool's bytes are an upload made by the same token, named by its
+//!      upload_id; nothing else. An upload is used up only by the call that
+//!      files it (TakenFile::filed); a call that fails leaves it for the
+//!      next.
 //!   2. begin_upload makes nothing for a receipt or document whose bytes
 //!      are stored already: it names the attachment (not withdrawn) that
 //!      holds them.
@@ -23,8 +24,9 @@
 //!   4. An upload is filed only by a tool of the purpose it was begun for
 //!      (a receipt or document, a CSV import, a W-9); another tool's
 //!      refusal leaves it for the right one.
-//!   5. Inline text longer than INLINE_MAX bytes' base64 is refused
-//!      before it is decoded.
+//!   5. A call that gives a file's bytes or text as an argument (one of
+//!      INLINE_ARGS) is refused before it runs, as an unknown argument
+//!      whose words name books.begin_upload (D-46).
 //!   6. A file the books make for an agent (D-29) is handed over as an
 //!      export the caller's token fetches with `wanderbooks download`;
 //!      never inline, never by a path.
@@ -34,20 +36,41 @@ use super::*;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// The most bytes given inline (plan 2.1: 256 KiB).
-pub(crate) const INLINE_MAX: usize = 256 * 1024;
+/// The arguments that once carried a file's bytes or text inline, before
+/// D-46 (INVARIANT 5): refused whatever tool they come to.
+pub(crate) const INLINE_ARGS: [&str; 5] = [
+    "content_base64",
+    "sha256",
+    "csv_text",
+    "w9_content_base64",
+    "w9_sha256",
+];
+
+/// Why `args` can't be taken by `tool` (INVARIANT 5): an argument that
+/// carries a file's bytes or text. books.begin_upload's own sha256 is the
+/// file's hash, not its bytes.
+pub(crate) fn inline_refusal(
+    tool: &str,
+    args: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> Option<String> {
+    let given = args?.keys().find(|k| INLINE_ARGS.contains(&k.as_str()))?;
+    if tool == "books.begin_upload" && given == "sha256" {
+        return None;
+    }
+    Some(format!(
+        "unknown argument {given:?}: a file never passes through you (D-46). Send it with books.begin_upload and the command it returns (`wanderbooks upload`), then name the upload_id here"
+    ))
+}
 
 /// Why a call with no token begins, takes or is handed no file
 /// (INVARIANT 3).
 const NO_CALLER: &str =
     "this call came without a token for these books: a file is kept only for the token that asked";
 
-/// What the bytes of a file a tool files came as (INVARIANT 1), and the
-/// upload purposes the tool takes (INVARIANT 4).
+/// The upload a tool files (INVARIANT 1), and the upload purposes the
+/// tool takes (INVARIANT 4).
 pub(crate) struct Given<'a> {
-    pub upload_id: Option<&'a str>,
-    pub content_base64: Option<&'a str>,
-    pub sha256: Option<&'a str>,
+    pub upload_id: &'a str,
     pub purposes: &'a [&'a str],
 }
 
@@ -61,8 +84,8 @@ pub(crate) const W9: &[&str] = &["w9"];
 /// The bytes, and the name and type an upload declared.
 pub(crate) struct TakenFile {
     pub bytes: Vec<u8>,
-    pub file_name: Option<String>,
-    pub mime: Option<String>,
+    pub file_name: String,
+    pub mime: String,
     /// The upload's hold, if it came as one (INVARIANT 1).
     pub claim: Option<ledger_store::uploads::Claim>,
 }
@@ -196,65 +219,32 @@ impl BooksServer {
         CALLER.with(|c| c.borrow().as_ref().map(|(id, _)| id.clone()))
     }
 
-    /// The bytes a tool was given (INVARIANT 1).
+    /// The bytes of the upload a tool was given (INVARIANT 1).
     pub(crate) fn take_file(&self, given: Given<'_>) -> Result<TakenFile, String> {
-        match (given.upload_id, given.content_base64) {
-            (Some(_), Some(_)) => Err("give upload_id or content_base64, not both".into()),
-            (None, None) => Err(
-                "the file's bytes are missing: upload it (books.begin_upload), or give content_base64 with its sha256 (at most 256 KiB)"
-                    .into(),
-            ),
-            (Some(id), None) => {
-                // INVARIANT 3.
-                let token = self.caller_token().ok_or(NO_CALLER)?;
-                let got = self
-                    .uploads
-                    .take(id.trim(), &token, chrono::Utc::now().timestamp())
-                    .map_err(|e| e.to_string())?;
-                // INVARIANT 4: dropped, the claim gives it back.
-                if !given.purposes.contains(&got.grant.purpose.as_str()) {
-                    return Err(format!(
-                        "that upload was begun for {}: this tool takes one begun for {}",
-                        got.grant.purpose,
-                        given.purposes.join(" or ")
-                    ));
-                }
-                Ok(TakenFile {
-                    bytes: got.bytes,
-                    file_name: Some(got.grant.file_name),
-                    mime: Some(got.grant.mime),
-                    claim: Some(got.claim),
-                })
-            }
-            (None, Some(b64)) => {
-                let Some(sha) = given.sha256 else {
-                    return Err("content_base64 comes with its sha256 (the file's SHA-256, hex), so a byte lost on the way is caught".into());
-                };
-                // INVARIANT 5.
-                if b64.len() > INLINE_MAX.div_ceil(3) * 4 {
-                    return Err(format!(
-                        "inline is at most {INLINE_MAX} bytes: upload it with books.begin_upload"
-                    ));
-                }
-                let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64)
-                    .map_err(|_| "content_base64 is not valid base64 (guard base64_corrupt): send the file with books.begin_upload".to_string())?;
-                if bytes.len() > INLINE_MAX {
-                    return Err(format!(
-                        "the file is {} bytes; inline is at most {INLINE_MAX}: upload it with books.begin_upload",
-                        bytes.len()
-                    ));
-                }
-                if ledger_store::journal::sha256_hex(&bytes) != sha.trim().to_ascii_lowercase() {
-                    return Err("content_base64 doesn't have the sha256 given: some of it was lost on the way (guard base64_corrupt). Send the file with books.begin_upload instead".into());
-                }
-                Ok(TakenFile {
-                    bytes,
-                    file_name: None,
-                    mime: None,
-                    claim: None,
-                })
-            }
+        // INVARIANT 3.
+        let token = self.caller_token().ok_or(NO_CALLER)?;
+        let got = self
+            .uploads
+            .take(
+                given.upload_id.trim(),
+                &token,
+                chrono::Utc::now().timestamp(),
+            )
+            .map_err(|e| e.to_string())?;
+        // INVARIANT 4: dropped, the claim gives it back.
+        if !given.purposes.contains(&got.grant.purpose.as_str()) {
+            return Err(format!(
+                "that upload was begun for {}: this tool takes one begun for {}",
+                got.grant.purpose,
+                given.purposes.join(" or ")
+            ));
         }
+        Ok(TakenFile {
+            bytes: got.bytes,
+            file_name: got.grant.file_name,
+            mime: got.grant.mime,
+            claim: Some(got.claim),
+        })
     }
 }
 
@@ -342,7 +332,45 @@ impl BooksServer {
 
 #[cfg(test)]
 mod tests {
-    use super::{CALLER, plain_file_name, token_flag};
+    use super::{CALLER, INLINE_ARGS, inline_refusal, plain_file_name, token_flag};
+
+    /// INVARIANT 5: every argument that once carried a file inline is
+    /// refused, on any tool, naming itself and books.begin_upload; but
+    /// books.begin_upload's own sha256 (the file's hash), and the
+    /// arguments that name an upload.
+    #[test]
+    fn an_inline_file_argument_is_refused_on_every_tool() {
+        let args = |key: &str| {
+            let mut m = serde_json::Map::new();
+            m.insert(key.into(), serde_json::json!("JVBERi0xLjQ="));
+            m
+        };
+        for tool in [
+            "books.attach_receipt",
+            "books.file_document",
+            "books.set_w9",
+            "books.import_bank_csv",
+            "books.import_chart_csv",
+            "books.draft_entry",
+        ] {
+            for key in INLINE_ARGS {
+                let why = inline_refusal(tool, Some(&args(key)))
+                    .unwrap_or_else(|| panic!("{tool} took {key}"));
+                assert!(why.contains(&format!("{key:?}")), "{why}");
+                assert!(why.contains("books.begin_upload"), "{why}");
+                assert!(why.starts_with("unknown argument"), "{why}");
+            }
+            for key in ["upload_id", "w9_upload_id", "file_name", "mime_type"] {
+                assert_eq!(inline_refusal(tool, Some(&args(key))), None, "{tool} {key}");
+            }
+        }
+        assert_eq!(
+            inline_refusal("books.begin_upload", Some(&args("sha256"))),
+            None
+        );
+        assert!(inline_refusal("books.begin_upload", Some(&args("content_base64"))).is_some());
+        assert_eq!(inline_refusal("books.attach_receipt", None), None);
+    }
 
     /// A name kept before names were checked is handed over cleaned, never
     /// refused (a W-9 sealed earlier, say).

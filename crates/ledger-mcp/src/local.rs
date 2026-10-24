@@ -86,8 +86,8 @@ pub const SERVER_LOCK: &str = "server.lock";
 /// What the server prints on stdout when it is ready (INVARIANT 5).
 pub const READY: &str = "ready";
 
-/// How large an MCP request may be (plan 3.2): files of any size come
-/// through uploads (`/b/{book}/u/{upload}`); inline, at most 256 KiB.
+/// How large an MCP request may be (plan 3.2): files come only through
+/// uploads (`/b/{book}/u/{upload}`), never in a request (D-46).
 pub const MAX_BODY: usize = 1024 * 1024;
 
 /// How long the admin socket waits for a request to arrive.

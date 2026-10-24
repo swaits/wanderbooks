@@ -247,14 +247,15 @@ reach through the bridge.
     action `download` with the attachment's id, a refusal at the door
     too.
   - `GET /b/{book}/x/{export}`: a file the books made for an agent (the
-    CPA package, a 1099 worksheet, a W-9: a `HandedFile`, "Tools — the
-    TIN vault"), as `/a/` (the same door, the same headers,
+    CPA package, a 1099 worksheet, a W-9, a report export, a label sheet,
+    a receipt's copy: a `HandedFile`, "Tools — the TIN vault"), as `/a/` (the same door, the same headers,
     `Repr-Digest` included, GET only), but only for the token it was made
     for (403 `not_yours`), with no scope of its own to check (the tool
     that made it checked its scope); 404 `no_such_export` (unknown or
     lapsed), 503 `stopped`. An export's id is `ex_` and 32 letters
     `a`-`p`; it is kept 15 minutes, fetched as often as wanted until
-    then, at most 16 per token, and swept like uploads. Logged as action
+    then, at most 64 per token (every file an agent takes away is one,
+    D-46), and swept like uploads. Logged as action
     `export` with the export's id.
   - `wanderbooks download --book B [--token NAME] ID --to DIR` takes an
     attachment's id (a number, `/a/`) or an export's (`ex_…`, `/x/`),
@@ -625,9 +626,9 @@ life's last day is 9999-12-31 at the latest.
   debiting the cost account, not reversed). Refused with nothing to
   change, or with both `serial` and `clear_serial`. `asset` is the id or current tag. Journaled as `asset.tagged`,
   `asset.serial_set`.
-- `books.asset_labels { assets?, skip? }` → `{ file_name, content_base64,
-  tags }`: an Avery 5160/8160 label sheet (PDF): company, tag, QR code of
-  the tag, description, serial. Default: every active tagged asset; `skip`
+- `books.asset_labels { assets?, skip? }` → `{ file, tags }`: an Avery
+  5160/8160 label sheet (PDF), handed over (`file` a `HandedFile`, D-46):
+  company, tag, QR code of the tag, description, serial. Default: every active tagged asset; `skip`
   reuses a partly used sheet.
 - `books.asset_schedule { asset_id | tag, through? }`
   → `{ asset_id, description, cost, salvage_value, useful_life_months,
@@ -1192,14 +1193,13 @@ texts are at most 500 characters, no control characters.
   employee with W-4 facts, is refused: clear the facts first.
 - `books.set_w9 { party, received_on, entity_type, exempt_payee_code?,
   fatca_code?, tin_last4, kept_at, tin?, tin_type?, w9_upload_id?,
-  w9_content_base64?, w9_sha256?, w9_file_name? }` or `{ party, clear:
-  true }` → the party. Journaled as `party.w9_set`. A party with a
+  w9_file_name? }` or `{ party, clear: true }` → the party. Journaled as `party.w9_set`. A party with a
   vendor record also gets the record's `tin_on_file` set to match
   (journaled as `vendor.w9_flag_set`, its 1099 decision and who made it
   kept), so `books.vendor_1099`'s `missing_w9` follows.
   `tin` and `tin_type` put the full TIN in the TIN vault, and the signed
-  form (`w9_upload_id`, or `w9_content_base64` with `w9_sha256`, as in
-  "Tools — receipts & documents") goes there too (below); with a TIN,
+  form (`w9_upload_id`, as in "Tools — receipts & documents") goes there
+  too (below); with a TIN,
   `tin_last4` comes from it (a given one must agree); with a TIN or the
   form, `kept_at` defaults to `"wanderbooks vault"`.
 - `books.set_w4 { party, received_on, state, kept_at }` or `{ party, clear:
@@ -1398,8 +1398,8 @@ and the CPA package carries them.
   facts name another last four is refused (a payee's new TIN comes with
   its W-9: `books.set_w9`); one whose W-9 facts agree gets their
   `vault_record` updated too (`party.w9_set`).
-- `books.set_w9 { ..., tin, tin_type, w9_upload_id? | w9_content_base64? +
-  w9_sha256?, w9_file_name? }` (above): validates the TIN against its type (nine digits,
+- `books.set_w9 { ..., tin, tin_type, w9_upload_id?, w9_file_name? }`
+  (above): validates the TIN against its type (nine digits,
   hyphens allowed; an ITIN starts with 9 and has an IRS group in digits
   4-5; an SSN or EIN doesn't start with 9), checks the facts on a copy of
   the ledger, then writes the vault and journals the facts with
@@ -1408,26 +1408,28 @@ and the CPA package carries them.
   (`party.tin_set`, as `books.set_tin`); a TIN with a new last four clears
   the old TIN facts first (`party.tin_set` null), so the two never
   disagree. The form (a PDF, PNG or JPEG, judged by its own first bytes,
-  whatever it is called; an upload of purpose `w9`, at most 25 MiB, or
-  inline at most 256 KiB) goes to the vault only, never the attachment
-  store. Its file name is `w9_file_name` if given, else the upload's,
-  else `w9.pdf`, `w9.png` or `w9.jpg` by its type, checked as any filed
-  name; `w9_file_name` without a W-9 is refused. Facts given later without a TIN
+  whatever it is called; an upload of purpose `w9`, at most 25 MiB) goes
+  to the vault only, never the attachment store. Its file name is
+  `w9_file_name` if given, else the upload's, checked as any filed name; `w9_file_name` without a W-9 is refused. Facts given later without a TIN
   keep the vault record when their last four agree with the vault's TIN,
   and are refused when they don't (pass the new TIN, or purge). Clearing
   the facts (`clear: true`) is refused while the vault holds the party's
   TIN or form: purge first.
 - `books.get_w9 { party }` → `{ party_id, file }`: the party's form from
   the vault, handed over. Journals nothing.
-- **Handed files** (D-29): no tool takes a path. A file the books make
-  for an agent (`books.get_w9`'s form, `books.vendor_1099`'s `csv`,
-  `books.export_cpa_package`'s zip) comes back as a `HandedFile {
+- **Handed files** (D-29, D-46): no tool takes a path, and no tool gives
+  a file's bytes back. Every file an agent takes away (`books.get_w9`'s
+  form, `books.vendor_1099`'s `csv`, `books.export_cpa_package`'s zip,
+  `books.export` in every format, `books.asset_labels`' sheet,
+  `books.get_receipt` view `bytes`) comes back as a `HandedFile {
   file_name, mime_type, size_bytes, sha256, download, expires_at }`: an
-  export, kept 15 minutes for the token that asked (at most 16 per
+  export, kept 15 minutes for the token that asked (at most 64 per
   token, swept like uploads), and `download` is the command that saves
   it in a folder the human names: `wanderbooks download --book B
   [--token NAME] ex_… --to <a folder>` (`GET /b/{book}/x/{export}`,
-  "Transports"). Its bytes never come back inline (D-44).
+  "Transports"). Its bytes never come back in the answer (D-44, D-46).
+  A resource read is text only (JSON, Markdown): `books://receipts/{id}`
+  is the receipt's meta, never its bytes.
   A file with full TINs never goes into the books: the server keeps, beside the vault, the SHA-256 of every
   file it read or wrote with full TINs (the W-9 `books.set_w9` reads,
   recorded once the call has passed every check, just before the vault
@@ -1497,16 +1499,18 @@ the receipt policy counts it.
 
 ## Tools — receipts & documents
 
-A file comes in one of two ways, named in the tool that files it
+A file comes in one way only (D-46: a file never passes through an
+agent's context, in either direction), named in the tool that files it
 (`books.attach_receipt`, `books.file_document`, `books.set_w9`,
-`books.import_bank_csv`, `books.import_chart_csv`): `upload_id`, an
-upload made with `books.begin_upload` (any file up to 25 MiB; its bytes
-never pass through the agent), or `content_base64` with its `sha256`
-(at most 256 KiB decoded; longer text is refused before it is decoded).
-Never both, never neither. Inline bytes that aren't base64, or whose
-SHA-256 isn't the one given, are refused (guard `base64_corrupt`): send
-the file as an upload. An upload is kept for the token that began it. An
-MCP request is at most 1 MiB. A file's name and type are checked when
+`books.import_bank_csv`, `books.import_chart_csv`): `upload_id` (for the
+W-9, `w9_upload_id`), an upload made with `books.begin_upload` (any file
+up to 25 MiB) and sent by `wanderbooks upload`. These tools take no other
+argument (their schemas say so): an argument that once carried a file's
+bytes or text inline (`content_base64`, `sha256`, `csv_text`,
+`w9_content_base64`, `w9_sha256`) is refused as unknown by every tool
+before it runs (a protocol error, recorded as refused `inline_file`),
+its words naming `books.begin_upload`. An upload is kept for the token
+that began it. An MCP request is at most 1 MiB. A file's name and type are checked when
 it is filed (every filing tool, `books.begin_upload`, and the W-9's
 name): a name of 1 to 255 bytes, with no `/` or `\`, not `.` or `..`,
 and no control or invisible (Unicode format) characters; a MIME type
@@ -1538,11 +1542,10 @@ and no control or invisible (Unicode format) characters; a MIME type
   names it (link it, `books.link_attachment`, instead of filing a copy);
   for `import` and `w9` a grant is always made. Refusals never name a
   path.
-- `books.attach_receipt { entry_id?, file_name?, mime_type?, upload_id? |
-  content_base64? + sha256?, description?, link_to? }` → `{ attachment_id,
-  sha256, deduplicated, links }`. `entry_id` is optional: a receipt can be
-  filed before its entry exists. `file_name` and `mime_type` default to
-  the upload's; inline they are required. The upload is taken only after
+- `books.attach_receipt { entry_id?, file_name?, mime_type?, upload_id,
+  description?, link_to? }` → `{ attachment_id, sha256, deduplicated,
+  links }`. `entry_id` is optional: a receipt can be filed before its
+  entry exists. `file_name` and `mime_type` default to the upload's. The upload is taken only after
   the entry and every `link_to` subject check out. `link_to` as in "Tools
   — attachments".
 - `books.link_receipt { attachment_id, entry_id }` → `{ ok }`. Links a previously filed
@@ -1570,17 +1573,16 @@ and no control or invisible (Unicode format) characters; a MIME type
   files filed on the entry and linked to it.
 - `books.get_receipt { attachment_id, view?: "meta" | "bytes" }` → `{
   attachment_id, sha256, entry_id?, category, file_name, mime_type,
-  size_bytes, description?, links, content_base64?, download? }`. `meta`
-  (the default) returns no bytes. `bytes` adds `content_base64`
-  (hash-verified) for a file of at most 256 KiB; a larger one gives
-  `download`, the command `wanderbooks download --book B <id> --to <a
-  folder>` (with `--token NAME` when the caller's token isn't the
-  default `agent`; `GET /b/{book}/a/{attachment}`, "Transports"), which
-  saves a copy as a new file in that folder.
+  size_bytes, description?, links, file? }`. `meta` (the default) returns
+  no file. `bytes` adds `file`, the file handed over (a `HandedFile`, read
+  hash-verified, whatever its size: D-46), whose `download` saves a copy
+  as a new file in a folder the human names. The stored file is also
+  fetched by `wanderbooks download --book B <id> --to <a folder>` (`GET
+  /b/{book}/a/{attachment}`, books:read, "Transports").
 - `books.file_document { category: "formation" | "legal" | "tax" |
   "accounting" | "statement" | "contract" | "photo" | "warranty" |
-  "import_source" | "other", file_name?, mime_type?, upload_id? |
-  content_base64? + sha256?, description?, link_to? }` → `{ attachment_id,
+  "import_source" | "other", file_name?, mime_type?, upload_id,
+  description?, link_to? }` → `{ attachment_id,
   sha256, deduplicated, links }`. The bytes, name and type as in
   `books.attach_receipt`. The Drive-folder replacement (today's 01
   Formation / 02 Legal / 03 Tax / 04 Accounting). Never a W-9: it shows
@@ -1635,8 +1637,10 @@ posting.
 ## Tools — export
 
 - `books.export { format, report, start?, end?, as_of?, cash_accounts?,
-  financing_accounts?, investing_accounts? }` → `{ content,
-  content_encoding?, warnings? }`.
+  financing_accounts?, investing_accounts? }` → `{ format, report, file,
+  warnings? }`: `file` the export handed over (a `HandedFile`, D-46),
+  named `<report>-<today>.<format>`, every format alike; never its bytes
+  in the answer.
   - Reports: `profit_and_loss`, `balance_sheet`, `cash_flow` (direct
     method; needs `cash_accounts`; json is `books.cash_flow`'s answer, csv
     is `section,kind,class,entry,date,label,amount,on_behalf` (`on_behalf`
@@ -1656,7 +1660,7 @@ posting.
     every posted entry from the first through `as_of`, never a period),
     `tax_summary` (see "Tools — tax categories"), `fixed_asset_register`
     (as of a day; see "Tools — fixed assets").
-  - Formats: `pdf` and `xlsx` (base64) for `profit_and_loss`,
+  - Formats: `pdf` and `xlsx` for `profit_and_loss`,
     `balance_sheet`, `cash_flow`, `trial_balance`, `members_equity`,
     `tax_summary` and `fixed_asset_register`; `xlsx`, `csv`, `json` for
     every report (`general_ledger` and `general_journal` have no pdf);
@@ -1668,7 +1672,7 @@ posting.
     refused); `balance_sheet`, `trial_balance`, `fixed_asset_register`
     and `iif` take `as_of` (omitted: today, the company's time zone).
   - IIF (`docs/spec/rules.md` B-34; plan D-36): plain ASCII text, every
-    line ending CR LF, inline (no `content_encoding`): every posted entry
+    line ending CR LF (`text/plain`, handed over like every export): every posted entry
     from the first through `as_of`, period-closing entries left out
     (QuickBooks keeps none; imported, a close would zero its period's
     profit), each transaction's DOCNUM its entry id; its BANK accounts are
@@ -1797,7 +1801,7 @@ posting.
 
 ## Tools — import
 
-- `books.import_bank_csv { csv_text? | upload_id?, bank_account_code,
+- `books.import_bank_csv { upload_id, bank_account_code,
   default_offset_code, rules?, date_order?, source_attachment_id? }` →
   `{ imported: [{ entry_id, date, description, amount, offset_account }],
   count, source_attachment_id, source_linked }`: one draft per
@@ -1809,12 +1813,12 @@ posting.
   `import_source`) is checked before any draft and linked to the bank
   account (`source_linked`; false when it was already), never to the
   drafts: a bank export is not a receipt.
-- `books.import_chart_csv { csv_text? | upload_id? }` → `{ created,
+- `books.import_chart_csv { upload_id }` → `{ created,
   count, warnings? }`: creates accounts from
   `code,name,type,parent_code[,tax_category]` CSV. All-or-nothing; the
   name and tax category rules are `books.add_account`'s.
-- Each takes the CSV as `csv_text` or as an upload (`books.begin_upload`
-  purpose `import`; UTF-8), never both. The CSV itself is not filed: file
+- Each takes the CSV only as an upload (`books.begin_upload` purpose
+  `import`; UTF-8; D-46). The CSV itself is not filed: file
   it with `books.file_document` (category `import_source`) for
   `source_attachment_id`.
 

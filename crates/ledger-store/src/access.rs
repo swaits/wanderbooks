@@ -122,18 +122,14 @@ pub fn asserted(text: &str) -> String {
 /// books show is found among 10^5 guesses (review of slice 4). Masked:
 /// any value under a key naming a TIN; any key or text holding one; any
 /// number of eight digits or more (whatever its sign or fraction: a TIN
-/// may start with a zero). A file's base64 bytes are hashed as they are:
-/// base64 never spells a TIN in the clear, and scanning megabytes of it
-/// costs more than it could protect.
+/// may start with a zero). No argument is a file's bytes (D-46: files
+/// come by upload), so every text is scanned.
 pub fn digest(args: &Value) -> String {
-    sha256_hex(canonical_json(&masked(args, false)).as_bytes())
+    sha256_hex(canonical_json(&masked(args)).as_bytes())
 }
 
-/// Keys whose values are a file's bytes, base64 (see [`digest`]).
-const FILE_BYTES: [&str; 2] = ["content_base64", "w9_content_base64"];
-
-/// `v` with every TIN masked (see [`digest`]); `bytes`: a file's base64.
-fn masked(v: &Value, bytes: bool) -> Value {
+/// `v` with every TIN masked (see [`digest`]).
+fn masked(v: &Value) -> Value {
     const MASK: &str = "[TIN]";
     match v {
         Value::Object(map) => Value::Object(
@@ -148,14 +144,13 @@ fn masked(v: &Value, bytes: bool) -> Value {
                     let v = if names_a_tin && !v.is_null() {
                         Value::from(MASK)
                     } else {
-                        masked(v, FILE_BYTES.contains(&k_lower.as_str()))
+                        masked(v)
                     };
                     (ledger_core::parties::redact_full_tins(k).into_owned(), v)
                 })
                 .collect(),
         ),
-        Value::Array(items) => Value::Array(items.iter().map(|v| masked(v, false)).collect()),
-        Value::String(_) if bytes => v.clone(),
+        Value::Array(items) => Value::Array(items.iter().map(masked).collect()),
         Value::String(s) => Value::from(ledger_core::parties::redact_full_tins(s).into_owned()),
         Value::Number(n) if n.as_f64().is_none_or(|f| f.abs() >= 1e7) => Value::from(MASK),
         other => other.clone(),
@@ -397,10 +392,10 @@ mod tests {
             digest(&serde_json::json!({"entry_id": 1234567})),
             digest(&serde_json::json!({"entry_id": 1234568}))
         );
-        // A file's bytes count as they are.
+        // Text with no TIN in it counts as it is.
         assert_ne!(
-            digest(&serde_json::json!({"content_base64": "MTIzNDU2Nzg5"})),
-            digest(&serde_json::json!({"content_base64": "OTg3NjU0MzIx"}))
+            digest(&serde_json::json!({"upload_id": "up_MTIzNDU2Nzg5"})),
+            digest(&serde_json::json!({"upload_id": "up_OTg3NjU0MzIx"}))
         );
     }
 
@@ -442,21 +437,16 @@ mod tests {
     }
 
     #[test]
-    fn a_files_bytes_are_hashed_as_they_are_even_where_they_spell_digits() {
-        // Base64 can hold a run of nine digits; it is still a file's bytes,
-        // not a TIN, and two files differing there differ.
-        for key in FILE_BYTES {
-            assert_ne!(
+    fn digits_inside_any_text_are_masked() {
+        // No argument is a file's bytes any more (D-46): a run of nine
+        // digits is masked wherever it is, under any key.
+        for key in ["memo", "description", "upload_id"] {
+            assert_eq!(
                 digest(&serde_json::json!({ key: "QUJD123456789QUJD" })),
                 digest(&serde_json::json!({ key: "QUJD987814321QUJD" })),
                 "{key}"
             );
         }
-        // The same text anywhere else is masked.
-        assert_eq!(
-            digest(&serde_json::json!({"memo": "QUJD123456789QUJD"})),
-            digest(&serde_json::json!({"memo": "QUJD987814321QUJD"}))
-        );
     }
 
     #[test]

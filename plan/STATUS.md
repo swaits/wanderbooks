@@ -194,7 +194,8 @@ books with no access log or backups, the settings file read and reloaded
 (`Served`); an unknown tool is a protocol error. Every suite that drove
 the stdio server moved to `crates/ledger-cli/tests/` and drives a real
 `wanderbooks server` on a data root of its own (`tests/common`), files by
-their download. Inline file input is unchanged. The owner then decided
+their download. Inline file input was unchanged then (D-46 removed it,
+below). The owner then decided
 (2026-10-23, the question tool): `books.import_settings` goes (118
 tools; old books come in whole by `books adopt`; `books.chart_template`
 gives its settings as `books.set_setting` changes); the viewer's
@@ -202,6 +203,23 @@ loose-books-folder mode goes (`--data-dir`, `--books-toml`,
 `--vault-key-file`, the settings file followed): it opens only books of
 the data root; and `wanderbooks dev-stdio` goes with no stub, an unknown
 command like any other.
+
+**Files only by handle (2026-10-23, D-46).** The owner, via the question
+tool: "Uploads only"; and before it: "What we would DEFINITELY want to
+avoid is passing a bunch of BLOBs through AI context windows. That's just
+a pure waste." No file passes through an agent's context, either way. In:
+`content_base64` and its `sha256` (`books.attach_receipt`,
+`books.file_document`), `w9_content_base64` and `w9_sha256`
+(`books.set_w9`) and `csv_text` (the two CSV imports) are gone with the
+256 KiB inline limit; files come only by `books.begin_upload` and
+`wanderbooks upload`; those tools take no other argument, and an inline
+argument to any tool is refused before it runs as unknown, pointing to
+`books.begin_upload`. Out: `books.export` (every format),
+`books.asset_labels` and `books.get_receipt` view `bytes` hand the file
+over as a download (`HandedFile`), as the CPA package and the W-9 did; a
+token keeps up to 64 handed files (was 16). The tests file by upload
+(`tests/common`: `Wire::upload`, `upload_on`) and read every file by its
+download (`docs/testing.md`, "D-46").
 
 **Still open after P3 (each for the phase named, or the lead):**
 - Invoices and bills take a project now (above), behind the new journal
@@ -407,6 +425,8 @@ interface is MCP, not a cloned GUI. The first storage + MCP slice is done
 
 ## Decisions log
 
+- 2026-10-23: D-46, files only by handle: no inline file bytes in or out;
+  uploads in, downloads out (plan/served.md D-46).
 - 2026-10-23: D-44, one way to serve books: the stdio server, its inline
   file outputs and its settings-file mode are gone; tests drive a real
   books server (plan/served.md D-44).

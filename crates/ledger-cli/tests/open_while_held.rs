@@ -301,13 +301,19 @@ struct Agent {
     next: u64,
     /// Notifications received.
     notes: Vec<Value>,
+    /// How it runs the commands it is given (`wanderbooks upload`), as
+    /// [`Home::cmd`] runs them, and the folder its files are in: the
+    /// program, the data root, the home.
+    commands: Option<(PathBuf, PathBuf, PathBuf)>,
 }
 
 impl Agent {
     fn start(home: &Home, book: &str) -> Self {
         let mut c = home.cmd("mcp");
         c.args(["--book", book]);
-        Self::from(c)
+        let mut a = Self::from(c);
+        a.commands = Some((home.exe.clone(), home.root(), home.dir.path().to_path_buf()));
+        a
     }
 
     fn from(c: Command) -> Self {
@@ -315,7 +321,48 @@ impl Agent {
             run: Running::start(c),
             next: 1,
             notes: Vec::new(),
+            commands: None,
         }
+    }
+
+    /// Send `bytes` as `name` as an agent does (D-46): books.begin_upload,
+    /// the file written in the home, and the command it returns run on
+    /// it. The upload_id.
+    fn upload(&mut self, bytes: &[u8], name: &str) -> Result<String, String> {
+        let (exe, root, home) = self.commands.clone().expect("an agent Agent::start made");
+        let begun = self.call(
+            "books.begin_upload",
+            json!({"sha256": ledger_store::journal::sha256_hex(bytes), "size": bytes.len(),
+                   "mime_type": "text/plain", "file_name": name, "purpose": "receipt"}),
+        )?;
+        let command = begun["command"]
+            .as_str()
+            .ok_or_else(|| format!("no upload begun: {begun}"))?;
+        let words: Vec<&str> = command
+            .strip_suffix(" <the file's path>")
+            .ok_or_else(|| command.to_string())?
+            .split(' ')
+            .collect();
+        let path = home.join(format!("upload-{}", begun["upload_id"].as_str().unwrap()));
+        std::fs::write(&path, bytes).unwrap();
+        let out = Command::new(exe)
+            .arg(words[1])
+            .arg("--root")
+            .arg(root)
+            .args(["--test-knobs", KNOBS])
+            .args(&words[2..])
+            .arg(&path)
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", &home)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        let _ = std::fs::remove_file(&path);
+        if !out.status.success() {
+            return Err(String::from_utf8_lossy(&out.stderr).to_string());
+        }
+        Ok(begun["upload_id"].as_str().unwrap().to_string())
     }
 
     fn send(&mut self, message: Value) {
@@ -405,11 +452,12 @@ fn post_one(a: &mut Agent, n: u64) -> Result<u64, String> {
             json!({"entry_id": id, "account": account, "side": side, "amount": "1.00"}),
         )?;
     }
+    // Bytes of each entry's own: the same bytes stored already would be
+    // named for linking, not uploaded again.
+    let upload = a.upload(format!("receipt {n}").as_bytes(), &format!("r{n}.txt"))?;
     a.call(
         "books.attach_receipt",
-        json!({"entry_id": id, "file_name": format!("r{n}.txt"),
-               "mime_type": "text/plain", "content_base64": "cmVjZWlwdA==",
-               "sha256": "6f32860910ca0fb2a20c7fda143666b09dbf8db5238195c90a586fb542ff0cad"}),
+        json!({"entry_id": id, "upload_id": upload}),
     )?;
     a.call(
         "books.post_entry",
@@ -2257,15 +2305,15 @@ fn an_agent_sends_and_saves_files_with_the_commands_it_is_given() {
         )
         .unwrap();
     let att = filed["attachment_id"].as_u64().unwrap();
-    // Too big to come back inline: the command saves a copy, beside any
-    // file of its name, never over it.
+    // Handed over (D-46): the command saves a copy, beside any file of
+    // its name, never over it.
     let back = a
         .call(
             "books.get_receipt",
             json!({"attachment_id": att, "view": "bytes"}),
         )
         .unwrap();
-    let download = back["download"].as_str().unwrap().to_string();
+    let download = back["file"]["download"].as_str().unwrap().to_string();
     for n in 1..=2 {
         let out = run_given(
             &home,
@@ -2348,7 +2396,7 @@ fn the_commands_given_run_as_the_agents_own_token() {
             json!({"attachment_id": filed["attachment_id"], "view": "bytes"}),
         )
         .unwrap();
-    let download = back["download"].as_str().unwrap().to_string();
+    let download = back["file"]["download"].as_str().unwrap().to_string();
     assert!(download.contains(" --token bookkeeper "), "{download}");
     let out = run_given(
         &home,

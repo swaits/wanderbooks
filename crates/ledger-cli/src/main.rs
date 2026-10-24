@@ -39,7 +39,7 @@ fn print_usage() {
     eprintln!("  mcp        an agent's way to the books, over stdio (what `connect` registers)");
     eprintln!("  passphrase set or change the owner passphrase (typed at a terminal)");
     eprintln!("  upload     send a file for an upload an agent began (books.begin_upload)");
-    eprintln!("  download   save a copy of a stored file (one too large to come back inline)");
+    eprintln!("  download   save a copy of a stored file or of one the books handed over");
     eprintln!("  serve      hold the books open until Ctrl-C");
     eprintln!("  close      close the books now: everything holding them lets go");
     eprintln!("  doctor     whether the books are open, what holds them, what went wrong");

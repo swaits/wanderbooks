@@ -271,15 +271,6 @@ fn books_in(name: &str, p2: bool) -> Mcp {
     m
 }
 
-fn b64(bytes: &[u8]) -> String {
-    use base64::Engine as _;
-    base64::engine::general_purpose::STANDARD.encode(bytes)
-}
-
-fn sha(bytes: &[u8]) -> String {
-    ledger_store::journal::sha256_hex(bytes)
-}
-
 impl Mcp {
     /// Draft with lines (account, side, amount, class), post it; the id.
     fn tagged(
@@ -308,12 +299,14 @@ impl Mcp {
         id
     }
 
+    /// File `bytes` as a contract, uploaded as an agent uploads them.
     fn doc(&mut self, bytes: &[u8], link_to: Value) -> Out {
+        let upload = self
+            .wire
+            .upload(bytes, "spec.pdf", "application/pdf", "document");
         self.tool(
             "books.file_document",
-            json!({"category": "contract", "file_name": "spec.pdf",
-                   "mime_type": "application/pdf", "content_base64": b64(bytes),
-                   "sha256": sha(bytes), "link_to": link_to}),
+            json!({"category": "contract", "upload_id": upload, "link_to": link_to}),
         )
     }
 }

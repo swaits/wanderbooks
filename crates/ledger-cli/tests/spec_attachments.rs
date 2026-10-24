@@ -274,16 +274,6 @@ impl Mcp {
     }
 }
 
-fn b64(bytes: &[u8]) -> String {
-    use base64::Engine as _;
-    base64::engine::general_purpose::STANDARD.encode(bytes)
-}
-
-/// The SHA-256 (hex) a file given inline comes with.
-fn sha(bytes: &[u8]) -> String {
-    ledger_store::journal::sha256_hex(bytes)
-}
-
 const CHART: &[(&str, &str, &str)] = &[
     ("1000", "Bank", "asset"),
     ("1300", "Prepaid Expenses", "asset"),
@@ -314,13 +304,22 @@ fn books(name: &str) -> Mcp {
 }
 
 impl Mcp {
+    /// Upload `bytes` as an agent does (D-46): the upload_id.
+    fn upload(&mut self, bytes: &[u8], file_name: &str, mime_type: &str, purpose: &str) -> String {
+        self.wire.upload(bytes, file_name, mime_type, purpose)
+    }
+
     /// File a document; its id.
     fn doc(&mut self, category: &str, bytes: &[u8], link_to: Value) -> u64 {
+        let upload = self.upload(
+            bytes,
+            &format!("{category}.pdf"),
+            "application/pdf",
+            "document",
+        );
         self.ok(
             "books.file_document",
-            json!({"category": category, "file_name": format!("{category}.pdf"),
-                   "mime_type": "application/pdf", "content_base64": b64(bytes), "sha256": sha(bytes),
-                   "link_to": link_to}),
+            json!({"category": category, "upload_id": upload, "link_to": link_to}),
         )["attachment_id"]
             .as_u64()
             .unwrap()
@@ -328,8 +327,8 @@ impl Mcp {
 
     /// Attach a receipt (to `entry`, or unlinked); its id.
     fn receipt(&mut self, entry: Option<u64>, bytes: &[u8]) -> u64 {
-        let mut args = json!({"file_name": "r.pdf", "mime_type": "application/pdf",
-                              "content_base64": b64(bytes), "sha256": sha(bytes)});
+        let upload = self.upload(bytes, "r.pdf", "application/pdf", "receipt");
+        let mut args = json!({"upload_id": upload});
         if let Some(e) = entry {
             args["entry_id"] = json!(e);
         }
@@ -691,6 +690,8 @@ fn filing_links_in_the_same_call_all_or_nothing() {
             .len()
     };
     let n = count(&mut m);
+    // One upload, left for the next call by each refused one.
+    let r = m.upload(b"r", "r.pdf", "application/pdf", "receipt");
     for link_to in [
         json!([{"kind": "party", "id": "Acme Design"}, {"kind": "entry", "id": 999}]),
         json!([{"kind": "company"}, {"kind": "company"}]),
@@ -699,26 +700,23 @@ fn filing_links_in_the_same_call_all_or_nothing() {
     ] {
         m.refuse(
             "books.attach_receipt",
-            json!({"entry_id": e, "file_name": "r.pdf", "mime_type": "application/pdf",
-                   "content_base64": b64(b"r"), "sha256": sha(b"r"), "link_to": link_to}),
+            json!({"entry_id": e, "upload_id": r, "link_to": link_to}),
         );
     }
+    let c = m.upload(b"c", "c.pdf", "application/pdf", "document");
     m.refuse(
         "books.file_document",
-        json!({"category": "contract", "file_name": "c.pdf", "mime_type": "application/pdf",
-               "content_base64": b64(b"c"), "sha256": sha(b"c"), "link_to": [{"kind": "asset", "id": "NOPE"}]}),
+        json!({"category": "contract", "upload_id": c, "link_to": [{"kind": "asset", "id": "NOPE"}]}),
     );
     // An unknown entry_id is refused before anything is filed.
     m.refuse(
         "books.attach_receipt",
-        json!({"entry_id": 999, "file_name": "r.pdf", "mime_type": "application/pdf",
-               "content_base64": b64(b"r"), "sha256": sha(b"r"), "link_to": [{"kind": "company"}]}),
+        json!({"entry_id": 999, "upload_id": r, "link_to": [{"kind": "company"}]}),
     );
     assert_eq!(count(&mut m), n, "nothing filed");
     let out = m.ok(
         "books.attach_receipt",
-        json!({"entry_id": e, "file_name": "r.pdf", "mime_type": "application/pdf",
-               "content_base64": b64(b"r"), "sha256": sha(b"r"),
+        json!({"entry_id": e, "upload_id": r,
                "link_to": [{"kind": "entry", "id": other}, {"kind": "party", "id": "acme design"}]}),
     );
     assert_eq!(
@@ -729,10 +727,10 @@ fn filing_links_in_the_same_call_all_or_nothing() {
     assert_eq!(out["links"][0]["id"], json!(e));
     assert_eq!(m.count("receipt.attached"), 1);
     assert_eq!(m.count("attachment.linked"), 2);
+    let cert = m.upload(b"certificate", "cert.pdf", "application/pdf", "document");
     let doc = m.ok(
         "books.file_document",
-        json!({"category": "formation", "file_name": "cert.pdf", "mime_type": "application/pdf",
-               "content_base64": b64(b"certificate"), "sha256": sha(b"certificate"), "link_to": [{"kind": "company"}]}),
+        json!({"category": "formation", "upload_id": cert, "link_to": [{"kind": "company"}]}),
     );
     assert_eq!(kinds(&doc), ["company"]);
     assert_eq!(m.count("document.filed"), 1);
@@ -759,10 +757,10 @@ fn documents_file_under_the_attachment_kinds() {
             c
         );
     }
+    let x = m.upload(b"x", "x", "text/plain", "document");
     m.refuse(
         "books.file_document",
-        json!({"category": "receipt-ish", "file_name": "x", "mime_type": "text/plain",
-               "content_base64": b64(b"x"), "sha256": sha(b"x")}),
+        json!({"category": "receipt-ish", "upload_id": x}),
     );
 }
 
@@ -1249,13 +1247,15 @@ fn a_bank_import_links_its_source_to_the_account_not_the_drafts() {
         "books.withdraw_attachment",
         json!({"attachment_id": gone, "reason": "superseded"}),
     );
-    let args = |source: u64| {
-        json!({"csv_text": csv, "bank_account_code": "1000", "default_offset_code": "6999",
+    let args = |upload: &str, source: u64| {
+        json!({"upload_id": upload, "bank_account_code": "1000", "default_offset_code": "6999",
                "source_attachment_id": source})
     };
-    m.refuse("books.import_bank_csv", args(999));
-    m.refuse("books.import_bank_csv", args(gone));
-    let out = m.ok("books.import_bank_csv", args(src));
+    // One upload, left for the next call by each refused one.
+    let up = m.upload(csv.as_bytes(), "bank.csv", "text/csv", "import");
+    m.refuse("books.import_bank_csv", args(&up, 999));
+    m.refuse("books.import_bank_csv", args(&up, gone));
+    let out = m.ok("books.import_bank_csv", args(&up, src));
     assert_eq!(out["count"], 2);
     assert_eq!(out["source_attachment_id"], json!(src));
     assert_eq!(out["source_linked"], true);
@@ -1271,13 +1271,15 @@ fn a_bank_import_links_its_source_to_the_account_not_the_drafts() {
         );
     }
     // Linked already: imported again, not linked twice.
-    let again = m.ok("books.import_bank_csv", args(src));
+    let up = m.upload(csv.as_bytes(), "bank.csv", "text/csv", "import");
+    let again = m.ok("books.import_bank_csv", args(&up, src));
     assert_eq!(again["source_linked"], false);
     assert_eq!(m.count("attachment.linked"), 1);
     // Without a source, as before.
+    let up = m.upload(csv.as_bytes(), "bank.csv", "text/csv", "import");
     let plain = m.ok(
         "books.import_bank_csv",
-        json!({"csv_text": csv, "bank_account_code": "1000", "default_offset_code": "6999"}),
+        json!({"upload_id": up, "bank_account_code": "1000", "default_offset_code": "6999"}),
     );
     assert!(plain["source_attachment_id"].is_null());
     assert_eq!(plain["source_linked"], false);

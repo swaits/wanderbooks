@@ -282,12 +282,15 @@ impl Mcp {
     }
 
     fn file_bill_of_sale(&mut self) -> u64 {
+        let upload = self.wire.upload(
+            b"bill of sale",
+            "bill-of-sale.txt",
+            "text/plain",
+            "document",
+        );
         self.ok(
             "books.file_document",
-            json!({"category": "legal", "file_name": "bill-of-sale.txt", "mime_type": "text/plain",
-                   "content_base64": b64(b"bill of sale"),
-                   "sha256": ledger_store::journal::sha256_hex(b"bill of sale"),
-                   "description": "Bill of sale"}),
+            json!({"category": "legal", "upload_id": upload, "description": "Bill of sale"}),
         )["attachment_id"]
             .as_u64()
             .unwrap()
@@ -311,49 +314,6 @@ fn books(name: &str) -> Mcp {
     m.accounts(CHART);
     m.books_dir = Some(dir);
     m
-}
-
-fn b64(bytes: &[u8]) -> String {
-    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::new();
-    for chunk in bytes.chunks(3) {
-        let n = (u32::from(chunk[0]) << 16)
-            | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8)
-            | u32::from(*chunk.get(2).unwrap_or(&0));
-        for i in 0..4 {
-            if i <= chunk.len() {
-                out.push(T[((n >> (18 - 6 * i)) & 63) as usize] as char);
-            } else {
-                out.push('=');
-            }
-        }
-    }
-    out
-}
-
-fn unb64(s: &str) -> Vec<u8> {
-    let val = |c: u8| -> u32 {
-        match c {
-            b'A'..=b'Z' => u32::from(c - b'A'),
-            b'a'..=b'z' => u32::from(c - b'a') + 26,
-            b'0'..=b'9' => u32::from(c - b'0') + 52,
-            b'+' => 62,
-            b'/' => 63,
-            _ => panic!("not base64: {c}"),
-        }
-    };
-    let clean: Vec<u8> = s.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
-    let mut out = Vec::new();
-    for chunk in clean.chunks(4) {
-        let pad = chunk.iter().filter(|&&b| b == b'=').count();
-        let mut n = 0u32;
-        for (i, &b) in chunk.iter().enumerate() {
-            n |= if b == b'=' { 0 } else { val(b) } << (18 - 6 * i);
-        }
-        let bytes = [(n >> 16) as u8, (n >> 8) as u8, n as u8];
-        out.extend_from_slice(&bytes[..3 - pad]);
-    }
-    out
 }
 
 /// Decimal strings compared by value.
@@ -677,9 +637,12 @@ fn asset_labels_prints_a_pdf_of_the_tags_in_order() {
     let (a3, t3) = m.register_ok(json!({"tag": "DESK/7"}));
     let r = m.read_only("books.asset_labels", json!({"assets": [t3, t1]}));
     assert_eq!(r["tags"], json!([t3, t1]), "the tags printed, in order");
-    let pdf = unb64(r["content_base64"].as_str().unwrap());
+    // Handed over (D-46): its bytes come by its download, never here.
+    assert!(r.get("content_base64").is_none(), "{r}");
+    let pdf = m.wire.fetch(&r["file"]);
     assert!(pdf.starts_with(b"%PDF"), "a PDF");
-    assert!(!r["file_name"].as_str().unwrap().is_empty());
+    assert_eq!(r["file"]["mime_type"], "application/pdf");
+    assert!(!r["file"]["file_name"].as_str().unwrap().is_empty());
     // By id too.
     let r = m.read_only("books.asset_labels", json!({"assets": [a3.to_string()]}));
     assert_eq!(r["tags"], json!(["DESK/7"]));
@@ -697,7 +660,7 @@ fn asset_labels_prints_a_pdf_of_the_tags_in_order() {
     assert_eq!(tags, want);
     // skip: 0 to 29.
     let r = m.read_only("books.asset_labels", json!({"assets": [t1], "skip": 29}));
-    assert!(unb64(r["content_base64"].as_str().unwrap()).starts_with(b"%PDF"));
+    assert!(m.wire.fetch(&r["file"]).starts_with(b"%PDF"));
     m.refuse("books.asset_labels", json!({"assets": [t2], "skip": 30}));
     // Unknown asset.
     m.refuse("books.asset_labels", json!({"assets": ["NOPE-1"]}));
@@ -795,7 +758,7 @@ fn export_fixed_asset_register_reconciles_to_the_books() {
         );
         assert_eq!(r["report"], "fixed_asset_register");
         assert_eq!(r["format"], format);
-        r["content"].as_str().unwrap().to_string()
+        m.wire.fetch_text(&r["file"])
     };
 
     // Agreeing: depreciation posted through February.
@@ -839,7 +802,7 @@ fn export_fixed_asset_register_as_of_leaves_out_later_assets() {
         "books.export",
         json!({"report": "fixed_asset_register", "format": "json", "as_of": "2026-03-31"}),
     );
-    let text = r["content"].as_str().unwrap();
+    let text = &m.wire.fetch_text(&r["file"]);
     assert!(text.contains("EARLY-1"));
     assert!(!text.contains("LATE-1"), "{text}");
 }
@@ -1385,13 +1348,11 @@ fn export_fixed_asset_register_carries_posted_scheduled_and_704c() {
                "confirmed": true, "receipt_attachment_ids": [doc]}),
     );
     let export = |m: &mut Mcp, format: &str| -> String {
-        m.read_only(
+        let r = m.read_only(
             "books.export",
             json!({"report": "fixed_asset_register", "format": format, "as_of": "2026-06-30"}),
-        )["content"]
-            .as_str()
-            .unwrap()
-            .to_string()
+        );
+        m.wire.fetch_text(&r["file"])
     };
     let j: Value = serde_json::from_str(&export(&mut m, "json")).unwrap();
     let rows = j["assets"].as_array().unwrap();

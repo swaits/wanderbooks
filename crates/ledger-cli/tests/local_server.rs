@@ -50,8 +50,10 @@ async fn chart(c: &Client) {
     }
 }
 
-/// Draft a receipted $1.00 + n entry; post it. Ok(entry id) or Err(why).
-async fn post_one(c: &Client, n: u64) -> Result<u64, String> {
+/// Draft a receipted $1.00 + n entry on `c`, a session with acme's books
+/// with `token` (of the server whose `run/` folder is `run`), its receipt
+/// uploaded as an agent uploads one; post it. Ok(entry id) or Err(why).
+async fn post_one(c: &Client, (run, token): (&Path, &str), n: u64) -> Result<u64, String> {
     let e = call(
         c,
         "books.draft_entry",
@@ -68,12 +70,37 @@ async fn post_one(c: &Client, n: u64) -> Result<u64, String> {
         )
         .await?;
     }
+    // Bytes of each entry's own: the same bytes stored already would be
+    // named for linking, not uploaded again.
+    let bytes = format!("receipt {n}");
+    let begun = call(
+        c,
+        "books.begin_upload",
+        common::upload_args(
+            bytes.as_bytes(),
+            &format!("r{n}.txt"),
+            "text/plain",
+            "receipt",
+        ),
+    )
+    .await?;
+    let upload = begun["upload_id"].as_str().unwrap_or_default().to_string();
+    let put = common::mcp_http_builder_at(run)
+        .build()
+        .unwrap()
+        .put(format!("http://localhost/b/acme/u/{upload}"))
+        .bearer_auth(token)
+        .body(bytes.into_bytes())
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if put.status().as_u16() != 200 {
+        return Err(put.text().await.unwrap_or_default());
+    }
     call(
         c,
         "books.attach_receipt",
-        json!({"entry_id": id, "file_name": format!("r{n}.txt"),
-               "mime_type": "text/plain", "content_base64": "cmVjZWlwdA==",
-               "sha256": "6f32860910ca0fb2a20c7fda143666b09dbf8db5238195c90a586fb542ff0cad"}),
+        json!({"entry_id": id, "upload_id": upload}),
     )
     .await?;
     call(
@@ -115,7 +142,9 @@ async fn every_book_is_served_on_its_own_route() {
     assert_ne!(a, b, "both routes answered from the same books");
     assert!(a.to_string().contains("Supplies"), "{a}");
     assert!(!b.to_string().contains("Supplies"), "{b}");
-    let id = post_one(&acme, 1).await.unwrap();
+    let id = post_one(&acme, (&home.run(), &home.token("acme")), 1)
+        .await
+        .unwrap();
     let entry = call(&acme, "books.get_entry", json!({"entry_id": id}))
         .await
         .unwrap();
@@ -227,11 +256,12 @@ async fn closing_during_a_burst_of_posts_loses_nothing() {
     let mut tasks = Vec::new();
     for n in 0..4u64 {
         let c = connect(&home, "acme").await.unwrap();
+        let (run, token) = (home.run(), home.token("acme"));
         tasks.push(tokio::spawn(async move {
             // Until the close turns it away: it can't finish first.
             let mut posted = Vec::new();
             for k in 0.. {
-                match post_one(&c, n * 100_000 + k).await {
+                match post_one(&c, (&run, &token), n * 100_000 + k).await {
                     Ok(id) => posted.push(id),
                     Err(why) => return (posted, why),
                 }
@@ -1175,7 +1205,8 @@ async fn every_call_is_recorded_once_refusals_included() {
     let admin_text = home.token("acme");
     let full = connect(&home, "acme").await.unwrap();
     chart(&full).await; // 3 ok
-    let id = post_one(&full, 7).await; // draft, 2 lines, post: ok or an error
+    // draft, 2 lines, begin_upload, attach, post: ok or an error
+    let id = post_one(&full, (&home.run(), &admin_text), 7).await;
     let _ = id;
     // A call that errs (bad arguments) and one refused by scope.
     assert!(
@@ -1211,8 +1242,8 @@ async fn every_call_is_recorded_once_refusals_included() {
     assert_eq!(seqs, sorted, "newest first");
     let tools: Vec<&Value> = records.iter().filter(|r| r["action"] == "tool").collect();
     // Every tool call made so far, one record each: 3 accounts, the
-    // posting (draft, two lines, post: up to four), the failed lookup,
-    // the refusal.
+    // posting (draft, two lines, its receipt's upload and filing, post),
+    // the failed lookup, the refusal.
     let by = |subject: &str| tools.iter().filter(|r| r["subject"] == subject).count();
     assert_eq!(by("books.add_account"), 4);
     assert_eq!(by("books.get_entry"), 1);
@@ -1794,8 +1825,9 @@ async fn an_upload_is_filed_once_by_its_own_token_exactly_as_declared() {
     assert_eq!(meta["file_name"], json!("big receipt.pdf"));
     assert_eq!(meta["mime_type"], json!("application/pdf"));
     assert_eq!(meta["size_bytes"], json!(bytes.len()));
-    assert!(meta.get("content_base64").is_none_or(Value::is_null));
-    // Too large to come back inline: the command that saves a copy.
+    assert!(meta.get("file").is_none_or(Value::is_null), "{meta}");
+    // Its bytes: handed over (D-46), the command that saves a copy, and
+    // the copy is the stored bytes.
     let big = call(
         &c,
         "books.get_receipt",
@@ -1803,12 +1835,17 @@ async fn an_upload_is_filed_once_by_its_own_token_exactly_as_declared() {
     )
     .await
     .unwrap();
-    assert!(big.get("content_base64").is_none_or(Value::is_null));
+    assert!(big.get("content_base64").is_none(), "{big}");
+    let command = big["file"]["download"].as_str().unwrap();
+    assert!(
+        command.starts_with("wanderbooks download --book acme --token test ex_")
+            && command.ends_with(" --to <a folder>"),
+        "{command}"
+    );
+    assert_eq!(big["file"]["file_name"], json!("big receipt.pdf"));
     assert_eq!(
-        big["download"],
-        json!(format!(
-            "wanderbooks download --book acme --token test {att} --to <a folder>"
-        ))
+        common::fetch_export(&home, "acme", &home.token("acme"), &big["file"]).await,
+        bytes
     );
     // The same bytes again: the attachment that holds them, no upload.
     let again = call(
@@ -1943,11 +1980,19 @@ async fn stored_bytes_are_named_only_where_they_can_be_linked() {
     home.create("acme", "USD");
     let c = connect(&home, "acme").await.unwrap();
     let csv = b"code,name,type,parent_code\n1000,Cash,asset,\n".to_vec();
+    let up = common::upload_on(
+        &c,
+        &home.run(),
+        "acme",
+        &home.token("acme"),
+        &csv,
+        ("chart.csv", "text/csv", "document"),
+    )
+    .await;
     let filed = call(
         &c,
         "books.file_document",
-        json!({"category": "import_source", "file_name": "chart.csv", "mime_type": "text/csv",
-               "content_base64": b64(&csv), "sha256": ledger_store::journal::sha256_hex(&csv)}),
+        json!({"category": "import_source", "upload_id": up}),
     )
     .await
     .unwrap();
@@ -1997,65 +2042,56 @@ async fn stored_bytes_are_named_only_where_they_can_be_linked() {
     assert!(server.close().success());
 }
 
+/// D-46: a file comes only by its upload. The inline arguments that once
+/// carried one are refused as unknown, whatever else comes with them,
+/// pointing to books.begin_upload; a filing tool given no upload is
+/// refused; the name and type a call gives are checked as the upload's
+/// are; and the file comes back only handed over, its download the
+/// stored bytes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn bytes_given_inline_are_small_and_carry_their_hash() {
-    let home = Home::new("inline");
+async fn a_file_comes_only_by_its_upload_and_goes_back_by_its_download() {
+    let home = Home::new("handles");
     let server = Server::start(&home);
     home.create("acme", "USD");
     let c = connect(&home, "acme").await.unwrap();
+    let token = home.token("acme");
     let small = pdf("small", 1000);
     let sha = ledger_store::journal::sha256_hex(&small);
+    let up = common::upload_on(
+        &c,
+        &home.run(),
+        "acme",
+        &token,
+        &small,
+        ("s.pdf", "application/pdf", "document"),
+    )
+    .await;
     let file = |extra: Value| {
-        let mut args = json!({"category": "other", "file_name": "s.pdf",
-                              "mime_type": "application/pdf"});
+        let mut args = json!({"category": "other"});
         args.as_object_mut()
             .unwrap()
             .extend(extra.as_object().unwrap().clone());
         args
     };
-    for (extra, why) in [
-        (json!({"content_base64": b64(&small)}), "sha256"),
-        (
-            json!({"content_base64": b64(&small), "sha256": ledger_store::journal::sha256_hex(b"x")}),
-            "lost on the way",
-        ),
-        (
-            json!({"content_base64": "not base64!", "sha256": sha}),
-            "not valid base64",
-        ),
-        (
-            json!({"content_base64": b64(&small), "sha256": sha, "upload_id": "up_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}),
-            "not both",
-        ),
-        (json!({}), "missing"),
+    for extra in [
+        json!({"content_base64": "JVBERi0xLjQ="}),
+        json!({"content_base64": "JVBERi0xLjQ=", "sha256": sha}),
+        json!({"sha256": sha, "upload_id": up}),
+        json!({"content_base64": "JVBERi0xLjQ=", "upload_id": up}),
     ] {
-        let e = call(&c, "books.file_document", file(extra))
+        let e = call(&c, "books.file_document", file(extra.clone()))
             .await
             .unwrap_err();
-        assert!(e.contains(why), "{why}: {e}");
+        assert!(
+            e.contains("unknown argument") && e.contains("books.begin_upload"),
+            "{extra}: {e}"
+        );
     }
-    // At most 256 KiB inline (the call's own limit is 1 MiB of base64).
-    let over = pdf("over", 256 * 1024 + 1);
-    let e = call(
-        &c,
-        "books.file_document",
-        file(json!({"content_base64": b64(&over),
-                    "sha256": ledger_store::journal::sha256_hex(&over)})),
-    )
-    .await
-    .unwrap_err();
-    assert!(e.contains("upload it with books.begin_upload"), "{e}");
-    // Text longer than the most bytes' base64 is refused unread.
-    let long = "!".repeat((256 * 1024usize).div_ceil(3) * 4 + 4);
-    let e = call(
-        &c,
-        "books.file_document",
-        file(json!({"content_base64": long, "sha256": sha})),
-    )
-    .await
-    .unwrap_err();
-    assert!(e.contains("inline is at most"), "{e}");
-    // A plain name and a real type.
+    let e = call(&c, "books.file_document", file(json!({})))
+        .await
+        .unwrap_err();
+    assert!(e.contains("upload_id"), "{e}");
+    // A plain name and a real type, given or the upload's.
     for (name, mime, why) in [
         ("../escape.pdf", "application/pdf", "no folder"),
         ("a\\b.pdf", "application/pdf", "no folder"),
@@ -2068,8 +2104,7 @@ async fn bytes_given_inline_are_small_and_carry_their_hash() {
         let e = call(
             &c,
             "books.file_document",
-            json!({"category": "other", "file_name": name, "mime_type": mime,
-                   "content_base64": b64(&small), "sha256": sha}),
+            json!({"category": "other", "file_name": name, "mime_type": mime, "upload_id": up}),
         )
         .await
         .unwrap_err();
@@ -2078,20 +2113,15 @@ async fn bytes_given_inline_are_small_and_carry_their_hash() {
     let e = call(
         &c,
         "books.file_document",
-        file(json!({"file_name": "x".repeat(256), "content_base64": b64(&small), "sha256": sha})),
+        file(json!({"file_name": "x".repeat(256), "upload_id": up})),
     )
     .await
     .unwrap_err();
     assert!(e.contains("at most 255 bytes"), "{e}");
-    let at = pdf("at", 256 * 1024);
-    let filed = call(
-        &c,
-        "books.file_document",
-        file(json!({"content_base64": b64(&at),
-                    "sha256": ledger_store::journal::sha256_hex(&at).to_uppercase()})),
-    )
-    .await
-    .unwrap();
+    // Every refusal left the upload: filed now, under its own name.
+    let filed = call(&c, "books.file_document", file(json!({"upload_id": up})))
+        .await
+        .unwrap();
     let att = filed["attachment_id"].as_u64().unwrap();
     let back = call(
         &c,
@@ -2100,8 +2130,13 @@ async fn bytes_given_inline_are_small_and_carry_their_hash() {
     )
     .await
     .unwrap();
-    assert_eq!(back["content_base64"], json!(b64(&at)));
-    assert!(back.get("download").is_none_or(Value::is_null));
+    assert!(back.get("content_base64").is_none(), "{back}");
+    assert_eq!(back["file"]["file_name"], json!("s.pdf"));
+    assert_eq!(back["file"]["sha256"], json!(sha));
+    assert_eq!(
+        common::fetch_export(&home, "acme", &token, &back["file"]).await,
+        small
+    );
     let e = call(
         &c,
         "books.get_receipt",
@@ -2122,12 +2157,19 @@ async fn a_download_is_the_stored_bytes_for_a_reader_and_is_recorded() {
     let c = connect(&home, "acme").await.unwrap();
     let token = home.token("acme");
     let bytes = pdf("down", 2000);
+    let up = common::upload_on(
+        &c,
+        &home.run(),
+        "acme",
+        &token,
+        &bytes,
+        ("Résumé \"final\".pdf", "application/pdf", "document"),
+    )
+    .await;
     let filed = call(
         &c,
         "books.file_document",
-        json!({"category": "other", "file_name": "Résumé \"final\".pdf",
-               "mime_type": "application/pdf", "content_base64": b64(&bytes),
-               "sha256": ledger_store::journal::sha256_hex(&bytes)}),
+        json!({"category": "other", "upload_id": up}),
     )
     .await
     .unwrap();
@@ -2491,14 +2533,21 @@ async fn a_file_the_books_make_is_fetched_by_its_own_token() {
     assert_eq!(records.len(), 7, "{log}");
     assert!(records.iter().filter(|r| r["subject"] == json!(id)).count() >= 5);
     // Given back to be filed, it is refused: the server made it with TINs.
+    let up = common::upload_on(
+        &c,
+        &home.run(),
+        "acme",
+        &token,
+        &zip,
+        ("p.zip", "application/zip", "document"),
+    )
+    .await;
     let e = call(
         &c,
         "books.file_document",
-        json!({"category": "tax", "file_name": "p.zip", "mime_type": "application/zip",
-               "content_base64": b64(&zip), "sha256": ledger_store::journal::sha256_hex(&zip)}),
+        json!({"category": "tax", "upload_id": up}),
     )
     .await;
-    assert!(zip.len() <= 256 * 1024, "small enough to give inline");
     let e = e.unwrap_err();
     assert!(e.contains("TIN"), "{e}");
     // Nothing loose in the book's folder: the export is in its own.

@@ -15,25 +15,15 @@ mod common;
 const CLIENTS: usize = 6;
 const ENTRIES: usize = 12;
 
-fn b64(bytes: &[u8]) -> String {
-    const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::new();
-    for c in bytes.chunks(3) {
-        let n = (u32::from(c[0]) << 16)
-            | (u32::from(*c.get(1).unwrap_or(&0)) << 8)
-            | u32::from(*c.get(2).unwrap_or(&0));
-        for (i, shift) in [18, 12, 6, 0].iter().enumerate() {
-            if i <= c.len() {
-                out.push(T[((n >> shift) & 63) as usize] as char);
-            } else {
-                out.push('=');
-            }
-        }
-    }
-    out
-}
-
-async fn draft(c: &Client, tag: &str, cents: u64, with_receipt: bool) -> u64 {
+/// Draft a `cents` entry tagged `tag` on `c` (a session with `token`, of
+/// the server whose `run/` folder is `run`), with a receipt uploaded for
+/// it as an agent uploads one, if `with_receipt`.
+async fn draft(
+    (c, run, token): (&Client, &std::path::Path, &str),
+    tag: &str,
+    cents: u64,
+    with_receipt: bool,
+) -> u64 {
     let e = call(
         c,
         "books.draft_entry",
@@ -53,12 +43,19 @@ async fn draft(c: &Client, tag: &str, cents: u64, with_receipt: bool) -> u64 {
         .unwrap();
     }
     if with_receipt {
+        let upload = common::upload_on(
+            c,
+            run,
+            common::BOOK,
+            token,
+            tag.as_bytes(),
+            (&format!("{tag}.pdf"), "application/pdf", "receipt"),
+        )
+        .await;
         call(
             c,
             "books.attach_receipt",
-            json!({"entry_id": id, "file_name": format!("{tag}.pdf"),
-                   "mime_type": "application/pdf", "content_base64": b64(tag.as_bytes()),
-                   "sha256": ledger_store::journal::sha256_hex(tag.as_bytes())}),
+            json!({"entry_id": id, "upload_id": upload}),
         )
         .await
         .unwrap();
@@ -102,7 +99,15 @@ async fn agents_posting_at_once_leave_whole_books() {
     // Drafts every client will race to post.
     let mut contested = Vec::new();
     for k in 0..ENTRIES {
-        contested.push(draft(&setup, &format!("contested {k}"), 100 + k as u64, true).await);
+        contested.push(
+            draft(
+                (&setup, &run, &token),
+                &format!("contested {k}"),
+                100 + k as u64,
+                true,
+            )
+            .await,
+        );
     }
 
     let mut tasks = Vec::new();
@@ -110,13 +115,13 @@ async fn agents_posting_at_once_leave_whole_books() {
         let (run, token) = (run.clone(), token.clone());
         let contested = contested.clone();
         tasks.push(tokio::spawn(async move {
-            let c = connect(run, token).await;
+            let c = connect(run.clone(), token.clone()).await;
             let (mut posted, mut refused, mut won) = (0usize, 0usize, 0usize);
             for (k, &race) in contested.iter().enumerate() {
                 // A receipted entry posts; a bare one is refused.
                 let receipted = k % 3 != 0;
                 let id = draft(
-                    &c,
+                    (&c, &run, &token),
                     &format!("c{n} e{k}"),
                     (n * 1000 + k + 1) as u64,
                     receipted,

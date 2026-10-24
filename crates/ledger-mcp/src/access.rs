@@ -96,6 +96,8 @@ pub(crate) const INSUFFICIENT_SCOPE: &str = "insufficient_scope";
 pub(crate) const CLOSING: &str = "closing";
 /// The server had stopped.
 pub(crate) const STOPPED: &str = "stopped";
+/// A file's bytes or text came as an argument (D-46).
+pub(crate) const INLINE_FILE: &str = "inline_file";
 
 /// What a refused call is told when its record couldn't be kept, or a
 /// call that ran is told instead of its answer (INVARIANT 3).

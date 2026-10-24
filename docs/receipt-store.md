@@ -93,8 +93,8 @@ a backup is then proven where it lands, by a drill (docs/mcp-interface.md,
 - **Deduplicated.** Attaching the same receipt twice stores one blob and two
   attachment rows. `attach_receipt` / `file_document` return
   `deduplicated: true` when the blob already existed.
-- **Limits.** 25 MiB per file as an upload (`books.begin_upload`), 256
-  KiB given inline. The name and MIME type are the client's, checked
+- **Limits.** 25 MiB per file, as an upload (`books.begin_upload`): the
+  only way a file comes in (D-46: nothing is given inline). The name and MIME type are the client's, checked
   when the file is filed: a name of 1 to 255 bytes, no `/` or `\`, not
   `.` or `..`, no control or invisible characters; a `type/subtype` of
   visible ASCII, at most 127 bytes (`docs/mcp-interface.md`, "Tools —

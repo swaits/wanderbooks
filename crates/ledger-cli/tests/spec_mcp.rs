@@ -426,13 +426,14 @@ impl Mcp {
         id
     }
 
+    /// Upload `bytes` as an agent does (D-46): the upload_id.
+    fn upload(&mut self, bytes: &[u8], file_name: &str, mime_type: &str, purpose: &str) -> String {
+        self.wire.upload(bytes, file_name, mime_type, purpose)
+    }
+
     fn attach(&mut self, entry: Option<u64>, bytes: &[u8]) -> u64 {
-        let mut args = json!({
-            "file_name": "receipt.txt",
-            "mime_type": "text/plain",
-            "content_base64": b64(bytes),
-            "sha256": sha(bytes),
-        });
+        let upload = self.upload(bytes, "receipt.txt", "text/plain", "receipt");
+        let mut args = json!({"upload_id": upload});
         if let Some(e) = entry {
             args["entry_id"] = json!(e);
         }
@@ -544,29 +545,6 @@ fn canon(s: &str) -> String {
     }
 }
 
-/// The SHA-256 (hex) a file given inline comes with.
-fn sha(bytes: &[u8]) -> String {
-    ledger_store::journal::sha256_hex(bytes)
-}
-
-fn b64(bytes: &[u8]) -> String {
-    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::new();
-    for chunk in bytes.chunks(3) {
-        let n = (u32::from(chunk[0]) << 16)
-            | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8)
-            | u32::from(*chunk.get(2).unwrap_or(&0));
-        for i in 0..4 {
-            if i <= chunk.len() {
-                out.push(T[((n >> (18 - 6 * i)) & 63) as usize] as char);
-            } else {
-                out.push('=');
-            }
-        }
-    }
-    out
-}
-
 /// A chart used by several tests.
 const BASE_CHART: &[(&str, &str, &str)] = &[
     ("1000", "Bank", "asset"),
@@ -627,10 +605,13 @@ fn happy_path(name: &str) -> Mcp {
         ("6010", "Platform Fees", "expense"),
         ("6500", "Depreciation Expense", "expense"),
     ]);
-    m.ok(
-        "books.import_chart_csv",
-        json!({"csv_text": "code,name,type,parent_code\n7000,Gain or Loss on Disposal,expense,\n"}),
+    let chart = m.upload(
+        b"code,name,type,parent_code\n7000,Gain or Loss on Disposal,expense,\n",
+        "chart.csv",
+        "text/csv",
+        "import",
     );
+    m.ok("books.import_chart_csv", json!({"upload_id": chart}));
     m.ok(
         "books.renumber_account",
         json!({"account": "7000", "code": "7100"}),
@@ -717,11 +698,11 @@ fn happy_path(name: &str) -> Mcp {
                "tin_last4": "4321", "kept_at": "CPA portal"}),
     );
     let w9_pdf = b"%PDF-1.4 W-9 EIN 79-9714321";
+    let w9 = m.upload(w9_pdf, "w9.pdf", "application/pdf", "w9");
     m.ok(
         "books.set_w9",
         json!({"party": "Landlord", "received_on": "2026-01-03", "entity_type": "LLC (partnership)",
-               "tin": "79-9714321", "tin_type": "ein",
-               "w9_content_base64": b64(w9_pdf), "w9_sha256": sha(w9_pdf)}),
+               "tin": "79-9714321", "tin_type": "ein", "w9_upload_id": w9}),
     );
     m.ok("books.get_w9", json!({"party": "Landlord"}));
     m.ok("books.parties", json!({"role": "landlord", "year": 2026}));
@@ -800,19 +781,22 @@ fn happy_path(name: &str) -> Mcp {
         "books.get_receipt",
         json!({"attachment_id": r_old, "view": "bytes"}),
     );
+    let oa = m.upload(
+        b"operating agreement",
+        "agreement.txt",
+        "text/plain",
+        "document",
+    );
     let doc = m.ok(
         "books.file_document",
-        json!({"category": "legal", "file_name": "agreement.txt", "mime_type": "text/plain",
-               "content_base64": b64(b"operating agreement"),
-               "sha256": sha(b"operating agreement"), "description": "OA"}),
+        json!({"category": "legal", "upload_id": oa, "description": "OA"}),
     )["attachment_id"]
         .as_u64()
         .unwrap();
+    let lease = m.upload(b"lease", "lease.txt", "text/plain", "document");
     let filed = m.ok(
         "books.file_document",
-        json!({"category": "contract", "file_name": "lease.txt", "mime_type": "text/plain",
-               "content_base64": b64(b"lease"),
-               "sha256": sha(b"lease"), "link_to": [{"kind": "company"}]}),
+        json!({"category": "contract", "upload_id": lease, "link_to": [{"kind": "company"}]}),
     )["attachment_id"]
         .as_u64()
         .unwrap();
@@ -833,7 +817,7 @@ fn happy_path(name: &str) -> Mcp {
     let local = m.attach(None, b"a local receipt");
     let up = m.ok(
         "books.begin_upload",
-        json!({"sha256": sha(b"a local receipt"), "size": 15, "mime_type": "text/plain",
+        json!({"sha256": ledger_store::journal::sha256_hex(b"a local receipt"), "size": 15, "mime_type": "text/plain",
                "file_name": "local-receipt.txt", "purpose": "receipt"}),
     );
     assert_eq!(up["existing_attachment_id"], json!(local), "{up}");
@@ -983,17 +967,17 @@ fn happy_path(name: &str) -> Mcp {
 
     // Bank import and reconciliation.
     let csv = "Date,Description,Amount\n2026-03-05,Coffee,-4.50\n";
+    let up = m.upload(csv.as_bytes(), "bank.csv", "text/csv", "document");
     let source = m.ok(
         "books.file_document",
-        json!({"category": "import_source", "file_name": "bank.csv", "mime_type": "text/csv",
-               "content_base64": b64(csv.as_bytes()),
-               "sha256": sha(csv.as_bytes())}),
+        json!({"category": "import_source", "upload_id": up}),
     )["attachment_id"]
         .as_u64()
         .unwrap();
+    let up = m.upload(csv.as_bytes(), "bank.csv", "text/csv", "import");
     m.ok(
         "books.import_bank_csv",
-        json!({"csv_text": csv, "bank_account_code": "1000", "default_offset_code": "6999",
+        json!({"upload_id": up, "bank_account_code": "1000", "default_offset_code": "6999",
                "source_attachment_id": source}),
     );
     m.ok(
@@ -1005,11 +989,15 @@ fn happy_path(name: &str) -> Mcp {
         "books.mark_cleared",
         json!({"entry_id": e1, "line_index": 0, "cleared": true}),
     );
+    let up = m.upload(
+        b"%PDF statement",
+        "2026-01.pdf",
+        "application/pdf",
+        "document",
+    );
     let stmt = m.ok(
         "books.file_document",
-        json!({"category": "statement", "file_name": "2026-01.pdf", "mime_type": "application/pdf",
-               "content_base64": b64(b"%PDF statement"),
-               "sha256": sha(b"%PDF statement")}),
+        json!({"category": "statement", "upload_id": up}),
     )["attachment_id"]
         .as_u64()
         .unwrap();
@@ -1324,9 +1312,10 @@ enum Op {
         date: String,
         confirmed: Option<bool>,
     },
+    /// A receipt: these bytes, or (None) bytes given inline.
     Attach {
         entry: Option<Pick>,
-        content: String,
+        content: Option<Vec<u8>>,
     },
     Link {
         att: Pick,
@@ -1424,8 +1413,8 @@ fn op_strategy() -> impl Strategy<Value = Op> {
         2 => (pick(), date_strategy(), confirmed())
             .prop_map(|(entry, date, confirmed)| Op::Reverse { entry, date, confirmed }),
         3 => (prop::option::of(pick()), prop_oneof![
-                4 => prop::collection::vec(any::<u8>(), 1..24).prop_map(|b| b64(&b)),
-                1 => Just("!!not base64!!".to_string()),
+                4 => prop::collection::vec(any::<u8>(), 1..24).prop_map(Some),
+                1 => Just(None),
             ])
             .prop_map(|(entry, content)| Op::Attach { entry, content }),
         1 => (pick(), pick()).prop_map(|(att, entry)| Op::Link { att, entry }),
@@ -1487,11 +1476,10 @@ fn run_op(m: &mut Mcp, k: &mut Known, op: &Op) {
             }
             if *receipt {
                 let bytes = format!("receipt for entry {e}");
+                let up = m.upload(bytes.as_bytes(), "r.txt", "text/plain", "receipt");
                 let out = m.tool(
                     "books.attach_receipt",
-                    json!({"entry_id": e, "file_name": "r.txt", "mime_type": "text/plain",
-                           "content_base64": b64(bytes.as_bytes()),
-                           "sha256": sha(bytes.as_bytes())}),
+                    json!({"entry_id": e, "upload_id": up}),
                 );
                 k.attachments.extend(new_id(&out, "attachment_id"));
             }
@@ -1521,19 +1509,30 @@ fn run_op(m: &mut Mcp, k: &mut Known, op: &Op) {
                    "confirmed": opt(*confirmed)}),
         ),
         Op::Attach { entry, content } => {
-            // The bytes' own SHA-256 (content that is no base64 has none).
-            let sha256 = {
-                use base64::Engine as _;
-                base64::engine::general_purpose::STANDARD
-                    .decode(content)
-                    .map_or_else(|_| "0".repeat(64), |b| sha(&b))
+            let entry = entry.map(|p| p.resolve(&k.entries));
+            // New bytes go by their upload; bytes stored already (begin_upload
+            // names their attachment) are attached by an upload there is
+            // none of; none at all, by the inline argument D-46 removed.
+            let given = match content {
+                Some(bytes) => {
+                    let begun = m.wire.begin_and_send(
+                        bytes,
+                        "r.bin",
+                        "application/octet-stream",
+                        "receipt",
+                    );
+                    let up = begun["upload_id"]
+                        .as_str()
+                        .map_or_else(|| format!("up_{}", "a".repeat(32)), str::to_string);
+                    json!({"upload_id": up})
+                }
+                None => json!({"content_base64": "cmVjZWlwdA=="}),
             };
-            (
-                "books.attach_receipt",
-                json!({"entry_id": entry.map(|p| p.resolve(&k.entries)), "file_name": "r.bin",
-                       "mime_type": "application/octet-stream", "content_base64": content,
-                       "sha256": sha256}),
-            )
+            let mut args = json!({"entry_id": entry});
+            for (key, v) in given.as_object().unwrap() {
+                args[key] = v.clone();
+            }
+            ("books.attach_receipt", args)
         }
         Op::Link { att, entry } => (
             "books.link_receipt",
@@ -2298,7 +2297,6 @@ fn helpers_self_check() {
     assert_eq!(canon("007.50"), "7.5");
     assert_eq!(canon("5.00"), "5");
     assert_eq!(canon("-0.00"), "0");
-    assert_eq!(b64(b"abcd"), "YWJjZA==");
     let mut bad = Vec::new();
     money_walk(
         &json!({"total": 5, "lines": [{"amount": "1.5"}], "id": 3}),

@@ -85,6 +85,21 @@ impl Mcp {
         assert!(file["expires_at"].is_string(), "{file}");
         self.wire.fetch(file)
     }
+
+    /// A file handed over, as text.
+    fn handed_text(&mut self, file: &Value) -> String {
+        String::from_utf8(self.handed(file)).expect("the file is text")
+    }
+
+    /// Upload `bytes` as an agent does (D-46): the upload_id.
+    fn upload(&mut self, bytes: &[u8], file_name: &str, mime_type: &str, purpose: &str) -> String {
+        self.wire.upload(bytes, file_name, mime_type, purpose)
+    }
+
+    /// Upload a CSV for an import: the upload_id.
+    fn csv_upload(&mut self, csv: &str) -> String {
+        self.upload(csv.as_bytes(), "import.csv", "text/csv", "import")
+    }
 }
 
 #[test]
@@ -98,7 +113,7 @@ fn mcp_end_to_end() {
         json!({
             "protocolVersion": "2025-06-18",
             "capabilities": {},
-            "clientInfo": {"name": "smoke-test", "version": "0.1.0"},
+            "clientInfo": {"name": "smoke-test", "version": "0.1.0"}
         }),
     );
     assert_eq!(init["result"]["serverInfo"]["name"], "wanderbooks");
@@ -188,16 +203,10 @@ fn mcp_end_to_end() {
     assert_eq!(err_json["remedy_tool"], "books.attach_receipt");
 
     // Attach the receipt, then the confirmed post succeeds.
-    let png = base64_like(b"fake-png-bytes");
+    let png = mcp.upload(b"fake-png-bytes", "rent.png", "image/png", "receipt");
     let attached = mcp.call(
         "books.attach_receipt",
-        json!({
-            "entry_id": entry_id,
-            "file_name": "rent.png",
-            "mime_type": "image/png",
-            "content_base64": png,
-            "sha256": sha(b"fake-png-bytes"),
-        }),
+        json!({"entry_id": entry_id, "upload_id": png}),
     );
     assert_eq!(attached["deduplicated"], false);
     assert_eq!(attached["sha256"].as_str().unwrap().len(), 64);
@@ -243,7 +252,7 @@ fn mcp_end_to_end() {
         "books.export",
         json!({"format": "csv", "report": "journal", "start": "2026-01-01", "end": "2026-12-31"}),
     );
-    assert!(export["content"].as_str().unwrap().contains("January rent"));
+    assert!(mcp.handed_text(&export["file"]).contains("January rent"));
 
     // Reversal: preview then post; the book still balances.
     let rev_preview = mcp.call(
@@ -270,7 +279,7 @@ fn mcp_assets_end_to_end() {
         json!({
             "protocolVersion": "2025-06-18",
             "capabilities": {},
-            "clientInfo": {"name": "smoke-test", "version": "0.1.0"},
+            "clientInfo": {"name": "smoke-test", "version": "0.1.0"}
         }),
     );
     assert_eq!(init["result"]["serverInfo"]["name"], "wanderbooks");
@@ -300,7 +309,7 @@ fn mcp_assets_end_to_end() {
             "useful_life_months": 60,
             "cost_account": "1500",
             "accum_depr_account": "1501",
-            "expense_account": "6100",
+            "expense_account": "6100"
         }),
     );
     let asset_id = reg["asset_id"].as_u64().unwrap();
@@ -358,7 +367,7 @@ fn mcp_assets_end_to_end() {
             "date": "2026-02-28",
             "proceeds": "60000",
             "proceeds_account": "1000",
-            "gain_loss_account": "4900",
+            "gain_loss_account": "4900"
         }),
     );
     assert_eq!(preview["status"], "preview");
@@ -376,7 +385,7 @@ fn mcp_assets_end_to_end() {
             "proceeds": "60000",
             "proceeds_account": "1000",
             "gain_loss_account": "4900",
-            "confirmed": true,
+            "confirmed": true
         }),
     );
     let err_json: serde_json::Value = serde_json::from_str(&err).unwrap();
@@ -384,14 +393,17 @@ fn mcp_assets_end_to_end() {
     assert_eq!(err_json["remedy_tool"], "books.file_document");
 
     // File the bill of sale, then confirm with its attachment id.
+    let up1 = mcp.upload(
+        b"fake bill of sale",
+        "bill-of-sale.pdf",
+        "application/pdf",
+        "document",
+    );
     let bill = mcp.call(
         "books.file_document",
         json!({
             "category": "legal",
-            "file_name": "bill-of-sale.pdf",
-            "mime_type": "application/pdf",
-            "content_base64": base64_like(b"fake bill of sale"),
-            "sha256": sha(b"fake bill of sale"),
+            "upload_id": up1
         }),
     );
     let aid = bill["attachment_id"].as_u64().unwrap();
@@ -404,7 +416,7 @@ fn mcp_assets_end_to_end() {
             "proceeds_account": "1000",
             "gain_loss_account": "4900",
             "confirmed": true,
-            "receipt_attachment_ids": [aid],
+            "receipt_attachment_ids": [aid]
         }),
     );
     assert_eq!(posted["status"], "posted");
@@ -440,7 +452,7 @@ fn mcp_receipt_policy_rejects_split_entries() {
         json!({
             "protocolVersion": "2025-06-18",
             "capabilities": {},
-            "clientInfo": {"name": "smoke-test", "version": "0.1.0"},
+            "clientInfo": {"name": "smoke-test", "version": "0.1.0"}
         }),
     );
     assert_eq!(init["result"]["serverInfo"]["name"], "wanderbooks");
@@ -532,7 +544,7 @@ fn mcp_receipt_corrections() {
         json!({
             "protocolVersion": "2025-06-18",
             "capabilities": {},
-            "clientInfo": {"name": "smoke-test", "version": "0.1.0"},
+            "clientInfo": {"name": "smoke-test", "version": "0.1.0"}
         }),
     );
     mcp.notify("notifications/initialized");
@@ -556,11 +568,10 @@ fn mcp_receipt_corrections() {
             "books.add_line",
             json!({"entry_id": id, "account": "1000", "side": "credit", "amount": amount}),
         );
+        let up2 = mcp.upload(receipt, "receipt.eml", "message/rfc822", "receipt");
         let att = mcp.call(
             "books.attach_receipt",
-            json!({"entry_id": id, "file_name": "receipt.eml", "mime_type": "message/rfc822",
-                   "content_base64": base64_like(receipt),
-                   "sha256": sha(receipt)}),
+            json!({"entry_id": id, "upload_id": up2}),
         );
         let posted = mcp.call(
             "books.post_entry",
@@ -584,11 +595,10 @@ fn mcp_receipt_corrections() {
     assert_eq!(err_json["remedy_tool"], "books.attach_receipt");
 
     // Replace: attach the PDF first, then unlink the .eml.
+    let up3 = mcp.upload(b"pdf-bytes", "receipt.pdf", "application/pdf", "receipt");
     let pdf = mcp.call(
         "books.attach_receipt",
-        json!({"entry_id": big, "file_name": "receipt.pdf", "mime_type": "application/pdf",
-               "content_base64": base64_like(b"pdf-bytes"),
-               "sha256": sha(b"pdf-bytes")}),
+        json!({"entry_id": big, "upload_id": up3}),
     )["attachment_id"]
         .as_u64()
         .unwrap();
@@ -669,7 +679,7 @@ fn mcp_resources() {
         json!({
             "protocolVersion": "2025-06-18",
             "capabilities": {},
-            "clientInfo": {"name": "smoke-test", "version": "0.1.0"},
+            "clientInfo": {"name": "smoke-test", "version": "0.1.0"}
         }),
     );
     assert_eq!(init["result"]["serverInfo"]["name"], "wanderbooks");
@@ -722,7 +732,7 @@ fn init(mcp: &mut Mcp) -> Value {
         json!({
             "protocolVersion": "2025-06-18",
             "capabilities": {},
-            "clientInfo": {"name": "smoke-test", "version": "0.1.0"},
+            "clientInfo": {"name": "smoke-test", "version": "0.1.0"}
         }),
     );
     mcp.notify("notifications/initialized");
@@ -754,11 +764,11 @@ fn tin_bearing_files_are_refused_when_given_back_to_be_filed() {
         "books.add_party",
         json!({"name": "Acme", "roles": ["contractor"]}),
     );
+    let w9_upload = mcp.upload(w9, "w9.pdf", "application/pdf", "w9");
     mcp.call(
         "books.set_w9",
         json!({"party": "Acme", "received_on": "2026-01-03", "entity_type": "Individual",
-               "tin": "291-12-2846", "tin_type": "ssn",
-               "w9_content_base64": base64_like(w9), "w9_sha256": sha(w9)}),
+               "tin": "291-12-2846", "tin_type": "ssn", "w9_upload_id": w9_upload}),
     );
     // Each comes back by its download.
     let got = mcp.call("books.get_w9", json!({"party": "Acme"}));
@@ -779,19 +789,13 @@ fn tin_bearing_files_are_refused_when_given_back_to_be_filed() {
     // filed.
     let journal = books.journal();
     for (n, bytes) in handed_over.iter().enumerate() {
+        // One upload, refused by each tool and so left for the next.
+        let up = mcp.upload(bytes, "receipt.pdf", "application/pdf", "receipt");
         for (tool, args) in [
-            (
-                "books.attach_receipt",
-                json!({"file_name": "receipt.pdf", "mime_type": "application/pdf",
-                       "content_base64": base64_like(bytes),
-                       "sha256": sha(bytes)}),
-            ),
+            ("books.attach_receipt", json!({"upload_id": up})),
             (
                 "books.file_document",
-                json!({"category": "statement", "file_name": "statement.csv",
-                       "mime_type": "text/csv",
-                       "content_base64": base64_like(bytes),
-                       "sha256": sha(bytes)}),
+                json!({"category": "statement", "upload_id": up}),
             ),
         ] {
             let why = mcp.call_err(tool, args);
@@ -808,10 +812,10 @@ fn tin_bearing_files_are_refused_when_given_back_to_be_filed() {
     assert!(plain["warning"].is_null(), "{plain}");
     assert_eq!(plain["csv"]["file_name"], "1099-worksheet-2026.csv");
     let bytes = mcp.handed(&plain["csv"]);
+    let up6 = mcp.upload(&bytes, "plain.csv", "text/csv", "document");
     mcp.call(
         "books.file_document",
-        json!({"category": "statement", "file_name": "plain.csv", "mime_type": "text/csv",
-               "content_base64": base64_like(&bytes), "sha256": sha(&bytes)}),
+        json!({"category": "statement", "upload_id": up6}),
     );
 }
 
@@ -840,7 +844,7 @@ fn every_receipt_account_left_out_of_the_connect_text_is_in_books_settings() {
         json!({
             "protocolVersion": "2025-06-18",
             "capabilities": {},
-            "clientInfo": {"name": "smoke-test", "version": "0.1.0"},
+            "clientInfo": {"name": "smoke-test", "version": "0.1.0"}
         }),
     );
     mcp.notify("notifications/initialized");
@@ -902,7 +906,7 @@ fn digest_bare_reads_once(attempt: u32) -> bool {
         json!({
             "protocolVersion": "2025-06-18",
             "capabilities": {},
-            "clientInfo": {"name": "smoke-test", "version": "0.1.0"},
+            "clientInfo": {"name": "smoke-test", "version": "0.1.0"}
         }),
     );
     mcp.notify("notifications/initialized");
@@ -972,7 +976,7 @@ fn handbook_tool_and_resources() {
         json!({
             "protocolVersion": "2025-06-18",
             "capabilities": {},
-            "clientInfo": {"name": "smoke-test", "version": "0.1.0"},
+            "clientInfo": {"name": "smoke-test", "version": "0.1.0"}
         }),
     );
     let instructions = init["result"]["instructions"].as_str().unwrap();
@@ -1057,30 +1061,6 @@ fn handbook_tool_and_resources() {
     assert!(resp.get("error").is_some());
 }
 
-/// The SHA-256 (hex) a file given inline comes with.
-fn sha(bytes: &[u8]) -> String {
-    ledger_store::journal::sha256_hex(bytes)
-}
-
-fn base64_like(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::new();
-    for chunk in bytes.chunks(3) {
-        let mut n: u32 = 0;
-        for (i, &b) in chunk.iter().enumerate() {
-            n |= (b as u32) << (16 - 8 * i);
-        }
-        let pad = 3 - chunk.len();
-        for i in 0..4 - pad {
-            out.push(ALPHABET[((n >> (18 - 6 * i)) & 63) as usize] as char);
-        }
-        for _ in 0..pad {
-            out.push('=');
-        }
-    }
-    out
-}
-
 #[test]
 fn mcp_import_export() {
     let books = Books::new("import_export");
@@ -1090,30 +1070,37 @@ fn mcp_import_export() {
         json!({
             "protocolVersion": "2025-06-18",
             "capabilities": {},
-            "clientInfo": {"name": "smoke-test", "version": "0.1.0"},
+            "clientInfo": {"name": "smoke-test", "version": "0.1.0"}
         }),
     );
     mcp.notify("notifications/initialized");
 
-    let chart = mcp.call(
-        "books.import_chart_csv",
-        json!({"csv_text": "code,name,type,parent_code\n1000,Cash,asset,\n4000,Revenue,revenue,\n6010,Café 北京,expense,\n"}),
-    );
+    let up1 = mcp.csv_upload("code,name,type,parent_code\n1000,Cash,asset,\n4000,Revenue,revenue,\n6010,Café 北京,expense,\n");
+    let chart = mcp.call("books.import_chart_csv", json!({"upload_id": up1}));
     assert_eq!(chart["count"], 3);
 
-    // The IIF is plain ASCII text with CR LF line endings, inline; what it
-    // writes differently from the books is in warnings (rules.md B-34).
+    // The IIF is plain ASCII text with CR LF line endings, handed over
+    // (D-46); what it writes differently from the books is in warnings
+    // (rules.md B-34).
     let iif = mcp.call(
         "books.export",
         json!({"format": "iif", "report": "journal"}),
     );
-    let text = iif["content"].as_str().unwrap();
+    let text = &mcp.handed_text(&iif["file"]);
     assert!(text.contains("!TRNS") && text.is_ascii() && text.ends_with("\r\n"));
     assert!(
         text.contains("\r\nACCNT\tCafe Bei Jing\tEXP\t6010\r\n"),
         "{text}"
     );
-    assert!(iif.get("content_encoding").is_none(), "{iif}");
+    assert!(iif.get("content").is_none(), "{iif}");
+    assert_eq!(
+        iif["file"]["file_name"]
+            .as_str()
+            .unwrap()
+            .rsplit('.')
+            .next(),
+        Some("iif")
+    );
     assert_eq!(
         iif["warnings"],
         json!(["account 6010's name \"Café 北京\" is written \"Cafe Bei Jing\""])
@@ -1123,14 +1110,15 @@ fn mcp_import_export() {
         "books.export",
         json!({"format": "xlsx", "report": "trial_balance"}),
     );
-    assert_eq!(xlsx["content_encoding"], "base64");
-    assert!(xlsx["content"].as_str().unwrap().starts_with("UEs"));
+    assert_eq!(
+        xlsx["file"]["mime_type"],
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
+    assert!(mcp.handed(&xlsx["file"]).starts_with(b"PK"), "a zip");
 }
 
 #[test]
 fn mcp_statement_pdfs_and_cpa_package() {
-    use base64::Engine;
-    let b64 = base64::engine::general_purpose::STANDARD;
     let books = Books::new("statement-pdfs");
     let mut mcp = Mcp::spawn(&books);
     mcp.request(
@@ -1138,14 +1126,12 @@ fn mcp_statement_pdfs_and_cpa_package() {
         json!({
             "protocolVersion": "2025-06-18",
             "capabilities": {},
-            "clientInfo": {"name": "smoke-test", "version": "0.1.0"},
+            "clientInfo": {"name": "smoke-test", "version": "0.1.0"}
         }),
     );
     mcp.notify("notifications/initialized");
-    mcp.call(
-        "books.import_chart_csv",
-        json!({"csv_text": "code,name,type,parent_code\n1000,Cash,asset,\n3000,Owner Capital,equity,\n6000,Software,expense,\n"}),
-    );
+    let up2 = mcp.csv_upload("code,name,type,parent_code\n1000,Cash,asset,\n3000,Owner Capital,equity,\n6000,Software,expense,\n");
+    mcp.call("books.import_chart_csv", json!({"upload_id": up2}));
     for (desc, debit, credit, amount) in [
         ("Owner contribution", "1000", "3000", "1000.00"),
         ("Domain", "6000", "1000", "12.00"),
@@ -1163,11 +1149,10 @@ fn mcp_statement_pdfs_and_cpa_package() {
             "books.add_line",
             json!({"entry_id": id, "account": credit, "side": "credit", "amount": amount}),
         );
+        let up = mcp.upload(desc.as_bytes(), "r.pdf", "application/pdf", "receipt");
         mcp.call(
             "books.attach_receipt",
-            json!({"entry_id": id, "file_name": "r.pdf", "mime_type": "application/pdf",
-                   "content_base64": base64_like(desc.as_bytes()),
-                   "sha256": sha(desc.as_bytes())}),
+            json!({"entry_id": id, "upload_id": up}),
         );
         mcp.call(
             "books.post_entry",
@@ -1187,8 +1172,8 @@ fn mcp_statement_pdfs_and_cpa_package() {
             .unwrap()
             .extend(extra.as_object().unwrap().clone());
         let out = mcp.call("books.export", args);
-        assert_eq!(out["content_encoding"], "base64");
-        let bytes = b64.decode(out["content"].as_str().unwrap()).unwrap();
+        assert_eq!(out["file"]["mime_type"], "application/pdf");
+        let bytes = mcp.handed(&out["file"]);
         assert!(bytes.starts_with(b"%PDF"), "{report} is not a PDF");
     }
     // The cash flow statement reconciles to named cash accounts: required.
@@ -1297,14 +1282,12 @@ fn mcp_period_statements() {
         json!({
             "protocolVersion": "2025-06-18",
             "capabilities": {},
-            "clientInfo": {"name": "smoke-test", "version": "0.1.0"},
+            "clientInfo": {"name": "smoke-test", "version": "0.1.0"}
         }),
     );
     mcp.notify("notifications/initialized");
-    mcp.call(
-        "books.import_chart_csv",
-        json!({"csv_text": "code,name,type,parent_code\n1000,Cash,asset,\n3000,Capital,equity,\n4000,Sales,revenue,\n6000,Software,expense,\n"}),
-    );
+    let up3 = mcp.csv_upload("code,name,type,parent_code\n1000,Cash,asset,\n3000,Capital,equity,\n4000,Sales,revenue,\n6000,Software,expense,\n");
+    mcp.call("books.import_chart_csv", json!({"upload_id": up3}));
     let post = |mcp: &mut Mcp, date: &str, dr: &str, cr: &str, amount: &str| {
         let e = mcp.call(
             "books.draft_entry",
@@ -1328,11 +1311,10 @@ fn mcp_period_statements() {
         json!({"entry_id": id, "confirmed": true}),
     );
     assert!(err.contains("5.00"), "{err}");
+    let up7 = mcp.upload(b"r", "r.pdf", "application/pdf", "receipt");
     mcp.call(
         "books.attach_receipt",
-        json!({"entry_id": id, "file_name": "r.pdf", "mime_type": "application/pdf",
-               "content_base64": base64_like(b"r"),
-               "sha256": sha(b"r")}),
+        json!({"entry_id": id, "upload_id": up7}),
     );
     mcp.call(
         "books.post_entry",
@@ -1388,7 +1370,7 @@ fn mcp_period_statements() {
         "books.export",
         json!({"format": "json", "report": "general_ledger", "start": "2026-02-01", "end": "2026-02-28"}),
     );
-    let gl: serde_json::Value = serde_json::from_str(gl["content"].as_str().unwrap()).unwrap();
+    let gl: serde_json::Value = serde_json::from_str(&mcp.handed_text(&gl["file"])).unwrap();
     let cash = &gl["accounts"][0];
     assert_eq!(cash["beginning_balance"], "1004.00");
     assert_eq!(cash["postings"][0]["split"], "6000 Software");
@@ -1403,7 +1385,7 @@ fn mcp_period_statements() {
         "books.export",
         json!({"format": "json", "report": "members_equity", "start": "2026-01-01", "end": "2026-02-28"}),
     );
-    let me: serde_json::Value = serde_json::from_str(me["content"].as_str().unwrap()).unwrap();
+    let me: serde_json::Value = serde_json::from_str(&mcp.handed_text(&me["file"])).unwrap();
     assert_eq!(me["members"][0]["name"], "Owner");
     assert_eq!(me["total"]["contributions"], "1000.00");
     assert_eq!(me["total"]["net_income"], "3.50");
@@ -1412,7 +1394,7 @@ fn mcp_period_statements() {
         "books.export",
         json!({"format": "pdf", "report": "members_equity", "end": "2026-02-28"}),
     );
-    assert_eq!(pdf["content_encoding"], "base64");
+    assert!(mcp.handed(&pdf["file"]).starts_with(b"%PDF"));
 
     // Closing January: a one-member LLC closes into the member's capital
     // account, not Retained Earnings. The preview is exactly what posts.
@@ -1442,7 +1424,7 @@ fn mcp_period_statements() {
         "books.export",
         json!({"format": "json", "report": "members_equity", "start": "2026-01-01", "end": "2026-01-31"}),
     );
-    let me: serde_json::Value = serde_json::from_str(me["content"].as_str().unwrap()).unwrap();
+    let me: serde_json::Value = serde_json::from_str(&mcp.handed_text(&me["file"])).unwrap();
     assert_eq!(me["total"]["contributions"], "1000.00");
     assert_eq!(me["total"]["net_income"], "4.00");
     assert_eq!(me["total"]["ending"], "1004.00");
@@ -1488,17 +1470,15 @@ fn mcp_period_statements() {
         "books.export",
         json!({"format": "json", "report": "tax_summary", "start": "2026-01-01", "end": "2026-02-28"}),
     );
-    let ts: serde_json::Value = serde_json::from_str(ts["content"].as_str().unwrap()).unwrap();
+    let ts: serde_json::Value = serde_json::from_str(&mcp.handed_text(&ts["file"])).unwrap();
     assert_eq!(ts["form"], "Form 1065");
     assert_eq!(ts["income"][0]["book"], "6.50");
     assert_eq!(ts["deductions"][0]["category"], "other_deductions");
     assert_eq!(ts["uncategorized"].as_array().unwrap().len(), 0);
     assert_eq!(ts["tax_net"], "3.50");
     // A chart import validates categories before creating anything.
-    let err = mcp.call_err(
-        "books.import_chart_csv",
-        json!({"csv_text": "code,name,type,parent_code,tax_category\n6100,Meals,expense,,meals\n4100,Fees,revenue,,commissions_fees\n"}),
-    );
+    let up4 = mcp.csv_upload("code,name,type,parent_code,tax_category\n6100,Meals,expense,,meals\n4100,Fees,revenue,,commissions_fees\n");
+    let err = mcp.call_err("books.import_chart_csv", json!({"upload_id": up4}));
     assert!(err.contains("4100"), "{err}");
     let chart = mcp.call("books.chart", json!({}));
     assert!(
@@ -1555,7 +1535,8 @@ fn mcp_partnership_from_template() {
     );
     let mut mcp = Mcp::spawn(&books);
     init(&mut mcp);
-    mcp.call("books.import_chart_csv", json!({"csv_text": t["csv"]}));
+    let up5 = mcp.csv_upload(t["csv"].as_str().unwrap());
+    mcp.call("books.import_chart_csv", json!({"upload_id": up5}));
     mcp.call(
         "books.set_setting",
         json!({"changes": settings, "decided_by": "Ann"}),
@@ -1589,7 +1570,7 @@ fn mcp_partnership_from_template() {
         "books.export",
         json!({"format": "json", "report": "members_equity", "start": "2026-01-01", "end": "2026-01-31"}),
     );
-    let me: serde_json::Value = serde_json::from_str(me["content"].as_str().unwrap()).unwrap();
+    let me: serde_json::Value = serde_json::from_str(&mcp.handed_text(&me["file"])).unwrap();
     assert_eq!(me["members"][1]["distributions"], "50.00");
     assert_eq!(me["members"][1]["ending"], "1150.00");
 
@@ -1662,7 +1643,8 @@ fn close_period_shows_each_members_running_split() {
         mcp
     };
     let mut mcp = spawn(&books);
-    mcp.call("books.import_chart_csv", json!({"csv_text": t["csv"]}));
+    let up6 = mcp.csv_upload(t["csv"].as_str().unwrap());
+    mcp.call("books.import_chart_csv", json!({"upload_id": up6}));
     mcp.call(
         "books.set_setting",
         json!({"changes": t["settings"], "decided_by": "Ann"}),
@@ -1759,7 +1741,7 @@ fn close_period_shows_each_members_running_split() {
         "books.export",
         json!({"format": "json", "report": "members_equity", "start": "2026-01-01", "end": "2026-02-28"}),
     );
-    let me: Value = serde_json::from_str(me["content"].as_str().unwrap()).unwrap();
+    let me: Value = serde_json::from_str(&mcp.handed_text(&me["file"])).unwrap();
     assert_eq!(me["members"][0]["ending"], "0.01");
     assert_eq!(me["members"][1]["ending"], "0.01");
 }
@@ -1934,7 +1916,7 @@ fn mcp_schedules_and_recurring() {
             "months": 3,
             "balance_account": "1300",
             "pl_account": "6300",
-            "convention": "monthly_even",
+            "convention": "monthly_even"
         }),
     );
     assert_eq!(s["convention"], "monthly_even");
@@ -1950,7 +1932,7 @@ fn mcp_schedules_and_recurring() {
         json!({
             "kind": "prepaid_expense", "description": "x", "total": "10",
             "start": "2026-11-01", "months": 2,
-            "balance_account": "6300", "pl_account": "6300",
+            "balance_account": "6300", "pl_account": "6300"
         }),
     );
     assert!(err.contains("Asset"), "{err}");
@@ -1989,7 +1971,7 @@ fn mcp_schedules_and_recurring() {
             "lines": [
                 {"account": "6600", "side": "debit", "amount": "2000.00"},
                 {"account": "1000", "side": "credit", "amount": "2000.00"},
-            ],
+            ]
         }),
     );
     let drafts = mcp.call("books.run_recurring", json!({"through": "2026-12-15"}));
@@ -2025,7 +2007,7 @@ fn mcp_payout_gross_up() {
         json!({
             "protocolVersion": "2025-06-18",
             "capabilities": {},
-            "clientInfo": {"name": "smoke-test", "version": "0.1.0"},
+            "clientInfo": {"name": "smoke-test", "version": "0.1.0"}
         }),
     );
     mcp.notify("notifications/initialized");
@@ -2082,14 +2064,17 @@ fn mcp_payout_gross_up() {
 
     // The statement is the receipt; then it posts like any entry.
     let entry_id = out["entry_id"].as_u64().unwrap();
+    let up8 = mcp.upload(
+        b"%PDF-1.4 statement",
+        "payout.pdf",
+        "application/pdf",
+        "receipt",
+    );
     mcp.call(
         "books.attach_receipt",
         json!({
             "entry_id": entry_id,
-            "file_name": "payout.pdf",
-            "mime_type": "application/pdf",
-            "content_base64": base64_like(b"%PDF-1.4 statement"),
-            "sha256": sha(b"%PDF-1.4 statement"),
+            "upload_id": up8
         }),
     );
     mcp.call(
@@ -2178,14 +2163,17 @@ fn mcp_vendor_1099() {
             json!({"entry_id": id, "account": account, "side": side, "amount": "2500.00"}),
         );
     }
+    let up9 = mcp.upload(
+        b"%PDF-1.4 invoice",
+        "invoice.pdf",
+        "application/pdf",
+        "receipt",
+    );
     mcp.call(
         "books.attach_receipt",
         json!({
             "entry_id": id,
-            "file_name": "invoice.pdf",
-            "mime_type": "application/pdf",
-            "content_base64": base64_like(b"%PDF-1.4 invoice"),
-            "sha256": sha(b"%PDF-1.4 invoice"),
+            "upload_id": up9
         }),
     );
     mcp.call(
@@ -2283,7 +2271,7 @@ fn mcp_receipts_always_required_when_threshold_is_zero() {
         json!({
             "protocolVersion": "2025-06-18",
             "capabilities": {},
-            "clientInfo": {"name": "smoke-test", "version": "0.1.0"},
+            "clientInfo": {"name": "smoke-test", "version": "0.1.0"}
         }),
     );
     let instructions = init["result"]["instructions"].as_str().unwrap();
@@ -2341,7 +2329,7 @@ fn cash_flow_reads_its_account_roles_from_the_books_settings() {
         json!({
             "protocolVersion": "2025-06-18",
             "capabilities": {},
-            "clientInfo": {"name": "smoke-test", "version": "0.1.0"},
+            "clientInfo": {"name": "smoke-test", "version": "0.1.0"}
         }),
     );
     mcp.notify("notifications/initialized");
@@ -2440,7 +2428,7 @@ fn cash_flow_refuses_contradictory_roles() {
         json!({
             "protocolVersion": "2025-06-18",
             "capabilities": {},
-            "clientInfo": {"name": "smoke-test", "version": "0.1.0"},
+            "clientInfo": {"name": "smoke-test", "version": "0.1.0"}
         }),
     );
     mcp.notify("notifications/initialized");
@@ -2487,7 +2475,7 @@ fn a_chart_file_with_a_bad_row_imports_nothing() {
         json!({
             "protocolVersion": "2025-06-18",
             "capabilities": {},
-            "clientInfo": {"name": "smoke-test", "version": "0.1.0"},
+            "clientInfo": {"name": "smoke-test", "version": "0.1.0"}
         }),
     );
     mcp.notify("notifications/initialized");
@@ -2506,14 +2494,14 @@ fn a_chart_file_with_a_bad_row_imports_nothing() {
         // A child of another type than its parent.
         "code,name,type,parent_code\n1000,Cash,asset,\n4000,Sales,revenue,1000\n",
     ] {
-        let err = mcp.call_err("books.import_chart_csv", json!({"csv_text": bad}));
+        let up7 = mcp.csv_upload(bad);
+        let err = mcp.call_err("books.import_chart_csv", json!({"upload_id": up7}));
         assert!(!err.is_empty());
         assert_eq!(count(&mut mcp), before, "half-imported: {bad}");
     }
-    let ok = mcp.call(
-        "books.import_chart_csv",
-        json!({"csv_text": "code,name,type,parent_code\n1000,Cash,asset,\n1010,Checking,asset,1000\n"}),
-    );
+    let up8 =
+        mcp.csv_upload("code,name,type,parent_code\n1000,Cash,asset,\n1010,Checking,asset,1000\n");
+    let ok = mcp.call("books.import_chart_csv", json!({"upload_id": up8}));
     assert_eq!(ok["count"], 2);
 }
 
@@ -2529,7 +2517,7 @@ fn bank_import_reads_dates_rules_and_files_whole() {
         json!({
             "protocolVersion": "2025-06-18",
             "capabilities": {},
-            "clientInfo": {"name": "smoke-test", "version": "0.1.0"},
+            "clientInfo": {"name": "smoke-test", "version": "0.1.0"}
         }),
     );
     mcp.notify("notifications/initialized");
@@ -2544,9 +2532,10 @@ fn bank_import_reads_dates_rules_and_files_whole() {
             json!({"code": code, "name": name, "account_type": typ}),
         );
     }
-    let base = |csv: &str| {
+    // The CSV's upload: one refused is left for the next call.
+    let base = |upload: &str| {
         json!({
-            "csv_text": csv,
+            "upload_id": upload,
             "bank_account_code": "1000",
             "default_offset_code": "6000",
             "rules": {"coffee": "6100", "coffee beans": "6200"},
@@ -2554,18 +2543,17 @@ fn bank_import_reads_dates_rules_and_files_whole() {
     };
     // 3/4/2026 reads both ways and nothing in the file settles it.
     let ambiguous = "Date,Description,Amount\n3/4/2026,Coffee shop,-4.50\n";
-    let err = mcp.call_err("books.import_bank_csv", base(ambiguous));
+    let up = mcp.csv_upload(ambiguous);
+    let err = mcp.call_err("books.import_bank_csv", base(&up));
     assert!(err.contains("either way"), "{err}");
-    let mut args = base(ambiguous);
+    let mut args = base(&up);
     args["date_order"] = json!("day_first");
     let out = mcp.call("books.import_bank_csv", args);
     assert_eq!(out["imported"][0]["date"], "2026-04-03");
     // Both patterns match "Coffee beans": the longer wins, every time.
     for _ in 0..5 {
-        let out = mcp.call(
-            "books.import_bank_csv",
-            base("Date,Description,Amount\n2026-05-01,Coffee beans 2kg,-30.00\n"),
-        );
+        let up = mcp.csv_upload("Date,Description,Amount\n2026-05-01,Coffee beans 2kg,-30.00\n");
+        let out = mcp.call("books.import_bank_csv", base(&up));
         assert_eq!(out["imported"][0]["offset_account"], "6200");
     }
     // A transaction dated in a closed period refuses the file: nothing of
@@ -2578,12 +2566,10 @@ fn bank_import_reads_dates_rules_and_files_whole() {
         "books.close_period",
         json!({"period_id": p["period_id"], "confirmed": true}),
     );
-    let err = mcp.call_err(
-        "books.import_bank_csv",
-        base(
-            "Date,Description,Amount\n2026-06-01,Fine,-1.00\n2026-01-15,In a closed month,-2.00\n",
-        ),
+    let up = mcp.csv_upload(
+        "Date,Description,Amount\n2026-06-01,Fine,-1.00\n2026-01-15,In a closed month,-2.00\n",
     );
+    let err = mcp.call_err("books.import_bank_csv", base(&up));
     assert!(err.contains("closed"), "{err}");
     let journal = String::from_utf8(books.journal()).unwrap();
     assert!(
@@ -2608,7 +2594,7 @@ fn renumbering_an_account_keeps_its_history() {
         json!({
             "protocolVersion": "2025-06-18",
             "capabilities": {},
-            "clientInfo": {"name": "smoke-test", "version": "0.1.0"},
+            "clientInfo": {"name": "smoke-test", "version": "0.1.0"}
         }),
     );
     mcp.notify("notifications/initialized");
@@ -2690,7 +2676,7 @@ fn renumbering_an_account_keeps_its_history() {
         json!({
             "protocolVersion": "2025-06-18",
             "capabilities": {},
-            "clientInfo": {"name": "smoke-test", "version": "0.1.0"},
+            "clientInfo": {"name": "smoke-test", "version": "0.1.0"}
         }),
     );
     mcp.notify("notifications/initialized");
@@ -2756,10 +2742,8 @@ fn one_default_period_everywhere_defect_16() {
         &books,
         "[company]\nname = \"Fernhill Labs LLC\"\nfiscal_year_start = \"07-01\"\ntax_classification = \"partnership\"\n[[company.members]]\nname = \"A\"\nshare = \"50%\"\ncapital_account = \"3000\"\n[[company.members]]\nname = \"B\"\nshare = \"50%\"\ncapital_account = \"3001\"\n[books]\nreceipt_threshold = \"1000000.00\"\ncash_accounts = [\"1000\"]\n",
     );
-    mcp.call(
-        "books.import_chart_csv",
-        json!({"csv_text": "code,name,type,parent_code,tax_category\n1000,Cash,asset,,\n3000,Capital A,equity,,\n3001,Capital B,equity,,\n4000,Sales,revenue,,gross_receipts\n6000,Software,expense,,other_deductions\n"}),
-    );
+    let up9 = mcp.csv_upload("code,name,type,parent_code,tax_category\n1000,Cash,asset,,\n3000,Capital A,equity,,\n3001,Capital B,equity,,\n4000,Sales,revenue,,gross_receipts\n6000,Software,expense,,other_deductions\n");
+    mcp.call("books.import_chart_csv", json!({"upload_id": up9}));
     let first = post_pair(&mut mcp, "2025-03-15", "1000", "3000", "500.00");
     let mid = post_pair(&mut mcp, "2025-09-10", "1000", "4000", "120.00");
     let late = post_pair(&mut mcp, "2026-02-01", "6000", "1000", "20.00");
@@ -2786,7 +2770,7 @@ fn one_default_period_everywhere_defect_16() {
             "books.export",
             json!({"report": report, "format": "json", "end": "2026-03-31"}),
         );
-        let v: Value = serde_json::from_str(out["content"].as_str().unwrap()).unwrap();
+        let v: Value = serde_json::from_str(&mcp.handed_text(&out["file"])).unwrap();
         assert_eq!(pair(&v), want, "{report}");
     }
     // The general journal: the period's entries, in json and csv alike.
@@ -2794,7 +2778,7 @@ fn one_default_period_everywhere_defect_16() {
         "books.export",
         json!({"report": "general_journal", "format": "json", "end": "2026-03-31"}),
     );
-    let v: Value = serde_json::from_str(out["content"].as_str().unwrap()).unwrap();
+    let v: Value = serde_json::from_str(&mcp.handed_text(&out["file"])).unwrap();
     let ids: Vec<u64> = v
         .as_array()
         .unwrap()
@@ -2806,7 +2790,7 @@ fn one_default_period_everywhere_defect_16() {
         "books.export",
         json!({"report": "journal", "format": "csv", "end": "2026-03-31"}),
     );
-    let rows = csv["content"].as_str().unwrap().lines().count();
+    let rows = mcp.handed_text(&csv["file"]).lines().count();
     assert_eq!(rows, 1 + 4, "header and two entries of two lines");
     // An inverted range is refused by the journal too (review R1).
     let err = mcp.call_err(
@@ -2836,7 +2820,7 @@ fn one_default_period_everywhere_defect_16() {
     ];
     for report in ["tax_summary", "members_equity", "general_ledger"] {
         let out = mcp.call("books.export", json!({"report": report, "format": "json"}));
-        let v: Value = serde_json::from_str(out["content"].as_str().unwrap()).unwrap();
+        let v: Value = serde_json::from_str(&mcp.handed_text(&out["file"])).unwrap();
         got.push(pair(&v));
     }
     let after = today();
@@ -2886,10 +2870,8 @@ fn the_default_period_never_shortens_the_iif_or_the_package() {
         &books,
         "[company]\nname = \"Fernhill Labs LLC\"\nfiscal_year_start = \"07-01\"\n[books]\nreceipt_threshold = \"1000000.00\"\ncash_accounts = [\"1000\"]\n",
     );
-    mcp.call(
-        "books.import_chart_csv",
-        json!({"csv_text": "code,name,type,parent_code,tax_category\n1000,Cash,asset,,\n3000,Capital,equity,,\n4000,Sales,revenue,,gross_receipts\n6000,Software,expense,,other_deductions\n"}),
-    );
+    let up10 = mcp.csv_upload("code,name,type,parent_code,tax_category\n1000,Cash,asset,,\n3000,Capital,equity,,\n4000,Sales,revenue,,gross_receipts\n6000,Software,expense,,other_deductions\n");
+    mcp.call("books.import_chart_csv", json!({"upload_id": up10}));
     let entries = [
         ("2025-03-15", "1000", "3000", "500.00"),
         ("2025-09-10", "1000", "4000", "120.00"),
@@ -2906,7 +2888,7 @@ fn the_default_period_never_shortens_the_iif_or_the_package() {
         json!({"report": "general_journal", "format": "json"}),
     );
     let after = today();
-    let v: Value = serde_json::from_str(out["content"].as_str().unwrap()).unwrap();
+    let v: Value = serde_json::from_str(&mcp.handed_text(&out["file"])).unwrap();
     let journal: Vec<u64> = v
         .as_array()
         .unwrap()
@@ -2939,7 +2921,7 @@ fn the_default_period_never_shortens_the_iif_or_the_package() {
         let iif = mcp.call("books.export", json!({"report": report, "format": "iif"}));
         assert_eq!(iif["report"], report.to_lowercase());
         assert_eq!(
-            iif_docnums(iif["content"].as_str().unwrap()),
+            iif_docnums(&mcp.handed_text(&iif["file"])),
             every,
             "{report}"
         );
@@ -2986,10 +2968,8 @@ fn rename_account_end_to_end_defect_15() {
         &books,
         "[company]\nname = \"Fernhill Labs LLC\"\n[books]\nreceipt_threshold = \"1000000.00\"\ncash_accounts = [\"1000\"]\n",
     );
-    mcp.call(
-        "books.import_chart_csv",
-        json!({"csv_text": "code,name,type,parent_code,tax_category\n1000,Business Checking,asset,,\n3000,Capital,equity,,\n6000,Operating,expense,,other_deductions\n6150,Software,expense,6000,other_deductions\n6160,Hosting,expense,6000,other_deductions\n"}),
-    );
+    let up11 = mcp.csv_upload("code,name,type,parent_code,tax_category\n1000,Business Checking,asset,,\n3000,Capital,equity,,\n6000,Operating,expense,,other_deductions\n6150,Software,expense,6000,other_deductions\n6160,Hosting,expense,6000,other_deductions\n");
+    mcp.call("books.import_chart_csv", json!({"upload_id": up11}));
     post_pair(&mut mcp, "2025-11-04", "1000", "3000", "800.00");
     post_pair(&mut mcp, "2025-11-20", "6150", "1000", "29.00");
     let verified = mcp.call("books.verify", json!({"blobs": false}));
@@ -3045,14 +3025,14 @@ fn rename_account_end_to_end_defect_15() {
         "books.export",
         json!({"report": "profit_and_loss", "format": "json", "start": "2025-11-01", "end": "2025-11-30"}),
     );
-    let pl: Value = serde_json::from_str(out["content"].as_str().unwrap()).unwrap();
+    let pl: Value = serde_json::from_str(&mcp.handed_text(&out["file"])).unwrap();
     assert_eq!(pl["expense_accounts"][0]["name"], "Software subscriptions");
     assert_eq!(pl["expense_accounts"][0]["amount"], "29.00");
     let iif = mcp.call(
         "books.export",
         json!({"report": "journal", "format": "iif"}),
     );
-    let iif = iif["content"].as_str().unwrap();
+    let iif = &mcp.handed_text(&iif["file"]);
     assert!(iif.contains("Operating:Software subscriptions"), "{iif}");
     // A renamed parent: its children's full names follow, and the note
     // says so.
@@ -3112,10 +3092,8 @@ fn rename_says_what_the_new_name_moves_defect_15() {
         &books,
         "[company]\nname = \"Fernhill Labs LLC\"\n[books]\nreceipt_threshold = \"1000000.00\"\n",
     );
-    mcp.call(
-        "books.import_chart_csv",
-        json!({"csv_text": "code,name,type,parent_code,tax_category\n1000,Business Checking,asset,,\n1010,Petty Fund,asset,,\n2100,Visa,liability,,\n2200,Credit Card,liability,,\n6000,Software,expense,,other_deductions\n"}),
-    );
+    let up12 = mcp.csv_upload("code,name,type,parent_code,tax_category\n1000,Business Checking,asset,,\n1010,Petty Fund,asset,,\n2100,Visa,liability,,\n2200,Credit Card,liability,,\n6000,Software,expense,,other_deductions\n");
+    mcp.call("books.import_chart_csv", json!({"upload_id": up12}));
     mcp.call(
         "books.set_convention",
         json!({"id": "software-note", "kind": "note", "title": "Subscriptions",
@@ -3257,4 +3235,178 @@ fn mcp_daily_schedule() {
                "pl_account": "6300", "convention": "weekly"}),
     );
     assert!(err.contains("daily or monthly_even"), "{err}");
+}
+
+/// D-46: files pass only by handle. The five tools that file a file take
+/// an upload and no other argument (their schemas close, and none names
+/// an inline field); an inline argument is refused as unknown before the
+/// tool runs, pointing to books.begin_upload, storing nothing; and every
+/// file a tool once gave inline (books.export in each format,
+/// books.asset_labels, books.get_receipt view bytes) comes back handed
+/// over, its download the very bytes, with the size and SHA-256 it
+/// states, and no bytes in the answer.
+#[test]
+fn files_pass_only_by_handle_in_and_out() {
+    let books = Books::with(
+        "handles",
+        "USD",
+        Some("[books]\nreceipt_threshold = \"0.00\"\ncash_accounts = [\"1000\"]\n"),
+    );
+    let mut mcp = Mcp::spawn(&books);
+    init(&mut mcp);
+    // The schemas: closed, an upload, nothing inline.
+    let list = mcp.request("tools/list", json!({}));
+    let tools = list["result"]["tools"].as_array().unwrap();
+    let tool = |name: &str| {
+        tools
+            .iter()
+            .find(|t| t["name"] == name)
+            .unwrap_or_else(|| panic!("{name} listed"))
+            .clone()
+    };
+    for (name, upload) in [
+        ("books.attach_receipt", "upload_id"),
+        ("books.file_document", "upload_id"),
+        ("books.set_w9", "w9_upload_id"),
+        ("books.import_bank_csv", "upload_id"),
+        ("books.import_chart_csv", "upload_id"),
+    ] {
+        let input = &tool(name)["inputSchema"];
+        assert_eq!(input["additionalProperties"], json!(false), "{name}");
+        let props = input["properties"].as_object().unwrap();
+        assert!(props.contains_key(upload), "{name}");
+        for gone in [
+            "content_base64",
+            "sha256",
+            "csv_text",
+            "w9_content_base64",
+            "w9_sha256",
+        ] {
+            assert!(!props.contains_key(gone), "{name} takes {gone}");
+        }
+    }
+    for name in ["books.export", "books.asset_labels", "books.get_receipt"] {
+        let out = tool(name)["outputSchema"].to_string();
+        assert!(!out.contains("content_base64"), "{name}: {out}");
+        assert!(!out.contains("content_encoding"), "{name}: {out}");
+        assert!(out.contains("\"file\""), "{name}: {out}");
+    }
+    let chart = mcp.csv_upload(
+        "code,name,type,parent_code\n1000,Cash,asset,\n1500,Equipment,asset,\n\
+         1510,Accumulated Depreciation,asset,\n3000,Capital,equity,\n\
+         6500,Depreciation,expense,\n",
+    );
+    mcp.call("books.import_chart_csv", json!({"upload_id": chart}));
+    // In: an inline file is refused as unknown, storing nothing.
+    let journal = books.journal();
+    for (name, args) in [
+        (
+            "books.attach_receipt",
+            json!({"file_name": "r.pdf", "mime_type": "application/pdf",
+                   "content_base64": "JVBERi0xLjQ=",
+                   "sha256": ledger_store::journal::sha256_hex(b"%PDF-1.4")}),
+        ),
+        (
+            "books.import_chart_csv",
+            json!({"csv_text": "code,name,type,parent_code\n1001,Petty,asset,\n"}),
+        ),
+    ] {
+        let resp = mcp.request_raw("tools/call", json!({"name": name, "arguments": args}));
+        let why = resp["error"]["message"].as_str().unwrap_or_default();
+        assert!(
+            why.contains("unknown argument") && why.contains("books.begin_upload"),
+            "{name}: {resp}"
+        );
+    }
+    assert_eq!(books.journal(), journal, "an inline file stored something");
+    // A posted entry with its receipt, and an asset with its tag.
+    let receipt = b"%PDF-1.4 a receipt for the laptop";
+    let e = mcp.call(
+        "books.draft_entry",
+        json!({"date": "2026-01-02", "description": "Laptop"}),
+    );
+    let id = e["entry_id"].as_u64().unwrap();
+    for (account, side) in [("1500", "debit"), ("3000", "credit")] {
+        mcp.call(
+            "books.add_line",
+            json!({"entry_id": id, "account": account, "side": side, "amount": "1200.00"}),
+        );
+    }
+    let up = mcp.upload(receipt, "laptop.pdf", "application/pdf", "receipt");
+    let att = mcp.call(
+        "books.attach_receipt",
+        json!({"entry_id": id, "upload_id": up}),
+    )["attachment_id"]
+        .clone();
+    mcp.call(
+        "books.post_entry",
+        json!({"entry_id": id, "confirmed": true, "no_party_reason": "a member's contribution"}),
+    );
+    mcp.call(
+        "books.register_asset",
+        json!({"description": "Laptop", "in_service_date": "2026-01-02", "cost": "1200.00",
+               "useful_life_months": 36, "cost_account": "1500",
+               "accum_depr_account": "1510", "expense_account": "6500"}),
+    );
+    // Out: each file handed over, its download the bytes it states.
+    let handed = |mcp: &mut Mcp, out: &Value, mime: &str| -> Vec<u8> {
+        for inline in ["content", "content_base64", "content_encoding"] {
+            assert!(out.get(inline).is_none(), "{inline} in {out}");
+        }
+        let file = &out["file"];
+        assert_eq!(file["mime_type"], mime, "{out}");
+        assert!(
+            file["download"]
+                .as_str()
+                .unwrap()
+                .starts_with("wanderbooks download --book acme"),
+            "{file}"
+        );
+        let bytes = mcp.handed(file);
+        assert_eq!(
+            file["sha256"],
+            json!(ledger_store::journal::sha256_hex(&bytes))
+        );
+        assert_eq!(file["size_bytes"], json!(bytes.len()));
+        bytes
+    };
+    for (format, report, mime, starts) in [
+        ("csv", "general_journal", "text/csv", &b"entry_id,"[..]),
+        ("json", "trial_balance", "application/json", b"{"),
+        (
+            "xlsx",
+            "balance_sheet",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            b"PK",
+        ),
+        ("pdf", "profit_and_loss", "application/pdf", b"%PDF"),
+        ("iif", "general_journal", "text/plain", b"!"),
+    ] {
+        let out = mcp.call("books.export", json!({"format": format, "report": report}));
+        let bytes = handed(&mut mcp, &out, mime);
+        assert!(
+            bytes.starts_with(starts),
+            "{format} {report}: {:?}",
+            String::from_utf8_lossy(&bytes[..bytes.len().min(40)])
+        );
+        assert!(
+            out["file"]["file_name"]
+                .as_str()
+                .unwrap()
+                .ends_with(&format!(".{format}")),
+            "{out}"
+        );
+    }
+    let labels = mcp.call("books.asset_labels", json!({}));
+    assert_eq!(labels["tags"].as_array().unwrap().len(), 1, "{labels}");
+    assert!(handed(&mut mcp, &labels, "application/pdf").starts_with(b"%PDF"));
+    let back = mcp.call(
+        "books.get_receipt",
+        json!({"attachment_id": att, "view": "bytes"}),
+    );
+    assert_eq!(handed(&mut mcp, &back, "application/pdf"), receipt);
+    assert_eq!(back["file"]["sha256"], back["sha256"]);
+    assert_eq!(back["file"]["file_name"], "laptop.pdf");
+    let meta = mcp.call("books.get_receipt", json!({"attachment_id": att}));
+    assert!(meta.get("file").is_none(), "{meta}");
 }

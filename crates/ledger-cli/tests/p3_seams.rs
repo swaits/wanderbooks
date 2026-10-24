@@ -202,7 +202,7 @@ fn the_tools_figures_are_the_engines_on_every_date() {
             "books.export",
             json!({"report": "members_equity", "format": "json", "start": START, "end": end}),
         );
-        let me: Value = serde_json::from_str(me["content"].as_str().unwrap()).unwrap();
+        let me: Value = serde_json::from_str(&mcp.wire.fetch_text(&me["file"])).unwrap();
         for (col, engine) in me["members"]
             .as_array()
             .unwrap()
@@ -263,7 +263,7 @@ fn the_tools_figures_are_the_engines_on_every_date() {
             "books.export",
             json!({"report": "general_journal", "format": "iif", "as_of": end}),
         );
-        assert_eq!(iif["content"].as_str().unwrap(), x.iif, "{end}");
+        assert_eq!(mcp.wire.fetch_text(&iif["file"]), x.iif, "{end}");
     }
     // Party totals for the year, on both bases.
     for (name, a) in &parties {

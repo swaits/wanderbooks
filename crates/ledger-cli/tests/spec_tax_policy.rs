@@ -60,6 +60,12 @@ impl Mcp {
     }
 
     /// Call a tool; panic on a refusal. Returns structuredContent.
+    /// Upload a CSV for an import as an agent does (D-46): the upload_id.
+    fn csv_upload(&mut self, csv: &str) -> String {
+        self.wire
+            .upload(csv.as_bytes(), "chart.csv", "text/csv", "import")
+    }
+
     fn call(&mut self, tool: &str, args: Value) -> Value {
         let result = self.result(tool, args);
         assert_ne!(
@@ -243,10 +249,8 @@ fn require_tax_category_refuses_defect_8() {
     );
     // The import: refused whole, saying why.
     let before = m.events();
-    let err = m.call_err(
-        "books.import_chart_csv",
-        json!({"csv_text": "code,name,type,parent_code,tax_category\n6200,Rent,expense,,rent_property\n6210,Misc,expense,,\n"}),
-    );
+    let up = m.csv_upload("code,name,type,parent_code,tax_category\n6200,Rent,expense,,rent_property\n6210,Misc,expense,,\n");
+    let err = m.call_err("books.import_chart_csv", json!({"upload_id": up}));
     assert!(
         err.contains("6210") && err.contains("fifth column") && err.contains("never a header"),
         "{err}"
@@ -296,10 +300,8 @@ fn require_tax_category_refuses_defect_8() {
         json!({"code": "6210", "name": "Misc", "account_type": "expense"}),
     );
     assert_eq!(out["warnings"].as_array().unwrap().len(), 1, "{out}");
-    let out = m.call(
-        "books.import_chart_csv",
-        json!({"csv_text": "code,name,type,parent_code\n6220,Postage,expense,\n6230,Fees,revenue,\n1100,Petty Cash,asset,\n"}),
-    );
+    let up = m.csv_upload("code,name,type,parent_code\n6220,Postage,expense,\n6230,Fees,revenue,\n1100,Petty Cash,asset,\n");
+    let out = m.call("books.import_chart_csv", json!({"upload_id": up}));
     assert_eq!(out["count"], 3);
     assert_eq!(out["warnings"].as_array().unwrap().len(), 2, "{out}");
 }
@@ -340,10 +342,8 @@ fn a_new_account_named_like_a_sibling_is_refused() {
         let err = m.call_err("books.add_account", args.clone());
         assert!(err.contains(says), "{args}: {err}");
     }
-    let err = m.call_err(
-        "books.import_chart_csv",
-        json!({"csv_text": "code,name,type,parent_code\n1000,Cash,asset,\n1010,cash,asset,\n"}),
-    );
+    let up = m.csv_upload("code,name,type,parent_code\n1000,Cash,asset,\n1010,cash,asset,\n");
+    let err = m.call_err("books.import_chart_csv", json!({"upload_id": up}));
     assert!(err.contains("1010") && err.contains("1000 Cash"), "{err}");
     assert_eq!(m.events(), before);
     // Top level: no sibling of the child.
@@ -389,7 +389,7 @@ fn a_gain_on_business_property_is_exported_apart() {
     }
     let range = |format: &str| json!({"report": "tax_summary", "format": format, "start": "2026-01-01", "end": "2026-12-31"});
     let out = m.call("books.export", range("json"));
-    let j: Value = serde_json::from_str(out["content"].as_str().unwrap()).unwrap();
+    let j: Value = serde_json::from_str(&m.wire.fetch_text(&out["file"])).unwrap();
     assert_eq!(
         j["form_4797"],
         json!([{"category": "form_4797_gain_loss", "label": "Gain or loss on business property (Form 4797)",
@@ -400,7 +400,7 @@ fn a_gain_on_business_property_is_exported_apart() {
     assert_eq!(j["book_net"], "10.00");
     assert_eq!(j["tax_net"], "10.00");
     let out = m.call("books.export", range("csv"));
-    let csv = out["content"].as_str().unwrap();
+    let csv = &m.wire.fetch_text(&out["file"]);
     assert!(
         csv.lines().any(|l| l
             == "form_4797,form_4797_gain_loss,Gain or loss on business property (Form 4797),4700 Gain on disposal,7.50,"),

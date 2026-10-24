@@ -1,9 +1,9 @@
 //! `ledger-mcp`: the AI-first bookkeeping interface. It is served one way
 //! (plan D-44): by the books server, `wanderbooks server` ([`local`]),
 //! every book of the data root on the root's local sockets, which agents
-//! reach through the bridge `wanderbooks mcp --book ID`. Files come in as
-//! tool input (inline, at most 256 KiB) or as uploads, and the files the
-//! books make go out as downloads.
+//! reach through the bridge `wanderbooks mcp --book ID`. Files come in only
+//! as uploads and go out only as downloads: never through an agent's
+//! context (D-46).
 
 pub mod access;
 pub mod admin;

@@ -162,7 +162,49 @@ impl Drop for Server {
     }
 }
 
-async fn connect(home: &Home, book: &str, token: String) -> Client {
+/// A session with one book, and what it takes to send the book a file as
+/// an agent does (D-46: a file comes only by upload).
+struct Agent {
+    client: Client,
+    http: reqwest::Client,
+    book: String,
+    token: String,
+}
+
+impl std::ops::Deref for Agent {
+    type Target = Client;
+    fn deref(&self) -> &Client {
+        &self.client
+    }
+}
+
+impl Agent {
+    /// Upload `bytes` as `wanderbooks upload` does: books.begin_upload,
+    /// then the bytes PUT with this session's token. The upload_id.
+    async fn upload(&self, bytes: &[u8], file_name: &str, mime_type: &str) -> String {
+        let begun = call(
+            self,
+            "books.begin_upload",
+            json!({"sha256": ledger_store::journal::sha256_hex(bytes), "size": bytes.len(),
+                   "mime_type": mime_type, "file_name": file_name, "purpose": "receipt"}),
+        )
+        .await
+        .unwrap();
+        let id = begun["upload_id"].as_str().unwrap().to_string();
+        let r = self
+            .http
+            .put(format!("http://localhost/b/{}/u/{id}", self.book))
+            .bearer_auth(&self.token)
+            .body(bytes.to_vec())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status().as_u16(), 200);
+        id
+    }
+}
+
+async fn connect(home: &Home, book: &str, token: String) -> Agent {
     // The short path is good in this process only, while it lives: kept.
     let short = ledger_store::root::SocketPath::new(&home.root().join("run"), "mcp.sock").unwrap();
     let path = short.path().to_path_buf();
@@ -173,11 +215,20 @@ async fn connect(home: &Home, book: &str, token: String) -> Client {
         .unwrap();
     let config =
         StreamableHttpClientTransportConfig::with_uri(format!("http://localhost/b/{book}/mcp"))
-            .auth_header(token);
-    ClientConfig::default()
-        .serve(StreamableHttpClientTransport::with_client(http, config))
+            .auth_header(token.clone());
+    let client = ClientConfig::default()
+        .serve(StreamableHttpClientTransport::with_client(
+            http.clone(),
+            config,
+        ))
         .await
-        .unwrap()
+        .unwrap();
+    Agent {
+        client,
+        http,
+        book: book.to_string(),
+        token,
+    }
 }
 
 /// Call a tool: Ok(structured result) or Err(the error text).
@@ -228,7 +279,7 @@ async fn set_targets(c: &Client, remote: Option<&Path>, folder: Option<&Path>) {
 }
 
 /// Draft, receipt and post one $n entry.
-async fn post_one(c: &Client, n: u64) {
+async fn post_one(c: &Agent, n: u64) {
     for (code, name, ty) in [("1000", "Cash", "asset"), ("6000", "Supplies", "expense")] {
         let _ = call(
             c,
@@ -254,12 +305,19 @@ async fn post_one(c: &Client, n: u64) {
         .await
         .unwrap();
     }
+    // Bytes of each entry's own: the same bytes stored already would be
+    // named for linking, not uploaded again.
+    let upload = c
+        .upload(
+            format!("receipt {n}").as_bytes(),
+            &format!("r{n}.txt"),
+            "text/plain",
+        )
+        .await;
     call(
         c,
         "books.attach_receipt",
-        json!({"entry_id": id, "file_name": format!("r{n}.txt"),
-               "mime_type": "text/plain", "content_base64": "cmVjZWlwdA==",
-               "sha256": "6f32860910ca0fb2a20c7fda143666b09dbf8db5238195c90a586fb542ff0cad"}),
+        json!({"entry_id": id, "upload_id": upload}),
     )
     .await
     .unwrap();

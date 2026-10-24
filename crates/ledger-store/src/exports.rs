@@ -1,7 +1,7 @@
-//! Files on their way out (plan 4.7, D-29): a file the server makes for an
-//! agent (the CPA package, the 1099 worksheet, a W-9) is kept here a
-//! while, for the token that asked for it, until `wanderbooks download`
-//! fetches it.
+//! Files on their way out (plan 4.7, D-29, D-46): a file the server hands
+//! an agent (the CPA package, the 1099 worksheet, a W-9, a report export,
+//! a label sheet, a receipt's copy) is kept here a while, for the token
+//! that asked for it, until `wanderbooks download` fetches it.
 //!
 //! ```text
 //! GOAL: an agent hands the human a file of any size the books make,
@@ -9,7 +9,8 @@
 //!       path on the server.
 //! SOURCE: plan 4.7 (`download_link`: "valid 10 minutes, access-logged");
 //!         D-29 ("their files are made by the server and handed over by a
-//!         command, `wanderbooks download`").
+//!         command, `wanderbooks download`"); D-46 ("files never pass
+//!         through an agent's context, in either direction").
 //! INVARIANTS:
 //!   1. An export is kept for one token, under an id of no digits (the
 //!      access log masks what could be a TIN), and lasts EXPORT_TTL; only
@@ -32,8 +33,10 @@ use std::path::{Path, PathBuf};
 pub const EXPORTS_DIR: &str = "exports";
 /// How long an export is kept, seconds.
 pub const EXPORT_TTL: i64 = 15 * 60;
-/// The most exports one token may have kept at once (INVARIANT 3).
-pub const MAX_LIVE: usize = 16;
+/// The most exports one token may have kept at once (INVARIANT 3): every
+/// file an agent takes away is one since D-46 (each report it exports,
+/// each receipt it reads back), so a month-end's worth fits.
+pub const MAX_LIVE: usize = 64;
 
 /// What an export is (INVARIANT 1): its bytes are beside it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

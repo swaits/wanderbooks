@@ -1491,7 +1491,9 @@ don't count toward the three: `sources/unicode-tin-text.md`, Unicode
 worksheets carry every member's and payee's TIN by default) are never
 written to a path: no tool takes one (D-29, P2 slice 6). Each is handed
 over as an export the asking token fetches with `wanderbooks download`
-(kept 15 minutes), never inline (D-44). (Until slice 6 they were
+(kept 15 minutes), never inline (D-44; since D-46 no tool takes or
+gives any file's bytes inline: files come in only by upload and go out
+only by download). (Until slice 6 they were
 written only outside the books dir: DECISION, P0 review, 2026-10-16, so
 none could be filed back in as a receipt and read out again.) No file
 holding a full TIN is filed into the books
@@ -1503,7 +1505,8 @@ before the vault keeps it, so a refused call marks no file; each
 a 1099 worksheet with TINs; a CPA package with TINs and each file in it
 that holds one), shared by every session and every later server for the
 books, and every way a file enters the books (`books.attach_receipt`,
-`books.file_document`, an upload or inline) refuses those exact files,
+`books.file_document`, by upload, the only way since D-46) refuses those
+exact files,
 and refuses any text file (by its type or name, or because it decodes as
 UTF-8 or UTF-16, with a byte-order mark or, NUL-interleaved, without one)
 holding (a) a TIN the vault holds for a party of the

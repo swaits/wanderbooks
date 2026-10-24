@@ -480,7 +480,7 @@ fn defect14_party_totals_take_a_basis() {
         "books.export",
         json!({"report": "members_equity", "format": "json", "start": "2026-01-01", "end": "2026-12-31"}),
     );
-    let me: Value = serde_json::from_str(me["content"].as_str().unwrap()).unwrap();
+    let me: Value = serde_json::from_str(&m.wire.fetch_text(&me["file"])).unwrap();
     for who in ["Tobin Harlow", "Morgan Ellis"] {
         let col = me["members"]
             .as_array()

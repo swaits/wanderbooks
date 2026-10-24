@@ -317,12 +317,8 @@ fn named(
     mime_type: Option<String>,
     file: &files::TakenFile,
 ) -> Result<(String, String), String> {
-    let name = file_name
-        .or_else(|| file.file_name.clone())
-        .ok_or("file_name is needed")?;
-    let mime = mime_type
-        .or_else(|| file.mime.clone())
-        .ok_or("mime_type is needed")?;
+    let name = file_name.unwrap_or_else(|| file.file_name.clone());
+    let mime = mime_type.unwrap_or_else(|| file.mime.clone());
     if let Some(why) = ledger_store::uploads::file_name_problem(&name)
         .or_else(|| ledger_store::uploads::mime_problem(&mime))
     {
@@ -939,35 +935,30 @@ impl BooksServer {
             .collect()
     }
 
-    /// The signed W-9 a call gives (an upload, or inline), for the vault:
+    /// The signed W-9 a call gives (its upload, `upload_id`), for the vault:
     /// a PDF, PNG, or JPEG by its own first bytes, whatever it is called.
     fn w9_file(
         &self,
         p: &SetW9Params,
+        upload_id: &str,
     ) -> Result<(ledger_vault::W9File, Option<ledger_store::uploads::Claim>), String> {
         let file = self.take_file(files::Given {
-            upload_id: p.w9_upload_id.as_deref(),
-            content_base64: p.w9_content_base64.as_deref(),
-            sha256: p.w9_sha256.as_deref(),
+            upload_id,
             purposes: files::W9,
         })?;
         // Not recorded here: set_w9 records it once the call can only
         // succeed, just before the vault write (tin_files.rs INVARIANT 1),
         // so a refused call never marks an ordinary file.
-        let (mime_type, ext) = if file.bytes.starts_with(b"%PDF-") {
-            ("application/pdf", "pdf")
+        let mime_type = if file.bytes.starts_with(b"%PDF-") {
+            "application/pdf"
         } else if file.bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-            ("image/png", "png")
+            "image/png"
         } else if file.bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
-            ("image/jpeg", "jpg")
+            "image/jpeg"
         } else {
             return Err("the W-9 is a PDF, PNG, or JPEG".into());
         };
-        let file_name = p
-            .w9_file_name
-            .clone()
-            .or(file.file_name)
-            .unwrap_or_else(|| format!("w9.{ext}"));
+        let file_name = p.w9_file_name.clone().unwrap_or(file.file_name);
         if let Some(why) = ledger_store::uploads::file_name_problem(&file_name) {
             return Err(why);
         }
@@ -981,29 +972,19 @@ impl BooksServer {
         ))
     }
 
-    /// A CSV's text, given inline or as an upload (books.begin_upload),
+    /// A CSV's text, from its upload (books.begin_upload purpose import),
     /// and the upload's hold.
     fn csv_given(
         &self,
-        text: Option<&str>,
-        upload_id: Option<&str>,
+        upload_id: &str,
     ) -> Result<(String, Option<ledger_store::uploads::Claim>), String> {
-        match (text, upload_id) {
-            (Some(_), Some(_)) => Err("give csv_text or upload_id, not both".into()),
-            (Some(t), None) => Ok((t.to_string(), None)),
-            (None, Some(id)) => {
-                let file = self.take_file(files::Given {
-                    upload_id: Some(id),
-                    content_base64: None,
-                    sha256: None,
-                    purposes: files::IMPORTED,
-                })?;
-                let text = String::from_utf8(file.bytes)
-                    .map_err(|_| "the CSV isn't UTF-8 text".to_string())?;
-                Ok((text, file.claim))
-            }
-            (None, None) => Err("give the CSV: csv_text, or an upload_id".into()),
-        }
+        let file = self.take_file(files::Given {
+            upload_id,
+            purposes: files::IMPORTED,
+        })?;
+        let text =
+            String::from_utf8(file.bytes).map_err(|_| "the CSV isn't UTF-8 text".to_string())?;
+        Ok((text, file.claim))
     }
 
     /// Record a file read or written with full TINs (tin_files.rs
@@ -3517,7 +3498,7 @@ impl BooksServer {
     #[tool(
         name = "books.attach_receipt",
         title = "Attach a receipt",
-        description = "Attach a receipt to an entry, or file it unlinked and link later with books.link_receipt. The bytes: upload_id (books.begin_upload), or content_base64 with its sha256 for a file of at most 256 KiB. Files are content-addressed and deduplicated. link_to links it to more subjects in the same call (another entry it also supports, an asset, a party, a project, ...: see books.link_attachment); every subject is checked first, so one bad subject files nothing. A file holding a full TIN is refused: one the server read or wrote with TINs, or text with a TIN the vault keeps or an SSN or EIN printed 3-2-4 or 2-7 with hyphens.",
+        description = "Attach a receipt to an entry, or file it unlinked and link later with books.link_receipt. The bytes: upload_id, from books.begin_upload and `wanderbooks upload` (a file never passes through you). Files are content-addressed and deduplicated. link_to links it to more subjects in the same call (another entry it also supports, an asset, a party, a project, ...: see books.link_attachment); every subject is checked first, so one bad subject files nothing. A file holding a full TIN is refused: one the server read or wrote with TINs, or text with a TIN the vault keeps or an SSN or EIN printed 3-2-4 or 2-7 with hyphens.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -3538,9 +3519,7 @@ impl BooksServer {
         let link_to = check_link_to(&store, p.entry_id, &p.link_to)?;
         // Taken once everything else is known good.
         let file = self.take_file(files::Given {
-            upload_id: p.upload_id.as_deref(),
-            content_base64: p.content_base64.as_deref(),
-            sha256: p.sha256.as_deref(),
+            upload_id: &p.upload_id,
             purposes: files::FILED,
         })?;
         let (file_name, mime_type) = named(p.file_name, p.mime_type, &file)?;
@@ -3572,7 +3551,7 @@ impl BooksServer {
     #[tool(
         name = "books.file_document",
         title = "File a document",
-        description = "File a document: category formation, legal, tax, accounting, statement (a bank or card statement: then books.record_statement), contract, photo, warranty, import_source (a bank export), or other. link_to links it to subjects in the same call (an account, an asset, a party, a project, the company: see books.link_attachment), all checked first. The bytes: upload_id (books.begin_upload), or content_base64 with its sha256 (at most 256 KiB). Never a W-9 (books.set_w9 w9_upload_id puts it in the vault). A file holding a full TIN is refused: one the server read or wrote with TINs, or text with a TIN the vault keeps or an SSN or EIN printed 3-2-4 or 2-7 with hyphens.",
+        description = "File a document: category formation, legal, tax, accounting, statement (a bank or card statement: then books.record_statement), contract, photo, warranty, import_source (a bank export), or other. link_to links it to subjects in the same call (an account, an asset, a party, a project, the company: see books.link_attachment), all checked first. The bytes: upload_id, from books.begin_upload and `wanderbooks upload` (a file never passes through you). Never a W-9 (books.set_w9 w9_upload_id puts it in the vault). A file holding a full TIN is refused: one the server read or wrote with TINs, or text with a TIN the vault keeps or an SSN or EIN printed 3-2-4 or 2-7 with hyphens.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -3597,9 +3576,7 @@ impl BooksServer {
         let mut store = self.lock()?;
         let link_to = check_link_to(&store, None, &p.link_to)?;
         let file = self.take_file(files::Given {
-            upload_id: p.upload_id.as_deref(),
-            content_base64: p.content_base64.as_deref(),
-            sha256: p.sha256.as_deref(),
+            upload_id: &p.upload_id,
             purposes: files::FILED,
         })?;
         let (file_name, mime_type) = named(p.file_name, p.mime_type, &file)?;
@@ -3890,7 +3867,7 @@ impl BooksServer {
     #[tool(
         name = "books.get_receipt",
         title = "Get a receipt",
-        description = "A receipt or document: what it is and everything it is linked to. view bytes adds its bytes, base64 and hash-verified, for a file of at most 256 KiB; a larger one gives the command (wanderbooks download) that saves a copy in a folder you name.",
+        description = "A receipt or document: what it is and everything it is linked to. view bytes adds the file, handed over: run its download (wanderbooks download) to save a copy in a folder you name; its bytes never come back here.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn get_receipt(
@@ -3910,33 +3887,17 @@ impl BooksServer {
         };
         let store = self.lock()?;
         let meta = find_attachment(&store, p.attachment_id)?;
-        let book = store
-            .data_dir()
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
-        let fits = meta.size_bytes as usize <= files::INLINE_MAX;
-        let content_base64 = if bytes_wanted && fits {
+        // Handed over, read hash-verified (D-46): never its bytes here.
+        let file = if bytes_wanted {
             let bytes = store
                 .attachment_bytes(p.attachment_id)
                 .map_err(|e| e.to_string())?;
-            Some(base64::Engine::encode(
-                &base64::engine::general_purpose::STANDARD,
-                &bytes,
-            ))
+            Some(self.hand_over(&book_name(&store), &meta.file_name, &meta.mime_type, bytes)?)
         } else {
             None
         };
-        // Too large to come back here: the command that saves a copy.
-        let download = (bytes_wanted && !fits).then(|| {
-            format!(
-                "wanderbooks download --book {book}{} {} --to <a folder>",
-                files::token_flag(),
-                meta.id
-            )
-        });
         Ok(Json(GetReceiptOut {
-            download,
+            file,
             links: links_out(&store, meta.id)?,
             description: meta.description.clone(),
             attachment_id: meta.id,
@@ -3946,7 +3907,6 @@ impl BooksServer {
             file_name: meta.file_name,
             mime_type: meta.mime_type,
             size_bytes: meta.size_bytes,
-            content_base64,
         }))
     }
 
@@ -4512,7 +4472,7 @@ impl BooksServer {
     #[tool(
         name = "books.import_bank_csv",
         title = "Import a bank CSV as drafts",
-        description = "Import a QuickBooks-style bank/credit-card CSV: 3 columns Date,Description,Amount (payments negative), or 4 columns Date,Description, money out, money in (Intuit heads them Credit,Debit). Slash dates must settle month-first or day-first from the file itself or from date_order (\"month_first\" for mm/dd, \"day_first\" for dd/mm); ask the human when the tool says the dates read either way. Creates one DRAFT entry per transaction, all or none: bank account on one side, categorized offset on the other (the longest matching rule pattern, else default_offset_code). Give the CSV as csv_text, or upload it (books.begin_upload purpose import) and give upload_id. Review with books.digest, then post. File the export too (books.file_document category import_source) and pass source_attachment_id: it is linked to the bank account, so the import traces to its source (never to the drafts: a bank export is not a receipt).",
+        description = "Import a QuickBooks-style bank/credit-card CSV: 3 columns Date,Description,Amount (payments negative), or 4 columns Date,Description, money out, money in (Intuit heads them Credit,Debit). Slash dates must settle month-first or day-first from the file itself or from date_order (\"month_first\" for mm/dd, \"day_first\" for dd/mm); ask the human when the tool says the dates read either way. Creates one DRAFT entry per transaction, all or none: bank account on one side, categorized offset on the other (the longest matching rule pattern, else default_offset_code). Give the CSV as upload_id: upload it with books.begin_upload purpose import and `wanderbooks upload` (a file never passes through you). Review with books.digest, then post. File the export too (books.file_document category import_source) and pass source_attachment_id: it is linked to the bank account, so the import traces to its source (never to the drafts: a bank export is not a receipt).",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -4534,7 +4494,7 @@ impl BooksServer {
                 ));
             }
         };
-        let (csv, claim) = self.csv_given(p.csv_text.as_deref(), p.upload_id.as_deref())?;
+        let (csv, claim) = self.csv_given(&p.upload_id)?;
         let txns = ledger_import::parse_bank_csv_with(&csv, order).map_err(|e| e.to_string())?;
         let mut store = self.lock()?;
         let bank = store
@@ -5683,14 +5643,13 @@ impl BooksServer {
     #[tool(
         name = "books.asset_labels",
         title = "Asset label sheet",
-        description = "A printable sheet of asset labels (PDF, base64): each label shows the company, the tag, a QR code of the tag, the description, and the serial number. Avery 5160/8160 (US letter, 30 labels of 1\" x 2-5/8\"); skip reuses a partly used sheet. Omit assets for every active asset with a tag. Save the file and tell the human to print at 100% scale.",
+        description = "A printable sheet of asset labels (a PDF, handed over: run its download to save it): each label shows the company, the tag, a QR code of the tag, the description, and the serial number. Avery 5160/8160 (US letter, 30 labels of 1\" x 2-5/8\"); skip reuses a partly used sheet. Omit assets for every active asset with a tag. Save the file and tell the human to print it at 100% scale.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn asset_labels(
         &self,
         params: Parameters<AssetLabelsParams>,
     ) -> Result<Json<AssetLabelsOut>, String> {
-        use base64::Engine as _;
         let p = params.0;
         let store = self.lock()?;
         let ledger = store.ledger();
@@ -5729,9 +5688,14 @@ impl BooksServer {
             p.skip.unwrap_or(0) as usize,
         )
         .map_err(|e| e.to_string())?;
+        let file = self.hand_over(
+            &book_name(&store),
+            &format!("asset-labels-{}.pdf", today()),
+            "application/pdf",
+            pdf,
+        )?;
         Ok(Json(AssetLabelsOut {
-            file_name: format!("asset-labels-{}.pdf", today()),
-            content_base64: base64::engine::general_purpose::STANDARD.encode(pdf),
+            file,
             tags: labels.into_iter().map(|l| l.tag).collect(),
         }))
     }
@@ -5866,7 +5830,7 @@ impl BooksServer {
     #[tool(
         name = "books.import_chart_csv",
         title = "Import a chart of accounts",
-        description = "Import a chart of accounts from CSV (header: code,name,type,parent_code,tax_category; the last is optional): csv_text, or upload_id (books.begin_upload purpose import). Types: asset, liability, equity, revenue, expense. Parents must come before children. Fails on the first bad row; nothing is half-imported. A revenue or expense row without a tax_category is listed in warnings, or, under policy.require_tax_category = refuse, refuses the file.",
+        description = "Import a chart of accounts from CSV (header: code,name,type,parent_code,tax_category; the last is optional), as upload_id: upload it with books.begin_upload purpose import and `wanderbooks upload` (a file never passes through you). Types: asset, liability, equity, revenue, expense. Parents must come before children. Fails on the first bad row; nothing is half-imported. A revenue or expense row without a tax_category is listed in warnings, or, under policy.require_tax_category = refuse, refuses the file.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -5878,7 +5842,7 @@ impl BooksServer {
         params: Parameters<ImportChartCsvParams>,
     ) -> Result<Json<ImportChartCsvOut>, String> {
         let p = params.0;
-        let (csv, claim) = self.csv_given(p.csv_text.as_deref(), p.upload_id.as_deref())?;
+        let (csv, claim) = self.csv_given(&p.upload_id)?;
         let rows = ledger_import::parse_chart_csv(&csv).map_err(|e| e.to_string())?;
         let mut store = self.lock()?;
         let parse_type = |t: &str| match t {
@@ -5996,7 +5960,7 @@ impl BooksServer {
     #[tool(
         name = "books.export",
         title = "Export a report",
-        description = "Export a report. Reports: profit_and_loss, balance_sheet, cash_flow (direct method, with its reconciliation and noncash schedules; needs cash_accounts), trial_balance (as_of), members_equity (multi-member LLC; members from the settings), tax_summary, general_ledger (by account: running balances, splits), general_journal (each entry posted in the period; alias journal), fixed_asset_register (as_of: every asset with tag, serial, cost, depreciation, book value, reconciled to the books). Formats: pdf and xlsx (base64) for the statements, tax_summary and fixed_asset_register; xlsx, csv, json for every report; iif for general_journal or journal (QuickBooks Desktop: plain ASCII text, CR LF; every posted entry from the first through as_of (start and end are refused), period closes left out, DOCNUM the entry id; names, numbers and memos fit QuickBooks' limits; warnings says what is written differently from the books, memos grouped, to tell the human). Dates: start/end for period reports (omitted: the fiscal year to date), as_of for balance_sheet, trial_balance, fixed_asset_register and iif (omitted: today).",
+        description = "Export a report. Reports: profit_and_loss, balance_sheet, cash_flow (direct method, with its reconciliation and noncash schedules; needs cash_accounts), trial_balance (as_of), members_equity (multi-member LLC; members from the settings), tax_summary, general_ledger (by account: running balances, splits), general_journal (each entry posted in the period; alias journal), fixed_asset_register (as_of: every asset with tag, serial, cost, depreciation, book value, reconciled to the books). The file is handed over (run its download to save it; never its bytes). Formats: pdf and xlsx for the statements, tax_summary and fixed_asset_register; xlsx, csv, json for every report; iif for general_journal or journal (QuickBooks Desktop: plain ASCII text, CR LF; every posted entry from the first through as_of (start and end are refused), period closes left out, DOCNUM the entry id; names, numbers and memos fit QuickBooks' limits; warnings says what is written differently from the books, memos grouped, to tell the human). Dates: start/end for period reports (omitted: the fiscal year to date), as_of for balance_sheet, trial_balance, fixed_asset_register and iif (omitted: today).",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn export(&self, params: Parameters<ExportParams>) -> Result<Json<ExportOut>, String> {
@@ -6025,11 +5989,11 @@ impl BooksServer {
             let as_of = self.as_of(p.as_of.as_deref())?;
             let iif = self.export_iif(as_of, &p.cash_accounts)?;
             let warnings = iif.warnings();
+            let file = self.hand_over_export(&report, &format, iif.text.into_bytes())?;
             return Ok(Json(ExportOut {
                 format,
                 report,
-                content: iif.text,
-                content_encoding: None,
+                file,
                 warnings,
             }));
         }
@@ -6039,11 +6003,11 @@ impl BooksServer {
             } else {
                 self.export_pdf(&report, &p)?
             };
+            let file = self.hand_over_export(&report, &format, bytes)?;
             return Ok(Json(ExportOut {
                 format,
                 report,
-                content: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes),
-                content_encoding: Some("base64".to_string()),
+                file,
                 warnings: Vec::new(),
             }));
         }
@@ -6066,13 +6030,38 @@ impl BooksServer {
                 ));
             }
         };
+        let file = self.hand_over_export(&report, &format, content.into_bytes())?;
         Ok(Json(ExportOut {
             format,
             report,
-            content,
-            content_encoding: None,
+            file,
             warnings: Vec::new(),
         }))
+    }
+
+    /// An export's file, handed over (files.rs INVARIANT 6, D-46): named
+    /// for its report and today, typed by its format.
+    fn hand_over_export(
+        &self,
+        report: &str,
+        format: &str,
+        bytes: Vec<u8>,
+    ) -> Result<HandedFile, String> {
+        let mime = match format {
+            "csv" => "text/csv",
+            "json" => "application/json",
+            "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "pdf" => "application/pdf",
+            // IIF is tab-separated ASCII text.
+            _ => "text/plain",
+        };
+        let book = book_name(&*self.lock()?);
+        self.hand_over(
+            &book,
+            &format!("{report}-{}.{format}", today()),
+            mime,
+            bytes,
+        )
     }
 
     /// Lay out a financial statement for rendering, from export params.
@@ -7555,7 +7544,7 @@ impl BooksServer {
     #[tool(
         name = "books.set_w9",
         title = "Record W-9 facts",
-        description = "Record what a contractor's or landlord's W-9 says, or clear it (clear: true alone): the date received (received_on), line 3 entity type, line 4 exempt payee and FATCA codes, the TIN's last four digits, and where the form is kept. Give the full TIN as tin with tin_type (ssn, ein, itin) and it goes only to the encrypted TIN vault (its key kept apart from it, created on first use): the books keep its last four (tin_last4 is then optional, and refused if it disagrees) and a hash of the vault record, in the W-9 facts and the party's TIN facts alike (party.tin_set, as books.set_tin), and kept_at defaults to \"wanderbooks vault\". The CPA package carries the full TIN to the CPA. Give the signed form (a PDF, PNG, or JPEG) as w9_upload_id (books.begin_upload), or w9_content_base64 with w9_sha256 when at most 256 KiB, and it goes to the vault too, never to the receipts and documents; read it back with books.get_w9. Never put a TIN in any other field, note, description, or file: the engine refuses any nine-digit number, and no tool output echoes one. The party needs a 1099 role (contractor or landlord: books.set_party_roles). Record it before paying them. A party with a vendor record also gets its W-9 marked on file there (books.vendor_1099 missing_w9). Clearing W-9 facts whose TIN is in the vault needs books.purge_tin first. Journaled as party.w9_set. Returns the party (the TIN's last four only).",
+        description = "Record what a contractor's or landlord's W-9 says, or clear it (clear: true alone): the date received (received_on), line 3 entity type, line 4 exempt payee and FATCA codes, the TIN's last four digits, and where the form is kept. Give the full TIN as tin with tin_type (ssn, ein, itin) and it goes only to the encrypted TIN vault (its key kept apart from it, created on first use): the books keep its last four (tin_last4 is then optional, and refused if it disagrees) and a hash of the vault record, in the W-9 facts and the party's TIN facts alike (party.tin_set, as books.set_tin), and kept_at defaults to \"wanderbooks vault\". The CPA package carries the full TIN to the CPA. Give the signed form (a PDF, PNG, or JPEG) as w9_upload_id (books.begin_upload purpose w9, then `wanderbooks upload`: a file never passes through you), and it goes to the vault too, never to the receipts and documents; read it back with books.get_w9. Never put a TIN in any other field, note, description, or file: the engine refuses any nine-digit number, and no tool output echoes one. The party needs a 1099 role (contractor or landlord: books.set_party_roles). Record it before paying them. A party with a vendor record also gets its W-9 marked on file there (books.vendor_1099 missing_w9). Clearing W-9 facts whose TIN is in the vault needs books.purge_tin first. Journaled as party.w9_set. Returns the party (the TIN's last four only).",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -7564,12 +7553,9 @@ impl BooksServer {
     )]
     async fn set_w9(&self, params: Parameters<SetW9Params>) -> Result<Json<PartyOut>, String> {
         let p = params.0;
-        let w9_given = p.w9_upload_id.is_some() || p.w9_content_base64.is_some();
+        let w9_given = p.w9_upload_id.is_some();
         if p.w9_file_name.is_some() && !w9_given {
-            return Err(
-                "w9_file_name names the W-9 given with it (w9_upload_id or w9_content_base64)"
-                    .into(),
-            );
+            return Err("w9_file_name names the W-9 given with it (w9_upload_id)".into());
         }
         let vault_input = p.tin.is_some() || p.tin_type.is_some() || w9_given;
         let tin = match (&p.tin, &p.tin_type) {
@@ -7624,8 +7610,8 @@ impl BooksServer {
                 vault_record: None,
             })
         };
-        let (w9_file, mut w9_claim) = if w9_given {
-            let (file, claim) = self.w9_file(&p)?;
+        let (w9_file, mut w9_claim) = if let Some(upload_id) = &p.w9_upload_id {
+            let (file, claim) = self.w9_file(&p, upload_id)?;
             (Some(file), claim)
         } else {
             (None, None)
@@ -9879,7 +9865,14 @@ impl ServerHandler for BooksServer {
                         .join(", ")
                 ))),
             )),
-            _ => None,
+            // A file's bytes or text given as an argument: refused as an
+            // unknown argument, before it runs (files.rs INVARIANT 5).
+            _ => files::inline_refusal(&request.name, request.arguments.as_ref()).map(|why| {
+                (
+                    access::INLINE_FILE,
+                    Err(rmcp::ErrorData::invalid_params(why, None)),
+                )
+            }),
         };
         if let Some((code, answer)) = refusal {
             call.digested(refused_digest(request.arguments.clone()).await);
@@ -10271,11 +10264,11 @@ mod tests {
         )
     }
 
-    /// An upload's limit, 25 MiB exactly; inline, 256 KiB (plan 2.1, 4.7).
+    /// An upload's limit, 25 MiB exactly (plan 4.7); nothing comes inline
+    /// (D-46).
     #[test]
     fn the_file_limits_are_the_plans() {
         assert_eq!(ledger_store::uploads::MAX_UPLOAD, 26_214_400);
-        assert_eq!(files::INLINE_MAX, 262_144);
         // Plan 4.7: an upload lasts 15 minutes; 16 under way per token.
         assert_eq!(ledger_store::uploads::UPLOAD_TTL, 900);
         assert_eq!(ledger_store::uploads::MAX_LIVE, 16);
@@ -10920,7 +10913,7 @@ mod tests {
     }
 
     /// No tool takes a path on the server's computer (plan 4.7, D-28,
-    /// D-29): files come in by upload or inline, and go out as exports.
+    /// D-29, D-46): files come in by upload, and go out as exports.
     #[test]
     fn no_tool_takes_a_path() {
         fn names(v: &serde_json::Value, out: &mut Vec<String>) {
@@ -11001,7 +10994,7 @@ mod tests {
             "read the file",
             "open the file",
             "cat ",
-            // Gone in P2 slice 5: files come by upload or inline.
+            // Gone in P2 slice 5: files come by upload.
             "import_local_file",
             "w9_file_path",
             "import folder",
@@ -11009,6 +11002,11 @@ mod tests {
             "put_url",
             "human_url",
             "fl-0001",
+            // Gone with D-46: a file never passes through the agent.
+            "content_base64",
+            "csv_text",
+            "base64",
+            "256 kib",
         ];
         // Whole words only: "digit" and "committee" are fine.
         const NEVER_WORDS: &[&str] = &["git", "commit"];

@@ -12,7 +12,6 @@
 //! folder of a data root of the test's own; then the store is closed and
 //! the server started on that root.
 
-use base64::Engine as _;
 use common::{Place, Wire};
 use ledger_core::{
     AccountId, AccountType, CashFlowParams, Currency, EntryStatus, Form1099, Ledger, MemberCapital,
@@ -148,25 +147,21 @@ impl Mcp {
         }
     }
 
-    /// `books.export`, returning the content (base64-decoded when the
-    /// server says it is base64).
+    /// `books.export`'s file: handed over (D-46), fetched by its
+    /// download, never its bytes in the answer.
     fn export(&mut self, args: Value) -> Vec<u8> {
-        let out = self.ok("books.export", args);
-        let content = out["content"].as_str().unwrap();
-        if out["content_encoding"] == "base64" {
-            b64d(content)
-        } else {
-            content.as_bytes().to_vec()
-        }
+        let out = self.ok("books.export", args.clone());
+        assert!(out.get("content").is_none(), "{args} came back inline");
+        self.handed(&out["file"])
     }
 
     fn export_text(&mut self, args: Value) -> String {
-        let out = self.ok("books.export", args.clone());
-        assert!(
-            out.get("content_encoding").is_none_or(|e| e.is_null()),
-            "text export {args} came back encoded"
-        );
-        out["content"].as_str().unwrap().to_string()
+        String::from_utf8(self.export(args)).expect("a text export")
+    }
+
+    /// Upload `bytes` as an agent does (D-46): the upload_id.
+    fn upload(&mut self, bytes: &[u8], file_name: &str, mime_type: &str, purpose: &str) -> String {
+        self.wire.upload(bytes, file_name, mime_type, purpose)
     }
 
     /// The viewer command the last `books.show` wrote, in the books' own
@@ -184,16 +179,6 @@ impl Mcp {
 }
 
 // ---------------------------------------------------------------- helpers
-
-fn b64e(bytes: &[u8]) -> String {
-    base64::engine::general_purpose::STANDARD.encode(bytes)
-}
-
-fn b64d(s: &str) -> Vec<u8> {
-    base64::engine::general_purpose::STANDARD
-        .decode(s)
-        .expect("valid base64")
-}
 
 fn sha256(bytes: &[u8]) -> String {
     ledger_store::journal::sha256_hex(bytes)
@@ -1440,7 +1425,8 @@ fn iif_declares_accounts_by_role_and_balances_every_transaction() {
         "books.export",
         json!({"format": "iif", "report": "journal", "as_of": END}),
     );
-    assert!(out.get("content_encoding").is_none(), "plain text: {out}");
+    assert!(out.get("content").is_none(), "handed over: {out}");
+    assert_eq!(out["file"]["mime_type"], "text/plain");
     let lunch = ledger
         .posted_entries()
         .find(|e| e.description().starts_with("Lunch"))
@@ -1466,7 +1452,7 @@ fn iif_declares_accounts_by_role_and_balances_every_transaction() {
         ),
     ];
     assert_eq!(out["warnings"], json!(warnings));
-    let iif = out["content"].as_str().unwrap();
+    let iif = &String::from_utf8(m.handed(&out["file"])).unwrap();
     assert!(iif.ends_with("\r\n") && !iif.replace("\r\n", "").contains(['\r', '\n']));
 
     let mut types: HashMap<String, String> = HashMap::new();
@@ -2081,10 +2067,10 @@ fn post_contribution(m: &mut Mcp) -> u64 {
             json!({"entry_id": e, "account": a, "side": side, "amount": "10000.00"}),
         );
     }
+    let up = m.upload(b"contribution", "c.txt", "text/plain", "receipt");
     m.ok(
         "books.attach_receipt",
-        json!({"entry_id": e, "file_name": "c.txt", "mime_type": "text/plain",
-               "content_base64": b64e(b"contribution"), "sha256": sha256(b"contribution")}),
+        json!({"entry_id": e, "upload_id": up}),
     );
     m.ok(
         "books.post_entry",
@@ -2739,7 +2725,7 @@ fn resources_read_back_as_the_matching_tools() {
             "books.get_receipt",
             json!({"attachment_id": id, "view": "bytes"}),
         );
-        assert_eq!(b64d(full["content_base64"].as_str().unwrap()), bytes);
+        assert_eq!(m.handed(&full["file"]), bytes);
     }
     let r = m.rpc("resources/read", json!({"uri": "books://nope"}));
     let err = r.get("error").unwrap_or_else(|| panic!("unknown URI: {r}"));
@@ -2764,29 +2750,38 @@ fn receipts_and_documents_round_trip() {
     let e = post_contribution(&mut m);
     let first: &[u8] = b"%PDF-1.4 first";
     let second: &[u8] = b"\x89PNG second \x00\xff";
+    let up = m.upload(first, "first.pdf", "application/pdf", "receipt");
     let a = m.ok(
         "books.attach_receipt",
-        json!({"entry_id": e, "file_name": "first.pdf", "mime_type": "application/pdf",
-               "content_base64": b64e(first), "sha256": sha256(first),
+        json!({"entry_id": e, "upload_id": up,
                "description": "Receipt ID 1007; Paid from: Quillmere"}),
     );
+    let up = m.upload(second, "oa.png", "image/png", "document");
     let b = m.ok(
         "books.file_document",
-        json!({"category": "legal", "file_name": "oa.png", "mime_type": "image/png",
-               "content_base64": b64e(second), "sha256": sha256(second),
-               "description": "Operating agreement"}),
+        json!({"category": "legal", "upload_id": up, "description": "Operating agreement"}),
+    );
+    let up = m.upload(
+        b"EIN letter bytes",
+        "ein-letter.pdf",
+        "application/pdf",
+        "document",
     );
     let c = m.ok(
         "books.file_document",
-        json!({"category": "tax", "file_name": "ein-letter.pdf", "mime_type": "application/pdf",
-               "content_base64": b64e(b"EIN letter bytes"), "sha256": sha256(b"EIN letter bytes"),
-               "description": "IRS CP 575"}),
+        json!({"category": "tax", "upload_id": up, "description": "IRS CP 575"}),
+    );
+    // The name and type a call gives win over the upload's.
+    let up = m.upload(
+        b"a scanned receipt",
+        "scan.bin",
+        "application/octet-stream",
+        "receipt",
     );
     let r = m.ok(
         "books.attach_receipt",
-        json!({"entry_id": e, "file_name": "renamed.png", "mime_type": "image/png",
-               "content_base64": b64e(b"a scanned receipt"),
-               "sha256": sha256(b"a scanned receipt"), "description": "scan"}),
+        json!({"entry_id": e, "upload_id": up, "file_name": "renamed.png",
+               "mime_type": "image/png", "description": "scan"}),
     );
 
     // (result, bytes, file name, MIME type, entry, description)
@@ -2830,23 +2825,20 @@ fn receipts_and_documents_round_trip() {
         let id = out["attachment_id"].as_u64().unwrap();
         assert_eq!(out["sha256"], sha256(bytes), "{name}: sha256 of the bytes");
         let meta = m.ok("books.get_receipt", json!({"attachment_id": id}));
-        assert!(
-            meta.get("content_base64").is_none(),
-            "{name}: meta, no bytes"
-        );
+        assert!(meta.get("file").is_none(), "{name}: meta, no file");
         let got = m.ok(
             "books.get_receipt",
             json!({"attachment_id": id, "view": "bytes"}),
         );
         assert_eq!(got["attachment_id"], json!(id));
-        assert_eq!(
-            b64d(got["content_base64"].as_str().unwrap()),
-            bytes,
-            "{name}"
-        );
+        // Handed over (D-46): its download is the bytes, under its name.
+        assert!(got.get("content_base64").is_none(), "{name}: {got}");
+        assert_eq!(m.handed(&got["file"]), bytes, "{name}");
+        assert_eq!(got["file"]["file_name"], name);
+        assert_eq!(got["file"]["mime_type"], mime);
         let mut without = got.clone();
-        without.as_object_mut().unwrap().remove("content_base64");
-        assert_eq!(without, meta, "{name}: view bytes is meta and the bytes");
+        without.as_object_mut().unwrap().remove("file");
+        assert_eq!(without, meta, "{name}: view bytes is meta and the file");
         assert_eq!(got["sha256"], sha256(bytes));
         assert_eq!(got["file_name"], name);
         assert_eq!(got["mime_type"], mime);
@@ -2882,31 +2874,27 @@ fn receipts_and_documents_round_trip() {
     }
 }
 
-/// 256 KiB is the most a file may be given inline (plan 2.1): exactly
-/// the limit is accepted by books.attach_receipt and books.file_document
-/// and stored whole, one byte more is refused by both, pointing at
-/// books.begin_upload, and nothing is stored. Kills: the limit comparison
-/// in take_file.
+/// No file is given inline any more (D-46): one past the old inline limit
+/// (256 KiB) is filed by upload through books.attach_receipt and
+/// books.file_document and stored whole, and comes back whole by its
+/// download; the inline arguments are refused by both as unknown,
+/// pointing at books.begin_upload, and nothing is stored.
 #[test]
-fn inline_files_up_to_256_kib_are_accepted_and_no_more() {
-    const LIMIT: usize = 256 * 1024;
+fn files_past_the_old_inline_limit_go_by_upload_and_come_back_by_download() {
+    const OLD_LIMIT: usize = 256 * 1024;
     let dir = test_dir("limits");
     let s = new_store(&dir);
     drop(s);
     let mut m = Mcp::start(&dir, "1000000.00");
-    let at = vec![b'a'; LIMIT];
-    let out = m.ok(
-        "books.attach_receipt",
-        json!({"file_name": "big.bin", "mime_type": "application/octet-stream",
-               "content_base64": b64e(&at), "sha256": sha256(&at)}),
-    );
+    let at = vec![b'a'; OLD_LIMIT + 1];
+    let up = m.upload(&at, "big.bin", "application/octet-stream", "receipt");
+    let out = m.ok("books.attach_receipt", json!({"upload_id": up}));
     let at_id = out["attachment_id"].as_u64().unwrap();
-    let doc = vec![b'b'; LIMIT];
+    let doc = vec![b'b'; OLD_LIMIT + 1];
+    let up = m.upload(&doc, "big.bin", "application/octet-stream", "document");
     let out = m.ok(
         "books.file_document",
-        json!({"category": "other", "file_name": "big.bin",
-               "mime_type": "application/octet-stream", "content_base64": b64e(&doc),
-               "sha256": sha256(&doc)}),
+        json!({"category": "other", "upload_id": up}),
     );
     let doc_id = out["attachment_id"].as_u64().unwrap();
     let listed = m.ok("books.list_receipts", json!({}));
@@ -2918,32 +2906,31 @@ fn inline_files_up_to_256_kib_are_accepted_and_no_more() {
             .find(|r| r["attachment_id"] == json!(id))
             .unwrap()
             .clone();
-        assert_eq!(row["size_bytes"], json!(LIMIT), "stored whole");
-        // And it comes back inline, whole.
+        assert_eq!(row["size_bytes"], json!(OLD_LIMIT + 1), "stored whole");
+        // And it comes back by its download, whole.
         let got = m.ok(
             "books.get_receipt",
             json!({"attachment_id": id, "view": "bytes"}),
         );
-        assert_eq!(&b64d(got["content_base64"].as_str().unwrap()), bytes);
+        assert_eq!(&m.handed(&got["file"]), bytes);
     }
     let journal = std::fs::read(data_dir(&dir).join(ledger_store::JOURNAL_FILE)).unwrap();
-    let over = vec![b'c'; LIMIT + 1];
     for (tool, args) in [
         (
             "books.attach_receipt",
-            json!({"file_name": "over.bin", "mime_type": "application/octet-stream",
-                   "content_base64": b64e(&over), "sha256": sha256(&over)}),
+            json!({"file_name": "s.bin", "mime_type": "application/octet-stream",
+                   "content_base64": "YQ==", "sha256": sha256(b"a")}),
         ),
         (
             "books.file_document",
-            json!({"category": "other", "file_name": "over.bin",
-                   "mime_type": "application/octet-stream", "content_base64": b64e(&over),
-                   "sha256": sha256(&over)}),
+            json!({"category": "other", "file_name": "s.bin",
+                   "mime_type": "application/octet-stream", "content_base64": "YQ==",
+                   "sha256": sha256(b"a")}),
         ),
     ] {
         let why = m.refuse(tool, args);
         assert!(
-            why.contains("books.begin_upload") && why.contains(&(LIMIT + 1).to_string()),
+            why.contains("books.begin_upload") && why.contains("unknown argument"),
             "{tool}: {why}"
         );
     }
@@ -2954,16 +2941,16 @@ fn inline_files_up_to_256_kib_are_accepted_and_no_more() {
     );
 }
 
-/// The bytes a filing tool takes are inline base64 with its own SHA-256,
-/// or an upload; never both, never neither. A sha256 missing, or not the
-/// bytes' own (a byte lost on the way), or base64 that isn't, is refused
-/// (guard base64_corrupt); inline bytes need their file_name and
-/// mime_type. An upload_id that names no upload is refused, and
-/// books.begin_upload names the attachment for bytes stored already, and
-/// begins an upload for new ones (journaling nothing). Every refusal
+/// A filing tool takes its file only as an upload (D-46): with none it is
+/// refused, naming upload_id; an argument that once carried the bytes
+/// inline (content_base64, sha256, csv_text), alone or beside an upload,
+/// is refused as unknown, pointing at books.begin_upload; an upload_id
+/// that names no upload is refused. books.begin_upload names the
+/// attachment for bytes stored already (its sha256 in any case), and
+/// begins an upload for new ones, journaling nothing. Every refusal
 /// stores nothing.
 #[test]
-fn inline_bytes_come_with_their_own_sha256_or_as_an_upload() {
+fn a_filing_tool_takes_its_file_only_as_an_upload() {
     let dir = test_dir("inline");
     let s = new_store(&dir);
     drop(s);
@@ -2972,43 +2959,36 @@ fn inline_bytes_come_with_their_own_sha256_or_as_an_upload() {
     let other: &[u8] = b"%PDF-1.4 a receipt!";
     let journal = || std::fs::read(data_dir(&dir).join(ledger_store::JOURNAL_FILE)).unwrap();
     let before = journal();
+    let up = m.upload(bytes, "r.pdf", "application/pdf", "receipt");
     for (tool, base) in [
         ("books.attach_receipt", json!({})),
         ("books.file_document", json!({"category": "other"})),
     ] {
         let with = |extra: Value| {
             let mut args = base.clone();
-            for (k, v) in json!({"file_name": "r.pdf", "mime_type": "application/pdf"})
-                .as_object()
-                .unwrap()
-                .iter()
-                .chain(extra.as_object().unwrap())
-            {
+            for (k, v) in extra.as_object().unwrap() {
                 args[k] = v.clone();
             }
             args
         };
         for (args, said) in [
-            // Neither, both.
-            (with(json!({})), "books.begin_upload"),
+            (with(json!({})), "upload_id"),
             (
-                with(json!({"upload_id": "u1", "content_base64": b64e(bytes),
-                            "sha256": sha256(bytes)})),
-                "not both",
-            ),
-            // The sha256 missing, another file's, not hex; base64 that isn't.
-            (with(json!({"content_base64": b64e(bytes)})), "sha256"),
-            (
-                with(json!({"content_base64": b64e(bytes), "sha256": sha256(other)})),
-                "base64_corrupt",
+                with(json!({"content_base64": "JVBERi0xLjQ=", "sha256": sha256(bytes)})),
+                "books.begin_upload",
             ),
             (
-                with(json!({"content_base64": b64e(bytes), "sha256": "not hex"})),
-                "base64_corrupt",
+                with(json!({"content_base64": "JVBERi0xLjQ="})),
+                "unknown argument",
+            ),
+            (with(json!({"sha256": sha256(bytes)})), "unknown argument"),
+            (
+                with(json!({"upload_id": up, "content_base64": "JVBERi0xLjQ="})),
+                "unknown argument",
             ),
             (
-                with(json!({"content_base64": "!!not base64", "sha256": sha256(bytes)})),
-                "base64_corrupt",
+                with(json!({"upload_id": up, "sha256": sha256(bytes)})),
+                "unknown argument",
             ),
             // An upload there is none of.
             (
@@ -3019,22 +2999,10 @@ fn inline_bytes_come_with_their_own_sha256_or_as_an_upload() {
             let why = m.refuse(tool, args.clone());
             assert!(why.contains(said), "{tool} {args}: {why}");
         }
-        // Inline bytes need their name and type.
-        for missing in ["file_name", "mime_type"] {
-            let mut args = with(json!({"content_base64": b64e(bytes), "sha256": sha256(bytes)}));
-            args.as_object_mut().unwrap().remove(missing);
-            let why = m.refuse(tool, args);
-            assert!(why.contains(missing), "{tool} without {missing}: {why}");
-        }
     }
-    // A sha256 given in capitals, or with spaces around it, is the same
-    // hash.
-    let out = m.ok(
-        "books.attach_receipt",
-        json!({"file_name": "r.pdf", "mime_type": "application/pdf",
-               "content_base64": b64e(bytes),
-               "sha256": format!(" {} ", sha256(bytes).to_ascii_uppercase())}),
-    );
+    assert_eq!(journal(), before, "a refusal stored something");
+    // Every refusal left the upload: filed now.
+    let out = m.ok("books.attach_receipt", json!({"upload_id": up}));
     assert_eq!(out["sha256"], sha256(bytes));
     let id = out["attachment_id"].as_u64().unwrap();
     assert_ne!(journal(), before);
@@ -3054,8 +3022,8 @@ fn inline_bytes_come_with_their_own_sha256_or_as_an_upload() {
     let begun = m.ok("books.begin_upload", up(sha256(other)));
     assert!(begun["upload_id"].is_string(), "{begun}");
     assert_eq!(journal(), stored, "beginning an upload journals nothing");
-    // The CSV imports take csv_text or an upload, never both, never
-    // neither; an upload there is none of is refused.
+    // The CSV imports take only an upload; the text inline is refused as
+    // unknown, alone or beside one; an upload there is none of is refused.
     for (tool, base) in [
         (
             "books.import_bank_csv",
@@ -3064,8 +3032,12 @@ fn inline_bytes_come_with_their_own_sha256_or_as_an_upload() {
         ("books.import_chart_csv", json!({})),
     ] {
         for (extra, said) in [
-            (json!({}), "csv_text"),
-            (json!({"csv_text": "a,b\n", "upload_id": "u1"}), "not both"),
+            (json!({}), "upload_id"),
+            (json!({"csv_text": "a,b\n"}), "books.begin_upload"),
+            (
+                json!({"csv_text": "a,b\n", "upload_id": "u1"}),
+                "unknown argument",
+            ),
             (json!({"upload_id": "u1"}), "there is no upload \"u1\""),
         ] {
             let mut args = base.clone();
@@ -3079,17 +3051,17 @@ fn inline_bytes_come_with_their_own_sha256_or_as_an_upload() {
     assert_eq!(journal(), stored, "a refusal stored something");
 }
 
-/// books.get_receipt with view "bytes" gives a file's bytes inline up to
-/// 256 KiB; a larger one, its download (a stored file, fetched with
-/// books:read by `GET /b/{book}/a/{id}`: those very bytes), never its
-/// bytes inline.
+/// books.get_receipt with view "bytes" hands every file over, whatever its
+/// size (D-46): its download, made for the caller's token, is those very
+/// bytes, as is the stored file's own route (`GET /b/{book}/a/{id}`, for
+/// books:read); the answer never carries the bytes.
 #[test]
-fn get_receipt_gives_bytes_up_to_256_kib_and_a_download_above() {
-    const LIMIT: usize = 256 * 1024;
+fn get_receipt_hands_every_file_over_by_its_download() {
+    const OLD_LIMIT: usize = 256 * 1024;
     let dir = test_dir("get-bytes");
     let mut s = new_store(&dir);
-    let at = vec![b'x'; LIMIT];
-    let over = vec![b'y'; LIMIT + 1];
+    let at = vec![b'x'; OLD_LIMIT];
+    let over = vec![b'y'; OLD_LIMIT + 1];
     let (at_id, _, _) = s
         .attach_receipt(None, "at.bin", "application/octet-stream", &at, None)
         .unwrap();
@@ -3098,27 +3070,29 @@ fn get_receipt_gives_bytes_up_to_256_kib_and_a_download_above() {
         .unwrap();
     drop(s);
     let mut m = Mcp::start(&dir, "1000000.00");
-    let got = m.ok(
-        "books.get_receipt",
-        json!({"attachment_id": at_id, "view": "bytes"}),
-    );
-    assert_eq!(b64d(got["content_base64"].as_str().unwrap()), at);
-    let big = m.ok(
-        "books.get_receipt",
-        json!({"attachment_id": over_id, "view": "bytes"}),
-    );
-    assert!(big.get("content_base64").is_none(), "{big}");
-    let download = big["download"].as_str().unwrap_or_else(|| panic!("{big}"));
-    assert!(download.contains(&format!(" {over_id} ")), "{download}");
-    assert_eq!(big["size_bytes"], json!(LIMIT + 1));
-    assert_eq!(big["sha256"], sha256(&over));
-    let (status, bytes) = m.wire.get(&format!("a/{over_id}"));
-    assert_eq!(status, 200);
-    assert_eq!(bytes, over);
-    let meta = m.ok("books.get_receipt", json!({"attachment_id": over_id}));
-    assert_eq!(meta["size_bytes"], json!(LIMIT + 1));
-    assert_eq!(meta["sha256"], sha256(&over));
-    assert!(meta.get("content_base64").is_none(), "{meta}");
+    for (id, bytes, name) in [(at_id, &at, "at.bin"), (over_id, &over, "over.bin")] {
+        let got = m.ok(
+            "books.get_receipt",
+            json!({"attachment_id": id, "view": "bytes"}),
+        );
+        assert!(got.get("content_base64").is_none(), "{got}");
+        assert!(got.get("download").is_none(), "{got}");
+        let file = &got["file"];
+        assert_eq!(file["file_name"], name);
+        assert_eq!(file["mime_type"], "application/octet-stream");
+        assert_eq!(file["size_bytes"], json!(bytes.len()));
+        assert_eq!(file["sha256"], sha256(bytes));
+        let download = file["download"].as_str().unwrap_or_else(|| panic!("{got}"));
+        assert!(download.contains(" ex_"), "{download}");
+        assert_eq!(&m.handed(file), bytes);
+        let (status, stored) = m.wire.get(&format!("a/{id}"));
+        assert_eq!(status, 200);
+        assert_eq!(&stored, bytes);
+        let meta = m.ok("books.get_receipt", json!({"attachment_id": id}));
+        assert_eq!(meta["size_bytes"], json!(bytes.len()));
+        assert_eq!(meta["sha256"], sha256(bytes));
+        assert!(meta.get("file").is_none(), "{meta}");
+    }
 }
 
 /// Bank CSV import: money in debits the bank, money out credits it; the
@@ -3131,13 +3105,15 @@ fn bank_import_puts_money_in_and_out_on_the_right_sides() {
     let s = new_store(&dir);
     drop(s);
     let mut m = Mcp::start(&dir, "1000000.00");
+    let csv = "Date,Description,Amount\n\
+                         03/04/2025,Corner Coffee Shop,-4.50\n\
+                         13/04/2025,Client payment,250.00\n\
+                         20/04/2025,STARBUCKS COFFEE #12,-6.00\n";
+    let up = m.upload(csv.as_bytes(), "bank.csv", "text/csv", "import");
     let out = m.ok(
         "books.import_bank_csv",
         json!({
-            "csv_text": "Date,Description,Amount\n\
-                         03/04/2025,Corner Coffee Shop,-4.50\n\
-                         13/04/2025,Client payment,250.00\n\
-                         20/04/2025,STARBUCKS COFFEE #12,-6.00\n",
+            "upload_id": up,
             "bank_account_code": "1000",
             "default_offset_code": "4000",
             "rules": {"coffee": "6010", "starbucks coffee": "6020"},

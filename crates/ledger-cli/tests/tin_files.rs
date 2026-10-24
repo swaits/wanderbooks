@@ -10,8 +10,8 @@
 //! INVARIANTS (oracle):
 //!   1. Every file the server read or wrote with full TINs is refused by
 //!      every way a file enters the books (books.attach_receipt and
-//!      books.file_document, its bytes given inline), from any session and
-//!      after the server restarts.
+//!      books.file_document, its bytes uploaded as an agent uploads them:
+//!      D-46), from any session and after the server restarts.
 //!   2. Text holding a full TIN is refused, whoever made it: one the vault
 //!      holds, in every common rendering (nine digits; 3-2-4 joined by
 //!      hyphens, spaces or dots; 2-7 joined by a hyphen or a space), and,
@@ -55,6 +55,10 @@ struct Books {
     dir: PathBuf,
     inbox: PathBuf,
     out: PathBuf,
+    /// Each upload a refusal left unused, by its bytes' SHA-256: named
+    /// again by the next call (files.rs INVARIANT 1), so the refusals
+    /// never pile up past a token's MAX_LIVE.
+    left: std::sync::Mutex<std::collections::HashMap<String, String>>,
 }
 
 fn books(tag: &str) -> Books {
@@ -83,6 +87,38 @@ fn books(tag: &str) -> Books {
         served,
         inbox,
         out,
+        left: Default::default(),
+    }
+}
+
+impl Books {
+    /// An upload of `bytes` named `name` on `c` (the books' token's
+    /// session), as an agent uploads them: one a refusal left unused if
+    /// there is one, else a new one (purpose `purpose`). Its id.
+    async fn upload(&self, c: &Client, bytes: &[u8], name: &str, purpose: &str) -> String {
+        let sha = ledger_store::journal::sha256_hex(bytes);
+        let key = format!("{purpose} {sha}");
+        if let Some(id) = self.left.lock().unwrap().get(&key) {
+            return id.clone();
+        }
+        let token = self.served.home.token(common::BOOK);
+        let id = common::upload_on(
+            c,
+            &self.served.home.run(),
+            common::BOOK,
+            &token,
+            bytes,
+            (name, "application/octet-stream", purpose),
+        )
+        .await;
+        self.left.lock().unwrap().insert(key, id.clone());
+        id
+    }
+
+    /// The upload of `bytes` for `purpose` was filed: used up.
+    fn spent(&self, bytes: &[u8], purpose: &str) {
+        let key = format!("{purpose} {}", ledger_store::journal::sha256_hex(bytes));
+        self.left.lock().unwrap().remove(&key);
     }
 }
 
@@ -95,15 +131,6 @@ async fn ok(c: &Client, tool: &str, args: Value) -> Value {
     call(c, tool, args)
         .await
         .unwrap_or_else(|e| panic!("{tool}: {e}"))
-}
-
-/// `bytes` as a tool takes them inline: base64, and their SHA-256 (hex).
-fn inline(bytes: &[u8]) -> (String, String) {
-    use base64::Engine;
-    (
-        base64::engine::general_purpose::STANDARD.encode(bytes),
-        ledger_store::journal::sha256_hex(bytes),
-    )
 }
 
 /// The bytes of a file a tool handed over (a `HandedFile`): fetched by its
@@ -123,20 +150,19 @@ async fn refused_everywhere(
     why: &str,
 ) -> Vec<String> {
     let bytes = std::fs::read(path).unwrap();
-    let (content, sha) = inline(&bytes);
+    // One upload, refused by each tool and so left for the next.
+    let upload = b.upload(c, &bytes, name, "receipt").await;
     let journal = b.dir.join(ledger_store::JOURNAL_FILE);
     let before = std::fs::read(&journal).unwrap();
     let mut refusals = Vec::new();
     for (tool, args) in [
         (
             "books.attach_receipt",
-            json!({"file_name": name, "mime_type": "application/octet-stream",
-                   "content_base64": content, "sha256": sha}),
+            json!({"upload_id": upload, "mime_type": "application/octet-stream"}),
         ),
         (
             "books.file_document",
-            json!({"category": "tax", "file_name": name, "mime_type": "application/pdf",
-                   "content_base64": content, "sha256": sha}),
+            json!({"category": "tax", "upload_id": upload, "mime_type": "application/pdf"}),
         ),
     ] {
         let err = call(c, tool, args).await.expect_err(tool);
@@ -155,7 +181,7 @@ async fn refused_everywhere(
 /// books.get_w9 copy of it, a 1099 worksheet and a CPA package with TINs,
 /// and the K-1 worksheet extracted from that package are each refused,
 /// from another session and after a restart; INVARIANT 2: a CSV holding a
-/// TIN that the server never saw is refused, sent as base64.
+/// TIN that the server never saw is refused, sent by upload.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_tin_bearing_file_is_refused_from_every_session_and_after_a_restart() {
     let b = books("sessions");
@@ -166,8 +192,10 @@ async fn a_tin_bearing_file_is_refused_from_every_session_and_after_a_restart() 
         b"%PDF-1.4\n\xff\xfe\x00 scanned W-9 \x01\x02\x03\n%%EOF\n",
     )
     .unwrap();
-    let (w9_content, w9_sha) = inline(&std::fs::read(&w9).unwrap());
     let one = connect(&b).await;
+    let w9_upload = b
+        .upload(&one, &std::fs::read(&w9).unwrap(), "w9.pdf", "w9")
+        .await;
     for (code, name, ty) in [
         ("1000", "Cash", "asset"),
         ("3000", "Capital", "equity"),
@@ -196,9 +224,10 @@ async fn a_tin_bearing_file_is_refused_from_every_session_and_after_a_restart() 
         &one,
         "books.set_w9",
         json!({"party": "Acme", "received_on": "2026-01-03", "entity_type": "Individual",
-               "tin": SSN, "tin_type": "ssn", "w9_content_base64": w9_content, "w9_sha256": w9_sha}),
+               "tin": SSN, "tin_type": "ssn", "w9_upload_id": w9_upload}),
     )
     .await;
+    b.spent(&std::fs::read(&w9).unwrap(), "w9");
     ok(
         &one,
         "books.set_tin",
@@ -207,7 +236,7 @@ async fn a_tin_bearing_file_is_refused_from_every_session_and_after_a_restart() 
     .await;
     // A bank statement filed in the books: the package carries it, and it
     // is no TIN file (its routing numbers are not TINs).
-    accepted_everywhere(&one, "statement.csv", BANK_CSV).await;
+    accepted_everywhere(&one, &b, "statement.csv", BANK_CSV).await;
     // What the server hands over with TINs, from the first session, saved
     // outside the books as the human would save it.
     let copy = b.out.join("w9-copy.pdf");
@@ -259,12 +288,18 @@ async fn a_tin_bearing_file_is_refused_from_every_session_and_after_a_restart() 
     std::fs::write(&fresh, format!("name,ssn\nDana,{}\n", "187-05-1907")).unwrap();
     refused_everywhere(&two, &b, &fresh, "payees.csv", TIN_PRINTED).await;
     // An ordinary file still goes in, every way.
-    let (fine, fine_sha) = inline(b"%PDF-1.4\n\xff lunch receipt, order 12-34\n");
+    let fine = b
+        .upload(
+            &two,
+            b"%PDF-1.4\n\xff lunch receipt, order 12-34\n",
+            "lunch.pdf",
+            "receipt",
+        )
+        .await;
     ok(
         &two,
         "books.attach_receipt",
-        json!({"file_name": "lunch.pdf", "mime_type": "application/pdf",
-               "content_base64": fine, "sha256": fine_sha}),
+        json!({"upload_id": fine, "mime_type": "application/pdf"}),
     )
     .await;
     // The books' own files the package carried are not marked: the
@@ -279,7 +314,7 @@ async fn a_tin_bearing_file_is_refused_from_every_session_and_after_a_restart() 
             "the package carries the statement"
         );
     }
-    accepted_everywhere(&two, "statement-again.csv", BANK_CSV).await;
+    accepted_everywhere(&two, &b, "statement-again.csv", BANK_CSV).await;
     drop((one, two));
     b.served.restart();
 
@@ -329,49 +364,60 @@ async fn a_refused_set_w9_never_marks_its_file() {
         )
         .await;
     }
-    let w9_args = |party: &str, path: &Path| {
-        let (content, sha) = inline(&std::fs::read(path).unwrap());
+    let w9_args = |party: &str, upload: &str| {
         json!({"party": party, "received_on": "2026-01-03", "entity_type": "Individual",
-               "tin": SSN, "tin_type": "ssn", "w9_content_base64": content, "w9_sha256": sha})
+               "tin": SSN, "tin_type": "ssn", "w9_upload_id": upload})
     };
     for (party, path, why) in [
         ("Nobody", &w9, "unknown party"),
         ("Mo", &w9, "1099"),
         ("Acme", &notes, "PDF, PNG, or JPEG"),
     ] {
-        let err = call(&c, "books.set_w9", w9_args(party, path))
+        let bytes = std::fs::read(path).unwrap();
+        let upload = b.upload(&c, &bytes, "w9.pdf", "w9").await;
+        let err = call(&c, "books.set_w9", w9_args(party, &upload))
             .await
             .expect_err("refused");
         assert!(err.contains(why), "{party}: {err}");
     }
     // Neither file was marked: each is filed as any document is.
+    let mut filed = Vec::new();
     for (name, bytes) in [
         ("w9-scan.pdf", w9_bytes.clone()),
         ("notes.txt", std::fs::read(&notes).unwrap()),
     ] {
-        let (content, sha) = inline(&bytes);
+        let upload = b.upload(&c, &bytes, name, "document").await;
         let out = ok(
             &c,
             "books.file_document",
-            json!({"category": "other", "file_name": name, "mime_type": "application/pdf",
-                   "content_base64": content, "sha256": sha}),
+            json!({"category": "other", "upload_id": upload, "mime_type": "application/pdf"}),
         )
         .await;
+        b.spent(&bytes, "document");
         assert!(out["attachment_id"].is_u64(), "{name}: {out}");
+        filed.push(out["attachment_id"].clone());
     }
     // A set_w9 that succeeds marks it.
-    ok(&c, "books.set_w9", w9_args("Acme", &w9)).await;
-    let (content, sha) = inline(&w9_bytes);
+    let upload = b.upload(&c, &w9_bytes, "w9.pdf", "w9").await;
+    ok(&c, "books.set_w9", w9_args("Acme", &upload)).await;
+    b.spent(&w9_bytes, "w9");
+    // The scan filed before is withdrawn, so its bytes are no attachment
+    // begin_upload names: they are uploaded, and refused.
+    ok(
+        &c,
+        "books.withdraw_attachment",
+        json!({"attachment_id": filed[0], "reason": "a W-9: it belongs in the vault"}),
+    )
+    .await;
+    let upload = b.upload(&c, &w9_bytes, "again.pdf", "document").await;
     for (tool, args) in [
         (
             "books.file_document",
-            json!({"category": "other", "file_name": "again.pdf", "mime_type": "application/pdf",
-                   "content_base64": content, "sha256": sha}),
+            json!({"category": "other", "upload_id": upload, "mime_type": "application/pdf"}),
         ),
         (
             "books.attach_receipt",
-            json!({"file_name": "again.pdf", "mime_type": "application/pdf",
-                   "content_base64": content, "sha256": sha}),
+            json!({"upload_id": upload, "mime_type": "application/pdf"}),
         ),
     ] {
         let err = call(&c, tool, args).await.expect_err("marked");
@@ -380,20 +426,42 @@ async fn a_refused_set_w9_never_marks_its_file() {
 }
 
 /// Every way a file enters the books takes the text `name` holding
-/// `text`, and the journal shows it.
-async fn accepted_everywhere(c: &Client, name: &str, text: &str) {
-    let (content, sha) = inline(text.as_bytes());
-    for (tool, args) in [
-        (
-            "books.attach_receipt",
-            json!({"file_name": name, "mime_type": "text/csv", "content_base64": content, "sha256": sha}),
-        ),
+/// `text`, and the journal shows it. The same bytes filed already are
+/// withdrawn first (books.begin_upload would name them instead of
+/// taking them again), so each tool takes them itself.
+async fn accepted_everywhere(c: &Client, b: &Books, name: &str, text: &str) {
+    let token = b.served.home.token(common::BOOK);
+    for (tool, mut args) in [
+        ("books.attach_receipt", json!({"mime_type": "text/csv"})),
         (
             "books.file_document",
-            json!({"category": "import_source", "file_name": name, "mime_type": "text/csv",
-                   "content_base64": content, "sha256": sha}),
+            json!({"category": "import_source", "mime_type": "text/csv"}),
         ),
     ] {
+        let begun = ok(
+            c,
+            "books.begin_upload",
+            common::upload_args(text.as_bytes(), name, "text/csv", "document"),
+        )
+        .await;
+        if let Some(stored) = begun["existing_attachment_id"].as_u64() {
+            ok(
+                c,
+                "books.withdraw_attachment",
+                json!({"attachment_id": stored, "reason": "filed again another way"}),
+            )
+            .await;
+        }
+        let upload = common::upload_on(
+            c,
+            &b.served.home.run(),
+            common::BOOK,
+            &token,
+            text.as_bytes(),
+            (name, "text/csv", "document"),
+        )
+        .await;
+        args["upload_id"] = json!(upload);
         let out = ok(c, tool, args).await;
         assert!(out["attachment_id"].is_u64(), "{tool}: {out}");
     }
@@ -453,7 +521,7 @@ async fn text_with_a_vault_tin_or_a_printed_one_is_refused_and_a_bank_export_is_
         std::fs::write(&path, format!("payee,tin\n{printed}\n")).unwrap();
         refused_everywhere(&c, &b, &path, &format!("payees-{n}.csv"), TIN_PRINTED).await;
     }
-    accepted_everywhere(&c, "bank.csv", BANK_CSV).await;
+    accepted_everywhere(&c, &b, "bank.csv", BANK_CSV).await;
     drop(c);
 
     // The vault locked (its key gone): the printed shapes are still
@@ -469,11 +537,12 @@ async fn text_with_a_vault_tin_or_a_printed_one_is_refused_and_a_bank_export_is_
     refused_everywhere(&c, &b, &path, "members-1.csv", TIN_PRINTED).await;
     accepted_everywhere(
         &c,
+        &b,
         "bank-2.csv",
         &format!("{BANK_CSV}2026-10-06,x,1.00,1.00,1\n"),
     )
     .await;
-    accepted_everywhere(&c, "members-0.csv", "member,tin\nKat,830835531\n").await;
+    accepted_everywhere(&c, &b, "members-0.csv", "member,tin\nKat,830835531\n").await;
 }
 
 /// INVARIANT 3b through the tools: the company's own EIN, as its
@@ -494,6 +563,7 @@ async fn the_company_s_own_ein_goes_in_and_no_other() {
     .unwrap();
     accepted_everywhere(
         &c,
+        &b,
         "plan.md",
         "# Tin Co business plan\n\nEIN 12-3456789, formed 2026-10-04.\n",
     )
@@ -617,8 +687,8 @@ async fn text_probing_for_a_tin_is_refused_alike_by_every_filing_tool() {
     };
     let open = probes(&c).await;
     refused_everywhere(&c, &b, &tin, "tin.csv", TIN_HELD).await;
-    accepted_everywhere(&c, "one.csv", &std::fs::read_to_string(&one).unwrap()).await;
-    accepted_everywhere(&c, "bank.csv", BANK_CSV).await;
+    accepted_everywhere(&c, &b, "one.csv", &std::fs::read_to_string(&one).unwrap()).await;
+    accepted_everywhere(&c, &b, "bank.csv", BANK_CSV).await;
     drop(c);
 
     // The vault locked: the same refusals, word for word.

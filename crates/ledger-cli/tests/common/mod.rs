@@ -5,8 +5,8 @@
 //! GOAL: a test drives books exactly as an agent reaches them: a
 //!       `wanderbooks server` on a data root of the test's own, spoken to
 //!       over the root's MCP socket with a bearer token, with the headers
-//!       the agents' bridge sends; a file the books make comes back by
-//!       its download, never inline.
+//!       the agents' bridge sends; a file goes in by its upload and comes
+//!       back by its download, never through the session (D-46).
 //! SOURCE: plan/served.md D-44 (one way to serve books), 3.1 (the
 //!         server's sockets, the admin socket), 3.3 (tokens), 4.7
 //!         (uploads and downloads); ledger-mcp local.rs INVARIANTS 8 and
@@ -23,6 +23,10 @@
 //!      reads from the text, made with books.set_setting.
 //!   4. The harness answers nothing itself: every message a test is
 //!      given is one the server sent.
+//!   5. A file a test gives the books is uploaded as an agent uploads it:
+//!      books.begin_upload, then its bytes PUT to the upload route with
+//!      the session's token, as `wanderbooks upload` sends them; the
+//!      upload_id is what the tool is given (D-46).
 //! ```
 #![allow(dead_code)]
 
@@ -511,6 +515,68 @@ impl Wire {
         bytes
     }
 
+    /// Upload `bytes` as an agent does (INVARIANT 5): books.begin_upload
+    /// with their SHA-256, size, type, name and purpose, then, if it began
+    /// one, the bytes PUT to the upload route. books.begin_upload's answer:
+    /// its upload_id, or the existing_attachment_id of the same bytes
+    /// stored already (nothing sent then).
+    pub fn begin_and_send(
+        &mut self,
+        bytes: &[u8],
+        file_name: &str,
+        mime_type: &str,
+        purpose: &str,
+    ) -> Value {
+        let r = self.call(
+            "books.begin_upload",
+            upload_args(bytes, file_name, mime_type, purpose),
+        );
+        let begun = answer_of(&r).unwrap_or_else(|e| panic!("books.begin_upload: {e}"));
+        if let Some(id) = begun["upload_id"].as_str() {
+            let (status, said) = self.put(&format!("u/{id}"), bytes);
+            assert_eq!(status, 200, "sending {id}: {said}");
+        }
+        begun
+    }
+
+    /// [`Wire::begin_and_send`] for bytes not stored yet: the upload_id to
+    /// name in the tool that files them.
+    pub fn upload(
+        &mut self,
+        bytes: &[u8],
+        file_name: &str,
+        mime_type: &str,
+        purpose: &str,
+    ) -> String {
+        let begun = self.begin_and_send(bytes, file_name, mime_type, purpose);
+        begun["upload_id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("no upload begun: {begun}"))
+            .to_string()
+    }
+
+    /// PUT `bytes` to `path` (under `/b/{book}/`) with this session's
+    /// token, as `wanderbooks upload` does: the status and the text.
+    pub fn put(&mut self, path: &str, bytes: &[u8]) -> (u16, String) {
+        let mut req = self
+            .http
+            .put(format!("http://localhost/b/{}/{path}", self.book))
+            .body(bytes.to_vec());
+        if let Some(t) = &self.token {
+            req = req.bearer_auth(t);
+        }
+        self.rt.block_on(async {
+            let r = req.send().await.expect("the server's socket answers");
+            let status = r.status().as_u16();
+            (status, r.text().await.unwrap_or_default())
+        })
+    }
+
+    /// [`Wire::fetch`], as text.
+    pub fn fetch_text(&mut self, file: &Value) -> String {
+        String::from_utf8(self.fetch(file)).expect("the file is text")
+    }
+
     /// End the session (DELETE, as the bridge does when its agent goes).
     pub fn end(&mut self) {
         let Some(s) = self.session.take() else { return };
@@ -523,6 +589,29 @@ impl Wire {
         }
         let _ = self.rt.block_on(async { req.send().await });
     }
+}
+
+/// books.begin_upload's arguments for `bytes`.
+pub fn upload_args(bytes: &[u8], file_name: &str, mime_type: &str, purpose: &str) -> Value {
+    json!({"sha256": ledger_store::journal::sha256_hex(bytes), "size": bytes.len(),
+           "mime_type": mime_type, "file_name": file_name, "purpose": purpose})
+}
+
+/// A `tools/call` answer: Ok(its structured result) or Err(the refusal's
+/// or the protocol error's text).
+pub fn answer_of(r: &Value) -> Result<Value, String> {
+    if let Some(e) = r.get("error") {
+        return Err(e["message"].as_str().unwrap_or_default().to_string());
+    }
+    let res = &r["result"];
+    let text = res["content"][0]["text"].as_str().unwrap_or_default();
+    if res["isError"] == json!(true) {
+        return Err(text.to_string());
+    }
+    Ok(res
+        .get("structuredContent")
+        .cloned()
+        .unwrap_or_else(|| serde_json::from_str(text).unwrap_or(Value::String(text.into()))))
 }
 
 /// A test's own books: a home, its server, and the books [`BOOK`] made in
@@ -919,6 +1008,42 @@ pub async fn call(c: &Client, tool: &str, args: Value) -> Result<Value, String> 
         Ok(r.structured_content
             .unwrap_or_else(|| serde_json::from_str(&text).unwrap_or(Value::String(text))))
     }
+}
+
+/// Upload `bytes` for `book` on the rmcp session `c` (to the server whose
+/// `run/` folder is `run`) as an agent does (INVARIANT 5), with `token`
+/// (the session's), declared as `(file_name, mime_type, purpose)`: the
+/// upload_id.
+pub async fn upload_on(
+    c: &Client,
+    run: &Path,
+    book: &str,
+    token: &str,
+    bytes: &[u8],
+    (file_name, mime_type, purpose): (&str, &str, &str),
+) -> String {
+    let begun = call(
+        c,
+        "books.begin_upload",
+        upload_args(bytes, file_name, mime_type, purpose),
+    )
+    .await
+    .unwrap_or_else(|e| panic!("books.begin_upload: {e}"));
+    let id = begun["upload_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no upload begun: {begun}"))
+        .to_string();
+    let r = mcp_http_builder_at(run)
+        .build()
+        .unwrap()
+        .put(format!("http://localhost/b/{book}/u/{id}"))
+        .bearer_auth(token)
+        .body(bytes.to_vec())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 200, "sending {id}");
+    id
 }
 
 /// Fetch the export a tool handed over in `file` (its `download`

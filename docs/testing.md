@@ -2301,7 +2301,8 @@ data root of its own, reached as an agent reaches it.
   lowered setting take effect on the next call
   (`a_changed_setting_is_read_on_the_next_call`,
   `a_lowered_threshold_is_enforced`); `get_receipt` above 256 KiB gives
-  its download (`get_receipt_gives_bytes_up_to_256_kib_and_a_download_above`);
+  its download (`get_receipt_gives_bytes_up_to_256_kib_and_a_download_above`,
+  since D-46 `get_receipt_hands_every_file_over_by_its_download`);
   an unknown tool is a protocol error (`jsonrpc_unknown_tool_is_a_protocol_error`,
   now true of the server itself).
 - **Deleted, for what they tested is gone:** startup's
@@ -2381,6 +2382,88 @@ data root of its own, reached as an agent reaches it.
 - **Time:** `just server-only` runs the one executable's own suites; the
   tool suites run once, in `check`. Mutation of `ledger-mcp` runs the
   ledger-cli suites too, without the viewer (`just mutants-mcp`).
+
+## Files only by handle (D-46, 2026-10-23)
+
+No file passes through an agent's context, in either direction: the
+inline arguments are gone (`content_base64`, `sha256`, `csv_text`,
+`w9_content_base64`, `w9_sha256`, the 256 KiB limit), and every file a
+tool gave inline is handed over (`books.export` in every format,
+`books.asset_labels`, `books.get_receipt` view `bytes`).
+
+- **The harness** (`tests/common/mod.rs`, its INVARIANT 5): a test files
+  a file as an agent does. `Wire::begin_and_send` calls
+  `books.begin_upload` and PUTs the bytes to `/b/{book}/u/{upload}` with
+  the session's token, as `wanderbooks upload` sends them (nothing sent
+  when it names an `existing_attachment_id`); `Wire::upload` gives the
+  `upload_id`; `upload_on` does the same for an rmcp session;
+  `upload_args` and `answer_of` are its pieces; `Wire::fetch_text` reads a
+  handed file as text. `backups.rs` and `open_while_held.rs` keep their
+  own harnesses: `backups.rs`'s `Agent` uploads the same way, and
+  `open_while_held.rs`'s bridge agent runs the very `wanderbooks upload`
+  command books.begin_upload returns.
+- **Migrated to uploads** (every assertion kept): every receipt, document,
+  W-9 and CSV given inline in `mcp_journeys.rs`, `spec_mcp.rs` (its
+  every-tool walk and the random walk, whose attach is now an upload, an
+  upload there is none of, or the removed inline argument),
+  `spec_vault.rs`, `spec_attachments.rs`, `spec_assets.rs`,
+  `spec_projects.rs`, `spec_tax_policy.rs`, `oracle_mcp.rs`,
+  `hostile_args.rs` (its fixture; the generator's file payloads now give
+  begin_upload's sha256), `tin_files.rs`, `local_server.rs`,
+  `backups.rs`, `http_concurrency.rs` and `open_while_held.rs`. A call
+  refused after taking an upload leaves it for the next, so a refusal
+  loop names one upload throughout (`tin_files.rs` keeps them by SHA-256,
+  so its refusals never pile up past a token's 16 uploads). Bytes stored
+  already are named by begin_upload, not uploaded again, so entries
+  posted in a loop get receipts of their own bytes (`receipt {n}`), and
+  `tin_files.rs`'s `accepted_everywhere` withdraws the copy filed the
+  other way before filing the same bytes again; the refused-W-9 test
+  withdraws the scan it filed before the W-9 marked it, then shows the
+  bytes refused.
+- **Migrated to downloads:** every read of an export's `content` or
+  `content_encoding`, of the label sheet's `content_base64`, and of
+  `get_receipt`'s `content_base64` or attachment-route `download`, now
+  reads the handed file by its download (`Wire::fetch`, which checks its
+  size and SHA-256): `mcp_journeys.rs`, `oracle_mcp.rs` (`export`,
+  `export_text`), `spec_assets.rs`, `spec_tax_policy.rs`,
+  `spec_party_totals.rs`, `p3_seams.rs`, `spec_vault.rs` (whose TIN scan
+  now also scans the journal's two exports: six files),
+  `local_server.rs` and `open_while_held.rs` (the saved copy of a
+  receipt is the export's, under the receipt's name).
+- **Rewritten, for what they tested changed:**
+  `oracle_mcp.rs` `inline_bytes_come_with_their_own_sha256_or_as_an_upload`
+  is `a_filing_tool_takes_its_file_only_as_an_upload` (no upload refused;
+  each inline argument, alone or beside an upload, refused as unknown,
+  pointing at books.begin_upload; begin_upload's naming of stored bytes
+  kept); `inline_files_up_to_256_kib_are_accepted_and_no_more` is
+  `files_past_the_old_inline_limit_go_by_upload_and_come_back_by_download`;
+  `get_receipt_gives_bytes_up_to_256_kib_and_a_download_above` is
+  `get_receipt_hands_every_file_over_by_its_download`;
+  `local_server.rs` `bytes_given_inline_are_small_and_carry_their_hash` is
+  `a_file_comes_only_by_its_upload_and_goes_back_by_its_download` (the
+  name and type checks kept, given beside an upload);
+  `spec_vault.rs`'s W-9 refusals keep the type, unknown upload and name
+  cases, add an upload of another purpose and the inline arguments.
+- **Removed, for what they tested is gone:** the inline cases only
+  (sha256 missing or another file's, base64 that isn't, both given, the
+  256 KiB limit and the length check before decoding: guard
+  `base64_corrupt`), in the tests above; `ledger-mcp`'s
+  `the_file_limits_are_the_plans` lost its `INLINE_MAX` assertion;
+  `ledger-store`'s `a_files_bytes_are_hashed_as_they_are_even_where_they_spell_digits`
+  is `digits_inside_any_text_are_masked` (no argument is a file's bytes,
+  so the access log's digest masks a TIN in any text).
+- **Added:** `tools/files.rs` `an_inline_file_argument_is_refused_on_every_tool`
+  (each inline name on any tool, naming itself and books.begin_upload;
+  begin_upload's own sha256 and the upload ids pass);
+  `mcp_journeys.rs` `files_pass_only_by_handle_in_and_out` (the five
+  filing tools' schemas closed, with an upload and no inline field; the
+  output schemas of export, asset_labels and get_receipt carry `file`;
+  an inline receipt and an inline CSV refused as unknown, storing
+  nothing; csv, json, xlsx, pdf and iif exports, the label sheet and a
+  receipt's bytes each handed over, its download the bytes, size and
+  SHA-256 stated, no bytes in the answer); the lint
+  `tool_text_lint` refuses `content_base64`, `csv_text`, `base64` and
+  `256 KiB` in every agent text.
 
 ## Benchmarks (baseline 2026-10-13)
 

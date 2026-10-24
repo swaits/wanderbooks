@@ -193,6 +193,11 @@ impl Mcp {
     }
 
     /// A tool's structured result; panics on any refusal (fixture setup).
+    /// Upload `bytes` as an agent does (D-46): the upload_id.
+    fn upload(&mut self, bytes: &[u8], file_name: &str, mime_type: &str, purpose: &str) -> String {
+        self.wire.upload(bytes, file_name, mime_type, purpose)
+    }
+
     fn ok(&mut self, tool: &str, args: Value) -> Value {
         let r = self.rpc("tools/call", json!({"name": tool, "arguments": args}));
         assert!(
@@ -258,12 +263,8 @@ fn fixture(m: &mut Mcp, p: &Places) {
         json!({"name": "Member A", "roles": ["member"]}),
     );
     // An unlinked receipt (attachment 1).
-    m.ok(
-        "books.attach_receipt",
-        json!({"file_name": "r.pdf", "mime_type": "application/pdf",
-               "content_base64": "JVBERi0xLjQgYSByZWNlaXB0",
-               "sha256": ledger_store::journal::sha256_hex(b"%PDF-1.4 a receipt")}),
-    );
+    let up = m.upload(b"%PDF-1.4 a receipt", "r.pdf", "application/pdf", "receipt");
+    m.ok("books.attach_receipt", json!({"upload_id": up}));
     for (date, dr, cr, amount) in [
         ("2026-01-02", "1000", "3000", "5000.00"),
         ("2026-01-02", "1000", "3001", "5000.00"),
@@ -282,11 +283,10 @@ fn fixture(m: &mut Mcp, p: &Places) {
             );
         }
         let pdf = format!("%PDF-1.4 receipt for {date} {dr} {cr}");
+        let up = m.upload(pdf.as_bytes(), "r.pdf", "application/pdf", "receipt");
         m.ok(
             "books.attach_receipt",
-            json!({"entry_id": id, "file_name": "r.pdf", "mime_type": "application/pdf",
-                   "content_base64": b64(pdf.as_bytes()),
-                   "sha256": ledger_store::journal::sha256_hex(pdf.as_bytes())}),
+            json!({"entry_id": id, "upload_id": up}),
         );
         m.ok(
             "books.post_entry",
@@ -325,11 +325,15 @@ fn fixture(m: &mut Mcp, p: &Places) {
         "books.set_tin",
         json!({"party": "Member A", "tin": "241-40-4915", "tin_type": "ssn"}),
     );
+    let up = m.upload(
+        b"%PDF-1.4 a statement",
+        "s.pdf",
+        "application/pdf",
+        "document",
+    );
     m.ok(
         "books.file_document",
-        json!({"category": "statement", "file_name": "s.pdf", "mime_type": "application/pdf",
-               "content_base64": "JVBERi0xLjQgYSBzdGF0ZW1lbnQ=",
-               "sha256": ledger_store::journal::sha256_hex(b"%PDF-1.4 a statement")}),
+        json!({"category": "statement", "upload_id": up}),
     );
     let _ = p;
 }
@@ -624,19 +628,14 @@ fn string_for(name: &str, node: &Value, p: &Places) -> BoxedStrategy<Value> {
             .prop_map(Value::String)
             .boxed();
     }
-    if n.contains("base64") {
-        likely.extend(INLINE_FILES.map(String::from));
-    }
-    // A file's SHA-256: of one of the files above (so some calls carry a
-    // matching pair and go on past the check), or not.
+    // A file's SHA-256 (books.begin_upload's): of one of the files
+    // below (so some calls go on past the check), or not.
     if n.contains("sha256") {
-        use base64::Engine;
-        likely.extend(INLINE_FILES.iter().filter_map(|f| {
-            base64::engine::general_purpose::STANDARD
-                .decode(f)
-                .ok()
-                .map(|b| ledger_store::journal::sha256_hex(&b))
-        }));
+        likely.extend(
+            HOSTILE_FILES
+                .iter()
+                .map(|b| ledger_store::journal::sha256_hex(b)),
+        );
         likely.push("0".repeat(64));
         likely.push("not hex".into());
     }
@@ -705,14 +704,14 @@ fn string_for(name: &str, node: &Value, p: &Places) -> BoxedStrategy<Value> {
     .boxed()
 }
 
-/// Files given inline (base64), hostile and not.
-const INLINE_FILES: [&str; 6] = [
-    "JVBERi0xLjQ=",
-    "",
-    "!!!not base64",
-    "AAAA",
-    "NTcxLTkzLTI4NDY=",
-    "RGF0ZSxBbW91bnQKMjAyNi0wMS0wMSwxCg==",
+/// Files an upload may declare, hostile and not (no tool takes a file's
+/// bytes: D-46).
+const HOSTILE_FILES: [&[u8]; 5] = [
+    b"%PDF-1.4",
+    b"",
+    b"\0\0\0",
+    b"571-93-2846",
+    b"Date,Amount\n2026-01-01,1\n",
 ];
 
 /// An object's value: each property present or not (required ones mostly
@@ -1169,12 +1168,11 @@ fn inputs_that_once_panicked_are_refused_or_answered() {
         "books.set_entry_vendor",
         json!({"entry_id": id, "vendor": "Acme"}),
     );
+    let up = m.upload(b"%PDF-1.4 huge", "h.pdf", "application/pdf", "receipt");
     pinned(
         &mut m,
         "books.attach_receipt",
-        json!({"entry_id": id, "file_name": "h.pdf", "mime_type": "application/pdf",
-               "content_base64": "JVBERi0xLjQgaHVnZQ==",
-               "sha256": ledger_store::journal::sha256_hex(b"%PDF-1.4 huge")}),
+        json!({"entry_id": id, "upload_id": up}),
     );
     pinned(
         &mut m,
@@ -1290,11 +1288,6 @@ fn hostile_resource_uris_never_stop_the_server() {
         })
         .unwrap();
     reopens(m.into_inner(), &p, "the resources");
-}
-
-fn b64(bytes: &[u8]) -> String {
-    use base64::Engine;
-    base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
 /// The arguments, cut for a failure message.

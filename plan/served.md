@@ -1415,7 +1415,11 @@ Each unit follows the 8.0.4 template. "A-n" is an owner answer numbered in 8.3.1
 5. **Files:** owns `has_full_tin`/`redact_full_tins`; touches `access.rs`, `tin_files.rs`, the two docs.
 6. **Tests and proofs:** named above.
 7. **Done when:** the property passes; the two integration tests pass; `no_mcp_output_contains_full_tin`-style canary tests (the existing TIN canary in `crates/ledger-cli/tests/spec_vault.rs`) still pass; `just check` green.
-8. **As built:** none yet.
+8. **As built** (2026-10-26, `0176214`, `fd9f678`): vault v2 stays closed (D-48): nothing of HPKE, keyslots, a recovery key or `/h/` pages was built. Departures from Build:
+   - Step 1's separators are read as the unit's own guard requires: a run of spaces counts once however long it is (`tin_gap`), and a comma or a parenthesis joins only a 3-2-4 or a 2-7 group (`grouped_tin_runs`), so `1,234,567.89` (1-3-3-2) stays an amount and a nine-digit D-U-N-S number stays `company.duns`'s kind. The truth table and the ASCII-equality property in `crates/ledger-core/tests/spec_parties.rs` pinned the old separator set (`291, 12, 2846` and `12    3456789` were false); they were updated in the same commit, and the property is now `has_full_tin_never_forgets_a_tin` (everything found before is still found).
+   - Step 1's ACH payment-method exemption is P4b S4's `invoicing.payment_methods` (`Kind::PaymentMethods`), which is not built; the property pins the two exemptions the books have today (`company.duns`, an amount) and says the S4 kind keeps a routing number out of the rule when it lands.
+   - Step 2's "the filing scan uses the same function" is not how `tin_files.rs` is built: B-26 makes its text check deliberately narrow so a bank export's routing numbers and amounts can be filed. It kept its own shapes and gained the comma renderings in `tin_shaped` and `holds_printed_tin` rather than calling `has_full_tin`, which would refuse `an_ordinary_bank_export_passes`.
+   - `docs/spec/rules.md` B-26 and `docs/testing.md` P7's For-P12 paragraph are updated; no other doc names this unit.
 
 #### P8: audit and attestations
 

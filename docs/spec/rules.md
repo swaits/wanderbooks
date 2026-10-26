@@ -1482,8 +1482,12 @@ asked): a refusal that quotes its input masks any TIN in it
 (`parties::redact_full_tins`, checked by `refusals_never_echo_a_tin`),
 and a party text field refuses nine digits however they are separated
 (`has_full_tin`: up to three spaces, hyphens, dots, slashes or
-underscores between neighbors, in any script's digits; past ASCII every
-Unicode space and dash and the fullwidth and small forms count, and
+underscores between neighbors, in any script's digits, a run of spaces
+counting once however long it is; and a comma or a parenthesis between
+a TIN's 3-2-4 or 2-7 groups (DECISION, P7, 2026-10-26), so
+`123,45,6789` and `(123) 45-6789` read as a TIN while an amount's
+comma-grouped thousands do not, `1,234,567.89` being 1-3-3-2; past ASCII
+every Unicode space and dash and the fullwidth and small forms count, and
 invisible characters such as a zero-width space or a right-to-left mark
 don't count toward the three: `sources/unicode-tin-text.md`, Unicode
 17.0). Files holding one (`books.get_w9`, `books.vendor_1099`'s
@@ -1511,12 +1515,14 @@ and refuses any text file (by its type or name, or because it decodes as
 UTF-8 or UTF-16, with a byte-order mark or, NUL-interleaved, without one)
 holding (a) a TIN the vault holds for a party of the
 books, anywhere in the text, as nine digits in a row, as 3-2-4 digits
-joined by hyphens, spaces or dots, or as 2-7 digits joined by a hyphen
-or a space (compared on the server against the decrypted vault, never
-returned or logged; a vault that can't be opened leaves (b) alone), or
+joined by hyphens, spaces, dots or commas, or as 2-7 digits joined by a
+hyphen, a space or a comma (compared on the server against the decrypted
+vault, never returned or logged; a vault that can't be opened leaves (b)
+alone), or
 (b) a number printed as an SSN or EIN is, standing alone: 3-2-4 digits
-joined by hyphens (123-45-6789) or 2-7 joined by a hyphen (12-3456789),
-with no digit, and no hyphen or dot followed by a digit, on either side,
+joined by hyphens or commas (123-45-6789, 123,45,6789) or 2-7 joined by a
+hyphen or a comma (12-3456789, 12,3456789), with no digit, and no hyphen
+or dot followed by a digit, on either side,
 except the company's own EIN as its settings hold it, printed 2-7: it is
 the company's, no person's, the settings already hold it in full (B-29),
 and every company document goes into the books, its formation papers and

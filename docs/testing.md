@@ -2807,3 +2807,43 @@ asserts from `invoice_document` today, so expect survivors there until
 one does: `PartiallyPaid` (no sample is part paid and not yet due) and
 `Draft` (only S4's preview reaches it; the renderer's own test renders
 it but asserts only that it succeeds).
+## P7: the TIN scanner's separators (2026-10-26)
+
+rules.md B-26; plan 8.2 P7, with vault v2 closed by D-48 (nothing of
+HPKE, keyslots or human pages is built here). The scanner
+(`ledger_core::parties::has_full_tin`, `redact_full_tins`) reads the
+commas, parentheses and any run of spaces that a TIN's groups can be
+written with: `123,45,6789`, `(123) 45-6789`, `12    3456789`. A run of
+spaces counts once however long it is; a comma or a parenthesis
+separates only a 3-2-4 or 2-7 group, so an amount's comma-grouped
+thousands (`1,234,567.89`, 1-3-3-2) stay an amount. The legacy run
+reading is unchanged for everything it found (the property asserts it
+never forgets one), and replay still reads a journaled line as P2 did
+(`parties::replaying`, B-28). The access log's masking and digest use
+the same function; the filing scan keeps its narrow printed shapes
+(B-26: a bank export's routing numbers must go in) and gains the comma
+renderings.
+
+Tests: `tin_shapes_with_any_separator_are_found`
+(`crates/ledger-core/tests/properties.rs`: generated separators on a
+3-2-4 and a 2-7 shape, found and masked to nine bullets; no false
+positive on an amount or on `company.duns`'s nine-digit D-U-N-S number);
+`has_full_tin_truth_table`, `has_full_tin_reads_every_script_and_separator`
+and `has_full_tin_never_forgets_a_tin` (`spec_parties.rs`, updated where
+they pinned the old separator set); `access_log_masks_a_comma_separated_tin`
+(`crates/ledger-store/src/access.rs`: a client's texts and a digest);
+`a_file_with_a_comma_separated_tin_is_refused`
+(`crates/ledger-mcp/src/tin_files.rs`, every encoding, vault locked and
+open, and an amount still filed). The TIN canaries in
+`crates/ledger-cli/tests/spec_vault.rs` still pass.
+
+**For P12 (mutation targets):** `tin_gap` (the space-run arm, so four
+spaces count once; `count <= MAX_TIN_GAP`; the invisible skip; the
+`grouped` arm), `tin_space`, `grouped_tin_separator` (each of `,`, `(`
+and `)`), `grouped_tin_runs` (each shape, the `n > 0` join, and the
+nine-digit check), `full_tin_runs`'s `extend(grouped_tin_runs(..))`;
+`tin_files::tin_shaped`'s comma in each rendering and
+`holds_printed_tin`'s comma join; `access::masked`'s string arm.
+Deleting any one of them leaves a TIN that the old scanner passed
+either readable or unmasked, which the truth table and the property
+catch.

@@ -1961,6 +1961,8 @@ accounting only: the caller supplies every figure), tax filing.
 
 ## Tools — A/R and A/P
 
+S4 changes `books.create_invoice` and `books.create_bill`; see plan 8.2 S4.
+
 - `books.add_customer { name }` → `{ id, party_id }`.
 - `books.add_vendor { name }` → `{ id, party_id }`. Both link the record to
   a party ("Tools — parties").
@@ -2023,16 +2025,20 @@ accounting only: the caller supplies every figure), tax filing.
   kind, documents: [{ ref, party, date, due_date, total, outstanding,
   status, overdue_days }], outstanding_total }`. Invoices (`kind`
   `invoices`) or bills (`bills`), due date first, every figure derived
-  from the document's lines that stand (B-38). `status` `open` (default:
-  anything still owed), `overdue`, `paid`, `void`, `written_off`,
-  `overpaid` or `all`; `party` (a customer's or vendor's name or id) and
-  `due_by` narrow the list (P4b S2).
+  from the document's lines that stand (B-38). `status` filters: `open`
+  (default: anything still owed, partly paid and overdue included),
+  `overdue`, `paid`, `void`, `written_off`, `overpaid` or `all`; a row's
+  own `status` is one of `open`, `partial`, `paid`, `written_off`,
+  `void`, `overpaid` or `unattached` (`DocStatus::key()`). `party` (a
+  customer's or vendor's name, ignoring case) and `due_by` (due on or
+  before that day) narrow the list (P4b S2).
 - `books.document { ref, as_of?, pdf? }` → `{ ref, party, date, due_date,
   entry_id, lines: [{ description, amount, project? }], total, paid,
   discounted, written_off, outstanding, status, overdue_days, timeline:
-  [{ date, entry_id, kind, amount, reversal, stands }] }`. `ref` is
-  `invoice:N` or `bill:N`; the timeline is every ledger line tagged with
-  the document in posting order, each saying whether its entry still
+  [{ date, entry_id, kind, amount, reversal, stands }], pdf? }`. `ref` is
+  `invoice:N` or `bill:N`; `status` as `books.documents`' rows; the
+  timeline is every ledger line tagged with the document, dated on or
+  before the day, in posting order, each saying whether its entry still
   stands as of the day (P4b S2). With `pdf: true` an invoice's PDF comes
   back as a handed file (`pdf`: run its download): re-created from the
   books as of the day, each standing payment on its own line with its

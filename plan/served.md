@@ -34,6 +34,31 @@ Paths are relative to `/home/swaits/Code/wanderbooks/crates/` unless they are ab
 
 ---
 
+## 0. How to read this document
+
+Written 2026-10-26, when the plan was reworked for a team of engineers working in parallel. Everything below it is the plan; this section says how its parts fit.
+
+**What is where.** Sections 1 to 7 are the design: what the system is, the invariants it enforces, its architecture, the agent surface, how state migrates, the threat model, and the owner's flows. Section 8 is the work: 8.0 how it is organized (status, dependencies, shared files, the unit template, the recipes), 8.1 what has landed, 8.2 every remaining unit in merge order, 8.3 the P4b reference design, 8.4 what is deliberately not scheduled. Section 9 is cross-cutting risks, section 10 the decisions and the open questions, section 11 the hosted service this plan does not build. `plan/STATUS.md` says where the live books stand.
+
+**Precedence.** The owner's decisions win: the eight at the top of this document (made 2026-10-16), then every D-n row in 10.1 in order of its number (a later decision amends an earlier one where they conflict, and says so). Then this section 8. Then sections 1 to 7, which describe the design as planned and carry **As built** notes and strike-throughs where the build or a decision departed from it. Where section 8 and an earlier section still disagree, section 8 is right and the earlier text is a documentation defect: fix the earlier text, never the unit.
+
+**Superseded text.** A sentence a decision made false is struck through in place with the decision that did it: `~~the old words~~ → D-46`. A longer passage carries a bold bracket instead: **[Superseded → D-32: no confinement was built.]** An **As built (date, commit)** block under a section lists departures only and never rewrites the scope above it. A reader implementing anything reads the As-built block before the scope.
+
+**Code references** are file paths and symbol names (`crates/ledger-core/src/ledger.rs::Ledger::stands_on`), never line numbers. Line numbers that remain in sections 1 to 7 (`S:553`, `ledger.rs:1355`) date from 2026-10-16 and are wrong today; treat them as "search for the symbol".
+
+**Abbreviations.**
+- **D-n**: a decision, 10.1 (settled), 10.2 (deferred); **Q-n**: an open question for the owner, 10.3; **A-n**: an owner answer about receivables and payables, 8.3.1.
+- **I-n**: an invariant the code enforces, section 2. **B-n**: a rule in `docs/spec/rules.md` (B-1 double entry … B-38 documents; B-39 to B-45 are allocated in 8.0.3). **R-x**: a recipe in 8.0.5.
+- **Pn**: a phase; **P4b Sn**: a slice of P4b (S1 to S7); **P2 slice n**: a slice of P2 (1 one executable, 2 the data root, 3 opening and closing the books, 4 access, 5 files in and out, 6 the viewer and `ledger-package`, 7 backups and restore, 8 the viewer's menu and setup, 9 the cutover). **U0a, U0b, U0c**: the pre-step units of 8.2.
+- **S:**: `crates/ledger-mcp/src/server.rs` (its line numbers are stale; see above). **T1 / T2**: the local desktop deployment / the self-host deployment (3.8).
+- **defect n**: a finding of the 2026-10-16 audit of the first company's books (1 to 20), of P0 (21, 22) or of P3 (23, 24): 1 cash flow (P3), 2 reversals posted without their own evidence (closed by D-12 and D-47), 3 receipts as blobs (P2 transport part; P6 text), 4 duplicate attachments (P6), 5 drafts (P4), 6 the digest (P4), 7 the IIF (P3), 8 tax categories (P3), 9 schedules (P3), 10 annotations (P6), 11 party TIN last-four (P3), 12 the 1099 worksheet (P3), 13 assets' bases (P3), 14 party shares (P3), 15 rename (P3), 16 period defaults (P3), 17 the odd cent (P3), 18 `not_reportable` (P3), 19 `import_local_file` (P0, P2), 20 the migration scripts (retired at the cutover; no tool), 21 the IIF ignores `as_of` (P3), 22 depreciation's final month (P3), 23 a vendor marked "no 1099" (P3), 24 accruals through other liabilities counted twice (P3).
+- **GL** general ledger; **TB** trial balance; **A/R, A/P** accounts receivable, payable; **EOM** end of month; **EM** the engineering manager who assigns units and merges; **the first company**, **the owner's books**: the books the plan is proven on, whose figures never appear in this repository (5.6).
+- `a | b` in a tool's arguments means exactly one of the two.
+
+**What changed on 2026-10-26.** A nine-stage review (`plan/review-2026-10-26/`) found the plan sound as a design record and not executable as a hand-off. Section 8 was rewritten: 8.0 to 8.4 are new; P4 was rewritten against the P4b slices built after it and D-47 (reversals stay posted); P6, P7, P8, P9, P10, P11 were cut to what the owner's decisions ask for; superseded sentences in sections 1 to 7 and 9 were struck through; the owner's P4b answers were numbered; decisions D-47 to D-54 and questions Q-4 to Q-7 were added. The review's reports list every finding and what was done with it.
+
+---
+
 ## 1. Summary
 
 **Today.** Your books are a folder inside your project directory. That folder holds the journal, the receipts, the settings, a list of helper commands and the agent's instructions. The agent opens the books by starting a helper program itself, so it can also read every file in the folder directly. That is how an agent ended up reading the journal file instead of asking the books.
@@ -61,10 +86,10 @@ Paths are relative to `/home/swaits/Code/wanderbooks/crates/` unless they are ab
 | I-1 | **The MCP is the only agent interface to the books.** Locally this is **advisory** (owner decision 2026-10-16): the server runs as the human, and the books are hidden, not locked. Mechanical enforcement is the self-host deployment on another machine, where agents have no access to the data root. | A data root outside every project directory (3.4), mode 0700, created with an explicit `set_permissions` call (not the umask). No tool, instruction, handbook text or result names a filesystem path (I-2, I-12). The stdio data-dir transport is gone (D-44): books are served only by the books server. `books.start`, `wanderbooks doctor` and the docs report `isolation: "same_user (advisory)"`. Landlock and seccomp confine the server itself where available; they do not restrict the agent and are never described as if they did. Test `agent_uid_cannot_read_tenant`, run in CI against the two-user self-host deployment, not the desktop default. |
 | I-2 | **No tool takes or returns a server filesystem path.** | Schema lint `no_path_params`: the build fails on any parameter matching `*path*`, `save_to` or `*_file`. Landlock harness `no_tool_touches_outside_tenant`, run with fuzzed arguments. Static check: no `std::fs` in `ledger-mcp/src/tools/**` outside the ledger-store APIs. |
 | I-3 | **The journal holds all books state.** Settings, conventions, decisions, draft states, evidence links, annotations, extraction records and attestations are journaled. Reports are pure functions of the journal. `wanderbooks.toml` is import/export text only. The server never reads a toml file. | `ledger-core::settings` replay. Property test `settings_replay_is_pure` (Store, Snapshot and the view are identical). Test `toml_round_trip_zero_events`. The daemon binary contains no toml file-read code path. |
-| I-4 | **Money is exact Decimal, every entry balances, and posted entries are permanent.** Corrections are reversal drafts that need evidence. | Existing kernel, Kani and Lean. New `Step.draftReversal` and `Step.discard`, with preservation proofs. |
-| I-5 | **Evidence gate.** One function, `ledger_core::evidence::requirement`, decides whether an entry may post. Store, MCP and GUI all call it. Reversals are not exempt. Depreciation, amortization and closes are exempt by origin, and the exemption is sourced. | The gate lives in `Store::post_entry`. Test `reversal_needs_evidence`. Test `gui_and_server_gate_agree`. |
-| I-6 | **A confirmed commit is bound to the server's most recent preview of that exact draft** (stale or altered drafts are refused). It does not prove that a human saw the preview, and locally the key is readable by any process running as the human (advisory). | `preview_token` = HMAC-SHA256 over (entry id, canonical draft state, settings seq, evidence-link set, policy result), keyed with a server secret held in `keys/`. A post with a stale token is refused with guard `stale_preview`. |
-| I-7 | **The agent never holds a full TIN or vault key material.** | Vault records are sealed with HPKE to a public key whose sha256 is journaled. The private key exists only wrapped in keyslots held by the customer. Unwrap code is reachable only from human-page handlers and the GUI unlock path (module-privacy test). A pattern-based TIN scanner fails closed on every tool result. A canary TIN/key fuzz test covers responses, errors, logs and the access log. |
+| I-4 | **Money is exact Decimal, every entry balances, and posted entries are permanent.** Corrections are posted reversals; a reversal's evidence is its original's (D-47). ~~Corrections are reversal drafts that need evidence.~~ → D-47 | Existing kernel, Kani and Lean. New `Step.discard` (P4) with its preservation proof. ~~`Step.draftReversal`~~ → D-47 |
+| I-5 | **Evidence gate.** One function, `ledger_core::evidence::requirement` (P4), decides whether a draft entry may post. Store, MCP and GUI all call it. Reversals are exempt: their evidence is the original's (D-47, D-12). Depreciation, amortization, closes and the entries the document, payroll, payout and disposal commands post are exempt by origin, and the exemption is sourced. ~~Reversals are not exempt.~~ → D-47 | The gate is called from `Store::post_entry` (P4 step 2). Test `gui_and_server_gate_agree`. Test `a_reversal_needs_no_receipt_of_its_own`. ~~`reversal_needs_evidence`~~ → D-47 |
+| I-6 | **A confirmed commit is bound to the server's most recent preview of that exact draft or operation** (a stale or altered preview is refused). It does not prove that a human saw the preview; it detects drift (D-50). | `preview` = SHA-256 of the canonical preview payload (a draft's state and the settings seq; or the tool, its canonical arguments, the settings seq and the journal head seq), returned by every preview and required by every confirm from P4 on; a mismatch is refused with guard `stale_preview`. ~~`preview_token` = HMAC-SHA256 … keyed with a server secret held in `keys/`~~ → D-50 (a same-user key proves nothing; a digest detects the same drift). |
+| I-7 | **A TIN passes through the agent only on its way into the vault; no result shows one except the TIN-bearing exports the owner chose (D-28, D-29).** ~~The agent never holds a full TIN or vault key material.~~ → D-28 | The v1 vault (`ledger-vault`, one key in `keys/legacy.key`, carried in every backup: D-31, D-48). A pattern-based TIN scanner (`has_full_tin`, `redact_full_tins`; P7 fixes its separators) fails closed on every result and masks the access log. The canary TIN tests in `crates/ledger-cli/tests/spec_vault.rs`. ~~HPKE, keyslots, human-page handlers, the GUI unlock path~~ → D-48 |
 | I-8 | **The GUI never mutates and never uses the MCP.** Locally it reads the data root directly, read-only, as today. It finds the root from the platform's well-known location or from `wanderbooks gui <book>`, never from a project directory or `wanderbooks.toml`. `books.show` reaches it through `ops/show.jsonl` in the book's own data root, never through the MCP. Remote books (self-host) are viewed through a read-only replica stream (P9). | `ledger-gui/tests/read_only.rs`. Tests `gui_works_under_read_only_landlock` and `gui_finds_root_without_project_dir`. Test `replica_snapshot_equals_store_snapshot` (P9). The GUI writes nothing under the data root and leaves no files under `$HOME` except eframe preferences. |
 | I-9 | **Every access through the server is logged, and logging fails closed.** | A hash-chained `access.jsonl` (own genesis). Property: exactly one record per tool call, upload, download, human action, remote replica connection and backup, refusals included (as built, slice 7: a backup's own runs are records of `ops/backup.jsonl`; `books.back_up_now`, a tool call, is in the access log). The local viewer's direct reads are not logged, because the GUI never writes; the docs say so. |
 | I-10 | **Tamper evidence.** Every mutating result carries `head {seq, hash}`. The head is handed off when a session goes quiet. The customer can clone the archive and run `wanderbooks verify-archive --expect-head`. Backup and access records stay out of the journal, so they never advance the head they report. (As built, slice 7, D-31: each backup commit records its head; a restore's preview proves a clone and names its head, and weekly drills prove each target; no separate `verify-archive`.) | Test `backup_does_not_advance_head`. Test `clone_verify_expect_head` (as built: `a_restore_is_of_the_backup_previewed_only`, the drills). |
@@ -80,20 +105,20 @@ Paths are relative to `/home/swaits/Code/wanderbooks/crates/` unless they are ab
 | Isolation, and when it lands | A: P5. B: P6. C: P3. All three assumed a service user. | **Owner decision 2026-10-16: "you, hidden away."** The desktop gets no service user, sudo, system account or container. P2 moves the books into a server-owned data root (0700, outside every project directory) whose path no text ever names. This isolation is advisory and is labelled that way. Mechanical enforcement is the self-host deployment on another machine (P9). From P2 on, CI proves it with `agent_uid_cannot_read_tenant` against a two-user deployment. P2 needs journaled settings first (P1), because the server never reads toml. |
 | Settings import | A: server reads legacy toml (`from_legacy:true`). B/C: agent passes text. | **No import tool** (D-44: `import_settings` is gone, owner 2026-10-23). No settings file is read by any server or the viewer: old books bring theirs in, once, by `books adopt`, and `books.set_setting` changes settings after. `books adopt` refuses a journal with no `settings.set` unless `--toml FILE` is given. The human's CLI reads that file and passes the text. |
 | Before import | C: writes blocked by a `settings_not_imported` guard. | **Never block.** Daemon books always have journaled settings (enforced by `adopt` and `create`); the `legacy_files` mode of `dev-stdio` is gone (D-44). |
-| Preview/post | A: `confirmed`. C: split tools plus `preview_token`. B: seven read-only twins. | **Keep `confirmed`, add `preview_token`.** Add one read-only twin, `books.preview_entry`, for the high-frequency post path, so claude.ai doesn't prompt on every preview. Close, reconcile, dispose, `run_*` and purge keep `confirmed` plus the token. `confirmed` without a token is accepted for one release with a deprecation warning. This limits churn in `mcp_journeys.rs`, `oracle_mcp.rs` and `spec_mcp.rs`. |
-| `requiresUserInteraction` | B: on every post. | **Not used anywhere in this plan** (owner decision 2026-10-16: no added friction). Post, reverse, close, reconcile, dispose, `run_*`, `purge_tin`, `consolidate_duplicates` and (until D-44 removed it) `import_settings` carry `destructiveHint` plus `preview_token`, and the client's normal permission rules apply. Full TINs leave the agent's path through human pages: TIN-bearing outputs from P2, and all TIN handling in P7. |
+| Preview/post | A: `confirmed`. C: split tools plus `preview_token`. B: seven read-only twins. | **Keep `confirmed`, add `preview` (D-50).** Add one read-only twin, `books.preview_entry`, for the high-frequency post path. Every tool with `confirmed` returns `preview` when called without it and requires it when called with it, from P4 on, in one sweep (P4 step 4). ~~`preview_token` … `confirmed` without a token is accepted for one release~~ → D-50: a digest, no key, no grace period. |
+| `requiresUserInteraction` | B: on every post. | **Not used anywhere in this plan** (owner decision 2026-10-16: no added friction). Post, reverse, close, reconcile, dispose, `run_*`, `purge_tin`, `consolidate_duplicates` and (until D-44 removed it) `import_settings` carry `destructiveHint` plus `preview` (D-50), and the client's normal permission rules apply. ~~Full TINs leave the agent's path through human pages: TIN-bearing outputs from P2, and all TIN handling in P7.~~ → D-28, D-29, D-48 |
 | Harness deny rules | C: P0 `.claude/settings.json` deny rules. | **Rejected.** That is plan A, which is dropped. P0 corrects only the sentence in the server text and the generated template that caused the `cat` (`/home/swaits/Documents/the first company-Books/AGENTS.md:68-69`, "the journal is the evidence — read it"). This is a content fix, not a guard. |
 | Defect 12 rule | A: everything through `financing_accounts` is excluded. | **Classified by instrument (C).** Payment-card and third-party-network payments are excluded (1099-K) and listed. A member's personal cash or check through 2100 stays reportable. An unknown instrument is `undetermined`. |
 | Odd cent (17) | A: fair ties. C: rotating tie-break. | **Cumulative apportionment (B)**, extending `kernel::apportion` (kernel.rs:309), its existing Kani proofs, and `Apportion.lean`. |
 | Cash flow (1) | A/C: per-entry heuristics. | **Structural partition plus direct-method lines (B).** Footing becomes an identity derived from trial-balance balance. A nonzero difference is an engine error. |
-| Vault crypto | A: bespoke X25519/HKDF/XChaCha. | **HPKE, RFC 9180** (X25519-HKDF-SHA256, ChaCha20-Poly1305) (B). The public key's sha256 is journaled. W-9 files are sealed into the vault and never become blobs. |
-| Vault unwrap | A: model A first. C: client-side default. | **Model A, locally and on self-host.** The server unwraps inside one human request, or the local GUI unwraps in its own process after the human types the passphrase. Client-side unwrap (model B) is a requirement of the hosted service (section 11). |
-| Human-session bootstrap | A: `wanderbooks open-link`, which a same-user-ID agent can mint. | **Rejected.** Every `/h/` page needs a factor that requires human presence: a passkey with user verification, or the owner passphrase set at install. That passphrase becomes vault keyslot 1 in P7. |
-| Replica keyring route | A: `/replica/keyring` serves wrapped keyslots to `books:view`. | **Removed.** No route ever serves wrapped keyslots. Local GUI TIN click: the GUI reads the wrapped keyslot from the data root (read-only), unwraps in its own process after the human types the passphrase, copies the value to the clipboard only, and zeroizes. A remote replica (P9) carries no keyslot material; remote TINs are seen only on `/h/` pages. |
+| Vault crypto | A: bespoke X25519/HKDF/XChaCha. | ~~**HPKE, RFC 9180** … The public key's sha256 is journaled.~~ → D-48: the v1 vault stays (XChaCha20-Poly1305 under one key). W-9 files are sealed into the vault and never become blobs (built). |
+| Vault unwrap | A: model A first. C: client-side default. | ~~**Model A** … after the human types the passphrase.~~ → D-28, D-29, D-48: no passphrase and no human pages locally; the server opens the vault with the book's key for the tools the owner chose. Client-side unwrap (model B) is a requirement of the hosted service (section 11). |
+| Human-session bootstrap | A: `wanderbooks open-link`, which a same-user-ID agent can mint. | **Rejected.** ~~Every `/h/` page needs a factor … That passphrase becomes vault keyslot 1 in P7.~~ → D-28, D-48: no `/h/` pages locally; the owner passphrase (P2) guards the format-upgrade consent only. Remote `/h/` pages are P9c, not planned (D-51). |
+| Replica keyring route | A: `/replica/keyring` serves wrapped keyslots to `books:view`. | **Removed.** ~~Local GUI TIN click: … after the human types the passphrase~~ → D-29: the viewer copies a TIN to the clipboard with the book's key, no passphrase (3.6 as built). The replica itself is P9c, not planned (D-51). |
 | TIN output scanner | A: match decrypted vault records. | **Pattern-based** (extend `has_full_tin`/`redact_full_tins` behind S:870 to every result, with the vault's last-four set as a hint). Fails closed. Documented as a pattern check. |
-| Extraction | In-process (A/B). | **Sandboxed subprocess** `ledger-extract` (C): rlimits, seccomp, no network, Landlock read-only on the input blob. |
-| Archive vs Landlock | A: server shells out to git, which contradicts its own Landlock rules. | **A separate archive process, `ledger-mcp archive`,** that the host starts beside the server, after the server holds every book's lock, and stops with it (3.9); each confines itself on its own. The archive process has read-only Landlock on `books/<id>/{journal.jsonl,blobs}`. Locally, Landlock ABI ≥ 4 limits its TCP connect to the target's port (443 or 22); it cannot filter by host, and an unprivileged process has no host-level egress filter, so that exists only under a system unit on self-host (`IPAddressAllow`). Locally the server listens on Unix sockets (3.9); if the owner turns TCP on, it binds 127.0.0.1 first. Either way Landlock ABI ≥ 4 then denies all further TCP bind and connect, so the local server has no egress. As built (slice 7, D-31): no archive process; the server runs git itself (3.7 as built), so slice 8's Landlock must let it run git and reach the backup folder and repository. On self-host, a system unit adds `IPAddressDeny=any` (loopback allowed); if the built-in authorization server fetches CIMD documents (D-7 a), connect is allowed to port 443 only and `IPAddressDeny` narrows to private and link-local ranges (loopback still allowed), matching the CIMD SSRF guard. This confines the server only; it does not restrict the agent. |
-| Attention engine location | A: `ledger-store/attention.rs`. B: wasm-clean `ledger-view`. | **New crate `ledger-view`** (depends only on `ledger-core`), holding `attention::find`, `next_steps`, the evidence gate view, and a `BooksView` trait implemented by Store and Snapshot. A pure-Rust evidence projection (dropping SQLite from the viewer) is deferred to the hosted service's web viewer (section 11). |
+| Extraction | In-process (A/B). | ~~**Sandboxed subprocess** `ledger-extract` (C): rlimits, seccomp, no network, Landlock read-only on the input blob.~~ → D-32, D-53: in-process, in `ledger-import` (P6), with `catch_unwind` and size caps; no new crate. |
+| Archive vs Landlock **[Superseded → D-31 (no archive process), D-32 (no Landlock, no seccomp); kept for the record]** | A: server shells out to git, which contradicts its own Landlock rules. | **A separate archive process, `ledger-mcp archive`,** that the host starts beside the server, after the server holds every book's lock, and stops with it (3.9); each confines itself on its own. The archive process has read-only Landlock on `books/<id>/{journal.jsonl,blobs}`. Locally, Landlock ABI ≥ 4 limits its TCP connect to the target's port (443 or 22); it cannot filter by host, and an unprivileged process has no host-level egress filter, so that exists only under a system unit on self-host (`IPAddressAllow`). Locally the server listens on Unix sockets (3.9); if the owner turns TCP on, it binds 127.0.0.1 first. Either way Landlock ABI ≥ 4 then denies all further TCP bind and connect, so the local server has no egress. As built (slice 7, D-31): no archive process; the server runs git itself (3.7 as built), so slice 8's Landlock must let it run git and reach the backup folder and repository. On self-host, a system unit adds `IPAddressDeny=any` (loopback allowed); if the built-in authorization server fetches CIMD documents (D-7 a), connect is allowed to port 443 only and `IPAddressDeny` narrows to private and link-local ranges (loopback still allowed), matching the CIMD SSRF guard. This confines the server only; it does not restrict the agent. |
+| Attention engine location | A: `ledger-store/attention.rs`. B: wasm-clean `ledger-view`. | ~~**New crate `ledger-view`** … a `BooksView` trait implemented by Store and Snapshot.~~ → D-53: `ledger-package` already holds that trait (`PackageBooks`, over `Store` or `Snapshot`, built in P2 slice 6); Needs attention and `next_steps` move beside it (U0b). A pure-Rust evidence projection is deferred to the hosted service's web viewer (section 11). |
 | Inline bytes | A: 256 KiB. B: 1 MiB without sha. C: 256 KiB plus sha. | ~~**256 KiB with a mandatory matching sha256.** A mismatch is refused with guard `base64_corrupt`, whose remedy is `books.begin_upload`.~~ **Superseded by D-46 (2026-10-23): no inline bytes at all, in or out; files come only by upload and go only by download.** `/mcp` body cap is 1 MiB. |
 | Same-user mode | C: an announced tier. B: refuse to start without an acknowledgement flag. | **The local default, with no gate flag** (owner decision 2026-10-16). `books.start`, Needs attention, `wanderbooks doctor` and the docs report `isolation: "same_user (advisory)"`. |
 | Viewer channel | A: replica over a peer-credential socket. | **Direct read-only disk access locally.** This is the owner's rule: "the GUI has r/o access to ALL state on disk; it never mutates; it doesn't go through the MCP." `books.show` requests reach the GUI through `ops/show.jsonl` in the book's own data root, which the server writes and the GUI watches. Presence is a shared `flock` that the GUI holds on a read-only descriptor of `ops/viewer.lock`. Locally there is no socket, no peer-credential check and no executable check. The replica protocol exists only for viewing remote books (P9). |
@@ -105,7 +130,7 @@ Paths are relative to `/home/swaits/Code/wanderbooks/crates/` unless they are ab
 
 ### 3.1 Processes
 
-From P2 every local program here is a mode of the one `wanderbooks` executable (D-22): `ledger-mcp serve` is its server mode, `ledger-gui` its viewer, `ledger-extract` its extractor, each run as its own process. The names below are the crates'. Claude Code and Codex reach a local book through the bridge, `wanderbooks mcp` (stdio, D-23), which speaks MCP to the server over a local socket (3.9).
+From P2 every local program here is a mode of the one `wanderbooks` executable (D-22): `wanderbooks server` is its server mode (the `ledger-mcp` crate), `wanderbooks gui` its viewer (`ledger-gui`), each run as its own process. ~~`ledger-extract` its extractor~~ → D-53. **[The figure and table below are the 2026-10-16 design; superseded parts: Landlock/seccomp and the archive process (D-31, D-32), `/h/*` and `/replica/*` (D-28, D-51), the extractor subprocess (D-53).]** The names below are the crates'. Claude Code and Codex reach a local book through the bridge, `wanderbooks mcp` (stdio, D-23), which speaks MCP to the server over a local socket (3.9).
 
 ```
                   agents (any directory, any client)                               human
@@ -136,7 +161,7 @@ The data root is `$XDG_DATA_HOME/wanderbooks` on Linux (default `~/.local/share/
 | Books server (local) | the server mode of `wanderbooks` (the `ledger-mcp` crate), listening on `run/mcp.sock` (and on 127.0.0.1:7411 only if the owner turns TCP on), started by the first opener (the app, an agent's bridge, or `wanderbooks serve`) through the host mode, and running while any opener holds it (D-21, D-23, 3.9; the host reads no books: it starts the server and the archive process, each confining itself, and stops both). TCP is off by default (3.9) | the human | yes, sole writer, holds the flock (`ledger-store/src/store.rs:74-89`) |
 | Books server (self-host, P9) | the same binary under a system unit on another machine | a dedicated account on that machine | yes, sole writer |
 | Archive pusher | `ledger-mcp archive --book <id>` (as built, slice 7, D-31: none; the server pushes) | the server's account, a separate process started beside the server | read-only journal and blobs |
-| Extractor | `ledger-extract` (subprocess) | inherits, sandboxed | the single input blob, via fd |
+| ~~Extractor~~ | ~~`ledger-extract` (subprocess)~~ → D-53: extraction runs inside the server (P6) | | |
 | Viewer | `wanderbooks gui <book>`, the viewer mode (the `ledger-gui` crate; local, direct, the default; what opening the app shows); `wanderbooks gui --books <url>` (remote replica, P9) | the human | local: yes, read-only, never writes. Remote: none |
 | CLI | `wanderbooks` (ledger-cli) | the human | **by design never**. Talks to `run/admin.sock` (peer-credential check: same user ID as the server). The admin socket cannot read books data; it can create or adopt books and mint agent tokens, admin-scope ones included. The peer-credential check keeps other local accounts out; any process running as the human, agents included, can use it (advisory, like the rest of the desktop deployment). |
 | Agent bridge | `wanderbooks mcp --book <id>` (stdio to the agent; `--url` for a remote book, P9) | the agent's user | never; it has no data-dir flag. It may start the host (D-23), whose server then reads the disk as itself |
@@ -150,7 +175,7 @@ Replaces `StreamableHttpServerConfig::default()` in `serve_http` (`ledger-mcp/sr
 - `legacy_session_mode=true` while Cursor and claude.ai stay on ≤ 2025-11-25.
 - `max_request_body_bytes = 1 MiB`.
 
-Both protocol eras are served: `initialize` and `server/discover` are both built from `get_info`, which calls `refresh` first, with `cacheScope: private` and `ttlMs: 60000`. rmcp features gain `elicitation` and `request-state` (`ledger-mcp/Cargo.toml:22`). Tools read the principal through `Extension<http::request::Parts>`. Long calls (CPA package, audit, extraction backfill, consolidation) run under `spawn_blocking` and return `{job_id}` when they exceed 20 s; `books.job` polls. The 240 s claude.ai limit and Codex's 60 s are therefore never hit.
+Both protocol eras are served: `initialize` and `server/discover` are both built from `get_info`, which calls `refresh` first, with `cacheScope: private` and `ttlMs: 60000`. rmcp features gain `elicitation` and `request-state` (`ledger-mcp/Cargo.toml:22`). Tools read the principal through `Extension<http::request::Parts>`. Long calls (CPA package, audit, consolidation) run under `spawn_blocking`. ~~and return `{job_id}` when they exceed 20 s; `books.job` polls. The 240 s claude.ai limit and Codex's 60 s are therefore never hit.~~ → D-53: no jobs locally; the extraction backfill is a command (P6).
 
 **Concurrency.** One `Store` per book behind `tokio::sync::Mutex` (replacing the std mutex at S:553). Tool bodies use `blocking_lock` inside `spawn_blocking`. Readers use a `Snapshot` refreshed after each write, so reports never wait on the writer.
 
@@ -164,7 +189,7 @@ Both protocol eras are served: `initialize` and `server/discover` are both built
 | `books:admin` | tokens, access log, backup run, consolidate, invite | owner's agent (local default), owner |
 | `books:view` | remote replica only (P9) | viewer client only, never agents |
 
-No scope unwraps the vault. Unwrap happens only inside an `/h/` request that has just presented a human factor, or inside the local GUI process after the human types the passphrase (3.6). *Until P7 moves TINs to the human pages, the three tools that can still put a full TIN out (`vendor_1099` with `include_tins`, `export_cpa_package`, `get_w9`) need books:admin, and sealing one (`set_tin`, `set_w9`) needs books:post (P2 slice 4, review).*
+~~No scope unwraps the vault. Unwrap happens only inside an `/h/` request that has just presented a human factor, or inside the local GUI process after the human types the passphrase (3.6).~~ → D-28, D-29: the server opens the vault for `set_tin`, `set_w9`, `get_w9`, `vendor_1099 include_tins` and `export_cpa_package`, which need books:post or books:admin as the As-built notes say; the viewer reads it with the book's key. *Until P7 moves TINs to the human pages, the three tools that can still put a full TIN out (`vendor_1099` with `include_tins`, `export_cpa_package`, `get_w9`) need books:admin, and sealing one (`set_tin`, `set_w9`) needs books:post (P2 slice 4, review).*
 
 - **Local:** a static bearer `wb_` + 32 random bytes, stored only as a sha256, compared in constant time, kept in the OS keyring, minted by `wanderbooks connect`, and revocable with `wanderbooks token revoke`. Agent and server run as the same user, so the token identifies the client and keeps other local users and web pages out. It is not a wall against processes running as the human.
   - Claude Code: `wanderbooks connect claude-code --book <book>` (also the app's "Connect Claude Code") runs `claude mcp add --scope user wanderbooks-<book> -- <absolute path of wanderbooks> mcp --book <book>`: stdio, through the bridge (D-23). The bridge reads the token from the keyring itself, so Claude's config holds no token and no helper. It offers a `permissions.allow mcp__wanderbooks-<book>` line.
@@ -177,7 +202,7 @@ No scope unwraps the vault. Unwrap happens only inside an `/h/` request that has
     ```
 
     The bridge answers `initialize` within Codex's startup timeout, opening the books first if they are closed. A client that needs HTTP can be pointed at `http://127.0.0.1:7411/b/<book>/mcp` with `wanderbooks token print` as its header helper once the owner turns TCP on (3.9); it holds no lease and needs the books already open. No `default_tools_approval_mode` is written. Codex documents `writes` as prompting for every tool not marked read-only, which would prompt on every post, close and reconcile (against owner decision 3); leaving the key unset keeps Codex's normal rules.
-- **Self-host, remote (P9):** the same static bearer over TLS for clients that send headers (Claude Code, Codex). claude.ai and ChatGPT need OAuth, so the self-hosted server offers OAuth 2.1 on this remote path only (D-7):
+- **Self-host, remote (P9a):** the same static bearer over TLS for clients that send headers (Claude Code, Codex). **[P9b, after Q-6 (D-51): claude.ai and ChatGPT need OAuth 2.1; the recommendation is an external identity provider (D-7 b), so the list below is the design only if the owner chooses D-7 a.]**
   - RFC 9728 PRM per book; 401 with `resource_metadata`.
   - 403 `insufficient_scope` for step-up.
   - RFC 8707 audience equal to the book URI.
@@ -188,7 +213,7 @@ No scope unwraps the vault. Unwrap happens only inside an `/h/` request that has
   - Signing keys held through systemd-creds.
   - The self-hosted server is its own issuer (D-7 a), or it validates an external IdP's tokens (D-7 b). Codex uses `codex mcp login`.
 
-**Human factor for `/h/`:** passkey with user verification (webauthn-rs; localhost is a secure context), or the owner passphrase (Argon2id, RFC 9106, m=64 MiB, t=3, p=1). Locally the passphrase is the default. Cookies are `__Host-` and SameSite=Strict, with CSRF tokens and CSP `default-src 'self'`. URL-mode elicitation is used where the client declares it, and the server requires that the session's `sub` equal the token's `sub`.
+**Human factor for `/h/`:** **[Superseded → D-28 (no local `/h/` pages), D-51 (remote `/h/` pages not planned). The owner passphrase (Argon2id, as built below) guards the format-upgrade consent only.]** ~~passkey with user verification … the session's `sub` equal the token's `sub`.~~
 
 **As built (P2 slice 4), and where it departs:**
 - **Tokens** are `wb_` and 64 hex digits (32 random bytes), one book and one name each (`agent` unless named), kept only as a SHA-256 in `auth/principals.jsonl`: a chain of `token.created` (with the token it replaces) and `token.revoked` records, each with its own hash besides the chain's (so a change to the last record is found too), replayed at start; one that can't be read refuses every agent with why (the list of books still answers). Checked in constant time against every live token. Made, listed, checked and revoked only through the admin socket: `wanderbooks token create --book ID [--name N] [--scopes read,write,post,admin] [--replace] | list | revoke | check | print`. A token made is kept in the keyring, and read back from it as kept, before anything is said of it, or revoked again; `print` is the only way its text is shown. `check` says whether the token kept here is the books' live one (exit 0), an old one, one the books no longer have, or none, asking the server by its SHA-256 alone (admin op `token_check`). `connect` (slice 8) will mint through the same path.
@@ -197,7 +222,7 @@ No scope unwraps the vault. Unwrap happens only inside an `/h/` request that has
 - **Scopes** (`ledger-mcp/src/scopes.rs`): a table of every tool. Read-only tools need books:read; a tool with `confirmed` needs books:write to preview and books:post to act; tools that post at once, settings commits, voids, renumbering, corrections and role changes need books:post, and so do the controls on posting (setting an approval rule, retiring a convention, approving an entry) and sealing a TIN (`set_tin`, `set_w9`, which can replace one); `books.access_log` and the tools that can still put a full TIN out (`vendor_1099`, `export_cpa_package`, `get_w9`) need books:admin, and so do backing up now and choosing where backups go (a `backup.*` setting, by `set_setting` or an imported `[backup]` table; slice 7): a backup is the whole book. A token is offered only the tools it can call (the list is then cached per caller, `cacheScope: private`); a call beyond its scopes is refused, unrun, naming the scope. Reading a resource needs books:read. A local token gets all four unless told otherwise.
 - **The access log** (`books/<id>/access.jsonl`, own genesis) records every tool call and resource read, refusals included: who (token id, name), the client as it named itself (cut to 64 characters, any full TIN masked), the request id, the tool or resource, a SHA-256 of the arguments' canonical JSON with what may be a TIN masked first (a value under a key naming one, any key or text holding one in a shape the TIN scanner knows, any number of eight digits or more: an unsalted digest of a TIN whose last four the books show is broken by 10^5 guesses; a file's base64 is hashed as it is, never spelling a TIN in the clear), what came of it (`ok`, `error`, or `refused` with a code), and the journal's head after the call's own last write, if it wrote, whatever it answered (taken under the store's lock as the call lets go). A call's record is written on its own blocking thread while it still counts as running (one that panics part way included, with what it wrote), so a close waits for it too, and before the answer goes; one that can't be written stops the book (no more requests until a restart) and the answer says the call ran (a call refused as not run, by a close or a stopped server, keeps its "not run" code). A tool no table names is refused unrun. Known gap: a crash of the process between a call's journal write and its record leaves the journal ahead of the log for that call. A damaged log, or one holding a record that isn't an access, keeps its book closed, with why. `books.access_log` (admin) reads it newest first, filtered by token, action or outcome, paged with `before`.
 - **The owner passphrase** is an Argon2id hash (m=64 MiB, t=3, p=1, its own salt) in `auth/owner.json`, replaced whole; 12 to 1024 characters, no other rule (NIST SP 800-63B); a check refuses a hash weaker than that (changed by hand). `setup` at a terminal asks for it (twice); elsewhere it says to run `wanderbooks passphrase`, which works only at a terminal, unechoed, and asks for the one in force before a change. (Advisory, like everything local: a process running as the human can drive a pseudo-terminal and set the first one.) A stored hash of another Argon2 version, with a short salt or output, or asking a check for more than 1 GiB, 16 passes or 8 lanes is refused as changed by hand. The command line wipes token texts and passphrases from memory once used (the server and the bridge, which hold tokens for their lifetime, don't). `doctor` says whether it is set and lists the tokens. Its uses (`/h/` pages, consents) come with the slices that build them.
-- **Known, product-wide (for P7):** the TIN scanner (`has_full_tin`) takes hyphens and spaces as separators, not commas or parentheses, so "123,45,6789" passes it in party fields and the access-log digest alike.
+- **Known, product-wide (P7, 8.2):** the TIN scanner (`has_full_tin`) takes hyphens and spaces as separators, not commas or parentheses, so "123,45,6789" passes it in party fields and the access-log digest alike.
 - **Departures:** rate limits (tower-governor) wait for P9: on a socket only this account can reach, nothing could be limited that couldn't read the files instead. Principals are per book, not lists of books. `initialize` (the connect text, composed from the book's settings) is given to any valid token and isn't recorded. Changing the token record holds its lock across one fsync, briefly delaying token checks.
 
 ### 3.4 Data layout (server-owned data root, 0700)
@@ -212,16 +237,15 @@ No scope unwraps the vault. Unwrap happens only inside an `/h/` request that has
   legacy/<id>-<date>/           old copies moved here at adoption if the owner agrees (Q-3); the server never deletes them
   books/<id>/                   == today's data dir layout, unchanged (Store/Snapshot/verify_and_heal untouched)
     journal.jsonl  blobs/aa/bb/<sha>  wanderbooks.v<N>.db(+wal/shm, one per schema; P3)  wanderbooks.lock
-    vault/{tin,w9}-<party>.bin  HPKE-sealed (v2); moved from <books>/vault (S:511)
-    keys/keyring.json           {pubkey, slots:[passphrase|recovery|passkey_prf|member_passkey]}, all wrapped
-    keys/preview.key            HMAC key for preview_token (0600)
-    keys/legacy.key             v1 raw key, P2..P7 only, deleted at rekey
+    vault/{tin,w9}-<party>.bin  sealed with the book's v1 key (D-48: no v2)
+    keys/legacy.key             the book's vault key (D-31: travels in every backup; D-48: stays)
+    (keys/keyring.json, keys/preview.key: not built → D-48, D-50)
     access.jsonl                hash-chained access log, own genesis "wanderbooks-access-v1"
     ops/backup.jsonl ops/heads.jsonl   not journaled
     ops/show.jsonl              books.show requests: the server appends (bounded, rotated), the GUI watches; not journaled
     ops/viewer.lock             created by the server; the GUI holds a shared flock on a read-only descriptor (presence)
     uploads/<id>.part           staging, swept after 15 min (a backup being restored is cloned into books/.restore-* instead: 3.7 as built)
-    derived/<sha>/page-N.png    disposable page-raster cache
+    derived/<sha>/page-N.png    disposable page-raster cache (P6)
     archive.git/                bare; journal.jsonl + blobs/ + vault/ + keys/ + access.jsonl, as they are (D-31, not encrypted); destinations D-30
 ```
 
@@ -231,9 +255,9 @@ The server, the CLI and the GUI find the data root with one shared function (`le
 
 | Key | Location | Usable by |
 |---|---|---|
-| Vault public key | `keyring.json`; sha256 journaled (`vault.created`/`vault.rotated`) | server, to seal new TINs. A swap fails `books.verify` and `verify-archive`. |
-| Vault private key | wrapped per keyslot; plaintext only inside one `/h/` request (server) or one GUI unlock (in the GUI process, local), then zeroized | the human holding the passphrase, passkey PRF, recovery key, or an optional CPA keyslot |
-| `preview.key` | `keys/` | server |
+| Vault key (v1) | `keys/legacy.key` (0600), in every backup (D-31) | the server (sealing and the TIN-bearing exports the owner chose, D-29) and the viewer (clipboard copy) |
+| ~~Vault public key / private key (keyslots)~~ | → D-48: not built | |
+| ~~`preview.key`~~ | → D-50: not built | |
 | Agent tokens | sha256 in `auth/`; plaintext in the user's keyring, which any process running as that user can read (advisory locally) | the agent's user |
 | Archive credentials | OS keyring entry read by the archive process (local); systemd-creds for the archive unit (self-host). As built (slice 7): the owner's own ssh agent and git credential helpers, through the server | archive pusher |
 | At-rest encryption | full-disk encryption (desktop); encrypted volume (self-host recipe) | protects against stolen disks |
@@ -246,15 +270,15 @@ The server, the CLI and the GUI find the data root with one shared function (`le
   - **`books.show`:** the server appends `{seq, ts, target}` to `ops/show.jsonl` (bounded, rotated, not journaled). The GUI watches it with the same watcher it uses for the journal. This replaces `viewer::request` and the `$XDG_RUNTIME_DIR` viewer file (`ledger-store/src/viewer.rs`). A show request only navigates, so a stray writer can do no more than move the view.
   - **Presence:** the GUI holds a shared `flock` on `ops/viewer.lock`, opened read-only. The server probes the lock to report `viewer.open` and whether a show request was delivered.
   - Locally there is no socket, no peer-credential check and no executable check.
-- **Remote: replica** (P9, self-host books only), `ledger-gui --books <url>` with the static token or OAuth, and `books:view`:
+- ~~**Remote: replica**~~ **[P9c, not planned → D-51; the design is kept for the record]** (self-host books only), `ledger-gui --books <url>` with the static token or OAuth, and `books:view`:
   - It pulls `/replica/journal?after_seq=N` (SSE of raw canonical lines) into `Snapshot::from_lines(LineSource, BlobSource)`. This reuses the parse, chain-check and replay loop of `snapshot.rs:137-183`.
   - Blobs are fetched on demand, hash-verified, and kept in a 512 MiB in-memory LRU, never on disk. "Not fetched" is a separate state from "damaged" (fixes `books.rs:456-478`, `attention.rs:551-568`).
   - `/replica/events` carries `books.show` targets per principal, and presence.
   - The replica carries no keyslot material.
 - **Settings come from the journal.** Deleted: `data.rs:76-87,157-162,188-195`, `books.rs:536-542`, `main.rs:47-53`, `--books-toml`.
-- **Needs attention** comes from `ledger_view::attention::find`, so it is the same list as `books.start`.
+- **Needs attention** comes from one function in `ledger-package` over `PackageBooks` (U0b; ~~`ledger_view::attention::find`~~ → D-53), so it is the same list as `books.start`.
 - **Save a copy / Open with system app** on any document (`Snapshot::attachment_bytes`, snapshot.rs:328). Fixes the viewer half of defect 3.
-- **TIN click:** locally, the GUI prompts for the passphrase, reads the wrapped keyslot and the sealed record from the data root, unwraps in its own process, and returns the value to the clipboard-only path (`tests/tin_copy.rs` behaviour), then zeroizes. This is not access-logged, because the GUI never writes; the docs say so. Remotely, TINs appear only on `/h/` pages.
+- **TIN click:** ~~locally, the GUI prompts for the passphrase, reads the wrapped keyslot … then zeroizes.~~ → D-29 (as built below): a click copies the TIN to the clipboard with the book's key, no passphrase. This is not access-logged, because the GUI never writes; the docs say so. ~~Remotely, TINs appear only on `/h/` pages.~~ → D-51
 - `[viewer] open_at_start` becomes a per-human eframe preference (`app.rs:833`), not journaled.
 - **Color schemes** (owner, 2026-10-19: "full blown colorscheme support … all the top neovim style colorschemes", "on the order of 20 families, each with a flyout of all its variants", a light/dark/all filter; Ayu included). The button in the sidebar's lower corner opens a menu: the filter, then, alphabetically and all on screen at once, the viewer's own family (Wanderbooks Light and Dark) and twenty families of editor schemes (Ayu, Catppuccin, Cyberdream, Dracula, Everforest, GitHub, Gruvbox, Kanagawa, Material, Melange, Monokai Pro, Night Owl, Nightfox, Nord, One Dark, Oxocarbon, Rosé Pine, Solarized, Sonokai, Tokyo Night), each a flyout of all its variants, alphabetical, each a row with a strip of its colors that chooses it; a row rested on for 50 ms is worn live until the pointer moves on (owner, 2026-10-19), and only a click keeps it. The choice and the filter are per-human eframe preferences like `open_at_start`; nothing is journaled and no figure changes (`schemes.rs` paints nine pages in all 80 schemes and checks every painted word and figure is the same, in the same place, and readable on what is under it). Every palette keeps every text color (figures, gains and losses, warnings, links, the faintest text) at WCAG AA contrast (4.5:1) on every background it is drawn on: a scheme's own color that falls short keeps its hue and only changes lightness, and gains, losses and text stay plainly different to the eye. The scheme pins egui's light or dark theme, so the system flipping changes nothing. The palettes come from each scheme's official source (`docs/color-schemes.md`).
 
@@ -270,7 +294,7 @@ The server, the CLI and the GUI find the data root with one shared function (`le
 
 ### 3.7 Backup and tamper evidence
 
-The archive process (`ledger-mcp archive`: locally started by the host after the server, and stopped with it, 3.9; a system unit on self-host) runs on a head-advance signal (debounced 30 s), on `period.closed`, on a timer while it runs, and once when it starts, for anything left unpushed. The books change only while they are open, so a backup is never missed while they are closed. "Back up now" in the viewer is the lease socket's `back_up_now` intent (3.9), opening the books first if they are closed. Each run:
+**[The three paragraphs below are the 2026-10-16 design; the As-built notes (D-30, D-31) are what exists: no archive process, no encryption, no `fetch`, no `verify-archive`, no `ops/heads.jsonl`.]** The archive process (`ledger-mcp archive`: locally started by the host after the server, and stopped with it, 3.9; a system unit on self-host) runs on a head-advance signal (debounced 30 s), on `period.closed`, on a timer while it runs, and once when it starts, for anything left unpushed. The books change only while they are open, so a backup is never missed while they are closed. "Back up now" in the viewer is the lease socket's `back_up_now` intent (3.9), opening the books first if they are closed. Each run:
 1. Verifies the chain.
 2. Commits the new journal lines and blobs to `archive.git` (one commit per push; the message is the seq range plus the head).
 3. Pushes to the targets: git remote, S3, dir, or `pull` (the customer runs `wanderbooks fetch`).
@@ -304,10 +328,10 @@ Email or webhook head delivery and a witness log belong to the hosted service (s
 | Processes | one server (as built, slice 7: which backs the books up itself), open while the app, an agent session or a terminal holds them (D-23) | the same binaries under system units, plus TLS (Caddy) and, optionally, `wanderbooks tunnel` |
 | Runs as | the human | a dedicated account; agents have no account on that machine |
 | Isolation | `same_user (advisory)`: hidden, not locked | `service_user (enforced)`: machine and user-ID boundary |
-| Auth | static bearer in the keyring; `/h/` uses the owner passphrase (or a passkey) | static bearer over TLS for header-capable clients; OAuth 2.1 for claude.ai and ChatGPT (D-7); `/h/` uses a passkey or the passphrase |
-| Vault unwrap | model A (server, inside the human request), plus the in-process GUI unlock | model A |
-| Viewer | reads the data root directly, read-only | replica over `books:view` |
-| Residual risk | a process running as the human (for example an agent that deliberately goes hunting) can read the data root, the agent token and the wrapped keyslots; TIN plaintext still needs the passphrase. The server's Landlock and seccomp confine only the server | whoever administers that machine |
+| Auth | static bearer in the keyring (no `/h/` pages: D-28) | static bearer over TLS for header-capable clients (P9a); OAuth 2.1 through an external identity provider for claude.ai (P9b, D-7 b recommended, Q-6) |
+| Vault | the book's v1 key, no passphrase (D-29, D-48) | the same |
+| Viewer | reads the data root directly, read-only | ~~replica over `books:view`~~ → D-51: a backup clone opened read-only |
+| Residual risk | a process running as the human (for example an agent that deliberately goes hunting) can read the data root, the agent token and the vault key (D-29: TINs get no handling beyond the vault). ~~The server's Landlock and seccomp confine only the server~~ → D-32 | whoever administers that machine |
 
 A multi-tenant hosted service is out of scope for this plan; see section 11.
 
@@ -326,7 +350,7 @@ The books are open while something holds them; there is no background service. T
 
 **The server's process (P2 slice 3).** The server is the hidden mode `wanderbooks server`, started by the host with a pipe on its standard input; it runs until that input ends (the host let go of it, or died) or it gets SIGTERM, SIGINT or SIGHUP (watched from before the books are opened). It takes `run/server.lock` before anything else (a second server waits for it, touching nothing, and leaves if told to close first), opens and verifies every book (a book that won't open is listed with why, and the others are served), binds both sockets, and only then prints `ready` on its standard output. `run/mcp.sock` speaks Streamable HTTP over the Unix socket, `/b/{id}/mcp` per book, so local and remote share one code path (3.2); `run/admin.sock` takes one JSON line and answers one (`list`, `create`, `adopt`). A socket path longer than the system allows is reached through `/proc/self/fd` on Linux. Closing: new requests are refused, unrun (HTTP 503 at the door, or, for a call already past it, JSON-RPC error -32050 "closing: this call wasn't run"; the bridge sends either again once the books are back); every request already running finishes its work, however long, whether or not its client is still there; answers on their way out get 10 s more (a second signal skips that wait, never the first); then the sessions end and the sockets go. A request is at most 1 MiB (64 MiB until slice 5 gave files their own route). A book in the root keeps its vault in its own `vault/` and its v1 key in its own `keys/legacy.key` (0700 and 0600, made private whenever first written), and no tool writes a file anywhere in the root (the server keeps uploads on their way in in the book's own `uploads/`, slice 5). Adoption is a preview, then a confirm tied to the head the preview read; entries of a settings file the books don't know are refused unless skipped, its comments are shown, the vault key it names must be the one given, and the key must open every vault record. Open for slice 8: under Landlock the server can't read an adoption's source outside the root, so adoption needs another way in by then.
 
-**The host's process (P2 slice 3).** `wanderbooks host` closes every descriptor above 2 it was handed, refuses to run confined, takes `run/host.lock` (waiting up to 30 s for a host that is closing; one that finds a live host exits at once), binds `run/lease.sock`, and starts the server from `/proc/self/exe`, naming the root on its command line only when the host itself was given one (tests): nothing in a process list names it. Ending leases, it tells each holder why and closes the server only once they have let go (at most 2 s), so holders stop sending before it closes; a call already on its way is refused at the door, unrun, and sent again once the books are back. A closing server is never killed, however long its last call runs; a new server waits for an old one still finishing (its host killed) rather than fail. A restart begins when the new version appears, not at a quiet moment: the server first finishes every call in progress (none is cut off), and calls arriving meanwhile wait for the new server (up to 60 s); waiting for idle comes with jobs (`books.job`), which are what can run long. On a restart the old host hands over: it lets go of `host.lock` and keeps `update.lock` until the new host answers, so waiting holders find it. A holder starts a host only when none holds the lock; one that died at once is noticed within 2 s; a server that fails soon after opening counts as failing (only 60 s open clears the count). Lease records carry the holder's process as the kernel reports it. The lease reasons are `closed_by_owner`, `restarting`, `closing` (the host is closing because nothing held it: hold again, a new host will answer; the owner's close, by the menu, `wanderbooks close` or a signal to the host, is always `closed_by_owner`, and a holder that had held stays closed) and `server_failed`. The bridge never sends a call the agent cancelled before it was sent (MCP owes no answer to a cancelled request), answers a ping itself while the books open, refuses JSON-RPC batches request by request, passes no client offer it can't carry back (sampling, elicitation, roots), reports a call answered with nothing as possibly run, and carries the per-request protocol headers of the 2026-07-28 era. Sessions on the server time out only after 24 h without a message (rmcp's idle timer ignores a call in progress, so a shorter one could cut a long call off); the bridge ends its own when its stdin closes or it is signalled. `wanderbooks doctor` (a first form, completed in slice 8) says whether the books are open, what holds them, and the host's and server's last log lines, naming no folder. Tests shorten the timings with a hidden `--test-knobs` flag, passed down from holder to helper to host.
+**The host's process (P2 slice 3).** `wanderbooks host` closes every descriptor above 2 it was handed, refuses to run confined, takes `run/host.lock` (waiting up to 30 s for a host that is closing; one that finds a live host exits at once), binds `run/lease.sock`, and starts the server from `/proc/self/exe`, naming the root on its command line only when the host itself was given one (tests): nothing in a process list names it. Ending leases, it tells each holder why and closes the server only once they have let go (at most 2 s), so holders stop sending before it closes; a call already on its way is refused at the door, unrun, and sent again once the books are back. A closing server is never killed, however long its last call runs; a new server waits for an old one still finishing (its host killed) rather than fail. A restart begins when the new version appears, not at a quiet moment: the server first finishes every call in progress (none is cut off), and calls arriving meanwhile wait for the new server (up to 60 s); ~~waiting for idle comes with jobs (`books.job`), which are what can run long.~~ → D-53 On a restart the old host hands over: it lets go of `host.lock` and keeps `update.lock` until the new host answers, so waiting holders find it. A holder starts a host only when none holds the lock; one that died at once is noticed within 2 s; a server that fails soon after opening counts as failing (only 60 s open clears the count). Lease records carry the holder's process as the kernel reports it. The lease reasons are `closed_by_owner`, `restarting`, `closing` (the host is closing because nothing held it: hold again, a new host will answer; the owner's close, by the menu, `wanderbooks close` or a signal to the host, is always `closed_by_owner`, and a holder that had held stays closed) and `server_failed`. The bridge never sends a call the agent cancelled before it was sent (MCP owes no answer to a cancelled request), answers a ping itself while the books open, refuses JSON-RPC batches request by request, passes no client offer it can't carry back (sampling, elicitation, roots), reports a call answered with nothing as possibly run, and carries the per-request protocol headers of the 2026-07-28 era. Sessions on the server time out only after 24 h without a message (rmcp's idle timer ignores a call in progress, so a shorter one could cut a long call off); the bridge ends its own when its stdin closes or it is signalled. `wanderbooks doctor` (a first form, completed in slice 8) says whether the books are open, what holds them, and the host's and server's last log lines, naming no folder. Tests shorten the timings with a hidden `--test-knobs` flag, passed down from holder to helper to host.
 
 **Starting the host cleanly.** Every mode that confines itself (the viewer, the bridge) first starts a small unconfined **helper** (`wanderbooks helper`, spawned as its own process over an inherited socket pair before any thread, window or Cocoa start; never a fork of a running GUI), then confines itself. The helper accepts a fixed message set and nothing else: `start_host`; `open_with` an attachment id (the helper itself copies that blob, read-only, into a 0700 per-user directory, `$XDG_RUNTIME_DIR/wanderbooks-open/` or its per-system equivalent, swept when the helper exits, and hands it to the system's default app; it never accepts a path or a command line); `stage_backup`, whose file the helper asks the owner for in its own file dialog (never a path from the viewer), copying it into the data root's `uploads/` and returning a staged id for the `restore` intent (as built, slice 7: a backup is a repository, and the `restore` intent names its folder or address, which the server clones; 3.7); and `start_updater`, with no arguments. A confined mode starts the host only through its helper; unconfined holders (the CLI commands, `serve`) use the same clean start directly, and a restarting host starts its successor itself, already clean, in its own session and scope (P2 slice 3). The clean start is a re-exec: environment scrubbed to a fixed allow-list (keeping `XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS`, which `systemd-run --user` needs, only after checking they point at the host's own user's runtime directory), stdin, stdout and stderr to null (a log file under `run/`), a new session (`setsid`), a fixed umask. On Linux under systemd (uwsm on Omarchy puts every app in its own scope, which would take the host down with the app) it re-execs through a transient `systemd-run --user --scope`, which installs nothing, persists nothing, and disappears with the host; elsewhere `setsid` alone. On Windows, `CREATE_BREAKAWAY_FROM_JOB` where the job allows it, and `DETACHED_PROCESS`. The host resolves the data root itself from the user's account (`getpwuid` home, or the known folder on Windows), never from the opener's environment, unless `wanderbooks setup` recorded another root. It refuses to run if it finds itself confined (seccomp in `/proc/self/status`, a Landlock write probe). 
 
@@ -334,13 +358,13 @@ The books are open while something holds them; there is no background service. T
 
 **Closing.** When the last lease ends, the host waits 10 s; a lease arriving in that time cancels the close. Then: no new requests, the one in progress finishes, the server makes a last backup of each book (as built, slice 7, at most 60 s), every writer lock is released, and the host exits. "Close the books" (the app's menu, `wanderbooks close`) ends every lease at once; a bridge then tells its agent the owner closed the books and reopens them only in a new session. Before it ends leases the host says why on each one (`closed_by_owner`, `restarting`, `closing`, `server_failed`; P2 slice 3). A holder that sees the connection end with no reason (a crash, a kill) starts a new host and re-takes its lease, with backoff (1, 2, 4 … 60 s, at most five tries); a host that keeps failing to start (a damaged journal, a panic) becomes a Needs-attention and `doctor` item, and a bridge answers its agent with a clear error instead of retrying forever. `host_respawns` and `respawn_backs_off` test it.
 
-**Restarting** (an update, or the executable replaced by a package manager) is not a close. What lives between calls survives it: upload grants, download links, `/h/` sessions and finished job results are kept in `run/state/` (0600, the session key with them), and a running job delays the restart until it finishes (jobs, `books.job`, come later; until then a restart begins at once and the server finishes every call in progress first, P2 slice 3). The host takes `run/update.lock`, closes the books as above but keeps the lease socket's holders informed, swaps (or, for a package-managed install, finds the new executable already in place), and restarts from the new executable. Openers that arrive meanwhile wait on `update.lock`. Bridges reconnect and re-initialize upstream without the agent noticing. A package-managed upgrade is noticed by the host (its executable's inode changed) and restarts it as above.
+**Restarting** (an update, or the executable replaced by a package manager) is not a close. What lives between calls survives it: upload grants, download links, `/h/` sessions and finished job results are kept in `run/state/` (0600, the session key with them), ~~and a running job delays the restart until it finishes (jobs, `books.job`, come later; until then~~ a restart begins at once and the server finishes every call in progress first (P2 slice 3; D-53: no jobs). The host takes `run/update.lock`, closes the books as above but keeps the lease socket's holders informed, swaps (or, for a package-managed install, finds the new executable already in place), and restarts from the new executable. Openers that arrive meanwhile wait on `update.lock`. Bridges reconnect and re-initialize upstream without the agent noticing. A package-managed upgrade is noticed by the host (its executable's inode changed) and restarts it as above.
 
 **One version at a time.** Children (server, archive, extractor) are started from the executable the host itself is running (`/proc/self/exe` or `fexecve` on Linux), never by path, so a swap mid-run can't mix versions. Where that isn't available (macOS, Windows) every child, bridge and lease handshake carries the version, and a mismatch triggers a restart. The lease, helper and bridge protocols carry protocol versions (not release versions, since a staged update can skip releases); each accepts its current version and the one before, and outside that range refuses with a plain message ("restart this agent session").
 
 **The bridge and slow starts.** The bridge waits up to 5 s for the server and returns its real `initialize` (the connect text composed from the book, 4.1). If the server isn't ready by then (a cold start, a projection rebuild), it answers `initialize` itself, within a client's startup timeout (Codex allows about 10 s), from the tool list built into the same executable and a short generic text that points at `books.start`, which returns the book's rules. Calls are queued until the server is ready; a queued call fails after 60 s with a clear error that names `wanderbooks doctor`.
 
-**Format changes are the server's gate, not the updater's.** A server that would write a newer journal format than a book has opens that book read-only, with guard `format_upgrade_pending`, until the owner consents in the app (or on a `/h/` page). Before it asks, it makes a verified local backup that includes the keys (`legacy.key` until P7). Consent comes only from the owner (the passphrase, through the viewer's `consent_format_upgrade` or a `/h/` page), never from an agent. Declining leaves the book as it was, and before consent the way back to a version that can write it is always there: a self-updating install keeps the previous verified app and offers "Go back to version X" (`wanderbooks rollback`); a package-managed one downgrades through its package manager (our apt and dnf repositories keep every release, and the AUR keeps old PKGBUILDs). This holds however the new version arrived: our updater, a package manager, or a hand install. **After consent** the previous version can no longer open that book, so "Go back to version X" refuses for it; the only way back is restoring the pre-upgrade backup, which would drop every entry since, so that restore says how many entries would be lost, arrives as its own book beside the current one (never replacing it), and needs the passphrase.
+**Format changes are the server's gate, not the updater's.** A server that would write a newer journal format than a book has opens that book read-only, with guard `format_upgrade_pending`, until the owner consents in the app ~~(or on a `/h/` page)~~ → D-28. Before it asks, it makes a verified local backup that includes the keys (`legacy.key`; D-48: for good). Consent comes only from the owner (the passphrase, through the viewer's `consent_format_upgrade` or a `/h/` page), never from an agent. Declining leaves the book as it was, and before consent the way back to a version that can write it is always there: a self-updating install keeps the previous verified app and offers "Go back to version X" (`wanderbooks rollback`); a package-managed one downgrades through its package manager (our apt and dnf repositories keep every release, and the AUR keeps old PKGBUILDs). This holds however the new version arrived: our updater, a package manager, or a hand install. **After consent** the previous version can no longer open that book, so "Go back to version X" refuses for it; the only way back is restoring the pre-upgrade backup, which would drop every entry since, so that restore says how many entries would be lost, arrives as its own book beside the current one (never replacing it), and needs the passphrase.
 
 **As built (P3, the format upgrade, D-39), and where it departs:**
 - **Waiting is a fact of the journal.** This version's format is the newest it reads with every feature it knows (`ledger_store::format::current`); a book declaring less waits (`JournalFormat::upgrade`), format 1 included, so the gate covers the step to format 2 as much as P3's features. New books declare the format in their second line (`Store::create`) and never wait; an adoption's copy is new books of this version and moves to it as it is made (the original keeps its own). The lazy declarations (`ensure_format` declared format 2 at the first setting) are gone: `ensure_format` and `ensure_feature` (the other P3 branches' call, same signature) now only refuse.
@@ -366,15 +390,17 @@ The books are open while something holds them; there is no background service. T
 Hard cap 1,400 characters. The first 512 contain `books.start`. Composed from journaled state:
 
 ```
-wanderbooks: the double-entry books of {company.name|"a new company"}. Call books.start first in every session: it returns the rules in force, this company's conventions, what needs attention, and your next steps. These tools are the only way to the books; never look for them in local files. Amounts are decimal strings ("123.45"). Entries: books.draft_entry, books.add_line, books.preview_entry, show the human the preview, then books.post_entry with its preview_token. Posted entries never change; books.reverse_entry makes a reversal draft.
-{evidence_rule}. No receipt yet? books.set_draft_state awaiting_evidence keeps the draft visible until it arrives. Files go in with books.begin_upload (never inline: D-46) and come out of books.get_receipt as text, page images or download links. Every change returns next_steps, guards and the journal head: follow them and show the human the affected balances. Never ask for, accept or repeat a full TIN: books.request_tin_entry gives the human a secure link. Procedures are prompts (onboard, month_end_close, cpa_handoff, audit); the guide is books.handbook or books://handbook.
+wanderbooks: the double-entry books of {company.name|"a new company"}. Call books.start first in every session: it returns the rules in force, this company's conventions, what needs attention, and your next steps. These tools are the only way to the books; never look for them in local files. Amounts are decimal strings ("123.45"). Entries: books.draft_entry, books.add_line, books.preview_entry, show the human the preview, then books.post_entry with its preview. Posted entries never change; books.reverse_entry posts a reversal (previewed first), whose evidence is the original's.
+{evidence_rule}. No receipt yet? books.set_draft_state awaiting_evidence keeps the draft visible until it arrives. Files go in with books.begin_upload (never inline: D-46) and come out of books.get_receipt as text, page images or download links. Every change returns next_steps, guards and the journal head: follow them and show the human the affected balances. A full TIN goes only into the vault (books.set_tin, books.set_w9): never repeat one. Procedures are prompts (onboard, month_end_close, cpa_handoff, audit); the guide is books.handbook or books://handbook.
 ```
 
-`{evidence_rule}` comes from `evidence::rule(&settings)`, which replaces `ReceiptPolicy::rule()` (`ledger-config/src/receipt_policy.rs:147`) and now names the required and exempt accounts. The first company example: "Every entry needs a receipt attached or linked before posting; depreciation, amortization and closes are exempt; a reversal needs its own receipt or the original's linked".
+**[Amended 2026-10-26 (D-47, D-50, D-28): `preview` for `preview_token`; a reversal posts; TINs through the agent into the vault. The live connect text is composed in `crates/ledger-mcp/src/handbook.rs`; P5 finalizes it.]**
+
+`{evidence_rule}` comes from `evidence::rule(&settings)`, which replaces `ReceiptPolicy::rule()` (`ledger-config/src/receipt_policy.rs:147`) and now names the required and exempt accounts. The first company example: "Every entry needs a receipt attached or linked before posting; depreciation, amortization and closes are exempt; a reversal needs none: the original carries the evidence" (D-47).
 
 ### 4.2 `books.start` (read-only, `_meta["anthropic/alwaysLoad"]=true`, ≤ 8 KB)
 
-The v1 ships in P1 with the fields marked †. The full version ships in P5.
+The v1 shipped in P1 with the fields marked † (as built: `crates/ledger-mcp/src/tools/kept.rs::start_out`). The full version ships in P5 (8.2).
 
 Input: `{focus?: "daily"|"onboarding"|"close"|"audit", agent?: {model, reasoning_effort, harness}}`. The `agent` block is self-reported and goes to the access log.
 
@@ -389,10 +415,10 @@ Input: `{focus?: "daily"|"onboarding"|"close"|"audit", agent?: {model, reasoning
   "conventions": [{"id","kind","title","summary"}],                                                      // †
   "open_items": [{"id","title","due"}],
   "needs_attention": [{"id","severity","title","detail","tool","args","prompt"}],   // top 12 + counts by kind
-  "drafts": {"building":n, "awaiting_evidence":[{"entry_id","date","amount","note"}], "reversal_drafts":[...]},
+  "drafts": {"building":n, "awaiting_evidence":[{"entry_id","date","amount","note"}]},   // no reversal_drafts (D-47)
   "reconciliation": {"tracked":[...], "never_reconciled":[...], "behind":[...]},
   "attestation": {"bar":{...}, "due":[...], "attested_through"},
-  "viewer": {"open":bool, "remote":[principal...], "how_to_open":"wanderbooks gui <book>"},         // remote: P9 replicas
+  "viewer": {"open":bool, "how_to_open":"wanderbooks gui <book>"},                              // no remote replicas (D-51)
   "backup": {"last_at","through_seq","stale":bool},
   "handbook_sections": [{"id","uri","chars"}], "prompts": [...],
   "next_steps": [{"tool"|"prompt","why","args","required"}] }
@@ -404,21 +430,23 @@ When `state=needs_onboarding`, `next_steps = [{prompt:"onboard"}]`. Conventions 
 
 `books.handbook {section?}` (read-only) and `books://handbook`, `books://handbook/{section}`. The source is `ledger-mcp/handbook/*.md`, compiled in with `include_str!`. It is generic and carries no the first company leaks ("FL-0001" and "Due to Shareholders" become neutral examples).
 
-Sections: `contract`, `entries`, `drafts-and-reversals`, `evidence-and-receipts`, `attachments`, `files-in-out`, `reconciliation`, `fixed-assets`, `prepaid-and-recurring`, `revenue-and-payouts`, `parties-and-tins`, `1099`, `closing`, `attestations-and-audit`, `cpa-handoff`, `settings-and-conventions`, `viewer`, `rules-that-change`, `control-roles`, `tracing-figures`.
+Sections as built (`crates/ledger-mcp/handbook/`, 21 files): `1099`, `attachments`, `backups`, `contract`, `control-roles`, `cpa-handoff`, `drafts-and-reversals`, `entries`, `evidence-and-receipts`, `files-in-out`, `fixed-assets`, `format-upgrade`, `parties-and-tins`, `prepaid-and-recurring`, `projects`, `reconciliation`, `revenue-and-payouts`, `rules-that-change`, `settings-and-conventions`, `tracing-figures`, `viewer`. To come: `invoices-and-bills` (S4), `attestations-and-audit` (P8), `self-host` (P9a); ~~`closing`~~ is covered by `entries` and the `month_end_close` prompt.
 
 `tracing-figures` replaces "the journal is the evidence — read it" with "trace through `books.get_entry`, `books.search_entries`, `books.journal_history`". Each section ends with this company's conventions that apply to it, rendered from journaled `convention.set` events. The long tool descriptions move here: `export_cpa_package` (1,677 characters), `set_entry_party` (1,453), `set_w9` (1,378), `vendor_1099` (1,055).
 
-### 4.4 Prompts (`#[prompt_router]`; the prompts capability is enabled at S:8172-8176; arguments are single tokens)
+### 4.4 Prompts (P5; arguments are single tokens)
+
+**[As of 2026-10-26 no prompt exists: `opening.rs::capabilities()` enables tools and resources only. P5 adds the prompts capability, a prompt router and these prompts; struck rows are not built (D-46, D-28, D-17, Z-6).]**
 
 | Prompt | Args | Drives |
 |---|---|---|
 | `onboard` | none | company facts → `set_setting` previews; chart template by entity type; members; timezone; evidence policy; attestation bar; opening entry; trial-balance check; offer `migrate`; offer to open the viewer |
-| `migrate` | `source=qbo\|csv\|sheet\|other` | import → `compare_reference` to the cent → `record_decision` cutover |
-| `process_inbox` | none | each upload left on the human drop page → find or create the entry → attach → post when ready, or leave a draft awaiting evidence |
-| `receipts_from_email` | none | `attach_email` flow |
+| ~~`migrate`~~ | | → not built (8.4) |
+| ~~`process_inbox`~~ | | → D-28, D-46: no drop page |
+| ~~`receipts_from_email`~~ | | → D-17 |
 | `reconcile` | `account=CODE month=YYYY-MM` | statement → `record_statement` → `mark_cleared` → `reconcile` |
 | `month_end_close` | `month=YYYY-MM` | data-driven: tracked accounts, financing-account review, schedules, depreciation, recurring, `close_step` conventions, `books.audit scope=month`, `close_period`, month-end `attest_period` |
-| `cpa_handoff` | `year=YYYY` | full audit at the bar → attestations → `export_cpa_package` (no TINs) → `request_human_download` |
+| `cpa_handoff` | `year=YYYY` | full audit at the bar → attestations → `export_cpa_package` (TINs by default, D-29; handed over as a download) |
 | `annual_compliance` | `year=YYYY` | calendar by entity type, 1099 work, open items |
 | `audit` | `scope=month\|annual\|cpa_handoff\|full` | the adversarial procedure: separate verifier agents, per-receipt extraction against page images, `attest_receipt`, `review_entry`, `attest_period` |
 
@@ -435,11 +463,11 @@ Sections: `contract`, `entries`, `drafts-and-reversals`, `evidence-and-receipts`
 | `books://entries/{id}` | — |
 | `books://attachments/{id}` | metadata plus extracted text |
 | `books://attachments/{id}/page/{n}` | PNG |
-| `books://attachments/{id}/file` | `BlobResourceContents` up to 1 MiB; larger files return an error naming `get_receipt view=link` |
+| ~~`books://attachments/{id}/file`~~ | → D-46: bytes only as a download (`books.get_receipt view=bytes`) |
 | `books://journal/{seq}` | — |
 | `books://workpapers/{id}` | — |
 
-`books://receipts/{id}` (S:8142, base64) remains for one release as an alias of `/attachments/{id}` with text.
+`books://receipts/{id}` is meta only (as built, slice 5); P6 adds the text to `books://attachments/{id}` and keeps the old URI as an alias until P5's doc rewrite.
 
 ### 4.6 Result envelope (single choke point in `call_tool`, S:8160)
 
@@ -451,9 +479,9 @@ Sections: `contract`, `entries`, `drafts-and-reversals`, `evidence-and-receipts`
   "head":       {"seq","hash"} }           // on every mutating result
 ```
 
-`next_steps::decorate(tool, &result, &view)` takes items from `ledger_view::attention` filtered to the touched subject, plus tool-specific steps. Examples:
+`next_steps::decorate(tool, &result, &view)` takes items from the attention function in `ledger-package` (U0b; ~~`ledger_view::attention`~~ → D-53) filtered to the touched subject, plus tool-specific steps. Examples:
 - After a post: attach or attest evidence if it is missing, `books.show entry`, the affected balances.
-- After a reversal draft: add evidence.
+- ~~After a reversal draft: add evidence.~~ → D-47
 - After a close: `attest_period`.
 - After `export_cpa_package`: the human download link.
 
@@ -462,20 +490,21 @@ Report results also carry `as_of_status {drafts_open_on_or_before, unreconciled,
 ### 4.7 Files in and out
 
 **In:**
-- `books.begin_upload {sha256, size, mime, file_name, purpose: receipt|document|import}` returns `{upload_id, put_url, curl, human_url, expires_at, max_bytes}`. If the bytes are already stored it returns `{existing_attachment_id}`.
+**[The planned lists; the As-built notes below are what exists. Struck items → D-28 (no drop page), D-46 (no inline bytes), D-17 (no email-in), D-51 (no App widget).]**
+- `books.begin_upload {sha256, size, mime, file_name, purpose: receipt|document|import|w9}` returns `{upload_id, command, expires_at, max_bytes}` (as built). ~~`put_url`, `curl`, `human_url`~~
 - `PUT /b/{book}/u/{upload_id}` is single-use, valid 15 minutes, bound to the principal, sha and size, capped at 25 MiB by default, and re-hashed before acceptance.
-- `human_url` is a drop zone on `/h/inbox` for clients with no shell (claude.ai).
-- `attach_receipt`, `file_document`, `import_bank_csv`, `import_chart_csv` and `attach_email` take `upload_id | inbox_id | sha256` (the planned `content_base64 (≤256 KiB + required sha256)` is superseded by D-46: no inline bytes).
-- `books.inbox` / `books.discard_inbox_item` manage the drop zone.
-- `openai/fileParams` is declared on the attach tools (P9). An MCP App upload widget comes in P9.
+- ~~`human_url` is a drop zone on `/h/inbox` for clients with no shell (claude.ai).~~
+- `attach_receipt`, `file_document`, `import_bank_csv`, `import_chart_csv` ~~and `attach_email`~~ take `upload_id | existing_attachment_id` ~~| inbox_id | sha256~~.
+- ~~`books.inbox` / `books.discard_inbox_item` manage the drop zone.~~
+- ~~`openai/fileParams` is declared on the attach tools (P9). An MCP App upload widget comes in P9.~~
 
 **Out:**
-- `books.get_receipt {id, view: meta+text (default) | text | page_image{page, max_px:1568} | link | bytes}` (bytes handed over as a download, never inline: D-46; it was planned inline up to 256 KiB).
-- `books.download_link {attachment_id|export_id}` returns `{url, expires_at, sha256, size}`. Links are single-use, valid 10 minutes, access-logged, and served with `Content-Disposition: attachment` and `nosniff`.
-- `export`, `asset_labels` and `export_cpa_package` return a link, plus inline JSON/CSV when ≤ 50K characters.
-- TIN-bearing outputs come only from `books.request_human_download`, which returns an `/h/` link.
+- `books.get_receipt {attachment_id, view: meta (default; with text from P6) | text (P6) | page_image{page, max_px} (P6) | bytes}` (bytes and page images handed over as downloads, never inline: D-46). ~~`link`~~
+- ~~`books.download_link`~~ → D-46: every file is handed over as a `HandedFile` with its `wanderbooks download` command (`hand_over`); there are no URLs locally.
+- `export`, `asset_labels` and `export_cpa_package` hand their files over (as built, slice 6).
+- ~~TIN-bearing outputs come only from `books.request_human_download`, which returns an `/h/` link.~~ → D-29: they come from the same tools, TINs included, as downloads.
 
-**Typical receipt flow (Claude Code, the daily case in 7.2), as planned; slice 5 built it with a command instead of `curl` (below):** `sha256sum` → `books.begin_upload` → `curl -T` the file to `put_url` → `attach_receipt {upload_id}` → `get_receipt` (text) → `draft_from_template` or `draft_entry` → `preview_entry`, shown to the human → on "yes", `post_entry` with the `preview_token` → `next_steps` and the head come back, and `books.show` moves the viewer to the entry. No step raises a client permission prompt beyond the client's normal rules. "Save it as a draft" is `set_draft_state awaiting_evidence`. On claude.ai, files go through `human_url` and the `process_inbox` prompt (the planned inline path for files ≤ 256 KiB is superseded by D-46).
+**Typical receipt flow (Claude Code, the daily case in 7.2), as planned; slice 5 built it with a command instead of `curl` (below):** `sha256sum` → `books.begin_upload` → `curl -T` the file to `put_url` → `attach_receipt {upload_id}` → `get_receipt` (text) → `draft_from_template` or `draft_entry` → `preview_entry`, shown to the human → on "yes", `post_entry` with its `preview` (D-50) → `next_steps` and the head come back, and `books.show` moves the viewer to the entry. No step raises a client permission prompt beyond the client's normal rules. "Save it as a draft" is `set_draft_state awaiting_evidence`. ~~On claude.ai, files go through `human_url` and the `process_inbox` prompt~~ → D-28, D-51 (claude.ai is P9b; its file path is decided then).
 
 **As built (P2 slice 5), and where it departs:**
 - **No path on the server's computer is read.** `books.import_local_file`, the import roots and `--import-root` are gone, and so is `set_w9`'s `w9_file_path`; a test (`no_tool_takes_a_path`) keeps any path-like parameter out, except the three outputs with full TINs (`export_cpa_package` and `get_w9` `save_to`, `vendor_1099` `save_csv_to`), which keep theirs, written only outside the books, until the viewer takes them over in slice 6 (D-28: the viewer reads and downloads; it never writes).
@@ -486,7 +515,7 @@ Report results also carry `as_of_status {drafts_open_on_or_before, unreconciled,
 
 ### 4.8 Drafts waiting on evidence
 
-- Draft states are `building | awaiting_evidence{note}`, plus reversal drafts.
+- Draft states are `building | awaiting_evidence{note}` (P4). ~~plus reversal drafts~~ → D-47
 - Open drafts appear in `books.start.drafts`, the digest, Needs attention ("Draft #52 awaiting receipt: Figma annual plan, noted 2026-10-16") and every report's `as_of_status`.
 - A close is refused while a draft in the period is open (existing Lean `hdrafts`). `discard_draft` is the way out.
 - `export_cpa_package` refuses while a draft dated on or before `as_of` is open, unless given `allow_open_drafts {reason}`.
@@ -497,21 +526,21 @@ Report results also carry `as_of_status {drafts_open_on_or_before, unreconciled,
 
 | Area | Tools |
 |---|---|
-| session | `books.start`, `books.handbook`, `books.job`, `books.journal_history {after_seq?, types?, subject?, limit}` (the only way to "read the journal"), `books.viewer_status` |
+| session | `books.start`, `books.handbook` (built), `books.journal_history {after_seq?, types?, subject?, limit}` (P5; the only way to "read the journal"). ~~`books.job`~~ → D-53; ~~`books.viewer_status`~~ → `books.show` reports it |
 | settings / conventions | `books.settings` (from the journal, with provenance and schema), `books.set_setting`, `books.export_settings`, `books.conventions`, `books.set_convention`, `books.retire_convention`, `books.record_decision`, `books.decisions`, `books.open_items`, `books.raise_item`, `books.resolve_item`, `books.draft_from_template {template_id, ...}` |
-| drafts | `books.preview_entry` (read-only), `books.list_drafts {as_of?, state?}`, `books.set_draft_state`, `books.discard_draft {reason}`, `books.inherit_evidence {entry_id, from_entry, reason}` |
+| drafts (P4) | `books.preview_entry` (read-only), `books.list_drafts {as_of?, state?}`, `books.set_draft_state`, `books.discard_draft {reason}`. `books.inherit_evidence {entry_id, from_entry, reason}` stays the re-audit's annotation (D-12) |
 | chart | `books.rename_account` |
-| evidence | `books.begin_upload`, `books.inbox`, `books.discard_inbox_item`, `books.attach_email`, `books.find_attachment {sha256\|md5\|receipt_number\|text}`, `books.annotate_attachment`, `books.consolidate_duplicates`, `books.add_instrument`, `books.instruments`, `books.set_entry_instrument`, `books.download_link` |
-| assurance | `books.audit {through, scope}` (job, deterministic workpaper), `books.workpaper`, `books.attest_receipt`, `books.review_entry`, `books.attest_period`, `books.attestations` |
-| ops | `books.backup`, `books.back_up_now` (admin), `books.access_log` (admin), `books.invite {kind: cpa\|member\|viewer, email}` (admin; remote people need the self-host server, P9) |
-| migration | `books.compare_reference {reference_attachment, as_of, mapping_convention}`, `books.record_inventory {source, items\|upload_id}`, `books.check_inventory {listing}` |
+| evidence | `books.begin_upload`, `books.add_instrument`, `books.instruments`, `books.set_entry_instrument` (built); `books.find_attachment {sha256\|receipt_number\|text}`, `books.annotate_attachment`, `books.consolidate_duplicates` (P6). ~~`books.inbox`, `books.discard_inbox_item`, `books.attach_email`, `books.download_link`~~ → D-28, D-17, D-46 |
+| assurance (P8) | `books.audit {through, scope}` (deterministic workpaper; ~~job~~ → D-53), `books.workpaper`, `books.attest_receipt`, `books.review_entry`, `books.attest_period`, `books.attestations` |
+| ops | `books.backup`, `books.back_up_now` (admin), `books.access_log` (admin) (built). ~~`books.invite`~~ → D-51 |
+| ~~migration~~ | ~~`books.compare_reference`, `books.record_inventory`, `books.check_inventory`~~ → not built (8.4) |
 | reports | `export` kinds `members_equity`, `general_ledger`, `general_journal` (JSON with `entry_id`) |
-| vault (human links) | `books.request_tin_entry {party, kind: ssn\|ein\|itin\|w9}`, `books.request_human_download {what: cpa_package_with_tins\|vendor_1099_with_tins\|w9, party?, year?}`, `books.set_w9_facts {party, name, classification, address, signed_on, exempt_payee?}` |
+| ~~vault (human links)~~ | ~~`books.request_tin_entry`, `books.request_human_download`, `books.set_w9_facts`~~ → D-28, D-29, D-48: `books.set_tin`, `books.set_w9`, `books.get_w9` stay |
 
 **Changed:**
-- `post_entry` requires `preview_token`; the gate moves into Store; the result carries `posted_seq` and `posted_at`.
-- `reverse_entry` creates a reversal draft, with `evidence: "link_original" | {attachment_ids} | "later"`.
-- `attach_receipt` and `file_document` deduplicate by sha: identical bytes link the existing record, so "deduplicated" becomes true. Text is extracted at attach.
+- `post_entry` requires `preview` (D-50; P4); the gate moves into Store (P4); the result carries `posted_seq`.
+- ~~`reverse_entry` creates a reversal draft, with `evidence: "link_original" | {attachment_ids} | "later"`.~~ → D-47: it previews, then posts, with the S1 bounds guard.
+- `attach_receipt` and `file_document` deduplicate by sha (P6): identical bytes link the existing record, so "deduplicated" becomes true. Text is extracted at attach (P6).
 - `get_receipt`: views as in 4.7.
 - `digest` (defect 6).
 - Reports: one default range, `as_of_status`, and `strict`.
@@ -524,24 +553,24 @@ Report results also carry `as_of_status {drafts_open_on_or_before, unreconciled,
 - `parties`: last four from `party.tin_set`.
 - `add_account`: tax-category warning, or refusal under the policy.
 - `show`: refuses `start > end`; appends the target to `ops/show.jsonl` in the book's data root (locally) or to the replica event channel (P9, remote viewers), and reports whether a viewer is open and was reached. The result never names a path.
-- `verify`: also checks `access.jsonl`, the vault public-key sha and extraction blobs.
-- `export_cpa_package`: no-TIN package returned as a link; becomes a job.
+- `verify`: also checks the control tie-out (built, S1); P8's audit checks `access.jsonl` and extraction blobs. ~~the vault public-key sha~~ → D-48
+- `export_cpa_package`: handed over as a download, TINs by default (D-29, D-46). ~~no-TIN package returned as a link; becomes a job.~~
 
 **Annotations (P0):** every tool gets a `title` and `readOnlyHint` or `destructiveHint`, plus `idempotentHint` where true. Corrections: `export_cpa_package` is no longer marked read-only; `verify`, `list_periods`, `ar_aging` and `ap_aging` are annotated. No tool gets `requiresUserInteraction` (2.1; owner decision 2026-10-16).
 
 **Removed:**
 - `import_local_file` (S:4511): restricted in P0, deleted in P2.
-- `get_w9`.
-- `set_tin`'s `tin` and `set_w9`'s `tin`/`w9_file_path`: guarded in P0, deleted in P7.
+- ~~`get_w9`.~~ → D-29: kept.
+- `set_w9`'s `w9_file_path`: deleted in P2. ~~`set_tin`'s `tin` and `set_w9`'s `tin`: deleted in P7.~~ → D-28: kept.
 - Every `save_to`/`save_csv_to` (`types.rs:368, 2563, 2686, 2758-2764`): deleted in P2.
-- `include_tins`.
+- ~~`include_tins`.~~ → D-29: kept.
 - The `INSTRUCTIONS` const.
 - `viewer::request` (replaced by `ops/show.jsonl`).
 - `--books-toml`/`--config` in serve mode.
 - Every mention of `just` or `wanderbooks.toml` in tool text: S:340, 390, 525, 546, 637, 640, 1902, 3061, 3251, 3374, 4060, 4315, 4568, 5194, 5829.
-- `server.rs` (8,529 lines) is split into `tools/<group>.rs` as each phase touches a group.
+- `server.rs` (12,566 lines on 2026-10-26; six groups in `tools/` so far) is split by tool group in one go (U0a) before the remaining units open.
 
-The tool count goes from 93 to about 125. Only `books.start` and `books.handbook` load upfront under tool search.
+The tool count is 118 (2026-10-26) and grows by about 15. Only `books.start` and `books.handbook` load upfront under tool search.
 
 ---
 
@@ -552,7 +581,7 @@ The tool count goes from 93 to about 125. Only `books.start` and `books.handbook
 - An unknown type is no longer `JournalCorrupt` (`store.rs:4419-4423`, `:4640`, Snapshot, GUI). It becomes `StoreError::NewerJournal {seq, type, need}`, shown as "update wanderbooks".
 - A one-time `journal.format_set {format: 2, features: [...]}` is written before the first v2 event.
 - Fixture journals from every phase are added to `books_written_under_older_rules_still_open`.
-- There is one executable (D-22), so an update never mixes versions; the host starts its children from its own executable (3.9). `wanderbooks update` updates a self-updating install (dmg, Windows installer, AppImage) and refuses on a package-managed one, saying to use the package manager. The local GUI reads the journal directly, so it hits the same `NewerJournal` gate; the replica protocol (P9) carries a minimum version header.
+- There is one executable (D-22), so an update never mixes versions; the host starts its children from its own executable (3.9). `wanderbooks update` updates a self-updating install (dmg, Windows installer, AppImage) and refuses on a package-managed one, saying to use the package manager. The local GUI reads the journal directly, so it hits the same `NewerJournal` gate. ~~the replica protocol (P9) carries a minimum version header.~~ → D-51
 
 ### 5.2 New events (all additive; legacy events replay unchanged)
 
@@ -571,21 +600,23 @@ Every event may carry an additive `actor {principal, client_id, kind}`, which re
 | `vendor.1099_set` value `not_reportable{reason}`; legacy `null` replays as `undetermined` | P3 | vendors |
 | `period.closed` with `close_to: MembersCumulative{since_seq}` (old variants replay as before) | P3 | periods |
 | `entry.draft_state_set {id, state, note}` / `entry.draft_discarded {id, reason}` | P4 | `Ledger` drafts (`Step.discard`; `draftsOpen` at `Ledger.lean:133`) |
-| `entry.reversal_drafted {id, reverses, date, description}` (lines derived from the original) | P4 | `Step.draftReversal`; posted later by an ordinary `entry.posted` |
-| `entry.evidence_inherited {entry_id, from_entry, attachment_ids, reason}` | P4 | evidence |
-| `entry.posted` + `actor`, `preview_digest` | P4 | ignored by replay |
+| ~~`entry.reversal_drafted`~~ | ~~P4~~ | → D-47: not built |
+| `entry.evidence_inherited {entry_id, from_entry, attachment_ids, reason}` | P10 (the re-audit's annotation, D-12) | evidence |
+| `entry.posted` + `actor` | P4 | ignored by replay (`posted_seq` is the line's own `seq`, read at replay: no field) |
 | `attachment.text_extracted {id, text_sha256, extractor, version, pages, status: ok\|none\|failed}` | P6 | evidence |
-| `attachment.rendered {id, from: eml, pdf_sha256, headers{message_id, from, to, date, subject}, source_sha256}` | P6 | evidence |
+| ~~`attachment.rendered`~~ | ~~P6~~ | → D-17: not built |
 | `attachment.annotated {id, fields{receipt_number?, payee?, amount?, date?, instrument?, category?, source?, reimbursable_to?}, note}` | P6 | evidence |
 | `entry.settles {entry_id, settles[]}` | P6 | derived `reimbursed` |
-| `inventory.recorded`, `reference.compared {reference_sha256, as_of, mapping, workpaper, differences}` | P6 | migration |
-| `vault.created` / `vault.rotated {pubkey_sha256, scheme:"hpke-x25519-chacha20poly1305-v2"}`, `vault.keyslot_added` / `vault.keyslot_removed {slot_id, kind, label}`, `vault.resealed {party, kind, old_hash, new_hash}` | P7 | evidence; `vault_tin` (S:1326-1378) accepts the newest hash |
+| ~~`inventory.recorded`, `reference.compared`~~ | ~~P6~~ | → not built (8.4) |
+| ~~`vault.created`, `vault.rotated`, `vault.keyslot_*`, `vault.resealed`~~ | ~~P7~~ | → D-48: not built |
+| `invoice.created`/`bill.created` with the `documents_v2` fields; `invoice.sent`; `invoice.payment_received`/`bill.paid` with `line`, `discount`, `fee`; `invoice.written_off` | P4b S4-S7 | `arap` (8.3.7) |
+| `convention.source_revised`, `decision.source_revised`, `open_item.source_revised` | P5 | `Conventions` |
 | `audit.run {id, through, scope, program_version, through_seq, tb_hash, findings, workpaper}` | P8 | assurance |
-| `receipt.attested`, `entry.reviewed`, `period.attested {..., method{model, reasoning_effort, adversarial, verifier_agents}, verified{principal, client_id}}`. `counts` is **derived** against the bar in force at that seq; it is never stored. | P8 | assurance |
+| `receipt.attested`, `entry.reviewed`, `period.attested {..., method{model, reasoning_effort, adversarial, verifier_agents}, verified{principal, client_id}}`. `counted` is **derived** against `policy.attestation_bar` as it stands when asked; never stored (8.2 P8). | P8 | assurance |
 
 **Not journaled:** the access log, backup runs, head handoffs, viewer preferences, page rasters, and any key material or key path.
 
-**Projection (schema v12, `schema.rs:8`):**
+**Projection (`schema.rs::SCHEMA_VERSION`, 15 on 2026-10-26; numbers taken at merge, 8.0.3):**
 - `entries` gains `created_seq, posted_seq, posted_at (= ts of the posting line), draft_state, posted_by`.
 - New tables: settings, conventions, decisions, open_items, instruments, annotations, extractions, attestations, audits.
 - Core keeps a side map `Ledger.entry_meta: id → {created_seq, posted_seq, posted_at}`, filled during replay, so the Snapshot sees it.
@@ -639,10 +670,11 @@ The `WANDERBOOKS_TOML` template (`ledger-cli/src/main.rs:237-347`) becomes the e
 | P2 (pre-cutover) | Run `verify-sheet` and `drive-manifest verify` a final time and file their outputs as `workpaper` documents. Recapture goldens. | Both pass |
 | P2 cutover (about 10 min) | 1. Ask the owner the two open cutover questions (section 10.3: Q-1 backups, Q-3 old copies; Q-2 is answered), one at a time, in plain English.<br>2. Quit the agent sessions and the GUI.<br>3. `wanderbooks setup`, with no sudo: it creates the data root (0700) and asks for the owner passphrase. Nothing is installed to run in the background (D-21).<br>4. Nothing to start: each command below opens the books while it runs, and afterwards the app or Claude opens them (D-23).<br>5. `wanderbooks books adopt /home/swaits/Documents/the first company-Books/books-data --id fernhill` (archive target from Q-1; old copies moved per Q-3).<br>6. `wanderbooks connect claude-code --book fernhill` (removes the old stdio registration made by `just mcp-add`, adds the bridge's stdio registration, `wanderbooks mcp --book fernhill`).<br>7. `wanderbooks connect codex --book fernhill`.<br>8. `wanderbooks gui fernhill`.<br>9. Remove `justfile`, `.claude/settings.json` hook, `.codex/hooks.json`, `scripts/` (archived under the data root's `legacy/`); `AGENTS.md`/`CLAUDE.md` become a 3-line pointer ("connect the wanderbooks MCP; call books.start").<br>10. The `company/` records are already filed (Q-2, D-20); the local copies stay until P6. | `books.verify` over MCP equals H. Goldens byte-equal. `books.start` works from Claude Code started in `~` and in `/tmp/empty`, and reports `isolation: "same_user (advisory)"`. No connect text, tool text, handbook section or result in a recorded cutover session names the data root. No step asked for sudo. If Q-3 is "move": the project folder holds no journal, blobs, vault or git history containing them. Viewer updates within 1 s. With every holder closed the books close cleanly (`books.verify` ok with the same head at the next open), and a Claude Code session started with the books closed opens them by itself, with no reconnect. **Rollback (nothing posted on the server):** close the books (`wanderbooks close`), move `legacy/fernhill-<date>/` back to the project folder (or use the untouched source if Q-3 was "no"), and re-register the P1 binary's stdio server as before cutover. **Rollback (entries posted):** `wanderbooks books export-legacy fernhill` writes a data dir with the same head check, then the same re-registration |
 | P3 | Defect fixes change reports (cash flow, 1099 sections, asset fields, digest). Each difference is hand-adjudicated in the P3 change log. 1099 classification and 704(c) fields are shown to the CPA. | Change log signed off |
+| P4b (one upgrade, D-52) | After S7 and P4 land: `wanderbooks books upgrade` (a verified backup first); then the owner sets `invoicing.*` (prefix, first number, default terms, payment methods), each party's email and terms, and the goldens are compared (the figures must not move). | `books.verify` ok; `books.control_check` agrees; the goldens unchanged to the cent |
 | P4 | `list_drafts`. Leftover drafts are discarded or set to `awaiting_evidence`. | Zero unexplained drafts |
-| P6 | • `consolidate_duplicates` resolves the 11 redundant records (preview first).<br>• Extraction is backfilled for all 66 attachments.<br>• Receipt numbers 1000–1029 are annotated from the "Receipt ID" in each description. Anomalies become annotations: 1009 unissued; 1011/1020 byte-identical pairs (merged); 43/45/47 have no ID. The next number is derived as 1030.<br>• Instruments: Quillmere, joint Amex, member cards, Chase Ink 2050.<br>• `verify-sheet.py`'s ALIASES/RECLASSIFIED/RENUMBERED tables (`scripts/verify-sheet.py:52, 69-108`) become a `mapping` convention, then `compare_reference` runs against attachment 37 as of 2026-10-11.<br>• `drive-manifest.json` text goes to `record_inventory`; the Drive connector listing goes to `check_inventory`. | `compare_reference` gives 0 differences. Inventory has 0 gaps. Drive deletion becomes possible (still the owner's call) |
-| P7 | `wanderbooks vault init --book fernhill` (on the human page, behind the owner passphrase): generates the HPKE keypair; keyslots for passphrase, recovery key (printed) and optional passkey PRF; reseals every record; journals `vault.created`, `vault.keyslot_added`×N, `vault.resealed`. A TIN is checked in the viewer, then `keys/legacy.key` and `~/.config/wanderbooks/vault.key` are shredded (the owner confirms). | Last-four and kind match the journal. No vault key material remains on disk except the wrapped keyslots in the data root (no v1 key, no `~/.config/wanderbooks/vault.key`) |
-| P10 | Re-audit (section 8). | — |
+| P6 | • `consolidate_duplicates` resolves the 11 redundant records (preview first).<br>• Extraction is backfilled for all 66 attachments.<br>• Receipt numbers 1000–1029 are annotated from the "Receipt ID" in each description. Anomalies become annotations: 1009 unissued; 1011/1020 byte-identical pairs (merged); 43/45/47 have no ID. The next number is derived as 1030.<br>• Instruments: Quillmere, joint Amex, member cards, Chase Ink 2050.<br>~~• `verify-sheet.py`'s tables become a `mapping` convention, then `compare_reference` runs against attachment 37 as of 2026-10-11.<br>• `drive-manifest.json` text goes to `record_inventory`; the Drive connector listing goes to `check_inventory`.~~ → not built (8.4): the final `verify-sheet` run is a filed workpaper (P2 pre-cutover) and P10 cites it. | Every attachment's `get_receipt` default answer under 8 KiB; the 11 duplicates consolidated; receipt numbers annotated |
+| ~~P7~~ | ~~`wanderbooks vault init` … `keys/legacy.key` shredded~~ → D-48: nothing; the v1 key stays in the books and in every backup (D-31) | — |
+| P10 | Re-audit (8.2 P10; `docs/runbooks/re-audit.md`). | the exit criteria there |
 
 ---
 
@@ -654,13 +686,13 @@ This section covers the local (T1) and self-host (T2) deployments. Threats speci
 
 | Adversary | Goal | Controls |
 |---|---|---|
-| The agent (careless or prompt-injected; locally it runs as the human's user ID, the same as the server) | read or alter books outside the MCP; see TINs | I-2, I-7, I-12: no text ever names the data root, which sits outside every project directory. Every call is access-logged. Destructive hints are set. `preview_token`. **Locally this is advisory:** an agent that deliberately hunts can read the data root, just as the human can, and `books.start`, `wanderbooks doctor` and the docs say so. TIN plaintext stays sealed even then, because unwrap needs the passphrase. Enforcement is the self-host deployment, proven by `agent_uid_cannot_read_tenant`. Where a company turns on approval-rule conventions (off by default), they are asserted by the agent (`approval{by_party}`): a policy, not proof, which the access log records |
+| The agent (careless or prompt-injected; locally it runs as the human's user ID, the same as the server) | read or alter books outside the MCP; see TINs | I-2, I-7, I-12: no text ever names the data root, which sits outside every project directory. Every call is access-logged. Destructive hints are set. `preview` (D-50). **Locally this is advisory:** an agent that deliberately hunts can read the data root, just as the human can, and `books.start`, `wanderbooks doctor` and the docs say so. ~~TIN plaintext stays sealed even then, because unwrap needs the passphrase.~~ → D-29: the vault key is in the data root too (advisory). Enforcement is the self-host deployment, proven by `agent_uid_cannot_read_tenant`. Where a company turns on approval-rule conventions (off by default), they are asserted by the agent (`approval{by_party}`): a policy, not proof, which the access log records |
 | Network attacker or browser | DNS rebinding, CSRF against localhost | Host allowlist; Origin enforced (403); bearer tokens only on `/mcp`; `/h/` cookies `__Host-` and SameSite=Strict, with CSRF tokens; no tokens in query strings |
-| Compromised OAuth client (self-host remote path, P9) | over-broad access | PKCE, exact redirect match, `iss`, CIMD SSRF guard (public IPs, 5 s, 64 KiB), consent per client per book, minimal base scopes with step-up, 1 h tokens with rotating refresh |
-| History rewrite or fork (any deployment) | alter or fork the books unnoticed | head in every result, quiet-period handoffs, `verify-archive --expect-head` against an independent clone |
-| Stolen disk or backup | read books | full-disk encryption on the desktop, an encrypted volume in the self-host recipe; archive encrypted with age to a customer recipient; the vault is always ciphertext |
-| Untrusted files (PDF/XLSX/EML) | parser exploit inside the data-owning process | the `ledger-extract` subprocess sandbox; fuzz targets |
-| A compromised server process | reach beyond the data root into the human's account | the server confines itself where available: Landlock (filesystem limited to the data root; on ABI ≥ 4, all TCP bind and connect denied once its own listening socket on 127.0.0.1 is bound), seccomp, rlimits; extraction runs in a further sandbox. This limits the server; it does not restrict the agent |
+| Compromised OAuth client (self-host remote path, P9b; D-7 b: an external identity provider) | over-broad access | PKCE, exact redirect match, `iss`, CIMD SSRF guard (public IPs, 5 s, 64 KiB), consent per client per book, minimal base scopes with step-up, 1 h tokens with rotating refresh |
+| History rewrite or fork (any deployment) | alter or fork the books unnoticed | head in every result; a backup's commits record each head; a restore's preview and the weekly drills prove each clone (D-31; ~~`verify-archive --expect-head`~~) |
+| Stolen disk or backup | read books | full-disk encryption on the desktop, an encrypted volume in the self-host recipe; ~~archive encrypted with age~~ → D-31: the backup destinations are trusted to keep it private; the vault records are ciphertext, the key beside them (D-31) |
+| Untrusted files (PDF/XLSX) | parser exploit inside the data-owning process | pure-Rust parsers (hayro, quick-xml) with size and page caps and `catch_unwind` (P6); fuzz targets `fuzz_extract_pdf`, `fuzz_extract_xlsx`. ~~the `ledger-extract` subprocess sandbox~~ → D-32, D-53: accepted residual risk, stated |
+| A compromised server process | reach beyond the data root into the human's account | ~~Landlock, seccomp, rlimits; a further sandbox for extraction~~ → D-32: no confinement; the residual is stated as `same_user (advisory)` |
 | Other processes running as the human, on the desktop | read the books; drive the viewer | no mechanical control locally (same user). A same-user process can alter anything the GUI reads (journal, blobs, keyslots). Journal tampering is detected by the hash chain and head handoff, not prevented; a vault public-key swap fails `books.verify`; a forged show request can only navigate. The GUI never writes. Stated as the advisory residual in `books.start`, `doctor` and the docs; the self-host deployment is the enforced option |
 
 **Immediate hole (P0).** `import_local_file` (S:4511) does an unrestricted `std::fs::read`, so it can file `~/.config/wanderbooks/vault.key` (`ledger-vault/src/lib.rs:216-222`), and `get_receipt` then returns the key as base64. P0 changes this:
@@ -668,15 +700,14 @@ This section covers the local (T1) and self-host (T2) deployments. Threats speci
 - Canonicalize, then refuse anything under the data dir, the books dir, the vault dir or the key directory, symlink escapes, and non-regular files.
 - Test `import_local_file_refuses_key_and_journal`, plus a property over generated paths.
 - No `requiresUserInteraction` is added (owner decision 2026-10-16). The interim TIN-bearing tools (`get_w9`, `set_tin`, `set_w9` with `tin`, `vendor_1099 include_tins`, `export_cpa_package` with TINs) keep today's behaviour (S:1198-1266, S:6111-6117).
-- P2 deletes the path parameters and makes TIN-bearing outputs human-only. P7 deletes full TINs from the MCP entirely.
+- P2 deleted the path parameters. ~~and makes TIN-bearing outputs human-only. P7 deletes full TINs from the MCP entirely.~~ → D-28, D-29, D-48: the TIN tools stay; TINs go through the agent into the vault and come out in the exports the owner chose.
 
 **Access log record:**
 
 ```
 {seq, ts, prev, principal{id, kind: agent|human|viewer|cpa|system, label},
  client{client_id (verified), name, version (asserted)}, model? (asserted), request_id,
- action: tool|upload|download|replica.connect|human.tin_entered|human.tin_viewed|
-         human.vault_unlocked|human.cpa_package|token.created|backup.run|keyslot.changed,
+ action: tool|upload|download|connect|token.created|backup.run   (as built; human.* and replica.* → D-28, D-51; keyslot.changed → D-48),
  subject, args_digest (sha256 of canonical args), result: ok|refused(code), head_after?}
 ```
 
@@ -685,16 +716,15 @@ Each record is fsynced, and a failed write fails the request. Readable through `
 **Security test suite** (`ledger-cli/tests/security_*.rs`, driving a real books server as `tests/common` does, D-44):
 - auth on every route; wrong audience → 401; bad Origin → 403; bad Host → 400; body over limit → 413
 - expired or replayed grant → 410; upload sha mismatch refused
-- `scope_step_up_403`; `handles_bound_to_sub`; `tin_entry_requires_same_sub`
-- `unwrap_only_in_human_handler` (module privacy plus grep gate; the GUI unlock path is the one other caller)
-- `vault_pubkey_swap_detected_by_verify`
-- `no_mcp_output_contains_full_tin`: canary TIN and key; session fuzz across responses, errors, server logs and access-log records
+- `scope_step_up_403`; `handles_bound_to_sub`; ~~`tin_entry_requires_same_sub`~~ → D-28
+- ~~`unwrap_only_in_human_handler`~~, ~~`vault_pubkey_swap_detected_by_verify`~~ → D-48
+- the TIN canary tests of `crates/ledger-cli/tests/spec_vault.rs`: a canary TIN never appears where D-29 forbids it (results that are not the owner's TIN exports, errors, server logs, access-log records)
 - `no_result_names_a_path`: the same session fuzz with the data root as the canary, across connect text, tool text, handbook, prompts, results and errors
 - `access_log_one_record_per_call`, refusals included
 - `isolation_label_is_advisory`: a local install reports `same_user (advisory)` in `books.start` and `doctor`
-- `agent_uid_cannot_read_tenant`, run against the two-user self-host deployment in CI (the desktop default is advisory and is not claimed to pass it); `no_tool_touches_outside_tenant` (Landlock harness)
+- `agent_uid_cannot_read_tenant`, run against the two-user self-host deployment in CI (P9a builds the job; the desktop default is advisory and is not claimed to pass it); ~~`no_tool_touches_outside_tenant` (Landlock harness)~~ → D-32
 
-New fuzz targets: `fuzz_http_mcp_request`, `fuzz_upload_put`, `fuzz_settings_replay`, `fuzz_extract_pdf`, `fuzz_extract_xlsx`, `fuzz_eml`, and `fuzz_replica_stream` (P9). New mutation recipes and scheduled CI for `ledger-vault`, `ledger-cli`, `ledger-view`, and `ledger-mcp/http`; none of these have a recipe today.
+Fuzz targets: nine exist (`fuzz_config_parse`, `fuzz_core_serde`, `fuzz_entry_validate`, `fuzz_import_csv`, `fuzz_journal_line`, `fuzz_op_sequence`, `fuzz_settings_replay`, `fuzz_store_open`, `fuzz_store_replay`); to add: `fuzz_http_mcp_request`, `fuzz_upload_put` (P12), `fuzz_extract_pdf`, `fuzz_extract_xlsx` (P6). ~~`fuzz_eml`, `fuzz_replica_stream`~~ → D-17, D-51. Mutation recipes to add in P12: `ledger-host`, `ledger-package`, `ledger-vault`, `ledger-cli` (~~`ledger-view`, `ledger-mcp/http`~~ → D-53).
 
 **Retention:** 7 years. A local or self-hosted book keeps SSNs, sealed, on a machine the owner controls.
 
@@ -708,7 +738,7 @@ What you will see and do. The technical details are in sections 3 and 4.
 
 1. You install Wanderbooks the usual way for your system: a `.dmg` on a Mac, an installer on Windows, your package manager on Linux (D-24). No developer tools, and no administrator password (on Linux your package manager asks for yours, as it does for everything). On first open it:
    - sets up the books server. It installs nothing that runs in the background, and it does not ask for an administrator password;
-   - asks you to choose a passphrase. You need it to type or see someone's Social Security or tax ID number, to download anything that contains them (such as the CPA package with them), and whenever the books open a private page for you, such as the page where you drop a big file;
+   - asks you to choose a passphrase. You need it only to agree to a books-format upgrade after an update (D-39). ~~You need it to type or see someone's Social Security or tax ID number … the page where you drop a big file;~~ → D-28, D-29: tax ID numbers go through the agent into the sealed vault and come out in the CPA package you ask for, with no passphrase.
    - creates your company's books;
    - connects Claude Code to the books, and Codex too if you have it;
    - tells you how the books open: opening Wanderbooks, or starting an agent, opens them; when the last of those closes, so do the books. Nothing runs in the background.
@@ -727,7 +757,7 @@ What you will see and do. The technical details are in sections 3 and 4.
 
 - The books live in a private folder that only your account can open, outside every project folder. Nothing the agent is told or shown names that folder, so an agent cannot wander in by accident.
 - It is a curtain, not a lock. The server runs as you, so an agent that deliberately went looking could find the folder. The books say so whenever they report on privacy ("same user, advisory"), and `wanderbooks doctor` shows it too.
-- Social Security and tax ID numbers stay sealed even then. Opening one needs your passphrase.
+- Social Security and tax ID numbers are sealed in the books' vault. ~~Opening one needs your passphrase.~~ → D-29: the agent and the viewer show them where you asked for them, with no passphrase.
 - For a real lock, run the books on another machine you own (7.4). The agent then has no way to reach the files at all.
 
 ### 7.4 Your own server, and claude.ai on the web
@@ -735,10 +765,10 @@ What you will see and do. The technical details are in sections 3 and 4.
 - You install the same programs on a home server, a network drive (NAS) or a rented server by following the recipe. Two commands move your books there, one on each machine, and the books' fingerprint must match before and after the move.
 - One command gives that server a web address claude.ai can reach. Anyone can find the address, but only you can sign in. In claude.ai you go to Settings → Connectors → Add custom connector, paste the address and sign in.
 - Then you chat as usual, for example "what needs attention?"
-- Small receipt files go straight through the chat. For bigger ones, you drop them on a private upload page and say "process my inbox".
-- Downloads come as one-time links.
-- When someone's tax ID number is needed, the agent gives you a link to a private page and you type the number there. The chat only ever sees "last four 1234 recorded".
-- The viewer on your computer can show the books on that server too. It streams a copy that it cannot change.
+- ~~Small receipt files go straight through the chat. For bigger ones, you drop them on a private upload page and say "process my inbox".~~ → D-46, D-51: files go in through the upload command; how claude.ai sends a file is decided with P9b.
+- ~~Downloads come as one-time links.~~ → D-46: every file comes as a download command.
+- ~~When someone's tax ID number is needed, the agent gives you a link to a private page and you type the number there. The chat only ever sees "last four 1234 recorded".~~ → D-28: you tell the agent the number and it seals it in the vault.
+- ~~The viewer on your computer can show the books on that server too. It streams a copy that it cannot change.~~ → D-51: the viewer opens a backup copy of the books instead.
 
 ### 7.5 Codex
 
@@ -746,10 +776,9 @@ The installer offers to connect Codex, or you can run `wanderbooks connect codex
 
 ### 7.6 Your CPA
 
-1. On your computer, you send the CPA the package the agent prepares. With your own server (7.4), you can also invite the CPA to look at the books directly. The CPA signs in with their phone or computer's built-in sign-in (a passkey), with no password, and sees the reports, documents, journal and audit papers, all read-only.
-2. The CPA package without tax ID numbers is an ordinary download.
-3. The version with tax ID numbers comes only through a one-time link. You open it, unlock it with your passphrase, and send it on. Every download is recorded.
-4. If the CPA wants, they can connect their own agent with read-only access.
+1. On your computer, you send the CPA the package the agent prepares. ~~With your own server (7.4), you can also invite the CPA to look at the books directly … all read-only.~~ → D-51: not planned.
+2. The CPA package is an ordinary download, tax ID numbers included (D-29): the agent makes it, or the viewer's Export menu does. ~~The version with tax ID numbers comes only through a one-time link. You open it, unlock it with your passphrase, and send it on.~~ Every download is recorded in the access log (the agent's) or not at all (the viewer's, which never writes).
+3. If the CPA wants, they can connect their own agent with a read-only token to your own server (7.4).
 
 ### 7.7 What stays easy (acceptance)
 
@@ -765,15 +794,178 @@ The installer offers to connect Codex, or you can run `wanderbooks connect codex
 
 ## 8. Phased milestones
 
-Every phase is one merge train. Each one:
-- passes `just check` (fmt, clippy `-D warnings`, rustdoc `-D warnings`, all tests) and `just prove` (Kani with no vacuous covers; Lean with standard axioms only, no `sorry`);
-- updates `docs/parity.md`, `docs/spec/rules.md` (SOURCE / CONVENTION / DECISION lines), `docs/mcp-interface.md`, `docs/testing.md`, `docs/verification.md` and `docs/architecture.md`;
-- runs mutation testing on the crates it touches, with every survivor killed or documented as equivalent;
-- builds features whole: core, store, MCP, viewer, exports, docs, tests.
+Phases are labelled P0 to P13, with P4b (receivables and payables) between P4 and P5. The labels are load-bearing in commits, `plan/STATUS.md` and the decisions, so they never change; the order of work does, and 8.0 is where it is stated. A reader who wants to know what to build next reads 8.0 and then the unit's own section in 8.2. Section 8.1 is history. Section 8.3 is the P4b reference design the S4 to S7 units point into. Section 8.4 is what is deliberately not scheduled.
 
-The first company keeps working between phases.
+### 8.0 How the work is organized
 
-### P0: Guard rails (days)
+#### 8.0.1 Status and dependency table (2026-10-26)
+
+One row per unit of work. A unit is what one engineer takes into one git worktree and brings back as one or a few reviewed pull requests. "Depends on" lists the units that must be merged into `main` first. "Beside" lists units that may run at the same time in other worktrees because they share no exclusive file (8.0.3 lists the shared files every unit appends to by rule). "Go-ahead" is the owner's format upgrade a unit's writes need on the live books (D-39); merging never waits for it.
+
+| Unit | Title | Status | Depends on | Beside | Go-ahead | Size (engineer-days) |
+|---|---|---|---|---|---|---|
+| P0 | Guard rails | landed 2026-10-17 | | | | |
+| P1 | Journal-native settings and conventions | landed 2026-10-17 | | | | |
+| P2 | One executable, open while held, the cutover | landed 2026-10-20 (slices 1-9) | | | | |
+| P3 | Engine correctness | landed 2026-10-22 | | | | |
+| Projects | Projects as classes with facts (D-43) | landed 2026-10-22 | | | | |
+| P4b S1 | Documents read their figures from standing lines | landed 2026-10-24 (`d7fa16e9`, `07f213c9`); feature `document_standing` declared on the live books 2026-10-24 | | | | |
+| P4b S2 | Read tools and viewer pages | landed 2026-10-24 (`7d2bf0b7`, `b7b7f171`) | | | | |
+| P4b S3 | The invoice PDF | landed 2026-10-24 (`c1f9001c`) | | | | |
+| U0a | Split `server.rs` by tool group | not started | none | U0b, U0c, S4.1, S4.2, S7.1 (core steps only) | none | 3-4 |
+| U0b | The attention engine over `PackageBooks` | not started | none | U0a, U0c, S4.1, S4.2 | none | 4-6 |
+| U0c | `docs/testing.md` sections for S1-B, S2, S3; `docs/mcp-interface.md` cleanup of stale P4b notes | not started | none | everything | none | 0.5-1 |
+| P4b S4 | `documents_v2`: numbers, terms, line accounts, snapshots, preview and confirm, the issued PDF filed, party email and terms, invoicing settings | not started | S4.1 and S4.2 need nothing; S4.3 needs S4.1, S4.2; S4.4 needs U0a, S4.3; S4.5 needs S4.4 | S5 (after S4.2), S7 (core after S1), P6, P9a, P11a, P13 | `documents_v2` (one upgrade after S7, D-52) | 12-16 |
+| P4b S5 | Sent tracking | not started | S1; S4.2 for the defaults (works without it, see the unit) | S4.3 onward, S6 | `documents_v2` | 3-4 |
+| P4b S6 | Paying on terms: multi-document payments, discounts, the processor fee, bills due, aging exports | not started | S4.1 (`Terms`), U0a | S5, S7, P6 | `documents_v2` | 8-10 |
+| P4b S7 | Bad debts (write-offs) | not started | S1; S4.3 for the same-call evidence attach; U0a | S4.4 onward, S5, S6 | `documents_v2` | 4-6 |
+| P4 | Draft states, the evidence gate in one place, the preview digest, the digest tool | not started | S4-S7 merged (one sweep over every confirm tool), U0b | P6, P9a, P11a, P13 | `drafts_v2` (same upgrade as `documents_v2`, D-52) | 8-10 |
+| P5 | Agent surface complete: the result envelope, prompts, `books.start` v2, journal history, agent evals | not started | P4, U0b; the envelope step is single-owner and merges when no other MCP branch is open | P6, P9a, P11a, P13 | `source_revisions` | 10-12 |
+| P6 | Evidence pipeline: extraction, dedup, annotations, company record categories | not started | U0a, U0b | S4-S7, P4, P5 (not its envelope step), P9a, P11a, P13 | `attachment_text` | 8-10 |
+| P7 | The TIN scanner's separators; vault v2 closed (D-48) | not started | none | everything | none | 1 |
+| P8 | Audit and attestations | not started | P6 (extraction), P4 (drafts), U0b | P9a, P11a, P13 | `audits` | 10-12 |
+| P9a | Self-host recipe, `books adopt` move with the head check, static bearer over a tunnel, the two-user CI job | not started | none (code); a second machine to try it on | everything | none | 3-4 |
+| P9b | claude.ai through an external identity provider (D-7 b, Q-6) | not planned until Q-6 is answered | P9a | | | |
+| P9c | Remote viewer replica, invitations | not planned (D-51) | | | | |
+| P10 | The re-audit runbook and its CI mirror; the owner runs the re-audit | not started | P5, P6, P8 | P11a, P13 | none | 1 (+ owner days) |
+| P11a | Packaging and updates: the trial, `wanderbooks update`/`rollback`, Linux packages, signing, macOS and Windows bundles | not started | none (code); certificates and keys from the owner for the signing steps; Q-4 before the manifest step | everything | none | 20-25 |
+| P11b | The agent dock and books homes | not started | P11a (an installed app to dock into) | P12 | none | 8-10 |
+| P12 | Max testing, again | not started | everything else merged | | none | 2-3 (+ machine time) |
+| P13 | bookspec: checker crate, `Engine` trait, rule ids, the spec text, the runner | not started | none for steps 1-4; the engine stable for step 5 | everything | none | 15-20 |
+
+#### 8.0.2 Dependency graph and merge order
+
+Forced order (an arrow means "merge first"):
+
+```
+U0a ─┬─> S4.4 ─> S4.5 ─┐
+     ├─> S6 ───────────┤
+     ├─> S7.2 ─────────┤
+     └─> P6 ───────────┼─> P4 ─> P5 ─> P8 ─> P10
+U0b ─┬─> P4 (attention items)                ^
+     └─> P5, P6, P8                           │
+S4.1 ─> S4.3 ─> S4.4 ; S4.1 ─> S6 ; S4.2 ─> S4.3 ; S4.2 ─> S5 (defaults) ; S4.3 ─> S7.2
+P6 ─> P8 ; P4 ─> P8
+P9a, P11a, P13 (steps 1-4), P7: independent of the chain above
+P11a ─> P11b
+everything ─> P12
+```
+
+The shortest path to P10 (the owner's goal: the whole re-audit through the MCP alone) is U0a, U0b → S4 (S5, S6, S7 beside it) → P4 → P5 → P6 (can start earlier) → P8 → P10. P9a, P11a, P13 and P7 run beside that chain whenever an engineer is free. P11b and P12 come last.
+
+Recommended staffing for a team of five: engineer A on U0a then S4.4/S4.5; B on U0b then P6; C on S4.1/S4.3 then S6; D on S4.2 then S5 then S7; E on P13 steps 1-3, then P9a, then P11a. The EM merges in the order above and holds the three single-owner moments: U0a (before any MCP-touching branch opens), P4's one sweep over the confirm tools, and P5's envelope step.
+
+#### 8.0.3 Shared files, owners, and allocated names
+
+These files are edited by nearly every unit. Each has one owner (the EM, or a named engineer) who merges changes to it; every other engineer appends by the rule in the right column, never reorders, and rebases before merging.
+
+| File | What every unit adds | Rule |
+|---|---|---|
+| `crates/ledger-mcp/src/server.rs` and `crates/ledger-mcp/src/tools/<group>.rs` | tool handlers | after U0a, a unit adds handlers only in its own group file (`tools/documents.rs`, `tools/drafts.rs`, `tools/evidence.rs`, `tools/audit.rs`, ...); `server.rs` keeps the router and the shared helpers |
+| `crates/ledger-mcp/src/types.rs` | params and output structs | append at the end, under a `// <unit>` comment |
+| `crates/ledger-mcp/src/scopes.rs` | one row per tool and the array length | append at the end of `TABLE`; bump the length |
+| `crates/ledger-store/src/format.rs` | `KNOWN_FEATURES`, `EVENT_TYPES`, `setting_feature` arms | feature and event names are the ones allocated below; append |
+| `crates/ledger-store/src/schema.rs` | one migration per unit that changes a table | numbers are taken at merge time: the unit writes its migration as the last entry; the second unit to merge rebases and takes the next number. Provisional numbers below are a guide, not a reservation |
+| `crates/ledger-store/src/store.rs` | replay and projection arms, new commands | arms go beside the arms of the same noun (`invoice.*` together) |
+| `crates/ledger-store/tests/format.rs`, `fuzz/fuzz_targets/fuzz_store_replay.rs` | the new event type's generator | append |
+| `crates/ledger-core/src/settings.rs` | `KEYS` entries and `Kind` arms | append under a `// <unit>` comment |
+| `crates/ledger-core/src/kernel.rs`, `crates/ledger-core/src/proofs.rs` | kernel functions and their Kani harnesses | append; a harness slower than a few minutes is named in the justfile's `kani_slow` |
+| `verify/lean/Wanderbooks/*.lean`, `verify/lean/Audit.lean` | new `Step` constructors, theorems, `#print axioms` lines | one unit at a time (the EM serializes Lean merges) |
+| `crates/ledger-mcp/handbook/*.md`, `handbook.rs::SECTIONS` | a section per procedure | ids allocated below |
+| `docs/mcp-interface.md`, `docs/spec/rules.md`, `docs/testing.md`, `docs/parity.md`, `docs/verification.md`, `docs/architecture.md`, `docs/receipt-store.md` | the unit's rows and paragraphs | append in the unit's own section; never rewrite another unit's |
+| `plan/served.md` (this file) | the unit's **As built** block and its Status | the engineer writes the As-built block in the PR; the EM updates 8.0.1 |
+
+**Allocated names** (no engineer invents another; a unit that needs one not listed asks the EM, who adds it here first):
+
+| Kind | Name | Unit |
+|---|---|---|
+| journal feature | `documents_v2` | S4, S5, S6, S7 (one feature for the four; D-52) |
+| journal feature | `drafts_v2` | P4 |
+| journal feature | `source_revisions` | P5 |
+| journal feature | `attachment_text` | P6 |
+| journal feature | `audits` | P8 |
+| event type | `invoice.sent` | S5 |
+| event type | `invoice.written_off` | S7 |
+| event type | `entry.draft_state_set`, `entry.draft_discarded` | P4 |
+| event type | `convention.source_revised`, `decision.source_revised`, `open_item.source_revised` | P5 |
+| event type | `attachment.text_extracted`, `attachment.annotated`, `entry.settles` | P6 |
+| event type | `audit.run`, `receipt.attested`, `entry.reviewed`, `period.attested` | P8 |
+| new fields on existing events | `invoice.created`/`bill.created`: `number`, `terms`, `bill_to`, `seller`, `customer_ref`, `memo`, `vendor_ref`, `received_on`, `duplicate_reason`; lines: `account`, `quantity`, `unit_price` | S4 |
+| new fields on existing events | `party.updated` field `email`, `default_terms_as_customer`, `default_terms_as_vendor` | S4 |
+| new fields on existing events | `invoice.payment_received`/`bill.paid`: `line`, `discount`, `discount_line`, `discount_reason`, `fee`, `fee_line` | S6 |
+| projection schema (provisional) | 16 S4, 17 S5, 18 S6, 19 P4, 20 P6, 21 P8 | taken at merge, 8.0.3 rule |
+| setting keys | `invoicing.number_prefix`, `invoicing.first_number`, `invoicing.default_terms`, `invoicing.payment_methods`, `invoicing.footer`, `invoicing.unsent_days`, `invoicing.reminder_days`, `bills.remind_days`, `bills.discount_warn_days`, `company.email`, `company.website` | S4 (S5 and S6 read the day counts) |
+| setting key | `policy.attestation_bar` | P8 |
+| roles | `bad_debts` (6990), `purchase_discounts` (6995), `sales_allowances` (4100, existing account), `payment_processing_fees` (the account payouts' fee lines already use) | S7, S6 |
+| MCP tools, new | `books.mark_sent` (S5); `books.bills_due` (S6); `books.write_off_invoice` (S7); `books.preview_entry`, `books.list_drafts`, `books.set_draft_state`, `books.discard_draft` (P4); `books.journal_history` (P5); `books.find_attachment`, `books.annotate_attachment`, `books.consolidate_duplicates` (P6); `books.audit`, `books.workpaper`, `books.attest_receipt`, `books.review_entry`, `books.attest_period`, `books.attestations` (P8) | |
+| MCP tools, changed | `books.create_invoice`, `books.create_bill`, `books.update_party` (S4); `books.receive_payment`, `books.pay_bill`, `books.ar_aging`, `books.ap_aging`, `books.export` (S6); `books.post_entry`, `books.reverse_entry`, `books.digest`, every tool with `confirmed` (P4); `books.start`, `books.set_convention`, `books.record_decision`, `books.raise_item` (P5); `books.get_receipt`, `books.attach_receipt`, `books.file_document` (P6); `books.export_cpa_package`, `books.verify` (P8) | |
+| handbook sections | `invoices-and-bills` (S4; S5, S6, S7 add their steps to it), `drafts-and-reversals` rewritten (P4), `evidence-and-receipts` extended (P6), `attestations-and-audit` (P8), `self-host` (P9a) | |
+| rules.md | B-39 terms (S4), B-40 numbers and the issued copy (S4), B-41 write-offs (S7), B-42 settlements and the fee (S6), B-43 drafts and evidence (P4), B-44 extraction and dedup (P6), B-45 audits and attestations (P8) | |
+| test files | `crates/ledger-cli/tests/documents.rs` (S4-S7 over the wire), `documents_parity.rs` (viewer equals server), `crates/ledger-core/tests/spec_documents.rs` (exists; grows), `crates/ledger-cli/tests/agent_evals/` (P5), `crates/ledger-cli/tests/audit.rs` (P8) | |
+
+#### 8.0.4 Every unit's bar, and the unit template
+
+Every unit, before its last pull request merges:
+- passes `just check` (format, clippy with `-D warnings`, rustdoc with `-D warnings`, every test) and `just prove` (Kani with no vacuous cover; Lean with standard axioms only, no `sorry`); a unit that adds a kernel function or a `Ledger` command adds its Kani harness and Lean step (AGENTS.md, "Formal methods");
+- updates, in the same pull request as the code: `docs/parity.md`, `docs/spec/rules.md` (SOURCE / CONVENTION / DECISION lines), `docs/mcp-interface.md` (a test fails otherwise), `docs/testing.md` (a **For P12** paragraph: D-33 paused mutation testing until P12, so each unit records what P12 must mutate), `docs/verification.md` (every new harness and theorem), `docs/architecture.md` where a crate's shape changes;
+- builds its feature whole: core, store, MCP, viewer, exports, handbook, tests; a unit is not done with the MCP tool and no viewer page, or the viewer page and no test;
+- is reviewed until a review round comes back clean (the reviewer reads the diff against the unit's section here and against AGENTS.md; findings are fixed, not argued away);
+- writes its **As built** block into this file (the template's last field) and the EM moves its row in 8.0.1 to "landed".
+
+The owner's live books (the first company's) keep working between units: a unit's writes that need a new journal feature are refused on books that have not declared it, with the `format_upgrade_pending` remedy, until the owner's go-ahead (D-39); everything else in the unit works at once. Merging never waits for the go-ahead.
+
+**The template.** Every remaining unit in 8.2 has these eight fields, in this order; a field with nothing to say reads "none".
+
+1. **Status**: not started / in progress (branch, engineer) / landed (commit, date).
+2. **Depends on**: units merged first; the owner go-ahead, if any.
+3. **Feature and schema**: the allocated feature name(s), event type(s) and provisional schema number, or none.
+4. **Build**: numbered steps, each a thing that compiles and passes `just check` on its own; each bullet ends with where it lives, as `crate/path/file.rs::symbol (new | changed)`. Core, store, MCP, viewer, docs sub-steps appear only where the unit has them.
+5. **Files**: owns (exclusive) / also touches (the 8.0.3 files, by their rules).
+6. **Tests and proofs**: every test named, with the file it goes in; the Kani harnesses and Lean theorems; the bookspec example ids.
+7. **Done when**: a numbered list the EM can check without the owner's books.
+8. **As built** (date, commit): departures from Build, one bullet each, citing the decision or review that caused it. The Build text is struck through where it changed (`~~text~~ → As built`), never rewritten.
+
+#### 8.0.5 Recipes (the mechanical steps every unit repeats)
+
+**R-A A new journal feature.** (1) `crates/ledger-store/src/format.rs`: `pub const NAME: &str = "name";` with a doc comment saying what an older version would misread, in the style of `DOCUMENT_STANDING`; append to `KNOWN_FEATURES` (`Store::ensure_feature` has `debug_assert!(KNOWN_FEATURES.contains(..))`). (2) A unit test `name_is_its_own_feature` beside `document_standing_is_its_own_feature`: `declared_knowing` with every earlier feature gives `NewerJournal`; `require_feature` gives `FormatUpgradePending`; `upgrade().adds()` names it. (3) Every `Store` command that writes a line the feature marks calls `self.ensure_feature(NAME)` before `rehearse` and before anything is journaled; a store test `<write>_waits_for_<name>` modelled on `repaying_after_a_reversal_waits_for_document_standing` (`crates/ledger-store/tests/arap_standing.rs`): refused, journal length unchanged, succeeds after `upgrade`, replay equals live. (4) `crates/ledger-cli/tests/format_upgrade.rs::books_p2_served_cut_over_whole`: one entry in its `refused` list and the same call made after consent. (5) `crates/ledger-mcp/handbook/format-upgrade.md` and rules.md B-27 list the feature.
+
+**R-B A new event type.** (1) `format.rs::EVENT_TYPES` (alphabetical; `crates/ledger-store/tests/format.rs::every_event_the_store_replays_passes_the_gate` scans store.rs for every `"x.y" =>` arm and fails on a mismatch in either direction). (2) A payload reader in `crates/ledger-store/src/meta.rs` in the style of `project_set_of`: a missing or mistyped key → `corrupt(..)`; an enum value this version doesn't know → `format::newer_content(..)` (B-27: never "corrupt" for newer). (3) A `replay_line` arm in `store.rs` calling a `Ledger::replay_*` method (`line.seq` is available, as `apply_settings` uses it). (4) An `apply_line_rows` arm (projection SQL); a migration in `schema.rs` and `SCHEMA_VERSION` + 1 only when a table or column changes (8.0.3's numbering rule); `crates/ledger-store/tests/schema_files.rs` proves the old database file is left alone and a new one built. (5) `projection_rows` and `compare_projections` list any new table; `Ledger::differs_from` gains the new state (the `("line_docs", ..)` pattern), or Store-vs-Snapshot parity cannot see it. (6) `fuzz/fuzz_targets/fuzz_store_replay.rs::TYPES` gains the type (`the_replay_fuzzer_writes_every_event_type` fails otherwise). (7) A `describe` arm in `crates/ledger-gui/src/pages/journal.rs`. (8) The event table in `docs/receipt-store.md` and the rule in `docs/spec/rules.md`.
+
+**R-C A new or changed MCP tool** (one commit; three tests fail on a partial state). (1) `crates/ledger-mcp/src/types.rs`: params and output structs with `JsonSchema` and doc comments (they are the schema descriptions the agent reads). (2) The handler in the unit's `tools/<group>.rs` with `#[tool(name = "books.x", title = "...", description = "...", annotations(read_only_hint, destructive_hint, open_world_hint))]` (`annotations_complete` checks every tool). (3) `crates/ledger-mcp/src/scopes.rs::TABLE`: a row `("books.x", <Needs>)` using the same `Needs` value the neighbouring rows use for that kind of tool, and the array length constant (a compile error otherwise). (4) `docs/mcp-interface.md`: an entry in the shape `` `books.x { a, b? } → { c }` `` under the right "Tools —" heading (`every_tool_is_documented_and_every_documented_tool_exists`). (5) The description at most 700 characters (`tool_descriptions_fit_700_characters` pins how many exceed it today; never raise that number) and `tool_text_lint` (no `just`, no toml, no path). (6) An over-the-wire test in `crates/ledger-cli/tests/<unit>.rs` through `common::Books::new(tag)` → `.wire()` → `.call("books.x", json!({..}))` → `answer_of` (the harness in `crates/ledger-cli/tests/common/mod.rs`; files by `upload_args` and `Wire::upload`, handed files by `Wire::fetch`). (7) A `docs/parity.md` row where the tool is a feature.
+
+**R-D A new setting key.** (1) `crates/ledger-core/src/settings.rs::KEYS`: a `Key { name, toml, kind, sensitivity, doc }` entry (pattern `company.duns`). A nine-digit (TIN-shaped) exemption is a `Kind` arm of its own, never a key-name match: `no_tin` runs for every text kind, and `Kind::Duns` escapes by having its own arm. (2) A `setting_feature` arm in `crates/ledger-store/src/format.rs` naming the feature the key needs (`Store::journal_settings` calls it; the `"settings.set"` replay arm refuses an unknown key as `newer_content`). (3) `ledger-config`'s `toml_round_trip_zero_events` and `codec_props.rs` pick the key up; `crates/ledger-core/tests/settings_units.rs` for the kind's canonical form. (4) The settings.rs module INVARIANTS block, where the key has a rule of its own.
+
+**R-E A new handbook section.** `crates/ledger-mcp/handbook/<id>.md` plus a tuple in `crates/ledger-mcp/src/handbook.rs::SECTIONS` (`include_str!`); text that differs before and after the owner's upgrade uses a placeholder rendered by `section(..)`, as `{document_projects}` does through `document_projects_rule(declared)`. The tests in handbook.rs check every section renders and every id is unique. `books.start` lists the sections and `books://handbook/{id}` serves them.
+
+**R-F A new Needs-attention item.** After U0b: one function in `ledger-package`'s attention module, read by the viewer and by `books.start`'s next steps alike; the parity test `crates/ledger-gui/tests/view_model.rs` and a screenshot through `shot()` (`crates/ledger-gui/tests/invoices.rs` shows how). Before U0b (only U0a and U0c may land before it): do not add attention items.
+
+**R-G The For-P12 paragraph.** In `docs/testing.md`, under the unit's heading, `**For P12 (mutation targets):**` naming each new function and the arms a mutant would flip (pattern: the P4b S1 section's paragraph). D-33.
+
+#### 8.0.6 Before a journal-touching unit merges
+
+A unit that adds a feature, an event type or a field on an event (S4, S5, S6, S7, P4, P5, P6, P8) proves, before merge, that the owner's live books cannot be hurt by it:
+1. `crates/ledger-store/tests/store.rs::books_written_under_older_rules_still_open` gains a hand-written line of the new shape through `JournalWriter`, and still opens every older fixture.
+2. A new fixture directory under `crates/ledger-store/tests/fixtures/old-books/` written by the version *before* the unit (the `old-books-writer` pattern), with its `expected.json`; the unit's version opens it and reports the same figures.
+3. The `books_p2_served_cut_over_whole` entry (R-A step 4): the write is refused before consent and accepted after.
+4. The `_is_its_own_feature` test (R-A step 2) and the `tests/format.rs` arms (R-B).
+5. Where a figure could move (a report, an aging, a status), a `figures.json` golden captured by the previous version (pattern: `crates/ledger-store/tests/fixtures/p4-arap-before` and `arap_standing.rs::write_the_p4_arap_fixture`), and a named test that adjudicates every difference. S4 to S7 and P4 move no figure: a golden change is a stop, not an update.
+6. The statement, in the PR description: "merge does not need the owner's go-ahead; the live books refuse the new write until he gives it."
+
+#### 8.0.7 Working in a worktree
+
+- One worktree per unit (`git worktree add ../wb-<unit> -b <unit>`), branched from `main` on the day it starts; rebase on `main` before each PR.
+- Conventional commits, one logical change each, the message explaining the accounting (AGENTS.md). The unit's id in the subject: `feat(arap): terms and due dates (P4b S4.1)`.
+- A PR is one step or a few steps of the unit's Build list; its description names the steps, the tests added, the docs touched, and the 8.0.6 checklist where it applies.
+- The engineer never runs `cargo mutants` (D-33), never edits a golden file without recomputing it by hand and saying so in the commit, never touches the owner's books (the only books an engineer uses are the test fixtures and books made by `wanderbooks setup` in a scratch root), and never changes `plan/served.md` beyond the unit's own As-built block.
+- Stuck for more than an hour on a question the plan does not answer: write the question and the two or three answers considered into the PR, pick the one that keeps the books right under the principles in section 2, and flag it for the EM. Do not invent a journal feature, event type, setting key or tool name: ask the EM, who adds it to 8.0.3.
+
+### 8.1 Landed
+
+History, kept for the record. Each landed phase keeps its original Scope / Tests / Accept text and its **As built** notes; the Status line is the only addition. New readers need only the Status lines and `plan/STATUS.md`.
+
+#### P0: Guard rails (days)
+
+**Status:** landed 2026-10-17 (`391634a`).
 
 **Scope:**
 - `import_local_file` allowlist (defect 19, interim).
@@ -794,7 +986,9 @@ The first company keeps working between phases.
 - A live Claude Code session receives the connect text untruncated.
 - The first company's daily flow is unchanged, with no new permission prompts.
 
-### P1: Journal-native settings and conventions (B, part 1)
+#### P1: Journal-native settings and conventions (B, part 1)
+
+**Status:** landed 2026-10-17; live on the owner's books the same day. **[Scope below is the 2026-10-16 design; `ledger-view` → D-53 (U0b, over `PackageBooks`).]**
 
 **Scope:**
 - `ledger-core/src/settings.rs` and `conventions.rs`.
@@ -829,7 +1023,7 @@ The first company keeps working between phases.
 **As built (2026-10-17), and where it departs from the scope above (engineering calls):**
 - One event per change set: `settings.set {changes: [{key, value|null}], source}` is all or nothing (an import is one line); there is no separate `settings.cleared` (a null value clears). `effective_from` is not built: no key needs it yet, and effective-dated members are the varying-interest rule (§706(d)), which changes figures and belongs with the P3 allocation work. A later format adds it.
 - Keys are flat (`company.formation_state`, `company.irs_name_control`, ...), not one `company.legal{}` object: each fact gets its own source, which is what "facts carry their source" asks. `company.members` keeps member names (matched to parties as before); `company.cpa` is text. `policy.capitalization`, `require_tax_category`, `attestation_bar`, `cpa_package_requires_audit`, `audit_cadence` and `books.schedule_convention` arrive with the phases that use them (P3, P8).
-- `ledger-view` (`attention::find` moved out of the viewer) moves to P5, where its first user (`books.start`'s needs_attention, `next_steps`) lands; P1 has no server-side consumer, and moving 700 lines of the viewer for nothing would be risk without use. `attention_server_equals_gui` goes with it.
+- ~~`ledger-view`~~ → D-53, U0b (`attention::find` moved out of the viewer) ~~moves to P5~~, where its first user (`books.start`'s needs_attention, `next_steps`) lands; P1 has no server-side consumer, and moving 700 lines of the viewer for nothing would be risk without use. `attention_server_equals_gui` goes with it.
 - The "due to" heuristic keeps reading account names: `financing_accounts` also holds bank loans, which aren't "paid personally".
 - Approval rules are checked by the engine (`Ledger::approvals_missing`) and enforced by the store: `Store::post_entry` refuses a covered draft until approved, and the operations that post at once (invoices, bills, payments, payroll, remittances, disposals) are refused when a rule covers the entry they would post (`approval_gate`: draft it instead). Reversals, closes, depreciation and amortization are exempt. An approval records the draft's fingerprint (date, description, lines, classes); any change voids it. A rule names accounts that take postings, and an account a rule names can't be renumbered until the rule is revised.
 - `books.import_settings` took only the file the server read, whole (compared key by key with the server's own reading), never turned approval rules on, and on books that keep their own settings changed nothing (review round 1: an agent-transcribed text could drop the EIN). D-44 removed it.
@@ -838,7 +1032,9 @@ The first company keeps working between phases.
 - A vault key file is never a books setting: `--vault-key-file` on the server and the viewer (both gone with D-44: a book keeps its own key), and an adoption is refused unless the key it names is the one given.
 - The connect text's lead names `books.start` first, then the handbook.
 
-### P2: One executable, open while held, hidden away, and the the first company cutover
+#### P2: One executable, open while held, hidden away, and the first company's cutover
+
+**Status:** landed 2026-10-18 to 2026-10-20 (slices 1-9); the cutover 2026-10-20. **[Scope below is the 2026-10-16 design; D-31 (no archive process, no encryption), D-32 (no confinement, no helper) and the As-built notes in 3.3, 3.6, 3.7, 3.9 and 4.7 are what exists.]**
 
 **Scope:**
 - `ledger-mcp serve --root` with multiple books at `/b/{book}/mcp`; explicit transport config (3.2); bearer tokens and scopes; rate limits (tower-governor).
@@ -894,7 +1090,9 @@ The first company keeps working between phases.
 - Viewer updates within 1 s.
 - A backup of the first company restores on a clean machine and beside the live books, each with the same head and byte-identical goldens.
 
-### P3: Engine correctness (defects 1, 7, 21, 8, 9, 11, 12, 13, 14, 15, 16, 17, 18, 22)
+#### P3: Engine correctness (defects 1, 7, 8, 9, 11 to 18, 21 to 24)
+
+**Status:** landed 2026-10-20 to 2026-10-22; live on the owner's books 2026-10-22.
 
 **Defect 1, cash flow** (`ledger-core/src/reports.rs:1231-1560`):
 - **Partition.** Every non-cash balance-sheet account belongs to exactly one section: investing (fixed-asset cost and accumulated depreciation, plus `investing_accounts`), financing (equity, plus `financing_accounts`), or operating (all others, including P&L).
@@ -968,955 +1166,737 @@ The first company keeps working between phases.
 - 0 unexplained mutation survivors in `ledger-core` and `ledger-import` (run in P12, D-33).
 - The the first company change log is adjudicated.
 
-### P4: Drafts, reversal as draft, the evidence gate, digest (defects 2, 5, 6)
 
-**Scope:**
-- **Core:** draft states; `entry.draft_state_set`, `draft_discarded`, `reversal_drafted`, `evidence_inherited`. `reverse_entry_steps` (`ledger.rs:1355-1380`) stops posting inline. `check_reversal` (`ledger.rs:1319`) also refuses a second open reversal draft. `ledger_core::evidence::requirement` is the single gate, used by `Store::post_entry` (every path), MCP and GUI.
-- **Exemptions removed:** S:561-568, `receipt_policy.rs:6`, S:2540, GUI `books.rs:648`. Digest, settings and docs now agree.
-- **Defect 5:** schema v12 columns; `list_drafts`; `discard_draft`; `set_draft_state`; `as_of_status` plus `strict` on reports; the CPA package refuses an open draft unless given a reason.
-- **Defect 6, digest:** `since`/`since_seq` by `posted_seq`; `as_of`; zero-net touched accounts; `reconciliation_tracked`; `never_reconciled`; drafts by state.
-- **Preview:** `preview_entry` plus `preview_token` on all confirm tools.
-- **Needs attention:** "draft awaiting evidence" and "reversal draft needs evidence", distinct from "draft not posted".
+#### Projects: classes with facts (D-43)
 
-**Proofs:**
-- Lean `Step.draftReversal`, `Step.discard`, each with preservation.
-- `Reachable.reversal_reverses_posted`: every posted reversal reverses a posted original, at most once.
-- `draftsOpen` accounts for discard.
-- `tests/model.rs` extended.
+**Status:** landed 2026-10-22 (`321b9456`, `3eda95eb`, `528c0706`, `6c587086`). A project is a class with facts (rules.md B-37), four tools (`books.add_project`, `books.update_project`, `books.projects`, `books.project`) in `crates/ledger-mcp/src/tools/projects.rs`, a project page in the viewer with a snapshot of its figures, invoice and bill lines that take a project (feature `document_line_projects`), the IIF carrying each line's project as CLASS. `plan/STATUS.md` "Projects" has the detail.
 
-**Tests:**
-- `reversal_needs_evidence`, `inherited_evidence_posts`, `legacy_reversed_replays_identically`, `discard_unblocks_close`, `report_warns_on_draft_before_as_of`, `cpa_package_refuses_open_draft`.
-- `digest_since_is_posting_time` (an entry backdated but posted today appears).
-- `stale_preview_refused`; `gui_and_server_gate_agree`.
-- `fuzz_op_sequence` gains the new ops; store refusal law at `STORE_CASES=5000`.
+#### P4b S1: documents read their figures from standing lines (`document_standing`)
 
-**Accept:** legacy fixtures open; the first company has 0 unexplained drafts.
+**Status:** landed 2026-10-24, part A `d7fa16e9` (core, store, viewer, Lean), part B `07f213c9` (MCP). The owner declared `document_standing` on the live books 2026-10-24.
 
-### P4b: Receivables and payables, first class (D-45)
+**As built (2026-10-23 to 2026-10-24):**
+- `crates/ledger-core/src/arap.rs`: `DocRef`, `Movement { Origin, Payment, Discount, WriteOff, Adopted, RoleMove }`, `DocTag`, `DocState`, `DocStatus { Open, Partial, Paid, WrittenOff, Void, Overpaid, Unattached }`, `doc_status(..)`, `ControlCheck`, `DocAttention`, `UnattachedLine`, `aging_bucket`, `document_parts`, `validate_due_date`, `validate_lines`.
+- `crates/ledger-core/src/ledger.rs`: `Ledger.line_docs` (the tag map), `stands_on(entry, as_of)`, `in_effect`, `doc_state`/`invoice_state`/`bill_state` (the signed sum of the document's tagged lines dated on or before the day; `stands_on` decides only the Void flag), `check_item_bounds` (private, run from `check_reversal` and the payment path), `payment_room`, `check_payment_account`, `check_control_lines`/`check_hand_line` (the control guard with the reversal-mirror exemption), `control_role_of`, `control_check`, `check_void_document`, `void_document`; `reverse_entry_steps` copies each line's tag onto its mirror; `Invoice.amount_paid`, `.owed`, `.status` kept as derived caches (`refresh_doc`, never journaled).
+- `crates/ledger-core/src/kernel.rs`: `running_bounds`, `bounds_kept`; Kani `bounds_check_matches_definition`, `bounds_kept_is_the_definition_on_books_in_bounds`.
+- Lean `verify/lean/Wanderbooks/Documents.lean`: `control_agrees`, `control_agrees_through`, `Step.document_unattached`, `Step.reverse_moves`, `reverse_twice`, `Reachable.control_is_documents`.
+- Store: `ensure_payment_features` (declares `document_standing` for a payment accepted only because an earlier one was reversed); replay derives tags from `invoice.created`, `bill.created`, `invoice.payment_received`, `bill.paid` ("the first untagged control line for the amount", rules.md B-38 item 1); `Store::void_document`.
+- MCP: `books.void_document { kind, id, date, reason }`, `books.control_check { as_of? }`, `instrument` and `reference` on `books.receive_payment` and `books.pay_bill`; the tie-out in `books.verify`; `control_problems` in `books.digest`; `documents_void_and_tie_out_over_the_wire`.
+- Goldens: `crates/ledger-store/tests/fixtures/p4-arap-before` (written by `0df7f52a`), adjudicated in `legacy_reversal_now_counts`.
+- Rules: `docs/spec/rules.md` B-38 (new), B-18 and B-23 amended. Tests: `crates/ledger-core/tests/spec_documents.rs`, `crates/ledger-store/tests/arap_standing.rs`, `arap_props.rs`, `bounds.rs`.
+- Departures from the plan: the plan's "stored fields removed" became derived caches; the plan's "`outstanding` over entries that stand" is not what was built (the date-sum is, and it is the right definition: a mirror carries the same tag and cancels; 8.3.3 says so now).
 
-**Status:** decided 2026-10-23 (D-45); slice S1 next. The owner's answers below override any text later in this section that says otherwise.
+#### P4b S2: read tools and the viewer's Invoices & Bills
 
-**The owner's answers (2026-10-23, through the question tool):**
-1. **Preview, then confirm** for invoices and bills, as for entries; an abandoned preview uses up no number.
-2. **Numbers: `INV-0001`, running**: the owner's prefix and a running number, with a one-time starting number; never reused; a void keeps its number.
-3. **Payment methods: any.** The owner: "Full ACH, payment link, QR code, whatever whatever. Companies accept payments in SO MANY ways, we should support anything." So `invoicing.payment_methods` is a list, each method `{kind, label, lines, link?, qr?}`: `kind` one of `ach`, `wire`, `link` (a card or processor pay page), `check` (a mailing address), `p2p` (Zelle, Venmo, PayPal, Cash App: a handle), `crypto`, `other`; the PDF prints each with its label and lines, and a QR code (drawn in Rust as an SVG, placed as an image: Typst does no network fetch) for any method with `qr: true` and a link or text to encode. The settings holding bank details are exempt from the nine-digit TIN check, by key, as the D-U-N-S number already is.
-4. **The books never send, receive or charge; they record.** The owner: "Wanderbooks just does books. Nothing else. ... it's more likely my agent (who talks to wanderbooks MCP) doing the sending and receiving and payment capture ... We took the same approach on payroll. Wanderbooks is NOT getting into that hellscape (just like the tax hellscape). That's for external tools. But the agent talking to the books MCP can coordinate all that and give the books what it needs." So: `books.mark_sent` records who sent it (the owner or a named delegate, such as an agent), the channel (email, portal, post, other), the recipients, when, and the channel's own reference (a message id); a payment records its processor and reference (a Stripe charge id, a bank trace) and, when the processor kept a fee, the fee: Accounts Receivable is credited the gross amount, the fee goes to its expense account (payment-processing fees) and the deposit account gets the net, the same gross presentation payouts already use. The mailto link stays as a convenience for a human sender.
-5. **The rest as recommended:** bad debts by direct write-off (IRC §166; Treas. Reg. §§1.166-2, 1.166-3); hand entries to 1200 and 2000 refused (B-23); the issued PDF stored at issue; discounts by the gross method; the bills posted to 6999 fixed by reclassifying entries; every bill line names its account; two upgrades (after S1, and after S7); overpayments refused, customer credits later; each party gets an email and default terms, copied onto each document at issue.
+**Status:** landed 2026-10-24 (`7d2bf0b7` MCP, `b7b7f171` viewer). No format change.
 
+**As built:** `books.documents { kind, status?, party?, due_by?, as_of? }` and `books.document { ref, as_of?, pdf? }` (`crates/ledger-mcp/src/server.rs`; `parse_doc_ref("invoice:7")`, `doc_ref_text`, `doc_label`, `movement_key`); the viewer's Money in and Money out pages, a document's page with its timeline (reversed items struck through), overview tiles ("Owed to you", "You owe"), `Route::Invoice(id)`/`Route::Bill(id)` (`crates/ledger-gui/src/pages/invoices.rs`); attention items for overdue and due-soon documents; `crates/ledger-gui/tests/invoices.rs` screenshots.
 
-**Owner's ask (2026-10-23):** "we kinda need stronger invoice support. Like make it a first class citizen. It could even spit out PDF invoices, track when they're sent, money received against, etc.. and maybe there's some accounting term for the opposite, like if we receive an invoice (we have to pay someone else) we need to pay it on its specific listed payment terms, tracking all that."
+#### P4b S3: the invoice PDF
 
-#### P4b.1 In plain language
+**Status:** landed 2026-10-24 (`c1f9001c`). No format change.
 
-Today an invoice keeps its own copy of "how much was paid" and "is it paid". That copy goes out of step with the ledger:
-- If you reverse an invoice, a bill or a payment, the document doesn't notice.
-- A reversed payment still counts as paid.
-- A reversed invoice still shows on the aging report.
-- After a wrong payment is reversed, the right one is refused as an overpayment.
+**As built:** `crates/ledger-import/src/invoice_pdf.rs::invoice_pdf(&InvoiceDoc) -> Result<Vec<u8>, PdfError>`, `InvoiceDoc { number, issue_date, due_date, terms: Option<String>, seller: InvoiceParty, bill_to: InvoiceParty, items: Vec<InvoiceItem { description, amount }>, total, settled: Vec<(String, Decimal)>, balance, stamp: Option<InvoiceStamp>, stamp_line, note }`, `InvoiceStamp { Paid, PartiallyPaid, PastDue, Void, Draft }`, `templates/invoice.typ` (seller block, "INVOICE" and the number, bill-to, dates, a Terms row, the lines, Total, each standing payment with its date, method and reference, Balance due, the stamp, the note; US Letter); `crates/ledger-package/src/invoice.rs::invoice_document(ledger, company, id, as_of, today) -> Result<InvoiceDoc, String>` (the one builder the server and the viewer share); `books.document { pdf: true }` hands the file over (`HandedFile`); the viewer's Save invoice PDF; a legacy invoice's copy is re-created and says so (`note`). Deterministic bytes (`an_invoice_renders_deterministically`). The copy issued is kept from S4 on.
 
-The fix is that a document stops storing figures. Every ledger line that touches Accounts Receivable or Accounts Payable is tagged with the document it belongs to. A document's balance is the sum of its tagged lines that still stand. Reversals, voids, bounced payments and write-offs then come out right without extra code. The receivables and payables accounts always equal their documents, by construction.
+### 8.2 Remaining units, in merge order
 
-On top of that come:
-- invoice numbers, payment terms and due dates;
-- a PDF of the invoice, kept exactly as it was sent;
-- a record of when it was sent;
-- bills coded to their real accounts, with the vendor's invoice number;
-- a "what to pay this week" list that follows each vendor's terms;
-- payments that settle several documents at once;
-- early-payment discounts, voids and bad-debt write-offs.
+Each unit follows the 8.0.4 template. "A-n" is an owner answer numbered in 8.3.1; "D-n" a decision in section 10; "B-n" a rule in `docs/spec/rules.md`; "I-n" an invariant in section 2; "R-x" a recipe in 8.0.5. Code is named by file and symbol, never by line number. A `|` between two argument names means exactly one of them.
+
+#### U0a: split `server.rs` by tool group
+
+1. **Status:** not started.
+2. **Depends on:** none. Single owner; merges before any other MCP-touching branch opens (S4.4, S6, S7.2, P4, P5, P6, P8 wait for it).
+3. **Feature and schema:** none.
+4. **Build:**
+   1. Move each tool group's handlers out of `crates/ledger-mcp/src/server.rs` into `crates/ledger-mcp/src/tools/<group>.rs`, following the existing `tools/projects.rs` and `tools/kept.rs` pattern (`use super::*;` and the `#[tool(..)]` attributes unchanged). Groups: `documents.rs` (invoices, bills, payments, void, documents, document, control check, agings), `entries.rs` (draft, line, post, reverse, get, search), `reports.rs` (statements, show, export), `assets.rs`, `schedules.rs` (schedules and recurring), `periods.rs`, `reconciliation.rs`, `parties.rs` (parties, vendors, customers, 1099, TIN vault), `attachments.rs` (receipts, documents filed, links), `settings.rs` (settings, conventions, decisions, open items), `chart.rs`, `payroll.rs`, `payouts.rs`, `tax.rs`. `server.rs` keeps `BooksServer`, the router (`tool_router`), `call_tool`, `get_info`, the shared helpers (`as_of`, `hand_over`, `resolve_vendor`, `parse_doc_ref`, `preview_lines_for`, ...) and the tests that span groups. Behaviour and tool names unchanged. `crates/ledger-mcp/src/server.rs (changed)`, `crates/ledger-mcp/src/tools/*.rs (new)`.
+   2. Move the shared helpers a group needs into `tools/mod.rs` or a `helpers.rs`, so no group file reaches into another group's.
+   3. `docs/architecture.md`: the `ledger-mcp` layout paragraph names the groups.
+5. **Files:** owns `crates/ledger-mcp/src/server.rs`, `crates/ledger-mcp/src/tools/*`; touches nothing else.
+6. **Tests and proofs:** no new tests; every existing test passes unchanged (`cargo test -p ledger-mcp`, `cargo test -p ledger-cli`). `every_tool_is_documented_and_every_documented_tool_exists`, `annotations_complete`, `tool_text_lint` and `tool_descriptions_fit_700_characters` prove the surface is identical.
+7. **Done when:** (1) `server.rs` is under 3,000 lines and holds no `#[tool(..)]` handler that belongs to a group; (2) `BooksServer::tool_router().list_all()` names the same 118 tools, in the same order, with identical descriptions and annotations (write a one-off comparison against `main` in the PR and paste the result); (3) `just check` green; (4) the architecture doc names the groups.
+8. **As built:** none yet.
+
+#### U0b: the attention engine over `PackageBooks`
+
+1. **Status:** not started.
+2. **Depends on:** none. Merges before P4, P5, P6, P8 and before any unit adds a Needs-attention item (R-F).
+3. **Feature and schema:** none.
+4. **Build:**
+   1. Read `crates/ledger-gui/src/attention.rs::find(b: &Books) -> Vec<Attention>` and the GUI's `Books` builder (`crates/ledger-gui/src/books.rs`, from `Books::load` on): list every field `find` reads (the per-entry `origin` label, `missing_receipt`, `depreciation_due`, `reconciliation_due`, `party_infos`, `w9_status`, drafts, documents overdue). This is a 700-line refactor, not a file move: the builder today is written over `ledger_store::Snapshot`.
+   2. Add an `attention` module to `crates/ledger-package` (`crates/ledger-package/src/attention.rs (new)`): `pub fn find(books: &impl PackageBooks, today: NaiveDate, settings: &Settings) -> Vec<Attention>`, with `Attention { severity, kind, title, detail, target: Target, tool: Option<(String, serde_json::Value)> }` where `Target` is an enum the viewer maps to its `Route` and the server maps to a `next_steps` item. Generalize the helpers it needs from `Snapshot` to `&impl PackageBooks` (`PackageBooks` already gives `ledger()`, `journal_seq()`, `all_attachments()`, `links_of()`, `attachment_bytes()`; add `settings()` if the trait lacks it, implemented for `Store` and `Snapshot` in `crates/ledger-package/src/books.rs`).
+   3. `missing_receipt` is computed by the policy the server uses (`ledger_config::ReceiptPolicy::receipt_required`, reachable from ledger-package through ledger-config) plus the same origin rule the GUI applies today (`matches!(origin, "Journal entry" | "Recurring") && reversal_of.is_none()`), so the list is identical before and after. P4 replaces that rule with the one gate; U0b does not change it.
+   4. The viewer's `attention::find` becomes a thin call that maps `Target` to `Route` (`crates/ledger-gui/src/attention.rs (changed)`); its GOAL block's INVARIANT list moves to the package module's.
+   5. `books.start`'s hand-coded next steps in `crates/ledger-mcp/src/tools/kept.rs::start_out` take their attention-derived items from the same function (`next_steps` keeps its own order rule: format upgrade first, then onboarding, then attention by severity, then focus, then the handbook contract and the digest). The hand-coded items that are not attention (format upgrade, onboarding, handbook contract) stay.
+   6. `docs/architecture.md`: `ledger-package` is "the shared read-only view: packages, the invoice PDF, and Needs attention, over `Store` or `Snapshot`".
+5. **Files:** owns `crates/ledger-package/src/attention.rs`, `crates/ledger-gui/src/attention.rs`; touches `crates/ledger-package/src/books.rs`, `crates/ledger-gui/src/books.rs`, `crates/ledger-mcp/src/tools/kept.rs`, `docs/architecture.md`.
+6. **Tests and proofs:** `crates/ledger-gui/tests/view_model.rs` passes unchanged (the viewer's list is the engine's); new `crates/ledger-cli/tests/attention_parity.rs::the_viewer_and_books_start_see_the_same_attention` (on the demo books and on a random book: the viewer's items equal the server's, item for item; pattern `projects_parity.rs`); the existing `spec_kept.rs` tests of `books.start` pass unchanged.
+7. **Done when:** (1) `ledger-gui` no longer computes any attention item itself; (2) `books.start` lists the same items the viewer shows, proven by the parity test; (3) `just check` green; (4) no new crate and no new trait beyond `PackageBooks`.
+8. **As built:** none yet.
+
+#### U0c: testing notes for S1-B, S2, S3, and stale notes in the tool docs
+
+1. **Status:** not started.
+2. **Depends on:** none.
+3. **Feature and schema:** none.
+4. **Build:**
+   1. `docs/testing.md`: three sections in the existing style ("P4b S1, part B", "P4b S2", "P4b S3"), each with its **For P12 (mutation targets)** paragraph: S1-B the `void_document` and `control_check` handlers and `PaymentDetails::{check, description}`; S2 `books.documents`' status filter arms and the timeline's struck-through items; S3 `InvoiceStamp` arms and `invoice_document`'s legacy branch.
+   2. `docs/mcp-interface.md`: the A/R and A/P section's text matches the shipped tools (it already does for S1-S3; check `books.document pdf` and the status list against `DocStatus::key()`), and a one-line note at the head of the section: "S4 changes `books.create_invoice` and `books.create_bill`; see plan 8.2 S4".
+5. **Files:** owns nothing; touches `docs/testing.md`, `docs/mcp-interface.md`.
+6. **Tests and proofs:** `every_tool_is_documented_and_every_documented_tool_exists` green.
+7. **Done when:** the three sections exist with their paragraphs; `just check` green.
+8. **As built:** none yet.
+
+#### P4b S4: `documents_v2`
+
+1. **Status:** not started.
+2. **Depends on:** S1-S3 (landed). Inside the unit: S4.1 and S4.2 need nothing and may run in two worktrees; S4.3 needs both; S4.4 needs U0a and S4.3; S4.5 needs S4.4. S6 may start when S4.1 has merged; S5 when S4.2 has; S7.2 when S4.3 has. Go-ahead: `documents_v2`, one upgrade after S7 (D-52; Q-5 asks the owner whether to upgrade earlier). Until the go-ahead, on the owner's books a document carrying any new field is refused with `format_upgrade_pending`; a document carrying none posts exactly as before.
+3. **Feature and schema:** feature `documents_v2` (R-A; shared with S5, S6, S7, so S4 creates the constant and the test and the later slices add their call sites). New fields on `invoice.created` and `bill.created` and on their lines, and on `party.updated`, as 8.0.3 lists; no new event type. Provisional schema 16: columns on the documents and document lines tables, a `parties.email` and two terms columns.
+4. **Build:**
+
+   **S4.1 Core: terms, numbers, line accounts** (`crates/ledger-core`).
+   1. `arap.rs (changed)`: `pub enum TermsKind { DueOnReceipt, Net(u16), NetEom(u16), Custom }`, `pub struct EarlyDiscount { percent_bp: u32 /* basis points, 1..=9999 */, days: u16 }`, `pub struct Terms { kind, discount: Option<EarlyDiscount>, text: String }`. `Terms::due_date(date) -> Result<NaiveDate, LedgerError>`: DueOnReceipt = date; Net(n) = date + n days; NetEom(n) = the last day of date's month + n days; Custom = the date given (the caller passes it); every result goes through `arap::validate_due_date(date, due)` (which calls `calendar::check`, so a date past 9999-12-31 is a refusal, never a panic); `n` is 0..=3650. `Terms::discount_by(date) -> Option<NaiveDate>` = date + discount.days, and `discount.days < the net days` (for DueOnReceipt or NetEom a discount is refused: `LedgerError::TermsDiscountNeedsNetDays`). `Terms::describe() -> String` composes `text` ("Net 30", "Net 15 EOM", "2/10 net 30", "Due on receipt", "Due 2026-11-15") so no caller supplies it. `Terms::parse(&str)` accepts exactly those spellings, case-insensitive, and refuses anything else (`LedgerError::TermsUnreadable`).
+   2. `kernel.rs (changed)`: `pub fn discount_max<T: Amount>(total: T, percent_bp: u32) -> Option<T>` = total × bp / 10,000, exact, no rounding (the caller's cents are what is taken; the kernel only bounds them); `pub fn line_amount<T: Amount>(quantity: T, unit_price: T) -> Option<T>` = the exact product. Kani in `proofs.rs`: `discount_max_is_bounded` (0 ≤ result ≤ total; `kani::cover!` a nonzero result), `line_amount_is_exact`. Bridge properties in `crates/ledger-core/tests/kernel_bridge.rs` for both on `Decimal`.
+   3. `arap.rs`: `DocumentLine` gains `account: Option<AccountId>` (None = the role's account, which is also what every legacy line means), `quantity: Option<Decimal>`, `unit_price: Option<Decimal>` (both or neither; `kernel::line_amount(q, u) == amount` compared as `Decimal` with no rounding, else `LedgerError::LineArithmetic`). `document_parts` keys by `(Option<AccountId>, Option<ClassId>)`; `Ledger::add_document_parts`, `create_invoice_steps`, `create_bill_steps`, `replay_invoice`, `replay_bill` and `Store::create_invoice`/`create_bill`'s posting vectors all take the account from the part (CD-A2: the posting is built in two places today and compared on replay; both change together). `Ledger::check_document_line_account(kind, account)` beside `check_line_account`: an invoice line takes a revenue account or a liability holding no role (2400 Deferred Revenue); a bill line takes an expense account or an asset that is not cash (`books.cash_accounts`) and holds no role (1500 Equipment, 1300 Prepaid); placeholders and role accounts (`control_role_of`) refused.
+   4. `arap.rs`: `pub struct PartySnapshot { name, address: Option<String>, email: Option<String> }` (not `Snapshot`: that name is the books' read-only view). `Invoice` gains `number: Option<String>`, `terms: Option<Terms>`, `bill_to: Option<PartySnapshot>`, `seller: Option<PartySnapshot>`, `customer_ref: Option<String>`, `memo: Option<String>`, `sends: Vec<Sent>` (the type comes in S5; S4 adds the empty field with `#[serde(default)]` so S5 changes no struct shape). `Bill` gains `vendor_ref: Option<String>`, `received_on: Option<NaiveDate>`, `terms: Option<Terms>`, `memo: Option<String>`. Every new field `#[serde(default, skip_serializing_if = "Option::is_none")]` exactly as `class_id` on `DocumentLine`.
+   5. `ledger.rs`: `next_invoice_number(prefix, first_number) -> String`: `prefix` + the number zero-padded to four digits (a fifth digit widens it: 9999 → 10000, never truncated); the number is `first_number` + the count of numbered invoices issued so far; stored on the invoice at issue and never recomputed; legacy invoices (`number: None`) are shown as "Invoice {id}" and are not counted. `check_vendor_ref(vendor, vendor_ref, duplicate_reason)`: `(vendor, normalized vendor_ref)` (lower-case, spaces and hyphens removed) unique among bills whose entry stands; a duplicate is refused (`LedgerError::DuplicateVendorRef`) unless `duplicate_reason` is given, in which case it is journaled on the bill.
+   6. Tests in `crates/ledger-core/tests/spec_documents.rs`: `terms_derive_due_dates` (2026-01-31 Net 30 → 2026-03-02; 2026-10-23 Net 15 EOM → 2026-11-15; a leap day; the 9999-12 bound refused), `discount_bounds_and_late_reason` (the bound, the date, DueOnReceipt refused), `terms_describe_and_parse_round_trip`, `bill_lines_post_to_their_accounts`, `invoice_line_to_deferred_revenue_posts_to_2400`, `qty_times_price_must_equal_amount`, `document_line_account_refuses_roles_cash_and_placeholders`, `numbers_run_and_voids_keep_theirs`, `number_widens_past_9999`, `duplicate_vendor_ref_refused_unless_a_reason_is_given`. `legacy_reversal_now_counts` and every S1 test unchanged.
+
+   **S4.2 Settings and party fields** (`crates/ledger-core/src/settings.rs`, `parties.rs`; may run beside S4.1).
+   7. R-D for each key: `invoicing.number_prefix` (Text, default "INV-", 1..=12 visible ASCII characters); `invoicing.first_number` (a new `Kind::Count`, a positive integer; settable only while no numbered invoice exists, checked by the store at `set_setting`: `LedgerError::FirstNumberLocked`); `invoicing.default_terms` (a new `Kind::Terms`, canonical form `Terms::describe()` of `Terms::parse`; default "Net 30"); `invoicing.payment_methods` (a new `Kind::PaymentMethods`: a JSON list of `{kind: ach|wire|link|check|p2p|crypto|other, label, lines: [String], link?: String, qr?: bool}`, at most 8 methods, each line at most 120 characters; the `no_tin` check is skipped for `lines` of `ach` and `wire` methods only, because a routing number is nine digits (A-3); every other text in it is scanned); `invoicing.footer` (LongText); `invoicing.unsent_days` (Count, default 2), `invoicing.reminder_days` (Count, default 14), `bills.remind_days` (Count, default 7), `bills.discount_warn_days` (Count, default 3); `company.email`, `company.website` (Text; the seller snapshot reads them through `Settings::company().profile`). `setting_feature` arms: every `invoicing.*` and `bills.*` key and the two `company.*` keys → `documents_v2`.
+   8. `parties.rs (changed)`: `Party` gains `email: Option<String>`, `default_terms_as_customer: Option<Terms>`, `default_terms_as_vendor: Option<Terms>` (`#[serde(default)]`); `PartyField` gains `Email(Option<String>)`, `DefaultTermsAsCustomer(Option<Terms>)`, `DefaultTermsAsVendor(Option<Terms>)`; `Ledger::check_update_party` runs `parties::check_text` on the email (and a plain shape check: one `@`, no spaces) and `has_full_tin` covers it. `Store::update_party` calls `ensure_feature(DOCUMENTS_V2)` for the three new variants. The `"party.updated"` replay arm in `store.rs` maps an unknown `field` to `format::newer_content(..)`, not `JournalCorrupt` (B-27; today it says corrupt: fix it in this step and add `an_unknown_party_field_is_newer_not_corrupt` to `crates/ledger-store/tests/format.rs`).
+   9. Tests: `crates/ledger-core/tests/settings_units.rs` (each new kind's canonical form and refusals: a routing number allowed in an `ach` method's lines, a nine-digit number refused in a `link` method's label), `crates/ledger-config` round-trip tests pick the keys up; `crates/ledger-store/tests/parties.rs::a_party_takes_an_email_and_terms_under_documents_v2`.
+
+   **S4.3 Store: journaling the new fields, the issued PDF** (`crates/ledger-store`; needs S4.1 and S4.2).
+   10. R-A: `DOCUMENTS_V2` constant, `KNOWN_FEATURES`, `documents_v2_is_its_own_feature`. `Store::create_invoice`/`create_bill` take the new fields; `ensure_document_fields` (beside `ensure_document_lines`) calls `ensure_feature(DOCUMENTS_V2)` only when any new field is `Some`; `document_line_json` and the document event's payload emit a key only when set (so a document with none of the new fields is journaled byte for byte as before: `no_new_fields_journals_byte_for_byte` in `tests/arap_standing.rs`, asserting the payload equals the pre-S4 shape field for field, like `a_payment_journals_its_method_and_reference`); `parse_document_lines` and the replay arms read them back; `replay_invoice`/`replay_bill` derive the posting with the line accounts. `documents_v2_waits_for_the_upgrade` (R-A step 3). Projection: columns for the new fields (schema 16, provisional); `differs_from` compares them.
+   11. The issued PDF, filed in the issuing call: `Store::create_invoice_issued(params, pdf_bytes: Vec<u8>) -> Result<(InvoiceId, EntryId, AttachmentId), StoreError>`. The server renders the PDF first (a Typst failure returns before the store is touched). Inside one `atomically` step the store journals the entry lines, `invoice.created`, then `receipt.attached` (through the existing `AttachRequest`: `entry_id: Some(entry)`, file name `INV-0007.pdf`, MIME `application/pdf`, description "Issued invoice"), then `attachment.linked` to `Subject::Invoice(id)`. There is **no** `issued_pdf` field on `invoice.created` (CD-A6: the attachment id is allocated after the entry exists); the issued copy is found through the link, which `books.document` and the viewer already read (`attachments_for(Subject::Invoice(id))`), and its SHA-256 is the `blob_sha` in `receipt.attached`. A failure anywhere leaves the journal unchanged: `issued_pdf_is_filed_with_the_invoice_or_nothing_is` (`tests/arap_standing.rs`).
+   12. `Store::preview_invoice(params) -> Result<InvoicePreview, StoreError>` runs `Ledger::create_invoice` on a clone (the `rehearse` pattern) and returns the posting, the total, the number it would take and the due date, journaling nothing. The same for bills.
+   13. 8.0.6 checklist items 1-4 and 6.
+
+   **S4.4 MCP** (`crates/ledger-mcp/src/tools/documents.rs`; needs U0a and S4.3). R-C for each.
+   14. `books.create_invoice { customer, date, terms? | due_date?, lines: [{ description, amount, quantity?, unit_price?, account?, class? }], customer_ref?, memo?, bill_to?: { name?, address?, email? }, confirmed? }` → without `confirmed`: `{ preview: true, number, due_date, terms, total, lines: [{ account, side, amount, class }], warnings, pdf: HandedFile (stamped DRAFT) }`; with `confirmed`: `{ id, number, total, due_date, terms, entry_id, pdf: { attachment_id, sha256 }, mailto, warnings, notes }`. `customer` is a customer id, a party id or a name (new `resolve_customer` mirroring `resolve_vendor`; a name matching two is refused, as `inv6_ambiguous_vendor_reference_refused` shows). Due date: `due_date` if given; else `terms` if given; else the party's `default_terms_as_customer`; else `invoicing.default_terms`; else refused naming the three ways to give one. `terms` is a string `Terms::parse` reads. `bill_to` omitted = the party's name, address and email at issue. The DRAFT preview PDF counts against the token's 64 handed files like any export. `party_id` is accepted as an alias of `customer` until P5's `docs/mcp-interface.md` rewrite removes it (that is the concrete end of "one release"). The result's `mailto` is a convenience link ("Invoice INV-0007 from {company}", the body URL-encoded, truncated to 1,800 bytes at the last whole word); the owner or a delegate sends (A-4).
+   15. `books.create_bill { vendor, date, received_on?, vendor_ref, terms? | due_date?, lines: [{ description, amount, account, class? }], memo?, upload_id | existing_attachment_id, duplicate_reason?, confirmed? }`. Under `documents_v2`, `account` is required on every line (A-11) and the file is required (`upload_id` through the same helper `books.attach_receipt` uses in `tools/files.rs`, or `existing_attachment_id`), filed on the bill's entry as a receipt and linked `Subject::Bill`; on books without the feature, lines without `account` post to 6999 as before and the file is optional. `vendor_ref` is required for a new bill (legacy bills have none and are shown by id). Output adds `discount_by?`, `max_discount?`. Preview as for invoices (no PDF).
+   16. `books.update_party` gains `email`, `default_terms_as_customer`, `default_terms_as_vendor` (`UpdatePartyParams` in `types.rs`; one `party.updated` per field as today).
+   17. Over-the-wire tests, `crates/ledger-cli/tests/documents.rs (new)`: `an_invoice_from_issue_to_paid` (S4's leg: the preview journals nothing and hands a DRAFT PDF; confirm; the attachment's sha equals `books.get_receipt`'s; the entry carries the PDF as its evidence; the number is INV-0001 then INV-0002), `a_bill_with_its_vendor_invoice_and_terms`, `duplicate_vendor_invoice_refused`, `a_line_account_must_be_allowed`, `terms_fall_back_in_order`, `documents_v2_refused_until_consent` (in `format_upgrade.rs`), `party_id_alias_still_works`.
+
+   **S4.5 PDF, viewer, handbook** (needs S4.4).
+   18. `crates/ledger-import/src/invoice_pdf.rs` and `templates/invoice.typ (changed)`: `InvoiceDoc` gains `items[].quantity`, `items[].unit_price` (printed as "3 × 33.33" when given), `customer_ref`, `memo`, `footer`, `payment_methods: Vec<PaymentMethodDoc { label, lines, qr_svg: Option<String> }>` (the QR through `labels::qr_svg`, placed with the same `image(bytes(..), format: "svg")` idiom `labels.typ` uses), seller email and website, `terms` text, the issue copy (no stamp, no settled rows: `InvoiceVersion::Issued`) beside the current copy (`InvoiceVersion::Current { as_of }`, whose "Re-created on DATE" note prints `as_of`, never the wall clock, so bytes stay deterministic). Every string is data (no Typst markup is ever interpreted); every amount passes through `report::amount_parts`. `crates/ledger-package/src/invoice.rs::invoice_document` fills the new fields from the invoice's snapshots (never from today's party record when a snapshot exists).
+   19. Tests: `an_invoice_renders_deterministically` (its golden sha updated once, the recomputation stated in the commit), `invoice_pdf_prints_what_it_should` in `crates/ledger-import/tests/spec_import.rs` (reads the PDF back with the hayro text reader beside `pdf_is_deterministic_and_labels_are_data`: the number, both dates, the total, the bill-to, each payment method's label and lines; a CJK name and an RTL name; no account code, project or id on the page), `labels_are_data` (an item description `#import "x"` prints literally), `two_hundred_lines_paginate`.
+   20. Viewer (`crates/ledger-gui/src/pages/invoices.rs (changed)`): the document page shows the number, terms, bill-to and PO; the Money in list shows numbers; Save invoice PDF offers the issued copy when one is filed and the current copy always. Screenshot `shot("invoice-numbered")` in `crates/ledger-gui/tests/invoices.rs`; `view_model.rs` parity for the new fields.
+   21. R-E: `crates/ledger-mcp/handbook/invoices-and-bills.md`, the "Invoices and bills" procedure: (1) invoice: preview, confirm, download the PDF, the owner or a delegate sends it, mark it sent (S5 adds the tool); (2) collect: `books.receive_payment` with the method and the processor's reference; (3) pay bills on their terms (S6 adds `books.bills_due`); (4) void, write-off or reverse a payment: when to use which (void = the document should never have existed; write-off = it will not be collected, S7; reverse a payment = it bounced or was recorded wrongly); (5) the month-end tie-out (`books.control_check`); (6) the CPA's list from 8.3.2. A `{documents_v2}` placeholder renders "your books have not declared `documents_v2` yet: numbers, terms and line accounts wait for the owner's upgrade" before the go-ahead. Rules: `docs/spec/rules.md` B-39 (terms), B-40 (numbers, the issued copy, the duplicate-bill control) from the spec blocks in 8.3.13, marked CONVENTION until their sources are vendored (8.4). `docs/mcp-interface.md`, `docs/parity.md` (A/R and A/P rows gain "numbers, terms, line accounts, the issued PDF"), `docs/testing.md` For-P12 (R-G: `Terms::due_date`'s arms, `next_invoice_number`'s padding, `check_vendor_ref`'s normalization, `check_document_line_account`'s arms, `ensure_document_fields`'s `Some` test).
+5. **Files:** owns `crates/ledger-core/src/arap.rs` (S4.1), `crates/ledger-mcp/src/tools/documents.rs` (S4.4), `crates/ledger-import/src/invoice_pdf.rs`, `crates/ledger-import/templates/invoice.typ`, `crates/ledger-package/src/invoice.rs`, `crates/ledger-gui/src/pages/invoices.rs`, `crates/ledger-mcp/handbook/invoices-and-bills.md`, `crates/ledger-cli/tests/documents.rs`; touches the 8.0.3 files.
+6. **Tests and proofs:** the tests named in each step; Kani `discount_max_is_bounded`, `line_amount_is_exact`; bridge properties for both; no Lean change (no new `Ledger` command: the document steps are the existing ones with more fields). bookspec (added to `bookspec/examples/` now; the loader in `crates/ledger-core/tests/bookspec.rs` gains `due_date` and `terms` on `InvoiceSpec`/`BillSpec`): `payment-terms-due-date`, `invoice-numbers-run-and-voids-keep-theirs`.
+7. **Done when:** (1) every test in steps 6, 9, 10, 11, 17, 19, 20 exists and passes; (2) the S1 tests named in 8.1 (`legacy_documents_replay_with_tags`, `legacy_reversal_now_counts`, `a_payment_journals_its_method_and_reference`, `several_payment_events_on_one_entry_tag_its_lines_in_order`) and the viewer's `the_list_shows_the_ledgers_figures` pass unchanged; (3) `no_new_fields_journals_byte_for_byte` proves an old-shape document is byte-identical; (4) the 8.0.6 checklist is in the PR; (5) `just check` and `just prove` green; (6) the handbook section renders; (7) no figure in any golden changed.
+8. **As built:** none yet.
+
+#### P4b S5: sent tracking (`invoice.sent`)
+
+1. **Status:** not started.
+2. **Depends on:** S1. S4.2 gives the defaults (`to` from the party's email; `invoicing.unsent_days`, `invoicing.reminder_days`); if S5 merges before S4.2, `to` is required and the day counts are the constants 2 and 14, and both paths are tested. MCP step needs U0a. Go-ahead: `documents_v2` (D-52).
+3. **Feature and schema:** feature `documents_v2` (S5 adds its `ensure_feature` call site; the constant is S4's, or S5 creates it per R-A if S5 merges first); new event type `invoice.sent { invoice_id, on, by, via, to: [String], kind, reference?, note? }` (R-B); provisional schema 17: table `invoice_sends`.
+4. **Build:**
+   1. `crates/ledger-core/src/arap.rs (changed)`: `pub enum SentVia { Email, Mail, Portal, Hand, Other(String) }`, `pub enum SendKind { Original, Reminder }`, `pub struct Sent { on: NaiveDate, by: String /* the owner, or a named delegate such as an agent: A-4 */, via: SentVia, to: Vec<String>, kind: SendKind, reference: Option<String> /* the channel's own id: a message id */, note: Option<String> }`. `Invoice.sends: Vec<Sent>` (the field S4 added empty). `Ledger::mark_sent(invoice, Sent) -> Result<(), LedgerError>`: refused on a Void invoice (`LedgerError::DocumentVoid`), allowed on Open, Partial, Paid, WrittenOff (a receipt copy); `to` non-empty; each `to` and `reference` through `parties::check_text`. A send changes no figure: `DocState` is identical before and after. Bills get no sends (we receive them).
+   2. Store (R-A, R-B): `Store::mark_sent` → `ensure_feature(DOCUMENTS_V2)` → `rehearse` → `append_journal("invoice.sent", ..)` → `ledger.mark_sent`; `meta::invoice_sent_of`; replay arm; projection table `invoice_sends (invoice_id, on, by, via, to_json, kind, reference, note)`; `differs_from` compares `sends`. Tests in `crates/ledger-store/tests/arap_standing.rs`: `mark_sent_waits_for_documents_v2`, `sends_replay_and_project`, `a_send_changes_no_figure`, `mark_sent_on_void_refused`; `arap_props.rs` gains a `MarkSent` op in `status_is_a_function_of_journal_and_date`.
+   3. MCP (R-C): `books.mark_sent { invoice, on?, by?, via?, to?: [String], kind?, reference?, note? }` → `{ invoice, sends: [..] }` (W scope). Defaults: `on` = today in the company's time zone (`BooksServer::as_of(None)`); `by` = the token's name (the agent) unless given; `via` = email; `kind` = original for the first send, reminder after; `to` = the invoice's `bill_to.email`, else the party's email, else required. `books.documents` rows gain `last_sent?`; `books.document`'s timeline shows each send. Over-the-wire: `documents.rs::mark_sent_records_who_and_how` (two sends, the second a reminder with a message id; `documents` shows `last_sent`).
+   4. Attention (R-F, after U0b): "invoice never sent" when `status ∈ {Open, Partial}`, `sends` empty, `number` is Some (legacy invoices exempt), and today (company time zone) > issue date + `invoicing.unsent_days` calendar days; "overdue invoice not reminded" when overdue and the last send is older than `invoicing.reminder_days`. Both in the viewer and `books.start` by the one function. Screenshot.
+   5. Handbook step 1 of `invoices-and-bills.md` gains the mark-sent sentence; `docs/mcp-interface.md`; `docs/parity.md`; `docs/testing.md` For-P12 (`mark_sent`'s refusals, the `kind` default, the two attention predicates' comparisons).
+5. **Files:** owns the `Sent` types and `Ledger::mark_sent`, the `invoice.sent` arms, `books.mark_sent`; touches the 8.0.3 files.
+6. **Tests and proofs:** named above; no kernel change, no Lean change (a send moves no money). 8.0.6 items 1-4, 6.
+7. **Done when:** (1) the tests pass; (2) a send on a fixture book changes no report and no `DocState` (`a_send_changes_no_figure`); (3) an older version stops at the `invoice.sent` line with `NewerJournal` (the `tests/format.rs` arm); (4) `just check` green; (5) attention parity holds.
+8. **As built:** none yet.
+
+#### P4b S6: paying on terms (multi-document payments, discounts, the processor fee, bills due, aging exports)
+
+1. **Status:** not started.
+2. **Depends on:** S4.1 (`Terms`, `discount_by`, `kernel::discount_max`), U0a. Go-ahead: `documents_v2` (D-52).
+3. **Feature and schema:** feature `documents_v2` (call site in `Store::ensure_payment_features`); no new event type: `invoice.payment_received` and `bill.paid` gain `line` (the index of the control line this event tags), `discount`, `discount_line`, `discount_reason`, `fee`, `fee_line` (8.0.3). A payment entry that settles N documents is N events naming the same entry, each with its `line`; legacy events without `line` keep the positional rule ("the first untagged control line for the amount", rules.md B-38 item 1, test `several_payment_events_on_one_entry_tag_its_lines_in_order`). Provisional schema 18 if a column is needed for discounts and fees in the projection's payments table.
+4. **Build:**
+   1. Kernel (`crates/ledger-core/src/kernel.rs (changed)`): `pub fn settle<T: Amount>(cash: &[T], discounts: &[T], fee: T) -> Option<Settlement<T>>` returning `{ applications_total = Σcash + Σdiscounts, deposit = Σcash − fee }` with checked arithmetic (`None` on overflow or a negative deposit). Kani `settle_is_exact` on fixed arrays with `kani::cover!` (a nonzero discount and a nonzero fee); bridge property in `tests/kernel_bridge.rs`. `payout_plan` in `payouts.rs` is left as it is (IZ-1e).
+   2. Core (`ledger.rs (changed)`): `Ledger::settle(SettleParams { date, description, cash_account, party, applications: Vec<Application { doc, cash, discount, discount_reason }>, fee: Option<Fee { amount, account }>, instrument, reference })` replaces the internals of `receive_payment_with`/`pay_bill_with` (which become one-application calls of it). Rules: one party per settlement (every document names the same customer or vendor); each application's `cash + discount ≤ payment_room(doc, date)` (the existing bound); a discount ≤ `kernel::discount_max(doc.total, terms.discount.percent_bp)` and dated ≤ `terms.discount_by(doc.date)`, else `discount_reason` required and journaled (a late discount a vendor honours); on a bill whose lines include an asset or prepaid account a discount is refused with the remedy "record the bill net of the discount, or reclassify by an entry Dr 6995 / Cr the asset account" (D-49: no apportioning across asset lines); the fee allowed on `receive_payment` only (a processor's fee on money received), posted Dr `payment_processing_fees` for the fee / Dr deposit account for the net / Cr A/R `[d, Payment]` for the gross (the same gross presentation `payouts.rs` uses, A-4), the fee line's party tag the processor's vendor if `fee.vendor` is given, else untagged. Posting rows per 8.3.6: payment lines in application order, then discount lines, then the fee line, then the cash line, so `line` indices are stable. The entry carries the party tag, `instrument` and `reference` as today.
+   3. Store: `Store::settle` journals `journal_auto_lines` (the N-line variant `create_invoice` uses) then one `invoice.payment_received`/`bill.paid` per application with `line`, `discount`, `discount_line`, `discount_reason`, `fee`, `fee_line` (the fee on the first application's event only); `ensure_payment_features` adds `ensure_feature(DOCUMENTS_V2)` when there is more than one application, a discount or a fee; replay reads `line` when present and tags that line, else the positional rule; a line it cannot match is listed by `control_check` as unattached (B-28: replay never refuses). Tests in `arap_standing.rs`: `a_settlement_names_its_lines_and_replays`, `settlement_waits_for_documents_v2`, `legacy_payment_events_keep_the_positional_rule`; `arap_props.rs` gains multi-document, discount and fee ops (the identity and bounds hold after each). 8.0.6 checklist, with a `figures.json` from the pre-S6 version over a fixture with payments (no figure moves).
+   4. Roles: `purchase_discounts` (6995, expense; tax category `other_deductions`), `sales_allowances` (4100, existing: `returns_allowances`), `payment_processing_fees` (the expense account payouts' fee lines use today; if payouts have no role for it, make one with that account as its default) created on demand by the same function the receivables and payables roles use (`ensure_control_account`'s pattern, in `store.rs`); chart templates under `crates/ledger-import/templates/` gain the codes; `crates/ledger-import/src/templates.rs::no_template_puts_another_account_at_a_control_code` stays green.
+   5. MCP (R-C): `books.receive_payment { date, deposit_to, instrument?, reference?, invoice | applications: [{ invoice, amount, discount?, discount_reason? }], fee?: { amount, account?, vendor? }, paid_in_full_marking?: bool, confirmed? }` → `{ entry_id, documents: [{ ref, number, outstanding, status }], deposited }`; `amount` (single form) or the applications' `amount`s are cash only; the discount is beside it. `paid_in_full_marking: true` adds a warning quoting UCC §3-311 (cashing a check marked payment in full of a disputed amount may settle the claim) and records nothing else. An overpayment is refused showing the excess and the remedy: record the excess as a plain entry to a customer-deposits liability (2300, no role) and apply it later (A-13, D-49). `books.pay_bill { date, paid_from, instrument?, reference?, bill | applications: [{ bill, amount, discount?, discount_reason? }], confirmed? }`. `document_id`/`cash_account` stay as aliases until P5's doc rewrite. `books.bills_due { through? }` → `{ bills: [{ ref, vendor, vendor_ref, due_date, outstanding, discount_by?, max_discount?, pay_by_discount_date_amount? }], by_date: [{ date, amount /* the running total of what falls due through that date */ }] }` (R). `books.ar_aging`/`books.ap_aging` gain `detail?: bool` (one row per document) and `control: { account, balance, documents_total, unattached: [..], difference }`. Over-the-wire (`documents.rs`): `one_payment_settles_two_invoices`, `bill_on_terms_with_discount`, `late_discount_needs_a_reason`, `a_fee_posts_gross_to_receivables_and_net_to_the_bank`, `card_paid_bill_is_not_1099_nec`, `equipment_bill_payment_is_investing_cash`, `discount_on_an_asset_bill_is_refused_with_the_remedy`, `bills_due_orders_by_due_and_discount`, `multi_document_payment_counts_once_for_1099_and_party_totals`, `overpayment_refused_with_the_excess`.
+   6. Exports: `books.export` kinds `ar_aging`, `ap_aging` in csv, xlsx, pdf (the `hand_over_export`, `layout_statement`, `report::{format_amount, amount_parts}`, `pdf::statement_pdf` seams); columns `number, party, date, due_date, terms, total, paid, discounted, outstanding, bucket, days_overdue`; a tie-out line `TOTAL,,,,,,,,<Σ outstanding>,GL <account> <balance>,difference 0.00`. The CPA package (`crates/ledger-package/src/package.rs`) gains `ar_aging.csv` and `ap_aging.csv`, and its README states the B-23 tie-out, the direct write-off method (S7) and the gross discount method. Tests: `crates/ledger-import/tests/spec_import.rs` (deterministic pdf, labels are data), `crates/ledger-package/tests/package.rs::the_aging_csvs_tie_to_the_control_check`.
+   7. Viewer: the Money out list gains a discount-deadline column and `due_soon`/`discount_open` flags; bucket totals and the tie-out badge; screenshot; `view_model.rs`.
+   8. Handbook steps 2, 3 and 5 of `invoices-and-bills.md`, plus the two procedures D-49 records: a replacement payment received before a bounce is known (park it Dr bank / Cr 2300, reverse the bounced payment dated the bounce day, then `receive_payment { deposit_to: 2300, date ≥ the bounce }`), and a discount on a bill with an asset line (the refusal's remedy). `docs/spec/rules.md` B-42 (settlements: exactness, one party, the discount bounds, the fee's gross presentation; SOURCE: ASC 606-10-32-5 to 32-9 noted as the strict treatment, the gross method a DECISION per A-9). `docs/mcp-interface.md`, `docs/parity.md`, `docs/testing.md` For-P12 (`settle`'s arms, `discount_max`, the late-discount test, the asset-line refusal, the `line` replay branch). bookspec: `payment-terms-early-discount`, `arap-settlement-exact`, `processor-fee-gross-presentation` (loader: `receive_payment`/`pay_bill` events with `applications`, `discount`, `fee`; queries `ar_aging`, `ap_aging`, `control_check`).
+5. **Files:** owns `Ledger::settle` and its tests, the payment events' new fields and arms, `books.bills_due`, the aging exports; touches the 8.0.3 files, `crates/ledger-mcp/src/tools/documents.rs` (after S4.4; coordinate with the S4 engineer on `tools/documents.rs`: S6 adds its handlers in a second file `tools/settlements.rs` if S4.4 is still open).
+6. **Tests and proofs:** named above; Kani `settle_is_exact`; Lean: none new (the posting step is `Step.document` with more lines; `control_agrees` covers it because every control line is tagged).
+7. **Done when:** (1) the tests pass; (2) `several_payment_events_on_one_entry_tag_its_lines_in_order` still passes (the legacy rule); (3) the 1099 worksheet and party totals count a two-invoice payment once (`multi_document_payment_counts_once_for_1099_and_party_totals`); (4) the CPA package's aging CSVs tie to `control_check` on the demo books; (5) 8.0.6 in the PR, no golden figure moved; (6) `just check`, `just prove` green.
+8. **As built:** none yet.
+
+#### P4b S7: bad debts (`write_off_invoice`)
+
+1. **Status:** not started.
+2. **Depends on:** S1; S4.3 for the same-call attach (the write-off needs its evidence filed in the same store call); U0a for the MCP step. Go-ahead: `documents_v2`.
+3. **Feature and schema:** feature `documents_v2`; new event type `invoice.written_off { invoice_id, entry_id, date, amount, reason }` (R-B). No schema change expected (the entry and its tag carry the figures; a column only if the projection's documents table needs `written_off`).
+4. **Build:**
+   1. Core: `Ledger::write_off(invoice, date, amount, reason) -> Result<EntryId, LedgerError>`: refused on cash-basis books (`Company.basis == "Cash"` from `Settings::company()`; `LedgerError::WriteOffOnCashBasis`, IRC §166 and Treas. Reg. §1.166-1(e): a debt never counted as income has no basis); `0 < amount ≤ outstanding(invoice, date)` (partial allowed, §1.166-3(a)); the date in an open period and not before the invoice; posts Dr `bad_debts` (6990) / Cr A/R `[d, WriteOff]` with the customer's party tag; `Movement::WriteOff` and `DocStatus::WrittenOff` already exist (S1), as does the derivation in `doc_state`. A recovery is **not** a new movement (D-49): same tax year, reverse the write-off (the document reopens) then `receive_payment`; a later year, a plain entry Dr deposit account / Cr a "Bad debt recoveries" revenue account (tax category `other_income`), memo naming the invoice, the document staying Written off (§111). Tests in `spec_documents.rs`: `half_paid_rest_written_off_is_written_off`, `write_off_refused_on_cash_basis`, `write_off_above_outstanding_refused`, `write_off_then_recovery_same_year`.
+   2. Lean (`verify/lean/Wanderbooks/Documents.lean (changed)`): `Step.writeOff` as a `Step.document` whose lines are tagged (it is one: a tagged control line and an expense line), so `control_agrees` and `Reachable.control_is_documents` hold without new proof; state and prove `writeOff_within_bounds`: a write-off of at most what is owed leaves `0 ≤ owed` (over the date-sum `docSum … through D`). List in `Audit.lean`. `just prove`.
+   3. Store (R-A call site, R-B): `Store::write_off_invoice(invoice, date, amount, reason, evidence: Evidence { upload bytes | existing_attachment_id })` in one `atomically`: `ensure_feature(DOCUMENTS_V2)`, the entry lines, `invoice.written_off`, `receipt.attached` on the write-off's entry (the evidence of worthlessness: collection correspondence, a bankruptcy notice; §1.166-2), `attachment.linked` to `Subject::Invoice`. Tests: `write_off_waits_for_documents_v2`, `write_off_replays_and_projects`, `write_off_without_evidence_is_refused`; `arap_props.rs` gains `WriteOff`.
+   4. MCP (R-C): `books.write_off_invoice { invoice, date, amount?, reason, upload_id | existing_attachment_id, confirmed? }` → `{ entry_id, document: { ref, status, paid, written_off, outstanding } }` (destructive; preview without `confirmed`). `books.reverse_entry` on a write-off's entry works as on any entry (the document reopens). Over-the-wire: `documents.rs::write_off_then_recovery`, `write_off_needs_evidence`.
+   5. Attention (R-F): "write-off awaiting the CPA's note" (a written-off invoice in the current year, listed until year end). Viewer: the timeline shows the write-off, struck through if reversed; screenshot.
+   6. Handbook step 4 (when to void, write off, or reverse) and the recovery procedures; `docs/spec/rules.md` B-41 from 8.3.13's block (SOURCE: IRC §166(a), §111; Treas. Reg. §1.166-1(e), (f), -2(a), -3(a); ASC 326-20 noted; DECISION: direct write-off, A-6); `docs/mcp-interface.md`; `docs/parity.md`; `docs/testing.md` For-P12. bookspec: `bad-debt-direct-write-off`, `arap-hand-control-posting-refused` (the latter uses the existing `older = true` and `refused` fields; the loader's refusal vocabulary gains `UntaggedControlLine`).
+5. **Files:** owns `Ledger::write_off`, the event's arms, `books.write_off_invoice`, `Step.writeOff`; touches the 8.0.3 files.
+6. **Tests and proofs:** named above; Lean `writeOff_within_bounds`; no kernel change.
+7. **Done when:** (1) the tests pass; (2) `just prove` green with the new theorem in `Audit.lean`; (3) 8.0.6 in the PR; (4) the handbook says when to void, write off or reverse; (5) `just check` green.
+8. **As built:** none yet.
+
+**Deferred from S7 (D-49, recorded in 8.4):** `books.adopt_control_line` and `books.assign_role { move_balance }`. 8.3.14 item 4 already gives two remedies for a legacy hand line on 1200 or 2000 that need no code: reverse it and re-enter it as a document while its period is open; or leave it, record a decision, and let the CPA README footnote it (the identity's `unattached` term exists for exactly this). Build the tools only if `books.control_check` on the owner's books lists a line neither remedy can take; then the EM writes a unit for them with a Lean `Step.adopt` and a per-account `owed_on` identity (8.4 has the notes).
+
+#### P4: draft states, the evidence gate in one place, the preview digest, the digest tool
+
+1. **Status:** not started. Rewritten 2026-10-26 against P4b S1-S3 and D-47 (reversals stay posted; no reversal drafts).
+2. **Depends on:** S4-S7 merged (step 4 is one sweep over every confirm tool, including S4's and S6's); U0b (attention items). Go-ahead: `drafts_v2`, declared in the same owner upgrade as `documents_v2` (D-52).
+3. **Feature and schema:** feature `drafts_v2`; new event types `entry.draft_state_set { id, state, note }`, `entry.draft_discarded { id, reason }` (R-B); provisional schema 19: `entries.draft_state`, `entries.posted_seq`.
+4. **Build:**
+   1. **Draft states.** `crates/ledger-core/src/journal.rs (changed)`: `JournalEntry` gains `draft_state: DraftState { Building, AwaitingEvidence { note } }` (meaningful while `status == Draft`); `Ledger::set_draft_state`, `Ledger::discard_draft(id, reason)` (removes the draft from `entries`; refused on a posted entry; `Ledger::differs_from` compares drafts and their states). `Ledger::posted_seq(entry) -> Option<u64>`: an `entry_id → seq` map filled in the `"entry.posted"` and `"entry.reversed"` replay arms (the precedent is `apply_settings(.., line.seq)`), so the Snapshot sees it; no new event. Lean (`Ledger.lean`): `Step.discard` (a draft removed; `draftsOpen` shrinks; balances unchanged), preservation proved, listed in `Audit.lean`. Store (R-A, R-B): `Store::set_draft_state`, `Store::discard_draft`, both `ensure_feature(DRAFTS_V2)`; replay and projection arms; `posted_seq` and `draft_state` columns. Tests: `crates/ledger-core/tests/invariants.rs::discard_unblocks_close` (a period with an open draft can't close; discarded, it can: the existing Lean `hdrafts`), `crates/ledger-store/tests/store.rs::draft_states_replay_and_project`, `drafts_v2_waits_for_the_upgrade`, `posted_seq_is_the_posting_lines_seq`.
+   2. **The evidence gate in one place** (I-5 as amended by D-47). Move the policy evaluation out of `crates/ledger-config/src/receipt_policy.rs` into `crates/ledger-core/src/evidence.rs (new)`: `pub fn requirement(ledger: &Ledger, entry: &JournalEntry, settings: &Settings) -> Requirement { Required { reason }, Exempt { source } }`; exemptions by what `Ledger` already knows: a closing entry (`closing_entry_ids`), a schedule posting (`schedule_month_of`), a depreciation run, a reversal (`reversal_of.is_some()`: D-47, D-12: a reversal's evidence is its original's), and entries the document, payroll, payout and disposal commands post (they carry their own evidence or are posted at once by design; their origin is known to the command that posts them and recorded as today); the policy's thresholds and account lists come from `policy.evidence.*` in `Settings`. `ReceiptPolicy` in `ledger-config` becomes a thin re-export or goes (its parsing stays only as far as adoption of an old `wanderbooks.toml` needs it). `Store::post_entry` calls `evidence::requirement` and refuses `Required` with the receipt-required error the MCP builds today (`ReceiptRequiredError { code: "receipt_required", remedy_tool: "books.attach_receipt", .. }` moves to the store's error and the MCP maps it). `BooksServer::post_entry`, `digest`, `dispose_asset`, `handbook::evidence_rule` and `tools/kept.rs` `RulesOut.evidence` call the one function. The viewer's `missing_receipt` (`crates/ledger-gui/src/books.rs`, the `matches!(origin, "Journal entry" | "Recurring")` string match) is deleted and the attention module (U0b) calls `evidence::requirement` over the Snapshot. The at-once tools keep posting at once with their evidence attached right after, as the live instructions say; nothing about them changes in P4. Tests: `crates/ledger-cli/tests/drafts.rs::gui_and_server_gate_agree` (on random books, the viewer's missing-evidence set equals the server's, through the parity harness), `legacy_reversed_replays_identically`, `a_reversal_needs_no_receipt_of_its_own` (D-47), `the_gate_moved_and_the_mcp_error_is_unchanged`.
+   3. **`books.list_drafts { state?, as_of? }`** → `{ drafts: [{ entry_id, date, description, total, state, note, missing_evidence }] }` (R); **`books.set_draft_state { entry_id, state, note? }`** (W); **`books.discard_draft { entry_id, reason, confirmed? }`** (destructive); **`books.preview_entry { entry_id }`** (R: the full preview `books.post_entry` shows without `confirmed`, plus `preview`). Reports gain `as_of_status { drafts_open_on_or_before, unreconciled, settings_problems }` where a draft dated on or before the report's end is open; `strict: true` on a report refuses instead of warning. `books.export_cpa_package` refuses while a draft dated on or before `as_of` is open unless `allow_open_drafts { reason }` is given (journaled as a decision). Over-the-wire: `drafts.rs::a_draft_waits_for_its_receipt_and_posts`, `discard_unblocks_the_close_over_the_wire`, `report_warns_on_draft_before_as_of`, `cpa_package_refuses_open_draft`.
+   4. **The preview digest (D-50, amending I-6).** Every tool called without `confirmed` returns `preview: String`, the SHA-256 of the canonical JSON of its preview payload (for a draft entry: the entry id, date, description, lines, classes, party, instrument, and the evidence links, plus the settings `seq`; for an operation without a draft, a close, a reconciliation, a disposal, a run, a document create or a settlement: the tool name, its canonical arguments, the settings `seq` and the journal head `seq`). Every call with `confirmed: true` takes `preview` and recomputes it; a mismatch is refused with guard `stale_preview` and a fresh preview (a post by another session in between moves the head and forces a re-preview, which is the intended behaviour; owner decision 3). Computed in one helper called from the result path in `server.rs` (`Preview::of(&payload)`), not per tool; no key file (`keys/preview.key` is not built). Required from this unit on: there is no "accepted without it for one release". Tools with `confirmed` today: `books.post_entry`, `books.reverse_entry`, `books.run_schedules`, `books.run_depreciation`, `books.run_recurring`, `books.dispose_asset`, `books.reconcile`, `books.close_period`, `books.void_document`, `books.create_invoice`, `books.create_bill`, `books.receive_payment`, `books.pay_bill`, `books.write_off_invoice`, `books.discard_draft` (grep `confirmed` in `crates/ledger-mcp/src/tools/` to get the list the day this starts). The journey tests (`mcp_journeys.rs`, `oracle_mcp.rs`, `spec_mcp.rs`) are updated to pass `preview`. Test: `drafts.rs::stale_preview_refused` (a post between preview and confirm; a changed argument), `every_confirm_tool_takes_a_preview` (iterates the tool list for `confirmed` and asserts `preview` is in its schema).
+   5. **`books.digest` (defect 6).** `since` stays by entry date; new `since_seq` selects entries whose `posted_seq` is after it (what was posted since a session's head, backdated entries included); `as_of`; touched accounts whose net movement is zero are listed under `zero_net_accounts`; `drafts_by_state`; `reconciliation_tracked`, `never_reconciled` (the accounts in `books.cash_accounts` with or without a statement ever recorded). Test `digest_since_seq_is_posting_time` (an entry backdated but posted today appears).
+   6. Attention (R-F): "draft awaiting evidence" and "draft not posted" as two items. Handbook `drafts-and-reversals.md` rewritten (it says reversals need no receipt: that stays true, D-47, and now says why, and how a draft waits on evidence). `docs/spec/rules.md` B-43 (drafts and the evidence gate; SOURCE: Pub. 583 "supporting documents", Rev. Proc. 98-25; DECISION D-47). `docs/mcp-interface.md` (the drafts tools; `preview` on every confirm tool; `as_of_status`); `docs/parity.md`; `docs/verification.md` (`Step.discard`); `docs/testing.md` For-P12 (`requirement`'s exemption arms, `Preview::of`'s canonicalization, `digest`'s `since_seq` comparison). `fuzz_op_sequence` gains `SetDraftState`, `DiscardDraft`.
+5. **Files:** owns `crates/ledger-core/src/evidence.rs`, `crates/ledger-mcp/src/tools/drafts.rs`, `crates/ledger-cli/tests/drafts.rs`, `handbook/drafts-and-reversals.md`; touches `journal.rs`, `ledger.rs`, `store.rs`, every tool with `confirmed` (the sweep), `crates/ledger-gui/src/books.rs`, `crates/ledger-package/src/attention.rs`, the 8.0.3 files.
+6. **Tests and proofs:** named above; Lean `Step.discard`; no kernel change.
+7. **Done when:** (1) every tool with `confirmed` takes `preview` and refuses a stale one (`every_confirm_tool_takes_a_preview`, `stale_preview_refused`); (2) one function decides evidence and the GUI's string match is gone (`gui_and_server_gate_agree`); (3) reversals still post at once with no receipt of their own (`a_reversal_needs_no_receipt_of_its_own`); (4) the drafts tools and the digest fields exist and are documented; (5) 8.0.6 in the PR (a `figures.json` from the pre-P4 version over a fixture holding reversals and drafts: no figure moves); (6) `just check`, `just prove` green.
+8. **As built:** none yet.
+
+**Struck from P4 (D-47):** ~~reversal as a draft (`entry.reversal_drafted`, `Step.draftReversal`, `evidence: link_original | {attachment_ids} | later`, "reversal draft needs evidence", `reversal_needs_evidence`, `inherited_evidence_posts`)~~; ~~`preview_token` as an HMAC with `keys/preview.key`~~ → D-50; ~~`ledger_core::evidence::requirement` used by "every path" including the at-once tools~~ → the at-once tools are unchanged (IZ-1h); ~~"defect 2"~~ → the 2026-10-16 audit's defect 2 (a reversal posted with no evidence of its own) is closed by D-47 and D-12, not by code.
+
+#### P5: agent surface complete
+
+1. **Status:** not started.
+2. **Depends on:** P4 (`preview` and the drafts tools are in `books.start` v2 and the evals), U0b (attention). Step 1 (the envelope) is single-owner and merges when no other MCP-touching branch is open; the EM schedules it. Go-ahead: `source_revisions` (its one new event type).
+3. **Feature and schema:** feature `source_revisions`; event types `convention.source_revised`, `decision.source_revised`, `open_item.source_revised { id, source, reason }` (R-B). No schema change (sources are read from the journal into `Conventions` as today).
+4. **Build:**
+   1. **The result envelope** (4.6): in `server.rs`'s result path, every tool result gains `next_steps: [{ tool | prompt, args?, why, required }]`, `guards: [{ code, message, remedy_tool, remedy_args? }]`, `warnings: [..]` (a tool's own `warnings` field is merged into it), and, on every mutating result, `head: { seq, hash }` (the store's `head()` after the call's last write). `next_steps` come from the attention module (U0b) filtered to the subject the call touched, plus tool-specific steps (after a post: attach evidence if missing, `books.show entry`, the affected balances; after a close: `attest_period` (P8); after `export_cpa_package`: the download command). A guard registry (`crates/ledger-mcp/src/guards.rs (new)`): an enum of every guard code with its remedy tool (`stale_preview`, `format_upgrade_pending`, `receipt_required`, `approval_required`, `untagged_control_line`, `duplicate_vendor_ref`, `first_number_locked`, ...). Tests: `every_mutating_result_has_head_and_next_steps`, `every_guard_names_an_existing_tool` (both in `crates/ledger-mcp/src/server.rs` tests, iterating the tool router).
+   2. **`books.start` v2** (4.2): the built `StartOut` (`crates/ledger-mcp/src/tools/kept.rs`) gains `book.id`, `book.url` (the local socket's book path, never a filesystem path), `you { principal, kind, scopes, client_id }`, `drafts { building, awaiting_evidence: [..] }`, `reconciliation { tracked, never_reconciled, behind }`, `backup { last_at, through_seq, stale }`, `prompts`, `needs_attention` (top 12 by severity plus counts by kind) and `next_steps` from the one attention function; `_meta["anthropic/alwaysLoad"] = true` on the tool; the `START_MAX` fit loop keeps it under 8 KiB. `agent?: { model, reasoning_effort, harness }` is accepted and written to the access log, nothing else.
+   3. **Prompts and resource templates** (4.4, 4.5). Today `opening.rs::capabilities()` enables tools and resources only and there is no prompt router (CD-D2): add `enable_prompts()`, a `tools/prompts.rs` with `ServerHandler::list_prompts`/`get_prompt`, and `list_resource_templates` beside `list_resources`; the bridge's cold-start `opening_initialize` (`crates/ledger-host/src/bridge.rs`) advertises the same capabilities. Prompts: `onboard`, `reconcile { account, month }`, `month_end_close { month }`, `cpa_handoff { year }`, `annual_compliance { year }`, `audit { scope }` (P8 fills its body; P5 ships it pointing at `books.verify`, `books.control_check` and the digest). ~~`migrate`, `process_inbox`, `receipts_from_email`~~ → not built (D-46, D-28, D-17: no drop page, no email-in, no migration tools; 8.4). Each prompt's text lives in `crates/ledger-mcp/prompts/<name>.md` (`include_str!`), with a golden render per prompt on the `p2-served` fixture (`crates/ledger-mcp/tests/prompts.rs`). Resource templates: `books://entries/{id}`, `books://attachments/{id}` (meta plus extracted text once P6 lands), `books://journal/{seq}`, `books://reports/{kind}{?start,end,as_of}`, `books://digest{?since,since_seq,as_of}`.
+   4. **`books.journal_history { after_seq?, types?, subject?, limit }`** → `{ lines: [{ seq, ts, type, summary, subject, entry_id? }] }` (R): the only way to "read the journal". Its `summary` comes from the describer in `crates/ledger-gui/src/pages/journal.rs` (`describe` arms), moved to `crates/ledger-store/src/describe.rs (new)` so the viewer and the server share one; it reads lines with `journal::read_journal_and_format` and lists `Store::tail_repairs`. `subject` is `entry:N | invoice:N | bill:N | account:CODE | party:N`.
+   5. **Correcting a record's source**: `books.set_convention`, `books.record_decision`, `books.raise_item` accept a call that changes only `source` (citation, who decided, when) with a `reason`; journaled as the `*.source_revised` events (today `set_convention` with only a new source is refused as "already says exactly that": `Ledger::check_convention`). Tests `a_source_only_revision_is_journaled`, `source_revisions_wait_for_the_upgrade`.
+   6. **Descriptions, lints, docs.** Drive `tool_descriptions_fit_700_characters`'s pinned count to 0 (the long descriptions' text moves into the handbook, 4.3) and delete the allowance; `instructions_budget` (the connect text ≤ 1,400 characters, `books.start` in the first 512: `handbook::CONNECT_MAX`, `CONNECT_LEAD`) stays green with the final connect text (4.1 as amended: no `preview_token`, no reversal drafts, no `request_tin_entry`). Remove the `party_id`, `document_id`, `cash_account` aliases (S4, S6). Rewrite `docs/mcp-interface.md`'s overview sections to the surface as it is (the per-tool sections are already kept current by the test).
+   7. **Agent evals.** `crates/ledger-cli/tests/agent_evals/*.json (new)`: scripted transcripts, no LLM: `[{"call": "books.start", "args": {}}, {"expect_next_steps_contains": "books.set_setting"}, {"call_next_step": 0}, ...]`, run by `agent_evals_follow_only_next_steps` through `common::Books` on a fresh book: onboarding to a first post; a receipt-backed post; a draft awaiting a receipt that posts when it arrives; a reversal; a reconciliation; a month-end close. Each transcript may only call `books.start` first and then a tool named in the previous result's `next_steps`.
+5. **Files:** owns `crates/ledger-mcp/src/guards.rs`, `tools/prompts.rs`, `prompts/*.md`, `crates/ledger-store/src/describe.rs`, `crates/ledger-cli/tests/agent_evals/`; touches `server.rs` (the result path), `tools/kept.rs`, `opening.rs`, `bridge.rs`, `handbook.rs`, the 8.0.3 files, `docs/mcp-interface.md`.
+6. **Tests and proofs:** named above; no kernel or Lean change.
+7. **Done when:** (1) every mutating result carries `head` and non-empty `next_steps`; (2) every guard's remedy tool exists; (3) `books.start` ≤ 8 KiB on the `p2-served` fixture and on the demo books; (4) the prompts list and render; (5) `tool_descriptions_fit_700_characters` pins 0; (6) the six evals pass; (7) `just check` green. The live check (a fresh Claude Code session in an empty folder, and a Codex session, each posting an entry by following `next_steps`) is the EM's, recorded in the As-built block.
+8. **As built:** none yet.
+
+**Struck from P5:** ~~`books.job` and the 20 s rule~~ → D-53 (no measured call approaches a client limit over the bridge; jobs come with P9b if claude.ai's 240 s limit is ever real); ~~URL-mode elicitation~~ → nothing local to elicit (D-28); ~~`ledger-view` crate~~ → U0b (`PackageBooks`); ~~`books.viewer_status`~~ → `books.show` already reports `viewer_open`.
+
+#### P6: evidence pipeline
+
+1. **Status:** not started. Rewritten 2026-10-26 (D-32: no sandbox; D-46: no inline bytes; D-17: no email-in; no migration tools).
+2. **Depends on:** U0a, U0b. Independent of P4b and P4. Go-ahead: `attachment_text`.
+3. **Feature and schema:** feature `attachment_text`; event types `attachment.text_extracted { attachment_id, text_sha256, extractor, version, pages, status: ok | none | failed }`, `attachment.annotated { attachment_id, fields { receipt_number?, payee?, amount?, date?, instrument?, category?, source?, reimbursable_to? }, note? }`, `entry.settles { entry_id, settles: [entry_id] }` (R-B); `attachment.withdrawn` gains `duplicate_of?`. Provisional schema 20: tables `extractions`, `annotations`.
+4. **Build:**
+   1. **Extraction in-process, in `ledger-import`** (`crates/ledger-import/src/extract.rs (new)`): `pub fn pdf_text(bytes: &[u8]) -> Result<String, ExtractError>` promoted from the test helper in `crates/ledger-import/tests/spec_import.rs` (it reads glyph runs through `hayro_interpret`; `hayro-interpret` moves from dev-dependencies to dependencies); `pub fn page_png(bytes: &[u8], page: usize, max_side_px: u32) -> Result<Vec<u8>, ExtractError>` moved from the viewer's private `pdf_first_page_png`/`render_pdf` (`crates/ledger-gui/src/receipts.rs`), which then call it; `pub fn text_of(bytes, mime_type, file_name) -> Option<String>` moved from `crates/ledger-mcp/src/tin_files.rs` and extended to call `pdf_text` for PDFs, so the filing TIN scan reads a PDF's text too (D-20's own-EIN exemption applies there as well); XLSX cells as exact decimal strings from the sheet XML (zip plus quick-xml, never floats) and CSV/plain text as today. Caps: 25 MiB in, 30 pages, 2 MiB of text; a failure is `status: failed`, never a panic out of the server (`std::panic::catch_unwind` around the hayro call; the process is not isolated, D-32, and the plan says so). No `lopdf`, no `mail-parser`, no subprocess. Tests: `extraction_deterministic` (same bytes, same text and same PNG bytes), `xlsx_cells_are_decimal_strings` (property), `a_pdf_that_crashes_the_reader_is_failed_not_fatal`; fuzz targets `fuzz_extract_pdf`, `fuzz_extract_xlsx` in `fuzz/fuzz_targets/` (listed in `.github/workflows/scheduled.yml`).
+   2. **Journaled extraction** (R-A, R-B): `Store::extract_attachment(id)` stores the text as a content-addressed blob and journals `attachment.text_extracted` (idempotent on `(attachment_id, extractor, version)`); `attach_receipt`/`file_document` extract at attach time; the backfill is `wanderbooks books extract ID` over the admin socket (`crates/ledger-host/src/commands.rs`, `admin::Request::Extract`), one attachment at a time, resumable. `Store::verify` checks the text blob's presence and hash and never re-derives it (an extractor upgrade journals a new record, never replaces one). Tests: `extraction_is_journaled_once_per_version`, `extract_waits_for_attachment_text`.
+   3. **`books.get_receipt { attachment_id, view: meta | text | page_image { page, max_px } | bytes }`** (R-C): `meta` (default) now includes `text` (the first 8 KiB, with `text_truncated`) and `pages`; `text` the whole text (capped 64 KiB, else a `HandedFile`); `page_image` a PNG as a `HandedFile` (D-46); `bytes` unchanged. Resources `books://attachments/{id}` (meta plus text) and `books://attachments/{id}/page/{n}`. Test: `get_receipt_default_has_text_and_no_bytes`, `page_image_is_a_png_of_the_page`.
+   4. **Dedup** (defect 4). Today `Store::attach` allocates a new attachment for identical bytes and only reports `deduplicated` (INVARIANT 3: "each filing is its own attachment"). P6 changes that invariant: `attach_receipt`/`file_document` with bytes already stored return the existing attachment's id and add a link (`attachment.linked`) to the new subject, with `deduplicated: true`; legacy duplicates stay as written. `books.find_attachment { sha256? | receipt_number? | text? }` (R). `books.consolidate_duplicates { confirmed? }` (destructive): for each set of records with one `blob_sha`, link the first record to every subject the others have (`Store::link_attachment`), unlink the others (`unlink_attachment`/`unlink_receipt`), then `withdraw_attachment(dup, "duplicate of #N")` with `duplicate_of`; refused if any entry would be left with no evidence (the gate of P4 step 2 is re-evaluated for every touched entry before the journal append). Tests: `same_bytes_one_record_many_links` (property), `consolidation_never_removes_an_entrys_only_evidence`, `legacy_duplicates_replay_as_written`.
+   5. **Annotations** (defect 10): `books.annotate_attachment { attachment_id, fields, note? }` (W; the closed field list above; `amount` a decimal string; `date` a date; `instrument` an instrument id or label); engine receipt numbers: `Ledger::next_receipt_number()` = max annotated `receipt_number` + 1; `reimbursed` for a member-paid entry is derived from `entry.settles` only (`books.set_entry_settles { entry_id, settles }`): where none is recorded, Needs attention asks (no FIFO guess: IZ-18). Tests: `annotations_replay_and_project`, `receipt_numbers_run_from_the_max`, `reimbursed_is_derived_from_settles_only`.
+   6. **Company records (D-20):** `file_document` categories gain `notices`, `correspondence`, `plans`, `history` (the list validated in one place, `BooksServer::file_document`; the store's doc comment on `Attachment.category` lists them all, with `statement` and `import_source` which the descriptions already use); the viewer's Documents page groups by category and subject.
+   7. Attention (R-F): "extraction failed" (a filed PDF whose text failed, so a human must read it); "member-paid entry with no settlement recorded". Handbook `evidence-and-receipts.md` gains the text/page-image reading order (text first; a page image only when the text is empty or suspicious; never `bytes` into context) and the dedup and annotation procedures. `docs/spec/rules.md` B-44 (extraction is derived and journaled, never trusted over the bytes; dedup by hash; SOURCE: Rev. Proc. 98-25 on electronic records' audit trail; CONVENTION). `docs/mcp-interface.md`, `docs/parity.md`, `docs/receipt-store.md` (the new events and tables), `docs/testing.md` For-P12.
+5. **Files:** owns `crates/ledger-import/src/extract.rs`, `crates/ledger-mcp/src/tools/evidence.rs`, the two fuzz targets; touches `crates/ledger-gui/src/receipts.rs`, `crates/ledger-mcp/src/tin_files.rs`, `store.rs` (`attach`), `crates/ledger-host/src/commands.rs`, the 8.0.3 files.
+6. **Tests and proofs:** named above; no kernel or Lean change (no money moves).
+7. **Done when:** (1) every attachment of the `p2-served` fixture and of the demo books gives a `get_receipt` default answer under 8 KiB; (2) the viewer and the TIN scan read PDFs through the one `extract` module (no `hayro` use left in `ledger-gui` beyond the call, none in `ledger-mcp`); (3) the dedup property and the only-evidence refusal pass; (4) the backfill command runs on a fixture and is idempotent; (5) 8.0.6 in the PR; (6) `just check` green and the two fuzz targets run clean for 10 minutes locally.
+8. **As built:** none yet.
+
+**Struck from P6:** ~~`ledger-extract` sandboxed subprocess (rlimits, seccomp, Landlock), `extractor_sandboxed`~~ → D-32, D-53; ~~`lopdf`~~ → hayro; ~~`attach_email`, `attachment.rendered`, `fuzz_eml`~~ → D-17 (email-in waits for the hosted service; a receipt that is an email is printed to PDF by the human, as the first company's convention says); ~~`compare_reference`, `record_inventory`, `check_inventory`, `inventory.recorded`, `reference.compared`~~ → the Sheet and the books as of 2026-10-11 are frozen and the final `verify-sheet` run is a filed workpaper; P10 step 5 cites it (IZ-3b, Z-6); ~~`inline_base64_requires_sha`~~ → D-46; ~~`reimbursed` by FIFO~~ → `entry.settles` only; ~~"the books dir's `company/` folder retired"~~ → done at the P1 and P2 cutovers.
+
+#### P7: the TIN scanner's separators; vault v2 closed
+
+1. **Status:** not started. Rewritten 2026-10-26: D-28 and D-29 keep TINs in the v1 vault with no passphrase, no human pages and no extra handling, so vault v2 (HPKE, keyslots, recovery key, `/h/tin`, `request_tin_entry`, `set_w9_facts`, the GUI passphrase unlock) is closed by D-48 and nothing of it is built.
+2. **Depends on:** none.
+3. **Feature and schema:** none.
+4. **Build:**
+   1. `crates/ledger-core/src/parties.rs (changed)`: `has_full_tin` and `redact_full_tins` take commas, periods, parentheses and any run of spaces as separators between the groups (today hyphens and spaces only, so "123,45,6789" passes); the own-EIN exemption (B-26) unchanged. Property test `tin_shapes_with_any_separator_are_found` in `crates/ledger-core/tests/properties.rs` (generated separators; no false positive on a nine-digit D-U-N-S in the `company.duns` key, a routing number in an `ach` payment method's lines, or an amount).
+   2. The access-log digest's masking (`crates/ledger-store/src/access.rs`) and the filing scan (`tin_files.rs`) use the same function and gain a test each (`access_log_masks_a_comma_separated_tin`, `a_file_with_a_comma_separated_tin_is_refused`).
+   3. `docs/spec/rules.md` B-26 amended; `docs/testing.md` For-P12 (the separator arms).
+5. **Files:** owns `has_full_tin`/`redact_full_tins`; touches `access.rs`, `tin_files.rs`, the two docs.
+6. **Tests and proofs:** named above.
+7. **Done when:** the property passes; the two integration tests pass; `no_mcp_output_contains_full_tin`-style canary tests (the existing TIN canary in `crates/ledger-cli/tests/spec_vault.rs`) still pass; `just check` green.
+8. **As built:** none yet.
+
+#### P8: audit and attestations
+
+1. **Status:** not started. Rewritten 2026-10-26: composed from the checks that exist; one bar setting evaluated at query time; one `audit.run` event.
+2. **Depends on:** P6 (extracted text for the receipt cross-check), P4 (drafts), U0b. Go-ahead: `audits`.
+3. **Feature and schema:** feature `audits`; event types `audit.run { id, through, through_seq, scope, program_version, tb_hash, findings_sha256, workpaper_attachment }`, `receipt.attested { attachment_id, entry_id, by, at, method { model?, reasoning_effort?, adversarial?, verifier_agents? }, amount_checked, date_checked, note? }`, `entry.reviewed { entry_id, by, at, method, note? }`, `period.attested { period_id, by, at, method, audit_run_id }` (R-B; `method` is self-reported and said so, risk 11). Provisional schema 21: tables `audits`, `attestations`. Setting `policy.attestation_bar { reasoning_effort: high, verifier_agents: 2, adversarial: true }` (a new `Kind::AttestationBar`, R-D; default per D-9). Setting `policy.cpa_package_requires_audit: refuse | warn` exists in the registry's plan (5.3) and is added here if missing.
+4. **Build:**
+   1. **`Finding`** (`crates/ledger-core/src/audit.rs (new)`): `pub struct Finding { code: &'static str, severity: Severity, subject: Subject, message: String }` and `pub fn statements(ledger: &Ledger, through: NaiveDate) -> Vec<Finding>`: the trial balance balances; A = L + E; P&L articulates to equity; `cash_flow(..).reconciles` (code `cash_flow_unfooted`); `control_check(through)` (`control_difference`, `unattached_control_line`, `document_overpaid`); closes in order and each close's member deltas equal `kernel::apportion_cumulative`'s (`close_out_of_order` cannot occur: the engine refuses it; `close_split_drifts`); schedules and depreciation posted through `through` (`Schedule::due(through)`, `FixedAssetRegister::unposted_depreciation()`: `schedule_behind`, `depreciation_behind`); assets' register equals the cost accounts (`register_differs`); every posted entry on or before `through` meets `evidence::requirement` (P4) or is `legacy_reversal_exempt` (informational: listed, not a failure); no draft dated on or before `through` (`draft_open`); tax categories on active P&L accounts (`tax::uncategorized_accounts`); 1099 payees with a decision (`vendor_1099_undecided`, from `form1099`); settings problems (the server's `settings_problems` moves beside it). Each check is one function with a unit test that seeds the defect through `Store` and asserts exactly that finding (`crates/ledger-core/tests/audit.rs`, one test per code; `audit_detects_each_seeded_defect` iterates the code table).
+   2. **Integrity** (`crates/ledger-store/src/audit.rs (new)`): `Store::integrity_findings() -> Vec<Finding>` composing `verify_and_heal`/`verify` (chain, projection, `differs_from`), `verify_blobs`, the access log's chain (`access::read`), extraction blobs present (P6), backup standing (`Backups::standing`, stale after a day: `backup_stale`, `drill_failed`).
+   3. **`books.audit { through, scope: month | annual | cpa_handoff | full, confirmed? }`** (R-C; P scope; preview lists what it will check): runs 1 and 2, writes the workpaper (JSON, and a PDF through Typst `templates/workpaper.typ`, deterministic bytes), files it with `Store::file_document("workpaper", ..)` (a new category; `Subject::Period` link for a month or year scope), journals `audit.run`. Idempotent on `(through, through_seq, program_version)`: the same head gives the same findings and the same sha (`audit_is_deterministic`). "Current head" for attestations means: no figure-bearing event (an entry, a document, a close, a settings change, a role change) after the audit's `through_seq`; audit and attestation events do not count (IZ-1k). `books.workpaper { id }` (R) returns the JSON and hands the PDF over. `books.verify` keeps its own checks and its output; `books.audit` is the whole programme.
+   4. **Attestations:** `books.attest_receipt { attachment_id, entry_id, amount, date, method?, note? }`: the engine compares `amount` and `date` with the entry's cash line and date; a mismatch is recorded as `disagrees: true` and never counts. `books.review_entry { entry_id, method?, note? }`. `books.attest_period { period, method?, note? }`: refused unless an `audit.run` exists at the current head (as defined above) for a scope covering the period. `books.attestations { through?, kind? }` (R) lists them with `counted: bool`, evaluated against `policy.attestation_bar` as it stands when asked (no bar versioning; D-9's bar; a bar change changes what counts, prospectively and retrospectively alike, and the handbook says so). `books.export_cpa_package` refuses when `policy.cpa_package_requires_audit = refuse` and no `audit.run` with scope `cpa_handoff` or `full` at the current head has its period attested, unless `without_audit_reason` is given (journaled as a decision, D-9).
+   5. Attention (R-F): "month-end attestation due" after each close without one; "full audit due before the CPA handoff" when the fiscal year has closed; "annual audit due". The `audit` prompt (P5) gets its body: separate verifier agents, per receipt `get_receipt` text then `page_image`, `attest_receipt` by each, `review_entry`, `attest_period`. Handbook `attestations-and-audit.md` (R-E): the bar, what counts, what the CPA package needs. `docs/spec/rules.md` B-45 (an audit is deterministic over the journal; attestations are claims by an authenticated client; SOURCE: Pub. 583, Rev. Proc. 98-25; DECISION D-9). `docs/mcp-interface.md`, `docs/parity.md`, `docs/receipt-store.md`, `docs/testing.md` For-P12.
+5. **Files:** owns `crates/ledger-core/src/audit.rs`, `crates/ledger-store/src/audit.rs`, `crates/ledger-mcp/src/tools/audit.rs`, `templates/workpaper.typ`, `crates/ledger-cli/tests/audit.rs`, `handbook/attestations-and-audit.md`; touches the 8.0.3 files, `tools/prompts.rs`, the CPA package builder.
+6. **Tests and proofs:** `audit_is_deterministic`, `audit_detects_each_seeded_defect`, `amount_mismatch_never_counts`, `below_bar_not_counted`, `stale_head_period_attestation_refused`, `cpa_package_refuses_without_a_counted_audit_unless_a_reason_is_given`, `audits_wait_for_the_upgrade`, `workpaper_pdf_is_deterministic`; no kernel change (the audit calls kernel functions; it adds none); Lean: none (the laws it checks are already theorems).
+7. **Done when:** (1) the code table has one row per check with its predicate, code, seeding fixture and severity, and `audit_detects_each_seeded_defect` iterates it; (2) a fixture with an unfooted cash flow, a missing receipt, an open draft and a duplicate blob produces exactly those findings; (3) the same head gives the same workpaper sha twice; (4) `export_cpa_package` refuses and the override is journaled; (5) 8.0.6 in the PR; (6) `just check` green.
+8. **As built:** none yet.
+
+**Struck from P8:** ~~bar versioning (`counts` derived against the bar in force at that seq; `bar_change_is_prospective`), the Lean counting lemma~~ → IZ-3d; ~~"vault public-key sha"~~ → D-48; ~~"access-log tooling"~~ → `books.access_log` exists (P2); ~~`books.audit` run as a job~~ → D-53.
+
+#### P9a: self-host recipe, the move, a static bearer over a tunnel
+
+1. **Status:** not started. P9 was split on 2026-10-26 (D-51): P9a is the owner's own use of a second machine; P9b (claude.ai through an external identity provider) waits for Q-6; P9c (a remote viewer replica, invitations) is not planned.
+2. **Depends on:** none in code. To try it: a second machine or VPS the owner controls, a Tailscale account (or cloudflared), a domain and TLS.
+3. **Feature and schema:** none.
+4. **Build:**
+   1. `deploy/wanderbooks-server.service (new)`: a system unit running `wanderbooks serve --root /srv/wanderbooks` as a dedicated account (`DynamicUser=no`, `User=wanderbooks`), `ProtectSystem=strict`, `ReadWritePaths=/srv/wanderbooks`, `NoNewPrivileges=yes`, `IPAddressDeny=any` with `IPAddressAllow=localhost` (the server listens on its Unix socket and, for the tunnel, on 127.0.0.1 with `--http`); no seccomp or Landlock lines (D-32 applies to the program; the unit's own hardening is the operator's). `deploy/README.md` (new): the recipe in numbered steps: install the one executable; `wanderbooks setup` as that account; move the books (`wanderbooks books adopt <copy> --id X` on the server from a backup clone or a copied data dir, then `books.verify` and compare the head with the desktop's: `commands::adopt` and `admin::Request::AdoptPreview` already do the head check; ~~`wanderbooks fetch`~~ → D-31: a backup clone is the transport); make a token (`wanderbooks token create --book X --name laptop`); Caddy for TLS; the tunnel (Tailscale Funnel or cloudflared) to the local HTTP port; on the desktop, `claude mcp add --transport http wanderbooks-X https://<host>/b/X/mcp` with the header helper `wanderbooks token print` (3.3), and Codex likewise. `books.start` reports `isolation: "service_user (enforced)"` when the server finds itself under such a unit (a `--isolation enforced` flag the unit passes; the server never guesses).
+   2. `.github/workflows/two-user.yml (new)`: a job that installs the executable in a container, runs the server as one user and the test client as another, and runs `crates/ledger-cli/tests/two_user.rs::agent_uid_cannot_read_tenant` (new: the client's user cannot read `/srv/wanderbooks`, every tool still works over HTTP with the bearer, `books.start` says enforced) and `self_host_adopt_same_head` (the moved books verify to the same head).
+   3. Handbook `self-host.md` (R-E): how the owner moves books and connects; `docs/architecture.md` 3.8 updated (as built).
+5. **Files:** owns `deploy/`, `.github/workflows/two-user.yml`, `crates/ledger-cli/tests/two_user.rs`, `handbook/self-host.md`; touches `books.start`'s `isolation` (`tools/kept.rs`), `crates/ledger-host/src/commands.rs` (the flag).
+6. **Tests and proofs:** `agent_uid_cannot_read_tenant`, `self_host_adopt_same_head`; `isolation_label_is_enforced_under_the_unit`.
+7. **Done when:** (1) the CI job passes; (2) the recipe, followed on a clean VM by someone other than its author, reaches `books.start` from a desktop Claude Code in under 30 minutes (recorded in the As-built block); (3) `just check` green.
+8. **As built:** none yet.
+
+**P9b (planned, not scheduled; after Q-6):** claude.ai and ChatGPT need OAuth 2.1. The recommendation is D-7 (b): an external identity provider (Authentik, Ory or Keycloak) issues tokens and the server only validates them (audience = the book URI, `iss`, expiry), so no authorization server is written in-house and no external security review is needed; the Origin allowlist gains `https://claude.ai`; `books.job` and the 240 s rule come here if a call is measured over the limit. **P9c (not planned, D-51):** the remote viewer replica (`/replica/*`, `Snapshot::from_lines`, the blob LRU), `books.invite`, the `/h/` pages for remote people, the MCP App upload widget and `openai/fileParams`. The viewer on another machine reads a backup clone (D-30, D-31) read-only instead.
+
+#### P10: the re-audit, through the MCP alone
+
+1. **Status:** not started. P10 is the owner's acceptance, run on the owner's books by the owner's agents; the engineering deliverable is small.
+2. **Depends on:** P5, P6, P8 (and P4b, P4 through them).
+3. **Feature and schema:** none.
+4. **Build:**
+   1. `docs/runbooks/re-audit.md (new)`: the steps, each naming the tool as it exists: (1) `books.audit { scope: full, through: <month end> }` and `{ scope: cpa_handoff }`; every finding fixed through journaled corrections (reversals with the original's evidence per D-12 and D-47, annotations, decisions); (2) every receipt attested from `get_receipt` text plus `page_image` by a pair of verifier agents at the bar (D-9), no bytes in context; (3) `review_entry` for every posted entry; `attest_period` monthly since formation and `cpa_handoff` for the year; (4) each defect regression test of the 24 (the 2026-10-16 audit's 1-20, P0's 21 and 22, 23 and 24 found in P3) named and shown green; (5) the Sheet comparison as of 2026-10-11: cite the filed `verify-sheet` workpaper (P2 pre-cutover) and record `decision.recorded` that the frozen Sheet and the books agreed then; no new comparison tool; (6) the CPA package from both doors (the agent's `export_cpa_package` with TINs by default, and the viewer's Export menu: D-29), byte-identical but for timestamps; (7) `books.verify` ok and a backup drill clean (`books.backup` shows the head and the drill), the owner's sign-off journaled as `decision.recorded`. The two cases: T1 (desktop only: Claude Code and Codex; separation advisory; evidence = the access log and transcripts that never name the data root) and T2 (a self-host machine running: add claude.ai through the tunnel when P9b exists; separation enforced).
+   2. `crates/ledger-cli/tests/defects.rs::every_defect_reproduction_is_a_named_test (new)`: asserts the 24 named regression tests exist in the workspace (a list of `(defect, test name, file)`; the test greps for each).
+5. **Files:** owns `docs/runbooks/re-audit.md`, `crates/ledger-cli/tests/defects.rs`.
+6. **Tests and proofs:** the one test.
+7. **Done when (engineering):** the runbook exists and names only tools and commands that exist; the test passes. **Exit (the owner's run):** zero failing workpaper checks; cash flow difference 0.00; every receipt and posted entry carries a counted attestation and none disagrees; the access log shows every action under the right principal and no transcript names the data root; no result carried a full TIN to a client that should not see one (D-29: the agent's exports may); agent context on receipts stayed under 100K tokens per the harness's own token count; the sign-off journaled.
+8. **As built:** none yet.
+
+#### P11a: packaging and updates (D-19, D-22, D-24, D-25, D-26)
+
+1. **Status:** not started. P11 was split 2026-10-26 (D-54): P11a is installers and updates; P11b the agent dock and books homes.
+2. **Depends on:** none in code. From the owner before the signing steps: the Apple Developer ID certificate and notarization credentials as CI secrets; the Windows signing identity (Azure Artifact Signing if eligible, else an OV certificate); GitHub Releases enabled on the public mirror; the release hardware token; clean VMs or runners for the install tests. Q-4 (keep the two-key release manifest of D-25, or minisign alone) before step 5.
+3. **Feature and schema:** none.
+4. **Build:**
+   1. **The trial** (2-3 days): build all six formats with `cargo packager` (pinned in `mise.toml`: `cargo-packager`, `cargo-packager-updater`, `cargo-generate-rpm`) on clean VMs; record in `docs/packaging.md (new)` what each produced, what failed, and the decision for each format (a table: format | built by | installs as | updated by | signed by). Anything the tooling cannot meet is written there before anything is built around it.
+   2. **`wanderbooks update` and `rollback`** (`crates/ledger-host/src/commands.rs (changed)`, a new `update.rs`): check the feed (`releases/latest/download/manifest.json` on GitHub Releases, D-26), download and verify (step 5's signatures), stage under `<root>/updates/<version>/`, swap the executable atomically, then trigger the restart the host already has (`host.rs` INVARIANT 7: `run/update.lock`, `Ending::Restart`, `restart()`; `bridge.rs` `with_list_changed`: these exist; the updater only triggers them). `rollback` swaps back to the kept previous executable and refuses for a book that consented to a newer format (3.9). A package-managed install (AUR, apt, dnf) refuses `update` and says to use the package manager; the host notices the replaced executable and restarts when idle (exists). The format gate is unchanged (3.9). Tested against a `file://` feed: `update_is_atomic`, `failed_update_rolls_back`, `unsigned_update_refused` (a bad signature, a sha that differs from the manifest, each refused, nothing changed), `bridge_survives_update`, `update_waits_for_a_running_call`, `package_managed_install_refuses_update`.
+   3. **Linux packages** in CI containers (unsigned first): `.deb` with an apt repository index and `.rpm` with a dnf index served from GitHub Pages; the AUR `PKGBUILD`; the AppImage with self-update. `linux_packages_install_and_upgrade` (Arch, Debian, Fedora containers: install, open, upgrade, the host restarts, the books' head unchanged).
+   4. **Updates staged, applied at restart**: the host checks daily while the books are open, downloads, verifies, stages; applied at the next restart the owner accepts in the app, or before the host next starts; never during a running call (3.9).
+   5. **Signing**: minisign through `cargo-packager-updater` plus OS code signing (Developer ID and notarization; the Windows identity). The two-key release manifest (two Ed25519 keys, rotation statements, a monotone version, an expiry) per the owner's answer to Q-4; D-25 and D-26 as recorded say to build it; if the owner answers "minisign only", D-25 is amended and this step is the minisign step alone.
+   6. **macOS and Windows bundles**: the `.dmg` (translocated-app detection: refuse to connect agents until moved out of Downloads), the per-user NSIS `.exe`; `install_needs_no_admin` on clean VMs; `translocated_app_refuses_to_connect`. The viewer's menu gets "Check for updates" (`Owner::check_for_updates`, over the admin socket like the other items).
+   7. `docs/architecture.md`, the website's install page, `docs/parity.md`.
+5. **Files:** owns `crates/ledger-host/src/update.rs`, `deploy/packaging/*`, `.github/workflows/release.yml`, `docs/packaging.md`; touches `commands.rs`, `crates/ledger-gui/src/owner.rs`, `mise.toml`.
+6. **Tests and proofs:** named above.
+7. **Done when:** (1) on a clean Linux VM the AppImage installs, opens, onboards and posts an entry with no terminal and no admin password, and updates itself from a test feed; (2) on Arch, Debian and Fedora the packages install and upgrade with the head unchanged; (3) an update leaves every book's head and goldens unchanged and a bridge session carries on across it; (4) a backup made on one system restores on another; (5) macOS and Windows: the same as (1), once the signing prerequisites exist (record which are done in the As-built block); (6) `just check` green.
+8. **As built:** none yet.
+
+#### P11b: the agent dock and books homes (D-27)
+
+1. **Status:** not started.
+2. **Depends on:** P11a (an installed app). Independent of the P10 chain.
+3. **Feature and schema:** none.
+4. **Build:**
+   1. **Books homes.** `commands::books_home(book) -> PathBuf` (new): `~/Documents/Wanderbooks/<Company>/` (the user's Documents folder on Windows), created by `New books…` and by `wanderbooks connect`; it holds exactly: `AGENTS.md` and `CLAUDE.md` (three lines: "These are <Company>'s books. Connect the wanderbooks MCP and call `books.start`. The books live in the app's private folder, not here."), `.mcp.json` (the project-level MCP server entry: `wanderbooks mcp --book <id>`), `.claude/settings.json` allowing `mcp__wanderbooks-<book>__*` so the daily flow doesn't prompt. No books data, no key, no token, no path into the data root. `connect_agent` is unchanged (it registers the user-scope server as today); the books home adds the project-level entry. Whether `connect codex` may mark the folder trusted is asked of the owner when built (Q-7, placeholder).
+   2. **The dock.** A terminal panel along the bottom of the viewer's window (`crates/ledger-gui/src/dock.rs (new)`, `alacritty_terminal` over a PTY; ConPTY on Windows), resizable and collapsible; the header picks Claude Code (default) or Codex, remembered as a viewer preference. The agent is started as an ordinary child process of the viewer's `Owner` (`Owner::start_agent(Agent, book) -> Child`, over the same ledger-host functions the command line uses) in the book's books home; ~~"started by the viewer's helper … the viewer stays confined"~~ → D-32: there is no helper and no confinement; the viewer is read-only by design and by test, which the dock does not change (the agent writes through the server, not through the viewer). The CLIs are found or offered through their vendors' installers, never bundled.
+   3. Tests: `dock_runs_the_chosen_agent` (a fake `claude` on the PATH: started in the books home, its output reaches the panel, Ctrl-C reaches it, resize redraws), `books_home_holds_no_books_data` (only the four files; none names the data root), `agent_missing_offers_the_installer`. Windows: ConPTY checked in the trial; an agent that fails the four checks (starts, `/login` works, resize redraws, Ctrl-C reaches it) is not offered there.
+5. **Files:** owns `crates/ledger-gui/src/dock.rs`, `commands::books_home`; touches `owner.rs`, `app.rs`, `commands.rs`.
+6. **Tests and proofs:** named above.
+7. **Done when:** the three tests pass on Linux; the dock runs Claude Code in a books home on Linux and macOS; Windows recorded as offered or not.
+8. **As built:** none yet.
+
+#### P12: max testing, again (D-33)
+
+1. **Status:** not started.
+2. **Depends on:** everything else merged. Hardware: the owner's desktop, or the scheduled GitHub Actions workflow (`.github/workflows/scheduled.yml`), or both; the gate for Accept is the scheduled workflow's run (reproducible by anyone), with the desktop as the faster place to triage.
+3. **Feature and schema:** none.
+4. **Build:**
+   1. Code first (2-3 days): the fuzz targets P2 promised and never added, `fuzz_http_mcp_request` and `fuzz_upload_put` (`fuzz/fuzz_targets/`, listed in scheduled.yml); `fuzz_op_sequence::Op` gains the document, settlement, write-off and draft-state ops; mutation recipes in the justfile for the crates that have none (`mutants-host`, `mutants-package`, `mutants-vault`, `mutants-cli`, each with `--test-package` set like `mutants-mcp`) and their shards in scheduled.yml; `docs/testing.md` consolidates the ~30 **For P12** paragraphs into one checklist per crate (U0c adds the three missing ones).
+   2. The run: `cargo mutants` over the whole diff from `168494b` (main before P2 slice 3) to the tip, crate by crate, each crate's own tests first and the survivors again with the end-to-end `ledger-cli` tests (`--iterate`); every survivor killed by a test or documented as equivalent in `docs/testing.md` with its reason; the viewer has no mutation run (its two musts are `tests/read_only.rs` and `tests/view_model.rs`). Every fuzz target for 4 hours (or the owner's number), any crash a regression test. Property tests at their maxima: `STORE_CASES=5000`, `WB_ORDERS_DEPTH=6`, the proptest case counts documented in `docs/testing.md`. The GnuCash differential (`just oracle`). `just prove-all`. Load: `cargo mutants -j <half the cores>`, one mutation run at a time.
+5. **Files:** owns the justfile mutation recipes, the two fuzz targets, scheduled.yml, `docs/testing.md`'s P12 section.
+6. **Tests and proofs:** the run itself.
+7. **Done when:** 0 unexplained mutation survivors workspace-wide (the viewer aside); every fuzz target clean for its time; `just prove-all` and `just check` green; `docs/testing.md` records each crate's counts and every equivalent mutant with its reason.
+8. **As built:** none yet.
+
+#### P13: bookspec, a formal accounting specification (D-34)
+
+1. **Status:** not started as a unit. The seed exists in this repository: `bookspec/README.md` (the TOML schema: `id, title, rule, status, sources, tags, appendix?`; `[setup]`; `[[events]]` of kinds `lines | reverses | close | bill | invoice | run_depreciation | dispose_asset | run_schedules | register_schedule` with `refused`, `payee`, `parties`, `instrument`, `older`; `[[changes]]`; `[[expect]]` with its query table), 56 examples in `bookspec/examples/`, the loader `crates/ledger-core/tests/bookspec.rs` (`every_bookspec_example_holds`: applies each example to a real `Store` and verifies it) and `crates/ledger-package/tests/package.rs::the_bookspec_iif_example_matches_the_engine`. Every P3 regression test and every P4b example is written there as it is built. The spec text, the formal validation and the conformance harness are the unit.
+2. **Depends on:** nothing for steps 1-4; the engine stable (P4b, P4 landed) for step 5. Runs beside everything.
+3. **Feature and schema:** none.
+4. **Build:**
+   1. **The checker crate.** Move the loader's types out of the test into `bookspec/checker/` (its own Cargo workspace inside the repository for now: `bookspec/Cargo.toml`), exposing `Example`, `Setup`, `Event`, `Expect`, `Query`, `Refusal` and the TOML parser with `deny_unknown_fields`; `crates/ledger-core/tests/bookspec.rs` becomes the wanderbooks adapter depending on it by path. `just check` keeps running every example (the test is unchanged in what it proves).
+   2. **The `Engine` trait** (`bookspec/checker/src/engine.rs`): `pub trait Engine { fn load(&mut self, setup: &Setup) -> Result<(), Refusal>; fn apply(&mut self, event: &Event) -> Result<(), Refusal>; fn query(&self, q: &Query) -> Result<serde_json::Value, Refusal>; fn claims(&self) -> Claims; }`, `Refusal { rule: RuleId, reason: String }`, `Claims` = the rule ids and choices the engine declares. The wanderbooks adapter implements it over `Store`; the runner (`bookspec/runner`) reports per rule: pass, fail, not claimed.
+   3. **Rule identifiers.** `BS-<area>-<n>` (areas: `entry`, `ledger`, `statement`, `period`, `partner`, `asset`, `prepaid`, `arap`, `revenue`, `1099`, `format`); a table from B-1..B-45 to bookspec ids in `bookspec/spec/rules-index.md`; `docs/spec/rules.md` gains each rule's bookspec id; rules.md `DECISION` becomes bookspec `CHOICE` (the spec names the options; an engine declares its pick).
+   4. **The specification text** (`bookspec/spec/*.md`): definitions and the model; every rule with its normative statement (MUST, MUST NOT, MAY), its source pinned exactly and its status (AUTHORITY, CONVENTION, CHOICE), its symbolic form, its concrete examples (the TOML files, by id), its applicability. First edition done line: every B-rule has an id, a statement, a source and at least one example; the five laws (debits equal credits; A = L + E; the trial balance balances; net income articulates to equity; the cash-flow sections sum to the change in cash) are Lean theorems in `bookspec/lean/` (ported from `verify/lean`); every citation resolves to a vendored source (`docs/spec/sources/`) or an exact external reference; US GAAP (the FASB Codification, cited never copied) and US federal tax (IRC, Treasury Regulations, IRS publications and form instructions, public domain) first; the Big Four guides never a source; a page budget of 60 pages for the first edition.
+   5. **The spec's own checker:** every example's expected value derived from its rule's symbolic form by the checker (exact decimal), so an example whose expectation disagrees with its derivation fails the spec's build; the runner against wanderbooks for every claimed rule; the GnuCash oracle (`docs/oracle.md`) as the second engine, through an adapter over the oracle's files; hledger, Beancount and QuickBooks are candidates, not scope.
+   6. Later, when step 5 is stable: its own public repository (CC BY 4.0 for the spec, MIT OR Apache-2.0 for the code), consumed by wanderbooks as a pinned dependency so `just check` keeps running the examples (D-34, Z-17).
+5. **Files:** owns `bookspec/**`; touches `crates/ledger-core/tests/bookspec.rs`, `crates/ledger-package/tests/package.rs`, `docs/spec/rules.md` (ids), `Cargo.toml` (workspace members if the checker joins the workspace).
+6. **Tests and proofs:** `every_bookspec_example_holds` unchanged; `bookspec/checker` tests (the schema, the derivations); `bookspec/lean` builds with standard axioms only.
+7. **Done when:** (1) the checker crate exists and `just check` still checks all 56+ examples; (2) the `Engine` trait and the wanderbooks adapter run the runner green for every claimed rule; (3) every B-rule has an id, statement, source and example; (4) the five laws are theorems in `bookspec/lean`; (5) the GnuCash adapter runs and its differences are settled from the sources (recorded in the As-built block).
+8. **As built:** none yet.
+
+### 8.3 P4b reference design: receivables and payables, first class (D-45)
+
+The design the S4 to S7 units build from. Corrected on 2026-10-26 against what S1 to S3 built (8.1) and the review's findings; superseded sentences are struck through with the decision that superseded them. In this section "document" means an invoice or a bill; "preview" means a tool called without `confirmed` (nothing is journaled); "draft" means a draft entry (P4).
+
+#### 8.3.1 The owner's ask and answers (2026-10-23)
+
+**The ask:** "we kinda need stronger invoice support. Like make it a first class citizen. It could even spit out PDF invoices, track when they're sent, money received against, etc.. and maybe there's some accounting term for the opposite, like if we receive an invoice (we have to pay someone else) we need to pay it on its specific listed payment terms, tracking all that."
+
+**The answers, through the question tool.** Numbered A-1 to A-14 so the units can cite them; A-5 to A-14 were one answer ("the rest as recommended") and are split here one per line.
+- **A-1.** Preview, then confirm, for invoices and bills, as for entries; an abandoned preview uses up no number.
+- **A-2.** Numbers `INV-0001`, running: the owner's prefix and a running number, with a one-time starting number; never reused; a void keeps its number.
+- **A-3.** Payment methods: any ("Full ACH, payment link, QR code, whatever whatever. Companies accept payments in SO MANY ways, we should support anything."). So `invoicing.payment_methods` is a list, each method `{ kind: ach | wire | link | check | p2p | crypto | other, label, lines, link?, qr? }`; the PDF prints each with its label and lines, and a QR code (an SVG from `labels::qr_svg`, placed as an image) for any method with `qr: true` and a link or text to encode. The bank-detail lines of `ach` and `wire` methods are exempt from the nine-digit TIN check (a routing number is nine digits), as `company.duns` is; nothing else in the list is.
+- **A-4.** The books never send, receive or charge; they record ("Wanderbooks just does books. Nothing else. … it's more likely my agent (who talks to wanderbooks MCP) doing the sending and receiving and payment capture … We took the same approach on payroll."). So `books.mark_sent` records who sent it (the owner, or a named delegate such as an agent), the channel (email, mail, portal, hand, other), the recipients, when, and the channel's own reference (a message id); a payment records its processor and reference (a Stripe charge id, a bank trace) and, when the processor kept a fee, the fee: Accounts Receivable is credited the gross amount, the fee goes to its expense account, the deposit account gets the net (the gross presentation payouts already use). The `mailto` link stays as a convenience for a human sender.
+- **A-5.** Bad debts by direct write-off (IRC §166; Treas. Reg. §§1.166-2, 1.166-3).
+- **A-6.** Hand entries to 1200 and 2000 are refused (B-23; built in S1).
+- **A-7.** The issued PDF is stored at issue.
+- **A-8.** Discounts by the gross method.
+- **A-9.** The bills posted to 6999 are fixed by reclassifying entries.
+- **A-10.** Every bill line names its account.
+- **A-11.** ~~Two upgrades (after S1, and after S7)~~ → the first (`document_standing`) was given 2026-10-24; D-52 makes the second the only remaining one: `documents_v2` covers S4 to S7 (and `drafts_v2` joins it), declared once after S7. Q-5 asks whether to declare it earlier.
+- **A-12.** Overpayments refused; customer credits later (8.4).
+- **A-13.** Each party gets an email and default terms, copied onto each document at issue.
+- **A-14.** (Reserved: the owner's answer to Q-5.)
+
+#### 8.3.2 In plain language
+
+Before S1 an invoice kept its own copy of "how much was paid" and "is it paid", and that copy went out of step with the ledger: a reversed payment still counted, a reversed invoice still aged, a wrong payment reversed blocked the right one. S1 fixed that: a document stores no figure. Every ledger line on Accounts Receivable or Accounts Payable is tagged with its document, and a document's balance is the sum of its tagged lines dated on or before the day asked about. Reversals, voids, bounced payments and write-offs come out right without extra code, and the control accounts always equal their documents, by construction.
+
+On top of that come (S4 to S7): invoice numbers, payment terms and due dates; a PDF kept exactly as it was sent; a record of when it was sent; bills coded to their real accounts with the vendor's invoice number; a "what to pay this week" list that follows each vendor's terms; payments that settle several documents at once, with early-payment discounts and the processor's fee; voids and bad-debt write-offs.
 
 **Terms, each explained once:**
-- **Accrual basis.** Income counts when it is earned and expenses when they are incurred, not when cash moves. Sources: IRS Pub. 538, "Accrual Method"; the all-events test in Treas. Reg. §1.451-1(a) for income and §1.461-1(a)(2) for expenses, with economic performance under §1.461-4. The company files on this basis (`books.accounting_basis`).
-  - Income is earned when the work is delivered (ASC 606-10-25-23), not when the invoice is written. An invoice normally carries the date the work was done.
-  - If you bill ahead of the work, the line goes to 2400 Deferred Revenue (a "contract liability", ASC 606-10-45-2). A B-16 schedule then recognizes it as revenue as the work is done.
-- **Invoice; accounts receivable (A/R, account 1200).** An invoice is the bill we send a customer. Until it is paid, the money owed is an asset called a receivable: "an entity's right to consideration that is unconditional" (ASC 606-10-45-4). ASC 310-10 covers how receivables are presented. Expected credit losses on receivables are ASC 326-20.
-- **Bill; accounts payable (A/P, account 2000).** This is the term for "an invoice someone sends us". What we owe on bills is a liability. It comes off the books only when (a) we pay it or (b) the creditor legally releases us (ASC 405-20-40-1). So a bill is never "written off". It is paid, credited by the vendor, or voided as an error.
-- **Control account; subledger.** 1200 and 2000 are control accounts: each balance must equal the total of the open documents behind it (rules.md B-23). The list of those documents is the subledger. The first thing a CPA checks is that the aging report ties to the trial balance.
-- **Aging.** Open balances grouped by days past due: Current, 1-30, 31-60, 61-90, 90+ (B-18; ASC 326-20-55-37/38 is illustrative). Due today counts as Current.
-- **Payment terms:**
-  - "Due on receipt": due on the document date.
-  - "Net 30": due 30 days after the document date.
-  - "Net 15 EOM": due 15 days after the end of the document's month.
-  - "2/10 net 30": 2% off if paid within 10 days, otherwise the full amount in 30. The 2% is an early-payment (cash) discount.
-  - For goods with no agreed terms, payment is due when and where the buyer receives them (UCC §2-310(a)). UCC Article 2 does not govern services such as this studio's; for services the contract sets the terms. Sending an invoice late does not move its due date here.
-- **Gross method (discounts).** The document is booked at its full price, and a discount is booked only when it is actually taken. For a discount we offer, ASC 606-10-32-5 to 32-9 strictly treat an expected discount as variable consideration, estimated when revenue is recognized. At this company's size the difference is immaterial; it is a stated simplification, not ASC 606's own treatment.
-- **Void.** The document should never have existed: a duplicate, or the wrong customer. It is voided by reversing its entry (B-9). It keeps its number, marked VOID, so a gap in the number series always has a reason.
-- **Credit memo; vendor credit.** A document that lowers a valid invoice or bill without cash moving: a price concession or an allowance. This is a later slice.
-- **Bad debt (write-off).** An invoice that will not be collected.
-  - Tax: IRC §166(a). The debt must be wholly or partly worthless on "all pertinent evidence" (Treas. Reg. §1.166-2(a)). A partial write-off is deductible only to the extent charged off on the books (§1.166-3(a)).
-  - It is allowed only because the accrual basis already counted the income (§1.166-1(e)).
-  - A later recovery is income again (IRC §111, the tax benefit rule; §1.166-1(f)).
-  - It is reported on Form 1065 line 12, "Bad debts". The tax category `bad_debts` already exists.
-  - GAAP prefers an allowance estimated ahead of time (ASC 326-20). For small, immaterial receivables a CPA accepts the direct write-off and notes it.
-- **"Paid in full" checks (UCC §3-311, accord and satisfaction).** Cashing a check plainly marked as full payment of a genuinely disputed amount can settle the whole claim. The payment tool warns before recording one.
-- **Records.** IRS Pub. 583 lists invoices among the supporting documents to keep. Rev. Proc. 98-25 requires electronic records to keep their audit trail. This is why the PDF as issued is filed with its hash, and why voids keep their numbers.
+- **Accrual basis.** Income counts when it is earned and expenses when they are incurred, not when cash moves (IRS Pub. 538, "Accrual Method"; the all-events test in Treas. Reg. §1.451-1(a) for income and §1.461-1(a)(2) for expenses, with economic performance under §1.461-4). The company files on this basis (`books.accounting_basis`). Income is earned when the work is delivered (ASC 606-10-25-23), not when the invoice is written; an invoice normally carries the date the work was done. Billing ahead of the work goes to 2400 Deferred Revenue (a contract liability, ASC 606-10-45-2), and a B-16 schedule recognizes it as the work is done.
+- **Invoice; accounts receivable (A/R, 1200).** The bill we send a customer; until paid, a receivable, an asset: "an entity's right to consideration that is unconditional" (ASC 606-10-45-4); presentation ASC 310-10; expected credit losses ASC 326-20.
+- **Bill; accounts payable (A/P, 2000).** An invoice someone sends us; a liability that leaves the books only when paid or when the creditor legally releases us (ASC 405-20-40-1). A bill is never written off: paid, credited by the vendor, or voided as an error.
+- **Control account; subledger.** 1200 and 2000 are control accounts: each balance must equal the total of the open documents behind it (B-23, B-38). The first thing a CPA checks is that the aging ties to the trial balance; here it ties by construction, and `books.control_check` shows it.
+- **Aging.** Open balances by days past due: Current, 1-30, 31-60, 61-90, 90+ (B-18; ASC 326-20-55-37/38 illustrative). Due today is Current.
+- **Payment terms.** "Due on receipt": due on the document date. "Net 30": 30 days after. "Net 15 EOM": 15 days after the end of the document's month. "2/10 net 30": 2% off if paid within 10 days, else the full amount in 30. For goods with no agreed terms, due when the buyer receives them (UCC §2-310(a)); for services the contract sets the terms. Sending an invoice late does not move its due date.
+- **Gross method.** The document is booked at its full price and a discount only when taken. ASC 606-10-32-5 to 32-9 strictly treat an expected discount as variable consideration estimated when revenue is recognized; at this company's size the difference is immaterial: a stated simplification (DECISION, A-8), not ASC 606's own treatment.
+- **Void.** The document should never have existed (a duplicate, the wrong customer): its entry is reversed (B-9); it keeps its number, marked VOID, so a gap in the series always has a reason. Built in S1 (`books.void_document`).
+- **Credit memo; vendor credit.** Lowers a valid document with no cash moving. Not scheduled (8.4).
+- **Bad debt (write-off).** An invoice that will not be collected. Tax: IRC §166(a); worthless on "all pertinent evidence" (Treas. Reg. §1.166-2(a)); a partial write-off deductible to the extent charged off on the books (§1.166-3(a)); allowed only because accrual already counted the income (§1.166-1(e)); a later recovery is income (IRC §111; §1.166-1(f)); Form 1065 line 12. GAAP prefers an allowance (ASC 326-20); for small receivables a CPA accepts the direct method and notes it.
+- **"Paid in full" checks (UCC §3-311).** Cashing a check marked as full payment of a disputed amount can settle the whole claim; the payment tool warns before recording one.
+- **Records.** Pub. 583 lists invoices among the documents to keep; Rev. Proc. 98-25 requires electronic records to keep their audit trail: why the PDF as issued is filed with its hash and voids keep their numbers.
 
-**What a CPA expects** (this list goes into the handbook):
-- A/R and A/P agings at each month-end and year-end that tie to 1200 and 2000. Here they tie by construction, and the tie is shown.
-- Invoice numbers unique and sequential, voids visible, none deleted.
-- Every bill coded to its real expense or asset account (the Form 1065 lines, B-32), never a catch-all, with the vendor's invoice attached. No bill paid twice.
-- Payments matched to documents. Card payments identified, because they are excluded from 1099-NEC (Treas. Reg. §1.6041-1(a)(1)(iv); D-40).
-- Write-offs carrying a reason and evidence of collection attempts.
-- Customer deposits shown as liabilities, not netted inside A/R.
-- Schedule L line 2a (trade receivables) and line 15 (accounts payable) taken straight from the control accounts.
-- Approvals and three-way matching (purchase order, receipt, invoice) are deliberately not adopted for a two-member LLC (light governance). The handbook says so, so the CPA knows it is a choice.
+**Rules this section fixes (so no one has to find them in the prose):** due today is Current; the sent date never moves the due date; `paid_in_full_marking` warns under UCC §3-311; the gross method is a DECISION (A-8); the CPA's list below goes into the handbook.
 
-#### P4b.2 Verified gaps
+**What a CPA expects (goes into `invoices-and-bills.md`):** agings at month and year end that tie to 1200 and 2000; invoice numbers unique and sequential, voids visible, none deleted; every bill coded to its real account (the Form 1065 lines, B-32), never a catch-all, with the vendor's invoice attached, no bill paid twice; payments matched to documents, card payments identified (excluded from 1099-NEC: Treas. Reg. §1.6041-1(a)(1)(iv); D-40); write-offs with a reason and evidence of collection attempts; customer deposits as liabilities, never netted inside A/R; Schedule L lines 2a and 15 straight from the control accounts; approvals and three-way matching deliberately not adopted for a two-member LLC (light governance), and the handbook says so.
 
-1. **Reversing a document's entry leaves the document unchanged.** `reverse_entry_steps` (ledger.rs ~1805) carries the class, vendor, instrument, party and schedule tags. It never touches `invoices`, `bills`, `invoice_payments` or `bill_payments`.
-2. **Payments count after reversal.** `paid_by` (ledger.rs ~5457-5468) filters by date only. Nothing ever lowers `amount_paid`. `replay_invoice_payment` and `replay_bill_payment` rebuild the same wrong figure.
-3. **Re-payment is blocked.** The stored `amount_paid` feeds the Overpayment check in `receive_payment` (~5165). After a wrong payment is reversed, the right one is refused.
-4. **Aging never checks whether an entry stands.** `ar_aging` and `ap_aging` (~5418-5510) never call `in_effect`. `in_effect` (~1761) has no date, so it cannot answer "as of D".
-5. **Hand entries to 1200 and 2000 are allowed.** `check_line_account` refuses only placeholder accounts, so B-23 is stated but not enforced. `receive_payment`'s `cash_account` may even be 1200 itself.
-6. **Every bill posts to 6999** (`create_bill_steps`, ~5057). The cash flow statement's rule 12 says it is empty "until a bill can carry an equipment line" (cashflow.rs ~1033). `bill_splits` says "A reversed payment still counts" (~1084).
-7. **Missing fields.** Documents have no number, terms, bill-to snapshot, vendor invoice number, memo, sent record or void. A party has an address but no email.
-8. **Misnamed parameter.** `CreateDocumentParams.party_id` holds a customer or vendor id, not a party id.
-9. **No payment method.** Payment tools take no `instrument`, so a card-paid bill needs a second call to be tagged for D-40.
-10. **The viewer's party card** marks "late" from the stored balance, and clicking a row opens the entry, not the document.
+#### 8.3.3 The core mechanism (built in S1): documents read their figures from tagged ledger lines
 
-**What already exists and is reused:**
-- `Subject::Invoice` and `Subject::Bill` are attachment subjects (store.rs, `enum Subject`).
-- PDFs are typeset with Typst in `ledger-import/src/pdf.rs` (typst 0.15.1, `templates/*.typ`, bundled fonts, labels passed as data, amounts split by `report::amount_parts`, deterministic bytes).
-- `ledger-package::PackageBooks` is the shared read-only builder for the server and the viewer.
-- Files go out through exports plus `wanderbooks download` (D-29).
-- Replay of `entry.reversed` calls `Ledger::reverse_entry` again. Anything `reverse_entry` derives is therefore rebuilt on replay with no new event.
+- **Tags.** `Ledger.line_docs: HashMap<(EntryId, usize), DocTag { doc: DocRef, movement: Movement }>`, beside `cleared` and the class tags; the kernel's `JournalLine` and its hash untouched. Live, only the document commands write tags, in the same step that posts the entry. On replay, tags come from the document events already journaled, with no format change: `invoice.created`/`bill.created` tag the one control-role line of the entry just replayed (the role as it stood at that point of the journal); `invoice.payment_received`/`bill.paid` tag "the first untagged control line for the payment's amount" (rules.md B-38 item 1), so several payment events naming one entry tag its lines in order; S6 adds an explicit `line` index to new payment events. `reverse_entry_steps` copies each line's tag onto its mirror. An entry whose lines cannot be matched stays untagged and is listed by `control_check`; replay never refuses (B-28).
+- **Standing.** `Ledger::stands_on(entry, as_of)`: posted, dated on or before `as_of`, and an even number of the reversals after it in its chain are dated by then, counted in chain order (a re-reversal dated before the reversal it undoes counts from that reversal's date). `in_effect(e) = stands_on(e, NaiveDate::MAX)`.
+- **Derived figures.** `outstanding(d, D)` = the signed sum of the posted lines tagged `d` dated on or before `D` (a debit to A/R counts plus for an invoice; a credit to A/P plus for a bill), **whatever their entries' standing**: a reversal's mirror carries the same tag and cancels its original, so standing never enters the sum. ~~"over entries that stand on D"~~ → wrong (it double-counts a re-reversal: origin +100, reversal −100, re-reversal +100 would sum to +200); the code and rules.md B-38 item 2 have the date-sum, and the Lean theorem is stated over it. `paid`, `discounted`, `written_off` are the same sum over one movement each. Status as of D (`arap::doc_status`): **Void** if the origin entry does not stand on D; else **Unattached** if the origin's control line carries no tag; else **Overpaid** if outstanding < 0; else **Written off** if outstanding is 0 and written_off > 0; else **Paid** if 0; else **Partial** if < total; else **Open**. The breakdown is always shown. Overdue and sent are flags.
+- **Stored fields.** ~~`Invoice.amount_paid`, `status`, `invoice_payments`, `bill_payments` stop being state~~ → as built, `amount_paid`, `owed` and `status` stay on `Invoice`/`Bill` as derived caches refreshed by `refresh_doc`, never journaled; every reader (the viewer, the MCP, `cashflow::bill_splits`, party totals, the 1099 worksheet, the projection, the IIF) reads the derived figures.
+- **Bounds.** `check_item_bounds` (private; run inside the payment path and from `check_reversal`, only on the documents the step touches): at every date in date order, 0 ≤ outstanding ≤ total. So: no void while a payment stands; no overpayment; no reversal of an origin under a payment. Reversing a payment, a discount or a write-off is always allowed and reopens the document. A payment received before a bounce is known is recorded through 2300 (the handbook procedure in S6; D-49).
+- **The control guard.** A line on an account holding the `receivables` or `payables` role (or holding a line of one of the role's documents) must carry a tag, or the posting is refused with `LedgerError::UntaggedControlLine { account, entry, line }` and the remedy names the document tools. It sits in `Ledger`, so MCP, GUI, recurring runs and templates cannot bypass it; `books.add_line`, `books.draft_entry` and `books.create_recurring` refuse earlier with the same remedy. The one exception is the mirror of an untagged legacy line in a reversal that takes the line off the books; reversing that cleanup (which would put it back) is refused (B-38 item 3, a deliberate B-10 exception). Replay never refuses. ~~"or a later control role"~~ → the receivables and payables roles only (payroll's payables are untagged by design).
+- **The identity.** For each control account A and date D: `GL(A, D) = Σ_docs outstanding(d, D) + unattached(A, D)`, where `unattached` is the legacy untagged lines that still stand; no command adds to it, and it changes only when a legacy line is reversed. (A document's lines never straddle two accounts: a control role moves only off an account with no balance, B-23, so the identity is well defined per account. The per-account `owed_on` refinement is needed only if `move_balance` is ever built: 8.4.)
+- **Dating rules.** A payment, discount or write-off is never dated before its document (`PaymentBeforeDocument`); a reversal of a document-owned entry never before the original; every date outside closed periods (B-12); a void of an invoice from a closed period is dated in an open one and listed in the CPA README.
+- **Payment accounts.** The deposit or payer account is a postable asset or liability holding no role (a bank account, a card payable, the member payable under D-42, 2300 Customer Deposits): never a control, revenue or expense account (`check_payment_account`).
 
-**Account codes in the chart template.** Already taken: 4100 Refunds and Allowances (tax category `returns_allowances`), 4900 Interest Income, 6800 Taxes and Licenses, 2400 Deferred Revenue. Free: 6990, 6995, 2300, 1250.
+#### 8.3.4 Data model (`crates/ledger-core/src/arap.rs`)
 
-#### P4b.3 The core mechanism: documents read their figures from tagged ledger lines
-
-**Tags.** A new side map lives in `Ledger`, like `cleared` and the class tags:
+Sketch, not compilable; the S4 and S5 units give the exact fields.
 
 ```rust
-pub enum DocRef { Invoice(InvoiceId), Bill(BillId) }
-pub enum Movement { Origin, Payment, Discount, WriteOff, Adopted, RoleMove }
-pub struct DocTag { pub doc: DocRef, pub movement: Movement }
-// Ledger.line_docs: HashMap<(EntryId, usize), DocTag>
-```
+pub enum TermsKind { DueOnReceipt, Net(u16), NetEom(u16), Custom }
+pub struct EarlyDiscount { pub percent_bp: u32 /* 1..=9999 basis points */, pub days: u16 /* < the net days */ }
+pub struct Terms { pub kind: TermsKind, pub discount: Option<EarlyDiscount>, pub text: String /* Terms::describe() */ }
+// Terms::due_date(date) -> Result<NaiveDate>; Terms::discount_by(date) -> Option<NaiveDate>;
+// kernel::discount_max(total, percent_bp) bounds a discount; the caller gives the exact cents taken.
 
-The kernel's `JournalLine` and its hash are untouched. How tags get set:
-- Live, only the document commands write tags, in the same `atomically` step that posts the entry.
-- On replay, tags come from existing events, with no format change:
-  - `invoice.created` and `bill.created` tag the one control-role line of the entry just replayed. The role is resolved as it stood at that point in the journal, not as it stands today.
-  - `invoice.payment_received` and `bill.paid` tag the payment entry's control line.
-  - When several payment events name one entry (a multi-document payment, P4b.7), the i-th event tags the i-th control line in line order. Its amount must match that line.
-  - An entry with no control line, or with lines that cannot be matched, stays untagged and is listed by the control check. Replay never refuses it (B-28).
-- `reverse_entry_steps` copies each line's tag onto its mirror, exactly as it copies `class_id`.
+pub struct PartySnapshot { pub name: String, pub address: Option<String>, pub email: Option<String> }
 
-**Standing as of a date (new code).**
-- `Ledger::stands_on(entry, as_of) -> bool`: the entry is posted, dated on or before `as_of`, and an even number of the reversals in its chain dated on or before `as_of` follow it.
-- `in_effect(e)` becomes `stands_on(e, NaiveDate::MAX)`.
-- Under P4 a reversal is first a draft. Only posted reversals count.
-
-**Derived figures.** These are pure functions with GOAL/INVARIANTS blocks. Signs: a debit to A/R counts plus for an invoice; a credit to A/P counts plus for a bill.
-- `outstanding(d, D)`: the signed sum of the lines tagged `d`, over entries that stand on `D`.
-- `paid(d, D)`, `discounted(d, D)`, `written_off(d, D)`: the same sum restricted to one movement.
-- `Ledger::invoice_state(id, as_of)` and `bill_state(id, as_of)` return `DocState { total, paid, discounted, written_off, outstanding, status, overdue_days }`.
-- **Status as of D:**
-  - **Void** if the origin entry does not stand.
-  - else **Written off** if outstanding is 0 and written_off > 0;
-  - else **Paid** if outstanding is 0;
-  - else **Partial** if outstanding < total;
-  - else **Open**.
-  - The breakdown is always shown, so "Written off" on a half-paid invoice still says what was paid.
-  - "Overdue" (outstanding > 0 and D past the due date) and "Sent" are flags, not states.
-
-**Stored fields removed on purpose.** `Invoice.amount_paid`, `Invoice.status`, `invoice_payments` and `bill_payments` stop being state. Removing the pub fields breaks the build wherever they are read, so the compiler finds every reader:
-- the GUI: `books.rs`, `cash.rs`, `company.rs`, `parties.rs`, `attention.rs`;
-- the MCP outputs;
-- `cashflow.rs` `bill_splits`;
-- party totals (B-35), the 1099 worksheet, the snapshot, the SQLite projection, the IIF export.
-
-**Bounds.** One function, `check_item_bounds(&Ledger after, touched) -> Result`. It runs inside `atomically` from every document command and from `check_reversal`, and only on the documents the step touches. At every date in date order, not only at the end, it requires 0 ≤ outstanding ≤ total. This makes the following impossible:
-- voiding a document while a payment stands;
-- overpaying;
-- reversing an origin entry under a payment.
-
-Reversing a payment, a discount or a write-off is always allowed. It reopens the document.
-
-**Control guard.** A line on an account holding the `receivables` or `payables` role, or a later control role, must carry a tag, or the posting is refused with `LedgerError::UntaggedControlLine { account, entry, line }`. The remedy names `books.create_invoice`, `books.receive_payment`, `books.create_bill`, `books.pay_bill` and `books.void_document`.
-- The guard sits in `Ledger`, so MCP, GUI, recurring runs and templates cannot bypass it.
-- `books.add_line` and `books.draft_entry` refuse earlier with the same remedy. `books.create_recurring` refuses a template naming a control account.
-- **Exemption:** the mirror line of a reversal of an untagged legacy line. Reversing an old hand entry is how it gets cleaned up.
-- Replay never refuses (B-28).
-
-**The identity.** For each control account A and every date D:
-
-`GL(A, D) = Σ_docs outstanding(d, D) + unattached(A, D)`
-
-Both sides sum the same lines, so this is an identity, not a reconciliation. `unattached` is the legacy untagged lines that still stand. No command adds to it. It changes only when a legacy line is reversed or adopted (P4b.10).
-
-**Dating rules.**
-- A payment, discount or write-off is never dated before its document (the existing `PaymentBeforeDocument`).
-- A reversal of a document-owned entry is never dated before the original. This settles the open B-9 question for documents.
-- Every date must fall outside closed periods (B-12). A void of an invoice from a closed period is dated in an open period. The P&L effect lands there, which is acceptable for an immaterial error (ASC 250). Such voids are listed in the CPA package README.
-
-**Payment accounts.** The deposit or payer account must be a postable asset or liability that holds no role: a bank account, a card payable, or the member payable under D-42. It is never a control, revenue or expense account.
-
-#### P4b.4 Data model (ledger-core `arap.rs`; split into an `arap/` module if it grows)
-
-```rust
-pub enum TermsKind { DueOnReceipt, Net(u16), NetEom(u16), Custom /* due_date given */ }
-pub struct EarlyDiscount { pub percent: Decimal /* 0<p<100, ≤2 dp */, pub days: u16 /* < net */ }
-pub struct Terms { pub kind: TermsKind, pub discount: Option<EarlyDiscount>, pub text: String /* as printed */ }
-// Terms::due_date(date) -> Result<NaiveDate>; Terms::discount_by(date) -> Option<NaiveDate>
-// Terms::max_discount(total) = total × percent / 100, exact (never rounded by the engine)
-
-pub struct Snapshot { pub name: String, pub address: Option<String>, pub email: Option<String> }
-
-pub struct DocumentLine {               // existing + optional fields
+pub struct DocumentLine {               // existing fields, plus:
     description, amount, class_id,      // one project per line (D-43)
     pub account: Option<AccountId>,     // None = the role account (legacy: what it posted to)
-    pub quantity: Option<Decimal>, pub unit_price: Option<Decimal>, // both or neither; q×u == amount exactly
+    pub quantity: Option<Decimal>, pub unit_price: Option<Decimal>, // both or neither; kernel::line_amount(q, u) == amount exactly
 }
 
 pub struct Invoice { id, customer_id, date, due_date, lines, entry_id,
-    pub number: Option<String>,          // snapshot at issue; None = legacy, shown "Invoice {id}"
-    pub terms: Option<Terms>, pub bill_to: Option<Snapshot>, pub seller: Option<Snapshot>,
-    pub customer_ref: Option<String>,    // customer's PO
+    pub number: Option<String>,          // at issue; None = legacy, shown "Invoice {id}"
+    pub terms: Option<Terms>, pub bill_to: Option<PartySnapshot>, pub seller: Option<PartySnapshot>,
+    pub customer_ref: Option<String>,    // the customer's PO
     pub memo: Option<String>,
-    pub issued_pdf: Option<AttachmentId>,
-    pub sends: Vec<Sent> }
+    pub sends: Vec<Sent> }               // S5
+    // no issued_pdf field: the issued copy is the receipt.attached on the entry, linked Subject::Invoice (S4.3)
 
 pub struct Bill { id, vendor_id, date, due_date, lines, entry_id,
     pub vendor_ref: Option<String>,      // the vendor's invoice number
     pub received_on: Option<NaiveDate>, pub terms: Option<Terms>, pub memo: Option<String> }
 
-pub struct Sent { pub on: NaiveDate, pub via: SentVia /* Email|Mail|Portal|Hand|Other */,
-    pub to: Vec<String>, pub kind: SendKind /* Original|Reminder */, pub note: Option<String> }
+pub struct Sent { pub on: NaiveDate, pub by: String, pub via: SentVia /* Email | Mail | Portal | Hand | Other(String) */,
+    pub to: Vec<String>, pub kind: SendKind /* Original | Reminder */, pub reference: Option<String>, pub note: Option<String> }
 ```
 
-**Line accounts.** One check, `check_document_line_account(kind, account)`, refuses role accounts, placeholders and cash accounts.
-- An invoice line takes Revenue (default: the `revenue` role) or a liability that holds no role (2400 Deferred Revenue; sales tax payable if ever needed).
-- A bill line takes Expense, or an asset that is not cash and holds no role (1500 Equipment, which feeds cash-flow rule 12 and asset registration under B-15 and D-35; 1300 Prepaid, which feeds a B-16 schedule).
-- `document_parts` groups by `(account, class)`. A document whose lines name neither posts exactly as before.
+**Line accounts.** `check_document_line_account(kind, account)` refuses role accounts, placeholders and cash accounts. An invoice line takes revenue (default the `revenue` role) or a liability holding no role (2400 Deferred Revenue). A bill line takes expense, or an asset that is not cash and holds no role (1500 Equipment, which feeds cash-flow rule 12 and asset registration under B-15; 1300 Prepaid, which feeds a B-16 schedule). `document_parts` groups by `(account, class)`; a document whose lines name neither posts exactly as before. Under `documents_v2` a bill line without `account` is refused (A-10); an invoice line without one defaults to the revenue role; the struct field is `Option` for legacy replay.
 
-**Numbers.**
-- An invoice number is `number_prefix + zero-padded n`, with prefix default "INV-".
-- `n` is `invoicing.first_number` plus the count of numbered invoices before this one. It is stored on the invoice at issue and never changes, even if the prefix later does.
-- `invoicing.first_number` may be set only before the first numbered invoice.
-- Numbers are never reused. Voids keep theirs.
+**Numbers.** `prefix + the number zero-padded to four digits` (wider past 9999), the number = `invoicing.first_number` + the count of numbered invoices issued before; stored at issue, never changed, even if the prefix later is. `invoicing.first_number` is settable only before the first numbered invoice; legacy invoices have no number and are not counted. Numbers are never reused; voids keep theirs. The preview shows the number the confirm will take, and the P4 preview digest covers it, so a number taken by another session in between refuses the confirm with `stale_preview`.
 
-**Duplicate bills.** `(vendor, vendor_ref)` must be unique among bills that stand. The comparison ignores case, spaces and hyphens. A duplicate is refused unless the call gives a `duplicate_reason`, which is journaled.
+**Duplicate bills.** `(vendor, normalized vendor_ref)` unique among bills whose entry stands (case, spaces and hyphens ignored); a duplicate is refused unless `duplicate_reason` is given, which is journaled.
 
-**Party.** Gains `email` and `default_terms`. The customer side means the terms we grant; the vendor side, the terms they give us. The TIN scan covers the new fields (`has_full_tin`).
+**Party.** Gains `email`, `default_terms_as_customer` (the terms we grant), `default_terms_as_vendor` (the terms they give us). `has_full_tin` scans the new fields.
 
-**New roles,** created on demand like the existing ones and checked by `check_controls`. The codes are free in the template; the slice re-checks them against the live chart through the MCP.
+**Roles** (created on demand like the existing ones; the codes are free in the chart template; the owner's live chart is checked at the upgrade, not by code):
 
 | Role | Default | Type | Tax category | Used for |
 |---|---|---|---|---|
-| `bad_debts` | 6990 Bad Debt Expense | Expense | `bad_debts` (1065 line 12) | write-offs |
-| `purchase_discounts` | 6995 Purchase Discounts | Expense (credit balance) | `other_deductions` | discounts taken on bills |
-| `sales_allowances` | 4100 Refunds and Allowances (existing) | Revenue (debit balance) | `returns_allowances` (1065 line 1b) | discounts given; credit memos later |
+| `bad_debts` | 6990 Bad Debt Expense | Expense | `bad_debts` (1065 line 12) | write-offs (S7) |
+| `purchase_discounts` | 6995 Purchase Discounts | Expense (a credit-balance expense: there is no contra type; the account's normal side is the expense's) | `other_deductions` | discounts taken on bills (S6) |
+| `sales_allowances` | 4100 Refunds and Allowances (existing) | Revenue (debit balance) | `returns_allowances` (1065 line 1b) | discounts given (S6); credit memos later |
+| `payment_processing_fees` | the account payouts' fee lines use | Expense | `other_deductions` | the processor's fee on a payment received (S6) |
 
-**Settings** (typed registry, journaled, gated by `setting_feature`):
-- `invoicing.number_prefix`, `invoicing.first_number`;
-- `invoicing.default_terms` (Net 30);
-- `invoicing.payment_instructions`. This is the second key exempt from the nine-digit refusal, beside `company.duns` (settings.rs INVARIANT 4), because an ABA routing number is nine digits. The exemption covers that key only.
-- `invoicing.footer`, `invoicing.reminder_days` (14), `invoicing.paper` (Letter or A4), `bills.remind_days` (7).
+**Settings** (typed registry, journaled, gated by `setting_feature` → `documents_v2`): `invoicing.number_prefix`, `invoicing.first_number`, `invoicing.default_terms` (Net 30), `invoicing.payment_methods` (A-3; the list, with the exemption for `ach`/`wire` lines only), `invoicing.footer`, `invoicing.unsent_days` (2), `invoicing.reminder_days` (14), `bills.remind_days` (7), `bills.discount_warn_days` (3), `company.email`, `company.website`. ~~`invoicing.payment_instructions`, "the exemption covers that key only"~~ → A-3's list. ~~`invoicing.paper`~~ → US Letter only until someone asks. The seller snapshot comes from `company.name`, `company.address`, `company.email`, `company.website`; the EIN is never printed.
 
-The seller snapshot comes from `company.name` and `company.address`. The EIN is never printed; customers get it from a W-9.
+#### 8.3.5 State machines
 
-#### P4b.5 State machines
+**Invoice.** `(preview) --confirm--> Open --payment < outstanding--> Partial --payment = outstanding--> Paid`; `Open/Partial --write_off ≤ outstanding--> Written off (when outstanding reaches 0)`; `Paid/Partial/Written off --reverse a payment, discount or write-off--> the state its new balance gives`; `Open --void (reverse the origin; only with nothing else standing)--> Void --reverse the void--> Open (B-10)`; **Overpaid** and **Unattached** are the two states only legacy books reach (listed by `control_check`). Flags: sent (one or more `Sent`), overdue (outstanding > 0 and as_of > due_date, today in the company's time zone, D-13).
 
-**Invoice.**
+**Bill.** The same states without write-off (a vendor's release is a later vendor credit, 8.4). Flags: `due_soon` (within `bills.remind_days`), `discount_open` (as_of ≤ discount_by), overdue.
 
-```
-(preview) --issue (confirmed)--> Open --payment < outstanding--> Partial --payment = outstanding--> Paid
-Open/Partial --write_off(≤ outstanding)--> Written off (when outstanding reaches 0)
-Paid/Partial/Written off --reverse a payment, discount or write-off--> the state its new balance gives
-Open --void (reverse the origin; only with nothing else standing)--> Void --reverse the void--> Open (B-10)
-flags: sent (≥1 Sent), overdue (outstanding > 0 and as_of > due_date, America/Denver today, D-13)
-```
+**Payment.** Recorded, then voided by reversing its entry; every document it settled reopens together, because the reversal mirrors every tagged line.
 
-**Bill.** The same states, without write-off; a vendor's release is a later vendor credit. The flags are `due_soon` (within `bills.remind_days`), `discount_open` (as_of ≤ discount_by) and overdue.
+**No stored preview.** Each create tool previews without `confirmed` (the posting, the number it will take, the due date, warnings, and a PDF stamped DRAFT handed as a file) and posts with `confirmed` (and, from P4 on, with `preview`). A-1.
 
-**Payment.** Recorded, then Voided by reversing its entry. Every document it settled reopens together, because the reversal mirrors every tagged line.
-
-**No stored draft.** Each create tool previews without `confirmed`: the posting, the number it will take, the due date, warnings, and a draft PDF stamped DRAFT. With `confirmed` (and P4's `preview_token` once that lands) it posts. See decision 1.
-
-#### P4b.6 Postings for every transition ([d] = tagged with the document)
+#### 8.3.6 Postings for every transition ([d] = tagged with the document)
 
 | Transition | Debit | Credit |
 |---|---|---|
 | Issue invoice | 1200 [d, Origin], total | each (account, project) part: the line account (default the `revenue` role; 2400 when billed ahead of the work) |
 | Record bill | each (account, project) part: expense, equipment or prepaid, with the vendor tag | 2000 [d, Origin], total |
-| Receive payment, one or several invoices | the deposit account, Σ cash; `sales_allowances` for any discount given | 1200 [d_i, Payment], cash_i, one line per invoice; 1200 [d_i, Discount] for each discount |
-| Pay bill, one or several bills | 2000 [d_i, Payment] cash_i; 2000 [d_i, Discount] discount_i | the payer account (bank, card or member payable), Σ cash; `purchase_discounts`, Σ discounts |
-| Void invoice or bill | the mirror of the origin entry (`reverse_entry`) | |
+| Receive payment, one or several invoices (S6) | the deposit account, Σ cash − fee; `payment_processing_fees`, the fee; `sales_allowances`, Σ discounts given | 1200 [d_i, Payment], cash_i, one line per invoice (application order); 1200 [d_i, Discount], discount_i |
+| Pay bill, one or several bills (S6) | 2000 [d_i, Payment], cash_i; 2000 [d_i, Discount], discount_i | the payer account (bank, card or member payable), Σ cash; `purchase_discounts`, Σ discounts |
+| Void invoice or bill (S1) | the mirror of the origin entry (`reverse_entry`) | |
 | Void (bounce) a payment | the mirror of the payment entry; a bank fee is its own entry | |
-| Write off an invoice | `bad_debts` 6990, the amount (≤ outstanding; partial allowed, §1.166-3) | 1200 [d, WriteOff] |
-| Recovery | reverse the write-off, dated now so the recovery lands in the year it happens (§111), then receive the payment | |
-| Adopt a legacy line | no entry: the tag is added to the existing line | |
-| Move a control role | per document: new account [d, RoleMove] / old account [d, RoleMove], or the mirror; then the role is assigned | |
+| Write off an invoice (S7) | `bad_debts` 6990, the amount (≤ outstanding; partial allowed, §1.166-3) | 1200 [d, WriteOff] |
+| Recovery, same tax year | reverse the write-off (the document reopens), then receive the payment | |
+| Recovery, a later year (D-49) | the deposit account | a "Bad debt recoveries" revenue account (`other_income`), memo naming the invoice; the document stays Written off (§111) |
 | Record sent; change memo or references | no entry | |
+| ~~Adopt a legacy line~~, ~~Move a control role~~ | → deferred, D-49 (8.4) | |
 
-**Rules for every entry:**
-- It carries its party tag and the payment `instrument`, written in the same call through the existing entry-instrument event (D-40, gap 9).
-- The vendor tag for 1099s is unchanged. Only cash movements count toward a 1099, so discounts and write-offs never count as paid.
-- `exact`: cash plus discounts equals the applications, to the cent.
-- A multi-document payment covers one party only.
-- A discount is at most `max_discount` and dated on or before `discount_by`. A late discount, which a vendor may honor, needs a `discount_reason`. The engine never rounds; the caller gives the vendor's exact cents.
+**Rules for every entry:** it carries its party tag and the payment `instrument` (D-40); only cash movements count toward a 1099, so discounts, write-offs and the fee never count as paid to the payee; `exact`: Σ cash + Σ discounts = Σ applications and deposit = Σ cash − fee (`kernel::settle`); a multi-document payment covers one party only; a discount is at most `kernel::discount_max(total, percent_bp)` and dated on or before `discount_by`, else `discount_reason` is required; a discount on a bill with an asset or prepaid line is refused with its remedy (D-49); the engine never rounds a discount: the caller gives the exact cents.
 
-#### P4b.7 Journal events and format features
+#### 8.3.7 Journal events and format features
 
-The pattern is unchanged. The entry's own `entry.created`, `entry.line_added` and `entry.posted` lines come first, then the document event, then the attachment events. Replay derives the posting from the document event and checks it line by line against the entry just replayed (`ReplayMismatch`). On every open, this proves the document owns its entry.
+The pattern is unchanged: the entry's own `entry.created`, `entry.line_added` and `entry.posted` lines come first, then the document event, then the attachment events. Replay derives the posting from the document event and checks it line by line against the entry just replayed (`ReplayMismatch`): on every open this proves the document owns its entry.
 
-| Feature (KNOWN_FEATURES) | Slice | Lines it marks | What an older version would misread |
+| Feature | Unit | Lines it marks | What an older version would misread |
 |---|---|---|---|
-| `document_standing` | S1 | an `invoice.payment_received` or `bill.paid` accepted only because an earlier payment, or the document's own standing, changed through a reversal | it replays the payment on top of the reversed one: paid above total, silently |
-| `documents_v2` | S4 | `invoice.created` and `bill.created` carrying `number`, `terms`, `bill_to`, `seller`, `customer_ref`, `memo`, `vendor_ref`, `received_on`, `issued_pdf`, `duplicate_reason`, and lines with `account`, `quantity` or `unit_price`; `party.updated` with `email` or `default_terms`; `settings.set` of the `invoicing.*` and `bills.*` keys | it drops the line accounts, so the parts would post to 4000 and 6999 |
-| `invoice_sent` | S5 | `invoice.sent {invoice_id, on, via, to[], kind, note?}` (new type) | (it refuses an unknown type) |
-| `settlements` | S6 | a `discount` on `invoice.payment_received` or `bill.paid` | it drops the discount, so the balance is wrong |
-| `write_offs` | S7 | `invoice.written_off {invoice_id, entry_id, date, amount, reason}` (new type) | (it refuses an unknown type) |
-| `control_lines` | S7 | `control_line.adopted {entry_id, line, doc, record_id, due_date, terms?, reason}` and `role.balance_moved {role, from, to, entries[]}` (new types) | (it refuses an unknown type) |
+| `document_standing` | S1 (declared on the live books 2026-10-24) | an `invoice.payment_received` or `bill.paid` accepted only because an earlier payment, or the document's own standing, changed through a reversal | it replays the payment on top of the reversed one: paid above total, silently |
+| `documents_v2` | S4, S5, S6, S7 (D-52: one feature, one upgrade after S7) | `invoice.created` and `bill.created` carrying `number`, `terms`, `bill_to`, `seller`, `customer_ref`, `memo`, `vendor_ref`, `received_on`, `duplicate_reason`, and lines with `account`, `quantity` or `unit_price`; `party.updated` with `email` or the terms fields; `settings.set` of the `invoicing.*`, `bills.*`, `company.email`, `company.website` keys (S4); `invoice.sent` (S5); `invoice.payment_received`/`bill.paid` with `line`, `discount`, `discount_line`, `discount_reason`, `fee`, `fee_line` (S6); `invoice.written_off` (S7) | S4: it drops the line accounts, so the parts would post to 4000 and 6999; S6: it drops the discount and the fee, so the balance is wrong; S5, S7: it refuses the unknown type |
+| ~~`invoice_sent`, `settlements`, `write_offs`, `control_lines`~~ | → folded into `documents_v2` (D-52); `control_lines` deferred with its tools (D-49) | | |
 
-**What needs no feature:**
-- A void writes no event. It is `entry.reversed` of the origin entry, and the reason is in the reversal's description.
-- A multi-document payment is several existing-shape payment events naming one entry, with the ordinal rule (P4b.3). Tests pin that the older replay, party totals, the 1099 worksheet, cash flow and the projection each count it once.
-- A document with none of the new fields is journaled byte for byte as before (the `document_line_projects` pattern).
+**What needs no feature:** a void (it is `entry.reversed` of the origin entry, the reason in the reversal's description); a document with none of the new fields (journaled byte for byte as before: the `document_line_projects` pattern); a legacy single-document payment event.
 
-**Projection.** The SQLite schema gains tables for documents, document lines, line tags and sends. `projection_rows`, `compare_projections` and `Ledger::differs_from` cover them. Every new event type gets a replay arm and a projection arm (tests/format.rs checks both).
+**Projection.** The SQLite schema gains columns for the new fields, a table for sends, and columns for discounts and fees; `projection_rows`, `compare_projections` and `Ledger::differs_from` cover them; every new event type gets a replay arm and a projection arm (`tests/format.rs` checks both). Numbers taken at merge (8.0.3).
 
-**Upgrades.** Each feature is declared at the owner's format upgrade (D-39: his go-ahead after a verified backup, with no passphrase). Until then, a write that needs a feature is refused with the upgrade remedy. Everything else in that slice still works. Decision 11 batches the upgrades.
+**The upgrade.** Declared at the owner's go-ahead after a verified backup (D-39). Until then, on the live books a write that needs `documents_v2` is refused with the upgrade remedy; everything else in S4 to S7 works at once. One go-ahead for all four slices (and P4's `drafts_v2`); Q-5 asks the owner whether to give it earlier, after S4.
 
-#### P4b.8 MCP tools
+#### 8.3.8 MCP tools
 
-Every description stays within 700 characters (I-12). Amounts are decimal strings. A document is referred to as "INV-0007", "invoice:7" or "bill:12". Mutating tools carry `destructiveHint`, preview without `confirmed`, and take `preview_token` once P4 lands.
+Every description within 700 characters. Amounts are decimal strings. A document is referred to as `invoice:7` or `bill:12` (and, from S4, `INV-0007`). Mutating tools carry `destructiveHint`, preview without `confirmed`, and take `preview` from P4 on. The S4 to S7 units give each tool's exact arguments and outputs; the list here is the surface:
 
-**Changed tools:**
+- **Changed:** `books.create_invoice`, `books.create_bill` (S4: `customer`/`vendor`, terms or due date, line accounts, quantity and unit price, PO, memo, bill-to, the bill's file and `vendor_ref`, preview and confirm, the issued PDF), `books.update_party` (S4: email, default terms per side), `books.receive_payment`, `books.pay_bill` (S6: `applications[]`, discounts, the fee, `paid_in_full_marking`), `books.ar_aging`, `books.ap_aging` (S6: `detail`, `control`), `books.export` (S6: `ar_aging`, `ap_aging`), `books.reverse_entry` (S1: the bounds check and the remedy "reverse payment entry N first").
+- **New:** `books.mark_sent` (S5), `books.bills_due` (S6), `books.write_off_invoice` (S7). Built in S1 and S2: `books.void_document`, `books.control_check`, `books.documents`, `books.document`.
+- ~~`books.adopt_control_line`, `books.assign_role { move_balance }`~~ → deferred (D-49, 8.4).
 
-- **`books.create_invoice`**
-  - Arguments: `{customer (customer id, party id or name), date, terms? | due_date?, lines[{description, amount, quantity?, unit_price?, account?, class?}], customer_ref?, memo?, bill_to?, confirmed?}`.
-  - On confirm it numbers the invoice, takes the snapshots, renders the PDF, files it and posts, all in one store call (P4b.11). The entry carries its own evidence when it posts, so the P4 evidence gate (I-5) passes.
-  - Output: `{id, number, total, due_date, terms, entry_id, pdf{attachment_id, sha256, download}, mailto, warnings, notes}`.
-  - When a line uses a liability account, the result notes that revenue is recognized when the work is done.
-  - `party_id` stays as a deprecated alias for one release (gap 8).
-- **`books.create_bill`**
-  - Arguments: `{vendor, date, received_on?, vendor_ref, terms? | due_date?, lines[{description, amount, account, class?}], memo?, upload_id? | attachment_id?, duplicate_reason?, confirmed?}`.
-  - It files the vendor's invoice in the same call. Under `documents_v2`, `account` is required on every line (decision 9).
-  - Output adds `discount_by?` and `max_discount?`.
-- **`books.receive_payment`**
-  - Arguments: `{date, amount, deposit_to, instrument?, reference?, invoice | applications[{invoice, amount, discount?}], paid_in_full_marking?, confirmed?}`.
-  - It refuses an overpayment, showing the excess (decision 12), and warns under UCC §3-311.
-  - Output: `{entry_id, documents[{number, outstanding, status}]}`.
-- **`books.pay_bill`**
-  - Arguments: `{date, amount, paid_from, instrument?, reference?, bill | applications[{bill, amount, discount?, discount_reason?}], confirmed?}`.
-- **`books.reverse_entry`**
-  - On an entry a document owns, it runs the bounds check and refuses with the remedy ("reverse payment entry N first").
-  - Output adds `document{ref, status}`.
-- **`books.ar_aging` / `books.ap_aging`**
-  - Correct as of a date. Gain `detail?` (one row per document) and `control{account, balance, documents_total, unattached[], difference}`.
-- **`books.add_line`, `books.draft_entry`, `books.create_recurring`** refuse control-account lines (P4b.3).
-- **`books.update_party`** gains `email` and `default_terms`.
-- **`books.assign_role`** gains `move_balance` (S7).
+**Agent guidance.** `books.start`'s next steps and Needs attention list (after U0b, by one function): overdue invoices; invoices never sent (after `invoicing.unsent_days`); overdue invoices not reminded within `invoicing.reminder_days`; bills due within `bills.remind_days`; discounts ending within `bills.discount_warn_days`; bills missing `vendor_ref`; unattached control lines; bill lines on 6999; a write-off awaiting the CPA's note. The handbook's `invoices-and-bills` procedure (S4.5, extended by S5, S6, S7).
 
-**New tools:**
+#### 8.3.9 Sent tracking
 
-- **`books.void_document {document, date, reason, confirmed?}`**: `reverse_entry` of the origin entry, with the guards, described as "Void INV-0007: reason". Plain `books.reverse_entry` gives the same result.
-- **`books.documents {kind: invoices|bills, status?: open|overdue|paid|void|written_off|all, party?, due_by?, as_of?}`**
-  - Rows: `{number|vendor_ref, party, date, due_date, terms, total, paid, outstanding, status, days_overdue, discount_by?, last_sent?, has_pdf}`.
-  - Footer: bucket totals and the control tie-out.
-- **`books.document {ref, as_of?, pdf?: issued|current}`**
-  - Returns the header, lines with account and project, the state and its breakdown, and a timeline: issued, each send, each payment, discount and write-off (struck through when reversed), the void, with links to the entries. Also attachments and the mailto link.
-  - `pdf` returns a download. "issued" is the filed copy. "current" is rendered on demand and journals nothing: it stamps PAID, VOID or BALANCE DUE and lists payments.
-- **`books.bills_due {through?}`**: bills to pay on their terms, ordered by due date, with discount deadlines, `max_discount`, and the amount needed by each date.
-- **`books.control_check {as_of?}`**: for each control account, the GL balance, the documents total, the unattached lines (listed) and the difference. A difference other than the listed unattached lines is an engine error. It is also run by `books.verify` (which reports and never fails), the digest and Needs attention.
-- **`books.mark_sent {invoice, on?, via?, to?[], kind?, note?}`** (S5). `to` defaults to the bill-to email.
-- **`books.write_off_invoice {invoice, date, amount?, reason, confirmed?}`** (S7). It needs evidence of worthlessness (collection attempts, correspondence, a bankruptcy notice; §1.166-2), attached in the same call. It is refused on cash-basis books (§1.166-1(e)).
-- **`books.adopt_control_line {entry, line, as: invoice|bill, party, due_date, terms?, reason}`** (S7). It turns a legacy hand line into a document over that line, with no new entry.
+The books never send mail (A-4; D-17 deferred). `create_invoice` returns a download and a `mailto:` link (subject "Invoice INV-0007 from {company}", the body URL-encoded and truncated to 1,800 bytes at the last whole word); a mailto link cannot carry an attachment, so the agent says which file to attach; the human or a delegate sends and the agent calls `books.mark_sent` with who sent it, the channel, the recipients and the channel's reference; several sends are allowed (reminders); a send changes no figure; the sent date never moves the due date.
 
-**Agent guidance.**
-- `books.start`'s next steps and Needs attention list: overdue invoices, invoices never sent (after 2 days), overdue invoices not reminded within `reminder_days`, bills due within 7 days, discounts ending within 3 days, bills missing `vendor_ref`, unattached control lines, and bill lines on 6999.
-- The handbook gains an "Invoices and bills" procedure:
-  1. Invoice: preview, confirm, download the PDF, the owner or a delegate sends it, mark it sent.
-  2. Collect.
-  3. Pay bills on their terms.
-  4. Void, write-off or reverse a payment: when to use which.
-  5. The month-end tie-out.
-  6. The CPA list from P4b.1.
+#### 8.3.10 Aging and the control check
 
-#### P4b.9 Sent tracking and email
+`ar_aging` and `ap_aging` bucket `outstanding(d, D)` by the due date (`arap::aging_bucket`); documents dated after D and documents with outstanding 0 are left out; the buckets partition Σ outstanding exactly (B-18); a document owing less than nothing is left out of the aging and listed by `control_check` with the unattached lines. The CPA package gains `ar_aging.csv` and `ap_aging.csv`, each with a tie-out line, and its README states the B-23 agreement, the direct write-off method and the gross discount method (S6). `books.control_check` is also run by `books.verify` (which reports and never fails on it alone), the digest (`control_problems`) and Needs attention (S1).
 
-The books never send mail (D-17 stays deferred; the owner or a delegate sends, answer 4 above).
-1. `create_invoice` returns a download and a `mailto:` link. The recipient, subject ("Invoice INV-0007 from {company}") and body are URL-encoded, and the body is capped at about 1,800 characters.
-2. A mailto link cannot carry an attachment, so the agent says which file to attach.
-3. The human sends the invoice and tells the agent. The agent calls `books.mark_sent`. Several sends are allowed (reminders).
-4. A send changes no figure.
+#### 8.3.11 The PDF invoice
 
-The sent date does not move the due date (P4b.1, terms).
+**Code (S3, extended in S4):** `crates/ledger-import/src/invoice_pdf.rs::invoice_pdf(&InvoiceDoc) -> Result<Vec<u8>, PdfError>` and `templates/invoice.typ`, the same `OnceLock` Typst engine, bundled fonts, data through `sys.inputs`; `crates/ledger-package/src/invoice.rs::invoice_document(ledger, company, id, as_of, today)` builds the data, so the server and the viewer give the same bytes.
 
-#### P4b.10 Aging and the control check
+**Contents:** the seller snapshot (name, address, and the email and website that are set); "INVOICE", the number, the issue date, the due date, the terms text, the early-discount line, the customer's PO; the bill-to snapshot; the lines (description, quantity × unit price when given, amount; never a project, account code or internal id); the total; in the current copy, each standing payment with its date, method and reference, discounts and written-off amounts, and the balance due; the payment methods with their QR codes; memo and footer; a stamp (DRAFT for a preview; PAID with the day, PARTIALLY PAID, PAST DUE or VOID on the current copy; none on the issued copy); no EIN or TIN.
 
-- `ar_aging` and `ap_aging` bucket `outstanding(d, D)` by the due date (`arap::aging_bucket`, unchanged). Documents dated after D, and documents with outstanding 0, are left out. The buckets partition Σ outstanding exactly (B-18).
-- The CPA package gains `ar_aging.csv` and `ap_aging.csv`, each with a tie-out line. Its README states the B-23 agreement, the direct write-off method and the gross discount method.
-- `books.export` gains `ar_aging` and `ap_aging` in csv, xlsx and pdf.
+**Issued copy (S4.3):** rendered before anything is journaled (a Typst failure leaves the books unchanged); filed in the same store call as the invoice as `receipt.attached` on the entry (`INV-0007.pdf`, `application/pdf`, "Issued invoice") plus `attachment.linked` to `Subject::Invoice`; its SHA-256 is the `blob_sha` in `receipt.attached`; found through the link, never by guessing. ~~The attachment id goes into `invoice.created`'s `issued_pdf`~~ → impossible in that order (the id is allocated after the entry exists; CD-A6) and unnecessary. A legacy invoice has no issued copy; its current copy says "Re-created on {as_of} from the books; not the copy sent".
 
-#### P4b.11 The PDF invoice
+**Invariants:** (1) deterministic: same data and same version, same bytes; no wall-clock timestamp anywhere (the "re-created on" date is the `as_of` argument); `typst`, `typst-pdf` and `typst-layout` pinned exactly; a golden-sha test; an upgrade may change new renders, never the filed issued copy; (2) every string is data, never markup, so `#import`, `]` and `$` print literally; (3) every amount reaches the page through `amount_parts` and Typst does no arithmetic on money: the printed total equals Σ lines equals the entry's control line.
 
-**Code.**
-- `ledger-import/templates/invoice.typ` and `ledger-import/src/invoice_pdf.rs::invoice_pdf(&InvoiceDoc, &DocMeta) -> Result<Vec<u8>, PdfError>`. It uses the same `OnceLock` engine, the bundled Inter and Noto fonts, and data passed through `sys.inputs.data`.
-- `ledger-package::invoice_document(&impl PackageBooks, InvoiceId, version)` builds the data. The server and the viewer call this one function, so the same books give the same bytes.
+#### 8.3.12 Viewer (read only, D-28)
 
-**Contents.**
-- The seller snapshot: name, address, email or website.
-- "INVOICE", the number, the issue date, the due date, the terms text, the early-discount line, and the customer's PO.
-- The bill-to snapshot.
-- The lines: description, quantity × unit price when given, amount. Projects, accounts and internal ids are never printed.
-- The total. In the "current" version only: payments, discounts and written-off amounts, and the balance due.
-- Payment instructions, memo and footer.
-- A DRAFT, VOID or PAID stamp.
-- No EIN or TIN.
+Built in S2 and S3: Money in and Money out pages (open documents by due date, whole-row click, "12 days late", filter chips Open / Overdue / Paid / Void / All, bucket totals and the tie-out badge), the document pages (`Route::Invoice(id)`, `Route::Bill(id)`: header and status chip, lines with project links, the timeline with reversed items struck through, attachments with Open and Save, Save invoice PDF), the party card opening the document page, the overview tiles ("Owed to you: $X (Y overdue)", "You owe: $Z (W due this week)"), `books.show` targets `invoice` and `bill`. S4 adds the number, terms, bill-to and PO and the issued copy to Save; S5 the Sent column ("Oct 3 to ap@…" or "Not sent") and send history; S6 the discount-deadline column; S7 write-offs on the timeline. Every page change: render the screenshots (`crates/ledger-gui/tests/invoices.rs`, `shot(..)`, written under the cache folder the test names) and look at them before calling it ready; `view_model.rs` parity; no mutation runs on the viewer.
 
-**Issued copy.**
-- On confirm, the PDF is rendered before anything is journaled. A Typst failure leaves the books unchanged.
-- It is filed in the same store call as the invoice: `receipt.attached` linked to the entry, plus `attachment.linked` to `Subject::Invoice`. The attachment id goes into `invoice.created`'s `issued_pdf`, and its sha256 into the attachment event. Nothing is found by guessing.
-- A legacy invoice has no issued copy. Its "current" render prints the party's details today and says "Re-created on DATE from the books; not the copy sent".
-
-**Invariants.**
-1. Deterministic: same data and same version, same bytes. There is no creation timestamp. `typst`, `typst-pdf` and `typst-layout` are pinned exactly, and a golden-sha test guards the output. An upgrade may change new renders, but never the filed issued copy.
-2. Every string is data, never markup, so `#import`, `]` and `$` print literally.
-3. Every line and every total reaches the page through `amount_parts`, and Typst does no arithmetic on money. The printed total equals Σ lines equals the entry's control line.
-
-#### P4b.12 Viewer (read only, D-28)
-
-- **"Money in" and "Money out" pages.**
-  - Open documents by due date, with a whole-row click.
-  - Overdue rows marked "12 days late".
-  - A Sent column ("Oct 3 to ap@…" or "Not sent"); on bills, a discount-deadline column.
-  - Filter chips (Open, Overdue, Paid, Void, All).
-  - Bucket totals and a tie-out badge: "Agrees with 1200", or "Differs by $X: entries N, M".
-- **Document pages** (`Route::Invoice(id)` and `Route::Bill(id)`).
-  - Header and status chip; lines with account and project links.
-  - The timeline, with reversed items struck through and linked to their reversals.
-  - Send history, and attachments with Open and Save.
-  - "Save invoice PDF", for the issued or the current version, rendered by `ledger-package`.
-  - "Email…" opens the mailto link and changes nothing.
-- **The party card** opens the document page and computes "late" from the derived state (gap 10).
-- **Overview:** "Owed to you: $X (Y overdue)" and "You owe: $Z (W due this week)". `books.show` gains `invoice` and `bill` targets.
-- **Checks.** Render the pages and look at the screenshots (in ~/.cache/wanderbooks) before calling them ready, then rebuild the release viewer. No mutation runs on the GUI.
-
-#### P4b.13 Invariants (spec blocks; new rules B-38 to B-41)
+#### 8.3.13 Invariants (spec blocks; rules B-38 to B-42)
 
 ```text
 GOAL: invoices and bills are the subledgers of the receivables and payables
       control accounts; every figure about a document is read from the
       ledger lines tagged with it.
-SOURCE: rules.md B-8, B-9, B-10, B-18, B-23, B-28, new B-38; ASC 310-10,
+SOURCE: rules.md B-8, B-9, B-10, B-18, B-23, B-28, B-38; ASC 310-10,
         ASC 405-20-40-1, ASC 606-10-45-4.
 INVARIANTS:
   1. For every control account A and date D:
-     GL(A, D) = Σ_docs outstanding(d, D) + unattached(A, D).
+     GL(A, D) = Σ_docs outstanding(d, D) + unattached(A, D), where
+     outstanding(d, D) is the signed sum of d's tagged lines dated ≤ D.
      No command adds an untagged control line; unattached changes only by
-     reversing or adopting a legacy line.
+     reversing a legacy line.
   2. 0 ≤ outstanding(d, D) ≤ total(d) at every D for every document written
      under these rules, whatever sequence of creates, payments, discounts,
      reversals, voids and write-offs ran; replay accepts what was written.
   3. Reversing a tagged entry changes outstanding by exactly the opposite
      of its tagged lines, from the reversal's date; reversing that
-     reversal restores it.
+     reversal restores it (except the B-38 item 3 cleanup, which is refused).
   4. DocState is a pure function of (journal, as_of): Store, Snapshot and
      the viewer give identical states, balances and aging.
-  5. Aging as of D partitions Σ outstanding(·, D) exactly.
-  6. Every refusal leaves the books and the journal unchanged; NEVER panics.
+  5. Aging as of D partitions Σ outstanding(·, D) over documents owing more
+     than nothing, exactly.
+  6. Every refusal leaves the books and the journal unchanged; the engine
+     never panics.
 SCENARIOS:
   1. Invoice 100, payment 100, payment reversed: Open, outstanding 100, A/R 100.
   2. Invoice reversed with nothing paid: Void, not in aging, number kept.
-  3. Void with a payment standing: SHOULD refuse, naming the payment.
+  3. Void with a payment standing: refused, naming the payment.
   4. As of a date between a payment and its reversal: counted as paid.
-  5. Wrong payment reversed, right one recorded: accepted (feature
-     document_standing declared first).
-  6. Hand Dr 1200 / Cr 4000: SHOULD refuse with the remedy tools named;
+  5. Wrong payment reversed, right one recorded: accepted (document_standing).
+  6. Hand Dr 1200 / Cr 4000: refused with the remedy tools named;
      reversing a legacy hand line on 1200: accepted, unattached shrinks.
   7. Half paid, rest written off: Written off, breakdown 50 paid / 50 written off.
-  8. receive_payment deposit_to = 1200 or 4000: SHOULD refuse.
+  8. receive_payment deposit_to = 1200 or 4000: refused.
+  9. Origin, reversal, re-reversal all before D: outstanding = total, Open.
 ```
 
 ```text
-GOAL: terms give one due date and one discount date, exactly.
-SOURCE: new B-39 (CONVENTION: standard trade-terms notation; UCC §2-310(a)
-        for goods; for services, the contract).
+GOAL: terms give one due date and one discount date, exactly.          (B-39, S4)
+SOURCE: CONVENTION: standard trade-terms notation; UCC §2-310(a) for goods;
+        for services, the contract.
 INVARIANTS:
   1. Net n = date + n; Net n EOM = last day of date's month + n; due on
      receipt = date; Custom = the given date. Always ≥ date, in the
-     calendar (B-28); days 0..=3650.
-  2. discount_by = date + d < due_date; a taken discount ≤ total × p / 100,
-     the caller's exact cents; after discount_by only with a reason.
+     calendar (calendar::check); n in 0..=3650.
+  2. discount_by = date + d, d < the net days (none for due on receipt or
+     EOM); a taken discount ≤ kernel::discount_max(total, percent_bp), the
+     caller's exact cents; after discount_by only with a reason.
 SCENARIOS: 2026-01-31 net 30 → 2026-03-02; 2026-10-23 net 15 EOM →
-  2026-11-15; leap day; 9999-12 bound refused, not panicking.
+  2026-11-15; leap day; the 9999-12 bound refused, not panicking.
 ```
 
 ```text
 GOAL: an invoice number names one invoice forever; the copy sent is kept;
-      a vendor invoice is entered once.
-SOURCE: new B-40 (Pub. 583; Rev. Proc. 98-25; CONVENTION: sequential
-        numbers, voids kept; duplicate-payment control).
+      a vendor invoice is entered once.                                  (B-40, S4)
+SOURCE: Pub. 583; Rev. Proc. 98-25; CONVENTION: sequential numbers, voids
+        kept; duplicate-payment control.
 INVARIANTS:
-  1. Numbers unique, in issue order, never reused.
+  1. Numbers unique, in issue order, never reused; a void keeps its number.
   2. Number, snapshots, terms and lines never change after issue.
-  3. The issued PDF is filed in the issuing call; its sha256 is journaled.
+  3. The issued PDF is filed in the issuing call as receipt.attached on the
+     entry and linked to the invoice; its sha256 is in that event.
   4. (vendor, normalized vendor_ref) unique among standing bills unless a
      duplicate_reason is journaled.
   5. Sends never change a figure.
 ```
 
 ```text
-GOAL: write off what won't be collected, as the tax rules require.
-SOURCE: new B-41 (IRC §166(a), §111; Treas. Reg. §1.166-1(e),(f), -2(a),
-        -3(a); ASC 326-20; DECISION: direct write-off).
+GOAL: write off what won't be collected, as the tax rules require.      (B-41, S7)
+SOURCE: IRC §166(a), §111; Treas. Reg. §1.166-1(e),(f), -2(a), -3(a);
+        ASC 326-20; DECISION: direct write-off (A-5).
 INVARIANTS:
-  1. amount ≤ outstanding; Dr bad_debts / Cr A/R [d, WriteOff].
+  1. amount ≤ outstanding; Dr bad_debts / Cr A/R [d, WriteOff]; evidence of
+     worthlessness filed in the same call.
   2. Its reversal reinstates; bills are never written off (ASC 405-20-40-1).
   3. Refused on cash-basis books.
 ```
 
-Each new rule keeps the CONVENTION label until its sources are vendored in docs/spec/sources with a SHA-256. B-18 (standing-aware aging) and B-23 (enforcement and tie-out) are amended. B-37 item 8 gains line accounts.
-
-#### P4b.14 Migration of existing books
-
-1. **Before S1 is installed** (through the MCP only, never the data root), capture into `goldens/p4-arap-before/`:
-   - `books.ar_aging` and `books.ap_aging` at each golden date;
-   - `books.party` for every party with documents;
-   - `books.trial_balance` and `books.cash_flow`.
-
-   Also search entries on 1200 and 2000, recurring templates, and conventions that name either account. The guard would refuse those at their next run.
-2. **No journal line is rewritten (B-8).** S1 derives tags on replay.
-   - Figures change only for documents whose origin or payment entry has a reversal in its chain, plus the cash flow `bill_splits`.
-   - The balance sheet and P&L don't move, because the GL already holds the reversals.
-   - Every difference against the goldens is adjudicated cent by cent in the private change log, as P3 did, before the goldens are refreshed.
-3. **Out-of-bounds legacy states replay as written.** One example is a voided invoice with a payment still standing. It shows in Needs attention with the remedy: reverse the payment.
-4. **Unattached hand lines on 1200 or 2000** are listed by `books.control_check`. For each one, the owner chooses:
-   - (a) reverse it and re-enter it as a document while its period is open;
-   - (b) adopt it (S7);
-   - (c) leave it, with a recorded decision and a note in the CPA README.
-5. **Legacy documents** keep "Invoice {id}". Terms are Custom with their due dates, there is no snapshot, and line accounts are None (the role accounts they posted to). New numbers continue from `invoicing.first_number`, which defaults to after the highest legacy id, so the series stays gap-free.
-6. **Bills on 6999** are reclassified by ordinary entries (Dr the right account / Cr 6999), each citing the bill's receipt (decision 8). Neither account is a control account, so this is allowed, and no document changes.
-7. **Older-rule fixtures** (reversed payments, reversed invoices, a hand line on 1200, a multi-payment entry, a role reassigned mid-stream) are added to `books_written_under_older_rules_still_open`.
-8. **After each install:** `books.verify`, `books.control_check`, then a cent-exact goldens comparison saved to `goldens/p4-arap-sN/`.
-
-#### P4b.15 Tests
-
-**ledger-core** (unit tests and `tests/spec_documents.rs`, one test per scenario above):
-- `reversing_a_payment_reopens_the_invoice`
-- `a_voided_invoice_never_ages`
-- `aging_as_of_ignores_a_later_reversal`
-- `a_corrected_payment_after_reversing_the_wrong_one`
-- `void_refused_while_paid`
-- `hand_line_on_control_refused`
-- `reversing_a_legacy_hand_line_is_allowed`
-- `deposit_account_must_be_cash_like`
-- `half_paid_rest_written_off_is_written_off`
-- `bill_lines_post_to_their_accounts`
-- `qty_times_price_must_equal_amount`
-- `terms_derive_due_dates`
-- `discount_bounds_and_late_reason`
-- `duplicate_vendor_ref_refused`
-- `write_off_refused_on_cash_basis`
-- `reversal_before_original_refused_for_documents`
-
-**proptest:**
-- `subledger_equals_control`: random sequences of create, pay (single and multi), discount, write-off, void, reverse-any-entry and hand-entry attempts. After every step, at every date: the identity, the bounds, and replay equal to live.
-- `status_is_a_function_of_journal_and_date`
-- `reversal_twice_restores_state`
-- `due_date_monotone`
-- `document_parts_partition_the_total` over (account, project).
-- `fuzz_op_sequence` gains the new ops.
-
-**Kani:**
-- `terms_due_date_laws`: no overflow, never before the date, EOM at month ends.
-- `discount_max_exact`
-- `bounds_check_matches_definition`
-
-**Lean:**
-- `Step.document` (every control line tagged) and the reversal step copying tags.
-- Theorems `control_agrees` (GL = Σ docs + unattached, with unattached fixed by every new step) and `bounds_preserved`, per I-13.
-
-**ledger-store:**
-- `legacy_documents_replay_with_tags`
-- `legacy_reversal_now_counts` (golden)
-- `role_reassigned_mid_stream_tags_the_role_then`
-- `document_posting_mismatch_is_replay_mismatch`
-- `older_version_stops_at_each_feature`
-- `multi_payment_entry_replays_without_a_feature`
-- `no_new_fields_journals_byte_for_byte`
-- projection parity
-
-**ledger-import / ledger-package:**
-- `invoice_pdf_is_deterministic` (golden sha)
-- `invoice_pdf_prints_what_it_should` (hayro reads back the number, dates, totals, bill-to and instructions; CJK and RTL names; no ids or projects)
-- `labels_are_data`
-- `two_hundred_lines_paginate`
-- `viewer_and_server_make_the_same_pdf` (Store vs Snapshot through `PackageBooks`)
-- the CPA package aging CSVs tie.
-
-**ledger-cli/tests** (D-44: a real server through the `local_server.rs` harness):
-- `documents.rs`:
-  - `an_invoice_from_issue_to_paid`: preview journals nothing; confirm; the PDF's sha matches the attachment; mark sent; partial payment; bounce; pay; Paid. The aging ties to the trial balance at each date.
-  - `one_payment_settles_two_invoices`
-  - `void_refused_then_allowed`
-  - `a_hand_entry_to_receivables_is_refused`
-  - `bill_on_terms_with_discount`
-  - `duplicate_vendor_invoice_refused`
-  - `card_paid_bill_is_not_1099_nec`
-  - `equipment_bill_payment_is_investing_cash`
-  - `bills_due_orders_by_due_and_discount`
-  - `write_off_then_recovery`
-  - `move_receivables_role_keeps_documents`
-- `documents_parity.rs`: the viewer's figures equal the server's to the cent (like `projects_parity.rs`).
-- `format_upgrade.rs` gains each feature's refusal-then-consent path.
-- `hostile_args` cases: huge terms, injection strings, nine digits in an email.
-
-**bookspec (P13):** `ar-subledger-ties-to-control`, `arap-reversed-payment-reopens`, `arap-void-is-a-reversal`, `payment-terms-due-date`, `bad-debt-direct-write-off`, `arap-hand-control-posting-refused`.
-
-**docs/testing.md** lists what P12 must mutate (D-33).
-
-#### P4b.16 Slices (each lands on main when checked: review until clean, `just check`, `just prove`, zero clippy warnings, push)
-
-1. **S1: the defect fix (urgent).**
-   - `stands_on`; line tags derived on replay and written by today's commands, and copied on reversal.
-   - Derived `DocState`, with `amount_paid`, `status` and the payment lists removed as fields. Every reader moves, including `bill_splits`, party totals and the 1099 worksheet.
-   - Only standing entries count, as of a date, in aging and payments.
-   - `check_item_bounds` on reversal and payment, and the reversal-date rule.
-   - **`books.void_document`**, and the guarded `books.reverse_entry`.
-   - **The control guard** (refusing hand entries, with the reversal-mirror exemption) on add_line, draft_entry and recurring.
-   - The deposit and payer account checks.
-   - **`books.control_check`**, wired into aging, verify, the digest and Needs attention.
-   - `instrument` and `reference` on the payment tools.
-   - The GUI party-card fix.
-   - Feature `document_standing`. Re-payment after a reversal waits for the owner's go-ahead; everything else works at once.
-   - Lean `control_agrees`; goldens captured first, then adjudicated.
-2. **S2: read tools and viewer pages** (no format change). `books.documents` and `books.document` (timeline), the Money in and Money out pages, the document pages, the Overview cards, and attention items for overdue and due-soon documents.
-3. **S3: the PDF** (no format change). `invoice_pdf`, the template, `ledger-package::invoice_document`, the "current" version and the legacy re-created copy, the viewer's Save PDF and mailto link, and the pinned Typst with its golden test.
-4. **S4: `documents_v2`.**
-   - Numbers, terms, line accounts, quantity and unit price.
-   - Snapshots, PO and memo; `vendor_ref` and `received_on` with the duplicate guard.
-   - Party email and default terms; the invoicing settings, with the payment-instructions exemption.
-   - Preview and confirm on the create tools; the issued PDF filed in the issuing call; `create_bill` with its file; the `customer` and `vendor` parameters, with the alias.
-   - The handbook procedure.
-5. **S5: sent tracking (`invoice_sent`).** `books.mark_sent`, and the unsent and reminder attention items.
-6. **S6: paying on terms (`settlements`).** Multi-document payments, discounts with the `purchase_discounts` and `sales_allowances` roles, `books.bills_due`, the late-discount reason, the aging exports and the CPA package CSVs, and Kani `discount_max_exact`.
-7. **S7: bad debts and legacy lines (`write_offs`, `control_lines`).** `books.write_off_invoice` with the `bad_debts` role, `books.adopt_control_line`, `books.assign_role move_balance`, B-41, and Lean `bounds_preserved`. Until S7, moving a control role that has a balance stays impossible: B-23's old path, a hand entry, is now refused.
-8. **Later, each a small design of its own:**
-   - customer deposits and credits in their own liability account (2300 Customer Deposits and Credits; ASC 606-10-45-2), with the vendor mirror (1250);
-   - credit memos (to 4100, 1065 line 1b);
-   - vendor credits and legal releases. A release of a valid debt is cancellation-of-debt income (IRC §61(a)(11)), with the exclusions applied at partner level (§108(d)(6)), flagged for the CPA. A billing correction is not income, because no debt existed in that amount.
-   - customer statements (PDF);
-   - recurring invoices;
-   - a cash-basis P&L view;
-   - sales tax (ask the CPA first: Utah taxes some software and digital products, Utah Code §59-12-103).
-
-**Sources to vendor before B-38 to B-41 become AUTHORITY:**
-- ASC 606-10-25-23, 45-2, 45-4, 32-5 to 32-9
-- ASC 405-20-40-1
-- ASC 310-10
-- ASC 326-20 (incl. 55-37/38)
-- IRC §§61(a)(11), 108(d)(6), 111, 166
-- Treas. Reg. §§1.166-1(e),(f), 1.166-2, 1.166-3, 1.451-1(a), 1.461-1(a), 1.461-4, 1.6041-1(a)(1)(iv)
-- Rev. Proc. 98-25
-- UCC §§2-310, 3-311
-- Form 1065 instructions for lines 1b and 12, and Schedule L lines 2a and 15
-
-Until vendored, they go on the Open list in `docs/spec/README.md`.
-
-#### P4b.17 Risks
-
-- **Golden figures will change.** Aging, open balances and the cash flow `bill_splits` change wherever existing books hold a reversal of an invoice, bill or payment entry. Each change is adjudicated, never refreshed silently. Whether any exist is unknown until the MCP check.
-- **The control guard will refuse old habits.** Any recurring template, convention or agent routine that writes to 1200 or 2000 by hand will be refused. Check through the MCP before installing S1.
-- **The guard must not block real document posting.** It sits in `Ledger`, but document commands post control lines themselves. The tag must be set inside the same atomic step, and the reversal-mirror exemption must not widen into a bypass.
-- **Removing the stored fields touches every reader at once:** the GUI, MCP, cash flow, party totals, the 1099 worksheet, the projection and IIF. It must land whole in S1.
-- **Multi-document payments use the ordinal rule.** Several payment events naming one entry depend on line order. Every reader that assumed one document per payment entry must be tested against double-counting.
-- **Bounds checked at every date cost more.** Limit the check to the documents a step touches.
-- **The upgrades and their prompts.** Six features need D-39 go-aheads, and too many prompts wear the owner down (decision 11). Until each go-ahead, the slice's writes refuse with the upgrade remedy, and the handbook must say so.
-- **PDF bytes depend on pinned versions.** Typst and font upgrades change new renders. The filed issued copy stays the record. Template injection must stay impossible (strings are data).
-- **The payment-instructions exemption must not spread.** It is one named key, like `company.duns`. The inbound file scan still runs on everything filed.
-- **Revenue can be dated too early.** An invoice dated before the work would overstate revenue (ASC 606-10-25-23). The agent must ask when the work happens and use 2400 for advance billing.
-- **Equipment on a bill must be registered.** A bill line coded to equipment must raise "register the asset" (B-15), or the asset is missing from the register.
-- **The tool budget.** About 7 new tools and several extended descriptions must fit I-12, and eight descriptions are already over it.
-- **The mailto flow cannot attach the PDF.** A forgotten attachment cannot be detected; sent tracking and reminders only mitigate it.
-- **Tax judgments stay with the CPA.** Write-offs, deposit timing (§1.451-8) and vendor releases are tax judgments. The tools flag them for the CPA and do not present them as settled.
-
-### P5: Agent surface complete (B, guidance)
-
-**Scope:**
-- Final connect text.
-- `books.start` v2 (4.2).
-- Full prompt set; resource templates.
-- Result envelope (`next_steps`, `guards`, `warnings`, `head`) in `call_tool`.
-- `books.journal_history`; `books.job`.
-- **Correcting a record's source.** A convention's citation (or who decided it, or when) can't be corrected today unless its words change too: `set_convention` with only a new source is refused as "already says exactly that" (found at the the first company P1 cutover, 2026-10-17, correcting an unchecked citation). A source-only revision, journaled with its reason; the same for decisions and open items.
-- Tool descriptions ≤ 700 characters; handbook complete; URL-mode elicitation where the client declares it.
-- `docs/mcp-interface.md` rewrite (24-95, 580-648, 723-747, 909-931).
-- **Agent-eval harness** `ledger-cli/tests/agent_evals/` (a real books server, D-44): scripted, with no LLM in CI. A zero-context transcript that follows only `books.start` and `next_steps` must complete onboarding, a receipt-backed post, a draft awaiting a receipt, a reversal draft with inherited evidence, a reconciliation and a month-end close.
-
-**Tests:**
-- Every mutating result has a head and a non-empty `next_steps`.
-- Every guard's remedy tool exists.
-- `instructions_budget` (first 512 characters contain `books.start`).
-- `tool_text_lint`.
-- Golden render per prompt.
-- `books.start` ≤ 8 KB on the the first company fixture.
-
-**Accept:**
-- A fresh Claude Code session in `/tmp/empty` and a Codex session each follow journaled conventions to post an entry. (claude.ai needs the tunnel and OAuth, so its leg is in P9's acceptance.)
-
-### P6: Evidence pipeline and scripts retired (defects 3, 4, 10, 20)
-
-**Scope:**
-- **Extraction.** Crate `ledger-extract`, run as a sandboxed subprocess:
-  - PDF text layer (lopdf);
-  - XLSX cells as exact decimal strings from the sheet XML (zip + quick-xml; never floats, fixing `verify-sheet.py:118-119`);
-  - CSV and text;
-  - EML via mail-parser;
-  - page raster with hayro;
-  - no OCR in core for now (D-15, decided): image-only receipts rely on page images plus attestation.
-- `attachment.text_extracted` at attach time, plus a backfill job.
-- `get_receipt` default meta + text, and `page_image`. Text and page resources. Defect 3 complete.
-- **Dedup (defect 4):** identical bytes return the existing record and add a link; `find_attachment`; `consolidate_duplicates` (links move to the first record, duplicates withdrawn with "duplicate of #N").
-- **Annotations (defect 10):** `annotate_attachment`; engine receipt numbers (next = max + 1); `reimbursed` derived (`entry.settles` when given, otherwise FIFO per party on the financing account, labelled `derived: fifo`).
-- **Email.** `attach_email`:
-  - an embedded PDF is preferred;
-  - otherwise a deterministic Typst render of headers and body, with fixed PDF metadata and inline images kept;
-  - `attachment.rendered` is journaled;
-  - the `.eml` itself is never filed.
-- **Company records (D-20).** Categories for notices and correspondence, plans, and history beside formation, legal and the rest; the viewer's Documents page grouped by category and subject; the books dir's `company/` folder retired (the first company: its files are filed, attachments 73–80, two more after the EIN fix). With extraction, the TIN scan reads PDFs' text too: the own-EIN exemption applies there as well.
-- **Migration tools (defect 20):** `compare_reference` and `record_inventory`/`check_inventory` replace `scripts/verify-sheet.py` and `scripts/drive-manifest.py`. `eml2pdf.py` is retired.
-
-**Tests:**
-- `same_bytes_one_record` (property: N attaches, 1 record, N links).
-- `get_receipt_default_has_no_bytes`, `page_image_is_png_of_page`, `inline_base64_requires_sha`.
-- `extraction_deterministic`, `eml_render_deterministic`.
-- `xlsx_cells_are_decimal_strings` (property).
-- `extractor_sandboxed` (network and filesystem escape attempts fail).
-- `compare_reference_detects_one_cent`.
-- `fuzz_extract_pdf`, `fuzz_extract_xlsx`, `fuzz_eml`.
-
-**Accept:**
-- `get_receipt` default output is < 8 KB for every the first company attachment (the earlier audit reached 415K tokens).
-- The first company 5.6 P6 checks: 0 differences, 0 inventory gaps.
-
-### P7: Vault v2 and the human channel
-
-**Scope:**
-- **`ledger-vault` v2:**
-  - HPKE sealing;
-  - `keyring.json` with keyslots: passphrase (the owner passphrase from P2), recovery key, passkey PRF, member_passkey;
-  - `rekey`;
-  - W-9 files sealed.
-- **Events:** `vault.created`, `vault.rotated`, `vault.keyslot_*`, `vault.resealed`. Verify checks the public-key sha.
-- **Human pages:** `/h/tin/{party}`, `/h/w9/{party}`, `/h/unlock`, `/h/tin-view`, `/h/download` (CPA package and 1099 worksheet with TINs, W-9), keyslot management.
-- **Tools:** `request_tin_entry`, `set_w9_facts`.
-- **Removed from the MCP:** `set_tin`, `set_w9 tin|w9_file_path`, `include_tins`, all of them.
-- **Scanner:** pattern-based TIN scanner on every result.
-- **GUI:** in-process passphrase unlock (3.6): it reads the wrapped keyslot and the sealed record from the data root read-only, unwraps, copies to the clipboard only, and zeroizes. No socket.
-- `wanderbooks vault init|rekey`.
-
-**Tests:**
-- `no_mcp_output_contains_full_tin` (session canary fuzz).
-- `unwrap_only_in_human_handler`; `vault_pubkey_swap_detected_by_verify`; `reseal_preserves_last4_and_kind`; `cpa_package_with_tins_human_only`.
-- Lost passphrase is recoverable with the recovery key.
-- GUI `tin_copy`; `gui_unlock_zeroizes` (no plaintext TIN or private key left in the GUI's memory after the copy).
-- Mutation testing on `ledger-vault` (in P12, D-33).
-
-**Accept:**
-- The the first company K-1 member worksheet and 1099 worksheet with TINs, produced through the human link, match the P0-era output byte for byte apart from timestamps.
-- No vault key material remains on disk except the wrapped keyslots in the data root.
-
-### P8: Audit, attestations, access-log tooling
-
-**`books.audit`** (`ledger-core/src/audit.rs` plus the store's evidence view; deterministic; no LLM; run as a job):
-- **Integrity:** chain, projection and blobs; access-log chain; vault public-key sha.
-- **Statements:** TB balances; A = L + E; P&L = current earnings; cash flow `reconciles`; cash equals the last statement for each tracked account; reconciliation coverage.
-- **Evidence:** the gate holds over every posted entry; `legacy_reversal_exempt` is informational; no drafts dated on or before `through`; duplicates.
-- **Closes and schedules:** closes in order, with member deltas to the cent; schedules and depreciation posted through.
-- **Assets:** register = cost accounts; tags and basis present.
-- **Tax and parties:** tax categories; 1099 payees with W-9 or TIN and their kind; party policy.
-- **Settings and freshness:** settings problems; 2100 aging; backup freshness.
-- **Attestations:** coverage against the bar.
-
-Output: a workpaper (JSON plus Typst PDF) filed as a `workpaper` document, and `audit.run` journaled. It is idempotent on `(through, through_seq, program_version)`.
-
-**Attestations:** `attest_receipt`, `review_entry` and `attest_period`.
-- `verified` (principal, client_id) is kept separate from `asserted` (model, effort, adversarial, agents).
-- The engine cross-checks extracted amount and date against the entry; a mismatch never counts.
-- A period attestation requires an `audit.run` at the current head.
-- `counts` is derived against `policy.attestation_bar` in force at that seq, so a bar change applies only going forward.
-
-**Needs attention items:** "month-end attestation due" after each close; "full audit due before CPA handoff" (`export_cpa_package` refuses without a counted full audit unless given a reason, per `policy.cpa_package_requires_audit = refuse`; D-9, decided); "annual audit due". Each states the bar.
-
-**Tests:**
-- `audit_is_deterministic` (same head gives the same sha).
-- `audit_detects_each_seeded_defect` (one fixture per check).
-- `below_bar_not_counted`, `bar_change_is_prospective`, `amount_mismatch_never_counts`, `stale_head_period_attestation_refused`.
-- Lean: counting lemma (counted ⇒ meets the bar at seq) as a decidable predicate.
-
-**Accept:** an injected fixture with an unfooted cash flow, a missing receipt, an open draft and a duplicate blob produces exactly those findings.
-
-### P9: Self-host on another machine, and remote access
-
-This is the documented path for anyone who wants mechanical enforcement, and it is how claude.ai on the web reaches the books. Multi-tenant hosting is not built here (section 11).
-
-**Scope:**
-- **Self-host recipe:** the same binaries on a machine the owner controls (home server, NAS, VPS), under system units and a dedicated account. `wanderbooks-server.service` with `IPAddressDeny=any` (loopback allowed; when the built-in authorization server fetches CIMD documents, D-7 a, connect to port 443 only, with private and link-local ranges denied), seccomp `@system-service` and Landlock; the archive unit with `IPAddressAllow` limited to its configured targets; an encrypted volume; Caddy for TLS. A container image is an alternative on that machine. `books.start` reports `isolation: "service_user (enforced)"`.
-- **Moving books there:** `wanderbooks fetch` from the desktop server, then `books adopt` on the self-host machine, with the head check. Adopting an archive clone works the same way.
-- **Remote access:** `wanderbooks tunnel --book <book>` (a Tailscale Funnel or cloudflared recipe). The static bearer over TLS for header-capable clients (Claude Code, Codex). OAuth 2.1 (3.3) for claude.ai and ChatGPT, built in (D-7 a) or delegated (D-7 b). OAuth is forced on whenever the tunnel is public. The Origin allowlist gains `https://claude.ai`.
-- **Remote viewer:** replica routes, `books:view`, `Snapshot::from_lines`, GUI `--books <url>`, and `/replica/events` for `books.show` and presence (3.6). The replica carries a minimum-version header and no keyslot material.
-- **Remote people:** `books.invite {kind: cpa|member|viewer, email}` sends a passkey enrolment link; the `cpa` role is read, view and archive. `/h/` pages are served over TLS behind a passkey or the passphrase.
-- **File inputs:** MCP App upload widget (an app-only tool); `openai/fileParams`.
-
-**Tests:**
-- `agent_uid_cannot_read_tenant`, rerun against the recipe's deployment.
-- `self_host_adopt_same_head`.
-- OAuth: PRM and 401, audience, PKCE, exact redirect, `iss`, CIMD SSRF guard, step-up; an external Origin, Host and CSRF scan.
-- `replica_snapshot_equals_store_snapshot`; `replica_carries_no_keyslot`; `fuzz_replica_stream`.
-- An external security review of the built-in authorization server before the remote path is opened publicly (not needed under D-7 b).
-
-**Accept:**
-- claude.ai custom connector via CIMD → `books.start` → upload through the drop page → post → visible in a replica GUI on another machine.
-- `codex mcp login` works, and the static token works over TLS.
-- The audit and the CPA package each finish in < 60 s on the first company, or return a job handle.
-
-### P10: Acceptance, the full the first company re-audit through the MCP alone
-
-Run from clients that hold only a URL and a credential: Claude Code started in `/tmp/empty`, Codex, and claude.ai through the tunnel if a self-host machine (T2) is running by then; otherwise the re-audit runs from Claude Code and Codex only, and the claude.ai leg is recorded as not applicable. The agents use the tools alone. On the desktop (T1) this separation is advisory, because the agents run as the same user as the server: the evidence is the access log plus session transcripts that never read the data root or name its path. If the owner runs a self-host machine (T2) by then, the re-audit runs against it, and the separation is enforced.
-
-1. `books.audit scope=full through=<month-end>` and `scope=cpa_handoff`. Every finding is fixed through journaled corrections: reversal drafts with evidence, annotations, decisions. Legacy reversals posted without their own evidence inherit the original's with `inherit_evidence` (D-12, decided).
-2. Every receipt is attested from `get_receipt` text plus page image by a pair at the bar: high reasoning effort, adversarial, at least 2 independent verifier agents (D-9, decided). No base64 enters context.
-3. `review_entry` for every posted entry; `attest_period` monthly since formation and `cpa_handoff` annually.
-4. Each of the 22 defect reproductions (20 from the 2026-10-16 audit, and defects 21 and 22 from P0) is re-run, and each shows fixed.
-5. `compare_reference` against the Sheet as of 2026-10-11 shows 0 differences. `check_inventory` against the Drive listing shows 0 gaps.
-6. CPA package: no TINs through the agent; with TINs through the human link.
-7. The head is handed to the owner and verified against a fresh `fetch` with `verify-archive --expect-head`.
-
-**Exit criteria:**
-- Zero failing workpaper checks; cash flow difference 0.00.
-- 100% of receipts and posted entries carry a counted attestation, and 0 disagree.
-- The access log shows every action under the right principal. No transcript reads the data root or names its path; the only other reader is the read-only viewer.
-- No result carried a full TIN or any file's bytes (D-46; it was "more than 256 KiB of inline bytes").
-- Agent context on receipts never exceeded 100K tokens.
-- The owner's sign-off is journaled as `decision.recorded`.
-
-### P11: One app for Windows, Mac and Linux (D-19, D-22, D-24, D-27)
-
-**Scope:**
-- **Tooling: cargo-packager (D-25).** Its `cargo packager` builds `Wanderbooks.app` and the `.dmg`, the NSIS setup `.exe` (in its default `CurrentUser` mode: no admin, metadata under `HKCU`), the `.deb`, the AppImage, and the pacman `PKGBUILD` the AUR package starts from; `cargo-packager-updater` updates the formats that update themselves (`app`, `nsis`, `appimage`; `wix` too, if an `.msi` is ever made). It has no `.rpm`, so cargo-generate-rpm makes that. Both tools are pinned in `mise.toml`, like every tool. Checked 2026-10-18 against its source (packager 0.11.8, updater 0.2.3, both pre-1.0): the updater verifies each bundle's minisign (Ed25519) signature against one public key and by default takes only a newer semver than the running one. It has no expiry, no second key and no key rotation, so our signed release manifest (below) is checked first, and the bundle's own minisign signature after it; the primary release key is the minisign key. P11's first step is a short trial of all six formats on clean machines; anything it can't meet goes in the change log before we build around it.
-- **macOS:** a `.dmg` holding `Wanderbooks.app` (the one executable inside the bundle), signed with the company's Developer ID, notarized and stapled. Drag to Applications, or `~/Applications` for a standard user who can't write `/Applications`; no admin password. While macOS runs the app translocated (straight from the `.dmg` or Downloads), it says to move it first and refuses to connect agents, so no temporary path lands in Claude's or Codex's config. The app updates itself in place.
-- **Windows:** a per-user installer that asks for no admin password: a signed setup `.exe` into the user's app folder; an `.msi` only if a managed install ever needs one. The app updates itself. Signing through Azure Artifact Signing if the company or the owner qualifies, else an OV certificate; SmartScreen warnings fade as the download builds a reputation.
-- **Linux:** Arch (an AUR `wanderbooks-bin` package), Debian/Ubuntu (`.deb` and our signed apt repository), Fedora (`.rpm` and our signed dnf repository), each installed and updated by the system's package manager (with `sudo`, as every package there is); and an AppImage that updates itself and needs no admin password, for every other distribution. The packages install the one executable, a `.desktop` entry and the icon.
-- **One updater rule set** (D-24), whatever the tooling:
-  - Every update is verified twice: against our own release key (Ed25519 over a release manifest listing each file's sha256) and the system's code signing. Either failing refuses the update; nothing is half-installed.
-  - The updater restarts the books, it doesn't close them (3.9): `update.lock`, a clean stop after the request in progress, an atomic swap, a restart from the new executable; the viewer reopens and the agent bridges reconnect by themselves.
-  - When updates happen: the host checks for one daily while the books are open, downloads and verifies it, and stages it; it is applied at the next restart the owner accepts in the app, or by the helper just before it next starts the host. An install whose books are never opened is never touched.
-  - Format changes are the server's gate (3.9, `format_upgrade_pending`), not the updater's: the owner consents in the app after a verified backup with the keys. A failed update rolls back to the previous app, which can still open the books as long as no newer format was written. After consent there is no rollback for that book: only restoring the pre-upgrade backup as a separate book, which shows how many entries it lacks (3.9).
-  - Updates never start during a long job (a CPA package, an audit, an extraction backfill). Multi-call work like a reconciliation is journaled as it goes, so a restart between calls loses nothing.
-  - **Release keys.** Two Ed25519 keys, a primary on a hardware token held by the owner and a backup kept offline; CI builds and code-signs but holds neither, so it cannot sign a manifest. Rotating or revoking a key is a statement signed by the other. Each manifest carries a version that only increases and an expiry: from the feed, an older version than the one installed is refused (no rollback attack), and so is an expired manifest (no frozen feed). Going back to the kept previous app is a local action by the owner, not a feed update, and stays allowed.
-  - **Package-managed installs** (AUR, apt, dnf) are updated by the package manager, with its own signatures (our repository keys) and `sudo` as usual on Linux; our updater stays out, and `wanderbooks update` refuses there. The host notices the new executable and restarts when idle (3.9); the format gate still protects the books.
-- **Connecting agents from the app:** the menu offers "Connect Claude Code" and "Connect Codex" (P2's `connect`, with the absolute path of the installed executable, which updates keep stable), so no one edits a `PATH`.
-- **The agent dock and books homes (D-27; owner, 2026-10-19: "a one stop shop … it boots up, you get the chat interface").** The app runs the agent itself, in a terminal docked inside its window, so a person who installs Wanderbooks needs nothing else open:
-  - **The CLIs are found or installed, never bundled.** The app looks for an installed `claude` and `codex` and offers the missing one through its vendor's official installer. Bundling is ruled out: Claude Code isn't redistributable, both release far faster than we do, and a second copy means a second login and a second set of permission rules.
-  - **The dock** is a full-width panel along the bottom of the main window (not the sidebar), resizable and collapsible, so the reports stay in view while the agent works: posts appear within a second and `books.show` moves the view, which is the point. Its header picks the agent: Claude Code by default, Codex if installed, remembered with the viewer's preferences. The terminal is `alacritty_terminal` rendered in egui (`egui_term`, or our own view over it), on a pseudo-terminal: Unix PTYs on Linux and macOS, ConPTY on Windows 10 1809 and later. `/login`, slash commands and the agents' own permission prompts work as in any terminal; we build no chat UI of our own (a native one over the Agent SDK or `codex app-server` stays a later option).
-  - **The agent is started by the viewer's helper** (3.9), not as the viewer's child: the viewer stays read-only and confined (3.6) while the agent runs unconfined, as the human, like one started in a terminal.
-  - **Each book has a books home**, the agent's working folder: a visible, ordinary folder named for the company (`~/Documents/Wanderbooks/<Company>/`; the user's Documents folder on Windows), never the data root and nothing inside it. It holds only what makes an agent started there work with that book: an `AGENTS.md`/`CLAUDE.md` pointer ("call `books.start`"), the agent's project-level MCP configuration for that book (`wanderbooks mcp --book <id>`), and `.claude/settings.json` allowing the wanderbooks tools so the daily flow doesn't prompt. No books data, no keys, no token. The agents' "trust this folder?" question is then about a harmless folder, and is answered by the person, once; the app never edits Claude's or Codex's own settings to pre-trust it (whether `wanderbooks connect codex`, which already writes Codex's configuration, may mark the books home trusted is asked of the owner when it is built). The books home is a convenience: agents started anywhere else keep working (I-11).
-  - **The first company's project folder becomes its books home.** After the P2 cutover clears its crumbs (10.3), `~/Documents/the first company-Books` holds exactly the pointer and the agent configuration: the first books home, and the template `New books…` makes the others from.
-  - **Windows.** The pseudo-terminal is ConPTY (it rewrites some escape sequences and has resize quirks; neither stops a terminal app). Each agent's own Windows support is checked in the first-step trial on a clean machine: Claude Code's need for Git for Windows, Codex's native support (historically WSL-first). An agent that isn't good enough there isn't offered in the dock on Windows, and the app still works as a viewer with agents started elsewhere.
-  - Open questions for the trial: whether Codex reads a per-folder MCP configuration (historically only the global `~/.codex/config.toml`; if not, `connect codex` writes one named server per book there); the exact layout of each agent's project files at that time.
-- Data root in each system's usual app-data folder (Application Support, `%LOCALAPPDATA%` (never the roaming profile), `~/.local/share`), as in 3.4 and 3.9.
-- Release builds and the full test suite on all three systems in CI; package builds for Arch, Debian and Fedora in their own containers.
-- The viewer menu of P2 (back up, export, restore, new books, close the books, connect an agent) is the app's whole surface beyond the viewer; there is no separate launcher app.
-- **Costs (company expenses, recorded with their receipts):** the Apple Developer Program (the company's enrollment, attachments 76 and 77); Windows code signing (Azure Artifact Signing, about $10 a month where eligible, or an OV certificate, about $150 to $300 a year).
-
-**Tests:** `install_needs_no_admin` (dmg, Windows installer, AppImage, clean machines); `translocated_app_refuses_to_connect`; `manifest_rollback_and_expiry_refused`; `key_rotation_statement_verified`; `package_upgrade_restarts_host`; `update_is_atomic`; `failed_update_rolls_back`; `unsigned_update_refused` (bad release-key signature, bad code signature, a file whose sha256 differs from the manifest: each refused, nothing changed); `update_closes_books_cleanly` (during a burst of posts; head verifies after); `update_waits_for_long_jobs`; `format_change_update_backs_up_and_asks` (declining leaves the books untouched and openable by the old version); `bridge_survives_update`; `linux_packages_install_and_upgrade` (AUR, apt and dnf repositories in clean containers; AppImage self-update); `server_runs_with_viewer_closed`; `dock_runs_the_chosen_agent` (on each system: the dock starts Claude Code, and Codex where offered, in the book's books home, through the helper; the viewer stays confined); `books_home_holds_no_books_data` (only the pointer and the agents' configuration; no path into the data root); `agent_missing_offers_the_installer`; P2's restore tests on all three systems.
-
-**Accept:**
-- On a clean Windows and Mac machine, and on Linux with the AppImage: install, open, onboard and post a first entry with no terminal and no admin password. On Arch, Debian and Fedora: the same after the package manager's usual install.
-- An update, on each system, leaves every book's head and goldens unchanged, and an agent session open across it carries on.
-- A backup made on one system restores on each of the others.
-
-### P12: Max testing, again (D-33)
-
-The whole max-testing pass of 2026-10-14 (`docs/testing.md`), run again over everything built since, on the owner's desktop once it is set up (the laptop stays usable: owner, 2026-10-20). Building comes first; this phase holds the testing every phase from P2 slice 3 on deferred to it.
-
-**Scope:**
-- **Mutation testing** of every crate but the viewer (no mutation runs on the GUI, owner 2026-10-14; its two musts are tested instead) over the whole diff from `main` as P2 slice 3 found it (`168494b`) to the tip: every survivor killed by a test or documented as equivalent in `docs/testing.md`, one section per phase. Each crate's own tests first, then the survivors again with the end-to-end `ledger-cli` tests (`--iterate`).
-- **Carried in from P2:** slices 3–6 had pass 1 on every crate and pass 2 on all but `ledger-host`; its survivors were partly triaged (`ledger-cli`'s 11 are `#[cfg(not(unix))]` stubs, equivalent on Linux; one area of `ledger-mcp` killed, which found and fixed the admin reply-length bug). Slices 7 and 8 had none. The triage notes go in `docs/testing.md`.
-- **Fuzzing:** every `cargo-fuzz` target, the old and the new (5.x), each for a set time without a crash; any crash becomes a regression test.
-- **Property tests** at their full case counts (`STORE_CASES` and the rest at the documented maximum), and the GnuCash differential re-run.
-- **Proofs:** `just prove` (Kani with no vacuous covers, Lean with standard axioms only), every harness and theorem added since.
-- **Where:** the desktop, or GitHub Actions' scheduled workflow (`.github/workflows/scheduled.yml`, already sharded to fit its six-hour jobs), or both.
-- **Load:** the runs never take every core (owner, 2026-10-20): cargo-mutants with an explicit `--jobserver-tasks`, one mutation run at a time, leaked test daemons reaped.
-
-**Accept:** 0 unexplained mutation survivors workspace-wide (the viewer aside); every fuzz target clean for its set time; `just prove` and `just check` green; `docs/testing.md` records each crate's counts and every equivalent mutant with its reason.
-
-### P13: bookspec, a formal accounting specification (D-34)
-
-**bookspec is a specification first.** A normative, formally written statement of how books are kept, every rule sourced to its authority, independent of any engine. Built on it, second and third: its own formal validation, and a conformance harness that any accounting engine implementing its interface can be tested with. Owner, 2026-10-20: "a FORMALLY written accounting spec … properly sourced with actual references, it's thorough, it might even have its OWN formal validation. It includes symbolic specs as well as concrete examples. It's useful for ANY accounting engine testing", and "bookspec is a SPEC first, and then it can also include formal methods/validation/proofs as well as a test harness that could be run against an accounting engine that conforms to the interface."
-
-**What it grows from:** `docs/spec/rules.md` (every rule with its AUTHORITY / CONVENTION / DECISION status and source), the vendored sources in `docs/spec/sources/`, the Lean theorems in `verify/lean/` (entries, ledger, statements, closing, apportionment), the goldens, and P3's named regression tests, written as bookspec examples from the start (P3).
-
-**1. The specification.** A document in numbered sections and stable rule identifiers (an identifier never changes meaning; the spec is versioned):
-- **Definitions and the model:** accounts (types, normal sides), money (exact decimal, currency, scale), entries and lines, periods and the fiscal year, basis (cash, accrual), parties and instruments, assets; the statements and reports defined over them.
-- **Rules, each with:**
-  - its **statement** in normative language (MUST, MUST NOT, MAY);
-  - its **source**, pinned exactly (an IRC section, a Treasury Regulation, IRS form instructions or a publication with its revision year, a FASB ASC topic-subtopic-section-paragraph) and its **status**: AUTHORITY (a source states it), CONVENTION (common practice, best reference given), or CHOICE (the authorities allow options: direct or indirect cash flow, FIFO or average cost, an apportionment rule; the spec names the options and an engine declares its own);
-  - its **symbolic form**: the rule as a formula over the model, with variables and their constraints (A > 0, 0 ≤ r ≤ 1) and the result as an expression;
-  - its **concrete examples**: worked cases (setup: the chart and settings, rounding mode and scale included; events in order; the exact expected results to the cent, or a refusal with its reason), with the edges that matter (odd cents and rounding, reversals, mid-period dates, the first and last day of a period, zero amounts, disposals, closed periods, multiple currencies);
-  - its **applicability**: cash or accrual, book or tax, jurisdiction, and for every tax rule the tax years it holds for (thresholds and tables change by year).
-- **Three kinds of rule:** laws that hold for all books (debits equal credits, A = L + E, the trial balance balances, net income articulates to equity, the cash-flow sections sum to the change in cash); sourced rules with definite answers (the de minimis safe harbor, the 12-month rule, MACRS tables and conventions, 1099 thresholds by year, 704(c) built-in gain, 723 carryover basis); and choices, parameters rather than one right answer.
-- **Coverage, written incrementally in order of need:** double entry and the account model; journals, reversals and corrections; trial balance, balance sheet and income statement; accrual and cash basis; cash flows, direct and indirect (ASC 230); periods, closes and the equity roll-forward; partnerships (capital accounts, allocations, 704(b) and 704(c), 723, K-1 figures); fixed assets and depreciation, book and tax (Pub. 946, MACRS); prepaids, amortization and capitalization (Treas. Reg. 1.263(a)-1(f), -4(f)); receivables, payables and aging; revenue (ASC 606) and deferred revenue; 1099 reporting; then payroll, sales tax, inventory and multiple currencies (ASC 830), each large on its own; rounding and apportionment throughout. Interchange formats (IIF, CSV) are an appendix, marked as formats, not accounting.
-
-**2. Formal validation of the spec.**
-- The model and every symbolic rule in Lean 4: the model is inhabited, the rules are consistent with each other (no two demand different results on the same books), and the laws are theorems (standard axioms only, no `sorry`).
-- Every concrete example is derived from its symbolic rule by the spec's own checker (Rust, exact decimal money): an example whose written expectation disagrees with its derivation fails the spec's build. No expected value rests on one engine's output (the GnuCash-is-not-the-authority lesson, applied to every engine, wanderbooks included).
-- Every citation resolves to a vendored or linked source, and no rule lacks one.
-
-**3. The conformance harness.**
-- **Rust throughout** (owner, 2026-10-20: "We are rust people"): the checker, the generator and the harness are Rust crates in bookspec's own Cargo workspace; no JavaScript anywhere.
-- **The interface** an engine implements is a Rust trait (`Engine`): load a setup, apply events, answer queries (balances, report lines) or refuse with a reason, and declare its choices and the parts of the spec it claims. An engine not written in Rust is reached through an adapter that implements the trait (over its API, its files or its command line).
-- **The cases** are the spec's examples plus cases generated from the symbolic rules (variables drawn within their constraints, expectations computed from the expressions, as `proptest` strategies), written as TOML files the Rust checker validates against their schema.
-- **The runner** reports per rule: pass, fail, or not claimed. A disagreement between engines is a lead, settled from the sources.
-- **Engines:** wanderbooks first (its engine crates directly, and end to end through its MCP); GnuCash through the oracle (`docs/oracle.md`), hledger and Beancount feasible, QuickBooks through its API perhaps.
-
-**Sources: United States first, canonical only** (owner, 2026-10-20: "the source should come from that national … association thing that we used earlier in this project. Or any other reputable, canonical source of accounting rules and practices and procedures"). The first edition is US GAAP and US federal tax; other jurisdictions and IFRS are later editions. Every rule cites the highest source that settles it, in this order:
-- **Accounting: the FASB Accounting Standards Codification** (the Financial Accounting Standards Board, read at asc.fasb.org as `docs/spec/sources/fasb-asc.md` was in this project). By its own terms the Codification is the single source of authoritative nongovernmental US GAAP (ASC 105-10-05-1), so an accounting rule's source is an ASC topic-subtopic-section-paragraph.
-- **Tax: the law and the IRS.** The Internal Revenue Code, Treasury Regulations, then IRS revenue rulings and procedures, notices, form instructions and publications (with their revision year).
-- **Where the Codification leaves a question open,** the nonauthoritative sources ASC 105-10-05-3 itself names, in its order: practices widely recognized and prevalent, FASB Concepts Statements (the conceptual framework), AICPA Issues Papers, IFRS, pronouncements of professional associations and regulators, the AICPA's Technical Practice Aids, and accounting textbooks, handbooks and articles (the list is checked against the paragraph when the spec is written). The Big Four firms' published guides (Deloitte's DART roadmaps among them) may help with reading a paragraph, but never stand as a rule's source. A rule resting only on these is marked CONVENTION.
-- **Never a source:** what one engine does (wanderbooks and GnuCash included), what one accountant says, or an unsourced website.
-
-**Copyright.** Rules and facts aren't copyrightable; their expression is. The Codification is copyrighted by the Financial Accounting Foundation, so bookspec states each rule in its own words with the paragraph cited, and quotes no more than the Foundation permits. IFRS text is treated likewise. IRS and Treasury text is public domain and may be quoted. Textbooks are used only under a compatible license (no NonCommercial or ShareAlike text). Public: the spec under CC BY 4.0, the checker and harness under MIT OR Apache-2.0.
-
-**Where it lives:** its own public repository (`bookspec`), separately versioned, which wanderbooks consumes: `docs/spec/rules.md` points each rule at its bookspec identifier, the engine's `SOURCE:` blocks cite bookspec, and the harness runs against wanderbooks in `just check` for the parts it claims.
-
-**Accept:** the spec's build green (Lean as above; every example matching its derivation; every citation resolved); wanderbooks passes every case for the parts it claims, with each unclaimed part listed; a second engine (GnuCash, through the oracle) runs through the harness, its differences settled from the sources.
+```text
+GOAL: a settlement is exact and names its lines.                        (B-42, S6)
+SOURCE: CONVENTION; ASC 606-10-32-5 to 32-9 noted; DECISION: the gross
+        method (A-8), the fee's gross presentation (A-4).
+INVARIANTS:
+  1. Σ cash + Σ discounts = Σ applications; deposit = Σ cash − fee
+     (kernel::settle); one party per settlement.
+  2. Each application's cash + discount ≤ what the document owes on every
+     day from the payment's date on.
+  3. Each new payment event names the line it tags; replay tags that line;
+     a legacy event without one takes the first untagged control line for
+     its amount.
+  4. A discount on a bill with an asset or prepaid line is refused.
+```
+
+Each rule keeps the CONVENTION label until its sources are vendored in `docs/spec/sources` with a SHA-256 (8.4).
+
+#### 8.3.14 Migration of existing books
+
+1. Before S1 was installed, the goldens were captured (`crates/ledger-store/tests/fixtures/p4-arap-before`, written by `0df7f52a`; adjudicated in `legacy_reversal_now_counts`). ~~`goldens/p4-arap-before/` through the MCP~~ → the fixture is the record; the owner's own goldens live privately in the books home (5.6) and are compared at each upgrade.
+2. No journal line is rewritten (B-8). S1 derives tags on replay. Figures changed only for documents whose origin or payment entry has a reversal in its chain, plus `cashflow::bill_splits`; the balance sheet and P&L did not move.
+3. Out-of-bounds legacy states replay as written (a voided invoice with a payment still standing shows in Needs attention with the remedy: reverse the payment).
+4. Unattached hand lines on 1200 or 2000 are listed by `books.control_check`. For each, the owner chooses: (a) reverse it and re-enter it as a document while its period is open; (c) leave it, with a recorded decision and a note in the CPA README. ~~(b) adopt it (S7)~~ → deferred (D-49); built only if a line on the live books fits neither (a) nor (c).
+5. Legacy documents keep "Invoice {id}": terms Custom with their due dates, no snapshot, line accounts None (the role accounts they posted to). New numbers start at `invoicing.first_number` (the owner's choice; the default 1), so the series is gap-free from the first numbered invoice.
+6. Bills on 6999 are reclassified by ordinary entries (Dr the right account / Cr 6999), each citing the bill's receipt (A-9).
+7. Older-rule fixtures (reversed payments, reversed invoices, a hand line on 1200, a multi-payment entry, a role reassigned mid-stream) are in `books_written_under_older_rules_still_open`; each unit adds its shape (8.0.6).
+8. At each upgrade of the owner's books: `books.verify`, `books.control_check`, then the cent-exact comparison with the previous goldens in the books home's `goldens/` (the EM's or the owner's step; never an engineer's).
+
+#### 8.3.15 Tests
+
+Named in each unit (8.2). Shipped in S1-S3: `crates/ledger-core/tests/spec_documents.rs` (`reversing_a_payment_reopens_the_invoice`, `a_voided_invoice_never_ages`, `aging_as_of_ignores_a_later_reversal`, `a_corrected_payment_after_reversing_the_wrong_one`, `void_refused_while_paid`, `hand_line_on_control_refused`, `reversing_a_legacy_hand_line_is_allowed`, `deposit_account_must_be_cash_like`, `several_payment_events_on_one_entry_tag_its_lines_in_order`), `crates/ledger-store/tests/arap_standing.rs` (`legacy_documents_replay_with_tags`, `legacy_reversal_now_counts`, `role_reassigned_mid_stream_tags_the_role_then`, `document_posting_mismatch_is_replay_mismatch`, `repaying_after_a_reversal_waits_for_document_standing`, `a_payment_journals_its_method_and_reference`), `arap_props.rs` (`subledger_equals_control`, `status_is_a_function_of_journal_and_date`, `reversal_twice_restores_state`), `bounds.rs`, Kani `bounds_check_matches_definition`, Lean `control_agrees`, over the wire `documents_void_and_tie_out_over_the_wire`, viewer `the_list_shows_the_ledgers_figures`, `an_invoice_renders_deterministically`. Properties every later unit keeps green: `subledger_equals_control` after every op (the identity, the bounds, replay equals live, at every date), `status_is_a_function_of_journal_and_date`, `reversal_twice_restores_state`, `due_date_monotone` (S4), `document_parts_partition_the_total` (S4). `fuzz_op_sequence` gains the document ops in P12.
+
+#### 8.3.16 Risks
+
+- **Golden figures.** S4 to S7 move no figure; 8.0.6 makes a moved figure a stop. (S1's changes were adjudicated at its upgrade.)
+- **The control guard refuses old habits.** Any recurring template, convention or agent routine writing to 1200 or 2000 by hand is refused (S1, live). The remedy names the document tools.
+- **The guard must not block real document posting.** The tag is set inside the same atomic step; the reversal-mirror exemption must not widen into a bypass (the B-38 item 3 refusal of the cleanup's reversal is the test).
+- **Multi-document payments.** New events name their lines (S6); every reader that assumed one document per payment entry is tested against double counting (`multi_document_payment_counts_once_for_1099_and_party_totals`).
+- **Bounds at every date cost more.** The check runs only on the documents a step touches.
+- **The upgrade.** One go-ahead for S4 to S7 and P4 (D-52); until then their writes refuse on the live books with the remedy, and the handbook says so. Too many prompts wear the owner down; one is the right number.
+- **PDF bytes depend on pinned versions.** The filed issued copy is the record; strings are data.
+- **The payment-methods exemption must not spread.** It is one `Kind` arm for `ach`/`wire` lines; the inbound file scan still runs on everything filed.
+- **Revenue can be dated too early.** An invoice dated before the work overstates revenue (ASC 606-10-25-23); the agent asks when the work happens and uses 2400 for advance billing (the handbook says so).
+- **Equipment on a bill must be registered.** A bill line coded to equipment raises "register the asset" (B-15) in Needs attention.
+- **The tool budget.** Three new tools and several extended descriptions must fit 700 characters; P5 drives the pinned count of over-long descriptions to 0.
+- **The mailto flow cannot attach the PDF.** Sent tracking and reminders mitigate a forgotten attachment.
+- **Tax judgments stay with the CPA.** Write-offs, recoveries, deposit timing (§1.451-8) and vendor releases are flagged, never presented as settled.
+
+### 8.4 Not scheduled
+
+Recorded so no one builds them by accident and so the decision that set each aside is one click away. Each becomes a unit only when the EM writes one, with the owner's go-ahead where a decision is amended.
+
+| Item | Why not now | Decision | Notes for when it is built |
+|---|---|---|---|
+| `books.adopt_control_line` | no legacy line on the live books is known to need it; 8.3.14's remedies (a) and (c) cost no code | D-49 | `as: invoice \| bill \| payment_of \| discount_of \| write_off_of`; an adopted origin gets one synthesized line (`account: None`); event `control_line.adopted`; `Ledger::differs_from` compares `line_docs` directly; Lean `Step.adopt` and `Reachable.unattached_zero` restated |
+| `books.assign_role { move_balance }` | B-23 already keeps a control role with a balance where it is; nobody has asked to renumber 1200 or 2000 | D-49 | RoleMove lines per document through `Ledger::atomically`, then `assign_role`; the identity becomes per account (`owed_on(A, d, D)`); event `role.balance_moved` |
+| `Movement::Recovery`, a `bad_debt_recoveries` role | a handbook procedure gives the same books (8.3.6) | D-49 | only if the CPA asks for recoveries on the document's timeline |
+| `receive_payment.excess_to`; customer deposits and credits (2300), vendor credits (1250) | A-12: overpayments refused, credits later; the replacement-before-bounce case has a procedure | D-49 | a `customer_credit` document kind; ASC 606-10-45-2; a release of a valid debt is cancellation-of-debt income (IRC §61(a)(11)), exclusions at partner level (§108(d)(6)) |
+| Apportioning a purchase discount across a bill's asset lines | refused with a remedy instead (8.3.6) | D-49 | `kernel::apportion` across line accounts; asset lines reduce cost (Pub. 946) |
+| Credit memos (to 4100), customer statements (PDF), recurring invoices, a cash-basis P&L view, sales tax (Utah Code §59-12-103; ask the CPA first) | the owner's list of later items | the plan of 2026-10-23 (its former P4b.16, item 8) | each a small design of its own |
+| Reversal as a draft with its own evidence gate | no decision asked for it; it breaks the built immediate void | D-47 | if ever wanted: a reversal draft is immutable, the whole reversal check re-runs at post time, Lean `Step.postReversal` |
+| Vault v2: HPKE, keyslots, recovery key, `rekey`, `/h/tin`, `request_tin_entry`, `set_w9_facts`, the GUI passphrase unlock | D-28, D-29 keep TINs in the v1 vault with no extra handling; D-31 carries the key in every backup | D-48 | belongs to the hosted service (section 11, model B) |
+| `books.job`, the 20 s rule, jobs as lease holders | no local call approaches a client limit over the bridge | D-53 | with P9b, if claude.ai's 240 s limit is measured |
+| `ledger-view`, `ledger-extract` crates | `PackageBooks` is the shared view; extraction is in-process in `ledger-import` | D-53 | a wasm viewer (section 11) may want a view crate later: a mechanical move |
+| `attach_email`, `attachment.rendered`, `fuzz_eml`, `.eml` uploads | email-in waits for the hosted service; the convention is "email as PDF" | D-17 | `mail-parser`, a deterministic Typst render of headers and body |
+| `compare_reference`, `record_inventory`, `check_inventory`, their events; the exact-decimal XLSX reader for the Sheet | the Sheet and the books as of 2026-10-11 are frozen; the final `verify-sheet` run is a filed workpaper | 2026-10-26 review (Z-6) | a `migrate` prompt for a second company is speculative |
+| `/h/inbox` drop page, `books.inbox`, `books.download_link`, `request_human_download`, the MCP App upload widget, `openai/fileParams` | D-28 (the agent does it all locally), D-46 (files only by handle); the hosted server adds a URL | D-28, D-46, D-51 | P9c |
+| The remote viewer replica (`/replica/*`, `Snapshot::from_lines`, the blob LRU), `books.invite`, passkeys for remote people | not on the P10 path; a backup clone opened read-only serves the owner | D-51 | P9c |
+| An in-house OAuth 2.1 authorization server | D-7 (b), an external identity provider, removes it and the external review | D-51, Q-6 | P9b |
+| Attestation bar versioning, the Lean counting lemma | the bar is one setting evaluated when asked | 2026-10-26 review (IZ-3d) | |
+| bookspec's own repository | the harness must be stable first; `just check` keeps running the examples | D-34, Z-17 | P13 step 6 |
+| hledger, Beancount, QuickBooks adapters for bookspec | candidates, not scope | P13 | |
+| **Sources to vendor before B-38 to B-45 become AUTHORITY** (`docs/spec/README.md` "Open"): ASC 606-10-25-23, 45-2, 45-4, 32-5 to 32-9; ASC 405-20-40-1; ASC 310-10; ASC 326-20 (incl. 55-37/38); IRC §§61(a)(11), 108(d)(6), 111, 166; Treas. Reg. §§1.166-1(e),(f), 1.166-2, 1.166-3, 1.451-1(a), 1.461-1(a), 1.461-4, 1.6041-1(a)(1)(iv); Rev. Proc. 98-25; UCC §§2-310, 3-311; Form 1065 instructions for lines 1b and 12, Schedule L lines 2a and 15; the P3 surface review's list (ASC 606-10-25-31, 25-32, 55-20, 55-39; 230-10-45-15(f); the ASC 250 paragraph B-15 rule 6 means; 105-10-05-1 to 05-3's current wording) | a documentation unit anyone can take, no code | | each read in the ASC basic view or vendored verbatim (public domain) with a SHA-256 |
 
 ---
 
 ## 9. Risks and mitigations
 
-1. **Journal forward compatibility.** Old GUIs or CLIs cannot read v2 events.
-   - The P0 `NewerJournal` gate ships first. The local GUI reads the journal directly, so it goes through the same gate.
+1. **Journal forward compatibility.** Old GUIs or CLIs cannot read newer events.
+   - The P0 `NewerJournal` gate shipped first; every new feature follows recipe R-A and the 8.0.6 checklist. The local GUI reads the journal directly, so it goes through the same gate.
    - One executable (D-22): an update replaces it whole; the server's `format_upgrade_pending` gate (3.9) protects the books however it arrived.
-   - The replica (P9) carries a minimum version.
+   - ~~The replica (P9) carries a minimum version.~~ → D-51
    - Fixtures from every phase are kept.
-   - Downgrade is impossible after the first v2 event, so back up first (P1 says so).
-2. **The settings migration shifts numbers.** Byte-identical goldens gate P1. `company.members` effective dating must reproduce the `close_to` history exactly.
-3. **P3 fixes change the first company's reports and tax output.** Every difference is hand-adjudicated in the change log, and the 1099 and 704(c) changes are shown to the CPA. Posted entries never change. The cumulative close rounding counts from inception (D-10), so the first new close may carry a one- or two-cent true-up; it is listed in the change log.
-4. **The P2 cutover is large and could disrupt daily use.**
+   - Downgrade is impossible after the first newer event, so back up first (3.9 as built: the upgrade makes a verified backup before it writes).
+2. **Retired (P1 landed 2026-10-17; the goldens were byte-identical).** ~~The settings migration shifts numbers.~~ Byte-identical goldens gate P1. `company.members` effective dating must reproduce the `close_to` history exactly.
+3. **Retired (P3 landed 2026-10-22; every difference adjudicated in the private change log).** P3 fixes change the first company's reports and tax output. Every difference is hand-adjudicated in the change log, and the 1099 and 704(c) changes are shown to the CPA. Posted entries never change. The cumulative close rounding counts from inception (D-10), so the first new close may carry a one- or two-cent true-up; it is listed in the change log.
+4. **Retired (the cutover happened 2026-10-20, P2 slice 9).** The P2 cutover is large and could disrupt daily use.
    - The scripted `adopt` checks the head hash.
    - If the owner agrees (Q-3), the old copies move into the data root's `legacy/` area. Nothing is deleted.
    - Rollback is documented.
    - The final runs of `verify-sheet` and `drive-manifest` are filed before cutover; Drive deletion waits for P6.
-5. **The P2–P7 interim:** TINs still cross the MCP on `set_tin`/`set_w9`, with no added prompt (owner decision: no `requiresUserInteraction`).
-   - Mitigation: P7 is scheduled before mid-January (1099s are due Jan 31, K-1s by Mar 15). TIN-bearing outputs are human-only from P2.
+5. **Closed by decision (D-28, D-29, D-48):** TINs cross the MCP on `set_tin`/`set_w9` on their way into the vault and come out in the exports the owner chose, with no added prompt; this is the design, not an interim. ~~Mitigation: P7 is scheduled before mid-January … TIN-bearing outputs are human-only from P2.~~
 6. **Desktop isolation is advisory.** A process running as the human, including an agent that deliberately hunts, can read the data root, the agent token and the wrapped keyslots.
-   - TIN plaintext still needs the passphrase.
+   - ~~TIN plaintext still needs the passphrase.~~ → D-29
    - The path is never named, the root sits outside every project directory, and every place that reports isolation says "advisory".
-   - The server's own Landlock and seccomp are never presented as protecting the books from the agent.
+   - ~~The server's own Landlock and seccomp are never presented as protecting the books from the agent.~~ → D-32: there is no confinement
    - Enforcement is the self-host deployment (P9), tested in CI from P2.
 7. **The books are open only while something holds them** (D-21, D-23: the app, an agent session, a `serve` terminal; no background service).
    - An agent session opens them itself through its bridge, so it needs no reconnect. A client connected over HTTP instead of the bridge holds no lease and needs them already open.
    - The viewer reads the data root directly, so it works even if the server can't start; "Restore…" and "New books…" say why they can't run then.
    - Backups run only while the books are open. The books change only then, so nothing goes unbacked; the server pushes anything left over, and a drill that fell due, at the next open.
    - The host outlives the opener that started it, by design, until the last lease ends; it is never left running with no holder for more than 10 s. A crash or power loss is what the append-only journal already survives.
-8. **The OAuth authorization server is security-critical code written in-house** (rmcp has no server-side auth). It is needed only on the self-host remote path.
+8. **~~The OAuth authorization server is security-critical code written in-house~~ → D-51, Q-6: the recommendation is an external identity provider (D-7 b), which removes this risk; the notes below apply only if the owner chooses D-7 a.** It is needed only on the self-host remote path (P9b).
    - Small surface: passkeys only, no password grant.
    - Built on audited crates (webauthn-rs, oauth2 types); fuzzed; externally reviewed before the remote path is opened publicly.
    - Alternatively an external IdP (D-7).
@@ -1926,12 +1906,12 @@ The whole max-testing pass of 2026-10-14 (`docs/testing.md`), run again over eve
    - Codex: a 512-character budget.
    - The `resource_link` content type is undocumented, and the files extension is experimental.
    - Mitigations: links repeated in text, both protocol eras served, jobs for long work, the drop page, and an adapter for `io.modelcontextprotocol/files` once it stabilizes.
-10. **Extraction quality.** There is no OCR in core (D-15), so image receipts rely on page images plus attestation. The extractor version is journaled, and re-extraction appends events and never rewrites.
+10. **Extraction quality.** There is no OCR in core (D-15), so image receipts rely on page images plus attestation. The extractor version is journaled, and re-extraction appends events and never rewrites. Extraction runs in the server's own process (D-32, D-53): a malformed PDF is caught by `catch_unwind` and size caps, not by a sandbox; the fuzz targets are the mitigation.
 11. **Attestation `method` is self-reported.** The bar is a policy on claims by an authenticated client. Verified and asserted fields are separated, and the deterministic cross-checks are the hard floor.
-12. **Performance.** One mutex per book serializes writers. Mitigations: reader snapshots, `spawn_blocking`, jobs, SSE backpressure, the blob LRU.
-13. **`server.rs` size (8,529 lines).** It is split per tool group as each phase touches it, to keep review cost bounded.
-14. **Tool surface churn** (`preview_token`, removed parameters). The `confirmed` alias and the removed-tool errors that name their replacement last one release, and the agent-eval harness catches guidance regressions.
-15. **Proof obligations** (cash-flow footing, cumulative drift, reversal-draft transitions) may take time. A failing proof is a finding and blocks its phase by design.
+12. **Performance.** One mutex per book serializes writers. Mitigations: reader snapshots, `spawn_blocking`. ~~jobs, SSE backpressure, the blob LRU~~ → D-53, D-51
+13. **`server.rs` size (12,566 lines on 2026-10-26).** ~~It is split per tool group as each phase touches it~~ → U0a splits it in one go before the remaining units open, because every unit adds tools to it and parallel worktrees would conflict on every merge (8.0.3).
+14. **Tool surface churn** (`preview`, renamed parameters). Aliases (`party_id`, `document_id`, `cash_account`) last until P5's `docs/mcp-interface.md` rewrite removes them; the agent-eval harness (P5) catches guidance regressions.
+15. **Proof obligations** (cash-flow footing, cumulative drift, the document steps) may take time. A failing proof is a finding and blocks its phase by design.
 
 Hosted-service risks (operator-served unwrap code, the legal exposure of hosting SSNs) are in section 11.
 
@@ -1952,9 +1932,9 @@ The owner decisions of 2026-10-16 (at the top of this document) replace the form
 | D-12 | Legacy reversals already posted without their own evidence | (a) During the re-audit, link the original's receipts with `inherit_evidence`, so the audit is fully clean. |
 | D-13 | The first company timezone | (a) `company.timezone = America/Denver`. |
 | D-15 | OCR for image-only receipts | (a) None in core for now: page images plus agent attestation. |
-| D-16 | CPA access to TINs | (a) To start, the owner prepares and sends a single-use human link each time. |
+| D-16 | CPA access to TINs | ~~(a) To start, the owner prepares and sends a single-use human link each time.~~ **Superseded by D-29** (2026-10-19): the CPA package with TINs is an ordinary download the owner sends on. |
 | D-18 | `dev-stdio` | (a) Kept permanently for tests and demo. It refuses inside the data root and is never offered by `connect`. **Superseded by D-44** (2026-10-23): `dev-stdio` is gone; tests and demos use a books server on a data root of their own. |
-| D-19 | One app for Windows, Mac and Linux (owner, 2026-10-17) | Planned: backup and restore in P2, the app itself in P11. One installer and auto-updater per system. The server, the viewer and the CLI ship and update together; since D-22 they are one executable that runs each as its own process: the agent needs the server while the viewer is closed, and the viewer stays read-only as a separate process. No separate launcher app, which would be a third program and a second writer (the helper of 3.9 is a mode of the one executable, not an app). The viewer is the app's face and gains menu items: "Export for CPA" (read-only; the viewer does it) and "Back up now" (handed to the archive process, 3.9), "Restore…" and "New books…" (they change books, so the viewer hands them to the server), and the CPA package with TINs through the human path (P2 `/h/`, P7 vault). The books live in each system's usual app-data folder (the data root of 3.4): hidden, not locked; a little more protected on macOS. **Backups must restore**, into an existing install or a new one, proven before use and never destructive (3.7). |
+| D-19 | One app for Windows, Mac and Linux (owner, 2026-10-17) | Planned: backup and restore in P2, the app itself in P11. One installer and auto-updater per system. The server, the viewer and the CLI ship and update together; since D-22 they are one executable that runs each as its own process: the agent needs the server while the viewer is closed, and the viewer stays read-only as a separate process. No separate launcher app, which would be a third program and a second writer (the helper of 3.9 is a mode of the one executable, not an app). The viewer is the app's face and gains menu items: "Export for CPA" (read-only; the viewer does it) and "Back up now" (handed to the archive process, 3.9), "Restore…" and "New books…" (they change books, so the viewer hands them to the server), and ~~the CPA package with TINs through the human path (P2 `/h/`, P7 vault)~~ → D-29, D-48: the CPA package with TINs from the agent or the viewer's menu. The books live in each system's usual app-data folder (the data root of 3.4): hidden, not locked; a little more protected on macOS. **Backups must restore**, into an existing install or a new one, proven before use and never destructive (3.7). |
 | D-20 | Company records (owner, 2026-10-17: "It's just too damn convenient to keep it all together in one place.") | Every company document goes into the books, not only what the CPA needs: formation papers, registrations, plans, notices, drafts, history. Done for the first company 2026-10-17 with the existing categories; the filing scan passes the company's own EIN printed 2-7 (rules.md B-26). P6 adds what makes it pleasant (below). |
 | D-21 | How the local server runs (owner, 2026-10-18: "Not sure I want a background service at all. Running in the foreground for now works for me.") | Started by hand in a terminal, not a background service: `wanderbooks serve` opens the books (the server and its archive process) and runs until stopped; agents connect over HTTP while it runs, several at once; Ctrl-C or closing the terminal closes the books cleanly. Nothing is installed to run in the background: no systemd unit file, no LaunchAgent, no socket activation, no login autostart. The viewer works with the server stopped (it reads the data root). **Amended by D-23** (same day): the books also open when the app or an agent starts, and close when the last of them ends. |
 | D-22 | One app or several (owner, 2026-10-18: "My objective is simplifying installation and updates.") | **One app, one executable, separate processes.** `wanderbooks` is the only program installed; each role is a mode of it, run as its own process: the viewer (what opening the app shows), the books server and its host, the agent bridge (`wanderbooks mcp`), the archive process and the extractor. One thing to sign, notarize, ship and update. Mixed versions are still possible across a swap, so the host starts its children from its own executable and every handshake carries the version (3.9). The viewer's read-only rule never rested on a separate file: `ledger-gui` already links `ledger-store` and stays read-only through `Snapshot` and `tests/read_only.rs`. As its own process it keeps that, and on Linux it also confines itself read-only (Landlock). Each mode confines itself at start. The crates stay as they are; the executable is a thin dispatcher (P2). One exception: a server-only build (the `gui` feature off) for self-host (P9), so a headless machine carries no window libraries. |
@@ -1982,15 +1962,33 @@ The owner decisions of 2026-10-16 (at the top of this document) replace the form
 | D-44 | One way to serve books: the stdio server is gone (owner, 2026-10-23: "We should probably just delete the stdio path altogether. THere's no point in that. And it sitting there unused will just lead to bitrot. Nuke it?") | **Books are served only by the books server** (`wanderbooks server`: every book of the data root on its local sockets, `/b/{book}/mcp`, uploads and downloads), reached by agents through the bridge (`wanderbooks mcp --book ID`: stdio to the agent, the server's socket upstream), which stays. Removed: `wanderbooks dev-stdio`, the `ledger-mcp` binary and `ledger_mcp::run`'s stdio and `--http` serving of a bare data dir, with everything only that mode had: files the books make coming back inline (`content_base64` on a handed file; every one is now a download), books with no access log and no backups (`books.access_log`, `books.backup` and `books.back_up_now` are always offered, by scope), a settings file read and reloaded (`legacy_files`; old books bring theirs in by `books adopt`), the vault key named by a settings file or `--vault-key-file`, and the key-inside-the-books and books-kept-in-git checks of the books dir (a book in the data root keeps its own key). `books.settings` loses `source`, `books_toml`, `books_toml_exists`, `config_json_present`, `reload_error` and `loads`, and `books.start` its `settings_source` (always the books now). **Owner decisions, 2026-10-23 (asked with the question tool):** (a) `books.import_settings` is removed entirely (the tool, its types, handbook, docs and tests; 118 tools): old books still come in whole through `wanderbooks books adopt`, which reads their settings file once, and ledger-config keeps its settings-file parsing only as far as adoption uses it (`load` and the path-reading `effective_receipt_policy` are gone); `books.chart_template` gives its settings as `books.set_setting` changes. (b) The viewer's loose-books-folder mode is removed (`wanderbooks gui --data-dir DIR --books-toml FILE --vault-key-file FILE`, and following a settings file and `config.json`): the viewer opens only books of the data root (`wanderbooks gui ID`), reads their settings from the journal and their vault from their own `vault/` and `keys/`; tests open throwaway books through the same `Source` and loader the live viewer uses. (c) `wanderbooks dev-stdio` is deleted with no stub: it is an unknown command like any other word. An unknown tool is now a protocol error, as mcp-tools.md asks. Inline file input (`content_base64` with its `sha256`, at most 256 KiB) is unchanged: a separate decision (since made: D-46 removed it). Every test that drove the removed mode drives a real books server on a data root of its own, reached as an agent reaches it (ledger-cli `tests/common`), and checks a handed file by its download. Supersedes D-18. |
 | D-45 | Receivables and payables, first class (P4b; owner, 2026-10-23: "we kinda need stronger invoice support. Like make it a first class citizen") | **A document's figures come from its tagged ledger lines that still stand**: every line on 1200 or 2000 carries its document; paid, outstanding and status are derived, so a reversal, void or write-off is right by construction and the control accounts always equal their documents (B-23). **Hand entries to 1200 and 2000 are refused.** Invoices: numbered `INV-0001` running, previewed then confirmed, terms and due dates, the issued PDF filed at issue, any payment methods printed (ACH, wire, links, QR codes, check, P2P handles, crypto, other). Bills: the vendor's number, terms, every line on its own account, paid on terms with early-payment discounts by the gross method. **The books never send, receive or charge** (as for payroll and taxes): the owner or a delegate (an agent) does, and the books record the send (who, channel, recipients, reference) and the payment (processor, reference, fee: gross to the receivable, fee to expense, net deposited). Bad debts by direct write-off (IRC §166). The slices and the owner's answers are in P4b. |
 | D-46 | Files only by handle: uploads in, downloads out (owner, 2026-10-23, via the question tool: "Uploads only"; and before it: "What we would DEFINITELY want to avoid is passing a bunch of BLOBs through AI context windows. That's just a pure waste.") | **Files never pass through an agent's context, in either direction.** In: every tool argument that carried a file's bytes or text inline is gone (`content_base64` and its `sha256` on `books.attach_receipt` and `books.file_document`, `w9_content_base64` and `w9_sha256` on `books.set_w9`, `csv_text` on `books.import_bank_csv` and `books.import_chart_csv`), with the 256 KiB inline limit; a file comes only by `books.begin_upload` and `wanderbooks upload`, named by its `upload_id` (`w9_upload_id`); the bytes stored already are still named by `existing_attachment_id`. Those five tools take no other argument, and any inline argument, on any tool, is refused before it runs as unknown, pointing to `books.begin_upload`. Out: every file a tool gave inline is handed over (D-29's `HandedFile`, a download command and its expiry): `books.export` in every format, `books.asset_labels`, and `books.get_receipt` view `bytes`; resource reads were and stay text (a receipt's resource is its meta). Small structured answers (reports as JSON data) are not files and stay. A token may keep 64 handed files at once (was 16), since every export is one now. Supersedes the plan's inline-bytes decision (section 2.1) and every planned inline path in 4.7. |
+| D-47 | Reversals stay posted; no reversal drafts (the engineer's recommendation from the 2026-10-26 review; the owner may revisit) | **A reversal is previewed, then posted in one call, every reversal check at the moment it posts; its evidence is its original's** (top decision 5 and D-12 already say so for old reversals; the live handbook and `ReceiptPolicy` say reversals need none; S1 built `books.void_document` as an immediate reversal and the owner upgraded to it). Evidence a reversal genuinely needs of its own (a bank's returned-item notice for a bounce) is attached right after, as every at-once tool works. Nothing of "reversal as a draft" is built: no `entry.reversal_drafted`, no `Step.draftReversal`, no `evidence: link_original \| later`. I-4 and I-5 are amended. `inherit_evidence` stays as the re-audit's annotation (D-12). The 2026-10-16 audit's defect 2 is closed by this and D-12, not by code. |
+| D-48 | Vault v2 and the TIN human pages are closed (2026-10-26 review; follows D-28, D-29, D-31) | **The vault stays v1** (`ledger-vault`: one key in `keys/legacy.key`, carried in every backup per D-31). Not built: HPKE, keyslots, a recovery key, `rekey`, `/h/tin`, `/h/w9`, `/h/unlock`, `request_tin_entry`, `set_w9_facts`, the GUI passphrase unlock, the removal of `set_tin`/`set_w9`/`get_w9`/`include_tins`. P7 is the TIN scanner's separator defect. Supersedes D-16 and the "P7 vault" clause of D-19; the hosted service (section 11, model B) owns client-side unwrap if it is ever built. |
+| D-49 | P4b deferrals (2026-10-26 review; the engineer's recommendation, the owner may revisit) | Deferred, each with a no-code procedure instead (8.3.6, the handbook): `books.adopt_control_line` and `books.assign_role { move_balance }` (P4b.14's remedies (a) and (c) cover a legacy hand line); `Movement::Recovery` (same year: reverse the write-off, then receive the payment; a later year: a plain entry to a "Bad debt recoveries" revenue account, the document staying Written off, §111); `receive_payment.excess_to` and customer credits (A-12; a replacement payment received before a bounce is known is parked through 2300 Customer Deposits, no role, then applied after the bounce is recorded); apportioning a purchase discount across a bill's asset lines (refused with the remedy: record the bill net, or reclassify Dr 6995 / Cr the asset); the per-account identity `owed_on` (needed only with `move_balance`). S7 is `write_off_invoice` alone. 8.4 holds the notes for when any is built. |
+| D-50 | The preview check is a digest in the result envelope, with no key (2026-10-26 review; amends I-6) | **Every tool called without `confirmed` returns `preview`, the SHA-256 of its canonical preview payload; every confirm takes it and refuses a stale one** (`stale_preview`). For a draft entry the payload is the draft's canonical state and the settings seq; for an operation without a draft (a close, a reconciliation, a disposal, a run, a document create, a settlement) it is the tool, its canonical arguments, the settings seq and the journal head seq, so a post by another session in between forces a re-preview (owner decision 3). No HMAC, no `keys/preview.key` (I-6 admitted a same-user key proves nothing), no "accepted without it for one release": required from P4 on. |
+| D-51 | P9 split (2026-10-26 review; honours top decision 4 and D-27) | **P9a now:** the self-host recipe (a system unit, no seccomp or Landlock lines: D-32), the move by `books adopt` with the head check (D-31: a backup clone is the transport; no `fetch`, no `verify-archive`), a static bearer over a tunnel for Claude Code and Codex, the two-user CI job. **P9b planned, after Q-6:** claude.ai and ChatGPT through OAuth 2.1 with an external identity provider (D-7 b recommended: no authorization server in-house, no external security review), `books.job` if a call is measured over claude.ai's limit. **P9c not planned:** the remote viewer replica, `books.invite`, passkeys and `/h/` pages for remote people, the MCP App upload widget, `openai/fileParams`; the viewer on another machine opens a backup clone read-only instead. |
+| D-52 | One remaining P4b upgrade (2026-10-26 review; applies A-11 after the `document_standing` go-ahead of 2026-10-24) | **`documents_v2` is the one journal feature for S4, S5, S6 and S7**, and P4's `drafts_v2` is declared in the same go-ahead, after S7 lands. Until then, on the owner's books, a write that carries a new field or event type is refused with the upgrade remedy and everything else works. ~~`invoice_sent`, `settlements`, `write_offs`, `control_lines`~~ are not separate features. Q-5 asks the owner whether to give the go-ahead earlier, after S4. |
+| D-53 | No `books.job` locally; no `ledger-view` or `ledger-extract` crate (2026-10-26 review) | Jobs, the 20 s rule and jobs as lease holders are not built locally (no call over the bridge approaches a client limit; 3.9 as built lets a running call finish before a close); they come with P9b if measured necessary. Needs attention lives in `ledger-package` over `PackageBooks` (U0b), not a new crate; extraction is in-process in `ledger-import` (P6), not a sandboxed subprocess (D-32). |
+| D-54 | P11 split (2026-10-26 review; D-24 to D-27 unchanged) | **P11a:** installers and updates. **P11b:** the agent dock and books homes. The dock starts the agent as an ordinary child process of the viewer's `Owner` (D-32 removed the helper and the confinement); the viewer stays read-only by design and by test. The two-key release manifest of D-25 is built unless the owner answers Q-4 "minisign only". |
 
 ### 10.2 Deferred
 
-- **D-7. OAuth for remote access.** This now applies only to the self-host remote path (P9). The options: (a) build a minimal authorization server into wanderbooks (passkeys, CIMD/DCR), self-contained and portable for self-hosters, which is recommended; or (b) delegate to an external IdP (Authentik, Ory, Keycloak) and only validate tokens. Settled when P9 starts.
+- **D-7. OAuth for remote access.** This applies only to the self-host remote path for claude.ai and ChatGPT (P9b). The options: (a) build a minimal authorization server into wanderbooks (passkeys, CIMD/DCR); or (b) delegate to an external identity provider (Authentik, Ory, Keycloak) and only validate tokens. The 2026-10-26 review recommends (b): no security-critical code in-house and no external review (D-51). Asked as Q-6 when P9b starts.
 - **D-17. Remote file intake beyond the drop page** (an email-in address) is deferred with the hosted service (section 11). P9 ships the MCP App upload widget only.
 
-### 10.3 To ask the owner at the P2 cutover
+### 10.3 Open questions for the owner, and the closed ones
 
-These are the only open owner questions. Ask them just before the move, one at a time, in plain English.
+**Open (2026-10-26).** Each is asked when its unit starts, one at a time, in plain English; none blocks the units before it.
+
+**Q-4 (before P11a step 5).** Releases: should the app check updates against our own signed release list as well (two keys, one on your hardware token and one offline, a version that only goes up, an expiry), as decided on 2026-10-18 (D-25), or is the packaging tool's own single-key signature plus Apple's and Microsoft's code signing enough? The second is simpler and already refuses an older version; the first also stops a frozen or replayed update list. Recommended: the first, as decided, since the key work is small once the token exists.
+
+**Q-5 (when S4 lands).** The receivables and payables work needs one more go-ahead to switch your books to the new format (numbers, terms, line accounts, sent records, discounts, write-offs). Should we ask once, after everything is built (write-offs and discounts included), or earlier, after invoice numbers and terms land, with a second ask later? Recommended: once, after everything, unless you need numbered invoices sooner.
+
+**Q-6 (before P9b).** For claude.ai on the web to reach the books on your own server, it needs a sign-in service. Should we run an existing one (Authentik, Ory or Keycloak) beside the books, which we only trust tokens from, or write our own small one into the books? Recommended: an existing one (D-7 b): no security-critical code of ours, no outside review needed.
+
+**Q-7 (when P11b starts).** When the app connects Codex to a company's books folder, may it mark that folder as trusted in Codex's own settings, or should Codex ask you itself the first time? Recommended: let Codex ask.
+
+**Closed: the P2 cutover questions (Q-1 to Q-3).** Answered 2026-10-17 and 2026-10-20; the cutover happened 2026-10-20 (P2 slice 9). Kept for the record:
 
 **Q-1. Where should the automatic backups go?** The books back themselves up after every change. Where should that copy live: in a private git repository you name (for example on your own git server), or on another disk? Either way, the backup includes the whole history and the sealed tax ID numbers, and it is locked with a key only you hold.
 
@@ -2015,6 +2013,27 @@ These are the only open owner questions. Ask them just before the move, one at a
 The cutover's check adds: the project folder holds none of the above, and `wanderbooks doctor` is clean.
 
 *For the engineer:* Q-1 was D-3, Q-2 was D-4 and Q-3 was D-2. Q-1's technical side is settled: `archive.git` is seeded from the existing git history, filtered to the journal and blob paths, includes the vault ciphertext, and is age-encrypted as a whole on push (3.4, 5.5). (Since D-31 not encrypted, and slice 7 begins each book's archive at its first backup: whether to seed it from the old history is the cutover's question.)
+
+
+### 10.4 Decisions by unit
+
+| Unit | Decisions it rests on |
+|---|---|
+| U0a, U0b, U0c | D-33 (no mutation runs), D-53 (no `ledger-view`) |
+| P4b S4 | A-1, A-2, A-3, A-7, A-10, A-13; D-39, D-43, D-45, D-46, D-52 |
+| P4b S5 | A-4; D-17, D-52 |
+| P4b S6 | A-4, A-8, A-12; D-40, D-42, D-49, D-52 |
+| P4b S7 | A-5; D-49, D-52 |
+| P4 | top decision 3; D-12, D-33, D-39, D-47, D-50, D-52 |
+| P5 | D-28, D-44, D-46, D-53; I-11, I-12 |
+| P6 | D-15, D-17, D-20, D-32, D-46, D-53 |
+| P7 | D-28, D-29, D-31, D-48 |
+| P8 | D-9, D-12, D-39 |
+| P9a, P9b, P9c | top decision 4; D-7, D-27, D-28, D-31, D-32, D-51 |
+| P10 | D-9, D-12, D-29, D-31, D-47 |
+| P11a, P11b | D-19, D-22, D-24, D-25, D-26, D-27, D-32, D-54; Q-4, Q-7 |
+| P12 | D-33 |
+| P13 | D-34 |
 
 ---
 

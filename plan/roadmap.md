@@ -23,7 +23,10 @@ The primary interface is MCP, not a cloned GUI (the owner's call, 2026-10-10).
 - Parallel run with the sheet; cutover per the cutover rule
   (`docs/parallel-run.md`).
 
-## Served (next, 2026-10-16)
+## Served (2026-10-16; reworked for a team 2026-10-26)
+
+The remaining work, its order, its dependencies and its hand-off are in
+`plan/served.md` section 8.0; the team's prompt is `plan/HANDOFF.md`.
 
 The books become a server that owns its data; every agent reaches them
 only through the MCP, from anywhere; no scaffold. Phases P0 (guard

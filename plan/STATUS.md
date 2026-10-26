@@ -1,6 +1,31 @@
-# STATUS — 2026-10-22: "Served" P0 to P3 live, with Projects
+# STATUS — 2026-10-26: "Served" P0 to P3 and P4b S1-S3 live; the plan reworked for a team
 
-## Now: Served (plan/served.md), P0 to P3 live; P4 next
+## Now: the plan is a hand-off (plan/served.md §8.0); P4b S4 next
+
+**2026-10-26: the plan was reviewed and rewritten for a team of engineers
+working in parallel worktrees.** A nine-stage Elephant-Goldfish review
+(`plan/review-2026-10-26/`, consolidated in
+`consolidated_review_report.md`) found `plan/served.md` sound as a design
+record and not executable as a hand-off: no remaining unit could be built
+from the text alone, P7 contradicted D-28/D-29, P4 was never reconciled
+with the P4b slices built after it, every code pointer was stale, and
+nothing stated status, dependencies, file ownership or done criteria.
+Section 8 of the plan is new: 8.0 (the status and dependency table, the
+merge order, the shared files and allocated names, the eight-field unit
+template, the recipes R-A to R-G, the journal-safety checklist, how to
+work in a worktree), 8.1 (what landed, with As-built blocks for P4b
+S1-S3), 8.2 (every remaining unit in merge order: U0a, U0b, U0c, P4b S4
+to S7, P4, P5, P6, P7, P8, P9a, P10, P11a, P11b, P12, P13), 8.3 (the
+corrected P4b reference design; the owner's answers numbered A-1 to
+A-14), 8.4 (what is not scheduled, and why). Decisions D-47 to D-54 and
+open questions Q-4 to Q-7 were added; superseded sentences in sections 1
+to 7 and 9 are struck through with the decision that superseded them.
+The hand-off prompt for the implementing team is `plan/HANDOFF.md`.
+Nothing in the code changed. **Next: U0a and U0b (the pre-steps), then
+P4b S4 with S5 and S7 beside it (8.0.2).** The first owner questions in
+line are Q-5 (one upgrade after S7, or an earlier one after S4) and Q-4
+(the release manifest, before P11a's signing step).
+
 
 The 2026-10-16 audit of the first company's books (62 verified findings,
 20 engine defects) and the design discussion that followed produced

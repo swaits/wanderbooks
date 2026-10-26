@@ -134,3 +134,35 @@ tokio mutex never poisons. So the server fails closed: a panic in a
 request (its task, or while it holds the guard) sets `stopped`, and every
 later request, on every session, is refused until a restart, which
 re-verifies the journal.
+
+## bookspec (`bookspec/`, P13)
+
+bookspec is the formal accounting specification (D-34): every rule stated
+normatively, sourced, with a symbolic form and concrete examples, and a
+conformance harness any engine can be run against. It lives in its own
+Cargo workspace inside this repository until the harness is stable enough
+to move to its own repository (P13 step 6, D-34, Z-17):
+
+- `bookspec/checker` is engine-independent: the example schema and its
+  parser (`Example::from_toml`, every structure `deny_unknown_fields`, the
+  cross-field shape checked by `Example::validate`), the rule catalogue
+  (`rules()`, `RuleId` `BS-<area>-<n>`, the refusal-to-rule table) and the
+  `Engine` trait (`load`, `apply`, `query`, `claims`, and `change` for a
+  `[[changes]]` entry, which posts no entry and so is neither a setup nor
+  an event).
+- `bookspec/runner` drives any `Engine` through the examples and reports
+  per rule: pass, fail or not claimed. It compares the engine's answers
+  with the examples' exact expected values; it never asks the engine
+  whether its own answer is right.
+- `bookspec/spec/rules-index.md` maps B-1 to B-45 to the bookspec ids;
+  `docs/spec/rules.md` carries each stated rule's id under its heading.
+- `crates/ledger-core/tests/bookspec.rs` is the wanderbooks adapter: it
+  implements `Engine` over `Store` (a dev-dependency only, so no engine
+  crate depends on the specification) and remains the loader that checks
+  every figure. `ledger-package` answers the formats appendix's IIF
+  queries through the same adapter, as the package test does.
+
+Neither bookspec crate depends on `ledger-core`; the dependency points
+inward from the adapter. `just check` runs the bookspec workspace's
+format, clippy and tests beside the wanderbooks workspace's, so an example
+cannot rot (P13 step 1).

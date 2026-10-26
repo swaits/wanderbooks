@@ -3,18 +3,23 @@
 Every rule the engine enforces, the authority for it, and what checks it.
 Status is **AUTHORITY** (a source states the rule), **CONVENTION** (common
 practice no authority states; the best reference is given), or
-**DECISION** (a human chose, and when). Vendored sources are in
+**CHOICE** (a human chose, and when; bookspec's CHOICE: the specification
+names the options, an engine declares its pick). Vendored sources are in
 `sources/`; FASB and OpenStax are quoted briefly under their copyright and
 license (see `README.md`). Quotes from FASB's Codification were read in
 Deloitte's DART roadmaps, which reproduce it ("FASB Accounting Standards
 Codification: Copyright © 2005 - 2026 by Financial Accounting
 Foundation").
 
-Spec blocks in the code cite these as `SOURCE: rules.md B-n`.
+Spec blocks in the code cite these as `SOURCE: rules.md B-n`. Every rule
+also has a bookspec identifier, `**bookspec:** BS-<area>-<n>`: the table
+from B-1 to B-45 is `bookspec/spec/rules-index.md` (P13, D-34).
 
 ---
 
 ## B-1 Every entry is a double entry: debits equal credits
+
+**bookspec:** `BS-entry-1`
 
 **Status:** AUTHORITY
 
@@ -28,13 +33,15 @@ Spec blocks in the code cite these as `SOURCE: rules.md B-n`.
 
 **Enforced:** `kernel::check_lines` via `JournalEntry::validate` (two or
 more lines, debits = credits exactly). A line's account must exist and
-take postings when the line is added, not only at post: DECISION
+take postings when the line is added, not only at post: CHOICE
 (the owner, 2026-10-13), `Ledger::add_line`
 (`a_line_on_an_unknown_or_placeholder_account_is_refused_when_added`). **Checked:** Kani
 `check_lines_is_exact`, `accepted_entry_nets_to_zero`; Lean
 `Accepted.net_zero`; property `prop_posted_entries_balance`.
 
 ## B-2 A line's amount is positive; its side gives the direction
+
+**bookspec:** `BS-entry-2`
 
 **Status:** CONVENTION
 
@@ -50,6 +57,8 @@ that every line reads one way (2026-10-13, found by the formal pass).
 
 ## B-3 One money through the ledger; foreign amounts at the transaction-date rate
 
+**bookspec:** `BS-ledger-1`
+
 **Status:** AUTHORITY
 
 - Pacioli ch. 36: "the money that you reckon by at the beginning should be
@@ -62,7 +71,7 @@ that every line reads one way (2026-10-13, found by the formal pass).
 A foreign line is booked in the base currency's smallest unit (ISO 4217
 minor units, `sources/iso-4217.md`), half away from zero; a ledger in one
 money holds no fractions of its smallest unit, and its cash can then
-match a bank statement: DECISION (the owner, 2026-10-13), after the GnuCash
+match a bank statement: CHOICE (the owner, 2026-10-13), after the GnuCash
 cross-check found wanderbooks kept $108.34567 where GnuCash booked
 $108.35. Lines booked before then replay as booked.
 
@@ -84,6 +93,8 @@ GnuCash oracle.
 
 ## B-4 Five elements, closed list
 
+**bookspec:** `BS-ledger-2`
+
 **Status:** AUTHORITY (definitions); the five-type chart is CONVENTION
 
 FASB Concepts Statement No. 8, Ch. 4 (2021), which replaced Concepts
@@ -97,10 +108,12 @@ or carrying out other activities." E81 expenses "are outflows or other
 using up of assets … or incurrences of its liabilities …".
 
 **Enforced:** `AccountType` (five variants). A child account has its
-parent's type: DECISION (the owner, 2026-10-13), `Ledger::add_account`
+parent's type: CHOICE (the owner, 2026-10-13), `Ledger::add_account`
 (`ParentTypeMismatch`). **Checked:** `a_child_account_has_its_parents_type`.
 
 ## B-5 Normal balances
+
+**bookspec:** `BS-ledger-3`
 
 **Status:** CONVENTION
 
@@ -117,6 +130,8 @@ with a credit, their 'normal' balance is a credit." Pacioli ch. 12: capital
 
 ## B-6 The trial balance balances
 
+**bookspec:** `BS-statement-1`
+
 **Status:** AUTHORITY
 
 Pacioli ch. 36: "the total of the credits — I do not say creditors —
@@ -129,6 +144,8 @@ Lean `trial_balance_iff`, `Reachable.trial_balance`,
 
 ## B-7 The accounting equation
 
+**bookspec:** `BS-statement-2`
+
 **Status:** AUTHORITY
 
 CON 8 Ch. 4 ¶E62 (cited): equity "is the difference between the entity's
@@ -140,6 +157,8 @@ of equity (B-11).
 `prop_balance_sheet_balances`.
 
 ## B-8 Posted is forever: the book is written only forward
+
+**bookspec:** `BS-ledger-4`
 
 **Status:** AUTHORITY
 
@@ -158,6 +177,8 @@ hash-chained. **Checked:** Lean `Step.extends`, `Steps.extends`; property
 
 ## B-9 A mistake is corrected by an opposite entry, never erased
 
+**bookspec:** `BS-ledger-5`
+
 **Status:** AUTHORITY
 
 Pacioli ch. 31 (the *storno*): "you shall make another entry opposite this
@@ -172,13 +193,17 @@ Lean `accepted_reversal_iff`, `movement_with_reversal`.
 
 ## B-10 An entry is reversed at most once; a closing entry never
 
-**Status:** DECISION (the owner, 2026-10-13)
+**bookspec:** `BS-ledger-6`
+
+**Status:** CHOICE (the owner, 2026-10-13)
 
 Follows from B-9 (a correction corrects once) and B-11 (a closed period
 stays closed). **Enforced:** `Ledger::check_reversal`. **Checked:**
 `an_entry_is_reversed_at_most_once`, `a_closing_entry_is_never_reversed`.
 
 ## B-11 Revenue and expenses close into profit and loss, and that into capital
+
+**bookspec:** `BS-period-1`
 
 **Status:** AUTHORITY (mechanics); the account the net lands in depends on
 the entity
@@ -197,13 +222,15 @@ the entity
 
 ## B-12 A closed period takes no new postings; periods close in order
 
+**bookspec:** `BS-period-2`
+
 **Status:** CONVENTION
 
 Periods themselves: IRS Pub. 538 (`sources/irs-periods-and-methods.md`)
 defines the tax year, calendar and fiscal. Locking a closed period and
 closing in order are practice (and follow from B-8: a closed period's
 book is not rewritten). Periods nest (a month in a quarter in a year)
-and never partially overlap: DECISION (the owner, 2026-10-13),
+and never partially overlap: CHOICE (the owner, 2026-10-13),
 `Ledger::create_period` (`PeriodsOverlap`;
 `periods_nest_but_never_partially_overlap`). **Enforced:** `closed_period_containing`,
 `CloseOutOfOrder`, `Store::rehearse`. **Checked:** Lean `Steps.frozen`;
@@ -212,10 +239,12 @@ closed period).
 
 ## B-13 Partners share income by the partnership agreement; capital accounts carry it
 
+**bookspec:** `BS-partner-1`
+
 **Status:** AUTHORITY (shares; capital accounts; a count ends where the
-members or shares change: §706(d)(1), Treas. Reg. §1.706-4(a)); DECISION
-(cent rounding, the owner 2026-10-13); DECISION (counted from the company's
-first close, D-10, 2026-10-16); DECISION (the statement splits unclosed
+members or shares change: §706(d)(1), Treas. Reg. §1.706-4(a)); CHOICE
+(cent rounding, the owner 2026-10-13); CHOICE (counted from the company's
+first close, D-10, 2026-10-16); CHOICE (the statement splits unclosed
 earnings the same running way, D-38, 2026-10-20)
 
 - 26 U.S.C. §704(a) (`sources/irs-partnerships.md`): "A partner's
@@ -238,7 +267,7 @@ earnings the same running way, D-38, 2026-10-20)
   worksheet carries the book capital analysis, and beside it the tax-basis
   capital as far as the books know it (B-36).
 - **No authority** says how to round a share to the cent. Largest
-  remainder, ties to the member listed first: DECISION (the owner,
+  remainder, ties to the member listed first: CHOICE (the owner,
   2026-10-13). Closes made before then replay with the last member
   absorbing it.
 - **Members closes split cumulatively, counted from the company's first
@@ -323,7 +352,7 @@ earnings the same running way, D-38, 2026-10-20)
   service contract credited straight to capital is property (a contract
   handed over), while a prepaid service they paid a vendor for on the
   company's behalf, booked through Due to Shareholders (Dr prepaid / Cr
-  2100, then Dr 2100 / Cr capital), is cash (DECISION, the owner,
+  2100, then Dr 2100 / Cr capital), is cash (CHOICE, the owner,
   2026-10-15); and it is shared among
   members credited in one entry in proportion to their credits
   (`k1` INVARIANTS 3, 4, 6).
@@ -364,7 +393,9 @@ earnings the same running way, D-38, 2026-10-20)
 
 ## B-14 Statements: P&L for a period; cash flows by the direct method
 
-**Status:** AUTHORITY, except where marked CONVENTION or DECISION
+**bookspec:** `BS-statement-3`
+
+**Status:** AUTHORITY, except where marked CONVENTION or CHOICE
 
 The P&L covers a period; a closing entry is not income or spending
 (B-11), so period statements exclude it.
@@ -575,7 +606,7 @@ in public sources that reproduce the Codification, `sources/fasb-asc.md`):
     close has no cash line.
 11. **What a member or a lender pays, or receives, for the company is
     cash the company borrowed (or a member contributed) and spent**
-    (DECISION, D-42, the owner, 2026-10-20, revising D-35's first point;
+    (CHOICE, D-42, the owner, 2026-10-20, revising D-35's first point;
     bookspec's CHOICE: the standard leaves it open).
     *Source.* The Codification does not address a payment a third party
     makes on the entity's behalf (PwC Viewpoint FSP 6.9.3: "ASC 230 does
@@ -648,7 +679,7 @@ in public sources that reproduce the Codification, `sources/fasb-asc.md`):
       contribution), and none of the guides read presents an expense
       someone paid on the entity's behalf as noncash. The books' own K-1
       worksheet already counts it as a cash contribution (`k1.rs`
-      INVARIANT 3, DECISION 2026-10-15), so the two agree.
+      INVARIANT 3, CHOICE 2026-10-15), so the two agree.
     - **Card purchases** follow the card's classification (D-35,
       unchanged): on a card listed as financing, the issuer is a lender
       that paid the merchant, so the purchase is borrowed and spent and the
@@ -761,6 +792,8 @@ the tools' `ledger-cli` `tests/p3_seams.rs`).
 
 ## B-15 Depreciation: straight line, salvage never depreciated, partial months by days
 
+**bookspec:** `BS-asset-1`
+
 **Status:** CONVENTION (book method); AUTHORITY for tax conventions, which
 wanderbooks does not apply
 
@@ -770,7 +803,7 @@ life of the asset," with "(Cost – salvage value)/Useful life"; partial
 periods: "A common method is to allocate depreciation expense based on the
 number of months the asset is owned in a year." wanderbooks prorates
 partial months by days, including a schedule through a mid-month date
-(DECISION, the owner 2026-10-13). ASC 360-10-35-4 (read 2026-10-14,
+(CHOICE, the owner 2026-10-13). ASC 360-10-35-4 (read 2026-10-14,
 `sources/fasb-asc.md`) prescribes no method: cost less salvage is spread
 over the useful life "in a systematic and rational manner," as equitably
 as possible to the periods served; straight line by days is one such
@@ -948,6 +981,8 @@ dates, `accumulated_posted` and its edges,
 
 ## B-16 Prepaid expenses and deferred revenue are recognized over the period benefited or earned
 
+**bookspec:** `BS-prepaid-1`
+
 **Status:** AUTHORITY (revenue); CONVENTION (prepaids)
 
 ASC 606-10-45-2 (cited): payment before transfer → "the entity shall
@@ -965,13 +1000,13 @@ spreads by the day from its start (the first day covered), as
 depreciation does (B-15 rules 1-4: full months equal, the first and last
 partial months by their days, the last taking what the others leave,
 rounded to the minor unit): a 12-month policy from March 15 posts
-thirteen month ends, a small March and a small final March (DECISION,
+thirteen month ends, a small March and a small final March (CHOICE,
 the owner, D-11 confirmed in D-37, 2026-10-20). Schedules registered before
 P3 keep equal months, the last absorbing rounding, forever: a posted
 month's replay re-derives its plan. `books.schedule_convention` sets the
 convention new schedules take (unset: daily). An equal-months schedule
 starts on the 1st of a month, for prepaid expenses and deferred revenue
-alike (DECISION, the owner, D-37, 2026-10-20): revenue is never recognized
+alike (CHOICE, the owner, D-37, 2026-10-20): revenue is never recognized
 before it is earned (ASC 606-10-25-23), and one rule for both is simpler
 and never early; schedules an earlier version took mid-month replay as
 they were. A reversed month is un-posted, so it is due again; a month in
@@ -1008,6 +1043,8 @@ B-16 cites them (P3 depreciation review R7).
 
 ## B-17 Platform payouts are recorded gross when the business is the principal
 
+**bookspec:** `BS-revenue-1`
+
 **Status:** AUTHORITY
 
 ASC 606-10-55-37 (cited): "An entity is a principal if it controls the
@@ -1024,17 +1061,19 @@ CPA confirms.
 
 ## B-18 Aging buckets: Current, 1–30, 31–60, 61–90, 90+ days past due
 
-**Status:** CONVENTION (bucket edges); DECISION (due today is Current)
+**bookspec:** `BS-arap-1`
+
+**Status:** CONVENTION (bucket edges); CHOICE (due today is Current)
 
 ASC 326-20-55-37/38 (cited) illustrates "one way" to age trade
 receivables with buckets "current … 1–30 days past due … 31–60 … 61–90 …
 more than 90 days past due"; it is illustrative, not a rule. The FFIEC
 Call Report instructions (bank regulators, not binding here): "The past
 due status … should be determined in accordance with its contractual
-repayment terms." A document due today is not yet past due: DECISION
+repayment terms." A document due today is not yet past due: CHOICE
 (the owner, 2026-10-13). Aging as of a date shows only documents issued by
 then, less only payments made by then; and a payment never predates its
-invoice or bill (a real prepayment is a deposit): DECISIONS (the owner,
+invoice or bill (a real prepayment is a deposit): CHOICES (the owner,
 2026-10-13). What a document owes as of a date is read from its ledger
 lines that stand then (B-38): a void invoice is in no bucket, a payment
 reversed by then no longer counts, one reversed later still does; the
@@ -1050,8 +1089,10 @@ buckets partition what the documents owe, exactly.
 
 ## B-19 1099 reporting thresholds, payment methods, and decisions
 
+**bookspec:** `BS-1099-1`
+
 **Status:** AUTHORITY (`sources/irs-1099-thresholds.md`,
-`sources/irs-1099-payment-method.md`), with the DECISIONs named below.
+`sources/irs-1099-payment-method.md`), with the CHOICEs named below.
 
 $600 through 2025; $2,000 for payments made after Dec. 31, 2025 (26 U.S.C.
 §6041(a), §6041A(a)(2), as amended by Pub. L. 119-21 §70433; §70433(f):
@@ -1107,7 +1148,7 @@ card's account (a business_card method's), or other. First match wins:
 |---|---|
 | the entry's method pays through this line's account, card or network | card (excluded) |
 | the entry's method pays through this line's account, bank or a member's own cash or check | counts |
-| a cash account (no method, or one naming another account) | counts: presumed check, ACH or transfer (DECISION D-40, owner, 2026-10-20); tag a debit-card payment with the card |
+| a cash account (no method, or one naming another account) | counts: presumed check, ACH or transfer (CHOICE D-40, owner, 2026-10-20); tag a debit-card payment with the card |
 | a financing account, or a member's or platform method's account (no method, or one naming another account) | undetermined until the method is recorded |
 | a company card's account (a business_card method's) | card (excluded) |
 | anything else (an expense, payables, prepaid) | no payment line |
@@ -1148,7 +1189,7 @@ employee's wages go on Form W-2 (§1.6041-2(a)(1)). Paid by card is never a
 vendor's reason: it is a property of each payment. Every new decision
 names who made it and when (`settings::Source`).
 
-**Dated decisions** (DECISION D-40, owner, 2026-10-20: "legally this has
+**Dated decisions** (CHOICE D-40, owner, 2026-10-20: "legally this has
 to be 2 dated statuses"). Each decision takes effect on a date (a W-9's,
 or a tax election's: Form 8832's effective date, §301.7701-3(c)(1)(iii)),
 or from the beginning; each payment takes the decision in force on its
@@ -1203,7 +1244,7 @@ named beside another vendor (`add_vendor`), checked by
 `a_named_party_gaining_a_vendor_record_keeps_one_vendor_per_entry`.
 Shares that don't resolve count the whole payment toward the vendor (the
 conservative answer) and the entry is listed (`Vendor1099Report::
-unresolved`; a `books.vendor_1099` note). DECISION (the owner,
+unresolved`; a `books.vendor_1099` note). CHOICE (the owner,
 2026-10-15: shares).
 
 **The quieter note.** Untagged posted entries are named only when they
@@ -1229,7 +1270,7 @@ contradict.
 (`ledger_core::rules::THRESHOLD_1099`, known through 2026, review from
 2026-11-01). For a later year the engine refuses with `RuleNotKnown`
 rather than guess; the MCP digest and the viewer's "Needs attention" list
-flag the rule once it is due (DECISION, the owner, 2026-10-13). The
+flag the rule once it is due (CHOICE, the owner, 2026-10-13). The
 bucket table is `kernel::payment_bucket` (Kani `payment_bucket_is_the_table`,
 `payment_split_is_exact`, `net_buckets_keeps_the_total`). **Checked:**
 `an_unknown_year_threshold_is_never_guessed`,
@@ -1266,6 +1307,8 @@ MCP tests through a real books server (ledger-cli); bookspec
 
 ## B-20 Every transaction has supporting documents; records are kept
 
+**bookspec:** `BS-ledger-7`
+
 **Status:** AUTHORITY (`sources/irs-records.md`)
 
 IRS Pub. 583: "In addition, you must keep supporting documents"; they
@@ -1276,6 +1319,8 @@ generally; 7 for bad debts).
 **Enforced:** the MCP receipt policy (not the engine; R-13).
 
 ## B-21 Exact amounts in the books; rounding only on returns
+
+**bookspec:** `BS-entry-3`
 
 **Status:** AUTHORITY (for where rounding happens)
 
@@ -1289,6 +1334,8 @@ cents (and FX precision) exactly (R-2).
 
 ## B-22 Expense or capitalize (book policy, mirrors tax)
 
+**bookspec:** `BS-asset-2`
+
 **Status:** AUTHORITY (`sources/irs-capitalization.md`)
 
 Treas. Reg. §1.263(a)-1(f)(1)(ii)(D) sets $500 per invoice or item for a
@@ -1301,8 +1348,10 @@ taxable years beginning on or after January 1, 2016. The 12-month rule:
 
 ## B-23 Control roles: one account each, of the right kind, moved only when empty
 
+**bookspec:** `BS-ledger-8`
+
 **Status:** CONVENTION (a control account agrees with the records it
-controls); DECISIONS (the owner, 2026-10-13 and 2026-10-15)
+controls); CHOICES (the owner, 2026-10-13 and 2026-10-15)
 
 Invoices, bills, payroll, and closes post to accounts the engine picks by
 role: receivables, revenue, payables, general expense, retained earnings,
@@ -1310,9 +1359,9 @@ salary and payroll tax expense, and five payroll withholdings. A role uses
 its default code (1200, 4000, 2000, 6999, 3999, 6100, 6110, 2110–2150)
 until the human assigns it one of the chart's own accounts; the assignment
 is journaled, so replay never depends on a setting outside the journal
-(DECISION, 2026-10-15). A role's account is postable and of the role's
+(CHOICE, 2026-10-15). A role's account is postable and of the role's
 type (B-4), and the engine refuses one that isn't rather than renumber
-the chart (DECISION, 2026-10-13). No account fills two roles. A
+the chart (CHOICE, 2026-10-13). No account fills two roles. A
 receivables, payables, withholding, or retained earnings account must keep
 agreeing with what it controls (open invoices, open bills, taxes withheld,
 closed earnings): such a role moves only when its account holds no
@@ -1340,7 +1389,9 @@ frees its code); the control guard and `Ledger::control_check` (B-38).
 
 ## B-24 Asset tags: one label per asset, never reused
 
-**Status:** DECISION (the owner, 2026-10-15)
+**bookspec:** `BS-asset-3`
+
+**Status:** CHOICE (the owner, 2026-10-15)
 
 Each fixed asset may carry a tag, the label stuck on the thing itself
 (generated `PREFIX-0001` or the human's own: 1–32 ASCII letters, digits,
@@ -1363,8 +1414,10 @@ the books' figure, never the schedule's (P3, defect 13).
 
 ## B-25 Tax figures beside book value: the §723 basis, the depreciable basis, the §704(c) built-in gain
 
-**Status:** AUTHORITY (`sources/irs-partnership-basis.md`); DECISION
-(the owner, 2026-10-15: the register carries tax basis); DECISION D-41
+**bookspec:** `BS-asset-4`
+
+**Status:** AUTHORITY (`sources/irs-partnership-basis.md`); CHOICE
+(the owner, 2026-10-15: the register carries tax basis); CHOICE D-41
 (the owner, 2026-10-20: the depreciable basis of property a member
 contributed from personal use is the lesser of its fair market value and
 the member's adjusted basis, the CPA to confirm at year end; the
@@ -1440,8 +1493,10 @@ never assumed). **Checked:** `ledger-core` `tests/spec_asset_basis.rs`,
 
 ## B-26 Parties: one directory, no full TIN in the books
 
+**bookspec:** `BS-partner-2`
+
 **Status:** AUTHORITY (truncated TINs: `sources/irs-truncated-tin.md`);
-DECISIONS (the owner, 2026-10-15)
+CHOICES (the owner, 2026-10-15)
 
 Everyone the company deals with is a party, with roles (vendor,
 contractor, customer, employee, member, payout platform, tax agency,
@@ -1451,12 +1506,12 @@ not archived, ignoring case and surrounding space. A W-9 is recorded as its
 facts and the TIN's last four digits (the part a truncated TIN shows,
 Treas. Reg. §301.6109-4(a)); no party field may hold a nine-digit number,
 and the full TIN lives only in the encrypted vault, outside the journal
-(DECISION). W-9 facts need a 1099 role (contractor, landlord); W-4 facts
+(CHOICE). W-9 facts need a 1099 role (contractor, landlord); W-4 facts
 need the employee role; payroll lines that name their employee name a
 party with that role. A project's text (its name, description, links and
 notes: B-37) holds no full TIN either (`settings::line_text`,
 `long_text`). A link is a web address, so its rule reads it as one
-(`settings::holds_printed_tin_in_link`, DECISION of this rule, so store
+(`settings::holds_printed_tin_in_link`, CHOICE of this rule, so store
 listings can be kept): the printed SSN (3-2-4) and EIN (2-7) forms and a
 bare nine digits standing alone are refused, but nine digits joined to a
 letter or to `/ = ? & #` are an id in a path or query (an app store
@@ -1471,13 +1526,13 @@ under the book's own key, `keys/legacy.key` beside it): `books.set_w9`
 journals only the last four and the vault record's hash; the signed W-9
 goes there too, never to the attachment store. Any party may have its
 TIN in the vault, whatever its roles: every member's (for their K-1) and
-every 1099 payee's belongs there (DECISION, the owner, 2026-10-15: "In the
+every 1099 payee's belongs there (CHOICE, the owner, 2026-10-15: "In the
 vault, that's the WHOLE reason we built it. And it needs to be in the
 damn CPA package."). `books.set_tin` stores one for any party; the books
 journal its TIN facts (type, last four, the record's hash:
 `party.tin_set`), which never disagree with its W-9 facts' last four. No
 tool output, error, or log holds a full TIN except `books.vendor_1099`
-with `include_tins` (DECISION, the owner, 2026-10-15: for the CPA, when
+with `include_tins` (CHOICE, the owner, 2026-10-15: for the CPA, when
 asked): a refusal that quotes its input masks any TIN in it
 (`parties::redact_full_tins`, checked by `refusals_never_echo_a_tin`),
 and a party text field refuses nine digits however they are separated
@@ -1498,10 +1553,10 @@ over as an export the asking token fetches with `wanderbooks download`
 (kept 15 minutes), never inline (D-44; since D-46 no tool takes or
 gives any file's bytes inline: files come in only by upload and go out
 only by download). (Until slice 6 they were
-written only outside the books dir: DECISION, P0 review, 2026-10-16, so
+written only outside the books dir: CHOICE, P0 review, 2026-10-16, so
 none could be filed back in as a receipt and read out again.) No file
 holding a full TIN is filed into the books
-(DECISION, P0 review round 2, 2026-10-16): the server keeps, beside the
+(CHOICE, P0 review round 2, 2026-10-16): the server keeps, beside the
 vault, the SHA-256 of every file it read or wrote with full TINs (the W-9
 `books.set_w9` reads, recorded once the call has passed every check, just
 before the vault keeps it, so a refused call marks no file; each
@@ -1526,9 +1581,9 @@ or dot followed by a digit, on either side,
 except the company's own EIN as its settings hold it, printed 2-7: it is
 the company's, no person's, the settings already hold it in full (B-29),
 and every company document goes into the books, its formation papers and
-plans printing it (DECISION, the owner, 2026-10-17); (a) still refuses it
+plans printing it (CHOICE, the owner, 2026-10-17); (a) still refuses it
 should the vault hold that number for a party. Full-width digits and
-Unicode hyphens and spaces count as their ASCII kin (`tin_files.rs`). The text check is narrow on purpose (DECISION,
+Unicode hyphens and spaces count as their ASCII kin (`tin_files.rs`). The text check is narrow on purpose (CHOICE,
 the owner, 2026-10-16): bank exports are filed for reconciliation, and
 their routing numbers, long references and dates next to amounts are
 not TINs; the broad `has_full_tin` reading stays on what the server says
@@ -1536,7 +1591,7 @@ not TINs; the broad `has_full_tin` reading stays on what the server says
 answer would tell an agent whether a text it chose holds a vault TIN;
 the tools show each TIN's last four, so an agent filing texts full of
 nine-digit numbers ending in those four could find the TIN in about 17
-filings. So (a) answers for at most two candidates a filing (DECISION,
+filings. So (a) answers for at most two candidates a filing (CHOICE,
 P0 review, 2026-10-16): before the vault is opened, a text holding more
 than two distinct TIN-shaped numbers (in any rendering (a) reads; one
 number written several ways counts once) that end in the last four of a
@@ -1593,10 +1648,12 @@ unit tests in `tin_files.rs`.
 
 ## B-27 The journal format gate: newer is not corrupt
 
-**Status:** DECISION (the owner, 2026-10-16; `plan/served.md` 5.1 and P0);
-DECISION (P0 review, 2026-10-16: a line's own hash is checked before the
+**bookspec:** `BS-format-1`
+
+**Status:** CHOICE (the owner, 2026-10-16; `plan/served.md` 5.1 and P0);
+CHOICE (P0 review, 2026-10-16: a line's own hash is checked before the
 line is called newer; the envelope and its hash are frozen across
-formats); DECISION (the owner, 2026-10-20, D-39, and `plan/served.md`
+formats); CHOICE (the owner, 2026-10-20, D-39, and `plan/served.md`
 3.9: older books move to a newer format only with the owner's go-ahead,
 asked at every open until given)
 
@@ -1789,11 +1846,13 @@ schema); `ledger-mcp` `local.rs` (`format_upgrade_waits_for_consent`,
 
 ## B-28 What new commands take: four-digit years, amounts a line can carry
 
+**bookspec:** `BS-entry-4`
+
 **Status:** CONVENTION (ISO 8601's basic calendar dates have four-digit
 years, as do the spreadsheet and PDF formats the books export to);
-DECISION (P0 review round 3, 2026-10-16, finding S1: the server stops
+CHOICE (P0 review round 3, 2026-10-16, finding S1: the server stops
 for every session when a request panics, so no input may reach one);
-DECISION (P0 review round 4, 2026-10-17: posted is forever, so the
+CHOICE (P0 review round 4, 2026-10-17: posted is forever, so the
 bounds are the commands', never replay's)
 
 **New commands.** Every date a command takes or derives is in
@@ -1904,7 +1963,9 @@ pinned; every tool over every old book) and `server.rs`
 
 ## B-29 The books keep how they are kept
 
-**SOURCE:** DECISION (plan/served.md I-3, owner decisions of 2026-10-16:
+**bookspec:** `BS-ledger-9`
+
+**SOURCE:** CHOICE (plan/served.md I-3, owner decisions of 2026-10-16:
 "the journal holds all books state"; light governance: decisions are
 recorded with who made them and when, not as paperwork); IRS Pub. 538 and
 the rules of B-1 to B-28 for what each setting means.
@@ -1978,12 +2039,14 @@ checked to change no figure or entry; `approval_rules_off_by_default`,
 
 ## B-30 A report asked for without dates covers this fiscal year so far
 
+**bookspec:** `BS-period-3`
+
 **Status:** AUTHORITY for the period (IRS Pub. 538,
 `sources/irs-periods-and-methods.md`: "A tax year is an annual accounting
 period for keeping records and reporting income and expenses"; 26 U.S.C.
 §6041(a), "in any calendar year", and §6041A(a)(2), "during such calendar
 year", `sources/irs-1099-thresholds.md`, for the calendar-year counts);
-DECISION for using it as the default (no authority says what a tool's
+CHOICE for using it as the default (no authority says what a tool's
 omitted dates mean; the owner, 2026-10-20, `plan/served.md` P3 "Settled in
 design": "a report asked for without dates covers this fiscal year so
 far, everywhere, and an account's register opens on it with 'Show all
@@ -2048,7 +2111,9 @@ generated descriptions (`described`) and parameter docs; `ledger-gui`
 
 ## B-31 Renaming an account changes its label, nothing else
 
-**Status:** DECISION (the owner, `plan/served.md` 4.9 and P3 "Settled in
+**bookspec:** `BS-ledger-10`
+
+**Status:** CHOICE (the owner, `plan/served.md` 4.9 and P3 "Settled in
 design", 2026-10-20: "a new account named like a sibling (ignoring
 capitals), or holding a nine-digit number, is refused"); B-8 (posted is
 forever); AUTHORITY for keeping the old name (Rev. Proc. 98-25 §5.01,
@@ -2111,13 +2176,15 @@ bookspec `examples/rename-changes-no-amount.toml`.
 
 ## B-32 Every revenue and expense account maps to a line of the return
 
+**bookspec:** `BS-ledger-11`
+
 **Status:** AUTHORITY for why it matters (IRS Pub. 583,
 `sources/irs-records.md`: "Your books must show your gross income, as
 well as your deductions and credits"; IRS Pub. 538: "you must maintain
 records that will enable you to file a correct return"; Rev. Proc. 98-25
 §5.01: the relationship "between the total of the amounts in the
 taxpayer's machine-sensible records by account and the taxpayer's
-return"); DECISION for warn versus refuse (Pub. 583: "the law does not
+return"); CHOICE for warn versus refuse (Pub. 583: "the law does not
 require any specific kind of records"; the owner, 2026-10-20: warn by
 default, header accounts exempt, the first company set to refuse at the
 P3 cutover).
@@ -2170,11 +2237,13 @@ bookspec `examples/tax-category-required.toml`.
 
 ## B-33 A package as of a day shows the books through that day
 
+**bookspec:** `BS-statement-4`
+
 **Status:** CONVENTION (a report as of a day reports the books on that
 day: balances through it, a period's activity from the period's start
 through it; nearest authorities the accounting period, IRS Pub. 538,
 `sources/irs-periods-and-methods.md`, and the information returns'
-calendar year, `sources/irs-1099-thresholds.md`); DECISION (owner,
+calendar year, `sources/irs-1099-thresholds.md`); CHOICE (owner,
 2026-10-20, plan D-36: the 1099 worksheet stops at as_of too)
 
 Nothing in the CPA package made as of a day (`books.export_cpa_package`,
@@ -2226,6 +2295,8 @@ and `bookspec/examples/1099-worksheet-through-as-of.toml` (`ledger-core`
 
 ## B-34 The QuickBooks Desktop file (IIF): plain ASCII, every entry through as_of, closes left out, classes carried
 
+**bookspec:** `BS-format-2`
+
 **Status:** AUTHORITY (Intuit, `sources/intuit-iif.md`: IIF files are
 ASCII text, tab-separated, with no escape; an account is known by its
 NAME, a subaccount's NAME its path joined by colons; lists come before
@@ -2243,7 +2314,7 @@ QuickBooks Desktop, as an account's); CONVENTION (a
 QuickBooks integrator and an IIF importer, same file: a longer name is
 cut on a chart import but not in a journal's lines; a double quote is a
 text delimiter; Conductor's QuickBooks Desktop API: a class's name
-case-insensitive, so no two alike ignoring case); DECISION (owner, 2026-10-20, plan D-36: plain ASCII, what isn't
+case-insensitive, so no two alike ignoring case); CHOICE (owner, 2026-10-20, plan D-36: plain ASCII, what isn't
 ASCII transliterated and listed; CR LF; DOCNUM the entry's id; closing
 entries left out; every entry since the company began until the CPA
 says otherwise); Unicode Standard Annex #14 (the mandatory line breaks)
@@ -2386,8 +2457,10 @@ appendix: the file line by line and its changes, derived by hand);
 
 ## B-35 A party's part of an entry, and a party's totals
 
+**bookspec:** `BS-partner-3`
+
 **Status:** CONVENTION (the sign: B-2's, a line on the party's own
-account); DECISION (the owner, 2026-10-15: `entry_flow`, money paid down
+account); CHOICE (the owner, 2026-10-15: `entry_flow`, money paid down
 counted once; the owner, 2026-10-20, P3 design settled with each review's
 recommendation: a member's entry counts what moved their capital, money
 is cash, cards, the members' financing and loans, and a liability credit
@@ -2615,10 +2688,12 @@ distributions declared or of depreciated property, the properties), Kani
 
 ## B-36 The K-1 worksheet reports tax-basis capital beside book capital
 
+**bookspec:** `BS-partner-4`
+
 **Status:** AUTHORITY (`sources/irs-partnerships.md`: Instructions for
 Form 1065 (2025), Item L, "Tax-basis method"; required from tax year
 2020: Instructions for Form 1065 (2020), Item L, "you must use the tax
-basis method this year"); DECISION D-41 (the owner, 2026-10-20: "the
+basis method this year"); CHOICE D-41 (the owner, 2026-10-20: "the
 K-1 worksheet reports tax-basis capital ... the contributed property at
 its §723 carryover basis, beside the book figures")
 
@@ -2670,7 +2745,7 @@ book capital reconciles to tax capital:
   account of a prepaid-expense schedule: a service contract the member
   handed over, B-13) with no fixed asset for it enters at its book
   amount, with a note: a contract's carryover basis is what the books
-  recorded for it (DECISION, P3 review 2026-10-21; the CPA to confirm).
+  recorded for it (CHOICE, P3 review 2026-10-21; the CPA to confirm).
 - What the books can't know is never guessed. The share of net income
   "as figured for tax purposes" is the return's, always: the books are
   kept on their own basis, and every book-tax difference (Schedule M-1)
@@ -2711,11 +2786,13 @@ package); the odd cents, `ledger_core::tax_capital::RunningSplit` on
 
 ## B-37 A project is a class with its facts; its figures are its tagged lines
 
-**Status:** DECISION (the owner, 2026-10-21: "a Projects page that treats
+**bookspec:** `BS-statement-5`
+
+**Status:** CHOICE (the owner, 2026-10-21: "a Projects page that treats
 a class as a project ... Projects are entities too and can have name,
 description, whatever other metadata you think they should have"; the
 convention `link-to-projects` in the books: "whenever applicable, we link
-things to [projects]"); DECISION (the owner, 2026-10-22, plan D-43: an invoice's or bill's
+things to [projects]"); CHOICE (the owner, 2026-10-22, plan D-43: an invoice's or bill's
 lines take a project, each line one or none, item 8); CONVENTION (job
 costing, items 3 and 8; the snapshot, item 7: a presentation choice from
 management accounting, not GAAP); AUTHORITY (on
@@ -2877,7 +2954,9 @@ proptests `prop_project_nets_partition_the_pnl`,
 
 ## B-38 A document's figures are its ledger lines that stand; a control account is its documents
 
-**Status:** DECISION (the owner, 2026-10-23, plan D-45: "we kinda need
+**bookspec:** `BS-arap-2`
+
+**Status:** CHOICE (the owner, 2026-10-23, plan D-45: "we kinda need
 stronger invoice support. Like make it a first class citizen"; hand
 entries to receivables and payables refused, the owner's answer 5);
 CONVENTION (a control account agrees with its subledger, as B-23; the

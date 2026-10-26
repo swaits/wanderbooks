@@ -71,3 +71,13 @@ do everything the GSheet+GDrive system does today? Tracked separately in
 `docs/capability-parity.md`, with its own cutover rule (parallel run +
 the owner's approval). The two catalogs converge: when both are green, the
 sheet retires.
+
+### P13 bookspec (2026-10-26)
+
+P13 is a specification, not a feature, so no row of the semantic catalog
+moves and the floor stands. It adds the checker crate (`bookspec/checker`:
+the example schema, the rule identifiers `BS-<area>-<n>` and the `Engine`
+trait), the runner (`bookspec/runner`: pass, fail or not claimed per rule),
+and the rule index from B-1 to B-45 (`bookspec/spec/rules-index.md`). Every
+existing bookspec example still runs on every `cargo test`, through both
+the loader's own checks and the `Engine` trait.

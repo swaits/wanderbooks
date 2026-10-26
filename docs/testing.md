@@ -2847,3 +2847,71 @@ nine-digit check), `full_tin_runs`'s `extend(grouped_tin_runs(..))`;
 Deleting any one of them leaves a TIN that the old scanner passed
 either readable or unmasked, which the truth table and the property
 catch.
+## P13: bookspec, the checker crate and the runner (2026-10-26)
+
+bookspec's example schema moved out of the loader into
+`bookspec/checker`, its own Cargo workspace inside the repository (P13
+step 1, D-34). `crates/ledger-core/tests/bookspec.rs` is now the
+wanderbooks adapter: it imports `Example`, `Setup`, `Event`, `Expect`,
+`Query`, `Refusal` and the rest from the checker by a path dev-dependency,
+and it is unchanged in what it proves. The loader parses every example
+with `Example::from_toml` (the parser plus the schema's own cross-field
+checks), so a malformed example fails before an engine sees it.
+
+Step 2 adds the `Engine` trait (`bookspec/checker/src/engine.rs`: `load`,
+`apply`, `query`, `claims`, and `change` for a `[[changes]]` entry), the
+runner (`bookspec/runner`), and the adapter's implementation over `Store`.
+The runner runs all 56 examples, one fresh engine each, compares every
+answer with the example's exact values and every refusal with the reason
+the example names, and reports per rule: pass, fail or not claimed. The
+adapter claims the rules the catalogue gives an example; a rule with no
+example is not claimed, never silently passed.
+
+Step 3 adds the rule identifiers: `BS-<area>-<n>` for the eleven areas,
+`bookspec/spec/rules-index.md` as the table from B-1 to B-45, and each
+stated rule's id under its heading in `docs/spec/rules.md`. `DECISION`
+there is bookspec's `CHOICE`: the specification names the options, an
+engine declares its pick (`Claims::with_choice`). B-39 to B-45 are
+allocated (`plan/served.md` 8.0.3) and not yet stated; they carry an id and
+an area and no status.
+
+- **`bookspec/checker` `tests/schema.rs`:** `every_seed_example_parses_and_validates`
+  (all 56, the file named for its id, ids unique), `an_unknown_key_is_refused`,
+  `the_status_is_authority_convention_or_choice`, `a_line_amount_is_exact_and_positive`,
+  `an_event_is_exactly_one_kind`, `reverses_counts_events_from_one`,
+  `the_members_shares_sum_to_one`, `a_share_is_a_fraction_above_zero`,
+  `every_refusal_reason_names_a_rule`, `an_unknown_query_is_refused`,
+  `a_period_may_be_refused`, `a_command_shows_no_values`,
+  `a_figure_query_takes_exact_decimals`, `a_query_does_not_carry_its_expected_values`,
+  `a_format_query_is_of_the_formats_appendix`, `the_rule_index_lists_every_stated_rule`.
+- **`bookspec/checker` `tests/rules.rs`:** `every_b_rule_has_one_id`,
+  `the_index_matches_the_catalogue`, `every_example_is_listed_under_a_rule`,
+  `a_claimed_rule_has_an_example`, `an_id_has_one_spelling`,
+  `a_choice_rule_declares_its_option`.
+- **`bookspec/checker` `tests/docs.rs`:** `rules_md_carries_every_id`.
+- **`bookspec/runner` `tests/runner.rs`:** `a_passing_engine_passes`,
+  `a_wrong_answer_fails`, `an_engine_that_claims_nothing_is_not_claimed`,
+  `a_claim_without_an_example_fails`, `a_refused_query_fails`,
+  `an_example_listed_under_no_rule_fails`, `a_refused_change_fails`. The
+  fake engine proves the runner judges answers, not the engine's belief.
+- **`ledger-core` `tests/bookspec.rs`:** `the_runner_reports_every_claimed_rule_green`
+  (all 56 examples through the trait, every claimed rule pass) and
+  `every_bookspec_example_holds` (unchanged: the loader's own checks).
+- **`ledger-package` `tests/package.rs`:** `the_bookspec_iif_example_matches_the_engine`
+  unchanged; the adapter answers the formats appendix through
+  `ledger_package::export_iif`, the same code the package test checks.
+
+**For P12 (mutation targets):** `rules::build`'s area ordinals (a rule in
+the wrong area); `RuleId::parse`'s prefix, area, digit, leading-zero and
+zero checks; `rule_for_refusal`'s mapping arms; `schema::is_exact_decimal`
+(each character class and the single point), `is_date`, `is_month`,
+`is_month_day` and `check_amount`'s positivity; `Example::validate`'s
+closed-list arms, the one-kind rule, `reverses < n`, the shares summing to
+1, `after` bounds, the command's accepted-or-refused exclusivity and the
+`only` table; `Query::is_complete`'s membership; `Refusal::of_reason`'s
+fallback; the runner's `compare` (key equality, missing and extra keys,
+list and row equality), `Outcome`'s mapping and `run`'s "claimed but no
+example" arm; the adapter's `event_of`, its `depreciation_schedule` month
+span (acquisition through as-of, 0.00 where the schedule reaches no month)
+and every `answer_*` figure against the loader's same check (the two must
+agree on all 56 examples).>>>>>>> 382e9406 (feat(bookspec): rule identifiers from B-1 to B-45 (P13))

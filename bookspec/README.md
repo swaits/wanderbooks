@@ -13,6 +13,14 @@ Every example is checked against wanderbooks on every `cargo test`
 with fails the build, so the examples can't rot. An expected value is worked
 by hand from the cited source, never copied from an engine's output.
 
+The schema, the parser (`Example::from_toml`, every structure with
+`deny_unknown_fields`) and the `Engine` trait an accounting engine
+implements live in `bookspec/checker`; `bookspec/runner` runs any engine
+through the examples and reports per rule: pass, fail or not claimed. The
+wanderbooks adapter is `crates/ledger-core/tests/bookspec.rs`. The rule
+identifiers are `BS-<area>-<n>`, tabled in `bookspec/spec/rules-index.md`
+(P13 steps 1 to 3).
+
 ## The shape of an example
 
 One TOML file per example in `examples/`, named for its `id`.
@@ -99,7 +107,7 @@ declares `largest-remainder`, the rule a members close splits by.
 authorities alone (a standard, a regulation, a statute, a court, the
 mechanics of double entry); `CONVENTION`, common practice where no
 authority governs (rules.md's CONVENTION); `CHOICE`, an owner's or the
-house's decision (a plan D-number, or a DECISION rules.md records) that
+house's decision (a plan D-number, or a CHOICE rules.md records) that
 some expected value depends on, even when authorities carry the rest. An
 example whose figures follow a decision cites it in `sources`.
 

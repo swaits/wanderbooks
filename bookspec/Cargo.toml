@@ -1,0 +1,14 @@
+# bookspec's own workspace, inside the wanderbooks repository until the
+# specification and its harness are stable enough to move to their own
+# repository (P13 step 6, D-34).
+[workspace]
+resolver = "2"
+members = ["checker", "runner"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://git.swaits.com/swaits/wanderbooks"
+
+[workspace.lints.rust]
+missing_docs = "warn"

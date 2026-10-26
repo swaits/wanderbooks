@@ -35,7 +35,7 @@ use std::borrow::Borrow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use chrono::NaiveDate;
+use chrono::{Datelike, NaiveDate};
 use ledger_core::calendar::{PeriodDefaults, period_defaults};
 use ledger_core::parties::{Basis, MoneyAccounts};
 use ledger_core::settings::{Company, Source};
@@ -51,617 +51,92 @@ use ledger_core::{
 };
 use ledger_store::{DepreciationRun, DisposalPreview, Store, StoreError};
 use rust_decimal::Decimal;
-use serde::Deserialize;
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Example {
-    id: String,
-    title: String,
-    rule: String,
-    status: String,
-    sources: Vec<String>,
-    tags: Vec<String>,
-    /// `"formats"`: an interchange format rather than an accounting rule
-    /// (P13's appendix of formats); absent for the rules themselves.
-    #[serde(default)]
-    appendix: Option<String>,
-    setup: Setup,
-    events: Vec<Event>,
-    /// Changes that post no entry, each made after the event it names.
-    #[serde(default)]
-    changes: Vec<ChangeSpec>,
-    expect: Vec<Expect>,
-}
+use bookspec_checker::{
+    AccountSpec, Area, BasisSpec, ChangeSpec, Claims, DocumentLineSpec, Engine, Event, Example,
+    Expect, Query, Refusal, RuleId, ScheduleSpec, Setup, Values,
+};
+use ledger_import::IifField;
+use ledger_package::export_iif;
+use serde_json::Value;
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Setup {
-    currency: String,
-    fiscal_year_start: String,
-    basis: String,
-    rounding: String,
-    accounts: Vec<AccountSpec>,
-    #[serde(default)]
-    cash_accounts: Vec<String>,
-    #[serde(default)]
-    financing_accounts: Vec<String>,
-    #[serde(default)]
-    investing_accounts: Vec<String>,
-    #[serde(default)]
-    fixed_assets: Vec<FixedAsset>,
-    /// Fixed assets registered, with their figures (rules.md B-15).
-    #[serde(default)]
-    assets: Vec<AssetSpec>,
-    /// Prepaid-expense and deferred-revenue schedules registered (rules.md
-    /// B-16).
-    #[serde(default)]
-    schedules: Vec<ScheduleSpec>,
-    /// The company's directory: parties other than a payee's vendor
-    /// record, and the payees' when the example names their roles.
-    #[serde(default)]
-    parties: Vec<PartySpec>,
-    #[serde(default)]
-    members: Vec<MemberSpec>,
-    #[serde(default)]
-    payees: Vec<PayeeSpec>,
-    /// A payee's 1099 decision from a date on (rules.md B-19, D-40).
-    #[serde(default)]
-    status_changes: Vec<StatusChangeSpec>,
-    /// The ways the company (or a member, for it) pays (rules.md B-19).
-    #[serde(default)]
-    instruments: Vec<InstrumentSpec>,
-    /// The projects (rules.md B-37), each added with its facts.
-    #[serde(default)]
-    projects: Vec<ProjectSpec>,
-    /// The day the books are asked on, in the company's time zone: what
-    /// an omitted date means (rules.md B-30). A query that omits a date
-    /// needs it.
-    #[serde(default)]
-    today: Option<String>,
-}
+/// A JSON object: the shape every figure query answers in.
+type JsonMap = serde_json::Map<String, Value>;
 
-/// A project (rules.md B-37): its name (once each), and its kind
-/// (`internal`, `client`, `on_spec`, `other`), status and party (a
-/// `setup.parties` name), if given.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ProjectSpec {
-    name: String,
-    #[serde(default)]
-    kind: Option<String>,
-    #[serde(default)]
-    status: Option<String>,
-    #[serde(default)]
-    party: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct AccountSpec {
-    code: String,
-    name: String,
-    #[serde(rename = "type")]
-    kind: String,
-    /// The parent account's code, declared before it.
-    #[serde(default)]
-    parent: Option<String>,
-    /// A header account: it groups others and takes no postings.
-    #[serde(default)]
-    header: bool,
-    /// Its tax category, a key of the catalog (rules.md B-32).
-    #[serde(default)]
-    tax_category: Option<String>,
-}
-
-impl AccountSpec {
-    fn account_type(&self, id: &str) -> AccountType {
-        match self.kind.as_str() {
-            "asset" => AccountType::Asset,
-            "liability" => AccountType::Liability,
-            "equity" => AccountType::Equity,
-            "revenue" => AccountType::Revenue,
-            "expense" => AccountType::Expense,
-            other => panic!("{id}: account type {other:?}"),
-        }
+/// The `AccountType` an example's account type names.
+fn account_type(a: &AccountSpec, id: &str) -> AccountType {
+    match a.kind.as_str() {
+        "asset" => AccountType::Asset,
+        "liability" => AccountType::Liability,
+        "equity" => AccountType::Equity,
+        "revenue" => AccountType::Revenue,
+        "expense" => AccountType::Expense,
+        other => panic!("{id}: account type {other:?}"),
     }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct FixedAsset {
-    cost_account: String,
-    accumulated_account: String,
-    expense_account: String,
+/// The period `[from, to]` a period query covers, each date omitted
+/// resolved by the one rule (rules.md B-30) on `setup.today`; panics on
+/// `as_of`, on an omitted date without `setup.today`, and on a period the
+/// rule refuses.
+fn period(ex: &Example, x: &Expect) -> (NaiveDate, NaiveDate) {
+    let q = x.query();
+    resolved_q_period(ex, &q).unwrap_or_else(|e| panic!("{}: {}: {e}", ex.id, x.query))
 }
 
-/// A fixed asset registered before the first event, named `id` by the
-/// events and queries that ask about it: straight line over its life from
-/// its in-service date (rules.md B-15).
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct AssetSpec {
-    id: String,
-    description: String,
-    cost: String,
-    salvage: String,
-    life_months: u32,
-    in_service: String,
-    /// `"straight_line"`, the one method the books have.
-    method: String,
-    cost_account: String,
-    accumulated_account: String,
-    expense_account: String,
-    /// The event whose entry put it on the books (its purchase or a
-    /// member's contribution), linked once that event is applied: its date
-    /// is the asset's acquired date (rules.md B-15 rule 7).
-    #[serde(default)]
-    acquired_by: Option<usize>,
-    /// How the company got it and the facts its tax figures follow from
-    /// (rules.md B-25), recorded as it is registered.
-    #[serde(default)]
-    basis: Option<BasisSpec>,
+/// [`period`], or the rule's refusal.
+fn resolved_period(ex: &Example, x: &Expect) -> Result<(NaiveDate, NaiveDate), LedgerError> {
+    resolved_q_period(ex, &x.query())
 }
 
-/// An asset's basis facts (rules.md B-25): `rule` `"purchase"`,
-/// `"carryover_723"` or `"personal_use_conversion"`; a contribution's
-/// `contributor_adjusted_basis` and `fmv_at_contribution`; its §704(c)
-/// method, if chosen (`"traditional"`, `"traditional_with_curative"`,
-/// `"remedial"`).
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct BasisSpec {
-    rule: String,
-    #[serde(default)]
-    contributor_adjusted_basis: Option<String>,
-    #[serde(default)]
-    fmv_at_contribution: Option<String>,
-    #[serde(default)]
-    sec704c_method: Option<String>,
+/// A query's period, or the rule's refusal.
+fn resolved_q_period(ex: &Example, q: &Query) -> Result<(NaiveDate, NaiveDate), LedgerError> {
+    let id = &ex.id;
+    assert!(
+        q.as_of.is_none(),
+        "{id}: {} covers a period (from, to), not as_of",
+        q.name
+    );
+    let from = q.from.as_deref().map(|s| date(s, id));
+    let to = q.to.as_deref().map(|s| date(s, id));
+    // A `period` query asks the rule itself, both dates given or not.
+    if let (Some(from), Some(to)) = (from, to)
+        && q.name != "period"
+    {
+        assert!(from <= to, "{id}: {} from {from} after to {to}", q.name);
+        return Ok((from, to));
+    }
+    defaults(ex, &q.name).statement(from, to)
 }
 
-/// A prepaid expense or deferred revenue recognized over `months` from
-/// `start` (rules.md B-16), named `id`: in `setup.schedules`, or registered
-/// by a `register_schedule` event.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ScheduleSpec {
-    id: String,
-    /// `"prepaid_expense"` or `"deferred_revenue"`.
-    kind: String,
-    description: String,
-    total: String,
-    start: String,
-    months: u32,
-    /// `"daily"` or `"monthly_even"`.
-    convention: String,
-    balance_account: String,
-    pl_account: String,
+/// The day an as-of query is made as of (omitted: `setup.today`, rules.md
+/// B-30); panics on `from` or `to`.
+fn day(ex: &Example, x: &Expect) -> NaiveDate {
+    let q = x.query();
+    resolved_q_day(ex, &q).unwrap_or_else(|e| panic!("{}: {}: {e}", ex.id, x.query))
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct MemberSpec {
-    /// The member's name: a party's in `setup.parties` (with the member
-    /// role) when the example asks about the member as a party.
-    name: String,
-    capital_account: String,
-    /// Their share of income, an exact decimal fraction; every member has
-    /// one or none does, and the shares sum to 1. A close to the members
-    /// needs them.
-    #[serde(default)]
-    share: Option<String>,
-    /// Their distributions account (rules.md B-13), when they have one.
-    #[serde(default)]
-    distributions_account: Option<String>,
-}
-
-/// A payee marked for an information return from the beginning (rules.md
-/// B-19): a vendor record, the party's of that name in `setup.parties`
-/// when there is one with the vendor role.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PayeeSpec {
-    name: String,
-    form: String,
-}
-
-/// One party in the directory (rules.md B-26, B-35).
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PartySpec {
-    name: String,
-    /// Role keys (`member`, `vendor`, `customer`, `contractor`,
-    /// `financial_institution`, ...); `vendor` and `customer` give the
-    /// party its record (one of them at most).
-    roles: Vec<String>,
-    /// The liabilities, by code, the company owes the party itself
-    /// (rules.md B-35 item 6).
-    #[serde(default)]
-    creditor_of: Vec<String>,
-    /// Its TIN facts' last four digits (an SSN's).
-    #[serde(default)]
-    tin_last4: Option<String>,
-    /// Its W-9 facts' last four digits (a 1099 role's).
-    #[serde(default)]
-    w9_tin_last4: Option<String>,
-    /// The vault's copy of the TIN purged, the facts kept (needs
-    /// `tin_last4`).
-    #[serde(default)]
-    tin_purged: bool,
-}
-
-/// A payee's 1099 decision from `effective` on (rules.md B-19, D-40).
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct StatusChangeSpec {
-    payee: String,
-    effective: String,
-    /// `"1099-NEC"`, `"1099-MISC"`, `"not_reportable"` (with `reason_kind`
-    /// and `reason`) or `"undetermined"`.
-    decision: String,
-    #[serde(default)]
-    reason_kind: Option<String>,
-    #[serde(default)]
-    reason: Option<String>,
-}
-
-/// A payment method (rules.md B-19).
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct InstrumentSpec {
-    label: String,
-    /// `bank`, `business_card`, `member_card`, `member_cash_or_check` or
-    /// `platform`.
-    kind: String,
-    /// The account it pays through, by code.
-    account: String,
-    #[serde(default)]
-    last4: Option<String>,
-    /// The party it belongs to, by name (informational).
-    #[serde(default)]
-    owner: Option<String>,
-}
-
-/// A party named on an entry, with its share: an `amount`, a `percent`,
-/// or neither (derived from the entry: rules.md B-35).
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ShareSpec {
-    party: String,
-    #[serde(default)]
-    amount: Option<String>,
-    #[serde(default)]
-    percent: Option<String>,
-}
-
-/// One event: an entry (`lines`), a reversal (`reverses`), a close
-/// (`close`), a bill (`bill`), or a command that posts what is due
-/// (`run_depreciation`, `dispose_asset`, `run_schedules`) or registers a
-/// schedule (`register_schedule`), exactly one of them.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Event {
-    /// The day of an entry, a reversal, a bill or a disposal, the last day
-    /// of a close; a command that dates its own entries takes none.
-    #[serde(default)]
-    date: Option<String>,
-    /// An entry's, a reversal's, a close's or a bill's; a command writes
-    /// its own.
-    #[serde(default)]
-    description: Option<String>,
-    #[serde(default)]
-    lines: Vec<LineSpec>,
-    reverses: Option<usize>,
-    #[serde(default)]
-    close: Option<CloseSpec>,
-    #[serde(default)]
-    bill: Option<BillSpec>,
-    #[serde(default)]
-    invoice: Option<InvoiceSpec>,
-    #[serde(default)]
-    run_depreciation: Option<RunSpec>,
-    #[serde(default)]
-    dispose_asset: Option<DisposeSpec>,
-    #[serde(default)]
-    run_schedules: Option<RunSchedulesSpec>,
-    #[serde(default)]
-    register_schedule: Option<ScheduleSpec>,
-    /// The engine refuses the event, for this reason in the words of
-    /// [`refusal`]: it changes nothing, and the books go on without it.
-    /// For a reversal or a command, which the books take whole or not at
-    /// all.
-    #[serde(default)]
-    refused: Option<String>,
-    /// The payee (in `setup.payees`) the entry paid.
-    #[serde(default)]
-    payee: Option<String>,
-    /// The parties (in `setup.parties`) the entry is with, and their
-    /// shares.
-    #[serde(default)]
-    parties: Vec<ShareSpec>,
-    /// The payment method (an `setup.instruments` label) it was paid with.
-    #[serde(default)]
-    instrument: Option<String>,
-    /// An entry as an earlier version could write it and this version's
-    /// commands refuse: a line by hand on a receivables or payables
-    /// account (the control guard, rules.md B-38). Posted as replay posts
-    /// it, since books that hold it must still read right.
-    #[serde(default)]
-    older: bool,
-}
-
-/// A depreciation run of `asset` for `period` ("YYYY-MM"): what is due
-/// through the month's end, dated then (rules.md B-15).
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RunSpec {
-    asset: String,
-    period: String,
-}
-
-/// The disposal of `asset` on the event's date for `proceeds`, received
-/// into `proceeds_account`, its gain or loss to `gain_loss_account`
-/// (rules.md B-15).
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct DisposeSpec {
-    asset: String,
-    proceeds: String,
-    proceeds_account: String,
-    gain_loss_account: String,
-}
-
-/// Every schedule's months due through `through`, posted (rules.md B-16).
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RunSchedulesSpec {
-    through: String,
-}
-
-/// A bill from `vendor`, dated and due on the event's date, for `amount`
-/// (one line, the event's description) or its `lines`, exactly one of
-/// them: Dr General Expenses (6999), Cr Accounts Payable (2000), each
-/// created with its fixed name when first needed, as the engine creates a
-/// control role's account (rules.md B-32); a line naming a project puts
-/// its cost on that project's expense line (B-37 item 8).
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct BillSpec {
-    vendor: String,
-    #[serde(default)]
-    amount: Option<String>,
-    #[serde(default)]
-    lines: Vec<DocumentLineSpec>,
-}
-
-/// An invoice to `customer` (a name; added when first named), dated and
-/// due on the event's date, for `amount` or its `lines`, exactly one of
-/// them: Dr Accounts Receivable (1200), Cr Revenue (4000), each created
-/// with its fixed name when first needed (B-32); a line naming a project
-/// puts its revenue on that project's revenue line (B-37 item 8).
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct InvoiceSpec {
-    customer: String,
-    #[serde(default)]
-    amount: Option<String>,
-    #[serde(default)]
-    lines: Vec<DocumentLineSpec>,
-}
-
-/// One line of an invoice or a bill: its amount, what it is (the event's
-/// description when left out) and the project (a `setup.projects` name)
-/// it belongs to.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct DocumentLineSpec {
-    amount: String,
-    #[serde(default)]
-    description: Option<String>,
-    #[serde(default)]
-    project: Option<String>,
-}
-
-/// A change to the books that posts no entry, made right after event
-/// `after` (counting from 1) once the expectations asked after that event
-/// are checked: a rename (`rename`), the tax-category policy
-/// (`require_tax_category`) or an asset's correction (`correct_asset`),
-/// exactly one of them.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ChangeSpec {
-    after: usize,
-    #[serde(default)]
-    rename: Option<RenameSpec>,
-    /// `policy.require_tax_category`: "warn" (the books' default) or
-    /// "refuse" (rules.md B-32).
-    #[serde(default)]
-    require_tax_category: Option<String>,
-    #[serde(default)]
-    correct_asset: Option<CorrectSpec>,
-}
-
-/// A registered asset's economics corrected (a registration mistake), for
-/// `reason`: each figure given replaces the asset's; the rest stay.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CorrectSpec {
-    asset: String,
-    #[serde(default)]
-    cost: Option<String>,
-    #[serde(default)]
-    salvage: Option<String>,
-    #[serde(default)]
-    life_months: Option<u32>,
-    #[serde(default)]
-    in_service: Option<String>,
-    reason: String,
-}
-
-/// Rename the account `code` to `name` (rules.md B-31).
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RenameSpec {
-    code: String,
-    name: String,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct LineSpec {
-    account: String,
-    side: String,
-    amount: String,
-    /// The project (a `setup.projects` name) the line is tagged with.
-    #[serde(default)]
-    project: Option<String>,
-}
-
-/// A close of the period from `start` through the event's date, to
-/// `"members"` (by share, in the order listed) or `"retained_earnings"`;
-/// `rounding = "per-close"`: a members close split on its own (books from
-/// an engine that rounded each close by itself), else the cumulative rule
-/// (rules.md B-13).
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CloseSpec {
-    start: String,
-    to: String,
-    #[serde(default)]
-    rounding: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Expect {
-    query: String,
-    from: Option<String>,
-    to: Option<String>,
-    as_of: Option<String>,
-    /// The event whose entry an `entry` or `party_part` query asks about.
-    entry: Option<usize>,
-    /// The `run_depreciation` event a `run` query asks about.
-    event: Option<usize>,
-    /// The fixed asset (`setup.assets` id) a `disposal`,
-    /// `depreciation_schedule`, `register_row` or `asset_basis` query asks
-    /// about.
-    asset: Option<String>,
-    /// The schedule (its id) a `schedule_plan` query asks about.
-    schedule: Option<String>,
-    /// The party a `party_part`, `party_totals` or `party_tin_last4`
-    /// query asks about (in `setup.parties`).
-    party: Option<String>,
-    /// The project (in `setup.projects`) a `project` query asks about.
-    #[serde(default)]
-    project: Option<String>,
-    /// `party_totals`' basis: `"cash"` or `"all"` (rules.md B-35 item 4).
-    basis: Option<String>,
-    /// The payee a `vendor_1099` query asks about (in `setup.payees`).
-    payee: Option<String>,
-    /// The books after event N, not after the last.
-    after: Option<usize>,
-    /// The account a `rename_account` or `set_tax_category` command
-    /// names, by code.
-    code: Option<String>,
-    /// The new name a `rename_account` command gives.
-    name: Option<String>,
-    /// The category a `set_tax_category` command sets (absent: it clears
-    /// the account's).
-    category: Option<String>,
-    /// The account an `add_account` command adds.
-    account: Option<AccountSpec>,
-    /// A command the engine accepts: `true` (never `false`: a command is
-    /// accepted or `refused`).
-    accepted: Option<bool>,
-    /// A command, or a `period`, the engine refuses: why, in the words
-    /// of [`refusal`].
-    refused: Option<String>,
-    #[serde(default)]
-    values: Option<Values>,
-}
-
-/// What a query expects: figures by key (every figure an exact decimal
-/// string), or, for a file format, its lines or its rows of fields.
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum Values {
-    Figures(BTreeMap<String, String>),
-    Lines(Vec<String>),
-    Rows(Vec<Vec<String>>),
-}
-
-impl Values {
-    fn is_empty(&self) -> bool {
-        match self {
-            Values::Figures(f) => f.is_empty(),
-            Values::Lines(l) => l.is_empty(),
-            Values::Rows(r) => r.is_empty(),
-        }
+/// A query's day, or the rule's refusal.
+fn resolved_q_day(ex: &Example, q: &Query) -> Result<NaiveDate, LedgerError> {
+    let id = &ex.id;
+    assert!(
+        q.from.is_none() && q.to.is_none(),
+        "{id}: {} is as of a day (as_of), not a period",
+        q.name
+    );
+    match q.as_of.as_deref() {
+        Some(s) => Ok(date(s, id)),
+        None => defaults(ex, &q.name).as_of(None).pipe(Ok),
     }
 }
 
-impl Expect {
-    /// The values a query expects; panics when it gives none.
-    fn values(&self, id: &str) -> &Values {
-        self.values
-            .as_ref()
-            .unwrap_or_else(|| panic!("{id}: {} expects values", self.query))
-    }
-
-    /// The figures a figure query expects; panics on lines or rows.
-    fn figures(&self, id: &str) -> &BTreeMap<String, String> {
-        match self.values(id) {
-            Values::Figures(f) => f,
-            _ => panic!("{id}: {} expects figures (a table)", self.query),
-        }
-    }
-
-    /// The period `[from, to]` a period query covers, each date omitted
-    /// resolved by the one rule (rules.md B-30) on `setup.today`; panics
-    /// on `as_of`, on an omitted date without `setup.today`, and on a
-    /// period the rule refuses.
-    fn period(&self, ex: &Example) -> (NaiveDate, NaiveDate) {
-        self.resolved_period(ex)
-            .unwrap_or_else(|e| panic!("{}: {}: {e}", ex.id, self.query))
-    }
-
-    /// [`Self::period`], or the rule's refusal.
-    fn resolved_period(&self, ex: &Example) -> Result<(NaiveDate, NaiveDate), LedgerError> {
-        let id = &ex.id;
-        assert!(
-            self.as_of.is_none(),
-            "{id}: {} covers a period (from, to), not as_of",
-            self.query
-        );
-        let from = self.from.as_deref().map(|s| date(s, id));
-        let to = self.to.as_deref().map(|s| date(s, id));
-        // A `period` query asks the rule itself, both dates given or not.
-        if let (Some(from), Some(to)) = (from, to)
-            && self.query != "period"
-        {
-            assert!(from <= to, "{id}: {} from {from} after to {to}", self.query);
-            return Ok((from, to));
-        }
-        defaults(ex, &self.query).statement(from, to)
-    }
-
-    /// The day an as-of query is made as of (omitted: `setup.today`,
-    /// rules.md B-30); panics on `from` or `to`.
-    fn day(&self, ex: &Example) -> NaiveDate {
-        let id = &ex.id;
-        assert!(
-            self.from.is_none() && self.to.is_none(),
-            "{id}: {} is as of a day (as_of), not a period",
-            self.query
-        );
-        match self.as_of.as_deref() {
-            Some(s) => date(s, id),
-            None => defaults(ex, &self.query).as_of(None),
-        }
+/// Rust has no pipe; this keeps the day rule a single expression.
+trait Pipe: Sized {
+    fn pipe<T>(self, f: impl FnOnce(Self) -> T) -> T {
+        f(self)
     }
 }
-
+impl<T> Pipe for T {}
 /// What an omitted date means for `ex` (rules.md B-30): its fiscal year
 /// on `setup.today`, which `query` needs.
 fn defaults(ex: &Example, query: &str) -> PeriodDefaults {
@@ -962,14 +437,41 @@ impl<'a> Books<'a> {
     /// The books an example sets up, before any event: its shape checked,
     /// its accounts, fixed assets, schedules, parties, members, payees,
     /// their dated decisions, and payment methods.
-    fn new(ex: &'a Example) -> Self {
-        let s = &ex.setup;
-        let currency = Currency::new(&s.currency).unwrap();
+    fn blank(ex: &'a Example) -> Self {
+        let currency = Currency::new(&ex.setup.currency).unwrap();
         let dir = tempfile::tempdir().unwrap();
-        let mut store = took(
+        let store = took(
             Store::create(&dir.path().join("books"), currency),
             &format!("{}: the books", ex.id),
         );
+        Books {
+            ex,
+            store,
+            _dir: dir,
+            currency,
+            members: Vec::new(),
+            party_members: Vec::new(),
+            parties: BTreeMap::new(),
+            payees: BTreeMap::new(),
+            vendors: BTreeMap::new(),
+            customers: BTreeMap::new(),
+            instruments: BTreeMap::new(),
+            assets: BTreeMap::new(),
+            projects: BTreeMap::new(),
+            schedules: BTreeMap::new(),
+            posted: Vec::new(),
+            runs: BTreeMap::new(),
+            disposals: BTreeMap::new(),
+        }
+    }
+
+    /// The books an example sets up, before any event: its shape checked,
+    /// its accounts, fixed assets, schedules, parties, members, payees,
+    /// their dated decisions, and payment methods.
+    fn setup(&mut self) {
+        let ex = self.ex;
+        let s = &ex.setup;
+        let currency = self.currency;
         assert!(
             ex.appendix.as_deref().is_none_or(|a| a == "formats"),
             "{}: appendix {:?}",
@@ -1016,13 +518,14 @@ impl<'a> Books<'a> {
         for a in &s.accounts {
             let what = format!("{}: account {}", ex.id, a.code);
             // A parent is declared before its subaccounts.
-            let parent = a.parent.as_deref().map(|p| id(store.ledger(), p));
+            let parent = a.parent.as_deref().map(|p| id(self.store.ledger(), p));
             let account = took(
-                store.add_account(&a.code, &a.name, a.account_type(&ex.id), parent, a.header),
+                self.store
+                    .add_account(&a.code, &a.name, account_type(a, &ex.id), parent, a.header),
                 &what,
             );
             if let Some(c) = &a.tax_category {
-                took(store.set_account_tax(account, Some(c), None), &what);
+                took(self.store.set_account_tax(account, Some(c), None), &what);
             }
         }
         let first = ex
@@ -1037,12 +540,12 @@ impl<'a> Books<'a> {
                 cost: Money::new(Decimal::ONE, currency),
                 salvage_value: Money::new(Decimal::ZERO, currency),
                 useful_life_months: 12,
-                cost_account: id(store.ledger(), &fa.cost_account),
-                accum_depr_account: id(store.ledger(), &fa.accumulated_account),
-                expense_account: id(store.ledger(), &fa.expense_account),
+                cost_account: id(self.store.ledger(), &fa.cost_account),
+                accum_depr_account: id(self.store.ledger(), &fa.accumulated_account),
+                expense_account: id(self.store.ledger(), &fa.expense_account),
             };
             took(
-                store.register_asset(new),
+                self.store.register_asset(new),
                 &format!("{}: fixed asset", ex.id),
             );
         }
@@ -1056,17 +559,17 @@ impl<'a> Books<'a> {
                 cost: Money::new(exact(&a.cost, &what), currency),
                 salvage_value: Money::new(exact(&a.salvage, &what), currency),
                 useful_life_months: a.life_months,
-                cost_account: id(store.ledger(), &a.cost_account),
-                accum_depr_account: id(store.ledger(), &a.accumulated_account),
-                expense_account: id(store.ledger(), &a.expense_account),
+                cost_account: id(self.store.ledger(), &a.cost_account),
+                accum_depr_account: id(self.store.ledger(), &a.accumulated_account),
+                expense_account: id(self.store.ledger(), &a.expense_account),
             };
-            let asset = took(store.register_asset(new), &what);
+            let asset = took(self.store.register_asset(new), &what);
             assert!(
                 assets.insert(a.id.clone(), asset).is_none(),
                 "{what}: id used twice"
             );
             if let Some(b) = &a.basis {
-                took(store.set_asset_basis(asset, basis(b, &what)), &what);
+                took(self.store.set_asset_basis(asset, basis(b, &what)), &what);
             }
             assert!(
                 a.acquired_by.is_none_or(|n| n >= 1 && n <= ex.events.len()),
@@ -1078,8 +581,8 @@ impl<'a> Books<'a> {
         let mut schedules = BTreeMap::new();
         for sc in &s.schedules {
             let what = format!("{}: schedule {}", ex.id, sc.id);
-            let new = new_schedule(store.ledger(), sc, currency, &what);
-            let schedule = took(store.register_schedule(new), &what);
+            let new = new_schedule(self.store.ledger(), sc, currency, &what);
+            let schedule = took(self.store.register_schedule(new), &what);
             assert!(
                 schedules.insert(sc.id.clone(), schedule).is_none(),
                 "{what}: id used twice"
@@ -1096,11 +599,11 @@ impl<'a> Books<'a> {
             .iter()
             .map(|m| MemberCapital {
                 name: m.name.clone(),
-                capital_account: id(store.ledger(), &m.capital_account),
+                capital_account: id(self.store.ledger(), &m.capital_account),
                 distribution_account: m
                     .distributions_account
                     .as_deref()
-                    .map(|c| id(store.ledger(), c)),
+                    .map(|c| id(self.store.ledger(), c)),
                 share: m.share.as_deref().map_or(Decimal::ZERO, |x| {
                     let share = exact(x, &format!("{} {} share", ex.id, m.name));
                     assert!(share > Decimal::ZERO, "{}: {}'s share", ex.id, m.name);
@@ -1112,13 +615,13 @@ impl<'a> Books<'a> {
             let total: Decimal = members.iter().map(|m| m.share).sum();
             assert_eq!(total, Decimal::ONE, "{}: the shares sum to 1", ex.id);
         }
-        let parties = add_parties(ex, &mut store);
+        let parties = add_parties(ex, &mut self.store);
         // A member who is a party (by name, with the member role), as the
         // settings' members are (settings::Company::party_members).
         let party_members: Vec<PartyMember> = members
             .iter()
             .filter_map(|m| {
-                let p = store.ledger().party_by_name(&m.name)?;
+                let p = self.store.ledger().party_by_name(&m.name)?;
                 p.roles.contains(&Role::Member).then_some(PartyMember {
                     party: p.id,
                     share: m.share,
@@ -1138,13 +641,13 @@ impl<'a> Books<'a> {
             // party's vendor record.
             let known = parties
                 .get(&p.name)
-                .and_then(|&id| store.ledger().get_party(id)?.vendor);
+                .and_then(|&id| self.store.ledger().get_party(id)?.vendor);
             let v = match known {
                 Some(v) => v,
-                None => took(store.add_vendor(&p.name), &what),
+                None => took(self.store.add_vendor(&p.name), &what),
             };
             let dated = Dated1099::from_beginning(Decision1099::Files(form), Some(source.clone()));
-            took(store.set_vendor_1099(v, &dated, Some(false)), &what);
+            took(self.store.set_vendor_1099(v, &dated, Some(false)), &what);
             assert!(
                 payees.insert(p.name.clone(), v).is_none(),
                 "{}: payee {} twice",
@@ -1167,7 +670,7 @@ impl<'a> Books<'a> {
                 ),
                 source: Some(source.clone()),
             };
-            took(store.set_vendor_1099(v, &dated, Some(false)), &what);
+            took(self.store.set_vendor_1099(v, &dated, Some(false)), &what);
         }
         let mut projects = BTreeMap::new();
         for p in &s.projects {
@@ -1188,7 +691,7 @@ impl<'a> Books<'a> {
                 }),
                 ..Default::default()
             };
-            let id = took(store.add_project(&p.name, &facts), &what);
+            let id = took(self.store.add_project(&p.name, &facts), &what);
             assert!(
                 projects.insert(p.name.clone(), id).is_none(),
                 "{what}: named twice"
@@ -1200,14 +703,15 @@ impl<'a> Books<'a> {
             let kind = InstrumentKind::parse(&i.kind)
                 .filter(|k| k.key() == i.kind)
                 .unwrap_or_else(|| panic!("{what}: kind {:?}", i.kind));
-            let account = id(store.ledger(), &i.account);
+            let account = id(self.store.ledger(), &i.account);
             let owner = i.owner.as_ref().map(|o| {
                 *parties
                     .get(o)
                     .unwrap_or_else(|| panic!("{what}: owner {o:?} not in setup.parties"))
             });
             let id = took(
-                store.add_instrument(kind, &i.label, i.last4.as_deref(), owner, account),
+                self.store
+                    .add_instrument(kind, &i.label, i.last4.as_deref(), owner, account),
                 &what,
             );
             assert!(
@@ -1215,25 +719,23 @@ impl<'a> Books<'a> {
                 "{what}: twice"
             );
         }
-        Books {
-            ex,
-            store,
-            _dir: dir,
-            currency,
-            members,
-            party_members,
-            parties,
-            vendors: payees.clone(),
-            customers: BTreeMap::new(),
-            payees,
-            instruments,
-            assets,
-            projects,
-            schedules,
-            posted: Vec::new(),
-            runs: BTreeMap::new(),
-            disposals: BTreeMap::new(),
-        }
+        self.members = members;
+        self.party_members = party_members;
+        self.parties = parties;
+        self.vendors = payees.clone();
+        self.customers = BTreeMap::new();
+        self.payees = payees;
+        self.instruments = instruments;
+        self.assets = assets;
+        self.projects = projects;
+        self.schedules = schedules;
+    }
+
+    /// The books an example sets up, already loaded.
+    fn new(ex: &'a Example) -> Self {
+        let mut books = Self::blank(ex);
+        books.setup();
+        books
     }
 
     /// The books as they stand.
@@ -1277,9 +779,8 @@ impl<'a> Books<'a> {
     /// Event `n` (counting from 1): accepted, or refused for the reason it
     /// gives and changing nothing; the entries it posted kept as event
     /// n's, tagged with the parties, payee and payment method it names.
-    fn apply(&mut self, n: usize, e: &Event) {
-        let spec = self.ex;
-        let ex = spec.id.as_str();
+    /// Event `n`'s kind; panics on a shape the schema refuses.
+    fn event_kind(&self, n: usize, e: &Event) -> &'static str {
         let kinds = [
             ("lines", !e.lines.is_empty()),
             ("reverses", e.reverses.is_some()),
@@ -1291,12 +792,19 @@ impl<'a> Books<'a> {
             ("run_schedules", e.run_schedules.is_some()),
             ("register_schedule", e.register_schedule.is_some()),
         ];
-        let kind = match kinds.iter().filter(|(_, given)| *given).collect::<Vec<_>>()[..] {
-            [(kind, _)] => *kind,
+        match kinds.iter().filter(|(_, given)| *given).collect::<Vec<_>>()[..] {
+            [(kind, _)] => kind,
             _ => panic!(
-                "{ex} event {n}: an event is one of lines, reverses, close, bill, invoice, run_depreciation, dispose_asset, run_schedules or register_schedule"
+                "{} event {n}: an event is one of lines, reverses, close, bill, invoice, run_depreciation, dispose_asset, run_schedules or register_schedule",
+                self.ex.id
             ),
-        };
+        }
+    }
+
+    /// The shape the event must have, checked before it is taken: what the
+    /// schema says and what the loader's own words say.
+    fn check_event_shape(&self, n: usize, e: &Event, kind: &str) {
+        let ex = self.ex.id.as_str();
         // An entry of the example's own words: dated and described. A
         // disposal is dated; the other commands date their own entries,
         // and every command describes its own.
@@ -1341,40 +849,26 @@ impl<'a> Books<'a> {
             e.refused.is_none() || !matches!(kind, "lines" | "close" | "bill" | "invoice"),
             "{ex} event {n}: refused is for a reversal or a command, which the books take whole or not at all"
         );
-        let what = format!("{ex} event {n}");
+    }
+
+    /// Take event `n` as the books take it, keep what it posted and tag it
+    /// with the parties, payee and payment method the example names; the
+    /// engine's answer, never compared with what the example expects.
+    fn apply_event(&mut self, n: usize, e: &Event) -> Result<(), StoreError> {
+        let kind = self.event_kind(n, e);
+        self.check_event_shape(n, e, kind);
+        let what = format!("{} event {n}", self.ex.id);
         let when = e.date.as_deref().map(|d| date(d, &what));
         let description = e.description.as_deref().unwrap_or_default();
-        let head = self.store.head();
         let first = self.l().next_entry_id();
         let result = self.take(n, e, kind, when, description, &what);
-        match (result, &e.refused) {
-            (Ok(()), None) => {}
-            (Err(err), Some(want)) => {
-                assert_eq!(store_refusal(&err), *want, "{what}: {kind} refused ({err})");
-                assert_eq!(
-                    self.store.head(),
-                    head,
-                    "{what}: a refused {kind} changes nothing"
-                );
-            }
-            (Err(err), None) => panic!("{what}: {kind}: {err}"),
-            (Ok(()), Some(want)) => panic!("{what}: {kind} accepted, expected refused: {want}"),
-        }
         let next = self.l().next_entry_id();
         let posted: Vec<EntryId> = (first..next).collect();
-        for &id in &posted {
-            assert_eq!(
-                self.l().get_entry(id).map(|x| x.status()),
-                Some(EntryStatus::Posted),
-                "{what}: entry {id}, which it made, is posted"
-            );
-        }
-        if own && e.refused.is_none() {
-            assert_eq!(posted.len(), 1, "{what}: {kind} posts one entry");
-        }
         self.posted.push(posted);
+        result?;
         // The assets this event's entry put on the books.
-        for a in spec
+        for a in self
+            .ex
             .setup
             .assets
             .iter()
@@ -1396,8 +890,8 @@ impl<'a> Books<'a> {
                         .unwrap_or_else(|| panic!("{what}: party {:?} not in setup", sh.party));
                     let share = match (&sh.amount, &sh.percent) {
                         (None, None) => Share::Derived,
-                        (Some(a), None) => Share::Amount(exact(a, ex)),
-                        (None, Some(p)) => Share::Percent(exact(p, ex)),
+                        (Some(a), None) => Share::Amount(exact(a, &self.ex.id)),
+                        (None, Some(p)) => Share::Percent(exact(p, &self.ex.id)),
                         _ => panic!("{what}: a share is an amount or a percent"),
                     };
                     PartyShare { party, share }
@@ -1422,6 +916,49 @@ impl<'a> Books<'a> {
                 .unwrap_or_else(|| panic!("{what}: payment method {label:?} not in setup"));
             let entry = self.entry_of(n, &what);
             took(self.store.set_entry_instrument(entry, Some(i)), &what);
+        }
+        Ok(())
+    }
+
+    /// Apply event `n` as the example says and check it: accepted, or
+    /// refused for the reason it gives and changing nothing.
+    fn apply(&mut self, n: usize, e: &Event) {
+        let ex = self.ex.id.as_str();
+        let kind = self.event_kind(n, e);
+        let what = format!("{ex} event {n}");
+        let own = matches!(kind, "lines" | "reverses" | "close" | "bill" | "invoice");
+        let head = self.store.head();
+        let first = self.l().next_entry_id();
+        let result = self.apply_event(n, e);
+        match (result, &e.refused) {
+            (Ok(()), None) => {}
+            (Err(err), Some(want)) => {
+                assert_eq!(store_refusal(&err), *want, "{what}: {kind} refused ({err})");
+                assert_eq!(
+                    self.store.head(),
+                    head,
+                    "{what}: a refused {kind} changes nothing"
+                );
+            }
+            (Err(err), None) => panic!("{what}: {kind}: {err}"),
+            (Ok(()), Some(want)) => panic!("{what}: {kind} accepted, expected refused: {want}"),
+        }
+        let next = self.l().next_entry_id();
+        let posted: Vec<EntryId> = (first..next).collect();
+        assert_eq!(
+            &posted,
+            &self.posted[n - 1],
+            "{what}: what the event posted is kept"
+        );
+        for &id in &posted {
+            assert_eq!(
+                self.l().get_entry(id).map(|x| x.status()),
+                Some(EntryStatus::Posted),
+                "{what}: entry {id}, which it made, is posted"
+            );
+        }
+        if own && e.refused.is_none() {
+            assert_eq!(posted.len(), 1, "{what}: {kind} posts one entry");
         }
     }
 
@@ -1643,14 +1180,19 @@ impl<'a> Books<'a> {
 
 impl Books<'_> {
     /// Make a change that posts no entry (after event `after`).
-    fn change(&mut self, c: &ChangeSpec) {
-        let ex = &self.ex.id;
+    /// Make a change that posts no entry (after event `after`), or say why
+    /// the books refuse it.
+    fn try_change(&mut self, c: &ChangeSpec) -> Result<(), Refusal> {
+        let ex = &self.ex.id.clone();
         let after = c.after;
         let what = format!("{ex} change after {after}");
         match (&c.rename, &c.require_tax_category, &c.correct_asset) {
             (Some(r), None, None) => {
                 let account = self.id(&r.code);
-                took(self.store.rename_account(account, &r.name, None), &what);
+                self.store
+                    .rename_account(account, &r.name, None)
+                    .map(|_| ())
+                    .map_err(|e| store_refusal_obj(&e))
             }
             (None, None, Some(f)) => {
                 let id = self.asset(&f.asset, &what);
@@ -1668,7 +1210,9 @@ impl Books<'_> {
                         .as_deref()
                         .map_or(a.in_service_date, |d| date(d, &what)),
                 };
-                took(self.store.correct_asset(id, fix, &f.reason), &what);
+                self.store
+                    .correct_asset(id, fix, &f.reason)
+                    .map_err(|e| store_refusal_obj(&e))
             }
             (None, Some(policy), None) => {
                 assert!(
@@ -1680,14 +1224,978 @@ impl Books<'_> {
                     key: "policy.require_tax_category".into(),
                     value: Some(serde_json::json!(policy)),
                 };
-                took(
-                    self.store.change_settings(&[change], &bookspec_source(ex)),
-                    &what,
-                );
+                self.store
+                    .change_settings(&[change], &bookspec_source(ex))
+                    .map(|_| ())
+                    .map_err(|e| store_refusal_obj(&e))
             }
             _ => panic!("{what}: a change is one of rename, require_tax_category or correct_asset"),
         }
     }
+
+    /// Make a change that posts no entry, checked: the books must take it.
+    fn change(&mut self, c: &ChangeSpec) {
+        let after = c.after;
+        let what = format!("{} change after {after}", self.ex.id);
+        self.try_change(c)
+            .unwrap_or_else(|r| panic!("{what}: {}", r.reason));
+    }
+}
+
+/// The refusal a store error is reported as: the examples' words when the
+/// engine's reason is one of them, the engine's own otherwise.
+fn store_refusal_obj(e: &StoreError) -> Refusal {
+    match e {
+        StoreError::Ledger(e) => Refusal::of_reason(refusal(e)),
+        other => Refusal::of_reason(format!("another refusal: {other}")),
+    }
+}
+
+/// The worker's refusal for an engine error the examples' words don't
+/// name.
+fn engine_refusal(rule: RuleId, e: impl std::fmt::Display) -> Refusal {
+    Refusal::new(rule, format!("another refusal: {e}"))
+}
+
+impl Books<'_> {
+    /// A refusal of a question the example did not fill in.
+    fn missing(&self, what: &str) -> Refusal {
+        Refusal::new(
+            RuleId::new(Area::Ledger, 1),
+            format!("{} names its {what}", "the query"),
+        )
+    }
+
+    /// The period a query covers, or the rule's refusal.
+    fn q_period(&self, q: &Query) -> Result<(NaiveDate, NaiveDate), Refusal> {
+        resolved_q_period(self.ex, q).map_err(|e| Refusal::of_reason(refusal(&e)))
+    }
+
+    /// The day an as-of query is made as of.
+    fn q_day(&self, q: &Query) -> Result<NaiveDate, Refusal> {
+        resolved_q_day(self.ex, q).map_err(|e| Refusal::of_reason(refusal(&e)))
+    }
+
+    /// The event whose entry `entry` is, counting from 1.
+    fn event_of(&self, entry: EntryId) -> Option<usize> {
+        self.posted
+            .iter()
+            .position(|entries| entries.contains(&entry))
+            .map(|i| i + 1)
+    }
+
+    /// The entry event `n` posted.
+    fn entry_or_refuse(&self, n: usize) -> Result<EntryId, Refusal> {
+        assert!(n >= 1 && n <= self.posted.len(), "event {n} not applied");
+        match self.posted[n - 1].as_slice() {
+            [entry] => Ok(*entry),
+            other => Err(Refusal::new(
+                RuleId::new(Area::Ledger, 1),
+                format!("event {n} posted {} entries", other.len()),
+            )),
+        }
+    }
+
+    /// The account `code` names.
+    fn account_or_refuse(&self, code: &str) -> Result<ledger_core::AccountId, Refusal> {
+        self.l()
+            .chart()
+            .find_by_code(code)
+            .map(|a| a.id)
+            .ok_or_else(|| Refusal::new(RuleId::new(Area::Ledger, 1), format!("no account {code}")))
+    }
+
+    /// The payment accounts the example names.
+    fn payment_accounts(&self) -> Result<PaymentAccounts, Refusal> {
+        let ex = &self.ex;
+        Ok(PaymentAccounts {
+            cash: codes(self.l(), &ex.setup.cash_accounts, &ex.id),
+            financing: codes(self.l(), &ex.setup.financing_accounts, &ex.id),
+        })
+    }
+
+    /// The engine's answer to one query, as the runner compares it: exact
+    /// decimal strings, never floats; dates `YYYY-MM-DD`.
+    fn answer(&self, q: &Query) -> Result<Value, Refusal> {
+        match q.name.as_str() {
+            "cash_flow" => self.answer_cash_flow(q),
+            "trial_balance" => self.answer_trial_balance(q),
+            "profit_and_loss" => self.answer_profit_and_loss(q),
+            "entry" => self.answer_entry(q),
+            "balances" => self.answer_balances(q),
+            "members_equity" => self.answer_members_equity(q),
+            "k1" => self.answer_k1(q),
+            "k1_tax_basis" => self.answer_k1_tax_basis(q),
+            "k1_reconciliation" => self.answer_k1_reconciliation(q),
+            "vendor_1099_paid" => self.answer_vendor_1099_paid(q),
+            "vendor_1099" => self.answer_vendor_1099(q),
+            "party_part" => self.answer_party_part(q),
+            "party_totals" => self.answer_party_totals(q),
+            "party_tin_last4" => self.answer_party_tin_last4(q),
+            "project" => self.answer_project(q),
+            "run" => self.answer_run(q),
+            "disposal" => self.answer_disposal(q),
+            "depreciation_schedule" => self.answer_depreciation_schedule(q),
+            "schedule_plan" => self.answer_schedule_plan(q),
+            "register_row" => self.answer_register_row(q),
+            "register_totals" => self.answer_register_totals(q),
+            "asset_basis" => self.answer_asset_basis(q),
+            "period" => {
+                let (from, to) = self.q_period(q)?;
+                Ok(json_figures([
+                    ("from".to_string(), from.to_string()),
+                    ("to".to_string(), to.to_string()),
+                ]))
+            }
+            "day" => Ok(json_figures([(
+                "as_of".to_string(),
+                self.q_day(q)?.to_string(),
+            )])),
+            "calendar_year" => Ok(json_figures([(
+                "year".to_string(),
+                defaults(self.ex, &q.name).calendar_year().to_string(),
+            )])),
+            "account_names" => Ok(json_figures(
+                self.l()
+                    .chart()
+                    .all()
+                    .map(|a| (a.code.clone(), a.name.clone())),
+            )),
+            "uncategorized_accounts" => Ok(Value::Array(
+                ledger_core::tax::uncategorized_accounts(self.l())
+                    .into_iter()
+                    .map(|a| Value::String(format!("{} {}", a.code, a.name)))
+                    .collect(),
+            )),
+            "iif_lines" | "iif_changes" => self.answer_iif(q),
+            "rename_account" | "add_account" | "set_tax_category" => self.answer_command(q),
+            other => Err(Refusal::new(
+                RuleId::new(Area::Ledger, 1),
+                format!("no answer for query {other:?}"),
+            )),
+        }
+    }
+
+    fn answer_cash_flow(&self, q: &Query) -> Result<Value, Refusal> {
+        let (start, end) = self.q_period(q)?;
+        let l = self.l();
+        let params = CashFlowParams {
+            start,
+            end,
+            cash_accounts: codes(l, &self.ex.setup.cash_accounts, &self.ex.id),
+            financing_accounts: codes(l, &self.ex.setup.financing_accounts, &self.ex.id),
+            investing_accounts: codes(l, &self.ex.setup.investing_accounts, &self.ex.id),
+            members: self.members.clone(),
+        };
+        let cf = cash_flow(l, &params)
+            .map_err(|e| engine_refusal(RuleId::new(Area::Statement, 3), e))?;
+        let mut m = JsonMap::new();
+        let put = |m: &mut JsonMap, key: &str, d: Decimal| {
+            m.insert(key.to_string(), Value::String(figure(d)));
+        };
+        put(&mut m, "net_change", cf.net_change_in_cash);
+        put(&mut m, "cash_beginning", cf.cash_beginning);
+        put(&mut m, "cash_ending", cf.cash_ending);
+        put(&mut m, "difference", cf.reconciles.difference);
+        put(&mut m, "net_income", cf.operating_reconciliation.net_income);
+        m.insert(
+            "noncash.count".to_string(),
+            Value::String(cf.noncash_disclosures.len().to_string()),
+        );
+        for (name, section) in [
+            ("operating", CashFlowSection::Operating),
+            ("investing", CashFlowSection::Investing),
+            ("financing", CashFlowSection::Financing),
+        ] {
+            put(&mut m, name, cf.total(section));
+            let lines = cf.lines(section);
+            let entries: BTreeSet<EntryId> = lines.iter().map(|l| l.entry).collect();
+            m.insert(
+                format!("{name}.count"),
+                Value::String(entries.len().to_string()),
+            );
+            for l in lines {
+                let Some(n) = self.event_of(l.entry) else {
+                    continue;
+                };
+                let key = format!("{name}.{n}");
+                let amount = m
+                    .get(&key)
+                    .and_then(Value::as_str)
+                    .and_then(|s| s.parse::<Decimal>().ok())
+                    .unwrap_or_default();
+                m.insert(key, Value::String(figure(amount + l.amount)));
+                let key = format!("{name}.{n}.on_behalf");
+                let amount = m
+                    .get(&key)
+                    .and_then(Value::as_str)
+                    .and_then(|s| s.parse::<Decimal>().ok())
+                    .unwrap_or_default();
+                m.insert(key, Value::String(figure(amount + l.on_behalf)));
+            }
+        }
+        for d in &cf.noncash_disclosures {
+            if let Some(n) = self.event_of(d.entry) {
+                let key = format!("noncash.{n}");
+                let amount = m
+                    .get(&key)
+                    .and_then(Value::as_str)
+                    .and_then(|s| s.parse::<Decimal>().ok())
+                    .unwrap_or_default();
+                m.insert(key, Value::String(figure(amount + d.amount)));
+            }
+        }
+        for (class, amount) in cf.operating_by_class() {
+            let letter = ["a", "b", "c", "d", "e", "f", "g"]
+                .into_iter()
+                .find(|l| operating_class(l) == Some(class))
+                .expect("a class has its letter");
+            put(&mut m, &format!("class.{letter}"), amount);
+        }
+        for line in &cf.operating_reconciliation.lines {
+            put(&mut m, &reconciliation_key(line), line.amount);
+        }
+        Ok(Value::Object(m))
+    }
+
+    fn answer_trial_balance(&self, q: &Query) -> Result<Value, Refusal> {
+        let as_of = self.q_day(q)?;
+        let tb = trial_balance_as_of(self.l(), as_of);
+        if !tb.balanced() {
+            return Err(Refusal::new(
+                RuleId::new(Area::Statement, 1),
+                "the trial balance balances",
+            ));
+        }
+        Ok(json_figures(self.ex.setup.accounts.iter().map(|a| {
+            let (dr, cr) = tb
+                .lines
+                .iter()
+                .find(|t| t.code == a.code)
+                .map_or((Decimal::ZERO, Decimal::ZERO), |t| (t.debit, t.credit));
+            (a.code.clone(), figure(dr - cr))
+        })))
+    }
+
+    fn answer_profit_and_loss(&self, q: &Query) -> Result<Value, Refusal> {
+        let (start, end) = self.q_period(q)?;
+        let pl = profit_and_loss_for_period(self.l(), start, end, None)
+            .map_err(|e| engine_refusal(RuleId::new(Area::Statement, 3), e))?;
+        let mut m = JsonMap::new();
+        for a in self
+            .ex
+            .setup
+            .accounts
+            .iter()
+            .filter(|a| matches!(a.kind.as_str(), "revenue" | "expense"))
+        {
+            let amount: Decimal = pl
+                .revenue
+                .iter()
+                .chain(&pl.expenses)
+                .filter(|s| s.code == a.code)
+                .map(|s| s.amount)
+                .sum();
+            m.insert(a.code.clone(), Value::String(figure(amount)));
+        }
+        m.insert(
+            "net_income".to_string(),
+            Value::String(figure(pl.net_income())),
+        );
+        Ok(Value::Object(m))
+    }
+
+    fn answer_entry(&self, q: &Query) -> Result<Value, Refusal> {
+        let n = q.entry.ok_or_else(|| self.missing("entry"))?;
+        let entry = self
+            .l()
+            .get_entry(self.entry_or_refuse(n)?)
+            .expect("an entry an event posted");
+        let mut got: BTreeMap<String, Decimal> = BTreeMap::new();
+        for line in entry.lines() {
+            let code = &self.l().chart().get(line.account).unwrap().code;
+            let side = match line.side {
+                Side::Debit => "debit",
+                Side::Credit => "credit",
+            };
+            *got.entry(format!("{code}.{side}")).or_default() += line.amount.amount;
+        }
+        Ok(json_figures(got.into_iter().map(|(k, v)| (k, figure(v)))))
+    }
+
+    fn answer_balances(&self, q: &Query) -> Result<Value, Refusal> {
+        let as_of = self.q_day(q)?;
+        let tb = trial_balance_as_of(self.l(), as_of);
+        let mut m = JsonMap::new();
+        for account in self.l().chart().all() {
+            let (dr, cr) = tb
+                .lines
+                .iter()
+                .find(|t| t.code == account.code)
+                .map_or((Decimal::ZERO, Decimal::ZERO), |t| (t.debit, t.credit));
+            let got = match account.account_type.normal_side() {
+                Side::Debit => dr - cr,
+                Side::Credit => cr - dr,
+            };
+            m.insert(account.code.clone(), Value::String(figure(got)));
+        }
+        Ok(Value::Object(m))
+    }
+
+    fn answer_members_equity(&self, q: &Query) -> Result<Value, Refusal> {
+        let (from, to) = self.q_period(q)?;
+        let st = members_equity(self.l(), from, to, &self.members)
+            .map_err(|e| engine_refusal(RuleId::new(Area::Partner, 1), e))?;
+        let mut m = JsonMap::new();
+        for member in &st.members {
+            for (column, v) in [
+                ("beginning", member.beginning),
+                ("contributions", member.contributions),
+                ("net_income", member.net_income),
+                ("distributions", member.distributions),
+                ("other", member.other),
+                ("ending", member.ending),
+            ] {
+                m.insert(
+                    format!("{}.{column}", member.name),
+                    Value::String(figure(v)),
+                );
+            }
+        }
+        Ok(Value::Object(m))
+    }
+
+    fn answer_k1(&self, q: &Query) -> Result<Value, Refusal> {
+        let (from, to) = self.q_period(q)?;
+        let cash = codes(self.l(), &self.ex.setup.cash_accounts, &self.ex.id);
+        let rows = ledger_core::k1::k1_worksheet(self.l(), from, to, &self.members, &cash)
+            .map_err(|e| engine_refusal(RuleId::new(Area::Partner, 1), e))?;
+        let mut m = JsonMap::new();
+        for r in &rows {
+            for (column, v) in [
+                ("beginning", r.beginning),
+                ("contributions_cash", r.contributions_cash),
+                ("contributions_property", r.contributions_property),
+                ("net_income", r.net_income),
+                ("distributions", r.distributions),
+                ("other", r.other),
+                ("ending", r.ending),
+            ] {
+                m.insert(format!("{}.{column}", r.name), Value::String(figure(v)));
+            }
+        }
+        Ok(Value::Object(m))
+    }
+
+    fn tax_rows(&self, from: NaiveDate, to: NaiveDate) -> Result<Vec<TaxCapitalRow>, Refusal> {
+        let cash = codes(self.l(), &self.ex.setup.cash_accounts, &self.ex.id);
+        ledger_core::tax_capital::tax_basis_capital(self.l(), from, to, &self.members, &cash)
+            .map(|r| r.rows)
+            .map_err(|e| engine_refusal(RuleId::new(Area::Partner, 4), e))
+    }
+
+    fn answer_k1_tax_basis(&self, q: &Query) -> Result<Value, Refusal> {
+        let (from, to) = self.q_period(q)?;
+        let mut m = JsonMap::new();
+        for row in self.tax_rows(from, to)? {
+            let name = &row.book.name;
+            m.insert(
+                format!("{name}.contributions_cash"),
+                Value::String(figure(row.contributions_cash)),
+            );
+            for (line, tax) in [
+                ("beginning", &row.beginning),
+                ("contributions_property", &row.contributions_property),
+                ("net_income", &row.net_income),
+                ("other", &row.other),
+                ("distributions", &row.distributions),
+                ("ending", &row.ending),
+            ] {
+                m.insert(
+                    format!("{name}.{line}"),
+                    Value::String(tax.tax().map_or("open".to_string(), figure)),
+                );
+                m.insert(
+                    format!("{name}.known_{line}"),
+                    Value::String(figure(tax.known)),
+                );
+            }
+        }
+        Ok(Value::Object(m))
+    }
+
+    fn answer_k1_reconciliation(&self, q: &Query) -> Result<Value, Refusal> {
+        let (from, to) = self.q_period(q)?;
+        let mut m = JsonMap::new();
+        for row in self.tax_rows(from, to)? {
+            let r = &row.reconciliation;
+            let total = r.total().ok_or_else(|| {
+                Refusal::new(
+                    RuleId::new(Area::Partner, 4),
+                    "the reconciliation's total is too large",
+                )
+            })?;
+            for (cause, v) in RECONCILING_CAUSES.into_iter().zip([
+                r.beginning,
+                r.built_in_gain_704c,
+                r.property_without_basis,
+                r.property_distributed,
+                total,
+            ]) {
+                m.insert(
+                    format!("{}.{cause}", row.book.name),
+                    Value::String(figure(v)),
+                );
+            }
+        }
+        Ok(Value::Object(m))
+    }
+
+    fn answer_vendor_1099_paid(&self, q: &Query) -> Result<Value, Refusal> {
+        let (from, to) = self.q_period(q)?;
+        let year = chrono::Datelike::year(&to);
+        let l = self.l();
+        let sources = self.payment_accounts()?;
+        let r = vendor_1099_report(l, year, None, &sources, &self.party_members, Some(to))
+            .map_err(|e| engine_refusal(RuleId::new(Area::Tax1099, 1), e))?;
+        let _ = from;
+        let mut m = JsonMap::new();
+        for (name, vendor) in &self.payees {
+            let paid: Decimal = r
+                .vendors
+                .iter()
+                .filter(|v| v.vendor_id == *vendor)
+                .map(|v| v.paid)
+                .sum();
+            m.insert(name.clone(), Value::String(figure(paid)));
+        }
+        Ok(Value::Object(m))
+    }
+
+    fn answer_vendor_1099(&self, q: &Query) -> Result<Value, Refusal> {
+        let (_, to) = self.q_period(q)?;
+        let year = chrono::Datelike::year(&to);
+        let name = q.payee.as_deref().ok_or_else(|| self.missing("payee"))?;
+        let v = *self.payees.get(name).ok_or_else(|| {
+            Refusal::new(
+                RuleId::new(Area::Tax1099, 1),
+                format!("payee {name:?} not in setup"),
+            )
+        })?;
+        let sources = self.payment_accounts()?;
+        let r = vendor_1099_report(
+            self.l(),
+            year,
+            None,
+            &sources,
+            &self.party_members,
+            Some(to),
+        )
+        .map_err(|e| engine_refusal(RuleId::new(Area::Tax1099, 1), e))?;
+        let line = r.vendors.iter().find(|l| l.vendor_id == v).ok_or_else(|| {
+            Refusal::new(
+                RuleId::new(Area::Tax1099, 1),
+                format!("the 1099 worksheet has no line for {name}"),
+            )
+        })?;
+        Ok(json_figures([
+            ("status".to_string(), line.status.key().to_string()),
+            ("threshold".to_string(), figure(r.threshold)),
+            ("paid".to_string(), figure(line.paid)),
+            ("excluded_card".to_string(), figure(line.excluded_card)),
+            ("undetermined".to_string(), figure(line.undetermined)),
+            ("not_reportable".to_string(), figure(line.not_reportable)),
+        ]))
+    }
+
+    fn answer_party_part(&self, q: &Query) -> Result<Value, Refusal> {
+        let event = q.entry.ok_or_else(|| self.missing("entry"))?;
+        let n = self.entry_or_refuse(event)?;
+        let name = q.party.as_deref().ok_or_else(|| self.missing("party"))?;
+        let party = *self.parties.get(name).ok_or_else(|| {
+            Refusal::new(
+                RuleId::new(Area::Partner, 3),
+                format!("party {name:?} not in setup"),
+            )
+        })?;
+        let ex = &self.ex;
+        let r = ledger_core::shares::resolve(
+            self.l(),
+            n,
+            self.l().entry_parties(n),
+            &party_money(ex, self.l()),
+            &self.party_members,
+        )
+        .map_err(|why| {
+            Refusal::new(
+                RuleId::new(Area::Partner, 3),
+                format!("entry {n}'s shares: {why}"),
+            )
+        })?;
+        let part = r.part(party).ok_or_else(|| {
+            Refusal::new(
+                RuleId::new(Area::Partner, 3),
+                format!("entry {n} doesn't name {name:?}"),
+            )
+        })?;
+        Ok(json_figures([
+            ("resolved".to_string(), figure(part.amount)),
+            (
+                "direction".to_string(),
+                r.target.direction.key().to_string(),
+            ),
+            ("cash".to_string(), figure(part.cash)),
+            ("in_kind".to_string(), figure(part.in_kind)),
+        ]))
+    }
+
+    fn answer_party_totals(&self, q: &Query) -> Result<Value, Refusal> {
+        let (from, to) = self.q_period(q)?;
+        let basis = q
+            .basis
+            .as_deref()
+            .ok_or_else(|| {
+                Refusal::new(
+                    RuleId::new(Area::Partner, 3),
+                    "party_totals names its basis",
+                )
+            })
+            .and_then(|k| {
+                Basis::parse(k).filter(|b| b.key() == k).ok_or_else(|| {
+                    Refusal::new(RuleId::new(Area::Partner, 3), format!("basis {k:?}"))
+                })
+            })?;
+        let name = q.party.as_deref().ok_or_else(|| self.missing("party"))?;
+        let party = *self.parties.get(name).ok_or_else(|| {
+            Refusal::new(
+                RuleId::new(Area::Partner, 3),
+                format!("party {name:?} not in setup"),
+            )
+        })?;
+        let ex = &self.ex;
+        let a = ledger_core::parties::activity_with(
+            self.l(),
+            party,
+            (from, to),
+            &party_money(ex, self.l()),
+            &self.party_members,
+        );
+        if !a.unresolved.is_empty() {
+            return Err(Refusal::new(
+                RuleId::new(Area::Partner, 3),
+                format!("{name:?}'s entries don't resolve"),
+            ));
+        }
+        let (paid, received) = a.totals(basis);
+        Ok(json_figures([
+            ("paid".to_string(), figure(paid)),
+            ("received".to_string(), figure(received)),
+        ]))
+    }
+
+    fn answer_party_tin_last4(&self, q: &Query) -> Result<Value, Refusal> {
+        let name = q.party.as_deref().ok_or_else(|| self.missing("party"))?;
+        let party = *self.parties.get(name).ok_or_else(|| {
+            Refusal::new(
+                RuleId::new(Area::Partner, 2),
+                format!("party {name:?} not in setup"),
+            )
+        })?;
+        let got = self
+            .l()
+            .get_party(party)
+            .and_then(|p| p.tin_last4())
+            .unwrap_or_default();
+        Ok(json_figures([("tin_last4".to_string(), got.to_string())]))
+    }
+
+    fn answer_project(&self, q: &Query) -> Result<Value, Refusal> {
+        let name = q
+            .project
+            .as_deref()
+            .ok_or_else(|| self.missing("project"))?;
+        let id = *self.projects.get(name).ok_or_else(|| {
+            Refusal::new(
+                RuleId::new(Area::Statement, 5),
+                format!("project {name:?} not in setup.projects"),
+            )
+        })?;
+        let (from, to) = self.q_period(q)?;
+        let f = ledger_core::project_figures(self.l(), id, from, to)
+            .map_err(|e| engine_refusal(RuleId::new(Area::Statement, 5), e))?;
+        let opt = |d: Option<Decimal>| d.map_or("none".to_string(), figure);
+        Ok(json_figures([
+            ("revenue".to_string(), figure(f.period.total_revenue)),
+            ("expenses".to_string(), figure(f.period.total_expenses)),
+            ("net".to_string(), figure(f.period.net_income())),
+            ("to_date.revenue".to_string(), figure(f.to_date.revenue)),
+            ("to_date.expenses".to_string(), figure(f.to_date.expenses)),
+            ("to_date.net".to_string(), figure(f.to_date.net())),
+            (
+                "unrecovered_cost".to_string(),
+                opt(f.to_date.unrecovered_cost),
+            ),
+        ]))
+    }
+
+    fn answer_run(&self, q: &Query) -> Result<Value, Refusal> {
+        let n = q.event.ok_or_else(|| self.missing("event"))?;
+        let run = self.runs.get(&n).ok_or_else(|| {
+            Refusal::new(
+                RuleId::new(Area::Asset, 1),
+                format!("event {n} is no run_depreciation (or not yet run)"),
+            )
+        })?;
+        let posted = if run.already_posted {
+            Decimal::ZERO
+        } else {
+            run.amount
+        };
+        let caught_up = (posted - run.scheduled).max(Decimal::ZERO);
+        Ok(json_figures([
+            ("amount".to_string(), figure(posted)),
+            ("caught_up".to_string(), figure(caught_up)),
+        ]))
+    }
+
+    fn answer_disposal(&self, q: &Query) -> Result<Value, Refusal> {
+        let name = q.asset.as_deref().ok_or_else(|| self.missing("asset"))?;
+        let p = self.disposals.get(name).ok_or_else(|| {
+            Refusal::new(
+                RuleId::new(Area::Asset, 1),
+                format!("asset {name:?} wasn't disposed of"),
+            )
+        })?;
+        Ok(json_figures([
+            (
+                "final_depreciation".to_string(),
+                figure(p.final_depreciation),
+            ),
+            (
+                "catch_up_depreciation".to_string(),
+                figure(p.catch_up_depreciation),
+            ),
+            (
+                "excess_depreciation".to_string(),
+                figure(p.excess_depreciation),
+            ),
+            ("accumulated".to_string(), figure(p.accumulated)),
+            ("book_value".to_string(), figure(p.book_value)),
+            ("gain_loss".to_string(), figure(p.gain_loss)),
+        ]))
+    }
+
+    fn answer_depreciation_schedule(&self, q: &Query) -> Result<Value, Refusal> {
+        let as_of = self.q_day(q)?;
+        let name = q.asset.as_deref().ok_or_else(|| self.missing("asset"))?;
+        let asset = self
+            .l()
+            .get_asset(self.asset(name, name))
+            .expect("a registered asset");
+        let lines = ledger_core::depreciation_schedule(asset, as_of)
+            .map_err(|e| engine_refusal(RuleId::new(Area::Asset, 1), e))?;
+        let mut m = JsonMap::new();
+        for l in &lines {
+            m.insert(l.period.clone(), Value::String(figure(l.amount)));
+        }
+        // A month the schedule doesn't reach is 0.00: from acquisition
+        // (never later than in-service) through the day asked as of.
+        let start = self
+            .l()
+            .asset_acquired_date(asset.id)
+            .unwrap_or(asset.in_service_date);
+        let (mut year, mut month) = (start.year(), start.month());
+        while (year, month) <= (as_of.year(), as_of.month()) {
+            m.entry(format!("{year:04}-{month:02}"))
+                .or_insert_with(|| Value::String("0.00".to_string()));
+            if month == 12 {
+                year += 1;
+                month = 1;
+            } else {
+                month += 1;
+            }
+        }
+        let accumulated = ledger_core::accumulated_scheduled_through(asset, as_of)
+            .map_err(|e| engine_refusal(RuleId::new(Area::Asset, 1), e))?;
+        let book_value = ledger_core::scheduled_book_value(asset, as_of)
+            .map_err(|e| engine_refusal(RuleId::new(Area::Asset, 1), e))?;
+        m.insert(
+            "accumulated".to_string(),
+            Value::String(figure(accumulated)),
+        );
+        m.insert("book_value".to_string(), Value::String(figure(book_value)));
+        Ok(Value::Object(m))
+    }
+
+    fn answer_schedule_plan(&self, q: &Query) -> Result<Value, Refusal> {
+        let name = q
+            .schedule
+            .as_deref()
+            .ok_or_else(|| self.missing("schedule"))?;
+        let id = *self.schedules.get(name).ok_or_else(|| {
+            Refusal::new(
+                RuleId::new(Area::Prepaid, 1),
+                format!("no schedule {name:?}"),
+            )
+        })?;
+        let plan = self
+            .l()
+            .get_schedule(id)
+            .expect("a registered schedule")
+            .plan()
+            .map_err(|e| engine_refusal(RuleId::new(Area::Prepaid, 1), e))?;
+        let mut m = JsonMap::new();
+        let mut total = Decimal::ZERO;
+        for (d, amount) in &plan {
+            m.insert(d.to_string(), Value::String(figure(*amount)));
+            total += *amount;
+        }
+        m.insert("total".to_string(), Value::String(figure(total)));
+        Ok(Value::Object(m))
+    }
+
+    fn answer_register_row(&self, q: &Query) -> Result<Value, Refusal> {
+        let as_of = self.q_day(q)?;
+        let name = q.asset.as_deref().ok_or_else(|| self.missing("asset"))?;
+        let id = self.asset(name, name);
+        let r = ledger_core::fixed_asset_register(self.l(), as_of)
+            .map_err(|e| engine_refusal(RuleId::new(Area::Asset, 3), e))?;
+        let row = r
+            .rows
+            .iter()
+            .find(|row| row.asset_id == id)
+            .ok_or_else(|| {
+                Refusal::new(
+                    RuleId::new(Area::Asset, 3),
+                    "not on the register (acquired later)",
+                )
+            })?;
+        Ok(json_figures([
+            ("acquired".to_string(), row.acquired_date.to_string()),
+            ("in_service".to_string(), row.in_service_date.to_string()),
+            ("cost".to_string(), figure(row.cost)),
+            (
+                "accumulated_scheduled".to_string(),
+                figure(row.accumulated_scheduled),
+            ),
+            (
+                "accumulated_posted".to_string(),
+                figure(row.accumulated_posted),
+            ),
+            (
+                "unposted".to_string(),
+                figure(row.accumulated_scheduled - row.accumulated_posted),
+            ),
+            ("book_value".to_string(), figure(row.book_value)),
+        ]))
+    }
+
+    fn answer_register_totals(&self, q: &Query) -> Result<Value, Refusal> {
+        let as_of = self.q_day(q)?;
+        let r = ledger_core::fixed_asset_register(self.l(), as_of)
+            .map_err(|e| engine_refusal(RuleId::new(Area::Asset, 3), e))?;
+        Ok(json_figures([
+            ("total_cost".to_string(), figure(r.total_cost)),
+            (
+                "total_accumulated_scheduled".to_string(),
+                figure(r.total_accumulated_scheduled),
+            ),
+            (
+                "total_accumulated_posted".to_string(),
+                figure(r.total_accumulated_posted),
+            ),
+            ("total_book_value".to_string(), figure(r.total_book_value)),
+            (
+                "total_depreciable_basis".to_string(),
+                figure(r.total_depreciable_basis),
+            ),
+            (
+                "total_tax_basis_723".to_string(),
+                figure(r.total_tax_basis_723),
+            ),
+            ("missing_basis".to_string(), r.missing_basis.to_string()),
+            (
+                "unregistered_cost".to_string(),
+                figure(r.unregistered_cost()),
+            ),
+            (
+                "unposted_depreciation".to_string(),
+                figure(r.unposted_depreciation()),
+            ),
+            (
+                "unattributed_accumulated".to_string(),
+                figure(r.unattributed_accumulated()),
+            ),
+        ]))
+    }
+
+    fn answer_asset_basis(&self, q: &Query) -> Result<Value, Refusal> {
+        let name = q.asset.as_deref().ok_or_else(|| self.missing("asset"))?;
+        let a = self
+            .l()
+            .get_asset(self.asset(name, name))
+            .expect("a registered asset");
+        let f = a
+            .basis_figures()
+            .map_err(|e| engine_refusal(RuleId::new(Area::Asset, 4), e))?
+            .ok_or_else(|| Refusal::new(RuleId::new(Area::Asset, 4), "no basis recorded"))?;
+        let opt = |d: Option<Decimal>| d.map_or("none".to_string(), figure);
+        let rule = a.basis.as_ref().expect("a basis recorded").rule;
+        Ok(json_figures([
+            ("rule".to_string(), rule.key().to_string()),
+            (
+                "contributor_adjusted_basis".to_string(),
+                opt(a.basis.as_ref().and_then(|b| b.contributor_adjusted_basis)),
+            ),
+            (
+                "fmv_at_contribution".to_string(),
+                opt(a.fmv_at_contribution()),
+            ),
+            ("tax_basis_723".to_string(), opt(f.tax_basis_723)),
+            ("depreciable_basis".to_string(), figure(f.depreciable_basis)),
+            ("built_in_gain_704c".to_string(), opt(f.built_in_gain_704c)),
+            ("sec704c_1c".to_string(), a.sec704c_1c().to_string()),
+        ]))
+    }
+
+    fn answer_iif(&self, q: &Query) -> Result<Value, Refusal> {
+        let as_of = self.q_day(q)?;
+        let iif = export_iif(self.l(), &self.ex.setup.cash_accounts, as_of)
+            .map_err(|e| engine_refusal(RuleId::new(Area::Format, 2), e))?;
+        match q.name.as_str() {
+            "iif_lines" => {
+                let mut lines: Vec<&str> = iif.text.split("\r\n").collect();
+                if lines.last() == Some(&"") {
+                    lines.pop();
+                }
+                Ok(Value::Array(
+                    lines
+                        .into_iter()
+                        .map(|l| Value::String(l.to_string()))
+                        .collect(),
+                ))
+            }
+            _ => Ok(Value::Array(
+                iif.changes
+                    .iter()
+                    .map(|c| {
+                        let what = match &c.field {
+                            IifField::AccountName { code } => format!("name {code}"),
+                            IifField::Memo { entry } => format!("memo {entry}"),
+                            IifField::AccountNumber | IifField::AccountNumberLeftOut { .. } => {
+                                "number".to_string()
+                            }
+                            IifField::AtTopLevel { code, .. } => format!("top level {code}"),
+                            IifField::ClassName { class } => format!("class {class}"),
+                        };
+                        Value::Array(vec![
+                            Value::String(what),
+                            Value::String(c.books.clone()),
+                            Value::String(c.written.clone()),
+                        ])
+                    })
+                    .collect(),
+            )),
+        }
+    }
+
+    fn answer_command(&self, q: &Query) -> Result<Value, Refusal> {
+        let ex = &self.ex;
+        let mut copy = self.l().clone();
+        let result: Result<(), LedgerError> = match q.name.as_str() {
+            "rename_account" => {
+                let code = q.code.as_deref().ok_or_else(|| self.missing("account"))?;
+                let name = q.new_name.as_deref().ok_or_else(|| self.missing("name"))?;
+                let account = self.account_or_refuse(code)?;
+                copy.rename_account(account, name)
+            }
+            "add_account" => {
+                let a = q.account.as_ref().ok_or_else(|| self.missing("account"))?;
+                let kind = account_type(a, &ex.id);
+                let parent = a
+                    .parent
+                    .as_deref()
+                    .map(|p| self.account_or_refuse(p))
+                    .transpose()?;
+                copy.add_account(&a.code, &a.name, kind, parent, a.header)
+                    .and_then(|id| match &a.tax_category {
+                        Some(c) => copy.set_account_tax(id, Some(c), None),
+                        None => Ok(()),
+                    })
+                    .and_then(|()| {
+                        self.l().check_tax_category_required(
+                            &a.code,
+                            &a.name,
+                            kind,
+                            a.header,
+                            a.tax_category.as_deref(),
+                        )
+                    })
+            }
+            "set_tax_category" => {
+                let code = q.code.as_deref().ok_or_else(|| self.missing("account"))?;
+                let account = self.account_or_refuse(code)?;
+                let category = q.category.as_deref();
+                copy.set_account_tax(account, category, None)
+                    .and_then(|()| self.l().check_tax_category_kept(account, category))
+            }
+            other => unreachable!("{other} is no command"),
+        };
+        result
+            .map(|()| Value::Bool(true))
+            .map_err(|e| Refusal::of_reason(refusal(&e)))
+    }
+}
+
+/// The `Engine` adapter: the wanderbooks implementation over `Store`, as
+/// the bookspec runner drives any engine (`plan/served.md` P13 step 2).
+impl Engine for Books<'_> {
+    fn load(&mut self, setup: &Setup) -> Result<(), Refusal> {
+        if setup != &self.ex.setup {
+            return Err(Refusal::new(
+                RuleId::new(Area::Ledger, 1),
+                "the setup handed over is not the example's",
+            ));
+        }
+        self.setup();
+        Ok(())
+    }
+
+    fn apply(&mut self, event: &Event) -> Result<(), Refusal> {
+        let n = self.posted.len() + 1;
+        self.apply_event(n, event)
+            .map_err(|e| store_refusal_obj(&e))
+    }
+
+    fn change(&mut self, change: &ChangeSpec) -> Result<(), Refusal> {
+        self.try_change(change)
+    }
+
+    fn query(&self, q: &Query) -> Result<Value, Refusal> {
+        self.answer(q)
+    }
+
+    fn claims(&self) -> Claims {
+        Claims::new(
+            bookspec_checker::covered_rules()
+                .into_iter()
+                .map(|r| r.id.clone()),
+        )
+    }
+}
+
+/// A JSON object of named strings (every figure an exact decimal string,
+/// never a number).
+fn json_figures<I>(figures: I) -> Value
+where
+    I: IntoIterator<Item = (String, String)>,
+{
+    Value::Object(
+        figures
+            .into_iter()
+            .map(|(k, v)| (k, Value::String(v)))
+            .collect(),
+    )
 }
 
 /// The books an example sets up, with every event and change applied and
@@ -1830,7 +2338,7 @@ fn reconciliation_key(l: &ledger_core::ReconcilingLine) -> String {
 /// Check one `cash_flow` expectation, every value it gives.
 fn check_cash_flow(b: &Books<'_>, x: &Expect) {
     let (ex, l, members) = (b.ex, b.l(), &b.members);
-    let (start, end) = x.period(ex);
+    let (start, end) = period(ex, x);
     let values = x.figures(&ex.id);
     let params = CashFlowParams {
         start,
@@ -1927,7 +2435,7 @@ fn exactly(ex: &Example, x: &Expect, keys: &BTreeSet<String>) {
 /// the day, debits less credits (a credit balance negative), every
 /// account listed (rules.md B-6, B-33).
 fn check_trial_balance(ex: &Example, l: &Ledger, x: &Expect) {
-    let as_of = x.day(ex);
+    let as_of = day(ex, x);
     let tb = trial_balance_as_of(l, as_of);
     assert!(tb.balanced(), "{}: the trial balance balances", ex.id);
     let keys = ex.setup.accounts.iter().map(|a| a.code.clone()).collect();
@@ -1949,7 +2457,7 @@ fn check_trial_balance(ex: &Example, l: &Ledger, x: &Expect) {
 /// left out, and `net_income`, revenue less expenses; every revenue and
 /// expense account listed (rules.md B-14, B-33).
 fn check_profit_and_loss(ex: &Example, l: &Ledger, x: &Expect) {
-    let (start, end) = x.period(ex);
+    let (start, end) = period(ex, x);
     let pl = profit_and_loss_for_period(l, start, end, None)
         .unwrap_or_else(|e| panic!("{}: {e}", ex.id));
     let mut keys: BTreeSet<String> = ex
@@ -1995,7 +2503,7 @@ fn report_1099(b: &Books<'_>, x: &Expect) -> (NaiveDate, NaiveDate, ledger_core:
         ex.id,
         x.query
     );
-    let (from, to) = x.period(ex);
+    let (from, to) = period(ex, x);
     let year = chrono::Datelike::year(&to);
     assert_eq!(
         Some(from),
@@ -2165,7 +2673,7 @@ fn check_party_totals(b: &Books<'_>, x: &Expect) {
         "{}: party_totals gives from and to",
         ex.id
     );
-    let (from, to) = x.period(ex);
+    let (from, to) = period(ex, x);
     let basis = x
         .basis
         .as_deref()
@@ -2225,7 +2733,7 @@ fn check_project(b: &Books<'_>, x: &Expect) {
         .projects
         .get(name)
         .unwrap_or_else(|| panic!("{}: project {name:?} not in setup.projects", ex.id));
-    let (from, to) = x.period(ex);
+    let (from, to) = period(ex, x);
     let f =
         ledger_core::project_figures(l, id, from, to).unwrap_or_else(|e| panic!("{}: {e}", ex.id));
     let keys: BTreeSet<String> = [
@@ -2294,7 +2802,7 @@ fn check_party_tin_last4(b: &Books<'_>, x: &Expect) {
 /// are the example's choice. It needs `cash_accounts` (what is money
 /// rather than property).
 fn check_k1(ex: &Example, l: &Ledger, members: &[MemberCapital], x: &Expect) {
-    let (from, to) = x.period(ex);
+    let (from, to) = period(ex, x);
     assert!(
         !members.is_empty() && members.iter().all(|m| m.share > Decimal::ZERO),
         "{}: k1 needs the members and their shares",
@@ -2356,7 +2864,7 @@ fn check_format_shape(ex: &Example, x: &Expect) {
     );
     // ledger-package reads the as_of itself: given, never defaulted.
     assert!(x.as_of.is_some(), "{}: {} gives as_of", ex.id, x.query);
-    x.day(ex);
+    day(ex, x);
     assert!(
         x.after.is_none(),
         "{}: {}: a format query is of the books after every event",
@@ -2411,7 +2919,7 @@ fn check_entry(b: &Books<'_>, x: &Expect) {
 /// of the day on its normal side (so a member's capital after a loss is
 /// negative); the accounts named are the example's choice.
 fn check_balances(ex: &Example, l: &Ledger, x: &Expect) {
-    let as_of = x.day(ex);
+    let as_of = day(ex, x);
     let tb = trial_balance_as_of(l, as_of);
     for (code, want) in x.figures(&ex.id) {
         let want = exact(want, &format!("{} {code}", ex.id));
@@ -2438,7 +2946,7 @@ fn check_balances(ex: &Example, l: &Ledger, x: &Expect) {
 /// and `ending`; the figures named are the example's choice (rules.md
 /// B-13).
 fn check_members_equity(ex: &Example, l: &Ledger, members: &[MemberCapital], x: &Expect) {
-    let (from, to) = x.period(ex);
+    let (from, to) = period(ex, x);
     assert!(
         !members.is_empty() && members.iter().all(|m| m.share > Decimal::ZERO),
         "{}: members_equity needs the members and their shares",
@@ -2561,7 +3069,7 @@ fn month_key(key: &str, what: &str) {
 /// figures it shows.
 fn check_depreciation_schedule(b: &Books<'_>, x: &Expect) {
     let ex = b.ex;
-    let as_of = x.day(ex);
+    let as_of = day(ex, x);
     let name = x
         .asset
         .as_deref()
@@ -2666,7 +3174,7 @@ fn figure(d: Decimal) -> String {
 /// later) is refused.
 fn check_register_row(b: &Books<'_>, x: &Expect) {
     let ex = b.ex;
-    let as_of = x.day(ex);
+    let as_of = day(ex, x);
     let name = x
         .asset
         .as_deref()
@@ -2704,7 +3212,7 @@ fn check_register_row(b: &Books<'_>, x: &Expect) {
 /// `unattributed_accumulated`; the example names the figures it shows.
 fn check_register_totals(b: &Books<'_>, x: &Expect) {
     let ex = b.ex;
-    let as_of = x.day(ex);
+    let as_of = day(ex, x);
     let what = format!("{} register_totals as of {as_of}", ex.id);
     let r =
         ledger_core::fixed_asset_register(b.l(), as_of).unwrap_or_else(|e| panic!("{what}: {e}"));
@@ -2778,7 +3286,7 @@ fn check_asset_basis(b: &Books<'_>, x: &Expect) {
 /// their shares, and `cash_accounts`.
 fn tax_capital_rows(b: &Books<'_>, x: &Expect, what: &str) -> Vec<TaxCapitalRow> {
     let ex = b.ex;
-    let (from, to) = x.period(ex);
+    let (from, to) = period(ex, x);
     assert!(
         !b.members.is_empty() && b.members.iter().all(|m| m.share > Decimal::ZERO),
         "{what}: needs the members and their shares"
@@ -2937,7 +3445,7 @@ fn check_command(ex: &Example, l: &Ledger, x: &Expect) {
                 .account
                 .as_ref()
                 .unwrap_or_else(|| panic!("{}: add_account gives the account", ex.id));
-            let kind = a.account_type(&ex.id);
+            let kind = account_type(a, &ex.id);
             let parent = a.parent.as_deref().map(|p| {
                 l.chart()
                     .find_by_code(p)
@@ -2981,7 +3489,7 @@ fn check_command(ex: &Example, l: &Ledger, x: &Expect) {
 /// these dates covers, by the one rule (rules.md B-30), as `from` and
 /// `to`; or the rule's refusal.
 fn check_period(ex: &Example, x: &Expect) {
-    match (x.resolved_period(ex), &x.refused) {
+    match (resolved_period(ex, x), &x.refused) {
         (Ok((from, to)), None) => {
             exactly(ex, x, &["from".to_string(), "to".to_string()].into());
             let f = x.figures(&ex.id);
@@ -3001,7 +3509,7 @@ fn check_period(ex: &Example, x: &Expect) {
 fn check_day(ex: &Example, x: &Expect) {
     exactly(ex, x, &["as_of".to_string()].into());
     let want = date(&x.figures(&ex.id)["as_of"], &ex.id);
-    assert_eq!(x.day(ex), want, "{}: day", ex.id);
+    assert_eq!(day(ex, x), want, "{}: day", ex.id);
 }
 
 /// Check one `calendar_year` expectation: the year a calendar-year count
@@ -3227,6 +3735,47 @@ fn run(ex: &Example) -> Vec<(String, Option<&'static str>)> {
     out
 }
 
+/// The `Engine` adapter over `Store` runs every example through the
+/// runner, and every rule the adapter claims passes (`plan/served.md` P13
+/// step 2). The loader above proves the same figures with its own checks;
+/// this proves the trait path, which is what another engine supplies.
+#[test]
+fn the_runner_reports_every_claimed_rule_green() {
+    let mut files: Vec<PathBuf> = std::fs::read_dir(examples_dir())
+        .expect("bookspec/examples")
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|x| x == "toml"))
+        .collect();
+    files.sort();
+    let mut examples = Vec::new();
+    for f in &files {
+        let text = std::fs::read_to_string(f).unwrap();
+        examples.push(Example::from_toml(&text).unwrap_or_else(|e| panic!("{}: {e}", f.display())));
+    }
+    assert!(examples.len() >= 56, "the seed has at least 56 examples");
+    let report = bookspec_runner::run(&examples, bookspec_checker::rules(), Books::blank);
+    assert!(
+        report.passed(),
+        "the runner is not green:\n{}",
+        report.failures().join("\n")
+    );
+    for rule in bookspec_checker::covered_rules() {
+        assert_eq!(
+            report.rules.get(&rule.id),
+            Some(&bookspec_runner::Outcome::Pass),
+            "{}",
+            rule.id
+        );
+    }
+    assert!(
+        report
+            .rules
+            .values()
+            .any(|o| *o == bookspec_runner::Outcome::NotClaimed),
+        "a rule with no example is not claimed"
+    );
+}
+
 #[test]
 fn every_bookspec_example_holds() {
     let mut files: Vec<PathBuf> = std::fs::read_dir(examples_dir())
@@ -3239,7 +3788,7 @@ fn every_bookspec_example_holds() {
     let mut checked: BTreeMap<String, usize> = BTreeMap::new();
     for f in &files {
         let text = std::fs::read_to_string(f).unwrap();
-        let ex: Example = toml::from_str(&text).unwrap_or_else(|e| panic!("{}: {e}", f.display()));
+        let ex = Example::from_toml(&text).unwrap_or_else(|e| panic!("{}: {e}", f.display()));
         let stem = f.file_stem().unwrap().to_string_lossy();
         assert_eq!(ex.id, stem, "{}: the file is named for its id", f.display());
         assert!(ids.insert(ex.id.clone()), "{}: id used twice", ex.id);

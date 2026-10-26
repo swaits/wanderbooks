@@ -770,6 +770,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "bookspec-checker"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "toml 1.1.8+spec-1.1.0",
+]
+
+[[package]]
+name = "bookspec-runner"
+version = "0.1.0"
+dependencies = [
+ "bookspec-checker",
+ "serde_json",
+]
+
+[[package]]
 name = "borrow-or-share"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3894,9 +3913,13 @@ dependencies = [
 name = "ledger-core"
 version = "0.1.0"
 dependencies = [
+ "bookspec-checker",
+ "bookspec-runner",
  "chrono",
  "criterion",
  "jiff",
+ "ledger-import",
+ "ledger-package",
  "ledger-store",
  "proptest",
  "rust_decimal",

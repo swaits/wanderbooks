@@ -6,3 +6,5 @@ site/dist/
 # cargo-mutants output (just mutants*)
 /mutants.out*/
 /mutants-*/
+# bookspec's own workspace target
+/bookspec/target/

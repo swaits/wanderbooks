@@ -419,4 +419,43 @@ impl BooksServer {
             decisions,
         }))
     }
+
+    #[tool(
+        name = "books.add_class",
+        title = "Add a class",
+        description = "Add a class: a project with only its name (books.add_project records its facts too; books.update_project adds them later). Names are unique, ignoring capitals. Tag journal lines with it via books.add_line's class param.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false
+        )
+    )]
+    async fn add_class(
+        &self,
+        params: Parameters<AddClassParams>,
+    ) -> Result<Json<AddClassOut>, String> {
+        let p = params.0;
+        let mut store = self.lock()?;
+        let id = store.add_class(&p.name).map_err(|e| e.to_string())?;
+        Ok(Json(AddClassOut { id }))
+    }
+
+    #[tool(
+        name = "books.list_classes",
+        title = "List classes",
+        description = "List classes (projects) in id order; books.projects gives their facts and figures.",
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    async fn list_classes(&self) -> Result<Json<ListClassesOut>, String> {
+        let store = self.lock()?;
+        let classes = store
+            .list_classes()
+            .into_iter()
+            .map(|c| ClassOut {
+                id: c.id,
+                name: c.name.clone(),
+            })
+            .collect();
+        Ok(Json(ListClassesOut { classes }))
+    }
 }

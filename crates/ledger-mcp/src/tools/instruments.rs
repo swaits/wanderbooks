@@ -25,8 +25,8 @@
 //! ```
 
 use super::*;
+use ledger_core::InstrumentKind;
 use ledger_core::form1099::{Applied, Dated1099, Decision1099, ExemptReason, Form1099};
-use ledger_core::{InstrumentId, InstrumentKind};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -186,26 +186,6 @@ fn instrument_out(store: &Store, i: &ledger_core::Instrument) -> InstrumentOut {
             .get(i.account)
             .map(|a| a.code.clone())
             .unwrap_or_default(),
-    }
-}
-
-/// Resolve a payment method by id or label (INVARIANT 5).
-pub(super) fn resolve_instrument(store: &Store, r: &str) -> Result<InstrumentId, String> {
-    let ledger = store.ledger();
-    let by_id = r
-        .trim()
-        .parse::<u64>()
-        .ok()
-        .filter(|id| ledger.get_instrument(*id).is_some());
-    let by_label = ledger.instrument_by_label(r).map(|i| i.id);
-    match (by_id, by_label) {
-        (Some(i), Some(l)) if i != l => Err(format!(
-            "payment method {r:?} is ambiguous: it is method {i}'s id and method {l}'s label; pass the id"
-        )),
-        (Some(i), _) | (None, Some(i)) => Ok(i),
-        (None, None) => Err(format!(
-            "unknown payment method {r:?}: use an id or label from books.instruments (books.add_instrument adds one)"
-        )),
     }
 }
 

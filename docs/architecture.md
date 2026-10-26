@@ -122,6 +122,46 @@ takes them whenever their last `settings.set` changes (on every lock of
 the store), the viewer reads them from the journal it shows, and neither
 reads a file; "today" is the company's time zone's, set per request. Rule: `docs/spec/rules.md` B-29.
 
+## The MCP server's layout (`ledger-mcp`, P0; U0a)
+
+`crates/ledger-mcp/src/server.rs` is the server itself: `BooksServer`, the
+shared store and its lock, `call_tool` and `get_info` (the `ServerHandler`),
+`tool_router`, the request machinery and the helpers that cross groups.
+Tool handlers live one file per group in `crates/ledger-mcp/src/tools/`,
+each declared with `#[path]`, opening with `use super::*`, and holding a
+`#[tool_router(router = <group>_router, vis = "pub(super)")] impl
+BooksServer`; `server.rs`'s `tool_router` adds every group's router. The
+groups are:
+
+- `documents` — invoices, bills, payments, voids, `books.documents`,
+  `books.document`, the control check and the agings;
+- `entries` — `books.draft_entry`, `books.add_line`, `books.post_entry`,
+  `books.reverse_entry`, `books.get_entry`, `books.search_entries`, the
+  bank CSV import;
+- `reports` — the statements, `books.show`, `books.verify`,
+  `books.digest`, `books.export`, the CPA package, the P&L by class, and
+  the export builders;
+- `assets`, `schedules` (schedules and recurring), `periods`,
+  `reconciliation`, `payroll`, `payouts`, `tax`;
+- `parties` — parties, vendors, customers, roles, W-9s, the TIN vault,
+  1099s, entry parties;
+- `attachments` — receipts, filed documents, and their links;
+- `settings` — the handbook, `books.settings` and the recorded FX rates
+  (the module is `settings_tools`, since `crate::settings` is the live
+  settings);
+- `chart` — the chart of accounts, the template and CSV import, renaming
+  and renumbering, and the control roles;
+
+plus the groups split earlier: `kept` (`books.start`, settings changes,
+conventions, decisions, open items, posting templates, approvals),
+`projects`, `files` (uploads), `instruments`, `access` and `backup`. A
+helper only one group uses lives in that group's file; the ones several
+groups share live in `tools/helpers.rs` and `server.rs` re-exports them,
+so no group file reaches into another group's. The tests that span the
+whole tool surface sit beside `server.rs` in `server_tests.rs`; a group's
+own tests live in its group file. The split changed no tool's name,
+description, annotations or behaviour.
+
 ## The MCP server's store lock (`ledger-mcp`, P0)
 
 One `Store` is shared by every session (`SharedStore`: a

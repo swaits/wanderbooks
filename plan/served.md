@@ -1239,12 +1239,14 @@ Each unit follows the 8.0.4 template. "A-n" is an owner answer numbered in 8.3.1
 2. **Depends on:** none.
 3. **Feature and schema:** none.
 4. **Build:**
-   1. `docs/testing.md`: three sections in the existing style ("P4b S1, part B", "P4b S2", "P4b S3"), each with its **For P12 (mutation targets)** paragraph: S1-B the `void_document` and `control_check` handlers and `PaymentDetails::{check, description}`; S2 `books.documents`' status filter arms and the timeline's struck-through items; S3 `InvoiceStamp` arms and `invoice_document`'s legacy branch.
+   1. `docs/testing.md`: three sections in the existing style ("P4b S1, part B", "P4b S2", "P4b S3"), each with its **For P12 (mutation targets)** paragraph: S1-B the `void_document` and `control_check` handlers and `PaymentDetails::{check, description}`; S2 `books.documents`' status filter arms and ~~the timeline's struck-through items~~ → As built: labelled; S3 `InvoiceStamp` arms and `invoice_document`'s legacy branch.
    2. `docs/mcp-interface.md`: the A/R and A/P section's text matches the shipped tools (it already does for S1-S3; check `books.document pdf` and the status list against `DocStatus::key()`), and a one-line note at the head of the section: "S4 changes `books.create_invoice` and `books.create_bill`; see plan 8.2 S4".
 5. **Files:** owns nothing; touches `docs/testing.md`, `docs/mcp-interface.md`.
 6. **Tests and proofs:** `every_tool_is_documented_and_every_documented_tool_exists` green.
 7. **Done when:** the three sections exist with their paragraphs; `just check` green.
-8. **As built:** none yet.
+8. **As built** (2026-10-26, `e9febc56`, `feae51e4`): the three sections are under `docs/testing.md`'s P4b S1 part A section, in its style; the A/R and A/P note is under that heading. Departures:
+   - The timeline's reversed items are labelled, not struck through: "Payment reversed" for the reversal and "Payment (reversed later)" for the payment, which is what the S2 paragraph names as P12's targets (`crates/ledger-gui/src/pages/invoices.rs`). Verified against the shipped page, not against plan 8.1 S2's "struck through".
+   - Build item 2 assumed the A/R and A/P text already matched S1-S3. It does not in one place: `books.documents`' `party` was said to take a customer's or vendor's name or id, while the handler matches that name (ignoring case) or the document's own id, never the customer's or vendor's id. The doc now says the name; the schema's own description (`crates/ledger-mcp/src/types.rs`, `DocumentsParams::party`) still offers an id, which is a code finding (resolve the id, or narrow the schema) for a unit that may change code, and this one may not.
 
 #### P4b S4: `documents_v2`
 

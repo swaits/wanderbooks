@@ -155,7 +155,9 @@ fn pay_line(name: &str, employee: Option<PartyId>) -> PayrollLine {
 
 /// Oracle: `has_full_tin` doc ("a run of nine digits, with at most three
 /// separators (space, hyphen, dot, slash, underscore, a Unicode dash or
-/// no-break space) between neighbors") and INVARIANT 1.
+/// no-break space) between neighbors, a run of spaces counting once; or a
+/// TIN's 3-2-4 or 2-7 groups with commas or parentheses between them") and
+/// INVARIANT 1.
 #[test]
 fn has_full_tin_truth_table() {
     let cases: &[(&str, bool)] = &[
@@ -177,15 +179,21 @@ fn has_full_tin_truth_table() {
         ("Bob 291 - 12 - 2846", true),       // three separators
         ("291\u{2013}12\u{2013}2846", true), // en dashes
         ("291\u{a0}12\u{a0}2846", true),     // no-break spaces
-        ("12    3456789", false),            // four separators break the run: 2 + 7
-        ("291, 12, 2846", false),            // a comma is not a separator
-        ("12\t3456789", false),              // a tab is not a space
-        ("12345678", false),                 // eight digits
+        ("12    3456789", true),             // a run of spaces counts once
+        ("291, 12, 2846", true),             // commas between a TIN's groups
+        ("291,12,2846", true),
+        ("12,3456789", true),    // an EIN's 2-7 groups
+        ("(291) 12-2846", true), // parentheses around a group
+        ("12\t3456789", false),  // a tab is not a space
+        ("12345678", false),     // eight digits
         ("123-45-678", false),
         ("1234", false),
         ("", false),
         ("Acme LLC", false),
         ("Suite 100, 84101", false), // 3 + 5 digits, separated by ", "
+        ("1,234,567.89", false),     // an amount: comma groups of three
+        ("123,456,789", false),      // a comma-grouped number, not a TIN
+        ("(123) 456-7890", false),   // a phone number: 3-3-4
         ("-123456789-", true),
     ];
     for (text, want) in cases {
@@ -242,17 +250,20 @@ fn has_full_tin_unicode_digits() {
     assert!(has_full_tin("١٢٣٤٥٦٧٨٩")); // Arabic-Indic digits
 }
 
-/// Oracle: `has_full_tin` doc (P3 review round 2): past ASCII, every form
-/// of the five separators Unicode has separates (every Zs space, every
+/// Oracle: `has_full_tin` doc (P3 review round 2; P7): past ASCII, every
+/// form of the five separators Unicode has separates (every Zs space, every
 /// Dash character, the compatibility forms of the dot, slash and
 /// underscore; `docs/spec/sources/unicode-tin-text.md`, Unicode 17.0),
 /// and invisible characters (Default_Ignorable_Code_Point) don't count
-/// toward the gap. A TIN typed in fullwidth forms, Arabic-Indic digits,
-/// with an en dash, a non-breaking hyphen, a Hebrew maqaf, any space, or
-/// with right-to-left marks around its hyphens is still a full TIN; line
-/// breaks, commas and a fourth visible separator still end a run.
-/// (Before, "１２３－４５－６７８９" passed: the fullwidth hyphen-minus wasn't
-/// a separator, nor the ideographic or thin space.)
+/// toward the gap. A run of spaces counts once, however long, and a comma
+/// or a parenthesis separates a TIN's 3-2-4 or 2-7 groups (ASCII only).
+/// A TIN typed in fullwidth forms, Arabic-Indic digits, with an en dash, a
+/// non-breaking hyphen, a Hebrew maqaf, any space, a comma or a
+/// parenthesis, or with right-to-left marks around its hyphens is still a
+/// full TIN; line breaks, commas in an ungrouped run, tabs and a fourth
+/// other visible separator still end a run. (Before P3, "１２３－４５－６７８９"
+/// passed: the fullwidth hyphen-minus wasn't a separator, nor the
+/// ideographic or thin space.)
 #[test]
 fn has_full_tin_reads_every_script_and_separator() {
     let tins = [
@@ -264,21 +275,26 @@ fn has_full_tin_reads_every_script_and_separator() {
         "\u{661}\u{662}\u{663}-\u{664}\u{665}-\u{666}\u{667}\u{668}\u{669}",
         "\u{6F1}\u{6F2}\u{6F3}\u{6F4}\u{6F5}\u{6F6}\u{6F7}\u{6F8}\u{6F9}",
         "\u{967}\u{968}\u{969}\u{2013}\u{96A}\u{96B}\u{2013}\u{96C}\u{96D}\u{96E}\u{96F}",
-        "291\u{2013}12\u{2013}2846",     // en dash
-        "291\u{2011}12\u{2011}2846",     // non-breaking hyphen
-        "291\u{2012}12\u{2012}2846",     // figure dash
-        "291\u{2015}12\u{2015}2846",     // horizontal bar
-        "291\u{5BE}12\u{5BE}2846",       // Hebrew maqaf
-        "291\u{301C}12\u{301C}2846",     // wave dash
-        "291\u{A0}12\u{A0}2846",         // no-break space
-        "291\u{3000}12\u{3000}2846",     // ideographic space
-        "291\u{2009}12\u{2009}2846",     // thin space
-        "291\u{202F}12\u{202F}2846",     // narrow no-break space
-        "291 \u{2014} 12 \u{2014} 2846", // three: space, em dash, space
-        "291\u{FF0E}12\u{FF0E}2846",     // fullwidth full stop
-        "291\u{2024}12\u{2024}2846",     // one dot leader
-        "291\u{FF0F}12\u{FF0F}2846",     // fullwidth solidus
-        "291\u{FF3F}12\u{FF3F}2846",     // fullwidth low line
+        "291\u{2013}12\u{2013}2846",                 // en dash
+        "291\u{2011}12\u{2011}2846",                 // non-breaking hyphen
+        "291\u{2012}12\u{2012}2846",                 // figure dash
+        "291\u{2015}12\u{2015}2846",                 // horizontal bar
+        "291\u{5BE}12\u{5BE}2846",                   // Hebrew maqaf
+        "291\u{301C}12\u{301C}2846",                 // wave dash
+        "291\u{A0}12\u{A0}2846",                     // no-break space
+        "291\u{3000}12\u{3000}2846",                 // ideographic space
+        "291\u{2009}12\u{2009}2846",                 // thin space
+        "291\u{202F}12\u{202F}2846",                 // narrow no-break space
+        "291 \u{2014} 12 \u{2014} 2846",             // three: space, em dash, space
+        "12\u{3000}\u{3000}\u{3000}\u{3000}3456789", // a run of spaces counts once
+        "291\u{FF0E}12\u{FF0E}2846",                 // fullwidth full stop
+        "291\u{2024}12\u{2024}2846",                 // one dot leader
+        "291\u{FF0F}12\u{FF0F}2846",                 // fullwidth solidus
+        "291\u{FF3F}12\u{FF3F}2846",                 // fullwidth low line
+        "291,12,2846",                               // commas between the groups
+        "291, 12, 2846",                             // a comma and a space
+        "(291) 12-2846",                             // parentheses around a group
+        "12,3456789",                                // an EIN's groups
         // Zero-width spaces between every digit.
         "2\u{200B}9\u{200B}1\u{200B}1\u{200B}2\u{200B}2\u{200B}8\u{200B}4\u{200B}6",
         "291\u{200F}-\u{200F}12\u{200F}-\u{200F}2846", // right-to-left marks around hyphens
@@ -308,24 +324,25 @@ fn has_full_tin_reads_every_script_and_separator() {
         "•••\u{200F}-\u{200F}••-•••• ok"
     );
     let not = [
-        "12\u{3000}\u{3000}\u{3000}\u{3000}3456789", // four visible separators
-        "12 \u{2014} \u{200B}-3456789",              // four, an invisible one among them
-        "291\u{2028}12\u{2028}2846",                 // line separators end a run
-        "291\u{2029}12\u{2029}2846",                 // paragraph separators
-        "291\u{85}12\u{85}2846",                     // next line
-        "291\u{FF0C}12\u{FF0C}2846",                 // fullwidth commas
-        "291\u{3001}12\u{3001}2846",                 // ideographic commas
+        "12 \u{2014} \u{200B}-3456789", // four visible, an invisible one among them
+        "291\u{2028}12\u{2028}2846",    // line separators end a run
+        "291\u{2029}12\u{2029}2846",    // paragraph separators
+        "291\u{85}12\u{85}2846",        // next line
+        "291\u{FF0C}12\u{FF0C}2846",    // fullwidth commas are not a group's comma
+        "291\u{3001}12\u{3001}2846",    // ideographic commas either
+        "1,234,567.89",                 // an amount: comma groups of three
+        "(123) 456-7890",               // a phone number: 3-3-4
         "\u{FF11}\u{FF12}\u{FF13}\u{FF14}\u{FF15}\u{FF16}\u{FF17}\u{FF18}", // eight digits
-        "291\u{200B}12284",                          // eight, invisibly joined
+        "291\u{200B}12284",             // eight, invisibly joined
     ];
     for t in not {
         assert!(!has_full_tin(t), "has_full_tin({t:?})");
     }
 }
 
-/// The reading before P3 review round 2, the oracle for ASCII: past it,
-/// only the no-break space and a few dashes separated, and every
-/// separator counted.
+/// The reading before P3 review round 2, the oracle for what P7 must
+/// never narrow: P7 only widens what reads as a TIN (commas and
+/// parentheses between a TIN's groups, any run of spaces counting once).
 fn has_full_tin_before(text: &str) -> bool {
     let sep = |c: char| {
         matches!(
@@ -366,15 +383,13 @@ fn has_full_tin_before(text: &str) -> bool {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(2000))]
 
-    /// `has_full_tin` reads ASCII exactly as it did (the fix only widens
-    /// what separates past ASCII), and what it found before in any text
-    /// it still finds: it only ever finds more.
+    /// What `has_full_tin` found before P7 it still finds: the fix only
+    /// widens the reading (commas and parentheses between a TIN's groups,
+    /// any run of spaces counting once), never narrows it.
     #[test]
-    fn has_full_tin_keeps_its_ascii_reading(
-        ascii in "[0-9 ./_\t\n\r,:a-]{0,40}",
+    fn has_full_tin_never_forgets_a_tin(
         any in "[0-9 ./_\t\n,a\u{A0}\u{2010}-\u{2015}\u{2212}\u{FF0D}\u{3000}\u{200B}\u{200F}\u{FF10}-\u{FF19}\u{660}-\u{669}\u{2028}-]{0,40}",
     ) {
-        prop_assert_eq!(has_full_tin(&ascii), has_full_tin_before(&ascii), "{:?}", ascii);
         if has_full_tin_before(&any) {
             prop_assert!(has_full_tin(&any), "{:?}", any);
         }

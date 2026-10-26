@@ -15,8 +15,10 @@
 //!   1. No party field holds a full taxpayer identification number: any
 //!      run of nine digits, in any script, separated or not (`has_full_tin`:
 //!      up to three spaces, hyphens, dots, slashes or underscores, in any
-//!      of their Unicode forms, between neighbors) is refused. A W-9's TIN
-//!      is kept as its last four digits only.
+//!      of their Unicode forms, between neighbors, any run of spaces
+//!      counting once; or a 3-2-4 or 2-7 group with commas or parentheses
+//!      between its groups) is refused. A W-9's TIN is kept as its last
+//!      four digits only.
 //!   2. W-9 facts need a 1099 role (contractor or landlord); W-4 facts need
 //!      the employee role. Taxpayer-ID facts (`TinFacts`: the TIN's type,
 //!      last four, and vault record) are allowed for any role: members
@@ -408,14 +410,65 @@ fn tin_invisible(c: char) -> bool {
 }
 
 /// The most separators that may sit between two of a TIN's digits
-/// (`" - "` is three); invisible characters ([`tin_invisible`]) don't
-/// count.
+/// (`" - "` is three); a run of spaces counts once however long it is,
+/// and invisible characters ([`tin_invisible`]) don't count.
 const MAX_TIN_GAP: usize = 3;
+
+/// Whether `c` is one of the spaces between a TIN's digits: a run of
+/// them, however long, counts as one separator ([`tin_gap`]), so
+/// `12    3456789` reads as an EIN.
+fn tin_space(c: char) -> bool {
+    c.is_whitespace() && tin_separator(c)
+}
+
+/// Whether `c` is a comma or a parenthesis: these separate a TIN's
+/// *groups* (`123,45,6789`, `(123) 45-6789`) and never an ungrouped run,
+/// so an amount's thousands separators (`1,234,567.89`, 1-3-3-2) are not
+/// a TIN ([`grouped_tin_runs`]).
+fn grouped_tin_separator(c: char) -> bool {
+    matches!(c, ',' | '(' | ')')
+}
+
+/// The gap from `chars[at..]` between two digits: how many characters it
+/// takes, or None when the next thing that isn't a separator or invisible
+/// isn't a digit, or it holds more than [`MAX_TIN_GAP`] separators. A run
+/// of spaces ([`tin_space`]) counts once, however long; invisible
+/// characters count not at all; `grouped` also reads a comma, a
+/// parenthesis ([`grouped_tin_separator`]).
+fn tin_gap(chars: &[char], at: usize, grouped: bool) -> Option<usize> {
+    let (mut i, mut count, mut in_spaces) = (at, 0, false);
+    while i < chars.len() {
+        let c = chars[i];
+        if tin_invisible(c) {
+            i += 1;
+            continue;
+        }
+        if tin_space(c) {
+            if !in_spaces {
+                count += 1;
+                in_spaces = true;
+            }
+            i += 1;
+            continue;
+        }
+        if tin_separator(c) || (grouped && grouped_tin_separator(c)) {
+            count += 1;
+            in_spaces = false;
+            i += 1;
+            continue;
+        }
+        break;
+    }
+    (i > at && count <= MAX_TIN_GAP && chars.get(i).is_some_and(|c| c.is_numeric()))
+        .then_some(i - at)
+}
 
 /// Each run in `chars` that holds nine digits or more, as (first, last)
 /// char indices of its digits: digits with at most [`MAX_TIN_GAP`]
-/// separators ([`tin_separator`]) between neighbors, and any number of
-/// invisible characters.
+/// separators ([`tin_separator`]) between neighbors, any run of spaces
+/// counting once, and any number of invisible characters. Also every
+/// 3-2-4 or 2-7 group ([`grouped_tin_runs`]), whose groups a comma or a
+/// parenthesis may join.
 fn full_tin_runs(chars: &[char]) -> Vec<(usize, usize)> {
     let mut runs = Vec::new();
     let mut i = 0;
@@ -432,21 +485,9 @@ fn full_tin_runs(chars: &[char]) -> Vec<(usize, usize)> {
                 j += 1;
                 continue;
             }
-            let between = chars[j..]
-                .iter()
-                .take_while(|c| tin_separator(**c) || tin_invisible(**c))
-                .count();
-            let gap = chars[j..j + between]
-                .iter()
-                .filter(|c| !tin_invisible(**c))
-                .count();
-            if between > 0
-                && gap <= MAX_TIN_GAP
-                && chars.get(j + between).is_some_and(|c| c.is_numeric())
-            {
-                j += between;
-            } else {
-                break;
+            match tin_gap(chars, j, false) {
+                Some(consumed) => j += consumed,
+                None => break,
             }
         }
         if digits >= 9 {
@@ -454,17 +495,57 @@ fn full_tin_runs(chars: &[char]) -> Vec<(usize, usize)> {
         }
         i = last + 1;
     }
+    runs.extend(grouped_tin_runs(chars));
+    runs.sort_unstable();
+    runs
+}
+
+/// Each 3-2-4 or 2-7 group in `chars`, as (first, last) char indices of
+/// its digits: a TIN's shapes (`123-45-6789`, `12-3456789`,
+/// `123,45,6789`, `(123) 45-6789`). A comma or a parenthesis separates
+/// these groups and no other run, so the amount `1,234,567.89` (1-3-3-2)
+/// is no TIN however it is grouped.
+fn grouped_tin_runs(chars: &[char]) -> Vec<(usize, usize)> {
+    const SHAPES: [&[usize]; 2] = [&[3, 2, 4], &[2, 7]];
+    let mut runs = Vec::new();
+    for at in 0..chars.len() {
+        if !chars[at].is_numeric() {
+            continue;
+        }
+        'shapes: for shape in SHAPES {
+            let mut i = at;
+            for (n, &len) in shape.iter().enumerate() {
+                if n > 0 {
+                    match tin_gap(chars, i, true) {
+                        Some(consumed) => i += consumed,
+                        None => continue 'shapes,
+                    }
+                }
+                for _ in 0..len {
+                    if !chars.get(i).is_some_and(|c| c.is_numeric()) {
+                        continue 'shapes;
+                    }
+                    i += 1;
+                }
+            }
+            runs.push((at, i - 1));
+        }
+    }
     runs
 }
 
 /// Whether `text` holds a run of nine digits, with at most three
 /// separators (a space, hyphen, dot, slash or underscore, in any of
-/// their Unicode forms) between neighbors, invisible
-/// characters not counted: an SSN, EIN, or ITIN however it's written
-/// (`291-12-2846`, `291.12.2846`, `291 - 12 - 2846`, `２９１－１２－２８４６`).
+/// their Unicode forms, and any run of spaces counting once) between
+/// neighbors, invisible characters not counted, or one of a TIN's groups
+/// (3-2-4 or 2-7) with a comma or a parenthesis between them: an SSN,
+/// EIN, or ITIN however it's written (`291-12-2846`, `291.12.2846`,
+/// `291 - 12 - 2846`, `291,12,2846`, `(291) 12-2846`, `２９１－１２－２８４６`).
 /// Any Unicode numeral counts as a digit (full-width, Arabic-Indic, ...),
-/// so a number can't slip through in another script. In ASCII, exactly
-/// the space, hyphen, dot, slash and underscore separate.
+/// so a number can't slip through in another script. In ASCII, the space,
+/// hyphen, dot, slash and underscore separate, and so do commas and
+/// parentheses between a TIN's groups: a comma-grouped amount
+/// (`1,234,567.89`) is no TIN.
 pub fn has_full_tin(text: &str) -> bool {
     let chars: Vec<char> = text.chars().collect();
     if REPLAYING.with(std::cell::Cell::get) {

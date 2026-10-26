@@ -1141,3 +1141,60 @@ proptest! {
         }
     }
 }
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(2000))]
+
+    /// rules.md B-26 (P7): a TIN is found and masked however its groups
+    /// are separated — a hyphen, a dot, a comma, a parenthesis, a slash,
+    /// an underscore, or any run of spaces — and what merely looks like
+    /// one is not: an amount's thousands separators (1,234,567.89 is
+    /// 1-3-3-2, no TIN's shape), a longer number holding a TIN's digits,
+    /// and the company's own nine-digit D-U-N-S number, which is its own
+    /// setting's kind (company.duns), never a party field. The ACH payment
+    /// methods' lines get the same exemption in P4b S4's Kind; until then
+    /// the filing scan's narrow shapes keep a bank export's routing
+    /// numbers out of the rule (rules.md B-26).
+    #[test]
+    fn tin_shapes_with_any_separator_are_found(
+        sep in prop::sample::select(vec![
+            "-", " ", "  ", "     ", ".", ",", "/", "_", " - ", ", ", ") ", "(", ")", ",\u{a0}",
+        ]),
+        which in 0usize..2,
+    ) {
+        let shapes: [&[&str]; 2] = [&["187", "05", "1907"], &["12", "3456789"]];
+        let tin = shapes[which].join(sep);
+        prop_assert!(ledger_core::parties::has_full_tin(&tin), "{:?}", tin);
+        let masked = ledger_core::parties::redact_full_tins(&tin);
+        prop_assert_eq!(
+            masked.chars().filter(|c| *c == '•').count(),
+            9,
+            "{:?}: {:?}",
+            tin,
+            masked
+        );
+        prop_assert!(
+            !ledger_core::parties::has_full_tin(&masked),
+            "{:?}: {:?}",
+            tin,
+            masked
+        );
+
+        // No false positive on an amount.
+        prop_assert!(!ledger_core::parties::has_full_tin("1,234,567.89"));
+        let amount = ledger_core::parties::redact_full_tins("1,234,567.89");
+        prop_assert_eq!(amount.as_ref(), "1,234,567.89");
+        // Nor on the company's D-U-N-S number: the key's own kind takes a
+        // nine-digit number, bare or printed 2-3-4.
+        let duns = ledger_core::settings::KEYS
+            .iter()
+            .find(|k| k.name == "company.duns")
+            .expect("the books know company.duns");
+        prop_assert!(
+            ledger_core::settings::check(duns, &serde_json::json!("149976972")).is_ok()
+        );
+        prop_assert!(
+            ledger_core::settings::check(duns, &serde_json::json!("14-997-6972")).is_ok()
+        );
+    }
+}

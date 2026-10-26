@@ -26,13 +26,15 @@
 //!      without one) holding a full TIN, read as either:
 //!      a. a TIN the vault holds for a party of the books, anywhere in the
 //!         text, written as nine digits in a row, as 3-2-4 digits joined
-//!         by hyphens, spaces or dots, or as 2-7 digits joined by a hyphen
-//!         or a space (compared on the server; the vault's TINs are never
-//!         returned or logged). A vault that can't be opened leaves (b);
+//!         by hyphens, spaces, dots or commas, or as 2-7 digits joined by
+//!         a hyphen, a space or a comma (compared on the server; the
+//!         vault's TINs are never returned or logged). A vault that can't
+//!         be opened leaves (b);
 //!      b. a number printed the way an SSN or an EIN is, standing alone:
-//!         3-2-4 digits joined by hyphens (123-45-6789) or 2-7 digits
-//!         joined by a hyphen (12-3456789), with no digit, and no hyphen
-//!         or dot followed by a digit, on either side.
+//!         3-2-4 digits joined by hyphens or commas (123-45-6789,
+//!         123,45,6789) or 2-7 digits joined by a hyphen or a comma
+//!         (12-3456789, 12,3456789), with no digit, and no hyphen or dot
+//!         followed by a digit, on either side.
 //!         Except the company's own EIN, as the books' settings hold it,
 //!         printed 2-7 (DECISION, owner, 2026-10-17: every company
 //!         document goes into the books, and its formation papers,
@@ -61,13 +63,12 @@
 //!      the server says).
 //!   6. Not detected: a changed copy of a binary file (a re-saved or
 //!      re-scanned W-9 PDF), and a TIN the vault doesn't hold written
-//!      other than (b). plan/served.md P2 and P7 take the path tools and
-//!      full TINs out of the agent's reach. Open until then: (a) still
-//!      answers for up to 2 candidates a filing (4), so an agent that
-//!      files 50,000 refused files can find a TIN; P2's access log
-//!      records every one of those calls, and P7's human-only TIN channel
-//!      takes full TINs, and so this check, off the agent's path
-//!      (rules.md B-26).
+//!      other than (b). TINs cross the MCP on their way into the vault by
+//!      design (plan D-28), the vault stays v1 (D-48), and (a) still
+//!      answers for up to 2 candidates a filing (4): an agent that files
+//!      50,000 refused files can find a TIN, so the access log records
+//!      every one of those calls and the probe bound keeps each answer
+//!      from telling more than two guesses apart (rules.md B-26).
 //! ```
 
 use std::path::Path;
@@ -222,13 +223,13 @@ fn digits_at(text: &[char], at: usize, groups: &[usize], joins: &[char]) -> Opti
 }
 
 /// Every TIN-shaped number in `text`, at every place, in every rendering
-/// (a) reads: nine digits in a row, 3-2-4 joined by hyphens, spaces or
-/// dots, 2-7 joined by a hyphen or a space (INVARIANT 3a).
+/// (a) reads: nine digits in a row, 3-2-4 joined by hyphens, spaces, dots
+/// or commas, 2-7 joined by a hyphen, a space or a comma (INVARIANT 3a).
 fn tin_shaped(text: &[char]) -> impl Iterator<Item = u32> + '_ {
     const RENDERINGS: [(&[usize], &[char]); 3] = [
         (&[9], &[]),
-        (&[3, 2, 4], &['-', ' ', '.']),
-        (&[2, 7], &['-', ' ']),
+        (&[3, 2, 4], &['-', ' ', '.', ',']),
+        (&[2, 7], &['-', ' ', ',']),
     ];
     (0..text.len()).flat_map(move |at| {
         RENDERINGS
@@ -256,9 +257,10 @@ fn holds_held_tin(text: &[char], tins: &[u32]) -> bool {
 }
 
 /// Whether `text` holds a number printed as an SSN (3-2-4 digits joined
-/// by hyphens) or an EIN (2-7 joined by a hyphen) is, standing alone: no
-/// digit beside it, and no hyphen or dot that a digit follows on; the
-/// company's own EIN printed 2-7 aside (INVARIANT 3b).
+/// by hyphens or commas) or an EIN (2-7 joined by a hyphen or a comma)
+/// is, standing alone: no digit beside it, and no hyphen or dot that a
+/// digit follows on; the company's own EIN printed 2-7 aside
+/// (INVARIANT 3b).
 fn holds_printed_tin(text: &[char], own_ein: Option<u32>) -> bool {
     let digit = |i: usize| text.get(i).is_some_and(|c| c.is_numeric());
     let joins_on = |join: usize, digit_at: usize| {
@@ -268,7 +270,7 @@ fn holds_printed_tin(text: &[char], own_ein: Option<u32>) -> bool {
         let alone_before = at == 0 || !(digit(at - 1) || at >= 2 && joins_on(at - 1, at - 2));
         alone_before
             && [&[3, 2, 4][..], &[2, 7][..]].iter().any(|groups| {
-                digits_at(text, at, groups, &['-']).is_some_and(|(value, end)| {
+                digits_at(text, at, groups, &['-', ',']).is_some_and(|(value, end)| {
                     let own = groups.len() == 2 && Some(value) == own_ein;
                     !(own || digit(end) || joins_on(end, end + 1))
                 })
@@ -573,6 +575,39 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// INVARIANT 3b (P7): a TIN written with commas between its groups
+    /// is refused like one written with hyphens, in every encoding, with
+    /// the vault locked or open.
+    #[test]
+    fn a_file_with_a_comma_separated_tin_is_refused() {
+        for tin in [
+            "187,05,1907", // 3-2-4
+            "12,3456789",  // 2-7
+        ] {
+            let text = format!("payee,tin\nDana,{tin}\n");
+            for (bytes, mime, name) in encodings(&text) {
+                assert_eq!(
+                    check(&bytes, mime, name),
+                    Err(TIN_PRINTED.into()),
+                    "{tin:?} as {name}, vault locked"
+                );
+                assert!(
+                    check_held(&bytes, mime, name).is_err(),
+                    "{tin:?} as {name}, vault open"
+                );
+            }
+        }
+        // A comma-grouped amount is no TIN (1-3-3-2): it goes in.
+        assert!(
+            check(
+                b"date,amount\n2026-10-01,\"1,234,567.89\"\n",
+                "text/csv",
+                "x.csv"
+            )
+            .is_ok()
+        );
     }
 
     /// INVARIANT 3b: an SSN or EIN shape inside a longer number (a digit,

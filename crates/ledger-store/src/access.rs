@@ -329,6 +329,48 @@ mod tests {
         assert!(!ledger_core::parties::has_full_tin(&client.version));
     }
 
+    /// INVARIANT 2 (P7): a TIN written with commas between its groups
+    /// never reaches a record or a digest, as one written with hyphens
+    /// never did: a client's texts are masked, and two calls that differ
+    /// only in such a TIN give one digest.
+    #[test]
+    fn access_log_masks_a_comma_separated_tin() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = AccessLog::open(dir.path()).unwrap();
+        let mut a = access(1);
+        a.client = Some(Client {
+            name: "claude-code".into(),
+            version: "187,05,1907".into(),
+        });
+        a.request_id = Some("ssn 187,05,1907".into());
+        a.principal.label = "agent 187,05,1907".into();
+        a.subject = "books.187,05,1907".into();
+        a.args_digest = Some(digest(
+            &serde_json::json!({"note": "SSN 187,05,1907 on file"}),
+        ));
+        log.record(&a).unwrap();
+        let text = std::fs::read_to_string(dir.path().join(ACCESS_FILE)).unwrap();
+        assert!(!text.contains("187,05,1907"), "{text}");
+        let (back, _) = read(dir.path()).unwrap();
+        let client = back[0].access.client.as_ref().unwrap();
+        assert_eq!(client.version, "•••,••,••••");
+        assert_eq!(back[0].access.subject, "books.•••,••,••••");
+        assert_eq!(
+            back[0].access.request_id.as_deref(),
+            Some("ssn •••,••,••••")
+        );
+        // The same call with another comma-separated TIN: the same digest,
+        // so no guess of the TIN can be checked against it.
+        assert_eq!(
+            digest(&serde_json::json!({"note": "SSN 187,05,1907 on file"})),
+            digest(&serde_json::json!({"note": "SSN 604,71,7433 on file"}))
+        );
+        assert_ne!(
+            digest(&serde_json::json!({"note": "SSN 187,05,1907 on file"})),
+            digest(&serde_json::json!({"note": "SSN 187,05,1907 is gone"}))
+        );
+    }
+
     #[test]
     fn a_digest_gives_no_tin_away() {
         // The same call with another TIN: the same digest, so no guess

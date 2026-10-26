@@ -349,23 +349,53 @@ pub fn receipt_policy(s: &Settings) -> ReceiptPolicy {
     }
 }
 
+/// A scalar as TOML writes it (strings escaped and quoted the TOML way).
+fn toml_scalar(v: toml::Value) -> String {
+    let mut t = toml::Table::new();
+    t.insert("x".to_string(), v);
+    let out = toml::to_string(&t).unwrap_or_default();
+    let out = out.trim_end();
+    out.strip_prefix("x = ").unwrap_or(out).to_string()
+}
+
+/// `v` on one line, as TOML's inline form: a table is `{ k = v }`, so a
+/// list of payment methods stays inside its table instead of becoming
+/// `[[payment_methods]]` sections under a later table.
+fn inline_toml(v: &Value) -> String {
+    match v {
+        Value::String(s) => toml_scalar(toml::Value::String(s.clone())),
+        Value::Bool(b) => b.to_string(),
+        Value::Number(n) => n.to_string(),
+        Value::Array(a) => format!(
+            "[{}]",
+            a.iter().map(inline_toml).collect::<Vec<_>>().join(", ")
+        ),
+        Value::Object(o) => format!(
+            "{{ {} }}",
+            o.iter()
+                .map(|(k, v)| format!("{} = {}", toml_key(k), inline_toml(v)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        Value::Null => "\"\"".to_string(),
+    }
+}
+
+/// A TOML key: bare when it can be, quoted when it can't.
+fn toml_key(k: &str) -> String {
+    if !k.is_empty()
+        && k.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        k.to_string()
+    } else {
+        toml_scalar(toml::Value::String(k.to_string()))
+    }
+}
+
 /// One TOML line `name = value`, the value spelled as TOML.
 fn toml_line(name: &str, v: &Value) -> String {
-    let tv = match v {
-        Value::String(s) => toml::Value::String(s.clone()),
-        Value::Array(a) => toml::Value::Array(
-            a.iter()
-                .map(|x| toml::Value::String(x.as_str().unwrap_or_default().to_string()))
-                .collect(),
-        ),
-        other => toml::Value::String(other.to_string()),
-    };
-    let mut t = toml::Table::new();
-    t.insert(name.to_string(), tv);
-    toml::to_string(&t)
-        .unwrap_or_default()
-        .trim_end()
-        .to_string()
+    format!("{name} = {}\n", inline_toml(v))
 }
 
 fn provenance(out: &mut String, r: &settings::Recorded) {
@@ -397,7 +427,14 @@ pub fn export(s: &Settings, base_currency: &str) -> String {
     out.push_str(
         "# The books keep their own settings: this file is a copy, and editing it\n# changes nothing (books.set_setting changes them).\n",
     );
-    for table in ["company", "books"] {
+    for table in ["company", "books", "invoicing", "bills"] {
+        // The invoicing and bills tables are written only once a key is
+        // set: an empty table says nothing.
+        if !["company", "books"].contains(&table)
+            && !s.iter().any(|(k, _)| k.toml.0 == table)
+        {
+            continue;
+        }
         let _ = write!(out, "\n[{table}]\n");
         if table == "company" {
             let _ = writeln!(
@@ -537,9 +574,65 @@ open_at_start = "ask"
         );
     }
 
-    /// INVARIANT 4 for policy.require_tax_category (rules.md B-32): it is
-    /// `[books] require_tax_category` in a file, and round-trips; a file
-    /// without it clears it back to warn.
+    /// INVARIANT 4 for the invoicing settings (P4b S4.2): the two new
+    /// tables export, a payment method with its bank details, its link and
+    /// its QR flag included, and the file imports as no change at all.
+    #[test]
+    fn the_invoicing_settings_round_trip() {
+        let file = format!(
+            "{FERNHILL}\n[invoicing]\n\
+             number_prefix = \"ACME-\"\n\
+             first_number = 1000\n\
+             default_terms = \"2/10 net 30\"\n\
+             footer = \"Thank you.\"\n\
+             unsent_days = 2\n\
+             reminder_days = 14\n\
+             payment_methods = [{{kind = \"ach\", label = \"Bank transfer\", lines = [\"Routing 123456789\"]}}, {{kind = \"link\", label = \"Card\", lines = [], link = \"https://pay.example/acme\", qr = true}}]\n\
+             \n[bills]\n\
+             remind_days = 7\n\
+             discount_warn_days = 3\n"
+        );
+        let s = imported(&file);
+        assert_eq!(
+            s.get("invoicing.first_number").unwrap().value,
+            json!(1000)
+        );
+        assert_eq!(
+            s.get("invoicing.default_terms").unwrap().value,
+            json!("2/10 net 30")
+        );
+        let text = export(&s, "USD");
+        assert!(text.contains("[invoicing]"), "{text}");
+        assert!(text.contains("[bills]"), "{text}");
+        assert!(text.contains("payment_methods = ["), "{text}");
+        assert!(text.contains("qr = true"), "{text}");
+        let back = import(&text, None, &s, "USD").unwrap();
+        assert!(back.changes.is_empty(), "{:?}\n{text}", back.changes);
+        assert!(back.unknown.is_empty(), "{:?}", back.unknown);
+        // Into empty books: the same values, in one spelling.
+        let fresh = import(&text, None, &Settings::default(), "USD").unwrap();
+        let mut other = Settings::default();
+        other.apply(&fresh.changes, &src(), 1).unwrap();
+        for name in [
+            "invoicing.number_prefix",
+            "invoicing.first_number",
+            "invoicing.default_terms",
+            "invoicing.footer",
+            "invoicing.unsent_days",
+            "invoicing.reminder_days",
+            "invoicing.payment_methods",
+            "bills.remind_days",
+            "bills.discount_warn_days",
+        ] {
+            assert_eq!(
+                other.get(name).map(|r| &r.value),
+                s.get(name).map(|r| &r.value),
+                "{name}"
+            );
+        }
+    }
+
+
     #[test]
     fn the_tax_category_policy_round_trips() {
         let file = FERNHILL.replace(
@@ -582,13 +675,13 @@ open_at_start = "ask"
     #[test]
     fn unknown_and_currency() {
         let i = import(
-            "[company]\nwebsite = \"x\"\n[extra]\na = 1\n",
+            "[company]\nfax = \"x\"\n[extra]\na = 1\n",
             None,
             &Settings::default(),
             "USD",
         )
         .unwrap();
-        assert_eq!(i.unknown, ["[company] website", "[extra] a"]);
+        assert_eq!(i.unknown, ["[company] fax", "[extra] a"]);
         assert!(
             import(
                 "[company]\nbase_currency = \"EUR\"\n",

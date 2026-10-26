@@ -70,6 +70,25 @@ fn candidates() -> Vec<(&'static str, Value)> {
         ("policy.evidence.exempt_accounts", json!(["6999", "6998"])),
         ("policy.parties", json!("require")),
         ("policy.approval_rules", json!("enforce")),
+        // P4b S4.2: invoicing, bills and contact details.
+        ("invoicing.number_prefix", json!("ACME-")),
+        ("invoicing.first_number", json!(1000)),
+        ("invoicing.default_terms", json!("2/10 net 30")),
+        ("invoicing.default_terms", json!("Net 15 EOM")),
+        (
+            "invoicing.payment_methods",
+            json!([{"kind": "ach", "label": "Bank transfer",
+                    "lines": ["Routing 123456789", "Account 000123456789"]},
+                   {"kind": "link", "label": "Card", "lines": [],
+                    "link": "https://pay.example/acme", "qr": true}]),
+        ),
+        ("invoicing.footer", json!("Thank you for your business.")),
+        ("invoicing.unsent_days", json!(2)),
+        ("invoicing.reminder_days", json!(14)),
+        ("bills.remind_days", json!(7)),
+        ("bills.discount_warn_days", json!(3)),
+        ("company.email", json!("billing@acme.example")),
+        ("company.website", json!("https://acme.example")),
     ]
 }
 

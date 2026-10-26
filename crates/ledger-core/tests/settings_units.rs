@@ -417,3 +417,184 @@ fn dates_take_one_spelling() {
         );
     }
 }
+
+// ------------------------------------------------ P4b S4.2: the new kinds
+
+/// `Kind::Count`: a positive whole number, in one canonical JSON number
+/// (a settings file writes it as digits; the journal keeps the number).
+#[test]
+fn counts_are_positive_whole_numbers() {
+    let days = |v: Value| checked("invoicing.unsent_days", v);
+    assert_eq!(days(json!(2)), Ok(json!(2)));
+    assert_eq!(days(json!("14")), Ok(json!(14)));
+    assert_eq!(
+        checked("invoicing.first_number", json!(1000)),
+        Ok(json!(1000))
+    );
+    for bad in [
+        json!(0),
+        json!(-1),
+        json!("0"),
+        json!("-2"),
+        json!(1.5),
+        json!("2.0"),
+        json!("x"),
+        json!(true),
+        json!(null),
+    ] {
+        assert!(days(bad.clone()).is_err(), "{bad}");
+    }
+    // Every day-count key takes the same kind.
+    for k in [
+        "invoicing.first_number",
+        "invoicing.unsent_days",
+        "invoicing.reminder_days",
+        "bills.remind_days",
+        "bills.discount_warn_days",
+    ] {
+        assert_eq!(checked(k, json!(7)), Ok(json!(7)), "{k}");
+        assert!(checked(k, json!(0)).is_err(), "{k}");
+    }
+}
+
+/// `Kind::Terms`: canonicalized through [`ledger_core::Terms`], so two
+/// spellings of one agreement are one value (rules.md B-39).
+#[test]
+fn terms_keep_one_canonical_spelling() {
+    let terms = |s: &str| checked("invoicing.default_terms", json!(s));
+    assert_eq!(terms("net 30"), Ok(json!("Net 30")));
+    assert_eq!(terms(" NET 15 EOM "), Ok(json!("Net 15 EOM")));
+    assert_eq!(terms("2/10 net 30"), Ok(json!("2/10 net 30")));
+    assert_eq!(terms("Due On Receipt"), Ok(json!("Due on receipt")));
+    assert_eq!(terms("due 2026-11-15"), Ok(json!("Due 2026-11-15")));
+    assert_eq!(terms("2.5/10 net 30"), Ok(json!("2.5/10 net 30")));
+    for bad in [
+        "net",
+        "Net 4000",
+        "Net -5",
+        "2/40 net 30",
+        "0/10 net 30",
+        "2/10 net 15 eom",
+        "2/10 net 30 extra",
+        "Due 9999-13-01",
+        "Due 2026-1-5",
+        "",
+    ] {
+        assert!(terms(bad).is_err(), "{bad:?}");
+    }
+}
+
+/// `Kind::PaymentMethods` (A-3): a routing number is nine digits, so an
+/// `ach` or `wire` method's bank-detail lines are the one text exempt from
+/// the full-TIN check; every other text in the list is scanned. At most
+/// eight methods, each line at most 120 characters.
+#[test]
+fn payment_methods_scan_every_text_but_ach_and_wire_lines() {
+    let methods = |v: Value| checked("invoicing.payment_methods", v);
+    for kind in ["ach", "wire"] {
+        let got = methods(json!([{
+            "kind": kind,
+            "label": "Bank transfer",
+            "lines": ["Routing 123456789", "Account 000123456789"],
+        }]))
+        .unwrap();
+        assert_eq!(got[0]["lines"][0], json!("Routing 123456789"), "{kind}");
+        assert_eq!(got[0]["lines"][1], json!("Account 000123456789"), "{kind}");
+    }
+    for bad in [
+        json!([{"kind": "link", "label": "123456789", "lines": []}]),
+        json!([{"kind": "link", "label": "Pay here", "lines": ["123456789"]}]),
+        json!([{"kind": "check", "label": "Check", "lines": ["pay to 123456789"]}]),
+        json!([{"kind": "other", "label": "Cash", "lines": [], "link": "123456789"}]),
+    ] {
+        assert!(methods(bad.clone()).is_err(), "{bad}");
+    }
+    // Canonical: the kind's spelling and the texts are trimmed.
+    assert_eq!(
+        methods(json!([{"kind": "ACH", "label": " Bank ", "lines": [" 123456789 "], "qr": true}]))
+            .unwrap(),
+        json!([{"kind": "ach", "label": "Bank", "lines": ["123456789"], "qr": true}])
+    );
+    // Unknown kind and unknown field are refused.
+    assert!(methods(json!([{"kind": "barter", "label": "X", "lines": []}])).is_err());
+    assert!(
+        methods(json!([{"kind": "other", "label": "X", "lines": [], "note": "y"}])).is_err()
+    );
+    // At most eight methods.
+    let pool = |n: usize| {
+        Value::Array(
+            (0..n)
+                .map(|i| json!({"kind": "other", "label": format!("Method {i}"), "lines": []}))
+                .collect(),
+        )
+    };
+    assert!(methods(pool(8)).is_ok());
+    assert!(methods(pool(9)).is_err());
+    // Each line at most 120 characters.
+    let long = "x".repeat(121);
+    assert!(
+        methods(json!([{"kind": "other", "label": "M", "lines": [long]}])).is_err(),
+        "121 characters"
+    );
+}
+
+/// `invoicing.number_prefix` is 1 to 12 visible ASCII characters: a number
+/// with a space or a control character in it reads wrong, and an empty
+/// prefix is no prefix.
+#[test]
+fn number_prefix_is_short_visible_ascii() {
+    let prefix = |s: &str| checked("invoicing.number_prefix", json!(s));
+    for ok in ["INV-", "A", "2026/", "ABCDEFGHIJKL"] {
+        assert_eq!(prefix(ok), Ok(json!(ok)), "{ok:?}");
+    }
+    assert_eq!(prefix("  INV-  "), Ok(json!("INV-")));
+    for bad in ["", "   ", "ABCDEFGHIJKLM", "INV 1", "INV\t1", "Ünï"] {
+        assert!(prefix(bad).is_err(), "{bad:?}");
+    }
+}
+
+/// The company's contact details are simple company keys, so the seller
+/// snapshot reads them through `Company::profile`.
+#[test]
+fn contact_details_are_in_the_company_profile() {
+    let s = settings(&[
+        ("company.name", json!("Acme LLC")),
+        ("company.email", json!("billing@acme.example")),
+        ("company.website", json!("https://acme.example")),
+    ]);
+    let profile: Vec<(String, String)> = s.company("USD").profile;
+    assert!(
+        profile.contains(&("email".into(), "billing@acme.example".into())),
+        "{profile:?}"
+    );
+    assert!(
+        profile.contains(&("website".into(), "https://acme.example".into())),
+        "{profile:?}"
+    );
+}
+
+/// Replay checks the new kinds by shape, never by a later version's
+/// bounds: a count is a positive whole number, terms any string, and a
+/// method list of objects with their fields (rules.md B-28).
+#[test]
+fn replay_shapes_the_new_kinds() {
+    let count = key("invoicing.unsent_days").unwrap();
+    assert!(shape(count, &json!(2)).is_ok());
+    assert!(shape(count, &json!("2")).is_ok());
+    assert!(shape(count, &json!(0)).is_err());
+    let terms = key("invoicing.default_terms").unwrap();
+    assert!(shape(terms, &json!("Net 30")).is_ok());
+    assert!(shape(terms, &json!("a spelling this version doesn't know")).is_ok());
+    assert!(shape(terms, &json!(30)).is_err());
+    let methods = key("invoicing.payment_methods").unwrap();
+    assert!(shape(methods, &json!([])).is_ok());
+    assert!(
+        shape(
+            methods,
+            &json!([{"kind": "ach", "label": "Bank", "lines": ["123456789"]}])
+        )
+        .is_ok()
+    );
+    assert!(shape(methods, &json!([{"kind": "ach", "label": "Bank"}])).is_err());
+}
+

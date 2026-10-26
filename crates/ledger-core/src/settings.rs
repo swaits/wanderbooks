@@ -31,7 +31,15 @@
 //!   5. Unset keys mean the defaults the settings file had: "Unnamed
 //!      company", a calendar year, accrual basis, receipts above 25.00,
 //!      parties suggested, a missing tax category warned of (not
-//!      refused), approval rules off, the computer's time zone.
+//!      refused), approval rules off, the computer's time zone; and, for
+//!      invoicing, the prefix "INV-", the first number 1, "Net 30", and
+//!      day counts of 2, 14, 7 and 3 (P4b S4.2).
+//!   6. Payment terms keep one spelling ([`crate::Terms::describe`]):
+//!      "net 30" is stored as "Net 30", never as it was typed.
+//!   7. A payment method's bank-detail lines (an `ach` or `wire` method's
+//!      `lines`) are the one text the full-TIN check doesn't scan, because
+//!      a routing number is nine digits (A-3); every other text in the
+//!      list is scanned.
 //! ```
 
 use crate::TaxForm;
@@ -129,6 +137,13 @@ pub enum Kind {
     /// A folder named from the root of its disk: one line, an absolute
     /// path.
     Folder,
+    /// A positive whole number (a day count, the first invoice number).
+    Count,
+    /// Payment terms, in their one canonical spelling ([`crate::Terms`],
+    /// rules.md B-39).
+    Terms,
+    /// Payment methods (A-3): a list of `{kind, label, lines, link?, qr?}`.
+    PaymentMethods,
 }
 
 /// One setting the books know.
@@ -397,6 +412,84 @@ pub static KEYS: &[Key] = &[
         kind: Kind::Folder,
         sensitivity: Sensitivity::Public,
         doc: "A folder the books back themselves up to as well (D-30): an absolute path, an external disk or a synced folder; the backup is a repository in it named for the book. Unset: none.",
+    },
+    // P4b S4.2: invoicing, bills and the company's contact details.
+    Key {
+        name: "invoicing.number_prefix",
+        toml: ("invoicing", "number_prefix"),
+        kind: Kind::Text,
+        sensitivity: Sensitivity::Public,
+        doc: "The prefix of an invoice number (\"INV-\" gives INV-0001): 1 to 12 visible ASCII characters. Unset: \"INV-\".",
+    },
+    Key {
+        name: "invoicing.first_number",
+        toml: ("invoicing", "first_number"),
+        kind: Kind::Count,
+        sensitivity: Sensitivity::Public,
+        doc: "The number the first numbered invoice takes (the series starts there): a positive whole number, settable only while no numbered invoice exists. Unset: 1.",
+    },
+    Key {
+        name: "invoicing.default_terms",
+        toml: ("invoicing", "default_terms"),
+        kind: Kind::Terms,
+        sensitivity: Sensitivity::Public,
+        doc: "The terms an invoice takes when neither the invoice nor the customer gives any (\"Net 30\", \"Net 15 EOM\", \"2/10 net 30\", \"Due on receipt\"). Unset: \"Net 30\".",
+    },
+    Key {
+        name: "invoicing.payment_methods",
+        toml: ("invoicing", "payment_methods"),
+        kind: Kind::PaymentMethods,
+        sensitivity: Sensitivity::Public,
+        doc: "The ways the company takes payment, printed on an invoice (A-3): [{kind: ach|wire|link|check|p2p|crypto|other, label, lines, link?, qr?}], at most 8; a bank-detail line of an ach or wire method may hold a routing number. Unset: none.",
+    },
+    Key {
+        name: "invoicing.footer",
+        toml: ("invoicing", "footer"),
+        kind: Kind::LongText,
+        sensitivity: Sensitivity::Public,
+        doc: "Text printed at the foot of each invoice (thank-you, payment note). Unset: none.",
+    },
+    Key {
+        name: "invoicing.unsent_days",
+        toml: ("invoicing", "unsent_days"),
+        kind: Kind::Count,
+        sensitivity: Sensitivity::Public,
+        doc: "How many days after issue an invoice nobody marked sent is listed as unsent: a positive whole number. Unset: 2.",
+    },
+    Key {
+        name: "invoicing.reminder_days",
+        toml: ("invoicing", "reminder_days"),
+        kind: Kind::Count,
+        sensitivity: Sensitivity::Public,
+        doc: "How many days after a reminder an overdue invoice is reminded again: a positive whole number. Unset: 14.",
+    },
+    Key {
+        name: "bills.remind_days",
+        toml: ("bills", "remind_days"),
+        kind: Kind::Count,
+        sensitivity: Sensitivity::Public,
+        doc: "A bill due within this many days is listed as due soon: a positive whole number. Unset: 7.",
+    },
+    Key {
+        name: "bills.discount_warn_days",
+        toml: ("bills", "discount_warn_days"),
+        kind: Kind::Count,
+        sensitivity: Sensitivity::Public,
+        doc: "A bill whose early-payment discount ends within this many days is listed: a positive whole number. Unset: 3.",
+    },
+    Key {
+        name: "company.email",
+        toml: ("company", "email"),
+        kind: Kind::Text,
+        sensitivity: Sensitivity::Public,
+        doc: "The company's email address, printed on an invoice as the seller's.",
+    },
+    Key {
+        name: "company.website",
+        toml: ("company", "website"),
+        kind: Kind::Text,
+        sensitivity: Sensitivity::Public,
+        doc: "The company's website, printed on an invoice as the seller's.",
     },
 ];
 
@@ -688,6 +781,15 @@ fn no_tin(what: &str, s: &str) -> Result<(), String> {
 /// One line of text: trimmed non-empty, at most `max` characters, no line
 /// breaks or other control characters, no full TIN.
 pub fn line_text(what: &str, s: &str, max: usize) -> Result<String, String> {
+    let t = bare_line_text(what, s, max)?;
+    no_tin(what, &t)?;
+    Ok(t)
+}
+
+/// [`line_text`] without the full-TIN check: for the one place a nine-digit
+/// number is legitimate (an `ach` or `wire` payment method's bank-detail
+/// line, where it is a routing number: A-3).
+fn bare_line_text(what: &str, s: &str, max: usize) -> Result<String, String> {
     let t = s.trim();
     if t.is_empty() {
         return Err(format!("{what} is blank"));
@@ -700,7 +802,6 @@ pub fn line_text(what: &str, s: &str, max: usize) -> Result<String, String> {
             "{what} holds a line break or other control character"
         ));
     }
-    no_tin(what, t)?;
     Ok(t.to_string())
 }
 
@@ -821,13 +922,127 @@ fn want_list<'a>(name: &str, v: &'a Value) -> Result<&'a Vec<Value>, String> {
         .ok_or_else(|| format!("{name} takes a list, not {v}"))
 }
 
+/// The payment-method kinds A-3 allows.
+const PAYMENT_KINDS: &[&str] = &["ach", "wire", "link", "check", "p2p", "crypto", "other"];
+
+/// A positive whole number: a JSON number, or the digits a settings file
+/// writes it as.
+fn count_of(name: &str, v: &Value) -> Result<u32, String> {
+    let n = match v {
+        Value::Number(n) => n.as_u64().and_then(|n| u32::try_from(n).ok()),
+        Value::String(s) => {
+            let s = s.trim();
+            (s.bytes().all(|b| b.is_ascii_digit()) && !s.is_empty())
+                .then(|| s.parse::<u32>().ok())
+                .flatten()
+        }
+        _ => None,
+    };
+    n.filter(|n| *n >= 1)
+        .ok_or_else(|| format!("{name} {v}: expected a positive whole number (1 or more)"))
+}
+
+/// A `qr` flag: a boolean, or the word a settings file writes it as.
+fn flag_of(name: &str, v: &Value) -> Result<bool, String> {
+    match v {
+        Value::Bool(b) => Ok(*b),
+        Value::String(s) if s == "true" => Ok(true),
+        Value::String(s) if s == "false" => Ok(false),
+        _ => Err(format!("{name} {v}: expected true or false")),
+    }
+}
+
+/// `invoicing.payment_methods` in its canonical form (A-3): at most 8
+/// methods, each `{kind, label, lines, link?, qr?}`. An `ach` or `wire`
+/// method's `lines` are its bank details, where a nine-digit routing
+/// number is legitimate; every other text in the list is scanned for a
+/// full TIN like every other setting.
+fn payment_methods(name: &str, list: &[Value]) -> Result<Value, String> {
+    if list.len() > 8 {
+        return Err(format!("{name}: at most 8 payment methods"));
+    }
+    let mut out = Vec::new();
+    for (i, m) in list.iter().enumerate() {
+        let n = format!("{name} method {}", i + 1);
+        let o = m
+            .as_object()
+            .ok_or_else(|| format!("{n}: expected {{kind, label, lines}}"))?;
+        for k in o.keys() {
+            if !["kind", "label", "lines", "link", "qr"].contains(&k.as_str()) {
+                return Err(format!("{n}: unknown field {k:?}"));
+            }
+        }
+        let kind = o
+            .get("kind")
+            .and_then(Value::as_str)
+            .map(|k| k.trim().to_lowercase())
+            .filter(|k| PAYMENT_KINDS.contains(&k.as_str()))
+            .ok_or_else(|| format!("{n}: kind is one of {}", PAYMENT_KINDS.join(", ")))?;
+        let label = line_text(
+            &format!("{n} label"),
+            o.get("label").and_then(Value::as_str).unwrap_or_default(),
+            MAX_TEXT,
+        )?;
+        let lines = o
+            .get("lines")
+            .and_then(Value::as_array)
+            .ok_or_else(|| format!("{n}: lines is a list of strings"))?;
+        let bank_details = matches!(kind.as_str(), "ach" | "wire");
+        let mut checked_lines = Vec::new();
+        for l in lines {
+            let text = l
+                .as_str()
+                .ok_or_else(|| format!("{n}: each line is a string"))?;
+            // A routing number is nine digits: bank-detail lines are the
+            // one text the TIN check doesn't scan (A-3). Length and
+            // control characters are still checked.
+            let text = if bank_details {
+                bare_line_text(&format!("{n} line"), text, 120)?
+            } else {
+                line_text(&format!("{n} line"), text, 120)?
+            };
+            checked_lines.push(json!(text));
+        }
+        let mut method = serde_json::Map::new();
+        method.insert("kind".into(), json!(kind));
+        method.insert("label".into(), json!(label));
+        method.insert("lines".into(), Value::Array(checked_lines));
+        if let Some(link) = o.get("link").filter(|l| !l.is_null()) {
+            let link = line_text(
+                &format!("{n} link"),
+                want_str(&format!("{n} link"), link)?,
+                MAX_TEXT,
+            )?;
+            method.insert("link".into(), json!(link));
+        }
+        if let Some(qr) = o.get("qr").filter(|q| !q.is_null()) {
+            method.insert("qr".into(), json!(flag_of(&format!("{n} qr"), qr)?));
+        }
+        out.push(Value::Object(method));
+    }
+    Ok(Value::Array(out))
+}
+
 /// Check a value for `key` before it is journaled, and return it in its
 /// canonical spelling (INVARIANT 1). `null` is never a value: clearing a
 /// key is its own change.
 pub fn check(key: &Key, v: &Value) -> Result<Value, String> {
     let name = key.name;
     match key.kind {
-        Kind::Text => Ok(json!(line_text(name, want_str(name, v)?, MAX_TEXT)?)),
+        Kind::Text => {
+            let text = line_text(name, want_str(name, v)?, MAX_TEXT)?;
+            // One key's own bound: an invoice number's prefix is short and
+            // visible (a space or a control character would break the
+            // number's reading, and the file's).
+            if name == "invoicing.number_prefix"
+                && (text.chars().count() > 12 || !text.chars().all(|c| c.is_ascii_graphic()))
+            {
+                return Err(format!(
+                    "{name} {text:?}: 1 to 12 visible ASCII characters (no spaces)"
+                ));
+            }
+            Ok(json!(text))
+        }
         Kind::LongText => Ok(json!(long_text(name, want_str(name, v)?, MAX_LONG_TEXT)?)),
         Kind::Choice(choices) => {
             let s = want_str(name, v)?.trim().to_lowercase();
@@ -879,6 +1094,13 @@ pub fn check(key: &Key, v: &Value) -> Result<Value, String> {
             Ok(json!(out))
         }
         Kind::Members => Ok(members_json(&check_members(want_list(name, v)?)?)),
+        Kind::Count => Ok(json!(count_of(name, v)?)),
+        Kind::Terms => {
+            let s = want_str(name, v)?.trim();
+            let terms = crate::Terms::parse(s).map_err(|e| format!("{name}: {e}"))?;
+            Ok(json!(terms.describe()))
+        }
+        Kind::PaymentMethods => payment_methods(name, want_list(name, v)?),
         Kind::TimeZone => {
             let s = want_str(name, v)?.trim();
             let zone = jiff::tz::TimeZone::get(s).map_err(|_| {
@@ -1004,6 +1226,29 @@ pub fn shape(key: &Key, v: &Value) -> Result<(), String> {
             decimal(s)
                 .map(|_| ())
                 .ok_or_else(|| format!("{name} {s:?} is not a decimal"))
+        }
+        Kind::Count => count_of(name, v).map(|_| ()),
+        Kind::PaymentMethods => {
+            for (i, m) in want_list(name, v)?.iter().enumerate() {
+                let n = format!("{name} method {}", i + 1);
+                let o = m
+                    .as_object()
+                    .ok_or_else(|| format!("{n}: expected an object"))?;
+                let field = |f: &str| o.get(f).ok_or_else(|| format!("{n}: no {f}"));
+                want_str(&format!("{n} kind"), field("kind")?)?;
+                want_str(&format!("{n} label"), field("label")?)?;
+                let lines = want_list(&format!("{n} lines"), field("lines")?)?;
+                for l in lines {
+                    want_str(&format!("{n} line"), l)?;
+                }
+                if let Some(link) = o.get("link").filter(|l| !l.is_null()) {
+                    want_str(&format!("{n} link"), link)?;
+                }
+                if o.get("qr").is_some_and(|q| !q.is_boolean() && !q.is_null()) {
+                    return Err(format!("{n} qr: expected true or false"));
+                }
+            }
+            Ok(())
         }
         Kind::MonthStart => parse_month_start_lenient(want_str(name, v)?).map(|_| ()),
         _ => want_str(name, v).map(|_| ()),
@@ -1528,6 +1773,11 @@ pub fn display(key: &Key, v: &Value, full: bool) -> String {
                     m.get("share").and_then(Value::as_str).unwrap_or("?")
                 )
             })
+            .collect::<Vec<_>>()
+            .join(", "),
+        Value::Array(a) if key.kind == Kind::PaymentMethods => a
+            .iter()
+            .filter_map(|m| m.get("label").and_then(Value::as_str))
             .collect::<Vec<_>>()
             .join(", "),
         Value::Array(a) => a

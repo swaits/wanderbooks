@@ -62,6 +62,7 @@ pub const KNOWN_FEATURES: &[&str] = &[
     PROJECTS,
     DOCUMENT_LINE_PROJECTS,
     DOCUMENT_STANDING,
+    DOCUMENTS_V2,
 ];
 
 /// Feature: `period.closed` closes to members with `"rounding":
@@ -88,6 +89,19 @@ pub(crate) fn setting_feature(key: &str) -> Option<&'static str> {
     match key {
         "policy.require_tax_category" => Some(FEATURE_REQUIRE_TAX_CATEGORY),
         "books.schedule_convention" => Some(SCHEDULE_CONVENTION),
+        // P4b S4.2: the invoicing and bills settings, and the company's
+        // contact details an invoice's seller snapshot reads.
+        "invoicing.number_prefix"
+        | "invoicing.first_number"
+        | "invoicing.default_terms"
+        | "invoicing.payment_methods"
+        | "invoicing.footer"
+        | "invoicing.unsent_days"
+        | "invoicing.reminder_days"
+        | "bills.remind_days"
+        | "bills.discount_warn_days"
+        | "company.email"
+        | "company.website" => Some(DOCUMENTS_V2),
         _ => None,
     }
 }
@@ -173,6 +187,16 @@ pub const DOCUMENT_LINE_PROJECTS: &str = "document_line_projects";
 /// payment on top of the reversed one, paid above the total, silently.
 /// Every other payment is written as before and needs no feature.
 pub const DOCUMENT_STANDING: &str = "document_standing";
+
+/// Feature: `documents_v2` (D-52; plan P4b S4 to S7): an `invoice.created`
+/// or `bill.created` carrying a number, terms, snapshots, references or
+/// line accounts; a `party.updated` with an email or default terms; a
+/// `settings.set` of the invoicing or bills keys or the company's contact
+/// details. S4.2 writes the settings and party fields; S4.3 to S7 add the
+/// document fields, sends, settlements and write-offs. An older version
+/// would drop the line accounts (posting to the role accounts), the
+/// discount and the fee, or refuse the unknown values, silently.
+pub const DOCUMENTS_V2: &str = "documents_v2";
 
 /// The line type that declares the journal format.
 pub const FORMAT_SET: &str = "journal.format_set";

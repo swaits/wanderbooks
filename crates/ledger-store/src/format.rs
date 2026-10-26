@@ -858,6 +858,41 @@ mod tests {
         assert_eq!(up.adds(), vec!["the journal feature document_standing"]);
     }
 
+    /// The version before P4b S4.2 (every feature through
+    /// `document_standing`) stops at a declaration of `documents_v2` as
+    /// newer, never restoring a party's email or default terms as absent
+    /// (or a document without its numbers, once S4.3 writes them); books
+    /// that declared every earlier feature still wait for it (B-27, D-39).
+    #[test]
+    fn documents_v2_is_its_own_feature() {
+        assert!(KNOWN_FEATURES.contains(&DOCUMENTS_V2));
+        let before: Vec<&str> = KNOWN_FEATURES
+            .iter()
+            .copied()
+            .filter(|f| *f != DOCUMENTS_V2)
+            .collect();
+        let l = line(
+            FORMAT_SET,
+            json!({"format": 2, "features": [DOCUMENT_STANDING, DOCUMENTS_V2]}),
+        );
+        match declared_knowing(&l, &before) {
+            Err(StoreError::NewerJournal { need, .. }) => {
+                assert_eq!(need, "journal features documents_v2")
+            }
+            other => panic!("expected NewerJournal, got {other:?}"),
+        }
+        let older = JournalFormat {
+            format: 2,
+            features: before.iter().map(|f| f.to_string()).collect(),
+        };
+        assert!(matches!(
+            older.require_feature(DOCUMENTS_V2),
+            Err(StoreError::FormatUpgradePending { .. })
+        ));
+        let up = older.upgrade().expect("waits for it");
+        assert_eq!(up.adds(), vec!["the journal feature documents_v2"]);
+    }
+
     /// This version's format: the newest it reads, every feature it
     /// knows, each once, sorted (what new books and an upgrade declare).
     #[test]

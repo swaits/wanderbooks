@@ -722,6 +722,13 @@ fn books_p2_served_cut_over_whole() {
             json!({"decided_by": "Avery Quill",
                    "changes": [{"key": "books.schedule_convention", "value": "monthly_even"}]}),
         ),
+        // An invoicing setting (documents_v2, P4b S4.2): an older version
+        // refuses the key.
+        (
+            "books.set_setting",
+            json!({"decided_by": "Avery Quill",
+                   "changes": [{"key": "invoicing.default_terms", "value": "Net 30"}]}),
+        ),
         (
             "books.add_account",
             json!({"code": "4900", "name": "Gain on sale", "account_type": "revenue",

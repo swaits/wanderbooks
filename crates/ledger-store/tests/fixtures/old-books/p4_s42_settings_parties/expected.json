@@ -1,0 +1,131 @@
+{
+  "assets": [],
+  "bills": [],
+  "entries": [
+    {
+      "date": "2026-03-01",
+      "description": "Rent",
+      "id": 1,
+      "lines": [
+        {
+          "account": 3,
+          "amount": {
+            "amount": "1000.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Debit"
+        },
+        {
+          "account": 1,
+          "amount": {
+            "amount": "1000.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Credit"
+        }
+      ],
+      "reversal_of": null,
+      "status": "Posted"
+    },
+    {
+      "date": "2026-01-01",
+      "description": "Opening capital",
+      "id": 2,
+      "lines": [
+        {
+          "account": 1,
+          "amount": {
+            "amount": "500.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Debit"
+        },
+        {
+          "account": 2,
+          "amount": {
+            "amount": "500.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Credit"
+        }
+      ],
+      "reversal_of": null,
+      "status": "Posted"
+    }
+  ],
+  "entry_parties": [
+    [
+      1,
+      [
+        {
+          "party_id": 1,
+          "share": "derived"
+        }
+      ]
+    ]
+  ],
+  "invoices": [],
+  "payroll_runs": [],
+  "periods": [],
+  "recurring": [],
+  "schedules": [],
+  "snapshot": {
+    "Ok": {
+      "balance_sheet": {
+        "assets": "-500",
+        "balanced": true,
+        "current_earnings": "-1000",
+        "equity": "-500",
+        "liabilities": "0"
+      },
+      "profit_and_loss": {
+        "expenses": "1000",
+        "net_income": "-1000",
+        "revenue": "0"
+      },
+      "trial_balance": {
+        "lines": [
+          {
+            "code": "1000",
+            "credit": "500",
+            "debit": "0",
+            "name": "Cash"
+          },
+          {
+            "code": "3000",
+            "credit": "500",
+            "debit": "0",
+            "name": "Capital"
+          },
+          {
+            "code": "6000",
+            "credit": "0",
+            "debit": "1000",
+            "name": "Rent"
+          }
+        ],
+        "total_credits": "1000",
+        "total_debits": "1000"
+      }
+    }
+  },
+  "verify": {
+    "Ok": null
+  }
+}

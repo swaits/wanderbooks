@@ -1833,6 +1833,28 @@ fn books_written_under_older_rules_still_open() {
                "foreign_currency": "EUR", "foreign_amount": "100.00", "fx_rate": "1.0834567"}),
     )
     .unwrap();
+    // P4b S4.2's new shapes, hand-written as a later version writes them:
+    // a party's email and default terms, and an invoicing setting. This
+    // reader takes them; the version before it stopped at the declaration.
+    w.append("party.added", json!({"id": 1, "name": "Acme", "roles": []}))
+        .unwrap();
+    w.append(
+        "party.updated",
+        json!({"id": 1, "change": {"field": "email", "value": "billing@acme.example"}}),
+    )
+    .unwrap();
+    w.append(
+        "party.updated",
+        json!({"id": 1, "change": {"field": "default_terms_as_customer",
+               "value": {"kind": {"net": 30}, "text": "Net 30"}}}),
+    )
+    .unwrap();
+    w.append(
+        "settings.set",
+        json!({"changes": [{"key": "invoicing.default_terms", "value": "2/10 net 30"}],
+               "source": {"decided_by": "Owner", "decided_on": "2026-10-26"}}),
+    )
+    .unwrap();
     drop(w);
     // Opening rebuilds from the journal; it must accept all of it.
     let _ = std::fs::remove_file(dir.join(ledger_store::db_file()));
@@ -1847,6 +1869,23 @@ fn books_written_under_older_rules_still_open() {
     assert_eq!(
         lines[1].amount.amount,
         "108.34567".parse::<Decimal>().unwrap()
+    );
+    // The new shapes replay as written: the party's facts and the setting.
+    let acme = store.ledger().get_party(1).expect("the party");
+    assert_eq!(acme.email.as_deref(), Some("billing@acme.example"));
+    assert_eq!(
+        acme.default_terms_as_customer
+            .as_ref()
+            .map(|t| t.describe()),
+        Some("Net 30".to_string())
+    );
+    assert_eq!(
+        store
+            .ledger()
+            .settings()
+            .get("invoicing.default_terms")
+            .and_then(|r| r.value.as_str()),
+        Some("2/10 net 30")
     );
 }
 

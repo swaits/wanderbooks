@@ -655,6 +655,15 @@ pub enum LedgerError {
     )]
     TermsDiscountNeedsNetDays,
 
+    /// `invoicing.first_number` asked to move after a numbered invoice
+    /// exists: the series has begun, and a number is never reused or
+    /// renumbered (rules.md B-40, A-2). The store's check lands with the
+    /// invoice numbers it reads (P4b S4.3).
+    #[error(
+        "invoicing.first_number is locked: a numbered invoice already exists, so the series has begun and its numbers are never reused"
+    )]
+    FirstNumberLocked,
+
     /// A date computed from another (payment terms' due or discount date)
     /// falls past the calendar the books keep.
     #[error(

@@ -40,6 +40,8 @@
 //!      `lines`) are the one text the full-TIN check doesn't scan, because
 //!      a routing number is nine digits (A-3); every other text in the
 //!      list is scanned.
+//!   8. An invoice number's prefix is 1 to 12 visible ASCII characters:
+//!      longer, blank or holding a space would not read as one number.
 //! ```
 
 use crate::TaxForm;

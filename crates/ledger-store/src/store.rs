@@ -1597,6 +1597,10 @@ impl Store {
     }
 
     /// Change one of a party's facts. Journaled as `party.updated`.
+    ///
+    /// An email or a default terms fact needs the `documents_v2` feature
+    /// (plan P4b S4.2): books that haven't declared it refuse the write
+    /// with the upgrade remedy, journaling nothing.
     pub fn update_party(
         &mut self,
         id: ledger_core::PartyId,

@@ -4702,12 +4702,11 @@ impl Ledger {
                 }
             }
             Archived(true) => {}
-            Email(v) => match v {
-                Some(e) => {
-                    crate::parties::check_email("email", e).map_err(LedgerError::InvalidParty)?
+            Email(v) => {
+                if let Some(e) = v {
+                    crate::parties::check_email("email", e).map_err(LedgerError::InvalidParty)?;
                 }
-                None => {}
-            },
+            }
             // Terms are typed and already canonical (`crate::Terms`), so
             // there is nothing here a string could get wrong.
             DefaultTermsAsCustomer(_) | DefaultTermsAsVendor(_) => {}

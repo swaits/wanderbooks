@@ -2647,3 +2647,163 @@ amount match and one-line rule; `refresh_doc`'s settled sum;
 `doc_status`'s Overpaid and Unattached arms; the aging's `<= 0`;
 `ensure_payment_features`' comparison; `check_document_reversal`'s date
 check; `control_check`'s chain netting.
+
+## P4b S1, part B: void, control check, and each payment's details (2026-10-24)
+
+The MCP layer of rules.md B-38 (plan P4b S1, part B). Part A (above) is
+the engine: the tags, the derived figures, the guards. Part B puts it on
+the wire: `books.void_document` reverses a document's own entry with the
+reason, `books.control_check` ties each control account to its documents,
+and `books.receive_payment` and `books.pay_bill` take `instrument` and
+`reference` and answer the document's derived `remaining` and `status`.
+It adds no engine rule, kernel function, Kani harness or Lean theorem:
+it calls what part A proved and tested.
+
+- **Over the wire, `crates/ledger-cli/tests/spec_mcp.rs`:**
+  `documents_void_and_tie_out_over_the_wire`. A payment of 200.00 against
+  a 500.00 invoice, recorded with instrument "Harbor checking" and
+  reference "tr_8812", answers `remaining` 300.00 and `status` partial,
+  and its entry carries both (the instrument, and a description ending
+  "(ref tr_8812)"). Voiding that invoice is refused and the refusal names
+  the payment entry; an invoice entered twice is voided and reads
+  "void"; a hand line to 1200 is refused. `books.control_check` at
+  2026-06-30 agrees: receivables 1200 has balance 300.00,
+  `documents_total` 300.00 and `difference` 0.00; `books.digest` has no
+  `control_problems` and `books.verify` names the control check it made.
+  The happy-path journey (`happy_path`) voids an invoice and runs the
+  check, so both output schemas are exercised on every run.
+- **The tool surface, `crates/ledger-mcp/src/server.rs`'s tests:**
+  `annotations_complete` pins `books.void_document` destructive and
+  posting, `books.control_check` read-only, and counts the 29
+  destructive tools the doc names; `period_tools_describe_the_one_default`
+  holds `books.control_check` to the one `as_of` sentence. The generic
+  lints cover the rest without a change of their own:
+  `every_tool_is_documented_and_every_documented_tool_exists`,
+  `tool_text_lint`, `tool_descriptions_fit_700_characters`. `scopes.rs`'s
+  table and `crates/ledger-cli/tests/mcp_journeys.rs::mcp_end_to_end`
+  both count every tool (120 when part B landed, 122 with S2's two).
+- **Handbook:** `revenue-and-payouts` says what a payment carries, that a
+  document that should never have existed is voided and never deleted,
+  and that `books.control_check`'s findings go to the human.
+
+**For P12 (mutation targets):** `PaymentDetails::check` (the newline test,
+the 200-character bound, a blank reference as none);
+`PaymentDetails::description` (the " (ref R)" suffix, the trim, a blank
+reference leaving the base); the server's `payment_details` (id or label resolution, an
+unknown instrument refused); `payment_out` (as of the end of the books,
+`remaining` from outstanding, `status` from `key()`); `doc_ref` (trim and
+case, the two kinds, anything else refused); the `void_document` handler
+(the status it answers, `map_or("void", ..)` after the day); `control_check`
+and `control_check_out` (`agrees` as zero difference and no unattached
+line and nothing needing attention, each field's mapping, the
+invoice/bill kind); `control_problems` (one message per unattached line
+and per document, both loops); the `digest` that includes it and the
+`verify` check that refuses a nonzero difference.
+
+## P4b S2: reading documents, in the tools and in the viewer (2026-10-24)
+
+`books.documents` and `books.document` (`7d2bf0b7`) and the viewer's
+Money in and Money out lists and a document's page (`b7b7f171`). No
+format change and no engine rule: both read the figures part A derives
+(B-38), and the viewer reads the same ledger directly (I-8).
+
+The plan calls the timeline's reversed items "struck through"; as built
+they are labelled: a payment reversed later reads "Payment (reversed
+later)" and its reversal "Payment reversed". The viewer draws no
+strikethrough, and the test asserts the labels.
+
+- **Over the wire, `crates/ledger-cli/tests/spec_mcp.rs`:**
+  `documents_list_and_timeline_over_the_wire`. Two invoices (500.00 due
+  Mar 1, 80.00 due Apr 30), a 200.00 payment against the first, and that
+  payment reversed. `books.documents` at 2026-03-15 lists both as open,
+  due date first, `outstanding_total` 580.00, the first 14 days overdue;
+  `status` overdue keeps one, `due_by` 2026-03-31 keeps one, and the
+  bills list is empty. `books.document` as of that day owes 500.00, paid
+  0.00, status open, and its timeline is three moves in posting order:
+  the origin standing, the payment not standing, and its reversal
+  standing. A bad ref ("invoice") and a bad status ("late") are refused.
+  The happy-path journey lists and reads one, so both output schemas are
+  exercised on every run.
+- **The tool surface:** `annotations_complete` pins both read-only
+  (table, now 122 tools); `period_tools_describe_the_one_default` holds
+  both to the `as_of` sentence;
+  `every_tool_is_documented_and_every_documented_tool_exists` and the
+  text lints cover the doc; `scopes.rs`'s table and
+  `mcp_journeys.rs::mcp_end_to_end` count 122.
+- **The viewer, `crates/ledger-gui/tests/invoices.rs`:**
+  `the_list_shows_the_ledgers_figures` (the reversed payment no longer
+  counts: $580 owed, $500 of it late; "Invoice 1, Harbor Client, 14 days
+  late, owes 500.00"; the paid invoice under All; the list ties to 1200;
+  the payables list); `a_documents_page_shows_its_timeline` (the payment
+  "(reversed later)", its reversal "Payment reversed", received $0.00,
+  and a row opens its entry); `the_overview_shows_what_is_owed_both_ways`
+  ("Owed to you", "You owe on bills", "1 invoice overdue");
+  `books_without_documents_show_no_overview_tiles_for_them` (no tiles, no
+  list). Each page is drawn for `SHOT_DIR`.
+
+**For P12 (mutation targets):** the `documents` handler's status arms
+(`"all"`; `"open"` as `!st.outstanding.is_zero() && key != "void"`;
+`"overdue"` as `st.overdue_days > 0`; `key == other`), the party compare,
+`due_by`'s `>` (due on or before the day), the `(due, id)` sort and the
+`outstanding_total` sum; the `document` handler's
+`l.date <= as_of` timeline filter,
+`stands`/`reversal` from `stands_on`, `movement_key`'s arms, and
+`parse_doc_ref`'s split, parse and kind; `DocStatus::key`'s arms, which
+four of the filters compare against; the viewer's
+`Filter::keeps` arms (Open's `!outstanding.is_zero() && != Void`,
+Overdue's `overdue_days > 0`, Paid, Void, All), a document after the day
+shown only under All (`Ok(None)`), the list's `(due, date, name)` sort
+and the timeline's movement×reversal labels with their `(reversed later)`
+condition (`!t.reversal && !stands_on(t.entry, b.today)`).
+
+## P4b S3: the invoice PDF (2026-10-24)
+
+An invoice as a PDF: `ledger_import::invoice_pdf::invoice_pdf` typesets
+`templates/invoice.typ` with the bundled fonts, and
+`ledger_package::invoice::invoice_document` builds what it prints from the
+books once, so the server's download and the viewer's Save give the same
+bytes for the same books. `books.document { pdf: true }` hands the file
+over; a bill's PDF is the vendor's, so it is refused. No format change
+and no engine rule: the figures are part A's (B-38) and the template does
+no arithmetic.
+
+- **`crates/ledger-import/src/invoice_pdf.rs`:**
+  `an_invoice_renders_deterministically` (the same document renders to
+  the same `%PDF` bytes twice; saved under `SHOT_DIR` to look at);
+  `text_is_data_and_money_is_formatted_here` (the total, the balance and
+  a settled line as printed, and a description that is Typst markup
+  printed literally); `stamps_render_and_no_lines_is_refused` (every
+  `InvoiceStamp` renders, and an invoice with no lines is refused).
+- **`crates/ledger-package/src/invoice.rs`:**
+  `an_invoice_prints_its_figures_as_of_a_day` (before and after the
+  payment: the balance, the one settled line, PAID with the day, the
+  seller's address lines, the bill-to, the printed issue date, and the
+  re-created note's day);
+  `the_sample_invoice_in_each_state` (through the books: part paid and
+  past due, its settled line reading "Payment Oct 6, 2026 · ACH · ref
+  tr_8812"; paid in full with PAID and its day; void; each saved under
+  `SHOT_DIR`).
+- **Over the wire:** `spec_mcp.rs::documents_list_and_timeline_over_the_wire`
+  grew the PDF block: `pdf: true` answers a handed file whose download
+  starts `%PDF` and is named `invoice-<id>.pdf`, and `pdf: true` on a
+  bill is refused.
+- **The viewer:**
+  `crates/ledger-gui/tests/invoices.rs::a_documents_page_shows_its_timeline`
+  also asserts an invoice's page offers "Save invoice PDF" (a bill's page
+  offers none: the file filed with it is the vendor's copy).
+
+**For P12 (mutation targets):** `InvoiceStamp::text`'s five arms and
+`template_data`'s `stamp_draft` test (`== Draft`); `invoice_document`'s
+stamp match (Void, then Paid with `last_paid`, then `overdue_days > 0`
+before PartiallyPaid, then none); the settled loop (`movement ==
+Payment`, `!reversal`, `l.date > as_of`, `!stands_on`, the negated
+amount, the method and the " · ref " suffix parsed back out of the
+description, and `last_paid`); the re-created-copy (legacy) branch:
+`number: format!("Invoice {id}")`, `terms: None`, and the `note` that
+names `today`, which S4 replaces when the issued copy is kept; `dollars`'
+sign handling and `format_amount`'s parenthesized negatives, which the
+settled lines print; `template_data`'s no-lines refusal. Two arms no test
+asserts from `invoice_document` today, so expect survivors there until
+one does: `PartiallyPaid` (no sample is part paid and not yet due) and
+`Draft` (only S4's preview reaches it; the renderer's own test renders
+it but asserts only that it succeeds).

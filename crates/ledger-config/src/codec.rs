@@ -430,9 +430,7 @@ pub fn export(s: &Settings, base_currency: &str) -> String {
     for table in ["company", "books", "invoicing", "bills"] {
         // The invoicing and bills tables are written only once a key is
         // set: an empty table says nothing.
-        if !["company", "books"].contains(&table)
-            && !s.iter().any(|(k, _)| k.toml.0 == table)
-        {
+        if !["company", "books"].contains(&table) && !s.iter().any(|(k, _)| k.toml.0 == table) {
             continue;
         }
         let _ = write!(out, "\n[{table}]\n");
@@ -593,10 +591,7 @@ open_at_start = "ask"
              discount_warn_days = 3\n"
         );
         let s = imported(&file);
-        assert_eq!(
-            s.get("invoicing.first_number").unwrap().value,
-            json!(1000)
-        );
+        assert_eq!(s.get("invoicing.first_number").unwrap().value, json!(1000));
         assert_eq!(
             s.get("invoicing.default_terms").unwrap().value,
             json!("2/10 net 30")
@@ -631,7 +626,6 @@ open_at_start = "ask"
             );
         }
     }
-
 
     #[test]
     fn the_tax_category_policy_round_trips() {

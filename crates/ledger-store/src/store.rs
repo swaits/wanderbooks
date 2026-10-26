@@ -1603,6 +1603,9 @@ impl Store {
         field: ledger_core::PartyField,
     ) -> Result<(), StoreError> {
         self.ledger.check_update_party(id, &field)?;
+        if field.needs_documents_v2() {
+            self.ensure_feature(crate::format::DOCUMENTS_V2)?;
+        }
         let line = self.append_journal("party.updated", json!({"id": id, "change": field}))?;
         self.ledger.update_party(id, field)?;
         apply_line_to_sqlite(&self.conn, &line)?;
@@ -6203,6 +6206,19 @@ fn replay_line(
             }
         }
         "party.updated" => {
+            // A field this version doesn't know: a newer one wrote it
+            // (rules.md B-27). A known field with a bad value is damage.
+            if let Some(field) = p
+                .get("change")
+                .and_then(|c| c.get("field"))
+                .and_then(Value::as_str)
+                && !ledger_core::PartyField::known_field(field)
+            {
+                return Err(crate::format::newer_content(
+                    line,
+                    format!("the party field {field}"),
+                ));
+            }
             let field: ledger_core::PartyField = serde_json::from_value(p["change"].clone())
                 .map_err(|_| StoreError::JournalCorrupt("party.updated change".into()))?;
             ledger.update_party(get_u64(p, "id")?, field)?;

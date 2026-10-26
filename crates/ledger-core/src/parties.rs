@@ -230,6 +230,18 @@ pub struct Party {
     /// Website.
     #[serde(default)]
     pub website: Option<String>,
+    /// Email address, where the company writes to them (A-13): copied onto
+    /// an invoice's bill-to snapshot at issue.
+    #[serde(default)]
+    pub email: Option<String>,
+    /// The terms this party grants the company as a customer: an invoice's
+    /// due date falls back to these (A-13).
+    #[serde(default)]
+    pub default_terms_as_customer: Option<crate::Terms>,
+    /// The terms this party, as a vendor, gives the company: a bill's due
+    /// date falls back to these (A-13).
+    #[serde(default)]
+    pub default_terms_as_vendor: Option<crate::Terms>,
     /// Business address.
     #[serde(default)]
     pub address: Option<String>,
@@ -687,6 +699,19 @@ pub fn check_text(field: &str, text: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Check an email address: one line of party text ([`check_text`], which
+/// refuses a full TIN) in a plain address shape, one `@` and no spaces. Not
+/// an RFC grammar test: the books only print it, they never send (A-4).
+pub fn check_email(field: &str, text: &str) -> Result<(), String> {
+    check_text(field, text)?;
+    if text.chars().filter(|c| *c == '@').count() != 1 || text.chars().any(char::is_whitespace) {
+        return Err(format!(
+            "{field} {text:?}: expected one address, like billing@example.com"
+        ));
+    }
+    Ok(())
+}
+
 impl W9Facts {
     /// Check the facts' form. Returns why not.
     pub fn check(&self) -> Result<(), String> {
@@ -747,6 +772,44 @@ pub enum PartyField {
     Notes(Option<String>),
     /// Archived (no longer dealt with) or not.
     Archived(bool),
+    /// The email address (A-13; `None` clears it).
+    Email(Option<String>),
+    /// The terms it grants the company as a customer (A-13; `None` clears).
+    DefaultTermsAsCustomer(Option<crate::Terms>),
+    /// The terms it gives the company as a vendor (A-13; `None` clears).
+    DefaultTermsAsVendor(Option<crate::Terms>),
+}
+
+impl PartyField {
+    /// Every field's wire name, as `party.updated` journals it.
+    pub const FIELDS: [&'static str; 9] = [
+        "name",
+        "display_name",
+        "website",
+        "address",
+        "notes",
+        "archived",
+        "email",
+        "default_terms_as_customer",
+        "default_terms_as_vendor",
+    ];
+
+    /// Whether `field` is a field this version knows. A `party.updated`
+    /// naming another was written by a newer version (rules.md B-27).
+    pub fn known_field(field: &str) -> bool {
+        Self::FIELDS.contains(&field)
+    }
+
+    /// Whether the field needs the `documents_v2` feature: the three A-13
+    /// facts an older version would drop.
+    pub fn needs_documents_v2(&self) -> bool {
+        matches!(
+            self,
+            PartyField::Email(_)
+                | PartyField::DefaultTermsAsCustomer(_)
+                | PartyField::DefaultTermsAsVendor(_)
+        )
+    }
 }
 
 /// Which of a party's totals to report (rules.md B-35 item 4). Not the

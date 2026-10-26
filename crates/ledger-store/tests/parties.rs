@@ -318,6 +318,111 @@ fn update_party_journals_party_updated() {
     assert_eq!(got.notes.as_deref(), Some("net 30"));
 }
 
+/// Oracle: P4b S4.2 (A-13, rules.md B-39, R-A step 3): a party's email and
+/// default terms are `party.updated` facts the `documents_v2` feature
+/// guards. In books that haven't declared it they are refused, journaling
+/// nothing; after the upgrade they journal, replay gives them back, and an
+/// email in no plain address shape or holding a full TIN is refused.
+#[test]
+fn a_party_takes_an_email_and_terms_under_documents_v2() {
+    let dir = test_dir("email-terms");
+    // Books as an older version wrote them: no features declared, as the
+    // owner's live books are until the go-ahead (D-39).
+    let mut s =
+        Store::create_in_format(&dir, Currency::USD, &ledger_store::JournalFormat::default())
+            .unwrap();
+    let id = s.add_party("Acme", &[]).unwrap();
+    let net = ledger_core::Terms::parse("Net 30").unwrap();
+    let early = ledger_core::Terms::parse("2/10 net 30").unwrap();
+    let fields = [
+        PartyField::Email(Some("billing@acme.example".into())),
+        PartyField::DefaultTermsAsCustomer(Some(net.clone())),
+        PartyField::DefaultTermsAsVendor(Some(early.clone())),
+    ];
+    for field in &fields {
+        refused_nothing_journaled(&mut s, &dir, &format!("{field:?} before consent"), |s| {
+            s.update_party(id, field.clone())
+        });
+    }
+    assert!(s.upgrade_format().unwrap().is_some(), "the go-ahead");
+
+    let ((), p) = one_event(&mut s, &dir, "party.updated", |s| {
+        s.update_party(id, fields[0].clone()).unwrap()
+    });
+    assert_eq!(
+        p["change"],
+        json!({"field": "email", "value": "billing@acme.example"})
+    );
+    let ((), p) = one_event(&mut s, &dir, "party.updated", |s| {
+        s.update_party(id, fields[1].clone()).unwrap()
+    });
+    assert_eq!(p["change"]["field"], json!("default_terms_as_customer"));
+    assert_eq!(
+        serde_json::from_value::<ledger_core::Terms>(p["change"]["value"].clone()).unwrap(),
+        net,
+        "the journal carries the terms whole"
+    );
+    let ((), p) = one_event(&mut s, &dir, "party.updated", |s| {
+        s.update_party(id, fields[2].clone()).unwrap()
+    });
+    assert_eq!(p["change"]["field"], json!("default_terms_as_vendor"));
+    assert_eq!(
+        serde_json::from_value::<ledger_core::Terms>(p["change"]["value"].clone()).unwrap(),
+        early,
+    );
+
+    let got = s.ledger().get_party(id).unwrap();
+    assert_eq!(got.email.as_deref(), Some("billing@acme.example"));
+    assert_eq!(
+        got.default_terms_as_customer.as_ref().map(|t| t.describe()),
+        Some("Net 30".to_string())
+    );
+    assert_eq!(
+        got.default_terms_as_vendor.as_ref().map(|t| t.describe()),
+        Some("2/10 net 30".to_string())
+    );
+
+    // Refusals, journaling nothing: no plain address shape, or a full TIN.
+    for bad in [
+        "billing",
+        "a b@example.com",
+        "a@@example.com",
+        "123-45-6789",
+    ] {
+        refused_nothing_journaled(&mut s, &dir, &format!("email {bad:?}"), |s| {
+            s.update_party(id, PartyField::Email(Some(bad.into())))
+        });
+    }
+
+    // `None` clears them, and the books replay to the same directory.
+    s.update_party(id, PartyField::Email(None)).unwrap();
+    s.update_party(id, PartyField::DefaultTermsAsVendor(None))
+        .unwrap();
+    s.verify().unwrap();
+    let live = s.ledger().clone();
+    drop(s);
+    for without_db in [false, true] {
+        if without_db {
+            delete_db(&dir);
+        }
+        let s = Store::open(&dir).unwrap();
+        assert!(
+            *s.ledger() == live,
+            "replay (db {}): {:?}",
+            !without_db,
+            s.ledger().differs_from(&live)
+        );
+        let got = s.ledger().get_party(id).unwrap();
+        assert_eq!(got.email, None);
+        assert_eq!(got.default_terms_as_vendor, None);
+        assert_eq!(
+            got.default_terms_as_customer.as_ref().map(|t| t.describe()),
+            Some("Net 30".to_string())
+        );
+        s.verify().unwrap();
+    }
+}
+
 /// Oracle: Store::set_party_role doc ("journaled as party.role_set") with
 /// {id, role, on}.
 #[test]

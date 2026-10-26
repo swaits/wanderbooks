@@ -517,9 +517,7 @@ fn payment_methods_scan_every_text_but_ach_and_wire_lines() {
     );
     // Unknown kind and unknown field are refused.
     assert!(methods(json!([{"kind": "barter", "label": "X", "lines": []}])).is_err());
-    assert!(
-        methods(json!([{"kind": "other", "label": "X", "lines": [], "note": "y"}])).is_err()
-    );
+    assert!(methods(json!([{"kind": "other", "label": "X", "lines": [], "note": "y"}])).is_err());
     // At most eight methods.
     let pool = |n: usize| {
         Value::Array(
@@ -597,4 +595,3 @@ fn replay_shapes_the_new_kinds() {
     );
     assert!(shape(methods, &json!([{"kind": "ach", "label": "Bank"}])).is_err());
 }
-

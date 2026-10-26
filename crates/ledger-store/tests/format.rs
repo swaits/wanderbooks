@@ -1200,6 +1200,55 @@ fn an_unknown_schedule_convention_is_newer_not_corrupt() {
     assert_corrupt(Store::open(&dir));
 }
 
+/// P4b S4.2 (rules.md B-27): a `party.updated` naming a field this version
+/// doesn't know is newer, never corrupt; a known field with a malformed
+/// value is still damage.
+#[test]
+fn an_unknown_party_field_is_newer_not_corrupt() {
+    let dir = test_dir("unknown-party-field");
+    books(&dir);
+    let seq = append(
+        &dir,
+        &[
+            (
+                "party.updated",
+                json!({"id": 0, "change": {"field": "ssn", "value": "x"}}),
+            ),
+            (
+                "fx.rate_set",
+                json!({"currency": "EUR", "date": "2026-10-01", "rate": "1.10"}),
+            ),
+        ],
+    )[0];
+    std::fs::remove_file(dir.join(db_file())).unwrap();
+    assert_newer(
+        Store::open(&dir),
+        seq,
+        "party.updated",
+        "the party field ssn",
+        false,
+    );
+    assert_newer(
+        Snapshot::load(&dir),
+        seq,
+        "party.updated",
+        "the party field ssn",
+        false,
+    );
+
+    let dir = test_dir("bad-party-field-value");
+    books(&dir);
+    append(
+        &dir,
+        &[(
+            "party.updated",
+            json!({"id": 0, "change": {"field": "email", "value": 5}}),
+        )],
+    );
+    std::fs::remove_file(dir.join(db_file())).unwrap();
+    assert_corrupt(Store::open(&dir));
+}
+
 /// P3 (R3; rules.md B-27): a schedule month reversed within its month is
 /// posted again only in books that declare journal feature month_reposting
 /// (an older version would refuse the second schedule.posted as posted

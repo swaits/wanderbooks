@@ -4450,6 +4450,9 @@ impl Ledger {
                         display_name: None,
                         roles: std::collections::BTreeSet::new(),
                         website: None,
+                        email: None,
+                        default_terms_as_customer: None,
+                        default_terms_as_vendor: None,
                         address: None,
                         notes: None,
                         archived: false,
@@ -4576,6 +4579,9 @@ impl Ledger {
                 display_name: None,
                 roles: roles.iter().copied().collect(),
                 website: None,
+                email: None,
+                default_terms_as_customer: None,
+                default_terms_as_vendor: None,
                 address: None,
                 notes: None,
                 archived: false,
@@ -4647,6 +4653,9 @@ impl Ledger {
             Address(v) => p.address = v,
             Notes(v) => p.notes = v,
             Archived(b) => p.archived = b,
+            Email(v) => p.email = v,
+            DefaultTermsAsCustomer(v) => p.default_terms_as_customer = v,
+            DefaultTermsAsVendor(v) => p.default_terms_as_vendor = v,
         }
         Ok(())
     }
@@ -4693,6 +4702,15 @@ impl Ledger {
                 }
             }
             Archived(true) => {}
+            Email(v) => match v {
+                Some(e) => {
+                    crate::parties::check_email("email", e).map_err(LedgerError::InvalidParty)?
+                }
+                None => {}
+            },
+            // Terms are typed and already canonical (`crate::Terms`), so
+            // there is nothing here a string could get wrong.
+            DefaultTermsAsCustomer(_) | DefaultTermsAsVendor(_) => {}
         }
         Ok(())
     }

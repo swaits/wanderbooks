@@ -244,14 +244,16 @@ folds into `documents_v2` because the owner's upgrade has not happened,
 so there is no extra go-ahead. **S4.4 builds core/store/journal/MCP; S4.5
 the PDF.** Terms per side were already there and are unchanged.
 
-**2026-10-27: the owner paused the team to free the machine.** Five units
-are frozen mid-`just check` with their process groups stopped (SIGSTOP),
-not killed: S4.4 (`wb-S4.4`), S5 (`wb-S5`), S6 (`wb-S6`), S7 (`wb-S7`) and
-P6 (`wb-P6`). Their worktrees, branches, commits and uncommitted edits are
-intact; nothing was merged, rebased or discarded. The checks resume with
-SIGCONT to the recorded groups, and a worker whose turn is lost can be
-restarted from its branch — P6's work is currently uncommitted, so it is
-the one to inspect first. The last landed commit is `ed637f0e`.
+**2026-10-27: the owner paused the team to free the machine.** All five
+agents (S4.4, S5, S6, S7, P6) were told to stop, and each acknowledged and
+ended its turn; their in-flight checks and detached `setsid` jobs were
+terminated, so resuming means re-running `just check`, not waking a paused
+process. Branches and worktrees are intact and clean: S4.4 (`002fb9f8`),
+S5 (`ad649be3`), S6 (`6c4480cd`), S7 (`4b4fecb9`). P6 had no commits, so
+its whole change set is checkpointed as `ce366408` (`wip: pause
+checkpoint — P6 feature complete, gate interrupted (not for merge)`).
+Nothing was merged, rebased or discarded; the last landed commit is
+`ed637f0e`.
 
 
 The 2026-10-16 audit of the first company's books (62 verified findings,

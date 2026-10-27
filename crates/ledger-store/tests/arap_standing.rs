@@ -1054,3 +1054,217 @@ fn preview_invoice_and_bill_journal_nothing() {
     );
     s.verify().unwrap();
 }
+
+/// A settlement of two invoices, a discount and a processor's fee: one
+/// entry whose events name the lines they tag, every figure derived, and
+/// the books replaying to the same lines (plan P4b S6; rules.md B-42
+/// INVARIANTS 1 and 3).
+#[test]
+fn a_settlement_names_its_lines_and_replays() {
+    use ledger_core::{Application, DocRef, Fee, SettleParams};
+    let dir = test_dir("settlement-lines");
+    let mut s = Store::create(&dir.0, Currency::USD).unwrap();
+    let bank = s
+        .add_account("1000", "Bank", AccountType::Asset, None, false)
+        .unwrap();
+    let c = s.add_customer("Fernhill Labs").unwrap();
+    let first = s
+        .create_invoice(c, d(2026, 4, 1), d(2026, 5, 1), vec![line("Design", 7_000)])
+        .unwrap();
+    let second = s
+        .create_invoice(
+            c,
+            d(2026, 4, 2),
+            d(2026, 5, 2),
+            vec![line("Support", 2_000)],
+        )
+        .unwrap();
+    let from = journal_len(&dir.0);
+    let entry = s
+        .settle(SettleParams {
+            date: d(2026, 4, 10),
+            description: "One deposit, two invoices".into(),
+            cash_account: bank,
+            party: c,
+            applications: vec![
+                Application {
+                    doc: DocRef::Invoice(first),
+                    cash: cents(6_000),
+                    discount: cents(1_000),
+                    discount_reason: Some("vendor honoured the early discount late".into()),
+                },
+                Application {
+                    doc: DocRef::Invoice(second),
+                    cash: cents(2_000),
+                    discount: Decimal::ZERO,
+                    discount_reason: None,
+                },
+            ],
+            fee: Some(Fee {
+                amount: cents(500),
+                account: None,
+                vendor: None,
+            }),
+            instrument: None,
+            reference: Some("ch_42".into()),
+        })
+        .unwrap();
+    let got = since(&dir.0, from);
+    // The two role accounts created on demand, then the entry, then one
+    // event per application.
+    assert_eq!(
+        got.iter().filter(|(t, _)| t == "account.added").count(),
+        2,
+        "{got:?}"
+    );
+    assert_eq!(
+        got.iter()
+            .filter(|(t, _)| t == "invoice.payment_received")
+            .count(),
+        2
+    );
+    assert_eq!(
+        got.iter().filter(|(t, _)| t == "entry.line_added").count(),
+        6
+    );
+    // One credit per invoice's cash, one for the discount, the fee, the
+    // discount expense and the net deposit: the rows the event lines name.
+    let events: Vec<&Value> = got
+        .iter()
+        .filter(|(t, _)| t == "invoice.payment_received")
+        .map(|(_, p)| p)
+        .collect();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0]["line"], json!(0));
+    assert_eq!(events[0]["discount"], json!("10.00"));
+    assert_eq!(events[0]["discount_line"], json!(2));
+    assert_eq!(events[0]["fee"], json!("5.00"));
+    assert_eq!(events[0]["fee_line"], json!(3));
+    assert_eq!(events[1]["line"], json!(1));
+    assert!(events[1].get("discount").is_none());
+    assert!(events[1].get("fee").is_none());
+    let live = s.ledger().clone();
+    let ar = live.control_check(d(2026, 4, 10)).unwrap();
+    let receivables = ar.iter().find(|c| c.role == "receivables").unwrap();
+    assert_eq!(receivables.balance, cents(0));
+    assert_eq!(receivables.documents_total, cents(0));
+    assert_eq!(receivables.difference, Decimal::ZERO);
+    for (id, paid, discounted) in [(first, 6_000, 1_000), (second, 2_000, 0)] {
+        let st = live.invoice_state(id, d(2026, 4, 10)).unwrap().unwrap();
+        assert_eq!(
+            (st.paid, st.discounted, st.outstanding),
+            (cents(paid), cents(discounted), Decimal::ZERO)
+        );
+    }
+    assert_eq!(s.ledger().get_entry(entry).unwrap().lines().len(), 6);
+    drop(s);
+    let s = Store::open(&dir.0).unwrap();
+    assert!(
+        live.differs_from(s.ledger()).is_empty(),
+        "{:?}",
+        live.differs_from(s.ledger())
+    );
+    s.verify().unwrap();
+}
+
+/// A settlement of more than one document, a discount or a fee needs
+/// `documents_v2`: refused, journaling nothing, in books without it, and
+/// accepted after the owner's upgrade, replaying to the same books (plan
+/// P4b S6; rules.md B-27, B-42).
+#[test]
+fn settlement_waits_for_documents_v2() {
+    use ledger_core::{Application, DocRef, SettleParams};
+    let dir = fixture("settlement-v2");
+    let mut s = Store::open(&dir.0).unwrap();
+    assert!(
+        !s.journal_format()
+            .has_feature(ledger_store::format::DOCUMENTS_V2)
+    );
+    let bank = s.ledger().chart().find_by_code("1000").unwrap().id;
+    let head = s.head();
+    let params = |discount: Decimal| SettleParams {
+        date: d(2026, 2, 15),
+        description: "Two bills, one payment".into(),
+        cash_account: bank,
+        party: 1,
+        applications: vec![
+            Application {
+                doc: DocRef::Bill(1),
+                cash: cents(7_000),
+                discount,
+                discount_reason: (!discount.is_zero()).then_some("late discount".into()),
+            },
+            Application {
+                doc: DocRef::Bill(2),
+                cash: cents(4_000),
+                discount: Decimal::ZERO,
+                discount_reason: None,
+            },
+        ],
+        fee: None,
+        instrument: None,
+        reference: None,
+    };
+    match s.settle(params(Decimal::ZERO)) {
+        Err(StoreError::FormatUpgradePending { need }) => {
+            assert_eq!(need, "the journal feature documents_v2")
+        }
+        other => panic!("expected FormatUpgradePending, got {other:?}"),
+    }
+    assert_eq!(s.head(), head, "nothing journaled");
+    s.upgrade_format().unwrap();
+    // The discount is outside the invoice's terms (it has none), so it
+    // needs its reason; the payment is also accepted only because the
+    // earlier one was reversed, which needs document_standing too.
+    s.settle(params(cents(1_000))).unwrap();
+    s.verify().unwrap();
+    let live = s.ledger().clone();
+    drop(s);
+    let s = Store::open(&dir.0).unwrap();
+    assert!(
+        live.differs_from(s.ledger()).is_empty(),
+        "{:?}",
+        live.differs_from(s.ledger())
+    );
+    let st = s.ledger().bill_state(1, d(2026, 12, 31)).unwrap().unwrap();
+    assert_eq!(st.status, ledger_core::DocStatus::Paid);
+}
+
+/// Legacy payment events carry no `line`, so replay keeps the positional
+/// rule: the first untagged control line for the payment's amount, in the
+/// order the events come (plan P4b S6; rules.md B-42 INVARIANT 3).
+#[test]
+fn legacy_payment_events_keep_the_positional_rule() {
+    use ledger_core::{DocRef, Movement};
+    let dir = fixture("legacy-positional");
+    let s = Store::open(&dir.0).unwrap();
+    let payments: Vec<Value> = std::fs::read_to_string(dir.0.join(JOURNAL_FILE))
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .filter(|v| v["type"] == json!("invoice.payment_received"))
+        .map(|v| v["payload"].clone())
+        .collect();
+    assert!(!payments.is_empty());
+    for p in &payments {
+        assert!(p.get("line").is_none(), "{p}");
+    }
+    let lines = s.ledger().doc_lines(DocRef::Invoice(3));
+    assert_eq!(
+        lines
+            .iter()
+            .map(|l| (l.movement, l.amount))
+            .collect::<Vec<_>>(),
+        [
+            (Movement::Origin, cents(30_000)),
+            (Movement::Payment, cents(-12_000))
+        ]
+    );
+    assert_eq!(
+        s.ledger()
+            .line_doc(lines[1].entry, lines[1].line)
+            .unwrap()
+            .doc,
+        DocRef::Invoice(3)
+    );
+}

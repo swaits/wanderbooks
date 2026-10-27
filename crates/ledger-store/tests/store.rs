@@ -1864,6 +1864,8 @@ fn books_written_under_older_rules_still_open() {
         (4, "4000", "Revenue", "Revenue"),
         (5, "2000", "Accounts Payable", "Liability"),
         (6, "6500", "Supplies", "Expense"),
+        (7, "4100", "Refunds and Allowances", "Revenue"),
+        (8, "1020", "Bank", "Asset"),
     ] {
         w.append(
             "account.added",
@@ -1946,13 +1948,55 @@ fn books_written_under_older_rules_still_open() {
                "memo": "A4 paper", "duplicate_reason": "the vendor sent it twice"}),
     )
     .unwrap();
+    // P4b S6's new shape, hand-written as this version writes it: a
+    // payment event naming its line and the discount line it also tags.
+    // This reader tags both; the version before it would drop the discount
+    // and read the invoice paid above its total.
+    w.append(
+        "entry.created",
+        json!({"id": 4, "date": "2026-04-05", "description": "Payment on invoice 1"}),
+    )
+    .unwrap();
+    for (account, side, amount) in [
+        (3, "credit", "98.99"),
+        (3, "credit", "1.00"),
+        (7, "debit", "1.00"),
+        (8, "debit", "98.99"),
+    ] {
+        w.append(
+            "entry.line_added",
+            json!({"id": 4, "account": account, "side": side, "amount": amount,
+                   "currency": "USD"}),
+        )
+        .unwrap();
+    }
+    w.append(
+        "entry.posted",
+        json!({"id": 4, "date": "2026-04-05", "description": "Payment on invoice 1",
+        "reversal_of": null,
+        "lines": [
+            {"account": 3, "side": "credit", "amount": "98.99", "currency": "USD"},
+            {"account": 3, "side": "credit", "amount": "1.00", "currency": "USD"},
+            {"account": 7, "side": "debit", "amount": "1.00", "currency": "USD"},
+            {"account": 8, "side": "debit", "amount": "98.99", "currency": "USD"}
+        ]}),
+    )
+    .unwrap();
+    w.append(
+        "invoice.payment_received",
+        json!({"invoice_id": 1, "date": "2026-04-05", "amount": "98.99",
+               "cash_account": 8, "entry_id": 4, "line": 0,
+               "discount": "1.00", "discount_line": 1,
+               "discount_reason": "the customer paid the rest late"}),
+    )
+    .unwrap();
     drop(w);
     // Opening rebuilds from the journal; it must accept all of it.
     let _ = std::fs::remove_file(dir.join(ledger_store::db_file()));
     let store = Store::open(&dir).expect("older books still open");
     store.verify().unwrap();
     assert_eq!(store.journal_format().format, 1);
-    assert_eq!(store.ledger().chart().len(), 6);
+    assert_eq!(store.ledger().chart().len(), 8);
     assert_eq!(store.ledger().list_periods().len(), 2);
     let lines = store.ledger().get_entry(1).unwrap().lines();
     assert_eq!(lines.len(), 2);
@@ -2007,6 +2051,30 @@ fn books_written_under_older_rules_still_open() {
     );
     assert_eq!(bill.memo.as_deref(), Some("A4 paper"));
     assert_eq!(bill.lines[0].account, Some(6));
+    // The S6 shape: the invoice reads paid and discounted, and replay
+    // tagged the lines the event names.
+    let st = store
+        .ledger()
+        .invoice_state(1, NaiveDate::from_ymd_opt(2026, 12, 31).unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (st.status, st.paid, st.discounted, st.outstanding),
+        (
+            ledger_core::DocStatus::Paid,
+            "98.99".parse::<Decimal>().unwrap(),
+            "1.00".parse::<Decimal>().unwrap(),
+            Decimal::ZERO
+        )
+    );
+    assert_eq!(
+        store.ledger().line_doc(4, 0).unwrap().movement,
+        ledger_core::Movement::Payment
+    );
+    assert_eq!(
+        store.ledger().line_doc(4, 1).unwrap().movement,
+        ledger_core::Movement::Discount
+    );
 }
 
 /// The books an earlier wanderbooks wrote, one directory each under

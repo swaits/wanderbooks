@@ -115,4 +115,8 @@ reference, for an owner or a delegate such as an agent. The record is
 `invoice.sent`, under `documents_v2` (D-52), and it moves no figure, so
 the A/R and A/P rows' figures are unchanged. The floor never decreases:
 the row is `done`, tested by `sends_replay_and_project`,
-`a_send_changes_no_figure` and `mark_sent_records_who_and_how`.
+`a_send_changes_no_figure` and `mark_sent_records_who_and_how`. Sent
+tracking also feeds Needs attention: an issued invoice nobody marked sent
+(past `invoicing.unsent_days`) and an overdue invoice not reminded within
+`invoicing.reminder_days` are one list in the viewer and in `books.start`,
+each offering `books.mark_sent` (step 4; U0b's one engine).

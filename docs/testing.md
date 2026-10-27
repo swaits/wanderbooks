@@ -3069,7 +3069,7 @@ one line and no entry, replay restores it and the projection keeps it in
   before and after), `mark_sent_on_void_refused` (`DocumentVoid`,
   nothing journaled; a send dated before the void is taken).
 - **`ledger-store` `tests/arap_props.rs`:** `status_is_a_function_of_journal_and_date`
-  gains `Op::Sent` (random sends on invoices, skipped on bills): every
+  gains `Op::MarkSent` (random sends on invoices, skipped on bills): every
   figure, the control check and both agings still agree across live,
   replay and snapshot.
 - **`ledger-store` `tests/format.rs`:** `an_older_version_stops_at_invoice_sent`
@@ -3087,6 +3087,17 @@ one line and no entry, replay restores it and the projection keeps it in
   total).
 - **`ledger-mcp/src/handbook.rs`:** the new `invoices-and-bills` section
   renders, and its id is unique (the existing handbook tests).
+- **Step 4, Attention (R-F):** `ledger-gui/tests/invoices.rs`:
+  `an_unsent_invoice_is_listed_until_a_send_clears_it` (an issued invoice
+  past `invoicing.unsent_days` is one to-do opening the invoice; the
+  overview draws it, `attention-unsent-invoice.png`; a send clears it),
+  `a_legacy_invoice_with_no_number_is_never_listed_as_unsent` (exempt),
+  `an_overdue_invoice_with_an_old_send_is_asked_to_remind` (due Mar 1,
+  last sent Feb 20: 14 days overdue, target the invoice, prompt names
+  `books.mark_sent`). `ledger-cli/tests/attention_parity.rs`:
+  `an_unsent_invoice_is_on_both_lists` (the viewer's list and `books.start`
+  both carry the item, and the step is `books.mark_sent` on `invoice:1`).
+  `the_viewer_and_books_start_see_the_same_attention` stays green.
 
 **For P12 (mutation targets):** `Ledger::mark_sent`'s refusals (unknown
 invoice, a send dated before it, `DocumentVoid`, empty `to`, and each of
@@ -3096,8 +3107,10 @@ its `other:` prefix; `SendKind::parse`'s two arms; `sent_via`'s arms and
 its empty fallback; `send_kind`'s error arm; the handler's `kind` default
 (`original` when `sends` is empty, `reminder` after), its `to` fallback
 (bill-to, then party, then refused) and its `by` fallback; `invoice_id`'s
-`invoice:` strip; `last_sent`'s `max`; and the replay reader's
-`newer_content` arms for an unknown channel or kind. The two attention
-predicates ("invoice never sent", "overdue invoice not reminded") and
-their day comparisons are deferred with the unit's step 4 until U0b
-lands, and are named here when they do.
+`invoice:` strip; `last_sent`'s `max`; the replay reader's
+`newer_content` arms for an unknown channel or kind; and the two attention
+predicates in `ledger-package::attention`: `invoice.number.is_some()`
+(the legacy exemption), `Open | Partial`, `sends.is_empty()`, the
+`checked_add_days` `unsent_days` comparison (`>`), `overdue_days > 0`, the
+`sends.max()` last send, and the `reminder_days` comparison (`>`), plus
+each item's target (`Target::Invoice`) and `books.mark_sent` step args.

@@ -229,6 +229,21 @@ owes** the over-the-wire consent entry for a document carrying the new
 fields and the tool docs; **S4.5 owes** B-39/B-40, parity, the S4
 For-P12 paragraph, the handbook and the two bookspec examples.
 
+**2026-10-27: the owner chose the full party contact block (D-55).** The
+question was raised because S4.3's schema 16 skipped the plan's
+`parties.email`/terms columns: the SQLite projection has no parties
+table, so those facts were never in a table — they live in the journal
+(`party.updated`) and are replayed and compared by `differs_from`, so
+nothing was missing. The owner's ask is a real extension: a party now
+carries `phone`, `contact` (a named person), `billing_address`,
+`shipping_address` and `billing_email` besides S4.2's `email` and the two
+term sets; `PartySnapshot` captures them at issue, the invoice prints
+the billing ones and a Ship-to line when shipping is set, and
+`books.update_party` / `books.create_invoice`'s `bill_to` take them. It
+folds into `documents_v2` because the owner's upgrade has not happened,
+so there is no extra go-ahead. **S4.4 builds core/store/journal/MCP; S4.5
+the PDF.** Terms per side were already there and are unchanged.
+
 
 The 2026-10-16 audit of the first company's books (62 verified findings,
 20 engine defects) and the design discussion that followed produced

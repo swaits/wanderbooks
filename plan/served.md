@@ -891,7 +891,7 @@ These files are edited by nearly every unit. Each has one owner (the EM, or a na
 | event type | `attachment.text_extracted`, `attachment.annotated`, `entry.settles` | P6 |
 | event type | `audit.run`, `receipt.attested`, `entry.reviewed`, `period.attested` | P8 |
 | new fields on existing events | `invoice.created`/`bill.created`: `number`, `terms`, `bill_to`, `seller`, `customer_ref`, `memo`, `vendor_ref`, `received_on`, `duplicate_reason`; lines: `account`, `quantity`, `unit_price` | S4 |
-| new fields on existing events | `party.updated` field `email`, `default_terms_as_customer`, `default_terms_as_vendor` | S4 |
+| new fields on existing events | `party.updated` field `email`, `default_terms_as_customer`, `default_terms_as_vendor`, and (D-55) `phone`, `contact`, `billing_address`, `shipping_address`, `billing_email` | S4 |
 | new fields on existing events | `invoice.payment_received`/`bill.paid`: `line`, `discount`, `discount_line`, `discount_reason`, `fee`, `fee_line` | S6 |
 | projection schema (provisional) | 16 S4, 17 S5, 18 S6, 19 P4, 20 P6, 21 P8 | taken at merge, 8.0.3 rule |
 | setting keys | `invoicing.number_prefix`, `invoicing.first_number`, `invoicing.default_terms`, `invoicing.payment_methods`, `invoicing.footer`, `invoicing.unsent_days`, `invoicing.reminder_days`, `bills.remind_days`, `bills.discount_warn_days`, `company.email`, `company.website` | S4 (S5 and S6 read the day counts) |
@@ -2018,6 +2018,7 @@ The owner decisions of 2026-10-16 (at the top of this document) replace the form
 | D-52 | One remaining P4b upgrade (2026-10-26 review; applies A-11 after the `document_standing` go-ahead of 2026-10-24) | **`documents_v2` is the one journal feature for S4, S5, S6 and S7**, and P4's `drafts_v2` is declared in the same go-ahead, after S7 lands. Until then, on the owner's books, a write that carries a new field or event type is refused with the upgrade remedy and everything else works. ~~`invoice_sent`, `settlements`, `write_offs`, `control_lines`~~ are not separate features. Q-5 asks the owner whether to give the go-ahead earlier, after S4. |
 | D-53 | No `books.job` locally; no `ledger-view` or `ledger-extract` crate (2026-10-26 review) | Jobs, the 20 s rule and jobs as lease holders are not built locally (no call over the bridge approaches a client limit; 3.9 as built lets a running call finish before a close); they come with P9b if measured necessary. Needs attention lives in `ledger-package` over `PackageBooks` (U0b), not a new crate; extraction is in-process in `ledger-import` (P6), not a sandboxed subprocess (D-32). |
 | D-54 | P11 split (2026-10-26 review; D-24 to D-27 unchanged) | **P11a:** installers and updates. **P11b:** the agent dock and books homes. The dock starts the agent as an ordinary child process of the viewer's `Owner` (D-32 removed the helper and the confinement); the viewer stays read-only by design and by test. The two-key release manifest of D-25 is built unless the owner answers Q-4 "minisign only". |
+| D-55 | Party contact details (owner, 2026-10-27: asked which fields, chose "Full contact block") | A party carries, all optional and journaled on `party.updated` behind `documents_v2`: `phone`, `contact` (a named person), `billing_address`, `shipping_address`, `billing_email`. The existing `email` stays the general address and the existing `address` the general/business one; when `billing_email` or `billing_address` is set, an invoice's bill-to uses it, else the general one. `PartySnapshot` carries the same at issue; the issued PDF prints the contact person, phone, billing address and billing email, and prints a Ship-to line when a shipping address is set. `books.update_party` and `books.create_invoice`'s `bill_to` override take all six; `""` clears a text field. Both emails go through `parties::check_email` (one `@`, no spaces, the full-TIN scan). S4.4 builds the core, store, journal and MCP parts; S4.5 the PDF. Folded into `documents_v2` because the owner's upgrade has not happened (D-52), so no second go-ahead. No projection columns: there is no parties table in the SQLite projection, and replay plus `differs_from` carry the facts. Terms per side are already D-52/S4.2's and are unchanged. |
 
 ### 10.2 Deferred
 
@@ -2068,7 +2069,7 @@ The cutover's check adds: the project folder holds none of the above, and `wande
 | Unit | Decisions it rests on |
 |---|---|
 | U0a, U0b, U0c | D-33 (no mutation runs), D-53 (no `ledger-view`) |
-| P4b S4 | A-1, A-2, A-3, A-7, A-10, A-13; D-39, D-43, D-45, D-46, D-52 |
+| P4b S4 | A-1, A-2, A-3, A-7, A-10, A-13; D-39, D-43, D-45, D-46, D-52, D-55 |
 | P4b S5 | A-4; D-17, D-52 |
 | P4b S6 | A-4, A-8, A-12; D-40, D-42, D-49, D-52 |
 | P4b S7 | A-5; D-49, D-52 |

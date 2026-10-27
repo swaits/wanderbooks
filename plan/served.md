@@ -1339,7 +1339,15 @@ Each unit follows the 8.0.4 template. "A-n" is an owner answer numbered in 8.3.1
 5. **Files:** owns the `Sent` types and `Ledger::mark_sent`, the `invoice.sent` arms, `books.mark_sent`; touches the 8.0.3 files.
 6. **Tests and proofs:** named above; no kernel change, no Lean change (a send moves no money). 8.0.6 items 1-4, 6.
 7. **Done when:** (1) the tests pass; (2) a send on a fixture book changes no report and no `DocState` (`a_send_changes_no_figure`); (3) an older version stops at the `invoice.sent` line with `NewerJournal` (the `tests/format.rs` arm); (4) `just check` green; (5) attention parity holds.
-8. **As built:** none yet.
+8. **As built** (2026-10-27, branch `S5`): Build steps 1-3 and 5 are done; **step 4 (the two attention items) is deferred until U0b lands** (8.0.5 R-F: no attention item before it), as the EM directed. Departures:
+   - ~~no Lean change (a send moves no money)~~ → AGENTS.md's formal-methods bar (I-13) wins: `Ledger::mark_sent` is a new `Ledger` command, so `verify/lean/Wanderbooks/Documents.lean` gains `sends` on `Books`, `Step.markSent` and `Step.markSent_changes_no_figure` (no axioms), listed in `Audit.lean` and in `docs/verification.md` rule 34.
+   - The MCP parameter for the recipients is `recipients`, not `to`: `no_tool_takes_a_path` refuses a parameter named `to` (a whole-word path-name rule, I-2). The journal event and the result keep the plan's `to`.
+   - `Ledger::mark_sent` also passes `note` through `parties::check_text`, beside `to` and `reference`: a note must not carry a full TIN (I-7).
+   - `LedgerError::DocumentVoid` (the plan's name) and `LedgerError::InvalidSend` (the text refusals) are new variants.
+   - Schema 17 at merge: S4.3 took 16 with the document fields, so this unit took the next number (8.0.3's numbering rule; the provisional 17 held).
+   - `books.mark_sent` lives in its own group, `crates/ledger-mcp/src/tools/sent.rs`, as the EM directed (S4.4 owns `documents.rs`); the EM approved the `sent` name and `docs/architecture.md` lists it. `sent_out` and `last_sent`, which the read tools share, sit in `tools/helpers.rs`.
+   - `books.document` shows every send in its own `sends` array; its `timeline` stays the ledger lines only (a send moves no line).
+   - `handbook/invoices-and-bills.md` is S4.5's file and had not landed, so this unit creates it (R-E) with the send procedure; S4.5 extends it with the rest of the procedure.
 
 #### P4b S6: paying on terms (multi-document payments, discounts, the processor fee, bills due, aging exports)
 

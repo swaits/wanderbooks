@@ -2029,6 +2029,28 @@ S4 changes `books.create_invoice` and `books.create_bill`; see plan 8.2 S4.
   number and reads `void`. Refused while a payment stands on it (the
   refusal names the payment entry to reverse first), when void already,
   before its date or in a closed period (P4b S1, B-38).
+- `books.write_off_invoice { invoice, date, amount?, reason, upload_id |
+  existing_attachment_id, confirmed? }` → `{ entry_id, document: { ref,
+  status, paid, written_off, outstanding } }`. Writes off an invoice that
+  will not be collected (a bad debt, P4b S7; rules.md B-41): posts Dr
+  `6990` Bad Debt Expense / Cr `1200` Accounts Receivable, the receivable
+  line tagged with the invoice (`WriteOff`), so the invoice reads
+  `written_off` and its figures stay derived (B-38). `amount` (a decimal
+  string, default all it owes) is at most what is owed and may be partial
+  (§1.166-3(a)). Its evidence of worthlessness (collection
+  correspondence, a bankruptcy notice: §1.166-2(a)) is filed in the same
+  call, as `upload_id` (books.begin_upload, purpose `document` or
+  `receipt`, then `wanderbooks upload`) or as an
+  `existing_attachment_id` already filed and not linked; it becomes a
+  receipt on the write-off's entry and a link to the invoice. Refused on
+  cash-basis books (§1.166-1(e)), above what it owes, before the
+  invoice's date or in a closed period. Without `confirmed: true` it
+  answers `entry_id` 0 and the figures the write-off would leave, writing
+  nothing. A recovery is not a new command (D-49): the same tax year,
+  reverse the write-off (`books.reverse_entry`, the invoice reopens) and
+  record the payment; a later year, a plain entry Dr the deposit account /
+  Cr a "Bad debt recoveries" revenue account, the invoice staying written
+  off (§111).
 - `books.documents { kind, status?, party?, due_by?, as_of? }` → `{ as_of,
   kind, documents: [{ ref, party, date, due_date, total, outstanding,
   status, overdue_days }], outstanding_total }`. Invoices (`kind`

@@ -42,7 +42,7 @@ fn annotations_complete() {
     const D: Hints = (Some(false), Some(true), None);
     const WI: Hints = (Some(false), Some(false), Some(true));
     const DI: Hints = (Some(false), Some(true), Some(true));
-    let table: [(&str, Hints); 122] = [
+    let table: [(&str, Hints); 123] = [
         ("books.handbook", R),
         ("books.start", R),
         ("books.set_setting", DI),
@@ -165,6 +165,8 @@ fn annotations_complete() {
         ("books.access_log", R),
         ("books.backup", R),
         ("books.back_up_now", WI),
+        // P4b S7: a bad-debt write-off.
+        ("books.write_off_invoice", D),
     ];
     let tools = BooksServer::tool_router().list_all();
     assert_eq!(tools.len(), table.len());
@@ -204,8 +206,8 @@ fn annotations_complete() {
             "{name}: openWorldHint"
         );
     }
-    // docs/mcp-interface.md names the 29 destructive tools.
-    assert_eq!(table.iter().filter(|(_, h)| h.1 == Some(true)).count(), 29);
+    // docs/mcp-interface.md names the 30 destructive tools.
+    assert_eq!(table.iter().filter(|(_, h)| h.1 == Some(true)).count(), 30);
 }
 
 /// Every refusal an agent can be given whose text is fixed here, or

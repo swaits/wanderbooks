@@ -26,6 +26,23 @@ P4b S4 with S5 and S7 beside it (8.0.2).** The first owner questions in
 line are Q-5 (one upgrade after S7, or an earlier one after S4) and Q-4
 (the release manifest, before P11a's signing step).
 
+**2026-10-26: the team's first wave is open; U0c landed (`198aa2a1`).**
+Eight units started in parallel worktrees: U0a (split the MCP server by
+tool group), U0b (the attention engine over `PackageBooks`), U0c, P4b
+S4.1 (terms, numbers, line accounts), P4b S4.2 (settings and party
+fields), P7 (the TIN scanner's separators), P9a (the self-host recipe)
+and P13 steps 1-3 (the bookspec checker). U0c is the first to land: the
+three missing `docs/testing.md` sections (P4b S1 part B, S2, S3), each
+with its For-P12 paragraph, and the A/R and A/P section of
+`docs/mcp-interface.md` checked against the shipped tools. It changed
+no code and no golden. It found a code gap, recorded in U0c's As-built
+block and here: `books.documents`' `party` filter matches a customer's
+or vendor's name, never the party id, while the parameter's schema
+description offers an id; the doc now says name, and the schema or the
+handler needs the fix in a unit that may change code (P4b S4.4 or P5's
+surface pass). The baseline `just check` on `main` before this wave was
+green.
+
 
 The 2026-10-16 audit of the first company's books (62 verified findings,
 20 engine defects) and the design discussion that followed produced

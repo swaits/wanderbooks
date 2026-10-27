@@ -814,7 +814,7 @@ One row per unit of work. A unit is what one engineer takes into one git worktre
 | P4b S3 | The invoice PDF | landed 2026-10-24 (`c1f9001c`) | | | | |
 | U0a | Split `server.rs` by tool group | not started | none | U0b, U0c, S4.1, S4.2, S7.1 (core steps only) | none | 3-4 |
 | U0b | The attention engine over `PackageBooks` | not started | none | U0a, U0c, S4.1, S4.2 | none | 4-6 |
-| U0c | `docs/testing.md` sections for S1-B, S2, S3; `docs/mcp-interface.md` cleanup of stale P4b notes | not started | none | everything | none | 0.5-1 |
+| U0c | `docs/testing.md` sections for S1-B, S2, S3; `docs/mcp-interface.md` cleanup of stale P4b notes | landed 2026-10-26 (`198aa2a1`) | none | everything | none | 0.5-1 |
 | P4b S4 | `documents_v2`: numbers, terms, line accounts, snapshots, preview and confirm, the issued PDF filed, party email and terms, invoicing settings | not started | S4.1 and S4.2 need nothing; S4.3 needs S4.1, S4.2; S4.4 needs U0a, S4.3; S4.5 needs S4.4 | S5 (after S4.2), S7 (core after S1), P6, P9a, P11a, P13 | `documents_v2` (one upgrade after S7, D-52) | 12-16 |
 | P4b S5 | Sent tracking | not started | S1; S4.2 for the defaults (works without it, see the unit) | S4.3 onward, S6 | `documents_v2` | 3-4 |
 | P4b S6 | Paying on terms: multi-document payments, discounts, the processor fee, bills due, aging exports | not started | S4.1 (`Terms`), U0a | S5, S7, P6 | `documents_v2` | 8-10 |

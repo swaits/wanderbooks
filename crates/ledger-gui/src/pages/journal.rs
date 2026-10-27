@@ -807,6 +807,24 @@ pub fn describe(b: &Books, line: &JournalLine) -> Option<Event> {
             format!("Payment received, {}", amount(p)),
             entry_id.map(Route::Entry),
         ),
+        "invoice.sent" => {
+            let invoice = p.get("invoice_id").and_then(|v| v.as_u64()).unwrap_or(0);
+            let via = p
+                .get("via")
+                .and_then(|v| v.as_str())
+                .map(|v| v.strip_prefix("other:").unwrap_or(v))
+                .unwrap_or("a channel");
+            let what = if p.get("kind").and_then(|v| v.as_str()) == Some("reminder") {
+                "reminder "
+            } else {
+                ""
+            };
+            ev(
+                icon::INVOICE,
+                format!("Invoice {invoice} {what}sent by {via}"),
+                None,
+            )
+        }
         "bill.paid" => ev(
             icon::MONEY,
             format!("Bill paid, {}", amount(p)),

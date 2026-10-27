@@ -896,6 +896,13 @@ fn happy_path(name: &str) -> Mcp {
         json!({"kind": "invoices", "status": "all"}),
     );
     m.ok("books.document", json!({"ref": format!("invoice:{inv}")}));
+    // P4b S5: the invoice went out (the books record the send, never make it).
+    m.ok(
+        "books.mark_sent",
+        json!({"invoice": format!("invoice:{inv}"), "on": "2026-02-03",
+               "by": "Avery Quill", "recipients": ["billing@client.example"],
+               "reference": "msg-1"}),
+    );
 
     // Fixed assets.
     let registered = m.ok(

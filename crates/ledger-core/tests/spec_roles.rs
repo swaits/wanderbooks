@@ -48,8 +48,9 @@ fn line(desc: &str, amount: &str) -> DocumentLine {
     }
 }
 
-/// The twelve role keys, as the spec lists them (B-23 and `UnknownRole`).
-const KEYS: [&str; 12] = [
+/// The thirteen role keys, as the spec lists them (B-23, B-41's
+/// bad_debts, and `UnknownRole`).
+const KEYS: [&str; 13] = [
     "receivables",
     "revenue",
     "payables",
@@ -62,6 +63,7 @@ const KEYS: [&str; 12] = [
     "social_security_payable",
     "medicare_payable",
     "other_deductions_payable",
+    "bad_debts",
 ];
 
 fn role(key: &str) -> &'static ControlAccount {
@@ -248,8 +250,9 @@ fn alice() -> PayrollLine {
 
 // ------------------------------------------------------------ the roles
 
-/// Oracle: B-23 names the roles and their default codes; `control_account`
-/// finds a role by its `key`; `UnknownRole` lists the twelve keys.
+/// Oracle: B-23 (and B-41 for bad_debts) names the roles and their default
+/// codes; `control_account` finds a role by its `key`; `UnknownRole` lists
+/// the thirteen keys.
 #[test]
 fn every_role_has_its_key_default_code_and_type() {
     use AccountType::*;
@@ -258,6 +261,7 @@ fn every_role_has_its_key_default_code_and_type() {
         ("revenue", "4000", Revenue),
         ("payables", "2000", Liability),
         ("general_expense", "6999", Expense),
+        ("bad_debts", "6990", Expense),
         ("retained_earnings", "3999", Equity),
         ("salary_expense", "6100", Expense),
         ("payroll_tax_expense", "6110", Expense),

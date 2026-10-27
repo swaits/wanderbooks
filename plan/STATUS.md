@@ -198,6 +198,37 @@ seen under load, not ours: `ledger-gui/tests/newer_journal.rs::a_live_viewer_say
 can read between the test's two appends; it passed alone and in the
 final run, and belongs with the other load-sensitive test noted above.
 
+**2026-10-27: P4b S4.3 landed (`d19fb464`); the document journal now
+holds the new fields.** `invoice.created`/`bill.created` carry number,
+terms, snapshots, references and each line's account, quantity and unit
+price — only when set, so an old-shape document is byte-for-byte the same
+(`no_new_fields_journals_byte_for_byte`). S4.1's interim guard is gone;
+`documents_v2_waits_for_the_upgrade` proves the write is refused before
+consent and accepted after; schema is 16; `FirstNumberLocked` is enforced
+at `set_setting`; the issued PDF is filed in the same call as the entry,
+`invoice.created`, `receipt.attached` and the link to the invoice
+(`issued_pdf_is_filed_with_the_invoice_or_nothing_is`), with the SHA-256
+the attachment's `blob_sha`; `preview_invoice`/`preview_bill` journal
+nothing; and the old-books fixture `p4_s43_documents` opens to the same
+figures. No figure or golden moved; `just check` green; no `just prove`
+needed (no new `Ledger` command, only replay support).
+
+Two departures recorded in the As-built. The unit's "a failure anywhere
+leaves the journal unchanged" is true of **every refusal** (all are
+prevalidated; the PDF's bytes are stored first), but the store has no
+transaction over journal appends — `atomically` does not exist — so an
+I/O failure between the invoice's lines and the attachment's is not
+rolled back; that is a property of every multi-line command, not a new
+one, and a journal transaction is a larger change. And the plan's schema
+16 named `parties.email` and two terms columns, but the projection has no
+parties table; replay and `differs_from` carry those facts, and inventing
+a table with no reader was rejected. Books that have not declared
+`documents_v2` still issue with the legacy `Invoice {id}.pdf` and no
+number (8.3.14 item 5), so an issue works before the go-ahead. **S4.4
+owes** the over-the-wire consent entry for a document carrying the new
+fields and the tool docs; **S4.5 owes** B-39/B-40, parity, the S4
+For-P12 paragraph, the handbook and the two bookspec examples.
+
 
 The 2026-10-16 audit of the first company's books (62 verified findings,
 20 engine defects) and the design discussion that followed produced

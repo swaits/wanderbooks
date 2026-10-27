@@ -822,7 +822,7 @@ One row per unit of work. A unit is what one engineer takes into one git worktre
 | P4 | Draft states, the evidence gate in one place, the preview digest, the digest tool | not started | S4-S7 merged (one sweep over every confirm tool), U0b | P6, P9a, P11a, P13 | `drafts_v2` (same upgrade as `documents_v2`, D-52) | 8-10 |
 | P5 | Agent surface complete: the result envelope, prompts, `books.start` v2, journal history, agent evals | not started | P4, U0b; the envelope step is single-owner and merges when no other MCP branch is open | P6, P9a, P11a, P13 | `source_revisions` | 10-12 |
 | P6 | Evidence pipeline: extraction, dedup, annotations, company record categories | not started | U0a, U0b | S4-S7, P4, P5 (not its envelope step), P9a, P11a, P13 | `attachment_text` | 8-10 |
-| P7 | The TIN scanner's separators; vault v2 closed (D-48) | not started | none | everything | none | 1 |
+| P7 | The TIN scanner's separators; vault v2 closed (D-48) | landed 2026-10-26 (`3e65c83f`) | none | everything | none | 1 |
 | P8 | Audit and attestations | not started | P6 (extraction), P4 (drafts), U0b | P9a, P11a, P13 | `audits` | 10-12 |
 | P9a | Self-host recipe, `books adopt` move with the head check, static bearer over a tunnel, the two-user CI job | not started | none (code); a second machine to try it on | everything | none | 3-4 |
 | P9b | claude.ai through an external identity provider (D-7 b, Q-6) | not planned until Q-6 is answered | P9a | | | |

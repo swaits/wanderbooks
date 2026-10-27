@@ -43,6 +43,27 @@ handler needs the fix in a unit that may change code (P4b S4.4 or P5's
 surface pass). The baseline `just check` on `main` before this wave was
 green.
 
+**2026-10-26: P7 landed (`3e65c83f`).** The TIN scanner now reads the
+commas, parentheses and any run of spaces a TIN's groups are written
+with (`123,45,6789`, `(123) 45-6789`, `12    3456789`), while an
+amount's comma-grouped thousands (`1,234,567.89`, 1-3-3-2) and the
+company's nine-digit D-U-N-S number stay what they are. A space run
+counts once however long; a comma or a parenthesis joins only a 3-2-4 or
+2-7 group. The old tests that pinned the narrow separator set were
+replaced, not deleted: `has_full_tin_never_forgets_a_tin` is a property
+over the old scanner (any TIN it found, the new one finds), and the
+truth table gained the comma, parenthesis, space-run, amount, D-U-N-S
+and phone cases. `tin_shapes_with_any_separator_are_found` generates the
+separators; the access log and the filing scan have their own tests, and
+the TIN canaries in `spec_vault.rs` still pass. Replay is unchanged
+(B-28), so old journals open as they did; vault v2 stays closed (D-48).
+Under this machine's parallel load (load average ~55)
+`closing_during_a_burst_of_posts_through_the_bridge_loses_nothing`
+flaked twice ("nothing posted"); it passes alone and passed on `main`
+quietly, and it is unrelated to the scanner. P12 or the test's own unit
+should make that burst test load-tolerant rather than let the gate depend
+on an idle machine.
+
 
 The 2026-10-16 audit of the first company's books (62 verified findings,
 20 engine defects) and the design discussion that followed produced

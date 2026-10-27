@@ -235,8 +235,10 @@ reports `service_user (enforced)` (`server::Isolation`).
 
 The door is the same HTTP service on a second listener:
 `--http 127.0.0.1:7411` binds the MCP routes beside the Unix sockets
-(3.9), and Caddy, Tailscale Funnel or cloudflared puts TLS and the public
-name in front of it. The bearer token guards every call exactly as on the
+(3.9), and the address is loopback only (any other is refused before
+anything binds: the door is plaintext with a static bearer, so the TLS
+proxy or tunnel belongs in front of loopback); Caddy, Tailscale Funnel or
+cloudflared puts TLS and the public name in front of it. The bearer token guards every call exactly as on the
 socket; the tunnel only forwards. The socket's peer-credential check
 (`OwnerOnly`) is for local callers and does not apply to the loopback
 door, which is why the bearer and the loopback-only bind matter there.

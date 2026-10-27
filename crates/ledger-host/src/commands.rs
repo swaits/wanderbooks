@@ -254,12 +254,20 @@ pub fn serve(
                 server_flags.push(level);
             }
             "--http" => {
+                let addr = match args.peek() {
+                    Some(v) if !v.starts_with('-') => args.next().unwrap_or_default(),
+                    _ => "127.0.0.1:7411".to_string(),
+                };
+                // Before a host starts: the door is loopback only (3.9, P9a).
+                let addr = match ledger_mcp::local::tunnel_address(&addr) {
+                    Ok(addr) => addr,
+                    Err(why) => {
+                        eprintln!("error: {why}");
+                        return Err(exit(2));
+                    }
+                };
                 server_flags.push(arg);
-                if let Some(v) = args.peek()
-                    && !v.starts_with('-')
-                {
-                    server_flags.push(args.next().unwrap_or_default());
-                }
+                server_flags.push(addr.to_string());
             }
             "--help" | "-h" => {
                 eprintln!("usage: {prog} [--root DIR] [--isolation LEVEL] [--http [ADDR]]");
@@ -267,8 +275,9 @@ pub fn serve(
                 eprintln!("  after nothing else (the app, an agent session) holds them.");
                 eprintln!("  --isolation same_user | enforced: how books.start says these books");
                 eprintln!("    are kept from agents (enforced: the owner's own machine, P9a).");
-                eprintln!("  --http [ADDR]: also serve the MCP door on 127.0.0.1:7411 (or ADDR),");
-                eprintln!("    for a TLS proxy or a tunnel in front of it.");
+                eprintln!("  --http [ADDR]: also serve the MCP door on loopback only (default");
+                eprintln!("    127.0.0.1:7411), for a TLS proxy or a tunnel in front of it; any");
+                eprintln!("    other address is refused.");
                 return Ok(());
             }
             other => {

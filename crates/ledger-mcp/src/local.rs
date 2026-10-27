@@ -1855,14 +1855,34 @@ fn bind(run: &Path, name: &str) -> std::io::Result<tokio::net::UnixListener> {
     Ok(listener)
 }
 
+/// The address `--http` takes: loopback only (plan 3.9, P9a).
+///
+/// The tunnel's door is the same plaintext MCP service with a static
+/// bearer token; a TLS proxy or tunnel runs in front of it on the same
+/// machine. Any other address would put the books' plaintext door on the
+/// network, which 3.9 and P9a do not allow, so it is refused rather than
+/// bound (or warned about).
+pub fn tunnel_address(text: &str) -> Result<std::net::SocketAddr, String> {
+    let addr: std::net::SocketAddr = text
+        .parse()
+        .map_err(|e| format!("--http takes an address like 127.0.0.1:7411: {e}"))?;
+    if !addr.ip().is_loopback() {
+        return Err(format!(
+            "--http is loopback only (127.0.0.1:7411 or [::1]:7411), not {addr}: this door is plaintext, so the TLS proxy or tunnel belongs in front of loopback"
+        ));
+    }
+    Ok(addr)
+}
+
 fn print_usage(prog: &str) {
     eprintln!("usage: {prog} [--root DIR] [--isolation LEVEL] [--http [ADDR]]");
     eprintln!("  The books server for the data root: started by the host, not by hand.");
     eprintln!("  It runs until its standard input ends, or SIGTERM, SIGINT or SIGHUP.");
     eprintln!("  --isolation same_user | enforced: what books.start says of how these books");
     eprintln!("    are kept from agents (enforced on the owner's own machine: P9a).");
-    eprintln!("  --http [ADDR]: also serve the MCP door on 127.0.0.1:7411 (or ADDR), for a");
-    eprintln!("    TLS proxy or a tunnel in front of it. Off unless given.");
+    eprintln!("  --http [ADDR]: also serve the MCP door on loopback only (default");
+    eprintln!("    127.0.0.1:7411), for a TLS proxy or a tunnel in front of it. Off unless");
+    eprintln!("    given; any other address is refused.");
 }
 
 /// `wanderbooks server`: serve every book in the data root until told to
@@ -1890,17 +1910,14 @@ pub fn run(
                 isolation = Isolation::parse(&value)?;
             }
             // The tunnel's door (plan 3.9, P9a): the same MCP service on
-            // 127.0.0.1, for a TLS proxy or tunnel in front of it. Off
+            // loopback, for a TLS proxy or tunnel in front of it. Off
             // unless asked for; the bearer token still guards every call.
             "--http" => {
                 let addr = match args.peek() {
                     Some(v) if !v.starts_with('-') => args.next().unwrap_or_default(),
                     _ => "127.0.0.1:7411".to_string(),
                 };
-                tunnel =
-                    Some(addr.parse().map_err(|e| {
-                        format!("--http takes an address like 127.0.0.1:7411: {e}")
-                    })?);
+                tunnel = Some(tunnel_address(&addr)?);
             }
             // How long the books stay unwritten before a backup (tests).
             "--backup-quiet" => {

@@ -2993,6 +2993,11 @@ loopback door (`--http`) for Caddy or a tunnel.
   already running keeps the flags it was started with (documented in
   `deploy/README.md` and the opener's comment).
 - **`crates/ledger-cli/tests/two_user.rs`:**
+  `the_tunnel_door_binds_loopback_only` (a network address — `0.0.0.0`,
+  a public sample address, `[::]` — is refused by `server` with a message
+  naming loopback, before any socket or lock exists, and by `serve` before
+  a host starts; a loopback address still starts and answers with the
+  bearer);
   `isolation_label_is_enforced_under_the_unit` (a server with no flag says
   `same_user (advisory)`; with `--isolation enforced --http` it says
   `service_user (enforced)` over the Unix socket and over the loopback
@@ -3034,11 +3039,14 @@ loopback door (`--http`) for Caddy or a tunnel.
 would report the advisory truth on the enforced machine);
 `Isolation::label`'s two strings; `start_out`'s `self.isolation.label()`
 (it replaced a literal, and a mutant that restores a literal must fail the
-two-door test); the `--http` arm's `args.peek()` guard and the default
-`127.0.0.1:7411` (binding the wrong interface, or consuming the next flag,
-must fail); `tunnel.is_some()` and the bind failure path (ready must still
-come after the try, and a failed bind must not be fatal); `open_with`'s
-`isolation` into `Served` and `BooksServer::new`'s copy (a dropped field
-must fail `isolation_label_is_enforced_under_the_unit`); the host's
-`server_flags` extension and `parse_args`' passthrough of `--isolation`
-and its optional `--http` value.
+two-door test); `local::tunnel_address`'s `is_loopback` test (a mutant
+that accepts any address must fail `the_tunnel_door_binds_loopback_only`,
+and one that rejects loopback must fail its second half); the `--http`
+arm's `args.peek()` guard and the default `127.0.0.1:7411` (binding the
+wrong interface, or consuming the next flag, must fail); `tunnel.is_some()`
+and the bind failure path (ready must still come after the try, and a
+failed bind must not be fatal); `open_with`'s `isolation` into `Served`
+and `BooksServer::new`'s copy (a dropped field must fail
+`isolation_label_is_enforced_under_the_unit`); the host's `server_flags`
+extension and `parse_args`' passthrough of `--isolation` and its optional
+`--http` value.

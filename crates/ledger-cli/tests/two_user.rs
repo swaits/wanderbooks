@@ -181,6 +181,22 @@ impl Drop for FlaggedServer {
     }
 }
 
+/// Run the server with `args` that should be refused before it serves
+/// anything: its status, stdout and stderr.
+fn refused_server(home: &Home, args: &[String]) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_wanderbooks"))
+        .arg("server")
+        .arg("--root")
+        .arg(home.root())
+        .args(args)
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", home.dir.path())
+        .env("XDG_CONFIG_HOME", home.dir.path().join(".config"))
+        .output()
+        .unwrap()
+}
+
 /// A port nothing is listening on now, for the tunnel's door.
 fn free_port() -> u16 {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -194,6 +210,78 @@ fn start_of(wire: &mut Wire) -> Value {
 }
 
 // ---------------------------------------------------------------- the tests
+
+/// The tunnel's door is loopback only (plan 3.9, P9a): the connection is
+/// plaintext with a static bearer, so any other address is refused before
+/// anything binds or a host starts, never warned about or fallen back
+/// from. A loopback address still starts and answers with the bearer.
+#[test]
+fn the_tunnel_door_binds_loopback_only() {
+    let home = Home::new("tunnel-loopback");
+    for addr in ["0.0.0.0:0", "192.0.2.1:0", "[::]:0"] {
+        let out = refused_server(&home, &["--http".to_string(), addr.to_string()]);
+        assert!(!out.status.success(), "--http {addr} was accepted");
+        let said = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            said.contains("loopback only"),
+            "--http {addr} was refused for the wrong reason: {said}"
+        );
+        assert!(
+            !String::from_utf8_lossy(&out.stdout).contains("ready"),
+            "--http {addr} said ready"
+        );
+        // Nothing was left half-open: no sockets, no lock holder.
+        for sock in ["mcp.sock", "admin.sock", "lease.sock"] {
+            assert!(
+                !home.run().join(sock).exists(),
+                "--http {addr} left {sock} behind"
+            );
+        }
+    }
+
+    // The same refusal through `serve`, before it starts a host at all.
+    let out = Command::new(env!("CARGO_BIN_EXE_wanderbooks"))
+        .args(["serve", "--root"])
+        .arg(home.root())
+        .args(["--http", "0.0.0.0:0"])
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", home.dir.path())
+        .env("XDG_CONFIG_HOME", home.dir.path().join(".config"))
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "serve accepted a network address");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("loopback only"),
+        "serve: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!home.run().join("lease.sock").exists(), "a host started");
+
+    // A loopback address starts, and the bearer reaches the books.
+    let port = free_port();
+    let server = FlaggedServer::start(&home, &["--http".to_string(), format!("127.0.0.1:{port}")]);
+    home.create(BOOK, "USD");
+    let d = Deployment {
+        root: home.root(),
+        server: format!("http://127.0.0.1:{port}"),
+        book: BOOK.into(),
+        token: home.token(BOOK),
+        write_book: BOOK.into(),
+        write_token: home.token(BOOK),
+        source: None,
+    };
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let start = rt.block_on(async {
+        let client = connect_over_http(&d, &d.book, &d.token).await;
+        let answer = common::call(&client, "books.start", json!({})).await;
+        let _ = client.cancel().await;
+        answer
+    });
+    let start = start.expect("books.start over the loopback door");
+    assert_eq!(start["isolation"], "same_user (advisory)");
+    assert!(server.close().success());
+}
 
 /// The server told `--isolation enforced` says so (`books.start`), over
 /// its Unix socket and over the HTTP door, and a server not told says the

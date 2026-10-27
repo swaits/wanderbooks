@@ -148,8 +148,11 @@ is not a command; if your machine has a persistent Secret Service, use it.)
 ## 6. TLS and the door
 
 The server listens on 127.0.0.1:7411 for the tunnel, and on its own Unix
-sockets for anything running as the same account. Put TLS in front of the
-loopback port. Two ways that need no open inbound port:
+sockets for anything running as the same account. **The TCP door is
+loopback only, on purpose**: it is plaintext with a static bearer token,
+so `--http` refuses `0.0.0.0`, a LAN address or `[::]` before it binds
+anything; the TLS proxy or tunnel is what faces the network. Put TLS in
+front of the loopback port. Two ways that need no open inbound port:
 
 **Tailscale Funnel** (a tailnet name, TLS included):
 

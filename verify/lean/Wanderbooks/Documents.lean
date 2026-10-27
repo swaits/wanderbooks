@@ -18,12 +18,17 @@ lines, so it is an identity, not a reconciliation, and it holds through
 any date, since a date is a filter on the lines. A document is one `Nat`
 here: an injective coding of `DocRef` (invoices and bills in one id
 space), which is all the sums need. Then, over the commands:
-a document step (an invoice, a bill, a payment, or any entry whose
-control lines are tagged) never moves what is unattached; a reversal
+a document step (an invoice, a bill, a payment, a write-off, or any entry
+whose control lines are tagged) never moves what is unattached; a reversal
 moves each document, and what is unattached, by exactly the opposite of
 the lines it mirrors (B-38 INVARIANT 3); so books built by these steps
 alone have nothing unattached on a control account, ever
 (`Reachable.unattached_zero`).
+
+A write-off (S7, B-41) is a document step too: its control line carries the
+document and its expense line is off the control accounts. And it never
+takes a document below zero: `writeOff_within_bounds` reads the date-sum
+before and after it.
 -/
 
 namespace Wanderbooks.Documents
@@ -108,6 +113,10 @@ theorem control_agrees (a : Nat) (ds : List Nat) (hd : Distinct ds) :
 /-- The lines dated on or before day `D`. -/
 def through (D : Nat) (ls : List TLine) : List TLine := ls.filter (fun l => decide (l.date ≤ D))
 
+theorem through_append (D : Nat) (xs ys : List TLine) :
+    through D (xs ++ ys) = through D xs ++ through D ys := by
+  simp [through, List.filter_append]
+
 theorem Covers.through {ds : List Nat} {ls : List TLine} (h : Covers ds ls) (D : Nat) :
     Covers ds (through D ls) := fun l hl => h l (List.mem_filter.1 hl).1
 
@@ -159,6 +168,28 @@ control guard requires of every entry a command posts. -/
 def Tagged (control : List Nat) (ls : List TLine) : Prop :=
   ∀ l ∈ ls, l.line.account ∈ control → l.doc ≠ none
 
+/-- A tagged list moves nothing that is unattached on a control account:
+no line it adds on one carries no document. -/
+theorem unattached_zero_of_tagged {control : List Nat} {e : List TLine} (h : Tagged control e)
+    {a : Nat} (ha : a ∈ control) : unattached a e = 0 := by
+  induction e with
+  | nil => rfl
+  | cons l ls ih =>
+    simp only [unattached]
+    rw [ih (fun m hm => h m (List.mem_cons_of_mem _ hm))]
+    by_cases hn : l.doc = none
+    · have hacc : l.line.account ≠ a := fun e => h l (List.mem_cons_self ..) (e ▸ ha) hn
+      simp [hn, onAcct, hacc]
+    · simp [hn]
+
+/-- The two lines a write-off of `amount` posts on day `D` (plan P4b S7):
+the document's control line credited, tagged with the document (the
+receivable falls), and the same amount of bad-debt expense debited,
+untagged (the deduction). -/
+def writeOffLines (control expense d D : Nat) (amount : Int) : List TLine :=
+  [ { line := { account := control, side := .credit, amount := amount }, date := D, doc := some d },
+    { line := { account := expense, side := .debit, amount := amount }, date := D, doc := none } ]
+
 /-- The books: the control accounts (the receivables and payables roles)
 and every posted line, in order. -/
 structure Books where
@@ -168,8 +199,9 @@ structure Books where
 /-- What the engine allows (S1): a document command, or any entry whose
 control lines are all tagged (`Step.document`); a reversal of posted
 lines, mirror for mirror, each keeping its tag (`Step.reverse`), dated on
-or after them (B-38, "Dating rules"); assigning a document role an
-account all of whose lines are documents' (`Step.assign`:
+or after them (B-38, "Dating rules"); writing off a bad debt, for at most
+what the document is owed (`Step.writeOff`, S7); assigning a document
+role an account all of whose lines are documents' (`Step.assign`:
 `check_assign_role` SCENARIO 6 refuses one holding an untagged line); and
 an account leaving the control accounts once it holds no document's line
 (`Step.release`: an assigned role moved off an account no document posted
@@ -180,6 +212,11 @@ inductive Step : Books → Books → Prop
       Step B { B with lines := B.lines ++ e }
   | reverse (B : Books) (e : List TLine) (he : ∀ l ∈ e, l ∈ B.lines) (D : Nat) :
       Step B { B with lines := B.lines ++ e.map (mirror D) }
+  | writeOff (B : Books) (control expense d D : Nat) (amount : Int)
+      (hc : control ∈ B.control) (hne : control ≠ expense)
+      (h : Tagged B.control (writeOffLines control expense d D amount))
+      (hb : amount ≤ docSum control d (through D B.lines)) :
+      Step B { B with lines := B.lines ++ writeOffLines control expense d D amount }
   | assign (B : Books) (c : Nat) (h : ∀ l ∈ B.lines, l.line.account = c → l.doc ≠ none) :
       Step B { B with control := c :: B.control }
   | release (B : Books) (c : Nat) (h : ∀ l ∈ B.lines, l.line.account = c → l.doc = none) :
@@ -189,17 +226,16 @@ inductive Step : Books → Books → Prop
 account: no command adds an untagged control line. -/
 theorem Step.document_unattached (B : Books) (e : List TLine) (h : Tagged B.control e)
     (a : Nat) (ha : a ∈ B.control) : unattached a (B.lines ++ e) = unattached a B.lines := by
-  rw [unattached_append]
-  suffices unattached a e = 0 by omega
-  induction e with
-  | nil => rfl
-  | cons l ls ih =>
-    simp only [unattached]
-    rw [ih (fun m hm => h m (List.mem_cons_of_mem _ hm))]
-    by_cases hn : l.doc = none
-    · have hacc : l.line.account ≠ a := fun e => h l (List.mem_cons_self ..) (e ▸ ha) hn
-      simp [hn, onAcct, hacc]
-    · simp [hn]
+  rw [unattached_append, unattached_zero_of_tagged h ha]; omega
+
+/-- **A write-off never moves what is unattached**: its control line carries
+the document (a `Step.document` in shape), and its expense line is off the
+control accounts, so no control account gains an untagged line (B-41). -/
+theorem Step.writeOff_unattached (B : Books) (control expense d D : Nat) (amount : Int)
+    (h : Tagged B.control (writeOffLines control expense d D amount)) (a : Nat)
+    (ha : a ∈ B.control) :
+    unattached a (B.lines ++ writeOffLines control expense d D amount) = unattached a B.lines := by
+  rw [unattached_append, unattached_zero_of_tagged h ha]; omega
 
 /-- **A reversal moves each document by exactly the opposite of its lines
 it mirrors** (B-38 INVARIANT 3), and what is unattached likewise: only
@@ -237,6 +273,11 @@ theorem Reachable.tagged {B : Books} (r : Reachable B) : Tagged B.control B.line
       · exact ih l hl hc
       · obtain ⟨m, hm, rfl⟩ := List.mem_map.1 hl
         exact ih m (he m hm) (by simpa [mirror, Line.reverse] using hc)
+    | writeOff control expense d D amount hc hne h hb =>
+      intro l hl hc'
+      rcases List.mem_append.1 hl with hl | hl
+      · exact ih l hl hc'
+      · exact h l hl hc'
     | assign c h =>
       intro l hl hc
       rcases List.mem_cons.1 hc with hc | hc
@@ -276,5 +317,26 @@ theorem Reachable.control_is_documents {B : Books} (r : Reachable B) (a : Nat)
     (ha : a ∈ B.control) (ds : List Nat) (hd : Distinct ds) (hc : Covers ds B.lines) (D : Nat) :
     gl a (through D B.lines) = sumOver (fun d => docSum a d (through D B.lines)) ds := by
   rw [control_agrees_through a ds hd B.lines hc D, r.unattached_zero a ha D]; omega
+
+/-! ## Writing off a bad debt (B-41, plan P4b S7) -/
+
+/-- What a write-off of `amount` does to the document's own sum through
+`D`: the control line it posts there is a credit tagged with the document,
+and the expense line carries none and is on another account. -/
+theorem docSum_writeOffLines (control expense d D : Nat) (amount : Int) :
+    docSum control d (through D (writeOffLines control expense d D amount)) = -amount := by
+  simp [writeOffLines, through, docSum, onAcct, Line.signed]
+
+/-- **A write-off of at most what is owed leaves nothing owed below zero**
+(B-41 INVARIANT 1, over the date-sum `docSum … through D`): the credit it
+posts on the control line is the amount, so what the document owes through
+the write-off's day is what it owed less the amount, and that is never
+below zero. Reversing the write-off adds the amount back
+(`reverse_twice`), which is the same-year recovery (D-49). -/
+theorem writeOff_within_bounds (B : Books) (control expense d D : Nat) (amount : Int)
+    (h : amount ≤ docSum control d (through D B.lines)) :
+    0 ≤ docSum control d (through D (B.lines ++ writeOffLines control expense d D amount)) := by
+  rw [through_append, docSum_append, docSum_writeOffLines]
+  omega
 
 end Wanderbooks.Documents

@@ -212,7 +212,7 @@ as_of = "2026-01-02"
 refused = "end_before_start""#,
     );
     let e = Example::from_toml(&text).unwrap_err();
-    assert!(e.message.contains("only a period may be refused"), "{e}");
+    assert!(e.message.contains("refused is for"), "{e}");
 }
 
 /// A command is accepted or refused, never both, and shows no values.

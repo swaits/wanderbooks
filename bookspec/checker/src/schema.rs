@@ -1321,27 +1321,7 @@ impl Example {
                 }
             } else {
                 match (&x.values, &x.refused) {
-                    (Some(v), None) if !v.is_empty() => {
-                        if let Values::Figures(f) = v {
-                            for (k, val) in f {
-                                if !matches!(
-                                    q,
-                                    "vendor_1099"
-                                        | "party_part"
-                                        | "party_tin_last4"
-                                        | "asset_basis"
-                                        | "register_row"
-                                        | "project"
-                                ) && !k.is_empty()
-                                {
-                                    // Figures may be dates, names or
-                                    // amounts; a format's text is a list,
-                                    // not a figure table.
-                                    let _ = val;
-                                }
-                            }
-                        }
-                    }
+                    (Some(v), None) if !v.is_empty() => {}
                     (None, Some(r)) => {
                         if q != "period" {
                             return Err(what(
@@ -1842,7 +1822,7 @@ fn check_document(
 /// A key only the queries that ask for it may name.
 fn only(x: &Expect, e: &impl Fn(String) -> SchemaError) -> Result<(), SchemaError> {
     let q = x.query.as_str();
-    let checks: [(&str, bool, &[&str]); 12] = [
+    let checks: [(&str, bool, &[&str]); 14] = [
         ("entry", x.entry.is_some(), &["entry", "party_part"]),
         ("event", x.event.is_some(), &["run"]),
         (
@@ -1872,6 +1852,17 @@ fn only(x: &Expect, e: &impl Fn(String) -> SchemaError) -> Result<(), SchemaErro
         ("name", x.name.is_some(), &["rename_account"]),
         ("category", x.category.is_some(), &["set_tax_category"]),
         ("account", x.account.is_some(), &["add_account"]),
+        ("accepted", x.accepted.is_some(), COMMANDS),
+        (
+            "refused",
+            x.refused.is_some(),
+            &[
+                "rename_account",
+                "add_account",
+                "set_tax_category",
+                "period",
+            ],
+        ),
     ];
     for (key, given, queries) in checks {
         if given && !queries.contains(&q) {

@@ -812,6 +812,14 @@ pub fn describe(b: &Books, line: &JournalLine) -> Option<Event> {
             format!("Bill paid, {}", amount(p)),
             entry_id.map(Route::Entry),
         ),
+        "invoice.written_off" => {
+            let invoice = p.get("invoice_id").and_then(|v| v.as_u64()).unwrap_or(id);
+            ev(
+                icon::HAND_COINS,
+                format!("Invoice {invoice} written off, {}", amount(p)),
+                entry_id.map(Route::Entry),
+            )
+        }
         "period.created" => ev(
             icon::CALENDAR_PLUS,
             format!("Period {} created", s(p, "name")),

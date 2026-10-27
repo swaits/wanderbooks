@@ -37,7 +37,10 @@
 //!      books.set_entry_instrument; a year whose worksheet can't be made
 //!      for want of named cash accounts while vendors were paid in it
 //!      (Todo); overdue bills, and overdue
-//!      invoices (Problem, one each, with the total); money owed to
+//!      invoices (Problem, one each, with the total); a written-off
+//!      invoice whose write-off is dated this calendar year and stands
+//!      (Todo, one per invoice, "Write-off awaiting the CPA's note",
+//!      its prompt naming books.document); money owed to
 //!      owners (Info, per account with a balance); the database differing
 //!      from the journal or unreadable, and damaged or missing stored
 //!      files (Problem); depreciation due through the last finished month
@@ -714,6 +717,63 @@ pub fn find_with(
                 "In wanderbooks, show me the A/R aging and draft reminders for past-due invoices."
                     .into(),
             tool: Some(("books.ar_aging".into(), Value::Null)),
+        });
+    }
+
+    // A write-off this year waits for the CPA's note: the deduction rests
+    // on evidence of worthlessness a human signs off, and §166's judgments
+    // stay with the CPA (plan P4b S7, 8.3.16; IRC §166(a); Treas. Reg.
+    // §1.166-2(a)). Listed until the year ends.
+    let mut written_off: Vec<(u64, Option<String>, NaiveDate, Decimal)> = Vec::new();
+    for inv in ledger.invoices() {
+        let doc = ledger_core::DocRef::Invoice(inv.id);
+        let state = ledger.invoice_state(inv.id, today).ok().flatten();
+        if state.map(|s| s.status) != Some(ledger_core::DocStatus::WrittenOff) {
+            continue;
+        }
+        let lines: Vec<ledger_core::DocLine> = ledger
+            .doc_lines(doc)
+            .into_iter()
+            .filter(|l| {
+                l.movement == ledger_core::Movement::WriteOff
+                    && l.date.year() == today.year()
+                    && ledger.stands_on(l.entry, today)
+            })
+            .collect();
+        let Some(last) = lines.last() else {
+            continue;
+        };
+        match lines
+            .iter()
+            .try_fold(Decimal::ZERO, |t, l| t.checked_sub(l.amount))
+        {
+            Some(amount) => written_off.push((inv.id, inv.number.clone(), last.date, amount)),
+            None => out.push(cant_compute(
+                format!("Invoice {}", inv.id),
+                &LedgerError::TooLargeToCompute("what was written off".into()),
+                Target::Documents,
+            )),
+        }
+    }
+    for (id, number, on, amount) in written_off {
+        let name = number.unwrap_or_else(|| format!("Invoice {id}"));
+        out.push(Attention {
+            severity: Severity::Todo,
+            kind: "write_off_note",
+            title: format!("Write-off awaiting the CPA's note: {name}"),
+            detail: format!(
+                "{} written off on {} (IRC §166; Treas. Reg. §1.166-2: the evidence of worthlessness is filed with the write-off).",
+                dollars(amount),
+                date(on)
+            ),
+            target: Target::Documents,
+            prompt: format!(
+                "In wanderbooks, show me invoice {id}'s write-off (books.document), with its reason and the evidence filed with it, and note it for the CPA at year end."
+            ),
+            tool: Some((
+                "books.document".into(),
+                serde_json::json!({ "ref": format!("invoice:{id}") }),
+            )),
         });
     }
 

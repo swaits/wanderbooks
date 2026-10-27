@@ -831,3 +831,93 @@ fn all_dates_holds_an_entry_dated_after_today() {
     assert_eq!(RegisterRange::All.dates(&b), (first, later));
     assert_eq!(Range::AllTime.dates(&b), (first, later));
 }
+
+/// A write-off this calendar year is one Needs-attention item, "Write-off
+/// awaiting the CPA's note", through the viewer and through the server's
+/// own read of the books alike (plan P4b S7; the one function in
+/// ledger-package::attention).
+#[test]
+fn a_write_off_is_flagged_for_the_cpa() {
+    let d = dir("write-off");
+    let today = NaiveDate::from_ymd_opt(2026, 6, 30).unwrap();
+    let mut s = Store::create(&d.join("books-data"), Currency::USD).unwrap();
+    s.add_account("1000", "Checking", AccountType::Asset, None, false)
+        .unwrap();
+    let cust = s.add_customer("Ridgeway Co").unwrap();
+    let inv = s
+        .create_invoice(
+            cust,
+            NaiveDate::from_ymd_opt(2026, 2, 1).unwrap(),
+            NaiveDate::from_ymd_opt(2026, 3, 1).unwrap(),
+            vec![DocumentLine {
+                description: "Survey".into(),
+                amount: Decimal::new(10_000, 2),
+                class_id: None,
+                account: None,
+                quantity: None,
+                unit_price: None,
+            }],
+        )
+        .unwrap();
+    let (entry, _) = s
+        .write_off_invoice(
+            inv,
+            NaiveDate::from_ymd_opt(2026, 3, 15).unwrap(),
+            Decimal::new(10_000, 2),
+            "collection exhausted",
+            Some(ledger_store::WriteOffEvidence::File {
+                file_name: "collection-letter.pdf",
+                mime_type: "application/pdf",
+                bytes: b"%PDF-1.4\nFinal demand\n%%EOF\n",
+                description: Some("Collection attempts"),
+            }),
+        )
+        .unwrap();
+    // The server's list: the same function, over the Store.
+    let settings = s.ledger().settings();
+    let company = settings.company("USD");
+    let (cash, financing, investing) = (
+        settings.cash_accounts(),
+        settings.financing_accounts(),
+        settings.investing_accounts(),
+    );
+    let server = ledger_package::find(
+        &s,
+        today,
+        &ledger_package::Settings {
+            company: &company,
+            cash_accounts: &cash,
+            financing_accounts: &financing,
+            investing_accounts: &investing,
+        },
+    );
+    let want = format!("Write-off awaiting the CPA's note: Invoice {inv}");
+    let said = server
+        .iter()
+        .find(|a| a.title == want)
+        .unwrap_or_else(|| panic!("the server's list has no {want:?}: {:?}", server.iter().map(|a| &a.title).collect::<Vec<_>>()));
+    assert_eq!(said.severity, ledger_package::Severity::Todo);
+    assert!(said.prompt.contains("wanderbooks"), "{}", said.prompt);
+    assert!(said.detail.contains("100.00"), "{}", said.detail);
+    drop(s);
+    // The viewer's list, over its snapshot, has the same item.
+    let books = data::load_once(&Source {
+        data_dir: d.join("books-data"),
+        today: Some(today),
+    })
+    .unwrap();
+    let shown = books
+        .attention
+        .iter()
+        .find(|a| a.title == want)
+        .unwrap_or_else(|| panic!("the viewer shows no {want:?}: {:?}", books.attention.iter().map(|a| &a.title).collect::<Vec<_>>()));
+    assert_eq!(shown.target, Some(ledger_gui::nav::Route::Documents));
+    // The viewer reads the same figures from the journal it replayed.
+    let st = books
+        .ledger
+        .invoice_state(inv, today)
+        .unwrap()
+        .unwrap();
+    assert_eq!(st.status, ledger_core::DocStatus::WrittenOff);
+    assert!(books.ledger.get_entry(entry).is_some());
+}

@@ -208,3 +208,58 @@ fn books_without_documents_show_no_overview_tiles_for_them() {
     shot(&mut h, "receivables-empty");
     assert!(h.query_by_label("No invoices").is_some());
 }
+
+/// A written-off invoice (plan P4b S7): $500 issued, written off whole for
+/// a bad debt with its evidence, so it reads Written off owing nothing.
+fn write_off_books(dir: &TempDir) -> (u64, u64) {
+    let mut s = Store::create(&dir.0.join("books-data"), Currency::USD).unwrap();
+    s.add_account("1000", "Checking", AccountType::Asset, None, false)
+        .unwrap();
+    s.add_account("3000", "Capital", AccountType::Equity, None, false)
+        .unwrap();
+    let client = s.add_customer("Harbor Client").unwrap();
+    let inv = s
+        .create_invoice(
+            client,
+            d(2026, 2, 1),
+            d(2026, 3, 1),
+            vec![line("Consulting", 50_000)],
+        )
+        .unwrap();
+    let (entry, _) = s
+        .write_off_invoice(
+            inv,
+            d(2026, 3, 10),
+            Decimal::new(50_000, 2),
+            "collection exhausted",
+            Some(ledger_store::WriteOffEvidence::File {
+                file_name: "collection-letter.pdf",
+                mime_type: "application/pdf",
+                bytes: b"%PDF-1.4\nFinal demand\n%%EOF\n",
+                description: Some("Collection attempts"),
+            }),
+        )
+        .unwrap();
+    (inv, entry)
+}
+
+/// The write-off is on its invoice's timeline, reads "Written off", and
+/// opens its entry.
+#[test]
+fn a_write_off_shows_on_the_timeline() {
+    let dir = TempDir::new("write-off");
+    let (inv, entry) = write_off_books(&dir);
+    let mut h = open(&dir, Route::Invoice(inv));
+    shot(&mut h, "invoice-written-off");
+    assert!(
+        h.query_by_label_contains("Written off, entry #")
+            .is_some(),
+        "the timeline shows the write-off"
+    );
+    // The status chip reads its label ("Written off"), not "late".
+    assert!(h.query_by_label("Written off").is_some());
+    h.get_by_label_contains(&format!("Written off, entry #{entry},"))
+        .click();
+    h.run_steps(2);
+    assert_eq!(h.state_mut().route(), &Route::Entry(entry));
+}

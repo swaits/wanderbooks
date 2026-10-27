@@ -37,7 +37,12 @@
 //!      books.set_entry_instrument; a year whose worksheet can't be made
 //!      for want of named cash accounts while vendors were paid in it
 //!      (Todo); overdue bills, and overdue
-//!      invoices (Problem, one each, with the total); money owed to
+//!      invoices (Problem, one each, with the total); an issued invoice
+//!      (`number` set) still Open or Partial with no send and past
+//!      `invoicing.unsent_days` (Todo, its prompt naming books.mark_sent;
+//!      a legacy invoice with no number is exempt); an overdue invoice
+//!      whose last send is older than `invoicing.reminder_days` (Todo, the
+//!      same tool); money owed to
 //!      owners (Info, per account with a balance); the database differing
 //!      from the journal or unreadable, and damaged or missing stored
 //!      files (Problem); depreciation due through the last finished month
@@ -83,8 +88,8 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use chrono::{Datelike, NaiveDate};
 use ledger_core::parties::MoneyAccounts;
 use ledger_core::{
-    AccountId, AccountType, AssetId, EntryId, EntryStatus, Ledger, LedgerError, Party, PartyId,
-    PartyMember, PeriodStatus,
+    AccountId, AccountType, AssetId, DocRef, DocStatus, EntryId, EntryStatus, Ledger, LedgerError,
+    Party, PartyId, PartyMember, PeriodStatus,
 };
 use ledger_store::{Attachment, DiskCheck, JournalLine, Reconciliation, Statement, Subject};
 use rust_decimal::Decimal;
@@ -131,6 +136,8 @@ pub enum Target {
     Asset(AssetId),
     /// The documents and attachments list.
     Documents,
+    /// One invoice's page.
+    Invoice(ledger_core::InvoiceId),
     /// The journal.
     Journal,
     /// One of the reports.
@@ -715,6 +722,85 @@ pub fn find_with(
                     .into(),
             tool: Some(("books.ar_aging".into(), Value::Null)),
         });
+    }
+
+    // Invoices: did each go out, and were overdue ones reminded? (plan P4b
+    // S5, A-4: the books record sends, they never make them.) The day
+    // counts are the owner's settings, with their documented defaults.
+    let setting_days = |key: &str, fallback: u32| {
+        ledger
+            .settings()
+            .get(key)
+            .and_then(|r| r.value.as_u64())
+            .and_then(|n| u32::try_from(n).ok())
+            .unwrap_or(fallback)
+    };
+    let unsent_days = setting_days("invoicing.unsent_days", 2);
+    let reminder_days = setting_days("invoicing.reminder_days", 14);
+    for invoice in ledger.invoices() {
+        let Ok(Some(state)) = ledger.doc_state(DocRef::Invoice(invoice.id), today) else {
+            continue;
+        };
+        let label = invoice
+            .number
+            .clone()
+            .unwrap_or_else(|| invoice.id.to_string());
+        let last_sent = invoice.sends.iter().map(|s| s.on).max();
+        let open = matches!(state.status, DocStatus::Open | DocStatus::Partial);
+        let listed_after = invoice
+            .date
+            .checked_add_days(chrono::Days::new(u64::from(unsent_days)));
+        if invoice.number.is_some()
+            && open
+            && last_sent.is_none()
+            && listed_after.is_some_and(|limit| today > limit)
+        {
+            out.push(Attention {
+                severity: Severity::Todo,
+                kind: "invoice_never_sent",
+                title: format!("Invoice {label} was never sent"),
+                detail: format!(
+                    "Issued {}, with no send recorded. It is listed once {unsent_days} days have passed.",
+                    date(invoice.date)
+                ),
+                target: Target::Invoice(invoice.id),
+                prompt: format!(
+                    "In wanderbooks, invoice {label} (invoice:{}) has no recorded send. Ask me when and how it went out, then record it with books.mark_sent (the recipient, how it went, and the channel's reference when there is one).",
+                    invoice.id
+                ),
+                tool: Some((
+                    "books.mark_sent".into(),
+                    serde_json::json!({ "invoice": format!("invoice:{}", invoice.id) }),
+                )),
+            });
+        }
+        if state.overdue_days > 0
+            && let Some(last) = last_sent
+            && today.signed_duration_since(last).num_days() > i64::from(reminder_days)
+        {
+            let days = usize::try_from(state.overdue_days).unwrap_or(usize::MAX);
+            out.push(Attention {
+                severity: Severity::Todo,
+                kind: "invoice_not_reminded",
+                title: format!("Invoice {label} is overdue: remind the customer"),
+                detail: format!(
+                    "Due {}, {} overdue; last sent {}. A reminder is due after {reminder_days} days.",
+                    date(invoice.due_date),
+                    count(days, "day", "days"),
+                    date(last)
+                ),
+                target: Target::Invoice(invoice.id),
+                prompt: format!(
+                    "In wanderbooks, invoice {label} (invoice:{}) is overdue and was last sent {}. Draft a reminder to the customer, then record it with books.mark_sent as a reminder (the day and the channel's reference).",
+                    invoice.id,
+                    date(last)
+                ),
+                tool: Some((
+                    "books.mark_sent".into(),
+                    serde_json::json!({ "invoice": format!("invoice:{}", invoice.id) }),
+                )),
+            });
+        }
     }
 
     for a in ledger.chart().all().filter(|a| {

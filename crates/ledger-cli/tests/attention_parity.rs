@@ -250,3 +250,50 @@ fn the_viewer_and_books_start_see_the_same_attention() {
         compare_and_expect(&place, &mut wire, today, "doesn't match the journal");
     }
 }
+
+/// Plan P4b S5, step 4 (R-F): an issued invoice nobody marked sent is on
+/// the viewer's list and in `books.start`'s next steps, from the one
+/// engine, with the step naming `books.mark_sent`.
+#[test]
+fn an_unsent_invoice_is_on_both_lists() {
+    let today = ledger_core::settings::today_in(None);
+    let place = common::Place::new("attention-unsent-parity");
+    let dir = place.books_data();
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut st = ledger_store::Store::create(&dir, Currency::USD).unwrap();
+    st.add_account("1000", "Checking", AccountType::Asset, None, false)
+        .unwrap();
+    let client = st.add_customer("Harbor Client").unwrap();
+    st.create_invoice_with(
+        client,
+        today - chrono::Days::new(40),
+        today + chrono::Days::new(20),
+        vec![ledger_core::arap::DocumentLine {
+            description: "Consulting".into(),
+            amount: Decimal::new(50_000, 2),
+            class_id: None,
+            account: None,
+            quantity: None,
+            unit_price: None,
+        }],
+        ledger_core::arap::InvoiceFields {
+            number: Some("INV-0001".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    drop(st);
+    let mut wire = place.start(Some(SETTINGS));
+    wire.initialize("attention-unsent-parity");
+    compare_and_expect(&place, &mut wire, today, "Invoice INV-0001 was never sent");
+    // The step offers the fix: books.mark_sent on that invoice.
+    let answer = start(&mut wire);
+    let step = answer["next_steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["why"] == json!("Invoice INV-0001 was never sent"))
+        .unwrap_or_else(|| panic!("no unsent step: {answer}"));
+    assert_eq!(step["tool"], json!("books.mark_sent"), "{answer}");
+    assert_eq!(step["args"]["invoice"], json!("invoice:1"), "{answer}");
+}

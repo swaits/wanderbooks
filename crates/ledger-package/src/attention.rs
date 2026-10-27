@@ -192,12 +192,21 @@ impl Default for Integrity {
 
 impl Integrity {
     /// Check the database and every stored file: the attachment's bytes
-    /// are read (and hash-checked) through the books.
+    /// are read (and hash-checked) through the books, once per blob that
+    /// is intact; a damaged blob is reported for each attachment filed
+    /// from it.
     pub fn check(books: &impl PackageBooks) -> Integrity {
+        let mut intact: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut file_failures = Vec::new();
         for a in books.all_attachments().unwrap_or_default() {
-            if let Err(e) = books.attachment_bytes(a.id) {
-                file_failures.push((a.id, e.to_string()));
+            if intact.contains(&a.blob_sha) {
+                continue;
+            }
+            match books.attachment_bytes(a.id) {
+                Ok(_) => {
+                    intact.insert(a.blob_sha.clone());
+                }
+                Err(e) => file_failures.push((a.id, e.to_string())),
             }
         }
         Integrity {

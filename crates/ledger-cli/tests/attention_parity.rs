@@ -1,14 +1,19 @@
 //! The viewer's "Needs attention" and `books.start`'s next steps are one
 //! list: both come from `ledger_package::attention`, the viewer over its
 //! `Snapshot`, the server over its `Store`. This drives both on the same
-//! books (the demo company, and a book written entry by entry) and compares
-//! them item for item.
+//! books (the demo company, a book written entry by entry, and that book
+//! after its stored file and its database are damaged) and compares them
+//! item for item.
 #![cfg(feature = "gui")]
+
+use std::collections::HashSet;
+use std::time::Instant;
 
 use chrono::NaiveDate;
 use ledger_core::{AccountType, Currency, Money, Side};
 use ledger_gui::{Source, data};
 use rust_decimal::Decimal;
+use serde_json::Value;
 use serde_json::json;
 
 mod common;
@@ -20,13 +25,18 @@ fn usd(cents: i64) -> Money {
     Money::new(Decimal::new(cents, 2), Currency::USD)
 }
 
+fn start(wire: &mut common::Wire) -> Value {
+    common::answer_of(&wire.call("books.start", json!({"focus": "daily"})))
+        .unwrap_or_else(|e| panic!("books.start: {e}"))
+}
+
 /// The items the viewer draws and the next steps the server lists: the
 /// server's attention steps are the ones whose `why` is one of the viewer's
 /// titles, and they must be the same titles, in the same order. The viewer
-/// has at most 12 (books.start lists the top 12).
-fn compare(place: &common::Place, wire: &mut common::Wire, today: NaiveDate) {
-    let answer = common::answer_of(&wire.call("books.start", json!({"focus": "daily"})))
-        .unwrap_or_else(|e| panic!("books.start: {e}"));
+/// has at most 12 (books.start lists the top 12). Returns the viewer's
+/// titles.
+fn compare(place: &common::Place, wire: &mut common::Wire, today: NaiveDate) -> Vec<String> {
+    let answer = start(wire);
     let books = data::load_once(&Source {
         data_dir: place.books_data(),
         today: Some(today),
@@ -53,11 +63,13 @@ fn compare(place: &common::Place, wire: &mut common::Wire, today: NaiveDate) {
         assert_eq!(&a.title, title);
         assert!(a.prompt.contains("wanderbooks"), "{}", a.prompt);
     }
+    viewer
 }
 
 /// A book written entry by entry, pseudo-randomly but deterministically (a
 /// fixed seed, so a failure reproduces): a chart, three drafts, posted
-/// entries without receipts, and one that names no counterparty.
+/// entries without receipts, one that names no counterparty, and one with
+/// a filed receipt (the blob the damage test removes).
 fn write_random(dir: &std::path::Path, today: NaiveDate) {
     let _ = std::fs::remove_dir_all(dir);
     let mut st = ledger_store::Store::create(dir, Currency::USD).unwrap();
@@ -132,6 +144,29 @@ fn write_random(dir: &std::path::Path, today: NaiveDate) {
     drop(st);
 }
 
+/// A blob's file in the content-addressed store (`<aa>/<bb>/<sha>`).
+fn blob_path(data_dir: &std::path::Path, sha: &str) -> std::path::PathBuf {
+    data_dir
+        .join("blobs")
+        .join(&sha[0..2])
+        .join(&sha[2..4])
+        .join(sha)
+}
+
+/// The viewer's items and the server's steps, and both name `expected`.
+fn compare_and_expect(
+    place: &common::Place,
+    wire: &mut common::Wire,
+    today: NaiveDate,
+    expected: &str,
+) {
+    let viewer = compare(place, wire, today);
+    assert!(
+        viewer.iter().any(|t| t.contains(expected)),
+        "the viewer should say {expected:?}: {viewer:?}"
+    );
+}
+
 #[test]
 fn the_viewer_and_books_start_see_the_same_attention() {
     let today = ledger_core::settings::today_in(None);
@@ -150,13 +185,68 @@ fn the_viewer_and_books_start_see_the_same_attention() {
         let mut wire = place.start(None);
         wire.initialize("attention-parity");
         compare(&place, &mut wire, today);
+        // What the real integrity check costs books.start: the cold call
+        // (which also opens the store) and a warm one, and how many stored
+        // files it hashes (one per distinct blob, as the viewer does).
+        let books = data::load_once(&Source {
+            data_dir: place.books_data(),
+            today: Some(today),
+        })
+        .unwrap();
+        let blobs: HashSet<&str> = books
+            .attachments
+            .iter()
+            .map(|a| a.blob_sha.as_str())
+            .collect();
+        let cold = Instant::now();
+        let _ = start(&mut wire);
+        let cold = cold.elapsed();
+        let warm = Instant::now();
+        let _ = start(&mut wire);
+        let warm = warm.elapsed();
+        println!(
+            "books.start on the demo: {} attachments, {} distinct blobs; cold {cold:?}, warm {warm:?}",
+            books.attachments.len(),
+            blobs.len()
+        );
     }
-    // A book written entry by entry.
+    // A book written entry by entry, then damaged: a stored file removed
+    // and the database changed from outside. Both lists must still agree,
+    // and both must name the damage (a clean-books-only test missed this).
     {
         let place = common::Place::new("attention-parity-random");
         write_random(&place.books_data(), today);
         let mut wire = place.start(Some(SETTINGS));
         wire.initialize("attention-parity");
         compare(&place, &mut wire, today);
+
+        // The stored file: remove its bytes (the blob store never deletes;
+        // the test does, on its own books).
+        let books = data::load_once(&Source {
+            data_dir: place.books_data(),
+            today: Some(today),
+        })
+        .unwrap();
+        let sha = books
+            .attachments
+            .first()
+            .expect("the fixture filed a receipt")
+            .blob_sha
+            .clone();
+        let path = blob_path(&place.books_data(), &sha);
+        std::fs::remove_file(&path).unwrap();
+        compare_and_expect(&place, &mut wire, today, "damaged or missing");
+
+        // The database: change a projected row the journal doesn't say.
+        let db = ledger_store::database_in_use(&place.books_data());
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute(
+            "UPDATE accounts SET name = name || ' (changed outside the journal)' \
+             WHERE id = (SELECT MIN(id) FROM accounts)",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        compare_and_expect(&place, &mut wire, today, "doesn't match the journal");
     }
 }

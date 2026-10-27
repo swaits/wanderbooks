@@ -834,12 +834,7 @@ impl BooksServer {
                 financing_accounts: &cfg.roles.financing,
                 investing_accounts: &cfg.roles.investing,
             };
-            let attention = ledger_package::find_with(
-                store,
-                today,
-                &attention_settings,
-                &ledger_package::Integrity::default(),
-            );
+            let attention = ledger_package::find(store, today, &attention_settings);
             for a in attention.iter().filter(|a| a.tool.is_some()).take(12) {
                 let Some((tool, args)) = &a.tool else {
                     continue;

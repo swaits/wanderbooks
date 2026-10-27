@@ -2927,7 +2927,9 @@ steps, `why` equal to the title, at most 12. `PackageBooks` gained
 `settings`, `journal`, `statements`, `reconciliations` and `disk_check`, so
 the engine can read an entry's origin from the journal's event types (as
 the viewer's builder did) and the same statements, reconciliations and
-database check through either view.
+database check through either view. `Store::disk_check` makes the viewer's
+comparison (a snapshot of the data directory) rather than assuming a
+match; `books.start` calls `find`, which runs the real check.
 
 - **ledger-package (unit tests in `src/attention.rs`):** none of its own
   (the engine's conditions are exercised end to end); the crate's tests
@@ -2941,9 +2943,13 @@ database check through either view.
   `tests/edges.rs`, `tests/old_books.rs`, `tests/parties.rs`,
   `tests/spec_gui.rs` exercise the items through the viewer's wrapper.
 - **ledger-cli:** `tests/attention_parity.rs`
-  `the_viewer_and_books_start_see_the_same_attention` (the demo books and a
-  book written entry by entry: the viewer's titles, in order, are exactly
-  `books.start`'s attention steps).
+  `the_viewer_and_books_start_see_the_same_attention` (the demo books, a
+  book written entry by entry, and that book after its stored file is
+  removed and its database is changed from outside: the viewer's titles,
+  in order, are exactly `books.start`'s attention steps, and both name the
+  `stored_files` and `database` items). The demo half measures
+  `books.start` with the real check (138 attachments and blobs: about
+  0.26 s warm on a debug build).
 - **unchanged:** `crates/ledger-cli/tests/spec_kept.rs`'s `books.start`
   tests (the fixed steps keep their order; attention items sit between the
   backup step and the focus).
@@ -2960,5 +2966,7 @@ not marked on file) and `files_1099`'s `any`; `paid_this_year`'s `max`
 `period_month`'s split; the severity arms (undetermined 1099, refuse
 tax category, parties require); `dollars`' thousands grouping and its
 negative-zero test; `filter(|a| a.tool.is_some()).take(12)` and
-`step_title`'s 160-character cut in `start_out`; the viewer wrapper's
+`step_title`'s 160-character cut in `start_out`; `Integrity::check`'s
+intact-blob set (a damaged blob reported per attachment) and `Store::
+disk_check`'s snapshot load and `Unreadable` arm; the viewer wrapper's
 `Target` arms.

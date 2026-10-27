@@ -1246,8 +1246,15 @@ Each unit follows the 8.0.4 template. "A-n" is an owner answer numbered in 8.3.1
    - `books.start` lists at most 12 attention steps (the eventual
      `needs_attention` top 12; counts by kind come with P5), each step's
      `why` cut to 160 characters (a free-text description could otherwise
-     push the result past 8 KB), and passes `Integrity::default()`: the
-     server's own damage check is `books.verify`.
+     push the result past 8 KB), and calls `find` — the real integrity
+     check, so a damaged database or stored file produces the same items
+     for the server as for the viewer. `Store::disk_check` makes the
+     viewer's comparison (a snapshot of its data directory) rather than
+     assuming a match; the check hashes each distinct stored blob once and
+     replays the journal once. On the demo books (138 attachments, 138
+     distinct blobs, debug build) `books.start` takes about 0.26 s warm,
+     0.29 s cold; a real book's cost scales with its stored bytes, and a
+     cache would be the next step if that ever exceeds a second.
    - The W-9 and reconciliation prompts and the 1099 predicate moved to
      `ledger-package`; `pages/parties.rs`, `pages/reconciliation.rs` and
      `Books::files_1099` delegate to them (two files beyond the Build's

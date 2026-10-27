@@ -62,9 +62,8 @@ pub trait PackageBooks {
     fn reconciliations(&self) -> Result<Vec<Reconciliation>, StoreError>;
 
     /// How the writer's database compares with the journal. A snapshot
-    /// compares them; the store is the only writer and applies each line
-    /// before it returns (a failed apply heals on its next open), so it
-    /// reports a match.
+    /// compares them; the store makes the same comparison (see its
+    /// implementation).
     fn disk_check(&self) -> DiskCheck {
         DiskCheck::Matches
     }
@@ -103,6 +102,17 @@ impl PackageBooks for Store {
 
     fn reconciliations(&self) -> Result<Vec<Reconciliation>, StoreError> {
         Store::reconciliations(self, None)
+    }
+
+    /// The same comparison the viewer makes, not an assumption: the
+    /// store's database is the file the viewer checks, and it can be
+    /// damaged or changed from outside. Loading a snapshot of the data
+    /// directory compares it against a fresh projection of the journal.
+    fn disk_check(&self) -> DiskCheck {
+        match Snapshot::load(Store::data_dir(self)) {
+            Ok(s) => Snapshot::check_disk(&s),
+            Err(e) => DiskCheck::Unreadable(e.to_string()),
+        }
     }
 }
 

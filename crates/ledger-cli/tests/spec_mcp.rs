@@ -878,6 +878,7 @@ fn happy_path(name: &str) -> Mcp {
     );
     m.ok("books.ar_aging", json!({"as_of": "2026-06-30"}));
     m.ok("books.ap_aging", json!({"as_of": "2026-06-30"}));
+    m.ok("books.bills_due", json!({"through": "2026-06-30"}));
     // P4b S1: a document voided, and the control accounts' tie-out.
     let dup = m.ok(
         "books.create_invoice",
@@ -1176,10 +1177,14 @@ fn happy_path(name: &str) -> Mcp {
         ("csv", "general_ledger"),
         ("json", "members_equity"),
         ("csv", "tax_summary"),
+        ("csv", "ar_aging"),
+        ("xlsx", "ar_aging"),
+        ("pdf", "ap_aging"),
     ] {
         m.ok(
             "books.export",
-            json!({"format": format, "report": report, "start": "2026-01-01", "end": "2026-12-31"}),
+            json!({"format": format, "report": report, "start": "2026-01-01", "end": "2026-12-31",
+                   "as_of": "2026-12-31"}),
         );
     }
     // The IIF takes as_of (every posted entry from the first through it),

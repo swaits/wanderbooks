@@ -3091,17 +3091,73 @@ pub struct CreateDocumentOut {
     pub notes: Vec<String>,
 }
 
+/// One invoice or bill a payment applies to (plan P4b S6; B-42).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PaymentApplicationParam {
+    /// The invoice (books.receive_payment) or bill (books.pay_bill), by id.
+    #[serde(default)]
+    pub invoice: Option<u64>,
+    /// The bill (books.pay_bill), by id.
+    #[serde(default)]
+    pub bill: Option<u64>,
+    /// The cash paid against it, decimal string, positive.
+    pub amount: String,
+    /// An early-payment discount taken off it, decimal string.
+    #[serde(default)]
+    pub discount: Option<String>,
+    /// Why a discount outside the document's terms was taken (a late
+    /// discount the vendor honours): one line, recorded with the payment.
+    #[serde(default)]
+    pub discount_reason: Option<String>,
+}
+
+/// A processor's fee withheld from a customer payment (plan P4b S6; A-4).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FeeParam {
+    /// The fee, decimal string, positive.
+    pub amount: String,
+    /// The expense account it goes to (id or code); omitted: the
+    /// payment-processing-fees role's account.
+    #[serde(default)]
+    pub account: Option<String>,
+    /// The processor, when the books know it as a vendor (id or name).
+    #[serde(default)]
+    pub vendor: Option<String>,
+}
+
 /// Parameters for `books.receive_payment` / `books.pay_bill`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PaymentParams {
-    /// Invoice id (receive_payment) or bill id (pay_bill).
-    pub document_id: u64,
+    /// Invoice id (receive_payment) or bill id (pay_bill); the older name
+    /// of `invoice` / `bill`.
+    #[serde(default)]
+    pub document_id: Option<u64>,
+    /// The invoice, by id (books.receive_payment).
+    #[serde(default)]
+    pub invoice: Option<u64>,
+    /// The bill, by id (books.pay_bill).
+    #[serde(default)]
+    pub bill: Option<u64>,
     /// Payment date, YYYY-MM-DD.
     pub date: String,
-    /// Payment amount, decimal string.
-    pub amount: String,
-    /// Cash account id or code.
-    pub cash_account: String,
+    /// Payment amount, decimal string; with `invoice` or `bill` only. The
+    /// applications' amounts are the cash; a discount is beside it.
+    #[serde(default)]
+    pub amount: Option<String>,
+    /// Cash account id or code; the older name of `deposit_to` /
+    /// `paid_from`.
+    #[serde(default)]
+    pub cash_account: Option<String>,
+    /// The account the cash reaches (receive_payment): a bank or card that
+    /// holds no role.
+    #[serde(default)]
+    pub deposit_to: Option<String>,
+    /// The account the cash leaves (pay_bill): a bank, card or payable
+    /// that holds no role.
+    #[serde(default)]
+    pub paid_from: Option<String>,
     /// How the money moved: a payment method's id or label
     /// (`books.instruments`), tagged on the payment's entry in the same
     /// call (D-40: a card payment is left out of 1099-NEC).
@@ -3112,6 +3168,34 @@ pub struct PaymentParams {
     /// carried in the entry's description (D-45).
     #[serde(default)]
     pub reference: Option<String>,
+    /// Several invoices (receive_payment) or bills (pay_bill) settled by
+    /// one payment, one party.
+    #[serde(default)]
+    pub applications: Vec<PaymentApplicationParam>,
+    /// The processor's fee withheld from a customer payment (never on a
+    /// bill): receivables are credited the gross, the fee goes to expense,
+    /// the deposit account gets the net.
+    #[serde(default)]
+    pub fee: Option<FeeParam>,
+    /// A check or note marked "paid in full" for a disputed amount: adds a
+    /// warning under UCC §3-311 and records nothing else.
+    #[serde(default)]
+    pub paid_in_full_marking: bool,
+}
+
+/// One document a payment settled, after it.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PaidDocumentOut {
+    /// "invoice:7" or "bill:12".
+    pub r#ref: String,
+    /// Its number, when it has one ("INV-0007").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub number: Option<String>,
+    /// What it still owes after the payment, decimal string.
+    pub outstanding: String,
+    /// Its status after it: open, partial, paid, written_off, void,
+    /// overpaid, or unattached.
+    pub status: String,
 }
 
 /// Output of `books.receive_payment` / `books.pay_bill`.
@@ -3119,12 +3203,22 @@ pub struct PaymentParams {
 pub struct PaymentOut {
     /// The payment journal entry's id.
     pub entry_id: u64,
-    /// What the document still owes after it, decimal string (derived
-    /// from its lines that stand).
-    pub remaining: String,
-    /// The document's status after it: open, partial, paid, written_off,
-    /// void, overpaid, or unattached.
-    pub status: String,
+    /// Every document it settled, in application order.
+    pub documents: Vec<PaidDocumentOut>,
+    /// What reached (receive_payment) or left (pay_bill) the account: the
+    /// cash less a processor's fee, decimal string.
+    pub deposited: String,
+    /// What the single document still owes (the older shape; present when
+    /// one document was settled).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remaining: Option<String>,
+    /// The single document's status (the older shape).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    /// What to tell the human (a "paid in full" marking's UCC §3-311
+    /// warning).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 /// Parameters for `books.documents`.
@@ -3361,6 +3455,10 @@ pub struct AgingParams {
     #[serde(default)]
     #[schemars(description = AS_OF_DOC)]
     pub as_of: Option<String>,
+    /// Also one row per document, with its number, dates, terms and
+    /// bucket.
+    #[serde(default)]
+    pub detail: bool,
 }
 
 /// One row of an aging report.
@@ -3382,6 +3480,53 @@ pub struct AgingRowOut {
     pub total: String,
 }
 
+/// One document in an aging's detail.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AgingDocumentOut {
+    /// "invoice:7" or "bill:12".
+    pub r#ref: String,
+    /// Its number, when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub number: Option<String>,
+    /// The customer or vendor.
+    pub party: String,
+    /// Its own date.
+    pub date: String,
+    /// When payment is due.
+    pub due_date: String,
+    /// Its terms, as they print ("2/10 net 30"), when it has them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terms: Option<String>,
+    /// The sum of its lines.
+    pub total: String,
+    /// Cash paid that stands.
+    pub paid: String,
+    /// Discounts taken that stand.
+    pub discounted: String,
+    /// What it still owes as of the day.
+    pub outstanding: String,
+    /// current, days_30, days_60, days_90 or days_90_plus.
+    pub bucket: String,
+    /// Days past its due date while something is owed; 0 otherwise.
+    pub days_overdue: i64,
+}
+
+/// The aging's account against its documents (the control check, B-23,
+/// B-38 INVARIANT 1).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AgingControlOut {
+    /// "1200 Accounts Receivable" or "2000 Accounts Payable".
+    pub account: String,
+    /// Its ledger balance as of the day.
+    pub balance: String,
+    /// What its documents owe on it, together.
+    pub documents_total: String,
+    /// The lines on it that are no document's.
+    pub unattached: Vec<UnattachedLineOut>,
+    /// balance − documents_total − unattached: always 0.00.
+    pub difference: String,
+}
+
 /// Output of `books.ar_aging` / `books.ap_aging`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct AgingOut {
@@ -3389,6 +3534,71 @@ pub struct AgingOut {
     pub as_of: String,
     /// Rows, one per party with an outstanding balance.
     pub rows: Vec<AgingRowOut>,
+    /// One row per open document, when `detail` was asked for.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub documents: Vec<AgingDocumentOut>,
+    /// The account's tie-out.
+    pub control: AgingControlOut,
+}
+
+/// Parameters for `books.bills_due`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct BillsDueParams {
+    /// Show bills due on or before this day, YYYY-MM-DD (omitted: today).
+    #[serde(default)]
+    pub through: Option<String>,
+    /// As of this day for what each bill owes ([`AS_OF_DOC`]).
+    #[serde(default)]
+    #[schemars(description = AS_OF_DOC)]
+    pub as_of: Option<String>,
+}
+
+/// One bill to pay, with its discount window when its terms give one.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DueBillOut {
+    /// "bill:12".
+    pub r#ref: String,
+    /// The vendor.
+    pub vendor: String,
+    /// The vendor's own invoice number, when recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vendor_ref: Option<String>,
+    /// When payment is due.
+    pub due_date: String,
+    /// What it still owes as of the day.
+    pub outstanding: String,
+    /// The last day its early-payment discount is open, when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discount_by: Option<String>,
+    /// The most its terms allow off, decimal string.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_discount: Option<String>,
+    /// What to pay to take the discount: the outstanding less the
+    /// discount, decimal string.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pay_by_discount_date_amount: Option<String>,
+}
+
+/// One date's running total of what falls due through it.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DueDateTotalOut {
+    /// The due date.
+    pub date: String,
+    /// What falls due on or before it, together.
+    pub amount: String,
+}
+
+/// Output of `books.bills_due`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct BillsDueOut {
+    /// The day it is as of.
+    pub as_of: String,
+    /// The last day a bill is included for.
+    pub through: String,
+    /// Bills due by `through`, due date first.
+    pub bills: Vec<DueBillOut>,
+    /// The running total, one row per due date.
+    pub by_date: Vec<DueDateTotalOut>,
 }
 
 // ---------------------------------------------------------------------------
@@ -4719,7 +4929,7 @@ pub struct ReconciliationsOut {
 /// Parameters for `books.handbook`.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct HandbookParams {
-    /// The section to read: contract, entries, drafts-and-reversals, evidence-and-receipts, attachments, files-in-out, reconciliation, fixed-assets, prepaid-and-recurring, revenue-and-payouts, projects, parties-and-tins, 1099, cpa-handoff, settings-and-conventions, viewer, backups, self-host, format-upgrade, rules-that-change, control-roles, tracing-figures, or "all" for the whole handbook in order. Omit for the index.
+    /// The section to read: contract, entries, drafts-and-reversals, evidence-and-receipts, attachments, files-in-out, reconciliation, fixed-assets, prepaid-and-recurring, revenue-and-payouts, projects, parties-and-tins, 1099, invoices-and-bills, cpa-handoff, settings-and-conventions, viewer, backups, self-host, format-upgrade, rules-that-change, control-roles, tracing-figures, or "all" for the whole handbook in order. Omit for the index.
     #[serde(default)]
     pub section: Option<String>,
 }

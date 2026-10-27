@@ -147,8 +147,11 @@ each declared with `#[path]`, opening with `use super::*`, and holding a
 BooksServer`; `server.rs`'s `tool_router` adds every group's router. The
 groups are:
 
-- `documents` — invoices, bills, payments, voids, `books.documents`,
-  `books.document`, the control check and the agings;
+- `documents` — invoices, bills, voids, `books.documents`,
+  `books.document` and the control check;
+- `settlements` — payments that settle one or several documents
+  (`books.receive_payment`, `books.pay_bill`), `books.bills_due`, and the
+  agings (`books.ar_aging`, `books.ap_aging`) with their tie-out (P4b S6);
 - `entries` — `books.draft_entry`, `books.add_line`, `books.post_entry`,
   `books.reverse_entry`, `books.get_entry`, `books.search_entries`, the
   bank CSV import;

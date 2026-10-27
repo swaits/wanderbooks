@@ -848,7 +848,7 @@ impl BooksServer {
     #[tool(
         name = "books.export",
         title = "Export a report",
-        description = "Export a report. Reports: profit_and_loss, balance_sheet, cash_flow (direct method, with its reconciliation and noncash schedules; needs cash_accounts), trial_balance (as_of), members_equity (multi-member LLC; members from the settings), tax_summary, general_ledger (by account: running balances, splits), general_journal (each entry posted in the period; alias journal), fixed_asset_register (as_of: every asset with tag, serial, cost, depreciation, book value, reconciled to the books). The file is handed over (run its download to save it; never its bytes). Formats: pdf and xlsx for the statements, tax_summary and fixed_asset_register; xlsx, csv, json for every report; iif for general_journal or journal (QuickBooks Desktop: plain ASCII text, CR LF; every posted entry from the first through as_of (start and end are refused), period closes left out, DOCNUM the entry id; names, numbers and memos fit QuickBooks' limits; warnings says what is written differently from the books, memos grouped, to tell the human). Dates: start/end for period reports (omitted: the fiscal year to date), as_of for balance_sheet, trial_balance, fixed_asset_register and iif (omitted: today).",
+        description = "Export a report. Reports: profit_and_loss, balance_sheet, cash_flow (direct method, with its reconciliation and noncash schedules; needs cash_accounts), trial_balance (as_of), members_equity (multi-member LLC; members from the settings), tax_summary, general_ledger (by account: running balances, splits), general_journal (each entry posted in the period; alias journal), fixed_asset_register (as_of: every asset with tag, serial, cost, depreciation, book value, reconciled to the books), ar_aging and ap_aging (as_of: one row per open invoice or bill, with a tie-out line to its control account). The file is handed over (run its download to save it; never its bytes). Formats: pdf and xlsx for the statements, tax_summary, fixed_asset_register and the agings; xlsx, csv, json for every report; iif for general_journal or journal (QuickBooks Desktop: plain ASCII text, CR LF; every posted entry from the first through as_of (start and end are refused), period closes left out, DOCNUM the entry id; names, numbers and memos fit QuickBooks' limits; warnings says what is written differently from the books, memos grouped, to tell the human). Dates: start/end for period reports (omitted: the fiscal year to date), as_of for balance_sheet, trial_balance, fixed_asset_register, ar_aging, ap_aging and iif (omitted: today).",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn export(&self, params: Parameters<ExportParams>) -> Result<Json<ExportOut>, String> {
@@ -911,9 +911,11 @@ impl BooksServer {
             "fixed_asset_register" => {
                 self.export_fixed_asset_register(&format, p.as_of.as_deref())?
             }
+            "ar_aging" => self.export_aging(&format, true, p.as_of.as_deref())?,
+            "ap_aging" => self.export_aging(&format, false, p.as_of.as_deref())?,
             _ => {
                 return Err(format!(
-                    "bad report {:?}: expected general_journal, general_ledger, trial_balance, profit_and_loss, balance_sheet, cash_flow, members_equity, tax_summary, or fixed_asset_register",
+                    "bad report {:?}: expected general_journal, general_ledger, trial_balance, profit_and_loss, balance_sheet, cash_flow, members_equity, tax_summary, fixed_asset_register, ar_aging, or ap_aging",
                     p.report
                 ));
             }
@@ -1205,12 +1207,62 @@ impl BooksServer {
                         .map_err(|e| e.to_string())?;
                 report::members_equity(&me)
             }
+            "ar_aging" => {
+                ledger_package::aging_statement(ledger, true, self.as_of(p.as_of.as_deref())?)
+                    .map_err(|e| e.to_string())?
+            }
+            "ap_aging" => {
+                ledger_package::aging_statement(ledger, false, self.as_of(p.as_of.as_deref())?)
+                    .map_err(|e| e.to_string())?
+            }
             _ => {
                 return Err(format!(
-                    "bad report {report:?}: expected profit_and_loss, balance_sheet, cash_flow, trial_balance, members_equity, or tax_summary"
+                    "bad report {report:?}: expected profit_and_loss, balance_sheet, cash_flow, trial_balance, members_equity, tax_summary, ar_aging, or ap_aging"
                 ));
             }
         })
+    }
+
+    /// The receivables or payables aging as CSV or JSON (plan P4b S6,
+    /// 8.3.10): one row per open document, then the tie-out line; the
+    /// same CSV the CPA package carries.
+    fn export_aging(
+        &self,
+        format: &str,
+        invoices: bool,
+        as_of: Option<&str>,
+    ) -> Result<String, String> {
+        let as_of = self.as_of(as_of)?;
+        let store = self.lock()?;
+        if format == "json" {
+            let docs = store
+                .ledger()
+                .aging_documents(as_of, invoices)
+                .map_err(|e| e.to_string())?;
+            let rows: Vec<serde_json::Value> = docs
+                .iter()
+                .map(|d| {
+                    serde_json::json!({
+                        "number": match d.doc {
+                            ledger_core::DocRef::Invoice(id) => store.ledger().get_invoice(id).and_then(|i| i.number.clone()),
+                            ledger_core::DocRef::Bill(id) => store.ledger().get_bill(id).and_then(|b| b.vendor_ref.clone()),
+                        },
+                        "party": d.party,
+                        "date": d.date.to_string(),
+                        "due_date": d.due_date.to_string(),
+                        "terms": d.terms,
+                        "total": money(d.total),
+                        "paid": money(d.paid),
+                        "discounted": money(d.discounted),
+                        "outstanding": money(d.outstanding),
+                        "bucket": d.bucket,
+                        "days_overdue": d.days_overdue,
+                    })
+                })
+                .collect();
+            return serde_json::to_string_pretty(&rows).map_err(|e| e.to_string());
+        }
+        ledger_package::aging_csv(store.ledger(), invoices, as_of)
     }
 
     /// Render a report to XLSX bytes via ledger-import.

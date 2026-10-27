@@ -20,8 +20,8 @@
 
 use ledger_core::Ledger;
 use ledger_store::{
-    Attachment, DiskCheck, JournalLine, Reconciliation, Snapshot, Statement, Store, StoreError,
-    Subject,
+    Attachment, DiskCheck, Extraction, JournalLine, Reconciliation, Snapshot, Statement, Store,
+    StoreError, Subject,
 };
 
 /// The books, read-only, as the package reads them.
@@ -46,6 +46,10 @@ pub trait PackageBooks {
     /// Every attachment (receipts and documents), withdrawn ones
     /// included, in id order.
     fn all_attachments(&self) -> Result<Vec<Attachment>, StoreError>;
+
+    /// Every extraction record, in seq order (plan P6): what reading each
+    /// file found.
+    fn extractions(&self) -> Result<Vec<Extraction>, StoreError>;
 
     /// The subjects attachment `attachment_id` is linked to beyond the
     /// entry it is filed on (an implementation may list that entry too:
@@ -86,6 +90,10 @@ impl PackageBooks for Store {
 
     fn all_attachments(&self) -> Result<Vec<Attachment>, StoreError> {
         Store::list_attachments(self, None)
+    }
+
+    fn extractions(&self) -> Result<Vec<Extraction>, StoreError> {
+        Store::extractions(self)
     }
 
     fn links_of(&self, attachment_id: u64) -> Result<Vec<Subject>, StoreError> {
@@ -131,6 +139,10 @@ impl PackageBooks for Snapshot {
 
     fn all_attachments(&self) -> Result<Vec<Attachment>, StoreError> {
         Snapshot::attachments(self, None)
+    }
+
+    fn extractions(&self) -> Result<Vec<Extraction>, StoreError> {
+        Snapshot::extractions(self)
     }
 
     fn links_of(&self, attachment_id: u64) -> Result<Vec<Subject>, StoreError> {

@@ -72,6 +72,11 @@ pub enum LedgerError {
     #[error("unknown account id {0}")]
     UnknownAccount(u64),
 
+    /// What the books record about their evidence (an annotation, a
+    /// settlement) is not a record they keep (plan P6, [`crate::evidence`]).
+    #[error("{0}")]
+    InvalidEvidence(String),
+
     /// Placeholder (header) accounts organize the chart; they take no postings.
     #[error("account '{0}' is a placeholder and cannot take postings")]
     PlaceholderAccount(String),

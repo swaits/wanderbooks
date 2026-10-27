@@ -1270,6 +1270,9 @@ impl PackageBooks for AtSeq<'_> {
     fn all_attachments(&self) -> Result<Vec<ledger_store::Attachment>, ledger_store::StoreError> {
         PackageBooks::all_attachments(self.0)
     }
+    fn extractions(&self) -> Result<Vec<ledger_store::Extraction>, ledger_store::StoreError> {
+        PackageBooks::extractions(self.0)
+    }
     fn links_of(&self, id: u64) -> Result<Vec<Subject>, ledger_store::StoreError> {
         PackageBooks::links_of(self.0, id)
     }

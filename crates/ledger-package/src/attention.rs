@@ -64,7 +64,12 @@
 //!      books.set_entry_party); each warning of the fiscal year's
 //!      statement of cash flows (rules.md B-14 rule 12: equipment sold for
 //!      an IOU, Todo; bought on an operating payable, Info; one per
-//!      entry, its detail the warning's fix).
+//!      entry, its detail the warning's fix); a filed PDF whose text
+//!      extraction failed (Todo, one per file: a human must read its
+//!      pages); a posted entry a member paid personally (a credit on a
+//!      "due to"/"owed to" liability) that no entry records settling
+//!      (Todo, one per entry; `entry.settles` only, no FIFO guess,
+//!      IZ-18).
 //!   3. Nothing else: books with none of those yield no items, except
 //!      that a figure behind an item that can't be computed (an
 //!      amortization plan past chrono's last day, an aging past exact
@@ -717,6 +722,63 @@ pub fn find_with(
         });
     }
 
+    // A member (or lender) paid for the company and nothing records what
+    // paid them back: `entry.settles` only, never a FIFO guess (IZ-18).
+    let owed: Vec<AccountId> = ledger
+        .chart()
+        .all()
+        .filter(|a| {
+            a.account_type == AccountType::Liability && {
+                let n = a.name.to_lowercase();
+                n.contains("due to") || n.contains("owed to")
+            }
+        })
+        .map(|a| a.id)
+        .collect();
+    for e in ledger.posted_entries() {
+        if ledger.settles_entry(e.id()) {
+            continue;
+        }
+        let Some(line) = e
+            .lines()
+            .iter()
+            .find(|l| l.side == ledger_core::Side::Credit && owed.contains(&l.account))
+        else {
+            continue;
+        };
+        // A member paying money INTO the company (a loan or a contribution:
+        // every debit is a cash account) is not an expense to be paid back.
+        if !e
+            .lines()
+            .iter()
+            .any(|l| l.side == ledger_core::Side::Debit && !money_cash.contains(&l.account))
+        {
+            continue;
+        }
+        let account = account_label(ledger, line.account);
+        out.push(Attention {
+            severity: Severity::Todo,
+            kind: "member_paid",
+            title: format!("No settlement recorded: {}", e.description()),
+            detail: format!(
+                "#{} · {} · {} paid through {}. No payment records settling it, so the books can't say whether the member was paid back.",
+                e.id(),
+                date(e.date()),
+                dollars(line.amount.amount),
+                account
+            ),
+            target: Target::Entry(e.id()),
+            prompt: format!(
+                "In wanderbooks, entry {} (\"{}\", {}) was paid by a member. Ask me which payment settled it (a reimbursement, a distribution, or a contribution of the expense) and record it with books.set_entry_settles on that payment, naming {} as settled.",
+                e.id(),
+                e.description(),
+                date(e.date()),
+                e.id()
+            ),
+            tool: Some(("books.set_entry_settles".into(), Value::Null)),
+        });
+    }
+
     for a in ledger.chart().all().filter(|a| {
         a.account_type == AccountType::Liability && {
             let n = a.name.to_lowercase();
@@ -1057,6 +1119,49 @@ pub fn find_with(
             tool: Some(("books.verify".into(), Value::Null)),
         });
     }
+    // A filed PDF whose text couldn't be read: a human must read its
+    // pages (plan P6 step 7; D-15: no OCR).
+    let extractions = books.extractions().unwrap_or_default();
+    let mut latest: HashMap<u64, &ledger_store::Extraction> = HashMap::new();
+    for x in &extractions {
+        let cur = latest.get(&x.attachment_id);
+        if cur.is_none_or(|c| c.seq < x.seq) {
+            latest.insert(x.attachment_id, x);
+        }
+    }
+    for a in books.all_attachments().unwrap_or_default() {
+        if a.withdrawn_at.is_some() {
+            continue;
+        }
+        let is_pdf =
+            a.mime_type == "application/pdf" || a.file_name.to_lowercase().ends_with(".pdf");
+        if !is_pdf
+            || !latest
+                .get(&a.id)
+                .is_some_and(|x| x.status == ledger_store::ExtractionStatus::Failed)
+        {
+            continue;
+        }
+        out.push(Attention {
+            severity: Severity::Todo,
+            kind: "extraction_failed",
+            title: format!("Couldn't read the text: {}", a.file_name),
+            detail: format!(
+                "Attachment {} ({}): reading its text failed, so its words are not in the books. A human must read its pages.",
+                a.id, a.category
+            ),
+            target: Target::Documents,
+            prompt: format!(
+                "In wanderbooks, reading attachment {}'s text failed. Show me its pages (books.get_receipt, view page_image, page 1) and let's read what it says; if the pages are pictures only, that is expected and no text is needed.",
+                a.id
+            ),
+            tool: Some((
+                "books.get_receipt".into(),
+                serde_json::json!({"attachment_id": a.id, "view": "page_image", "page": 1}),
+            )),
+        });
+    }
+
     // The statement of cash flows' warnings this fiscal year (rules.md
     // B-14 rule 12, D-35): equipment sold for an IOU, flagged with its fix
     // (Todo); equipment bought on an operating payable, following how the

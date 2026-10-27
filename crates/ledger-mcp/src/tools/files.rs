@@ -48,13 +48,14 @@ pub(crate) const INLINE_ARGS: [&str; 5] = [
 
 /// Why `args` can't be taken by `tool` (INVARIANT 5): an argument that
 /// carries a file's bytes or text. books.begin_upload's own sha256 is the
-/// file's hash, not its bytes.
+/// file's hash, not its bytes, and books.find_attachment's is what it
+/// searches by (plan P6 step 4): neither file passes through the call.
 pub(crate) fn inline_refusal(
     tool: &str,
     args: Option<&serde_json::Map<String, serde_json::Value>>,
 ) -> Option<String> {
     let given = args?.keys().find(|k| INLINE_ARGS.contains(&k.as_str()))?;
-    if tool == "books.begin_upload" && given == "sha256" {
+    if matches!(tool, "books.begin_upload" | "books.find_attachment") && given == "sha256" {
         return None;
     }
     Some(format!(
@@ -366,6 +367,11 @@ mod tests {
         }
         assert_eq!(
             inline_refusal("books.begin_upload", Some(&args("sha256"))),
+            None
+        );
+        // A search by a file's hash names no bytes (plan P6).
+        assert_eq!(
+            inline_refusal("books.find_attachment", Some(&args("sha256"))),
             None
         );
         assert!(inline_refusal("books.begin_upload", Some(&args("content_base64"))).is_some());

@@ -91,3 +91,20 @@ trait), the runner (`bookspec/runner`: pass, fail or not claimed per rule),
 and the rule index from B-1 to B-45 (`bookspec/spec/rules-index.md`). Every
 existing bookspec example still runs on every `cargo test`, through both
 the loader's own checks and the `Engine` trait.
+
+## P6: the evidence pipeline (2026-10-26–27)
+
+No semantic feature of the catalog above moved, so no status changed and
+the floor stands (10 done): P6 changes how evidence is kept, not how a
+figure is computed. It adds one in-process extractor (a PDF's text and
+pages, an XLSX's cells as exact decimal strings, plain text; 25 MiB, 30
+pages, 2 MiB of text), journals each extraction as its own record (one per
+attachment, extractor and version, its text a content-addressed blob whose
+hash `books.verify` checks), holds identical bytes as one live attachment
+(linked to every subject, legacy duplicates consolidated with
+`duplicate_of`), records what a human read off a file (the closed
+annotation field list, engine receipt numbers running from the max) and
+what a payment settles (`entry.settles`, the only source of "reimbursed"),
+and gives company records four more homes (`notices`, `correspondence`,
+`plans`, `history`, D-20). Rules.md B-44 states it; `docs/testing.md`'s P6
+section lists its tests and the P12 mutation targets.

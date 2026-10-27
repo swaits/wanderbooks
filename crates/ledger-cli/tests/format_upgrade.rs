@@ -743,6 +743,13 @@ fn books_p2_served_cut_over_whole() {
             "books.close_period",
             json!({"period_id": q2, "confirmed": true}),
         ),
+        // A file's annotation (attachment_text, P6): an older version
+        // doesn't know the event.
+        (
+            "books.annotate_attachment",
+            json!({"attachment_id": 1, "fields": {"payee": "Harbor Design LLC",
+                   "amount": "12.34", "date": "2026-02-01"}}),
+        ),
     ];
     for (tool, args) in &refused {
         let e = a.call(tool, args.clone()).unwrap_err();

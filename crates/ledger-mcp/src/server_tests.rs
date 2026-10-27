@@ -42,7 +42,7 @@ fn annotations_complete() {
     const D: Hints = (Some(false), Some(true), None);
     const WI: Hints = (Some(false), Some(false), Some(true));
     const DI: Hints = (Some(false), Some(true), Some(true));
-    let table: [(&str, Hints); 122] = [
+    let table: [(&str, Hints); 126] = [
         ("books.handbook", R),
         ("books.start", R),
         ("books.set_setting", DI),
@@ -162,6 +162,11 @@ fn annotations_complete() {
         ("books.project", R),
         ("books.profit_and_loss_by_class", R),
         ("books.export_cpa_package", W),
+        // P6: evidence (plan/served.md P6).
+        ("books.find_attachment", R),
+        ("books.annotate_attachment", W),
+        ("books.set_entry_settles", W),
+        ("books.consolidate_duplicates", D),
         ("books.access_log", R),
         ("books.backup", R),
         ("books.back_up_now", WI),
@@ -205,7 +210,7 @@ fn annotations_complete() {
         );
     }
     // docs/mcp-interface.md names the 29 destructive tools.
-    assert_eq!(table.iter().filter(|(_, h)| h.1 == Some(true)).count(), 29);
+    assert_eq!(table.iter().filter(|(_, h)| h.1 == Some(true)).count(), 30);
 }
 
 /// Every refusal an agent can be given whose text is fixed here, or
@@ -468,6 +473,12 @@ fn no_tool_takes_a_path() {
             &mut props,
         );
         for p in props {
+            // An annotation's `source` (plan P6 step 5) is what a human
+            // says a receipt came from ("the owner's email"), kept as text
+            // and never read as a place on this computer.
+            if t.name == "books.annotate_attachment" && p == "source" {
+                continue;
+            }
             let lower = p.to_ascii_lowercase();
             // Names that hold a place to read or write: whole words,
             // so `link_to`, `*_file_name`, `tin_on_file` and `date_to`

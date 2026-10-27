@@ -25,6 +25,7 @@ pub mod cashflow;
 pub mod classes;
 pub mod conventions;
 pub mod error;
+pub mod evidence;
 pub mod form1099;
 pub mod instruments;
 pub mod journal;
@@ -68,6 +69,7 @@ pub use cashflow::{
 };
 pub use classes::{Class, ClassId, ProjectFacts, ProjectKind, ProjectStatus};
 pub use error::LedgerError;
+pub use evidence::{Annotation, AnnotationFields};
 pub use form1099::{
     Dated1099, Decision1099, ExemptReason, Form1099, Payment1099, PaymentAccounts, Status1099,
     Vendor1099Line, Vendor1099Report, vendor_1099_report,

@@ -310,6 +310,12 @@ pub struct Ledger {
     /// Conventions, decisions, open items and approvals
     /// ([`crate::conventions`]).
     conventions: crate::conventions::Conventions,
+    /// The facts recorded about each filed file ([`crate::evidence`],
+    /// `attachment.annotated`), by attachment id.
+    annotations: std::collections::BTreeMap<u64, crate::evidence::Annotation>,
+    /// What each entry settles (`entry.settles`, plan P6): the one record
+    /// a member-paid entry's "reimbursed" is derived from (IZ-18).
+    entry_settles: std::collections::BTreeMap<EntryId, Vec<EntryId>>,
 }
 
 impl Ledger {
@@ -364,6 +370,8 @@ impl Ledger {
             entry_no_party: HashMap::new(),
             settings: crate::settings::Settings::default(),
             conventions: crate::conventions::Conventions::default(),
+            annotations: std::collections::BTreeMap::new(),
+            entry_settles: std::collections::BTreeMap::new(),
         }
     }
 
@@ -777,6 +785,8 @@ impl Ledger {
             ),
             ("settings", self.settings == other.settings),
             ("conventions", self.conventions == other.conventions),
+            ("annotations", self.annotations == other.annotations),
+            ("entry_settles", self.entry_settles == other.entry_settles),
         ]
         .into_iter()
         .filter(|(_, same)| !same)
@@ -7432,6 +7442,101 @@ impl Ledger {
     /// Conventions, decisions, open items and approvals.
     pub fn conventions(&self) -> &crate::conventions::Conventions {
         &self.conventions
+    }
+
+    /// The facts recorded about the books' files, by attachment id
+    /// (`attachment.annotated`, plan P6 step 5).
+    pub fn annotations(&self) -> impl Iterator<Item = &crate::evidence::Annotation> {
+        self.annotations.values()
+    }
+
+    /// The facts recorded about one file, if any.
+    pub fn annotation(&self, attachment_id: u64) -> Option<&crate::evidence::Annotation> {
+        self.annotations.get(&attachment_id)
+    }
+
+    /// The next receipt number: one past the highest one annotated, or 1
+    /// when none is (plan P6 step 5: engine numbers run from the max).
+    pub fn next_receipt_number(&self) -> u32 {
+        self.annotations
+            .values()
+            .filter_map(|a| a.fields.receipt_number)
+            .max()
+            .map_or(1, |n| n.saturating_add(1))
+    }
+
+    /// Record what a human read off a file, replacing an earlier
+    /// annotation of it (plan P6 step 5; INVARIANTS 1 and 2 of
+    /// [`crate::evidence`]).
+    pub fn annotate_attachment(
+        &mut self,
+        annotation: crate::evidence::Annotation,
+    ) -> Result<(), LedgerError> {
+        let annotation = annotation.checked()?;
+        self.annotations
+            .insert(annotation.attachment_id, annotation);
+        Ok(())
+    }
+
+    /// [`Self::annotate_attachment`] as journaled (`attachment.annotated`),
+    /// for replay only (rules.md B-28).
+    pub fn replay_annotate_attachment(
+        &mut self,
+        annotation: crate::evidence::Annotation,
+    ) -> Result<(), LedgerError> {
+        self.annotate_attachment(annotation)
+    }
+
+    /// The entries `entry` records settling (`entry.settles`, plan P6).
+    pub fn entry_settles(&self, entry: EntryId) -> &[EntryId] {
+        self.entry_settles.get(&entry).map_or(&[], Vec::as_slice)
+    }
+
+    /// Whether any entry records settling `entry`: the one way a
+    /// member-paid entry reads as reimbursed (IZ-18: no FIFO guess).
+    pub fn settles_entry(&self, entry: EntryId) -> bool {
+        self.entry_settles.values().any(|s| s.contains(&entry))
+    }
+
+    /// Record which entries `entry` settles (a reimbursement naming what
+    /// it pays back, plan P6 step 5). INVARIANT 3: every entry exists,
+    /// none is `entry` itself, none is named twice.
+    pub fn set_entry_settles(
+        &mut self,
+        entry: EntryId,
+        settles: Vec<EntryId>,
+    ) -> Result<(), LedgerError> {
+        if !self.entries.contains_key(&entry) {
+            return Err(LedgerError::UnknownEntry(entry));
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for s in &settles {
+            if *s == entry {
+                return Err(LedgerError::InvalidEvidence(
+                    "an entry doesn't settle itself".into(),
+                ));
+            }
+            if !self.entries.contains_key(s) {
+                return Err(LedgerError::UnknownEntry(*s));
+            }
+            if !seen.insert(*s) {
+                return Err(LedgerError::InvalidEvidence(format!(
+                    "entry {s} is settled twice by entry {entry}"
+                )));
+            }
+        }
+        self.entry_settles.insert(entry, settles);
+        Ok(())
+    }
+
+    /// [`Self::set_entry_settles`] as journaled (`entry.settles`), for
+    /// replay only (rules.md B-28).
+    pub fn replay_set_entry_settles(
+        &mut self,
+        entry: EntryId,
+        settles: Vec<EntryId>,
+    ) -> Result<(), LedgerError> {
+        self.set_entry_settles(entry, settles)
     }
 
     /// Check a convention before it is journaled: its id, text and

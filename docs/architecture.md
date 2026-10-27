@@ -95,6 +95,24 @@ the agent's cannot drift apart. The crate depends inward (`ledger-core`,
 `ledger-store`, `ledger-config`, `ledger-import`, `ledger-vault`), never on
 `ledger-mcp` or `ledger-gui`.
 
+## The evidence pipeline (`ledger-import`, `ledger-core`, `ledger-store`, P6)
+
+One extractor lives in `ledger-import` (`src/extract.rs`, D-53: in-process,
+no new crate): a PDF's text and pages, an XLSX's cells as exact decimal
+strings, and plain text; the caps are 25 MiB in, 30 pages and 2 MiB of
+text, and a reader panic is caught there. `ledger-store` depends on
+`ledger-import` so the writer can read a file as it is filed and journal
+`attachment.text_extracted` (content-addressed text blob, extractor,
+version, pages, `ok`/`none`/`failed`), one record per attachment, extractor
+and version; `Store::verify` checks the text blob's hash and never
+re-derives it. The server's filing scan (`tin_files`) and the viewer's PDF
+rasterizer read through the same module, so a PDF's text is read one way.
+Annotations and settlements are ledger state (`ledger_core::evidence`,
+`Ledger::differs_from`), projected into schema 16's `annotations` table;
+extractions have a table of their own. The viewer's Documents page groups
+by category and filters by subject; Needs attention reads both through
+`PackageBooks`.
+
 ## The journal format gate (`ledger-store`, P0)
 
 Every journal line passes a gate after its parse, seq and chain checks
@@ -160,6 +178,8 @@ groups are:
 - `parties` — parties, vendors, customers, roles, W-9s, the TIN vault,
   1099s, entry parties;
 - `attachments` — receipts, filed documents, and their links;
+- `evidence` — finding a file by its hash, number or text, annotating it,
+  recording what a payment settles, and consolidating duplicates (P6);
 - `settings` — the handbook, `books.settings` and the recorded FX rates
   (the module is `settings_tools`, since `crate::settings` is the live
   settings);

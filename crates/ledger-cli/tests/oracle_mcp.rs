@@ -2868,7 +2868,7 @@ fn receipts_and_documents_round_trip() {
             json!({"attachment_id": a["attachment_id"], "view": view}),
         );
         assert!(
-            why.contains("meta (the default) or bytes"),
+            why.contains("meta (the default), text, page_image or bytes"),
             "{view:?}: {why}"
         );
     }

@@ -2970,3 +2970,111 @@ negative-zero test; `filter(|a| a.tool.is_some()).take(12)` and
 intact-blob set (a damaged blob reported per attachment) and `Store::
 disk_check`'s snapshot load and `Unreadable` arm; the viewer wrapper's
 `Target` arms.
+
+## P6: the evidence pipeline (2026-10-27)
+
+Extraction, dedup, annotations and company record categories (plan P6;
+rules.md B-44). One in-process extractor in `ledger-import`
+(`src/extract.rs`): `pdf_text` and `pdf_lines` (promoted from the PDF
+reader test), `page_count`, `page_png` (promoted from the viewer's private
+rasterizer), `xlsx_text` (cells as the exact decimal strings the sheet XML
+holds), `text_of` (moved from `tin_files`, now reading a PDF's text too)
+and `extract`, which reports `ok`, `none` or `failed` under the caps (25
+MiB in, 30 pages, 2 MiB of text). A reader panic is caught there, never
+reaching the server (D-32: no sandbox, and the plan says so). The viewer
+and the server's filing scan both read through it: `ledger-gui/src/receipts.rs`
+keeps no `hayro` use of its own.
+
+- **ledger-import:** `tests/extract.rs` `extraction_deterministic` (same
+  bytes, same text and PNG bytes; plain text and an image's `none`),
+  `xlsx_cells_are_decimal_strings` (proptest: the cell text is the decimal
+  string written, never a float), `a_pdf_that_crashes_the_reader_is_failed_not_fatal`
+  (garbage and truncated PDFs are `Err`, the too-large cap is refused
+  before the reader, page 31 and a zero-size page are refused); unit tests
+  in `src/extract.rs` for the panic catch and the input cap. `tests/spec_import.rs`
+  keeps its script/RTL PDF test; its `pdf_lines` helper is now the
+  extractor's.
+- **ledger-core:** `src/evidence.rs` (`Annotation`, `AnnotationFields`;
+  `checked`), `Ledger::{annotate_attachment, next_receipt_number,
+  entry_settles, settles_entry, set_entry_settles}`, and `differs_from`
+  gains both. No kernel or Lean change: no money moves.
+- **ledger-store:** feature `attachment_text` (format gate;
+  `attachment_text_is_its_own_feature`), the three event types
+  (`format.rs`, `meta.rs` readers, replay and projection arms), schema v16
+  (`extractions`, `annotations`, `attachments.duplicate_of`). `attach`
+  returns the live record for bytes already stored (linked to the new
+  subject), `extract_attachment`, `annotate_attachment`,
+  `set_entry_settles`, `withdraw_attachment_duplicate`,
+  `attachments_holding_text` and `attachments_with_receipt_number`;
+  `verify` checks each extraction's text blob hash and never re-derives it;
+  `stored_blob_shas` includes it. `tests/attachments.rs`:
+  `extraction_is_journaled_once_per_version`,
+  `extract_waits_for_attachment_text` (R-A: refused before the upgrade,
+  journaling nothing; accepted after), `same_bytes_one_record_many_links`
+  (proptest, eight cases: one record, one extraction, a link per filing),
+  `legacy_duplicates_replay_as_written`, `annotations_replay_and_project`,
+  `receipt_numbers_run_from_the_max`,
+  `reimbursed_is_derived_from_settles_only`. The `p6_evidence` fixture
+  (`tests/fixtures/old-books/`) was written by the version before the unit
+  and opens to the same figures.
+- **ledger-mcp:** `tools/evidence.rs` (`books.find_attachment`,
+  `books.annotate_attachment`, `books.set_entry_settles`,
+  `books.consolidate_duplicates`), `books.get_receipt`'s `text` and
+  `page_image` views (meta carries the first 8 KiB and the page count),
+  `books.file_document`'s four new categories, the new store and snapshot
+  methods, and the resource reads `books://attachments/{id}` and
+  `books://attachments/{id}/page/{n}` (a PNG blob).
+- **ledger-package / ledger-gui:** Needs attention gains "extraction
+  failed" and "member-paid entry with no settlement recorded" (R-F) over
+  `PackageBooks::extractions`; the viewer's Documents page groups by
+  category and filters by subject; `Books` carries the extractions.
+- **ledger-cli:** `tests/evidence.rs` `get_receipt_default_has_text_and_no_bytes`
+  (the default is under 8 KiB, has the text and no file; the resource
+  matches), `page_image_is_a_png_of_the_page` (IHDR-checked, page 2
+  refused, `bytes` unchanged, the page resource a PNG blob),
+  `annotations_and_searches` (the closed fields, the engine number, the
+  three searches, a settlement, exactly-one-selector),
+  `consolidation_never_removes_an_entrys_only_evidence` (a hand-written
+  legacy pair whose kept record is withdrawn: `receipt_required`, journal
+  unchanged) and `consolidation_links_the_kept_file_to_every_subject`
+  (preview journals nothing; the kept file takes the subject; the other is
+  withdrawn with `duplicate_of`; verify ok),
+  `every_p2_served_attachment_has_a_small_default_answer` (all 64 of the
+  fixture's attachments under 8 KiB), and
+  `the_backfill_reads_an_old_fixtures_files_once` (the `p6_evidence`
+  fixture upgraded, read through the admin command and then through
+  `wanderbooks books extract`, a second run journaling nothing). The
+  cutover test `books_p2_served_cut_over_whole` gained the annotation
+  call: refused before consent, accepted after.
+- **fuzz:** `fuzz_extract_pdf` and `fuzz_extract_xlsx` in
+  `fuzz/fuzz_targets/`, in the scheduled workflow's matrix.
+
+**Done when, checked:** (1) the two fixture tests above; (2) no `hayro`
+use in `ledger-gui` or `ledger-mcp` (the extract crate is the only one);
+(3) the dedup property and the only-evidence refusal pass; (4) the
+backfill command test; (5) the PR carries the 8.0.6 checklist; (6)
+`just check` green and both fuzz targets run ten minutes clean.
+
+**For P12 (mutation targets, none run, D-33):** `ledger-import::extract`:
+the caps' comparisons (`MAX_BYTES`, `MAX_PAGES`, `MAX_TEXT_BYTES`, the
+`cap_text` boundary walk), `extract`'s order (PDF by type or magic, XLSX
+by type or extension, then plain text) and `found`'s blank-text arm;
+`pdf_lines`' page `take`, the baseline rounding and the left-to-right
+sort; `page_png`'s scale floor and its page bounds; `xlsx_text`'s shared
+string index, the `t="s"`/`inlineStr`/`b` arms and the sheet-name filter.
+`ledger-core::evidence`: `checked`'s trims, the zero number, the negative
+amount and the empty-annotation refusal; `next_receipt_number`'s
+`saturating_add`. `ledger-store`: `attach`'s live-record lookup and link
+arms, `extract_and_journal`'s text/blob branch and status mapping,
+`extraction_for`'s triple (attachment, extractor, version),
+`withdraw_attachment_as`'s `duplicate_of` arm and feature check, the
+`verify` text-blob loop, and the projection arms' conflict keys.
+`ledger-mcp::evidence`: `find_attachment`'s exactly-one selector, the
+hex check and the text length floor; `consolidate_duplicates`' grouping
+(`< 2`), the keep/dups split, the evidence `left == 0` gate, the keep
+`withdrawn` test, the unlink dedup and the `withdrawn` count; the
+annotation amount/date parse and the next number; `get_receipt`'s view
+arms, the 8 KiB cut, the 64 KiB hand-over threshold and `page - 1`.
+`ledger-package::attention`: the extraction `seq` comparison and the
+`Failed` filter, the owed-account name test, the credit side and the
+`settles_entry` skip.

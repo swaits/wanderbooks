@@ -1737,7 +1737,11 @@ version would drop silently: B-37). After P3: `document_line_projects`
 project, B-37 item 8; an older version would restore the document without
 it, silently). It is a feature of its own, not part of `projects`: books
 that declared `projects` before it existed wait for their owner's next
-upgrade before a document's line names a project. A command asks for
+upgrade before a document's line names a project. P6's is
+`attachment_text` (an `attachment.text_extracted`, `attachment.annotated`
+or `entry.settles`, a new event type, and an `attachment.withdrawn`
+carrying `duplicate_of`; an older version would refuse the types, or
+withdraw a duplicate without saying what it duplicates, B-44). A command asks for
 the feature it needs (`Store::ensure_feature`) before its first journaled
 line, and only when the line it is about to write uses it, so a write
 refused for waiting on the upgrade journals nothing, never an entry
@@ -3103,3 +3107,79 @@ starts from empty books (legacy lines are covered by the identity
 coding of `DocRef`), and an account becoming a control account by its
 first document, holding lines from before, is outside it (those lines are
 listed as unattached).
+
+## B-44 Evidence is read from the bytes, never trusted over them; identical files are kept once
+
+```text
+GOAL: a receipt's text and the facts read off it are derived records the
+      books can re-make; the file's bytes stay the authority; the same
+      bytes are one file wherever they are evidence; and a payment says
+      what it settles instead of the books guessing.
+SOURCE: Rev. Proc. 98-25 §5.01 (machine-sensible records with an audit
+        trail: the relationship between the records and the books must be
+        demonstrable); IRS Pub. 583 (supporting documents are kept with
+        the entries they support); plan/served.md P6 (defects 4 and 10);
+        IZ-18 (no FIFO guess);
+        CONVENTION (the extractor's version is part of its record; a
+        failed read is recorded, not hidden; a duplicate is withdrawn, not
+        deleted).
+INVARIANTS:
+  1. An attachment's text is a record (`attachment.text_extracted`) with
+     the text's content-addressed blob, the extractor and its version, the
+     page count and `ok`, `none` or `failed`. One record per attachment,
+     extractor and version: an upgrade adds a record and NEVER replaces
+     one, and the bytes are never re-derived by `verify` (its hash is
+     checked).
+  2. Extraction is derived and journaled, never authoritative: a report,
+     a posting or an audit reads the file's bytes when the text matters,
+     and a failed extraction is a record that a human must read the
+     pages (D-15: no OCR).
+  3. Identical bytes are one file: filing bytes already stored (and not
+     withdrawn) returns the existing attachment, linked to the new
+     subject. Consolidating legacy duplicates keeps the oldest, links it
+     to every subject the others had, and withdraws the others with
+     `duplicate_of`; nothing is deleted and no posted entry the receipt
+     policy covers is left without evidence.
+  4. An annotation (`attachment.annotated`) records what a human read off
+     a file and changes no amount, no file and no posting; its fields are
+     a closed list. At least one field or the note is present.
+  5. `entry.settles` names the entries a payment pays back, every named
+     entry existing, none itself, none twice. "Reimbursed" is derived from
+     it alone: where no settlement is recorded, Needs attention asks; the
+     books never guess (IZ-18).
+  6. Every refusal leaves the journal unchanged; NEVER panics.
+SCENARIOS:
+  1. A text PDF filed: one extraction record, its text a blob, `ok`.
+  2. The same PDF filed again: one attachment, linked to the second
+     subject, `deduplicated: true`.
+  3. Two legacy records with one blob, the oldest withdrawn, the youngest
+     an entry's only receipt: consolidation is refused whole.
+  4. The same, both live: the oldest is linked to the other's subjects,
+     the other is unlinked and withdrawn with `duplicate_of`.
+  5. A receipt annotated 7 on two different files: the next engine number
+     is 8 (numbers run from the max; a human's duplicate is not renumbered).
+  6. An amount 20.00 paid by a member, reimbursed: the reimbursement's
+     `entry.settles` names the expense; no Needs-attention item remains.
+  7. The same with no settlement: Needs attention asks, once.
+```
+
+**Enforced:** `ledger_import::extract` (`pdf_text`, `pdf_lines`,
+`page_png`, `xlsx_text`, `text_of`, `extract`; caps 25 MiB, 30 pages,
+2 MiB of text; a reader panic is caught), `ledger_core::evidence::{Annotation,
+AnnotationFields}`, `Ledger::{annotate_attachment, next_receipt_number,
+entry_settles, settles_entry, set_entry_settles}`,
+`Store::{extract_attachment, annotate_attachment, set_entry_settles,
+withdraw_attachment_duplicate}` and `Store::attach`'s dedup; feature
+`attachment_text`.
+**Checked:** `ledger-import` `tests/extract.rs`
+(`extraction_deterministic`, `xlsx_cells_are_decimal_strings`,
+`a_pdf_that_crashes_the_reader_is_failed_not_fatal`); `ledger-store`
+`tests/attachments.rs` (`extraction_is_journaled_once_per_version`,
+`extract_waits_for_attachment_text`, `same_bytes_one_record_many_links`,
+`legacy_duplicates_replay_as_written`,
+`annotations_replay_and_project`, `receipt_numbers_run_from_the_max`,
+`reimbursed_is_derived_from_settles_only`); `ledger-cli`
+`tests/evidence.rs` (`get_receipt_default_has_text_and_no_bytes`,
+`page_image_is_a_png_of_the_page`,
+`consolidation_never_removes_an_entrys_only_evidence`); fuzz targets
+`fuzz_extract_pdf` and `fuzz_extract_xlsx`.

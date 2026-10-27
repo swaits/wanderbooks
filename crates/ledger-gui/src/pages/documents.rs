@@ -18,6 +18,9 @@ use ledger_store::{Attachment, Subject};
 #[derive(Default)]
 pub struct State {
     pub category: Option<String>,
+    /// One subject's files only (plan P6 step 6: grouped by category and
+    /// subject).
+    pub subject: Option<Subject>,
     pub show_withdrawn: bool,
     pub query: String,
 }
@@ -72,6 +75,38 @@ fn grid(ui: &mut Ui, b: &Books, selected: Option<u64>, shell: &mut Shell<'_>) {
                     st.category = Some(c.clone());
                 }
             }
+            // One subject's files (plan P6 step 6): every subject any
+            // document is evidence of, and the company's own.
+            let mut subjects: Vec<Subject> = Vec::new();
+            for a in &b.attachments {
+                if let Some(e) = a.entry_id {
+                    subjects.push(Subject::Entry(e));
+                }
+                subjects.extend(b.links_of(a.id));
+            }
+            subjects.sort();
+            subjects.dedup();
+            egui::ComboBox::from_id_salt("documents-subject")
+                .selected_text(match st.subject {
+                    None => "Any subject".to_string(),
+                    Some(s) => b.subject_label(s),
+                })
+                .show_ui(ui, |ui| {
+                    if ui
+                        .selectable_label(st.subject.is_none(), "Any subject")
+                        .clicked()
+                    {
+                        st.subject = None;
+                    }
+                    for s in subjects {
+                        if ui
+                            .selectable_label(st.subject == Some(s), b.subject_label(s))
+                            .clicked()
+                        {
+                            st.subject = Some(s);
+                        }
+                    }
+                });
             ui.checkbox(&mut st.show_withdrawn, "Show withdrawn");
         });
         ui.add_space(12.0);
@@ -82,6 +117,12 @@ fn grid(ui: &mut Ui, b: &Books, selected: Option<u64>, shell: &mut Shell<'_>) {
             .rev()
             .filter(|a| st.show_withdrawn || a.withdrawn_at.is_none())
             .filter(|a| st.category.as_ref().is_none_or(|c| &a.category == c))
+            .filter(|a| match st.subject {
+                None => true,
+                Some(s) => {
+                    a.entry_id.map(Subject::Entry) == Some(s) || b.links_of(a.id).contains(&s)
+                }
+            })
             .filter(|a| {
                 q.is_empty()
                     || a.file_name.to_lowercase().contains(&q)
@@ -101,16 +142,34 @@ fn grid(ui: &mut Ui, b: &Books, selected: Option<u64>, shell: &mut Shell<'_>) {
         let tile_w =
             ((ui.available_width() - 16.0 * (per_row as f32 - 1.0)) / per_row as f32).min(280.0);
         let mut go = None;
-        for row in docs.chunks(per_row) {
-            ui.horizontal_top(|ui| {
-                ui.spacing_mut().item_spacing.x = 16.0;
-                for a in row {
-                    if tile(ui, b, a, tile_w, selected == Some(a.id), shell).clicked() {
-                        go = Some(a.id);
+        // Grouped by category unless one is chosen (plan P6 step 6): a
+        // heading, then its files; the subject filter narrows each group.
+        let by_category = st.category.is_none();
+        let mut groups: std::collections::BTreeMap<String, Vec<&Attachment>> =
+            std::collections::BTreeMap::new();
+        for a in docs {
+            groups.entry(a.category.clone()).or_default().push(a);
+        }
+        for (category, files) in groups {
+            if by_category {
+                ui.label(
+                    RichText::new(fmt::label(&category))
+                        .font(theme::semibold(12.5))
+                        .color(pal(ui.ctx()).muted),
+                );
+                ui.add_space(6.0);
+            }
+            for row in files.chunks(per_row) {
+                ui.horizontal_top(|ui| {
+                    ui.spacing_mut().item_spacing.x = 16.0;
+                    for a in row {
+                        if tile(ui, b, a, tile_w, selected == Some(a.id), shell).clicked() {
+                            go = Some(a.id);
+                        }
                     }
-                }
-            });
-            ui.add_space(16.0);
+                });
+                ui.add_space(16.0);
+            }
         }
         if let Some(id) = go {
             shell.go(Route::Document(id));
@@ -624,6 +683,40 @@ fn links_section(ui: &mut Ui, b: &Books, a: &Attachment, go: &mut Option<Route>)
 mod tests {
     use super::*;
     use crate::test_support::{Build, d, find, render};
+
+    /// The list groups by category and offers one subject's files (plan P6
+    /// step 6).
+    #[test]
+    fn documents_group_by_category_and_subject() {
+        let mut b = Build::new("documents-groups");
+        let (cash, capital) = (b.cash, b.capital);
+        let e = b.post(d(2026, 1, 2), cash, capital, 100_000);
+        let (accounting, _, _) =
+            b.s.file_document(
+                "accounting",
+                "ledger.pdf",
+                "application/pdf",
+                b"%PDF ledger",
+                None,
+            )
+            .unwrap();
+        b.s.link_attachment(accounting, ledger_store::Subject::Entry(e))
+            .unwrap();
+        b.s.file_document(
+            "notices",
+            "notice.pdf",
+            "application/pdf",
+            b"%PDF notice",
+            None,
+        )
+        .unwrap();
+        let (_dir, books) = b.books();
+        let (texts, _) = render(books, Route::Documents, |_| {});
+        for group in ["Receipts", "Accounting", "Notices"] {
+            find(&texts, group);
+        }
+        find(&texts, "Any subject");
+    }
 
     /// A document's page lists what it is linked to: an entry with its date
     /// and amount.

@@ -325,6 +325,9 @@ pub struct Books {
     pub statements: Vec<Statement>,
     /// Reconciliations, voided ones included, by date then id.
     pub reconciliations: Vec<Reconciliation>,
+    /// What reading each file's text found (plan P6): the same records the
+    /// server's Needs attention reads.
+    pub extractions: Vec<ledger_store::Extraction>,
     /// The format upgrade the books wait for, if they do (plan 3.9, D-39):
     /// read from their journal, as the server reads it.
     pub format_upgrade: Option<ledger_store::FormatUpgrade>,
@@ -666,6 +669,7 @@ impl Books {
         }
         let statements = snap.statements(None).map_err(|e| e.to_string())?;
         let reconciliations = snap.reconciliations(None).map_err(|e| e.to_string())?;
+        let extractions = snap.extractions().map_err(|e| e.to_string())?;
         let fresh_from_seq = prev_seq.unwrap_or(journal.len() as u64);
         let mut fresh = HashSet::new();
         let closings = ledger.closing_entry_ids();
@@ -832,6 +836,7 @@ impl Books {
             links,
             statements,
             reconciliations,
+            extractions,
             format_upgrade: snap.journal_format().upgrade(),
         };
         books.parties = books.party_infos();

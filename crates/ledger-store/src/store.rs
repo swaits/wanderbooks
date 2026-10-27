@@ -45,6 +45,7 @@ use ledger_core::{
     payroll::{PayrollAccounts, payroll_entry_plan, payroll_remit_plan},
     reports,
 };
+use ledger_import::extract::{EXTRACTOR as E_EXTRACTOR, VERSION as E_VERSION};
 use rusqlite::{Connection, OptionalExtension, params};
 use rust_decimal::Decimal;
 use serde_json::{Value, json};
@@ -299,7 +300,11 @@ pub struct Attachment {
     pub blob_sha: String,
     /// Linked entry, if any.
     pub entry_id: Option<u64>,
-    /// `receipts`, `formation`, `legal`, `tax`, `accounting`, `other`.
+    /// `receipts`, or a document's: `formation`, `legal`, `tax`,
+    /// `accounting`, `statement` (a bank or card statement), `contract`,
+    /// `photo`, `warranty`, `import_source` (a bank export), `notices`,
+    /// `correspondence`, `plans`, `history`, `other` (D-20: every company
+    /// record, not only what the CPA needs).
     pub category: String,
     /// Original file name.
     pub file_name: String,
@@ -315,6 +320,64 @@ pub struct Attachment {
     pub withdrawn_at: Option<String>,
     /// Why it was withdrawn, if it was.
     pub withdrawn_reason: Option<String>,
+    /// The attachment it duplicates, when it was withdrawn as one
+    /// (`attachment.withdrawn`'s `duplicate_of`, plan P6 step 4).
+    pub duplicate_of: Option<u64>,
+}
+
+/// What reading a file's text found (`attachment.text_extracted`, plan P6
+/// step 2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExtractionStatus {
+    /// Text was read.
+    Ok,
+    /// There is no text to read (an image, an empty sheet): D-15's page
+    /// pictures, not OCR.
+    None,
+    /// Reading was tried and failed: a human must read the file.
+    Failed,
+}
+
+impl ExtractionStatus {
+    /// Its wire name, as journaled.
+    pub fn key(self) -> &'static str {
+        match self {
+            ExtractionStatus::Ok => "ok",
+            ExtractionStatus::None => "none",
+            ExtractionStatus::Failed => "failed",
+        }
+    }
+
+    /// A wire name back as a status.
+    pub fn parse(key: &str) -> Option<Self> {
+        match key {
+            "ok" => Some(ExtractionStatus::Ok),
+            "none" => Some(ExtractionStatus::None),
+            "failed" => Some(ExtractionStatus::Failed),
+            _ => None,
+        }
+    }
+}
+
+/// One record of reading a file's text, per (attachment, extractor,
+/// version): an extractor upgrade journals a new record, never replaces
+/// one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Extraction {
+    /// The attachment read.
+    pub attachment_id: u64,
+    /// The text's blob (its SHA-256), when there is text.
+    pub text_sha256: Option<String>,
+    /// What read it (`ledger_import::extract::EXTRACTOR`).
+    pub extractor: String,
+    /// That extractor's version.
+    pub version: String,
+    /// How many pages the file has (0 when it has none).
+    pub pages: u32,
+    /// What was found.
+    pub status: ExtractionStatus,
+    /// The journal seq of the record (the latest wins when reading).
+    pub seq: u64,
 }
 
 /// Input to [`Store::run_payroll`]: one employee's gross pay and every
@@ -3764,11 +3827,31 @@ impl Store {
     }
 
     /// One filing of bytes into the blob store and journal.
+    ///
+    /// Plan P6 step 4 (defect 4): bytes already filed (and not withdrawn)
+    /// are one file, not a second record: the existing attachment is
+    /// linked to the new subject and returned, `deduplicated` true. A
+    /// filing with no subject (an unlinked receipt, a document) returns
+    /// the existing record too, for the caller to link later. Legacy
+    /// duplicates stay as they were written.
     fn attach(&mut self, req: AttachRequest<'_>) -> Result<(u64, String, bool), StoreError> {
         if let Some(eid) = req.entry_id {
             self.ledger
                 .get_entry(eid)
                 .ok_or(LedgerError::UnknownEntry(eid))?;
+        }
+        let sha = sha256_hex(req.bytes);
+        if let Some(existing) = self.live_attachment_with_sha(&sha)? {
+            if let Some(e) = req.entry_id {
+                let covered = existing.entry_id == Some(e)
+                    || self
+                        .attachment_links(existing.id)?
+                        .contains(&Subject::Entry(e));
+                if !covered {
+                    self.link_attachment(existing.id, Subject::Entry(e))?;
+                }
+            }
+            return Ok((existing.id, sha, true));
         }
         // Bytes hit the content-addressed store first; an orphan blob from a
         // failed journal append is harmless (unreferenced, deduplicated).
@@ -3792,7 +3875,210 @@ impl Store {
             }),
         )?;
         apply_line_to_sqlite(&self.conn, &line)?;
+        // Plan P6 step 2: a file is read as it is filed. Books that haven't
+        // declared `attachment_text` yet keep filing (the owner's go-ahead
+        // gates the extraction records, not attaching a receipt); their
+        // old and new files are read by `wanderbooks books extract` after
+        // the upgrade.
+        if self.format.has_feature(crate::format::ATTACHMENT_TEXT) {
+            self.extract_and_journal(id, req.bytes, req.mime_type, req.file_name)?;
+        }
         Ok((id, sha, dedup))
+    }
+
+    /// The first attachment holding `sha`'s bytes that is not withdrawn.
+    fn live_attachment_with_sha(&self, sha: &str) -> Result<Option<Attachment>, StoreError> {
+        Ok(query_attachments(&self.conn, None)?
+            .into_iter()
+            .find(|a| a.blob_sha.eq_ignore_ascii_case(sha) && a.withdrawn_at.is_none()))
+    }
+
+    /// Read a new attachment's text and journal the record (plan P6 step
+    /// 2): a content-addressed text blob, the extractor and its version,
+    /// the pages, and `ok`, `none` or `failed`. A file with no text still
+    /// gets its `none` record: the books say reading was tried.
+    fn extract_and_journal(
+        &mut self,
+        attachment_id: u64,
+        bytes: &[u8],
+        mime_type: &str,
+        file_name: &str,
+    ) -> Result<Extraction, StoreError> {
+        if let Some(already) = self.extraction_for(attachment_id, E_EXTRACTOR, E_VERSION)? {
+            return Ok(already);
+        }
+        let got = ledger_import::extract::extract(bytes, mime_type, file_name);
+        let text_sha = match &got.text {
+            Some(text) => Some(self.blobs.put(text.as_bytes())?.0),
+            None => None,
+        };
+        let line = self.append_journal(
+            "attachment.text_extracted",
+            crate::meta::text_extracted(
+                attachment_id,
+                text_sha.as_deref(),
+                E_EXTRACTOR,
+                E_VERSION,
+                got.pages,
+                got.status.key(),
+            ),
+        )?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(Extraction {
+            attachment_id,
+            text_sha256: text_sha,
+            extractor: E_EXTRACTOR.into(),
+            version: E_VERSION.into(),
+            pages: got.pages,
+            status: match got.status {
+                ledger_import::extract::ExtractStatus::Ok => ExtractionStatus::Ok,
+                ledger_import::extract::ExtractStatus::None => ExtractionStatus::None,
+                ledger_import::extract::ExtractStatus::Failed => ExtractionStatus::Failed,
+            },
+            seq: line.seq,
+        })
+    }
+
+    /// Read an attachment's text now and journal it (plan P6 step 2;
+    /// idempotent on attachment, extractor and version). A refusal (an
+    /// unknown attachment, books that haven't declared `attachment_text`)
+    /// journals nothing. The backfill
+    /// (`wanderbooks books extract ID`) loops this over old attachments,
+    /// one at a time.
+    pub fn extract_attachment(&mut self, attachment_id: u64) -> Result<Extraction, StoreError> {
+        let a = self
+            .attachment_by_id(attachment_id)?
+            .ok_or(StoreError::UnknownAttachment(attachment_id))?;
+        if let Some(already) = self.extraction_for(attachment_id, E_EXTRACTOR, E_VERSION)? {
+            return Ok(already);
+        }
+        self.ensure_feature(crate::format::ATTACHMENT_TEXT)?;
+        let bytes = self.blobs.get(&a.blob_sha)?;
+        self.extract_and_journal(attachment_id, &bytes, &a.mime_type, &a.file_name)
+    }
+
+    /// The newest extraction record for an attachment, if any.
+    pub fn extraction(&self, attachment_id: u64) -> Result<Option<Extraction>, StoreError> {
+        Ok(query_extractions(&self.conn)?
+            .into_iter()
+            .filter(|x| x.attachment_id == attachment_id)
+            .max_by_key(|x| x.seq))
+    }
+
+    /// The extraction record for exactly this extractor and version.
+    fn extraction_for(
+        &self,
+        attachment_id: u64,
+        extractor: &str,
+        version: &str,
+    ) -> Result<Option<Extraction>, StoreError> {
+        Ok(query_extractions(&self.conn)?.into_iter().find(|x| {
+            x.attachment_id == attachment_id && x.extractor == extractor && x.version == version
+        }))
+    }
+
+    /// The text an attachment's newest extraction read, if any.
+    pub fn extraction_text(&self, attachment_id: u64) -> Result<Option<String>, StoreError> {
+        let Some(x) = self.extraction(attachment_id)? else {
+            return Ok(None);
+        };
+        let Some(sha) = x.text_sha256 else {
+            return Ok(None);
+        };
+        Ok(Some(
+            String::from_utf8_lossy(&self.blobs.get(&sha)?).into_owned(),
+        ))
+    }
+
+    /// Every extraction record, in seq order.
+    pub fn extractions(&self) -> Result<Vec<Extraction>, StoreError> {
+        query_extractions(&self.conn)
+    }
+
+    /// Every annotation, by attachment id (plan P6 step 5).
+    pub fn annotations(&self) -> Result<Vec<ledger_core::Annotation>, StoreError> {
+        query_annotations(&self.conn)
+    }
+
+    /// An attachment by id, withdrawn or not.
+    pub fn attachment_by_id(&self, id: u64) -> Result<Option<Attachment>, StoreError> {
+        Ok(query_attachments(&self.conn, None)?
+            .into_iter()
+            .find(|a| a.id == id))
+    }
+
+    /// Attachments whose bytes hold `text`, case-insensitively: the text
+    /// search of `books.find_attachment` (plan P6 step 2's extraction is
+    /// what makes a receipt searchable by what it says).
+    pub fn attachments_holding_text(&self, text: &str) -> Result<Vec<Attachment>, StoreError> {
+        let needle = text.to_lowercase();
+        let mut out = Vec::new();
+        for a in query_attachments(&self.conn, None)? {
+            if self
+                .extraction_text(a.id)?
+                .is_some_and(|t| t.to_lowercase().contains(&needle))
+            {
+                out.push(a);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Attachments annotated with `receipt_number`.
+    pub fn attachments_with_receipt_number(
+        &self,
+        receipt_number: u32,
+    ) -> Result<Vec<Attachment>, StoreError> {
+        let ids: Vec<i64> = self
+            .conn
+            .prepare("SELECT attachment_id FROM annotations WHERE receipt_number = ?")?
+            .query_map(params![i64::from(receipt_number)], |r| r.get(0))?
+            .collect::<Result<_, _>>()?;
+        Ok(query_attachments(&self.conn, None)?
+            .into_iter()
+            .filter(|a| ids.contains(&(a.id as i64)))
+            .collect())
+    }
+
+    /// Record what a human read off a file (`attachment.annotated`, plan
+    /// P6 step 5), replacing an earlier annotation of the same file. The
+    /// fields are the closed list of [`ledger_core::AnnotationFields`];
+    /// a refusal journals nothing.
+    pub fn annotate_attachment(
+        &mut self,
+        annotation: ledger_core::Annotation,
+    ) -> Result<ledger_core::Annotation, StoreError> {
+        self.ensure_feature(crate::format::ATTACHMENT_TEXT)?;
+        let a = self
+            .attachment_by_id(annotation.attachment_id)?
+            .ok_or(StoreError::UnknownAttachment(annotation.attachment_id))?;
+        if a.withdrawn_at.is_some() {
+            return Err(StoreError::AttachmentWithdrawn(a.id));
+        }
+        let annotation = annotation.checked()?;
+        self.rehearse(|l| l.annotate_attachment(annotation.clone()))?;
+        let line =
+            self.append_journal("attachment.annotated", crate::meta::annotated(&annotation))?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        self.ledger.annotate_attachment(annotation.clone())?;
+        Ok(annotation)
+    }
+
+    /// Record which entries an entry settles (`entry.settles`, plan P6
+    /// step 5): what a reimbursement names, and the only source of a
+    /// member-paid entry's "reimbursed" (IZ-18).
+    pub fn set_entry_settles(
+        &mut self,
+        entry: EntryId,
+        settles: &[EntryId],
+    ) -> Result<(), StoreError> {
+        self.ensure_feature(crate::format::ATTACHMENT_TEXT)?;
+        self.rehearse(|l| l.set_entry_settles(entry, settles.to_vec()))?;
+        let line =
+            self.append_journal("entry.settles", crate::meta::entry_settles(entry, settles))?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        self.ledger.set_entry_settles(entry, settles.to_vec())?;
+        Ok(())
     }
 
     /// Register an amortization schedule. Journaled as `schedule.registered`,
@@ -4425,6 +4711,32 @@ impl Store {
         attachment_id: u64,
         reason: &str,
     ) -> Result<(), StoreError> {
+        self.withdraw_attachment_as(attachment_id, reason, None)
+    }
+
+    /// [`Self::withdraw_attachment`] of a duplicate, naming the attachment
+    /// it duplicates (`attachment.withdrawn`'s `duplicate_of`, plan P6
+    /// step 4).
+    pub fn withdraw_attachment_duplicate(
+        &mut self,
+        attachment_id: u64,
+        reason: &str,
+        duplicate_of: u64,
+    ) -> Result<(), StoreError> {
+        if duplicate_of == attachment_id {
+            return Err(StoreError::Ledger(LedgerError::InvalidEvidence(
+                "an attachment doesn't duplicate itself".into(),
+            )));
+        }
+        self.withdraw_attachment_as(attachment_id, reason, Some(duplicate_of))
+    }
+
+    fn withdraw_attachment_as(
+        &mut self,
+        attachment_id: u64,
+        reason: &str,
+        duplicate_of: Option<u64>,
+    ) -> Result<(), StoreError> {
         let reason = reason.trim();
         if reason.is_empty() {
             return Err(StoreError::ReasonRequired);
@@ -4433,9 +4745,21 @@ impl Store {
         if let Some(sub) = self.attachment_links(attachment_id)?.first() {
             return Err(StoreError::AlreadyLinked(attachment_id, sub.describe()));
         }
+        if let Some(dup) = duplicate_of {
+            // The one it duplicates must be a different attachment, and
+            // `duplicate_of` is a field only books with the feature read
+            // (plan P6).
+            self.ensure_feature(crate::format::ATTACHMENT_TEXT)?;
+            self.attachment_by_id(dup)?
+                .ok_or(StoreError::UnknownAttachment(dup))?;
+        }
         let line = self.append_journal(
             "attachment.withdrawn",
-            json!({ "attachment_id": attachment_id, "reason": reason }),
+            json!({
+                "attachment_id": attachment_id,
+                "reason": reason,
+                "duplicate_of": duplicate_of,
+            }),
         )?;
         apply_line_to_sqlite(&self.conn, &line)?;
         Ok(())
@@ -5094,6 +5418,20 @@ impl Store {
                 "payroll runs diverged between journal, live ledger, and sqlite projection".into(),
             ));
         }
+        // The text an extraction recorded is a stored file too: present,
+        // and the hash it names (plan P6 step 2). It is never re-derived
+        // here (an extractor upgrade journals a new record, never replaces
+        // one).
+        for x in query_extractions(&self.conn)? {
+            if let Some(sha) = x.text_sha256 {
+                self.blobs.get(&sha).map_err(|e| {
+                    StoreError::VerifyMismatch(format!(
+                        "attachment {}'s extracted text doesn't verify: {e}",
+                        x.attachment_id
+                    ))
+                })?;
+            }
+        }
         // Finally, the whole projection, not just what reports read: every
         // table, row for row, against a fresh projection of the journal.
         compare_projections(
@@ -5153,7 +5491,9 @@ impl Store {
     /// The SHA-256 of every stored file the books name (receipts and
     /// documents, withdrawn ones included).
     pub fn stored_blob_shas(&self) -> Result<Vec<String>, StoreError> {
-        let mut stmt = self.conn.prepare("SELECT sha256 FROM blobs")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT sha256 FROM blobs UNION SELECT text_sha256 FROM extractions WHERE text_sha256 IS NOT NULL",
+        )?;
         let shas = stmt
             .query_map([], |r| r.get::<_, String>(0))?
             .collect::<Result<Vec<_>, _>>()?;
@@ -6160,8 +6500,22 @@ fn replay_line(
         | "receipt.linked"
         | "receipt.unlinked"
         | "document.filed"
-        | "attachment.withdrawn" => {
-            // Not accounting state; the projection records them.
+        | "attachment.withdrawn"
+        | "attachment.text_extracted" => {
+            // Not accounting state; the projection records them. (The text
+            // record is checked for shape here: an unknown status is newer,
+            // rules.md B-27.)
+            if line.line_type == "attachment.text_extracted" {
+                crate::meta::text_extracted_of(line)?;
+            }
+        }
+        "attachment.annotated" => {
+            let a = crate::meta::annotated_of(line)?;
+            ledger.replay_annotate_attachment(a)?;
+        }
+        "entry.settles" => {
+            let (entry, settles) = crate::meta::entry_settles_of(p)?;
+            ledger.replay_set_entry_settles(entry, settles)?;
         }
         "payroll.taxes_remitted" => {
             // Names the remittance entry (rebuilt by the entry events just
@@ -7243,13 +7597,55 @@ fn apply_line_rows(conn: &Connection, line: &JournalLine) -> Result<(), StoreErr
         }
         "attachment.withdrawn" => {
             conn.execute(
-                "UPDATE attachments SET withdrawn_at = ?, withdrawn_reason = ? WHERE id = ?",
+                "UPDATE attachments SET withdrawn_at = ?, withdrawn_reason = ?, duplicate_of = ? WHERE id = ?",
                 params![
                     line.ts,
                     get_str(p, "reason")?,
+                    p.get("duplicate_of").and_then(|v| v.as_u64()).map(|v| v as i64),
                     get_u64(p, "attachment_id")? as i64,
                 ],
             )?;
+        }
+        "attachment.text_extracted" => {
+            let (id, sha, extractor, version, pages, status) =
+                crate::meta::text_extracted_of(line)?;
+            conn.execute(
+                "INSERT INTO extractions(attachment_id, extractor, version, text_sha256, pages, status, seq)
+                 VALUES (?,?,?,?,?,?,?)
+                 ON CONFLICT(attachment_id, extractor, version) DO UPDATE SET
+                   text_sha256 = excluded.text_sha256, pages = excluded.pages,
+                   status = excluded.status, seq = excluded.seq",
+                params![id as i64, extractor, version, sha, i64::from(pages), status, line.seq as i64],
+            )?;
+        }
+        "attachment.annotated" => {
+            let a = crate::meta::annotated_of(line)?;
+            conn.execute(
+                "INSERT INTO annotations(attachment_id, receipt_number, payee, amount, date, instrument, category, source, reimbursable_to, note, seq)
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                 ON CONFLICT(attachment_id) DO UPDATE SET
+                   receipt_number = excluded.receipt_number, payee = excluded.payee,
+                   amount = excluded.amount, date = excluded.date,
+                   instrument = excluded.instrument, category = excluded.category,
+                   source = excluded.source, reimbursable_to = excluded.reimbursable_to,
+                   note = excluded.note, seq = excluded.seq",
+                params![
+                    a.attachment_id as i64,
+                    a.fields.receipt_number.map(i64::from),
+                    a.fields.payee,
+                    a.fields.amount.map(|v| v.to_string()),
+                    a.fields.date.map(|d| d.to_string()),
+                    a.fields.instrument,
+                    a.fields.category,
+                    a.fields.source,
+                    a.fields.reimbursable_to,
+                    a.note,
+                    line.seq as i64,
+                ],
+            )?;
+        }
+        "entry.settles" => {
+            // Rebuilt into the ledger by replay; no report rows.
         }
         "asset.registered" => {
             let cost = &p["cost"];
@@ -7993,7 +8389,8 @@ pub(crate) fn query_attachments(
     let mut sql = String::from(
         "SELECT a.id, a.blob_sha, a.entry_id, a.category, \
          COALESCE(a.file_name, b.original_name), COALESCE(a.mime_type, b.mime_type), \
-         b.size_bytes, a.description, a.created_at, a.withdrawn_at, a.withdrawn_reason \
+         b.size_bytes, a.description, a.created_at, a.withdrawn_at, a.withdrawn_reason, \
+         a.duplicate_of \
          FROM attachments a \
          JOIN blobs b ON b.sha256 = a.blob_sha",
     );
@@ -8044,7 +8441,59 @@ fn row_to_attachment(r: &rusqlite::Row) -> rusqlite::Result<Attachment> {
         created_at: r.get(8)?,
         withdrawn_at: r.get(9)?,
         withdrawn_reason: r.get(10)?,
+        duplicate_of: r.get::<_, Option<i64>>(11)?.map(|v| v as u64),
     })
+}
+
+/// Every extraction record, in seq order (plan P6).
+pub(crate) fn query_extractions(conn: &Connection) -> Result<Vec<Extraction>, StoreError> {
+    let mut stmt = conn.prepare(
+        "SELECT attachment_id, text_sha256, extractor, version, pages, status, seq \
+         FROM extractions ORDER BY seq, attachment_id, extractor, version",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        let status: String = r.get(5)?;
+        Ok(Extraction {
+            attachment_id: r.get::<_, i64>(0)? as u64,
+            text_sha256: r.get(1)?,
+            extractor: r.get(2)?,
+            version: r.get(3)?,
+            pages: r.get::<_, i64>(4)? as u32,
+            status: ExtractionStatus::parse(&status).unwrap_or(ExtractionStatus::Failed),
+            seq: r.get::<_, i64>(6)? as u64,
+        })
+    })?;
+    Ok(rows.collect::<Result<_, _>>()?)
+}
+
+/// Every annotation, by attachment id (plan P6).
+pub(crate) fn query_annotations(
+    conn: &Connection,
+) -> Result<Vec<ledger_core::Annotation>, StoreError> {
+    use ledger_core::{Annotation, AnnotationFields};
+    let mut stmt = conn.prepare(
+        "SELECT attachment_id, receipt_number, payee, amount, date, instrument, category, \
+         source, reimbursable_to, note FROM annotations ORDER BY attachment_id",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        let amount: Option<String> = r.get(3)?;
+        let date: Option<String> = r.get(4)?;
+        Ok(Annotation {
+            attachment_id: r.get::<_, i64>(0)? as u64,
+            fields: AnnotationFields {
+                receipt_number: r.get::<_, Option<i64>>(1)?.map(|v| v as u32),
+                payee: r.get(2)?,
+                amount: amount.and_then(|a| a.parse().ok()),
+                date: date.and_then(|d| NaiveDate::parse_from_str(&d, "%Y-%m-%d").ok()),
+                instrument: r.get(5)?,
+                category: r.get(6)?,
+                source: r.get(7)?,
+                reimbursable_to: r.get(8)?,
+            },
+            note: r.get(9)?,
+        })
+    })?;
+    Ok(rows.collect::<Result<_, _>>()?)
 }
 
 /// The base currency of a journal: its first line's, which must be a

@@ -361,6 +361,54 @@ pub fn entry_approved_of(p: &Value, seq: u64) -> Result<(u64, Approval), StoreEr
     ))
 }
 
+/// A bad-debt write-off as journaled (plan P4b S7; rules.md B-41):
+/// `invoice.written_off {invoice_id, entry_id, date, amount, reason}`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WrittenOff {
+    /// The invoice written off.
+    pub invoice_id: u64,
+    /// The entry that posted it (already rebuilt from its own events).
+    pub entry_id: u64,
+    /// The write-off's day.
+    pub date: NaiveDate,
+    /// What was written off.
+    pub amount: rust_decimal::Decimal,
+    /// Why (it has no resolution: the evidence is the receipt).
+    pub reason: String,
+}
+
+/// `invoice.written_off {invoice_id, entry_id, date, amount, reason}`.
+pub fn invoice_written_off(
+    invoice_id: u64,
+    entry_id: u64,
+    date: NaiveDate,
+    amount: rust_decimal::Decimal,
+    reason: &str,
+) -> Value {
+    json!({
+        "invoice_id": invoice_id,
+        "entry_id": entry_id,
+        "date": date.to_string(),
+        "amount": amount.to_string(),
+        "reason": reason,
+    })
+}
+
+/// Read an `invoice.written_off` payload.
+pub fn invoice_written_off_of(p: &Value) -> Result<WrittenOff, StoreError> {
+    const E: &str = "invoice.written_off";
+    let amount = str_of(p, E, "amount")?
+        .parse()
+        .map_err(|_| corrupt(E, "amount"))?;
+    Ok(WrittenOff {
+        invoice_id: u64_of(p, E, "invoice_id")?,
+        entry_id: u64_of(p, E, "entry_id")?,
+        date: date_of(&str_of(p, E, "date")?, E, "date")?,
+        amount,
+        reason: str_of(p, E, "reason")?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

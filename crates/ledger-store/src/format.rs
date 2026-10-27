@@ -243,6 +243,7 @@ pub const EVENT_TYPES: &[&str] = &[
     "fx.rate_set",
     "invoice.created",
     "invoice.payment_received",
+    "invoice.written_off",
     "instrument.added",
     FORMAT_SET,
     "journal.tail_repaired",

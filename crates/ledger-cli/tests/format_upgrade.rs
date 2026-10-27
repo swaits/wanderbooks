@@ -703,6 +703,28 @@ fn books_p2_served_cut_over_whole() {
     // A project by name alone is a plain class, which P2 reads.
     a.call("books.add_project", json!({"name": "Lighthouse"}))
         .unwrap();
+    // A receipt not yet on an entry (P2 reads the unlink; entry 7's bank
+    // fee is under the receipt policy's threshold, so taking its last
+    // receipt is allowed), and a legacy-shape invoice (no new field, so no
+    // feature): the evidence and the document P4b S7's write-off needs
+    // after the go-ahead.
+    a.call(
+        "books.unlink_receipt",
+        json!({"attachment_id": 7, "reason": "filed against the wrong entry"}),
+    )
+    .unwrap();
+    let customer = a
+        .call("books.add_customer", json!({"name": "Ridgeway Co"}))
+        .unwrap()["id"]
+        .clone();
+    let unpaid = a
+        .call(
+            "books.create_invoice",
+            json!({"party_id": customer, "date": "2026-01-10", "due_date": "2026-02-09",
+                   "lines": [{"description": "Survey", "amount": "300.00"}]}),
+        )
+        .unwrap()["id"]
+        .clone();
     let waiting = journal(&dir);
     let refused: Vec<(&str, Value)> = vec![
         // An invoice's or bill's line naming its project
@@ -742,6 +764,14 @@ fn books_p2_served_cut_over_whole() {
         (
             "books.close_period",
             json!({"period_id": q2, "confirmed": true}),
+        ),
+        // A bad-debt write-off (documents_v2's new event, P4b S7): its
+        // evidence filed and linked in the same call.
+        (
+            "books.write_off_invoice",
+            json!({"invoice": unpaid, "date": "2026-02-20",
+                   "reason": "collection exhausted",
+                   "existing_attachment_id": 7, "confirmed": true}),
         ),
     ];
     for (tool, args) in &refused {

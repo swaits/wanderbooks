@@ -385,6 +385,31 @@ struct AttachRequest<'a> {
     description: Option<&'a str>,
 }
 
+/// The evidence a bad-debt write-off files (plan P4b S7; rules.md B-41
+/// INVARIANT 1): the file that shows the debt is worthless — collection
+/// correspondence, a bankruptcy notice (Treas. Reg. §1.166-2). Given as
+/// bytes to file in the same call, or as an attachment already in the
+/// books that is linked to the write-off's entry and its invoice.
+#[derive(Clone, Copy)]
+pub enum WriteOffEvidence<'a> {
+    /// A file's bytes: filed against the write-off's entry (`receipt.
+    /// attached`) and linked to the invoice in the same call.
+    File {
+        /// Its name, e.g. "collection-letter.pdf".
+        file_name: &'a str,
+        /// Its MIME type.
+        mime_type: &'a str,
+        /// Its bytes.
+        bytes: &'a [u8],
+        /// What it is, in one line.
+        description: Option<&'a str>,
+    },
+    /// An attachment already filed and not linked to an entry (it was
+    /// filed for this): it is linked to the write-off's entry and the
+    /// invoice.
+    Existing(u64),
+}
+
 impl Store {
     // ------------------------------------------------------------------
     // Open / create
@@ -3651,6 +3676,108 @@ impl Store {
             apply_line_to_sqlite(&self.conn, line)?;
         }
         Ok(live)
+    }
+
+    /// Write off an invoice as a bad debt (plan P4b S7; rules.md B-41),
+    /// filing its evidence in the same call. The write-off's entry (Dr
+    /// 6990 Bad Debt Expense / Cr A/R) is journaled through the standard
+    /// entry flow, then `invoice.written_off`, then the evidence: a
+    /// `receipt.attached` on the write-off's entry and an
+    /// `attachment.linked` to the invoice. Returns the write-off's entry
+    /// and its evidence's attachment.
+    ///
+    /// ```text
+    /// GOAL: a bad debt comes off the receivables with the proof it was
+    ///       worthless, in one call that is all or nothing.
+    /// SOURCE: IRC §166(a); Treas. Reg. §1.166-1(e), -2(a), -3(a);
+    ///         docs/spec/rules.md B-41; plan P4b S7, 8.3.6.
+    /// INVARIANTS:
+    ///   1. A write that needs journal feature documents_v2 (the event
+    ///      type) MUST be refused in books that haven't declared it,
+    ///      journaling nothing (FormatUpgradePending).
+    ///   2. The engine's whole check runs first (cash basis, the amount,
+    ///      the day): a refusal MUST leave the journal, the ledger and
+    ///      the projection unchanged.
+    ///   3. No evidence is no write-off (WriteOffNeedsEvidence): the file
+    ///      is a receipt attached to the entry and linked to the invoice,
+    ///      in this call.
+    ///   4. Applying the lines MUST replay to the same books
+    ///      (`invoice.written_off` tags the invoice's line WriteOff).
+    /// ```
+    pub fn write_off_invoice(
+        &mut self,
+        invoice: InvoiceId,
+        date: NaiveDate,
+        amount: Decimal,
+        reason: &str,
+        evidence: Option<WriteOffEvidence<'_>>,
+    ) -> Result<(EntryId, u64), StoreError> {
+        self.ensure_feature(crate::format::DOCUMENTS_V2)?;
+        self.rehearse(|l| l.write_off(invoice, date, amount, reason).map(drop))?;
+        self.approval_gate(
+            |l| l.write_off(invoice, date, amount, reason).map(drop),
+            false,
+        )?;
+        let Some(evidence) = evidence else {
+            return Err(StoreError::WriteOffNeedsEvidence);
+        };
+        // Every check on the evidence before anything is journaled: a bad
+        // attachment refuses the whole write-off.
+        if let WriteOffEvidence::Existing(id) = evidence {
+            self.check_linkable(id)?;
+            if self
+                .attachment_links(id)?
+                .contains(&Subject::Invoice(invoice))
+            {
+                return Err(StoreError::AlreadyLinked(
+                    id,
+                    Subject::Invoice(invoice).describe(),
+                ));
+            }
+        }
+        // The bytes hit the content-addressed store before anything is
+        // journaled: an orphan blob from a later refusal is harmless
+        // (unreferenced, deduplicated), a journal line naming a blob that
+        // failed to store would not be (as the issued invoice's PDF, S4.3).
+        if let WriteOffEvidence::File { bytes, .. } = evidence {
+            self.blobs.put(bytes)?;
+        }
+        let bad = self.ensure_control_account(&ledger_core::BAD_DEBTS)?;
+        let ar = self.ensure_control_account(&ledger_core::RECEIVABLES)?;
+        let description = format!("Write off invoice {invoice}: {}", reason.trim());
+        let (entry_id, mut journaled) =
+            self.journal_auto_entry(date, &description, bad, ar, amount)?;
+        let written_off = crate::meta::invoice_written_off(
+            invoice,
+            entry_id,
+            date,
+            amount,
+            reason.trim(),
+        );
+        journaled.push(self.append_journal("invoice.written_off", written_off)?);
+        let live = self.ledger.write_off(invoice, date, amount, reason)?;
+        debug_assert_eq!(live, entry_id, "id allocator diverged from journal");
+        for line in &journaled {
+            apply_line_to_sqlite(&self.conn, line)?;
+        }
+        let attachment_id = match evidence {
+            WriteOffEvidence::File {
+                file_name,
+                mime_type,
+                bytes,
+                description,
+            } => {
+                let (id, _, _) =
+                    self.attach_receipt(Some(entry_id), file_name, mime_type, bytes, description)?;
+                id
+            }
+            WriteOffEvidence::Existing(id) => {
+                self.link_attachment(id, Subject::Entry(entry_id))?;
+                id
+            }
+        };
+        self.link_attachment(attachment_id, Subject::Invoice(invoice))?;
+        Ok((entry_id, attachment_id))
     }
 
     /// The journal features a payment of `amount` on `doc` needs
@@ -6999,6 +7126,13 @@ fn replay_line(
                 get_u64(p, "entry_id")?,
             )?;
         }
+        "invoice.written_off" => {
+            // The write-off's entry was already rebuilt; this only tags
+            // its receivable line with the invoice (WriteOff), which is
+            // what makes the written-off figure and the status derive.
+            let w = crate::meta::invoice_written_off_of(p)?;
+            ledger.replay_invoice_write_off(w.invoice_id, w.amount, w.entry_id)?;
+        }
         "fx.rate_set" => {
             ledger.set_fx_rate(
                 Currency::new(get_str(p, "currency")?)
@@ -7964,6 +8098,10 @@ fn apply_line_rows(conn: &Connection, line: &JournalLine) -> Result<(), StoreErr
         // A payment moves no document row: what a document is paid is read
         // from the ledger lines tagged with it (schema v15, rules.md B-38).
         "invoice.payment_received" => {}
+        // A write-off moves no document row either: written_off and the
+        // status are derived from the tagged lines (the tag is set by
+        // replay; rules.md B-41).
+        "invoice.written_off" => {}
         "bill.paid" => {
             conn.execute(
                 "INSERT OR REPLACE INTO entry_vendors(entry_id, vendor_id) \

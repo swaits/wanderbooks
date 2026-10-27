@@ -14,7 +14,7 @@ use ledger_core::LedgerError;
 use ledger_core::arap;
 use ledger_core::arap::DocumentLine;
 use ledger_core::{AccountType, Currency, Money, Side};
-use ledger_store::{JOURNAL_FILE, Store, StoreError, Subject};
+use ledger_store::{JOURNAL_FILE, Store, StoreError, Subject, WriteOffEvidence};
 use rust_decimal::Decimal;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -1051,6 +1051,230 @@ fn preview_invoice_and_bill_journal_nothing() {
             arap::InvoiceFields::default(),
         )
         .is_err()
+    );
+    s.verify().unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// Bad-debt write-offs (plan P4b S7; rules.md B-41)
+// ---------------------------------------------------------------------------
+
+/// The evidence a write-off test files: a collection letter.
+fn collection_letter() -> &'static [u8] {
+    b"%PDF-1.4\nFinal demand, unpaid\n%%EOF\n"
+}
+
+/// A write-off needs journal feature documents_v2 (its event type is new;
+/// an older version refuses the unknown type): refused, journaling
+/// nothing, until the owner's upgrade; then it is taken and replays to the
+/// same books (R-A, B-27).
+#[test]
+fn write_off_waits_for_documents_v2() {
+    let dir = fixture("write-off-v2");
+    let mut s = Store::open(&dir.0).unwrap();
+    assert!(
+        !s.journal_format()
+            .has_feature(ledger_store::format::DOCUMENTS_V2)
+    );
+    let head = s.head();
+    let len = journal_len(&dir.0);
+    let evidence = || {
+        Some(WriteOffEvidence::File {
+            file_name: "collection-letter.pdf",
+            mime_type: "application/pdf",
+            bytes: collection_letter(),
+            description: Some("Collection attempts"),
+        })
+    };
+    match s.write_off_invoice(1, d(2026, 2, 1), cents(10_000), "uncollectible", evidence()) {
+        Err(StoreError::FormatUpgradePending { need }) => {
+            assert_eq!(need, "the journal feature documents_v2")
+        }
+        other => panic!("expected FormatUpgradePending, got {other:?}"),
+    }
+    assert_eq!(s.head(), head, "nothing journaled");
+    assert_eq!(journal_len(&dir.0), len);
+    assert!(s.upgrade_format().unwrap().is_some());
+    let (entry, attachment) = s
+        .write_off_invoice(1, d(2026, 2, 1), cents(10_000), "uncollectible", evidence())
+        .unwrap();
+    s.verify().unwrap();
+    let live = s.ledger().clone();
+    let st = live
+        .invoice_state(1, d(2026, 12, 31))
+        .unwrap()
+        .unwrap();
+    assert_eq!(st.status, ledger_core::DocStatus::WrittenOff);
+    assert_eq!(st.written_off, cents(10_000));
+    // The evidence is on the write-off's entry and on its invoice.
+    let on_entry = s.attachments_for(Subject::Entry(entry)).unwrap();
+    assert_eq!(on_entry.len(), 1);
+    assert_eq!(on_entry[0].id, attachment);
+    let on_invoice = s.attachments_for(Subject::Invoice(1)).unwrap();
+    assert!(on_invoice.iter().any(|a| a.id == attachment));
+    drop(s);
+    let s = Store::open(&dir.0).unwrap();
+    assert!(
+        live.differs_from(s.ledger()).is_empty(),
+        "{:?}",
+        live.differs_from(s.ledger())
+    );
+    s.verify().unwrap();
+}
+
+/// A write-off is journaled as its entry and one `invoice.written_off`,
+/// and replay derives the same figures and the projection agrees: the
+/// invoice reads Written off, the bad-debt expense is on 6990, and the
+/// control account still equals its documents (B-41, B-38 INVARIANT 1).
+#[test]
+fn write_off_replays_and_projects() {
+    let dir = test_dir("write-off-replay");
+    let mut s = Store::create(&dir.0, Currency::USD).unwrap();
+    let bank = s
+        .add_account("1000", "Bank", AccountType::Asset, None, false)
+        .unwrap();
+    let c = s.add_customer("Fernhill Labs").unwrap();
+    let inv = s
+        .create_invoice(c, d(2026, 4, 1), d(2026, 5, 1), vec![line("Design", 10_000)])
+        .unwrap();
+    // Half paid, the rest written off: the invoice reads Written off with
+    // 50 paid and 50 written off (B-38 SCENARIO 7).
+    s.receive_payment(inv, d(2026, 4, 20), cents(5_000), bank)
+        .unwrap();
+    let from = journal_len(&dir.0);
+    let (entry, attachment) = s
+        .write_off_invoice(
+            inv,
+            d(2026, 4, 30),
+            cents(5_000),
+            "collection exhausted",
+            Some(WriteOffEvidence::File {
+                file_name: "collection-letter.pdf",
+                mime_type: "application/pdf",
+                bytes: collection_letter(),
+                description: Some("Collection attempts"),
+            }),
+        )
+        .unwrap();
+    // The event: one invoice.written_off with the five facts, right after
+    // the entry's own events.
+    let got = since(&dir.0, from);
+    let written: Vec<&(String, Value)> = got
+        .iter()
+        .filter(|(t, _)| t == "invoice.written_off")
+        .collect();
+    assert_eq!(written.len(), 1, "{got:?}");
+    let (_, p) = written[0];
+    assert_eq!(p["invoice_id"], json!(inv));
+    assert_eq!(p["entry_id"], json!(entry));
+    assert_eq!(p["date"], json!("2026-04-30"));
+    assert_eq!(p["amount"], json!("50.00"));
+    assert_eq!(p["reason"], json!("collection exhausted"));
+    // The evidence: a receipt.attached on the entry, then attachment.linked
+    // to the invoice.
+    assert!(got.iter().any(|(t, v)| t == "receipt.attached"
+        && v["attachment_id"] == json!(attachment)
+        && v["entry_id"] == json!(entry)));
+    assert!(got.iter().any(|(t, v)| t == "attachment.linked"
+        && v["attachment_id"] == json!(attachment)));
+    // The figures, live.
+    let st = s.ledger().invoice_state(inv, d(2026, 5, 1)).unwrap().unwrap();
+    assert_eq!(st.status, ledger_core::DocStatus::WrittenOff);
+    assert_eq!(
+        (st.paid, st.written_off, st.outstanding),
+        (cents(5_000), cents(5_000), Decimal::ZERO)
+    );
+    let bad = s.ledger().chart().find_by_code("6990").unwrap().id;
+    assert_eq!(s.ledger().account_balance(bad).unwrap(), cents(5_000));
+    let ar = s.ledger().chart().find_by_code("1200").unwrap().id;
+    assert_eq!(s.ledger().account_balance(ar).unwrap(), Decimal::ZERO);
+    assert!(
+        s.ledger()
+            .control_check(d(2026, 5, 1))
+            .unwrap()
+            .iter()
+            .all(|c| c.difference.is_zero() && c.attention.is_empty())
+    );
+    // `verify` compares the projection with the journal (the write-off
+    // moves no document row: the figures are the tagged lines').
+    s.verify().unwrap();
+    let live = s.ledger().clone();
+    drop(s);
+    let s = Store::open(&dir.0).unwrap();
+    assert!(
+        live.differs_from(s.ledger()).is_empty(),
+        "{:?}",
+        live.differs_from(s.ledger())
+    );
+    let replayed = s.ledger().invoice_state(inv, d(2026, 5, 1)).unwrap().unwrap();
+    assert_eq!(replayed, st);
+    s.verify().unwrap();
+}
+
+/// No evidence, no write-off (B-41 INVARIANT 1; Treas. Reg.
+/// §1.166-2(a)): refused, journaling nothing; an attachment already filed
+/// is linked instead, to the entry and the invoice.
+#[test]
+fn write_off_without_evidence_is_refused() {
+    let dir = test_dir("write-off-evidence");
+    let mut s = Store::create(&dir.0, Currency::USD).unwrap();
+    let c = s.add_customer("Fernhill Labs").unwrap();
+    let inv = s
+        .create_invoice(c, d(2026, 4, 1), d(2026, 5, 1), vec![line("Design", 10_000)])
+        .unwrap();
+    let head = s.head();
+    let len = journal_len(&dir.0);
+    assert!(matches!(
+        s.write_off_invoice(inv, d(2026, 4, 30), cents(10_000), "uncollectible", None),
+        Err(StoreError::WriteOffNeedsEvidence)
+    ));
+    assert_eq!(s.head(), head, "nothing journaled");
+    assert_eq!(journal_len(&dir.0), len);
+    // An attachment that isn't in the books refuses it too, before
+    // anything is written.
+    assert!(matches!(
+        s.write_off_invoice(
+            inv,
+            d(2026, 4, 30),
+            cents(10_000),
+            "uncollectible",
+            Some(WriteOffEvidence::Existing(999)),
+        ),
+        Err(StoreError::UnknownAttachment(999))
+    ));
+    assert_eq!(s.head(), head, "nothing journaled");
+    // One already filed (unlinked) is linked to the write-off's entry and
+    // its invoice.
+    let (attachment, _, _) = s
+        .file_document(
+            "other",
+            "collection-letter.pdf",
+            "application/pdf",
+            collection_letter(),
+            Some("Collection attempts"),
+        )
+        .unwrap();
+    let (entry, evidence) = s
+        .write_off_invoice(
+            inv,
+            d(2026, 4, 30),
+            cents(10_000),
+            "uncollectible",
+            Some(WriteOffEvidence::Existing(attachment)),
+        )
+        .unwrap();
+    assert_eq!(evidence, attachment);
+    assert!(
+        s.attachments_for(Subject::Entry(entry))
+            .unwrap()
+            .iter()
+            .any(|a| a.id == attachment)
+    );
+    assert!(
+        s.attachments_for(Subject::Invoice(inv))
+            .unwrap()
+            .iter()
+            .any(|a| a.id == attachment)
     );
     s.verify().unwrap();
 }

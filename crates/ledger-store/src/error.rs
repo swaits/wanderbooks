@@ -144,6 +144,16 @@ pub enum StoreError {
     #[error("store not found at {0}")]
     NotFound(String),
 
+    /// A write-off with no evidence (rules.md B-41 INVARIANT 1): a bad
+    /// debt is deducted on evidence that it is worthless (Treas. Reg.
+    /// §1.166-2), so the books take the write-off only with its file.
+    #[error(
+        "a write-off needs its evidence: file the collection correspondence or the bankruptcy \
+         notice with upload_id, or name an attachment already filed with existing_attachment_id \
+         (Treas. Reg. §1.166-2: worthlessness on all the pertinent evidence)"
+    )]
+    WriteOffNeedsEvidence,
+
     /// The requested base currency differs from the store's.
     #[error("base currency mismatch: store is {0}, requested {1}")]
     CurrencyMismatch(String, String),

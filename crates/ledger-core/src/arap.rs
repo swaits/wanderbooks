@@ -154,9 +154,10 @@ impl DocRef {
 }
 
 /// Why a ledger line carries its document: what it does to what is owed.
-/// Only `Origin` and `Payment` are written today (P4b S1); the rest are
-/// the movements later slices write (P4b.6), named here so a tag's kind
-/// never changes meaning.
+/// `Origin`, `Payment` and `WriteOff` are written today (S1, S7); the rest
+/// are movements only a later unit may write (P4b.6), named here so a
+/// tag's kind never changes meaning. `Adopted` and `RoleMove` are
+/// deferred (D-49).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Movement {
@@ -168,9 +169,9 @@ pub enum Movement {
     Discount,
     /// A bad debt written off (S7).
     WriteOff,
-    /// A legacy hand line adopted as the document (S7).
+    /// A legacy hand line adopted as the document (deferred, D-49).
     Adopted,
-    /// The balance moved with its control role (S7).
+    /// The balance moved with its control role (deferred, D-49).
     RoleMove,
 }
 

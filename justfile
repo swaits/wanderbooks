@@ -48,7 +48,10 @@ server-only:
 # Only such a process: the live books' processes have no test `--root`.
 sweep-test-tmp:
     #!/usr/bin/env bash
-    find "${TMPDIR:-/tmp}" /tmp -maxdepth 1 -user "$(id -u)" -type d -mmin +60 \( -name 'wb-*' -o -name 'wanderbooks-*' -o -name 'ledger-*' \) -exec rm -rf {} + 2>/dev/null || true
+    # A day, not an hour: a working session in a parallel worktree keeps its
+    # test roots (and a running test's data root) for hours, and sweeping
+    # another engineer's roots mid-run fails their run for no reason.
+    find "${TMPDIR:-/tmp}" /tmp -maxdepth 1 -user "$(id -u)" -type d -mmin +1440 \( -name 'wb-*' -o -name 'wanderbooks-*' -o -name 'ledger-*' \) -exec rm -rf {} + 2>/dev/null || true
     for pid in $(pgrep -u "$(id -u)" -x wanderbooks; pgrep -u "$(id -u)" -f '^wanderbooks (server|host|mcp|serve) '); do
         root=$(tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null | sed -n '/^--root$/{n;p;q}')
         case "$root" in

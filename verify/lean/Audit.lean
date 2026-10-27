@@ -94,5 +94,6 @@ open Wanderbooks
 #print axioms Documents.Step.document_unattached
 #print axioms Documents.Step.reverse_moves
 #print axioms Documents.reverse_twice
+#print axioms Documents.Step.markSent_changes_no_figure
 #print axioms Documents.Reachable.unattached_zero
 #print axioms Documents.Reachable.control_is_documents

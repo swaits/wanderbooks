@@ -37,6 +37,15 @@ structure TLine where
   doc : Option Nat
   deriving DecidableEq
 
+/-- A recorded send of an invoice (plan P4b S5, `Sent`, `invoice.sent`):
+the invoice, the day, and a code for who sent it, how, to whom and the
+channel's own reference. No figure reads it: a send moves no money. -/
+structure Send where
+  doc : Nat
+  day : Nat
+  code : Nat
+  deriving DecidableEq
+
 /-- A line's signed amount on account `a` (zero on another account). -/
 def onAcct (a : Nat) (l : TLine) : Int := if l.line.account = a then l.line.signed else 0
 
@@ -159,11 +168,17 @@ control guard requires of every entry a command posts. -/
 def Tagged (control : List Nat) (ls : List TLine) : Prop :=
   ∀ l ∈ ls, l.line.account ∈ control → l.doc ≠ none
 
-/-- The books: the control accounts (the receivables and payables roles)
-and every posted line, in order. -/
+/-- The books: the control accounts (the receivables and payables roles),
+every posted line in order, and the sends recorded (each on its invoice;
+plan P4b S5). -/
 structure Books where
   control : List Nat
   lines : List TLine
+  sends : List Send
+
+/-- The documents some lines carry: the invoices a send can name. -/
+def Books.docs (B : Books) : List Nat :=
+  B.lines.filterMap (fun l => l.doc)
 
 /-- What the engine allows (S1): a document command, or any entry whose
 control lines are all tagged (`Step.document`); a reversal of posted
@@ -184,6 +199,11 @@ inductive Step : Books → Books → Prop
       Step B { B with control := c :: B.control }
   | release (B : Books) (c : Nat) (h : ∀ l ∈ B.lines, l.line.account = c → l.doc = none) :
       Step B { B with control := B.control.erase c }
+  /-- `mark_sent` (`Ledger::mark_sent`, plan P4b S5): a send is recorded on
+  an invoice the books hold, and nothing else changes. It moves no line,
+  so every figure stays where it was. -/
+  | markSent (B : Books) (s : Send) (h : s.doc ∈ B.docs) :
+      Step B { B with sends := s :: B.sends }
 
 /-- **A document step never moves what is unattached** on a control
 account: no command adds an untagged control line. -/
@@ -216,9 +236,24 @@ theorem reverse_twice (a d D D' : Nat) (e : List TLine) :
     docSum a d ((e.map (mirror D)).map (mirror D')) = docSum a d e := by
   rw [docSum_mirror, docSum_mirror]; omega
 
+/-- **A send changes no figure** (plan P4b S5): recording one leaves every
+control account's balance, every document's sum on it and what is
+unattached exactly as they were, through any day. A send adds a record and
+no line, so the engine's own statement (`Ledger::mark_sent`) that a
+document's DocState is the same before and after is this, line for line. -/
+theorem Step.markSent_changes_no_figure (B : Books) (s : Send) (_h : s.doc ∈ B.docs)
+    (a d D : Nat) :
+    gl a (through D ({ B with sends := s :: B.sends } : Books).lines)
+        = gl a (through D B.lines)
+    ∧ docSum a d (through D ({ B with sends := s :: B.sends } : Books).lines)
+        = docSum a d (through D B.lines)
+    ∧ unattached a (through D ({ B with sends := s :: B.sends } : Books).lines)
+        = unattached a (through D B.lines) := by
+  exact ⟨rfl, rfl, rfl⟩
+
 /-- States reachable from books with no lines. -/
 inductive Reachable : Books → Prop
-  | empty (control : List Nat) : Reachable ⟨control, []⟩
+  | empty (control : List Nat) : Reachable ⟨control, [], []⟩
   | step {B B' : Books} : Reachable B → Step B B' → Reachable B'
 
 theorem Reachable.tagged {B : Books} (r : Reachable B) : Tagged B.control B.lines := by
@@ -245,6 +280,9 @@ theorem Reachable.tagged {B : Books} (r : Reachable B) : Tagged B.control B.line
     | release c h =>
       intro l hl hc
       exact ih l hl (List.mem_of_mem_erase hc)
+    | markSent _ _ =>
+      -- A send touches no line: the control lines are the ones it found.
+      exact ih
 
 /-- **Nothing is ever unattached on a control account** in books these
 steps build, through any day, roles assigned and released included:

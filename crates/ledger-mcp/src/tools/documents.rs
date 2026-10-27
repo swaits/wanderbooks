@@ -77,6 +77,56 @@ fn doc_label(doc: ledger_core::DocRef) -> String {
     }
 }
 
+/// A recorded send on the wire (plan P4b S5).
+fn sent_out(s: &ledger_core::arap::Sent) -> SentOut {
+    SentOut {
+        on: s.on.to_string(),
+        by: s.by.clone(),
+        via: s.via.key(),
+        to: s.to.clone(),
+        kind: s.kind.key().to_string(),
+        reference: s.reference.clone(),
+        note: s.note.clone(),
+    }
+}
+
+/// The day an invoice last went out, when a send is recorded.
+fn last_sent(sends: &[ledger_core::arap::Sent]) -> Option<String> {
+    sends.iter().map(|s| s.on).max().map(|d| d.to_string())
+}
+
+/// `books.mark_sent`'s `invoice`: `invoice:7` (as books.documents names
+/// it), or a bare id.
+fn invoice_id(r: &str) -> Result<u64, String> {
+    let t = r.trim();
+    let t = t.strip_prefix("invoice:").map(str::trim).unwrap_or(t);
+    t.parse::<u64>()
+        .map_err(|_| format!("bad invoice {r:?}: expected invoice:7 or 7"))
+}
+
+/// The channel a send went by: email, mail, portal, hand, or another
+/// channel's own name (`Other`).
+fn sent_via(s: &str) -> Result<ledger_core::arap::SentVia, String> {
+    use ledger_core::arap::SentVia;
+    let t = s.trim();
+    match t.to_ascii_lowercase().as_str() {
+        "email" => Ok(SentVia::Email),
+        "mail" | "post" | "paper mail" => Ok(SentVia::Mail),
+        "portal" => Ok(SentVia::Portal),
+        "hand" | "in person" => Ok(SentVia::Hand),
+        _ if t.is_empty() => {
+            Err("via is empty: give email, mail, portal, hand or another channel".into())
+        }
+        _ => Ok(SentVia::Other(t.to_string())),
+    }
+}
+
+/// original or reminder.
+fn send_kind(s: &str) -> Result<ledger_core::arap::SendKind, String> {
+    ledger_core::arap::SendKind::parse(s.trim())
+        .ok_or_else(|| format!("bad kind {s:?}: expected original or reminder"))
+}
+
 /// An invoice's or bill's lines as the tool takes them: each amount
 /// parsed and each project resolved ([`resolve_class`]) before anything is
 /// written.
@@ -309,6 +359,83 @@ impl BooksServer {
     }
 
     #[tool(
+        name = "books.mark_sent",
+        title = "Record an invoice sent",
+        description = "Record that an invoice went out: who sent it (by), how (via: email, mail, portal, hand, or another channel's name), to whom, the day, original or reminder, and the channel's own reference (a message id). The books never send mail: the owner or a delegate sends, then this records it. Several sends are allowed (reminders). A send changes no figure and never moves the due date. Refused on a void invoice, dated before it, with no recipients, or while the books wait for their format upgrade (documents_v2).",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false
+        )
+    )]
+    async fn mark_sent(
+        &self,
+        params: Parameters<MarkSentParams>,
+    ) -> Result<Json<MarkSentOut>, String> {
+        use ledger_core::arap::{SendKind, Sent};
+        let p = params.0;
+        let on = self.as_of(p.on.as_deref())?;
+        let id = invoice_id(&p.invoice)?;
+        let mut store = self.lock()?;
+        let (to, kind) = {
+            let invoice = store
+                .ledger()
+                .get_invoice(id)
+                .ok_or_else(|| format!("no invoice {id}: see books.documents"))?;
+            let to = match p.recipients {
+                Some(to) if !to.is_empty() => to,
+                _ => {
+                    let bill_to = invoice.bill_to.as_ref().and_then(|b| b.email.clone());
+                    let party = store
+                        .ledger()
+                        .party_of_customer(invoice.customer_id)
+                        .and_then(|pid| store.ledger().get_party(pid))
+                        .and_then(|p| p.email.clone());
+                    vec![bill_to.or(party).ok_or_else(|| {
+                        format!(
+                            "invoice {id} has no bill-to email and its customer no email: give to"
+                        )
+                    })?]
+                }
+            };
+            let kind = match p.kind.as_deref() {
+                Some(k) => send_kind(k)?,
+                None if invoice.sends.is_empty() => SendKind::Original,
+                None => SendKind::Reminder,
+            };
+            (to, kind)
+        };
+        let by = p.by.unwrap_or_else(|| {
+            CALLER
+                .with(|c| c.borrow().as_ref().map(|(_, name)| name.clone()))
+                .unwrap_or_else(|| ledger_store::auth::DEFAULT_NAME.to_string())
+        });
+        let via = sent_via(p.via.as_deref().unwrap_or("email"))?;
+        store
+            .mark_sent(
+                id,
+                Sent {
+                    on,
+                    by,
+                    via,
+                    to,
+                    kind,
+                    reference: p.reference,
+                    note: p.note,
+                },
+            )
+            .map_err(|e| e.to_string())?;
+        let invoice = store
+            .ledger()
+            .get_invoice(id)
+            .ok_or_else(|| format!("invoice {id} not found after its send"))?;
+        Ok(Json(MarkSentOut {
+            invoice: format!("invoice:{id}"),
+            sends: invoice.sends.iter().map(sent_out).collect(),
+        }))
+    }
+
+    #[tool(
         name = "books.documents",
         title = "List invoices or bills",
         description = described(
@@ -345,7 +472,13 @@ impl BooksServer {
         }
         let store = self.lock()?;
         let ledger = store.ledger();
-        let docs: Vec<(ledger_core::DocRef, String, NaiveDate, NaiveDate)> = if invoices {
+        let docs: Vec<(
+            ledger_core::DocRef,
+            String,
+            NaiveDate,
+            NaiveDate,
+            Option<String>,
+        )> = if invoices {
             ledger
                 .invoices()
                 .into_iter()
@@ -354,7 +487,13 @@ impl BooksServer {
                         .get_customer(i.customer_id)
                         .map(|c| c.name.clone())
                         .unwrap_or_default();
-                    (ledger_core::DocRef::Invoice(i.id), who, i.date, i.due_date)
+                    (
+                        ledger_core::DocRef::Invoice(i.id),
+                        who,
+                        i.date,
+                        i.due_date,
+                        last_sent(&i.sends),
+                    )
                 })
                 .collect()
         } else {
@@ -366,14 +505,20 @@ impl BooksServer {
                         .get_vendor(b.vendor_id)
                         .map(|v| v.name.clone())
                         .unwrap_or_default();
-                    (ledger_core::DocRef::Bill(b.id), who, b.date, b.due_date)
+                    (
+                        ledger_core::DocRef::Bill(b.id),
+                        who,
+                        b.date,
+                        b.due_date,
+                        None,
+                    )
                 })
                 .collect()
         };
         let party = p.party.as_deref().map(|s| s.trim().to_lowercase());
         let mut rows = Vec::new();
         let mut owed = Decimal::ZERO;
-        for (doc, who, date, due) in docs {
+        for (doc, who, date, due, last_sent) in docs {
             if let Some(want_party) = &party
                 && who.to_lowercase() != *want_party
                 && doc_id(doc).to_string() != *want_party
@@ -411,6 +556,7 @@ impl BooksServer {
                     outstanding: money(st.outstanding),
                     status: key.to_string(),
                     overdue_days: st.overdue_days,
+                    last_sent,
                 },
             ));
         }
@@ -441,7 +587,7 @@ impl BooksServer {
         let doc = parse_doc_ref(&p.r#ref)?;
         let store = self.lock()?;
         let ledger = store.ledger();
-        let (who, date, due, entry_id, lines) = match doc {
+        let (who, date, due, entry_id, lines, sends) = match doc {
             ledger_core::DocRef::Invoice(id) => {
                 let i = ledger
                     .get_invoice(id)
@@ -450,7 +596,14 @@ impl BooksServer {
                     .get_customer(i.customer_id)
                     .map(|c| c.name.clone())
                     .unwrap_or_default();
-                (who, i.date, i.due_date, i.entry_id, i.lines.clone())
+                (
+                    who,
+                    i.date,
+                    i.due_date,
+                    i.entry_id,
+                    i.lines.clone(),
+                    i.sends.iter().map(sent_out).collect(),
+                )
             }
             ledger_core::DocRef::Bill(id) => {
                 let b = ledger
@@ -460,7 +613,14 @@ impl BooksServer {
                     .get_vendor(b.vendor_id)
                     .map(|v| v.name.clone())
                     .unwrap_or_default();
-                (who, b.date, b.due_date, b.entry_id, b.lines.clone())
+                (
+                    who,
+                    b.date,
+                    b.due_date,
+                    b.entry_id,
+                    b.lines.clone(),
+                    Vec::new(),
+                )
             }
         };
         let st = ledger
@@ -532,6 +692,7 @@ impl BooksServer {
             status: st.status.key().to_string(),
             overdue_days: st.overdue_days,
             timeline,
+            sends,
             pdf,
         }))
     }

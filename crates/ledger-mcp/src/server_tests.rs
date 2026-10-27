@@ -42,7 +42,7 @@ fn annotations_complete() {
     const D: Hints = (Some(false), Some(true), None);
     const WI: Hints = (Some(false), Some(false), Some(true));
     const DI: Hints = (Some(false), Some(true), Some(true));
-    let table: [(&str, Hints); 122] = [
+    let table: [(&str, Hints); 123] = [
         ("books.handbook", R),
         ("books.start", R),
         ("books.set_setting", DI),
@@ -145,6 +145,7 @@ fn annotations_complete() {
         ("books.receive_payment", D),
         ("books.pay_bill", D),
         ("books.void_document", D),
+        ("books.mark_sent", W),
         ("books.control_check", R),
         ("books.documents", R),
         ("books.document", R),

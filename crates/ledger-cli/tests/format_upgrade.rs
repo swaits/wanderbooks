@@ -703,6 +703,16 @@ fn books_p2_served_cut_over_whole() {
     // A project by name alone is a plain class, which P2 reads.
     a.call("books.add_project", json!({"name": "Lighthouse"}))
         .unwrap();
+    // An invoice for the send below: a document P2 reads (no new fields),
+    // so it is written before the go-ahead; its send waits for it.
+    let invoice = a
+        .call(
+            "books.create_invoice",
+            json!({"party_id": 1, "date": "2026-01-05", "due_date": "2026-02-04",
+                   "lines": [{"description": "Design", "amount": "400.00"}]}),
+        )
+        .unwrap()["id"]
+        .clone();
     let waiting = journal(&dir);
     let refused: Vec<(&str, Value)> = vec![
         // An invoice's or bill's line naming its project
@@ -728,6 +738,13 @@ fn books_p2_served_cut_over_whole() {
             "books.set_setting",
             json!({"decided_by": "Avery Quill",
                    "changes": [{"key": "invoicing.default_terms", "value": "Net 30"}]}),
+        ),
+        // A recorded send (invoice.sent, documents_v2, P4b S5): an older
+        // version refuses the type.
+        (
+            "books.mark_sent",
+            json!({"invoice": invoice.to_string(), "on": "2026-01-06",
+                   "by": "Avery Quill", "recipients": ["billing@fernhill.example"]}),
         ),
         (
             "books.add_account",

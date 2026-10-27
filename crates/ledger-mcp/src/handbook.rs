@@ -103,6 +103,10 @@ pub const SECTIONS: &[(&str, &str)] = &[
         "tracing-figures",
         include_str!("../handbook/tracing-figures.md"),
     ),
+    (
+        "invoices-and-bills",
+        include_str!("../handbook/invoices-and-bills.md"),
+    ),
 ];
 
 /// The resource URI of the handbook's index, and the prefix of a section's.

@@ -322,6 +322,24 @@ pub struct Attachment {
 /// write-path signature reads as input rather than stored state.
 pub type PayrollLineInput = PayrollLine;
 
+/// One line of a previewed posting, the way the page shows it: the
+/// account's code and name (resolved in the probe, so an account the
+/// preview would create is named even though the live books don't have it
+/// yet), its side, amount and project (plan P4b S4.4).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreviewPosting {
+    /// The account's code ("1200").
+    pub account: String,
+    /// Its name ("Accounts Receivable").
+    pub name: String,
+    /// Debit or credit.
+    pub side: Side,
+    /// The amount.
+    pub amount: Decimal,
+    /// The project it is tagged with, if any.
+    pub class_id: Option<ClassId>,
+}
+
 /// What issuing an invoice would post and take, journaling nothing
 /// ([`Store::preview_invoice`]; plan P4b S4.3 item 12). The posting is the
 /// entry's lines in order: account, side, amount, project.
@@ -329,6 +347,10 @@ pub type PayrollLineInput = PayrollLine;
 pub struct InvoicePreview {
     /// The entry it would post, line by line.
     pub posting: Vec<(AccountId, Side, Decimal, Option<ClassId>)>,
+    /// The same lines with their accounts' codes and names (plan P4b
+    /// S4.4: the preview page shows them, and an account the issue would
+    /// create has no id the live books know yet).
+    pub lines: Vec<PreviewPosting>,
     /// The document's total.
     pub total: Decimal,
     /// The number it would take (A-2), when the books number their
@@ -336,6 +358,10 @@ pub struct InvoicePreview {
     pub number: Option<String>,
     /// Its due date.
     pub due_date: NaiveDate,
+    /// The invoice the probe wrote: its lines, terms, snapshots and
+    /// dates, exactly as the issue would store them. What the DRAFT copy
+    /// prints (plan P4b S4.4).
+    pub invoice: arap::Invoice,
 }
 
 /// What recording a bill would post, journaling nothing
@@ -344,6 +370,9 @@ pub struct InvoicePreview {
 pub struct BillPreview {
     /// The entry it would post, line by line.
     pub posting: Vec<(AccountId, Side, Decimal, Option<ClassId>)>,
+    /// The same lines with their accounts' codes and names
+    /// ([`InvoicePreview::lines`]).
+    pub lines: Vec<PreviewPosting>,
     /// The document's total.
     pub total: Decimal,
     /// Its due date.
@@ -353,6 +382,32 @@ pub struct BillPreview {
 /// The most recurring drafts one [`Store::run_recurring`] creates: more is
 /// refused, so a far-off date can't make one request write without end.
 pub const MAX_RECURRING_RUN: usize = 1000;
+
+/// A probe entry's lines as a preview shows them: each account's code and
+/// name, read from the probe (plan P4b S4.4). The probe always holds the
+/// accounts its posting names, so a missing one is a bug, reported as an
+/// error rather than a panic.
+fn preview_lines(
+    probe: &Ledger,
+    lines: &[ledger_core::journal::JournalLine],
+) -> Result<Vec<PreviewPosting>, StoreError> {
+    lines
+        .iter()
+        .map(|l| {
+            let account = probe
+                .chart()
+                .get(l.account)
+                .ok_or(LedgerError::UnknownAccount(l.account))?;
+            Ok(PreviewPosting {
+                account: account.code.clone(),
+                name: account.name.clone(),
+                side: l.side,
+                amount: l.amount.amount,
+                class_id: l.class_id,
+            })
+        })
+        .collect()
+}
 
 /// The store: one writer, one data directory.
 ///
@@ -3317,9 +3372,11 @@ impl Store {
                 .iter()
                 .map(|l| (l.account, l.side, l.amount.amount, l.class_id))
                 .collect(),
+            lines: preview_lines(&probe, entry.lines())?,
             total: inv.total()?,
             number: fields.number,
             due_date: inv.due_date,
+            invoice: inv.clone(),
         })
     }
 
@@ -3493,6 +3550,7 @@ impl Store {
                 .iter()
                 .map(|l| (l.account, l.side, l.amount.amount, l.class_id))
                 .collect(),
+            lines: preview_lines(&probe, entry.lines())?,
             total: bill.total()?,
             due_date: bill.due_date,
         })

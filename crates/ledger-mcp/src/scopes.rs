@@ -160,9 +160,9 @@ pub const TABLE: [(&str, Needs); 122] = [
     ("books.parties", R),
     ("books.party", R),
     ("books.set_entry_party", W),
-    // These post at once, unchecked.
-    ("books.create_invoice", P),
-    ("books.create_bill", P),
+    // These preview, then post when confirmed (P4b S4.4, A-1).
+    ("books.create_invoice", C),
+    ("books.create_bill", C),
     ("books.receive_payment", P),
     ("books.pay_bill", P),
     ("books.void_document", P),
@@ -371,7 +371,7 @@ mod tests {
         );
         assert_eq!(
             needs(
-                "books.create_invoice",
+                "books.receive_payment",
                 args(json!({"confirmed": false})).as_ref()
             ),
             Some(Scope::Post),
@@ -421,7 +421,11 @@ mod tests {
         assert!(!shown("books.access_log", &read));
         let write = set(&[Scope::Read, Scope::Write]);
         assert!(shown("books.post_entry", &write), "it may preview");
-        assert!(!shown("books.create_invoice", &write));
+        assert!(
+            shown("books.create_invoice", &write),
+            "it may preview an invoice"
+        );
+        assert!(!shown("books.receive_payment", &write));
         let post = set(&[Scope::Post]);
         assert!(shown("books.post_entry", &post));
         assert!(!shown("books.chart", &post));

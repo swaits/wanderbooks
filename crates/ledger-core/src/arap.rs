@@ -711,18 +711,65 @@ fn last_day_of_month(date: NaiveDate) -> Result<NaiveDate, LedgerError> {
 }
 
 /// The parties on a document, as they were when it was issued (plan P4b
-/// S4.1, A-13): a name, and the address and email that were on the
-/// document. Never today's party record when a snapshot exists.
+/// S4.1, A-13; the contact block, D-55): a name, and the address and email
+/// that were on the document, with the phone, contact person, billing and
+/// shipping details when the party had them. Never today's party record
+/// when a snapshot exists.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PartySnapshot {
     /// The party's name at issue.
     pub name: String,
-    /// Its address at issue, when the document printed one.
+    /// Its address at issue, as the document printed it: the billing
+    /// address when the party has one, else its general one (D-55).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub address: Option<String>,
-    /// Its email at issue, when the document printed one.
+    /// Its email at issue, as the document printed it: the billing email
+    /// when the party has one, else its general one (D-55).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
+    /// Its telephone number at issue (D-55).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phone: Option<String>,
+    /// The person there to write to, at issue (D-55).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contact: Option<String>,
+    /// Where its bills go, when it said so (D-55). [`Self::address`] is
+    /// this one whenever it is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub billing_address: Option<String>,
+    /// Where goods go, when it said so (D-55): the issued page prints a
+    /// Ship-to line for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shipping_address: Option<String>,
+    /// Where its bills are emailed, when it said so (D-55). [`Self::email`]
+    /// is this one whenever it is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub billing_email: Option<String>,
+}
+
+impl PartySnapshot {
+    /// The snapshot of `party` at issue (A-13, D-55): its name, and the
+    /// contact details as they stood, with the billing address and billing
+    /// email in place of the general ones when it has them. The one place
+    /// the bill-to rule lives, so every document agrees.
+    pub fn from_party(party: &crate::Party) -> Self {
+        PartySnapshot {
+            name: party
+                .display_name
+                .clone()
+                .unwrap_or_else(|| party.name.clone()),
+            address: party
+                .billing_address
+                .clone()
+                .or_else(|| party.address.clone()),
+            email: party.billing_email.clone().or_else(|| party.email.clone()),
+            phone: party.phone.clone(),
+            contact: party.contact.clone(),
+            billing_address: party.billing_address.clone(),
+            shipping_address: party.shipping_address.clone(),
+            billing_email: party.billing_email.clone(),
+        }
+    }
 }
 
 /// How an invoice was sent (plan P4b S5; the type S4.1 adds so

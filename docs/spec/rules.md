@@ -1740,8 +1740,10 @@ that declared `projects` before it existed wait for their owner's next
 upgrade before a document's line names a project. `documents_v2` (plan
 P4b S4, one feature for S4 to S7: D-52) is the next: a `settings.set` of
 the `invoicing.*`, `bills.*`, `company.email` or `company.website` keys,
-which an earlier version refuses (S4.2); a `party.updated` with an email
-or a default terms fact (S4.2); an `invoice.created` or `bill.created`
+which an earlier version refuses (S4.2); a `party.updated` with an email,
+a default terms fact (S4.2), or a contact-block fact — a phone, a contact
+person, a billing or shipping address, a billing email (D-55); an
+`invoice.created` or `bill.created`
 carrying a number, terms, a bill-to or seller snapshot, a customer
 reference or memo, a vendor reference, a receipt date or a duplicate's
 reason, or a line naming its account, quantity or unit price (S4.3); and

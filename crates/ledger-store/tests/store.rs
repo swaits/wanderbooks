@@ -1849,6 +1849,17 @@ fn books_written_under_older_rules_still_open() {
                "value": {"kind": {"net": 30}, "text": "Net 30"}}}),
     )
     .unwrap();
+    // D-55's contact block, hand-written the same way (P4b S4.4).
+    for change in [
+        json!({"field": "phone", "value": "555-0142"}),
+        json!({"field": "contact", "value": "Dana Reed"}),
+        json!({"field": "billing_address", "value": "12 Billing Way"}),
+        json!({"field": "shipping_address", "value": "Dock 4"}),
+        json!({"field": "billing_email", "value": "ap@acme.example"}),
+    ] {
+        w.append("party.updated", json!({"id": 1, "change": change}))
+            .unwrap();
+    }
     w.append(
         "settings.set",
         json!({"changes": [{"key": "invoicing.default_terms", "value": "2/10 net 30"}],
@@ -1964,6 +1975,11 @@ fn books_written_under_older_rules_still_open() {
     // The new shapes replay as written: the party's facts and the setting.
     let acme = store.ledger().get_party(1).expect("the party");
     assert_eq!(acme.email.as_deref(), Some("billing@acme.example"));
+    assert_eq!(acme.phone.as_deref(), Some("555-0142"));
+    assert_eq!(acme.contact.as_deref(), Some("Dana Reed"));
+    assert_eq!(acme.billing_address.as_deref(), Some("12 Billing Way"));
+    assert_eq!(acme.shipping_address.as_deref(), Some("Dock 4"));
+    assert_eq!(acme.billing_email.as_deref(), Some("ap@acme.example"));
     assert_eq!(
         acme.default_terms_as_customer
             .as_ref()

@@ -234,6 +234,24 @@ pub struct Party {
     /// an invoice's bill-to snapshot at issue.
     #[serde(default)]
     pub email: Option<String>,
+    /// Telephone number (D-55): printed on the invoice's bill-to.
+    #[serde(default)]
+    pub phone: Option<String>,
+    /// The named person there to write to (D-55).
+    #[serde(default)]
+    pub contact: Option<String>,
+    /// Where its bills go (D-55): the invoice's bill-to address when set,
+    /// else [`Self::address`].
+    #[serde(default)]
+    pub billing_address: Option<String>,
+    /// Where goods go (D-55): the issued invoice prints a Ship-to line
+    /// when it is set.
+    #[serde(default)]
+    pub shipping_address: Option<String>,
+    /// Where its bills are emailed (D-55): the bill-to email when set,
+    /// else [`Self::email`].
+    #[serde(default)]
+    pub billing_email: Option<String>,
     /// The terms this party grants the company as a customer: an invoice's
     /// due date falls back to these (A-13).
     #[serde(default)]
@@ -778,11 +796,21 @@ pub enum PartyField {
     DefaultTermsAsCustomer(Option<crate::Terms>),
     /// The terms it gives the company as a vendor (A-13; `None` clears).
     DefaultTermsAsVendor(Option<crate::Terms>),
+    /// The telephone number (D-55; `None` clears it).
+    Phone(Option<String>),
+    /// The named person there to write to (D-55; `None` clears it).
+    Contact(Option<String>),
+    /// Where its bills go (D-55; `None` clears it).
+    BillingAddress(Option<String>),
+    /// Where goods go (D-55; `None` clears it).
+    ShippingAddress(Option<String>),
+    /// Where its bills are emailed (D-55; `None` clears it).
+    BillingEmail(Option<String>),
 }
 
 impl PartyField {
     /// Every field's wire name, as `party.updated` journals it.
-    pub const FIELDS: [&'static str; 9] = [
+    pub const FIELDS: [&'static str; 14] = [
         "name",
         "display_name",
         "website",
@@ -792,6 +820,11 @@ impl PartyField {
         "email",
         "default_terms_as_customer",
         "default_terms_as_vendor",
+        "phone",
+        "contact",
+        "billing_address",
+        "shipping_address",
+        "billing_email",
     ];
 
     /// Whether `field` is a field this version knows. A `party.updated`
@@ -800,14 +833,19 @@ impl PartyField {
         Self::FIELDS.contains(&field)
     }
 
-    /// Whether the field needs the `documents_v2` feature: the three A-13
-    /// facts an older version would drop.
+    /// Whether the field needs the `documents_v2` feature: the A-13 facts
+    /// and the D-55 contact block, which an older version would drop.
     pub fn needs_documents_v2(&self) -> bool {
         matches!(
             self,
             PartyField::Email(_)
                 | PartyField::DefaultTermsAsCustomer(_)
                 | PartyField::DefaultTermsAsVendor(_)
+                | PartyField::Phone(_)
+                | PartyField::Contact(_)
+                | PartyField::BillingAddress(_)
+                | PartyField::ShippingAddress(_)
+                | PartyField::BillingEmail(_)
         )
     }
 }

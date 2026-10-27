@@ -3056,39 +3056,118 @@ pub struct DocumentLineParam {
     /// receivable or payable line never does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub class: Option<String>,
+    /// The account the line's revenue, expense or asset goes to (a code or
+    /// an id): an invoice line a revenue account or a liability holding no
+    /// role (deferred revenue), a bill line an expense account or an asset
+    /// that is not cash and holds no role. Omitted: the kind's own role
+    /// account (revenue for an invoice, general expenses for a bill). A
+    /// bill's line must name one in books that have declared the journal
+    /// feature documents_v2 (A-10).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+    /// How many units the line bills, with unit_price, when the line is
+    /// priced rather than summed: quantity × unit_price must equal amount
+    /// exactly. Both or neither.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quantity: Option<String>,
+    /// The price of one unit, with quantity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit_price: Option<String>,
 }
 
-/// Parameters for `books.create_invoice` / `books.create_bill`.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct CreateDocumentParams {
-    /// Customer id (invoice) or vendor id (bill).
-    pub party_id: u64,
-    /// Document date, YYYY-MM-DD.
+/// A document's party as the page prints it: the customer's or vendor's
+/// name, address and email at issue (A-13), and its contact block (D-55).
+/// Every part omitted is the party record's.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct BillToParam {
+    /// Its name at issue.
+    pub name: Option<String>,
+    /// Its address at issue (the general one), one line per line.
+    pub address: Option<String>,
+    /// Its email at issue (the general one).
+    pub email: Option<String>,
+    /// Its telephone number at issue.
+    pub phone: Option<String>,
+    /// The person there to write to at issue.
+    pub contact: Option<String>,
+    /// Where its bills go: the bill-to address when set, else `address`.
+    pub billing_address: Option<String>,
+    /// Where goods go: the page prints a Ship-to line for it.
+    pub shipping_address: Option<String>,
+    /// Where its bills are emailed: the bill-to email when set, else
+    /// `email`.
+    pub billing_email: Option<String>,
+}
+
+/// Parameters for `books.create_invoice`: it previews without
+/// `confirmed`, and posts with it (A-1).
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct CreateInvoiceParams {
+    /// The customer: a customer id, its party's id, or its name. A name
+    /// that two customers answer to is refused.
+    pub customer: Option<String>,
+    /// The old spelling of `customer` (accepted until P5): a customer id.
+    #[serde(default)]
+    pub party_id: Option<u64>,
+    /// The invoice date, YYYY-MM-DD.
     pub date: String,
-    /// Due date, YYYY-MM-DD.
-    pub due_date: String,
+    /// Its payment terms ("Net 30", "Net 15 EOM", "2/10 net 30", "Due on
+    /// receipt", "Due 2026-11-15"). The due date is derived from them.
+    pub terms: Option<String>,
+    /// Its due date, YYYY-MM-DD: used as given, and it overrides `terms`.
+    pub due_date: Option<String>,
     /// Line items.
     pub lines: Vec<DocumentLineParam>,
+    /// The customer's own reference (their purchase order).
+    pub customer_ref: Option<String>,
+    /// A memo printed on the invoice.
+    pub memo: Option<String>,
+    /// The customer as the page prints it (omitted: the party's name,
+    /// address and email at issue).
+    pub bill_to: Option<BillToParam>,
+    /// True: post it. Absent or false: preview it and post nothing.
+    pub confirmed: Option<bool>,
 }
 
-/// Output of `books.create_invoice` / `books.create_bill`.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct CreateDocumentOut {
-    /// The new document's id.
-    pub id: u64,
-    /// Total amount, decimal string.
-    pub total: String,
-    /// The auto-posted journal entry's id.
-    pub entry_id: u64,
-    /// What to tell the human: a revenue or expense account this created
-    /// (Revenue 4000, General Expenses 6999) has no tax category yet.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub warnings: Vec<String>,
-    /// One per finished or abandoned project a line names, as
-    /// `books.add_line`'s `note`, and on an invoice one per on-spec
-    /// project a line names (is there now an agreement?): tagged anyway.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub notes: Vec<String>,
+/// Parameters for `books.create_bill`: it previews without `confirmed`,
+/// and posts with it.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct CreateBillParams {
+    /// The vendor: a vendor id, its party's id, or its name. A name that
+    /// two vendors answer to is refused.
+    pub vendor: Option<String>,
+    /// The old spelling of `vendor` (accepted until P5): a vendor id.
+    #[serde(default)]
+    pub party_id: Option<u64>,
+    /// The bill's date, YYYY-MM-DD.
+    pub date: String,
+    /// The day the bill was received, when it differs from its date.
+    pub received_on: Option<String>,
+    /// The vendor's own invoice number: required in books that have
+    /// declared documents_v2 (a second bill with the same vendor and
+    /// number is refused unless duplicate_reason says why).
+    pub vendor_ref: Option<String>,
+    /// Its payment terms; the due date is derived from them.
+    pub terms: Option<String>,
+    /// Its due date, YYYY-MM-DD: used as given, and it overrides `terms`.
+    pub due_date: Option<String>,
+    /// Line items.
+    pub lines: Vec<DocumentLineParam>,
+    /// A memo about the bill.
+    pub memo: Option<String>,
+    /// The vendor's invoice itself: an upload made with books.begin_upload
+    /// and `wanderbooks upload` (D-46). Required in books that have
+    /// declared documents_v2: it is filed on the bill's entry as its
+    /// evidence.
+    pub upload_id: Option<String>,
+    /// The vendor's invoice, stored already (books.attachments): filed
+    /// like an upload.
+    pub existing_attachment_id: Option<u64>,
+    /// Why a vendor invoice number that already names a standing bill is
+    /// entered again anyway.
+    pub duplicate_reason: Option<String>,
+    /// True: post it. Absent or false: preview it and post nothing.
+    pub confirmed: Option<bool>,
 }
 
 /// Parameters for `books.receive_payment` / `books.pay_bill`.
@@ -3945,6 +4024,28 @@ pub struct UpdatePartyParams {
     pub address: Option<String>,
     /// Notes; "" clears them.
     pub notes: Option<String>,
+    /// Email address, where the company writes to them (A-13): copied onto
+    /// an invoice's bill-to or a bill's vendor at issue. "" clears it.
+    pub email: Option<String>,
+    /// The payment terms this party grants the company as a customer
+    /// ("Net 30", "2/10 net 30"): an invoice's due date falls back to them
+    /// when neither it nor the call gives terms. "" clears them.
+    pub default_terms_as_customer: Option<String>,
+    /// The payment terms this party, as a vendor, gives the company: a
+    /// bill's due date falls back to them. "" clears them.
+    pub default_terms_as_vendor: Option<String>,
+    /// Telephone number (D-55). "" clears it.
+    pub phone: Option<String>,
+    /// The named person there to write to (D-55). "" clears it.
+    pub contact: Option<String>,
+    /// Where its bills go (D-55): an invoice's bill-to address when set,
+    /// else `address`. "" clears it.
+    pub billing_address: Option<String>,
+    /// Where goods go (D-55). "" clears it.
+    pub shipping_address: Option<String>,
+    /// Where its bills are emailed (D-55): an invoice's bill-to email when
+    /// set, else `email`. "" clears it.
+    pub billing_email: Option<String>,
     /// True: no longer dealt with (its history stays; it no longer
     /// resolves by name, and its name is free for another party). False:
     /// dealt with again (refused while another party has its name).
@@ -4289,6 +4390,25 @@ pub struct PartyOut {
     pub address: Option<String>,
     /// Notes.
     pub notes: Option<String>,
+    /// Email address (A-13): the general one, where the company writes to
+    /// it.
+    pub email: Option<String>,
+    /// Telephone number (D-55).
+    pub phone: Option<String>,
+    /// The named person there to write to (D-55).
+    pub contact: Option<String>,
+    /// Where its bills go (D-55): an invoice's bill-to address when set,
+    /// else `address`.
+    pub billing_address: Option<String>,
+    /// Where goods go (D-55).
+    pub shipping_address: Option<String>,
+    /// Where its bills are emailed (D-55): the bill-to email when set,
+    /// else `email`.
+    pub billing_email: Option<String>,
+    /// The terms it grants the company as a customer ("Net 30"), when set.
+    pub default_terms_as_customer: Option<String>,
+    /// The terms it gives the company as a vendor, when set.
+    pub default_terms_as_vendor: Option<String>,
     /// No longer dealt with.
     pub archived: bool,
     /// Its vendor record's id, if it bills the company.
@@ -4757,4 +4877,132 @@ pub struct HandbookOut {
     pub sections: Vec<HandbookSectionOut>,
     /// The section asked for (null: none was).
     pub section: Option<HandbookTextOut>,
+}
+
+// ---------------------------------------------------------------------------
+// P4b S4.4: invoices and bills preview, then confirm
+// ---------------------------------------------------------------------------
+
+/// One line of a document's posting, as a preview shows it: the account's
+/// code and name, its side, the amount, and the project it is tagged with.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct DocumentPostingOut {
+    /// The account's code ("1200").
+    pub account: String,
+    /// Its name ("Accounts Receivable").
+    pub name: String,
+    /// "debit" or "credit".
+    pub side: String,
+    /// The amount, decimal string.
+    pub amount: String,
+    /// The project the line is tagged with, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub class: Option<String>,
+}
+
+/// An invoice's PDF: the DRAFT copy a preview hands over, or the issued
+/// copy a confirm files, named by its attachment (A-7).
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(untagged)]
+pub enum DocumentPdfOut {
+    /// The DRAFT copy, handed over: run its `download` to save it (D-46).
+    Draft(HandedFile),
+    /// The issued copy, filed with the invoice in the call that issued it.
+    Issued(IssuedFileOut),
+}
+
+/// A file filed with a document: its attachment and SHA-256.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct IssuedFileOut {
+    /// The attachment (books.get_receipt).
+    pub attachment_id: u64,
+    /// The file's SHA-256, hex: the same one books.get_receipt reports.
+    pub sha256: String,
+}
+
+/// Result of `books.create_invoice`: a preview (nothing posted) or the
+/// posted invoice.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct InvoiceOut {
+    /// True: a preview, and nothing was posted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<bool>,
+    /// The invoice's id (confirm).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<u64>,
+    /// Its number (confirm: the one issued; preview: the one it would
+    /// take). Absent in books that don't number their invoices yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub number: Option<String>,
+    /// The total, decimal string.
+    pub total: String,
+    /// The due date, YYYY-MM-DD.
+    pub due_date: String,
+    /// The terms' text ("Net 30"), when it has them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terms: Option<String>,
+    /// The auto-posted entry's id (confirm).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry_id: Option<u64>,
+    /// The posting, line by line (preview).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lines: Vec<DocumentPostingOut>,
+    /// The PDF: DRAFT and handed over on a preview, the issued copy filed
+    /// with the invoice on a confirm.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pdf: Option<DocumentPdfOut>,
+    /// A `mailto:` link for a human to send it from their own mail
+    /// program (the books never send, A-4). The file is attached by hand.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mailto: Option<String>,
+    /// What to tell the human: a revenue account this created (4000) has
+    /// no tax category yet.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+    /// One per finished or abandoned project a line names, and one per
+    /// on-spec project a line names (is there now an agreement?).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+}
+
+/// Result of `books.create_bill`: a preview (nothing posted) or the
+/// posted bill.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct BillOut {
+    /// True: a preview, and nothing was posted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<bool>,
+    /// The bill's id (confirm).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<u64>,
+    /// The total, decimal string.
+    pub total: String,
+    /// The due date, YYYY-MM-DD.
+    pub due_date: String,
+    /// The terms' text ("2/10 net 30"), when it has them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terms: Option<String>,
+    /// The auto-posted entry's id (confirm).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry_id: Option<u64>,
+    /// The posting, line by line (preview).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lines: Vec<DocumentPostingOut>,
+    /// The last day its early-payment discount is open, when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discount_by: Option<String>,
+    /// The largest discount its terms allow, decimal string (the caller
+    /// gives the exact cents when it takes one).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_discount: Option<String>,
+    /// The vendor's invoice, filed with the bill (confirm).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<IssuedFileOut>,
+    /// What to tell the human: an expense account this created (6999) has
+    /// no tax category yet.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+    /// One per finished or abandoned project a line names.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
 }

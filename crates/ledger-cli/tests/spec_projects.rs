@@ -1236,7 +1236,7 @@ fn invoice_and_bill_lines_count_toward_their_projects() {
             {"description": "Hosting", "amount": "200.00", "class": harbor.to_string()},
             {"description": "Rush fee", "amount": "100.00"},
             {"description": "Revisions", "amount": "500.00", "class": " zeta SITE "},
-        ]}),
+        ], "confirmed": true}),
     );
     assert_eq!(inv["total"], "3800.00");
     assert!(inv.get("notes").is_none(), "{inv}");
@@ -1256,19 +1256,27 @@ fn invoice_and_bill_lines_count_toward_their_projects() {
         m.entry_class_ids(inv_entry),
         vec![None, Some(zeta), Some(harbor), None]
     );
+    let dana_invoice = m.wire.upload(
+        b"Dana's invoice",
+        "dana-invoice.pdf",
+        "application/pdf",
+        "receipt",
+    );
     let bill = m.ok(
         "books.create_bill",
-        json!({"party_id": dana_vendor, "date": "2026-03-09", "due_date": "2026-04-08", "lines": [
-            {"description": "Illustration", "amount": "1200.00", "class": "Zeta site"},
-            {"description": "Postage", "amount": "50.00"},
-        ]}),
+        json!({"party_id": dana_vendor, "date": "2026-03-09", "due_date": "2026-04-08",
+               "vendor_ref": "DANA-77",
+               "lines": [
+            {"description": "Illustration", "amount": "1200.00", "account": "6000", "class": "Zeta site"},
+            {"description": "Postage", "amount": "50.00", "account": "6000"},
+        ], "upload_id": dana_invoice, "confirmed": true}),
     );
     let bill_entry = bill["entry_id"].as_u64().unwrap();
     assert_eq!(
         m.entry_lines(bill_entry),
         vec![
-            l4("6999", "debit", "1200.00", Some("Zeta site")),
-            l4("6999", "debit", "50.00", None),
+            l4("6000", "debit", "1200.00", Some("Zeta site")),
+            l4("6000", "debit", "50.00", None),
             l4("2000", "credit", "1250.00", None),
         ]
     );
@@ -1375,7 +1383,7 @@ fn a_document_for_a_finished_project_says_so() {
             {"description": "Final", "amount": "10.00", "class": "Harbor"},
             {"description": "Again", "amount": "10.00", "class": "harbor"},
             {"description": "Old", "amount": "10.00", "class": "Dock"},
-        ]}),
+        ], "confirmed": true}),
     );
     let notes: Vec<&str> = out["notes"]
         .as_array()
@@ -1420,7 +1428,7 @@ fn an_invoice_for_an_on_spec_project_asks_about_an_agreement() {
             {"description": "Build", "amount": "10.00", "class": "Kestrel"},
             {"description": "More", "amount": "5.00", "class": "kestrel"},
             {"description": "Site", "amount": "7.00", "class": "Zeta"},
-        ]}),
+        ], "confirmed": true}),
     );
     let notes = out["notes"].as_array().unwrap();
     assert_eq!(notes.len(), 1, "{out}");
@@ -1434,11 +1442,19 @@ fn an_invoice_for_an_on_spec_project_asks_about_an_agreement() {
         m.entry_lines(e)[1],
         l4("4000", "credit", "15.00", Some("Kestrel"))
     );
+    let icons_invoice = m.wire.upload(
+        b"icons invoice",
+        "icons-invoice.pdf",
+        "application/pdf",
+        "receipt",
+    );
     let bill = m.ok(
         "books.create_bill",
-        json!({"party_id": v, "date": "2026-10-05", "due_date": "2026-11-04", "lines": [
-            {"description": "Icons", "amount": "10.00", "class": "Kestrel"},
-        ]}),
+        json!({"party_id": v, "date": "2026-10-05", "due_date": "2026-11-04",
+               "vendor_ref": "V-512",
+               "lines": [
+            {"description": "Icons", "amount": "10.00", "account": "6000", "class": "Kestrel"},
+        ], "upload_id": icons_invoice, "confirmed": true}),
     );
     assert!(bill.get("notes").is_none(), "{bill}");
 }
@@ -1473,7 +1489,7 @@ fn books_without_the_feature_refuse_a_tagged_document() {
         "books.create_invoice",
         json!({"party_id": cedar, "date": "2026-03-02", "due_date": "2026-04-01", "lines": [
             {"description": "a", "amount": "10.00"},
-        ]}),
+        ], "confirmed": true}),
     );
     let text = m.read_only("books.handbook", json!({"section": "projects"}))["section"]["text"]
         .as_str()

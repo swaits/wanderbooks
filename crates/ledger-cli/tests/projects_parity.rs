@@ -230,7 +230,14 @@ fn invoiced_and_billed_project_figures_are_the_same_in_the_viewer_and_from_the_s
     server.tool("books.add_project", json!({"name": "Heron"}));
     let cedar = server.tool("books.add_customer", json!({"name": "Cedar Client"}))["id"].clone();
     let dana = server.tool("books.add_vendor", json!({"name": "Dana Illustration"}))["id"].clone();
-    let doc = |party: &Value, date: &str, lines: Value| json!({"party_id": party, "date": date, "due_date": date, "lines": lines});
+    let doc = |party: &Value, date: &str, lines: Value| {
+        json!({"party_id": party, "date": date, "due_date": date, "lines": lines,
+               "confirmed": true})
+    };
+    server.tool(
+        "books.add_account",
+        json!({"code": "6500", "name": "Supplies", "account_type": "expense"}),
+    );
     let inv = server.tool(
         "books.create_invoice",
         doc(
@@ -251,17 +258,20 @@ fn invoiced_and_billed_project_figures_are_the_same_in_the_viewer_and_from_the_s
             json!([{"description": "Build", "amount": "4321.09", "class": "kestrel"}]),
         ),
     );
-    let bill = server.tool(
-        "books.create_bill",
-        doc(
-            &dana,
-            "2026-03-09",
-            json!([
-                {"description": "Illustration", "amount": "987.65", "class": "Kestrel"},
-                {"description": "Postage", "amount": "12.00"},
-            ]),
-        ),
+    let bill_file = server
+        .wire
+        .upload(b"Dana's invoice", "dana.pdf", "application/pdf", "receipt");
+    let mut bill_args = doc(
+        &dana,
+        "2026-03-09",
+        json!([
+            {"description": "Illustration", "amount": "987.65", "account": "6500", "class": "Kestrel"},
+            {"description": "Postage", "amount": "12.00", "account": "6500"},
+        ]),
     );
+    bill_args["vendor_ref"] = json!("DANA-9");
+    bill_args["upload_id"] = json!(bill_file);
+    let bill = server.tool("books.create_bill", bill_args);
     server.tool(
         "books.receive_payment",
         json!({"document_id": inv["id"], "date": "2026-02-20", "amount": "1830.00", "cash_account": "1000"}),
@@ -329,7 +339,7 @@ fn invoiced_and_billed_project_figures_are_the_same_in_the_viewer_and_from_the_s
             .as_array()
             .unwrap()
             .iter()
-            .filter(|l| l["code"] == "4000" || l["code"] == "6999")
+            .filter(|l| matches!(l["code"].as_str(), Some("4000" | "6500" | "6999")))
             .map(|l| l["project"].as_str().map(str::to_string))
             .collect();
         assert_eq!(viewer, served, "entry {entry}");

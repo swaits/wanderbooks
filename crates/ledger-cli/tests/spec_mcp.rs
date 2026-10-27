@@ -857,7 +857,8 @@ fn happy_path(name: &str) -> Mcp {
     let inv = m.ok(
         "books.create_invoice",
         json!({"party_id": customer, "date": "2026-02-01", "due_date": "2026-03-01",
-               "lines": [{"description": "Consulting", "amount": "500.00"}]}),
+               "lines": [{"description": "Consulting", "amount": "500.00"}],
+               "confirmed": true}),
     )["id"]
         .as_u64()
         .unwrap();
@@ -865,10 +866,18 @@ fn happy_path(name: &str) -> Mcp {
         "books.receive_payment",
         json!({"document_id": inv, "date": "2026-02-10", "amount": "200.00", "cash_account": "1000"}),
     );
+    let vendor_invoice = m.upload(
+        b"vendor invoice",
+        "vendor-invoice.pdf",
+        "application/pdf",
+        "receipt",
+    );
     let bill = m.ok(
         "books.create_bill",
         json!({"party_id": vendor, "date": "2026-02-01", "due_date": "2026-02-28",
-               "lines": [{"description": "Office rent", "amount": "300.00"}]}),
+               "vendor_ref": "V-1001",
+               "lines": [{"description": "Office rent", "amount": "300.00", "account": "6000"}],
+               "upload_id": vendor_invoice, "confirmed": true}),
     )["id"]
         .as_u64()
         .unwrap();
@@ -882,7 +891,8 @@ fn happy_path(name: &str) -> Mcp {
     let dup = m.ok(
         "books.create_invoice",
         json!({"party_id": customer, "date": "2026-02-02", "due_date": "2026-03-02",
-               "lines": [{"description": "Consulting, entered twice", "amount": "500.00"}]}),
+               "lines": [{"description": "Consulting, entered twice", "amount": "500.00"}],
+               "confirmed": true}),
     )["id"]
         .as_u64()
         .unwrap();
@@ -1297,6 +1307,9 @@ struct Known {
     periods: Vec<u64>,
     vendors: Vec<u64>,
     bills: Vec<u64>,
+    /// The vendor's invoice every bill filed in this run names (P4b S4.4:
+    /// a bill keeps the file it was entered from).
+    vendor_invoice: u64,
 }
 
 /// One step of the random walk.
@@ -1363,6 +1376,9 @@ enum Op {
     CreateBill {
         party: Pick,
         amount: String,
+        /// The vendor's own invoice number: two bills by one vendor with
+        /// the same number are refused (B-40).
+        vendor_ref: String,
     },
     PayBill {
         doc: Pick,
@@ -1444,7 +1460,8 @@ fn op_strategy() -> impl Strategy<Value = Op> {
               prop::sample::select(vec!["asset", "expense", "revenue", "bogus"]))
             .prop_map(|(c, t)| Op::AddAccount { code: c.to_string(), ty: t.to_string() }),
         1 => prop::sample::select(vec!["Acme", "Acme", "", "1"]).prop_map(|n| Op::AddVendor { name: n.to_string() }),
-        1 => (pick(), amount_strategy()).prop_map(|(party, amount)| Op::CreateBill { party, amount }),
+        1 => (pick(), amount_strategy(), 0u64..1000)
+            .prop_map(|(party, amount, n)| Op::CreateBill { party, amount, vendor_ref: format!("V-{n}") }),
         1 => (pick(), amount_strategy()).prop_map(|(doc, amount)| Op::PayBill { doc, amount }),
         1 => amount_strategy().prop_map(|deposit| Op::Payout { deposit }),
         1 => (account_strategy(), prop::sample::select(vec!["8000", "1000", ""]))
@@ -1578,10 +1595,16 @@ fn run_op(m: &mut Mcp, k: &mut Known, op: &Op) {
             json!({"code": code, "name": format!("Acct {code}"), "account_type": ty}),
         ),
         Op::AddVendor { name } => ("books.add_vendor", json!({"name": name})),
-        Op::CreateBill { party, amount } => (
+        Op::CreateBill {
+            party,
+            amount,
+            vendor_ref,
+        } => (
             "books.create_bill",
             json!({"party_id": party.resolve(&k.vendors), "date": "2026-03-01",
-                   "due_date": "2026-03-31", "lines": [{"description": "thing", "amount": amount}]}),
+                   "due_date": "2026-03-31", "vendor_ref": vendor_ref,
+                   "lines": [{"description": "thing", "amount": amount, "account": "6000"}],
+                   "existing_attachment_id": k.vendor_invoice, "confirmed": true}),
         ),
         Op::PayBill { doc, amount } => (
             "books.pay_bill",
@@ -1647,7 +1670,10 @@ proptest! {
         let toml = books_toml(&dir, "25.00", "");
         let mut m = Mcp::start(&dir, &toml);
         m.accounts(BASE_CHART);
-        let mut known = Known::default();
+        let mut known = Known {
+            vendor_invoice: m.attach(None, b"a vendor's invoice"),
+            ..Known::default()
+        };
         for op in &ops {
             run_op(&mut m, &mut known, op);
         }
@@ -2482,7 +2508,8 @@ fn assigned_roles_steer_invoices() {
     m.ok(
         "books.create_invoice",
         json!({"party_id": customer, "date": "2026-02-01", "due_date": "2026-03-01",
-               "lines": [{"description": "Consulting", "amount": "500.00"}]}),
+               "lines": [{"description": "Consulting", "amount": "500.00"}],
+               "confirmed": true}),
     );
     let tb = m.ok("books.trial_balance", json!({})).to_string();
     assert!(tb.contains("1110") && tb.contains("4100"), "{tb}");
@@ -2544,7 +2571,8 @@ fn documents_void_and_tie_out_over_the_wire() {
     let inv = m.ok(
         "books.create_invoice",
         json!({"party_id": customer, "date": "2026-02-01", "due_date": "2026-03-01",
-               "lines": [{"description": "Consulting", "amount": "500.00"}]}),
+               "lines": [{"description": "Consulting", "amount": "500.00"}],
+               "confirmed": true}),
     )["id"]
         .as_u64()
         .unwrap();
@@ -2574,7 +2602,8 @@ fn documents_void_and_tie_out_over_the_wire() {
     let dup = m.ok(
         "books.create_invoice",
         json!({"party_id": customer, "date": "2026-02-02", "due_date": "2026-03-02",
-               "lines": [{"description": "Consulting, entered twice", "amount": "500.00"}]}),
+               "lines": [{"description": "Consulting, entered twice", "amount": "500.00"}],
+               "confirmed": true}),
     )["id"]
         .as_u64()
         .unwrap();
@@ -2641,7 +2670,8 @@ fn documents_list_and_timeline_over_the_wire() {
         m.ok(
             "books.create_invoice",
             json!({"party_id": customer, "date": date, "due_date": due,
-                   "lines": [{"description": "Consulting", "amount": amount}]}),
+                   "lines": [{"description": "Consulting", "amount": amount}],
+                   "confirmed": true}),
         )["id"]
             .as_u64()
             .unwrap()

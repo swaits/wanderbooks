@@ -4453,6 +4453,11 @@ impl Ledger {
                         email: None,
                         default_terms_as_customer: None,
                         default_terms_as_vendor: None,
+                        phone: None,
+                        contact: None,
+                        billing_address: None,
+                        shipping_address: None,
+                        billing_email: None,
                         address: None,
                         notes: None,
                         archived: false,
@@ -4582,6 +4587,11 @@ impl Ledger {
                 email: None,
                 default_terms_as_customer: None,
                 default_terms_as_vendor: None,
+                phone: None,
+                contact: None,
+                billing_address: None,
+                shipping_address: None,
+                billing_email: None,
                 address: None,
                 notes: None,
                 archived: false,
@@ -4656,6 +4666,11 @@ impl Ledger {
             Email(v) => p.email = v,
             DefaultTermsAsCustomer(v) => p.default_terms_as_customer = v,
             DefaultTermsAsVendor(v) => p.default_terms_as_vendor = v,
+            Phone(v) => p.phone = v,
+            Contact(v) => p.contact = v,
+            BillingAddress(v) => p.billing_address = v,
+            ShippingAddress(v) => p.shipping_address = v,
+            BillingEmail(v) => p.billing_email = v,
         }
         Ok(())
     }
@@ -4705,6 +4720,18 @@ impl Ledger {
             Email(v) => {
                 if let Some(e) = v {
                     crate::parties::check_email("email", e).map_err(LedgerError::InvalidParty)?;
+                }
+            }
+            // The D-55 contact block: two addresses and a phone like any
+            // other text (no full TIN), the billing email an address.
+            Phone(v) => text("phone", v)?,
+            Contact(v) => text("contact", v)?,
+            BillingAddress(v) => text("billing_address", v)?,
+            ShippingAddress(v) => text("shipping_address", v)?,
+            BillingEmail(v) => {
+                if let Some(e) = v {
+                    crate::parties::check_email("billing_email", e)
+                        .map_err(LedgerError::InvalidParty)?;
                 }
             }
             // Terms are typed and already canonical (`crate::Terms`), so

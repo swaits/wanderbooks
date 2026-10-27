@@ -521,6 +521,27 @@ proptest! {
         );
     }
 
+    /// kernel::settle at i64 (what Kani's settle_is_exact proved) and at
+    /// Decimal agree: the same cash, discounts and fee give the same
+    /// applications total and deposit, and both refuse the same cases.
+    #[test]
+    fn settle_agrees(
+        cash in prop::collection::vec(0..=MAX_CENTS, 0..4),
+        discounts in prop::collection::vec(0..=MAX_CENTS, 0..4),
+        fee in 0..=MAX_CENTS,
+    ) {
+        let narrow = kernel::settle(&cash, &discounts, fee);
+        let wide = kernel::settle(
+            &cash.iter().map(|&c| dec(c)).collect::<Vec<_>>(),
+            &discounts.iter().map(|&c| dec(c)).collect::<Vec<_>>(),
+            dec(fee),
+        );
+        prop_assert_eq!(
+            narrow.map(|s| (dec(s.applications_total), dec(s.deposit))),
+            wide.map(|s| (s.applications_total, s.deposit))
+        );
+    }
+
     /// kernel::line_amount at i64 (what Kani's line_amount_is_exact
     /// proved) and at Decimal agree: cents x cents at i64 is the same
     /// product as dollars x dollars at Decimal, to four places.

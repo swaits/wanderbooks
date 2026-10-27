@@ -555,8 +555,8 @@ const SPEC: Spec = &[
     (
         42,
         Area::Arap,
-        "Settlements and the fee (allocated, not yet stated)",
-        None,
+        "A settlement is exact, one party, and names its lines; the gross discount and the gross fee",
+        Some(Status::Convention),
         &[],
     ),
     (

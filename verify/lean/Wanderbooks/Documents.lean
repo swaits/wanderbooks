@@ -201,6 +201,21 @@ theorem Step.document_unattached (B : Books) (e : List TLine) (h : Tagged B.cont
       simp [hn, onAcct, hacc]
     · simp [hn]
 
+/-- **A settlement is a document step**: its entry's every control line
+carries its document (a payment or a discount), so the books' rules for
+any entry whose control lines are tagged cover it; no new `Step`
+constructor is needed (plan P4b S6; rules.md B-42). -/
+theorem settle_posts_a_document_step (B : Books) (e : List TLine)
+    (h : Tagged B.control e) : Step B { B with lines := B.lines ++ e } :=
+  Step.document B e h
+
+/-- **A settlement never moves what is unattached** on a control account:
+every control line it posts is its document's (B-42, from
+`Step.document_unattached`). -/
+theorem settle_unattached (B : Books) (e : List TLine) (h : Tagged B.control e) (a : Nat)
+    (ha : a ∈ B.control) : unattached a (B.lines ++ e) = unattached a B.lines :=
+  Step.document_unattached B e h a ha
+
 /-- **A reversal moves each document by exactly the opposite of its lines
 it mirrors** (B-38 INVARIANT 3), and what is unattached likewise: only
 reversing a legacy hand line changes it. -/

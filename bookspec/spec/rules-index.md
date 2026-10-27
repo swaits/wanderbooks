@@ -7,9 +7,9 @@ what its statement rests on and the examples that demonstrate it.
 A rule whose only source is a human choice carries rules.md's **CHOICE**, bookspec's status of the same name:
 the specification names the options, an engine declares its pick
 (`claims.choices`, `bookspec_checker::Claims`). Rules B-39 to B-45 are
-allocated in `plan/served.md` 8.0.3 and not yet stated: their
-identifier and area are fixed here so a later unit fills them in
-without moving anyone else's number.
+allocated in `plan/served.md` 8.0.3; those not yet stated keep only
+their identifier and area here, so a later unit fills them in without
+moving anyone else's number.
 
 | B | bookspec id | area | status | rule | examples |
 |---|---|---|---|---|---|
@@ -54,7 +54,7 @@ without moving anyone else's number.
 | B-39 | `BS-arap-3` | arap | — | Terms: when a document is due (allocated, not yet stated) | — |
 | B-40 | `BS-arap-4` | arap | — | Numbers and the issued copy (allocated, not yet stated) | — |
 | B-41 | `BS-arap-5` | arap | — | Write-offs (allocated, not yet stated) | — |
-| B-42 | `BS-arap-6` | arap | — | Settlements and the fee (allocated, not yet stated) | — |
+| B-42 | `BS-arap-6` | arap | CONVENTION | A settlement is exact, one party, and names its lines; the gross discount and the gross fee | — |
 | B-43 | `BS-entry-5` | entry | — | Drafts and evidence (allocated, not yet stated) | — |
 | B-44 | `BS-ledger-12` | ledger | — | Extraction and dedup (allocated, not yet stated) | — |
 | B-45 | `BS-ledger-13` | ledger | — | Audits and attestations (allocated, not yet stated) | — |

@@ -1928,6 +1928,38 @@ fn discount_max_is_bounded() {
     kani::cover!(got.is_none(), "an exact bound finer than a whole cent");
 }
 
+/// `kernel::settle` is exact: the applications' total is the cash plus the
+/// discounts, the deposit is the cash less the fee, and a fee above the
+/// cash is refused rather than wrapped.
+#[kani::proof]
+fn settle_is_exact() {
+    const N: usize = 3;
+    let cash: [i32; N] = kani::any();
+    let discounts: [i32; N] = kani::any();
+    let fee: i32 = kani::any();
+    kani::assume(fee >= 0 && fee <= 3_000_000);
+    for i in 0..N {
+        kani::assume(cash[i] >= 0 && cash[i] <= 1_000_000);
+        kani::assume(discounts[i] >= 0 && discounts[i] <= 1_000_000);
+    }
+    let total_cash = cash[0] + cash[1] + cash[2];
+    let total_discounts = discounts[0] + discounts[1] + discounts[2];
+    let got = kernel::settle(&cash, &discounts, fee);
+    if fee <= total_cash {
+        let settlement = got.expect("no overflow under these bounds");
+        assert_eq!(settlement.applications_total, total_cash + total_discounts);
+        assert_eq!(settlement.deposit, total_cash - fee);
+        assert!(settlement.deposit >= 0);
+    } else {
+        assert!(got.is_none());
+    }
+    kani::cover!(
+        got.is_some() && discounts.iter().any(|d| *d > 0) && fee > 0 && fee < total_cash,
+        "a discount and a fee inside the cash"
+    );
+    kani::cover!(got.is_none(), "a fee above the cash");
+}
+
 /// `kernel::line_amount` is the exact product of a quantity and a unit
 /// price: never a rounded amount, and None rather than an overflow.
 #[kani::proof]

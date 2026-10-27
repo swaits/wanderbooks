@@ -425,6 +425,64 @@ impl PaymentDetails {
     }
 }
 
+/// One document a settlement applies to (plan P4b S6; rules.md B-42): the
+/// cash paid on it, the early-payment discount taken off it, and why a
+/// discount outside its terms was taken anyway.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Application {
+    /// The invoice or bill it applies to.
+    pub doc: DocRef,
+    /// The cash paid against it, positive.
+    pub cash: Decimal,
+    /// The early-payment discount taken, zero when none.
+    pub discount: Decimal,
+    /// Why a discount outside the document's terms was taken (a vendor who
+    /// honours a late discount): one line, journaled with the payment.
+    pub discount_reason: Option<String>,
+}
+
+/// A processor's fee withheld from a customer payment (plan P4b S6; A-4):
+/// receivables are credited the gross, the fee goes to its expense
+/// account, and the deposit account gets the net.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Fee {
+    /// The fee, positive.
+    pub amount: Decimal,
+    /// The expense account it goes to; `None` is the
+    /// `payment_processing_fees` role's account.
+    pub account: Option<crate::AccountId>,
+    /// The processor, when the books know it as a vendor.
+    pub vendor: Option<VendorId>,
+}
+
+/// Everything one settlement needs (plan P4b S6; rules.md B-42): its date,
+/// description, deposit account, the party every document belongs to, the
+/// applications, and the processor's fee when one was withheld.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SettleParams {
+    /// The settlement's date.
+    pub date: NaiveDate,
+    /// The entry's description.
+    pub description: String,
+    /// The account the cash reaches (or leaves): a bank, a card, a payable
+    /// holding no role.
+    pub cash_account: crate::AccountId,
+    /// The customer or vendor every application names.
+    pub party: u64,
+    /// One or more documents, one party, one kind.
+    pub applications: Vec<Application>,
+    /// The processor's fee, on a customer payment only.
+    pub fee: Option<Fee>,
+    /// The payment method, when known (D-40).
+    pub instrument: Option<crate::InstrumentId>,
+    /// The processor's or bank's reference, when there is one.
+    pub reference: Option<String>,
+}
+
+/// One posted line a settlement's plan asks for, with the document it tags
+/// when it is a control line ([`Application`]'s payment or discount).
+pub type SettlementRow = (crate::AccountId, crate::Side, Decimal, Option<DocTag>);
+
 /// How a document's payment terms count their days (rules.md B-39; plan
 /// P4b S4.1): from the document's date, from the end of its month, or a
 /// date the parties agreed.
@@ -1167,6 +1225,35 @@ impl AgingRow {
     }
 }
 
+/// One document in an aging's detail: its figures and the bucket it falls
+/// in (plan P4b S6, 8.3.10). Every figure is derived from its tagged lines
+/// ([`crate::Ledger::doc_state`]).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AgingDocument {
+    /// The invoice or bill.
+    pub doc: DocRef,
+    /// The customer or vendor.
+    pub party: String,
+    /// Its own date.
+    pub date: NaiveDate,
+    /// When payment is due.
+    pub due_date: NaiveDate,
+    /// Its terms, as they print ("2/10 net 30"), when it has them.
+    pub terms: Option<String>,
+    /// The sum of its lines.
+    pub total: Decimal,
+    /// Cash paid that stands.
+    pub paid: Decimal,
+    /// Discounts taken that stand.
+    pub discounted: Decimal,
+    /// What it still owes as of the day.
+    pub outstanding: Decimal,
+    /// `current`, `days_30`, `days_60`, `days_90` or `days_90_plus`.
+    pub bucket: &'static str,
+    /// Days past its due date while something is owed; 0 otherwise.
+    pub days_overdue: i64,
+}
+
 /// Put an open balance in its aging bucket.
 ///
 /// ```text
@@ -1199,21 +1286,33 @@ pub fn aging_bucket(due_date: NaiveDate, as_of: NaiveDate, balance: Decimal) -> 
         days_90: Decimal::ZERO,
         days_90_plus: Decimal::ZERO,
     };
-    if due_date >= as_of {
-        row.current = balance;
-    } else {
-        let days = (as_of - due_date).num_days();
-        if days <= 30 {
-            row.days_30 = balance;
-        } else if days <= 60 {
-            row.days_60 = balance;
-        } else if days <= 90 {
-            row.days_90 = balance;
-        } else {
-            row.days_90_plus = balance;
-        }
+    match bucket_key(due_date, as_of) {
+        "current" => row.current = balance,
+        "days_30" => row.days_30 = balance,
+        "days_60" => row.days_60 = balance,
+        "days_90" => row.days_90 = balance,
+        _ => row.days_90_plus = balance,
     }
     row
+}
+
+/// The aging bucket a document due `due_date` falls in as of `as_of`, by
+/// the edges [`aging_bucket`] uses: `current` (due today is current),
+/// `days_30`, `days_60`, `days_90` or `days_90_plus`.
+pub fn bucket_key(due_date: NaiveDate, as_of: NaiveDate) -> &'static str {
+    if due_date >= as_of {
+        return "current";
+    }
+    let days = (as_of - due_date).num_days();
+    if days <= 30 {
+        "days_30"
+    } else if days <= 60 {
+        "days_60"
+    } else if days <= 90 {
+        "days_90"
+    } else {
+        "days_90_plus"
+    }
 }
 
 #[cfg(test)]

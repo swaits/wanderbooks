@@ -676,8 +676,79 @@ pub enum LedgerError {
     InvalidPaymentAmount(Decimal),
 
     /// Payment exceeds the remaining balance.
-    #[error("payment of {0} exceeds remaining balance of {1}")]
+    #[error(
+        "payment of {0} exceeds remaining balance of {1}; the difference is the excess: record it as a plain entry to a customer-deposits liability (2300) and apply it later"
+    )]
     Overpayment(Decimal, Decimal),
+
+    /// A settlement named no documents.
+    #[error("a settlement needs at least one invoice or bill")]
+    SettlementEmpty,
+
+    /// A settlement's documents aren't all invoices or all bills.
+    #[error("a settlement cannot mix invoices and bills: {0} is not the same kind as the others")]
+    SettlementMixedKinds(String),
+
+    /// A settlement's documents don't all belong to the one party it
+    /// names (rules.md B-42 INVARIANT 1).
+    #[error("{0} is not {1}'s: a settlement covers one party only")]
+    SettlementPartiesDiffer(String, u64),
+
+    /// A discount needs a reason: none is stated in the document's terms,
+    /// or it is larger than its terms allow, or it is taken after the
+    /// discount date (rules.md B-42 INVARIANT 2).
+    #[error(
+        "{doc}: the discount of {discount} needs a reason ({because}); pass discount_reason with the payment"
+    )]
+    DiscountNeedsReason {
+        /// The document.
+        doc: String,
+        /// The discount taken.
+        discount: Decimal,
+        /// Why the terms don't allow it as a matter of course.
+        because: String,
+    },
+
+    /// A discount on a bill whose lines include an asset or prepaid
+    /// account is refused: apportioning it across those lines is deferred
+    /// (D-49).
+    #[error(
+        "{doc} has a line on {code} \"{name}\" (an asset or prepaid account), so a discount on it cannot be apportioned (D-49): record the bill net of the discount, or reclassify by an entry Dr 6995 Purchase Discounts / Cr {code}"
+    )]
+    DiscountOnAssetBill {
+        /// The bill.
+        doc: String,
+        /// The asset line's account code.
+        code: String,
+        /// Its name.
+        name: String,
+    },
+
+    /// A settlement names the same document twice: each document takes one
+    /// application (its cash and its discount), so its bound is one bound.
+    #[error("{0} appears twice in one settlement: name it once, with all its cash and discount")]
+    SettlementDuplicateDocument(String),
+
+    /// A settlement's discount reason is not one line of at most
+    /// [`crate::arap::MAX_REFERENCE_CHARS`] characters.
+    #[error("a discount's reason is one line of at most {0} characters")]
+    InvalidDiscountReason(usize),
+
+    /// A processor's fee is a customer payment's only: a bill is paid from
+    /// the company's own money, with no processor taking a cut.
+    #[error("a processor's fee belongs on a customer payment, not on paying a bill")]
+    FeeOnBill,
+
+    /// A fee's amount or account the books can't take: the message says
+    /// why.
+    #[error("{0}")]
+    InvalidFee(String),
+
+    /// A settlement's figures can't be exact: the cash and discounts
+    /// don't cover the applications, or the fee leaves a negative deposit
+    /// (rules.md B-42 INVARIANT 1).
+    #[error("{0}")]
+    InvalidSettlement(String),
 
     /// A payment's details were refused (its reference): the message says
     /// why.

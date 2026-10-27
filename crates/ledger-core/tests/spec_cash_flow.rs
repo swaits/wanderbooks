@@ -3662,3 +3662,41 @@ fn a_government_selling_services_is_a_supplier() {
     let line = cf.operating.iter().find(|l| l.entry == stamps).unwrap();
     assert_eq!(line.class, Some(OperatingClass::OtherPayments));
 }
+
+/// A bill whose line is equipment, paid later: the payment's cash is
+/// investing, through the bill's split (D-35; rules.md B-14), not
+/// operating. Plan P4b S6 keeps this true when the bill is paid as part
+/// of a settlement.
+#[test]
+fn equipment_bill_payment_is_investing_cash() {
+    use ledger_core::arap::{BillFields, DocumentLine};
+    let mut b = Books::new();
+    b.acct("1000", "Bank", AccountType::Asset);
+    b.acct("1500", "Equipment", AccountType::Asset);
+    b.acct("2000", "Accounts Payable", AccountType::Liability);
+    let bank = b.id("1000");
+    let equipment = b.id("1500");
+    let vendor = b.l.add_vendor("Tobin Harlow Supply").unwrap();
+    let bill =
+        b.l.create_bill_with(
+            vendor,
+            d(2026, 1, 10),
+            d(2026, 2, 9),
+            vec![DocumentLine {
+                description: "Laptop".into(),
+                amount: x("500.00"),
+                class_id: None,
+                account: Some(equipment),
+                quantity: None,
+                unit_price: None,
+            }],
+            BillFields::default(),
+        )
+        .unwrap();
+    b.l.pay_bill(bill, d(2026, 1, 20), x("500.00"), bank)
+        .unwrap();
+    let cf = b.cf(d(2026, 1, 1), d(2026, 1, 31), &["1000"], &[], &["1500"]);
+    assert_eq!(cf.cash_from_investing, -x("500.00"));
+    assert_eq!(cf.cash_from_operations, Decimal::ZERO);
+    assert_eq!(cf.net_change_in_cash, -x("500.00"));
+}

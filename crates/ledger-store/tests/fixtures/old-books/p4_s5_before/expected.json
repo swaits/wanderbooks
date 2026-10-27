@@ -1,0 +1,265 @@
+{
+  "assets": [],
+  "bills": [
+    {
+      "amount_paid": "0",
+      "date": "2026-02-10",
+      "due_date": "2026-03-12",
+      "entry_id": 4,
+      "id": 1,
+      "lines": [
+        {
+          "amount": "300.00",
+          "description": "Drafting"
+        }
+      ],
+      "status": "Open",
+      "vendor_id": 1
+    }
+  ],
+  "entries": [
+    {
+      "date": "2026-01-01",
+      "description": "Opening capital",
+      "id": 1,
+      "lines": [
+        {
+          "account": 1,
+          "amount": {
+            "amount": "1000",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Debit"
+        },
+        {
+          "account": 2,
+          "amount": {
+            "amount": "1000",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Credit"
+        }
+      ],
+      "reversal_of": null,
+      "status": "Posted"
+    },
+    {
+      "date": "2026-02-01",
+      "description": "Invoice 1",
+      "id": 2,
+      "lines": [
+        {
+          "account": 3,
+          "amount": {
+            "amount": "1200.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Debit"
+        },
+        {
+          "account": 4,
+          "amount": {
+            "amount": "1200.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Credit"
+        }
+      ],
+      "reversal_of": null,
+      "status": "Posted"
+    },
+    {
+      "date": "2026-02-15",
+      "description": "Payment on invoice 1",
+      "id": 3,
+      "lines": [
+        {
+          "account": 1,
+          "amount": {
+            "amount": "400.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Debit"
+        },
+        {
+          "account": 3,
+          "amount": {
+            "amount": "400.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Credit"
+        }
+      ],
+      "reversal_of": null,
+      "status": "Posted"
+    },
+    {
+      "date": "2026-02-10",
+      "description": "Bill 1",
+      "id": 4,
+      "lines": [
+        {
+          "account": 5,
+          "amount": {
+            "amount": "300.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Debit"
+        },
+        {
+          "account": 6,
+          "amount": {
+            "amount": "300.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Credit"
+        }
+      ],
+      "reversal_of": null,
+      "status": "Posted"
+    }
+  ],
+  "entry_parties": [
+    [
+      2,
+      [
+        {
+          "party_id": 1,
+          "share": "derived"
+        }
+      ]
+    ],
+    [
+      3,
+      [
+        {
+          "party_id": 1,
+          "share": "derived"
+        }
+      ]
+    ],
+    [
+      4,
+      [
+        {
+          "party_id": 2,
+          "share": "derived"
+        }
+      ]
+    ]
+  ],
+  "invoices": [
+    {
+      "amount_paid": "400.00",
+      "customer_id": 1,
+      "date": "2026-02-01",
+      "due_date": "2026-03-03",
+      "entry_id": 2,
+      "id": 1,
+      "lines": [
+        {
+          "amount": "1200.00",
+          "description": "Design"
+        }
+      ],
+      "status": "Partial"
+    }
+  ],
+  "payroll_runs": [],
+  "periods": [],
+  "recurring": [],
+  "schedules": [],
+  "snapshot": {
+    "Ok": {
+      "balance_sheet": {
+        "assets": "2200",
+        "balanced": true,
+        "current_earnings": "900",
+        "equity": "1900",
+        "liabilities": "300"
+      },
+      "profit_and_loss": {
+        "expenses": "300",
+        "net_income": "900",
+        "revenue": "1200"
+      },
+      "trial_balance": {
+        "lines": [
+          {
+            "code": "1000",
+            "credit": "0",
+            "debit": "1400",
+            "name": "Bank"
+          },
+          {
+            "code": "1200",
+            "credit": "0",
+            "debit": "800",
+            "name": "Accounts Receivable"
+          },
+          {
+            "code": "2000",
+            "credit": "300",
+            "debit": "0",
+            "name": "Accounts Payable"
+          },
+          {
+            "code": "3000",
+            "credit": "1000",
+            "debit": "0",
+            "name": "Capital"
+          },
+          {
+            "code": "4000",
+            "credit": "1200",
+            "debit": "0",
+            "name": "Revenue"
+          },
+          {
+            "code": "6999",
+            "credit": "0",
+            "debit": "300",
+            "name": "General Expenses"
+          }
+        ],
+        "total_credits": "2500",
+        "total_debits": "2500"
+      }
+    }
+  },
+  "verify": {
+    "Ok": null
+  }
+}

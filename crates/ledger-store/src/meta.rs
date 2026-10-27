@@ -14,7 +14,9 @@
 //! ```
 
 use crate::error::StoreError;
+use crate::journal::JournalLine;
 use chrono::NaiveDate;
+use ledger_core::arap::{SendKind, Sent, SentVia};
 use ledger_core::conventions::{Approval, ConventionKind, NewConvention, NewDecision, NewOpenItem};
 use ledger_core::settings::{Change, Source};
 use ledger_core::{ClassId, ProjectFacts, ProjectKind, ProjectStatus};
@@ -357,6 +359,61 @@ pub fn entry_approved_of(p: &Value, seq: u64) -> Result<(u64, Approval), StoreEr
             note: opt_str(p, E, "note")?,
             source: source_of(p, E, "source")?,
             seq,
+        },
+    ))
+}
+
+/// A list of strings, each checked (`to` on `invoice.sent`).
+fn str_list(p: &Value, event: &str, k: &str) -> Result<Vec<String>, StoreError> {
+    p.get(k)
+        .and_then(Value::as_array)
+        .ok_or_else(|| corrupt(event, k))?
+        .iter()
+        .map(|v| {
+            v.as_str()
+                .map(str::to_string)
+                .ok_or_else(|| corrupt(event, k))
+        })
+        .collect()
+}
+
+/// `invoice.sent {invoice_id, on, by, via, to, kind, reference?, note?}`
+/// (plan P4b S5): a send is a fact of the document's life and moves no
+/// figure.
+pub fn invoice_sent(invoice: u64, s: &Sent) -> Value {
+    let mut o = Map::new();
+    o.insert("invoice_id".into(), json!(invoice));
+    o.insert("on".into(), json!(s.on.to_string()));
+    o.insert("by".into(), json!(s.by));
+    o.insert("via".into(), json!(s.via.key()));
+    o.insert("to".into(), json!(s.to));
+    o.insert("kind".into(), json!(s.kind.key()));
+    put(&mut o, "reference", s.reference.clone());
+    put(&mut o, "note", s.note.clone());
+    Value::Object(o)
+}
+
+/// Read an `invoice.sent`: `(invoice, send)`. A channel or kind this
+/// version doesn't know is newer, never corrupt (rules.md B-27).
+pub fn invoice_sent_of(line: &JournalLine) -> Result<(u64, Sent), StoreError> {
+    const E: &str = "invoice.sent";
+    let p = &line.payload;
+    let via = str_of(p, E, "via")?;
+    let kind = str_of(p, E, "kind")?;
+    Ok((
+        u64_of(p, E, "invoice_id")?,
+        Sent {
+            on: date_of(&str_of(p, E, "on")?, E, "on")?,
+            by: str_of(p, E, "by")?,
+            via: SentVia::parse(&via).ok_or_else(|| {
+                crate::format::newer_content(line, format!("the send channel {via:?}"))
+            })?,
+            to: str_list(p, E, "to")?,
+            kind: SendKind::parse(&kind).ok_or_else(|| {
+                crate::format::newer_content(line, format!("the send kind {kind:?}"))
+            })?,
+            reference: opt_str(p, E, "reference")?,
+            note: opt_str(p, E, "note")?,
         },
     ))
 }

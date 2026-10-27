@@ -778,6 +778,17 @@ pub enum LedgerError {
     #[error("{0}")]
     InvalidVoid(String),
 
+    /// A void invoice can't be recorded as sent: it was never a document
+    /// the customer should have received (plan P4b S5, B-38).
+    #[error("invoice {0} is void: a void invoice was never sent")]
+    DocumentVoid(u64),
+
+    /// A send was refused: the message says why (no recipients, a date
+    /// before its invoice, a recipient or reference that breaks the
+    /// books' text rule). Plan P4b S5.
+    #[error("{0}")]
+    InvalidSend(String),
+
     /// Invoice/bill due date is before its date.
     #[error("due date {0} is before document date")]
     DueBeforeDate(String),

@@ -12,8 +12,8 @@
 use chrono::NaiveDate;
 use ledger_core::LedgerError;
 use ledger_core::arap;
-use ledger_core::arap::DocumentLine;
-use ledger_core::{AccountType, Currency, Money, Side};
+use ledger_core::arap::{DocumentLine, SendKind, Sent, SentVia};
+use ledger_core::{AccountType, Currency, DocRef, Money, Side};
 use ledger_store::{JOURNAL_FILE, Store, StoreError, Subject};
 use rust_decimal::Decimal;
 use serde_json::{Value, json};
@@ -1052,5 +1052,192 @@ fn preview_invoice_and_bill_journal_nothing() {
         )
         .is_err()
     );
+    s.verify().unwrap();
+}
+
+/// A send, as these tests record one (plan P4b S5, A-4).
+fn sent(on: NaiveDate, kind: SendKind, reference: Option<&str>) -> Sent {
+    Sent {
+        on,
+        by: "agent".into(),
+        via: SentVia::Email,
+        to: vec!["billing@fernhill.example".into()],
+        kind,
+        reference: reference.map(str::to_string),
+        note: None,
+    }
+}
+
+/// R-A step 3 (plan P4b S5): `invoice.sent` is `documents_v2`'s, so books
+/// that haven't declared it refuse a send, journaling nothing; after the
+/// owner's go-ahead it journals, and the reopened books hold it.
+#[test]
+fn mark_sent_waits_for_documents_v2() {
+    let dir = test_dir("sent-waits");
+    let mut s = Store::create_in_format(
+        &dir.0,
+        Currency::USD,
+        &ledger_store::JournalFormat::default(),
+    )
+    .unwrap();
+    let c = s.add_customer("Fernhill Labs").unwrap();
+    let inv = s
+        .create_invoice(
+            c,
+            d(2026, 3, 1),
+            d(2026, 3, 31),
+            vec![line("Design", 10_000)],
+        )
+        .unwrap();
+    let head = s.head();
+    let from = journal_len(&dir.0);
+    let one = sent(d(2026, 3, 2), SendKind::Original, None);
+    match s.mark_sent(inv, one.clone()) {
+        Err(StoreError::FormatUpgradePending { need }) => {
+            assert_eq!(need, "the journal feature documents_v2")
+        }
+        other => panic!("expected FormatUpgradePending, got {other:?}"),
+    }
+    assert_eq!(s.head(), head, "a refusal journals nothing");
+    assert_eq!(journal_len(&dir.0), from);
+    assert!(s.upgrade_format().unwrap().is_some(), "the go-ahead");
+    s.mark_sent(inv, one).unwrap();
+    let live = s.ledger().clone();
+    drop(s);
+    let reopened = Store::open(&dir.0).unwrap();
+    reopened.verify().unwrap();
+    assert!(
+        live.differs_from(reopened.ledger()).is_empty(),
+        "{:?}",
+        live.differs_from(reopened.ledger())
+    );
+    assert_eq!(reopened.ledger().get_invoice(inv).unwrap().sends.len(), 1);
+}
+
+/// R-A and R-B (plan P4b S5): a send journals one `invoice.sent` line with
+/// the whole record, replays into the invoice, and projects into
+/// `invoice_sends`; two sends keep their order.
+#[test]
+fn sends_replay_and_project() {
+    let dir = test_dir("sent-replay");
+    let mut s = Store::create(&dir.0, Currency::USD).unwrap();
+    let c = s.add_customer("Fernhill Labs").unwrap();
+    let inv = s
+        .create_invoice(
+            c,
+            d(2026, 3, 1),
+            d(2026, 3, 31),
+            vec![line("Design", 10_000)],
+        )
+        .unwrap();
+    let from = journal_len(&dir.0);
+    let original = sent(d(2026, 3, 2), SendKind::Original, None);
+    let reminder = sent(d(2026, 3, 20), SendKind::Reminder, Some("msg-2"));
+    s.mark_sent(inv, original.clone()).unwrap();
+    s.mark_sent(inv, reminder.clone()).unwrap();
+    let got = since(&dir.0, from);
+    assert_eq!(got.len(), 2, "{got:?}");
+    assert_eq!(got[0].0, "invoice.sent");
+    assert_eq!(got[0].1["invoice_id"], json!(inv));
+    assert_eq!(got[0].1["on"], json!("2026-03-02"));
+    assert_eq!(got[0].1["by"], json!("agent"));
+    assert_eq!(got[0].1["via"], json!("email"));
+    assert_eq!(got[0].1["to"], json!(["billing@fernhill.example"]));
+    assert_eq!(got[0].1["kind"], json!("original"));
+    assert_eq!(got[0].1.get("reference"), None, "absent, not null");
+    assert_eq!(got[1].1["kind"], json!("reminder"));
+    assert_eq!(got[1].1["reference"], json!("msg-2"));
+    s.verify().unwrap();
+    let live = s.ledger().clone();
+    drop(s);
+    let reopened = Store::open(&dir.0).unwrap();
+    reopened.verify().unwrap();
+    assert!(
+        live.differs_from(reopened.ledger()).is_empty(),
+        "{:?}",
+        live.differs_from(reopened.ledger())
+    );
+    assert_eq!(
+        reopened.ledger().get_invoice(inv).unwrap().sends,
+        vec![original, reminder]
+    );
+}
+
+/// A send changes no figure (plan P4b S5, B-38): on the fixture book an
+/// earlier version wrote, every report, every derived document figure and
+/// the invoice's whole DocState are the same before and after it.
+#[test]
+fn a_send_changes_no_figure() {
+    let dir = fixture("sent-figure");
+    let mut s = Store::open(&dir.0).unwrap();
+    s.upgrade_format().unwrap();
+    let before = ledger_core::reports::snapshot(s.ledger()).unwrap();
+    let state_before = s.ledger().invoice_state(1, d(9999, 12, 31)).unwrap();
+    let cached_before: Vec<_> = s
+        .ledger()
+        .invoices()
+        .into_iter()
+        .map(|i| (i.id, i.amount_paid, i.owed, i.status))
+        .collect();
+    s.mark_sent(1, sent(d(2026, 4, 1), SendKind::Original, None))
+        .unwrap();
+    assert_eq!(
+        ledger_core::reports::snapshot(s.ledger()).unwrap(),
+        before,
+        "a send moves no report"
+    );
+    assert_eq!(
+        s.ledger().invoice_state(1, d(9999, 12, 31)).unwrap(),
+        state_before,
+        "a send moves no DocState"
+    );
+    assert_eq!(
+        s.ledger()
+            .invoices()
+            .into_iter()
+            .map(|i| (i.id, i.amount_paid, i.owed, i.status))
+            .collect::<Vec<_>>(),
+        cached_before,
+        "and no derived cache"
+    );
+    assert_eq!(
+        trial_balance_json(&s),
+        golden()["trial_balance"],
+        "the golden's general ledger, a send included"
+    );
+    assert_eq!(s.ledger().get_invoice(1).unwrap().sends.len(), 1);
+    s.verify().unwrap();
+}
+
+/// A void invoice is refused a send (plan P4b S5, `DocumentVoid`),
+/// journaling nothing; an invoice open on the send's date but voided after
+/// it keeps the send that happened first.
+#[test]
+fn mark_sent_on_void_refused() {
+    let dir = test_dir("sent-void");
+    let mut s = Store::create(&dir.0, Currency::USD).unwrap();
+    let c = s.add_customer("Fernhill Labs").unwrap();
+    let inv = s
+        .create_invoice(
+            c,
+            d(2026, 3, 1),
+            d(2026, 3, 31),
+            vec![line("Design", 10_000)],
+        )
+        .unwrap();
+    s.void_document(DocRef::Invoice(inv), d(2026, 3, 10), "duplicate")
+        .unwrap();
+    let head = s.head();
+    let from = journal_len(&dir.0);
+    match s.mark_sent(inv, sent(d(2026, 3, 11), SendKind::Original, None)) {
+        Err(StoreError::Ledger(LedgerError::DocumentVoid(id))) => assert_eq!(id, inv),
+        other => panic!("expected DocumentVoid, got {other:?}"),
+    }
+    assert_eq!(s.head(), head, "a refusal journals nothing");
+    assert_eq!(journal_len(&dir.0), from);
+    // Dated before the void, the send was a real one: it replays.
+    s.mark_sent(inv, sent(d(2026, 3, 5), SendKind::Original, None))
+        .unwrap();
+    assert_eq!(s.ledger().get_invoice(inv).unwrap().sends.len(), 1);
     s.verify().unwrap();
 }

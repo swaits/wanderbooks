@@ -27,7 +27,8 @@ const TYPES: &[&str] = &[
     "asset.registered", "attachment.withdrawn", "bill.created", "bill.paid", "class.added",
     "customer.added", "document.filed", "entry.created", "entry.line_added",
     "entry.line_class_set", "entry.posted", "entry.reversed", "entry.vendor_set",
-    "fx.rate_set", "invoice.created", "invoice.payment_received", "journal.tail_repaired",
+    "fx.rate_set", "invoice.created", "invoice.payment_received", "invoice.sent",
+    "journal.tail_repaired",
     "line.cleared", "payroll.run", "period.closed", "period.created", "receipt.attached",
     "receipt.linked", "receipt.unlinked", "recurring.generated", "recurring.registered",
     "schedule.posted", "schedule.registered", "vendor.1099_set", "vendor.added",
@@ -61,6 +62,7 @@ const FIELDS: &[&str] = &[
     "rule", "contributor_adjusted_basis", "fmv_at_contribution", "sec704c_method",
     "tax_basis_723", "depreciable_basis", "built_in_gain_704c", "on", "convention",
     "status", "party_id", "started_on", "ended_on", "links", "notes", "projects",
+    "via", "by", "to", "reference", "note",
 ];
 
 /// Journal features a `journal.format_set` may declare.

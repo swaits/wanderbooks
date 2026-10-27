@@ -115,9 +115,12 @@ settings-and-conventions section says how to use them.
   (below); its next step comes first, before anything else, at every
   start until it is done: `books.handbook {section: "format-upgrade"}`,
   "Tell the human first: …".
-  `isolation` is `same_user (advisory)` (D-32): the books are hidden from
-  agents in the owner's own account, not locked against them. Lists cut
-  to fit say so in `truncated` ("conventions: 4 more (books.conventions)").
+  `isolation` is `same_user (advisory)` locally (D-32): the books are
+  hidden from agents in the owner's own account, not locked against them.
+  On the owner's own machine, where the server runs as a separate account
+  and agents have none, the unit passes `--isolation enforced` and it is
+  `service_user (enforced)`; the server never guesses (P9a, 3.8). Lists
+  cut to fit say so in `truncated` ("conventions: 4 more (books.conventions)").
   `projects` lists the active and paused projects by name, at most 20
   ("projects: N more (books.projects)" past that).
   `next_steps`, in order: the format upgrade's (when waiting); the
@@ -326,8 +329,8 @@ The long guidance is the **handbook**, compiled in from
   contract, entries, drafts-and-reversals, evidence-and-receipts,
   attachments, files-in-out, reconciliation, fixed-assets,
   prepaid-and-recurring, revenue-and-payouts, parties-and-tins, 1099,
-  cpa-handoff, settings-and-conventions, viewer, backups, format-upgrade,
-  rules-that-change, control-roles, tracing-figures.
+  cpa-handoff, settings-and-conventions, viewer, backups, self-host,
+  format-upgrade, rules-that-change, control-roles, tracing-figures.
 - The same as resources: `books://handbook` (the index, JSON) and
   `books://handbook/{section}` (Markdown, `text/markdown`), one listed per
   section.

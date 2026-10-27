@@ -244,16 +244,32 @@ struct Args {
     /// server finds the root itself, and no command line names it.
     root: Option<PathBuf>,
     knobs: Knobs,
+    /// Flags the server is started with (P9a): `--isolation`, `--http`.
+    server_flags: Vec<String>,
 }
 
 fn parse_args(prog: &str, args: impl IntoIterator<Item = String>) -> Result<Option<Args>, String> {
     let mut root = None;
     let mut knobs = Knobs::default();
-    let mut args = args.into_iter();
+    let mut server_flags: Vec<String> = Vec::new();
+    let mut args = args.into_iter().peekable();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--root" => root = Some(PathBuf::from(args.next().ok_or("--root needs a folder")?)),
             FLAG => knobs = Knobs::parse(&args.next().ok_or("--test-knobs needs a value")?)?,
+            // Passed through to the server (P9a).
+            "--isolation" => {
+                server_flags.push(arg);
+                server_flags.push(args.next().ok_or("--isolation needs a level")?);
+            }
+            "--http" => {
+                server_flags.push(arg);
+                if let Some(v) = args.peek()
+                    && !v.starts_with('-')
+                {
+                    server_flags.push(args.next().unwrap_or_default());
+                }
+            }
             "--help" | "-h" => {
                 eprintln!("usage: {prog} [--root DIR]");
                 eprintln!("  Holds the books open while anything holds a lease on it; started by");
@@ -263,7 +279,11 @@ fn parse_args(prog: &str, args: impl IntoIterator<Item = String>) -> Result<Opti
             other => return Err(format!("unknown argument: {other}")),
         }
     }
-    Ok(Some(Args { root, knobs }))
+    Ok(Some(Args {
+        root,
+        knobs,
+        server_flags,
+    }))
 }
 
 /// `wanderbooks host`.
@@ -395,6 +415,8 @@ struct Host {
     root: Root,
     run: PathBuf,
     knobs: Knobs,
+    /// Flags the server is started with (P9a).
+    server_flags: Vec<String>,
     leases: BTreeMap<u64, Held>,
     next_lease: u64,
     ready: bool,
@@ -417,6 +439,7 @@ impl Host {
             root,
             run,
             knobs: args.knobs,
+            server_flags: args.server_flags,
             leases: BTreeMap::new(),
             next_lease: 1,
             ready: false,
@@ -655,6 +678,8 @@ impl Host {
         if self.explicit_root {
             command.arg("--root").arg(self.root.path());
         }
+        // What `serve` was told, for the server (P9a).
+        command.args(&self.server_flags);
         let d = Knobs::default();
         for (flag, now, default) in [
             ("--backup-quiet", self.knobs.backup_quiet, d.backup_quiet),

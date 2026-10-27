@@ -60,7 +60,7 @@
 //! ```
 
 use crate::admin::{self, Request, Response};
-use crate::server::{BooksServer, Served, SharedStore};
+use crate::server::{BooksServer, Isolation, Served, SharedStore};
 use ledger_store::Store;
 use ledger_store::access::{Access, AccessLog, Outcome, Principal};
 use ledger_store::auth::{Principals, Scope, Token};
@@ -187,6 +187,9 @@ struct Books {
     drill_first: Duration,
     /// Held through a restore: one at a time.
     restoring: Mutex<()>,
+    /// How these books are kept from agents (plan 3.8, P9a): what
+    /// `books.start` reports (`--isolation`).
+    isolation: Isolation,
 }
 
 impl Books {
@@ -294,7 +297,7 @@ impl Books {
         }
         let waiting = Arc::new(Mutex::new(store.journal_format().upgrade()));
         let database = (store.database_file(), store.other_databases());
-        let served = Served::open(store).map_err(|e| self.hide(e))?;
+        let served = Served::open_with(store, self.isolation).map_err(|e| self.hide(e))?;
         let config = StreamableHttpServerConfig::default()
             .with_json_response(true)
             .with_legacy_session_mode(true)
@@ -1853,9 +1856,13 @@ fn bind(run: &Path, name: &str) -> std::io::Result<tokio::net::UnixListener> {
 }
 
 fn print_usage(prog: &str) {
-    eprintln!("usage: {prog} [--root DIR]");
+    eprintln!("usage: {prog} [--root DIR] [--isolation LEVEL] [--http [ADDR]]");
     eprintln!("  The books server for the data root: started by the host, not by hand.");
     eprintln!("  It runs until its standard input ends, or SIGTERM, SIGINT or SIGHUP.");
+    eprintln!("  --isolation same_user | enforced: what books.start says of how these books");
+    eprintln!("    are kept from agents (enforced on the owner's own machine: P9a).");
+    eprintln!("  --http [ADDR]: also serve the MCP door on 127.0.0.1:7411 (or ADDR), for a");
+    eprintln!("    TLS proxy or a tunnel in front of it. Off unless given.");
 }
 
 /// `wanderbooks server`: serve every book in the data root until told to
@@ -1867,10 +1874,34 @@ pub fn run(
     let mut root: Option<PathBuf> = None;
     let mut backup_quiet = BACKUP_QUIET;
     let mut drill_first = DRILL_FIRST;
-    let mut args = args.into_iter();
+    let mut isolation = Isolation::SameUser;
+    let mut tunnel: Option<std::net::SocketAddr> = None;
+    let mut args = args.into_iter().peekable();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--root" => root = Some(PathBuf::from(args.next().ok_or("--root needs a folder")?)),
+            // How the books are kept from agents (plan 3.8, P9a): the
+            // system unit on the owner's own machine passes `enforced`;
+            // the server never guesses.
+            "--isolation" => {
+                let value = args
+                    .next()
+                    .ok_or("--isolation needs same_user or enforced")?;
+                isolation = Isolation::parse(&value)?;
+            }
+            // The tunnel's door (plan 3.9, P9a): the same MCP service on
+            // 127.0.0.1, for a TLS proxy or tunnel in front of it. Off
+            // unless asked for; the bearer token still guards every call.
+            "--http" => {
+                let addr = match args.peek() {
+                    Some(v) if !v.starts_with('-') => args.next().unwrap_or_default(),
+                    _ => "127.0.0.1:7411".to_string(),
+                };
+                tunnel =
+                    Some(addr.parse().map_err(|e| {
+                        format!("--http takes an address like 127.0.0.1:7411: {e}")
+                    })?);
+            }
             // How long the books stay unwritten before a backup (tests).
             "--backup-quiet" => {
                 let ms: u64 = args
@@ -1967,6 +1998,7 @@ pub fn run(
         backup_quiet,
         drill_first,
         restoring: Mutex::new(()),
+        isolation,
     });
     {
         let loaded = books.load_principals();
@@ -1984,7 +2016,7 @@ pub fn run(
         eprintln!("wanderbooks server: told to close while opening: closed");
         Ok(())
     } else {
-        rt.block_on(serve(books.clone(), &run, &stops))
+        rt.block_on(serve(books.clone(), &run, &stops, tunnel))
     };
     // No request is running now (serve waited for each); the stores go
     // before the lock, and the process exit would release both.
@@ -2024,9 +2056,26 @@ async fn serve(
     books: Arc<Books>,
     run: &Path,
     stops: &Stops,
+    tunnel: Option<std::net::SocketAddr>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mcp_listener = OwnerOnly(bind(run, MCP_SOCKET)?);
     let mut admin_listener = OwnerOnly(bind(run, ADMIN_SOCKET)?);
+    // The tunnel's door (plan 3.9, P9a): the same service on 127.0.0.1,
+    // for the TLS proxy or tunnel in front of it. Bound before ready, so
+    // what starts beside the server finds it; a bind that fails is said
+    // and is not fatal (3.9: the books' own sockets still serve).
+    let tunnel_listener = match tunnel {
+        Some(addr) => match tokio::net::TcpListener::bind(addr).await {
+            Ok(listener) => Some(listener),
+            Err(e) => {
+                eprintln!(
+                    "wanderbooks server: the tunnel's door at {addr} can't be bound ({e}); serving the local sockets only"
+                );
+                None
+            }
+        },
+        None => None,
+    };
     let stop = stops.close.clone();
     {
         use std::io::Write;
@@ -2083,10 +2132,20 @@ async fn serve(
     // close is done: a client is never cut off mid-request by it.
     let shut = CancellationToken::new();
     let graceful = shut.clone();
+    let tunnel_app = app.clone();
     let mut http = tokio::spawn(async move {
         axum::serve(mcp_listener, app)
             .with_graceful_shutdown(async move { graceful.cancelled().await })
             .await
+    });
+    let tunnel_http = tunnel_listener.map(|listener| {
+        let app = tunnel_app;
+        let graceful = shut.clone();
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async move { graceful.cancelled().await })
+                .await
+        })
     });
     let admin_jobs = TaskTracker::new();
     loop {
@@ -2171,6 +2230,14 @@ async fn serve(
         Ok(Ok(Err(e))) => eprintln!("wanderbooks server: {e}"),
         Ok(Err(e)) => eprintln!("wanderbooks server: {e}"),
         Err(_) => http.abort(),
+    }
+    if let Some(mut tunnel) = tunnel_http {
+        match tokio::time::timeout(HTTP_GRACE, &mut tunnel).await {
+            Ok(Ok(Ok(()))) => {}
+            Ok(Ok(Err(e))) => eprintln!("wanderbooks server: {e}"),
+            Ok(Err(e)) => eprintln!("wanderbooks server: {e}"),
+            Err(_) => tunnel.abort(),
+        }
     }
     eprintln!("wanderbooks server: closed");
     Ok(())
@@ -2599,6 +2666,7 @@ mod tests {
             backup_quiet: BACKUP_QUIET,
             drill_first: DRILL_FIRST,
             restoring: Mutex::new(()),
+            isolation: Isolation::SameUser,
         });
         let loaded = books.load_principals();
         *books.principals.write().unwrap() = loaded;

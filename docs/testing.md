@@ -2970,3 +2970,75 @@ negative-zero test; `filter(|a| a.tool.is_some()).take(12)` and
 intact-blob set (a damaged blob reported per attachment) and `Store::
 disk_check`'s snapshot load and `Unreadable` arm; the viewer wrapper's
 `Target` arms.
+
+## P9a: self-host, the move, and the static bearer over a tunnel (2026-10-26)
+
+Plan 8.2 P9a, D-51. The books on a machine of the owner's own: the same
+server as a dedicated account (`deploy/wanderbooks-server.service`), a
+data root only that account can read, `books.start` saying
+`service_user (enforced)` when the unit passes `--isolation enforced`, the
+move by `books adopt` with its head check, and the same MCP service on a
+loopback door (`--http`) for Caddy or a tunnel.
+
+- **ledger-mcp:** `server::Isolation` (`label`, `parse`), carried from
+  `--isolation` through `Served::open_with` into `BooksServer`, and read by
+  `books.start`'s `start_out` (`tools/kept.rs`); `--http` binds a second
+  `axum::serve` listener over the same router and the same door, before the
+  ready line, and closes with the same graceful shutdown (a failed bind is
+  said and is not fatal, 3.9). `common/mod.rs`'s harness is unchanged; the
+  local flag test starts its own server (`two_user.rs::FlaggedServer`)
+  because `common::Server` takes no extra flags.
+- **ledger-host:** `serve --isolation/--http` → `Opener::starting_with` →
+  `start::start_host` → `host::Args` → the server's command line. A host
+  already running keeps the flags it was started with (documented in
+  `deploy/README.md` and the opener's comment).
+- **`crates/ledger-cli/tests/two_user.rs`:**
+  `isolation_label_is_enforced_under_the_unit` (a server with no flag says
+  `same_user (advisory)`; with `--isolation enforced --http` it says
+  `service_user (enforced)` over the Unix socket and over the loopback
+  door, and both report the same head; the unit file itself is read to
+  require the `--isolation enforced`, `--http` and `IPAddress*` lines the
+  test exercises);
+  `agent_uid_cannot_read_tenant` and `self_host_adopt_same_head` (two
+  accounts, run by `.github/workflows/two-user.yml`; they skip with a line
+  when `WB_TWO_USER` is unset, so a laptop's suite stays green). The first
+  proves `read_dir` and a journal `open` are refused with
+  `PermissionDenied`, then reads (`books.chart`), writes
+  (`books.add_account`), uploads (`books.begin_upload` + the `u/` route),
+  exports (`books.export` + the `x/` route, checked against its SHA-256)
+  and verifies (`books.verify {blobs:true}`) with the bearer over HTTP, in
+  a second book so the moved books' head is never advanced; the second
+  reads the source clone's journal, computes its head from the last line's
+  canonical bytes, and requires the moved books' `books.start` and
+  `books.verify` to report the same seq, hash and event count.
+- **The job:** `.github/workflows/two-user.yml` makes the accounts, adopts
+  the repository's `p2-served` fixture into a desktop root at this version,
+  copies the book as the transport (D-31), adopts it into
+  `/srv/wanderbooks` behind `--isolation enforced --http`, mints a token
+  with the `file_keyring` test knob (a runner has no Secret Service), and
+  runs the test as the runner. `deploy/README.md` is the same recipe by
+  hand; the job does not install the systemd unit (it drives `serve` with
+  the same flags), so the unit's lines are checked by the test's file read
+  and by review, not executed as a unit.
+- **Not covered:** the recipe walked on a clean VM by someone other than
+  its author (Done when 2), a real TLS tunnel (Tailscale Funnel or Caddy)
+  and a real Secret Service on a headless server. Those are the owner's
+  and the EM's checks; the As-built block says so.
+- **Docs:** `docs/architecture.md` "Self-host", `docs/mcp-interface.md`
+  (`books.start`'s two `isolation` values), `docs/parity.md` (no semantic
+  row moved; the floor stands), the handbook's `self-host` section, and
+  `deploy/README.md`.
+
+**For P12 (mutation targets, none run, D-33):** `Isolation::parse`'s
+`same_user`/`advisory` and `service_user`/`enforced` arms (a wrong arm
+would report the advisory truth on the enforced machine);
+`Isolation::label`'s two strings; `start_out`'s `self.isolation.label()`
+(it replaced a literal, and a mutant that restores a literal must fail the
+two-door test); the `--http` arm's `args.peek()` guard and the default
+`127.0.0.1:7411` (binding the wrong interface, or consuming the next flag,
+must fail); `tunnel.is_some()` and the bind failure path (ready must still
+come after the try, and a failed bind must not be fatal); `open_with`'s
+`isolation` into `Served` and `BooksServer::new`'s copy (a dropped field
+must fail `isolation_label_is_enforced_under_the_unit`); the host's
+`server_flags` extension and `parse_args`' passthrough of `--isolation`
+and its optional `--http` value.

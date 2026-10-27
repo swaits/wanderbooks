@@ -231,16 +231,44 @@ pub fn serve(
     args: impl IntoIterator<Item = String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut common = Common::default();
-    let mut args = args.into_iter();
+    let mut server_flags: Vec<String> = Vec::new();
+    let mut args = args.into_iter().peekable();
     while let Some(arg) = args.next() {
         if common.take(&arg, &mut args)? {
             continue;
         }
         match arg.as_str() {
+            // What this server is told (P9a): passed through the host.
+            "--isolation" => {
+                let level = args
+                    .next()
+                    .ok_or("--isolation needs same_user or enforced")?;
+                if !matches!(
+                    level.as_str(),
+                    "same_user" | "advisory" | "service_user" | "enforced"
+                ) {
+                    eprintln!("error: --isolation takes same_user or enforced, not {level:?}");
+                    return Err(exit(2));
+                }
+                server_flags.push(arg);
+                server_flags.push(level);
+            }
+            "--http" => {
+                server_flags.push(arg);
+                if let Some(v) = args.peek()
+                    && !v.starts_with('-')
+                {
+                    server_flags.push(args.next().unwrap_or_default());
+                }
+            }
             "--help" | "-h" => {
-                eprintln!("usage: {prog}");
+                eprintln!("usage: {prog} [--root DIR] [--isolation LEVEL] [--http [ADDR]]");
                 eprintln!("  Opens the books and holds them open until Ctrl-C. They close 10 s");
                 eprintln!("  after nothing else (the app, an agent session) holds them.");
+                eprintln!("  --isolation same_user | enforced: how books.start says these books");
+                eprintln!("    are kept from agents (enforced: the owner's own machine, P9a).");
+                eprintln!("  --http [ADDR]: also serve the MCP door on 127.0.0.1:7411 (or ADDR),");
+                eprintln!("    for a TLS proxy or a tunnel in front of it.");
                 return Ok(());
             }
             other => {
@@ -259,7 +287,8 @@ pub fn serve(
             common.knobs,
             Kind::Serve,
             None,
-        )?;
+        )?
+        .starting_with(server_flags);
         // Ctrl-C, SIGTERM and SIGHUP are heard from the start, whatever
         // serve is doing (opening, waiting to try again): none is missed.
         let stop = std::sync::Arc::new(tokio::sync::Notify::new());

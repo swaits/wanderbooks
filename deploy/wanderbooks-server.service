@@ -1,0 +1,60 @@
+# The books on a machine of the owner's own (plan 8.2 P9a, section 3.8).
+#
+# One server, one account, one door. It runs `wanderbooks serve` as the
+# dedicated account `wanderbooks`, over a data root only that account can
+# read, and says `service_user (enforced)` in `books.start` (the flag; the
+# server never guesses). Agents have no account on this machine and reach
+# the books through the TLS door on 127.0.0.1:7411 (a tunnel or Caddy in
+# front of it), with a static bearer token.
+#
+# No seccomp or Landlock lines: D-32 (no self-confinement) and D-51 (P9a
+# is the recipe and the boundary between accounts, nothing more). What is
+# here is the unit's own hardening of the account and the filesystem.
+#
+# Install: /usr/local/bin/wanderbooks is the server-only build
+# (`cargo build --release -p ledger-cli --no-default-features`), and the
+# root has been made once by `wanderbooks setup --root /srv/wanderbooks`
+# as the wanderbooks account. See README.md in this folder for the steps.
+
+[Unit]
+Description=wanderbooks: the books server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=wanderbooks
+Group=wanderbooks
+DynamicUser=no
+# The account's own home (the keyring, when one runs; the recorded root).
+StateDirectory=wanderbooks
+Environment=HOME=/var/lib/wanderbooks
+WorkingDirectory=/
+# The books' data root, and the tunnel's door. `--isolation enforced` is
+# what `books.start` reports; `--http` serves the same MCP service on
+# 127.0.0.1 for Caddy or a tunnel. Drop `--http` if this machine has no
+# TLS door.
+ExecStart=/usr/local/bin/wanderbooks serve --root /srv/wanderbooks --isolation enforced --http 127.0.0.1:7411
+# `serve` hears SIGTERM and lets go: the server finishes the call in
+# progress, makes a last backup and closes. A long call is never cut off.
+KillSignal=SIGTERM
+TimeoutStopSec=600
+Restart=on-failure
+RestartSec=2s
+
+# The account and the filesystem (plan 3.8, 3.9).
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/srv/wanderbooks
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+# No network but loopback: the tunnel reaches 127.0.0.1:7411, and the
+# server reaches nothing out. A book whose backup target is a remote git
+# repository needs that host allowed here (`IPAddressAllow=` its address)
+# or its backups fail; see README.md.
+IPAddressDeny=any
+IPAddressAllow=localhost
+
+[Install]
+WantedBy=multi-user.target

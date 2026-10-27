@@ -74,6 +74,46 @@ pub struct BooksServer {
     exports: ledger_store::exports::Exports,
     /// The books' backups (backup.rs).
     backups: Arc<crate::backup::Backups>,
+    /// How these books are kept from agents (plan 3.8, P9a): what
+    /// `books.start` reports.
+    isolation: Isolation,
+}
+
+/// How the books are kept from agents (plan 3.8, 2.1; D-32, D-51).
+///
+/// Locally the server runs as the human and the books are hidden, not
+/// locked: `SameUser`. On a machine of the owner's the server runs as a
+/// dedicated account and agents have no account there: `ServiceUser`.
+/// The server never guesses which; `--isolation enforced` says so
+/// (`serve --isolation enforced` under the system unit, P9a).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Isolation {
+    /// Hidden from the agent in the owner's own account, not locked.
+    SameUser,
+    /// A separate account on another machine; the agent has none there.
+    ServiceUser,
+}
+
+impl Isolation {
+    /// What `books.start` says (the strings plan 3.8 names).
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::SameUser => "same_user (advisory)",
+            Self::ServiceUser => "service_user (enforced)",
+        }
+    }
+
+    /// What `--isolation` takes: `same_user`, `advisory`, `service_user`
+    /// or `enforced`.
+    pub fn parse(text: &str) -> Result<Self, String> {
+        match text {
+            "same_user" | "advisory" => Ok(Self::SameUser),
+            "service_user" | "enforced" => Ok(Self::ServiceUser),
+            other => Err(format!(
+                "--isolation takes same_user or enforced, not {other:?}"
+            )),
+        }
+    }
 }
 
 /// One book as the books server serves it (local.rs), shared by every
@@ -88,15 +128,23 @@ pub(crate) struct Served {
     pub(crate) uploads: ledger_store::uploads::Uploads,
     pub(crate) exports: ledger_store::exports::Exports,
     pub(crate) backups: Arc<crate::backup::Backups>,
+    pub(crate) isolation: Isolation,
 }
 
 impl Served {
+    /// [`Self::open_with`] for books served the local way
+    /// ([`Isolation::SameUser`]): how the server's own tests open them.
+    #[cfg(test)]
+    pub(crate) fn open(store: Store) -> Result<Self, String> {
+        Self::open_with(store, Isolation::SameUser)
+    }
+
     /// What serving the books `store` holds needs, opened beside them:
     /// the settings in force (the books' own), the access log, the uploads
     /// and exports, the viewer's side channel, and the backups. The books
     /// server opens every book this way (local.rs), the only way books are
-    /// served (plan D-44).
-    pub(crate) fn open(store: Store) -> Result<Self, String> {
+    /// served (plan D-44), saying how the server runs (plan 3.8, P9a).
+    pub(crate) fn open_with(store: Store, isolation: Isolation) -> Result<Self, String> {
         let mut live = Live::own();
         live.sync(store.ledger().settings(), store.base_currency().code());
         let access = Arc::new(
@@ -130,6 +178,7 @@ impl Served {
             uploads,
             exports,
             backups,
+            isolation,
         })
     }
 }
@@ -498,6 +547,7 @@ impl BooksServer {
             uploads: served.uploads.clone(),
             exports: served.exports.clone(),
             backups: served.backups.clone(),
+            isolation: served.isolation,
         }
     }
 

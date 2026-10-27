@@ -266,9 +266,11 @@ pub struct StartOut {
     pub format_upgrade: Option<FormatUpgradeOut>,
     /// What to do next, in order.
     pub next_steps: Vec<NextStepOut>,
-    /// How the books are kept from agents: "same_user (advisory)", hidden
-    /// from them in the human's own account, not locked against them
-    /// (plan D-32): reach them only through these tools.
+    /// How the books are kept from agents: "same_user (advisory)" locally
+    /// (hidden from them in the human's own account, not locked against
+    /// them: plan D-32), or "service_user (enforced)" when the books run
+    /// on the owner's own machine as a dedicated account (plan 3.8, P9a).
+    /// Either way, reach them only through these tools.
     pub isolation: String,
 }
 
@@ -921,7 +923,7 @@ impl BooksServer {
                 how: "only the owner, with the owner passphrase: in the app (it asks when it opens the books) or `wanderbooks books upgrade ID` at a terminal; a verified backup with the keys is made first. No tool can.".to_string(),
             }),
             next_steps,
-            isolation: "same_user (advisory)".to_string(),
+            isolation: self.isolation.label().to_string(),
         };
         // Fit (INVARIANT 4): whole lists if they fit; else summaries go,
         // then the lists shorten from the end, each saying how many more.

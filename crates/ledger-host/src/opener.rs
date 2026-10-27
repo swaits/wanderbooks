@@ -100,6 +100,9 @@ pub struct Opener {
     opened_at: Option<std::time::Instant>,
     /// Whether this holder has held a lease (INVARIANT 5).
     has_held: bool,
+    /// Flags the server this opener starts is started with (P9a):
+    /// `--isolation` and `--http`. Empty for every ordinary holder.
+    server_flags: Vec<String>,
 }
 
 /// A held lease: the books stay open while it lives.
@@ -146,7 +149,18 @@ impl Opener {
             failures: 0,
             opened_at: None,
             has_held: false,
+            server_flags: Vec::new(),
         })
+    }
+
+    /// Start the server this opener brings up with these flags (P9a:
+    /// `--isolation`, `--http`). Only `serve` uses it: on the owner's own
+    /// machine it is the one holder, so the host it starts is the server's
+    /// only one. A host already running was started with other flags, and
+    /// this one has no way to change it.
+    pub fn starting_with(mut self, flags: Vec<String>) -> Self {
+        self.server_flags = flags;
+        self
     }
 
     /// The timings in force.
@@ -256,9 +270,12 @@ impl Opener {
     async fn start(&self) -> Result<(), String> {
         let root = self.root.clone();
         let knobs = self.knobs;
-        tokio::task::spawn_blocking(move || crate::start::start_host(root.as_deref(), &knobs))
-            .await
-            .map_err(|e| e.to_string())?
+        let flags = self.server_flags.clone();
+        tokio::task::spawn_blocking(move || {
+            crate::start::start_host(root.as_deref(), &knobs, &flags)
+        })
+        .await
+        .map_err(|e| e.to_string())?
     }
 
     /// Say hello on a connection and read the host's first word.
@@ -457,6 +474,7 @@ mod tests {
             failures: 0,
             opened_at: None,
             has_held: false,
+            server_flags: Vec::new(),
         };
         for _ in 0..MAX_TRIES {
             o.failed().await.unwrap();

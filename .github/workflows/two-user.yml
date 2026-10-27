@@ -1,0 +1,111 @@
+# The two-account, self-host deployment (plan 8.2 P9a, D-51): the books
+# server runs as one account, an agent as another, and the agent reaches
+# the books only through the server's HTTP door with a static bearer
+# token. `crates/ledger-cli/tests/two_user.rs` is the check; this file
+# makes the deployment it needs and runs it against real accounts. A
+# laptop's `cargo test` skips those two tests (WB_TWO_USER unset); this
+# job sets it, so a skip here is a failure's cousin: the job only goes
+# green when both tests ran.
+#
+# The token is minted with the test knob `file_keyring=1` (a file under
+# the root's run/, 0600, ledger-host tokens.rs INVARIANT 3), because a
+# runner has no Secret Service; deploy/README.md says what a real server
+# does instead.
+name: two-user
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+# A newer push makes an older run pointless: it is cancelled.
+concurrency:
+  group: two-user-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  two-user:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      WB_PORT: "17411"
+      WB: /usr/local/bin/wanderbooks
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - name: Build the server-only executable and the test
+        run: |
+          cargo build --release -p ledger-cli --no-default-features
+          cargo test -p ledger-cli --test two_user --no-run
+      - name: Two accounts, one data root only one can read
+        run: |
+          set -euo pipefail
+          sudo useradd --system --create-home --home-dir /var/lib/wanderbooks \
+                       --shell /usr/sbin/nologin wanderbooks
+          sudo install -d -o wanderbooks -g wanderbooks -m 0700 /srv/wanderbooks
+          sudo install -d -o wanderbooks -g wanderbooks -m 0700 /srv/desktop
+          sudo install -d -o wanderbooks -g wanderbooks -m 0700 /srv/desktop-home
+          sudo install -m 0755 target/release/wanderbooks "$WB"
+      - name: The deployment, the move, and the check
+        run: |
+          set -euo pipefail
+          as_books() { sudo -u wanderbooks -H env HOME=/var/lib/wanderbooks "$@"; }
+          wait_open() {
+            for _ in $(seq 1 240); do
+              grep -q "The books are open" "$1" && return 0
+              sleep 0.5
+            done
+            echo "the server did not open:" >&2
+            cat "$1" >&2
+            return 1
+          }
+          stop_servers() {
+            as_books "$WB" close --root /srv/desktop >/dev/null 2>&1 || true
+            as_books "$WB" close --root /srv/wanderbooks >/dev/null 2>&1 || true
+          }
+          trap stop_servers EXIT
+
+          # The machine the books come from: books of this version, made by
+          # adopting the repository's fixture (so the move changes no event).
+          # Its own home, so the two roots are not "somewhere else" to one
+          # another (root::setup records one root per account home).
+          as_books "$WB" setup --root /srv/desktop --home /srv/desktop-home
+          as_books "$WB" serve --root /srv/desktop > /tmp/desktop.log 2>&1 &
+          wait_open /tmp/desktop.log
+          sudo cp -a crates/ledger-cli/tests/fixtures/p2-served /tmp/fixture
+          as_books "$WB" books adopt /tmp/fixture --root /srv/desktop --id acme --yes
+          as_books "$WB" close --root /srv/desktop
+
+          # The backup clone that is the transport (plan D-31): readable by
+          # the agent account, because the test reads its journal to know
+          # the head the move must keep.
+          sudo cp -a /srv/desktop/books/acme /tmp/source
+          sudo chown -R "$(id -u):$(id -g)" /tmp/source
+          sudo chmod -R a+rX /tmp/source
+
+          # The server's machine: the same books, moved, behind `enforced`.
+          as_books "$WB" setup --root /srv/wanderbooks
+          as_books "$WB" serve --root /srv/wanderbooks --isolation enforced \
+                     --http "127.0.0.1:$WB_PORT" > /tmp/tenant.log 2>&1 &
+          wait_open /tmp/tenant.log
+          as_books "$WB" books adopt /tmp/source --root /srv/wanderbooks --id acme --yes
+          as_books "$WB" books create tunnel --root /srv/wanderbooks
+
+          # Tokens for the agent account (the test), kept in the root's
+          # run/ by the test knob; a real server uses its OS keyring.
+          as_books "$WB" token create --root /srv/wanderbooks --book acme --name ci \
+                     --test-knobs file_keyring=1 >/dev/null
+          TOKEN=$(as_books "$WB" token print --root /srv/wanderbooks --book acme \
+                     --name ci --test-knobs file_keyring=1)
+          as_books "$WB" token create --root /srv/wanderbooks --book tunnel --name ci \
+                     --test-knobs file_keyring=1 >/dev/null
+          WRITE_TOKEN=$(as_books "$WB" token print --root /srv/wanderbooks --book tunnel \
+                     --name ci --test-knobs file_keyring=1)
+
+          # The check, as the agent account, over the loopback door.
+          WB_TWO_USER=1 \
+          WB_TENANT_ROOT=/srv/wanderbooks \
+          WB_SERVER_URL="http://127.0.0.1:$WB_PORT" \
+          WB_BOOK=acme \
+          WB_TOKEN="$TOKEN" \
+          WB_WRITE_BOOK=tunnel \
+          WB_WRITE_TOKEN="$WRITE_TOKEN" \
+          WB_SOURCE_DIR=/tmp/source \
+            cargo test -p ledger-cli --test two_user -- --nocapture --test-threads=1

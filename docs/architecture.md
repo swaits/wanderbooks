@@ -220,3 +220,35 @@ Neither bookspec crate depends on `ledger-core`; the dependency points
 inward from the adapter. `just check` runs the bookspec workspace's
 format, clippy and tests beside the wanderbooks workspace's, so an example
 cannot rot (P13 step 1).
+
+## Self-host: the same server, another account (P9a, D-51)
+
+The books can live on a machine the owner controls (plan 3.8). It is the
+same `ledger-mcp` server, the same store and the same tools; only the
+process boundary changes. `wanderbooks serve` runs as the dedicated
+account `wanderbooks` under `deploy/wanderbooks-server.service`, over a
+data root only that account can read (`/srv/wanderbooks`, 0700). Agents
+have no account on that machine, so the isolation is enforced by the
+operating system rather than advisory: the server is told
+`--isolation enforced` (the flag, never a guess) and `books.start`
+reports `service_user (enforced)` (`server::Isolation`).
+
+The door is the same HTTP service on a second listener:
+`--http 127.0.0.1:7411` binds the MCP routes beside the Unix sockets
+(3.9), and Caddy, Tailscale Funnel or cloudflared puts TLS and the public
+name in front of it. The bearer token guards every call exactly as on the
+socket; the tunnel only forwards. The socket's peer-credential check
+(`OwnerOnly`) is for local callers and does not apply to the loopback
+door, which is why the bearer and the loopback-only bind matter there.
+The flag travels `serve` → `ledger-host`'s host → `server`
+(`Opener::starting_with`, `start::start_host`, `host::Args`), so a host
+already running with other flags keeps them; on a self-host machine
+`serve` is the unit's only holder.
+
+The unit sets `IPAddressDeny=any` and `IPAddressAllow=localhost`: the
+server reaches nothing out. A book whose backup target is a remote git
+repository therefore needs that host allowed in a drop-in (D-31 backups
+still run on the server). The recipe, the head check for the move and the
+two-account CI job are in `deploy/README.md`, `deploy/wanderbooks-server.service`
+and `.github/workflows/two-user.yml`; the checks are
+`crates/ledger-cli/tests/two_user.rs`.

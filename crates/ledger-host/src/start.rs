@@ -174,8 +174,12 @@ fn systemd_run() -> Option<&'static str> {
 }
 
 /// Start a host for the root (`root`, else the one the host finds
-/// itself), with these knobs (INVARIANTS 1-5).
-pub fn start_host(root: Option<&Path>, knobs: &Knobs) -> Result<(), String> {
+/// itself), with these knobs and these server flags (INVARIANTS 1-5).
+pub fn start_host(
+    root: Option<&Path>,
+    knobs: &Knobs,
+    server_flags: &[String],
+) -> Result<(), String> {
     let found = ledger_store::root::Root::find(root).map_err(|e| e.to_string())?;
     let run = found.run_dir().map_err(|e| e.to_string())?;
     let home = ledger_store::root::account_home().map_err(|e| e.to_string())?;
@@ -187,6 +191,9 @@ pub fn start_host(root: Option<&Path>, knobs: &Knobs) -> Result<(), String> {
         args.push(found.path().as_os_str().to_os_string());
     }
     args.extend(knobs.args().into_iter().map(Into::into));
+    // What the server this host starts is told (P9a): the same flags
+    // `serve` was given.
+    args.extend(server_flags.iter().map(Into::into));
     let log = || {
         let path = run.join(HOST_LOG);
         // A large log is moved aside first (to `.1`), never from under a

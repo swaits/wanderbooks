@@ -86,6 +86,7 @@ pub const SECTIONS: &[(&str, &str)] = &[
     ),
     ("viewer", include_str!("../handbook/viewer.md")),
     ("backups", include_str!("../handbook/backups.md")),
+    ("self-host", include_str!("../handbook/self-host.md")),
     (
         "format-upgrade",
         include_str!("../handbook/format-upgrade.md"),

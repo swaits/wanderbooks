@@ -91,3 +91,16 @@ trait), the runner (`bookspec/runner`: pass, fail or not claimed per rule),
 and the rule index from B-1 to B-45 (`bookspec/spec/rules-index.md`). Every
 existing bookspec example still runs on every `cargo test`, through both
 the loader's own checks and the `Engine` trait.
+
+### P9a self-host deployment (2026-10-26)
+
+P9a is a deployment, not a semantic feature: the same engine, store, MCP
+surface and reports on a machine of the owner's own. No row above changed
+status and the floor stands. What it adds is the enforced isolation the
+catalog's parity claims rest on in practice: a dedicated account, a data
+root only that account can read, `books.start` saying
+`service_user (enforced)` (`--isolation`), and the same bearer-guarded MCP
+door on loopback for Caddy or a tunnel. `crates/ledger-cli/tests/two_user.rs`
+proves the account boundary and the move's head in CI
+(`.github/workflows/two-user.yml`); the recipe is `deploy/README.md`.
+The cutover rule in `docs/capability-parity.md` is unchanged.

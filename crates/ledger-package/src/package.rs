@@ -372,6 +372,17 @@ pub fn build_package<B: PackageBooks + ?Sized>(
         files.push((format!("{name}.pdf"), pdf(st)?));
         files.push((format!("{name}.xlsx"), xlsx(XlsxReport::Statement(st))?));
     }
+    // The receivables and payables agings, each with its tie-out line to
+    // the control account (B-23, 8.3.10): the same CSV books.export and
+    // the viewer make.
+    files.push((
+        "ar_aging.csv".into(),
+        crate::aging::aging_csv(ledger, true, as_of)?.into_bytes(),
+    ));
+    files.push((
+        "ap_aging.csv".into(),
+        crate::aging::aging_csv(ledger, false, as_of)?.into_bytes(),
+    ));
     // The fixed asset register, when an asset was acquired by as_of (one
     // acquired later is not in it, so neither is an empty register).
     if ledger
@@ -566,7 +577,7 @@ pub fn build_package<B: PackageBooks + ?Sized>(
     let year_end = NaiveDate::from_ymd_opt(year, 12, 31) == Some(as_of);
     let include_tins = tins.is_some();
     let readme = format!(
-        "{name} — books package for the CPA\n\nFiscal year to date: {fy_start} through {as_of_s}. {basis} basis.\nKept in wanderbooks: double-entry books from an append-only, hash-chained journal ({seq} events, verified).\n\nStatements (PDF and XLSX): profit and loss, balance sheet, cash flow, {members}tax summary, trial balance.\nLedgers (XLSX): general ledger by account; general journal entry by entry.\n{iif}{worksheet}{k1}{receipts}{tins}\nThe tax summary maps accounts to return categories; it's a worksheet, not a filing. Questions go to the owners, who can ask their bookkeeping agent to trace any number to its entries and receipts.\n",
+        "{name} — books package for the CPA\n\nFiscal year to date: {fy_start} through {as_of_s}. {basis} basis.\nKept in wanderbooks: double-entry books from an append-only, hash-chained journal ({seq} events, verified).\n\nStatements (PDF and XLSX): profit and loss, balance sheet, cash flow, {members}tax summary, trial balance.\nLedgers (XLSX): general ledger by account; general journal entry by entry.\nAgings (CSV): ar_aging.csv and ap_aging.csv, one row per open invoice or bill, each ending with a TOTAL line that ties to its control account (B-23). Early-payment discounts are taken by the gross method (A-8); bad debts are written off directly (A-5).\n{iif}{worksheet}{k1}{receipts}{tins}\nThe tax summary maps accounts to return categories; it's a worksheet, not a filing. Questions go to the owners, who can ask their bookkeeping agent to trace any number to its entries and receipts.\n",
         name = company.name,
         basis = company.basis,
         members = if company.members.is_empty() {

@@ -338,6 +338,8 @@ fn a_single_member_package_holds_the_documented_files_in_order() {
         "tax-summary.xlsx".into(),
         "trial-balance.pdf".into(),
         "trial-balance.xlsx".into(),
+        "ar_aging.csv".into(),
+        "ap_aging.csv".into(),
         "general-ledger.xlsx".into(),
         "general-journal.xlsx".into(),
         "1099-worksheet-2026.csv".into(),
@@ -2445,4 +2447,83 @@ fn the_k1_worksheet_reports_tax_basis_capital() {
     );
     // The book worksheet is the same as without assets' bases.
     assert!(text(&p, "k1-members.csv").contains(",1685.00\n"));
+}
+
+/// The CPA package's aging CSVs are the agings, one row per open document
+/// and a tie-out line that equals the control account (plan P4b S6,
+/// 8.3.10; rules.md B-23, B-38 INVARIANT 1).
+#[test]
+fn the_aging_csvs_tie_to_the_control_check() {
+    let dir = tempfile::Builder::new()
+        .prefix("wb-package-aging-")
+        .tempdir()
+        .unwrap();
+    let mut s = Store::create(&dir.path().join("books-data"), Currency::USD).unwrap();
+    for (code, name, ty) in [
+        ("1000", "Checking", AccountType::Asset),
+        ("3000", "Capital", AccountType::Equity),
+    ] {
+        s.add_account(code, name, ty, None, false).unwrap();
+    }
+    let bank = id_of(&s, "1000");
+    let customer = s.add_customer("Fernhill Labs").unwrap();
+    let vendor = s.add_vendor("Tobin Harlow Supply").unwrap();
+    let line = |what: &str, cents: i64| DocumentLine {
+        description: what.into(),
+        amount: Decimal::new(cents, 2),
+        class_id: None,
+        account: None,
+        quantity: None,
+        unit_price: None,
+    };
+    let invoice = s
+        .create_invoice(
+            customer,
+            d("2026-02-01"),
+            d("2026-03-01"),
+            vec![line("Consulting", 50_000)],
+        )
+        .unwrap();
+    let bill = s
+        .create_bill(
+            vendor,
+            d("2026-02-02"),
+            d("2026-03-04"),
+            vec![line("Paper", 20_000)],
+        )
+        .unwrap();
+    s.receive_payment(invoice, d("2026-02-10"), Decimal::new(20_000, 2), bank)
+        .unwrap();
+    s.pay_bill(bill, d("2026-02-11"), Decimal::new(10_000, 2), bank)
+        .unwrap();
+    let p = build_package(
+        &s,
+        &settings(&company(false), &cash()),
+        &request(false, None),
+    )
+    .unwrap();
+    for (name, role, code, balance) in [
+        ("ar_aging.csv", "receivables", "1200", "300.00"),
+        ("ap_aging.csv", "payables", "2000", "100.00"),
+    ] {
+        let csv = text(&p, name);
+        let total = csv.lines().last().unwrap();
+        assert!(
+            total.starts_with("TOTAL,,,,,,,,300.00") || total.starts_with("TOTAL,,,,,,,,100.00")
+        );
+        assert!(
+            total.contains(&format!("GL {code} {balance}")),
+            "{name}: {total}"
+        );
+        assert!(total.ends_with("difference 0.00"), "{name}: {total}");
+        let check = s
+            .ledger()
+            .control_check(d("2026-12-31"))
+            .unwrap()
+            .into_iter()
+            .find(|c| c.role == role)
+            .unwrap();
+        assert_eq!(check.balance.to_string(), balance, "{name}");
+        assert_eq!(check.difference, Decimal::ZERO, "{name}");
+    }
 }

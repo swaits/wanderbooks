@@ -156,6 +156,8 @@ fn the_list_shows_the_ledgers_figures() {
     );
     let mut h = open(&dir, Route::Payables);
     shot(&mut h, "payables");
+    // The Money out list carries the discount-deadline column (blank
+    // until terms are journaled, S4.3).
     assert!(
         h.query_by_label_contains("Bill 1, Clay Co, Open, owes 300.00")
             .is_some()

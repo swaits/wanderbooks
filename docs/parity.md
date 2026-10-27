@@ -45,6 +45,9 @@ No other statuses.
 | 1099 vendor tracking + year-end worksheet | Vendors → Track payments for 1099; 1099 report | partial | hand-verified fixture (bill payments, card exclusion, reversal, year boundary); no golden file yet |
 | Prepaid expense + deferred revenue amortization | Amortization schedules (Xero/QBO add-ons) | partial | hand-verified fixture, to the cent; no golden file yet |
 | Automated cross-implementation diff harness (GnuCash first) | — (our `xtask oracle`) | todo | roadmap phase 3 |
+| Multi-document settlements with early-payment discounts (gross method) | Business → Invoices/Bills; Receive payment | done | P4b S6: one entry, one party, one application per document (`kernel::settle`, B-42); a discount beyond the terms needs a reason; a bill with an asset line is refused (D-49); the bill and its payment tested, replay equal to live |
+| A processor's fee on a payment received (gross presentation) | Xero/QBO Stripe & Shopify deposits | done | P4b S6: Dr the deposit the net, Dr processing fees the fee, Cr A/R the gross (A-4); `a_fee_posts_gross_to_receivables_and_net_to_the_bank` |
+| Bills due, aging detail and tie-out, aging exports | Business → Bills; Reports → A/R and A/P Aging | done | P4b S6: `books.bills_due`, `detail`, `control`, `ar_aging.csv`/`ap_aging.csv` in `books.export` and the CPA package, each with its `TOTAL` tie-out (`the_aging_csvs_tie_to_the_control_check`) |
 
 Workflow/UI parity (QuickBooks/Xero reference) gets its own catalog when the
 egui phase starts; semantics come first.
@@ -104,3 +107,12 @@ door on loopback for Caddy or a tunnel. `crates/ledger-cli/tests/two_user.rs`
 proves the account boundary and the move's head in CI
 (`.github/workflows/two-user.yml`); the recipe is `deploy/README.md`.
 The cutover rule in `docs/capability-parity.md` is unchanged.
+
+### P4b S6 paying on terms (2026-10-27)
+
+S6 adds the three rows above: multi-document settlements with
+early-payment discounts (the gross method, A-8), the processor's fee
+posted gross (A-4), and the bills-due list with the agings' detail,
+tie-out and exports. The pre-S6 fixture's figures still hold (no figure
+moves), and every new write needs the journal feature `documents_v2`,
+which the owner's books declare at their next upgrade (D-52).

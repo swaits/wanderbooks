@@ -824,7 +824,7 @@ One row per unit of work. A unit is what one engineer takes into one git worktre
 | P6 | Evidence pipeline: extraction, dedup, annotations, company record categories | not started | U0a, U0b | S4-S7, P4, P5 (not its envelope step), P9a, P11a, P13 | `attachment_text` | 8-10 |
 | P7 | The TIN scanner's separators; vault v2 closed (D-48) | landed 2026-10-26 (`3e65c83f`) | none | everything | none | 1 |
 | P8 | Audit and attestations | not started | P6 (extraction), P4 (drafts), U0b | P9a, P11a, P13 | `audits` | 10-12 |
-| P9a | Self-host recipe, `books adopt` move with the head check, static bearer over a tunnel, the two-user CI job | not started | none (code); a second machine to try it on | everything | none | 3-4 |
+| P9a | Self-host recipe, `books adopt` move with the head check, static bearer over a tunnel, the two-user CI job | landed 2026-10-27 (`c8541ea9`); Done-when 1-2 are owner/EM to verify | none (code); a second machine to try it on | everything | none | 3-4 |
 | P9b | claude.ai through an external identity provider (D-7 b, Q-6) | not planned until Q-6 is answered | P9a | | | |
 | P9c | Remote viewer replica, invitations | not planned (D-51) | | | | |
 | P10 | The re-audit runbook and its CI mirror; the owner runs the re-audit | not started | P5, P6, P8 | P11a, P13 | none | 1 (+ owner days) |

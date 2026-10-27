@@ -177,6 +177,27 @@ is where one would go. `Attention` also carries the prompt (the viewer's,
 so there is one copy) beyond the plan's sketch, and `PackageBooks` gained
 four read methods rather than a new trait. `just check` green.
 
+**2026-10-27: P9a landed (`c8541ea9`).** The self-host recipe is in
+`deploy/` (a system unit as the `wanderbooks` account, `ProtectSystem`,
+`NoNewPrivileges`, loopback-only network, no seccomp/Landlock per D-32),
+`books adopt` moves a book with its head check, `wanderbooks serve
+--isolation enforced` makes `books.start` say `service_user (enforced)`,
+and `--http` serves the same MCP door on loopback behind Caddy or a
+tunnel, with the bearer still guarding every call. The door is
+**loopback only**: a review found the first version bound any address,
+which would have exposed a plaintext static-bearer door; it now refuses
+anything but 127.0.0.0/8 or `::1` before a socket or a host exists, and
+`the_tunnel_door_binds_loopback_only` proves it. `two_user.rs` has the
+two-account tests; `agent_uid_cannot_read_tenant` skips unless
+`WB_TWO_USER=1` and the CI job sets it. **Done-when (1) the CI job and
+(2) the clean-VM walkthrough by a non-author are owner/EM to verify** —
+they were not run here, and the As-built says so. `IPAddressDeny=any`
+also blocks the server's own push to a remote backup repository; the
+README documents the `IPAddressAllow` drop-in. One pre-existing race was
+seen under load, not ours: `ledger-gui/tests/newer_journal.rs::a_live_viewer_says_update_when_the_books_move_ahead_of_it`
+can read between the test's two appends; it passed alone and in the
+final run, and belongs with the other load-sensitive test noted above.
+
 
 The 2026-10-16 audit of the first company's books (62 verified findings,
 20 engine defects) and the design discussion that followed produced

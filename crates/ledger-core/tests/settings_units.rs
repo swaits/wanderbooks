@@ -467,6 +467,9 @@ fn terms_keep_one_canonical_spelling() {
     assert_eq!(terms("2/10 net 30"), Ok(json!("2/10 net 30")));
     assert_eq!(terms("Due On Receipt"), Ok(json!("Due on receipt")));
     assert_eq!(terms("due 2026-11-15"), Ok(json!("Due 2026-11-15")));
+    // S4.1's parse reads a date chrono can read and canonicalizes it, so a
+    // single-digit month and day get their zero padding in the one value.
+    assert_eq!(terms("Due 2026-1-5"), Ok(json!("Due 2026-01-05")));
     assert_eq!(terms("2.5/10 net 30"), Ok(json!("2.5/10 net 30")));
     for bad in [
         "net",
@@ -477,7 +480,6 @@ fn terms_keep_one_canonical_spelling() {
         "2/10 net 15 eom",
         "2/10 net 30 extra",
         "Due 9999-13-01",
-        "Due 2026-1-5",
         "",
     ] {
         assert!(terms(bad).is_err(), "{bad:?}");

@@ -2674,7 +2674,7 @@ it calls what part A proved and tested.
   check, so both output schemas are exercised on every run.
 - **The tool surface, `crates/ledger-mcp/src/server.rs`'s tests:**
   `annotations_complete` pins `books.void_document` destructive and
-  posting, `books.control_check` read-only, and counts the 29
+  posting, `books.control_check` read-only, and counts the 30
   destructive tools the doc names; `period_tools_describe_the_one_default`
   holds `books.control_check` to the one `as_of` sentence. The generic
   lints cover the rest without a change of their own:
@@ -2725,11 +2725,11 @@ strikethrough, and the test asserts the labels.
   The happy-path journey lists and reads one, so both output schemas are
   exercised on every run.
 - **The tool surface:** `annotations_complete` pins both read-only
-  (table, now 122 tools); `period_tools_describe_the_one_default` holds
+  (table, now 123 tools); `period_tools_describe_the_one_default` holds
   both to the `as_of` sentence;
   `every_tool_is_documented_and_every_documented_tool_exists` and the
   text lints cover the doc; `scopes.rs`'s table and
-  `mcp_journeys.rs::mcp_end_to_end` count 122.
+  `mcp_journeys.rs::mcp_end_to_end` count 123.
 - **The viewer, `crates/ledger-gui/tests/invoices.rs`:**
   `the_list_shows_the_ledgers_figures` (the reversed payment no longer
   counts: $580 owed, $500 of it late; "Invoice 1, Harbor Client, 14 days

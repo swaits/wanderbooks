@@ -3114,3 +3114,105 @@ starts from empty books (legacy lines are covered by the identity
 coding of `DocRef`), and an account becoming a control account by its
 first document, holding lines from before, is outside it (those lines are
 listed as unattached).
+
+## B-41 A debt that will not be collected is written off, and a recovery is income
+
+**bookspec:** `BS-arap-5`
+
+**Status:** CHOICE (the owner, 2026-10-23, plan 8.3.1 A-5: bad debts by
+the **direct write-off** method, and 8.3.2: for a small company's
+receivables a CPA accepts the direct method and notes it, where GAAP
+prefers an allowance under ASC 326-20). AUTHORITY for what the rule
+rests on: IRC §166(a) (a debt that becomes worthless is deductible in
+that year), Treas. Reg. §1.166-1(e) (a debt never counted as income has
+no basis to deduct), §1.166-2(a) (worthlessness on all the pertinent
+evidence), §1.166-3(a) (a partial write-off, to the extent charged off),
+and IRC §111 (a recovery of an amount deducted is income in the year
+received). ASC 405-20-40-1 for a bill's release.
+
+1. **The write-off.** Writing off an invoice posts one balanced entry:
+   Dr the bad-debt expense role (`bad_debts`, 6990) and Cr receivables
+   for the amount, the receivable line carrying the invoice with the
+   movement `WriteOff`, so what the invoice owes falls by the amount from
+   the write-off's day and what was written off rises by it. The amount
+   is above zero and at most what the invoice owes, and at most the least
+   it owes on any day from the write-off's on (so no later day, a payment
+   after it included, takes the document below nothing: B-38 INVARIANT 2).
+   A partial write-off is allowed (§1.166-3(a)); the rest stays owed and
+   aged.
+2. **The day.** The write-off's day is in the calendar, in an open period
+   (B-12), and not before the invoice's. A document's entry is reversed,
+   never edited (B-8, B-9): a write-off is not a void and a void is not a
+   write-off.
+3. **Cash basis refused.** Books on the cash basis never counted the
+   invoice as income, so the debt has no basis to deduct (§1.166-1(e)):
+   the command refuses, changing nothing.
+4. **Bills are never written off** (ASC 405-20-40-1): a liability leaves
+   the books only when paid or when the creditor releases it, which is a
+   vendor credit (not scheduled). The command takes an invoice.
+5. **A recovery is not a new movement** (plan D-49). In the same tax year,
+   reverse the write-off: the invoice reopens and owes what the write-off
+   took off, and the payment is recorded as any payment. In a later year,
+   record a plain entry Dr the deposit account / Cr a "Bad debt
+   recoveries" revenue account (tax category other income), its memo
+   naming the invoice: the recovery is income (§111) and the invoice stays
+   written off. There is no `Movement::Recovery` and no bad-debt-recoveries
+   role.
+6. **Evidence.** The write-off's evidence of worthlessness — collection
+   correspondence, a bankruptcy or liquidation notice (§1.166-2(a)) — is
+   filed in the same call: a `receipt.attached` on the write-off's entry,
+   linked to the invoice. A write-off with no evidence is refused. The tax
+   judgments (whether the debt is worthless, and in which year) stay with
+   the CPA: the books flag each write-off made this year for the CPA's
+   note.
+7. **Journal.** `invoice.written_off {invoice_id, entry_id, date, amount,
+   reason}` is a new event type and needs journal feature
+   `documents_v2` (B-27, D-52): an older version refuses it rather than
+   misreading a document as still owed. Replay tags the receivable line
+   `WriteOff`; the projection keeps no document figure (B-38).
+
+```text
+GOAL: write off what will not be collected, as the tax rules require.
+SOURCE: IRC §166(a), §111; Treas. Reg. §1.166-1(e), (f), -2(a), -3(a);
+        ASC 326-20 and ASC 405-20-40-1 noted; CHOICE: the direct
+        write-off method (plan 8.3.1 A-5).
+INVARIANTS:
+  1. amount <= outstanding on the write-off's day and on every day from
+     it; Dr bad_debts / Cr receivables [d, WriteOff]; the evidence of
+     worthlessness filed in the same call.
+  2. Its reversal re-instates the debt; bills are never written off.
+  3. Refused on cash-basis books.
+  4. A refusal leaves the books and the journal unchanged; NEVER panics.
+SCENARIOS:
+  1. Half paid, the rest written off: Written off, with 50 paid / 50
+     written off.
+  2. A write-off of 0, a negative amount, or more than is owed: SHOULD
+     refuse, naming what is owed.
+  3. Cash-basis books: SHOULD refuse (no basis to deduct).
+  4. The write-off reversed in the same year and the payment recorded:
+     Paid; receivables back to zero.
+  5. A later year's recovery: a plain entry to a bad-debt-recoveries
+     revenue account; the invoice stays written off.
+```
+
+**Enforced:** `ledger_core::Ledger::write_off` (and its replay
+`replay_invoice_write_off`), `LedgerError::{WriteOffOnCashBasis,
+InvalidWriteOff}`, the `bad_debts` control role (`BAD_DEBTS`, 6990);
+`ledger_store::Store::write_off_invoice` (feature `documents_v2`; the
+evidence filed and linked in the same call), `WriteOffEvidence`,
+`StoreError::WriteOffNeedsEvidence`; `books.write_off_invoice`
+(`crates/ledger-mcp/src/tools/write_offs.rs`); the viewer's timeline
+(`Movement::WriteOff`); Needs attention's write-off item.
+**Checked:** `ledger-core` `tests/spec_documents.rs`
+(`half_paid_rest_written_off_is_written_off`,
+`write_off_refused_on_cash_basis`, `write_off_above_outstanding_refused`,
+`write_off_then_recovery_same_year`); `ledger-store`
+`tests/arap_standing.rs` (`write_off_waits_for_documents_v2`,
+`write_off_replays_and_projects`, `write_off_without_evidence_is_refused`),
+`tests/arap_props.rs` (`status_is_a_function_of_journal_and_date` with
+write-offs); over the wire `crates/ledger-cli/tests/documents.rs`
+(`write_off_then_recovery`, `write_off_needs_evidence`); bookspec
+`bad-debt-direct-write-off`; Lean `Documents.Step.writeOff_unattached`,
+`Documents.writeOff_within_bounds`; the viewer
+`a_write_off_shows_on_the_timeline`; the item
+`a_write_off_is_flagged_for_the_cpa`.

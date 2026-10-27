@@ -104,3 +104,14 @@ door on loopback for Caddy or a tunnel. `crates/ledger-cli/tests/two_user.rs`
 proves the account boundary and the move's head in CI
 (`.github/workflows/two-user.yml`); the recipe is `deploy/README.md`.
 The cutover rule in `docs/capability-parity.md` is unchanged.
+
+## P4b S7: bad debts (write-offs), 2026-10-27
+
+A/R gained the direct write-off the owner chose (A-5; plan 8.2 S7): an
+invoice that will not be collected comes off 1200 with Dr 6990 Bad Debt
+Expense, its receivable line tagged `WriteOff` so the receipt's figures
+stay derived, and its evidence of worthlessness filed in the same call
+(rules.md B-41; IRC §166, §111; Treas. Reg. §1.166-1(e), (f), -2(a),
+-3(a)). A same-year recovery is the reversal D-49 records, not a new
+movement; bills are never written off. No row above changed status (the
+A/R and A/P rows already say `done`), so the floor stands (10 done).

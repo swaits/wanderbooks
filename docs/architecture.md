@@ -160,6 +160,9 @@ groups are:
 - `parties` — parties, vendors, customers, roles, W-9s, the TIN vault,
   1099s, entry parties;
 - `attachments` — receipts, filed documents, and their links;
+- `write_offs` — `books.write_off_invoice`, the bad debt (P4b S7; rules.md
+  B-41), kept apart from `documents` so S4.4's document tools and this one
+  land in different files;
 - `settings` — the handbook, `books.settings` and the recorded FX rates
   (the module is `settings_tools`, since `crate::settings` is the live
   settings);

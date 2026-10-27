@@ -367,6 +367,9 @@ pub struct Event {
     /// An invoice.
     #[serde(default)]
     pub invoice: Option<InvoiceSpec>,
+    /// A bad-debt write-off of an earlier invoice.
+    #[serde(default)]
+    pub write_off: Option<WriteOffSpec>,
     /// A depreciation run.
     #[serde(default)]
     pub run_depreciation: Option<RunSpec>,
@@ -409,6 +412,7 @@ impl Event {
             (EventKind::Close, self.close.is_some()),
             (EventKind::Bill, self.bill.is_some()),
             (EventKind::Invoice, self.invoice.is_some()),
+            (EventKind::WriteOff, self.write_off.is_some()),
             (EventKind::RunDepreciation, self.run_depreciation.is_some()),
             (EventKind::DisposeAsset, self.dispose_asset.is_some()),
             (EventKind::RunSchedules, self.run_schedules.is_some()),
@@ -445,6 +449,8 @@ pub enum EventKind {
     Bill,
     /// An invoice.
     Invoice,
+    /// A bad-debt write-off of an earlier invoice (rules.md B-41).
+    WriteOff,
     /// A depreciation run.
     RunDepreciation,
     /// A fixed asset's disposal.
@@ -464,6 +470,7 @@ impl EventKind {
             EventKind::Close => "close",
             EventKind::Bill => "bill",
             EventKind::Invoice => "invoice",
+            EventKind::WriteOff => "write_off",
             EventKind::RunDepreciation => "run_depreciation",
             EventKind::DisposeAsset => "dispose_asset",
             EventKind::RunSchedules => "run_schedules",
@@ -481,6 +488,7 @@ impl EventKind {
                 | EventKind::Close
                 | EventKind::Bill
                 | EventKind::Invoice
+                | EventKind::WriteOff
                 | EventKind::DisposeAsset
         )
     }
@@ -499,12 +507,14 @@ impl EventKind {
     }
 
     /// True when the books take it whole or not at all, so `refused` may
-    /// be given: a reversal or a command, never an entry, a close, a bill
-    /// or an invoice.
+    /// be given: a reversal, an entry or a command, never a close, a bill
+    /// or an invoice (those are corrected by a reversal). An entry posts
+    /// whole or not at all, so a hand line the control guard refuses is
+    /// one too.
     pub fn may_refuse(self) -> bool {
         !matches!(
             self,
-            EventKind::Lines | EventKind::Close | EventKind::Bill | EventKind::Invoice
+            EventKind::Close | EventKind::Bill | EventKind::Invoice
         )
     }
 
@@ -513,6 +523,7 @@ impl EventKind {
         !matches!(
             self,
             EventKind::Reverses
+                | EventKind::WriteOff
                 | EventKind::RunDepreciation
                 | EventKind::DisposeAsset
                 | EventKind::RunSchedules
@@ -580,6 +591,23 @@ pub struct InvoiceSpec {
     /// Its lines.
     #[serde(default)]
     pub lines: Vec<DocumentLineSpec>,
+}
+
+/// A write-off of the invoice an earlier event posted (rules.md B-41;
+/// plan P4b S7): the invoice's event, what to write off and why.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WriteOffSpec {
+    /// The event (1-based) whose invoice this writes off: an `invoice`
+    /// event before it.
+    pub invoice: usize,
+    /// How much to write off, an exact decimal string above zero; left
+    /// out, all the invoice owes on the day.
+    #[serde(default)]
+    pub amount: Option<String>,
+    /// Why it will not be collected (collection correspondence, a
+    /// bankruptcy), one line.
+    pub reason: String,
 }
 
 /// One line of an invoice or a bill.
@@ -973,6 +1001,7 @@ pub fn refusal_reasons() -> impl Iterator<Item = &'static str> {
         "already_disposed",
         "invalid_depreciation_period",
         "invalid_schedule",
+        "untagged_control_line",
     ]
     .into_iter()
 }
@@ -1105,6 +1134,13 @@ impl Example {
                     "older is an entry's lines, as an earlier version wrote them".into(),
                 ));
             }
+            if ev.older && ev.refused.is_some() {
+                return Err(what(
+                    "an entry posted as an earlier version wrote it (older) can't also be \
+                     refused"
+                        .into(),
+                ));
+            }
             if ev.payee.is_some() && kind != EventKind::Lines {
                 return Err(what(
                     "a payee is an entry's: a reversal takes its original's, a bill names \
@@ -1196,6 +1232,26 @@ impl Example {
                 check_document(&i.amount, &i.lines, &projects, &what)?;
                 if i.customer.is_empty() {
                     return Err(what("an invoice names its customer".into()));
+                }
+            }
+            if let Some(w) = &ev.write_off {
+                if w.invoice < 1 || w.invoice >= n {
+                    return Err(what(format!(
+                        "write_off names event {}: an earlier invoice",
+                        w.invoice
+                    )));
+                }
+                if self.events[w.invoice - 1].invoice.is_none() {
+                    return Err(what(format!(
+                        "write_off names event {}, which is no invoice",
+                        w.invoice
+                    )));
+                }
+                if let Some(a) = &w.amount {
+                    check_amount(a, true, &what)?;
+                }
+                if w.reason.trim().is_empty() {
+                    return Err(what("a write-off says why it will not be collected".into()));
                 }
             }
             if let Some(r) = &ev.run_depreciation {

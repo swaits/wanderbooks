@@ -1744,8 +1744,11 @@ which an earlier version refuses (S4.2); a `party.updated` with an email
 or a default terms fact (S4.2); an `invoice.created` or `bill.created`
 carrying a number, terms, a bill-to or seller snapshot, a customer
 reference or memo, a vendor reference, a receipt date or a duplicate's
-reason, or a line naming its account, quantity or unit price (S4.3); and
-S5 to S7's sends, settlements and write-offs. An older version would
+reason, or a line naming its account, quantity or unit price (S4.3);
+S5's `invoice.sent` (who sent an invoice, how, to whom and when: a record
+that moves no figure); S6's payments with `line`, `discount`,
+`discount_line`, `discount_reason`, `fee` or `fee_line`; and S7's
+`invoice.written_off`. An older version would
 restore the document without them silently: every invoice line would post
 to the revenue role and every bill line to general expenses, and every new
 event type would be refused. A command asks for

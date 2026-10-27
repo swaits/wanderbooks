@@ -982,6 +982,9 @@ impl<'a> Books<'a> {
                 description: description.to_string(),
                 amount: positive(a),
                 class_id: None,
+                account: None,
+                quantity: None,
+                unit_price: None,
             }],
             (None, [_, ..]) => lines
                 .iter()
@@ -993,6 +996,9 @@ impl<'a> Books<'a> {
                             panic!("{what}: project {p:?} not in setup.projects")
                         })
                     }),
+                    account: None,
+                    quantity: None,
+                    unit_price: None,
                 })
                 .collect(),
             _ => panic!("{what}: a document has an amount or lines, exactly one"),

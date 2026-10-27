@@ -1893,6 +1893,65 @@ fn bounds_kept_is_the_definition_on_books_in_bounds() {
 }
 
 // ---------------------------------------------------------------------------
+// Terms and document lines (P4b S4.1)
+// ---------------------------------------------------------------------------
+
+/// `kernel::discount_max` never bounds a discount above the total, and what
+/// it gives is exact: result x 10,000 = total x basis points. None is an
+/// exact bound no whole cent can hold, not a rounded one.
+///
+/// At `i32`, like the proration charge harnesses: the law relates a
+/// product to a quotient, which the model checker proves far faster on
+/// 32-bit arithmetic; the bridge property carries it to `Decimal`.
+#[kani::proof]
+fn discount_max_is_bounded() {
+    let total: i32 = kani::any();
+    kani::assume(total >= 0 && total <= 200_000);
+    // A u16 stands for the percentage: any 1..=9,999 basis points, and a
+    // narrower divisor keeps the model checker quick (the kernel takes
+    // u32; the bridge checks that boundary).
+    let percent_bp: u16 = kani::any();
+    kani::assume(percent_bp >= 1 && percent_bp <= 9_999);
+    let got = kernel::discount_max(total, u32::from(percent_bp));
+    if let Some(discount) = got {
+        assert!(discount >= 0);
+        assert!(discount <= total);
+        assert_eq!(
+            discount.checked_mul(10_000),
+            total.checked_mul(i32::from(percent_bp))
+        );
+    }
+    kani::cover!(
+        got.is_some_and(|d| d > 0),
+        "a discount that takes something"
+    );
+    kani::cover!(got.is_none(), "an exact bound finer than a whole cent");
+}
+
+/// `kernel::line_amount` is the exact product of a quantity and a unit
+/// price: never a rounded amount, and None rather than an overflow.
+#[kani::proof]
+fn line_amount_is_exact() {
+    let quantity: i64 = kani::any();
+    let unit_price: i64 = kani::any();
+    kani::assume(quantity >= 0 && quantity <= 1_000_000);
+    kani::assume(unit_price >= 0 && unit_price <= 1_000_000);
+    let got = kernel::line_amount(quantity, unit_price);
+    assert_eq!(got, quantity.checked_mul(unit_price));
+    if let Some(amount) = got {
+        assert!(amount >= 0);
+        if quantity > 0 && unit_price > 0 {
+            assert!(amount >= quantity);
+            assert!(amount >= unit_price);
+        }
+    }
+    kani::cover!(
+        got.is_some_and(|a| a > 1) && quantity > 1 && unit_price > 1,
+        "a product both factors grow"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // The checker itself
 // ---------------------------------------------------------------------------
 

@@ -37,6 +37,9 @@ fn line(desc: &str, amount: &str) -> DocumentLine {
         description: desc.to_string(),
         amount: dec(amount),
         class_id: None,
+        account: None,
+        quantity: None,
+        unit_price: None,
     }
 }
 
@@ -187,6 +190,13 @@ fn invoice_total_is_sum_of_lines_and_balance_is_what_is_owed() {
         owed: dec("90.00"),
         status: DocumentStatus::Partial,
         entry_id: 1,
+        number: None,
+        terms: None,
+        bill_to: None,
+        seller: None,
+        customer_ref: None,
+        memo: None,
+        sends: Vec::new(),
     };
     assert_eq!(inv.total().unwrap(), dec("150.00"));
     assert_eq!(inv.balance().unwrap(), dec("90.00"));
@@ -205,6 +215,10 @@ fn bill_total_is_sum_of_lines_and_balance_is_what_is_owed() {
         owed: Decimal::ZERO,
         status: DocumentStatus::Paid,
         entry_id: 9,
+        vendor_ref: None,
+        received_on: None,
+        terms: None,
+        memo: None,
     };
     assert_eq!(bill.total().unwrap(), dec("20.00"));
     assert_eq!(bill.balance().unwrap(), Decimal::ZERO);
@@ -384,7 +398,14 @@ proptest! {
     ) {
         let lines: Vec<DocumentLine> = amts
             .iter()
-            .map(|c| DocumentLine { description: "l".into(), amount: cents(*c), class_id: None })
+            .map(|c| DocumentLine {
+                description: "l".into(),
+                amount: cents(*c),
+                class_id: None,
+                account: None,
+                quantity: None,
+                unit_price: None,
+            })
             .collect();
         let ok = !amts.is_empty() && amts.iter().all(|c| *c > 0);
         prop_assert_eq!(validate_lines(&lines).is_ok(), ok);
@@ -1088,6 +1109,9 @@ fn doc_lines(doc: &Doc) -> Vec<DocumentLine> {
             description: "item".into(),
             amount: cents(*c),
             class_id: None,
+            account: None,
+            quantity: None,
+            unit_price: None,
         })
         .collect()
 }

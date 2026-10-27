@@ -1774,6 +1774,9 @@ fn the_package_iif_carries_an_invoices_and_a_bills_projects() {
         description: description.into(),
         amount: Decimal::from_str(amount).unwrap(),
         class_id,
+        account: None,
+        quantity: None,
+        unit_price: None,
     };
     let customer = s.add_customer("Potter").unwrap();
     s.create_invoice(

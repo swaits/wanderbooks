@@ -5270,18 +5270,24 @@ impl Ledger {
         self.add_control_account(c).expect("fresh code cannot fail")
     }
 
-    /// A document's revenue or expense side on its draft `entry`: one line
-    /// on `account` per part ([`arap::document_parts`]), each tagged with
-    /// its project (a project the books don't have: UnknownClass, and the
-    /// caller's `atomically` leaves the books unchanged).
+    /// A document's revenue, expense or asset side on its draft `entry`:
+    /// one line on each part's account, or on `default_account` when the
+    /// part names none ([`arap::document_parts`]), each tagged with its
+    /// project (a project the books don't have: UnknownClass, and the
+    /// caller's `atomically` leaves the books unchanged). Every account is
+    /// checked for the document's kind first
+    /// ([`Self::check_document_line_account`]).
     fn add_document_parts(
         &mut self,
         entry: EntryId,
-        account: AccountId,
+        default_account: AccountId,
         side: Side,
-        parts: &[(Option<ClassId>, Decimal)],
+        kind: arap::DocumentKind,
+        parts: &[(arap::DocumentPartKey, Decimal)],
     ) -> Result<(), LedgerError> {
-        for &(class, amount) in parts {
+        for &((account, class), amount) in parts {
+            let account = account.unwrap_or(default_account);
+            self.check_document_line_account(kind, account)?;
             self.add_line(entry, account, side, Money::new(amount, self.base_currency))?;
             if class.is_some() {
                 let last = self
@@ -5294,20 +5300,119 @@ impl Ledger {
         Ok(())
     }
 
+    /// A document line's account must be one its kind can post to (plan
+    /// P4b S4.1, A-10): an invoice line takes a revenue account, or a
+    /// liability holding no role (2400 Deferred Revenue, a contract
+    /// liability); a bill line takes an expense account, or an asset that
+    /// is not cash and holds no role (1500 Equipment, 1300 Prepaid).
+    /// Placeholders and the receivables and payables control accounts are
+    /// refused. Checked when a line is added and when the entry posts.
+    ///
+    /// ```text
+    /// GOAL: a document's lines go where its kind can put them, never to a
+    ///       control, a cash account or a header.
+    /// SOURCE: docs/spec/rules.md B-39; plan P4b S4.1 ("Line accounts"),
+    ///         A-10 (every bill line names its account);
+    ///         ASC 606-10-45-2 (deferred revenue is a liability).
+    /// INVARIANTS:
+    ///   1. An invoice line: a revenue account, or a liability that holds
+    ///      no role.
+    ///   2. A bill line: an expense account, or an asset that is not cash
+    ///      (`Ledger::account_is_cash`) and holds no role.
+    ///   3. A placeholder, or an account that is a document control
+    ///      (receivables or payables), is refused for both.
+    ///   4. A refusal names the account, the kind and the rule.
+    /// ```
+    pub fn check_document_line_account(
+        &self,
+        kind: arap::DocumentKind,
+        account: AccountId,
+    ) -> Result<(), LedgerError> {
+        self.check_line_account(account)?;
+        let a = self.chart.get(account).expect("checked above");
+        let kind_name = match kind {
+            arap::DocumentKind::Invoice => "an invoice",
+            arap::DocumentKind::Bill => "a bill",
+        };
+        let refuse = |why: &str| {
+            Err(LedgerError::DocumentLineAccount {
+                code: a.code.clone(),
+                name: a.name.clone(),
+                kind: kind_name,
+                why: why.to_string(),
+            })
+        };
+        if self.control_role_of(account).is_some() {
+            return refuse(
+                "it is a receivables or payables control account; its balance is its documents'",
+            );
+        }
+        match kind {
+            arap::DocumentKind::Invoice => match a.account_type {
+                AccountType::Revenue => Ok(()),
+                AccountType::Liability if !self.holds_any_role(account) => Ok(()),
+                _ => refuse(
+                    "an invoice line takes a revenue account, or a liability holding no role (deferred revenue)",
+                ),
+            },
+            arap::DocumentKind::Bill => {
+                if a.account_type == AccountType::Expense {
+                    return Ok(());
+                }
+                if a.account_type == AccountType::Asset
+                    && !self.account_is_cash(account)
+                    && !self.holds_any_role(account)
+                {
+                    return Ok(());
+                }
+                refuse(
+                    "a bill line takes an expense account, or an asset that is not cash and holds no role (equipment, prepaid)",
+                )
+            }
+        }
+    }
+
+    /// Whether `account` is one of the books' cash accounts: the codes in
+    /// `books.cash_accounts` when set, else (as `ledger-store`'s
+    /// reconciliation reads them) the asset accounts whose names say they
+    /// hold cash.
+    fn account_is_cash(&self, account: AccountId) -> bool {
+        let Some(a) = self.chart.get(account) else {
+            return false;
+        };
+        let configured = self.settings.cash_accounts();
+        if !configured.is_empty() {
+            return configured.iter().any(|c| c == &a.code);
+        }
+        const CASH_WORDS: [&str; 5] = ["cash", "bank", "checking", "savings", "money market"];
+        let name = a.name.to_lowercase();
+        a.account_type == AccountType::Asset
+            && !a.placeholder
+            && CASH_WORDS.iter().any(|w| name.contains(w))
+    }
+
+    /// Whether `account` fills any of the books' control roles (assigned,
+    /// or the account at the role's code and type).
+    fn holds_any_role(&self, account: AccountId) -> bool {
+        control_accounts().any(|c| self.holds_role(c, account))
+    }
+
     /// Create a sales invoice. Auto-posts: Dr `1200` Accounts Receivable,
-    /// Cr `4000` Revenue. The invoice date must not fall in a closed period.
+    /// Cr each line's revenue account (the revenue role, `4000`, when a
+    /// line names none). The invoice date must not fall in a closed period.
     ///
     /// ```text
     /// GOAL: bill a customer and recognize the revenue (accrual basis).
     /// SOURCE: IRS Pub. 538, accrual method (docs/spec/sources/irs-periods-and-methods.md:
     ///         "report income in the year it is earned"); ASC 606-10-25-23;
-    ///         control accounts: Ledger::check_controls; rules.md B-38.
+    ///         control accounts: Ledger::check_controls; rules.md B-38, B-39.
     /// INVARIANTS:
-    ///   1. MUST post one balanced entry: Dr 1200 receivables, Cr 4000 revenue,
-    ///      for the sum of the lines, dated the invoice date: one revenue
-    ///      line per project the lines name, the untagged lines' as one
-    ///      (arap::document_parts), each tagged with its project; the
-    ///      receivable line never (rules.md B-37 item 8).
+    ///   1. MUST post one balanced entry: Dr 1200 receivables, Cr the lines'
+    ///      accounts, for the sum of the lines, dated the invoice date: one
+    ///      line per (account, project) part the lines name, the parts
+    ///      naming neither as one (arap::document_parts), each revenue line
+    ///      tagged with its project; the receivable line never (rules.md
+    ///      B-37 item 8).
     ///   2. The receivable line MUST carry the invoice (Origin), in the
     ///      step that posts it: the invoice starts Open, owing its total.
     ///   3. A refusal MUST leave the books unchanged.
@@ -5324,7 +5429,28 @@ impl Ledger {
         due_date: NaiveDate,
         lines: Vec<DocumentLine>,
     ) -> Result<InvoiceId, LedgerError> {
-        self.atomically(|l| l.create_invoice_steps(customer_id, date, due_date, lines))
+        self.create_invoice_with(
+            customer_id,
+            date,
+            due_date,
+            lines,
+            arap::InvoiceFields::default(),
+        )
+    }
+
+    /// [`Self::create_invoice`] with the document's new fields (number,
+    /// terms, snapshots, references: plan P4b S4.1). The fields are stored
+    /// on the invoice at issue and never change. All `None` is exactly
+    /// [`Self::create_invoice`].
+    pub fn create_invoice_with(
+        &mut self,
+        customer_id: CustomerId,
+        date: NaiveDate,
+        due_date: NaiveDate,
+        lines: Vec<DocumentLine>,
+        fields: arap::InvoiceFields,
+    ) -> Result<InvoiceId, LedgerError> {
+        self.atomically(|l| l.create_invoice_steps(customer_id, date, due_date, lines, fields))
     }
 
     /// The steps of [`Self::create_invoice`], run inside [`Self::atomically`].
@@ -5334,12 +5460,21 @@ impl Ledger {
         date: NaiveDate,
         due_date: NaiveDate,
         lines: Vec<DocumentLine>,
+        fields: arap::InvoiceFields,
     ) -> Result<InvoiceId, LedgerError> {
         if !self.customers.contains_key(&customer_id) {
             return Err(LedgerError::UnknownCustomer(customer_id));
         }
         arap::validate_lines(&lines)?;
         arap::validate_due_date(date, due_date)?;
+        if let Some(number) = &fields.number
+            && self
+                .invoices
+                .values()
+                .any(|i| i.number.as_deref() == Some(number.as_str()))
+        {
+            return Err(LedgerError::DuplicateInvoiceNumber(number.clone()));
+        }
         if let Some(pid) = self.closed_period_containing(date) {
             return Err(LedgerError::ClosedPeriod(pid, date.to_string()));
         }
@@ -5360,7 +5495,13 @@ impl Ledger {
                 movement: arap::Movement::Origin,
             },
         )?;
-        self.add_document_parts(entry, revenue, Side::Credit, &parts)?;
+        self.add_document_parts(
+            entry,
+            revenue,
+            Side::Credit,
+            arap::DocumentKind::Invoice,
+            &parts,
+        )?;
         self.post_entry(entry)?;
         self.next_invoice_id += 1;
         self.invoices.insert(
@@ -5375,6 +5516,13 @@ impl Ledger {
                 owed: Decimal::ZERO,
                 status: DocumentStatus::Open,
                 entry_id: entry,
+                number: fields.number,
+                terms: fields.terms,
+                bill_to: fields.bill_to,
+                seller: fields.seller,
+                customer_ref: fields.customer_ref,
+                memo: fields.memo,
+                sends: Vec::new(),
             },
         );
         self.tag_customer(entry, customer_id);
@@ -5382,22 +5530,24 @@ impl Ledger {
         Ok(id)
     }
 
-    /// Create a vendor bill. Auto-posts: Dr `6999` General Expenses,
-    /// Cr `2000` Accounts Payable. The bill date must not fall in a closed
+    /// Create a vendor bill. Auto-posts: Dr each line's expense or asset
+    /// account (general expenses, `6999`, when a line names none), Cr
+    /// `2000` Accounts Payable. The bill date must not fall in a closed
     /// period.
     ///
     /// ```text
-    /// GOAL: record a vendor's bill as an expense owed (accrual basis).
+    /// GOAL: record a vendor's bill as an expense or asset owed (accrual
+    ///       basis).
     /// SOURCE: IRS Pub. 538, accrual method ("deduct ... expenses in the year
     ///         incurred"); control accounts: Ledger::check_controls;
-    ///         rules.md B-38.
+    ///         rules.md B-38, B-39 (plan P4b S4.1, A-10).
     /// INVARIANTS:
-    ///   1. MUST post one balanced entry: Dr 6999 general expenses, Cr 2000
+    ///   1. MUST post one balanced entry: Dr the lines' accounts, Cr 2000
     ///      payables, for the sum of the lines, dated the bill date, tagged
-    ///      with the vendor (1099s): one expense line per project the lines
-    ///      name, the untagged lines' as one (arap::document_parts), each
-    ///      tagged with its project; the payable line never (rules.md B-37
-    ///      item 8).
+    ///      with the vendor (1099s): one line per (account, project) part
+    ///      the lines name, the parts naming neither as one
+    ///      (arap::document_parts), each tagged with its project; the
+    ///      payable line never (rules.md B-37 item 8).
     ///   2. The payable line MUST carry the bill (Origin), in the step that
     ///      posts it.
     ///   3. A refusal MUST leave the books unchanged.
@@ -5413,7 +5563,28 @@ impl Ledger {
         due_date: NaiveDate,
         lines: Vec<DocumentLine>,
     ) -> Result<BillId, LedgerError> {
-        self.atomically(|l| l.create_bill_steps(vendor_id, date, due_date, lines))
+        self.create_bill_with(
+            vendor_id,
+            date,
+            due_date,
+            lines,
+            arap::BillFields::default(),
+        )
+    }
+
+    /// [`Self::create_bill`] with the bill's new fields (the vendor's
+    /// invoice number, terms, receipt date, memo: plan P4b S4.1). The
+    /// fields are stored on the bill at issue and never change. All `None`
+    /// is exactly [`Self::create_bill`].
+    pub fn create_bill_with(
+        &mut self,
+        vendor_id: VendorId,
+        date: NaiveDate,
+        due_date: NaiveDate,
+        lines: Vec<DocumentLine>,
+        fields: arap::BillFields,
+    ) -> Result<BillId, LedgerError> {
+        self.atomically(|l| l.create_bill_steps(vendor_id, date, due_date, lines, fields))
     }
 
     /// The steps of [`Self::create_bill`], run inside [`Self::atomically`].
@@ -5423,12 +5594,19 @@ impl Ledger {
         date: NaiveDate,
         due_date: NaiveDate,
         lines: Vec<DocumentLine>,
+        fields: arap::BillFields,
     ) -> Result<BillId, LedgerError> {
         if !self.vendors.contains_key(&vendor_id) {
             return Err(LedgerError::UnknownVendor(vendor_id));
         }
         arap::validate_lines(&lines)?;
         arap::validate_due_date(date, due_date)?;
+        if let Some(received_on) = fields.received_on {
+            crate::calendar::check(received_on)?;
+        }
+        if let Some(vendor_ref) = fields.vendor_ref.as_deref() {
+            self.check_vendor_ref(vendor_id, vendor_ref, fields.duplicate_reason.as_deref())?;
+        }
         if let Some(pid) = self.closed_period_containing(date) {
             return Err(LedgerError::ClosedPeriod(pid, date.to_string()));
         }
@@ -5439,7 +5617,13 @@ impl Ledger {
         let ap = self.ensure_control(&PAYABLES);
         let id = self.next_bill_id;
         let entry = self.create_entry(date, &format!("Bill {id}"));
-        self.add_document_parts(entry, expense, Side::Debit, &parts)?;
+        self.add_document_parts(
+            entry,
+            expense,
+            Side::Debit,
+            arap::DocumentKind::Bill,
+            &parts,
+        )?;
         self.add_tagged_line(
             entry,
             ap,
@@ -5464,11 +5648,63 @@ impl Ledger {
                 owed: Decimal::ZERO,
                 status: DocumentStatus::Open,
                 entry_id: entry,
+                vendor_ref: fields.vendor_ref,
+                received_on: fields.received_on,
+                terms: fields.terms,
+                memo: fields.memo,
             },
         );
         self.tag_vendor(entry, vendor_id);
         self.refresh_doc(arap::DocRef::Bill(id));
         Ok(id)
+    }
+
+    /// The number the next invoice is issued under (A-2, B-40): `prefix`,
+    /// then `first_number` plus the count of numbered invoices issued so
+    /// far, zero-padded to four digits and wider past 9,999 (never
+    /// truncated). Stored at issue, never recomputed; a void keeps its
+    /// number, so the series never reuses one; a legacy invoice
+    /// (`number: None`) is not counted.
+    pub fn next_invoice_number(&self, prefix: &str, first_number: u64) -> String {
+        let issued = self
+            .invoices
+            .values()
+            .filter(|i| i.number.is_some())
+            .count() as u64;
+        format!("{prefix}{:04}", first_number.saturating_add(issued))
+    }
+
+    /// Refuse a vendor invoice number that already names a standing bill
+    /// of the same vendor (B-40), unless `duplicate_reason` says why it is
+    /// entered again. Case, spaces and hyphens are ignored: "ACME-123",
+    /// "acme 123" and "Acme123" are the same number.
+    pub fn check_vendor_ref(
+        &self,
+        vendor: VendorId,
+        vendor_ref: &str,
+        duplicate_reason: Option<&str>,
+    ) -> Result<(), LedgerError> {
+        if duplicate_reason.is_some_and(|r| !r.trim().is_empty()) {
+            return Ok(());
+        }
+        let key = normalize_vendor_ref(vendor_ref);
+        if key.is_empty() {
+            return Ok(());
+        }
+        for bill in self.bills.values() {
+            if bill.vendor_id != vendor || !self.in_effect(bill.entry_id) {
+                continue;
+            }
+            if let Some(existing) = &bill.vendor_ref
+                && normalize_vendor_ref(existing) == key
+            {
+                return Err(LedgerError::DuplicateVendorRef {
+                    vendor,
+                    vendor_ref: vendor_ref.to_string(),
+                });
+            }
+        }
+        Ok(())
     }
 
     /// Look up an invoice.
@@ -6395,6 +6631,13 @@ impl Ledger {
                 owed: Decimal::ZERO,
                 status: DocumentStatus::Open,
                 entry_id,
+                number: None,
+                terms: None,
+                bill_to: None,
+                seller: None,
+                customer_ref: None,
+                memo: None,
+                sends: Vec::new(),
             },
         );
         self.tag_customer(entry_id, customer_id);
@@ -6443,6 +6686,10 @@ impl Ledger {
                 owed: Decimal::ZERO,
                 status: DocumentStatus::Open,
                 entry_id,
+                vendor_ref: None,
+                received_on: None,
+                terms: None,
+                memo: None,
             },
         );
         self.tag_vendor(entry_id, vendor_id);
@@ -7931,6 +8178,17 @@ fn same_member_set(a: &[(AccountId, Decimal)], b: &[(AccountId, Decimal)]) -> bo
         v
     };
     a.len() == b.len() && sorted(a) == sorted(b)
+}
+
+/// A vendor invoice number as the duplicate check compares it: lower case,
+/// with spaces and hyphens removed ("ACME-123" and "acme 123" are the
+/// same number; rules.md B-40).
+fn normalize_vendor_ref(vendor_ref: &str) -> String {
+    vendor_ref
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '-')
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 /// A members regime ([`Ledger::members_regime`]): the members closes with

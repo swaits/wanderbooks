@@ -785,6 +785,9 @@ mod tests {
                     description: "Brand identity, website and a long tail of revisions".into(),
                     amount: Decimal::new(123_456, 2),
                     class_id: Some(project),
+                    account: None,
+                    quantity: None,
+                    unit_price: None,
                 }],
             )
             .unwrap();

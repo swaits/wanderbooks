@@ -12,7 +12,7 @@
 use chrono::NaiveDate;
 use ledger_core::arap::DocumentLine;
 use ledger_core::{AccountType, Currency, Money, Side};
-use ledger_store::{JOURNAL_FILE, Store};
+use ledger_store::{JOURNAL_FILE, Store, StoreError};
 use rust_decimal::Decimal;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -30,6 +30,9 @@ fn line(what: &str, c: i64) -> DocumentLine {
         description: what.into(),
         amount: cents(c),
         class_id: None,
+        account: None,
+        quantity: None,
+        unit_price: None,
     }
 }
 
@@ -610,4 +613,98 @@ fn legacy_documents_replay_with_tags() {
         .unwrap()
         .id();
     assert!((0..2).all(|i| l.line_doc(hand, i).is_none()));
+}
+
+/// S4.1's line fields (the account, the quantity and unit price) are not
+/// journaled yet: S4.3's `documents_v2` writes them. The store refuses
+/// such a line before it rehearses or journals anything, so replay can
+/// never lose one; an ordinary line still posts exactly as before, with
+/// no new key in its journal payload.
+#[test]
+fn document_line_fields_wait_for_documents_v2() {
+    let dir = test_dir("unjournaled-fields");
+    let mut s = Store::create(&dir.0, Currency::USD).unwrap();
+    let bank = s
+        .add_account("1000", "Bank", AccountType::Asset, None, false)
+        .unwrap();
+    let c = s.add_customer("Fernhill Labs").unwrap();
+    let v = s.add_vendor("Tobin Harlow Supply").unwrap();
+    // A first invoice creates the control accounts, so the assertions
+    // below see only the document's own events.
+    s.create_invoice(c, d(2026, 3, 1), d(2026, 4, 1), vec![line("Seed", 1_000)])
+        .unwrap();
+    let from = journal_len(&dir.0);
+    let next_invoice = s.ledger().next_invoice_id();
+    let next_bill = s.ledger().next_bill_id();
+
+    let with_account = DocumentLine {
+        description: "Design".into(),
+        amount: cents(5_000),
+        class_id: None,
+        account: Some(bank),
+        quantity: None,
+        unit_price: None,
+    };
+    for refused in [
+        s.create_invoice(c, d(2026, 4, 1), d(2026, 5, 1), vec![with_account.clone()]),
+        s.create_bill(v, d(2026, 4, 1), d(2026, 5, 1), vec![with_account]),
+    ] {
+        assert!(
+            matches!(
+                refused,
+                Err(StoreError::DocumentFieldsAwaitUpgrade {
+                    field: "an account"
+                })
+            ),
+            "{refused:?}"
+        );
+    }
+
+    let with_price = DocumentLine {
+        description: "Hours".into(),
+        amount: cents(9_999),
+        class_id: None,
+        account: None,
+        quantity: Some(Decimal::from(3)),
+        unit_price: Some(cents(3_333)),
+    };
+    assert!(matches!(
+        s.create_invoice(c, d(2026, 4, 1), d(2026, 5, 1), vec![with_price.clone()]),
+        Err(StoreError::DocumentFieldsAwaitUpgrade {
+            field: "a quantity and unit price"
+        })
+    ));
+    assert!(matches!(
+        s.create_bill(v, d(2026, 4, 1), d(2026, 5, 1), vec![with_price]),
+        Err(StoreError::DocumentFieldsAwaitUpgrade {
+            field: "a quantity and unit price"
+        })
+    ));
+
+    // Every refusal left the journal and the allocators exactly as they
+    // were.
+    assert_eq!(journal_len(&dir.0), from);
+    assert_eq!(s.ledger().next_invoice_id(), next_invoice);
+    assert_eq!(s.ledger().next_bill_id(), next_bill);
+    s.verify().unwrap();
+
+    // An ordinary line posts exactly as before: the same five events, and
+    // the line carries no key the older journal did not have.
+    let inv = s
+        .create_invoice(c, d(2026, 4, 1), d(2026, 5, 1), vec![line("Design", 5_000)])
+        .unwrap();
+    let got = since(&dir.0, from);
+    assert_eq!(got.len(), 5, "{got:?}");
+    assert_eq!(got[4].0, "invoice.created");
+    let keys: Vec<&String> = got[4].1["lines"][0].as_object().unwrap().keys().collect();
+    assert_eq!(keys, ["amount", "description"]);
+    let live = s.ledger().clone();
+    drop(s);
+    let s = Store::open(&dir.0).unwrap();
+    assert!(live.differs_from(s.ledger()).is_empty());
+    assert_eq!(
+        s.ledger().get_invoice(inv).unwrap().total(),
+        Ok(cents(5_000))
+    );
+    s.verify().unwrap();
 }

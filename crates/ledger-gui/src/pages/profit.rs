@@ -449,6 +449,9 @@ mod tests {
                 description: "work".into(),
                 amount: cents(c),
                 class_id: None,
+                account: None,
+                quantity: None,
+                unit_price: None,
             }]
         };
         let acme = b.s.add_customer("Acme").unwrap();

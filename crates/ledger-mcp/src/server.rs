@@ -2627,6 +2627,9 @@ fn document_lines(
                     .as_deref()
                     .map(|c| resolve_class(store, c))
                     .transpose()?,
+                account: None,
+                quantity: None,
+                unit_price: None,
             })
         })
         .collect()

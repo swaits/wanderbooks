@@ -479,6 +479,31 @@ one kernel function, `kernel::unrecovered_cost`:
     `unrecovered_cost_only_for_on_spec_and_never_negative`. No Lean model:
     the function is one subtraction and a `max`.
 
+### Payment terms and document lines (P4b S4.1)
+
+Payment terms (rules.md B-39) give a due date and a discount date by
+calendar arithmetic in `arap::Terms`, and the two money figures they touch
+come from the kernel:
+
+33. **A discount never exceeds its stated percentage of the total, and a
+    line's amount is exactly its quantity times its unit price.** The
+    bound is `total × basis points / 10,000`, exact: a result times 10,000
+    is the total times the basis points, and it is never above the total;
+    when no whole amount can hold the exact bound, or a factor would
+    overflow, the kernel refuses (None) rather than rounding. A line's
+    amount is the exact product, never rounded, and None on overflow.
+    Terms' own due dates (Net n, Net n EOM, due on receipt, custom; the
+    9999-12 bound) are checked by `spec_documents.rs`'s
+    `terms_derive_due_dates`, and the parser's round trip by
+    `terms_describe_and_parse_round_trip`.
+    - Kani `discount_max_is_bounded` (at i32, as the proration charge
+      harnesses are: the law relates a product to a quotient) ·
+      `line_amount_is_exact` (at i64) · bridge `discount_max_agrees`,
+      `discount_max_i32_agrees_with_i64`, `line_amount_agrees` · tests
+      `discount_bounds_and_late_reason`, `qty_times_price_must_equal_amount`.
+      No Lean model: these are two arithmetic laws, not a new `Ledger`
+      command (S4.1 adds fields to the existing document commands).
+
 ## What the proofs found
 
 The engine already had 190+ tests, property tests, mutation testing,
@@ -674,6 +699,10 @@ then) and `just prove-slow` 1,365 s (seven then; `entry_flows_sum_to_cash`
 headline theorems) and `just prove-slow` 467 s (8 harnesses, the slowest
 `entry_flows_sum_to_cash` at 301 s).
 
+P4b S4.1's two harnesses were measured on 2026-10-26 (a busy machine);
+the rest are the 2026-10-22 run. `discount_max_is_bounded`'s 163 s is
+Kani's verification time (it runs in `prove-slow`).
+
 Every harness, the law it proves, the recipe that runs it, and its time
 in that quiet run (`prove`: each harness's verification time; `prove-slow`:
 each harness's whole run, its compile of about 50 s included):
@@ -735,4 +764,6 @@ each harness's whole run, its compile of about 50 s included):
 | `true_up_reaches_the_target` | 30 | prove | 0 |
 | `basis_figures_laws` | 31 | prove | 0 |
 | `unrecovered_cost_laws` | 32 | prove | 0 |
+| `discount_max_is_bounded` | 33 | prove-slow | 163 |
+| `line_amount_is_exact` | 33 | prove | 6 |
 | `kani_symbolic_copy_canary` | (the checker: "Trusting the checker") | prove | 3 |

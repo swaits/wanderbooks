@@ -322,6 +322,9 @@ fn every_subject(s: &mut Store, fx: &Fx) -> Vec<Subject> {
                 description: "App".into(),
                 amount: dec("100.00"),
                 class_id: None,
+                account: None,
+                quantity: None,
+                unit_price: None,
             }],
         )
         .unwrap();
@@ -335,6 +338,9 @@ fn every_subject(s: &mut Store, fx: &Fx) -> Vec<Subject> {
                 description: "Design".into(),
                 amount: dec("200.00"),
                 class_id: None,
+                account: None,
+                quantity: None,
+                unit_price: None,
             }],
         )
         .unwrap();

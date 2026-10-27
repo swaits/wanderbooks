@@ -1725,6 +1725,9 @@ mod tests {
                 description: "work".into(),
                 amount: cents(c),
                 class_id: None,
+                account: None,
+                quantity: None,
+                unit_price: None,
             }]
         };
         // Owed, not yet due; owed, due today; paid, past due; owed, past

@@ -17,8 +17,8 @@ use ledger_core::form1099::{PaymentAccounts, vendor_1099_report};
 use ledger_core::parties::{MoneyAccounts, activity};
 use ledger_core::reports::profit_and_loss_by_class;
 use ledger_core::{
-    AccountType, ClassId, Currency, Ledger, LedgerError, ProjectFacts, ProjectStatus, Side,
-    project_entries, project_to_date,
+    AccountId, AccountType, ClassId, Currency, Ledger, LedgerError, ProjectFacts, ProjectStatus,
+    Side, project_entries, project_to_date,
 };
 use proptest::prelude::*;
 use rust_decimal::Decimal;
@@ -36,6 +36,9 @@ fn line(what: &str, c: i64, class: Option<ClassId>) -> DocumentLine {
         description: what.into(),
         amount: cents(c),
         class_id: class,
+        account: None,
+        quantity: None,
+        unit_price: None,
     }
 }
 
@@ -436,20 +439,25 @@ proptest! {
         let parts = document_parts(&lines, "doc").unwrap();
         let total: Decimal = lines.iter().map(|l| l.amount).sum();
         prop_assert_eq!(parts.iter().map(|p| p.1).sum::<Decimal>(), total);
-        let mut first: Vec<Option<ClassId>> = Vec::new();
+        let mut first: Vec<(Option<AccountId>, Option<ClassId>)> = Vec::new();
         for l in &lines {
-            if !first.contains(&l.class_id) {
-                first.push(l.class_id);
+            let key = (l.account, l.class_id);
+            if !first.contains(&key) {
+                first.push(key);
             }
         }
         prop_assert_eq!(parts.iter().map(|p| p.0).collect::<Vec<_>>(), first);
-        for (k, amount) in &parts {
-            let sum: Decimal = lines.iter().filter(|l| l.class_id == *k).map(|l| l.amount).sum();
+        for ((account, class), amount) in &parts {
+            let sum: Decimal = lines
+                .iter()
+                .filter(|l| l.account == *account && l.class_id == *class)
+                .map(|l| l.amount)
+                .sum();
             prop_assert_eq!(*amount, sum);
             prop_assert!(*amount > Decimal::ZERO);
         }
-        if lines.iter().all(|l| l.class_id.is_none()) {
-            prop_assert_eq!(parts, vec![(None, total)]);
+        if lines.iter().all(|l| l.class_id.is_none() && l.account.is_none()) {
+            prop_assert_eq!(parts, vec![((None, None), total)]);
         }
     }
 }
@@ -462,6 +470,9 @@ fn document_parts_refuse_past_exact_arithmetic() {
         description: "x".into(),
         amount: Decimal::MAX,
         class_id: Some(1),
+        account: None,
+        quantity: None,
+        unit_price: None,
     };
     assert!(matches!(
         document_parts(&[big.clone(), big], "doc"),

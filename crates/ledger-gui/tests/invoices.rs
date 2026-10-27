@@ -42,6 +42,9 @@ fn line(description: &str, cents: i64) -> DocumentLine {
         description: description.into(),
         amount: Decimal::new(cents, 2),
         class_id: None,
+        account: None,
+        quantity: None,
+        unit_price: None,
     }
 }
 

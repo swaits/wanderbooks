@@ -2,8 +2,10 @@
 //!
 //! Invoices and bills are business documents that auto-post journal entries:
 //!
-//! * `create_invoice`: Dr `1200` Accounts Receivable, Cr `4000` Revenue.
-//! * `create_bill`: Dr `6999` General Expenses, Cr `2000` Accounts Payable.
+//! * `create_invoice`: Dr `1200` Accounts Receivable, Cr each line's account
+//!   (the revenue role, `4000`, when a line names none).
+//! * `create_bill`: Dr each line's account (the general-expenses role,
+//!   `6999`, when a line names none), Cr `2000` Accounts Payable.
 //! * `receive_payment`: Dr Cash, Cr A/R.
 //! * `pay_bill`: Dr A/P, Cr Cash.
 //!
@@ -21,9 +23,14 @@
 //! closed period.
 
 use crate::LedgerError;
-use chrono::NaiveDate;
+use chrono::{Datelike, Days, NaiveDate};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
+
+/// The most days a payment term may run: ten years, far beyond any trade
+/// term, and short of the calendar's end for every document date the
+/// books can hold (B-39).
+pub const MAX_TERMS_DAYS: u16 = 3_650;
 
 /// Opaque customer handle.
 pub type CustomerId = u64;
@@ -91,6 +98,17 @@ pub enum DocumentStatus {
     Partial,
     /// Fully paid.
     Paid,
+}
+
+/// The two kinds of document (an invoice or a bill), without an id: what
+/// a line's account rule and the journal's event names key on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DocumentKind {
+    /// A sales invoice (receivables).
+    Invoice,
+    /// A vendor bill (payables).
+    Bill,
 }
 
 /// A document: an invoice or a bill, the two kinds whose ledger lines
@@ -407,6 +425,393 @@ impl PaymentDetails {
     }
 }
 
+/// How a document's payment terms count their days (rules.md B-39; plan
+/// P4b S4.1): from the document's date, from the end of its month, or a
+/// date the parties agreed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TermsKind {
+    /// Due on the document's own date.
+    DueOnReceipt,
+    /// Due `n` days after the document's date (Net n).
+    Net(u16),
+    /// Due `n` days after the last day of the document's month (Net n
+    /// EOM).
+    NetEom(u16),
+    /// Due on a date the parties agreed; the caller passes it to
+    /// [`Terms::due_date`], and [`Terms::describe`] carries it for
+    /// people.
+    Custom,
+}
+
+/// An early-payment discount: take `percent_bp` off if paid within
+/// `days` of the document's date ("2/10 net 30").
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EarlyDiscount {
+    /// The discount in basis points: 1 to 9,999 (0.01% to 99.99%).
+    pub percent_bp: u32,
+    /// The days after the document's date the discount is open.
+    pub days: u16,
+}
+
+/// Payment terms: one due date, and the early-payment discount open
+/// before it (rules.md B-39; plan P4b S4.1, A-2, A-8).
+///
+/// ```text
+/// GOAL: terms give one due date and one discount date, exactly.
+/// SOURCE: docs/spec/rules.md B-39; plan/served.md 8.3.13 (B-39);
+///         CONVENTION: standard trade-terms notation; UCC §2-310(a) for
+///         goods; for services, the contract.
+/// INVARIANTS:
+///   1. Net n = date + n; Net n EOM = the last day of date's month + n;
+///      due on receipt = date; Custom = the given date. Every result is
+///      >= the document date and in the calendar (calendar::check); n is
+///      0..=3650.
+///   2. discount_by = date + d, d < the net days; no discount with due on
+///      receipt, EOM or custom terms.
+///   3. describe() is the canonical text; parse() accepts it and the
+///      canonical spellings, case-insensitively, and nothing else.
+/// ```
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Terms {
+    /// How the due date counts.
+    kind: TermsKind,
+    /// The early-payment discount, when there is one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    discount: Option<EarlyDiscount>,
+    /// The canonical text: "Net 30", "Net 15 EOM", "2/10 net 30", "Due on
+    /// receipt", "Due 2026-11-15".
+    text: String,
+}
+
+impl Terms {
+    /// Terms for `kind`, with `discount` when given, canonical text
+    /// composed. Refused when the days are past [`MAX_TERMS_DAYS`], the
+    /// discount is outside 1..=9,999 basis points, or a discount is asked
+    /// for terms that count no net days (due on receipt, EOM or custom).
+    pub fn new(kind: TermsKind, discount: Option<EarlyDiscount>) -> Result<Self, LedgerError> {
+        if let TermsKind::Net(n) | TermsKind::NetEom(n) = kind
+            && n > MAX_TERMS_DAYS
+        {
+            return Err(LedgerError::TermsUnreadable(format!(
+                "net days {n} is outside 0..={MAX_TERMS_DAYS}"
+            )));
+        }
+        if let Some(d) = discount {
+            if !(1..=9_999).contains(&d.percent_bp) {
+                return Err(LedgerError::TermsUnreadable(format!(
+                    "discount {} basis points is outside 1..=9999",
+                    d.percent_bp
+                )));
+            }
+            match kind {
+                TermsKind::Net(n) if d.days < n => {}
+                _ => return Err(LedgerError::TermsDiscountNeedsNetDays),
+            }
+        }
+        // Custom terms are a date; without one there is nothing to print
+        // or derive (Terms::custom is the way to give it).
+        if kind == TermsKind::Custom {
+            return Err(LedgerError::TermsUnreadable(
+                "custom terms need their date: use Terms::custom".into(),
+            ));
+        }
+        Ok(Terms {
+            kind,
+            discount,
+            text: compose_terms_text(kind, discount),
+        })
+    }
+
+    /// Custom terms due on `due`: the parties agreed a date rather than a
+    /// count of days. Its text carries the date for people; the document
+    /// stores the due date itself.
+    pub fn custom(due: NaiveDate) -> Result<Self, LedgerError> {
+        crate::calendar::check(due)?;
+        Ok(Terms {
+            kind: TermsKind::Custom,
+            discount: None,
+            text: format!("Due {due}"),
+        })
+    }
+
+    /// How the due date counts.
+    pub fn kind(&self) -> TermsKind {
+        self.kind
+    }
+
+    /// The early-payment discount, when there is one.
+    pub fn discount(&self) -> Option<EarlyDiscount> {
+        self.discount
+    }
+
+    /// The canonical text ("Net 30", "2/10 net 30", "Due 2026-11-15").
+    pub fn describe(&self) -> String {
+        self.text.clone()
+    }
+
+    /// The date payment is due for a document dated `date`.
+    ///
+    /// For [`TermsKind::Custom`] the caller passes the agreed date itself
+    /// (there is no count to derive it from); for every other kind `date`
+    /// is the document's date. The result is never before `date` and
+    /// always in the calendar: a due date past 9999-12-31 is refused
+    /// ([`LedgerError::DateOverflow`]), never a panic.
+    pub fn due_date(&self, date: NaiveDate) -> Result<NaiveDate, LedgerError> {
+        crate::calendar::check(date)?;
+        let due = match self.kind {
+            TermsKind::DueOnReceipt | TermsKind::Custom => date,
+            TermsKind::Net(n) => add_days(date, n)?,
+            TermsKind::NetEom(n) => add_days(last_day_of_month(date)?, n)?,
+        };
+        validate_due_date(date, due)?;
+        Ok(due)
+    }
+
+    /// The last date the early-payment discount is open for a document
+    /// dated `date`: `date + discount.days`, or `None` when there is no
+    /// discount or the date is outside the calendar.
+    pub fn discount_by(&self, date: NaiveDate) -> Option<NaiveDate> {
+        let d = self.discount?;
+        let by = date.checked_add_days(Days::new(u64::from(d.days)))?;
+        crate::calendar::check(by).ok()
+    }
+
+    /// Read the canonical spellings, case-insensitively: "Net 30", "Net 15
+    /// EOM", "2/10 net 30", "Due on receipt", "Due 2026-11-15". Anything
+    /// else is [`LedgerError::TermsUnreadable`].
+    pub fn parse(text: &str) -> Result<Self, LedgerError> {
+        let raw = text.trim();
+        let lower = raw.to_lowercase();
+        let unreadable = || LedgerError::TermsUnreadable(raw.to_string());
+        if lower == "due on receipt" {
+            return Terms::new(TermsKind::DueOnReceipt, None);
+        }
+        if let Some(rest) = lower.strip_prefix("due ") {
+            let due =
+                NaiveDate::parse_from_str(rest.trim(), "%Y-%m-%d").map_err(|_| unreadable())?;
+            return Terms::custom(due).map_err(|_| unreadable());
+        }
+        // "2/10 net 30" (an optional decimal percentage), or "net 30" /
+        // "net 15 eom".
+        let (percent, days, net, eom) = match lower.split_once('/') {
+            Some((pct, rest)) => {
+                let (days, net_part) = rest.trim().split_once(' ').ok_or_else(unreadable)?;
+                let after = net_part
+                    .trim()
+                    .strip_prefix("net ")
+                    .ok_or_else(unreadable)?
+                    .trim();
+                let (net, eom) = match after.strip_suffix(" eom") {
+                    Some(n) => (n, true),
+                    None => (after, false),
+                };
+                (
+                    Some(parse_percent(pct).ok_or_else(unreadable)?),
+                    days,
+                    net,
+                    eom,
+                )
+            }
+            None => {
+                let rest = lower.strip_prefix("net ").ok_or_else(unreadable)?;
+                let (net, eom) = match rest.trim().strip_suffix(" eom") {
+                    Some(n) => (n, true),
+                    None => (rest.trim(), false),
+                };
+                (None, "0", net, eom)
+            }
+        };
+        let net: u16 = net.trim().parse().map_err(|_| unreadable())?;
+        let discount = match (percent, days) {
+            (Some(percent_bp), days_raw) => {
+                let days: u16 = days_raw.parse().map_err(|_| unreadable())?;
+                Some(EarlyDiscount { percent_bp, days })
+            }
+            (None, _) => None,
+        };
+        let kind = if eom {
+            TermsKind::NetEom(net)
+        } else {
+            TermsKind::Net(net)
+        };
+        Terms::new(kind, discount).map_err(|_| unreadable())
+    }
+}
+
+/// The canonical text of terms: `"2/10 net 30"` with a discount, else
+/// `"Net 30"`, `"Net 15 EOM"` or `"Due on receipt"`.
+fn compose_terms_text(kind: TermsKind, discount: Option<EarlyDiscount>) -> String {
+    match (discount, kind) {
+        (Some(EarlyDiscount { percent_bp, days }), TermsKind::Net(n)) => {
+            format!("{}/{} net {n}", percent_text(percent_bp), days)
+        }
+        (_, TermsKind::Net(n)) => format!("Net {n}"),
+        (_, TermsKind::NetEom(n)) => format!("Net {n} EOM"),
+        (_, TermsKind::DueOnReceipt) => "Due on receipt".to_string(),
+        (_, TermsKind::Custom) => "Due".to_string(),
+    }
+}
+
+/// Basis points as the percentage trade terms print: 200 is "2", 250 is
+/// "2.5", 205 is "2.05".
+fn percent_text(percent_bp: u32) -> String {
+    let whole = percent_bp / 100;
+    let frac = percent_bp % 100;
+    match (whole, frac) {
+        (w, 0) => w.to_string(),
+        (w, f) if f % 10 == 0 => format!("{w}.{}", f / 10),
+        (w, f) => format!("{w}.{f:02}"),
+    }
+}
+
+/// A percentage in trade terms as basis points: "2" is 200, "2.5" is 250,
+/// "2.05" is 205. None when it isn't a percentage with at most two
+/// decimal places.
+fn parse_percent(s: &str) -> Option<u32> {
+    let (whole, frac) = match s.trim().split_once('.') {
+        Some((w, f)) => (w, f),
+        None => (s.trim(), ""),
+    };
+    if frac.len() > 2 || !frac.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let whole: u32 = whole.parse().ok()?;
+    let frac: u32 = if frac.is_empty() {
+        0
+    } else {
+        format!("{frac:0<2}").parse().ok()?
+    };
+    whole.checked_mul(100)?.checked_add(frac)
+}
+
+/// `date` plus `n` days, or [`LedgerError::DateOverflow`] past the
+/// calendar's end.
+fn add_days(date: NaiveDate, n: u16) -> Result<NaiveDate, LedgerError> {
+    date.checked_add_days(Days::new(u64::from(n)))
+        .ok_or(LedgerError::DateOverflow(date))
+}
+
+/// The last day of `date`'s month, or [`LedgerError::DateOverflow`] when
+/// there is no such date in the calendar.
+fn last_day_of_month(date: NaiveDate) -> Result<NaiveDate, LedgerError> {
+    let (year, month) = if date.month() == 12 {
+        (
+            date.year()
+                .checked_add(1)
+                .ok_or(LedgerError::DateOverflow(date))?,
+            1,
+        )
+    } else {
+        (date.year(), date.month() + 1)
+    };
+    NaiveDate::from_ymd_opt(year, month, 1)
+        .and_then(|first| first.pred_opt())
+        .ok_or(LedgerError::DateOverflow(date))
+}
+
+/// The parties on a document, as they were when it was issued (plan P4b
+/// S4.1, A-13): a name, and the address and email that were on the
+/// document. Never today's party record when a snapshot exists.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PartySnapshot {
+    /// The party's name at issue.
+    pub name: String,
+    /// Its address at issue, when the document printed one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
+    /// Its email at issue, when the document printed one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+}
+
+/// How an invoice was sent (plan P4b S5; the type S4.1 adds so
+/// [`Invoice::sends`] has one from the start).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SentVia {
+    /// Email.
+    Email,
+    /// Paper mail.
+    Mail,
+    /// A customer or vendor portal.
+    Portal,
+    /// Handed over.
+    Hand,
+    /// Another channel, named.
+    Other(String),
+}
+
+/// Whether a send was the original or a reminder (plan P4b S5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SendKind {
+    /// The document first went out.
+    Original,
+    /// It went out again.
+    Reminder,
+}
+
+/// One recorded send of an invoice (plan P4b S5): who sent it, how, to
+/// whom, and the channel's own reference. A send changes no figure.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Sent {
+    /// The day it went out.
+    pub on: NaiveDate,
+    /// Who sent it: the owner, or a named delegate such as an agent (A-4).
+    pub by: String,
+    /// The channel.
+    pub via: SentVia,
+    /// The recipients.
+    pub to: Vec<String>,
+    /// Original or reminder.
+    pub kind: SendKind,
+    /// The channel's own id (a message id), when there is one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<String>,
+    /// A note about the send, when there is one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// The fields a new invoice carries beyond its figures (plan P4b S4.1).
+/// Every one is optional: all `None` is the invoice every earlier version
+/// wrote, posted and journaled exactly as before.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct InvoiceFields {
+    /// The number to issue it under ([`crate::Ledger::next_invoice_number`]).
+    pub number: Option<String>,
+    /// Its payment terms.
+    pub terms: Option<Terms>,
+    /// The customer as the document prints it.
+    pub bill_to: Option<PartySnapshot>,
+    /// Us as the document prints us.
+    pub seller: Option<PartySnapshot>,
+    /// The customer's own reference (their purchase order).
+    pub customer_ref: Option<String>,
+    /// A memo printed on the document.
+    pub memo: Option<String>,
+}
+
+/// The fields a new bill carries beyond its figures (plan P4b S4.1).
+/// Every one is optional: all `None` is the bill every earlier version
+/// wrote, posted and journaled exactly as before.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BillFields {
+    /// The vendor's own invoice number.
+    pub vendor_ref: Option<String>,
+    /// The day we received the bill, when it differs from its date.
+    pub received_on: Option<NaiveDate>,
+    /// Its payment terms.
+    pub terms: Option<Terms>,
+    /// A memo about the bill.
+    pub memo: Option<String>,
+    /// Why a vendor invoice number that already names a standing bill is
+    /// entered again anyway. Journaled with the bill (S4.3); never part of
+    /// the record itself.
+    pub duplicate_reason: Option<String>,
+}
+
 /// One line on an invoice or bill.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct DocumentLine {
@@ -421,6 +826,23 @@ pub struct DocumentLine {
     /// have none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub class_id: Option<crate::ClassId>,
+    /// The account the line's revenue, expense or asset goes to (plan P4b
+    /// S4.1, A-10): an invoice line's revenue or a liability holding no
+    /// role; a bill line's expense or a non-cash asset holding no role.
+    /// None is the kind's role account (revenue for an invoice, general
+    /// expenses for a bill), which is also what every legacy line means.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<crate::AccountId>,
+    /// How many units the line bills, when it gives a quantity and price
+    /// rather than one amount. It and `unit_price` are both given or
+    /// neither, and `quantity × unit_price` must equal `amount` exactly
+    /// (plan P4b S4.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quantity: Option<Decimal>,
+    /// The price of one unit, when the line gives a quantity. See
+    /// [`Self::quantity`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit_price: Option<Decimal>,
 }
 
 /// A sales invoice: we billed a customer.
@@ -455,6 +877,30 @@ pub struct Invoice {
     pub status: DocumentStatus,
     /// The auto-posted journal entry.
     pub entry_id: u64,
+    /// The number it was issued under ("INV-0007"), from
+    /// [`crate::Ledger::next_invoice_number`]; stored at issue, never
+    /// recomputed, kept by a void (A-2, B-40). None on a legacy invoice:
+    /// it is shown as "Invoice {id}" and never counted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub number: Option<String>,
+    /// Its payment terms, when it has them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terms: Option<Terms>,
+    /// The customer as the document printed it, when it printed one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bill_to: Option<PartySnapshot>,
+    /// Us as the document printed us, when it printed us.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seller: Option<PartySnapshot>,
+    /// The customer's own reference (their purchase order), when given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub customer_ref: Option<String>,
+    /// A memo printed on the document, when given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memo: Option<String>,
+    /// Every recorded send, in order (plan P4b S5; empty until then).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sends: Vec<Sent>,
 }
 
 /// The sum of a document's lines; refused (TooLargeToCompute), never a
@@ -468,39 +914,51 @@ pub fn document_total(lines: &[DocumentLine], what: &str) -> Result<Decimal, Led
         .ok_or_else(|| LedgerError::TooLargeToCompute(format!("{what}'s total")))
 }
 
-/// The revenue (an invoice's) or expense (a bill's) side of a document's
-/// entry: one part per project the lines name, in the order each first
-/// appears, the untagged lines together as one part (`None`), each the
-/// sum of its lines ([`document_total`]).
+/// The account and project a document's lines group by (plan P4b S4.1):
+/// None for either means the kind's role account (an invoice's revenue, a
+/// bill's general expenses) and no project.
+pub type DocumentPartKey = (Option<crate::AccountId>, Option<crate::ClassId>);
+
+/// The revenue (an invoice's), expense or asset (a bill's) side of a
+/// document's entry: one part per (account, project) the lines name, in
+/// the order each first appears, the lines naming neither together as one
+/// part (`(None, None)`), each the sum of its lines ([`document_total`]).
 ///
 /// ```text
-/// GOAL: a document's lines count toward their projects, and a document
-///       whose lines name none posts exactly as before.
+/// GOAL: a document's lines post to their accounts and count toward their
+///       projects, and a document whose lines name neither posts exactly
+///       as before.
 /// SOURCE: docs/spec/rules.md B-37 item 3 (job costing: the revenue and
 ///         direct costs identified with one job) and item 8 (an
-///         invoice's or bill's line names its project).
+///         invoice's or bill's line names its project); B-39 and plan
+///         P4b S4.1 A-10 (every bill line names its account).
 /// INVARIANTS:
 ///   1. The parts sum to the document's total (conservation), and each
 ///      line is in exactly one part.
-///   2. No two parts name the same project; no part is empty.
-///   3. Lines naming no project make one part, so an untagged document is
-///      one part: the one line every document posted before projects.
+///   2. No two parts name the same account and project; no part is empty.
+///   3. Lines naming neither make one part, so a document with no new
+///      fields is one part: the one line every document posted before
+///      S4.1.
 ///   4. NEVER panics: TooLargeToCompute past exact arithmetic.
 /// ```
 pub fn document_parts(
     lines: &[DocumentLine],
     what: &str,
-) -> Result<Vec<(Option<crate::ClassId>, Decimal)>, LedgerError> {
-    let mut keys: Vec<Option<crate::ClassId>> = Vec::new();
+) -> Result<Vec<(DocumentPartKey, Decimal)>, LedgerError> {
+    let mut keys: Vec<DocumentPartKey> = Vec::new();
     for l in lines {
-        if !keys.contains(&l.class_id) {
-            keys.push(l.class_id);
+        let key = (l.account, l.class_id);
+        if !keys.contains(&key) {
+            keys.push(key);
         }
     }
     keys.into_iter()
         .map(|k| {
-            let part: Vec<DocumentLine> =
-                lines.iter().filter(|l| l.class_id == k).cloned().collect();
+            let part: Vec<DocumentLine> = lines
+                .iter()
+                .filter(|l| (l.account, l.class_id) == k)
+                .cloned()
+                .collect();
             Ok((k, document_total(&part, what)?))
         })
         .collect()
@@ -553,6 +1011,19 @@ pub struct Bill {
     pub status: DocumentStatus,
     /// The auto-posted journal entry.
     pub entry_id: u64,
+    /// The vendor's own invoice number, when given: what a duplicate
+    /// check reads (B-40; [`crate::Ledger::check_vendor_ref`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vendor_ref: Option<String>,
+    /// The day we received the bill, when it differs from its date.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub received_on: Option<NaiveDate>,
+    /// Its payment terms, when it has them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terms: Option<Terms>,
+    /// A memo about the bill, when given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memo: Option<String>,
 }
 
 impl Bill {
@@ -571,8 +1042,9 @@ impl Bill {
 }
 
 /// Validate document lines: at least one, all positive amounts, each in a
-/// journal line's range. For new documents; replay restores them as
-/// journaled (rules.md B-28).
+/// journal line's range, and a quantity and unit price that multiply to
+/// the amount exactly (plan P4b S4.1). For new documents; replay restores
+/// them as journaled (rules.md B-28).
 pub fn validate_lines(lines: &[DocumentLine]) -> Result<(), LedgerError> {
     if lines.is_empty() {
         return Err(LedgerError::EmptyDocumentLines);
@@ -588,6 +1060,36 @@ pub fn validate_lines(lines: &[DocumentLine]) -> Result<(), LedgerError> {
                 "document line amount {}",
                 line.amount
             )));
+        }
+        match (line.quantity, line.unit_price) {
+            (None, None) => {}
+            (Some(quantity), Some(unit_price)) => {
+                if quantity <= Decimal::ZERO || unit_price <= Decimal::ZERO {
+                    return Err(LedgerError::LineArithmetic(format!(
+                        "line '{}': quantity {quantity} and unit price {unit_price} must both be positive",
+                        line.description
+                    )));
+                }
+                let product =
+                    crate::kernel::line_amount(quantity, unit_price).ok_or_else(|| {
+                        LedgerError::LineArithmetic(format!(
+                            "line '{}': {quantity} x {unit_price} is too large to compute exactly",
+                            line.description
+                        ))
+                    })?;
+                if product != line.amount {
+                    return Err(LedgerError::LineArithmetic(format!(
+                        "line '{}': {quantity} x {unit_price} = {product}, not the line's amount {}; the engine never rounds a quantity times a price",
+                        line.description, line.amount
+                    )));
+                }
+            }
+            (quantity, unit_price) => {
+                return Err(LedgerError::LineArithmetic(format!(
+                    "line '{}': a quantity and a unit price are both given or neither (quantity {quantity:?}, unit price {unit_price:?})",
+                    line.description
+                )));
+            }
         }
     }
     Ok(())
@@ -739,6 +1241,9 @@ mod tests {
                     description: "Widgets".to_string(),
                     amount: "1000.00".parse().unwrap(),
                     class_id: None,
+                    account: None,
+                    quantity: None,
+                    unit_price: None,
                 }],
             )
             .unwrap();
@@ -789,6 +1294,9 @@ mod tests {
                     description: "Paper".to_string(),
                     amount: "250.00".parse().unwrap(),
                     class_id: None,
+                    account: None,
+                    quantity: None,
+                    unit_price: None,
                 }],
             )
             .unwrap();
@@ -831,6 +1339,9 @@ mod tests {
                     description: "X".to_string(),
                     amount: "100.00".parse().unwrap(),
                     class_id: None,
+                    account: None,
+                    quantity: None,
+                    unit_price: None,
                 }],
             )
             .unwrap();
@@ -909,6 +1420,9 @@ mod tests {
                 description: "A".to_string(),
                 amount: "100.00".parse().unwrap(),
                 class_id: None,
+                account: None,
+                quantity: None,
+                unit_price: None,
             }],
         )
         .unwrap();
@@ -921,6 +1435,9 @@ mod tests {
                 description: "B".to_string(),
                 amount: "200.00".parse().unwrap(),
                 class_id: None,
+                account: None,
+                quantity: None,
+                unit_price: None,
             }],
         )
         .unwrap();
@@ -951,6 +1468,9 @@ mod tests {
                 description: "X".to_string(),
                 amount: "100.00".parse().unwrap(),
                 class_id: None,
+                account: None,
+                quantity: None,
+                unit_price: None,
             }],
         );
         assert!(matches!(err, Err(LedgerError::ClosedPeriod(_, _))));

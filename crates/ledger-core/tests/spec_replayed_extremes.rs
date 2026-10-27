@@ -305,6 +305,9 @@ fn documents_and_aging_are_exact_or_refused() {
         description: "x".into(),
         amount: a,
         class_id: None,
+        account: None,
+        quantity: None,
+        unit_price: None,
     };
     // An entry as replay rebuilds it: Dr `dr` / Cr `cr` for `a`.
     let replayed = |l: &mut Ledger, dr, cr, a: Decimal| {

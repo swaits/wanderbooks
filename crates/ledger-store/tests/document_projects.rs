@@ -53,6 +53,9 @@ fn line(what: &str, c: i64, class: Option<ClassId>) -> DocumentLine {
         description: what.into(),
         amount: cents(c),
         class_id: class,
+        account: None,
+        quantity: None,
+        unit_price: None,
     }
 }
 

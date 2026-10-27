@@ -133,6 +133,9 @@ fn run(s: &mut Store, k: &Setup, ops: &[Op], docs: &mut Vec<DocRef>) -> Result<(
                 description: "work".into(),
                 amount: cents(c),
                 class_id: None,
+                account: None,
+                quantity: None,
+                unit_price: None,
             }]
         };
         let result: Result<(), StoreError> = match *op {

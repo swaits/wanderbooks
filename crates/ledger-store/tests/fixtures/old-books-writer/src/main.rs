@@ -79,7 +79,9 @@ fn main() {
     // 11. invoice with sub-cent lines that cancel
     { let mut b = books(&root, "invoice_fine");
       let c = b.s.add_customer("Cust").unwrap();
-      report("invoice_fine", b.s.create_invoice(c, d(2026,3,1), d(2026,3,31), vec![DocumentLine{description:"a".into(), amount: dec("0.00000000001")}, DocumentLine{description:"b".into(), amount: dec("9.99999999999")}])); }
+      report("invoice_fine", b.s.create_invoice(c, d(2026,3,1), d(2026,3,31), vec![
+        DocumentLine{description:"a".into(), amount: dec("0.00000000001"), account: None, quantity: None, unit_price: None},
+        DocumentLine{description:"b".into(), amount: dec("9.99999999999"), account: None, quantity: None, unit_price: None}])); }
     // 12. period year 0
     { let mut b = books(&root, "period_year0");
       report("period_year0", b.s.create_period("y0", d(0,1,1), d(0,12,31))); }

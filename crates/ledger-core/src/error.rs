@@ -601,6 +601,67 @@ pub enum LedgerError {
     #[error("document line amount must be positive, got {0}")]
     InvalidDocumentLineAmount(Decimal),
 
+    /// A document line's quantity and unit price don't multiply to its
+    /// amount, or only one of the two is given: the engine never rounds
+    /// one (plan P4b S4.1; rules.md B-39).
+    #[error("{0}")]
+    LineArithmetic(String),
+
+    /// A document line is on an account that kind of document can't post
+    /// to (plan P4b S4.1, A-10; rules.md B-39): a role account, a cash
+    /// account, or a type the document's side doesn't take.
+    #[error("account {code} \"{name}\" cannot take {kind} line: {why}")]
+    DocumentLineAccount {
+        /// The account's code.
+        code: String,
+        /// Its name.
+        name: String,
+        /// "an invoice" or "a bill".
+        kind: &'static str,
+        /// What the rule is, in a sentence.
+        why: String,
+    },
+
+    /// A vendor's invoice number (normalized) already names a standing
+    /// bill of that vendor, and no duplicate reason was given (rules.md
+    /// B-40).
+    #[error(
+        "vendor invoice number '{vendor_ref}' is already on another standing bill of this vendor; \
+         give duplicate_reason when it really is a second bill"
+    )]
+    DuplicateVendorRef {
+        /// The vendor the bill is from.
+        vendor: u64,
+        /// The number as given.
+        vendor_ref: String,
+    },
+
+    /// An invoice number already names an invoice: numbers are never
+    /// reused (rules.md B-40, A-2).
+    #[error("invoice number '{0}' is already used; numbers are never reused")]
+    DuplicateInvoiceNumber(String),
+
+    /// Payment terms could not be read: the message says what to write.
+    #[error(
+        "payment terms '{0}' are not in a form the books read (Net 30, Net 15 EOM, 2/10 net 30, Due on receipt, Due 2026-11-15)"
+    )]
+    TermsUnreadable(String),
+
+    /// An early-payment discount needs net days to be open before: it
+    /// can't be given with due-on-receipt, end-of-month or custom terms
+    /// (rules.md B-39).
+    #[error(
+        "an early-payment discount needs net terms with a fixed number of days; it can't be given with due-on-receipt, end-of-month or custom terms"
+    )]
+    TermsDiscountNeedsNetDays,
+
+    /// A date computed from another (payment terms' due or discount date)
+    /// falls past the calendar the books keep.
+    #[error(
+        "a date computed from {0} is outside the calendar the books keep (0001-01-01 through 9999-12-31)"
+    )]
+    DateOverflow(chrono::NaiveDate),
+
     /// Payment amount must be positive.
     #[error("payment amount must be positive, got {0}")]
     InvalidPaymentAmount(Decimal),

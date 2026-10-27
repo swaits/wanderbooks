@@ -2959,6 +2959,10 @@ impl Store {
         due_date: NaiveDate,
         lines: Vec<DocumentLine>,
     ) -> Result<InvoiceId, StoreError> {
+        // S4.1's line fields are not journaled yet (S4.3's `documents_v2`
+        // writes them); refuse before `rehearse`, so replay can never lose
+        // one.
+        check_journaled_document_lines(&lines)?;
         self.rehearse(|l| l.create_invoice(customer_id, date, due_date, lines.clone()))?;
         self.approval_gate(
             |l| l.create_invoice(customer_id, date, due_date, lines.clone()),
@@ -2986,7 +2990,9 @@ impl Store {
         posting.extend(
             arap::document_parts(&lines, "the invoice")?
                 .into_iter()
-                .map(|(class, amount)| (revenue, Side::Credit, amount, class)),
+                .map(|((account, class), amount)| {
+                    (account.unwrap_or(revenue), Side::Credit, amount, class)
+                }),
         );
         let (entry_id, mut journaled) = self.journal_auto_lines(date, &description, &posting)?;
         let doc_lines: Vec<Value> = lines.iter().map(document_line_json).collect();
@@ -3029,6 +3035,9 @@ impl Store {
         due_date: NaiveDate,
         lines: Vec<DocumentLine>,
     ) -> Result<BillId, StoreError> {
+        // See create_invoice: the line's account, quantity and unit price
+        // wait for S4.3's journaling.
+        check_journaled_document_lines(&lines)?;
         self.rehearse(|l| l.create_bill(vendor_id, date, due_date, lines.clone()))?;
         self.approval_gate(
             |l| l.create_bill(vendor_id, date, due_date, lines.clone()),
@@ -3050,7 +3059,9 @@ impl Store {
         let description = format!("Bill {bill_id}");
         let mut posting: Vec<_> = arap::document_parts(&lines, "the bill")?
             .into_iter()
-            .map(|(class, amount)| (expense, Side::Debit, amount, class))
+            .map(|((account, class), amount)| {
+                (account.unwrap_or(expense), Side::Debit, amount, class)
+            })
             .collect();
         posting.push((ap, Side::Credit, total, None));
         let (entry_id, mut journaled) = self.journal_auto_lines(date, &description, &posting)?;
@@ -5607,6 +5618,27 @@ fn plain_line_json(account: AccountId, side: Side, amount: Money) -> Value {
 
 /// One invoice/bill document line as journal JSON. Amounts are decimal
 /// strings, never floats.
+/// Refuse a document line carrying a field the journal does not write yet
+/// (S4.1 through S4.2): S4.3's `documents_v2` journals the line's account,
+/// quantity and unit price. Called before `rehearse`, so a refusal leaves
+/// the journal and the books exactly as they were, and replay never loses
+/// one. S4.3 removes this guard when it journals the fields.
+fn check_journaled_document_lines(lines: &[DocumentLine]) -> Result<(), StoreError> {
+    for line in lines {
+        if line.account.is_some() {
+            return Err(StoreError::DocumentFieldsAwaitUpgrade {
+                field: "an account",
+            });
+        }
+        if line.quantity.is_some() || line.unit_price.is_some() {
+            return Err(StoreError::DocumentFieldsAwaitUpgrade {
+                field: "a quantity and unit price",
+            });
+        }
+    }
+    Ok(())
+}
+
 fn document_line_json(l: &DocumentLine) -> Value {
     let mut v = json!({
         "description": l.description,
@@ -5646,6 +5678,12 @@ fn parse_document_lines(p: &Value) -> Result<Vec<DocumentLine>, StoreError> {
                             })?,
                     ),
                 },
+                // The new line fields are read in S4.3; an older version
+                // never wrote them, and replay of a document written by
+                // this one leaves the S4.1 shape.
+                account: None,
+                quantity: None,
+                unit_price: None,
             })
         })
         .collect()

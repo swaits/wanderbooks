@@ -11,7 +11,9 @@
 //! ```
 
 use chrono::NaiveDate;
-use ledger_core::arap::DocumentLine;
+use ledger_core::arap::{
+    BillFields, DocumentKind, DocumentLine, EarlyDiscount, InvoiceFields, Terms, TermsKind,
+};
 use ledger_core::{
     AccountId, AccountType, Currency, DocRef, DocStatus, Ledger, LedgerError, Money, Movement,
     PaymentDetails, Side,
@@ -36,6 +38,9 @@ fn line(what: &str, c: i64) -> Vec<DocumentLine> {
         description: what.into(),
         amount: cents(c),
         class_id: None,
+        account: None,
+        quantity: None,
+        unit_price: None,
     }]
 }
 
@@ -1401,4 +1406,519 @@ proptest! {
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// S4.1: terms, numbers, line accounts, quantity and price
+// ---------------------------------------------------------------------------
+
+/// A document line naming its account and, when `qty` and `price` are
+/// given, its quantity and unit price (plan P4b S4.1).
+fn doc_line(
+    what: &str,
+    c: i64,
+    account: Option<AccountId>,
+    qty: Option<i64>,
+    price: Option<i64>,
+) -> DocumentLine {
+    let quantity = qty.map(Decimal::from);
+    let unit_price = price.map(cents);
+    let amount = match (quantity, unit_price) {
+        (Some(q), Some(p)) => q * p,
+        _ => cents(c),
+    };
+    DocumentLine {
+        description: what.into(),
+        amount,
+        class_id: None,
+        account,
+        quantity,
+        unit_price,
+    }
+}
+
+/// B-39 SCENARIOS: Net 30, Net 15 EOM, a leap day, due on receipt, a
+/// custom date, and the 9999-12 bound refused instead of panicking.
+#[test]
+fn terms_derive_due_dates() {
+    let net30 = Terms::new(TermsKind::Net(30), None).unwrap();
+    assert_eq!(net30.due_date(d(2026, 1, 31)).unwrap(), d(2026, 3, 2));
+    assert_eq!(net30.describe(), "Net 30");
+
+    let eom15 = Terms::new(TermsKind::NetEom(15), None).unwrap();
+    assert_eq!(eom15.due_date(d(2026, 10, 23)).unwrap(), d(2026, 11, 15));
+    assert_eq!(eom15.describe(), "Net 15 EOM");
+
+    let net28 = Terms::new(TermsKind::Net(28), None).unwrap();
+    assert_eq!(net28.due_date(d(2028, 2, 1)).unwrap(), d(2028, 2, 29));
+    let net0 = Terms::new(TermsKind::Net(0), None).unwrap();
+    assert_eq!(net0.due_date(d(2026, 5, 4)).unwrap(), d(2026, 5, 4));
+
+    let on_receipt = Terms::new(TermsKind::DueOnReceipt, None).unwrap();
+    assert_eq!(on_receipt.due_date(d(2026, 7, 4)).unwrap(), d(2026, 7, 4));
+
+    let custom = Terms::custom(d(2026, 11, 15)).unwrap();
+    assert_eq!(custom.describe(), "Due 2026-11-15");
+    assert_eq!(custom.due_date(d(2026, 11, 15)).unwrap(), d(2026, 11, 15));
+
+    // The calendar's end: refused, not a panic.
+    let last_day = Terms::new(TermsKind::Net(1), None).unwrap();
+    assert!(last_day.due_date(d(9999, 12, 31)).is_err());
+    let last_month = Terms::new(TermsKind::NetEom(1), None).unwrap();
+    assert!(last_month.due_date(d(9999, 12, 1)).is_err());
+    // Ten years is the most a term may run.
+    assert!(Terms::new(TermsKind::Net(3_651), None).is_err());
+    assert!(Terms::new(TermsKind::NetEom(3_651), None).is_err());
+}
+
+/// B-39 INVARIANT 2: the discount's bound, its date, and the terms that
+/// cannot carry one.
+#[test]
+fn discount_bounds_and_late_reason() {
+    let discount = EarlyDiscount {
+        percent_bp: 200,
+        days: 10,
+    };
+    let net30 = Terms::new(TermsKind::Net(30), Some(discount)).unwrap();
+    assert_eq!(net30.describe(), "2/10 net 30");
+    assert_eq!(net30.discount_by(d(2026, 1, 10)), Some(d(2026, 1, 20)));
+    // The discount window closes after its last day: the discount is the
+    // bound, and a payment after it has no discount to take without a
+    // reason (the payment path's check, S6).
+    assert!(net30.discount_by(d(2026, 1, 10)).unwrap() < net30.due_date(d(2026, 1, 10)).unwrap());
+
+    // Due on receipt and EOM terms have no net days to discount before.
+    assert_eq!(
+        Terms::new(TermsKind::DueOnReceipt, Some(discount)),
+        Err(LedgerError::TermsDiscountNeedsNetDays)
+    );
+    assert_eq!(
+        Terms::new(TermsKind::NetEom(30), Some(discount)),
+        Err(LedgerError::TermsDiscountNeedsNetDays)
+    );
+    // The discount must close before the net days run out.
+    assert_eq!(
+        Terms::new(
+            TermsKind::Net(10),
+            Some(EarlyDiscount {
+                percent_bp: 200,
+                days: 10
+            })
+        ),
+        Err(LedgerError::TermsDiscountNeedsNetDays)
+    );
+    // A percentage outside 0.01%..99.99% is not a discount.
+    assert!(
+        Terms::new(
+            TermsKind::Net(30),
+            Some(EarlyDiscount {
+                percent_bp: 0,
+                days: 10
+            })
+        )
+        .is_err()
+    );
+    assert!(
+        Terms::new(
+            TermsKind::Net(30),
+            Some(EarlyDiscount {
+                percent_bp: 10_000,
+                days: 10
+            })
+        )
+        .is_err()
+    );
+
+    // The kernel bounds the exact cents: 2% of 100.00 is 2.00, and 2% of
+    // 100.01 is 2.0002, never a rounded 2.00.
+    use ledger_core::kernel;
+    assert_eq!(kernel::discount_max(cents(10_000), 200), Some(cents(200)));
+    assert_eq!(
+        kernel::discount_max(cents(10_001), 200),
+        Some(Decimal::new(20_002, 4))
+    );
+    assert_eq!(kernel::discount_max(cents(10_000), 0), None);
+    assert_eq!(kernel::discount_max(cents(-1), 200), None);
+}
+
+/// B-39 INVARIANT 3: the canonical spellings read back as they print.
+#[test]
+fn terms_describe_and_parse_round_trip() {
+    for text in [
+        "Net 30",
+        "Net 15 EOM",
+        "2/10 net 30",
+        "Due on receipt",
+        "Due 2026-11-15",
+    ] {
+        let terms = Terms::parse(text).unwrap();
+        assert_eq!(terms.describe(), text, "parsing {text}");
+        assert_eq!(Terms::parse(&terms.describe()).unwrap(), terms);
+    }
+    // Case does not matter; the text printed is the canonical spelling.
+    assert_eq!(Terms::parse("net 30").unwrap().describe(), "Net 30");
+    assert_eq!(
+        Terms::parse("2/10 NET 30").unwrap().describe(),
+        "2/10 net 30"
+    );
+    assert_eq!(
+        Terms::parse("2.5/10 net 30").unwrap().describe(),
+        "2.5/10 net 30"
+    );
+    // Anything else is refused, never guessed.
+    for bad in [
+        "net thirty",
+        "net 30 days",
+        "2/10 net 5",
+        "Due 2026-13-01",
+        "2/10",
+        "",
+    ] {
+        assert!(
+            matches!(Terms::parse(bad), Err(LedgerError::TermsUnreadable(_))),
+            "{bad:?} was read as {:?}",
+            Terms::parse(bad)
+        );
+    }
+}
+
+/// A bill's lines post to the accounts they name, one line per (account,
+/// project) part (plan P4b S4.1, 8.3.6 "Record bill").
+#[test]
+fn bill_lines_post_to_their_accounts() {
+    let mut b = books();
+    let equipment =
+        b.l.add_account("1500", "Equipment", AccountType::Asset, None, false)
+            .unwrap();
+    let supplies =
+        b.l.add_account("6100", "Supplies", AccountType::Expense, None, false)
+            .unwrap();
+    let bill =
+        b.l.create_bill(
+            b.vendor,
+            d(2026, 3, 1),
+            d(2026, 3, 31),
+            vec![
+                doc_line("Chair", 30_000, Some(equipment), None, None),
+                doc_line("Paper", 5_000, Some(supplies), None, None),
+                doc_line("Ink", 1_000, Some(supplies), None, None),
+            ],
+        )
+        .unwrap();
+    assert_eq!(b.account("1500"), equipment);
+    assert_eq!(b.l.account_balance(equipment).unwrap(), cents(30_000));
+    assert_eq!(b.l.account_balance(supplies).unwrap(), cents(6_000));
+    let ap = b.account("2000");
+    assert_eq!(b.l.account_balance(ap).unwrap(), cents(36_000));
+    // The legacy default account takes nothing when every line names one.
+    assert_eq!(
+        b.l.account_balance(b.account("6999")).unwrap(),
+        Decimal::ZERO
+    );
+    // Three lines: one per (account, project) part (equipment, supplies
+    // for Paper and Ink together) and one payable line.
+    assert_eq!(
+        b.l.get_entry(b.l.get_bill(bill).unwrap().entry_id)
+            .unwrap()
+            .lines()
+            .len(),
+        3
+    );
+    b.ties(d(2026, 3, 31));
+}
+
+/// An invoice line billed ahead of the work goes to 2400 Deferred Revenue,
+/// a contract liability (ASC 606-10-45-2; A-10's invoice rule).
+#[test]
+fn invoice_line_to_deferred_revenue_posts_to_2400() {
+    let mut b = books();
+    let deferred =
+        b.l.add_account(
+            "2400",
+            "Deferred Revenue",
+            AccountType::Liability,
+            None,
+            false,
+        )
+        .unwrap();
+    let inv =
+        b.l.create_invoice(
+            b.customer,
+            d(2026, 4, 1),
+            d(2026, 5, 1),
+            vec![doc_line("Retainer", 50_000, Some(deferred), None, None)],
+        )
+        .unwrap();
+    assert_eq!(b.l.account_balance(deferred).unwrap(), cents(50_000));
+    let revenue = b.account("4000");
+    assert_eq!(b.l.account_balance(revenue).unwrap(), Decimal::ZERO);
+    assert_eq!(b.l.get_invoice(inv).unwrap().total(), Ok(cents(50_000)));
+    b.ties(d(2026, 5, 1));
+}
+
+/// A line's amount is exactly its quantity times its unit price; the
+/// engine never rounds one (plan P4b S4.1; kernel::line_amount).
+#[test]
+fn qty_times_price_must_equal_amount() {
+    let mut b = books();
+    let inv =
+        b.l.create_invoice(
+            b.customer,
+            d(2026, 5, 1),
+            d(2026, 5, 31),
+            vec![doc_line("Hours", 0, None, Some(3), Some(3_333))],
+        )
+        .unwrap();
+    assert_eq!(b.l.get_invoice(inv).unwrap().total(), Ok(cents(9_999)));
+
+    // 3 x 33.33 is 99.99, not 100.00: refused, and nothing is posted.
+    let bad = vec![DocumentLine {
+        description: "Hours".into(),
+        amount: cents(10_000),
+        class_id: None,
+        account: None,
+        quantity: Some(Decimal::from(3)),
+        unit_price: Some(cents(3_333)),
+    }];
+    let ar = b.account("1200");
+    let before = b.l.account_balance(ar).unwrap();
+    assert!(matches!(
+        b.l.create_invoice(b.customer, d(2026, 6, 1), d(2026, 6, 30), bad.clone()),
+        Err(LedgerError::LineArithmetic(_))
+    ));
+    assert_eq!(b.l.account_balance(ar).unwrap(), before);
+    assert_eq!(b.l.next_invoice_id(), inv + 1);
+
+    // Both or neither: a quantity without a price is refused too.
+    let mut half = bad.clone();
+    half[0].amount = cents(9_999);
+    half[0].unit_price = None;
+    assert!(matches!(
+        b.l.create_invoice(b.customer, d(2026, 6, 1), d(2026, 6, 30), half),
+        Err(LedgerError::LineArithmetic(_))
+    ));
+}
+
+/// B-39 line accounts: an invoice takes revenue or deferred revenue; a
+/// bill takes an expense or a non-cash asset; roles, cash and headers are
+/// refused (plan P4b S4.1, A-10).
+#[test]
+fn document_line_account_refuses_roles_cash_and_placeholders() {
+    let mut b = books();
+    let deferred =
+        b.l.add_account(
+            "2400",
+            "Deferred Revenue",
+            AccountType::Liability,
+            None,
+            false,
+        )
+        .unwrap();
+    let revenue =
+        b.l.add_account("4000", "Revenue", AccountType::Revenue, None, false)
+            .unwrap();
+    let equipment =
+        b.l.add_account("1500", "Equipment", AccountType::Asset, None, false)
+            .unwrap();
+    let supplies =
+        b.l.add_account("6100", "Supplies", AccountType::Expense, None, false)
+            .unwrap();
+    let header =
+        b.l.add_account("9000", "Header", AccountType::Asset, None, true)
+            .unwrap();
+    let control =
+        b.l.add_account("1150", "Trade Receivables", AccountType::Asset, None, false)
+            .unwrap();
+    b.l.assign_role("receivables", Some(control)).unwrap();
+
+    let check = |l: &Ledger, kind, account| l.check_document_line_account(kind, account);
+    // An invoice line: revenue, or a liability holding no role.
+    assert!(check(&b.l, DocumentKind::Invoice, revenue).is_ok());
+    assert!(check(&b.l, DocumentKind::Invoice, deferred).is_ok());
+    assert!(check(&b.l, DocumentKind::Invoice, b.bank).is_err());
+    assert!(check(&b.l, DocumentKind::Invoice, supplies).is_err());
+    assert!(check(&b.l, DocumentKind::Invoice, equipment).is_err());
+    assert!(check(&b.l, DocumentKind::Invoice, control).is_err());
+    assert!(check(&b.l, DocumentKind::Invoice, header).is_err());
+    // A bill line: an expense, or a non-cash asset holding no role.
+    assert!(check(&b.l, DocumentKind::Bill, supplies).is_ok());
+    assert!(check(&b.l, DocumentKind::Bill, equipment).is_ok());
+    assert!(check(&b.l, DocumentKind::Bill, b.bank).is_err());
+    assert!(check(&b.l, DocumentKind::Bill, revenue).is_err());
+    assert!(check(&b.l, DocumentKind::Bill, deferred).is_err());
+    assert!(check(&b.l, DocumentKind::Bill, control).is_err());
+    assert!(check(&b.l, DocumentKind::Bill, header).is_err());
+
+    // The create path applies the same rule, and refuses before posting.
+    let before = b.l.next_bill_id();
+    let bad = vec![doc_line("Loan", 1_000, Some(b.bank), None, None)];
+    assert!(matches!(
+        b.l.create_bill(b.vendor, d(2026, 7, 1), d(2026, 7, 31), bad),
+        Err(LedgerError::DocumentLineAccount { .. })
+    ));
+    assert_eq!(b.l.next_bill_id(), before);
+}
+
+/// A-2, B-40: numbers run, a void keeps its number, legacy invoices are
+/// not counted, and a number is never reused.
+#[test]
+fn numbers_run_and_voids_keep_theirs() {
+    let mut b = books();
+    let first = {
+        let number = b.l.next_invoice_number("INV-", 1);
+        assert_eq!(number, "INV-0001");
+        b.l.create_invoice_with(
+            b.customer,
+            d(2026, 1, 5),
+            d(2026, 2, 4),
+            line("Work", 10_000),
+            InvoiceFields {
+                number: Some(number),
+                ..InvoiceFields::default()
+            },
+        )
+        .unwrap()
+    };
+    let second = {
+        let number = b.l.next_invoice_number("INV-", 1);
+        assert_eq!(number, "INV-0002");
+        b.l.create_invoice_with(
+            b.customer,
+            d(2026, 1, 6),
+            d(2026, 2, 5),
+            line("Work", 20_000),
+            InvoiceFields {
+                number: Some(number),
+                ..InvoiceFields::default()
+            },
+        )
+        .unwrap()
+    };
+    assert_eq!(
+        b.l.get_invoice(first).unwrap().number.as_deref(),
+        Some("INV-0001")
+    );
+    // A void keeps its number and still counts: the series never reuses
+    // one.
+    b.l.void_document(DocRef::Invoice(first), d(2026, 1, 7), "Duplicate")
+        .unwrap();
+    assert_eq!(
+        b.l.get_invoice(first).unwrap().number.as_deref(),
+        Some("INV-0001")
+    );
+    assert_eq!(b.l.next_invoice_number("INV-", 1), "INV-0003");
+    // A legacy invoice (no number) is not counted, shown as "Invoice {id}".
+    let legacy =
+        b.l.create_invoice(b.customer, d(2026, 1, 8), d(2026, 2, 7), line("Old", 100))
+            .unwrap();
+    assert_eq!(b.l.get_invoice(legacy).unwrap().number, None);
+    assert_eq!(b.l.next_invoice_number("INV-", 1), "INV-0003");
+    // Numbers are never reused, even by a direct create.
+    assert_eq!(
+        b.l.create_invoice_with(
+            b.customer,
+            d(2026, 1, 9),
+            d(2026, 2, 8),
+            line("Work", 100),
+            InvoiceFields {
+                number: Some("INV-0002".into()),
+                ..InvoiceFields::default()
+            },
+        ),
+        Err(LedgerError::DuplicateInvoiceNumber("INV-0002".into()))
+    );
+    assert_eq!(
+        b.l.get_invoice(second).unwrap().number.as_deref(),
+        Some("INV-0002")
+    );
+}
+
+/// B-40: four digits, wider past 9,999, never truncated.
+#[test]
+fn number_widens_past_9999() {
+    let mut b = books();
+    let number = b.l.next_invoice_number("INV-", 9_999);
+    assert_eq!(number, "INV-9999");
+    b.l.create_invoice_with(
+        b.customer,
+        d(2026, 2, 1),
+        d(2026, 3, 1),
+        line("Work", 100),
+        InvoiceFields {
+            number: Some(number),
+            ..InvoiceFields::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(b.l.next_invoice_number("INV-", 9_999), "INV-10000");
+}
+
+/// B-40: a vendor's invoice number names one standing bill; case, spaces
+/// and hyphens are ignored; a duplicate needs a reason (plan P4b S4.1).
+#[test]
+fn duplicate_vendor_ref_refused_unless_a_reason_is_given() {
+    let mut b = books();
+    let fields = |vendor_ref: &str, reason: Option<&str>| BillFields {
+        vendor_ref: Some(vendor_ref.into()),
+        duplicate_reason: reason.map(str::to_string),
+        ..BillFields::default()
+    };
+    let first =
+        b.l.create_bill_with(
+            b.vendor,
+            d(2026, 1, 5),
+            d(2026, 2, 4),
+            line("Paper", 1_000),
+            fields("ACME-123", None),
+        )
+        .unwrap();
+    // Case, spaces and hyphens do not make a new number.
+    for same in ["acme 123", "Acme123", "ACME - 123"] {
+        assert_eq!(
+            b.l.create_bill_with(
+                b.vendor,
+                d(2026, 1, 6),
+                d(2026, 2, 5),
+                line("Paper", 2_000),
+                fields(same, None),
+            ),
+            Err(LedgerError::DuplicateVendorRef {
+                vendor: b.vendor,
+                vendor_ref: same.into()
+            })
+        );
+    }
+    // Another vendor's invoice may carry the same number.
+    let other = b.l.add_vendor("Other Supply").unwrap();
+    b.l.create_bill_with(
+        other,
+        d(2026, 1, 6),
+        d(2026, 2, 5),
+        line("Paper", 2_000),
+        fields("ACME-123", None),
+    )
+    .unwrap();
+    // A reason makes the second one a bill of its own.
+    let second =
+        b.l.create_bill_with(
+            b.vendor,
+            d(2026, 1, 7),
+            d(2026, 2, 6),
+            line("Paper", 3_000),
+            fields("acme 123", Some("Second shipment, vendor reissued it")),
+        )
+        .unwrap();
+    // A voided bill no longer stands, so its number is free again.
+    b.l.void_document(DocRef::Bill(first), d(2026, 1, 8), "Entered twice")
+        .unwrap();
+    b.l.void_document(DocRef::Bill(second), d(2026, 1, 8), "Entered twice")
+        .unwrap();
+    b.l.create_bill_with(
+        b.vendor,
+        d(2026, 1, 9),
+        d(2026, 2, 8),
+        line("Paper", 4_000),
+        fields("ACME-123", None),
+    )
+    .unwrap();
 }

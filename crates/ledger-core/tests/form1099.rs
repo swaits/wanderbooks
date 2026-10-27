@@ -161,6 +161,9 @@ fn books() -> Ledger {
                 description: "Design work".into(),
                 amount: dec("1500"),
                 class_id: None,
+                account: None,
+                quantity: None,
+                unit_price: None,
             }],
         )
         .unwrap();

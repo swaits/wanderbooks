@@ -48,9 +48,10 @@ pub mod tax_capital;
 
 pub use account::{Account, AccountId, AccountType, ChartOfAccounts, Side};
 pub use arap::{
-    AgingRow, Bill, BillId, ControlCheck, Customer, CustomerId, DocLine, DocRef, DocState,
-    DocStatus, DocTag, DocumentLine, DocumentStatus, Invoice, InvoiceId, Movement, PaymentDetails,
-    UnattachedLine, Vendor, VendorId,
+    AgingRow, Bill, BillFields, BillId, ControlCheck, Customer, CustomerId, DocLine, DocRef,
+    DocState, DocStatus, DocTag, DocumentKind, DocumentLine, DocumentPartKey, DocumentStatus,
+    EarlyDiscount, Invoice, InvoiceFields, InvoiceId, Movement, PartySnapshot, PaymentDetails,
+    SendKind, Sent, SentVia, Terms, TermsKind, UnattachedLine, Vendor, VendorId,
 };
 pub use assets::{
     Asset, AssetBasis, AssetCorrection, AssetId, AssetStatus, BasisRule, DepreciationMethod,

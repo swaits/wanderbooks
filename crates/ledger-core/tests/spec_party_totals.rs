@@ -466,6 +466,9 @@ fn audit() -> Audit {
                 description: "filing".into(),
                 amount: d("80.00"),
                 class_id: None,
+                account: None,
+                quantity: None,
+                unit_price: None,
             }],
         )
         .unwrap();
@@ -484,6 +487,9 @@ fn audit() -> Audit {
                 description: "consulting".into(),
                 amount: d("120.00"),
                 class_id: None,
+                account: None,
+                quantity: None,
+                unit_price: None,
             }],
         )
         .unwrap();

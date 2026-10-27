@@ -484,4 +484,53 @@ proptest! {
             prop_assert_eq!(i.built_in_gain_704c.map(dec), d.built_in_gain_704c);
         }
     }
+
+    /// kernel::discount_max at i64 (what Kani's discount_max_is_bounded
+    /// proved) and at Decimal agree where both are exact: the bound is
+    /// the same money, never above the total, and result x 10,000 =
+    /// total x basis points on both.
+    #[test]
+    fn discount_max_agrees(
+        total in 0..=MAX_CENTS,
+        percent_bp in 1u32..=9_999,
+    ) {
+        let narrow = kernel::discount_max(total, percent_bp);
+        let wide = kernel::discount_max(dec(total), percent_bp)
+            .expect("a decimal division by 10,000 is exact");
+        if let Some(n) = narrow {
+            prop_assert_eq!(wide, dec(n));
+        }
+        prop_assert!(wide >= Decimal::ZERO);
+        prop_assert!(wide <= dec(total));
+        prop_assert_eq!(
+            wide * Decimal::from(10_000u32),
+            dec(total) * Decimal::from(percent_bp)
+        );
+    }
+
+    /// The discount bound Kani proves at i32 (small totals) is the same
+    /// bound at i64, which the property above carries to Decimal.
+    #[test]
+    fn discount_max_i32_agrees_with_i64(
+        total in 0i32..=200_000,
+        percent_bp in 1u32..=9_999,
+    ) {
+        prop_assert_eq!(
+            kernel::discount_max(total, percent_bp).map(i64::from),
+            kernel::discount_max(i64::from(total), percent_bp)
+        );
+    }
+
+    /// kernel::line_amount at i64 (what Kani's line_amount_is_exact
+    /// proved) and at Decimal agree: cents x cents at i64 is the same
+    /// product as dollars x dollars at Decimal, to four places.
+    #[test]
+    fn line_amount_agrees(
+        quantity in 0..=1_000_000i64,
+        unit_price in 0..=1_000_000i64,
+    ) {
+        let narrow = kernel::line_amount(quantity, unit_price);
+        let wide = kernel::line_amount(dec(quantity), dec(unit_price));
+        prop_assert_eq!(narrow.map(|n| Decimal::new(n, 4)), wide);
+    }
 }

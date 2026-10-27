@@ -47,6 +47,17 @@ pub enum StoreError {
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
 
+    /// A document line carries a field this version's journal cannot write
+    /// yet: line accounts, quantities and unit prices are journaled from
+    /// S4.3 (`documents_v2`) on. Refused before anything is journaled.
+    #[error(
+        "this document line names {field}, which these books cannot journal yet: line accounts, quantities and unit prices wait for the documents_v2 upgrade (S4.3). Nothing was changed; give the line one amount for now"
+    )]
+    DocumentFieldsAwaitUpgrade {
+        /// The field it names: "an account", "a quantity and unit price".
+        field: &'static str,
+    },
+
     /// The engine rejected the operation. The journal is untouched.
     #[error("ledger error: {0}")]
     Ledger(#[from] ledger_core::LedgerError),

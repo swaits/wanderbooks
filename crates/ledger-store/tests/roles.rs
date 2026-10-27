@@ -60,6 +60,9 @@ fn line(desc: &str, amount: &str) -> DocumentLine {
         description: desc.to_string(),
         amount: dec(amount),
         class_id: None,
+        account: None,
+        quantity: None,
+        unit_price: None,
     }
 }
 

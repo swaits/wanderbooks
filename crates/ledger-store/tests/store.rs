@@ -816,6 +816,9 @@ fn vendor_1099_tags_replay_and_project() {
                 description: "Design".into(),
                 amount: Decimal::from(1500),
                 class_id: None,
+                account: None,
+                quantity: None,
+                unit_price: None,
             }],
         )
         .unwrap();
@@ -1229,6 +1232,9 @@ mod refusals {
                 description: "work".into(),
                 amount: Decimal::new(c, 2),
                 class_id: None,
+                account: None,
+                quantity: None,
+                unit_price: None,
             }]
         };
         match *op {
@@ -2827,6 +2833,9 @@ fn the_database_tracks_what_an_invoice_has_been_paid() {
                 description: "work".into(),
                 amount: Decimal::from(100),
                 class_id: None,
+                account: None,
+                quantity: None,
+                unit_price: None,
             }],
         )
         .unwrap();
@@ -3388,6 +3397,9 @@ fn the_tax_category_policy_refuses_only_what_it_says() {
                 description: "hosting".into(),
                 amount: Decimal::new(4_200, 2),
                 class_id: None,
+                account: None,
+                quantity: None,
+                unit_price: None,
             }],
         )
         .unwrap();

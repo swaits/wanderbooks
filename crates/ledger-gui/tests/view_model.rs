@@ -263,6 +263,9 @@ fn origins_and_parties() {
             description: "x".into(),
             amount: Decimal::new(a, 2),
             class_id: None,
+            account: None,
+            quantity: None,
+            unit_price: None,
         }]
     };
     let inv = s
@@ -645,6 +648,9 @@ fn more_origins_and_parties() {
             description: "x".into(),
             amount: Decimal::new(a, 2),
             class_id: None,
+            account: None,
+            quantity: None,
+            unit_price: None,
         }]
     };
     s.create_invoice(cust, today, today + Days::new(30), line(10_000))

@@ -1284,6 +1284,9 @@ fn an_invoice_and_a_bill_show_each_lines_project() {
         description: what.into(),
         amount: cents(c),
         class_id: class,
+        account: None,
+        quantity: None,
+        unit_price: None,
     };
     let inv = s
         .create_invoice(

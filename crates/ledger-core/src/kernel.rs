@@ -28,6 +28,9 @@
 //! * a payment to a vendor splits, line by line, into what counts toward
 //!   its 1099, what a card or payment network paid, and what is unknown,
 //!   and money moved between the company's own sources nets out (B-19);
+//! * an early-payment discount never exceeds its stated percentage of the
+//!   total, and a document line's amount is exactly its quantity times its
+//!   unit price, neither rounded (B-39);
 //! * an allocation's parts sum to the whole, to the last unit, by largest
 //!   remainder (B-13);
 //! * a cumulative allocation hands out exactly the new amount, and leaves
@@ -71,6 +74,20 @@ pub trait Amount: Copy + Ord {
     /// True when the amount is small and precise enough for a journal line
     /// (see [`MAX_LINE_AMOUNT`] and [`MAX_LINE_SCALE`] for [`Decimal`]).
     fn in_line_range(self) -> bool;
+    /// `n`, exactly, or `None` when it doesn't fit.
+    ///
+    /// A whole count (a percentage in basis points, ten thousand) as the
+    /// arithmetic here needs it; the kernel's other functions get their
+    /// counts as [`crate::kernel::Units`].
+    fn from_u32(n: u32) -> Option<Self>;
+    /// `self * rhs`, or `None` when it cannot be represented exactly.
+    ///
+    /// A quantity times a unit price (a document line, B-39) is the one
+    /// use: it never rounds.
+    fn checked_mul(self, rhs: Self) -> Option<Self>;
+    /// `self / rhs` exactly, or `None` when `rhs` is zero or the quotient
+    /// is not a whole amount of `Self` (never a rounded share).
+    fn checked_div_exact(self, rhs: Self) -> Option<Self>;
 
     /// `self - rhs`, or `None` when it cannot be represented exactly.
     fn checked_sub(self, rhs: Self) -> Option<Self> {
@@ -99,6 +116,43 @@ impl Amount for Decimal {
     fn in_line_range(self) -> bool {
         self.abs() <= MAX_LINE_AMOUNT && self.normalize().scale() <= MAX_LINE_SCALE
     }
+    fn from_u32(n: u32) -> Option<Self> {
+        Some(Decimal::from(n))
+    }
+    fn checked_mul(self, rhs: Self) -> Option<Self> {
+        Decimal::checked_mul(self, rhs)
+    }
+    fn checked_div_exact(self, rhs: Self) -> Option<Self> {
+        let q = self.checked_div(rhs)?;
+        (q.checked_mul(rhs) == Some(self)).then_some(q)
+    }
+}
+
+impl Amount for i32 {
+    const ZERO: Self = 0;
+    fn checked_add(self, rhs: Self) -> Option<Self> {
+        i32::checked_add(self, rhs)
+    }
+    fn checked_neg(self) -> Option<Self> {
+        i32::checked_neg(self)
+    }
+    fn in_line_range(self) -> bool {
+        // The same headroom, scaled down: a proof model, never money.
+        self.unsigned_abs() <= (1 << 20)
+    }
+    fn from_u32(n: u32) -> Option<Self> {
+        i32::try_from(n).ok()
+    }
+    fn checked_mul(self, rhs: Self) -> Option<Self> {
+        i32::checked_mul(self, rhs)
+    }
+    fn checked_div_exact(self, rhs: Self) -> Option<Self> {
+        let r = self.checked_rem(rhs)?;
+        if r != 0 {
+            return None;
+        }
+        self.checked_div(rhs)
+    }
 }
 
 impl Amount for i64 {
@@ -113,6 +167,19 @@ impl Amount for i64 {
         // Scaled down with the same headroom as Decimal's range: lines
         // this size can be summed many times over without overflow.
         self.unsigned_abs() <= (1 << 40)
+    }
+    fn from_u32(n: u32) -> Option<Self> {
+        Some(i64::from(n))
+    }
+    fn checked_mul(self, rhs: Self) -> Option<Self> {
+        i64::checked_mul(self, rhs)
+    }
+    fn checked_div_exact(self, rhs: Self) -> Option<Self> {
+        let r = self.checked_rem(rhs)?;
+        if r != 0 {
+            return None;
+        }
+        self.checked_div(rhs)
     }
 }
 
@@ -172,6 +239,50 @@ pub fn net<T: Amount>(lines: impl IntoIterator<Item = (Side, T)>) -> Option<T> {
         total = total.checked_add(signed(side, amount)?)?;
     }
     Some(total)
+}
+
+/// The most a stated early-payment discount can take from `total`:
+/// `total × percent_bp / 10,000`, exactly. The caller gives the exact
+/// cents it takes; the kernel only bounds them, so it never rounds a
+/// discount up or down (a discount no amount of `Self` can hold is
+/// `None`, not a rounded bound).
+///
+/// ```text
+/// GOAL: an early-payment discount never takes more than its percentage
+///       says, in exact money.
+/// SOURCE: docs/spec/rules.md B-39 INVARIANT 2, B-42; plan/served.md
+///         8.3.13; CHOICE: the gross method, A-8 (the discount is
+///         booked when taken, never estimated).
+/// INVARIANTS:
+///   1. 0 <= result <= total for every total >= 0 and 1 <= percent_bp <=
+///      9,999.
+///   2. result x 10,000 = total x percent_bp exactly: no rounding.
+///   3. None when a factor overflows or the quotient is finer than Self;
+///      NEVER a rounded or wrapped result, never a panic.
+/// ```
+pub fn discount_max<T: Amount>(total: T, percent_bp: u32) -> Option<T> {
+    if total < T::ZERO || percent_bp == 0 || percent_bp > 9_999 {
+        return None;
+    }
+    let bp = T::from_u32(percent_bp)?;
+    let ten_thousand = T::from_u32(10_000)?;
+    total.checked_mul(bp)?.checked_div_exact(ten_thousand)
+}
+
+/// A document line's amount from its quantity and unit price: the exact
+/// product, never rounded.
+///
+/// ```text
+/// GOAL: a line's quantity times its unit price is the amount it posts,
+///       to the last decimal place.
+/// SOURCE: docs/spec/rules.md B-39; plan/served.md 8.3.4 ("kernel::
+///         line_amount(q, u) == amount exactly").
+/// INVARIANTS:
+///   1. Some(p) gives p = quantity x unit_price exactly.
+///   2. None on overflow; never a rounded product, never a panic.
+/// ```
+pub fn line_amount<T: Amount>(quantity: T, unit_price: T) -> Option<T> {
+    quantity.checked_mul(unit_price)
 }
 
 /// Check an entry's lines: two or more, every amount positive and within

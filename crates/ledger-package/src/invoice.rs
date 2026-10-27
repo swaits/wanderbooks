@@ -181,6 +181,9 @@ mod tests {
                     description: "Consulting".into(),
                     amount: Decimal::new(50_000, 2),
                     class_id: None,
+                    account: None,
+                    quantity: None,
+                    unit_price: None,
                 }],
             )
             .unwrap();
@@ -248,6 +251,9 @@ mod tests {
             description: d.into(),
             amount: Decimal::new(cents, 2),
             class_id: None,
+            account: None,
+            quantity: None,
+            unit_price: None,
         };
         let inv = l
             .create_invoice(

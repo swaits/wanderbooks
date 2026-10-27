@@ -69,7 +69,7 @@ sweep-test-tmp:
 # 100 minutes of CPU, 2026-10-21) can't finish inside the 30-minute cap at
 # four jobs, a CI runner's. Every other harness in src/proofs.rs runs in `prove`, a new one
 # included; a name here that isn't a harness fails both (docs/verification.md).
-kani_slow := "accounting_equation cumulative_close_never_drifts_a_unit_at_near_thirds cumulative_closing_entry_balances entry_flows_pure_are_movements entry_flows_sum_to_cash prorate_parts_sum_to_total sums_are_exact the_last_months_charge_is_within_half_a_cent"
+kani_slow := "accounting_equation cumulative_close_never_drifts_a_unit_at_near_thirds cumulative_closing_entry_balances discount_max_is_bounded entry_flows_pure_are_movements entry_flows_sum_to_cash prorate_parts_sum_to_total sums_are_exact the_last_months_charge_is_within_half_a_cent"
 
 # Formal proofs: Kani on the accounting kernel (all but kani_slow), Lean for books of any size (docs/verification.md)
 prove: (_kani "fast")

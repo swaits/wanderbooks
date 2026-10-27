@@ -764,6 +764,9 @@ pub fn build(dir: &Path, today: NaiveDate) -> Result<(), StoreError> {
                         .into(),
                     amount: amt,
                     class_id: Some(client_class),
+                    account: None,
+                    quantity: None,
+                    unit_price: None,
                 }],
             )?;
             open_invoices.push((inv, date, amt));

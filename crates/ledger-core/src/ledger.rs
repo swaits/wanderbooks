@@ -6629,6 +6629,32 @@ impl Ledger {
         lines: Vec<DocumentLine>,
         entry_id: EntryId,
     ) -> Result<(), LedgerError> {
+        self.replay_invoice_with(
+            id,
+            customer_id,
+            date,
+            due_date,
+            lines,
+            entry_id,
+            arap::InvoiceFields::default(),
+        )
+    }
+
+    /// [`Self::replay_invoice`] with the invoice's new fields (number,
+    /// terms, snapshots, references: plan P4b S4.3, feature
+    /// `documents_v2`). All `None` is exactly [`Self::replay_invoice`].
+    #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)] // one argument per journaled field
+    pub fn replay_invoice_with(
+        &mut self,
+        id: InvoiceId,
+        customer_id: CustomerId,
+        date: NaiveDate,
+        due_date: NaiveDate,
+        lines: Vec<DocumentLine>,
+        entry_id: EntryId,
+        fields: arap::InvoiceFields,
+    ) -> Result<(), LedgerError> {
         if id != self.next_invoice_id {
             return Err(LedgerError::ReplayIdMismatch(id, self.next_invoice_id));
         }
@@ -6648,12 +6674,12 @@ impl Ledger {
                 owed: Decimal::ZERO,
                 status: DocumentStatus::Open,
                 entry_id,
-                number: None,
-                terms: None,
-                bill_to: None,
-                seller: None,
-                customer_ref: None,
-                memo: None,
+                number: fields.number,
+                terms: fields.terms,
+                bill_to: fields.bill_to,
+                seller: fields.seller,
+                customer_ref: fields.customer_ref,
+                memo: fields.memo,
                 sends: Vec::new(),
             },
         );
@@ -6684,6 +6710,32 @@ impl Ledger {
         lines: Vec<DocumentLine>,
         entry_id: EntryId,
     ) -> Result<(), LedgerError> {
+        self.replay_bill_with(
+            id,
+            vendor_id,
+            date,
+            due_date,
+            lines,
+            entry_id,
+            arap::BillFields::default(),
+        )
+    }
+
+    /// [`Self::replay_bill`] with the bill's new fields (the vendor's
+    /// invoice number, its receipt date, terms, memo: plan P4b S4.3,
+    /// feature `documents_v2`). All `None` is exactly [`Self::replay_bill`].
+    #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)] // one argument per journaled field
+    pub fn replay_bill_with(
+        &mut self,
+        id: BillId,
+        vendor_id: VendorId,
+        date: NaiveDate,
+        due_date: NaiveDate,
+        lines: Vec<DocumentLine>,
+        entry_id: EntryId,
+        fields: arap::BillFields,
+    ) -> Result<(), LedgerError> {
         if id != self.next_bill_id {
             return Err(LedgerError::ReplayIdMismatch(id, self.next_bill_id));
         }
@@ -6703,10 +6755,10 @@ impl Ledger {
                 owed: Decimal::ZERO,
                 status: DocumentStatus::Open,
                 entry_id,
-                vendor_ref: None,
-                received_on: None,
-                terms: None,
-                memo: None,
+                vendor_ref: fields.vendor_ref,
+                received_on: fields.received_on,
+                terms: fields.terms,
+                memo: fields.memo,
             },
         );
         self.tag_vendor(entry_id, vendor_id);

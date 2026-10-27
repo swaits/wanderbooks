@@ -56,12 +56,25 @@ apply is safe — on startup the applier replays every journal line with
 
 - `seq`: 1-based, gapless, assigned by the writer.
 - `ts`: UTC, RFC 3339. Recorded, never trusted for ordering (`seq` orders).
-- `type`: `account.added`, `entry.posted`, `entry.reversed`,
-  `receipt.attached`, `receipt.linked`, `receipt.unlinked`,
+- `type`: `account.added`, `entry.posted`, `entry.reversed`, `invoice.created`,
+  `bill.created`, `receipt.attached`, `receipt.linked`, `receipt.unlinked`,
   `document.filed`, `attachment.withdrawn` (plus the A/R, A/P, asset,
   period, payroll, and class events listed on `JournalLine`).
 - `payload`: the full domain facts (account fields, entry with lines, blob
   sha, ...). Everything the applier needs; nothing it must look up elsewhere.
+  An `invoice.created` or `bill.created` written after the `documents_v2`
+  upgrade (plan P4b S4.3) carries only the new fields it names, so a
+  document naming none is byte for byte the payload every earlier version
+  wrote: the invoice's `number`, `terms`, `bill_to` and `seller` snapshots
+  (as they were at issue), `customer_ref` and `memo`; the bill's
+  `vendor_ref`, `received_on`, `terms`, `memo` and the `duplicate_reason`
+  that allowed a duplicate of a standing vendor invoice; and each line's
+  `account`, `quantity` and `unit_price`. The issued copy of an invoice is
+  **not** a field on the event (its attachment id is allocated after the
+  entry exists): it is a `receipt.attached` on the invoice's own entry
+  (`INV-0007.pdf`, `application/pdf`, "Issued invoice"), its SHA-256 the
+  `blob_sha`, linked to the invoice with `attachment.linked` and found
+  through that link (plan 8.3.11).
 - `prev`: hex SHA-256 of the previous line's canonical JSON (keys sorted, no
   whitespace). The genesis line uses `"prev": "000...0"` (64 zeros).
 
@@ -149,6 +162,14 @@ Suspected corruption is fixed by rebuild, never by forensics.
   tails. (Poll `WHERE seq > ?`; later SSE over the HTTP transport. This is
   the correct answer to "watch its files to update live" — watch the event
   stream, not the files.)
+- **Document fields.** Since schema v16 (plan P4b S4.3) the documents'
+  new fields are columns: `invoices(number, terms, bill_to, seller,
+  customer_ref, memo)` and `bills(vendor_ref, received_on, terms, memo,
+  duplicate_reason)`, with terms and snapshots as canonical JSON TEXT and a
+  document written before them NULL there. A line's `account`, `quantity`
+  and `unit_price` ride its document's `lines_json`, as its project does.
+  The party's email and default terms are journaled and replayed into the
+  ledger; the projection keeps no party table to hold them.
 - **Amounts as TEXT, never REAL.** Unchanged and still load-bearing: a REAL
   column would silently reintroduce binary floats into the money path.
 - **Append-only, three layers.** (1) The engine's API never mutates posted

@@ -1737,7 +1737,18 @@ version would drop silently: B-37). After P3: `document_line_projects`
 project, B-37 item 8; an older version would restore the document without
 it, silently). It is a feature of its own, not part of `projects`: books
 that declared `projects` before it existed wait for their owner's next
-upgrade before a document's line names a project. A command asks for
+upgrade before a document's line names a project. `documents_v2` (plan
+P4b S4, one feature for S4 to S7: D-52) is the next: a `settings.set` of
+the `invoicing.*`, `bills.*`, `company.email` or `company.website` keys,
+which an earlier version refuses (S4.2); a `party.updated` with an email
+or a default terms fact (S4.2); an `invoice.created` or `bill.created`
+carrying a number, terms, a bill-to or seller snapshot, a customer
+reference or memo, a vendor reference, a receipt date or a duplicate's
+reason, or a line naming its account, quantity or unit price (S4.3); and
+S5 to S7's sends, settlements and write-offs. An older version would
+restore the document without them silently: every invoice line would post
+to the revenue role and every bill line to general expenses, and every new
+event type would be refused. A command asks for
 the feature it needs (`Store::ensure_feature`) before its first journaled
 line, and only when the line it is about to write uses it, so a write
 refused for waiting on the upgrade journals nothing, never an entry

@@ -322,6 +322,34 @@ pub struct Attachment {
 /// write-path signature reads as input rather than stored state.
 pub type PayrollLineInput = PayrollLine;
 
+/// What issuing an invoice would post and take, journaling nothing
+/// ([`Store::preview_invoice`]; plan P4b S4.3 item 12). The posting is the
+/// entry's lines in order: account, side, amount, project.
+#[derive(Clone, Debug, PartialEq)]
+pub struct InvoicePreview {
+    /// The entry it would post, line by line.
+    pub posting: Vec<(AccountId, Side, Decimal, Option<ClassId>)>,
+    /// The document's total.
+    pub total: Decimal,
+    /// The number it would take (A-2), when the books number their
+    /// invoices.
+    pub number: Option<String>,
+    /// Its due date.
+    pub due_date: NaiveDate,
+}
+
+/// What recording a bill would post, journaling nothing
+/// ([`Store::preview_bill`]; plan P4b S4.3 item 12).
+#[derive(Clone, Debug, PartialEq)]
+pub struct BillPreview {
+    /// The entry it would post, line by line.
+    pub posting: Vec<(AccountId, Side, Decimal, Option<ClassId>)>,
+    /// The document's total.
+    pub total: Decimal,
+    /// Its due date.
+    pub due_date: NaiveDate,
+}
+
 /// The most recurring drafts one [`Store::run_recurring`] creates: more is
 /// refused, so a far-off date can't make one request write without end.
 pub const MAX_RECURRING_RUN: usize = 1000;
@@ -897,6 +925,15 @@ impl Store {
             .collect();
         self.ensure_features(&needed)?;
         self.ensure_format()?;
+        // invoicing.first_number is settable only while no numbered invoice
+        // exists (A-2, rules.md B-40): the series has begun, and a number is
+        // never reused or renumbered. Changing or clearing it is refused
+        // before anything is journaled.
+        if changes.iter().any(|c| c.key == "invoicing.first_number")
+            && self.ledger.invoices().iter().any(|i| i.number.is_some())
+        {
+            return Err(LedgerError::FirstNumberLocked.into());
+        }
         let line =
             self.append_journal("settings.set", crate::meta::settings_set(&changes, source))?;
         self.ledger.apply_settings(&changes, source, line.seq)?;
@@ -2926,6 +2963,19 @@ impl Store {
         Ok(())
     }
 
+    /// The feature a document's new fields need (rules.md B-27): an
+    /// invoice or bill naming a number, terms, a snapshot, a reference, a
+    /// memo or a duplicate's reason, or a line naming its account, quantity
+    /// or unit price, needs `documents_v2` (plan P4b S4.3; D-52). A
+    /// document naming none of them is written byte for byte as before and
+    /// is never refused.
+    fn ensure_document_fields(&self, fields: &DocumentFields<'_>) -> Result<(), StoreError> {
+        if fields.any_new() {
+            self.ensure_feature(crate::format::DOCUMENTS_V2)?;
+        }
+        Ok(())
+    }
+
     /// Add a customer. Journaled as `customer.added`.
     pub fn add_customer(&mut self, name: &str) -> Result<CustomerId, StoreError> {
         self.rehearse(|l| l.add_customer(name))?;
@@ -2959,6 +3009,9 @@ impl Store {
     /// Create a sales invoice. The auto-posted entry (Dr A/R, Cr Revenue)
     /// is journaled first through the standard entry flow, then the
     /// invoice itself as `invoice.created`.
+    ///
+    /// [`Self::create_invoice_with`] with no new fields: the invoice
+    /// every version before `documents_v2` wrote.
     pub fn create_invoice(
         &mut self,
         customer_id: CustomerId,
@@ -2966,57 +3019,50 @@ impl Store {
         due_date: NaiveDate,
         lines: Vec<DocumentLine>,
     ) -> Result<InvoiceId, StoreError> {
-        // S4.1's line fields are not journaled yet (S4.3's `documents_v2`
-        // writes them); refuse before `rehearse`, so replay can never lose
-        // one.
-        check_journaled_document_lines(&lines)?;
-        self.rehearse(|l| l.create_invoice(customer_id, date, due_date, lines.clone()))?;
-        self.approval_gate(
-            |l| l.create_invoice(customer_id, date, due_date, lines.clone()),
-            false,
-        )?;
-        // Pure pre-validation mirroring Ledger::create_invoice, so the
-        // journal writes below cannot be followed by a failed mutation.
-        // (The auto-posted entry balances by construction and its accounts
-        // are ensured below.)
-        if self.ledger.get_customer(customer_id).is_none() {
-            return Err(LedgerError::UnknownCustomer(customer_id).into());
-        }
-        arap::validate_lines(&lines)?;
-        arap::validate_due_date(date, due_date)?;
-        if let Some(pid) = self.ledger.closed_period_containing(date) {
-            return Err(LedgerError::ClosedPeriod(pid, date.to_string()).into());
-        }
-        self.ensure_document_lines(&lines)?;
-        let ar = self.ensure_control_account(&ledger_core::RECEIVABLES)?;
-        let revenue = self.ensure_control_account(&ledger_core::REVENUE)?;
-        let invoice_id = self.ledger.next_invoice_id();
-        let total: Decimal = lines.iter().map(|l| l.amount).sum();
-        let description = format!("Invoice {invoice_id}");
-        let mut posting = vec![(ar, Side::Debit, total, None)];
-        posting.extend(
-            arap::document_parts(&lines, "the invoice")?
-                .into_iter()
-                .map(|((account, class), amount)| {
-                    (account.unwrap_or(revenue), Side::Credit, amount, class)
-                }),
-        );
-        let (entry_id, mut journaled) = self.journal_auto_lines(date, &description, &posting)?;
-        let doc_lines: Vec<Value> = lines.iter().map(document_line_json).collect();
-        journaled.push(self.append_journal(
-            "invoice.created",
-            json!({
-                "id": invoice_id,
-                "customer_id": customer_id,
-                "date": date.to_string(),
-                "due_date": due_date.to_string(),
-                "lines": doc_lines,
-                "entry_id": entry_id,
-            }),
-        )?);
+        self.create_invoice_with(
+            customer_id,
+            date,
+            due_date,
+            lines,
+            arap::InvoiceFields::default(),
+        )
+    }
+
+    /// Create a sales invoice with its new fields (number, terms, snapshots,
+    /// references: plan P4b S4.3). The fields are journaled on
+    /// `invoice.created` and restored by replay; a document whose fields are
+    /// all `None` is journaled exactly as before
+    /// ([`Self::create_invoice`]).
+    ///
+    /// ```text
+    /// GOAL: a document's new fields are journaled with it, so replay can
+    ///       never lose them, and a document naming none is written byte
+    ///       for byte as an earlier version wrote it.
+    /// SOURCE: docs/spec/rules.md B-27, B-40 (plan P4b S4.3); A-2, A-13.
+    /// INVARIANTS:
+    ///   1. A write naming a number, terms, a snapshot, a reference, a memo,
+    ///      a line account, quantity or unit price MUST need journal feature
+    ///      documents_v2: refused (FormatUpgradePending), journaling
+    ///      nothing, in books that haven't declared it.
+    ///   2. A refusal MUST leave the journal, the ledger and the projection
+    ///      unchanged.
+    ///   3. The event's fields MUST be exactly the ones given: no key is
+    ///      written for a field that is None.
+    /// ```
+    pub fn create_invoice_with(
+        &mut self,
+        customer_id: CustomerId,
+        date: NaiveDate,
+        due_date: NaiveDate,
+        lines: Vec<DocumentLine>,
+        fields: arap::InvoiceFields,
+    ) -> Result<InvoiceId, StoreError> {
+        self.check_invoice_create(customer_id, date, due_date, &lines, &fields)?;
+        let (invoice_id, entry_id, journaled) =
+            self.journal_invoice(customer_id, date, due_date, &lines, &fields)?;
         let live = self
             .ledger
-            .create_invoice(customer_id, date, due_date, lines)?;
+            .create_invoice_with(customer_id, date, due_date, lines, fields)?;
         debug_assert_eq!(live, invoice_id, "id allocator diverged from journal");
         debug_assert_eq!(
             self.ledger
@@ -3032,9 +3078,257 @@ impl Store {
         Ok(live)
     }
 
+    /// Everything [`Self::create_invoice_with`] refuses, before anything is
+    /// journaled: the engine's whole check on a clone, its approval rules,
+    /// and the journal format the fields need.
+    fn check_invoice_create(
+        &self,
+        customer_id: CustomerId,
+        date: NaiveDate,
+        due_date: NaiveDate,
+        lines: &[DocumentLine],
+        fields: &arap::InvoiceFields,
+    ) -> Result<(), StoreError> {
+        self.rehearse(|l| {
+            l.create_invoice_with(customer_id, date, due_date, lines.to_vec(), fields.clone())
+        })?;
+        self.approval_gate(
+            |l| {
+                l.create_invoice_with(customer_id, date, due_date, lines.to_vec(), fields.clone())?;
+                Ok(())
+            },
+            false,
+        )?;
+        // Pure pre-validation mirroring create_invoice_steps, so the
+        // journal writes below cannot be followed by a failed mutation.
+        // (The auto-posted entry balances by construction and its accounts
+        // are ensured below.)
+        if self.ledger.get_customer(customer_id).is_none() {
+            return Err(LedgerError::UnknownCustomer(customer_id).into());
+        }
+        arap::validate_lines(lines)?;
+        arap::validate_due_date(date, due_date)?;
+        if let Some(pid) = self.ledger.closed_period_containing(date) {
+            return Err(LedgerError::ClosedPeriod(pid, date.to_string()).into());
+        }
+        if let Some(number) = &fields.number
+            && self
+                .ledger
+                .invoices()
+                .iter()
+                .any(|i| i.number.as_deref() == Some(number.as_str()))
+        {
+            return Err(LedgerError::DuplicateInvoiceNumber(number.clone()).into());
+        }
+        self.ensure_document_lines(lines)?;
+        self.ensure_document_fields(&DocumentFields {
+            invoice: Some(fields),
+            bill: None,
+            lines,
+        })?;
+        Ok(())
+    }
+
+    /// Journal an invoice's auto-posted entry and its `invoice.created`
+    /// event, without touching the live ledger. [`Self::check_invoice_create`]
+    /// has run.
+    fn journal_invoice(
+        &mut self,
+        customer_id: CustomerId,
+        date: NaiveDate,
+        due_date: NaiveDate,
+        lines: &[DocumentLine],
+        fields: &arap::InvoiceFields,
+    ) -> Result<(InvoiceId, EntryId, Vec<JournalLine>), StoreError> {
+        let ar = self.ensure_control_account(&ledger_core::RECEIVABLES)?;
+        let revenue = self.ensure_control_account(&ledger_core::REVENUE)?;
+        let invoice_id = self.ledger.next_invoice_id();
+        let total: Decimal = lines.iter().map(|l| l.amount).sum();
+        let description = format!("Invoice {invoice_id}");
+        let mut posting = vec![(ar, Side::Debit, total, None)];
+        posting.extend(arap::document_parts(lines, "the invoice")?.into_iter().map(
+            |((account, class), amount)| (account.unwrap_or(revenue), Side::Credit, amount, class),
+        ));
+        let (entry_id, mut journaled) = self.journal_auto_lines(date, &description, &posting)?;
+        let doc_lines: Vec<Value> = lines.iter().map(document_line_json).collect();
+        let mut payload = json!({
+            "id": invoice_id,
+            "customer_id": customer_id,
+            "date": date.to_string(),
+            "due_date": due_date.to_string(),
+            "lines": doc_lines,
+            "entry_id": entry_id,
+        });
+        invoice_fields_json(&mut payload, fields);
+        journaled.push(self.append_journal("invoice.created", payload)?);
+        Ok((invoice_id, entry_id, journaled))
+    }
+
+    /// The issued copy of an invoice, filed in the call that issues it
+    /// (plan P4b S4.3 item 11, A-7; rules.md B-40 item 3): the entry, then
+    /// `invoice.created`, then `receipt.attached` on the entry
+    /// (`INV-0007.pdf`, `application/pdf`, "Issued invoice"), then
+    /// `attachment.linked` to the invoice. The server renders the PDF
+    /// first, so a rendering failure never reaches the store.
+    ///
+    /// The copy is found through the link, never by guessing
+    /// ([`Self::attachments_for`] with [`Subject::Invoice`]); its SHA-256
+    /// is the `blob_sha` in `receipt.attached`. There is no `issued_pdf`
+    /// field on the event: the attachment id is allocated after the entry
+    /// exists (CD-A6).
+    ///
+    /// ```text
+    /// GOAL: the copy sent is kept with the invoice, or nothing is.
+    /// SOURCE: IRS Pub. 583 (keep invoices); Rev. Proc. 98-25 (the audit
+    ///         trail keeps the record as issued); plan P4b S4.3, 8.3.11;
+    ///         rules.md B-40 item 3.
+    /// INVARIANTS:
+    ///   1. Every refusal (an unknown customer, an invalid line or due
+    ///      date, a duplicate number, a closed period, a feature the books
+    ///      haven't declared) MUST happen before the first journal line.
+    ///   2. The issued copy MUST be a `receipt.attached` on the invoice's
+    ///      own entry, linked to the invoice, with the PDF's SHA-256.
+    ///   3. The invoice is numbered: the number given, or the next from
+    ///      invoicing.number_prefix and invoicing.first_number (A-2).
+    /// ```
+    pub fn create_invoice_issued(
+        &mut self,
+        customer_id: CustomerId,
+        date: NaiveDate,
+        due_date: NaiveDate,
+        lines: Vec<DocumentLine>,
+        fields: arap::InvoiceFields,
+        pdf_bytes: Vec<u8>,
+    ) -> Result<(InvoiceId, EntryId, u64), StoreError> {
+        let fields = self.numbered(fields);
+        self.check_invoice_create(customer_id, date, due_date, &lines, &fields)?;
+        // The bytes hit the content-addressed store before anything is
+        // journaled: an orphan blob from a later refusal is harmless
+        // (unreferenced, deduplicated), a journal line naming a blob that
+        // failed to store would not be.
+        self.blobs.put(&pdf_bytes)?;
+        let (invoice_id, entry_id, journaled) =
+            self.journal_invoice(customer_id, date, due_date, &lines, &fields)?;
+        let live =
+            self.ledger
+                .create_invoice_with(customer_id, date, due_date, lines, fields.clone())?;
+        debug_assert_eq!(live, invoice_id, "id allocator diverged from journal");
+        debug_assert_eq!(
+            self.ledger
+                .get_invoice(live)
+                .expect("invoice exists")
+                .entry_id,
+            entry_id,
+            "invoice entry diverged from journal"
+        );
+        let file_name = match &fields.number {
+            Some(n) => format!("{n}.pdf"),
+            None => format!("Invoice {live}.pdf"),
+        };
+        // The entry's and the invoice's lines apply first: they were
+        // journaled before the attachment's, and the projection's
+        // `last_applied_seq` follows the last line applied.
+        for line in &journaled {
+            apply_line_to_sqlite(&self.conn, line)?;
+        }
+        let (attachment_id, _, _) = self.attach_receipt(
+            Some(entry_id),
+            &file_name,
+            "application/pdf",
+            &pdf_bytes,
+            Some("Issued invoice"),
+        )?;
+        self.link_attachment(attachment_id, Subject::Invoice(live))?;
+        Ok((live, entry_id, attachment_id))
+    }
+
+    /// `fields` with a number when the books number their invoices: the one
+    /// given, or the next from the books' invoicing settings (A-2,
+    /// [`Ledger::next_invoice_number`]). Books that haven't declared
+    /// `documents_v2` keep the legacy shape (migration item 5: "Invoice
+    /// {id}", uncounted), so their issue files the copy and takes no number.
+    fn numbered(&self, fields: arap::InvoiceFields) -> arap::InvoiceFields {
+        if fields.number.is_some()
+            || !self
+                .journal_format()
+                .has_feature(crate::format::DOCUMENTS_V2)
+        {
+            return fields;
+        }
+        let setting = |key: &str| self.ledger.settings().get(key).map(|r| r.value.clone());
+        let prefix = setting("invoicing.number_prefix")
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_else(|| "INV-".to_string());
+        let first = setting("invoicing.first_number")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(1);
+        arap::InvoiceFields {
+            number: Some(self.ledger.next_invoice_number(&prefix, first)),
+            ..fields
+        }
+    }
+
+    /// What issuing an invoice would post and take, journaling nothing
+    /// (plan P4b S4.3 item 12): the engine runs on a clone (the
+    /// rehearsal pattern: the engine runs on a clone), so every refusal is
+    /// the issue's own.
+    ///
+    /// ```text
+    /// GOAL: the confirm is never a surprise: the posting, the total, the
+    ///       number it would take and the due date are shown first.
+    /// SOURCE: plan P4b S4.3 item 12; A-1 (an abandoned preview uses up no
+    ///         number).
+    /// INVARIANTS:
+    ///   1. MUST journal nothing and change nothing, allocators included.
+    ///   2. The posting MUST be the entry [`Self::create_invoice_issued`]
+    ///      would post, and the number the one it would take.
+    /// ```
+    pub fn preview_invoice(
+        &self,
+        customer_id: CustomerId,
+        date: NaiveDate,
+        due_date: NaiveDate,
+        lines: Vec<DocumentLine>,
+        fields: arap::InvoiceFields,
+    ) -> Result<InvoicePreview, StoreError> {
+        let fields = self.numbered(fields);
+        // The same checks the issue makes, so a preview refuses exactly what
+        // the confirm will.
+        self.ensure_document_lines(&lines)?;
+        self.ensure_document_fields(&DocumentFields {
+            invoice: Some(&fields),
+            bill: None,
+            lines: &lines,
+        })?;
+        self.approval_gate(
+            |l| {
+                l.create_invoice_with(customer_id, date, due_date, lines.clone(), fields.clone())?;
+                Ok(())
+            },
+            false,
+        )?;
+        let mut probe = self.ledger.clone();
+        let id = probe.create_invoice_with(customer_id, date, due_date, lines, fields.clone())?;
+        let inv = probe.get_invoice(id).expect("the probe made the invoice");
+        let entry = probe.get_entry(inv.entry_id).expect("its entry");
+        Ok(InvoicePreview {
+            posting: entry
+                .lines()
+                .iter()
+                .map(|l| (l.account, l.side, l.amount.amount, l.class_id))
+                .collect(),
+            total: inv.total()?,
+            number: fields.number,
+            due_date: inv.due_date,
+        })
+    }
+
     /// Create a vendor bill. The auto-posted entry (Dr General Expenses, Cr
     /// A/P) is journaled first through the standard entry flow, then the
     /// bill itself as `bill.created`.
+    ///
+    /// [`Self::create_bill_with`] with no new fields: the bill every
+    /// version before `documents_v2` wrote.
     pub fn create_bill(
         &mut self,
         vendor_id: VendorId,
@@ -3042,49 +3336,33 @@ impl Store {
         due_date: NaiveDate,
         lines: Vec<DocumentLine>,
     ) -> Result<BillId, StoreError> {
-        // See create_invoice: the line's account, quantity and unit price
-        // wait for S4.3's journaling.
-        check_journaled_document_lines(&lines)?;
-        self.rehearse(|l| l.create_bill(vendor_id, date, due_date, lines.clone()))?;
-        self.approval_gate(
-            |l| l.create_bill(vendor_id, date, due_date, lines.clone()),
-            false,
-        )?;
-        if self.ledger.get_vendor(vendor_id).is_none() {
-            return Err(LedgerError::UnknownVendor(vendor_id).into());
-        }
-        arap::validate_lines(&lines)?;
-        arap::validate_due_date(date, due_date)?;
-        if let Some(pid) = self.ledger.closed_period_containing(date) {
-            return Err(LedgerError::ClosedPeriod(pid, date.to_string()).into());
-        }
-        self.ensure_document_lines(&lines)?;
-        let expense = self.ensure_control_account(&ledger_core::GENERAL_EXPENSES)?;
-        let ap = self.ensure_control_account(&ledger_core::PAYABLES)?;
-        let bill_id = self.ledger.next_bill_id();
-        let total: Decimal = lines.iter().map(|l| l.amount).sum();
-        let description = format!("Bill {bill_id}");
-        let mut posting: Vec<_> = arap::document_parts(&lines, "the bill")?
-            .into_iter()
-            .map(|((account, class), amount)| {
-                (account.unwrap_or(expense), Side::Debit, amount, class)
-            })
-            .collect();
-        posting.push((ap, Side::Credit, total, None));
-        let (entry_id, mut journaled) = self.journal_auto_lines(date, &description, &posting)?;
-        let doc_lines: Vec<Value> = lines.iter().map(document_line_json).collect();
-        journaled.push(self.append_journal(
-            "bill.created",
-            json!({
-                "id": bill_id,
-                "vendor_id": vendor_id,
-                "date": date.to_string(),
-                "due_date": due_date.to_string(),
-                "lines": doc_lines,
-                "entry_id": entry_id,
-            }),
-        )?);
-        let live = self.ledger.create_bill(vendor_id, date, due_date, lines)?;
+        self.create_bill_with(
+            vendor_id,
+            date,
+            due_date,
+            lines,
+            arap::BillFields::default(),
+        )
+    }
+
+    /// Create a vendor bill with its new fields (the vendor's invoice
+    /// number, receipt date, terms, memo, a duplicate's reason: plan P4b
+    /// S4.3). [`Self::create_invoice_with`]'s INVARIANTS hold here too; a
+    /// bill whose fields are all `None` is journaled exactly as before.
+    pub fn create_bill_with(
+        &mut self,
+        vendor_id: VendorId,
+        date: NaiveDate,
+        due_date: NaiveDate,
+        lines: Vec<DocumentLine>,
+        fields: arap::BillFields,
+    ) -> Result<BillId, StoreError> {
+        self.check_bill_create(vendor_id, date, due_date, &lines, &fields)?;
+        let (bill_id, entry_id, journaled) =
+            self.journal_bill(vendor_id, date, due_date, &lines, &fields)?;
+        let live = self
+            .ledger
+            .create_bill_with(vendor_id, date, due_date, lines, fields)?;
         debug_assert_eq!(live, bill_id, "id allocator diverged from journal");
         debug_assert_eq!(
             self.ledger.get_bill(live).expect("bill exists").entry_id,
@@ -3095,6 +3373,129 @@ impl Store {
             apply_line_to_sqlite(&self.conn, line)?;
         }
         Ok(live)
+    }
+
+    /// Everything [`Self::create_bill_with`] refuses, before anything is
+    /// journaled; [`Self::check_invoice_create`]'s comments apply.
+    fn check_bill_create(
+        &self,
+        vendor_id: VendorId,
+        date: NaiveDate,
+        due_date: NaiveDate,
+        lines: &[DocumentLine],
+        fields: &arap::BillFields,
+    ) -> Result<(), StoreError> {
+        self.rehearse(|l| {
+            l.create_bill_with(vendor_id, date, due_date, lines.to_vec(), fields.clone())
+        })?;
+        self.approval_gate(
+            |l| {
+                l.create_bill_with(vendor_id, date, due_date, lines.to_vec(), fields.clone())?;
+                Ok(())
+            },
+            false,
+        )?;
+        if self.ledger.get_vendor(vendor_id).is_none() {
+            return Err(LedgerError::UnknownVendor(vendor_id).into());
+        }
+        arap::validate_lines(lines)?;
+        arap::validate_due_date(date, due_date)?;
+        if let Some(received_on) = fields.received_on {
+            ledger_core::calendar::check(received_on)?;
+        }
+        if let Some(vendor_ref) = fields.vendor_ref.as_deref() {
+            self.ledger.check_vendor_ref(
+                vendor_id,
+                vendor_ref,
+                fields.duplicate_reason.as_deref(),
+            )?;
+        }
+        if let Some(pid) = self.ledger.closed_period_containing(date) {
+            return Err(LedgerError::ClosedPeriod(pid, date.to_string()).into());
+        }
+        self.ensure_document_lines(lines)?;
+        self.ensure_document_fields(&DocumentFields {
+            invoice: None,
+            bill: Some(fields),
+            lines,
+        })?;
+        Ok(())
+    }
+
+    /// Journal a bill's auto-posted entry and its `bill.created` event,
+    /// without touching the live ledger; [`Self::check_bill_create`] has
+    /// run.
+    fn journal_bill(
+        &mut self,
+        vendor_id: VendorId,
+        date: NaiveDate,
+        due_date: NaiveDate,
+        lines: &[DocumentLine],
+        fields: &arap::BillFields,
+    ) -> Result<(BillId, EntryId, Vec<JournalLine>), StoreError> {
+        let expense = self.ensure_control_account(&ledger_core::GENERAL_EXPENSES)?;
+        let ap = self.ensure_control_account(&ledger_core::PAYABLES)?;
+        let bill_id = self.ledger.next_bill_id();
+        let total: Decimal = lines.iter().map(|l| l.amount).sum();
+        let description = format!("Bill {bill_id}");
+        let mut posting: Vec<_> = arap::document_parts(lines, "the bill")?
+            .into_iter()
+            .map(|((account, class), amount)| {
+                (account.unwrap_or(expense), Side::Debit, amount, class)
+            })
+            .collect();
+        posting.push((ap, Side::Credit, total, None));
+        let (entry_id, mut journaled) = self.journal_auto_lines(date, &description, &posting)?;
+        let doc_lines: Vec<Value> = lines.iter().map(document_line_json).collect();
+        let mut payload = json!({
+            "id": bill_id,
+            "vendor_id": vendor_id,
+            "date": date.to_string(),
+            "due_date": due_date.to_string(),
+            "lines": doc_lines,
+            "entry_id": entry_id,
+        });
+        bill_fields_json(&mut payload, fields);
+        journaled.push(self.append_journal("bill.created", payload)?);
+        Ok((bill_id, entry_id, journaled))
+    }
+
+    /// What recording a bill would post, journaling nothing (plan P4b S4.3
+    /// item 12); [`Self::preview_invoice`]'s INVARIANTS hold here too.
+    pub fn preview_bill(
+        &self,
+        vendor_id: VendorId,
+        date: NaiveDate,
+        due_date: NaiveDate,
+        lines: Vec<DocumentLine>,
+        fields: arap::BillFields,
+    ) -> Result<BillPreview, StoreError> {
+        self.ensure_document_lines(&lines)?;
+        self.ensure_document_fields(&DocumentFields {
+            invoice: None,
+            bill: Some(&fields),
+            lines: &lines,
+        })?;
+        self.approval_gate(
+            |l| {
+                l.create_bill_with(vendor_id, date, due_date, lines.clone(), fields.clone())?;
+                Ok(())
+            },
+            false,
+        )?;
+        let mut probe = self.ledger.clone();
+        let id = probe.create_bill_with(vendor_id, date, due_date, lines, fields)?;
+        let bill = probe.get_bill(id).expect("the probe made the bill");
+        let entry = probe.get_entry(bill.entry_id).expect("its entry");
+        Ok(BillPreview {
+            posting: entry
+                .lines()
+                .iter()
+                .map(|l| (l.account, l.side, l.amount.amount, l.class_id))
+                .collect(),
+            total: bill.total()?,
+            due_date: bill.due_date,
+        })
     }
 
     /// Record a customer payment against an invoice
@@ -5624,28 +6025,8 @@ fn plain_line_json(account: AccountId, side: Side, amount: Money) -> Value {
 }
 
 /// One invoice/bill document line as journal JSON. Amounts are decimal
-/// strings, never floats.
-/// Refuse a document line carrying a field the journal does not write yet
-/// (S4.1 through S4.2): S4.3's `documents_v2` journals the line's account,
-/// quantity and unit price. Called before `rehearse`, so a refusal leaves
-/// the journal and the books exactly as they were, and replay never loses
-/// one. S4.3 removes this guard when it journals the fields.
-fn check_journaled_document_lines(lines: &[DocumentLine]) -> Result<(), StoreError> {
-    for line in lines {
-        if line.account.is_some() {
-            return Err(StoreError::DocumentFieldsAwaitUpgrade {
-                field: "an account",
-            });
-        }
-        if line.quantity.is_some() || line.unit_price.is_some() {
-            return Err(StoreError::DocumentFieldsAwaitUpgrade {
-                field: "a quantity and unit price",
-            });
-        }
-    }
-    Ok(())
-}
-
+/// strings, never floats; a new field is written only when set, so a line
+/// naming none is byte for byte the line every earlier version wrote.
 fn document_line_json(l: &DocumentLine) -> Value {
     let mut v = json!({
         "description": l.description,
@@ -5656,7 +6037,163 @@ fn document_line_json(l: &DocumentLine) -> Value {
     if let Some(c) = l.class_id {
         v["class_id"] = json!(c);
     }
+    // Its account, quantity and unit price, behind documents_v2 (plan P4b
+    // S4.3); a line naming none is written as before it.
+    if let Some(a) = l.account {
+        v["account"] = json!(a);
+    }
+    if let Some(q) = l.quantity {
+        v["quantity"] = json!(q.to_string());
+    }
+    if let Some(u) = l.unit_price {
+        v["unit_price"] = json!(u.to_string());
+    }
     v
+}
+
+/// The new fields a document write names, for
+/// [`Store::ensure_document_fields`]: one of the two record shapes, and the
+/// lines (whose account, quantity and unit price also need `documents_v2`).
+struct DocumentFields<'a> {
+    invoice: Option<&'a arap::InvoiceFields>,
+    bill: Option<&'a arap::BillFields>,
+    lines: &'a [DocumentLine],
+}
+
+impl DocumentFields<'_> {
+    /// Whether any field the journal couldn't write before `documents_v2`
+    /// is some.
+    fn any_new(&self) -> bool {
+        let invoice = self.invoice.is_some_and(|f| {
+            f.number.is_some()
+                || f.terms.is_some()
+                || f.bill_to.is_some()
+                || f.seller.is_some()
+                || f.customer_ref.is_some()
+                || f.memo.is_some()
+        });
+        let bill = self.bill.is_some_and(|f| {
+            f.vendor_ref.is_some()
+                || f.received_on.is_some()
+                || f.terms.is_some()
+                || f.memo.is_some()
+                || f.duplicate_reason.is_some()
+        });
+        invoice
+            || bill
+            || self
+                .lines
+                .iter()
+                .any(|l| l.account.is_some() || l.quantity.is_some() || l.unit_price.is_some())
+    }
+}
+
+/// Add an invoice's new fields to its `invoice.created` payload, each key
+/// only when set (plan P4b S4.3, feature `documents_v2`).
+fn invoice_fields_json(payload: &mut Value, fields: &arap::InvoiceFields) {
+    if let Some(n) = &fields.number {
+        payload["number"] = json!(n);
+    }
+    if let Some(t) = &fields.terms {
+        payload["terms"] = json!(t);
+    }
+    if let Some(s) = &fields.bill_to {
+        payload["bill_to"] = json!(s);
+    }
+    if let Some(s) = &fields.seller {
+        payload["seller"] = json!(s);
+    }
+    if let Some(r) = &fields.customer_ref {
+        payload["customer_ref"] = json!(r);
+    }
+    if let Some(m) = &fields.memo {
+        payload["memo"] = json!(m);
+    }
+}
+
+/// Add a bill's new fields to its `bill.created` payload, each key only when
+/// set. A duplicate's reason is journaled for the record (rules.md B-40 item
+/// 4); the bill itself keeps none.
+fn bill_fields_json(payload: &mut Value, fields: &arap::BillFields) {
+    if let Some(r) = &fields.vendor_ref {
+        payload["vendor_ref"] = json!(r);
+    }
+    if let Some(on) = fields.received_on {
+        payload["received_on"] = json!(on.to_string());
+    }
+    if let Some(t) = &fields.terms {
+        payload["terms"] = json!(t);
+    }
+    if let Some(m) = &fields.memo {
+        payload["memo"] = json!(m);
+    }
+    if let Some(r) = &fields.duplicate_reason {
+        payload["duplicate_reason"] = json!(r);
+    }
+}
+
+/// The invoice's new fields from an `invoice.created` payload; absent keys
+/// are the invoice every earlier version wrote.
+fn parse_invoice_fields(p: &Value) -> Result<arap::InvoiceFields, StoreError> {
+    Ok(arap::InvoiceFields {
+        number: opt_str(p, "number")?.map(str::to_string),
+        terms: parse_terms(p.get("terms"))?,
+        bill_to: parse_snapshot(p.get("bill_to"))?,
+        seller: parse_snapshot(p.get("seller"))?,
+        customer_ref: opt_str(p, "customer_ref")?.map(str::to_string),
+        memo: opt_str(p, "memo")?.map(str::to_string),
+    })
+}
+
+/// The bill's new fields from a `bill.created` payload; absent keys are the
+/// bill every earlier version wrote.
+fn parse_bill_fields(p: &Value) -> Result<arap::BillFields, StoreError> {
+    Ok(arap::BillFields {
+        vendor_ref: opt_str(p, "vendor_ref")?.map(str::to_string),
+        received_on: match opt_str(p, "received_on")? {
+            Some(d) => Some(parse_date(d)?),
+            None => None,
+        },
+        terms: parse_terms(p.get("terms"))?,
+        memo: opt_str(p, "memo")?.map(str::to_string),
+        duplicate_reason: opt_str(p, "duplicate_reason")?.map(str::to_string),
+    })
+}
+
+/// A payload's optional value kept as its canonical JSON text (terms, a
+/// party snapshot): absent or null is SQL NULL.
+fn json_column(p: &Value, key: &str) -> Option<String> {
+    p.get(key).filter(|v| !v.is_null()).map(|v| v.to_string())
+}
+
+/// A payload's optional string: absent or null is none, anything but a
+/// string is damage.
+fn opt_str<'a>(p: &'a Value, key: &str) -> Result<Option<&'a str>, StoreError> {
+    match p.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s)),
+        Some(_) => Err(StoreError::JournalCorrupt(format!("bad {key}"))),
+    }
+}
+
+/// A payload's optional payment terms, as journaled.
+fn parse_terms(v: Option<&Value>) -> Result<Option<arap::Terms>, StoreError> {
+    match v {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => serde_json::from_value(v.clone())
+            .map(Some)
+            .map_err(|_| StoreError::JournalCorrupt("bad terms".into())),
+    }
+}
+
+/// A payload's optional party snapshot, as journaled.
+fn parse_snapshot(v: Option<&Value>) -> Result<Option<arap::PartySnapshot>, StoreError> {
+    match v {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => serde_json::from_value(v.clone())
+            .map(Some)
+            .map_err(|_| StoreError::JournalCorrupt("bad party snapshot".into())),
+    }
 }
 
 /// Parse the `lines` array of an invoice/bill journal payload back into
@@ -5685,15 +6222,30 @@ fn parse_document_lines(p: &Value) -> Result<Vec<DocumentLine>, StoreError> {
                             })?,
                     ),
                 },
-                // The new line fields are read in S4.3; an older version
-                // never wrote them, and replay of a document written by
-                // this one leaves the S4.1 shape.
-                account: None,
-                quantity: None,
-                unit_price: None,
+                // Absent (every document before documents_v2) or null:
+                // the line names none, exactly the line it was written as.
+                account: match l.get("account") {
+                    None | Some(Value::Null) => None,
+                    Some(a) => Some(a.as_u64().ok_or_else(|| {
+                        StoreError::JournalCorrupt("bad document line account".into())
+                    })?),
+                },
+                quantity: opt_decimal(l, "quantity")?,
+                unit_price: opt_decimal(l, "unit_price")?,
             })
         })
         .collect()
+}
+
+/// A payload's optional exact amount, journaled as a decimal string.
+fn opt_decimal(p: &Value, key: &str) -> Result<Option<Decimal>, StoreError> {
+    match opt_str(p, key)? {
+        None => Ok(None),
+        Some(s) => s
+            .parse()
+            .map(Some)
+            .map_err(|_| StoreError::JournalCorrupt(format!("bad {key}"))),
+    }
 }
 
 fn flip_line_json(l: &ledger_core::JournalLine) -> Value {
@@ -6406,23 +6958,25 @@ fn replay_line(
         "invoice.created" => {
             // The entry was already rebuilt by the standard entry handlers;
             // this only restores the invoice record, without re-posting.
-            ledger.replay_invoice(
+            ledger.replay_invoice_with(
                 get_u64(p, "id")?,
                 get_u64(p, "customer_id")?,
                 parse_date(get_str(p, "date")?)?,
                 parse_date(get_str(p, "due_date")?)?,
                 parse_document_lines(p)?,
                 get_u64(p, "entry_id")?,
+                parse_invoice_fields(p)?,
             )?;
         }
         "bill.created" => {
-            ledger.replay_bill(
+            ledger.replay_bill_with(
                 get_u64(p, "id")?,
                 get_u64(p, "vendor_id")?,
                 parse_date(get_str(p, "date")?)?,
                 parse_date(get_str(p, "due_date")?)?,
                 parse_document_lines(p)?,
                 get_u64(p, "entry_id")?,
+                parse_bill_fields(p)?,
             )?;
         }
         "invoice.payment_received" => {
@@ -7362,7 +7916,7 @@ fn apply_line_rows(conn: &Connection, line: &JournalLine) -> Result<(), StoreErr
                 StoreError::JournalCorrupt("invoice.created without lines".into())
             })?;
             conn.execute(
-                "INSERT INTO invoices(id, customer_id, date, due_date, lines_json, entry_id) VALUES (?,?,?,?,?,?)",
+                "INSERT INTO invoices(id, customer_id, date, due_date, lines_json, entry_id, number, terms, bill_to, seller, customer_ref, memo) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 params![
                     get_u64(p, "id")? as i64,
                     get_u64(p, "customer_id")? as i64,
@@ -7370,6 +7924,12 @@ fn apply_line_rows(conn: &Connection, line: &JournalLine) -> Result<(), StoreErr
                     get_str(p, "due_date")?,
                     lines.to_string(),
                     get_u64(p, "entry_id")? as i64,
+                    opt_str(p, "number")?,
+                    json_column(p, "terms"),
+                    json_column(p, "bill_to"),
+                    json_column(p, "seller"),
+                    opt_str(p, "customer_ref")?,
+                    opt_str(p, "memo")?,
                 ],
             )?;
         }
@@ -7378,7 +7938,7 @@ fn apply_line_rows(conn: &Connection, line: &JournalLine) -> Result<(), StoreErr
                 .get("lines")
                 .ok_or_else(|| StoreError::JournalCorrupt("bill.created without lines".into()))?;
             conn.execute(
-                "INSERT INTO bills(id, vendor_id, date, due_date, lines_json, entry_id) VALUES (?,?,?,?,?,?)",
+                "INSERT INTO bills(id, vendor_id, date, due_date, lines_json, entry_id, vendor_ref, received_on, terms, memo, duplicate_reason) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 params![
                     get_u64(p, "id")? as i64,
                     get_u64(p, "vendor_id")? as i64,
@@ -7386,6 +7946,11 @@ fn apply_line_rows(conn: &Connection, line: &JournalLine) -> Result<(), StoreErr
                     get_str(p, "due_date")?,
                     lines.to_string(),
                     get_u64(p, "entry_id")? as i64,
+                    opt_str(p, "vendor_ref")?,
+                    opt_str(p, "received_on")?,
+                    json_column(p, "terms"),
+                    opt_str(p, "memo")?,
+                    opt_str(p, "duplicate_reason")?,
                 ],
             )?;
             conn.execute(

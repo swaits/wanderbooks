@@ -10,9 +10,11 @@
 //! change, and the general ledger doesn't move at all.
 
 use chrono::NaiveDate;
+use ledger_core::LedgerError;
+use ledger_core::arap;
 use ledger_core::arap::DocumentLine;
 use ledger_core::{AccountType, Currency, Money, Side};
-use ledger_store::{JOURNAL_FILE, Store, StoreError};
+use ledger_store::{JOURNAL_FILE, Store, StoreError, Subject};
 use rust_decimal::Decimal;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -615,96 +617,440 @@ fn legacy_documents_replay_with_tags() {
     assert!((0..2).all(|i| l.line_doc(hand, i).is_none()));
 }
 
-/// S4.1's line fields (the account, the quantity and unit price) are not
-/// journaled yet: S4.3's `documents_v2` writes them. The store refuses
-/// such a line before it rehearses or journals anything, so replay can
-/// never lose one; an ordinary line still posts exactly as before, with
-/// no new key in its journal payload.
+/// A document's new fields (its number, terms, snapshots, references, a
+/// line's account, quantity or price) wait for the journal feature
+/// `documents_v2` (plan P4b S4.3; rules.md B-27): refused,
+/// FormatUpgradePending, journaling nothing, in books that haven't declared
+/// it; after the owner's upgrade the same writes are taken, and the books
+/// replay to what was live.
 #[test]
-fn document_line_fields_wait_for_documents_v2() {
-    let dir = test_dir("unjournaled-fields");
-    let mut s = Store::create(&dir.0, Currency::USD).unwrap();
-    let bank = s
-        .add_account("1000", "Bank", AccountType::Asset, None, false)
+fn documents_v2_waits_for_the_upgrade() {
+    let dir = fixture("documents-v2");
+    let mut s = Store::open(&dir.0).unwrap();
+    assert!(
+        !s.journal_format()
+            .has_feature(ledger_store::format::DOCUMENTS_V2)
+    );
+    // A revenue account for a line to name, created before the head we
+    // compare (it needs nothing new).
+    let revenue = s
+        .add_account("4100", "Consulting", AccountType::Revenue, None, false)
         .unwrap();
+    let head = s.head();
+    let terms = ledger_core::Terms::new(ledger_core::TermsKind::Net(30), None).unwrap();
+    let invoice_fields = arap::InvoiceFields {
+        number: Some("INV-0001".into()),
+        terms: Some(terms.clone()),
+        ..arap::InvoiceFields::default()
+    };
+    let bill_fields = arap::BillFields {
+        vendor_ref: Some("TOBIN-77".into()),
+        received_on: Some(d(2026, 3, 2)),
+        ..arap::BillFields::default()
+    };
+    let with_account = DocumentLine {
+        description: "Consulting".into(),
+        amount: cents(3_000),
+        class_id: None,
+        account: Some(revenue),
+        quantity: None,
+        unit_price: None,
+    };
+    for refused in [
+        s.create_invoice_with(
+            1,
+            d(2026, 3, 1),
+            d(2026, 3, 31),
+            vec![line("Work", 3_000)],
+            invoice_fields.clone(),
+        ),
+        s.create_bill_with(
+            1,
+            d(2026, 3, 1),
+            d(2026, 3, 31),
+            vec![line("Paper", 2_000)],
+            bill_fields.clone(),
+        ),
+        s.create_invoice_with(
+            1,
+            d(2026, 3, 1),
+            d(2026, 3, 31),
+            vec![with_account.clone()],
+            arap::InvoiceFields::default(),
+        ),
+    ] {
+        match refused {
+            Err(StoreError::FormatUpgradePending { need }) => {
+                assert_eq!(need, "the journal feature documents_v2")
+            }
+            other => panic!("expected FormatUpgradePending, got {other:?}"),
+        }
+    }
+    assert_eq!(s.head(), head, "nothing journaled");
+
+    // Filing the issued copy needs nothing new: an old-shape invoice keeps
+    // its "Invoice {id}" (no number) and the copy is filed and linked.
+    let unnumbered = s
+        .create_invoice_issued(
+            1,
+            d(2026, 3, 2),
+            d(2026, 3, 31),
+            vec![line("Old shape", 1_000)],
+            arap::InvoiceFields::default(),
+            b"%PDF-1.4 old\n%%EOF\n".to_vec(),
+        )
+        .unwrap();
+    assert_eq!(s.ledger().get_invoice(unnumbered.0).unwrap().number, None);
+    assert_eq!(
+        s.attachments_for(Subject::Invoice(unnumbered.0)).unwrap()[0]
+            .file_name
+            .as_str(),
+        format!("Invoice {}.pdf", unnumbered.0)
+    );
+
+    assert!(s.upgrade_format().unwrap().is_some());
+    let inv = s
+        .create_invoice_with(
+            1,
+            d(2026, 3, 1),
+            d(2026, 3, 31),
+            vec![line("Work", 3_000)],
+            invoice_fields,
+        )
+        .unwrap();
+    let bill = s
+        .create_bill_with(
+            1,
+            d(2026, 3, 1),
+            d(2026, 3, 31),
+            vec![line("Paper", 2_000)],
+            bill_fields,
+        )
+        .unwrap();
+    let lined = s
+        .create_invoice_with(
+            1,
+            d(2026, 3, 1),
+            d(2026, 3, 31),
+            vec![with_account],
+            arap::InvoiceFields::default(),
+        )
+        .unwrap();
+    let live = s.ledger().clone();
+    // The fields are journaled, not just held live.
+    let replay = live
+        .invoices()
+        .into_iter()
+        .find(|i| i.id == inv)
+        .expect("invoice 4");
+    assert_eq!(replay.number.as_deref(), Some("INV-0001"));
+    assert_eq!(
+        replay.terms.as_ref().map(|t| t.describe()),
+        Some("Net 30".into())
+    );
+    assert_eq!(replay.bill_to, None);
+    let lined_lines = live.get_invoice(lined).unwrap().lines.clone();
+    assert_eq!(lined_lines[0].account, Some(revenue));
+    let replayed_bill = live.bills().into_iter().find(|b| b.id == bill).unwrap();
+    assert_eq!(replayed_bill.vendor_ref.as_deref(), Some("TOBIN-77"));
+    assert_eq!(replayed_bill.received_on, Some(d(2026, 3, 2)));
+    drop(s);
+    let s = Store::open(&dir.0).unwrap();
+    assert!(
+        live.differs_from(s.ledger()).is_empty(),
+        "{:?}",
+        live.differs_from(s.ledger())
+    );
+    s.verify().unwrap();
+}
+
+/// A document naming none of the new fields is journaled byte for byte as
+/// every version before `documents_v2` wrote it (plan P4b S4.3; the
+/// `document_line_projects` pattern): the same five events, the same
+/// payload keys, no key for a field that is None.
+#[test]
+fn no_new_fields_journals_byte_for_byte() {
+    let dir = test_dir("old-shape-documents");
+    let mut s = Store::create(&dir.0, Currency::USD).unwrap();
     let c = s.add_customer("Fernhill Labs").unwrap();
     let v = s.add_vendor("Tobin Harlow Supply").unwrap();
     // A first invoice creates the control accounts, so the assertions
     // below see only the document's own events.
     s.create_invoice(c, d(2026, 3, 1), d(2026, 4, 1), vec![line("Seed", 1_000)])
         .unwrap();
+    s.create_bill(v, d(2026, 3, 1), d(2026, 4, 1), vec![line("Seed", 1_000)])
+        .unwrap();
+
     let from = journal_len(&dir.0);
-    let next_invoice = s.ledger().next_invoice_id();
-    let next_bill = s.ledger().next_bill_id();
-
-    let with_account = DocumentLine {
-        description: "Design".into(),
-        amount: cents(5_000),
-        class_id: None,
-        account: Some(bank),
-        quantity: None,
-        unit_price: None,
-    };
-    for refused in [
-        s.create_invoice(c, d(2026, 4, 1), d(2026, 5, 1), vec![with_account.clone()]),
-        s.create_bill(v, d(2026, 4, 1), d(2026, 5, 1), vec![with_account]),
-    ] {
-        assert!(
-            matches!(
-                refused,
-                Err(StoreError::DocumentFieldsAwaitUpgrade {
-                    field: "an account"
-                })
-            ),
-            "{refused:?}"
-        );
-    }
-
-    let with_price = DocumentLine {
-        description: "Hours".into(),
-        amount: cents(9_999),
-        class_id: None,
-        account: None,
-        quantity: Some(Decimal::from(3)),
-        unit_price: Some(cents(3_333)),
-    };
-    assert!(matches!(
-        s.create_invoice(c, d(2026, 4, 1), d(2026, 5, 1), vec![with_price.clone()]),
-        Err(StoreError::DocumentFieldsAwaitUpgrade {
-            field: "a quantity and unit price"
-        })
-    ));
-    assert!(matches!(
-        s.create_bill(v, d(2026, 4, 1), d(2026, 5, 1), vec![with_price]),
-        Err(StoreError::DocumentFieldsAwaitUpgrade {
-            field: "a quantity and unit price"
-        })
-    ));
-
-    // Every refusal left the journal and the allocators exactly as they
-    // were.
-    assert_eq!(journal_len(&dir.0), from);
-    assert_eq!(s.ledger().next_invoice_id(), next_invoice);
-    assert_eq!(s.ledger().next_bill_id(), next_bill);
-    s.verify().unwrap();
-
-    // An ordinary line posts exactly as before: the same five events, and
-    // the line carries no key the older journal did not have.
     let inv = s
         .create_invoice(c, d(2026, 4, 1), d(2026, 5, 1), vec![line("Design", 5_000)])
         .unwrap();
     let got = since(&dir.0, from);
     assert_eq!(got.len(), 5, "{got:?}");
     assert_eq!(got[4].0, "invoice.created");
-    let keys: Vec<&String> = got[4].1["lines"][0].as_object().unwrap().keys().collect();
-    assert_eq!(keys, ["amount", "description"]);
+    let entry = s.ledger().get_invoice(inv).unwrap().entry_id;
+    assert_eq!(
+        got[4].1,
+        json!({
+            "id": inv,
+            "customer_id": c,
+            "date": "2026-04-01",
+            "due_date": "2026-05-01",
+            "lines": [{"description": "Design", "amount": "50.00"}],
+            "entry_id": entry,
+        }),
+        "the invoice event is the shape every earlier version wrote"
+    );
+
+    let from = journal_len(&dir.0);
+    let bill = s
+        .create_bill(v, d(2026, 4, 1), d(2026, 5, 1), vec![line("Paper", 2_000)])
+        .unwrap();
+    let got = since(&dir.0, from);
+    assert_eq!(got.len(), 5, "{got:?}");
+    assert_eq!(got[4].0, "bill.created");
+    let entry = s.ledger().get_bill(bill).unwrap().entry_id;
+    assert_eq!(
+        got[4].1,
+        json!({
+            "id": bill,
+            "vendor_id": v,
+            "date": "2026-04-01",
+            "due_date": "2026-05-01",
+            "lines": [{"description": "Paper", "amount": "20.00"}],
+            "entry_id": entry,
+        }),
+        "the bill event is the shape every earlier version wrote"
+    );
     let live = s.ledger().clone();
     drop(s);
     let s = Store::open(&dir.0).unwrap();
     assert!(live.differs_from(s.ledger()).is_empty());
+    assert_eq!(s.ledger().get_invoice(inv).unwrap().number, None);
+    s.verify().unwrap();
+}
+
+/// The issued copy is filed with the invoice or nothing is (plan P4b S4.3
+/// item 11, A-7; rules.md B-40 item 3): a refusal leaves the journal, the
+/// ledger and the allocators exactly as they were; an issue journals the
+/// entry, `invoice.created`, `receipt.attached` on that entry
+/// (`INV-0007.pdf`, `application/pdf`, "Issued invoice") and
+/// `attachment.linked` to the invoice, and the copy found through the link
+/// is the bytes given, by their SHA-256.
+#[test]
+fn issued_pdf_is_filed_with_the_invoice_or_nothing_is() {
+    let dir = test_dir("issued-pdf");
+    let mut s = Store::create(&dir.0, Currency::USD).unwrap();
+    let c = s.add_customer("Fernhill Labs").unwrap();
+    // The invoice's control accounts exist already, so the issue journals
+    // only its own lines.
+    s.add_account(
+        "1200",
+        "Accounts Receivable",
+        AccountType::Asset,
+        None,
+        false,
+    )
+    .unwrap();
+    s.add_account("4000", "Revenue", AccountType::Revenue, None, false)
+        .unwrap();
+    let head = s.head();
+    let next_invoice = s.ledger().next_invoice_id();
+    let pdf = b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n".to_vec();
+    let fields = |number: &str| arap::InvoiceFields {
+        number: Some(number.into()),
+        ..arap::InvoiceFields::default()
+    };
+    // An unknown customer: refused before anything is journaled.
+    assert!(matches!(
+        s.create_invoice_issued(
+            999,
+            d(2026, 4, 1),
+            d(2026, 5, 1),
+            vec![line("Design", 5_000)],
+            fields("INV-0007"),
+            pdf.clone(),
+        ),
+        Err(StoreError::Ledger(LedgerError::UnknownCustomer(999)))
+    ));
+    // A line that is not a document line: refused too.
+    assert!(
+        s.create_invoice_issued(
+            c,
+            d(2026, 4, 1),
+            d(2026, 5, 1),
+            vec![line("Design", -1)],
+            fields("INV-0007"),
+            pdf.clone(),
+        )
+        .is_err()
+    );
+    assert_eq!(s.head(), head, "nothing journaled");
+    assert_eq!(s.ledger().next_invoice_id(), next_invoice);
+    assert!(s.list_attachments(None).unwrap().is_empty());
+
+    // The issue itself, in one call.
+    let from = journal_len(&dir.0);
+    let (inv, entry, attachment) = s
+        .create_invoice_issued(
+            c,
+            d(2026, 4, 1),
+            d(2026, 5, 1),
+            vec![line("Design", 5_000)],
+            fields("INV-0007"),
+            pdf.clone(),
+        )
+        .unwrap();
+    let got = since(&dir.0, from);
+    let types: Vec<&str> = got.iter().map(|(t, _)| t.as_str()).collect();
     assert_eq!(
-        s.ledger().get_invoice(inv).unwrap().total(),
-        Ok(cents(5_000))
+        types,
+        [
+            "entry.created",
+            "entry.line_added",
+            "entry.line_added",
+            "entry.posted",
+            "invoice.created",
+            "receipt.attached",
+            "attachment.linked",
+        ]
+    );
+    let sha = ledger_store::journal::sha256_hex(&pdf);
+    assert_eq!(got[5].1["attachment_id"], json!(attachment));
+    assert_eq!(got[5].1["entry_id"], json!(entry));
+    assert_eq!(got[5].1["blob_sha"], json!(sha));
+    assert_eq!(got[5].1["category"], json!("receipts"));
+    assert_eq!(got[5].1["file_name"], json!("INV-0007.pdf"));
+    assert_eq!(got[5].1["mime_type"], json!("application/pdf"));
+    assert_eq!(got[5].1["description"], json!("Issued invoice"));
+    assert_eq!(got[5].1["size_bytes"], json!(pdf.len() as u64));
+    assert_eq!(
+        got[6].1["subject"],
+        json!({"kind": "invoice", "id": inv}),
+        "the copy is linked to the invoice"
+    );
+    // Found through the link, never by guessing; and it is the entry's
+    // evidence too.
+    let linked = s.attachments_for(Subject::Invoice(inv)).unwrap();
+    assert_eq!(linked.len(), 1);
+    assert_eq!(linked[0].id, attachment);
+    assert_eq!(linked[0].blob_sha, sha);
+    assert_eq!(s.attachment_bytes(attachment).unwrap(), pdf);
+    assert!(
+        s.list_attachments(Some(entry))
+            .unwrap()
+            .iter()
+            .any(|a| a.id == attachment)
+    );
+    let live = s.ledger().clone();
+    drop(s);
+    let s = Store::open(&dir.0).unwrap();
+    assert!(live.differs_from(s.ledger()).is_empty());
+    assert_eq!(s.attachments_for(Subject::Invoice(inv)).unwrap().len(), 1);
+    s.verify().unwrap();
+}
+
+/// Previews journal nothing (plan P4b S4.3 item 12): the invoice preview
+/// is the posting, total, number and due date the issue would take (the
+/// account each line posts to and the number from the books' settings),
+/// and a refusal in it is the issue's own.
+#[test]
+fn preview_invoice_and_bill_journal_nothing() {
+    let dir = test_dir("preview");
+    let mut s = Store::create(&dir.0, Currency::USD).unwrap();
+    let c = s.add_customer("Fernhill Labs").unwrap();
+    let v = s.add_vendor("Tobin Harlow Supply").unwrap();
+    let revenue = s
+        .add_account("4100", "Consulting", AccountType::Revenue, None, false)
+        .unwrap();
+    let expenses = s
+        .add_account("6500", "Supplies", AccountType::Expense, None, false)
+        .unwrap();
+    // The preview's posting names the control accounts the issue would
+    // use; they exist in the books because a document made them before.
+    s.add_account(
+        "1200",
+        "Accounts Receivable",
+        AccountType::Asset,
+        None,
+        false,
+    )
+    .unwrap();
+    s.add_account(
+        "2000",
+        "Accounts Payable",
+        AccountType::Liability,
+        None,
+        false,
+    )
+    .unwrap();
+    let head = s.head();
+    let next_invoice = s.ledger().next_invoice_id();
+    let preview = s
+        .preview_invoice(
+            c,
+            d(2026, 4, 1),
+            d(2026, 5, 1),
+            vec![DocumentLine {
+                description: "Consulting".into(),
+                amount: cents(6_000),
+                class_id: None,
+                account: Some(revenue),
+                quantity: None,
+                unit_price: None,
+            }],
+            arap::InvoiceFields::default(),
+        )
+        .unwrap();
+    assert_eq!(preview.number.as_deref(), Some("INV-0001"));
+    assert_eq!(preview.due_date, d(2026, 5, 1));
+    assert_eq!(preview.total, cents(6_000));
+    let ar = s.ledger().chart().find_by_code("1200").unwrap().id;
+    assert_eq!(
+        preview.posting,
+        vec![
+            (ar, Side::Debit, cents(6_000), None),
+            (revenue, Side::Credit, cents(6_000), None),
+        ]
+    );
+    let bill = s
+        .preview_bill(
+            v,
+            d(2026, 4, 1),
+            d(2026, 5, 1),
+            vec![DocumentLine {
+                description: "Supplies".into(),
+                amount: cents(2_000),
+                class_id: None,
+                account: Some(expenses),
+                quantity: None,
+                unit_price: None,
+            }],
+            arap::BillFields::default(),
+        )
+        .unwrap();
+    let ap = s.ledger().chart().find_by_code("2000").unwrap().id;
+    assert_eq!(
+        bill.posting,
+        vec![
+            (expenses, Side::Debit, cents(2_000), None),
+            (ap, Side::Credit, cents(2_000), None),
+        ]
+    );
+    assert_eq!(bill.total, cents(2_000));
+    assert_eq!(s.head(), head, "a preview journals nothing");
+    assert_eq!(s.ledger().next_invoice_id(), next_invoice);
+    assert!(s.ledger().invoices().is_empty());
+    // What a preview refuses, the issue refuses too.
+    assert!(
+        s.preview_invoice(
+            999,
+            d(2026, 4, 1),
+            d(2026, 5, 1),
+            vec![line("Design", 5_000)],
+            arap::InvoiceFields::default(),
+        )
+        .is_err()
     );
     s.verify().unwrap();
 }

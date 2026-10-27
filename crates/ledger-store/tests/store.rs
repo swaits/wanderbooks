@@ -1855,13 +1855,104 @@ fn books_written_under_older_rules_still_open() {
                "source": {"decided_by": "Owner", "decided_on": "2026-10-26"}}),
     )
     .unwrap();
+    // P4b S4.3's new shapes, hand-written as this version writes them: a
+    // document carrying its number, terms, snapshots, references and memo,
+    // and a line naming its account, quantity and unit price. This reader
+    // takes them; the version before it stopped at the declaration.
+    for (id, code, name, t) in [
+        (3, "1200", "Accounts Receivable", "Asset"),
+        (4, "4000", "Revenue", "Revenue"),
+        (5, "2000", "Accounts Payable", "Liability"),
+        (6, "6500", "Supplies", "Expense"),
+    ] {
+        w.append(
+            "account.added",
+            json!({"id": id, "code": code, "name": name, "account_type": t,
+                   "parent": null, "placeholder": false, "currency": "USD"}),
+        )
+        .unwrap();
+    }
+    w.append("customer.added", json!({"id": 1, "name": "Fernhill Labs"}))
+        .unwrap();
+    w.append(
+        "vendor.added",
+        json!({"id": 1, "name": "Tobin Harlow Supply"}),
+    )
+    .unwrap();
+    w.append(
+        "entry.created",
+        json!({"id": 2, "date": "2026-04-01", "description": "Invoice 1"}),
+    )
+    .unwrap();
+    w.append(
+        "entry.line_added",
+        json!({"id": 2, "account": 3, "side": "debit", "amount": "99.99", "currency": "USD"}),
+    )
+    .unwrap();
+    w.append(
+        "entry.line_added",
+        json!({"id": 2, "account": 4, "side": "credit", "amount": "99.99", "currency": "USD"}),
+    )
+    .unwrap();
+    w.append(
+        "entry.posted",
+        json!({"id": 2, "date": "2026-04-01", "description": "Invoice 1", "reversal_of": null,
+               "lines": [
+                   {"account": 3, "side": "debit", "amount": "99.99", "currency": "USD"},
+                   {"account": 4, "side": "credit", "amount": "99.99", "currency": "USD"}]}),
+    )
+    .unwrap();
+    w.append(
+        "invoice.created",
+        json!({"id": 1, "customer_id": 1, "date": "2026-04-01", "due_date": "2026-05-01",
+               "lines": [{"description": "Consulting", "amount": "99.99", "account": 4,
+                          "quantity": "3", "unit_price": "33.33"}],
+               "entry_id": 2, "number": "INV-0001",
+               "terms": {"kind": {"net": 30}, "text": "Net 30"},
+               "bill_to": {"name": "Fernhill Labs", "email": "billing@fernhill.example"},
+               "seller": {"name": "Acme", "address": "1 Main St"},
+               "customer_ref": "PO-7", "memo": "Thanks"}),
+    )
+    .unwrap();
+    w.append(
+        "entry.created",
+        json!({"id": 3, "date": "2026-04-02", "description": "Bill 1"}),
+    )
+    .unwrap();
+    w.append(
+        "entry.line_added",
+        json!({"id": 3, "account": 6, "side": "debit", "amount": "20.00", "currency": "USD"}),
+    )
+    .unwrap();
+    w.append(
+        "entry.line_added",
+        json!({"id": 3, "account": 5, "side": "credit", "amount": "20.00", "currency": "USD"}),
+    )
+    .unwrap();
+    w.append(
+        "entry.posted",
+        json!({"id": 3, "date": "2026-04-02", "description": "Bill 1", "reversal_of": null,
+               "lines": [
+                   {"account": 6, "side": "debit", "amount": "20.00", "currency": "USD"},
+                   {"account": 5, "side": "credit", "amount": "20.00", "currency": "USD"}]}),
+    )
+    .unwrap();
+    w.append(
+        "bill.created",
+        json!({"id": 1, "vendor_id": 1, "date": "2026-04-02", "due_date": "2026-05-17",
+               "lines": [{"description": "Paper", "amount": "20.00", "account": 6}],
+               "entry_id": 3, "vendor_ref": "TOBIN-77", "received_on": "2026-04-03",
+               "terms": {"kind": {"net_eom": 15}, "text": "Net 15 EOM"},
+               "memo": "A4 paper", "duplicate_reason": "the vendor sent it twice"}),
+    )
+    .unwrap();
     drop(w);
     // Opening rebuilds from the journal; it must accept all of it.
     let _ = std::fs::remove_file(dir.join(ledger_store::db_file()));
     let store = Store::open(&dir).expect("older books still open");
     store.verify().unwrap();
     assert_eq!(store.journal_format().format, 1);
-    assert_eq!(store.ledger().chart().len(), 2);
+    assert_eq!(store.ledger().chart().len(), 6);
     assert_eq!(store.ledger().list_periods().len(), 2);
     let lines = store.ledger().get_entry(1).unwrap().lines();
     assert_eq!(lines.len(), 2);
@@ -1887,6 +1978,35 @@ fn books_written_under_older_rules_still_open() {
             .and_then(|r| r.value.as_str()),
         Some("2/10 net 30")
     );
+    // The documents' new fields replay as written, its lines included.
+    let inv = store.ledger().get_invoice(1).expect("the invoice");
+    assert_eq!(inv.number.as_deref(), Some("INV-0001"));
+    assert_eq!(
+        inv.terms.as_ref().map(|t| t.describe()),
+        Some("Net 30".into())
+    );
+    assert_eq!(
+        inv.bill_to.as_ref().and_then(|s| s.email.as_deref()),
+        Some("billing@fernhill.example")
+    );
+    assert_eq!(inv.seller.as_ref().map(|s| s.name.as_str()), Some("Acme"));
+    assert_eq!(inv.customer_ref.as_deref(), Some("PO-7"));
+    assert_eq!(inv.memo.as_deref(), Some("Thanks"));
+    assert_eq!(inv.lines[0].account, Some(4));
+    assert_eq!(inv.lines[0].quantity, Some("3".parse().unwrap()));
+    assert_eq!(inv.lines[0].unit_price, Some("33.33".parse().unwrap()));
+    let bill = store.ledger().get_bill(1).expect("the bill");
+    assert_eq!(bill.vendor_ref.as_deref(), Some("TOBIN-77"));
+    assert_eq!(
+        bill.received_on,
+        Some(NaiveDate::from_ymd_opt(2026, 4, 3).unwrap())
+    );
+    assert_eq!(
+        bill.terms.as_ref().map(|t| t.describe()),
+        Some("Net 15 EOM".into())
+    );
+    assert_eq!(bill.memo.as_deref(), Some("A4 paper"));
+    assert_eq!(bill.lines[0].account, Some(6));
 }
 
 /// The books an earlier wanderbooks wrote, one directory each under

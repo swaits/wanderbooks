@@ -5,7 +5,7 @@
 //! is the current version.
 
 /// Current schema version.
-pub const SCHEMA_VERSION: u32 = 15;
+pub const SCHEMA_VERSION: u32 = 16;
 
 /// Migrations, in order. `MIGRATIONS[i]` migrates from version `i` to `i+1`.
 pub const MIGRATIONS: &[&str] = &[
@@ -396,5 +396,26 @@ ALTER TABLE invoices DROP COLUMN amount_paid;
 ALTER TABLE invoices DROP COLUMN status;
 ALTER TABLE bills DROP COLUMN amount_paid;
 ALTER TABLE bills DROP COLUMN status;
+"#,
+    r#"
+-- v16: a document's new fields (plan P4b S4.3, feature documents_v2): the
+-- number it was issued under, its terms, the bill-to and seller snapshots,
+-- the customer's reference and its memo; the bill's vendor reference, its
+-- receipt date, terms and memo, and why a duplicate was entered anyway.
+-- Terms and snapshots are canonical JSON TEXT; a document written before
+-- this schema names none and its columns stay NULL. A line's account,
+-- quantity and unit price ride its entry in lines_json, as its project
+-- does.
+ALTER TABLE invoices ADD COLUMN number TEXT;
+ALTER TABLE invoices ADD COLUMN terms TEXT;
+ALTER TABLE invoices ADD COLUMN bill_to TEXT;
+ALTER TABLE invoices ADD COLUMN seller TEXT;
+ALTER TABLE invoices ADD COLUMN customer_ref TEXT;
+ALTER TABLE invoices ADD COLUMN memo TEXT;
+ALTER TABLE bills ADD COLUMN vendor_ref TEXT;
+ALTER TABLE bills ADD COLUMN received_on TEXT;
+ALTER TABLE bills ADD COLUMN terms TEXT;
+ALTER TABLE bills ADD COLUMN memo TEXT;
+ALTER TABLE bills ADD COLUMN duplicate_reason TEXT;
 "#,
 ];

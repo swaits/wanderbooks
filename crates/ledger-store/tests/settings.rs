@@ -116,6 +116,78 @@ fn assert_every_reader_agrees(dir: &std::path::Path, s: &Store) {
 /// older version wrote in format 1 refuse the change, journaling nothing,
 /// until their format upgrade (the owner's go-ahead, D-39); then it is
 /// made, after the one declaration.
+/// `invoicing.first_number` is settable only while no numbered invoice
+/// exists (A-2, rules.md B-40): once a number has been issued the series
+/// has begun, so changing or clearing the starting number is refused before
+/// anything is journaled, and a legacy invoice (no number) never locks it.
+#[test]
+fn first_number_locks_once_a_numbered_invoice_exists() {
+    use ledger_core::LedgerError;
+    let (dir, mut s) = books("first-number");
+    s.change_settings(&[set("invoicing.first_number", json!(5))], &src("Avery"))
+        .unwrap();
+    let first = |s: &Store| {
+        s.ledger()
+            .settings()
+            .get("invoicing.first_number")
+            .map(|r| r.value.clone())
+    };
+    assert_eq!(first(&s), Some(json!(5)));
+    let c = s.add_customer("Fernhill Labs").unwrap();
+    let line = || ledger_core::arap::DocumentLine {
+        description: "Design".into(),
+        amount: Decimal::from(500),
+        class_id: None,
+        account: None,
+        quantity: None,
+        unit_price: None,
+    };
+    // An invoice with no number is the legacy shape and does not count.
+    s.create_invoice(c, d(2026, 4, 1), d(2026, 5, 1), vec![line()])
+        .unwrap();
+    s.change_settings(&[set("invoicing.first_number", json!(6))], &src("Avery"))
+        .unwrap();
+    // The first numbered invoice begins the series.
+    s.create_invoice_with(
+        c,
+        d(2026, 4, 2),
+        d(2026, 5, 2),
+        vec![line()],
+        ledger_core::arap::InvoiceFields {
+            number: Some("INV-0006".into()),
+            ..ledger_core::arap::InvoiceFields::default()
+        },
+    )
+    .unwrap();
+    let head = s.head();
+    let refused = s.change_settings(&[set("invoicing.first_number", json!(7))], &src("Avery"));
+    assert!(
+        matches!(
+            refused,
+            Err(StoreError::Ledger(LedgerError::FirstNumberLocked))
+        ),
+        "{refused:?}"
+    );
+    // Clearing it would move it to the default: refused too.
+    assert!(matches!(
+        s.change_settings(
+            &[Change {
+                key: "invoicing.first_number".into(),
+                value: None,
+            }],
+            &src("Avery"),
+        ),
+        Err(StoreError::Ledger(LedgerError::FirstNumberLocked))
+    ));
+    assert_eq!(s.head(), head, "nothing journaled");
+    assert_eq!(first(&s), Some(json!(6)), "the setting did not move");
+    s.verify().unwrap();
+    drop(s);
+    let s = Store::open(&dir).unwrap();
+    assert_eq!(first(&s), Some(json!(6)));
+    s.verify().unwrap();
+}
+
 #[test]
 fn a_change_needs_journal_format_2() {
     let (dir, mut s) = books("format");

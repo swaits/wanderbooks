@@ -124,6 +124,26 @@ bookspec examples `payment-terms-due-date` and
 `invoice-numbers-run-and-voids-keep-theirs` remain owed by a later S4
 slice, since P13's checker now takes an unknown key as an error.
 
+**2026-10-27: P4b S4.2 landed (`bf91c5a7`).** The invoicing, bills and
+company-contact settings are journaled keys (eleven of them) with the new
+`Kind::{Count, Terms, PaymentMethods}`, and a party can carry an email and
+default terms as customer and as vendor. `documents_v2` exists early —
+its constant, `KNOWN_FEATURES` entry and `documents_v2_is_its_own_feature`
+landed here because the party and settings writes must call
+`ensure_feature`; **S4.3 must not redeclare them**, and it owns the
+document write call sites, schema 16 and the byte-for-byte test. The
+branch's stub `Terms` was deleted at the rebase; `arap.rs` is S4.1's
+alone, and `settings::Kind::Terms` canonicalizes through `Terms::parse` /
+`describe`. `LedgerError::FirstNumberLocked` exists as the contract only:
+**S4.3 enforces it at `set_setting`**. The 8.0.6 work is in the branch: a
+hand-written new-shape line in `books_written_under_older_rules_still_open`,
+the `p4_s42_settings_parties` old-books fixture written by `1bfce915`, the
+`invoicing.default_terms` refusal in `books_p2_served_cut_over_whole`, and
+`documents_v2_is_its_own_feature`; no figure or golden moved. One test
+adaptation, not a weakening: `terms_keep_one_canonical_spelling` now
+asserts that `Due 2026-1-5` is accepted and stored as `Due 2026-01-05`,
+which is S4.1's `Terms::parse`.
+
 
 The 2026-10-16 audit of the first company's books (62 verified findings,
 20 engine defects) and the design discussion that followed produced

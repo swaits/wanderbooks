@@ -831,7 +831,7 @@ One row per unit of work. A unit is what one engineer takes into one git worktre
 | P11a | Packaging and updates: the trial, `wanderbooks update`/`rollback`, Linux packages, signing, macOS and Windows bundles | not started | none (code); certificates and keys from the owner for the signing steps; Q-4 before the manifest step | everything | none | 20-25 |
 | P11b | The agent dock and books homes | not started | P11a (an installed app to dock into) | P12 | none | 8-10 |
 | P12 | Max testing, again | not started | everything else merged | | none | 2-3 (+ machine time) |
-| P13 | bookspec: checker crate, `Engine` trait, rule ids, the spec text, the runner | not started | none for steps 1-4; the engine stable for step 5 | everything | none | 15-20 |
+| P13 | bookspec: checker crate, `Engine` trait, rule ids, the spec text, the runner | in progress: steps 1-3 landed 2026-10-26 (`579d0eed`); steps 4-6 open | none for steps 1-4; the engine stable for step 5 | everything | none | 15-20 |
 
 #### 8.0.2 Dependency graph and merge order
 

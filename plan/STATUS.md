@@ -64,6 +64,34 @@ quietly, and it is unrelated to the scanner. P12 or the test's own unit
 should make that burst test load-tolerant rather than let the gate depend
 on an idle machine.
 
+**2026-10-26: P13 steps 1-3 landed (`579d0eed`); the unit is in
+progress, not done.** bookspec now has its own Cargo workspace in the
+repository with the checker (the example schema and parser, every
+structure `deny_unknown_fields`, the cross-field checks, the rule
+catalogue) and the runner, plus the `Engine` trait and the wanderbooks
+adapter over `Store`. `crates/ledger-core/tests/bookspec.rs` is the
+adapter and still checks all 56 examples; the runner reports per rule,
+and a rule with no example is `NotClaimed`, never a silent pass.
+`docs/spec/rules.md` carries a `**bookspec:**` id under each of its 38
+stated rules; `bookspec/spec/rules-index.md` maps B-1 to B-45, with
+B-39 to B-45 allocated and unstated. 15 rules are claimed today because
+15 have examples; step 4 owes an example for every rule, the normative
+text and sources, and the five laws as Lean theorems; steps 5-6 owe the
+spec's own checker and the GnuCash adapter. `just check` now runs the
+bookspec workspace's fmt, clippy, rustdoc and tests beside the main
+workspace's, and was green at the merge.
+
+Two departures, both reviewed. The trait gained a required
+`Engine::change(&ChangeSpec)` (the plan's four methods have no path for
+an example's `[[changes]]`, and skipping those examples would have
+rejected part of the corpus). And the rule catalog's `DECISION` status
+is now `CHOICE`, bookspec's word: `docs/spec/rules.md`, `AGENTS.md` and
+`docs/spec/README.md` say so, and the rebased P7 sentence that still
+said DECISION was fixed in the same landing. **Every later unit that
+states a rule must use CHOICE where a human chose and must add its
+`**bookspec:**` id line** (B-39 S4.5, B-40 S4.5, B-41 S7, B-43 P4,
+B-44 P6, B-45 P8); `rules_md_carries_every_id` fails the tree otherwise.
+
 
 The 2026-10-16 audit of the first company's books (62 verified findings,
 20 engine defects) and the design discussion that followed produced

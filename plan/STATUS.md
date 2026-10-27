@@ -160,6 +160,23 @@ MCP handlers only in its own group file** (`documents.rs` for S4.4/S6,
 `drafts.rs` for P4, `evidence.rs` for P6, `audit.rs` for P8); `server.rs`
 keeps the router and the shared helpers.
 
+**2026-10-27: U0b landed (`26d3a994`).** Needs attention is one engine in
+`ledger-package::attention`, read by the viewer and by `books.start`; the
+viewer's module only maps a target to a route. The review found and the
+unit fixed a parity gap: the server had passed `Integrity::default()`
+("healthy") while the viewer computed its own, so a damaged book showed
+the `database` or `stored_files` item to the human and not to the agent.
+`books.start` now runs the real check, and
+`the_viewer_and_books_start_see_the_same_attention` proves the two lists
+equal item for item on a clean demo, a written book, that book with a
+missing receipt blob, and that book with a tampered projection. Cost
+measured on the demo books: 138 distinct blobs hashed, `books.start` cold
+287 ms / warm 256 ms in a debug build on a loaded machine; no cache was
+added, and the As-built records that a book with thousands of large scans
+is where one would go. `Attention` also carries the prompt (the viewer's,
+so there is one copy) beyond the plan's sketch, and `PackageBooks` gained
+four read methods rather than a new trait. `just check` green.
+
 
 The 2026-10-16 audit of the first company's books (62 verified findings,
 20 engine defects) and the design discussion that followed produced

@@ -144,6 +144,22 @@ adaptation, not a weakening: `terms_keep_one_canonical_spelling` now
 asserts that `Due 2026-1-5` is accepted and stored as `Due 2026-01-05`,
 which is S4.1's `Terms::parse`.
 
+**2026-10-27: U0a landed (`45396bdc`).** `server.rs` is the router and the
+request machinery (1,909 lines, no `#[tool(..)]` handler); the 98
+handlers it held live in fourteen `crates/ledger-mcp/src/tools/*.rs`
+groups, each with its own `tool_router`, and the helpers several groups
+share sit in `tools/helpers.rs`, re-exported by `server.rs`, so no group
+file reaches into another's. The surface is identical: the tool table is
+122 (the unit's 118 is stale), `annotations_complete` passes, and a
+one-off dump of every tool's name, title, description, schemas and
+annotations in `list_all()` order diffed empty against `main` before the
+split. The whole-surface tests stay in `server_tests.rs` beside
+`server.rs`; each group's own tests moved with it. `just check` was green
+on the merge candidate, which included S4.2. **From here, every unit adds
+MCP handlers only in its own group file** (`documents.rs` for S4.4/S6,
+`drafts.rs` for P4, `evidence.rs` for P6, `audit.rs` for P8); `server.rs`
+keeps the router and the shared helpers.
+
 
 The 2026-10-16 audit of the first company's books (62 verified findings,
 20 engine defects) and the design discussion that followed produced

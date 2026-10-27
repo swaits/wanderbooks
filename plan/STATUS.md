@@ -92,6 +92,38 @@ states a rule must use CHOICE where a human chose and must add its
 `**bookspec:**` id line** (B-39 S4.5, B-40 S4.5, B-41 S7, B-43 P4,
 B-44 P6, B-45 P8); `rules_md_carries_every_id` fails the tree otherwise.
 
+**2026-10-27: P4b S4.1 landed (`13282cf8`); P4b S4 is in progress.** The
+core can now carry a document's terms, its number, its line's own account,
+quantity and unit price, the parties' snapshots and the bill's vendor
+reference: `Terms`/`TermsKind`/`EarlyDiscount` with exact due dates
+(Net n, Net n EOM, due on receipt, custom), `kernel::discount_max` and
+`kernel::line_amount` (Kani, with bridge properties),
+`PartySnapshot`, `Invoice`/`Bill`'s new optional fields,
+`Ledger::next_invoice_number` and `Ledger::check_vendor_ref`. Ten tests in
+`spec_documents.rs`; `just check` and `just prove` green (51 fast Kani
+harnesses, Lean 90 headline theorems, standard axioms only); no golden
+moved.
+
+One guard, and the reason it exists: `Store::create_invoice` and
+`create_bill` refuse a line carrying `account`, `quantity` or
+`unit_price` (`StoreError::DocumentFieldsAwaitUpgrade`) because the
+journal does not write those fields yet. A store caller could otherwise
+post a document whose replay silently loses its line account, which I-3
+forbids and no MCP path reaches today. **S4.3 removes the guard in the
+same change that journals the three fields and adds its byte-for-byte
+test**; `document_line_fields_wait_for_documents_v2` proves the refusal,
+the unchanged journal and the unchanged ordinary posting, and the guard
+sits before `rehearse` in both commands. Departures to carry forward: the
+`Sent`/`SentVia`/`SendKind` types are defined here though S5 owns them
+(**S5 adds `Ledger::mark_sent` and must not redefine them**);
+`InvoiceFields`/`BillFields` and `create_invoice_with`/`create_bill_with`
+are the carrier for the create inputs the plan names but does not place;
+and `check_document_line_account`'s fallback to the store's name-based
+cash-account rule is a second copy of that rule, to unify later. The
+bookspec examples `payment-terms-due-date` and
+`invoice-numbers-run-and-voids-keep-theirs` remain owed by a later S4
+slice, since P13's checker now takes an unknown key as an error.
+
 
 The 2026-10-16 audit of the first company's books (62 verified findings,
 20 engine defects) and the design discussion that followed produced

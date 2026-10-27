@@ -2914,4 +2914,4 @@ list and row equality), `Outcome`'s mapping and `run`'s "claimed but no
 example" arm; the adapter's `event_of`, its `depreciation_schedule` month
 span (acquisition through as-of, 0.00 where the schedule reaches no month)
 and every `answer_*` figure against the loader's same check (the two must
-agree on all 56 examples).>>>>>>> 382e9406 (feat(bookspec): rule identifiers from B-1 to B-45 (P13))
+agree on all 56 examples).

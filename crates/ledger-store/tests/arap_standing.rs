@@ -1100,10 +1100,7 @@ fn write_off_waits_for_documents_v2() {
         .unwrap();
     s.verify().unwrap();
     let live = s.ledger().clone();
-    let st = live
-        .invoice_state(1, d(2026, 12, 31))
-        .unwrap()
-        .unwrap();
+    let st = live.invoice_state(1, d(2026, 12, 31)).unwrap().unwrap();
     assert_eq!(st.status, ledger_core::DocStatus::WrittenOff);
     assert_eq!(st.written_off, cents(10_000));
     // The evidence is on the write-off's entry and on its invoice.
@@ -1135,7 +1132,12 @@ fn write_off_replays_and_projects() {
         .unwrap();
     let c = s.add_customer("Fernhill Labs").unwrap();
     let inv = s
-        .create_invoice(c, d(2026, 4, 1), d(2026, 5, 1), vec![line("Design", 10_000)])
+        .create_invoice(
+            c,
+            d(2026, 4, 1),
+            d(2026, 5, 1),
+            vec![line("Design", 10_000)],
+        )
         .unwrap();
     // Half paid, the rest written off: the invoice reads Written off with
     // 50 paid and 50 written off (B-38 SCENARIO 7).
@@ -1175,10 +1177,16 @@ fn write_off_replays_and_projects() {
     assert!(got.iter().any(|(t, v)| t == "receipt.attached"
         && v["attachment_id"] == json!(attachment)
         && v["entry_id"] == json!(entry)));
-    assert!(got.iter().any(|(t, v)| t == "attachment.linked"
-        && v["attachment_id"] == json!(attachment)));
+    assert!(
+        got.iter()
+            .any(|(t, v)| t == "attachment.linked" && v["attachment_id"] == json!(attachment))
+    );
     // The figures, live.
-    let st = s.ledger().invoice_state(inv, d(2026, 5, 1)).unwrap().unwrap();
+    let st = s
+        .ledger()
+        .invoice_state(inv, d(2026, 5, 1))
+        .unwrap()
+        .unwrap();
     assert_eq!(st.status, ledger_core::DocStatus::WrittenOff);
     assert_eq!(
         (st.paid, st.written_off, st.outstanding),
@@ -1206,7 +1214,11 @@ fn write_off_replays_and_projects() {
         "{:?}",
         live.differs_from(s.ledger())
     );
-    let replayed = s.ledger().invoice_state(inv, d(2026, 5, 1)).unwrap().unwrap();
+    let replayed = s
+        .ledger()
+        .invoice_state(inv, d(2026, 5, 1))
+        .unwrap()
+        .unwrap();
     assert_eq!(replayed, st);
     s.verify().unwrap();
 }
@@ -1220,7 +1232,12 @@ fn write_off_without_evidence_is_refused() {
     let mut s = Store::create(&dir.0, Currency::USD).unwrap();
     let c = s.add_customer("Fernhill Labs").unwrap();
     let inv = s
-        .create_invoice(c, d(2026, 4, 1), d(2026, 5, 1), vec![line("Design", 10_000)])
+        .create_invoice(
+            c,
+            d(2026, 4, 1),
+            d(2026, 5, 1),
+            vec![line("Design", 10_000)],
+        )
         .unwrap();
     let head = s.head();
     let len = journal_len(&dir.0);

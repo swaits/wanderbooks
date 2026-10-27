@@ -3747,13 +3747,8 @@ impl Store {
         let description = format!("Write off invoice {invoice}: {}", reason.trim());
         let (entry_id, mut journaled) =
             self.journal_auto_entry(date, &description, bad, ar, amount)?;
-        let written_off = crate::meta::invoice_written_off(
-            invoice,
-            entry_id,
-            date,
-            amount,
-            reason.trim(),
-        );
+        let written_off =
+            crate::meta::invoice_written_off(invoice, entry_id, date, amount, reason.trim());
         journaled.push(self.append_journal("invoice.written_off", written_off)?);
         let live = self.ledger.write_off(invoice, date, amount, reason)?;
         debug_assert_eq!(live, entry_id, "id allocator diverged from journal");

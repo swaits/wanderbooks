@@ -87,7 +87,12 @@ fn write_off_then_recovery() {
         }),
     );
     // The write-off's evidence, uploaded as an agent uploads it (D-46).
-    let upload = wire.upload(LETTER, "collection-letter.pdf", "application/pdf", "document");
+    let upload = wire.upload(
+        LETTER,
+        "collection-letter.pdf",
+        "application/pdf",
+        "document",
+    );
     let out = ok(
         &mut wire,
         "books.write_off_invoice",
@@ -110,7 +115,10 @@ fn write_off_then_recovery() {
     // invoice: get_entry shows the one, the document's timeline the other.
     let got = ok(&mut wire, "books.get_entry", json!({ "entry_id": entry }));
     assert_eq!(got["receipts"].as_array().map(Vec::len), Some(1), "{got}");
-    assert_eq!(got["receipts"][0]["file_name"], json!("collection-letter.pdf"));
+    assert_eq!(
+        got["receipts"][0]["file_name"],
+        json!("collection-letter.pdf")
+    );
     let doc = ok(
         &mut wire,
         "books.document",
@@ -225,6 +233,12 @@ fn write_off_needs_evidence() {
         json!({ "attachment_id": attachment }),
     );
     let links = receipt["links"].as_array().cloned().unwrap_or_default();
-    assert!(links.iter().any(|l| l["kind"] == json!("invoice")), "{receipt}");
-    assert!(links.iter().any(|l| l["kind"] == json!("entry")), "{receipt}");
+    assert!(
+        links.iter().any(|l| l["kind"] == json!("invoice")),
+        "{receipt}"
+    );
+    assert!(
+        links.iter().any(|l| l["kind"] == json!("entry")),
+        "{receipt}"
+    );
 }

@@ -128,10 +128,6 @@ impl BooksServer {
                 entry_id
             }
         };
-        Ok(Json(write_off_out(
-            store.ledger(),
-            p.invoice,
-            entry_id,
-        )?))
+        Ok(Json(write_off_out(store.ledger(), p.invoice, entry_id)?))
     }
 }

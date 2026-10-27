@@ -252,8 +252,7 @@ fn a_write_off_shows_on_the_timeline() {
     let mut h = open(&dir, Route::Invoice(inv));
     shot(&mut h, "invoice-written-off");
     assert!(
-        h.query_by_label_contains("Written off, entry #")
-            .is_some(),
+        h.query_by_label_contains("Written off, entry #").is_some(),
         "the timeline shows the write-off"
     );
     // The status chip reads its label ("Written off"), not "late".

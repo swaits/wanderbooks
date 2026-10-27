@@ -6329,9 +6329,9 @@ impl Ledger {
     ///         §1.166-2(a) (worthlessness on all the pertinent evidence),
     ///         §1.166-3(a) (a partial write-off, to the extent charged
     ///         off); docs/spec/rules.md B-41; plan/served.md P4b S7,
-    ///         A-5 (direct write-off), A-6; ASC 326-20 noted (an allowance
-    ///         is the GAAP preference; a small company's CPA accepts the
-    ///         direct method, stated).
+    ///         A-5 (the direct write-off method); ASC 326-20 noted (an
+    ///         allowance is the GAAP preference; a small company's CPA
+    ///         accepts the direct method, stated).
     /// INVARIANTS:
     ///   1. MUST post one balanced entry: Dr the bad_debts role (6990 Bad
     ///      Debt Expense), Cr receivables, for the amount, dated the

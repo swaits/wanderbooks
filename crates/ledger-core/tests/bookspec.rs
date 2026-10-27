@@ -1171,13 +1171,14 @@ impl<'a> Books<'a> {
                     .unwrap_or_else(|| panic!("{what}: event {} posted no invoice", w.invoice));
                 let amount = match &w.amount {
                     Some(a) => exact(a, what),
-                    None => self
-                        .store
-                        .ledger()
-                        .invoice_state(invoice, day())
-                        .expect("the invoice's figures")
-                        .expect("dated by its own day")
-                        .outstanding,
+                    None => {
+                        self.store
+                            .ledger()
+                            .invoice_state(invoice, day())
+                            .expect("the invoice's figures")
+                            .expect("dated by its own day")
+                            .outstanding
+                    }
                 };
                 self.store
                     .write_off_invoice(

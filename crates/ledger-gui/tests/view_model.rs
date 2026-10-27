@@ -892,10 +892,12 @@ fn a_write_off_is_flagged_for_the_cpa() {
         },
     );
     let want = format!("Write-off awaiting the CPA's note: Invoice {inv}");
-    let said = server
-        .iter()
-        .find(|a| a.title == want)
-        .unwrap_or_else(|| panic!("the server's list has no {want:?}: {:?}", server.iter().map(|a| &a.title).collect::<Vec<_>>()));
+    let said = server.iter().find(|a| a.title == want).unwrap_or_else(|| {
+        panic!(
+            "the server's list has no {want:?}: {:?}",
+            server.iter().map(|a| &a.title).collect::<Vec<_>>()
+        )
+    });
     assert_eq!(said.severity, ledger_package::Severity::Todo);
     assert!(said.prompt.contains("wanderbooks"), "{}", said.prompt);
     assert!(said.detail.contains("100.00"), "{}", said.detail);
@@ -910,14 +912,15 @@ fn a_write_off_is_flagged_for_the_cpa() {
         .attention
         .iter()
         .find(|a| a.title == want)
-        .unwrap_or_else(|| panic!("the viewer shows no {want:?}: {:?}", books.attention.iter().map(|a| &a.title).collect::<Vec<_>>()));
+        .unwrap_or_else(|| {
+            panic!(
+                "the viewer shows no {want:?}: {:?}",
+                books.attention.iter().map(|a| &a.title).collect::<Vec<_>>()
+            )
+        });
     assert_eq!(shown.target, Some(ledger_gui::nav::Route::Documents));
     // The viewer reads the same figures from the journal it replayed.
-    let st = books
-        .ledger
-        .invoice_state(inv, today)
-        .unwrap()
-        .unwrap();
+    let st = books.ledger.invoice_state(inv, today).unwrap().unwrap();
     assert_eq!(st.status, ledger_core::DocStatus::WrittenOff);
     assert!(books.ledger.get_entry(entry).is_some());
 }

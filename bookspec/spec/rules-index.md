@@ -4,7 +4,7 @@ Every rule of `docs/spec/rules.md` (B-1 to B-45), its bookspec
 identifier `BS-<area>-<n>` (`plan/served.md` P13 step 3), its area,
 what its statement rests on and the examples that demonstrate it.
 
-`docs/spec/rules.md`'s **DECISION** status is bookspec's **CHOICE**:
+A rule whose only source is a human choice carries rules.md's **CHOICE**, bookspec's status of the same name:
 the specification names the options, an engine declares its pick
 (`claims.choices`, `bookspec_checker::Claims`). Rules B-39 to B-45 are
 allocated in `plan/served.md` 8.0.3 and not yet stated: their

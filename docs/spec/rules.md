@@ -1539,7 +1539,7 @@ and a party text field refuses nine digits however they are separated
 (`has_full_tin`: up to three spaces, hyphens, dots, slashes or
 underscores between neighbors, in any script's digits, a run of spaces
 counting once however long it is; and a comma or a parenthesis between
-a TIN's 3-2-4 or 2-7 groups (DECISION, P7, 2026-10-26), so
+a TIN's 3-2-4 or 2-7 groups (CHOICE, P7, 2026-10-26), so
 `123,45,6789` and `(123) 45-6789` read as a TIN while an amount's
 comma-grouped thousands do not, `1,234,567.89` being 1-3-3-2; past ASCII
 every Unicode space and dash and the fullwidth and small forms count, and

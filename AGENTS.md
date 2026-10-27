@@ -98,7 +98,8 @@ So the bar, for every agent, every change:
    mechanics of double entry, the IRS (vendored verbatim, public domain)
    for records, periods, 1099s, capitalization, partnerships, and payroll,
    FASB's Codification (cited, never copied) for GAAP. A rule no authority
-   states is marked CONVENTION or DECISION, with who decided and when.
+   states is marked CONVENTION or CHOICE (bookspec's word for a
+   decision), with who decided and when.
    Spec blocks in the code (```text GOAL/SOURCE/INVARIANTS/SCENARIOS)
    carry a `SOURCE:` line. Never write a spec from what the code happens
    to do, or from what you remember; find the document, or ask.

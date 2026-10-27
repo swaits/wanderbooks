@@ -18,18 +18,18 @@ layers differ in what they cover and in whether we may copy them:
 | **FASB Accounting Standards Codification (ASC)** | Authoritative US GAAP: cash flows (ASC 230), revenue and principal vs agent (ASC 606), foreign currency (ASC 830), credit losses and aging (ASC 326), property and depreciation (ASC 360) | © Financial Accounting Foundation | Cited by paragraph with short quotes only (in `rules.md`; the paragraphs read, with where and when, in `sources/fasb-asc.md` and below) |
 | **FASB Concepts Statement No. 8, Chapter 4 (2021)** | Definitions of the five elements (it replaced Concepts Statement 6) | © Financial Accounting Foundation; non-authoritative | Cited with short quotes only |
 | **Textbooks (OpenStax *Principles of Accounting, Vol. 1*)** | Conventions no standard states: normal balances, closing-entry mechanics, straight-line depreciation arithmetic | CC BY-NC-SA 4.0 (incompatible with this repo's license) | Cited with short quotes and attribution only |
-| **Convention or decision** | Where no authority speaks: aging bucket edges, cent rounding among members, closed-period locks | — | Stated as CONVENTION or DECISION, with who decided and when |
+| **Convention or decision** | Where no authority speaks: aging bucket edges, cent rounding among members, closed-period locks | — | Stated as CONVENTION or CHOICE, with who decided and when |
 
 ## How to read a SOURCE line
 
 ```text
 SOURCE: Pacioli ch. 36 (sources/pacioli-1494.md); IRS Pub. 583 (sources/irs-records.md)
 SOURCE: ASC 830-20-30-1 (cited, rules.md B-3)
-SOURCE: DECISION (the owner, 2026-10-13)
+SOURCE: CHOICE (the owner, 2026-10-13)
 SOURCE: CONVENTION (QuickBooks aging); nearest authority ASC 326-20-55-38 (illustrative)
 ```
 
-A rule whose only source is CONVENTION or DECISION is a candidate for a
+A rule whose only source is CONVENTION or CHOICE is a candidate for a
 human to confirm or overturn; nothing else is.
 
 ## Rules added later never lock out older books

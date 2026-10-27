@@ -85,4 +85,4 @@ Searched 2026-10-13 (the three US articles above; Intuit's other regional editio
 - an exhaustive list of accepted date formats, or how QBO disambiguates `1/2/2018`;
 - whether a header row is mandatory.
 
-Rules wanderbooks applies on these points are CONVENTION or DECISION, not Intuit's.
+Rules wanderbooks applies on these points are CONVENTION or CHOICE, not Intuit's.

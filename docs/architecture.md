@@ -81,6 +81,20 @@ appended journal lines; the UI renders an immutable view model rebuilt per
 change. Statements and series come from `ledger-core` (`reports`,
 `analysis`); the GUI only arranges them. See `plan/gui.md`.
 
+## Shared read-only views (`ledger-package`)
+
+`ledger-package` is the shared read-only view: packages, the invoice PDF,
+and Needs attention, over `Store` or `Snapshot`. Its `PackageBooks` trait
+is what those builders read of the books (ledger, settings, journal,
+attachments and their links and bytes, statements, reconciliations), so the
+server and the viewer make the same package, the same invoice, and the same
+attention list from one piece of code; nothing in it writes. The viewer's
+`attention` module only maps each item's `Target` to its own route, and
+`books.start` turns the items into its next steps, so the human's list and
+the agent's cannot drift apart. The crate depends inward (`ledger-core`,
+`ledger-store`, `ledger-config`, `ledger-import`, `ledger-vault`), never on
+`ledger-mcp` or `ledger-gui`.
+
 ## The journal format gate (`ledger-store`, P0)
 
 Every journal line passes a gate after its parse, seq and chain checks

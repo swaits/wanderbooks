@@ -63,6 +63,16 @@ D-46); no file with a full TIN is filed into the books (B-26); the agent is
 told the rules in force in a short connect text and a handbook, and no
 agent text points at the books' files, git or the repo.
 
+## U0b: one attention engine (D-53, 2026-10-26)
+
+No semantic feature changed, so no status moved and the floor stands (10
+done). Needs attention used to be computed by the viewer alone; it now
+lives in `ledger-package::attention`, over `PackageBooks`, and both the
+viewer and `books.start` read it (the same items, the same prompts), so the
+list the human sees and the next steps the agent gets cannot drift. The
+parity test `the_viewer_and_books_start_see_the_same_attention` compares
+them item for item on the demo books and on a book written entry by entry.
+
 ## Capability parity (AI-first phase)
 
 Semantic parity (above) is about *correctness*: the engine computes the

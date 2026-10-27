@@ -23,6 +23,7 @@
 //!      whichever [`PackageBooks`] they are read through.
 //! ```
 
+mod attention;
 mod books;
 mod iif;
 mod invoice;
@@ -33,6 +34,10 @@ mod text;
 mod tins;
 mod vendor_1099;
 
+pub use attention::{
+    Attention, Integrity, Report, Severity, Target, files_1099, find, find_with, reconcile_prompt,
+    w9_missing, w9_prompt,
+};
 pub use books::PackageBooks;
 pub use iif::export_iif;
 pub use invoice::invoice_document;

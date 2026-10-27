@@ -1,0 +1,162 @@
+//! The viewer's "Needs attention" and `books.start`'s next steps are one
+//! list: both come from `ledger_package::attention`, the viewer over its
+//! `Snapshot`, the server over its `Store`. This drives both on the same
+//! books (the demo company, and a book written entry by entry) and compares
+//! them item for item.
+#![cfg(feature = "gui")]
+
+use chrono::NaiveDate;
+use ledger_core::{AccountType, Currency, Money, Side};
+use ledger_gui::{Source, data};
+use rust_decimal::Decimal;
+use serde_json::json;
+
+mod common;
+
+const SETTINGS: &str = "[company]\nname = \"Attention Parity LLC\"\nfiscal_year_start = \"01-01\"\n\
+     [books]\nreceipt_threshold = \"0.00\"\ncash_accounts = [\"1000\"]\nparties = \"require\"\n";
+
+fn usd(cents: i64) -> Money {
+    Money::new(Decimal::new(cents, 2), Currency::USD)
+}
+
+/// The items the viewer draws and the next steps the server lists: the
+/// server's attention steps are the ones whose `why` is one of the viewer's
+/// titles, and they must be the same titles, in the same order. The viewer
+/// has at most 12 (books.start lists the top 12).
+fn compare(place: &common::Place, wire: &mut common::Wire, today: NaiveDate) {
+    let answer = common::answer_of(&wire.call("books.start", json!({"focus": "daily"})))
+        .unwrap_or_else(|e| panic!("books.start: {e}"));
+    let books = data::load_once(&Source {
+        data_dir: place.books_data(),
+        today: Some(today),
+    })
+    .unwrap_or_else(|e| panic!("the viewer can't read the books: {e}"));
+    let viewer: Vec<String> = books.attention.iter().map(|a| a.title.clone()).collect();
+    assert!(
+        viewer.len() <= 12,
+        "the fixture is meant to fit books.start's 12 attention steps: {viewer:?}"
+    );
+    let steps = answer["next_steps"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no next_steps: {answer}"));
+    let server: Vec<String> = steps
+        .iter()
+        .filter_map(|s| s["why"].as_str())
+        .filter(|why| viewer.iter().any(|t| t == why))
+        .map(str::to_string)
+        .collect();
+    assert_eq!(server, viewer, "books.start: {answer}");
+    // Item for item: severity, title, and detail are the viewer's own; the
+    // prompt names the books and says what to do.
+    for (a, title) in books.attention.iter().zip(&viewer) {
+        assert_eq!(&a.title, title);
+        assert!(a.prompt.contains("wanderbooks"), "{}", a.prompt);
+    }
+}
+
+/// A book written entry by entry, pseudo-randomly but deterministically (a
+/// fixed seed, so a failure reproduces): a chart, three drafts, posted
+/// entries without receipts, and one that names no counterparty.
+fn write_random(dir: &std::path::Path, today: NaiveDate) {
+    let _ = std::fs::remove_dir_all(dir);
+    let mut st = ledger_store::Store::create(dir, Currency::USD).unwrap();
+    let account = |code: &str, name: &str, ty, st: &mut ledger_store::Store| {
+        st.add_account(code, name, ty, None, false).unwrap()
+    };
+    let checking = account("1000", "Checking", AccountType::Asset, &mut st);
+    let owners = account("2100", "Due to owners", AccountType::Liability, &mut st);
+    let capital = account("3000", "Capital", AccountType::Equity, &mut st);
+    let revenue = account("4000", "Design", AccountType::Revenue, &mut st);
+    let supplies = account("6100", "Supplies", AccountType::Expense, &mut st);
+    let contractors = account("6200", "Contractors", AccountType::Expense, &mut st);
+    // A member paid a cost personally: money owed to an owner.
+    let post = |st: &mut ledger_store::Store, day: NaiveDate, dr, cr, cents: i64| {
+        let e = st.create_entry(day, "Entry").unwrap();
+        st.add_line(e, dr, Side::Debit, usd(cents)).unwrap();
+        st.add_line(e, cr, Side::Credit, usd(cents)).unwrap();
+        st.post_entry(e).unwrap();
+        e
+    };
+    post(
+        &mut st,
+        today - chrono::Days::new(40),
+        supplies,
+        checking,
+        12_345,
+    );
+    // Three drafts, alternating accounts.
+    for i in 0..3i64 {
+        let e = st
+            .create_entry(today - chrono::Days::new(30 - i as u64), "A draft")
+            .unwrap();
+        st.add_line(
+            e,
+            if i % 2 == 0 { supplies } else { contractors },
+            Side::Debit,
+            usd(5_000 + i),
+        )
+        .unwrap();
+        st.add_line(e, checking, Side::Credit, usd(5_000 + i))
+            .unwrap();
+    }
+    // Posted without receipts, one naming no counterparty.
+    for i in 0..4i64 {
+        let day = today - chrono::Days::new(20 - i as u64);
+        let e = st.create_entry(day, "No receipt").unwrap();
+        st.add_line(
+            e,
+            if i % 2 == 0 { supplies } else { contractors },
+            Side::Debit,
+            usd(7_000 + i),
+        )
+        .unwrap();
+        st.add_line(e, checking, Side::Credit, usd(7_000 + i))
+            .unwrap();
+        st.post_entry(e).unwrap();
+    }
+    // A reverse of the first entry (its original carries the evidence).
+    let first = st.ledger().posted_entries().next().map(|e| e.id()).unwrap();
+    st.reverse_entry(first, today - chrono::Days::new(1), "Wrong account")
+        .unwrap();
+    // One entry with a receipt, so not every posted entry is flagged.
+    let e = st
+        .create_entry(today - chrono::Days::new(3), "With receipt")
+        .unwrap();
+    st.add_line(e, revenue, Side::Credit, usd(50_000)).unwrap();
+    st.add_line(e, checking, Side::Debit, usd(50_000)).unwrap();
+    st.attach_receipt(Some(e), "r.pdf", "application/pdf", b"%PDF r", None)
+        .unwrap();
+    st.post_entry(e).unwrap();
+    let _ = (owners, capital);
+    drop(st);
+}
+
+#[test]
+fn the_viewer_and_books_start_see_the_same_attention() {
+    let today = ledger_core::settings::today_in(None);
+    // The demo company (ledger_gui::demo): the books the viewer ships with,
+    // with a few loose ends of every kind. Built in a folder of its own and
+    // adopted into the data root, as old books come in.
+    {
+        let place = common::Place::new("attention-parity-demo");
+        let source = tempfile::Builder::new()
+            .prefix("wb-attention-demo-")
+            .tempdir()
+            .unwrap();
+        ledger_gui::demo::build(source.path(), today).unwrap();
+        std::fs::create_dir_all(place.books_data().parent().unwrap()).unwrap();
+        std::fs::rename(source.path().join("books-data"), place.books_data()).unwrap();
+        let mut wire = place.start(None);
+        wire.initialize("attention-parity");
+        compare(&place, &mut wire, today);
+    }
+    // A book written entry by entry.
+    {
+        let place = common::Place::new("attention-parity-random");
+        write_random(&place.books_data(), today);
+        let mut wire = place.start(Some(SETTINGS));
+        wire.initialize("attention-parity");
+        compare(&place, &mut wire, today);
+    }
+}

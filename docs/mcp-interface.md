@@ -124,7 +124,12 @@ settings-and-conventions section says how to use them.
   onboarding step (`books.handbook {section: "contract"}`, when the chart
   is empty or `focus` is `onboarding`); `books.open_items` (an item due
   within 30 days or overdue); `books.backup` (none set up, or one stale,
-  failing, paused or failing its drill); the focus's step (`close`:
+  failing, paused or failing its drill); then Needs attention, by
+  severity, at most 12, each one `{tool, args?, why}` whose `why` is the
+  item's title (the same list the viewer draws: `ledger_package::
+  attention`, so the two can't differ; `books.verify` items are the
+  server's own damage check and are not repeated); then the focus's step
+  (`close`:
   `books.conventions {kind: "close_step"}`; `audit`: `books.verify`); then
   always `books.handbook {section: "contract"}` and `books.digest`.
   `focus` is `daily` (the default), `onboarding`, `close` or `audit`;

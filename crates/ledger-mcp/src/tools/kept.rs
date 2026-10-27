@@ -761,6 +761,18 @@ impl BooksServer {
             args,
             why: why.into(),
         };
+        // An attention title can carry a free-text description; keep the
+        // step short so books.start stays within START_MAX (INVARIANT 4).
+        let step_title = |t: &str| -> String {
+            const MAX: usize = 160;
+            if t.chars().count() <= MAX {
+                t.to_string()
+            } else {
+                let mut s: String = t.chars().take(MAX - 1).collect();
+                s.push('…');
+                s
+            }
+        };
         let mut next_steps = Vec::new();
         // Books an older version wrote wait for the owner's go-ahead to
         // upgrade their format: first, at every start until it is given
@@ -809,6 +821,31 @@ impl BooksServer {
                     None,
                     "A backup is behind or failing: books.backup says which and why; tell the human.",
                 ));
+            }
+        }
+        // The attention items, as next steps: the same function the viewer
+        // draws (ledger_package::attention), so the agent and the human see
+        // one list. The most urgent first (the list is sorted by severity),
+        // at most 12: `books.start` stays small (INVARIANT 4).
+        {
+            let attention_settings = ledger_package::Settings {
+                company: &cfg.company,
+                cash_accounts: &cfg.roles.cash,
+                financing_accounts: &cfg.roles.financing,
+                investing_accounts: &cfg.roles.investing,
+            };
+            let attention = ledger_package::find_with(
+                store,
+                today,
+                &attention_settings,
+                &ledger_package::Integrity::default(),
+            );
+            for a in attention.iter().filter(|a| a.tool.is_some()).take(12) {
+                let Some((tool, args)) = &a.tool else {
+                    continue;
+                };
+                let args = (!args.is_null()).then(|| args.clone());
+                next_steps.push(step(tool, args, &step_title(&a.title)));
             }
         }
         match focus {

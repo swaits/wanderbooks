@@ -2915,3 +2915,50 @@ example" arm; the adapter's `event_of`, its `depreciation_schedule` month
 span (acquisition through as-of, 0.00 where the schedule reaches no month)
 and every `answer_*` figure against the loader's same check (the two must
 agree on all 56 examples).
+
+## U0b: one attention engine over `PackageBooks` (2026-10-26)
+
+Needs attention moved out of the viewer into `ledger-package::attention`
+(D-53): one function, `find`/`find_with(books, today, settings, integrity)`,
+over the `PackageBooks` trait (`Store` and `Snapshot`). The viewer's
+`ledger-gui::attention::find` is now a mapping (`Target` → `Route`,
+`Severity` → the viewer's); `books.start` turns the same items into next
+steps, `why` equal to the title, at most 12. `PackageBooks` gained
+`settings`, `journal`, `statements`, `reconciliations` and `disk_check`, so
+the engine can read an entry's origin from the journal's event types (as
+the viewer's builder did) and the same statements, reconciliations and
+database check through either view.
+
+- **ledger-package (unit tests in `src/attention.rs`):** none of its own
+  (the engine's conditions are exercised end to end); the crate's tests
+  (`cargo test -p ledger-package`) keep the package over `Store` and
+  `Snapshot` equal.
+- **ledger-gui:** `tests/view_model.rs` passes unchanged (the viewer's
+  list is the engine's); `src/attention.rs`'s unit tests
+  (`cash_flow_warnings_are_items`,
+  `a_stale_rule_asks_for_the_authority_and_the_humans_confirmation`) move
+  with it and pass; `tests/assets.rs`, `tests/attachments.rs`,
+  `tests/edges.rs`, `tests/old_books.rs`, `tests/parties.rs`,
+  `tests/spec_gui.rs` exercise the items through the viewer's wrapper.
+- **ledger-cli:** `tests/attention_parity.rs`
+  `the_viewer_and_books_start_see_the_same_attention` (the demo books and a
+  book written entry by entry: the viewer's titles, in order, are exactly
+  `books.start`'s attention steps).
+- **unchanged:** `crates/ledger-cli/tests/spec_kept.rs`'s `books.start`
+  tests (the fixed steps keep their order; attention items sit between the
+  backup step and the focus).
+
+**For P12 (mutation targets, none run, D-33):**
+`ledger-package attention`: `origin`'s arm order (a reversal before its
+schedule, a bill before its payment) and `entry_refs`' keys;
+`missing_receipt`'s conjunction (the `Journal entry | Recurring` origin,
+`reversal_of` none, no receipts, the policy); the `> 3` combine and its
+`try_fold`; `w9_missing`'s three clauses (no W-9, files a 1099, the vendor
+not marked on file) and `files_1099`'s `any`; `paid_this_year`'s `max`
+(today) and `min` (Dec 31) and its `paid - received`; `depreciation_due`'s
+`in_effect` filter, its `period_month` (`1..=12`) and its `!is_zero`;
+`period_month`'s split; the severity arms (undetermined 1099, refuse
+tax category, parties require); `dollars`' thousands grouping and its
+negative-zero test; `filter(|a| a.tool.is_some()).take(12)` and
+`step_title`'s 160-character cut in `start_out`; the viewer wrapper's
+`Target` arms.

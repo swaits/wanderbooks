@@ -1264,6 +1264,9 @@ impl PackageBooks for AtSeq<'_> {
     fn journal_seq(&self) -> u64 {
         self.1
     }
+    fn journal(&self) -> Result<Vec<ledger_store::JournalLine>, ledger_store::StoreError> {
+        PackageBooks::journal(self.0)
+    }
     fn all_attachments(&self) -> Result<Vec<ledger_store::Attachment>, ledger_store::StoreError> {
         PackageBooks::all_attachments(self.0)
     }
@@ -1272,6 +1275,14 @@ impl PackageBooks for AtSeq<'_> {
     }
     fn attachment_bytes(&self, id: u64) -> Result<Vec<u8>, ledger_store::StoreError> {
         PackageBooks::attachment_bytes(self.0, id)
+    }
+    fn statements(&self) -> Result<Vec<ledger_store::Statement>, ledger_store::StoreError> {
+        PackageBooks::statements(self.0)
+    }
+    fn reconciliations(
+        &self,
+    ) -> Result<Vec<ledger_store::Reconciliation>, ledger_store::StoreError> {
+        PackageBooks::reconciliations(self.0)
     }
 }
 

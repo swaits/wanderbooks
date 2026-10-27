@@ -9,21 +9,39 @@
 //! INVARIANTS:
 //!   1. Every method only reads.
 //!   2. A Store and a Snapshot of the same journal answer every method
-//!      alike: the same ledger, journal seq, attachments (withdrawn ones
-//!      included), entry links, and bytes.
+//!      alike: the same ledger, settings, journal, journal seq,
+//!      attachments (withdrawn ones included), bytes, statements, and
+//!      reconciliations, and the same entry links once the filing entry
+//!      is added (a store lists it in `links_of`; a snapshot only lists
+//!      the explicit links, so callers take the union with
+//!      `all_attachments`, as `build_package` and the attention module
+//!      do).
 //! ```
 
 use ledger_core::Ledger;
-use ledger_store::{Attachment, Snapshot, Store, StoreError, Subject};
+use ledger_store::{
+    Attachment, DiskCheck, JournalLine, Reconciliation, Snapshot, Statement, Store, StoreError,
+    Subject,
+};
 
-/// The books, read-only, as the CPA package reads them.
+/// The books, read-only, as the package reads them.
 pub trait PackageBooks {
     /// The ledger every figure comes from.
     fn ledger(&self) -> &Ledger;
 
+    /// The settings journaled in the books (the same ones the server and
+    /// the viewer read).
+    fn settings(&self) -> &ledger_core::settings::Settings {
+        self.ledger().settings()
+    }
+
     /// Sequence number of the last journal line: the journal state the
     /// package reflects.
     fn journal_seq(&self) -> u64;
+
+    /// Every journal line, in order: what an entry's origin and its events
+    /// are read from.
+    fn journal(&self) -> Result<Vec<JournalLine>, StoreError>;
 
     /// Every attachment (receipts and documents), withdrawn ones
     /// included, in id order.
@@ -36,6 +54,20 @@ pub trait PackageBooks {
 
     /// An attachment's bytes, verified against its hash.
     fn attachment_bytes(&self, attachment_id: u64) -> Result<Vec<u8>, StoreError>;
+
+    /// Recorded bank and card statements, by period end.
+    fn statements(&self) -> Result<Vec<Statement>, StoreError>;
+
+    /// Reconciliations, voided ones included, by date then id.
+    fn reconciliations(&self) -> Result<Vec<Reconciliation>, StoreError>;
+
+    /// How the writer's database compares with the journal. A snapshot
+    /// compares them; the store is the only writer and applies each line
+    /// before it returns (a failed apply heals on its next open), so it
+    /// reports a match.
+    fn disk_check(&self) -> DiskCheck {
+        DiskCheck::Matches
+    }
 }
 
 impl PackageBooks for Store {
@@ -45,6 +77,12 @@ impl PackageBooks for Store {
 
     fn journal_seq(&self) -> u64 {
         Store::journal_seq(self)
+    }
+
+    fn journal(&self) -> Result<Vec<JournalLine>, StoreError> {
+        ledger_store::journal::read_and_verify_journal(
+            &Store::data_dir(self).join(ledger_store::JOURNAL_FILE),
+        )
     }
 
     fn all_attachments(&self) -> Result<Vec<Attachment>, StoreError> {
@@ -58,6 +96,14 @@ impl PackageBooks for Store {
     fn attachment_bytes(&self, attachment_id: u64) -> Result<Vec<u8>, StoreError> {
         Store::attachment_bytes(self, attachment_id)
     }
+
+    fn statements(&self) -> Result<Vec<Statement>, StoreError> {
+        Store::statements(self, None)
+    }
+
+    fn reconciliations(&self) -> Result<Vec<Reconciliation>, StoreError> {
+        Store::reconciliations(self, None)
+    }
 }
 
 impl PackageBooks for Snapshot {
@@ -67,6 +113,10 @@ impl PackageBooks for Snapshot {
 
     fn journal_seq(&self) -> u64 {
         Snapshot::journal_seq(self)
+    }
+
+    fn journal(&self) -> Result<Vec<JournalLine>, StoreError> {
+        Ok(Snapshot::journal(self).to_vec())
     }
 
     fn all_attachments(&self) -> Result<Vec<Attachment>, StoreError> {
@@ -83,5 +133,17 @@ impl PackageBooks for Snapshot {
 
     fn attachment_bytes(&self, attachment_id: u64) -> Result<Vec<u8>, StoreError> {
         Snapshot::attachment_bytes(self, attachment_id)
+    }
+
+    fn statements(&self) -> Result<Vec<Statement>, StoreError> {
+        Snapshot::statements(self, None)
+    }
+
+    fn reconciliations(&self) -> Result<Vec<Reconciliation>, StoreError> {
+        Snapshot::reconciliations(self, None)
+    }
+
+    fn disk_check(&self) -> DiskCheck {
+        Snapshot::check_disk(self)
     }
 }

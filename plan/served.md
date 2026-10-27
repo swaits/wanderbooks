@@ -1231,7 +1231,29 @@ Each unit follows the 8.0.4 template. "A-n" is an owner answer numbered in 8.3.1
 5. **Files:** owns `crates/ledger-package/src/attention.rs`, `crates/ledger-gui/src/attention.rs`; touches `crates/ledger-package/src/books.rs`, `crates/ledger-gui/src/books.rs`, `crates/ledger-mcp/src/tools/kept.rs`, `docs/architecture.md`.
 6. **Tests and proofs:** `crates/ledger-gui/tests/view_model.rs` passes unchanged (the viewer's list is the engine's); new `crates/ledger-cli/tests/attention_parity.rs::the_viewer_and_books_start_see_the_same_attention` (on the demo books and on a random book: the viewer's items equal the server's, item for item; pattern `projects_parity.rs`); the existing `spec_kept.rs` tests of `books.start` pass unchanged.
 7. **Done when:** (1) `ledger-gui` no longer computes any attention item itself; (2) `books.start` lists the same items the viewer shows, proven by the parity test; (3) `just check` green; (4) no new crate and no new trait beyond `PackageBooks`.
-8. **As built:** none yet.
+8. **As built (2026-10-26):**
+   - `PackageBooks` grew `journal`, `statements`, `reconciliations` and
+     `disk_check` beside `settings` (the Build named only `settings`): the
+     engine reads an entry's origin from the journal's event types (as the
+     viewer's builder did), and the viewer's statements, reconciliations
+     and database check, so a `Store` and a `Snapshot` answer alike.
+   - `Attention` keeps the viewer's `prompt` beside the plan's `kind` and
+     `tool`: the viewer draws the shared text and the server turns the same
+     item into a next step without a second copy of the prompts.
+   - `find_with` takes the viewer's already-computed `Integrity` (the
+     loader checks the database and the stored files once per refresh);
+     `find` computes it for callers with none.
+   - `books.start` lists at most 12 attention steps (the eventual
+     `needs_attention` top 12; counts by kind come with P5), each step's
+     `why` cut to 160 characters (a free-text description could otherwise
+     push the result past 8 KB), and passes `Integrity::default()`: the
+     server's own damage check is `books.verify`.
+   - The W-9 and reconciliation prompts and the 1099 predicate moved to
+     `ledger-package`; `pages/parties.rs`, `pages/reconciliation.rs` and
+     `Books::files_1099` delegate to them (two files beyond the Build's
+     list, to keep one copy of each text).
+   - `ledger-package` gained `ledger-config` and `serde_json` (the receipt
+     policy the items use, and the tool arguments they carry).
 
 #### U0c: testing notes for S1-B, S2, S3, and stale notes in the tool docs
 

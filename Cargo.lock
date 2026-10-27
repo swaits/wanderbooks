@@ -4042,12 +4042,14 @@ name = "ledger-package"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "ledger-config",
  "ledger-core",
  "ledger-import",
  "ledger-store",
  "ledger-vault",
  "proptest",
  "rust_decimal",
+ "serde_json",
  "tempfile",
  "toml 1.1.8+spec-1.1.0",
  "zip 9.0.2",

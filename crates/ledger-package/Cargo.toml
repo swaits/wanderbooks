@@ -9,10 +9,12 @@ description = "wanderbooks' CPA handoff package and the reports and worksheets i
 [dependencies]
 ledger-core = { path = "../ledger-core" }
 ledger-store = { path = "../ledger-store" }
+ledger-config = { path = "../ledger-config" }
 ledger-import = { path = "../ledger-import" }
 ledger-vault = { path = "../ledger-vault" }
 chrono = "0.4"
 rust_decimal = "1"
+serde_json = "1"
 zip = "9.0.1"
 
 [lints]

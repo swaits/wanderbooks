@@ -33,13 +33,10 @@ use rust_decimal::Decimal;
 ///   2. Says where it last stood: reconciled through a date, or never.
 /// ```
 pub fn reconcile_prompt(b: &Books, account: AccountId, through: NaiveDate) -> String {
-    let since = match b.reconciled_through(account) {
-        Some(d) => format!("It is reconciled through {d}, so start with the statement after that"),
-        None => "It has never been reconciled, so start with its first statement".to_string(),
-    };
-    format!(
-        "In wanderbooks, reconcile {} through {through}. {since}. For each monthly statement: file the PDF, record it with books.record_statement (its period and opening and closing balances), mark the lines that cleared with books.mark_cleared, then run books.reconcile against it (preview first; the difference must be exactly zero). Show me anything that doesn't match, and the account when it's done.",
-        b.account_label(account)
+    ledger_package::reconcile_prompt(
+        &b.account_label(account),
+        b.reconciled_through(account),
+        through,
     )
 }
 

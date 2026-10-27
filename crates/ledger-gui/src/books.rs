@@ -1057,12 +1057,11 @@ impl Books {
 
     /// Whether a party files a 1099: it has a 1099 role (contractor,
     /// landlord), or its vendor record has been decided for one (from any
-    /// date: its W-9 matters for those payments).
+    /// date: its W-9 matters for those payments). The shared rule
+    /// (ledger_package::attention::files_1099), so the viewer's W-9 column
+    /// and the attention items say the same.
     pub fn files_1099(&self, p: &Party) -> bool {
-        p.roles.iter().any(|r| r.gets_1099())
-            || p.vendor
-                .and_then(|v| self.ledger.get_vendor(v))
-                .is_some_and(|v| v.decisions_1099.iter().any(|d| d.decision.form().is_some()))
+        ledger_package::files_1099(&self.ledger, p)
     }
 
     /// The 1099 report for calendar `year`, the server's

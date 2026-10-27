@@ -237,29 +237,12 @@ pub fn w9_status(b: &Books, p: &Party) -> W9Status {
     }
 }
 
-/// The 1099 role a party files under, in words ("contractor",
-/// "landlord"), for prompts.
-fn form_role(p: &Party) -> &'static str {
-    if p.roles.contains(&Role::Landlord) && !p.roles.contains(&Role::Contractor) {
-        "landlord"
-    } else {
-        "contractor"
-    }
-}
-
 /// The agent prompt that collects and records a party's W-9.
 pub fn collect_w9_prompt(b: &Books, p: &Party) -> String {
-    let paid = b.party(p.id).map(|i| i.paid_ytd).unwrap_or_default();
-    let paid = if paid > Decimal::ZERO {
-        format!(", paid {} so far in {}", fmt::dollars(paid), b.today.year())
-    } else {
-        String::new()
-    };
-    format!(
-        "In wanderbooks, {} (party {}) is a {}{paid} with no W-9 facts recorded. Remind me to collect a W-9 before the next payment. Once I have it, record what it says with books.set_w9: the date received, the entity type (line 3), any exempt payee or FATCA codes (line 4), the last four digits of the TIN only (the full TIN goes in the vault, never the books), and where the form is kept. Then show me the party.",
-        p.label(),
-        p.id,
-        form_role(p)
+    ledger_package::w9_prompt(
+        p,
+        b.party(p.id).map(|i| i.paid_ytd).unwrap_or_default(),
+        b.today.year(),
     )
 }
 

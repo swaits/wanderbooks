@@ -35,7 +35,7 @@ the specification in `bookspec/` (which never depends on the engine).
 | `ledger-import` | formats: QuickBooks CSV in; IIF, XLSX, Typst PDFs (statements, the invoice, labels) out | `ledger-core` |
 | `ledger-package` | the shared read-only view over `Store` or `Snapshot` (`PackageBooks`): the CPA package, the 1099 worksheet, the invoice document, Needs attention | `ledger-core`, `ledger-store`, `ledger-config`, `ledger-import`, `ledger-vault` |
 | `ledger-mcp` | the books server: the MCP tools (122), resources, the handbook, scopes, the door and the access log, backups' scheduling | all of the above |
-| `ledger-host` | the host and its leases, the agent bridge (`wanderbooks mcp`), tokens in the OS keyring, the owner's commands, uploads and downloads | `ledger-store`, `ledger-mcp`, `ledger-config` |
+| `ledger-host` | the host and its leases, the agent bridge (`wanderbooks mcp`), tokens in the OS keyring (Secret Service, macOS Keychain, Windows Credential Manager), the owner's commands, uploads and downloads | `ledger-store`, `ledger-mcp`, `ledger-config` |
 | `ledger-gui` | the viewer: read-only, live, egui; the Books menu hands work to the server | `ledger-core`, `ledger-store`, `ledger-config`, `ledger-import`, `ledger-package`, `ledger-vault`, `ledger-host` |
 | `ledger-cli` | `wanderbooks`, the one executable: every mode (`serve`, `server`, `host`, `mcp`, `gui`, `setup`, `books`, `token`, `connect`, `doctor`, …) and the over-the-wire test suites | everything |
 | `bookspec/checker`, `bookspec/runner` | the example schema and parser, the rule catalogue, the `Engine` trait; the per-rule runner | nothing of ours (the adapter in `ledger-core`'s tests depends on them) |

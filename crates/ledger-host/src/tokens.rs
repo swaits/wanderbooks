@@ -188,6 +188,49 @@ fn delete_all<I: Items>(items: &I, account: &Account) -> Result<(), KeyringError
 /// The OS keyring.
 struct Os;
 
+/// What a keyring error says (INVARIANT 4: locked is said as such).
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+fn refused(e: keyring_core::Error) -> String {
+    match e {
+        keyring_core::Error::NoStorageAccess(_) => {
+            format!("this computer's keyring is locked, or wouldn't let it be read ({e})")
+        }
+        e => format!("the keyring refused: {e}"),
+    }
+}
+
+/// Make an item for `account` in a store's default collection.
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+fn make_in(
+    store: &dyn keyring_core::api::CredentialStoreApi,
+    account: &Account,
+    text: &str,
+) -> Result<(), String> {
+    let label = account.label();
+    let modifiers = std::collections::HashMap::from([("label", label.as_str())]);
+    // Only the Secret Service takes a label; the other stores refuse
+    // modifiers they don't know, so they are built without.
+    let modifiers = cfg!(target_os = "linux").then_some(&modifiers);
+    store
+        .build(SERVICE, &account.key(), modifiers)
+        .and_then(|entry| entry.set_password(text))
+        .map_err(refused)
+}
+
+/// An item's text, and its removal, the same on every store.
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+fn read_item(item: &keyring_core::Entry) -> Result<String, String> {
+    item.get_password().map_err(refused)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+fn remove_item(item: keyring_core::Entry) -> Result<(), String> {
+    match item.delete_credential() {
+        Ok(()) | Err(keyring_core::Error::NoEntry) => Ok(()),
+        Err(e) => Err(refused(e)),
+    }
+}
+
 #[cfg(target_os = "linux")]
 mod os {
     use super::{Account, Items, SERVICE};
@@ -207,13 +250,49 @@ mod os {
         }
     }
 
-    /// What a keyring error says (INVARIANT 4: locked is said as such).
-    fn refused(e: keyring_core::Error) -> String {
-        match e {
-            keyring_core::Error::NoStorageAccess(_) => {
-                format!("this computer's keyring is locked, or wouldn't let it be read ({e})")
-            }
-            e => format!("the keyring refused: {e}"),
+    impl Items for Service {
+        type Item = keyring_core::Entry;
+
+        fn find(&self, account: &Account) -> Result<Vec<Self::Item>, String> {
+            let key = account.key();
+            let spec = HashMap::from([("service", SERVICE), ("username", key.as_str())]);
+            self.0.search(&spec).map_err(super::refused)
+        }
+
+        fn read(&self, item: &Self::Item) -> Result<String, String> {
+            super::read_item(item)
+        }
+
+        fn remove(&self, item: Self::Item) -> Result<(), String> {
+            super::remove_item(item)
+        }
+
+        fn make(&self, account: &Account, text: &str) -> Result<(), String> {
+            super::make_in(&*self.0, account, text)
+        }
+    }
+}
+
+/// The macOS login Keychain (plan 3.3, D-56): one generic password per
+/// account, under the service "wanderbooks".
+#[cfg(target_os = "macos")]
+mod os {
+    use super::{Account, Items, SERVICE};
+    use apple_native_keyring_store::keychain::Store;
+    use keyring_core::api::CredentialStoreApi;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    /// The login keychain, reached for one keeper call.
+    pub(super) struct Service(Arc<Store>);
+
+    impl Service {
+        pub(super) fn reach() -> Result<Self, String> {
+            Store::new().map(Self).map_err(|e| {
+                format!(
+                    "this Mac's keychain can't be reached ({e}): is the login keychain unlocked?"
+                )
+            })
         }
     }
 
@@ -222,33 +301,77 @@ mod os {
 
         fn find(&self, account: &Account) -> Result<Vec<Self::Item>, String> {
             let key = account.key();
-            let spec = HashMap::from([("service", SERVICE), ("username", key.as_str())]);
-            self.0.search(&spec).map_err(refused)
+            let spec = HashMap::from([("service", SERVICE), ("user", key.as_str())]);
+            self.0.search(&spec).map_err(super::refused)
         }
 
         fn read(&self, item: &Self::Item) -> Result<String, String> {
-            item.get_password().map_err(refused)
+            super::read_item(item)
         }
 
         fn remove(&self, item: Self::Item) -> Result<(), String> {
-            match item.delete_credential() {
-                Ok(()) | Err(keyring_core::Error::NoEntry) => Ok(()),
-                Err(e) => Err(refused(e)),
-            }
+            super::remove_item(item)
         }
 
         fn make(&self, account: &Account, text: &str) -> Result<(), String> {
-            let label = account.label();
-            let modifiers = HashMap::from([("label", label.as_str())]);
-            self.0
-                .build(SERVICE, &account.key(), Some(&modifiers))
-                .and_then(|entry| entry.set_password(text))
-                .map_err(refused)
+            super::make_in(&*self.0, account, text)
         }
     }
 }
 
-#[cfg(target_os = "linux")]
+/// The Windows Credential Manager: one generic credential per account
+/// (its target name is unique, so a second item for an account cannot
+/// exist; INVARIANT 4 holds by construction and is still checked).
+#[cfg(windows)]
+mod os {
+    use super::{Account, Items, SERVICE};
+    use keyring_core::api::CredentialStoreApi;
+    use std::sync::Arc;
+    use windows_native_keyring_store::Store;
+
+    /// The Credential Manager, reached for one keeper call.
+    pub(super) struct Service(Arc<Store>);
+
+    impl Service {
+        pub(super) fn reach() -> Result<Self, String> {
+            Store::new()
+                .map(Self)
+                .map_err(|e| format!("this computer's Credential Manager can't be reached ({e})"))
+        }
+    }
+
+    impl Items for Service {
+        type Item = keyring_core::Entry;
+
+        /// The credential for the account, if one is there: its target
+        /// name is the account, so a probe finds it or finds none.
+        fn find(&self, account: &Account) -> Result<Vec<Self::Item>, String> {
+            let entry = self
+                .0
+                .build(SERVICE, &account.key(), None)
+                .map_err(super::refused)?;
+            match entry.get_password() {
+                Ok(_) => Ok(vec![entry]),
+                Err(keyring_core::Error::NoEntry) => Ok(Vec::new()),
+                Err(e) => Err(super::refused(e)),
+            }
+        }
+
+        fn read(&self, item: &Self::Item) -> Result<String, String> {
+            super::read_item(item)
+        }
+
+        fn remove(&self, item: Self::Item) -> Result<(), String> {
+            super::remove_item(item)
+        }
+
+        fn make(&self, account: &Account, text: &str) -> Result<(), String> {
+            super::make_in(&*self.0, account, text)
+        }
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 impl Keeper for Os {
     fn get(&self, account: &Account) -> Result<Option<String>, KeyringError> {
         let service = os::Service::reach().map_err(KeyringError::Unavailable)?;
@@ -266,7 +389,8 @@ impl Keeper for Os {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+/// Any other OS has no keyring store yet.
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 impl Keeper for Os {
     fn get(&self, _: &Account) -> Result<Option<String>, KeyringError> {
         Err(KeyringError::Unavailable(NOT_YET.into()))
@@ -279,9 +403,8 @@ impl Keeper for Os {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
-const NOT_YET: &str =
-    "agents' tokens are kept in the keyring on Linux only, until the macOS and Windows apps (P11)";
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+const NOT_YET: &str = "agents' tokens are kept in the keyring on Linux, macOS and Windows only";
 
 /// Files, for tests (INVARIANT 3): a folder per collection (`default/`
 /// where tokens are kept), a file a token. A collection holding a file
@@ -532,7 +655,7 @@ mod tests {
     /// The real keyring, on a desktop with one (`cargo test -p
     /// ledger-host -- --ignored os_keyring`): kept, read, replaced and
     /// forgotten, under a service no one else uses.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     #[test]
     #[ignore]
     fn os_keyring_keeps_and_forgets() {

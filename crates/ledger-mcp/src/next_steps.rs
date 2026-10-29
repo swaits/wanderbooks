@@ -309,6 +309,15 @@ pub(crate) fn tool_steps(
                 .get("period_id")
                 .or_else(|| args.and_then(|a| a.get("period_id")))
                 .and_then(Value::as_u64);
+            // The chain first (cheap, and what every close has always
+            // offered: the month_end_close eval follows it), then the
+            // audit the attestation rests on (P8).
+            steps.push(Step::tool(
+                "books.verify",
+                None,
+                "Verify the journal's chain and the projection after the close.",
+                false,
+            ));
             steps.push(Step::tool(
                 "books.audit",
                 Some(json!({ "scope": "month" })),

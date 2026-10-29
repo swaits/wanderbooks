@@ -3497,11 +3497,14 @@ fn cpa_package_holds_the_year_and_its_evidence() {
     // and the em dashes of the depreciation memos: written differently, so
     // said, the memos grouped (four lines for one name and four memos), in
     // warnings and the README alike.
+    // (The audit notice P8 adds while no counted audit stands behind the
+    // package is a warning too; it is not about the IIF.)
     let warnings: Vec<String> = out["warnings"]
         .as_array()
         .unwrap()
         .iter()
         .map(|w| w.as_str().unwrap().to_string())
+        .filter(|w| !w.starts_with("No counted audit"))
         .collect();
     assert_eq!(warnings.len(), 4, "{out}");
     let readme = std::str::from_utf8(&files["README.txt"]).unwrap();

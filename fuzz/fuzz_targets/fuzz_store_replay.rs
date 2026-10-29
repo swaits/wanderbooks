@@ -46,6 +46,7 @@ const TYPES: &[&str] = &[
  "project.set", "entry.settles",
  "entry.draft_state_set", "entry.draft_discarded",
  "convention.source_revised", "decision.source_revised", "open_item.source_revised",
+ "audit.run", "receipt.attested", "entry.reviewed", "period.attested",
     // Merged 2026-10-28 (S7, P6): every type EVENT_TYPES names.
 ];
 
@@ -68,6 +69,9 @@ const FIELDS: &[&str] = &[
     "tax_basis_723", "depreciable_basis", "built_in_gain_704c", "on", "convention",
     "status", "party_id", "started_on", "ended_on", "links", "notes", "projects",
     "via", "by", "to", "reference", "note", "state",
+ "through", "through_seq", "scope", "program_version", "tb_hash", "findings_sha256",
+ "workpaper_attachment", "workpaper_pdf", "at", "amount_checked", "date_checked",
+ "disagrees", "audit_run_id", "period_id", "verifier_agents", "reasoning_effort",
 ];
 
 /// Journal features a `journal.format_set` may declare.

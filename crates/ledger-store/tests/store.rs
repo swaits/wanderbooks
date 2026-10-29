@@ -2181,6 +2181,37 @@ fn books_written_under_older_rules_still_open() {
         json!({"id": 1, "source": cpa, "reason": "raised by the CPA"}),
     )
     .unwrap();
+    // P8's new shapes, hand-written as this version writes them: an audit
+    // run and the three kinds of attestation (the method is the client's
+    // own claim). This reader takes them; the version before it stopped at
+    // the declaration.
+    let method = json!({"model": "opus", "reasoning_effort": "high",
+                        "adversarial": true, "verifier_agents": 2});
+    w.append(
+        "audit.run",
+        json!({"id": 1, "through": "2026-05-31", "through_seq": 30, "scope": "month",
+               "program_version": "audit-0.1.0-1", "tb_hash": "aa", "findings_sha256": "bb",
+               "workpaper_attachment": 6, "workpaper_pdf": 7}),
+    )
+    .unwrap();
+    w.append(
+        "receipt.attested",
+        json!({"attachment_id": 5, "entry_id": 2, "by": "verifier", "at": "2026-06-01T00:00:00Z",
+               "method": method, "amount_checked": "99.99", "date_checked": "2026-04-01",
+               "disagrees": false, "note": "read the page"}),
+    )
+    .unwrap();
+    w.append(
+        "entry.reviewed",
+        json!({"entry_id": 2, "by": "verifier", "at": "2026-06-01T00:00:01Z", "method": {}}),
+    )
+    .unwrap();
+    w.append(
+        "period.attested",
+        json!({"period_id": 1, "by": "verifier", "at": "2026-06-01T00:00:02Z",
+               "method": method, "audit_run_id": 1}),
+    )
+    .unwrap();
     drop(w);
     // Opening rebuilds from the journal; it must accept all of it.
     let _ = std::fs::remove_file(dir.join(ledger_store::db_file()));
@@ -2210,6 +2241,17 @@ fn books_written_under_older_rules_still_open() {
     assert_eq!(annotation.fields.receipt_number, Some(3));
     assert_eq!(annotation.fields.payee.as_deref(), Some("Acme"));
     assert_eq!(store.ledger().next_receipt_number(), 4);
+    // P8's shapes replayed: the run and the three claims, as written.
+    let runs = store.audit_runs().unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].scope, ledger_core::audit::Scope::Month);
+    assert_eq!(runs[0].workpaper_pdf, Some(7));
+    let claims = store.attestations().unwrap();
+    assert_eq!(claims.len(), 3);
+    assert_eq!(claims[0].kind(), "receipt");
+    assert_eq!(claims[0].method.verifier_agents, Some(2));
+    assert_eq!(claims[1].method, ledger_core::audit::Method::default());
+    assert_eq!(claims[2].kind(), "period");
     assert_eq!(store.ledger().entry_settles(7), [1]);
     assert!(store.ledger().settles_entry(1));
     let acme = store.ledger().get_party(1).expect("the party");

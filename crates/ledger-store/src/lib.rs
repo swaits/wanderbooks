@@ -47,6 +47,7 @@ pub use error::StoreError;
 pub use format::{FormatUpgrade, JournalFormat, SUPPORTED_JOURNAL_FORMAT};
 pub use journal::{GENESIS_PREV, JournalLine, JournalWriter};
 pub use snapshot::{DiskCheck, Snapshot};
+pub use store::audit;
 pub use store::{
     Attachment, BillPreview, DepreciationRun, DisposalPreview, EntryRow, EventRow, Extraction,
     ExtractionStatus, InvoicePreview, JOURNAL_FILE, LEGACY_DB_FILE, LOCK_FILE, MAX_RECURRING_RUN,

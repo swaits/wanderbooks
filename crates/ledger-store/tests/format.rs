@@ -150,7 +150,7 @@ fn assert_corrupt<T>(got: Result<T, StoreError>) {
 fn old_reader_gets_newer_journal() {
     let cases = [
         (
-            "period.attested",
+            "ledger.not_yet_written",
             json!({"key": "company.name", "value": "X"}),
             "an event type this version doesn't know",
         ),
@@ -243,12 +243,24 @@ fn the_writer_and_the_viewer_agree_on_newer_books() {
         &[
             // Chained and of a known type, but replay refuses it.
             ("entry.posted", json!({"id": 99})),
-            ("period.attested", json!({"key": "company.name"})),
+            ("ledger.not_yet_written", json!({"key": "company.name"})),
         ],
     )[1];
     let need = "an event type this version doesn't know";
-    assert_newer(Store::open(&dir), seq, "period.attested", need, false);
-    assert_newer(Snapshot::load(&dir), seq, "period.attested", need, false);
+    assert_newer(
+        Store::open(&dir),
+        seq,
+        "ledger.not_yet_written",
+        need,
+        false,
+    );
+    assert_newer(
+        Snapshot::load(&dir),
+        seq,
+        "ledger.not_yet_written",
+        need,
+        false,
+    );
 }
 
 /// Damage stays corruption, whatever the damaged line's type: the gate
@@ -282,7 +294,7 @@ fn damaged_journals_are_still_corrupt() {
     ];
     let newer = [
         (FORMAT_SET, json!({"format": 3, "features": []})),
-        ("period.attested", json!({"key": "company.name"})),
+        ("ledger.not_yet_written", json!({"key": "company.name"})),
     ];
     for (name, damage) in damages {
         for (i, last) in newer.iter().enumerate() {
@@ -566,32 +578,32 @@ fn a_newer_format_frames_its_lines_its_own_way() {
     let nexts: [(&str, Next, Option<bool>); 6] = [
         (
             "float",
-            |seq, prev| json!({"seq": seq, "ts": "t", "type": "period.attested", "payload": {"rate": 0.5}, "prev": prev}),
+            |seq, prev| json!({"seq": seq, "ts": "t", "type": "ledger.not_yet_written", "payload": {"rate": 0.5}, "prev": prev}),
             Some(true),
         ),
         (
             "string-seq",
-            |seq, prev| json!({"seq": seq.to_string(), "ts": "t", "type": "period.attested", "payload": {}, "prev": prev}),
+            |seq, prev| json!({"seq": seq.to_string(), "ts": "t", "type": "ledger.not_yet_written", "payload": {}, "prev": prev}),
             Some(true),
         ),
         (
             "envelope-key",
-            |seq, prev| json!({"seq": seq, "ts": "t", "type": "period.attested", "payload": {}, "prev": prev, "actor": "agent"}),
+            |seq, prev| json!({"seq": seq, "ts": "t", "type": "ledger.not_yet_written", "payload": {}, "prev": prev, "actor": "agent"}),
             Some(true),
         ),
         (
             "no-prev",
-            |seq, prev| json!({"seq": seq, "ts": "t", "type": "period.attested", "payload": {}, "parent": prev}),
+            |seq, prev| json!({"seq": seq, "ts": "t", "type": "ledger.not_yet_written", "payload": {}, "parent": prev}),
             Some(false),
         ),
         (
             "prev-not-text",
-            |seq, _| json!({"seq": seq, "ts": "t", "type": "period.attested", "payload": {}, "prev": 1.5}),
+            |seq, _| json!({"seq": seq, "ts": "t", "type": "ledger.not_yet_written", "payload": {}, "prev": 1.5}),
             Some(false),
         ),
         (
             "wrong-prev",
-            |seq, _| json!({"seq": seq, "ts": "t", "type": "period.attested", "payload": {"rate": 0.5}, "prev": "00"}),
+            |seq, _| json!({"seq": seq, "ts": "t", "type": "ledger.not_yet_written", "payload": {"rate": 0.5}, "prev": "00"}),
             None,
         ),
     ];
@@ -686,11 +698,23 @@ fn a_line_that_is_not_utf8_is_corrupt_for_the_viewer_and_the_writer() {
         } else {
             // After a refused line, it is a next line without a readable
             // prev: unverified, for both.
-            let seq = append(&dir, &[("period.attested", json!({}))])[0];
+            let seq = append(&dir, &[("ledger.not_yet_written", json!({}))])[0];
             append_raw(&dir, b"{\"prev\":\"\xff\"}\n");
             let need = "an event type this version doesn't know";
-            assert_newer(Store::open(&dir), seq, "period.attested", need, false);
-            assert_newer(Snapshot::load(&dir), seq, "period.attested", need, false);
+            assert_newer(
+                Store::open(&dir),
+                seq,
+                "ledger.not_yet_written",
+                need,
+                false,
+            );
+            assert_newer(
+                Snapshot::load(&dir),
+                seq,
+                "ledger.not_yet_written",
+                need,
+                false,
+            );
         }
     }
 }
@@ -703,12 +727,21 @@ fn a_line_that_is_not_utf8_is_corrupt_for_the_viewer_and_the_writer() {
 fn an_old_reader_never_repairs_newer_books() {
     let dir = test_dir("newer-torn");
     books(&dir);
-    let seq = append(&dir, &[("period.attested", json!({"key": "company.name"}))])[0];
+    let seq = append(
+        &dir,
+        &[("ledger.not_yet_written", json!({"key": "company.name"}))],
+    )[0];
     append_raw(&dir, b"{\"seq\":");
     let path = dir.join(JOURNAL_FILE);
     let before = std::fs::read(&path).unwrap();
     let need = "an event type this version doesn't know";
-    assert_newer(Store::open(&dir), seq, "period.attested", need, false);
+    assert_newer(
+        Store::open(&dir),
+        seq,
+        "ledger.not_yet_written",
+        need,
+        false,
+    );
     assert_eq!(std::fs::read(&path).unwrap(), before);
     let set_aside: Vec<_> = std::fs::read_dir(&dir)
         .unwrap()

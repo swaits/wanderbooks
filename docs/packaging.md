@@ -21,11 +21,10 @@ table is filled by the person who runs it.
 
 ## What step 0 found about the platforms (read before the macOS and Windows rows)
 
-The agent path was Linux-only because of the keyring. Step 0 adds the
-macOS login Keychain and the Windows Credential Manager behind
-`ledger-host/src/tokens.rs::Keeper`; CI (`portable` job) is the evidence.
-Beyond the keyring, the Windows host is a port, not a `cfg` gap. Today
-Unix-only, found by grep (2026-10-29):
+The agent path was Linux-only because of the keyring; D-63 removed the
+keyring on every OS (tokens are 0600 files under the data root, unit U0e),
+so nothing about tokens is OS-specific now. The Windows host is a port,
+not a `cfg` gap. Today Unix-only, found by grep (2026-10-29):
 
 - `ledger-host`: `bridge`, `host`, `start`, `opener` and others are
   `#[cfg(unix)]` modules; `host.rs`/`start.rs` use `setsid`, `umask`,

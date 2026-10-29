@@ -26,7 +26,7 @@ Type=simple
 User=wanderbooks
 Group=wanderbooks
 DynamicUser=no
-# The account's own home (the keyring, when one runs; the recorded root).
+# The account's own home (the recorded root).
 StateDirectory=wanderbooks
 Environment=HOME=/var/lib/wanderbooks
 WorkingDirectory=/

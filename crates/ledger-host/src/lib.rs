@@ -8,7 +8,7 @@
 //! [`host::run`] (`wanderbooks host`), [`bridge::run`] (`wanderbooks
 //! mcp`), and the owner's commands in [`commands`] (`serve`, `close`,
 //! `books`, `token`, `connect`, `doctor`, `passphrase`, and what the
-//! viewer's Books menu does). Agents' tokens are kept in the OS keyring
+//! viewer's Books menu does). Agents' tokens are kept in files under the data root
 //! ([`tokens`]).
 
 #[cfg(unix)]

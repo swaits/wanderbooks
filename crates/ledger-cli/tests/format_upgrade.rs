@@ -27,9 +27,9 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-/// Short timings for tests, and agents' tokens kept in files in the test
-/// root, not this computer's keyring.
-const KNOBS: &str = "close_after=2500,backoff=50,exe_poll=100,init_wait=5000,queue_wait=30000,file_keyring=1,backup_quiet=300";
+/// Short timings for tests.
+const KNOBS: &str =
+    "close_after=2500,backoff=50,exe_poll=100,init_wait=5000,queue_wait=30000,backup_quiet=300";
 
 /// The owner passphrase the tests set.
 const PASS: &str = "correct horse battery";

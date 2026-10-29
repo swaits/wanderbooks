@@ -17,9 +17,9 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-/// Short timings for tests (the defaults are the plan's), and agents'
-/// tokens kept in files in the test root, not this computer's keyring.
-const KNOBS: &str = "close_after=2500,backoff=50,exe_poll=100,init_wait=5000,queue_wait=30000,file_keyring=1,backup_quiet=300";
+/// Short timings for tests (the defaults are the plan's).
+const KNOBS: &str =
+    "close_after=2500,backoff=50,exe_poll=100,init_wait=5000,queue_wait=30000,backup_quiet=300";
 
 /// A home with a data root, and the program the tests run (possibly a
 /// copy, for restarts).
@@ -653,7 +653,7 @@ fn the_bridge_answers_initialize_itself_during_a_slow_start() {
         "--book",
         "acme",
         "--test-knobs",
-        "close_after=1500,backoff=50,server_delay=3000,init_wait=300,queue_wait=30000,file_keyring=1",
+        "close_after=1500,backoff=50,server_delay=3000,init_wait=300,queue_wait=30000",
     ]);
     let mut a = Agent::from(c);
     let started = Instant::now();
@@ -722,7 +722,7 @@ fn the_bridge_gives_up_on_books_that_never_open() {
         "--book",
         "acme",
         "--test-knobs",
-        "close_after=800,backoff=50,server_delay=20000,init_wait=200,queue_wait=1000,file_keyring=1",
+        "close_after=800,backoff=50,server_delay=20000,init_wait=200,queue_wait=1000",
     ]);
     let mut a = Agent::from(c);
     a.initialize();
@@ -1323,7 +1323,7 @@ fn a_call_cancelled_at_once_is_never_made() {
         "--book",
         "acme",
         "--test-knobs",
-        "close_after=1500,backoff=50,server_delay=1500,init_wait=200,queue_wait=30000,file_keyring=1",
+        "close_after=1500,backoff=50,server_delay=1500,init_wait=200,queue_wait=30000",
     ]);
     let mut a = Agent::from(c);
     a.initialize();
@@ -1393,7 +1393,7 @@ fn a_signalled_bridge_goes_at_once() {
         "--book",
         "acme",
         "--test-knobs",
-        "close_after=1500,backoff=50,server_delay=20000,init_wait=200,queue_wait=30000,file_keyring=1",
+        "close_after=1500,backoff=50,server_delay=20000,init_wait=200,queue_wait=30000",
     ]);
     let mut a = Agent::from(c);
     a.initialize();
@@ -1831,7 +1831,7 @@ fn books_made_mid_session_and_bad_requests() {
         "--book",
         "acme",
         "--test-knobs",
-        "close_after=2500,backoff=50,server_delay=2000,init_wait=200,queue_wait=30000,file_keyring=1",
+        "close_after=2500,backoff=50,server_delay=2000,init_wait=200,queue_wait=30000",
     ]);
     let mut d = Agent::from(c);
     d.initialize();
@@ -2108,7 +2108,10 @@ fn the_token_commands_and_the_bridge() {
     // A read-only token, made: the same session uses it from now on.
     let (code, made, _) = token(&["create", "--book", "acme", "--scopes", "read"]);
     assert_eq!(code, Some(0), "{made}");
-    assert!(made.contains("kept in this computer's keyring"), "{made}");
+    assert!(
+        made.contains("kept in a token file in the data root"),
+        "{made}"
+    );
     assert!(
         made.contains("books:read") && !made.contains("wb_"),
         "{made}"
@@ -2124,7 +2127,7 @@ fn the_token_commands_and_the_bridge() {
     assert!(err.contains("needs books:write"), "{err}");
     // A name taken; replaced on request, and the running session takes
     // the new token at its next call (the old one refused at the door, the
-    // keyring read again: review of slice 4).
+    // token file read again: review of slice 4).
     let (code, _, err) = token(&["create", "--book", "acme"]);
     assert_eq!(code, Some(1));
     assert!(err.contains("already have a token"), "{err}");
@@ -2161,7 +2164,7 @@ fn the_token_commands_and_the_bridge() {
         printed.trim().starts_with("wb_") && printed.trim().len() == 67,
         "{printed}"
     );
-    // Revoked: the next call is refused, and the keyring forgets it.
+    // Revoked: the next call is refused, and the token file forgets it.
     let (code, said, _) = token(&["revoke", "--book", "acme"]);
     assert_eq!(code, Some(0), "{said}");
     assert!(b.call("books.chart", json!({})).is_err());
@@ -2810,13 +2813,12 @@ fn the_viewers_hold_new_books_and_close_the_books() {
 }
 
 #[test]
-fn connect_makes_anew_a_token_the_keyring_lost_and_says_when_an_agent_refuses() {
+fn connect_makes_anew_a_token_whose_file_is_gone_and_says_when_an_agent_refuses() {
     use std::os::unix::fs::PermissionsExt;
     let home = Home::new("connect-lost");
     home.create("acme");
-    // The server keeps the books' agent token; this computer's keyring
-    // lost it.
-    std::fs::remove_dir_all(home.run_dir().join("test-keyring")).unwrap();
+    // The server keeps the books' agent token; its token file is gone.
+    std::fs::remove_dir_all(home.run_dir().join("tokens")).unwrap();
     let (bin, _log) = fake_agent(&home, "claude");
     let connect = |path: &Path| {
         home.cmd("connect")
@@ -2852,13 +2854,12 @@ fn connect_makes_anew_a_token_the_keyring_lost_and_says_when_an_agent_refuses() 
 }
 
 /// tokens.rs INVARIANT 4, commands.rs INVARIANT 4, bridge.rs INVARIANT
-/// 11: `token check` says whether the keyring's token is the books' live
-/// one, never its text; a second keyring item for one token is said, and
-/// `create --replace` keeps one again; a token the keyring can't keep is
-/// revoked again; and a bridge that can't read the keyring says so, not
-/// "make a token".
+/// 11: `token check` says whether the token file's token is the books'
+/// live one, never its text; an unreadable token file is said, by the
+/// check and by a bridge, never "no token"; and a token the file can't
+/// keep is revoked again.
 #[test]
-fn token_check_one_item_per_token_and_a_keyring_that_cant_be_read() {
+fn token_check_says_where_the_token_file_stands_and_an_unreadable_one_is_said() {
     let home = Home::new("tokencheck");
     let out = home.books(&["create", "acme"]);
     assert!(out.status.success(), "{out:?}");
@@ -2889,38 +2890,24 @@ fn token_check_one_item_per_token_and_a_keyring_that_cant_be_read() {
     let (code, said, _) = check();
     assert_eq!(code, Some(0), "{said}");
     assert!(said.contains("is the live one"), "{said}");
-    // The one item kept, in the test keyring's default collection.
-    let keyring = home.run_dir().join("test-keyring");
-    let item = std::fs::read_dir(keyring.join("default"))
+    // The one file kept, mode 0600.
+    let folder = home.run_dir().join("tokens");
+    let item = std::fs::read_dir(&folder)
         .unwrap()
         .map(|e| e.unwrap().path())
         .collect::<Vec<_>>();
     assert_eq!(item.len(), 1);
     let item = item[0].clone();
-    let file_name = item.file_name().unwrap().to_owned();
-    // A second item for it, in another collection: said, none used.
-    let login = keyring.join("login");
-    std::fs::create_dir_all(&login).unwrap();
-    std::fs::write(login.join(&file_name), "wb_stale").unwrap();
-    let (code, _, err) = check();
-    assert_eq!(code, Some(1));
-    assert!(
-        err.contains("2 items") && err.contains("token create --book acme --replace"),
-        "{err}"
-    );
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&item).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
     let mut a = Agent::start(&home, "acme");
     a.initialize();
-    let err = a.call("books.start", json!({})).unwrap_err();
-    assert!(err.contains("2 items"), "{err}");
-    // Kept again: one item, the live one, and the session goes on.
-    let (code, _, err) = token(&["create", "--book", "acme", "--replace"]);
-    assert_eq!(code, Some(0), "{err}");
-    assert!(!login.join(&file_name).exists());
-    let (code, said, _) = check();
-    assert_eq!(code, Some(0), "{said}");
     a.call("books.start", json!({})).unwrap();
     assert!(a.end().is_some());
-    // The keyring holding a token replaced since: not the live one.
+    // The file holding a token replaced since: not the live one.
     let old = std::fs::read_to_string(&item).unwrap();
     let (code, _, _) = token(&["create", "--book", "acme", "--replace"]);
     assert_eq!(code, Some(0));
@@ -2931,30 +2918,31 @@ fn token_check_one_item_per_token_and_a_keyring_that_cant_be_read() {
         said.contains("isn't the live one") && said.contains("--replace"),
         "{said}"
     );
-    // A keyring that can't be reached: a bridge with no token says so,
-    // never "make a token"; and a token made then is revoked again.
+    // A token file that can't be read (a folder in its place): a bridge
+    // with no token says so, never "make a token"; and a token made then
+    // is revoked again.
     std::fs::remove_file(&item).unwrap();
-    let unreachable = keyring.join("unreachable");
-    std::fs::write(&unreachable, "").unwrap();
+    std::fs::create_dir(&item).unwrap();
     let mut b = Agent::start(&home, "acme");
     b.initialize();
     let err = b.call("books.start", json!({})).unwrap_err();
     assert!(
-        err.contains("keyring is locked or unreachable") && err.contains("token itself is fine"),
+        err.contains("token file in the data root couldn't be read")
+            && err.contains("token itself is fine"),
         "{err}"
     );
     assert!(!err.contains("token create"), "{err}");
     assert!(b.end().is_some());
     let (code, _, err) = check();
     assert_eq!(code, Some(1));
-    assert!(err.contains("can't be reached"), "{err}");
+    assert!(err.contains("token file couldn't give"), "{err}");
     let (code, _, err) = token(&["create", "--book", "acme", "--replace"]);
     assert_eq!(code, Some(1));
     assert!(
         err.contains("couldn't keep it") && err.contains("revoked again"),
         "{err}"
     );
-    std::fs::remove_file(&unreachable).unwrap();
+    std::fs::remove_dir(&item).unwrap();
     let (_, listed, _) = token(&["list"]);
     assert!(listed.contains("No tokens yet"), "{listed}");
 }

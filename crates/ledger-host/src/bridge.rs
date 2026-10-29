@@ -42,17 +42,16 @@
 //!      are not passed on, in initialize or in a request's own metadata.
 //!  10. Ended by its stdin or by a signal, the bridge ends its upstream
 //!      session.
-//!  11. Every request upstream carries its token, read from the keyring
-//!      (tokens.rs) before each new session (even with one held: one the
-//!      keyring no longer gives is said on stderr, and the keyring's used)
+//!  11. Every request upstream carries its token, read from the token
+//!      file (tokens.rs) before each new session (even with one held: one
+//!      the file no longer gives is said on stderr, and the file's used)
 //!      and before each request until it is found, and again when the
 //!      door refuses it (the call then sent once more if another was
 //!      found), so a token made or replaced mid-session is used from the
 //!      next call. Without one, calls are answered with the server's
-//!      refusal, which says how the human makes one; but when the keyring
-//!      couldn't be read (locked, unreachable, or holding several items
-//!      for the token), with that instead: the token is not said to be
-//!      missing. The token is never written to the agent or to stderr.
+//!      refusal, which says how the human makes one; but when the token
+//!      file is there and couldn't be read, with that instead: the token
+//!      is not said to be missing. The token is never written to the agent or to stderr.
 //! ```
 
 use crate::knobs::{FLAG, Knobs};
@@ -143,13 +142,13 @@ struct Bridge {
     book: String,
     /// The name of the token it uses (tokens.rs).
     token_name: String,
-    /// The token's text, once read from the keyring (INVARIANT 11).
+    /// The token's text, once read from the token file (INVARIANT 11).
     token: Mutex<Option<String>>,
     /// Where it is kept: its account, and the root's `run/`.
-    keyring: std::sync::OnceLock<(crate::tokens::Account, PathBuf)>,
-    /// Why the keyring last couldn't be read, if it couldn't (INVARIANT
+    token_file: std::sync::OnceLock<(crate::tokens::Account, PathBuf)>,
+    /// Why the token file last couldn't be read, if it couldn't (INVARIANT
     /// 11).
-    keyring_trouble: Mutex<Option<crate::tokens::KeyringError>>,
+    token_file_trouble: Mutex<Option<crate::tokens::TokenFileError>>,
     http: reqwest::Client,
     knobs: Knobs,
     to_agent: mpsc::UnboundedSender<Value>,
@@ -179,9 +178,9 @@ enum Owner {
 /// before it counts as not answering.
 const UPSTREAM_WAIT: Duration = Duration::from_secs(10);
 
-/// How long the keyring is waited for before a new session when a token
+/// How long the token file is waited for before a new session when a token
 /// is already held (INVARIANT 11): the one held is used if it is slow.
-const KEYRING_RECHECK_WAIT: Duration = Duration::from_secs(2);
+const TOKEN_FILE_RECHECK_WAIT: Duration = Duration::from_secs(2);
 
 /// Where one of the agent's requests stands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -339,9 +338,9 @@ impl Bridge {
         format!("http://localhost/b/{}/mcp", self.book)
     }
 
-    /// Read the token from the keyring if it isn't known yet (INVARIANT
+    /// Read the token from the token file if it isn't known yet (INVARIANT
     /// 11): a token made after the session began is found on the next
-    /// try. A keyring that fails is said on stderr; the server's refusal
+    /// try. A token file that fails is said on stderr; the server's refusal
     /// then tells the agent what to do.
     async fn find_token(&self) {
         if self
@@ -362,19 +361,19 @@ impl Bridge {
             .is_some()
     }
 
-    /// Read the token from the keyring, keeping it if found: whether a
+    /// Read the token from the token file, keeping it if found: whether a
     /// token other than the one held was found (one made since, or one
     /// that replaced it).
     async fn read_token(&self) -> bool {
         self.read_token_within(self.knobs.queue_wait).await
     }
 
-    /// [`Bridge::read_token`], waiting at most `wait` for the keyring.
+    /// [`Bridge::read_token`], waiting at most `wait` for the file.
     async fn read_token_within(&self, wait: Duration) -> bool {
-        let Some((account, run_dir)) = self.keyring.get().cloned() else {
+        let Some((account, run_dir)) = self.token_file.get().cloned() else {
             return false;
         };
-        let keeper = crate::tokens::keeper(&run_dir, &self.knobs);
+        let keeper = crate::tokens::keeper(&run_dir);
         let read = tokio::time::timeout(
             wait,
             tokio::task::spawn_blocking(move || keeper.get(&account)),
@@ -382,13 +381,13 @@ impl Bridge {
         .await;
         let read = match read {
             Ok(Ok(read)) => read,
-            Ok(Err(_)) | Err(_) => Err(crate::tokens::KeyringError::Unavailable(
-                "it didn't give the token in time: is it locked?".into(),
+            Ok(Err(_)) | Err(_) => Err(crate::tokens::TokenFileError::new(
+                "the token file didn't give the token in time",
             )),
         };
         let trouble = read.as_ref().err().cloned();
         *self
-            .keyring_trouble
+            .token_file_trouble
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = trouble;
         match read {
@@ -397,7 +396,7 @@ impl Bridge {
                 let new = held.as_deref() != Some(token.as_str());
                 if new && held.is_some() {
                     eprintln!(
-                        "wanderbooks mcp: the keyring gives another token for these books than the one held: using the keyring's"
+                        "wanderbooks mcp: the token file gives another token for these books than the one held: using the file's"
                     );
                 }
                 *held = Some(token);
@@ -412,24 +411,21 @@ impl Bridge {
     }
 
     /// What the agent is told instead of the door's "make a token" when
-    /// no token is held because the keyring couldn't be read (INVARIANT
+    /// no token is held because the token file couldn't be read (INVARIANT
     /// 11).
-    fn keyring_refusal(&self) -> Option<String> {
+    fn token_file_refusal(&self) -> Option<String> {
         if self.holds_token() {
             return None;
         }
         let trouble = self
-            .keyring_trouble
+            .token_file_trouble
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone()?;
-        Some(match trouble {
-            crate::tokens::KeyringError::Unavailable(why) => format!(
-                "this computer's keyring is locked or unreachable, so the token for the books {} couldn't be read ({why}). The token itself is fine: unlock the keyring (or log in again) and try once more; don't make a new one (`wanderbooks token check --book {}` says where it stands).",
-                self.book, self.book
-            ),
-            duplicates => duplicates.to_string(),
-        })
+        Some(format!(
+            "the token file in the data root couldn't be read, so the token for the books {} couldn't be used ({trouble}). The token itself is fine: mend what stops the file being read and try once more; don't make a new one (`wanderbooks token check --book {}` says where it stands).",
+            self.book, self.book
+        ))
     }
 
     /// A request upstream, carrying the token (INVARIANT 11).
@@ -464,7 +460,7 @@ impl Bridge {
         self.find_token().await;
         let (sent, unauthorized) = self.send_once(message, up).await;
         // Refused at the door for its token (not run): one made or
-        // replaced since is read from the keyring (INVARIANT 11). A
+        // replaced since is read from the token file (INVARIANT 11). A
         // session belongs to the token that opened it, so with a session
         // the call waits for a new one (opened with the new token); with
         // none it is sent once more at once.
@@ -474,9 +470,9 @@ impl Bridge {
             }
             return self.send_once(message, up).await.0;
         }
-        // No token, for a keyring that couldn't be read: that is said,
+        // No token, for a token file that couldn't be read: that is said,
         // not "make one" (INVARIANT 11).
-        if unauthorized && let Some(why) = self.keyring_refusal() {
+        if unauthorized && let Some(why) = self.token_file_refusal() {
             return Sent::Refused(why);
         }
         sent
@@ -583,10 +579,10 @@ impl Bridge {
         epoch: u64,
     ) -> Result<Upstream, Option<String>> {
         // Read again before every session, even with a token held
-        // (INVARIANT 11): a held one the keyring no longer gives isn't
-        // kept on in silence. A slow keyring leaves the one held in use.
+        // (INVARIANT 11): a held one the token file no longer gives isn't
+        // kept on in silence. A slow token file leaves the one held in use.
         if self.holds_token() {
-            self.read_token_within(KEYRING_RECHECK_WAIT.min(self.knobs.queue_wait))
+            self.read_token_within(TOKEN_FILE_RECHECK_WAIT.min(self.knobs.queue_wait))
                 .await;
         } else {
             self.read_token().await;
@@ -601,12 +597,12 @@ impl Bridge {
         };
         let mut response = post().await.map_err(|_| None)?;
         // Refused for its token: once more with one made or replaced
-        // since (INVARIANT 11); with none, for a keyring that couldn't be
+        // since (INVARIANT 11); with none, for a token file that couldn't be
         // read, that is said instead of the door's words.
         if response.status() == reqwest::StatusCode::UNAUTHORIZED {
             if self.read_token().await {
                 response = post().await.map_err(|_| None)?;
-            } else if let Some(why) = self.keyring_refusal() {
+            } else if let Some(why) = self.token_file_refusal() {
                 return Err(Some(why));
             }
         }
@@ -918,7 +914,7 @@ impl Bridge {
         let run_dir = opener.run_dir().to_path_buf();
         let root = run_dir.parent().unwrap_or(&run_dir).to_path_buf();
         let account = crate::tokens::Account::new(&root, &self.book, &self.token_name);
-        let _ = self.keyring.set((account, run_dir));
+        let _ = self.token_file.set((account, run_dir));
         let mut epoch = 0u64;
         loop {
             let mut lease = match opener.hold().await {
@@ -1279,7 +1275,7 @@ fn usage(prog: &str) {
     eprintln!("  Connects an agent (over stdio) to the books called ID, opening them if");
     eprintln!("  they are closed and holding them open for the session. It uses the");
     eprintln!("  token NAME (default: agent) that `wanderbooks token create` kept in");
-    eprintln!("  this computer's keyring.");
+    eprintln!("  a file in the data root.");
 }
 
 /// `wanderbooks mcp --book ID`.
@@ -1340,8 +1336,8 @@ pub fn run(
             book,
             token_name,
             token: Mutex::new(None),
-            keyring: std::sync::OnceLock::new(),
-            keyring_trouble: Mutex::new(None),
+            token_file: std::sync::OnceLock::new(),
+            token_file_trouble: Mutex::new(None),
             http,
             knobs,
             to_agent,
@@ -1683,11 +1679,11 @@ mod against_a_server {
         let (link, _) = watch::channel(Link::Opening);
         let bridge = Arc::new(Bridge {
             book: "acme".into(),
-            // A token the fake server doesn't check; no keyring is read.
+            // A token the fake server doesn't check; no token file is read.
             token_name: crate::tokens::DEFAULT_NAME.into(),
             token: Mutex::new(Some("wb_test".into())),
-            keyring: std::sync::OnceLock::new(),
-            keyring_trouble: Mutex::new(None),
+            token_file: std::sync::OnceLock::new(),
+            token_file_trouble: Mutex::new(None),
             http,
             knobs,
             to_agent,
@@ -1899,23 +1895,21 @@ mod against_a_server {
         assert!(none.session.is_none() && none.init.is_none());
     }
 
-    /// A bridge whose token is kept in a test keyring in `dir` (none held
-    /// yet), and that keyring's folder.
-    fn bridge_with_keyring(
+    /// A bridge whose token is kept in a token file under `dir` (none
+    /// held yet), and the keeper of that file.
+    fn bridge_with_token_file(
         socket: &Path,
         dir: &Path,
-    ) -> (Arc<Bridge>, mpsc::UnboundedReceiver<Value>, PathBuf) {
-        let knobs = Knobs {
-            file_keyring: true,
-            ..knobs(1000, 1000)
-        };
-        let (b, rx) = bridge_at(socket, knobs);
+    ) -> (
+        Arc<Bridge>,
+        mpsc::UnboundedReceiver<Value>,
+        crate::tokens::Keeper,
+    ) {
+        let (b, rx) = bridge_at(socket, knobs(1000, 1000));
         *b.token.lock().unwrap() = None;
         let account = crate::tokens::Account::new(dir, "acme", crate::tokens::DEFAULT_NAME);
-        b.keyring.set((account, dir.to_path_buf())).unwrap();
-        let keyring = dir.join("test-keyring");
-        std::fs::create_dir_all(&keyring).unwrap();
-        (b, rx, keyring)
+        b.token_file.set((account, dir.to_path_buf())).unwrap();
+        (b, rx, crate::tokens::keeper(dir))
     }
 
     /// The door's refusal of a request with no token.
@@ -1929,22 +1923,24 @@ mod against_a_server {
         }
     }
 
-    /// INVARIANT 11: with no token because the keyring couldn't be read,
-    /// the agent is told that, never to make a token; with a keyring that
-    /// simply has none, the door's words.
+    /// INVARIANT 11: with no token because the token file is there and
+    /// couldn't be read, the agent is told that, never to make a token;
+    /// with a token file that simply isn't there, the door's words.
     #[tokio::test]
-    async fn a_keyring_that_cant_be_read_is_said_never_make_a_token() {
+    async fn a_token_file_that_cant_be_read_is_said_never_make_a_token() {
         let server = Server::start();
         let dir = tempfile::tempdir().unwrap();
-        let (b, _rx, keyring) = bridge_with_keyring(&server.socket, dir.path());
+        let (b, _rx, keeper) = bridge_with_token_file(&server.socket, dir.path());
+        let account = b.token_file.get().unwrap().0.clone();
         let call: Value = serde_json::from_str(CALL).unwrap();
         let params = json!({"protocolVersion": "2025-06-18", "capabilities": {}});
-        let unreachable = keyring.join(crate::tokens::TEST_UNREACHABLE);
-        std::fs::write(&unreachable, "").unwrap();
+        // A directory where the token file belongs: unreadable.
+        let file = keeper.file(&account);
+        std::fs::create_dir_all(&file).unwrap();
         server.script([no_token_at_the_door(), no_token_at_the_door()]);
         let said = what(&b.send(&call, &up(1)).await);
         assert!(
-            said.contains("keyring is locked or unreachable")
+            said.contains("token file in the data root couldn't be read")
                 && said.contains("token itself is fine")
                 && said.contains("token check --book acme"),
             "{said}"
@@ -1963,41 +1959,22 @@ mod against_a_server {
                 .all(|s| !s.headers.contains_key("authorization")),
             "no bearer was sent"
         );
-        // Two items for the token: that, and how to keep one again.
-        std::fs::remove_file(&unreachable).unwrap();
-        let account = b.keyring.get().unwrap().0.clone();
-        crate::tokens::keeper(dir.path(), &b.knobs)
-            .set(&account, "wb_one")
-            .unwrap();
-        let other = keyring.join("login");
-        std::fs::create_dir_all(&other).unwrap();
-        for entry in std::fs::read_dir(keyring.join(crate::tokens::TEST_DEFAULT)).unwrap() {
-            std::fs::write(other.join(entry.unwrap().file_name()), "wb_two").unwrap();
-        }
-        server.script([no_token_at_the_door()]);
-        let said = what(&b.send(&call, &up(1)).await);
-        assert!(
-            said.contains("2 items") && said.contains("--replace"),
-            "{said}"
-        );
-        assert!(!said.contains("wb_"), "{said}");
-        // A keyring that has none: the door's own words.
-        std::fs::remove_dir_all(&keyring).unwrap();
+        // No file at all: the door's own words.
+        std::fs::remove_dir_all(&file).unwrap();
         server.script([no_token_at_the_door()]);
         let said = what(&b.send(&call, &up(1)).await);
         assert!(said.contains("wanderbooks token create"), "{said}");
     }
 
-    /// INVARIANT 11: before each new session the keyring is read again,
-    /// even with a token held, and the keyring's token is the one used.
+    /// INVARIANT 11: before each new session the token file is read
+    /// again, even with a token held, and the file's token is the one used.
     #[tokio::test]
-    async fn each_new_session_reads_the_keyring_again() {
+    async fn each_new_session_reads_the_token_file_again() {
         let server = Server::start();
         let dir = tempfile::tempdir().unwrap();
-        let (b, _rx, _keyring) = bridge_with_keyring(&server.socket, dir.path());
+        let (b, _rx, keeper) = bridge_with_token_file(&server.socket, dir.path());
         *b.token.lock().unwrap() = Some("wb_held".into());
-        let account = b.keyring.get().unwrap().0.clone();
-        let keeper = crate::tokens::keeper(dir.path(), &b.knobs);
+        let account = b.token_file.get().unwrap().0.clone();
         keeper.set(&account, "wb_kept").unwrap();
         let params = json!({"protocolVersion": "2025-06-18", "capabilities": {}});
         let result = json!({"protocolVersion": "2025-06-18", "capabilities": {"tools": {}},
@@ -2021,18 +1998,14 @@ mod against_a_server {
                 .collect()
         };
         assert_eq!(bearers(&server), ["Bearer wb_kept", "Bearer wb_kept"]);
-        // A keyring that can't be read then: the token held goes on.
-        std::fs::write(
-            dir.path()
-                .join("test-keyring")
-                .join(crate::tokens::TEST_UNREACHABLE),
-            "",
-        )
-        .unwrap();
+        // A token file that can't be read then: the token held goes on.
+        let file = keeper.file(&account);
+        std::fs::remove_file(&file).unwrap();
+        std::fs::create_dir_all(&file).unwrap();
         server.script(opened());
         b.initialize_upstream(&params, 2).await.unwrap();
         assert_eq!(bearers(&server)[2..], ["Bearer wb_kept", "Bearer wb_kept"]);
-        assert!(b.keyring_refusal().is_none(), "a token is held");
+        assert!(b.token_file_refusal().is_none(), "a token is held");
     }
 
     #[tokio::test]

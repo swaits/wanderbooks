@@ -22,14 +22,15 @@
 //!   3. Adoption and restoring are previewed first and go ahead only on a
 //!      yes at the terminal, or --yes; a vault beside the books must be
 //!      named (or --no-vault given): it is never silently left behind.
-//!   4. A token made is kept in the keyring, and read back from it as
-//!      kept, before anything is said of it, and its text is printed only
-//!      by `token print`; one that can't be kept (or read back) is revoked
-//!      again. A token revoked is forgotten by the keyring too. `token
-//!      check` says whether the keyring's token is the books' live one,
-//!      by its SHA-256 alone, never its text. `connect` makes the books' agent token only when the keyring
-//!      has none, replacing the server's (no one could be using it: the
-//!      bridge reads its token from this keyring).
+//!   4. A token made is kept in its token file (tokens.rs), and read back
+//!      from it as kept, before anything is said of it, and its text is
+//!      printed only by `token print`; one that can't be kept (or read
+//!      back) is revoked again. A token revoked is forgotten by the token
+//!      file too. `token check` says whether the file's token is the
+//!      books' live one, by its SHA-256 alone, never its text. `connect`
+//!      makes the books' agent token only when there is no token file for
+//!      it, replacing the server's (no one could be using it: the bridge
+//!      reads its token from this file).
 //!   5. The viewer's hold lets go only when the owner closes the books;
 //!      books that stop, or won't open, are tried again.
 //!   6. Books waiting for a format upgrade (plan 3.9, D-39): the owner's
@@ -150,7 +151,7 @@ fn with_server(common: &Common, request: Request) -> Result<Response, String> {
 }
 
 /// [`with_server`], with the root's `run/` folder too (where the
-/// keyring's test stand-in lives).
+/// token files live).
 fn with_server_in(common: &Common, request: Request) -> Result<(Response, PathBuf), String> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -1127,7 +1128,7 @@ pub fn connect(
             "--help" | "-h" => {
                 eprintln!("usage: {prog} claude|codex --book ID");
                 eprintln!(
-                    "  Lets Claude Code or Codex reach the books: keeps their token in this computer's keyring and adds the books to the agent's own list."
+                    "  Lets Claude Code or Codex reach the books: keeps their token in a file in the data root and adds the books to the agent's own list."
                 );
                 return Ok(());
             }
@@ -1160,7 +1161,7 @@ pub fn connect(
 }
 
 /// Let the agent `agent` ("claude" or "codex") reach the books `book`:
-/// their token kept in the keyring (made if none is), and `wanderbooks
+/// their token kept in its token file (made if none is), and `wanderbooks
 /// mcp --book <book>` added to the agent's own list as
 /// `wanderbooks-<book>`. What was done, a line each.
 pub fn connect_agent(common: &Common, agent: &str, book: &str) -> Result<Vec<String>, String> {
@@ -1207,22 +1208,19 @@ pub fn connect_agent(common: &Common, agent: &str, book: &str) -> Result<Vec<Str
             format!("{label} isn't installed here (no `{cli}` on the PATH, nor where its installer puts it)")
         })?;
     let mut lines = Vec::new();
-    // The token: kept in the keyring, or made now.
+    // The token: kept in its file, or made now.
     let found =
         ledger_store::root::Root::find(common.root.as_deref()).map_err(|e| e.to_string())?;
     let run = found.run_dir().map_err(|e| e.to_string())?;
     let account = crate::tokens::Account::new(found.path(), &book, crate::tokens::DEFAULT_NAME);
-    if crate::tokens::keeper(&run, &common.knobs)
-        .get(&account)?
-        .is_none()
-    {
+    if crate::tokens::keeper(&run).get(&account)?.is_none() {
         let scopes = ledger_store::auth::Scope::ALL
             .iter()
             .map(|s| s.as_str().to_string())
             .collect();
         make_token(common, &book, crate::tokens::DEFAULT_NAME, scopes, true)?;
         lines.push(format!(
-            "Made the agent token of the books {book}, kept in this computer's keyring."
+            "Made the agent token of the books {book}, kept in a token file in the data root."
         ));
     }
     // The agent's own list: the books' entry made anew.
@@ -1291,8 +1289,8 @@ pub fn connect_agent(common: &Common, agent: &str, book: &str) -> Result<Vec<Str
     Ok(lines)
 }
 
-/// Make the token `name` for `book` (the server does) and keep it in this
-/// computer's keyring (INVARIANT 4: kept first, or taken back).
+/// Make the token `name` for `book` (the server does) and keep it in its
+/// token file (INVARIANT 4: kept first, or taken back).
 fn make_token(
     common: &Common,
     book: &str,
@@ -1315,7 +1313,7 @@ fn make_token(
     let root = run_dir.parent().unwrap_or(&run_dir).to_path_buf();
     let account = crate::tokens::Account::new(&root, book, name);
     // Kept, and read back as kept: else taken back (INVARIANT 4).
-    let keeper = crate::tokens::keeper(&run_dir, &common.knobs);
+    let keeper = crate::tokens::keeper(&run_dir);
     let kept = keeper
         .set(&account, &text)
         .map_err(String::from)
@@ -1345,7 +1343,7 @@ fn make_token(
             ""
         };
         return Err(format!(
-            "the token was made, but this computer's keyring couldn't keep it ({why}), {after}.{replaced}"
+            "the token was made, but its token file couldn't keep it ({why}), {after}.{replaced}"
         ));
     }
     Ok(info)
@@ -2047,8 +2045,8 @@ fn token_usage(prog: &str) {
     eprintln!("       {prog} revoke --book ID [--name NAME]");
     eprintln!("       {prog} check --book ID [--name NAME]");
     eprintln!("       {prog} print --book ID [--name NAME]");
-    eprintln!("  create  make an agent's token for the books ID and keep it in this");
-    eprintln!("          computer's keyring, where `wanderbooks mcp --book ID` finds it");
+    eprintln!("  create  make an agent's token for the books ID and keep it in its");
+    eprintln!("          token file, where `wanderbooks mcp --book ID` finds it");
     eprintln!("          (NAME: agent unless given; LIST: read,write,post,admin unless");
     eprintln!("          given; --replace ends a token of the same name)");
     eprintln!("  list    the tokens there are (never their text)");
@@ -2129,7 +2127,7 @@ pub fn token(
             let book = need_book()?;
             let info = make_token(&common, &book, &name, scopes, replace).map_err(fail)?;
             println!(
-                "Made the token {:?} for the books {} ({}), kept in this computer's keyring.",
+                "Made the token {:?} for the books {} ({}), kept in a token file in the data root.",
                 info.name,
                 info.book,
                 info.scopes.join(", ")
@@ -2177,11 +2175,11 @@ pub fn token(
                 Response::TokenRevoked(t) => {
                     let root = run_dir.parent().unwrap_or(&run_dir).to_path_buf();
                     let account = crate::tokens::Account::new(&root, &book, &name);
-                    let forgot = crate::tokens::keeper(&run_dir, &common.knobs).delete(&account);
+                    let forgot = crate::tokens::keeper(&run_dir).delete(&account);
                     println!("Revoked the token {:?} for the books {}.", t.name, t.book);
                     if let Err(why) = forgot {
                         eprintln!(
-                            "warning: this computer's keyring still holds its text ({why}); it opens nothing now"
+                            "warning: its token file still holds its text ({why}); it opens nothing now"
                         );
                     }
                     Ok(())
@@ -2198,11 +2196,11 @@ pub fn token(
             let root = run_dir.parent().unwrap_or(&run_dir).to_path_buf();
             let account = crate::tokens::Account::new(&root, &book, &name);
             // Its SHA-256 alone leaves here (INVARIANT 4).
-            let kept = crate::tokens::keeper(&run_dir, &common.knobs)
+            let kept = crate::tokens::keeper(&run_dir)
                 .get(&account)
                 .map_err(|e| {
                     fail(format!(
-                        "this computer's keyring couldn't give the token {name:?} of the books {book}: {e}"
+                        "the token file couldn't give the token {name:?} of the books {book}: {e}"
                     ))
                 })?
                 .map(|text| {
@@ -2232,20 +2230,20 @@ pub fn token(
             let said = match (kept.is_some(), live, matches) {
                 (true, Some(t), true) => {
                     println!(
-                        "The token {name:?} of the books {book} kept in this computer's keyring is the live one (made {}).",
+                        "The token {name:?} of the books {book} kept in its token file is the live one (made {}).",
                         t.created
                     );
                     return Ok(());
                 }
                 (true, Some(t), false) => format!(
-                    "This computer's keyring holds a token {name:?} for the books {book} that isn't the live one (made {}): {remake} makes one and keeps it here; then reconnect the agent.",
+                    "The token file holds a token {name:?} for the books {book} that isn't the live one (made {}): {remake} makes one and keeps it here; then reconnect the agent.",
                     t.created
                 ),
                 (true, None, _) => format!(
-                    "This computer's keyring holds a token {name:?} for the books {book} that they no longer have (it was revoked): `wanderbooks token create --book {book}{named}` makes one."
+                    "The token file holds a token {name:?} for the books {book} that they no longer have (it was revoked): `wanderbooks token create --book {book}{named}` makes one."
                 ),
                 (false, Some(t), _) => format!(
-                    "This computer's keyring keeps no token {name:?} for the books {book}, though they have a live one (made {}): {remake} makes one kept here.",
+                    "The token file keeps no token {name:?} for the books {book}, though they have a live one (made {}): {remake} makes one kept here.",
                     t.created
                 ),
                 (false, None, _) => format!(
@@ -2262,7 +2260,7 @@ pub fn token(
             let run_dir = opener.run_dir().to_path_buf();
             let root = run_dir.parent().unwrap_or(&run_dir).to_path_buf();
             let account = crate::tokens::Account::new(&root, &book, &name);
-            match crate::tokens::keeper(&run_dir, &common.knobs).get(&account) {
+            match crate::tokens::keeper(&run_dir).get(&account) {
                 Ok(Some(text)) => {
                     println!("{text}");
                     Ok(())
@@ -2361,7 +2359,7 @@ pub fn passphrase(
 }
 
 /// A request to a book over the server's socket, with the agent's token
-/// from the keyring, the books held open meanwhile: its status, the
+/// from the token file, the books held open meanwhile: its status, the
 /// headers wanted, and its body.
 fn on_the_socket(
     common: &Common,
@@ -2389,7 +2387,7 @@ fn on_the_socket(
         let run_dir = opener.run_dir().to_path_buf();
         let root = run_dir.parent().unwrap_or(&run_dir).to_path_buf();
         let account = crate::tokens::Account::new(&root, book, token_name);
-        let keeper = crate::tokens::keeper(&run_dir, &common.knobs);
+        let keeper = crate::tokens::keeper(&run_dir);
         let token = tokio::task::spawn_blocking(move || keeper.get(&account))
             .await
             .map_err(|e| e.to_string())??

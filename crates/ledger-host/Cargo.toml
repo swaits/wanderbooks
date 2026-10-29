@@ -18,10 +18,6 @@ base64 = "0.22"
 # `wanderbooks download` checks what arrived against its Repr-Digest.
 sha2 = "0.10"
 tokio-util = { version = "0.7", features = ["rt"] }
-# Agents' tokens are kept in the OS keyring (plan 3.3, 3.5): the Secret
-# Service on Linux, the login Keychain on macOS, the Credential Manager on
-# Windows (P11a step 0).
-keyring-core = "1"
 # The owner passphrase is typed at the terminal, unechoed.
 rpassword = "7"
 # Token texts and passphrases are wiped from memory when dropped.
@@ -29,15 +25,6 @@ zeroize = "1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
-
-[target.'cfg(target_os = "linux")'.dependencies]
-zbus-secret-service-keyring-store = { version = "1", features = ["rt-async-io-crypto-rust"] }
-
-[target.'cfg(target_os = "macos")'.dependencies]
-apple-native-keyring-store = { version = "1.0.2", features = ["keychain"] }
-
-[target.'cfg(windows)'.dependencies]
-windows-native-keyring-store = "1.1.0"
 
 [dev-dependencies]
 tempfile = "3"

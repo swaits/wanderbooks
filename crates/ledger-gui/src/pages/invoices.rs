@@ -658,7 +658,6 @@ fn pdf_actions(ui: &mut Ui, b: &Books, id: ledger_core::InvoiceId) {
                 &b.settings.company,
                 id,
                 b.today,
-                b.today,
             )
             .and_then(|doc| {
                 ledger_import::invoice_pdf::invoice_pdf(&doc).map_err(|e| e.to_string())

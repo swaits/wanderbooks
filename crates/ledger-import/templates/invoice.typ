@@ -7,9 +7,14 @@
 // markup (a description holding Typst syntax prints literally).
 //
 // Shape: { title: "INVOICE", number, issue_date, due_date, terms: null | str,
-//          seller: { name, lines: [str] }, bill_to: { name, lines: [str] },
-//          lines: [{ description, amount }], total,
+//          seller: { name, lines: [str] }, seller_email: null | str,
+//          seller_website: null | str,
+//          bill_to: { name, lines: [str] }, ship_to: [str],
+//          customer_ref: null | str, memo: null | str,
+//          lines: [{ description, detail: null | str, amount }], total,
 //          settled: [{ label, amount }], balance_label, balance,
+//          payment_methods: [{ label, lines: [str], qr: null | svg }],
+//          footer: null | str,
 //          stamp: null | str, stamp_draft: bool, stamp_line: null | str,
 //          note: null | str }
 
@@ -41,6 +46,8 @@
     #text(15pt, weight: "bold", d.seller.name) \
     #set text(fill: quiet)
     #lines(d.seller.lines)
+    #if d.seller_email != none [#d.seller_email \ ]
+    #if d.seller_website != none [#d.seller_website \ ]
   ],
   [
     #text(22pt, weight: "bold", tracking: 0.08em, d.title) \
@@ -58,6 +65,12 @@
     #v(2pt)
     #text(weight: "semibold", d.bill_to.name) \
     #lines(d.bill_to.lines)
+    #if d.ship_to.len() > 0 {
+      v(6pt)
+      text(8pt, weight: "semibold", fill: quiet, tracking: 0.06em, "SHIP TO")
+      linebreak()
+      lines(d.ship_to)
+    }
   ],
   grid(
     columns: (auto, auto),
@@ -67,6 +80,7 @@
     text(fill: quiet, "Invoice date"), d.issue_date,
     text(fill: quiet, "Due date"), text(weight: "semibold", d.due_date),
     ..if d.terms != none { (text(fill: quiet, "Terms"), d.terms) } else { () },
+    ..if d.customer_ref != none { (text(fill: quiet, "Your reference"), d.customer_ref) } else { () },
   ),
 )
 
@@ -82,7 +96,16 @@
     text(8pt, weight: "semibold", fill: quiet, tracking: 0.06em, "AMOUNT"),
   ),
   table.hline(stroke: hair),
-  ..d.lines.map(l => (l.description, l.amount)).flatten(),
+  ..d.lines.map(l => (
+    {
+      l.description
+      if l.detail != none {
+        linebreak()
+        text(8.5pt, fill: quiet, l.detail)
+      }
+    },
+    l.amount,
+  )).flatten(),
   table.hline(stroke: firm),
 )
 
@@ -125,4 +148,37 @@
 #if d.note != none {
   v(0.3in)
   text(8.5pt, fill: quiet, d.note)
+}
+
+#if d.memo != none {
+  v(0.25in)
+  text(8pt, weight: "semibold", fill: quiet, tracking: 0.06em, "NOTES")
+  linebreak()
+  d.memo
+}
+
+#if d.payment_methods.len() > 0 {
+  v(0.3in)
+  block(breakable: false, {
+    text(8pt, weight: "semibold", fill: quiet, tracking: 0.06em, "HOW TO PAY")
+    v(4pt)
+    for m in d.payment_methods {
+      block(breakable: false, below: 8pt, grid(
+        columns: (1fr, auto),
+        column-gutter: 12pt,
+        align: (left + top, right + top),
+        [
+          #text(weight: "semibold", m.label) \
+          #set text(fill: quiet)
+          #lines(m.lines)
+        ],
+        if m.qr != none { image(bytes(m.qr), format: "svg", width: 0.8in, height: 0.8in) } else { none },
+      ))
+    }
+  })
+}
+
+#if d.footer != none {
+  v(0.3in)
+  align(center, text(8.5pt, fill: quiet, d.footer))
 }

@@ -5205,3 +5205,120 @@ proptest! {
         prop_assert_eq!(&iif.changes, &want);
     }
 }
+
+// ---------------------------------------------------------------------
+// The issued invoice's page (P4b S4.5): what a customer pays from
+// ---------------------------------------------------------------------
+
+fn numbered_invoice() -> ledger_import::InvoiceDoc {
+    use ledger_import::{InvoiceItem, InvoiceParty, PaymentMethodDoc};
+    ledger_import::InvoiceDoc {
+        number: "INV-0007".into(),
+        issue_date: "Oct 1, 2026".into(),
+        due_date: "Oct 31, 2026".into(),
+        terms: Some("Net 30".into()),
+        seller: InvoiceParty {
+            name: "Fernhill Labs LLC".into(),
+            lines: vec!["12 Orchard Lane".into(), "Springfield, UT 84000".into()],
+        },
+        seller_email: Some("billing@fernhill.example".into()),
+        seller_website: Some("fernhill.example".into()),
+        bill_to: InvoiceParty {
+            name: "東京珈琲 株式会社".into(),
+            lines: vec!["שלום עולם בע״מ".into(), "1-2-3 Chiyoda".into()],
+        },
+        ship_to: vec!["Dock 4, Harbor Road".into()],
+        customer_ref: Some("PO-4471".into()),
+        memo: Some("Thank you for the quick turnaround.".into()),
+        items: vec![
+            InvoiceItem {
+                description: "Design hours".into(),
+                amount: dec("99.99"),
+                quantity: Some(dec("3")),
+                unit_price: Some(dec("33.33")),
+            },
+            InvoiceItem {
+                description: "Hosting".into(),
+                amount: dec("1000.01"),
+                quantity: None,
+                unit_price: None,
+            },
+        ],
+        total: dec("1100.00"),
+        balance: dec("1100.00"),
+        payment_methods: vec![
+            PaymentMethodDoc {
+                label: "Bank transfer".into(),
+                lines: vec!["Routing 123456789".into(), "Account 000111222".into()],
+                qr_svg: None,
+            },
+            PaymentMethodDoc {
+                label: "Card".into(),
+                lines: vec!["https://pay.example/fernhill".into()],
+                qr_svg: Some(
+                    ledger_import::labels::qr_svg("https://pay.example/fernhill").unwrap(),
+                ),
+            },
+        ],
+        footer: Some("Thank you for your business.".into()),
+        ..ledger_import::InvoiceDoc::default()
+    }
+}
+
+/// The issued invoice's PDF, read back with the PDF text reader, carries
+/// the number, both dates, the total, the bill-to (CJK and right-to-left
+/// text included), the terms, the reference, each payment method's label
+/// and lines, and the quantity beside its price; and nothing internal.
+#[test]
+fn invoice_pdf_prints_what_it_should() {
+    let doc = numbered_invoice();
+    let pdf = ledger_import::invoice_pdf(&doc).unwrap();
+    // SHOT_DIR set: the page, to look at.
+    if let Ok(dir) = std::env::var("SHOT_DIR") {
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            std::path::Path::new(&dir).join("invoice-numbered.pdf"),
+            &pdf,
+        )
+        .unwrap();
+    }
+    let text = ledger_import::pdf_text(&pdf).unwrap();
+    let flat: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    for want in [
+        "INV-0007",
+        "Oct 1, 2026",
+        "Oct 31, 2026",
+        "$1,100.00",
+        "Net 30",
+        "PO-4471",
+        "Fernhill Labs LLC",
+        "billing@fernhill.example",
+        "fernhill.example",
+        "3 × $33.33",
+        "$99.99",
+        "$1,000.01",
+        "Bank transfer",
+        "Routing 123456789",
+        "Account 000111222",
+        "Card",
+        "https://pay.example/fernhill",
+        "Dock 4, Harbor Road",
+        "Thank you for your business.",
+        "Thank you for the quick turnaround.",
+        "東京珈琲",
+        "1-2-3 Chiyoda",
+    ] {
+        assert!(flat.contains(want), "{want:?} missing from:\n{flat}");
+    }
+    // Right-to-left text comes back in reading or visual order depending
+    // on the reader; its letters are all there either way.
+    let has_hebrew = |s: &str| "שלוםעולם".chars().all(|c| s.contains(c));
+    assert!(has_hebrew(&flat), "Hebrew missing from:\n{flat}");
+    // The issued copy: no stamp, no "re-created", no balance of payments.
+    assert!(!flat.contains("Re-created"), "{flat}");
+    assert!(!flat.contains("DRAFT") && !flat.contains("PAID"), "{flat}");
+    // Nothing internal: no account code, project, or id.
+    for never in ["Project", "project", "class", "6999", "Account 4", "id:"] {
+        assert!(!flat.contains(never), "{never:?} on the page:\n{flat}");
+    }
+}

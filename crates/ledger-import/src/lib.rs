@@ -35,7 +35,10 @@ pub use iif::{
     Iif, IifAccount, IifChange, IifClass, IifError, IifField, LeftOut, MEMO_MAX, NAME_MAX,
     NUMBER_MAX, QbAccountType, iif_accounts, iif_classes, journal_to_iif,
 };
-pub use invoice_pdf::{InvoiceDoc, InvoiceItem, InvoiceParty, InvoiceStamp, invoice_pdf};
+pub use invoice_pdf::{
+    InvoiceDoc, InvoiceItem, InvoiceParty, InvoiceStamp, InvoiceVersion, PaymentMethodDoc,
+    invoice_pdf,
+};
 pub use labels::{AssetLabel, LabelSheet, asset_labels_pdf};
 pub use pdf::{PdfError, statement_pdf};
 pub use report::{Member, ReportMeta, Row, RowKind, Statement, YearEarnings, format_amount};

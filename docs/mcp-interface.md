@@ -2002,7 +2002,17 @@ posting.
 ## Resources (read-only)
 
 Hand-rolled on `ServerHandler` (rmcp 3.x has no resource macros):
-`list_resources` advertises, `read_resource` renders.
+`list_resources` advertises, `list_resource_templates` advertises the
+templates below (P5), `read_resource` renders.
+
+- Templates: `books://entries/{id}` (as `books.get_entry`),
+  `books://attachments/{id}` (as below), `books://journal/{seq}` (that line
+  in words: `books.journal_history`'s answer for it),
+  `books://reports/{kind}{?start,end,as_of}` (`kind` is `trial-balance`,
+  `balance-sheet` or `profit-and-loss`; `as_of` for the first two, `start`
+  and `end` for the third; omitted: today, or the fiscal year to date) and
+  `books://digest{?since,since_seq,as_of}` (`since_seq` wins over `since`;
+  bare: this month so far).
 
 - `books://start`, `books://settings`, `books://conventions`
 - `books://chart`

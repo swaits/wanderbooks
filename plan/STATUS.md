@@ -6,9 +6,11 @@
 session is the EM and launches Sonnet subagents in parallel worktrees,
 one per unit, briefed from `plan/HANDOFF.md`; it reviews each against
 the unit's Done-when, merges with a compile and the unit's own tests
-(D-60), and runs one exhaustive gate per wave. Wave 1 so far: U0d
+(D-60), and runs one exhaustive gate per wave. Wave 1, all landed: U0d
 (`39c76d3f`), P11a step 0 (`5e220cca`; see below), S4.5 (`ac0c949b`:
-P4b S4 is complete), P13 steps 4-5 (`d839e709`); P4 is still building.
+P4b S4 is complete), P13 steps 4-5 (`d839e709`), U0e (`75882c5e`), P4
+(`b97234ac`, schema 19). Wave 2 is building: P5, P8, P11a's trial,
+update/rollback and Linux packages, P11c.
 
 **Two decisions the wave forced.** D-62: native Windows is a port, not
 cfg fixes (the host, the MCP transport, the store's locking and

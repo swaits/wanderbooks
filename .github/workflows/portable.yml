@@ -35,6 +35,12 @@ jobs:
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
       CARGO_PROFILE_TEST_DEBUG: line-tables-only
+      # macOS: a Unix socket path holds 104 bytes, and the runner's default
+      # temp folder (/var/folders/...) plus a test home plus
+      # `Library/Application Support/wanderbooks/run/` is longer than that;
+      # the server then refuses the root ("too long for its sockets"). The
+      # tests' temp homes go under /tmp there. Windows ignores TMPDIR.
+      TMPDIR: /tmp
     steps:
       - uses: actions/checkout@v4
       - name: Rust (the version mise.toml pins)

@@ -53,6 +53,7 @@ use crate::knobs::{FLAG, Knobs};
 use crate::lease::{self, Ask, HostMsg, Intent, LeaseInfo, Reason};
 use ledger_store::root::Root;
 use std::collections::BTreeMap;
+#[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -80,7 +81,23 @@ const LOG_LIMIT: u64 = 8 * 1024 * 1024;
 /// The exit code when another host holds the root.
 pub const EXIT_ANOTHER_HOST: i32 = 3;
 
+/// File options for what the host makes: mode 0600 on Unix; on Windows
+/// the file takes the owner-only DACL its folder carries (P11c).
+fn private_options() -> std::fs::OpenOptions {
+    #[allow(unused_mut)]
+    let mut options = std::fs::OpenOptions::new();
+    #[cfg(unix)]
+    options.mode(0o600);
+    options
+}
+
+/// Windows passes no descriptor to a child unless asked to, so there is
+/// nothing to close (INVARIANT 2).
+#[cfg(not(unix))]
+fn close_stray_descriptors() {}
+
 /// Close every descriptor above 2 (INVARIANT 2).
+#[cfg(unix)]
 fn close_stray_descriptors() {
     #[cfg(target_os = "linux")]
     {
@@ -112,12 +129,7 @@ fn confined(run: &Path) -> Option<&'static str> {
         }
     }
     let probe = run.join(format!(".host-probe-{}", std::process::id()));
-    match std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&probe)
-    {
+    match private_options().write(true).create_new(true).open(&probe) {
         Ok(_) => {
             let _ = std::fs::remove_file(&probe);
             None
@@ -138,11 +150,10 @@ fn take_host_lock(run: &Path) -> Result<Option<std::fs::File>, String> {
 /// [`take_host_lock`], waiting at most `wait` (tests shorten it).
 fn take_host_lock_within(run: &Path, wait: Duration) -> Result<Option<std::fs::File>, String> {
     let path = run.join(lease::HOST_LOCK);
-    let file = std::fs::OpenOptions::new()
+    let file = private_options()
         .create(true)
         .truncate(false)
         .write(true)
-        .mode(0o600)
         .open(&path)
         .map_err(|e| format!("can't open the host lock: {}", e.kind()))?;
     let deadline = std::time::Instant::now() + wait;
@@ -180,11 +191,7 @@ fn open_log_within(path: &Path, limit: u64) -> std::io::Result<std::fs::File> {
     if std::fs::metadata(path).is_ok_and(|m| m.len() > limit) {
         let _ = std::fs::rename(path, path.with_extension("log.1"));
     }
-    std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .mode(0o600)
-        .open(path)
+    private_options().create(true).append(true).open(path)
 }
 
 /// The executable the server is started from (INVARIANT 3).
@@ -196,9 +203,13 @@ fn children_executable() -> PathBuf {
     }
 }
 
+/// A program file's identity: what changes when the file is replaced.
+type Identity = (u64, u64);
+
 /// The running executable's file identity, and its file's now: they
 /// differ once the file was replaced (INVARIANT 7).
-fn running_identity() -> Option<(u64, u64)> {
+#[cfg(unix)]
+fn running_identity() -> Option<Identity> {
     let running = if cfg!(target_os = "linux") {
         std::fs::metadata("/proc/self/exe").ok()?
     } else {
@@ -207,17 +218,44 @@ fn running_identity() -> Option<(u64, u64)> {
     Some((running.dev(), running.ino()))
 }
 
+/// Windows can't replace a program that runs, so an update puts the new
+/// file at the old path (the old one moved aside): the identity is the
+/// file's size and last write at the path, read when the host started.
+#[cfg(windows)]
+fn running_identity() -> Option<Identity> {
+    identity_of(&std::env::current_exe().ok()?)
+}
+
 /// The identity of the file at this executable's path, if it is a
 /// program (a file half-written or gone doesn't count yet).
-fn file_identity() -> Option<(u64, u64)> {
+fn file_identity() -> Option<Identity> {
     identity_of(&crate::start::this_executable().ok()?)
 }
 
 /// The identity (device, inode) of the program at `path`: a file someone
 /// may run; else None.
-fn identity_of(path: &Path) -> Option<(u64, u64)> {
+#[cfg(unix)]
+fn identity_of(path: &Path) -> Option<Identity> {
     let meta = std::fs::metadata(path).ok()?;
     (meta.is_file() && meta.permissions().mode() & 0o111 != 0).then(|| (meta.dev(), meta.ino()))
+}
+
+/// The identity (size, last write in nanoseconds) of the program at
+/// `path`: a file; else None.
+#[cfg(windows)]
+fn identity_of(path: &Path) -> Option<Identity> {
+    let meta = std::fs::metadata(path).ok()?;
+    let written = meta
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?;
+    meta.is_file().then(|| {
+        (
+            meta.len(),
+            u64::try_from(written.as_nanos()).unwrap_or(u64::MAX),
+        )
+    })
 }
 
 /// Wait at most `wait` for a host to answer on the lease socket: whether
@@ -347,19 +385,29 @@ pub fn run(
 /// Start the next host from the file now on disk, with this one's
 /// arguments and (already clean) environment (INVARIANT 7).
 fn restart() -> Result<(), String> {
-    use std::os::unix::process::CommandExt;
     let exe = crate::start::this_executable()?;
     let mut c = std::process::Command::new(exe);
     c.args(std::env::args_os().skip(1))
-        .current_dir("/")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null());
-    // SAFETY: setsid is async-signal-safe and touches only the child.
-    unsafe {
-        c.pre_exec(|| {
-            libc::setsid();
-            Ok(())
-        });
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        c.current_dir("/");
+        // SAFETY: setsid is async-signal-safe and touches only the child.
+        unsafe {
+            c.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // Detached from this console and its Ctrl+C, as a new session is
+        // on Unix.
+        c.creation_flags(crate::start::DETACHED_HOST);
     }
     c.spawn()
         .map(drop)
@@ -456,20 +504,11 @@ impl Host {
     /// Bind the lease socket, start the server, and serve leases until
     /// the books close.
     async fn serve(mut self) -> Result<Ending, String> {
-        let listener = bind(&self.run)?;
+        let mut listener = bind(&self.run)?;
         let (events, mut inbox) = mpsc::unbounded_channel::<Event>();
         let connections = TaskTracker::new();
-        let mut signals = Vec::new();
-        for kind in [
-            tokio::signal::unix::SignalKind::terminate(),
-            tokio::signal::unix::SignalKind::interrupt(),
-            tokio::signal::unix::SignalKind::hangup(),
-        ] {
-            signals.push(
-                tokio::signal::unix::signal(kind)
-                    .map_err(|e| format!("can't watch for signals: {e}"))?,
-            );
-        }
+        let signals =
+            ledger_mcp::ipc::stop_signals().map_err(|e| format!("can't watch for signals: {e}"))?;
         let (stop_tx, mut stop) = mpsc::unbounded_channel::<()>();
         for mut s in signals {
             let stop_tx = stop_tx.clone();
@@ -513,9 +552,9 @@ impl Host {
                     }
                 }
                 accepted = listener.accept() => match accepted {
-                    Ok((stream, _)) if ledger_mcp::local::peer_is_us(&stream) => {
+                    Ok(stream) if ledger_mcp::ipc::peer_is_us(&stream) => {
                         // The holder's process, as the kernel knows it.
-                        let pid = ledger_mcp::local::peer_pid(&stream);
+                        let pid = ledger_mcp::ipc::peer_pid(&stream);
                         connections.spawn(connection(stream, pid, events.clone()));
                     }
                     Ok(_) => {}
@@ -674,7 +713,9 @@ impl Host {
         let log = open_log(&self.run.join(SERVER_LOG))
             .map_err(|e| format!("can't open the server's log: {}", e.kind()))?;
         let mut command = tokio::process::Command::new(children_executable());
-        command.arg0("wanderbooks").arg("server");
+        #[cfg(unix)]
+        command.arg0("wanderbooks");
+        command.arg("server");
         if self.explicit_root {
             command.arg("--root").arg(self.root.path());
         }
@@ -815,11 +856,10 @@ fn consented(socket: &Path, book: String, passphrase: ledger_mcp::admin::Passphr
 
 /// Take run/update.lock (exclusive), if it is free now.
 fn take_update_lock(run: &Path) -> Result<std::fs::File, String> {
-    let file = std::fs::OpenOptions::new()
+    let file = private_options()
         .create(true)
         .truncate(false)
         .write(true)
-        .mode(0o600)
         .open(run.join(lease::UPDATE_LOCK))
         .map_err(|e| format!("can't open the update lock: {}", e.kind()))?;
     match file.try_lock() {
@@ -834,31 +874,22 @@ fn take_update_lock(run: &Path) -> Result<std::fs::File, String> {
 }
 
 /// Bind run/lease.sock, replacing a stale one (only the host holding the
-/// lock gets here).
-fn bind(run: &Path) -> Result<tokio::net::UnixListener, String> {
-    let path = run.join(lease::LEASE_SOCKET);
-    match std::fs::remove_file(&path) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(format!("can't replace the lease socket: {}", e.kind())),
-    }
-    let short = ledger_store::root::SocketPath::new(run, lease::LEASE_SOCKET)
+/// lock gets here); on Windows the lease pipe of the root.
+fn bind(run: &Path) -> Result<ledger_mcp::ipc::Listener, String> {
+    let endpoint = ledger_mcp::ipc::Endpoint::new(run, lease::LEASE_SOCKET)
         .map_err(|e| format!("can't make the lease socket: {e}"))?;
-    let listener = tokio::net::UnixListener::bind(short.path())
-        .map_err(|e| format!("can't make the lease socket: {}", e.kind()))?;
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
-        .map_err(|e| format!("can't make the lease socket private: {}", e.kind()))?;
-    Ok(listener)
+    ledger_mcp::ipc::Listener::bind(&endpoint)
+        .map_err(|e| format!("can't make the lease socket: {}", e.kind()))
 }
 
 /// One connection: its first line, then a lease or one answer
 /// (lease.rs INVARIANT 1).
 async fn connection(
-    stream: tokio::net::UnixStream,
+    stream: ledger_mcp::ipc::Accepted,
     peer_pid: Option<u32>,
     events: mpsc::UnboundedSender<Event>,
 ) {
-    let (read, mut write) = stream.into_split();
+    let (read, mut write) = ledger_mcp::ipc::split_accepted(stream);
     let mut reader = tokio::io::BufReader::new(read.take(lease::MAX_LINE as u64 + 1));
     let mut first = String::new();
     let answer = |msg: HostMsg| lease::line(&msg);
@@ -1019,13 +1050,31 @@ mod tests {
             "123456"
         );
         assert_eq!(std::fs::read_to_string(&log).unwrap(), "", "a new log");
-        use std::os::unix::fs::PermissionsExt;
-        assert_eq!(
-            std::fs::metadata(&log).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&log).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn a_folder_the_host_can_write_isnt_a_sandbox() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(confined(dir.path()), None);
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            0,
+            "its probe went"
+        );
+        // A folder that isn't there: no sign of a sandbox.
+        assert_eq!(confined(&dir.path().join("gone")), None);
+    }
+
+    #[cfg(unix)]
     #[test]
     fn a_folder_the_host_can_write_isnt_a_sandbox() {
         let seccomp = std::fs::read_to_string("/proc/self/status")
@@ -1061,6 +1110,24 @@ mod tests {
         assert_eq!(confined(&dir.path().join("gone")), None);
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn only_a_file_has_an_identity_and_a_replaced_one_another() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("wanderbooks.exe");
+        std::fs::write(&file, "x").unwrap();
+        let first = identity_of(&file).expect("a file");
+        // Replaced by another file (as an update does): another identity.
+        let next = dir.path().join("next.exe");
+        std::fs::write(&next, "yy").unwrap();
+        std::fs::rename(&next, &file).unwrap();
+        let second = identity_of(&file).unwrap();
+        assert_ne!(first, second);
+        assert_eq!(identity_of(dir.path()), None, "a folder isn't one");
+        assert_eq!(identity_of(&dir.path().join("gone")), None);
+    }
+
+    #[cfg(unix)]
     #[test]
     fn only_a_program_file_has_an_identity() {
         use std::os::unix::fs::PermissionsExt;

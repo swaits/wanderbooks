@@ -9,7 +9,7 @@ pub mod access;
 pub mod admin;
 pub mod backup;
 mod handbook;
-#[cfg(unix)]
+pub mod ipc;
 pub mod local;
 pub mod opening;
 mod policy;

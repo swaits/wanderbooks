@@ -59,10 +59,10 @@ fn gui_args(args: Vec<String>) -> Vec<String> {
 
 /// The viewer's owner (ledger-gui owner.rs): its Books menu, done as the
 /// command line does it (the books server, the agents' own commands).
-#[cfg(all(feature = "gui", unix))]
+#[cfg(feature = "gui")]
 struct ViewerOwner(ledger_host::commands::Common);
 
-#[cfg(all(feature = "gui", unix))]
+#[cfg(feature = "gui")]
 impl ledger_gui::owner::Owner for ViewerOwner {
     fn close_books(&self) -> Result<String, String> {
         ledger_host::commands::close_books(&self.0)
@@ -124,7 +124,6 @@ impl ledger_gui::owner::Owner for ViewerOwner {
 #[cfg(feature = "gui")]
 fn run_gui(args: Vec<String>) -> i32 {
     let args = gui_args(args);
-    #[cfg(unix)]
     {
         let value = |flag: &str| {
             // The last given, as the viewer reads it.
@@ -256,7 +255,6 @@ fn run_setup(args: Vec<String>) -> i32 {
 
 /// After setup: the owner passphrase, asked for at a terminal if none is
 /// set yet; elsewhere (a script, an agent) only said how to set it.
-#[cfg(unix)]
 fn owner_passphrase(root: &ledger_store::root::Root) -> i32 {
     let auth = match root.auth_dir() {
         Ok(dir) => dir,
@@ -294,14 +292,8 @@ fn owner_passphrase(root: &ledger_store::root::Root) -> i32 {
     }
 }
 
-#[cfg(not(unix))]
-fn owner_passphrase(_root: &ledger_store::root::Root) -> i32 {
-    0
-}
-
 /// `wanderbooks server`: the books server for the data root, on its
 /// local sockets (plan 3.9). The host starts it.
-#[cfg(unix)]
 fn run_server(args: Vec<String>) -> i32 {
     match ledger_mcp::local::run("wanderbooks server", args) {
         Ok(()) => 0,
@@ -317,7 +309,6 @@ fn run_server(args: Vec<String>) -> i32 {
 
 /// The modes that open and hold the books (plan 3.9): the host, the
 /// agents' bridge, and the owner's commands.
-#[cfg(unix)]
 fn run_local(mode: &str, args: Vec<String>) -> i32 {
     let prog = format!("wanderbooks {mode}");
     let result = match mode {
@@ -345,7 +336,6 @@ fn run_local(mode: &str, args: Vec<String>) -> i32 {
 
 /// `upload` and `download`: the agent's file commands, whose words may
 /// be paths that aren't text.
-#[cfg(unix)]
 fn run_files(mode: &str, args: Vec<std::ffi::OsString>) -> i32 {
     let prog = format!("wanderbooks {mode}");
     let result = match mode {
@@ -362,27 +352,6 @@ fn run_files(mode: &str, args: Vec<std::ffi::OsString>) -> i32 {
             }
         },
     }
-}
-
-/// The file commands, where local sockets aren't built yet.
-#[cfg(not(unix))]
-fn run_files(_mode: &str, _args: Vec<std::ffi::OsString>) -> i32 {
-    eprintln!("error: opening the books this way comes to this system with P11");
-    2
-}
-
-/// The modes that hold the books, where local sockets aren't built yet.
-#[cfg(not(unix))]
-fn run_local(_mode: &str, _args: Vec<String>) -> i32 {
-    eprintln!("error: opening the books this way comes to this system with P11");
-    2
-}
-
-/// `wanderbooks server` where local sockets aren't built yet.
-#[cfg(not(unix))]
-fn run_server(_args: Vec<String>) -> i32 {
-    eprintln!("error: the books server's local sockets come to this system with P11");
-    2
 }
 
 fn main() {

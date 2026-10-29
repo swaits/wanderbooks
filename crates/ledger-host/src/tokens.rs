@@ -125,6 +125,9 @@ impl Keeper {
             std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o700))
                 .map_err(refused)?;
         }
+        // Windows: this account's alone, and what is made in it too.
+        #[cfg(windows)]
+        ledger_store::winsec::set_owner_only(&self.0).map_err(refused)?;
         let name = account.file_name();
         let tmp = self.0.join(format!("{name}.tmp{}", std::process::id()));
         let _ = std::fs::remove_file(&tmp);

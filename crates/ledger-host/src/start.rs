@@ -28,17 +28,33 @@
 //! ```
 
 use crate::knobs::Knobs;
+#[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+#[cfg(unix)]
 use std::time::{Duration, Instant};
 
 /// The host's PATH (INVARIANT 1).
+#[cfg(unix)]
 const PATH: &str = "/usr/local/bin:/usr/bin:/bin";
 
 /// Where systemd-run may be (never looked up on the opener's PATH).
+#[cfg(unix)]
 const SYSTEMD_RUN: [&str; 2] = ["/usr/bin/systemd-run", "/bin/systemd-run"];
+
+/// Windows: a process of its own, without this console, its Ctrl+C or its
+/// window (DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP): what `setsid`
+/// is on Unix.
+#[cfg(windows)]
+pub(crate) const DETACHED_HOST: u32 = 0x0000_0008 | 0x0000_0200;
+/// Windows: leave the job the opener runs in, if it lets its processes
+/// (CREATE_BREAKAWAY_FROM_JOB): a host must not end with an agent's job,
+/// as it must not end with an app's scope on Linux (INVARIANT 3).
+#[cfg(windows)]
+const BREAKAWAY: u32 = 0x0100_0000;
 
 /// The host's log, in the root's `run/`.
 pub const HOST_LOG: &str = "host.log";
@@ -60,11 +76,13 @@ pub fn this_executable() -> Result<PathBuf, String> {
 }
 
 /// This account's user ID.
+#[cfg(unix)]
 fn own_uid() -> u32 {
     // SAFETY: geteuid has no preconditions and can't fail.
     unsafe { libc::geteuid() }
 }
 
+#[cfg(unix)]
 /// `XDG_RUNTIME_DIR` from `value`, if it is this account's own private
 /// runtime folder: absolute, a real folder (no link), owned by this
 /// account, and closed to everyone else.
@@ -79,6 +97,7 @@ pub fn own_runtime_dir(value: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
     (meta.is_dir() && meta.uid() == own_uid() && meta.mode() & 0o077 == 0).then_some(dir)
 }
 
+#[cfg(unix)]
 /// `DBUS_SESSION_BUS_ADDRESS` from `value`, if it is the bus in `runtime`
 /// (`unix:path=<runtime>/bus`, perhaps with a guid after a comma).
 pub fn own_bus(value: Option<&std::ffi::OsStr>, runtime: &Path) -> Option<String> {
@@ -88,6 +107,7 @@ pub fn own_bus(value: Option<&std::ffi::OsStr>, runtime: &Path) -> Option<String
     (rest.is_empty() || rest.starts_with(',')).then(|| value.to_string())
 }
 
+#[cfg(unix)]
 /// This account's runtime folder: the one named in the environment if it
 /// is ours and private; else, when the opener's environment has none (a
 /// client that scrubs it, as Codex does), the system's for this account,
@@ -100,6 +120,7 @@ fn runtime_dir() -> Option<PathBuf> {
         .or_else(|| own_runtime_dir(Some(format!("/run/user/{}", own_uid()).as_ref())))
 }
 
+#[cfg(unix)]
 /// The session bus in `runtime`: the one named in the environment if it
 /// is there, else its usual socket there, if one exists.
 fn session_bus(runtime: &Path) -> Option<String> {
@@ -115,6 +136,7 @@ fn session_bus(runtime: &Path) -> Option<String> {
     }
 }
 
+#[cfg(unix)]
 /// The ssh agent's socket named in `named`, if it is a socket this
 /// account owns at an absolute path (INVARIANT 1).
 fn own_agent(named: Option<&std::ffi::OsStr>) -> Option<std::ffi::OsString> {
@@ -126,6 +148,7 @@ fn own_agent(named: Option<&std::ffi::OsStr>) -> Option<std::ffi::OsString> {
     .then(|| path.as_os_str().to_os_string())
 }
 
+#[cfg(unix)]
 /// The host's environment (INVARIANT 1), given the opener's
 /// `SSH_AUTH_SOCK`.
 fn host_env(home: &Path, ssh_agent: Option<&std::ffi::OsStr>) -> Vec<(String, std::ffi::OsString)> {
@@ -145,6 +168,7 @@ fn host_env(home: &Path, ssh_agent: Option<&std::ffi::OsStr>) -> Vec<(String, st
     env
 }
 
+#[cfg(unix)]
 /// Whether this process sits in a unit under this account's user manager
 /// (an app's scope or service, as uwsm makes for every app), whose stop
 /// would take the host with it; going by the unified cgroup line of
@@ -160,6 +184,7 @@ pub fn in_app_scope(cgroup: &str, uid: u32) -> bool {
     })
 }
 
+#[cfg(unix)]
 /// systemd-run, if this process is in an app scope and the user manager
 /// can be reached (INVARIANT 3).
 fn systemd_run() -> Option<&'static str> {
@@ -173,6 +198,7 @@ fn systemd_run() -> Option<&'static str> {
     SYSTEMD_RUN.into_iter().find(|p| Path::new(p).is_file())
 }
 
+#[cfg(unix)]
 /// Start a host for the root (`root`, else the one the host finds
 /// itself), with these knobs and these server flags (INVARIANTS 1-5).
 pub fn start_host(
@@ -266,9 +292,11 @@ pub fn start_host(
     Ok(())
 }
 
+#[cfg(unix)]
 /// How long systemd-run has to make its scope and run the host.
 const SCOPE_WAIT: Duration = Duration::from_secs(2);
 
+#[cfg(unix)]
 /// Whether systemd-run made its scope and ran the host (INVARIANT 3): the
 /// host's first line is in its log after `from`, or systemd-run is still
 /// running when SCOPE_WAIT is up (it became the host). Only systemd-run
@@ -298,6 +326,111 @@ fn scope_made(child: &mut std::process::Child, log: &std::fs::File, from: u64) -
     }
 }
 
+/// The host's environment on Windows (INVARIANT 1's counterpart): the
+/// system's own variables, the account's profile, and a PATH fixed to the
+/// system folders and Git for Windows (the backups run `git`). Nothing
+/// else of the opener's passes. (CHOICE, P11c: no authority states a
+/// Windows list; this is the least a Windows program and `git` need.)
+#[cfg(windows)]
+fn host_env(home: &Path) -> Vec<(String, std::ffi::OsString)> {
+    let var = |name: &str| std::env::var_os(name);
+    let system_root: PathBuf = var("SystemRoot")
+        .or_else(|| var("windir"))
+        .map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from);
+    let program_files: PathBuf =
+        var("ProgramFiles").map_or_else(|| PathBuf::from(r"C:\Program Files"), PathBuf::from);
+    let path = std::env::join_paths([
+        system_root.join("System32"),
+        system_root.clone(),
+        program_files.join("Git").join("cmd"),
+    ])
+    .unwrap_or_default();
+    let mut env: Vec<(String, std::ffi::OsString)> = vec![
+        ("PATH".into(), path),
+        ("SystemRoot".into(), system_root.clone().into_os_string()),
+        ("windir".into(), system_root.into_os_string()),
+        ("USERPROFILE".into(), home.as_os_str().to_os_string()),
+        ("HOME".into(), home.as_os_str().to_os_string()),
+        ("TEMP".into(), std::env::temp_dir().into_os_string()),
+        ("TMP".into(), std::env::temp_dir().into_os_string()),
+    ];
+    if let Some(local) = ledger_store::winsec::local_app_data() {
+        env.push(("LOCALAPPDATA".into(), local.into_os_string()));
+    }
+    for name in ["APPDATA", "ComSpec", "PATHEXT", "ProgramFiles"] {
+        if let Some(value) = var(name) {
+            env.push((name.into(), value));
+        }
+    }
+    env
+}
+
+/// Start a host for the root (`root`, else the one the host finds
+/// itself), with these knobs and these server flags (INVARIANTS 1, 2, 4
+/// and 5; there is no scope to leave, but a job to break away from).
+#[cfg(windows)]
+pub fn start_host(
+    root: Option<&Path>,
+    knobs: &Knobs,
+    server_flags: &[String],
+) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    let found = ledger_store::root::Root::find(root).map_err(|e| e.to_string())?;
+    let run = found.run_dir().map_err(|e| e.to_string())?;
+    let home = ledger_store::root::account_home().map_err(|e| e.to_string())?;
+    let exe = this_executable()?;
+    let mut args: Vec<std::ffi::OsString> = vec!["host".into()];
+    if root.is_some() {
+        args.push("--root".into());
+        args.push(found.path().as_os_str().to_os_string());
+    }
+    args.extend(knobs.args().into_iter().map(Into::into));
+    args.extend(server_flags.iter().map(Into::into));
+    let log = || {
+        let path = run.join(HOST_LOG);
+        if std::fs::metadata(&path).is_ok_and(|m| m.len() > LOG_LIMIT)
+            && !crate::opener::host_lock_held(&run)
+        {
+            let _ = std::fs::rename(&path, path.with_extension("log.1"));
+        }
+        std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .append(true)
+            .open(&path)
+            .map_err(|e| format!("can't open the host's log: {}", e.kind()))
+    };
+    let spawn = |flags: u32| -> Result<std::process::Child, String> {
+        Command::new(&exe)
+            .args(&args)
+            .env_clear()
+            .envs(host_env(&home))
+            .current_dir(&run)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(log()?)
+            .creation_flags(flags)
+            .spawn()
+            .map_err(|e| {
+                // Named for the caller below: breakaway refused.
+                if e.kind() == std::io::ErrorKind::PermissionDenied {
+                    "denied".to_string()
+                } else {
+                    format!("can't start the books' host: {e}")
+                }
+            })
+    };
+    let child = match spawn(DETACHED_HOST | BREAKAWAY) {
+        Ok(child) => child,
+        // The job the opener runs in doesn't let a process leave it: the
+        // host starts inside it, as a host without a scope does on Linux.
+        Err(why) if why == "denied" => spawn(DETACHED_HOST)?,
+        Err(why) => return Err(why),
+    };
+    reap(child);
+    Ok(())
+}
+
 /// Reap a started host when it ends, without waiting for it (INVARIANT 5).
 fn reap(mut child: std::process::Child) {
     let _ = std::thread::Builder::new()
@@ -307,7 +440,7 @@ fn reap(mut child: std::process::Child) {
         });
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
@@ -455,5 +588,46 @@ mod tests {
     fn this_executable_is_a_file_on_disk() {
         let exe = this_executable().unwrap();
         assert!(exe.is_file(), "{exe:?}");
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    #[test]
+    fn this_executable_is_a_file_on_disk() {
+        let exe = this_executable().unwrap();
+        assert!(exe.is_file(), "{exe:?}");
+    }
+
+    #[test]
+    fn the_host_environment_carries_nothing_of_the_openers_choosing() {
+        let env = host_env(Path::new(r"C:\Users\someone"));
+        let names: Vec<&str> = env.iter().map(|(n, _)| n.as_str()).collect();
+        for n in &names {
+            assert!(
+                [
+                    "PATH",
+                    "SystemRoot",
+                    "windir",
+                    "USERPROFILE",
+                    "HOME",
+                    "TEMP",
+                    "TMP",
+                    "LOCALAPPDATA",
+                    "APPDATA",
+                    "ComSpec",
+                    "PATHEXT",
+                    "ProgramFiles"
+                ]
+                .contains(n),
+                "{n}"
+            );
+        }
+        let home = env.iter().find(|(n, _)| n == "HOME").unwrap();
+        assert_eq!(home.1, r"C:\Users\someone");
+        let path = env.iter().find(|(n, _)| n == "PATH").unwrap();
+        assert!(path.1.to_string_lossy().to_lowercase().contains("system32"));
     }
 }

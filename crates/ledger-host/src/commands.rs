@@ -302,12 +302,7 @@ pub fn serve(
         // Ctrl-C, SIGTERM and SIGHUP are heard from the start, whatever
         // serve is doing (opening, waiting to try again): none is missed.
         let stop = std::sync::Arc::new(tokio::sync::Notify::new());
-        for kind in [
-            tokio::signal::unix::SignalKind::interrupt(),
-            tokio::signal::unix::SignalKind::terminate(),
-            tokio::signal::unix::SignalKind::hangup(),
-        ] {
-            let mut signals = tokio::signal::unix::signal(kind)?;
+        for mut signals in ledger_mcp::ipc::stop_signals()? {
             let stop = stop.clone();
             tokio::spawn(async move {
                 while signals.recv().await.is_some() {
@@ -872,8 +867,13 @@ fn offer_upgrades(run: &Path) {
 /// or a job in the background, would wait unseen for an answer, and mix
 /// the question into its output).
 fn offer_upgrade(run: &Path, book: &str, waiting: &admin::FormatWaiting) {
+    // Windows has no foreground process group to ask about: a terminal
+    // is all there is to see.
+    #[cfg(unix)]
     // SAFETY: isatty, tcgetpgrp and getpgrp have no preconditions.
     let seen = unsafe { libc::isatty(1) == 1 && libc::tcgetpgrp(0) == libc::getpgrp() };
+    #[cfg(windows)]
+    let seen = std::io::IsTerminal::is_terminal(&std::io::stdout());
     if !(seen && can_type_a_passphrase()) {
         eprintln!(
             "note: the books \"{book}\" wait for a format upgrade (to {}): until the owner agrees, with `wanderbooks books upgrade {book}` at a terminal or in the app, they work on their old format.",
@@ -1160,6 +1160,20 @@ pub fn connect(
     }
 }
 
+/// Whether `p` is a file someone may run (Windows: a file; what it can
+/// run as is told by its extension, which the caller chose).
+fn is_runnable(p: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::metadata(p).is_ok_and(|m| m.is_file())
+    }
+}
+
 /// Let the agent `agent` ("claude" or "codex") reach the books `book`:
 /// their token kept in its token file (made if none is), and `wanderbooks
 /// mcp --book <book>` added to the agent's own list as
@@ -1176,7 +1190,7 @@ pub fn connect_agent(common: &Common, agent: &str, book: &str) -> Result<Vec<Str
     // The PATH first; then where the agents' installers put them (a
     // viewer started from the desktop has a short PATH).
     // ($HOME: a test's own home is never the account's.)
-    let home = std::env::var_os("HOME")
+    let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
         .map(PathBuf::from)
         .filter(|h| h.is_absolute());
     let usual = [
@@ -1185,6 +1199,8 @@ pub fn connect_agent(common: &Common, agent: &str, book: &str) -> Result<Vec<Str
         ".bun/bin",
         ".cargo/bin",
         ".volta/bin",
+        // Where npm puts global programs on Windows.
+        "AppData/Roaming/npm",
     ]
     .into_iter()
     .filter_map(|d| home.as_ref().map(|h| h.join(d)))
@@ -1199,11 +1215,19 @@ pub fn connect_agent(common: &Common, agent: &str, book: &str) -> Result<Vec<Str
         .into_iter()
         .chain(usual)
         .filter(|d| d.is_absolute())
-        .map(|d| d.join(cli))
-        .find(|p| {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        .flat_map(|d| {
+            // Windows runs a program by its extension.
+            let names: &[&str] = if cfg!(windows) {
+                &[".exe", ".cmd", ".bat"]
+            } else {
+                &[""]
+            };
+            names
+                .iter()
+                .map(|ext| d.join(format!("{cli}{ext}")))
+                .collect::<Vec<_>>()
         })
+        .find(|p| is_runnable(p))
         .ok_or_else(|| {
             format!("{label} isn't installed here (no `{cli}` on the PATH, nor where its installer puts it)")
         })?;
@@ -1610,8 +1634,7 @@ fn vault_beside(source: &Path) -> Option<PathBuf> {
 
 /// Whether standard input is a terminal.
 fn at_a_terminal() -> bool {
-    // SAFETY: isatty has no preconditions.
-    unsafe { libc::isatty(0) == 1 }
+    std::io::IsTerminal::is_terminal(&std::io::stdin())
 }
 
 /// `wanderbooks books adopt` (INVARIANT 3).
@@ -2397,10 +2420,9 @@ fn on_the_socket(
                 )
             })?;
         let token = zeroize::Zeroizing::new(token);
-        let socket = ledger_store::root::SocketPath::new(&run_dir, ledger_mcp::local::MCP_SOCKET)
+        let socket = ledger_mcp::ipc::Endpoint::new(&run_dir, ledger_mcp::local::MCP_SOCKET)
             .map_err(|e| format!("can't reach the books server: {e}"))?;
-        let http = reqwest::Client::builder()
-            .unix_socket(socket.path())
+        let http = crate::channel::http_builder(&socket)
             .no_proxy()
             .build()
             .map_err(|e| e.to_string())?;

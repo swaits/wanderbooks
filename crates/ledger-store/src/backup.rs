@@ -124,11 +124,20 @@ impl Git {
             .unwrap_or_default();
         dirs.iter()
             .chain(
-                ["/usr/bin", "/bin", "/usr/local/bin", "/opt/homebrew/bin"]
-                    .iter()
-                    .map(PathBuf::from)
-                    .collect::<Vec<_>>()
-                    .iter(),
+                [
+                    "/usr/bin",
+                    "/bin",
+                    "/usr/local/bin",
+                    "/opt/homebrew/bin",
+                    // Git for Windows' own folders (a host started clean
+                    // has a short PATH).
+                    r"C:\Program Files\Git\cmd",
+                    r"C:\Program Files\Git\bin",
+                ]
+                .iter()
+                .map(PathBuf::from)
+                .collect::<Vec<_>>()
+                .iter(),
             )
             .filter(|d| d.is_absolute())
             .map(|d| d.join(if cfg!(windows) { "git.exe" } else { "git" }))
@@ -266,8 +275,24 @@ impl Git {
         let kill_group = |pid: u32| unsafe {
             libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
         };
-        #[cfg(not(unix))]
-        let kill_group = |_: u32| {};
+        // Windows has no process group to signal: a git that has gone quiet
+        // is stopped with the tree of processes it started (`taskkill /T`).
+        // Once git has ended normally nothing is looked for (a process
+        // spawned per git call would cost more than the leftovers it could
+        // find).
+        #[cfg(windows)]
+        let kill_group = |pid: u32| {
+            let _ = std::process::Command::new("taskkill")
+                .args(["/T", "/F", "/PID", &pid.to_string()])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        };
+        #[cfg(unix)]
+        let kill_leftovers = kill_group;
+        #[cfg(windows)]
+        let kill_leftovers = |_: u32| {};
         let status = loop {
             if let Some(status) = child.try_wait()? {
                 break status;
@@ -284,7 +309,7 @@ impl Git {
             std::thread::sleep(Duration::from_millis(20));
         };
         // What it started may still hold its pipes: not waited for long.
-        kill_group(child.id());
+        kill_leftovers(child.id());
         let wait = Duration::from_secs(10);
         let stdout = stdout.recv_timeout(wait).unwrap_or_default();
         let stderr = stderr.recv_timeout(wait).unwrap_or_default();

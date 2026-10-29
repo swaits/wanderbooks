@@ -63,14 +63,10 @@ impl Home {
             .prefix(&format!("wb-{tag}-"))
             .tempdir()
             .unwrap();
-        let out = Command::new(env!("CARGO_BIN_EXE_wanderbooks"))
-            .args(["setup", "--home"])
-            .arg(dir.path())
-            .env_clear()
-            .env("PATH", "/usr/bin:/bin")
-            .env("HOME", dir.path())
-            .output()
-            .unwrap();
+        let mut setup = Command::new(env!("CARGO_BIN_EXE_wanderbooks"));
+        setup.args(["setup", "--home"]).arg(dir.path());
+        clean_env(&mut setup, dir.path());
+        let out = setup.output().unwrap();
         assert!(out.status.success(), "{out:?}");
         Self {
             dir,
@@ -79,7 +75,7 @@ impl Home {
     }
 
     pub fn root(&self) -> PathBuf {
-        self.dir.path().join(".local/share/wanderbooks")
+        ledger_store::root::default_root(self.dir.path())
     }
 
     pub fn run(&self) -> PathBuf {
@@ -190,14 +186,14 @@ impl Server {
             .append(true)
             .open(home.dir.path().join("server.log"))
             .unwrap();
-        let mut child = Command::new(env!("CARGO_BIN_EXE_wanderbooks"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_wanderbooks"));
+        command
             .arg("server")
             .arg("--root")
             .arg(home.root())
-            .current_dir(cwd)
-            .env_clear()
-            .env("PATH", "/usr/bin:/bin")
-            .env("HOME", home.dir.path())
+            .current_dir(cwd);
+        clean_env(&mut command, home.dir.path());
+        let mut child = command
             .env("XDG_CONFIG_HOME", home.dir.path().join(".config"))
             .envs(env.iter().map(|(k, v)| (*k, v.as_os_str())))
             .stdin(Stdio::piped())
@@ -248,10 +244,10 @@ pub fn mcp_http_builder(home: &Home) -> reqwest::ClientBuilder {
 /// [`mcp_http_builder`], for the root's `run/` folder `run`.
 pub fn mcp_http_builder_at(run: &Path) -> reqwest::ClientBuilder {
     // The short path is good in this process only, while it lives: kept.
-    let short = ledger_store::root::SocketPath::new(run, "mcp.sock").unwrap();
-    let path = short.path().to_path_buf();
-    std::mem::forget(short);
-    reqwest::Client::builder().unix_socket(path)
+    let endpoint = ledger_mcp::ipc::Endpoint::new(run, "mcp.sock").unwrap();
+    let builder = ledger_host::channel::http_builder(&endpoint);
+    std::mem::forget(endpoint);
+    builder
 }
 
 /// The settings a settings file's text gives, as books.set_setting changes
@@ -836,17 +832,68 @@ pub fn book_files(dir: &Path) -> std::collections::BTreeMap<PathBuf, String> {
 /// Copy the tree `from` into `to`, private as the server keeps a book
 /// (folders 0700, files 0600).
 pub fn copy_private(from: &Path, to: &Path) {
-    use std::os::unix::fs::PermissionsExt;
     std::fs::create_dir_all(to).unwrap();
-    std::fs::set_permissions(to, std::fs::Permissions::from_mode(0o700)).unwrap();
+    private_folder(to);
     for entry in std::fs::read_dir(from).unwrap().flatten() {
         let (src, dst) = (entry.path(), to.join(entry.file_name()));
         if entry.file_type().unwrap().is_dir() {
             copy_private(&src, &dst);
         } else {
             std::fs::copy(&src, &dst).unwrap();
-            std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(0o600)).unwrap();
+            private_file(&dst);
         }
+    }
+}
+
+/// Make the folder `dir` private as the server keeps one (0700; on
+/// Windows this account's alone, by an owner-only DACL).
+pub fn private_folder(dir: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    #[cfg(windows)]
+    ledger_store::winsec::set_owner_only(dir).unwrap();
+}
+
+/// Make the file `path` private as the server keeps one (0600; on
+/// Windows this account's alone).
+pub fn private_file(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    #[cfg(windows)]
+    ledger_store::winsec::set_owner_only(path).unwrap();
+}
+
+/// A child process's environment cleared down to what a program needs to
+/// run and to find `home` as its own: PATH and HOME on Unix; the system
+/// folder, a PATH of the system's, the profile and the temporary folder on
+/// Windows (a program started with nothing at all can't load its DLLs).
+pub fn clean_env(command: &mut Command, home: &Path) {
+    command.env_clear();
+    #[cfg(unix)]
+    {
+        command.env("PATH", "/usr/bin:/bin").env("HOME", home);
+    }
+    #[cfg(windows)]
+    {
+        let root = std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
+        let system32 = Path::new(&root).join("System32");
+        command
+            .env("SystemRoot", &root)
+            .env("windir", &root)
+            .env(
+                "PATH",
+                std::env::join_paths([system32, root.clone().into()]).unwrap(),
+            )
+            .env("USERPROFILE", home)
+            .env("HOME", home)
+            .env("TEMP", std::env::temp_dir())
+            .env("TMP", std::env::temp_dir());
     }
 }
 
@@ -912,8 +959,7 @@ impl Place {
         let dir = self.books_data();
         let fresh = !dir.join("journal.jsonl").exists();
         if dir.exists() {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+            private_folder(&dir);
         }
         let cwd = self.cwd.borrow().clone();
         let cwd = cwd.as_deref().unwrap_or(self.home.dir.path());

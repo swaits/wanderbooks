@@ -521,14 +521,12 @@ impl std::fmt::Display for CallError {
 
 /// Ask the server on `socket` (the root's `run/admin.sock`), waiting as
 /// long as it takes (a create or an adoption).
-#[cfg(unix)]
 pub fn call(socket: &std::path::Path, request: Request) -> Result<Response, CallError> {
     call_within(socket, request, None)
 }
 
 /// [`call`], waiting at most `wait` for the answer (a quick look, such
 /// as `doctor`'s).
-#[cfg(unix)]
 pub fn call_within(
     socket: &std::path::Path,
     request: Request,
@@ -574,15 +572,14 @@ pub fn call_within(
             .and_then(|n| n.to_str())
             .unwrap_or_default(),
     );
-    let short = ledger_store::root::SocketPath::new(dir, name)
+    let endpoint = crate::ipc::Endpoint::new(dir, name)
         .map_err(|e| not_sent(format!("can't reach the books server: {e}")))?;
-    let stream =
-        std::os::unix::net::UnixStream::connect(short.path()).map_err(|e| match e.kind() {
-            std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused => {
-                not_sent("the books server isn't running".to_string())
-            }
-            _ => not_sent(format!("can't reach the books server: {}", e.kind())),
-        })?;
+    let stream = crate::ipc::connect_std(&endpoint).map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused => {
+            not_sent("the books server isn't running".to_string())
+        }
+        _ => not_sent(format!("can't reach the books server: {}", e.kind())),
+    })?;
     crate::local::check_peer_std(&stream).map_err(not_sent)?;
     stream
         .set_read_timeout(wait)
@@ -896,26 +893,38 @@ mod tests {
         );
     }
 
-    /// A fake books server on the socket `name` in `dir`: it takes one
+    /// A fake books server on the channel `name` in `dir`: it takes one
     /// request and answers `answer`, byte for byte.
-    #[cfg(unix)]
     fn answering(
         dir: &std::path::Path,
         name: &str,
         answer: Vec<u8>,
     ) -> (std::path::PathBuf, std::thread::JoinHandle<()>) {
         let socket = dir.join(name);
-        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let endpoint = crate::ipc::Endpoint::new(dir, name).unwrap();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let server = std::thread::spawn(move || {
-            use std::io::{BufRead, Write};
-            let (stream, _) = listener.accept().unwrap();
-            let mut request = String::new();
-            std::io::BufReader::new(&stream)
-                .read_line(&mut request)
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
                 .unwrap();
-            // A client that stops reading part way breaks the pipe: fine.
-            let _ = (&stream).write_all(&answer);
+            rt.block_on(async move {
+                use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+                let mut listener = crate::ipc::Listener::bind(&endpoint).unwrap();
+                ready_tx.send(()).unwrap();
+                let stream = listener.accept().await.unwrap();
+                let (read, mut write) = crate::ipc::split_accepted(stream);
+                let mut request = String::new();
+                tokio::io::BufReader::new(read)
+                    .read_line(&mut request)
+                    .await
+                    .unwrap();
+                // A client that stops reading part way breaks the pipe: fine.
+                let _ = write.write_all(&answer).await;
+                let _ = write.flush().await;
+            });
         });
+        ready_rx.recv().unwrap();
         (socket, server)
     }
 
@@ -931,7 +940,6 @@ mod tests {
     /// newline not counted, is taken whole (settings texts ride in them);
     /// a byte more is refused, as is an answer cut off before its
     /// newline, even when what came parses.
-    #[cfg(unix)]
     #[test]
     fn an_answer_is_one_line_of_at_most_four_mib() {
         let four_mib = 4 * 1024 * 1024;
@@ -956,7 +964,6 @@ mod tests {
     /// No server on the socket: the request never left, and the command
     /// line says the server isn't running, whether there is no socket or
     /// one a stopped server left behind.
-    #[cfg(unix)]
     #[test]
     fn no_server_means_nothing_was_sent() {
         let dir = tempfile::tempdir().unwrap();
@@ -965,17 +972,21 @@ mod tests {
             call(&dir.path().join("admin.sock"), Request::List),
             not_running
         );
-        let stale = dir.path().join("stale.sock");
-        drop(std::os::unix::net::UnixListener::bind(&stale).unwrap());
-        assert_eq!(
-            call(
-                &stale,
-                Request::Create {
-                    id: "acme".into(),
-                    currency: "USD".into(),
-                }
-            ),
-            not_running
-        );
+        // (A pipe has no stale file to leave behind: only a socket does.)
+        #[cfg(unix)]
+        {
+            let stale = dir.path().join("stale.sock");
+            drop(std::os::unix::net::UnixListener::bind(&stale).unwrap());
+            assert_eq!(
+                call(
+                    &stale,
+                    Request::Create {
+                        id: "acme".into(),
+                        currency: "USD".into(),
+                    }
+                ),
+                not_running
+            );
+        }
     }
 }

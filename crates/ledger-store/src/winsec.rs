@@ -415,11 +415,15 @@ pub fn pid_is_us(pid: u32) -> bool {
 }
 
 /// The process at the client end of the pipe `handle` (a server's).
-pub fn pipe_client_pid(handle: std::os::windows::io::RawHandle) -> io::Result<u32> {
+pub fn pipe_client_pid(pipe: &impl std::os::windows::io::AsRawHandle) -> io::Result<u32> {
     let mut pid = 0u32;
     // SAFETY: a pipe handle the caller owns and an out value.
-    if unsafe { windows_sys::Win32::System::Pipes::GetNamedPipeClientProcessId(handle, &mut pid) }
-        == 0
+    if unsafe {
+        windows_sys::Win32::System::Pipes::GetNamedPipeClientProcessId(
+            pipe.as_raw_handle(),
+            &mut pid,
+        )
+    } == 0
     {
         return Err(io::Error::last_os_error());
     }
@@ -427,11 +431,15 @@ pub fn pipe_client_pid(handle: std::os::windows::io::RawHandle) -> io::Result<u3
 }
 
 /// The process at the server end of the pipe `handle` (a client's).
-pub fn pipe_server_pid(handle: std::os::windows::io::RawHandle) -> io::Result<u32> {
+pub fn pipe_server_pid(pipe: &impl std::os::windows::io::AsRawHandle) -> io::Result<u32> {
     let mut pid = 0u32;
     // SAFETY: a pipe handle the caller owns and an out value.
-    if unsafe { windows_sys::Win32::System::Pipes::GetNamedPipeServerProcessId(handle, &mut pid) }
-        == 0
+    if unsafe {
+        windows_sys::Win32::System::Pipes::GetNamedPipeServerProcessId(
+            pipe.as_raw_handle(),
+            &mut pid,
+        )
+    } == 0
     {
         return Err(io::Error::last_os_error());
     }
@@ -440,13 +448,13 @@ pub fn pipe_server_pid(handle: std::os::windows::io::RawHandle) -> io::Result<u3
 
 /// How many bytes wait to be read on the pipe `handle`, without reading
 /// them. A pipe whose other end has gone is `ERROR_BROKEN_PIPE`.
-pub fn pipe_bytes_waiting(handle: std::os::windows::io::RawHandle) -> io::Result<u32> {
+pub fn pipe_bytes_waiting(pipe: &impl std::os::windows::io::AsRawHandle) -> io::Result<u32> {
     let mut avail = 0u32;
     // SAFETY: a pipe handle the caller owns; only the available count is
     // asked for.
     let ok = unsafe {
         windows_sys::Win32::System::Pipes::PeekNamedPipe(
-            handle,
+            pipe.as_raw_handle(),
             std::ptr::null_mut(),
             0,
             std::ptr::null_mut(),

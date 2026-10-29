@@ -109,8 +109,8 @@ pub struct Opener {
 pub struct Lease {
     /// Its number.
     pub id: u64,
-    lines: tokio::io::Lines<tokio::io::BufReader<tokio::io::Take<tokio::net::unix::OwnedReadHalf>>>,
-    _write: tokio::net::unix::OwnedWriteHalf,
+    lines: tokio::io::Lines<tokio::io::BufReader<tokio::io::Take<ledger_mcp::ipc::ConnectedRead>>>,
+    _write: ledger_mcp::ipc::ConnectedWrite,
 }
 
 impl Lease {
@@ -207,11 +207,11 @@ impl Opener {
         let mut started: Option<Instant> = None;
         loop {
             wait_for_restart(&self.run).await;
-            let short = ledger_store::root::SocketPath::new(&self.run, lease::LEASE_SOCKET)
+            let endpoint = ledger_mcp::ipc::Endpoint::new(&self.run, lease::LEASE_SOCKET)
                 .map_err(|e| format!("can't reach the books' host: {e}"))?;
-            match tokio::net::UnixStream::connect(short.path()).await {
+            match ledger_mcp::ipc::connect(&endpoint).await {
                 Ok(stream) => {
-                    if !ledger_mcp::local::peer_is_us(&stream) {
+                    if !ledger_mcp::ipc::peer_is_us(&stream) {
                         return Err(
                             "the books' host socket belongs to another account: not used".into(),
                         );
@@ -279,8 +279,8 @@ impl Opener {
     }
 
     /// Say hello on a connection and read the host's first word.
-    async fn ask(&self, stream: tokio::net::UnixStream) -> Result<Asked, String> {
-        let (read, mut write) = stream.into_split();
+    async fn ask(&self, stream: ledger_mcp::ipc::Connected) -> Result<Asked, String> {
+        let (read, mut write) = ledger_mcp::ipc::split_connected(stream);
         let hello = Hello {
             proto: lease::PROTO,
             ask: Ask::Hold {
@@ -402,14 +402,14 @@ pub fn ask_once(run: &Path, ask: Ask) -> Result<Option<HostMsg>, String> {
 /// [`ask_once`], waiting at most `wait` for the answer (a probe).
 pub fn ask_once_within(run: &Path, ask: Ask, wait: Duration) -> Result<Option<HostMsg>, String> {
     use std::io::{BufRead, Write};
-    let short = ledger_store::root::SocketPath::new(run, lease::LEASE_SOCKET)
+    let endpoint = ledger_mcp::ipc::Endpoint::new(run, lease::LEASE_SOCKET)
         .map_err(|e| format!("can't reach the books' host: {e}"))?;
-    let stream = match std::os::unix::net::UnixStream::connect(short.path()) {
+    let stream = match ledger_mcp::ipc::connect_std(&endpoint) {
         Ok(s) => s,
         Err(e) if no_host(&e) => return Ok(None),
         Err(e) => return Err(format!("can't reach the books' host: {}", e.kind())),
     };
-    if !ledger_mcp::local::peer_is_us(&stream) {
+    if !ledger_mcp::ipc::peer_is_us(&stream) {
         return Err("the books' host socket belongs to another account: not used".into());
     }
     stream

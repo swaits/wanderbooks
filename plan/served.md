@@ -1601,7 +1601,7 @@ The design the S4 to S7 units build from. Corrected on 2026-10-26 against what S
 - **A-11.** ~~Two upgrades (after S1, and after S7)~~ → the first (`document_standing`) was given 2026-10-24; D-52 makes the second the only remaining one: `documents_v2` covers S4 to S7 (and `drafts_v2` joins it), declared once after S7. Q-5 asks whether to declare it earlier.
 - **A-12.** Overpayments refused; customer credits later (8.4).
 - **A-13.** Each party gets an email and default terms, copied onto each document at issue.
-- **A-14.** (Reserved: the owner's answer to Q-5.)
+- **A-14.** (Q-5, answered 2026-10-28, D-57.) One go-ahead, after S7 and P4 have landed: `documents_v2` and `drafts_v2` are declared together, after one verified backup and one comparison of the goldens.
 
 #### 8.3.2 In plain language
 
@@ -2027,6 +2027,8 @@ The owner decisions of 2026-10-16 (at the top of this document) replace the form
 | D-54 | P11 split (2026-10-26 review; D-24 to D-27 unchanged) | **P11a:** installers and updates. **P11b:** the agent dock and books homes. The dock starts the agent as an ordinary child process of the viewer's `Owner` (D-32 removed the helper and the confinement); the viewer stays read-only by design and by test. The two-key release manifest of D-25 is built unless the owner answers Q-4 "minisign only". |
 | D-55 | Party contact details (owner, 2026-10-27: asked which fields, chose "Full contact block") | A party carries, all optional and journaled on `party.updated` behind `documents_v2`: `phone`, `contact` (a named person), `billing_address`, `shipping_address`, `billing_email`. The existing `email` stays the general address and the existing `address` the general/business one; when `billing_email` or `billing_address` is set, an invoice's bill-to uses it, else the general one. `PartySnapshot` carries the same at issue; the issued PDF prints the contact person, phone, billing address and billing email, and prints a Ship-to line when a shipping address is set. `books.update_party` and `books.create_invoice`'s `bill_to` override take all six; `""` clears a text field. Both emails go through `parties::check_email` (one `@`, no spaces, the full-TIN scan). S4.4 builds the core, store, journal and MCP parts; S4.5 the PDF. Folded into `documents_v2` because the owner's upgrade has not happened (D-52), so no second go-ahead. No projection columns: there is no parties table in the SQLite projection, and replay plus `differs_from` carry the facts. Terms per side are already D-52/S4.2's and are unchanged. |
 | D-56 | The destination, and when P11a starts (owner, 2026-10-28: the work is "ultimately taking it to a single bundled server+GUI installation for Mac/Windows/Linux and then beyond") | **The installed app is this plan's destination** (D-19, D-22 and D-24 to D-27 unchanged), and the hosted service of section 11 is what comes after it. So P11a is no longer "any time": it starts as soon as an engineer is free, beside the P4b finish, with its new step 0 first (the macOS and Windows keyring stores, the Windows data root and pipes, a macOS and Windows CI build), because today the executable's agent path works on Linux alone. The P10 chain (P4, P5, P8) keeps its order and runs beside it. |
+| D-57 | Q-5 answered (owner, 2026-10-28, the question tool: "Once, after everything") | **One format upgrade of the live books, after S7 and P4 have landed**, declaring `documents_v2` and `drafts_v2` together (D-52 confirmed). Until then the new writes are refused on the owner's books with the upgrade remedy; a few days without numbered invoices is the accepted cost. A-14 records it. |
+| D-58 | Q-8 answered (owner, 2026-10-28, the question tool: "Yes, all stand as built") | **D-47 to D-54 are the owner's decisions**, no longer the review's recommendations: reversals stay posted (D-47), the vault stays v1 (D-48), the P4b deferrals (D-49), the preview digest with no key (D-50), the P9 split (D-51), one P4b upgrade (D-52), no jobs and no new crates (D-53), the P11 split (D-54). The "the owner may revisit" clauses on those rows are closed. |
 
 ### 10.2 Deferred
 
@@ -2035,17 +2037,17 @@ The owner decisions of 2026-10-16 (at the top of this document) replace the form
 
 ### 10.3 Open questions for the owner, and the closed ones
 
-**Open (2026-10-28).** Each is asked when its unit starts, one at a time, in plain English; none blocks the units before it.
+**Open (2026-10-28): Q-4, Q-6, Q-7.** Each is asked when its unit starts, one at a time, in plain English; none blocks the units before it. Q-5 and Q-8 were answered on 2026-10-28 (D-57, D-58) and are kept below for the record.
 
 **Q-4 (before P11a step 5).** Releases: should the app check updates against our own signed release list as well (two keys, one on your hardware token and one offline, a version that only goes up, an expiry), as decided on 2026-10-18 (D-25), or is the packaging tool's own single-key signature plus Apple's and Microsoft's code signing enough? The second is simpler and already refuses an older version; the first also stops a frozen or replayed update list. Recommended: the first, as decided, since the key work is small once the token exists.
 
-**Q-5 (due now: S4.1-S4.3 landed 2026-10-27 and S4.4 is built).** The receivables and payables work needs one more go-ahead to switch your books to the new format (numbers, terms, line accounts, sent records, discounts, write-offs). Should we ask once, after everything is built (write-offs and discounts included), or earlier, after invoice numbers and terms land, with a second ask later? Recommended: once, after everything, unless you need numbered invoices sooner.
+**Q-5 (closed 2026-10-28 → D-57: once, after everything).** The receivables and payables work needs one more go-ahead to switch your books to the new format (numbers, terms, line accounts, sent records, discounts, write-offs). Should we ask once, after everything is built (write-offs and discounts included), or earlier, after invoice numbers and terms land, with a second ask later? Recommended: once, after everything, unless you need numbered invoices sooner.
 
 **Q-6 (before P9b).** For claude.ai on the web to reach the books on your own server, it needs a sign-in service. Should we run an existing one (Authentik, Ory or Keycloak) beside the books, which we only trust tokens from, or write our own small one into the books? Recommended: an existing one (D-7 b): no security-critical code of ours, no outside review needed.
 
 **Q-7 (when P11b starts).** When the app connects Codex to a company's books folder, may it mark that folder as trusted in Codex's own settings, or should Codex ask you itself the first time? Recommended: let Codex ask.
 
-**Q-8 (now, with Q-5).** The 2026-10-26 review made eight engineering decisions in your name (D-47 to D-54: reversals stay posted with no reversal drafts; the vault stays v1; the P4b deferrals; the preview digest with no key; the P9 and P11 splits; one `documents_v2` upgrade; no jobs and no new crates), and S5, S6, S7 and P6 were built on them. Do they stand? Recommended: yes, as built; any you reverse becomes a new unit.
+**Q-8 (closed 2026-10-28 → D-58: all stand).** The 2026-10-26 review made eight engineering decisions in your name (D-47 to D-54: reversals stay posted with no reversal drafts; the vault stays v1; the P4b deferrals; the preview digest with no key; the P9 and P11 splits; one `documents_v2` upgrade; no jobs and no new crates), and S5, S6, S7 and P6 were built on them. Do they stand? Recommended: yes, as built; any you reverse becomes a new unit.
 
 **Closed: the P2 cutover questions (Q-1 to Q-3).** Answered 2026-10-17 and 2026-10-20; the cutover happened 2026-10-20 (P2 slice 9). Kept for the record:
 
@@ -2079,7 +2081,7 @@ The cutover's check adds: the project folder holds none of the above, and `wande
 | Unit | Decisions it rests on |
 |---|---|
 | U0a, U0b, U0c | D-33 (no mutation runs), D-53 (no `ledger-view`) |
-| P4b S4 | A-1, A-2, A-3, A-7, A-10, A-13; D-39, D-43, D-45, D-46, D-52, D-55 |
+| P4b S4 | A-1, A-2, A-3, A-7, A-10, A-13, A-14; D-39, D-43, D-45, D-46, D-52, D-55, D-57 |
 | P4b S5 | A-4; D-17, D-52 |
 | P4b S6 | A-4, A-8, A-12; D-40, D-42, D-49, D-52 |
 | P4b S7 | A-5; D-49, D-52 |

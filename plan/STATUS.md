@@ -55,6 +55,10 @@ keyring and only the Linux Secret Service store exists, so on macOS
 CI. P11a gains step 0 for exactly that groundwork and starts now, beside
 the P4b finish; the P10 chain (P4, P5, P8) keeps its order.
 
+**Answered 2026-10-28 (the question tool):** Q-5, one format upgrade after
+S7 and P4 (D-57); Q-8, D-47 to D-54 stand (D-58); the planning session
+does the merges itself; the website is redeployed with the macOS wording.
+
 **Next, in order:** (1) resume the five branches in the 8.0.2 order,
 each rebased and `just check`ed again (the pause killed every gate),
 P6 last with its gate run to the end and its dependency reviewed; (2)

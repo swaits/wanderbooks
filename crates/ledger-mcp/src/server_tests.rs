@@ -716,23 +716,10 @@ fn tool_text_lint() {
     }
 }
 
-/// Tool descriptions are at most 700 characters (plan I-12). The
-/// ones over it today are listed, each to be shortened in P5 when its
-/// text moves into the handbook; no new one may join them, and one
-/// that shrinks under the cap must leave the list.
+/// Tool descriptions are at most 700 characters (plan I-12); the long
+/// text lives in the handbook (P5 moved the last eight there).
 #[test]
 fn tool_descriptions_fit_700_characters() {
-    // Shorten in P5.
-    const OVER: &[&str] = &[
-        "books.export",
-        "books.export_cpa_package",
-        "books.import_bank_csv",
-        "books.reconcile",
-        "books.set_entry_party",
-        "books.set_w9",
-        "books.show",
-        "books.vendor_1099",
-    ];
     let mut over: Vec<String> = BooksServer::tool_router()
         .list_all()
         .iter()
@@ -740,7 +727,7 @@ fn tool_descriptions_fit_700_characters() {
         .map(|t| t.name.to_string())
         .collect();
     over.sort();
-    assert_eq!(over, OVER, "tool descriptions over 700 characters");
+    assert!(over.is_empty(), "tool descriptions over 700 characters: {over:?}");
 }
 
 /// The tools docs/mcp-interface.md documents: a line (or a bullet)

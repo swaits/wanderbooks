@@ -706,7 +706,7 @@ impl BooksServer {
     #[tool(
         name = "books.import_bank_csv",
         title = "Import a bank CSV as drafts",
-        description = "Import a QuickBooks-style bank/credit-card CSV: 3 columns Date,Description,Amount (payments negative), or 4 columns Date,Description, money out, money in (Intuit heads them Credit,Debit). Slash dates must settle month-first or day-first from the file itself or from date_order (\"month_first\" for mm/dd, \"day_first\" for dd/mm); ask the human when the tool says the dates read either way. Creates one DRAFT entry per transaction, all or none: bank account on one side, categorized offset on the other (the longest matching rule pattern, else default_offset_code). Give the CSV as upload_id: upload it with books.begin_upload purpose import and `wanderbooks upload` (a file never passes through you). Review with books.digest, then post. File the export too (books.file_document category import_source) and pass source_attachment_id: it is linked to the bank account, so the import traces to its source (never to the drafts: a bank export is not a receipt).",
+        description = "Import a bank or card CSV (Date, Description, Amount; or Date, Description, money out, money in) as one DRAFT entry per transaction, all or none: the bank account on one side, a categorized offset on the other. Give the CSV as upload_id (books.begin_upload purpose import; a file never passes through you). Ambiguous slash dates need date_order. Review with books.digest, then post. Also file the export (books.file_document category import_source) and pass source_attachment_id. Details in books.handbook section files-in-out.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,

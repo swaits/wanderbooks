@@ -123,7 +123,7 @@ impl BooksServer {
     #[tool(
         name = "books.reconcile",
         title = "Reconcile an account",
-        description = "Reconcile a bank, cash, or card account against a statement. Give statement_attachment (a statement recorded with books.record_statement: its account, period end, and closing balance), or account, statement_date, and statement_balance for a quick check against any balance. Returns the book balance, cleared balance, statement balance, the difference (cleared minus statement; zero means reconciled), the cleared and uncleared lines through the statement date, and the problems that would stop it being recorded. Without confirmed=true it is a preview and records nothing. With confirmed=true and a recorded statement it records the reconciliation (journaled as reconciliation.completed, linked to the statement), refused unless the difference is exactly zero and it comes after the account's last reconciliation. Mark lines cleared with books.mark_cleared first.",
+        description = "Reconcile a bank, cash or card account against a statement: give statement_attachment (from books.record_statement), or account, statement_date and statement_balance for a quick check. Returns the book, cleared and statement balances, the difference (cleared minus statement; zero means reconciled), the cleared and uncleared lines and the problems that would stop it. Without confirmed it previews. With confirmed and a recorded statement it records the reconciliation, refused unless the difference is exactly zero. Mark lines first with books.mark_cleared.",
         annotations(
             read_only_hint = false,
             destructive_hint = true,

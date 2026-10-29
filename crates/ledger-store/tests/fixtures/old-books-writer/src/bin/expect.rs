@@ -6,7 +6,7 @@ fn main() {
     names.sort();
     for dir in names {
         let n = dir.file_name().unwrap().to_string_lossy().to_string();
-        let _ = std::fs::remove_file(dir.join(ledger_store::DB_FILE));
+        let _ = std::fs::remove_file(dir.join(ledger_store::db_file()));
         let s = match ledger_store::Store::open(&dir) { Ok(s) => s, Err(e) => { println!("FAILS {n}: {e}"); continue } };
         let l = s.ledger();
         let entries: Vec<_> = (1..l.next_entry_id()).filter_map(|id| l.get_entry(id)).collect();

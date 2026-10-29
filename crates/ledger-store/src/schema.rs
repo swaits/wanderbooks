@@ -5,7 +5,7 @@
 //! is the current version.
 
 /// Current schema version.
-pub const SCHEMA_VERSION: u32 = 18;
+pub const SCHEMA_VERSION: u32 = 19;
 
 /// Migrations, in order. `MIGRATIONS[i]` migrates from version `i` to `i+1`.
 pub const MIGRATIONS: &[&str] = &[
@@ -468,5 +468,22 @@ CREATE TABLE IF NOT EXISTS annotations(
   seq INTEGER NOT NULL
 );
 ALTER TABLE attachments ADD COLUMN duplicate_of INTEGER NULL;
+"#,
+    r#"
+-- v19: draft states and posting order (plan P4, `drafts_v2`). Drafts are
+-- not rows of `entries` (they never touch the projection until posted),
+-- so a draft's state has a table of its own: one row per draft awaiting
+-- its evidence (a draft being built is the default and has no row), gone
+-- when the draft posts or is discarded. `posted_seq` is the journal line
+-- (`entry.posted` or `entry.reversed`) that posted the entry: what the
+-- digest's `since_seq` reads. Old rows are never migrated in place: the
+-- database file is named for its schema, so a v19 file is built from the
+-- journal.
+ALTER TABLE entries ADD COLUMN posted_seq INTEGER NULL;
+CREATE TABLE IF NOT EXISTS draft_states(
+  entry_id INTEGER PRIMARY KEY,
+  state TEXT NOT NULL,
+  note TEXT NULL
+);
 "#,
 ];

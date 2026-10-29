@@ -1757,7 +1757,11 @@ event type would be refused. P6's is `attachment_text` (an
 `attachment.text_extracted`, `attachment.annotated` or `entry.settles`, a
 new event type, and an `attachment.withdrawn` carrying `duplicate_of`; an
 older version would refuse the types, or withdraw a duplicate without
-saying what it duplicates, B-44). A command asks for
+saying what it duplicates, B-44). P4's is `drafts_v2` (an
+`entry.draft_state_set` or `entry.draft_discarded`, both new event types:
+an older version would refuse them, or, reading around them, keep a
+discarded draft that holds a period open and call a waiting draft one
+being built, B-43). A command asks for
 the feature it needs (`Store::ensure_feature`) before its first journaled
 line, and only when the line it is about to write uses it, so a write
 refused for waiting on the upgrade journals nothing, never an entry

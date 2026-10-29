@@ -61,7 +61,11 @@ apply is safe — on startup the applier replays every journal line with
   never a ledger line or a figure; P4b S5), `invoice.written_off` (P4b S7),
   `receipt.attached`, `receipt.linked`, `receipt.unlinked`,
   `document.filed`, `attachment.withdrawn`, `attachment.text_extracted`,
-  `attachment.annotated`, `entry.settles` (P6) (plus the A/R, A/P, asset,
+  `attachment.annotated`, `entry.settles` (P6), `entry.draft_state_set`
+  (a draft building or awaiting its evidence: a note on the draft, no
+  figure) and `entry.draft_discarded` (a draft thrown away, with why; the
+  draft's earlier lines stay in the journal) (P4, feature `drafts_v2`)
+  (plus the A/R, A/P, asset,
   period, payroll, and class events listed on `JournalLine`).
 - `payload`: the full domain facts (account fields, entry with lines, blob
   sha, ...). Everything the applier needs; nothing it must look up elsewhere.

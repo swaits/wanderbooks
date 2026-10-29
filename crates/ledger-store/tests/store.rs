@@ -2120,6 +2120,26 @@ fn books_written_under_older_rules_still_open() {
     .unwrap();
     w.append("entry.settles", json!({"entry_id": 7, "settles": [1]}))
         .unwrap();
+    // P4's new shapes, hand-written as this version writes them: a draft
+    // awaiting its evidence, and a draft thrown away. This reader takes
+    // them; the version before it stopped at the declaration.
+    for (id, what) in [(8, "Waiting on a receipt"), (9, "Entered twice")] {
+        w.append(
+            "entry.created",
+            json!({"id": id, "date": "2026-05-01", "description": what}),
+        )
+        .unwrap();
+    }
+    w.append(
+        "entry.draft_state_set",
+        json!({"id": 8, "state": "awaiting_evidence", "note": "invoice due"}),
+    )
+    .unwrap();
+    w.append(
+        "entry.draft_discarded",
+        json!({"id": 9, "reason": "entered twice"}),
+    )
+    .unwrap();
     drop(w);
     // Opening rebuilds from the journal; it must accept all of it.
     let _ = std::fs::remove_file(dir.join(ledger_store::db_file()));
@@ -2247,6 +2267,14 @@ fn books_written_under_older_rules_still_open() {
         store.ledger().line_doc(6, 1).map(|t| t.movement),
         Some(ledger_core::Movement::WriteOff)
     );
+    // P4's draft state and discard replay as written, and move no figure.
+    assert!(
+        store.ledger().get_entry(9).is_none(),
+        "the discarded draft is gone"
+    );
+    let waiting = store.ledger().get_entry(8).expect("the waiting draft");
+    assert_eq!(waiting.draft_state().key(), "awaiting_evidence");
+    assert_eq!(waiting.draft_state().note(), "invoice due");
 }
 
 /// The books an earlier wanderbooks wrote, one directory each under
@@ -4171,4 +4199,286 @@ fn a_new_accounts_name_is_journaled_trimmed() {
         })
         .unwrap();
     assert_eq!(name, "Hosting");
+}
+
+// ---------------------------------------------------------------------------
+// Draft states, discards and the posting line (plan P4, `drafts_v2`).
+// ---------------------------------------------------------------------------
+
+fn jan(day: u32) -> NaiveDate {
+    NaiveDate::from_ymd_opt(2026, 1, day).unwrap()
+}
+
+/// A books dir with two accounts and one posted entry, in the current
+/// format (new books declare every feature).
+fn books_for_drafts(dir: &std::path::Path) -> (Store, u64, u64, u64) {
+    let mut s = Store::create(dir, Currency::USD).unwrap();
+    let cash = s
+        .add_account("1000", "Cash", AccountType::Asset, None, false)
+        .unwrap();
+    let equity = s
+        .add_account("3000", "Equity", AccountType::Equity, None, false)
+        .unwrap();
+    let rent = s
+        .add_account("6000", "Rent", AccountType::Expense, None, false)
+        .unwrap();
+    let seed = s.create_entry(jan(2), "Seed").unwrap();
+    s.add_line(seed, cash, Side::Debit, usd(500)).unwrap();
+    s.add_line(seed, equity, Side::Credit, usd(500)).unwrap();
+    s.post_entry(seed).unwrap();
+    (s, cash, rent, seed)
+}
+
+fn lines_of(dir: &std::path::Path) -> Vec<serde_json::Value> {
+    std::fs::read_to_string(dir.join(ledger_store::JOURNAL_FILE))
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
+}
+
+/// R-B (plan P4): a draft's state journals `entry.draft_state_set`, replays
+/// into the draft, and projects into `draft_states` (a row only while it
+/// awaits evidence, gone when it posts or is discarded); a discard
+/// journals `entry.draft_discarded` with its reason and replays into a
+/// ledger without the draft. Live, replay and the projection agree.
+#[test]
+fn draft_states_replay_and_project() {
+    let dir = test_dir("draft-states");
+    let (mut s, cash, rent, _) = books_for_drafts(&dir);
+    let waiting = s.create_entry(jan(10), "Figma annual plan").unwrap();
+    s.add_line(waiting, rent, Side::Debit, usd(40)).unwrap();
+    s.add_line(waiting, cash, Side::Credit, usd(40)).unwrap();
+    let doomed = s.create_entry(jan(11), "Duplicate").unwrap();
+    s.add_line(doomed, rent, Side::Debit, usd(5)).unwrap();
+    s.add_line(doomed, cash, Side::Credit, usd(5)).unwrap();
+    let from = lines_of(&dir).len();
+    s.set_draft_state(
+        waiting,
+        ledger_core::DraftState::AwaitingEvidence {
+            note: "invoice due from Figma".into(),
+        },
+    )
+    .unwrap();
+    s.set_draft_state(doomed, ledger_core::DraftState::Building)
+        .unwrap();
+    s.discard_draft(doomed, "entered twice").unwrap();
+    let got: Vec<_> = lines_of(&dir).into_iter().skip(from).collect();
+    assert_eq!(got[0]["type"], "entry.draft_state_set");
+    assert_eq!(got[0]["payload"]["id"], waiting);
+    assert_eq!(got[0]["payload"]["state"], "awaiting_evidence");
+    assert_eq!(got[0]["payload"]["note"], "invoice due from Figma");
+    assert_eq!(got[1]["payload"]["state"], "building");
+    assert!(got[1]["payload"].get("note").is_none(), "absent, not empty");
+    assert_eq!(got[2]["type"], "entry.draft_discarded");
+    assert_eq!(got[2]["payload"]["reason"], "entered twice");
+    s.verify().unwrap();
+    let rows = |dir: &std::path::Path| -> Vec<(i64, String, Option<String>)> {
+        let conn = rusqlite::Connection::open(dir.join(ledger_store::db_file())).unwrap();
+        let mut q = conn
+            .prepare("SELECT entry_id, state, note FROM draft_states ORDER BY entry_id")
+            .unwrap();
+        q.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect()
+    };
+    assert_eq!(
+        rows(&dir),
+        vec![(
+            waiting as i64,
+            "awaiting_evidence".to_string(),
+            Some("invoice due from Figma".to_string())
+        )]
+    );
+    // The live ledger, and one rebuilt from the journal alone, agree.
+    let live = s.ledger().clone();
+    assert!(
+        live.get_entry(doomed).is_none(),
+        "the discarded draft is gone"
+    );
+    assert_eq!(
+        live.get_entry(waiting).unwrap().draft_state().key(),
+        "awaiting_evidence"
+    );
+    drop(s);
+    let mut reopened = Store::open(&dir).unwrap();
+    reopened.verify().unwrap();
+    assert!(
+        live.differs_from(reopened.ledger()).is_empty(),
+        "{:?}",
+        live.differs_from(reopened.ledger())
+    );
+    // Posting the waiting draft clears its row and its state.
+    reopened.post_entry(waiting).unwrap();
+    assert_eq!(
+        reopened
+            .ledger()
+            .get_entry(waiting)
+            .unwrap()
+            .draft_state()
+            .key(),
+        "building"
+    );
+    reopened.verify().unwrap();
+    drop(reopened);
+    assert!(rows(&dir).is_empty());
+    // The refusals: a posted entry, an unknown one, an empty reason, a TIN.
+    let mut s = Store::open(&dir).unwrap();
+    let head = s.head();
+    assert!(s.discard_draft(waiting, "oops").is_err());
+    assert!(s.discard_draft(9999, "oops").is_err());
+    let again = s.create_entry(jan(12), "Another").unwrap();
+    let head = {
+        let _ = head;
+        s.head()
+    };
+    assert!(s.discard_draft(again, "   ").is_err());
+    assert!(s.discard_draft(again, "ssn 123-45-6789").is_err());
+    assert!(
+        s.set_draft_state(
+            again,
+            ledger_core::DraftState::AwaitingEvidence {
+                note: "ein 12-3456789 pending".into()
+            }
+        )
+        .is_err()
+    );
+    assert!(
+        s.set_draft_state(waiting, ledger_core::DraftState::Building)
+            .is_err()
+    );
+    assert_eq!(s.head(), head, "a refusal journals nothing");
+}
+
+/// R-A step 3 (plan P4): the draft tools are `drafts_v2`'s, so books that
+/// haven't declared it refuse them, journaling nothing; after the owner's
+/// go-ahead they journal, and the reopened books hold them.
+#[test]
+fn drafts_v2_waits_for_the_upgrade() {
+    let dir = test_dir("drafts-wait");
+    let mut s =
+        Store::create_in_format(&dir, Currency::USD, &ledger_store::JournalFormat::default())
+            .unwrap();
+    let cash = s
+        .add_account("1000", "Cash", AccountType::Asset, None, false)
+        .unwrap();
+    let rent = s
+        .add_account("6000", "Rent", AccountType::Expense, None, false)
+        .unwrap();
+    let d = s.create_entry(jan(10), "Figma").unwrap();
+    s.add_line(d, rent, Side::Debit, usd(40)).unwrap();
+    s.add_line(d, cash, Side::Credit, usd(40)).unwrap();
+    let head = s.head();
+    let len = lines_of(&dir).len();
+    for refused in [
+        s.set_draft_state(
+            d,
+            ledger_core::DraftState::AwaitingEvidence { note: "x".into() },
+        ),
+        s.discard_draft(d, "no longer needed"),
+    ] {
+        match refused {
+            Err(StoreError::FormatUpgradePending { need }) => {
+                assert_eq!(need, "the journal feature drafts_v2")
+            }
+            other => panic!("expected FormatUpgradePending, got {other:?}"),
+        }
+    }
+    assert_eq!(s.head(), head, "a refusal journals nothing");
+    assert_eq!(lines_of(&dir).len(), len);
+    // Posting a draft needs nothing new: it is the old shape.
+    assert!(s.upgrade_format().unwrap().is_some(), "the go-ahead");
+    s.set_draft_state(
+        d,
+        ledger_core::DraftState::AwaitingEvidence { note: "x".into() },
+    )
+    .unwrap();
+    s.discard_draft(d, "no longer needed").unwrap();
+    let live = s.ledger().clone();
+    drop(s);
+    let reopened = Store::open(&dir).unwrap();
+    reopened.verify().unwrap();
+    assert!(live.differs_from(reopened.ledger()).is_empty());
+    assert!(reopened.ledger().get_entry(d).is_none());
+}
+
+/// Plan P4: `posted_seq` is the journal line that posted the entry:
+/// `entry.posted` (hand entries and the ones commands make), `entry.reversed`,
+/// the closing entry's `period.closed`. A backdated entry has the line it
+/// was posted at, not the line its date would suggest; replay and the live
+/// books agree; the projection's `entries.posted_seq` is the same number.
+#[test]
+fn posted_seq_is_the_posting_lines_seq() {
+    let dir = test_dir("posted-seq");
+    let (mut s, cash, rent, seed) = books_for_drafts(&dir);
+    // Drafted first, posted later, and dated before the seed.
+    let backdated = s.create_entry(jan(1), "Backdated").unwrap();
+    s.add_line(backdated, rent, Side::Debit, usd(7)).unwrap();
+    s.add_line(backdated, cash, Side::Credit, usd(7)).unwrap();
+    let other = s.create_entry(jan(20), "Later date, earlier post").unwrap();
+    s.add_line(other, rent, Side::Debit, usd(3)).unwrap();
+    s.add_line(other, cash, Side::Credit, usd(3)).unwrap();
+    s.post_entry(other).unwrap();
+    s.post_entry(backdated).unwrap();
+    let reversal = s.reverse_entry(other, jan(21), "Undo").unwrap();
+    let jan_p = s
+        .create_period(
+            "2026-01",
+            jan(1),
+            NaiveDate::from_ymd_opt(2026, 1, 31).unwrap(),
+        )
+        .unwrap();
+    let closing = s.close_period(jan_p).unwrap().expect("income to close");
+    // The journal line that carries each posting.
+    let lines = lines_of(&dir);
+    let seq_of = |ty: &str, id: u64| -> u64 {
+        lines
+            .iter()
+            .find(|l| l["type"] == ty && l["payload"]["id"] == id)
+            .unwrap_or_else(|| panic!("no {ty} for {id}"))["seq"]
+            .as_u64()
+            .unwrap()
+    };
+    let closing_seq = lines.iter().find(|l| l["type"] == "period.closed").unwrap()["seq"]
+        .as_u64()
+        .unwrap();
+    let want = [
+        (seed, seq_of("entry.posted", seed)),
+        (other, seq_of("entry.posted", other)),
+        (backdated, seq_of("entry.posted", backdated)),
+        (reversal, seq_of("entry.reversed", reversal)),
+        (closing, closing_seq),
+    ];
+    for (id, seq) in want {
+        assert_eq!(s.ledger().posted_seq(id), Some(seq), "live: entry {id}");
+    }
+    assert!(
+        s.ledger().posted_seq(backdated) > s.ledger().posted_seq(other),
+        "posted later though dated earlier"
+    );
+    s.verify().unwrap();
+    let live = s.ledger().clone();
+    drop(s);
+    let reopened = Store::open(&dir).unwrap();
+    reopened.verify().unwrap();
+    for (id, seq) in want {
+        assert_eq!(
+            reopened.ledger().posted_seq(id),
+            Some(seq),
+            "replay: entry {id}"
+        );
+    }
+    assert!(live.differs_from(reopened.ledger()).is_empty());
+    let conn = rusqlite::Connection::open(dir.join(ledger_store::db_file())).unwrap();
+    for (id, seq) in want {
+        let got: i64 = conn
+            .query_row(
+                "SELECT posted_seq FROM entries WHERE id = ?",
+                [id as i64],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(got as u64, seq, "projection: entry {id}");
+    }
 }

@@ -18,7 +18,7 @@
 use chrono::NaiveDate;
 use ledger_core::arap::{DocumentLine, SendKind, Sent, SentVia};
 use ledger_core::{AccountType, Currency, Money, Side};
-use ledger_store::format::{DOCUMENTS_V2, EVENT_TYPES, FORMAT_SET, KNOWN_FEATURES};
+use ledger_store::format::{DOCUMENTS_V2, DRAFTS_V2, EVENT_TYPES, FORMAT_SET, KNOWN_FEATURES};
 use ledger_store::journal::{canonical_json, sha256_hex};
 use ledger_store::{
     JOURNAL_FILE, JournalFormat, JournalWriter, SUPPORTED_JOURNAL_FORMAT, Snapshot, Store,
@@ -1585,4 +1585,69 @@ fn an_unknown_convention_kind_is_newer_for_the_writer_and_the_viewer_alike() {
         (Ok(_), Err(e)) => panic!("the writer opens books the viewer refuses: {e}"),
         (Err(e), Ok(_)) => panic!("the viewer loads books the writer refuses: {e}"),
     }
+}
+
+/// Done-when (plan P4): the two draft events are this version's, they need
+/// `drafts_v2`, and the books declare that feature before the first such
+/// line, so a version without it stops at the declaration and reports the
+/// books as newer, never corrupt, never keeping a discarded draft that
+/// would block a close (rules.md B-27, B-43).
+#[test]
+fn an_older_version_stops_at_the_draft_events() {
+    assert!(EVENT_TYPES.contains(&"entry.draft_state_set"));
+    assert!(EVENT_TYPES.contains(&"entry.draft_discarded"));
+    let older = JournalFormat {
+        format: SUPPORTED_JOURNAL_FORMAT,
+        features: KNOWN_FEATURES
+            .iter()
+            .copied()
+            .filter(|f| *f != DRAFTS_V2)
+            .map(str::to_string)
+            .collect(),
+    };
+    assert!(
+        matches!(
+            older.require_feature(DRAFTS_V2),
+            Err(StoreError::FormatUpgradePending { .. })
+        ),
+        "a reader without drafts_v2 waits for it"
+    );
+    let dir = test_dir("drafts-gate");
+    let mut store =
+        Store::create_in_format(&dir, Currency::USD, &JournalFormat::default()).unwrap();
+    let date = NaiveDate::from_ymd_opt(2026, 3, 1).unwrap();
+    let draft = store.create_entry(date, "Waiting").unwrap();
+    store.upgrade_format().unwrap().expect("the go-ahead");
+    store
+        .set_draft_state(
+            draft,
+            ledger_core::DraftState::AwaitingEvidence {
+                note: "receipt".into(),
+            },
+        )
+        .unwrap();
+    store.discard_draft(draft, "not needed").unwrap();
+    let journal = std::fs::read_to_string(dir.join(JOURNAL_FILE)).unwrap();
+    let mut declared = false;
+    let mut seen = 0;
+    for line in journal.lines() {
+        let v: serde_json::Value = serde_json::from_str(line).unwrap();
+        if v["type"] == FORMAT_SET
+            && v["payload"]["features"]
+                .as_array()
+                .is_some_and(|f| f.iter().any(|x| x == DRAFTS_V2))
+        {
+            declared = true;
+        }
+        if v["type"] == "entry.draft_state_set" || v["type"] == "entry.draft_discarded" {
+            assert!(
+                declared,
+                "drafts_v2 must be declared before the draft events"
+            );
+            seen += 1;
+        }
+    }
+    assert_eq!(seen, 2);
+    drop(store);
+    Store::open(&dir).unwrap().verify().unwrap();
 }

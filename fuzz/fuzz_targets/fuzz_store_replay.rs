@@ -44,6 +44,7 @@ const TYPES: &[&str] = &[
  "party.w4_set", "party.w9_set", "payroll.taxes_remitted", "reconciliation.completed",
  "reconciliation.voided", "role.assigned", "statement.recorded", "statement.voided",
  "project.set", "entry.settles",
+ "entry.draft_state_set", "entry.draft_discarded",
     // Merged 2026-10-28 (S7, P6): every type EVENT_TYPES names.
 ];
 
@@ -65,7 +66,7 @@ const FIELDS: &[&str] = &[
     "rule", "contributor_adjusted_basis", "fmv_at_contribution", "sec704c_method",
     "tax_basis_723", "depreciable_basis", "built_in_gain_704c", "on", "convention",
     "status", "party_id", "started_on", "ended_on", "links", "notes", "projects",
-    "via", "by", "to", "reference", "note",
+    "via", "by", "to", "reference", "note", "state",
 ];
 
 /// Journal features a `journal.format_set` may declare.

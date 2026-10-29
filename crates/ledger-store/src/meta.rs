@@ -20,7 +20,7 @@ use ledger_core::arap::{SendKind, Sent, SentVia};
 use ledger_core::conventions::{Approval, ConventionKind, NewConvention, NewDecision, NewOpenItem};
 use ledger_core::settings::{Change, Source};
 use ledger_core::{
-    Annotation, AnnotationFields, ClassId, ProjectFacts, ProjectKind, ProjectStatus,
+    Annotation, AnnotationFields, ClassId, DraftState, ProjectFacts, ProjectKind, ProjectStatus,
 };
 use serde_json::{Map, Value, json};
 
@@ -622,6 +622,44 @@ pub fn entry_settles_of(p: &Value) -> Result<(u64, Vec<u64>), StoreError> {
         .map(|v| v.as_u64().ok_or_else(|| corrupt(E, "settles")))
         .collect::<Result<Vec<_>, _>>()?;
     Ok((u64_of(p, E, "entry_id")?, settles))
+}
+
+/// `entry.draft_state_set {id, state, note?}` (plan P4): where a draft
+/// stands. A state is a note on the draft; it moves no figure.
+pub fn draft_state_set(id: u64, state: &DraftState) -> Value {
+    let mut o = Map::new();
+    o.insert("id".into(), json!(id));
+    o.insert("state".into(), json!(state.key()));
+    if !state.note().is_empty() {
+        o.insert("note".into(), json!(state.note()));
+    }
+    Value::Object(o)
+}
+
+/// Read an `entry.draft_state_set`: `(draft, state)`. A state this
+/// version doesn't know is newer, never corrupt (rules.md B-27).
+pub fn draft_state_set_of(line: &JournalLine) -> Result<(u64, DraftState), StoreError> {
+    const E: &str = "entry.draft_state_set";
+    let p = &line.payload;
+    let key = str_of(p, E, "state")?;
+    let note = opt_str(p, E, "note")?.unwrap_or_default();
+    Ok((
+        u64_of(p, E, "id")?,
+        DraftState::parse(&key, &note).ok_or_else(|| {
+            crate::format::newer_content(line, format!("the draft state {key:?}"))
+        })?,
+    ))
+}
+
+/// `entry.draft_discarded {id, reason}` (plan P4): a draft thrown away.
+pub fn draft_discarded(id: u64, reason: &str) -> Value {
+    json!({"id": id, "reason": reason})
+}
+
+/// Read an `entry.draft_discarded`: `(draft, reason)`.
+pub fn draft_discarded_of(p: &Value) -> Result<(u64, String), StoreError> {
+    const E: &str = "entry.draft_discarded";
+    Ok((u64_of(p, E, "id")?, str_of(p, E, "reason")?))
 }
 
 #[cfg(test)]

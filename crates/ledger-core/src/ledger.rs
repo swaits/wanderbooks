@@ -360,6 +360,14 @@ pub struct Ledger {
     /// backdated entries included. An entry the journal's own posting
     /// line doesn't name (none today) has no place here.
     posted_seq: std::collections::BTreeMap<EntryId, u64>,
+    /// The journal line already known to be an entry's posting line,
+    /// before the engine posts it (a store journals `entry.posted` ahead
+    /// of the command that posts): consumed when the entry posts. Not
+    /// state of its own.
+    expected_seq: std::collections::BTreeMap<EntryId, u64>,
+    /// Entries posted since the last [`Self::stamp_unstamped`], whose
+    /// posting line is the one being applied. Not state of its own.
+    unstamped: Vec<EntryId>,
 }
 
 impl Ledger {
@@ -417,6 +425,8 @@ impl Ledger {
             annotations: std::collections::BTreeMap::new(),
             entry_settles: std::collections::BTreeMap::new(),
             posted_seq: std::collections::BTreeMap::new(),
+            expected_seq: std::collections::BTreeMap::new(),
+            unstamped: Vec::new(),
         }
     }
 
@@ -1976,6 +1986,12 @@ impl Ledger {
             .get_mut(&entry)
             .ok_or(LedgerError::UnknownEntry(entry))?
             .mark_posted();
+        match self.expected_seq.remove(&entry) {
+            Some(seq) => {
+                self.posted_seq.entry(entry).or_insert(seq);
+            }
+            None => self.unstamped.push(entry),
+        }
         self.order_pos.insert(entry, self.order.len());
         self.order.push(entry);
         if let Some(o) = snapshot.reversal_of() {
@@ -2086,13 +2102,26 @@ impl Ledger {
         self.posted_seq.get(&entry).copied()
     }
 
-    /// Record the journal line that posted `entry` (the store, live and
-    /// on replay, after the posting line's own command). Idempotent for
-    /// the same line; a second, different line is ignored (the first
-    /// posting stands).
+    /// Say that journal line `seq` will be `entry`'s posting line, ahead
+    /// of the command that posts it (a store, live: it journals
+    /// `entry.posted` or `entry.reversed` first). Consumed when the entry
+    /// posts.
     #[doc(hidden)]
-    pub fn note_posted_seq(&mut self, entry: EntryId, seq: u64) {
-        self.posted_seq.entry(entry).or_insert(seq);
+    pub fn expect_posted_seq(&mut self, entry: EntryId, seq: u64) {
+        self.expected_seq.insert(entry, seq);
+    }
+
+    /// Give every entry posted since the last call (and not already told
+    /// its line by [`Self::expect_posted_seq`]) journal line `seq`: the
+    /// line whose application posted it. A store calls it after each line
+    /// it replays, and after a live command that journals one line and
+    /// posts an entry with it (a close, a schedule month). The first
+    /// posting stands.
+    #[doc(hidden)]
+    pub fn stamp_unstamped(&mut self, seq: u64) {
+        for entry in std::mem::take(&mut self.unstamped) {
+            self.posted_seq.entry(entry).or_insert(seq);
+        }
     }
 
     /// Draft entries in id order, with their state.

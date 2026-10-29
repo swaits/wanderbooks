@@ -426,6 +426,29 @@ pub fn describe(b: &Books, line: &JournalLine) -> Option<Event> {
             },
             Some(Route::Document(att)),
         ),
+        // A draft's state and a discard (plan P4): notes on a draft, no
+        // figure. A discarded draft is no longer an entry to open.
+        "entry.draft_state_set" => ev(
+            icon::PENCIL_SIMPLE,
+            match (
+                s(p, "state"),
+                p.get("note")
+                    .and_then(|v| v.as_str())
+                    .filter(|n| !n.is_empty()),
+            ) {
+                ("awaiting_evidence", Some(note)) => {
+                    format!("Draft #{id} waits for its evidence: {note}")
+                }
+                ("awaiting_evidence", None) => format!("Draft #{id} waits for its evidence"),
+                _ => format!("Draft #{id} is being built"),
+            },
+            Some(Route::Entry(id)),
+        ),
+        "entry.draft_discarded" => ev(
+            icon::TRASH,
+            format!("Draft #{id} discarded: {}", s(p, "reason")),
+            None,
+        ),
         "entry.settles" => {
             let settles: Vec<String> = p
                 .get("settles")

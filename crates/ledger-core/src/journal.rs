@@ -63,6 +63,12 @@ impl DraftState {
         }
     }
 
+    /// Whether this is the default, building (a serialized entry omits it,
+    /// so every entry an earlier version wrote reads and writes as it did).
+    pub fn is_building(&self) -> bool {
+        matches!(self, DraftState::Building)
+    }
+
     /// The note an awaiting state carries; empty for building.
     pub fn note(&self) -> &str {
         match self {
@@ -110,7 +116,7 @@ pub struct JournalEntry {
     reversal_of: Option<EntryId>,
     /// Where the draft stands (`entry.draft_state_set`); meaningful while
     /// `status` is `Draft`.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "DraftState::is_building")]
     draft_state: DraftState,
 }
 

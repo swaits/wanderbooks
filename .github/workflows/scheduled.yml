@@ -38,3 +38,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: jdx/mise-action@v2
       - run: just fuzz ${{ matrix.target }} 600
+      # A crash's input is the finding: keep it (the 2026-10-26 run found one
+      # in fuzz_store_replay and kept nothing, so it had to be hunted again).
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-${{ matrix.target }}-artifacts
+          path: fuzz/artifacts
+          if-no-files-found: ignore

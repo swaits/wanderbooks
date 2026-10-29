@@ -106,15 +106,37 @@ Conventions, decisions, open items and approvals live in the books too
 when; `books.start` lists them, and the handbook's
 settings-and-conventions section says how to use them.
 
-- `books.start { focus? }` (read-only, at most 8 KB) → `{ book: { name,
-  timezone, today, fiscal_year, base_currency, basis }, head: { seq, hash },
+- `books.start { focus?, agent? }` (read-only, at most 8 KB; `_meta`
+  `anthropic/alwaysLoad: true`, so a client that defers tools loads it up
+  front) → `{ book: { id, url, name,
+  timezone, today, fiscal_year, base_currency, basis }, you?: { principal,
+  kind, scopes, client_id? }, head: { seq, hash },
   state ("needs_onboarding" or "active"), rules: {
   evidence, parties, approval_rules }, settings_summary: [{ key, value,
   set_by, seq }], conventions: [{ id, kind, title, summary }], open_items:
   [{ id, title, due }], projects: [{ id, name, status, kind? }],
-  truncated?, handbook_sections, format_upgrade?: {
-  guard, format, adds, how }, next_steps: [{ tool, args?, why }],
-  isolation }`. The connect text names it as the first call.
+  drafts: { building, awaiting_evidence: [{ entry_id, date, amount, note
+  }] }, reconciliation: { tracked, never_reconciled, behind } (account
+  codes), backup: { last_at, through_seq, stale }, prompts: [{ name, args
+  }], needs_attention: { items: [{ id, severity, kind, title, tool?, args?
+  }], counts: { kind: n } }, truncated?, handbook_sections,
+  format_upgrade?: { guard, format, adds, how }, next_steps: [{ tool |
+  prompt, args?, why, required }], isolation }`. The connect text names it
+  as the first call. `book.url` is the book's path on this server
+  (`/b/ID/mcp`), never a path on a disk. `you` is the token's own facts
+  (its name, the kind `agent`, its scopes) and the client program's name; it is
+  absent on the `books://start` resource, which no token's call made.
+  `agent: { model?, reasoning_effort?, harness? }` is what the agent says
+  about itself: self-reported, never checked, written to the call's access
+  record (`books.access_log` shows it as `agent`) and used for nothing
+  else. `drafts` lists the first ten drafts waiting on their evidence;
+  `reconciliation` the accounts reconciled to statements and which are
+  behind or never reconciled; `needs_attention` the twelve most urgent
+  items (problems first) with every item counted by kind: the same list
+  the viewer draws, from one function (`ledger_package::attention`). If
+  the answer would pass 8 KiB it shortens, in this order: convention
+  summaries, attention items (to four), waiting drafts (to three), then
+  the lists below, each saying how many more in `truncated`.
   `format_upgrade` is there only for books waiting for a format upgrade
   (below); its next step comes first, before anything else, at every
   start until it is done: `books.handbook {section: "format-upgrade"}`,
@@ -128,8 +150,9 @@ settings-and-conventions section says how to use them.
   `projects` lists the active and paused projects by name, at most 20
   ("projects: N more (books.projects)" past that).
   `next_steps`, in order: the format upgrade's (when waiting); the
-  onboarding step (`books.handbook {section: "contract"}`, when the chart
-  is empty or `focus` is `onboarding`); `books.open_items` (an item due
+  onboarding steps (the `onboard` prompt, `books.set_setting`,
+  `books.chart_template` and `books.handbook {section: "contract"}`, when
+  the chart is empty or `focus` is `onboarding`); `books.open_items` (an item due
   within 30 days or overdue); `books.backup` (none set up, or one stale,
   failing, paused or failing its drill); then Needs attention, by
   severity, at most 12, each one `{tool, args?, why}` whose `why` is the
@@ -138,11 +161,11 @@ settings-and-conventions section says how to use them.
   server's own damage check and are not repeated); then the focus's step
   (`close`:
   `books.conventions {kind: "close_step"}`; `audit`: `books.verify`); then
-  always `books.handbook {section: "contract"}` and `books.digest`.
+  `books.draft_entry` (the books are set up), `books.handbook {section:
+  "contract"}` and `books.digest`. Attention steps are `required` when the
+  item is a problem.
   `focus` is `daily` (the default), `onboarding`, `close` or `audit`;
-  anything else is refused. Not built yet (P5):
-  `book.id`, `book.url`, `head.last_handoff`, the `agent` input, and
-  loading it up front under tool search. Also `books://start`.
+  anything else is refused. Also `books://start`.
 **The format upgrade** (plan 3.9, D-39, rules.md B-27). Books an older
 wanderbooks wrote are in an older journal format: they are served on it,
 and every tool that needs nothing new works as before. A tool whose

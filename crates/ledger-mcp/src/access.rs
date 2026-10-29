@@ -86,6 +86,7 @@ pub(crate) struct Call {
     action: &'static str,
     subject: String,
     args_digest: Option<String>,
+    agent: Option<ledger_store::access::Agent>,
 }
 
 /// Why a call wasn't run, for its record and its answer.
@@ -124,6 +125,7 @@ impl Call {
             action,
             subject: subject.to_string(),
             args_digest: None,
+            agent: None,
         }
     }
 
@@ -138,6 +140,16 @@ impl Call {
     /// This call, with its arguments' digest.
     pub(crate) fn digested(&mut self, args_digest: Option<String>) {
         self.args_digest = args_digest;
+    }
+
+    /// This call, with what the agent said about itself (`books.start`).
+    pub(crate) fn with_agent(&mut self, agent: Option<ledger_store::access::Agent>) {
+        self.agent = agent;
+    }
+
+    /// The client program's name, as it named itself at `initialize`.
+    pub(crate) fn client_name(&self) -> Option<String> {
+        self.client.as_ref().map(|c| c.name.clone())
     }
 
     /// The call's caller, if the door named one.
@@ -172,6 +184,7 @@ impl Call {
             args_digest: self.args_digest.clone(),
             result,
             head_after,
+            agent: self.agent.clone(),
         };
         match self.log.record(&access) {
             Ok(_) => Ok(()),

@@ -1381,6 +1381,13 @@ thread_local! {
     /// The journal's head after the last write made by the request
     /// running on this thread (StoreGuard's drop), for its access record.
     static WROTE: std::cell::RefCell<Option<(u64, String)>> = const { std::cell::RefCell::new(None) };
+    /// Who the request running on this thread is, as `books.start` shows
+    /// it: `{principal, kind, scopes, client_id}`. The token's own facts
+    /// and the client's name; set at the start of the request.
+    static YOU: std::cell::RefCell<Option<serde_json::Value>> = const { std::cell::RefCell::new(None) };
+    /// What the agent said about itself in a `books.start` this request is
+    /// running (`agent`), for the call's access record.
+    static AGENT_NOTE: std::cell::RefCell<Option<ledger_store::access::Agent>> = const { std::cell::RefCell::new(None) };
     /// The company's time zone for the request running on this thread
     /// (set at its start from the settings in force: one version per
     /// request), so every "today" in it agrees.
@@ -1832,6 +1839,17 @@ impl ServerHandler for BooksServer {
                     .caller()
                     .map(|c| (c.token.id.clone(), c.token.name.clone()));
                 CALLER.with(|c| *c.borrow_mut() = caller);
+                AGENT_NOTE.with(|a| a.borrow_mut().take());
+                YOU.with(|y| {
+                    *y.borrow_mut() = running_call.caller().map(|c| {
+                        serde_json::json!({
+                            "principal": c.token.name,
+                            "kind": "agent",
+                            "scopes": c.token.scopes.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+                            "client_id": running_call.client_name(),
+                        })
+                    })
+                });
                 // Counted as running by now (run_blocking): hashed here.
                 let digest = Call::digest_of(request.arguments.as_ref());
                 let tcc =
@@ -1862,8 +1880,12 @@ impl ServerHandler for BooksServer {
                 };
                 // The result envelope (next_steps.rs INVARIANT 1).
                 let out = next_steps::apply(&server, &tool_name, envelope_args.as_ref(), out);
+                // Who asked is the request's alone: a later request on this
+                // thread (a resource read) must not see it.
+                YOU.with(|y| y.borrow_mut().take());
                 let mut c = running_call;
                 c.digested(digest);
+                c.with_agent(AGENT_NOTE.with(|a| a.borrow_mut().take()));
                 let recorded = c.record_blocking(outcome_of(&out), wrote);
                 (out, recorded)
             })
@@ -2074,7 +2096,10 @@ impl BooksServer {
         let server = self.clone();
         let at = uri.clone();
         let body = run_blocking(&self.store, move || {
-            Box::pin(async move { in_timezone_async(timezone, server.resource_body(&at)).await })
+            Box::pin(async move {
+                YOU.with(|y| y.borrow_mut().take());
+                in_timezone_async(timezone, server.resource_body(&at)).await
+            })
         })
         .await?;
         // A refusal quotes the URI it was given: masked like a tool's.

@@ -9,6 +9,20 @@
 use super::*;
 use crate::server::test_support::*;
 
+/// Plan 4.2 (P5 step 2): `books.start` is loaded up front by clients that
+/// defer tools, and no other tool asks for that.
+#[test]
+fn books_start_is_always_loaded() {
+    for tool in BooksServer::tool_router().list_all() {
+        let always = tool
+            .meta
+            .as_ref()
+            .and_then(|m| m.0.get("anthropic/alwaysLoad"))
+            .and_then(serde_json::Value::as_bool);
+        assert_eq!(always == Some(true), tool.name == "books.start", "{}", tool.name);
+    }
+}
+
 /// An upload's limit, 25 MiB exactly (plan 4.7); nothing comes inline
 /// (D-46).
 #[test]

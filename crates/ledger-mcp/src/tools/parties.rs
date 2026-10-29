@@ -63,6 +63,20 @@ fn party_out(ledger: &Ledger, p: &ledger_core::Party) -> PartyOut {
         website: p.website.clone(),
         address: p.address.clone(),
         notes: p.notes.clone(),
+        email: p.email.clone(),
+        phone: p.phone.clone(),
+        contact: p.contact.clone(),
+        billing_address: p.billing_address.clone(),
+        shipping_address: p.shipping_address.clone(),
+        billing_email: p.billing_email.clone(),
+        default_terms_as_customer: p
+            .default_terms_as_customer
+            .as_ref()
+            .map(ledger_core::Terms::describe),
+        default_terms_as_vendor: p
+            .default_terms_as_vendor
+            .as_ref()
+            .map(ledger_core::Terms::describe),
         archived: p.archived,
         vendor_id: p.vendor,
         customer_id: p.customer,
@@ -540,7 +554,7 @@ impl BooksServer {
     #[tool(
         name = "books.update_party",
         title = "Update a party",
-        description = "Change a party's facts: name, display_name, website, address, notes, archived, creditor_of. Give only the fields to change; \"\" clears display_name, website, address or notes. creditor_of replaces the list of liabilities the company owes the party itself (its card, its loan, what the members advanced): a credit to one never counts as paying it. Every field is checked before any is written, so a bad one (a blank or taken name, a full TIN, over 500 characters, not a liability) changes nothing; each is journaled as party.updated or party.creditor_set. Archive a party you no longer deal with (its history stays; it then goes by id). Returns the party.",
+        description = "Change a party's facts: name, display_name, website, address, notes, email, default_terms_as_customer, default_terms_as_vendor, archived, creditor_of. Give only the fields to change; \"\" clears display_name, website, address, notes, email or the terms. email and the terms are copied onto each invoice or bill at issue (A-13); terms (\"Net 30\") set a due date when the document gives none. creditor_of replaces the list of liabilities the company owes the party itself. Every field is checked before any is written; each is journaled as party.updated. Returns the party.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -571,6 +585,40 @@ impl BooksServer {
         if let Some(v) = p.notes {
             fields.push(F::Notes(optional_text(&v)));
         }
+        if let Some(v) = p.email {
+            fields.push(F::Email(optional_text(&v)));
+        }
+        // "" clears the terms; any other text is trade terms this party
+        // grants or is granted (B-39).
+        let terms = |v: String| -> Result<Option<ledger_core::Terms>, String> {
+            if v.trim().is_empty() {
+                return Ok(None);
+            }
+            ledger_core::Terms::parse(&v)
+                .map(Some)
+                .map_err(|e| e.to_string())
+        };
+        if let Some(v) = p.default_terms_as_customer {
+            fields.push(F::DefaultTermsAsCustomer(terms(v)?));
+        }
+        if let Some(v) = p.default_terms_as_vendor {
+            fields.push(F::DefaultTermsAsVendor(terms(v)?));
+        }
+        if let Some(v) = p.phone {
+            fields.push(F::Phone(optional_text(&v)));
+        }
+        if let Some(v) = p.contact {
+            fields.push(F::Contact(optional_text(&v)));
+        }
+        if let Some(v) = p.billing_address {
+            fields.push(F::BillingAddress(optional_text(&v)));
+        }
+        if let Some(v) = p.shipping_address {
+            fields.push(F::ShippingAddress(optional_text(&v)));
+        }
+        if let Some(v) = p.billing_email {
+            fields.push(F::BillingEmail(optional_text(&v)));
+        }
         if let Some(a) = p.archived {
             fields.push(F::Archived(a));
         }
@@ -588,7 +636,7 @@ impl BooksServer {
         }
         if fields.is_empty() && p.creditor_of.is_none() {
             return Err(
-                "give at least one field to change: name, display_name, website, address, notes, archived, creditor_of"
+                "give at least one field to change: name, display_name, website, address, notes, email, default_terms_as_customer, default_terms_as_vendor, phone, contact, billing_address, shipping_address, billing_email, archived, creditor_of"
                     .into(),
             );
         }
@@ -604,10 +652,15 @@ impl BooksServer {
                 .set_party_creditor(id, *a, *on)
                 .map_err(|e| e.to_string())?;
         }
-        // The creditor lines' journal feature, asked for before this
+        // The journal features these lines need, asked for before this
         // command's first line, never between its lines (rules.md B-27:
         // books waiting for their format upgrade must not be left with the
-        // name changed and the creditors not).
+        // name changed and the rest not).
+        if fields.iter().any(|f| f.needs_documents_v2()) {
+            store
+                .ensure_feature(ledger_store::format::DOCUMENTS_V2)
+                .map_err(|e| e.to_string())?;
+        }
         if !creditor.is_empty() {
             store
                 .ensure_feature(ledger_store::format::PARTY_CREDITORS)

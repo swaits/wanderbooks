@@ -28,7 +28,7 @@
 
 use chrono::NaiveDate;
 use ledger_core::settings::Company;
-use ledger_core::{DocRef, DocStatus, InvoiceId, Ledger};
+use ledger_core::{DocRef, DocStatus, Invoice, InvoiceId, Ledger};
 use ledger_import::{InvoiceDoc, InvoiceItem, InvoiceParty, InvoiceStamp};
 
 /// A date as an invoice prints it: "Feb 1, 2026".
@@ -152,6 +152,115 @@ pub fn invoice_document(
             "Re-created on {} from the books; not a copy of the one sent.",
             printed(today)
         )),
+    })
+}
+
+/// The copy of an invoice that is being issued (plan P4b S4.4; A-7): the
+/// page the confirm renders before the invoice exists in the ledger, and
+/// files with it. No stamp and no note, because this is the copy the
+/// customer gets. Its number is the one the issue will take (A-2), its
+/// seller and bill-to the snapshots the issue will store (A-13) — read
+/// from `ledger` when a document made before snapshots has none — and
+/// nothing is settled on it yet.
+pub fn issued_invoice_document(
+    ledger: &Ledger,
+    company: &Company,
+    invoice: &Invoice,
+) -> Result<InvoiceDoc, String> {
+    unissued_document(ledger, company, invoice, None, None)
+}
+
+/// The DRAFT copy of an invoice not yet issued (plan P4b S4.4): the PDF a
+/// preview hands over. The issued copy's page, stamped DRAFT, saying that
+/// nothing is posted and that it is not the copy sent.
+pub fn draft_invoice_document(
+    ledger: &Ledger,
+    company: &Company,
+    invoice: &Invoice,
+) -> Result<InvoiceDoc, String> {
+    unissued_document(
+        ledger,
+        company,
+        invoice,
+        Some(InvoiceStamp::Draft),
+        Some("Draft for review: nothing is posted, and this is not the copy sent.".to_string()),
+    )
+}
+
+/// [`issued_invoice_document`]'s and [`draft_invoice_document`]'s page:
+/// the invoice as the books would hold it, with the stamp and note given.
+fn unissued_document(
+    ledger: &Ledger,
+    company: &Company,
+    invoice: &Invoice,
+    stamp: Option<InvoiceStamp>,
+    note: Option<String>,
+) -> Result<InvoiceDoc, String> {
+    let total = invoice.total().map_err(|e| e.to_string())?;
+    // The snapshots at issue are what prints (A-13); the party record and
+    // the company are the fallbacks for a document made before they were
+    // kept.
+    let seller = match &invoice.seller {
+        Some(s) => InvoiceParty {
+            name: s.name.clone(),
+            lines: address_lines(s.address.as_deref()),
+        },
+        None => InvoiceParty {
+            name: company.name.clone(),
+            lines: address_lines(
+                company
+                    .profile
+                    .iter()
+                    .find(|(k, _)| k == "address")
+                    .map(|(_, v)| v.as_str()),
+            ),
+        },
+    };
+    let (name, address) = match &invoice.bill_to {
+        Some(b) => (Some(b.name.clone()), b.address.clone()),
+        None => {
+            let party = ledger
+                .party_of_customer(invoice.customer_id)
+                .and_then(|p| ledger.get_party(p));
+            let name = party
+                .and_then(|p| p.display_name.clone())
+                .or_else(|| {
+                    ledger
+                        .get_customer(invoice.customer_id)
+                        .map(|c| c.name.clone())
+                })
+                .unwrap_or_default();
+            (Some(name), party.and_then(|p| p.address.clone()))
+        }
+    };
+    let bill_to = InvoiceParty {
+        name: name.unwrap_or_default(),
+        lines: address_lines(address.as_deref()),
+    };
+    Ok(InvoiceDoc {
+        number: invoice
+            .number
+            .clone()
+            .unwrap_or_else(|| format!("Invoice {}", invoice.id)),
+        issue_date: printed(invoice.date),
+        due_date: printed(invoice.due_date),
+        terms: invoice.terms.as_ref().map(ledger_core::Terms::describe),
+        seller,
+        bill_to,
+        items: invoice
+            .lines
+            .iter()
+            .map(|l| InvoiceItem {
+                description: l.description.clone(),
+                amount: l.amount,
+            })
+            .collect(),
+        total,
+        settled: Vec::new(),
+        balance: total,
+        stamp,
+        stamp_line: None,
+        note,
     })
 }
 

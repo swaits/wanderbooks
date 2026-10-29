@@ -34,8 +34,8 @@ No other statuses.
 | Bank reconciliation (cleared flags + report) | Reconcile | done | — |
 | QuickBooks CSV import (bank txns, chart of accounts) | Banking → Upload | done | R-FUTURE-4 |
 | QuickBooks IIF + XLSX export | Export / reports | done | R-FUTURE-4 |
-| A/R invoices + payments + aging | Business → Invoices | done | R-FUTURE-5; since P4b S1 (D-45) a document's paid, outstanding and status are read from its tagged ledger lines, hand lines on the receivables account are refused, `books.void_document` and `books.control_check` tie the subledger to the control account (rules.md B-38); S2 `books.documents`/`books.document` and the viewer pages; S3 the invoice PDF; S4.1-S4.3 terms, numbers, line accounts, the issued PDF filed at issue (behind `documents_v2`, the owner's next upgrade) |
-| A/P bills + payments + aging | Business → Bills | done | R-FUTURE-5; the same S1 derivation and control guard on the payables account; S4.1-S4.3 the vendor's invoice number, terms, every line on its own account (behind `documents_v2`) |
+| A/R invoices + payments + aging | Business → Invoices | done | R-FUTURE-5; since P4b S1 (D-45) a document's paid, outstanding and status are read from its tagged ledger lines, hand lines on the receivables account are refused, `books.void_document` and `books.control_check` tie the subledger to the control account (rules.md B-38); S2 `books.documents`/`books.document` and the viewer pages; S3 the invoice PDF; S4.1-S4.3 terms, numbers, line accounts, the issued PDF filed at issue (behind `documents_v2`, the owner's next upgrade); numbers, terms, line accounts, the party snapshots and the issued PDF filed with the invoice, through `books.create_invoice`'s preview and confirm (P4b S4.4) |
+| A/P bills + payments + aging | Business → Bills | done | R-FUTURE-5; the same S1 derivation and control guard on the payables account; S4.1-S4.3 the vendor's invoice number, terms, every line on its own account (behind `documents_v2`); the vendor's own invoice number (a duplicate refused), terms, line accounts and the vendor's invoice filed as the bill's evidence, through `books.create_bill`'s preview and confirm (P4b S4.4) |
 | Payroll runs (accounting only, no tax tables) + tax remittance | Payroll | done | — |
 | Tracking classes (divisional P&L) | Class tracking | done | invoice and bill lines take a class too (projects, rules.md B-37 item 8; QBO/Xero class or tracking per line) |
 | CPA handoff package (TB + GL xlsx, P&L + BS pdf, zip) | Reports → export | done | — |
@@ -106,6 +106,22 @@ trait), the runner (`bookspec/runner`: pass, fail or not claimed per rule),
 and the rule index from B-1 to B-45 (`bookspec/spec/rules-index.md`). Every
 existing bookspec example still runs on every `cargo test`, through both
 the loader's own checks and the `Engine` trait.
+
+### P4b S4.4: the create tools preview and confirm (2026-10-27)
+
+The A/R and A/P rows above gain their note rather than a new row: no
+parity item changed status, so the floor stands. `books.create_invoice`
+and `books.create_bill` now preview without `confirmed` (the posting, the
+number and due date it will take, the DRAFT or the discount, and nothing
+written) and post with it (A-1), which is what the workflow reference
+does before a document leaves the company. A bill in books that have
+declared `documents_v2` names each line's account and keeps the vendor's
+invoice (A-10, A-13); an invoice keeps the copy it issued (A-7, B-40) and
+a `mailto` link for a human to send it, since the books never send (A-4).
+`books.update_party` takes the party's email and terms per side (A-13) and
+the owner's full contact block (D-55: phone, contact person, billing and
+shipping addresses, billing email), which an invoice's bill-to copies at
+issue.
 
 ### P9a self-host deployment (2026-10-26)
 

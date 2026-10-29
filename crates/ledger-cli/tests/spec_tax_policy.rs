@@ -270,10 +270,18 @@ fn require_tax_category_refuses_defect_8() {
     // A bill creates General Expenses 6999 without a category: never
     // refused, named in the result's warnings and the digest.
     let vendor = m.call("books.add_vendor", json!({"name": "Coastline Hosting"}));
+    let first_invoice = m.wire.upload(
+        b"Coastline's invoice",
+        "coastline-1.pdf",
+        "application/pdf",
+        "receipt",
+    );
     let bill = m.call(
         "books.create_bill",
         json!({"party_id": vendor["id"], "date": "2026-02-01", "due_date": "2026-03-01",
-               "lines": [{"description": "hosting", "amount": "42.00"}]}),
+               "vendor_ref": "CH-1",
+               "lines": [{"description": "hosting", "amount": "42.00", "account": "6150"}],
+               "upload_id": first_invoice, "confirmed": true}),
     );
     assert_eq!(
         bill["warnings"],
@@ -287,10 +295,18 @@ fn require_tax_category_refuses_defect_8() {
         json!(["6999 General Expenses"])
     );
     // A second bill creates nothing, and warns of nothing.
+    let second_invoice = m.wire.upload(
+        b"Coastline's second invoice",
+        "coastline-2.pdf",
+        "application/pdf",
+        "receipt",
+    );
     let again = m.call(
         "books.create_bill",
         json!({"party_id": vendor["id"], "date": "2026-02-02", "due_date": "2026-03-02",
-               "lines": [{"description": "hosting", "amount": "1.00"}]}),
+               "vendor_ref": "CH-2",
+               "lines": [{"description": "hosting", "amount": "1.00", "account": "6150"}],
+               "upload_id": second_invoice, "confirmed": true}),
     );
     assert!(again.get("warnings").is_none(), "{again}");
     // Back to warn (cleared): created, with the warning.

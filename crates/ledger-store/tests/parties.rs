@@ -1062,3 +1062,216 @@ mod shares {
         }
     }
 }
+
+/// Oracle: D-55 (the owner's full contact block): a party's phone, contact
+/// person, billing and shipping addresses and billing email are
+/// `party.updated` facts under `documents_v2`; they journal one event
+/// apiece, replay gives them back, and the live ledger and a fresh replay
+/// agree.
+#[test]
+fn the_contact_block_round_trips_and_replays() {
+    let dir = test_dir("contact-block");
+    let mut s = Store::create(&dir, Currency::USD).unwrap();
+    let id = s.add_party("Harbor Coffee", &[]).unwrap();
+    let fields = [
+        (
+            PartyField::Phone(Some("555-0142".into())),
+            json!({"field": "phone", "value": "555-0142"}),
+        ),
+        (
+            PartyField::Contact(Some("Dana Reed".into())),
+            json!({"field": "contact", "value": "Dana Reed"}),
+        ),
+        (
+            PartyField::BillingAddress(Some("12 Billing Way\nPortland, OR 97209".into())),
+            json!({"field": "billing_address",
+                   "value": "12 Billing Way\nPortland, OR 97209"}),
+        ),
+        (
+            PartyField::ShippingAddress(Some("Dock 4, 9 Wharf Street".into())),
+            json!({"field": "shipping_address", "value": "Dock 4, 9 Wharf Street"}),
+        ),
+        (
+            PartyField::BillingEmail(Some("ap@harbor.example".into())),
+            json!({"field": "billing_email", "value": "ap@harbor.example"}),
+        ),
+    ];
+    for (field, want) in &fields {
+        let ((), p) = one_event(&mut s, &dir, "party.updated", |s| {
+            s.update_party(id, field.clone()).unwrap()
+        });
+        assert_eq!(p["change"], *want, "{field:?}");
+    }
+    let got = s.ledger().get_party(id).unwrap();
+    assert_eq!(got.phone.as_deref(), Some("555-0142"));
+    assert_eq!(got.contact.as_deref(), Some("Dana Reed"));
+    assert_eq!(
+        got.billing_address.as_deref(),
+        Some("12 Billing Way\nPortland, OR 97209")
+    );
+    assert_eq!(
+        got.shipping_address.as_deref(),
+        Some("Dock 4, 9 Wharf Street")
+    );
+    assert_eq!(got.billing_email.as_deref(), Some("ap@harbor.example"));
+    // The general email is its own fact, and neither replaces the other.
+    s.update_party(id, PartyField::Email(Some("hello@harbor.example".into())))
+        .unwrap();
+
+    // A full TIN in the block, or an address that isn't one, is refused.
+    for field in [
+        PartyField::Phone(Some("123-45-6789".into())),
+        PartyField::BillingEmail(Some("not an address".into())),
+    ] {
+        refused_nothing_journaled(&mut s, &dir, &format!("{field:?}"), |s| {
+            s.update_party(id, field.clone())
+        });
+    }
+
+    s.verify().unwrap();
+    let live = s.ledger().clone();
+    drop(s);
+    for without_db in [false, true] {
+        if without_db {
+            delete_db(&dir);
+        }
+        let s = Store::open(&dir).unwrap();
+        assert!(
+            *s.ledger() == live,
+            "replay (db {}): {:?}",
+            !without_db,
+            s.ledger().differs_from(&live)
+        );
+        let got = s.ledger().get_party(id).unwrap();
+        assert_eq!(got.contact.as_deref(), Some("Dana Reed"));
+        assert_eq!(got.billing_email.as_deref(), Some("ap@harbor.example"));
+        s.verify().unwrap();
+    }
+    // `None` clears each, and the journal keeps what they were.
+    let mut s = Store::open(&dir).unwrap();
+    for field in [
+        PartyField::Phone(None),
+        PartyField::Contact(None),
+        PartyField::BillingAddress(None),
+        PartyField::ShippingAddress(None),
+        PartyField::BillingEmail(None),
+    ] {
+        s.update_party(id, field).unwrap();
+    }
+    let got = s.ledger().get_party(id).unwrap();
+    assert!(got.phone.is_none() && got.contact.is_none());
+    assert!(got.billing_address.is_none() && got.shipping_address.is_none());
+    assert!(got.billing_email.is_none());
+    s.verify().unwrap();
+}
+
+/// Oracle: D-55 and A-13: an invoice's bill-to snapshot is the customer's
+/// contact block at issue, with the billing address and billing email in
+/// place of the general ones when it has them
+/// (`PartySnapshot::from_party`, the one place that rule lives); a later
+/// party edit does not change the issued snapshot.
+#[test]
+fn an_invoice_keeps_the_billing_details_it_was_issued_with() {
+    use ledger_core::arap::PartySnapshot;
+    let dir = test_dir("contact-snapshot");
+    let mut s = Store::create(&dir, Currency::USD).unwrap();
+    let customer = s.add_customer("Harbor Coffee").unwrap();
+    let party = s.ledger().party_of_customer(customer).unwrap();
+    for field in [
+        PartyField::Address(Some("PO Box 9, Portland, OR 97209".into())),
+        PartyField::Email(Some("hello@harbor.example".into())),
+        PartyField::Phone(Some("555-0142".into())),
+        PartyField::Contact(Some("Dana Reed".into())),
+        PartyField::BillingAddress(Some("12 Billing Way, Portland, OR 97209".into())),
+        PartyField::BillingEmail(Some("ap@harbor.example".into())),
+        PartyField::ShippingAddress(Some("Dock 4, 9 Wharf Street".into())),
+    ] {
+        s.update_party(party, field).unwrap();
+    }
+    let snapshot = PartySnapshot::from_party(s.ledger().get_party(party).unwrap());
+    assert_eq!(
+        snapshot.address.as_deref(),
+        Some("12 Billing Way, Portland, OR 97209"),
+        "the billing address, not the general one"
+    );
+    assert_eq!(snapshot.email.as_deref(), Some("ap@harbor.example"));
+    assert_eq!(snapshot.contact.as_deref(), Some("Dana Reed"));
+    assert_eq!(snapshot.phone.as_deref(), Some("555-0142"));
+    assert_eq!(
+        snapshot.shipping_address.as_deref(),
+        Some("Dock 4, 9 Wharf Street")
+    );
+    assert_eq!(
+        snapshot.billing_address.as_deref(),
+        Some("12 Billing Way, Portland, OR 97209")
+    );
+
+    let line = ledger_core::DocumentLine {
+        description: "Coffee".into(),
+        amount: dec("100.00"),
+        class_id: None,
+        account: None,
+        quantity: None,
+        unit_price: None,
+    };
+    let id = s
+        .create_invoice_with(
+            customer,
+            date(2026, 2, 1),
+            date(2026, 3, 3),
+            vec![line],
+            ledger_core::arap::InvoiceFields {
+                bill_to: Some(snapshot.clone()),
+                ..ledger_core::arap::InvoiceFields::default()
+            },
+        )
+        .unwrap();
+    // The event carries it, so replay can never lose it.
+    let event = journal(&dir)
+        .into_iter()
+        .rev()
+        .find(|(t, _)| t == "invoice.created")
+        .map(|(_, p)| p)
+        .expect("invoice.created");
+    assert_eq!(
+        event["bill_to"],
+        json!({
+            "name": "Harbor Coffee",
+            "address": "12 Billing Way, Portland, OR 97209",
+            "email": "ap@harbor.example",
+            "phone": "555-0142",
+            "contact": "Dana Reed",
+            "billing_address": "12 Billing Way, Portland, OR 97209",
+            "shipping_address": "Dock 4, 9 Wharf Street",
+            "billing_email": "ap@harbor.example",
+        }),
+        "{event}"
+    );
+
+    // A later edit changes the record, never the issued copy.
+    s.update_party(party, PartyField::BillingAddress(Some("99 New Way".into())))
+        .unwrap();
+    s.update_party(party, PartyField::Phone(Some("555-9999".into())))
+        .unwrap();
+    let kept = s.ledger().get_invoice(id).unwrap().bill_to.clone().unwrap();
+    assert_eq!(kept, snapshot, "an issued snapshot never changes");
+    // And the books come back to it exactly.
+    s.verify().unwrap();
+    let live = s.ledger().clone();
+    drop(s);
+    let s = Store::open(&dir).unwrap();
+    assert_eq!(
+        s.ledger().get_invoice(id).unwrap().bill_to.clone().unwrap(),
+        snapshot
+    );
+    assert!(*s.ledger() == live);
+    // The party's own record took the edit.
+    assert_eq!(
+        s.ledger()
+            .get_party(party)
+            .unwrap()
+            .billing_address
+            .as_deref(),
+        Some("99 New Way")
+    );
+}

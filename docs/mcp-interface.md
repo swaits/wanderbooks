@@ -1190,15 +1190,29 @@ texts are at most 500 characters, no control characters.
 - `books.add_party { name, roles? }` → the party (below). Journaled as
   `party.added`.
 - `books.update_party { party, name?, display_name?, website?, address?,
-  notes?, archived?, creditor_of? }` → the party. Give at least one field;
-  `""` clears `display_name`, `website`, `address`, or `notes`;
-  `creditor_of` (account codes or ids) replaces the party's list of the
-  liabilities the company owes it itself (below). Every field is checked
-  (in order, on a rehearsal) before any is written; each is journaled as
-  its own `party.updated`, in the order name, display_name, website,
-  address, notes, archived, then one `party.creditor_set` per account
-  added or dropped. Un-archiving is refused while another party has the
-  name.
+  notes?, email?, default_terms_as_customer?, default_terms_as_vendor?,
+  phone?, contact?, billing_address?, shipping_address?, billing_email?,
+  archived?, creditor_of? }` → the party. Give at least one field; `""`
+  clears `display_name`, `website`, `address`, `notes`, `email`, the terms,
+  `phone`, `contact`, `billing_address`, `shipping_address` or
+  `billing_email`; `creditor_of` (account codes or ids) replaces the
+  party's list of the liabilities the company owes it itself (below).
+  `email` is its general address; `billing_email` is where its bills go
+  (an invoice's bill-to email, when set, else the general one). `address`
+  is its general/business address; `billing_address` where its bills go
+  (the bill-to address when set, else the general one) and
+  `shipping_address` where goods go; `contact` is the person there to
+  write to and `phone` its number (D-55). The terms are trade terms per
+  side (`"Net 30"`, `"2/10 net 30"`): a document's due date falls back to
+  them (below). Every field is checked (in order, on a rehearsal) before
+  any is written; each is journaled as its own `party.updated`, in the
+  order name, display_name, website, address, notes, email, the two terms,
+  phone, contact, billing_address, shipping_address, billing_email,
+  archived, then one `party.creditor_set` per account added or dropped.
+  The email, terms and contact block need the journal feature
+  `documents_v2` (rules.md B-27): books that haven't declared it refuse
+  them with `format_upgrade_pending`, journaling nothing. Un-archiving is
+  refused while another party has the name.
 - `books.set_party_roles { party, add?, remove? }` → the party. Adds apply
   before removes (so a contractor's W-9 survives a swap to landlord); roles
   it already has, or lacks, are skipped; each change is journaled as
@@ -1632,10 +1646,12 @@ posting.
   violation, and the append-only audit log would show it anyway.
   (`asset_id` instead of `entry_id` for a disposal; `split_group: [ids]`
   when the split check triggered.)
-- **Not checked yet:** `books.create_invoice`, `books.create_bill`,
-  `books.receive_payment`, `books.pay_bill`, `books.run_payroll` and
-  `books.remit_payroll_taxes` post at once with no preview and no receipt
-  check: attach their evidence right after, to the entry they return.
+- **Not checked yet:** `books.receive_payment`, `books.pay_bill`,
+  `books.run_payroll` and `books.remit_payroll_taxes` post at once with no
+  receipt check: attach their evidence right after, to the entry they
+  return. (`books.create_invoice` and `books.create_bill` preview and
+  confirm, and a bill's vendor invoice is required, in books that have
+  declared `documents_v2`.)
 - **Anti-splitting.** Posting an entry triggers a split check: posted
   entries on the same date with the same normalized description and debit
   accounts are grouped, and if the group total exceeds the threshold while
@@ -1973,45 +1989,103 @@ accounting only: the caller supplies every figure), tax filing.
 
 ## Tools — A/R and A/P
 
-S4 changes `books.create_invoice` and `books.create_bill`; see plan 8.2 S4.
+S4 gives `books.create_invoice` and `books.create_bill` a preview and a
+confirm (A-1) and the documents numbers, terms, line accounts and party
+snapshots; see plan 8.2 S4.
 
 - `books.add_customer { name }` → `{ id, party_id }`.
 - `books.add_vendor { name }` → `{ id, party_id }`. Both link the record to
   a party ("Tools — parties").
-- `books.create_invoice { party_id, date, due_date, lines: [{ description,
-  amount, class? }] }` → `{ id, total, entry_id, warnings?, notes? }`.
-  Auto-posts Dr `1200` Accounts Receivable / Cr `4000` Revenue. `warnings`
-  names a revenue account it created with no tax category (rules.md
-  B-32). `party_id` is the customer's `id` from `books.add_customer`, not
-  its `party_id`. A line's `class` (a project: name or id, resolved as
-  `books.add_line`'s) puts its revenue on that project (rules.md B-37 item
-  8, the owner's decision D-43): one project or none per line, several
-  projects as several lines each with its own amount, never a percentage
-  (a cost truly shared names none: it reaches the projects only as
-  entries of their own under the company's monthly allocation convention,
-  when `books.conventions` has one, and otherwise stays untagged while the
-  agent asks the human). The entry's revenue side is one line per project named, in the
-  order each is first named, the untagged lines' as one (a document
-  naming none posts the one revenue line it always did); the receivable
-  line is never tagged. Every project is resolved before anything is
-  written (an unknown one is refused, the document whole). `notes`: one
-  per finished or abandoned project named, as `books.add_line`'s `note`,
-  and one per on-spec project named, asking whether there is now an
-  agreement (on spec, a hoped-for payment is no receivable until
-  received: B-37 item 4) (tagged anyway). Books that haven't declared the journal feature
-  `document_line_projects` (B-27; the live books until their owner's next
-  upgrade, D-39) refuse a line naming a project with
-  `format_upgrade_pending`, journaling nothing; a document naming none is
-  taken as before.
-- `books.create_bill { party_id, date, due_date, lines }` → `{ id, total,
-  entry_id, warnings?, notes? }`. Auto-posts Dr `6999` General Expenses /
-  Cr `2000` Accounts Payable; `warnings` as for invoices. `party_id` is
-  the vendor's `id` from `books.add_vendor`, not its `party_id`. A line's
-  `class` puts its cost on that project, as an invoice's its revenue: one
-  expense line per project, the untagged lines' as one, the payable line
-  never tagged; `notes` as for invoices, but none for an on-spec project
-  (a cost of on-spec work is an expense like any other); the feature as
-  for invoices.
+- `books.create_invoice { customer | party_id, date, terms? | due_date?,
+  lines: [{ description, amount, quantity?, unit_price?, account?,
+  class? }], customer_ref?, memo?, bill_to?: { name?, address?, email?,
+  phone?, contact?, billing_address?, shipping_address?, billing_email? },
+  confirmed? }` → without `confirmed`: `{ preview: true, number?, total,
+  due_date, terms?, lines: [{ account, name, side, amount, class? }],
+  pdf }`, and nothing is written; with `confirmed: true`: `{ id, number?,
+  total, due_date, terms?, entry_id, pdf: { attachment_id, sha256 },
+  mailto?, warnings?, notes? }`.
+  Confirmed it posts Dr `1200` Accounts Receivable / Cr each line's
+  account (the revenue role, `4000`, when a line names none), the
+  receivable line tagged with the invoice and the receivable side one line
+  per (account, project) part.
+  - `customer` is the customer's id, its party's id or its name (a name
+    two customers answer to is refused); `party_id` is the old spelling of
+    the same thing (a customer id), kept until P5.
+  - The due date: `due_date` as given (and it overrides `terms`); else
+    `terms` ("Net 30", "Net 15 EOM", "2/10 net 30", "Due on receipt",
+    "Due 2026-11-15", rules.md B-39); else the customer's
+    `default_terms_as_customer`; else the books' `invoicing.default_terms`
+    ("Net 30" unset); else refused, naming those ways. Terms are kept on
+    the invoice only when given or taken from a default: with only a due
+    date the invoice prints none.
+  - Its number (`INV-0001`) is `invoicing.number_prefix` and
+    `invoicing.first_number` plus the count of numbered invoices before it
+    (A-2, B-40); it is stored at issue and never recomputed, and a preview
+    shows the number the confirm will take (an abandoned preview uses up
+    none). Books that haven't declared `documents_v2` number nothing and
+    show a document as "Invoice {N}".
+  - The bill-to snapshot is the customer's name, address and email at
+    issue, with its `billing_address` and `billing_email` in their place
+    when it has them, and its `contact` person, `phone` and
+    `shipping_address` (D-55); a `bill_to` object overrides any part for
+    this one document. `customer_ref` is the customer's own reference (a
+    purchase order) and `memo` prints on the page. These are new fields:
+    books that haven't declared `documents_v2` refuse a document carrying
+    any of them with `format_upgrade_pending`, journaling nothing, and
+    take one carrying none as before.
+  - A line's `class` (a project: name or id) tags its revenue, as before;
+    a line's `account` sends it to a revenue account or a liability
+    holding no role (deferred revenue). `quantity` and `unit_price` go
+    together, and quantity × unit_price must equal `amount` exactly.
+  - Without `confirmed` the DRAFT copy of the PDF is handed over (`pdf`,
+    run its `download`, D-46); confirming renders the issued copy before
+    anything is journaled and files it with the invoice in the same call
+    (A-7, B-40), returning its `attachment_id` and `sha256` (the same
+    `sha256` `books.get_receipt` reports).
+  - `mailto` is a convenience link for a human to send it from their own
+    mail program: the subject "Invoice INV-0007 from {company}", the body
+    URL-encoded and cut to 1,800 bytes at the last whole word. The books
+    never send anything (A-4): a mailto link carries no attachment, so say
+    which file to attach.
+  - `warnings` names a revenue account it created with no tax category
+    (rules.md B-32); `notes` one per finished or abandoned project a line
+    names, and on confirm one per on-spec project (is there now an
+    agreement?).
+- `books.create_bill { vendor | party_id, date, received_on?, vendor_ref?,
+  terms? | due_date?, lines: [{ description, amount, account, class? }],
+  memo?, upload_id | existing_attachment_id, duplicate_reason?,
+  confirmed? }` → without `confirmed`: `{ preview: true, total, due_date,
+  terms?, lines: [...], discount_by?, max_discount? }` and nothing is
+  written; with `confirmed: true`: `{ id, total, due_date, terms?,
+  entry_id, lines?, discount_by?, max_discount?, file: { attachment_id,
+  sha256 }, warnings?, notes? }`.
+  Confirmed it posts Dr each line's account / Cr `2000` Accounts Payable,
+  the payable line tagged with the bill and one debit line per (account,
+  project) part; `vendor` is a vendor id, its party's id or its name, and
+  `party_id` the old spelling (a vendor id).
+  - `vendor_ref` is the vendor's own invoice number: required in books
+    that have declared `documents_v2` (B-40). The same vendor and number
+    twice is refused unless `duplicate_reason` says why, which is
+    journaled with the bill; case, spaces and hyphens are ignored.
+    `received_on` is the day it was received, when it differs from its
+    date.
+  - In books that have declared `documents_v2` every line names its
+    `account` (A-10: an expense account, or an asset that is not cash and
+    holds no role: equipment, prepaid), and the vendor's invoice is
+    required: `upload_id` (books.begin_upload and `wanderbooks upload`,
+    D-46) or `existing_attachment_id` (bytes stored already,
+    books.attachments). It is filed on the bill's entry as its evidence,
+    linked to the bill, and returned as `file` with its `sha256`. In books
+    that haven't declared the feature, lines without `account` post to
+    `6999` as before and the file is optional.
+  - The due date and terms fall back as an invoice's, to the vendor's
+    `default_terms_as_vendor` and no further. `discount_by` is the last
+    day an early-payment discount is open and `max_discount` the largest
+    it allows (B-39): the caller gives the exact cents when it takes one.
+  - `warnings` names an expense account it created with no tax category;
+    `notes` one per finished or abandoned project a line names (none for
+    on-spec: a cost of on-spec work is an expense like any other).
 - `books.receive_payment { document_id, date, amount, cash_account,
   instrument?, reference? }` → `{ entry_id, remaining, status }`. Posts
   Dr Cash / Cr A/R, the receivable line tagged with the invoice (B-38),

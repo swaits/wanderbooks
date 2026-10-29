@@ -1178,7 +1178,10 @@ async fn a_token_does_only_what_its_scopes_allow() {
         tools.contains(&"books.post_entry".to_string()),
         "it may preview"
     );
-    assert!(!tools.contains(&"books.create_invoice".to_string()));
+    assert!(
+        !tools.contains(&"books.receive_payment".to_string()),
+        "it may preview an invoice, but not post a payment"
+    );
     let preview = call(&writer, "books.post_entry", json!({"entry_id": entry})).await;
     if let Err(e) = &preview {
         assert!(

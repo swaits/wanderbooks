@@ -611,6 +611,63 @@ fn format_upgrade_waits_for_consent() {
     assert_eq!(format_lines(&dir), 1);
 }
 
+/// plan P4b S4.4 (R-A step 4, 8.0.6 item 3): on books that haven't
+/// declared `documents_v2`, an invoice carrying a new field (terms) is
+/// refused with the upgrade remedy and journals nothing, while one
+/// carrying none posts as before; after the owner's go-ahead the same call
+/// is made, and takes the first number.
+#[test]
+fn documents_v2_refused_until_consent() {
+    let home = Home::new("documents-v2");
+    let dir = old_books(&home, "acme");
+    let _held = serve(&home);
+    let out = home
+        .cmd("token")
+        .args(["create", "--book", "acme"])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let mut a = Agent::start(&home, "acme");
+    let customer = a
+        .call("books.add_customer", json!({"name": "Harbor Coffee"}))
+        .unwrap()["id"]
+        .clone();
+    let line = json!([{"description": "Design", "amount": "500.00"}]);
+    let with_terms = json!({"customer": customer.to_string(), "date": "2026-02-10",
+                            "terms": "Net 30", "lines": line, "confirmed": true});
+    let before = journal(&dir);
+    let refused = a
+        .call("books.create_invoice", with_terms.clone())
+        .unwrap_err();
+    assert!(refused.starts_with("format_upgrade_pending"), "{refused}");
+    assert!(refused.contains("documents_v2"), "{refused}");
+    assert_eq!(journal(&dir), before, "a refusal journals nothing");
+    // A document carrying none of the new fields posts as before, and
+    // files its copy; it takes no number (an older version reads it).
+    let plain = a
+        .call(
+            "books.create_invoice",
+            json!({"customer": customer.to_string(), "date": "2026-02-10", "due_date": "2026-03-12",
+                   "lines": line, "confirmed": true}),
+        )
+        .unwrap();
+    assert!(plain.get("number").is_none(), "{plain}");
+    assert_eq!(plain["total"], "500.00");
+
+    // The go-ahead.
+    let mut words = home.words("books");
+    words.extend(["upgrade".into(), "acme".into()]);
+    let (code, shown) = home.at_terminal(&words, &[PASS]);
+    assert_eq!(code, 0, "{shown}");
+    assert_eq!(format_lines(&dir), 1, "the format moved once");
+    let made = a.call("books.create_invoice", with_terms).unwrap();
+    assert_eq!(made["number"], "INV-0001", "{made}");
+    assert_eq!(made["terms"], "Net 30", "{made}");
+    assert_eq!(made["due_date"], "2026-03-12", "{made}");
+    a.call("books.verify", json!({})).unwrap();
+}
+
 /// Copy the tree `from` into `to`, private as the server keeps a book
 /// (folders 0700, files 0600).
 fn copy_private(from: &Path, to: &Path) {
@@ -705,17 +762,24 @@ fn books_p2_served_cut_over_whole() {
         .unwrap();
     let waiting = journal(&dir);
     let refused: Vec<(&str, Value)> = vec![
-        // An invoice's or bill's line naming its project
-        // (document_line_projects, rules.md B-37 item 8).
+        // An invoice carrying documents_v2's fields (terms: P4b S4.4) and
+        // its line naming its project (document_line_projects, rules.md
+        // B-37 item 8).
         (
             "books.create_invoice",
-            json!({"party_id": 1, "date": "2026-02-10", "due_date": "2026-03-12",
-                   "lines": [{"description": "Design", "amount": "500.00", "class": "Lighthouse"}]}),
+            json!({"customer": "1", "date": "2026-02-10", "terms": "Net 30",
+                   "lines": [{"description": "Design", "amount": "500.00", "class": "Lighthouse"}],
+                   "confirmed": true}),
         ),
+        // A bill carrying documents_v2's fields (the vendor's number, the
+        // line's account, its invoice: A-10, A-13) and its line's project.
         (
             "books.create_bill",
-            json!({"party_id": 1, "date": "2026-02-11", "due_date": "2026-03-13",
-                   "lines": [{"description": "Drafting", "amount": "120.00", "class": "Lighthouse"}]}),
+            json!({"vendor": "1", "date": "2026-02-11", "due_date": "2026-03-13",
+                   "vendor_ref": "L-77",
+                   "lines": [{"description": "Drafting", "amount": "120.00",
+                              "account": "6600", "class": "Lighthouse"}],
+                   "existing_attachment_id": 1, "confirmed": true}),
         ),
         (
             "books.set_setting",

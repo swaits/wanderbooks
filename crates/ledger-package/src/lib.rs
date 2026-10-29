@@ -40,7 +40,7 @@ pub use attention::{
 };
 pub use books::PackageBooks;
 pub use iif::export_iif;
-pub use invoice::invoice_document;
+pub use invoice::{draft_invoice_document, invoice_document, issued_invoice_document};
 pub use k1_tax::{open_text, tax_basis_csv};
 pub use package::{Package, PackageRequest, build_package, package_file_name};
 pub use reports::{

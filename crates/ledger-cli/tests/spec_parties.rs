@@ -827,10 +827,18 @@ fn party_totals_match_a_hand_computed_year() {
         .as_u64()
         .unwrap();
     // A bill of 800 (not paid until paid), 300 of it paid from the bank.
+    let logo_invoice = m.wire.upload(
+        b"logo invoice",
+        "logo-invoice.pdf",
+        "application/pdf",
+        "receipt",
+    );
     let bill = m.ok(
         "books.create_bill",
         json!({"party_id": v, "date": "2026-07-01", "due_date": "2026-07-31",
-               "lines": [{"description": "Logo", "amount": "800.00"}]}),
+               "vendor_ref": "D-1041",
+               "lines": [{"description": "Logo", "amount": "800.00", "account": "6000"}],
+               "upload_id": logo_invoice, "confirmed": true}),
     );
     let pay = m.ok(
         "books.pay_bill",
@@ -910,7 +918,8 @@ fn party_totals_for_a_customer_a_member_and_a_prepaid() {
     let inv = m.ok(
         "books.create_invoice",
         json!({"party_id": c, "date": "2026-03-01", "due_date": "2026-03-31",
-               "lines": [{"description": "Work", "amount": "1000.00"}]}),
+               "lines": [{"description": "Work", "amount": "1000.00"}],
+               "confirmed": true}),
     );
     let pay = m.ok(
         "books.receive_payment",

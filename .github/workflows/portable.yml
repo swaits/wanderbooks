@@ -1,0 +1,55 @@
+# The portable builds (plan P11a step 0, D-56): the workspace builds and
+# passes its tests on macOS and Windows, not only on Linux. A workflow of
+# its own, not a job beside `check`: GitHub serves a job's log only when
+# its whole run has completed, and `check` takes over an hour, so a macOS
+# failure's reason was unreadable for that long while it sat in the same
+# run. Here each OS's run completes on its own.
+name: portable
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+concurrency:
+  group: portable-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  # The destination is one installation for macOS, Windows and Linux (D-56,
+  # P11a step 0): the workspace must build and pass its tests on each, not
+  # only here. `just check` (fmt, clippy, rustdoc, proofs' friends) stays
+  # the Linux job's; these run the build and the tests. The job tells
+  # which OS a failure is on; neither is allowed to hide the other.
+  portable:
+    name: portable (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            experimental: false
+          - os: windows-latest
+            experimental: true
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.experimental }}
+    # Same disk discipline as above: no incremental caches, line tables only.
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust (the version mise.toml pins)
+        shell: bash
+        run: rustup toolchain install 1.99 --profile minimal && rustup default 1.99
+      - name: Room for the build
+        shell: bash
+        run: df -h . | tail -1
+      - name: The server-only build (no viewer)
+        run: cargo build -p ledger-cli --no-default-features
+      - name: Everything compiles
+        run: cargo build --workspace --all-targets
+      - name: Tests
+        run: cargo test --workspace
+      - name: What the build used
+        if: always()
+        shell: bash
+        run: df -h . | tail -1

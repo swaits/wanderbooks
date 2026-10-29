@@ -31,7 +31,7 @@ the specification in `bookspec/` (which never depends on the engine).
 | `ledger-core` | the semantics engine: money, chart, journal, `Ledger` commands, reports, periods, assets, schedules, parties, A/R and A/P, payroll, projects, settings and conventions, the kernel and its Kani harnesses | nothing |
 | `ledger-vault` | the TIN vault: XChaCha20-Poly1305 records under the book's key | nothing |
 | `ledger-config` | the `wanderbooks.toml` codec (adoption in, `books.export_settings` out) and the receipt policy until P4 moves it into the core | `ledger-core` |
-| `ledger-store` | the source of truth: the hash-chained JSONL journal, its format gate, the SQLite projection (schema 18; a file per schema), the blob store, backups, the access log, `Snapshot` for readers | `ledger-core`, `ledger-import` (the file reader, P6; Q-9) |
+| `ledger-store` | the source of truth: the hash-chained JSONL journal, its format gate, the SQLite projection (schema 18; a file per schema), the blob store, backups, the access log, `Snapshot` for readers | `ledger-core`, `ledger-import` (the file reader, P6; `ledger-reader` after U0d, D-61) |
 | `ledger-import` | formats: QuickBooks CSV in; IIF, XLSX, Typst PDFs (statements, the invoice, labels) out | `ledger-core` |
 | `ledger-package` | the shared read-only view over `Store` or `Snapshot` (`PackageBooks`): the CPA package, the 1099 worksheet, the invoice document, Needs attention | `ledger-core`, `ledger-store`, `ledger-config`, `ledger-import`, `ledger-vault` |
 | `ledger-mcp` | the books server: the MCP tools (122), resources, the handbook, scopes, the door and the access log, backups' scheduling | all of the above |
@@ -50,14 +50,14 @@ test `crates/ledger-core/tests/oracle_gnucash.rs` with `oracle/gnucash/`
 (`PackageBooks` is the shared view; extraction is in-process in
 `ledger-import`, P6).
 
-Under review (Q-9, asked 2026-10-29 when P6 landed): P6 made
-`ledger-store` depend on `ledger-import` so the writer can extract a
-file's text at attach time and on the backfill command. That keeps the
-direction inward (`ledger-import` depends on the core alone and must
-never depend on the store) but pulls Typst, the fonts and hayro into the
-store's dependency closure. The plan's recommendation is a small library
-crate holding the reader that both depend on; until the owner decides,
-the arrow stands as drawn above.
+Decided (Q-9 → D-61, 2026-10-29): P6 made `ledger-store` depend on
+`ledger-import` so the writer can extract a file's text at attach time
+and on the backfill command. That keeps the direction inward
+(`ledger-import` depends on the core alone and must never depend on the
+store) but pulls Typst, the fonts and hayro into the store's dependency
+closure. Unit U0d (plan 8.2, after S4.5) moves the reader into a small
+library crate, `ledger-reader`, that both depend on; until it lands the
+arrow stands as drawn above.
 
 `ledger-core` itself (`crates/ledger-core/src/`): `money`, `account`,
 `journal`, `ledger` (the command surface and replay), `kernel` (every

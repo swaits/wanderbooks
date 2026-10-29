@@ -42,12 +42,14 @@ reproduce locally (the hand-written case passes; ten local minutes
 found nothing); the job now keeps its crash input as an artifact for
 the next run.
 
-**Open for the owner (the question tool):** Q-9, whether
-`ledger-store` keeps its dependency on `ledger-import` (P6 made the
-writer read a file's text as it is filed).
+**Answered 2026-10-29 (the question tool):** Q-9, the writer's dependency
+on the formats crate: the reader moves into a small crate of its own
+after S4.5 (D-61, unit U0d, half a day). And D-60, the owner's rule for
+how much checking a merge gets: a compile and the unit's own tests per
+merge; the exhaustive gates once per batch.
 
-**Next, in order:** (1) merge `ci-fixes`; (2) S4.5, the last P4b slice;
-(3) P11a step 0 (the macOS and Windows keyring stores, the Windows data
+**Next, in order:** (1) S4.5, the last P4b slice (`ci-fixes` merged,
+`95a54d69`); (2) U0d, the reader crate, beside it; (3) P11a step 0 (the macOS and Windows keyring stores, the Windows data
 root and pipes, a cross-platform CI build) and the packaging trial,
 staffed now; (4) P4 (adding `confirmed` to the settlement tools too),
 then the owner's one format upgrade (D-57), P5, P8, P10; P13 steps 4-6

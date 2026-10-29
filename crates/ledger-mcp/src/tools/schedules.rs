@@ -188,6 +188,12 @@ impl BooksServer {
                 .map_err(|e| e.to_string())?
                 .1)
         };
+        let digest = self.preview_of(
+            &store,
+            "books.run_schedules",
+            p.confirmed,
+            p.preview.as_deref(),
+        )?;
         if !p.confirmed {
             let postings = due
                 .into_iter()
@@ -205,6 +211,7 @@ impl BooksServer {
                 status: "preview".to_string(),
                 postings,
                 skipped,
+                preview: Some(digest),
             }));
         }
         let mut postings = Vec::new();
@@ -225,6 +232,7 @@ impl BooksServer {
             status: "posted".to_string(),
             postings,
             skipped,
+            preview: Some(digest),
         }))
     }
 

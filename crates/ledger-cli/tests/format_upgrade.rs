@@ -20,6 +20,8 @@
 //! ```
 #![cfg(target_os = "linux")]
 
+mod common;
+
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -332,7 +334,7 @@ impl Agent {
 
     /// Call a tool: Ok(its structured result) or Err(the error's text).
     fn call(&mut self, tool: &str, args: Value) -> Result<Value, String> {
-        let r = self.request("tools/call", json!({"name": tool, "arguments": args}), 60);
+        let r = common::tools_call(|m, p| self.request(m, p, 60), tool, args.clone());
         if let Some(e) = r.get("error") {
             return Err(e["message"].as_str().unwrap_or_default().to_string());
         }
@@ -792,8 +794,38 @@ fn books_p2_served_cut_over_whole() {
         )
         .unwrap()["id"]
         .clone();
+    // A draft P2 reads (the old shape): its state and its discard are
+    // drafts_v2's, and wait.
+    let waiting_draft = a
+        .call(
+            "books.draft_entry",
+            json!({"date": "2026-02-12", "description": "Waiting for a receipt",
+                   "no_party_reason": "test"}),
+        )
+        .unwrap()["entry_id"]
+        .clone();
+    for (account, side) in [("6600", "debit"), ("1000", "credit")] {
+        a.call(
+            "books.add_line",
+            json!({"entry_id": waiting_draft, "account": account, "side": side,
+                   "amount": "10.00"}),
+        )
+        .unwrap();
+    }
     let waiting = journal(&dir);
     let refused: Vec<(&str, Value)> = vec![
+        // A draft's state and its discard (drafts_v2, P4): an older
+        // version refuses the types.
+        (
+            "books.set_draft_state",
+            json!({"entry_id": waiting_draft, "state": "awaiting_evidence",
+                   "note": "the travel receipt"}),
+        ),
+        (
+            "books.discard_draft",
+            json!({"entry_id": waiting_draft, "reason": "entered twice",
+                   "confirmed": true}),
+        ),
         // An invoice carrying documents_v2's fields (terms: P4b S4.4) and
         // its line naming its project (document_line_projects, rules.md
         // B-37 item 8).

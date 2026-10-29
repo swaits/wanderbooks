@@ -23,6 +23,61 @@ pub enum EntryStatus {
     Posted,
 }
 
+/// Where a draft entry stands (plan P4, `drafts_v2`): still being built,
+/// or finished and waiting on the document that supports it (rules.md
+/// B-43). Meaningful while the entry is a draft; a posted entry keeps
+/// the state it had and nothing reads it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DraftState {
+    /// Lines are still being added. What every draft starts as.
+    #[default]
+    Building,
+    /// The lines are final and the entry waits for its receipt or other
+    /// evidence; `note` says what is awaited (empty: nothing said).
+    AwaitingEvidence {
+        /// What the draft waits on, in the words of whoever set the state.
+        note: String,
+    },
+}
+
+impl DraftState {
+    /// Its key as the journal, the tools and the viewer name it:
+    /// `building` or `awaiting_evidence`.
+    pub fn key(&self) -> &'static str {
+        match self {
+            DraftState::Building => "building",
+            DraftState::AwaitingEvidence { .. } => "awaiting_evidence",
+        }
+    }
+
+    /// [`Self::key`] the other way, with the note an awaiting state
+    /// carries; `None` for a state this version doesn't know (a newer
+    /// version's).
+    pub fn parse(key: &str, note: &str) -> Option<DraftState> {
+        match key {
+            "building" => Some(DraftState::Building),
+            "awaiting_evidence" => Some(DraftState::AwaitingEvidence {
+                note: note.to_string(),
+            }),
+            _ => None,
+        }
+    }
+
+    /// Whether this is the default, building (a serialized entry omits it,
+    /// so every entry an earlier version wrote reads and writes as it did).
+    pub fn is_building(&self) -> bool {
+        matches!(self, DraftState::Building)
+    }
+
+    /// The note an awaiting state carries; empty for building.
+    pub fn note(&self) -> &str {
+        match self {
+            DraftState::Building => "",
+            DraftState::AwaitingEvidence { note } => note,
+        }
+    }
+}
+
 /// One debit or credit line of a journal entry.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct JournalLine {
@@ -59,6 +114,10 @@ pub struct JournalEntry {
     lines: Vec<JournalLine>,
     status: EntryStatus,
     reversal_of: Option<EntryId>,
+    /// Where the draft stands (`entry.draft_state_set`); meaningful while
+    /// `status` is `Draft`.
+    #[serde(default, skip_serializing_if = "DraftState::is_building")]
+    draft_state: DraftState,
 }
 
 impl JournalEntry {
@@ -72,6 +131,7 @@ impl JournalEntry {
             lines: Vec::new(),
             status: EntryStatus::Draft,
             reversal_of: None,
+            draft_state: DraftState::Building,
         }
     }
 
@@ -100,6 +160,12 @@ impl JournalEntry {
         self.status
     }
 
+    /// Where a draft stands (plan P4): building, or awaiting evidence.
+    /// Meaningful while the entry is a draft.
+    pub fn draft_state(&self) -> &DraftState {
+        &self.draft_state
+    }
+
     /// If this entry reverses another, the reversed entry's id.
     pub fn reversal_of(&self) -> Option<EntryId> {
         self.reversal_of
@@ -116,9 +182,17 @@ impl JournalEntry {
         self.lines[index].class_id = class_id;
     }
 
+    /// Set the draft's state. Only while drafted; only via
+    /// [`crate::Ledger::set_draft_state`].
+    pub(crate) fn set_draft_state(&mut self, state: DraftState) {
+        self.draft_state = state;
+    }
+
     /// Mark posted. Only via [`crate::Ledger`], after [`Self::validate`].
     pub(crate) fn mark_posted(&mut self) {
         self.status = EntryStatus::Posted;
+        // A posted entry waits on nothing: its state is the canonical one.
+        self.draft_state = DraftState::Building;
     }
 
     /// Link this entry as the reversal of another. Only via [`crate::Ledger`].

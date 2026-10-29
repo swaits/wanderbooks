@@ -278,10 +278,39 @@ pub fn find_with(
     };
     let money = ledger_core::parties::money_accounts(ledger, &money_cash, &financing);
     let members = settings.company.party_members(ledger);
-    let entries = entries(books, &journal, &policy);
+    let entries = entries(books, &journal);
     let mut out = Vec::new();
 
+    // Two kinds of open draft (plan P4, R-F): one that says it waits for
+    // its evidence, and one still being built.
     for e in entries.iter().filter(|e| e.status == EntryStatus::Draft) {
+        if let Some(note) = &e.awaiting_evidence {
+            let waits = if note.is_empty() {
+                String::new()
+            } else {
+                format!(": {note}")
+            };
+            out.push(Attention {
+                severity: Severity::Todo,
+                kind: "draft_awaiting_evidence",
+                title: format!("Draft #{} awaiting receipt: {}", e.id, e.description),
+                detail: format!(
+                    "#{} · {} · {}. Waiting for its evidence{waits}. It appears in no report until posted.",
+                    e.id,
+                    date(e.date),
+                    dollars_or(e.amount)
+                ),
+                target: Target::Entry(e.id),
+                prompt: format!(
+                    "In wanderbooks, draft entry {} (\"{}\", {}) is waiting for its evidence{waits}. If the receipt has arrived, attach it, preview the entry (books.preview_entry) and post it; if it never will, say why and discard it (books.discard_draft).",
+                    e.id,
+                    e.description,
+                    dollars_or(e.amount)
+                ),
+                tool: Some(("books.get_entry".into(), serde_json::json!({ "entry_id": e.id }))),
+            });
+            continue;
+        }
         out.push(Attention {
             severity: Severity::Todo,
             kind: "draft",
@@ -1362,15 +1391,14 @@ struct Entry {
     parties: Vec<PartyId>,
     /// Covered by the receipt policy and has no receipt.
     missing_receipt: bool,
+    /// A draft that says it is finished and waits for its evidence: the
+    /// note it was given (plan P4).
+    awaiting_evidence: Option<String>,
 }
 
 /// Every entry, with the journal-derived facts the items read: its origin
 /// and whether the receipt policy covers it without a receipt.
-fn entries(
-    books: &impl PackageBooks,
-    journal: &[JournalLine],
-    policy: &ledger_config::ReceiptPolicy,
-) -> Vec<Entry> {
+fn entries(books: &impl PackageBooks, journal: &[JournalLine]) -> Vec<Entry> {
     let ledger = books.ledger();
     let mut events: HashMap<EntryId, Vec<usize>> = HashMap::new();
     for (i, line) in journal.iter().enumerate() {
@@ -1405,10 +1433,9 @@ fn entries(
         let evs = events.remove(&id).unwrap_or_default();
         let origin = origin(&evs, journal, closings.contains(&id));
         let amount = ledger_config::ReceiptPolicy::entry_debits(e).ok();
-        let covered = matches!(origin, "Journal entry" | "Recurring")
-            && e.reversal_of().is_none()
-            && receipts.get(&id).copied().unwrap_or(0) == 0
-            && policy.receipt_required(ledger, e);
+        // The engine decides (plan P4, I-5), as the server's gate does.
+        let covered = receipts.get(&id).copied().unwrap_or(0) == 0
+            && ledger_core::evidence::requirement(ledger, e, ledger.settings()).is_required();
         out.push(Entry {
             id,
             date: e.date(),
@@ -1418,6 +1445,14 @@ fn entries(
             origin,
             parties: ledger.entry_parties(id).iter().map(|p| p.party).collect(),
             missing_receipt: covered,
+            awaiting_evidence: match e.draft_state() {
+                ledger_core::DraftState::AwaitingEvidence { note }
+                    if e.status() == EntryStatus::Draft =>
+                {
+                    Some(note.clone())
+                }
+                _ => None,
+            },
         });
     }
     out

@@ -340,7 +340,7 @@ impl BooksServer {
             open_world_hint = false
         )
     )]
-    async fn post_entry(
+    pub(super) async fn post_entry(
         &self,
         params: Parameters<PostEntryParams>,
     ) -> Result<Json<PostEntryOut>, String> {
@@ -368,20 +368,14 @@ impl BooksServer {
                 ));
             }
         }
-        let mut receipt_required = self
-            .settings()
-            .policy
-            .receipt_required(store.ledger(), &entry);
+        // One function decides (plan P4, I-5): the engine's. A draft that
+        // joins a split group is covered too (anti-splitting).
+        let receipt_required =
+            ledger_core::evidence::requirement(store.ledger(), &entry, store.ledger().settings())
+                .is_required();
         let receipts = preview_receipts(&store, p.entry_id)?;
-        // Anti-splitting: if this entry looks like part of a split group,
-        // the receipt policy applies to the group total.
-        let split_group = self
-            .settings()
-            .policy
+        let split_group = ledger_core::evidence::Policy::from_settings(store.ledger().settings())
             .split_group(store.ledger(), p.entry_id, &entry);
-        if !split_group.is_empty() {
-            receipt_required = true;
-        }
         let receipt_missing = receipt_required && receipts.is_empty();
         let party_policy = self.settings().parties;
         let party_id = store.ledger().entry_party(p.entry_id);
@@ -399,7 +393,8 @@ impl BooksServer {
         } else {
             Vec::new()
         };
-        let out = PostEntryOut {
+        let mut out = PostEntryOut {
+            preview: None,
             status: "preview".to_string(),
             entry_id: p.entry_id,
             date: entry.date().to_string(),
@@ -428,6 +423,26 @@ impl BooksServer {
                 .map(|(rule, approver)| ApprovalNeededOut { rule, approver })
                 .collect(),
         };
+        // The digest of the draft as it stands (plan P4 step 4, D-50): its
+        // lines, party, vendor, instrument and evidence, and the settings
+        // seq. Another session's unrelated post does not disturb it.
+        let payload = serde_json::json!({
+            "tool": "books.post_entry",
+            "entry": &entry,
+            "party": out.party_id,
+            "parties": &out.parties,
+            "no_party_reason": &out.no_party_reason,
+            "vendor": store.ledger().entry_vendor(p.entry_id),
+            "instrument": store.ledger().entry_instrument(p.entry_id),
+            "evidence": out.receipts.iter().map(|r| r.attachment_id).collect::<Vec<_>>(),
+            "settings_seq": store.ledger().settings().last_seq(),
+        });
+        out.preview = Some(Preview::check(
+            "books.post_entry",
+            &payload,
+            p.confirmed.unwrap_or(false),
+            p.preview.as_deref(),
+        )?);
         if !p.confirmed.unwrap_or(false) {
             return Ok(Json(out));
         }
@@ -480,38 +495,11 @@ impl BooksServer {
             })
             .to_string());
         }
-        if receipt_missing {
-            let split_note = if split_group.is_empty() {
-                String::new()
-            } else {
-                format!(
-                    " Anti-splitting: this looks like part of a split group with entries {:?}; the policy applies to the group total.",
-                    split_group
-                )
-            };
-            return Err(ReceiptRequiredError {
-                code: "receipt_required".to_string(),
-                message: format!(
-                    "entry {} moves {} in debits ({}); attach a receipt with books.attach_receipt before posting.{}",
-                    p.entry_id,
-                    money(total),
-                    self.settings().policy.describe(),
-                    split_note
-                ),
-                entry_id: Some(p.entry_id),
-                asset_id: None,
-                debits: total.to_string(),
-                policy: self.settings().policy.describe(),
-                remedy_tool: "books.attach_receipt".to_string(),
-                remedy_hint: format!(
-                    "attach a receipt to entry {} with books.attach_receipt, then retry books.post_entry with confirmed=true",
-                    p.entry_id
-                ),
-                split_group,
-            }
-            .to_tool_error());
-        }
-        store.post_entry(p.entry_id).map_err(|e| e.to_string())?;
+        // The evidence gate, in the store (plan P4, I-5): the same
+        // decision the preview showed, made again at the moment it posts.
+        store
+            .post_entry_checked(p.entry_id)
+            .map_err(|e| receipt_required_text(e, &self.settings().policy))?;
         fix_derived_shares(&mut store, &self.settings(), p.entry_id)?;
         let mut posted = out;
         posted.status = "posted".to_string();
@@ -560,7 +548,14 @@ impl BooksServer {
                 (l.account, side, l.amount)
             })
             .collect();
+        let digest = self.preview_of(
+            &store,
+            "books.reverse_entry",
+            p.confirmed.unwrap_or(false),
+            p.preview.as_deref(),
+        )?;
         let out = ReverseEntryOut {
+            preview: Some(digest),
             status: "preview".to_string(),
             reversal_id: 0, // filled in on post
             reverses: p.entry_id,

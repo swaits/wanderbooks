@@ -355,6 +355,23 @@ pub struct Ledger {
     /// What each entry settles (`entry.settles`, plan P6): the one record
     /// a member-paid entry's "reimbursed" is derived from (IZ-18).
     entry_settles: std::collections::BTreeMap<EntryId, Vec<EntryId>>,
+    /// What posted the entries the ledger's other state doesn't say
+    /// ([`crate::evidence::Origin`]): an asset's disposal, a payroll tax
+    /// remittance. Read by [`crate::evidence::requirement`].
+    entry_origins: std::collections::BTreeMap<EntryId, crate::evidence::Origin>,
+    /// The journal line that posted each posted entry (`entry.posted` or
+    /// `entry.reversed`, plan P4): what "posted since seq N" is read from,
+    /// backdated entries included. An entry the journal's own posting
+    /// line doesn't name (none today) has no place here.
+    posted_seq: std::collections::BTreeMap<EntryId, u64>,
+    /// The journal line already known to be an entry's posting line,
+    /// before the engine posts it (a store journals `entry.posted` ahead
+    /// of the command that posts): consumed when the entry posts. Not
+    /// state of its own.
+    expected_seq: std::collections::BTreeMap<EntryId, u64>,
+    /// Entries posted since the last [`Self::stamp_unstamped`], whose
+    /// posting line is the one being applied. Not state of its own.
+    unstamped: Vec<EntryId>,
 }
 
 impl Ledger {
@@ -411,6 +428,10 @@ impl Ledger {
             conventions: crate::conventions::Conventions::default(),
             annotations: std::collections::BTreeMap::new(),
             entry_settles: std::collections::BTreeMap::new(),
+            entry_origins: std::collections::BTreeMap::new(),
+            posted_seq: std::collections::BTreeMap::new(),
+            expected_seq: std::collections::BTreeMap::new(),
+            unstamped: Vec::new(),
         }
     }
 
@@ -826,6 +847,8 @@ impl Ledger {
             ("conventions", self.conventions == other.conventions),
             ("annotations", self.annotations == other.annotations),
             ("entry_settles", self.entry_settles == other.entry_settles),
+            ("posted_seq", self.posted_seq == other.posted_seq),
+            ("entry_origins", self.entry_origins == other.entry_origins),
         ]
         .into_iter()
         .filter(|(_, same)| !same)
@@ -1969,12 +1992,207 @@ impl Ledger {
             .get_mut(&entry)
             .ok_or(LedgerError::UnknownEntry(entry))?
             .mark_posted();
+        match self.expected_seq.remove(&entry) {
+            Some(seq) => {
+                self.posted_seq.entry(entry).or_insert(seq);
+            }
+            None => self.unstamped.push(entry),
+        }
         self.order_pos.insert(entry, self.order.len());
         self.order.push(entry);
         if let Some(o) = snapshot.reversal_of() {
             self.reversed_by.entry(o).or_insert(entry);
         }
         Ok(())
+    }
+
+    /// Set where a draft stands: still being built, or awaiting its
+    /// evidence (plan P4, rules.md B-43). A state is a note on the draft
+    /// and moves no figure; the draft's lines are what they were.
+    ///
+    /// ```text
+    /// GOAL: let a draft say it is finished and waiting on a document,
+    ///       so it is neither lost nor mistaken for work in progress.
+    /// SOURCE: docs/spec/rules.md B-43 (DECISION D-47: a draft waits on
+    ///         evidence; the evidence is checked when it posts); IRS
+    ///         Pub. 583 "supporting documents".
+    /// INVARIANTS:
+    ///   1. Only a draft has a state: a posted entry is refused
+    ///      (PostedEntryImmutable), an unknown one too (UnknownEntry).
+    ///   2. The note passes parties::check_text (no full TIN, no control
+    ///      characters, at most 500 characters).
+    ///   3. No line, balance or report moves; a refusal changes nothing.
+    /// ```
+    pub fn set_draft_state(
+        &mut self,
+        entry: EntryId,
+        state: crate::DraftState,
+    ) -> Result<(), LedgerError> {
+        if let crate::DraftState::AwaitingEvidence { note } = &state {
+            crate::parties::check_text("the note", note).map_err(LedgerError::InvalidDraft)?;
+        }
+        self.draft_mut(entry)?.set_draft_state(state);
+        Ok(())
+    }
+
+    /// [`Self::set_draft_state`] as journaled, for replay (rules.md
+    /// B-28): the state is restored on a draft that exists; a state
+    /// naming an entry since posted or discarded is refused like the
+    /// command, which journal order makes impossible.
+    #[doc(hidden)]
+    pub fn replay_set_draft_state(
+        &mut self,
+        entry: EntryId,
+        state: crate::DraftState,
+    ) -> Result<(), LedgerError> {
+        self.draft_mut(entry)?.set_draft_state(state);
+        Ok(())
+    }
+
+    /// Throw a draft away, with the reason (plan P4, rules.md B-43): the
+    /// only way out of an open draft that will never post, and so the way
+    /// a period it holds open can close. The draft was never in the books,
+    /// so no balance moves; the id is spent (ids are never reused); the
+    /// journal still holds its lines and why it went.
+    ///
+    /// ```text
+    /// GOAL: remove a draft that will not post, leaving the books and
+    ///       every id as they were.
+    /// SOURCE: docs/spec/rules.md B-43; B-8 (a posted entry is never
+    ///         removed: only a draft is); Lean Step.discard.
+    /// INVARIANTS:
+    ///   1. Only a draft is discarded: a posted entry is refused
+    ///      (EntryAlreadyPosted), an unknown one too (UnknownEntry).
+    ///   2. The reason is not empty and passes parties::check_text.
+    ///   3. Posted entries, their order, every balance and every id
+    ///      allocator are as they were; what was recorded about the draft
+    ///      itself (its vendor, instrument, parties, settlements) goes
+    ///      with it.
+    /// SCENARIOS:
+    ///   1. IF a period holds the draft open: after it, the period can
+    ///      close (the Lean hypothesis hdrafts).
+    /// ```
+    pub fn discard_draft(&mut self, entry: EntryId, reason: &str) -> Result<(), LedgerError> {
+        if reason.trim().is_empty() {
+            return Err(LedgerError::InvalidDraft(
+                "a discarded draft needs a reason".to_string(),
+            ));
+        }
+        crate::parties::check_text("the reason", reason).map_err(LedgerError::InvalidDraft)?;
+        self.replay_discard_draft(entry)
+    }
+
+    /// [`Self::discard_draft`] as journaled, for replay: the draft goes.
+    #[doc(hidden)]
+    pub fn replay_discard_draft(&mut self, entry: EntryId) -> Result<(), LedgerError> {
+        let e = self
+            .entries
+            .get(&entry)
+            .ok_or(LedgerError::UnknownEntry(entry))?;
+        if e.status() != EntryStatus::Draft {
+            return Err(LedgerError::EntryAlreadyPosted(entry));
+        }
+        self.entries.remove(&entry);
+        self.entry_vendors.remove(&entry);
+        self.entry_instruments.remove(&entry);
+        self.entry_parties.remove(&entry);
+        self.entry_no_party.remove(&entry);
+        self.entry_settles.remove(&entry);
+        Ok(())
+    }
+
+    /// The journal line (`seq`) that posted `entry`: `entry.posted` or
+    /// `entry.reversed`. `None` for a draft, an unknown entry, or books
+    /// read by a path that doesn't carry the sequence (plan P4).
+    pub fn posted_seq(&self, entry: EntryId) -> Option<u64> {
+        self.posted_seq.get(&entry).copied()
+    }
+
+    /// Record what posted `entry` where the ledger's other state doesn't
+    /// say: an asset's disposal entry, a payroll tax remittance (the store,
+    /// live, after the command; on replay, from the event that names the
+    /// entry). Read by [`crate::evidence::requirement`].
+    #[doc(hidden)]
+    pub fn note_entry_origin(&mut self, entry: EntryId, origin: crate::evidence::Origin) {
+        self.entry_origins.insert(entry, origin);
+    }
+
+    /// Why `entry` needs no evidence of its own, by what posted it, if
+    /// that is so ([`crate::evidence::requirement`] INVARIANT 1); `None`
+    /// for an entry the receipt policy covers (a hand entry, a recurring
+    /// draft, a payout).
+    pub(crate) fn origin_exemption(&self, entry: &JournalEntry) -> Option<&'static str> {
+        let id = entry.id();
+        if entry.reversal_of().is_some() {
+            return Some("a reversal: its evidence is its original's (B-43, D-47, D-12)");
+        }
+        if self.is_closing_entry(id) {
+            return Some("a period's closing entry: derived from the books (B-43)");
+        }
+        if self.schedule_month_of(id).is_some() {
+            return Some("a schedule month's posting: the schedule is the evidence (B-43)");
+        }
+        if self
+            .asset_runs
+            .values()
+            .any(|runs| runs.iter().any(|r| r.entry == id))
+        {
+            return Some("a depreciation run: the asset's schedule is the evidence (B-43)");
+        }
+        match self.entry_origins.get(&id) {
+            Some(crate::evidence::Origin::AssetDisposal) => {
+                return Some("an asset's disposal: the register is the evidence (B-43)");
+            }
+            Some(crate::evidence::Origin::PayrollRemittance) => {
+                return Some("a payroll tax remittance: the payroll runs are the evidence (B-43)");
+            }
+            None => {}
+        }
+        if (0..entry.lines().len()).any(|i| self.line_docs.contains_key(&(id, i))) {
+            return Some(
+                "a document's entry (invoice, bill, payment, write-off): the document is the evidence (B-43)",
+            );
+        }
+        if self.payroll_runs.values().any(|r| r.entry_id == id) {
+            return Some("a payroll run: the run is the evidence (B-43)");
+        }
+        None
+    }
+
+    /// Say that journal line `seq` will be `entry`'s posting line, ahead
+    /// of the command that posts it (a store, live: it journals
+    /// `entry.posted` or `entry.reversed` first). Consumed when the entry
+    /// posts.
+    #[doc(hidden)]
+    pub fn expect_posted_seq(&mut self, entry: EntryId, seq: u64) {
+        self.expected_seq.insert(entry, seq);
+    }
+
+    /// Give every entry posted since the last call (and not already told
+    /// its line by [`Self::expect_posted_seq`]) journal line `seq`: the
+    /// line whose application posted it. A store calls it after each line
+    /// it replays, and after a live command that journals one line and
+    /// posts an entry with it (a close, a schedule month). The first
+    /// posting stands.
+    #[doc(hidden)]
+    pub fn stamp_unstamped(&mut self, seq: u64) {
+        for entry in std::mem::take(&mut self.unstamped) {
+            self.posted_seq.entry(entry).or_insert(seq);
+        }
+    }
+
+    /// Draft entries in id order, with their state.
+    pub fn drafts(&self) -> Vec<&JournalEntry> {
+        let mut ids: Vec<EntryId> = self
+            .entries
+            .values()
+            .filter(|e| e.status() == EntryStatus::Draft)
+            .map(|e| e.id())
+            .collect();
+        ids.sort_unstable();
+        ids.into_iter()
+            .filter_map(|i| self.entries.get(&i))
+            .collect()
     }
 
     /// Look up an entry by id (draft or posted).

@@ -114,7 +114,7 @@ impl Mcp {
     }
 
     fn tool(&mut self, name: &str, args: Value) -> Out {
-        let resp = self.rpc("tools/call", json!({"name": name, "arguments": args}));
+        let resp = common::tools_call(|m, p| self.rpc(m, p), name, args.clone());
         if let Some(e) = resp.get("error") {
             return Out::RpcErr(e.clone());
         }
@@ -1043,6 +1043,15 @@ fn cash_flow_exports_equal_the_core_statement() {
     let tool = m.ok(
         "books.cash_flow",
         json!({"start": START, "end": END, "cash_accounts": ["1000"], "financing_accounts": ["2100"]}),
+    );
+    // (The tool's answer also says what is open as of the end; the
+    // export's file is the statement alone.)
+    let mut tool = tool;
+    assert!(
+        tool.as_object_mut()
+            .unwrap()
+            .remove("as_of_status")
+            .is_some()
     );
     assert_eq!(tool, j);
 }
@@ -3442,7 +3451,8 @@ fn cpa_package_holds_the_year_and_its_evidence() {
     let mut m = Mcp::start(&dir, "1000000.00");
     let out = m.ok(
         "books.export_cpa_package",
-        json!({"as_of": END, "cash_accounts": ["1000"], "include_tins": false}),
+        json!({"as_of": END, "cash_accounts": ["1000"], "include_tins": false,
+                "allow_open_drafts": {"reason": "the test books keep drafts open"}}),
     );
     assert_eq!(out["file"]["file_name"], format!("cpa-package-{END}.zip"));
     assert_eq!(out["file"]["mime_type"], "application/zip");
@@ -3646,7 +3656,8 @@ fn cpa_package_holds_the_year_and_its_evidence() {
     // Without receipts: no evidence at all.
     let out = m.ok(
         "books.export_cpa_package",
-        json!({"as_of": END, "cash_accounts": ["1000"], "include_receipts": false, "include_tins": false}),
+        json!({"as_of": END, "cash_accounts": ["1000"], "include_receipts": false, "include_tins": false,
+                "allow_open_drafts": {"reason": "the test books keep drafts open"}}),
     );
     let files = unzip(&m.handed(&out["file"]));
     assert!(

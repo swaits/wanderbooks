@@ -64,6 +64,7 @@ pub const KNOWN_FEATURES: &[&str] = &[
     DOCUMENT_STANDING,
     DOCUMENTS_V2,
     ATTACHMENT_TEXT,
+    DRAFTS_V2,
 ];
 
 /// Feature: `period.closed` closes to members with `"rounding":
@@ -208,6 +209,15 @@ pub const DOCUMENTS_V2: &str = "documents_v2";
 /// declaration instead (rules.md B-27, B-44).
 pub const ATTACHMENT_TEXT: &str = "attachment_text";
 
+/// Feature: `drafts_v2` (plan P4, D-52): `entry.draft_state_set` (a draft
+/// building or awaiting its evidence) and `entry.draft_discarded` (a
+/// draft thrown away, with why). An older version doesn't know those
+/// event types: it would refuse them as unknown, or, replaying around
+/// them, keep a discarded draft that blocks a period's close and call a
+/// waiting draft one being built; it stops at the declaration instead
+/// (rules.md B-27, B-43).
+pub const DRAFTS_V2: &str = "drafts_v2";
+
 /// The line type that declares the journal format.
 pub const FORMAT_SET: &str = "journal.format_set";
 
@@ -243,6 +253,8 @@ pub const EVENT_TYPES: &[&str] = &[
     "document.filed",
     "entry.approved",
     "entry.created",
+    "entry.draft_discarded",
+    "entry.draft_state_set",
     "entry.instrument_set",
     "entry.line_added",
     "entry.line_class_set",
@@ -940,6 +952,41 @@ mod tests {
         ));
         let up = older.upgrade().expect("waits for it");
         assert_eq!(up.adds(), vec!["the journal feature documents_v2"]);
+    }
+
+    /// The version before P4 (every feature through `attachment_text`)
+    /// stops at a declaration of `drafts_v2` as newer, never keeping a
+    /// discarded draft or calling a waiting one a draft being built; and
+    /// books that declared every earlier feature still wait for it
+    /// (B-27, D-39).
+    #[test]
+    fn drafts_v2_is_its_own_feature() {
+        assert!(KNOWN_FEATURES.contains(&DRAFTS_V2));
+        let before: Vec<&str> = KNOWN_FEATURES
+            .iter()
+            .copied()
+            .filter(|f| *f != DRAFTS_V2)
+            .collect();
+        let l = line(
+            FORMAT_SET,
+            json!({"format": 2, "features": [ATTACHMENT_TEXT, DRAFTS_V2]}),
+        );
+        match declared_knowing(&l, &before) {
+            Err(StoreError::NewerJournal { need, .. }) => {
+                assert_eq!(need, "journal features drafts_v2")
+            }
+            other => panic!("expected NewerJournal, got {other:?}"),
+        }
+        let older = JournalFormat {
+            format: 2,
+            features: before.iter().map(|f| f.to_string()).collect(),
+        };
+        assert!(matches!(
+            older.require_feature(DRAFTS_V2),
+            Err(StoreError::FormatUpgradePending { .. })
+        ));
+        let up = older.upgrade().expect("waits for it");
+        assert_eq!(up.adds(), vec!["the journal feature drafts_v2"]);
     }
 
     /// This version's format: the newest it reads, every feature it

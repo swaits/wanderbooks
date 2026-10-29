@@ -583,6 +583,7 @@ impl BooksServer {
             + Self::payouts_router()
             + Self::tax_router()
             + Self::write_offs_router()
+            + Self::drafts_router()
     }
 
     /// The settings in force for this request: the books' own, taken from
@@ -1010,14 +1011,10 @@ impl BooksServer {
         if entry.status() != ledger_core::EntryStatus::Posted || entry.reversal_of().is_some() {
             return Ok(());
         }
-        let split_group = self
-            .settings()
-            .policy
+        let split_group = ledger_core::evidence::Policy::from_settings(store.ledger().settings())
             .split_group(store.ledger(), entry_id, entry);
-        if !self
-            .settings()
-            .policy
-            .receipt_required(store.ledger(), entry)
+        if !ledger_core::evidence::requirement(store.ledger(), entry, store.ledger().settings())
+            .is_required()
             && split_group.is_empty()
         {
             return Ok(());
@@ -1328,6 +1325,10 @@ thread_local! {
     /// (set at its start from the settings in force: one version per
     /// request), so every "today" in it agrees.
     static TIMEZONE: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+    /// The arguments the request running on this thread was called with,
+    /// as the caller sent them: what the preview digest (plan P4 step 4,
+    /// D-50) is taken over, so a changed argument is a changed preview.
+    static ARGS: std::cell::RefCell<Option<serde_json::Map<String, serde_json::Value>>> = const { std::cell::RefCell::new(None) };
 }
 
 /// Poll `fut` with "today" in the request's zone on this thread, each
@@ -1415,6 +1416,8 @@ mod attachments;
 mod chart;
 #[path = "tools/documents.rs"]
 mod documents;
+#[path = "tools/drafts.rs"]
+mod drafts;
 #[path = "tools/entries.rs"]
 mod entries;
 #[path = "tools/evidence.rs"]
@@ -1503,7 +1506,10 @@ impl BooksServer {
             }
             "books://reports/balance-sheet" => {
                 let Json(out) = self
-                    .balance_sheet(Parameters(BalanceSheetParams { as_of: None }))
+                    .balance_sheet(Parameters(BalanceSheetParams {
+                        as_of: None,
+                        strict: None,
+                    }))
                     .await?;
                 json(&out)
             }
@@ -1513,13 +1519,20 @@ impl BooksServer {
                         start: None,
                         end: None,
                         class: None,
+                        strict: None,
                     }))
                     .await?;
                 json(&out)
             }
             "books://digest" => {
                 let since = digest_since(query, today());
-                let Json(out) = self.digest(Parameters(DigestParams { since })).await?;
+                let Json(out) = self
+                    .digest(Parameters(DigestParams {
+                        since: Some(since),
+                        since_seq: None,
+                        as_of: None,
+                    }))
+                    .await?;
                 json(&out)
             }
             handbook::URI => {
@@ -1694,6 +1707,7 @@ impl ServerHandler for BooksServer {
         let result = run_blocking(&self.store, move || {
             Box::pin(async move {
                 WROTE.with(|w| w.borrow_mut().take());
+                ARGS.with(|a| *a.borrow_mut() = request.arguments.clone());
                 let caller = running_call
                     .caller()
                     .map(|c| (c.token.id.clone(), c.token.name.clone()));

@@ -162,7 +162,7 @@ impl Mcp {
     /// must match the outputSchema.
     fn tool(&mut self, name: &str, args: Value) -> Out {
         let before = self.journal();
-        let resp = self.rpc("tools/call", json!({"name": name, "arguments": args}));
+        let resp = common::tools_call(|m, p| self.rpc(m, p), name, args.clone());
         let out = if let Some(err) = resp.get("error") {
             Out::RpcErr(err.clone())
         } else {

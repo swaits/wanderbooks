@@ -7,6 +7,7 @@
 
 use super::*;
 use ledger_core::InstrumentId;
+use ledger_store::StoreError;
 
 /// The book's id, as the commands given to agents name it: its folder's
 /// name in the data root.
@@ -32,6 +33,56 @@ pub(crate) fn named(
         return Err(why);
     }
     Ok((name, mime))
+}
+
+/// A refusal of the store's evidence gate as the tool error the agent
+/// reads: the structured `receipt_required` (plan P4 step 2: the error the
+/// MCP built before the gate moved into the store, unchanged), any other
+/// store error as its text.
+pub(crate) fn receipt_required_text(e: StoreError, policy: &ReceiptPolicy) -> String {
+    let StoreError::ReceiptRequired(info) = e else {
+        return e.to_string();
+    };
+    let ledger_store::error::ReceiptRequiredInfo {
+        entry_id,
+        debits,
+        split_group,
+        ..
+    } = *info;
+    let split_note = if split_group.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " Anti-splitting: this looks like part of a split group with entries {:?}; the policy applies to the group total.",
+            split_group
+        )
+    };
+    // A draft's debits may be past exact arithmetic (rules.md B-28): then
+    // the refusal says so in place of the sum.
+    let (total, debits) = match debits {
+        Some(t) => (money(t), t.to_string()),
+        None => (
+            "an amount too large to add".to_string(),
+            "too large".to_string(),
+        ),
+    };
+    ReceiptRequiredError {
+        code: "receipt_required".to_string(),
+        message: format!(
+            "entry {entry_id} moves {total} in debits ({}); attach a receipt with books.attach_receipt before posting.{split_note}",
+            policy.describe()
+        ),
+        entry_id: Some(entry_id),
+        asset_id: None,
+        debits,
+        policy: policy.describe(),
+        remedy_tool: "books.attach_receipt".to_string(),
+        remedy_hint: format!(
+            "attach a receipt to entry {entry_id} with books.attach_receipt, then retry books.post_entry with confirmed=true"
+        ),
+        split_group,
+    }
+    .to_tool_error()
 }
 
 /// The settings as ledger_package reads them: the company, and the
@@ -763,4 +814,95 @@ pub(crate) fn floor_char_boundary(text: &str, at: usize) -> usize {
         cut -= 1;
     }
     cut
+}
+
+/// The preview digest (plan P4 step 4, D-50, amending I-6): the SHA-256 of
+/// the canonical JSON of what a tool's preview shows. A confirmed call
+/// recomputes it from the books as they are now and refuses a different
+/// one (`stale_preview`): a changed argument, a post by another session,
+/// a changed setting. It detects drift; it does not prove a human saw the
+/// preview. No key: a same-user key would prove nothing.
+///
+/// ```text
+/// GOAL: a commit acts on the thing that was previewed, or not at all.
+/// SOURCE: plan/served.md I-6, D-50 (owner decision 3: a post by another
+///         session in between forces a re-preview).
+/// INVARIANTS:
+///   1. For a draft entry the payload is the entry's canonical state
+///      (id, date, description, lines with their classes, party, vendor,
+///      instrument, the evidence linked) and the settings seq: other
+///      sessions' unrelated posts do not disturb it.
+///   2. For every other operation it is the tool, its canonical arguments
+///      (without `confirmed` and `preview`), the settings seq and the
+///      journal head seq: any write in between does.
+///   3. Equal payloads give equal digests whatever the key order.
+/// ```
+pub struct Preview;
+
+impl Preview {
+    /// The digest of `payload`.
+    pub fn of(payload: &serde_json::Value) -> String {
+        ledger_store::journal::sha256_hex(ledger_store::journal::canonical_json(payload).as_bytes())
+    }
+
+    /// The payload of an operation without a draft: the tool, the
+    /// arguments it was called with (without `confirmed` and `preview`),
+    /// the settings seq and the journal head seq.
+    pub fn operation(store: &Store, tool: &str) -> serde_json::Value {
+        let mut args = ARGS.with(|a| a.borrow().clone()).unwrap_or_default();
+        args.remove("confirmed");
+        args.remove("preview");
+        args.retain(|_, v| !v.is_null());
+        serde_json::json!({
+            "tool": tool,
+            "args": args,
+            "settings_seq": store.ledger().settings().last_seq(),
+            "head_seq": store.head().0,
+        })
+    }
+
+    /// The preview check every tool with `confirmed` makes: the digest of
+    /// `payload` now. Without `confirmed` it is what the preview returns;
+    /// with it, `given` must equal it, or the call is refused with the
+    /// structured `stale_preview` guard before anything is written.
+    pub fn check(
+        tool: &str,
+        payload: &serde_json::Value,
+        confirmed: bool,
+        given: Option<&str>,
+    ) -> Result<String, String> {
+        let now = Self::of(payload);
+        if !confirmed {
+            return Ok(now);
+        }
+        let message = match given.map(str::trim) {
+            None | Some("") => format!(
+                "{tool} with confirmed=true needs the preview of what is being confirmed: call {tool} without confirmed, show it to the human, then pass its preview"
+            ),
+            Some(g) if g == now => return Ok(now),
+            Some(_) => format!(
+                "the books or the arguments changed since {tool} was previewed (a post by another session, a changed setting or argument): call {tool} without confirmed again and confirm that preview"
+            ),
+        };
+        Err(serde_json::json!({
+            "code": "stale_preview",
+            "message": message,
+            "remedy_tool": tool,
+        })
+        .to_string())
+    }
+}
+
+impl BooksServer {
+    /// [`Preview::check`] for an operation without a draft: the payload is
+    /// built from the tool, its arguments and the books' seqs.
+    pub(crate) fn preview_of(
+        &self,
+        store: &Store,
+        tool: &str,
+        confirmed: bool,
+        given: Option<&str>,
+    ) -> Result<String, String> {
+        Preview::check(tool, &Preview::operation(store, tool), confirmed, given)
+    }
 }

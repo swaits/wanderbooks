@@ -10,6 +10,8 @@
 //! bridge_initializes_during_cold_start, no_local_agent_tcp).
 #![cfg(target_os = "linux")]
 
+mod common;
+
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -405,7 +407,7 @@ impl Agent {
 
     /// Call a tool: Ok(its structured result) or Err(the error's text).
     fn call(&mut self, tool: &str, args: Value) -> Result<Value, String> {
-        let r = self.request("tools/call", json!({"name": tool, "arguments": args}), 60);
+        let r = common::tools_call(|m, p| self.request(m, p, 60), tool, args.clone());
         if let Some(e) = r.get("error") {
             return Err(e["message"].as_str().unwrap_or_default().to_string());
         }

@@ -513,6 +513,12 @@ impl BooksServer {
             .terms
             .as_ref()
             .map(ledger_core::Terms::describe);
+        let digest = self.preview_of(
+            &store,
+            "books.create_invoice",
+            p.confirmed.unwrap_or(false),
+            p.preview.as_deref(),
+        )?;
         if !p.confirmed.unwrap_or(false) {
             let printed = ledger_package::draft_invoice_document(
                 store.ledger(),
@@ -527,7 +533,7 @@ impl BooksServer {
             );
             let pdf = self.hand_over(&book_name(&store), &file_name, "application/pdf", bytes)?;
             return Ok(Json(InvoiceOut {
-                preview: Some(true),
+                preview: Some(digest),
                 id: None,
                 number: preview.number,
                 total: money(preview.total),
@@ -711,9 +717,15 @@ impl BooksServer {
                 );
             }
         }
+        let digest = self.preview_of(
+            &store,
+            "books.create_bill",
+            p.confirmed.unwrap_or(false),
+            p.preview.as_deref(),
+        )?;
         if !p.confirmed.unwrap_or(false) {
             return Ok(Json(BillOut {
-                preview: Some(true),
+                preview: Some(digest),
                 id: None,
                 total: money(preview.total),
                 due_date: preview.due_date.to_string(),

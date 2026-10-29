@@ -26,11 +26,14 @@ fn control_problems(out: &ControlCheckOut) -> Vec<String> {
     v
 }
 
-/// Net movement of one account over entries in `[from, to]`, normal side.
-fn movement_in(ledger: &Ledger, account: AccountId, from: NaiveDate, to: NaiveDate) -> Decimal {
-    let movement: Decimal = ledger
-        .posted_entries()
-        .filter(|e| e.date() >= from && e.date() <= to)
+/// An account's net movement over `entries` in its normal direction.
+fn movement_over(
+    ledger: &Ledger,
+    account: AccountId,
+    entries: &[&ledger_core::JournalEntry],
+) -> Decimal {
+    let movement: Decimal = entries
+        .iter()
         .flat_map(|e| e.lines())
         .filter(|l| l.account == account)
         .map(|l| match l.side {
@@ -83,6 +86,7 @@ fn cash_flow_out(stmt: &ledger_core::CashFlowStatement) -> CashFlowOut {
     };
     let r = &stmt.operating_reconciliation;
     CashFlowOut {
+        as_of_status: None,
         method: "direct".to_string(),
         start: stmt.start.to_string(),
         end: stmt.end.to_string(),
@@ -278,8 +282,10 @@ impl BooksServer {
     ) -> Result<Json<TrialBalanceOut>, String> {
         let store = self.lock()?;
         let as_of = self.as_of(params.0.as_of.as_deref())?;
+        let as_of_status = self.report_status(&store, as_of, params.0.strict.unwrap_or(false))?;
         let tb = reports::trial_balance_as_of(store.ledger(), as_of);
         Ok(Json(TrialBalanceOut {
+            as_of_status,
             as_of: as_of.to_string(),
             lines: tb
                 .lines
@@ -322,7 +328,9 @@ impl BooksServer {
             p.end.as_deref(),
             class_id,
         )?;
+        let as_of_status = self.report_status(&store, pl.end, p.strict.unwrap_or(false))?;
         Ok(Json(ProfitAndLossOut {
+            as_of_status,
             start: pl.start.to_string(),
             end: pl.end.to_string(),
             revenue: money(pl.total_revenue),
@@ -349,7 +357,9 @@ impl BooksServer {
         let p = params.0;
         let store = self.lock()?;
         let bs = self.bs_statement(store.ledger(), p.as_of.as_deref())?;
+        let as_of_status = self.report_status(&store, bs.as_of, p.strict.unwrap_or(false))?;
         Ok(Json(BalanceSheetOut {
+            as_of_status,
             as_of: bs.as_of.to_string(),
             assets: money(bs.total_assets),
             liabilities: money(bs.total_liabilities),
@@ -386,7 +396,10 @@ impl BooksServer {
             &p.financing_accounts,
             &p.investing_accounts,
         )?;
-        Ok(Json(cash_flow_out(&stmt)))
+        let as_of_status = self.report_status(&store, stmt.end, p.strict.unwrap_or(false))?;
+        let mut out = cash_flow_out(&stmt);
+        out.as_of_status = as_of_status;
+        Ok(Json(out))
     }
 
     #[tool(
@@ -758,19 +771,36 @@ impl BooksServer {
         params: Parameters<DigestParams>,
     ) -> Result<Json<DigestOut>, String> {
         let p = params.0;
-        let since = parse_date(&p.since)?;
+        let since = p.since.as_deref().map(parse_date).transpose()?;
+        if since.is_none() && p.since_seq.is_none() {
+            return Err("give since (a date) or since_seq (a journal sequence number)".into());
+        }
         let today = today();
+        let as_of = p.as_of.as_deref().map(parse_date).transpose()?;
+        let end = as_of.unwrap_or(today);
         let store = self.lock()?;
         let ledger = store.ledger();
+        // The entries: after a journal line (by when they were posted,
+        // backdated ones included), else by their date.
+        let selected: Vec<&ledger_core::JournalEntry> = ledger
+            .posted_entries()
+            .filter(|e| match p.since_seq {
+                Some(n) => {
+                    ledger.posted_seq(e.id()).is_some_and(|s| s > n)
+                        && as_of.is_none_or(|d| e.date() <= d)
+                }
+                None => since.is_some_and(|s| e.date() >= s) && as_of.is_none_or(|d| e.date() <= d),
+            })
+            .collect();
         let mut entries = Vec::new();
-        for e in ledger.posted_entries() {
-            if e.date() < since {
-                continue;
-            }
+        for e in &selected {
             let receipts = store
                 .list_attachments(Some(e.id()))
                 .map_err(|e| e.to_string())?;
-            let required = self.settings().policy.receipt_required(ledger, e);
+            // The one function that decides (plan P4, I-5): what posted
+            // an entry is part of the answer.
+            let required =
+                ledger_core::evidence::requirement(ledger, e, ledger.settings()).is_required();
             entries.push(DigestEntry {
                 entry_id: e.id(),
                 date: e.date().to_string(),
@@ -783,20 +813,40 @@ impl BooksServer {
             });
         }
         entries.sort_by(|a, b| b.date.cmp(&a.date).then(b.entry_id.cmp(&a.entry_id)));
+        // Movement over the entries asked for (by date: those dated from
+        // `since` through the end, as before).
+        let in_range: Vec<&ledger_core::JournalEntry> = if p.since_seq.is_some() {
+            selected.clone()
+        } else {
+            selected
+                .iter()
+                .copied()
+                .filter(|e| e.date() <= end)
+                .collect()
+        };
+        let touched: std::collections::BTreeSet<AccountId> = in_range
+            .iter()
+            .flat_map(|e| e.lines())
+            .map(|l| l.account)
+            .collect();
         let mut totals = Vec::new();
+        let mut zero_net_accounts = Vec::new();
         for a in ledger.chart().all() {
             if a.placeholder {
                 continue;
             }
-            let m = movement_in(ledger, a.id, since, today);
+            let m = movement_over(ledger, a.id, &in_range);
             if !m.is_zero() {
                 totals.push(DigestTotal {
                     code: a.code.clone(),
                     name: a.name.clone(),
                     movement: money(m),
                 });
+            } else if touched.contains(&a.id) {
+                zero_net_accounts.push(format!("{} {}", a.code, a.name));
             }
         }
+        zero_net_accounts.sort();
         totals.sort_by(|a, b| a.code.cmp(&b.code));
         let stale_rules = ledger_core::rules::stale_rules(today)
             .into_iter()
@@ -811,7 +861,9 @@ impl BooksServer {
             .tail_repairs()
             .map_err(|e| e.to_string())?
             .into_iter()
-            .filter(|(at, _, _)| at.get(..10).is_some_and(|d| d >= p.since.as_str()))
+            .filter(|(at, _, _)| {
+                since.is_none_or(|s| at.get(..10).is_some_and(|d| d >= s.to_string().as_str()))
+            })
             // The stamp only: the file's name would name the journal.
             .map(|(at, bytes, saved_as)| JournalRepair {
                 at,
@@ -832,11 +884,40 @@ impl BooksServer {
             today,
             &ledger.control_check(today).map_err(|e| e.to_string())?,
         ));
+        let mut drafts_by_state = std::collections::BTreeMap::new();
+        for e in ledger.drafts() {
+            *drafts_by_state
+                .entry(e.draft_state().key().to_string())
+                .or_insert(0u64) += 1;
+        }
+        let with_statement: std::collections::BTreeSet<AccountId> = store
+            .statements(None)
+            .map_err(|e| e.to_string())?
+            .iter()
+            .map(|s| s.account_id)
+            .collect();
+        let (mut reconciliation_tracked, mut never_reconciled) = (Vec::new(), Vec::new());
+        for id in ledger_store::reconcilable::cash_accounts(ledger, &self.settings().roles.cash) {
+            let code = code_name(&store, id).0;
+            if with_statement.contains(&id) {
+                reconciliation_tracked.push(code);
+            } else {
+                never_reconciled.push(code);
+            }
+        }
+        reconciliation_tracked.sort();
+        never_reconciled.sort();
         Ok(Json(DigestOut {
+            since_seq: p.since_seq,
+            head_seq: store.head().0,
+            zero_net_accounts,
+            drafts_by_state,
+            reconciliation_tracked,
+            never_reconciled,
             unreconciled_accounts,
             uncategorized_accounts,
             control_problems,
-            since: since.to_string(),
+            since: since.map(|d| d.to_string()).unwrap_or_default(),
             entries,
             totals_by_account: totals,
             stale_rules,
@@ -946,6 +1027,7 @@ impl BooksServer {
         let store = self.lock()?;
         let ledger = store.ledger();
         let (start, end) = self.statement_range(p.start.as_deref(), p.end.as_deref())?;
+        let as_of_status = self.report_status(&store, end, p.strict.unwrap_or(false))?;
         // One class, if asked (validated like every reference).
         let only = match &p.class {
             Some(c) => Some(resolve_class(&store, c)?),
@@ -1018,6 +1100,7 @@ impl BooksServer {
             })
             .collect();
         Ok(Json(ProfitAndLossByClassOut {
+            as_of_status,
             start: start.to_string(),
             end: end.to_string(),
             classes,
@@ -1063,7 +1146,55 @@ impl BooksServer {
     ) -> Result<Json<ExportCpaPackageOut>, String> {
         let p = params.0;
         let as_of = self.as_of(p.as_of.as_deref())?;
-        let store = self.lock()?;
+        let mut store = self.lock()?;
+        // A package with a draft missing from its figures is not final
+        // (plan P4, 4.8): refused unless the human says why it goes anyway,
+        // and that is journaled as a decision.
+        let open_drafts: Vec<(u64, String)> = store
+            .ledger()
+            .drafts()
+            .into_iter()
+            .filter(|e| e.date() <= as_of)
+            .map(|e| (e.id(), e.description().to_string()))
+            .collect();
+        if !open_drafts.is_empty() {
+            let named: Vec<String> = open_drafts
+                .iter()
+                .map(|(id, d)| format!("#{id} {d}"))
+                .collect();
+            let Some(allow) = p.allow_open_drafts.as_ref() else {
+                return Err(serde_json::json!({
+                    "code": "open_drafts",
+                    "message": format!(
+                        "{} draft(s) dated on or before {as_of} are open and missing from the package's figures: {}. Post them (books.post_entry) or discard them (books.discard_draft), or pass allow_open_drafts with the reason the package goes anyway",
+                        open_drafts.len(),
+                        named.join("; ")
+                    ),
+                    "remedy_tool": "books.list_drafts",
+                })
+                .to_string());
+            };
+            let by = CALLER
+                .with(|c| c.borrow().as_ref().map(|(_, name)| name.clone()))
+                .unwrap_or_else(|| ledger_store::auth::DEFAULT_NAME.to_string());
+            store
+                .record_decision(&ledger_core::conventions::NewDecision {
+                    subject: format!("CPA package as of {as_of} with open drafts"),
+                    decision_md: format!(
+                        "The CPA package as of {as_of} was exported with {} draft(s) open: {}. Reason: {}",
+                        open_drafts.len(),
+                        named.join("; "),
+                        allow.reason.trim()
+                    ),
+                    decided_by: vec![by],
+                    decided_on: today(),
+                    evidence_attachment: None,
+                    supersedes: None,
+                    citation: None,
+                    projects: Vec::new(),
+                })
+                .map_err(|e| e.to_string())?;
+        }
         let book = book_name(&store);
         // The vault, opened once and never creating a key: locked, each
         // TIN row says so and the package is built anyway (INVARIANT 3).

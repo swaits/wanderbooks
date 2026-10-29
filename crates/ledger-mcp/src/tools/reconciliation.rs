@@ -266,7 +266,10 @@ impl BooksServer {
             cleared_lines,
             problems,
             reconciliation: None,
+            preview: None,
         };
+        let digest = self.preview_of(&store, "books.reconcile", confirmed, p.preview.as_deref())?;
+        out.preview = Some(digest);
         if !confirmed {
             return Ok(Json(out));
         }

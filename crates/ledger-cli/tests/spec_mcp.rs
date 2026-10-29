@@ -287,7 +287,7 @@ impl Mcp {
     fn tool(&mut self, name: &str, args: Value) -> Out {
         let before = self.journal();
         let files = self.read_only(name).then(|| self.data_files());
-        let resp = self.rpc("tools/call", json!({"name": name, "arguments": args}));
+        let resp = common::tools_call(|m, p| self.rpc(m, p), name, args.clone());
         let out = if let Some(err) = resp.get("error") {
             Out::RpcErr(err.clone())
         } else {
@@ -884,6 +884,30 @@ fn happy_path(name: &str) -> Mcp {
                "foreign_currency": "EUR", "foreign_amount": "10.00", "fx_rate": "1.10"}),
     );
 
+    // P4: a draft's state, the list, the full preview, and a discard.
+    let dd = m.ok(
+        "books.draft_entry",
+        json!({"date": "2026-04-23", "description": "Entered twice"}),
+    )["entry_id"]
+        .as_u64()
+        .unwrap();
+    for (account, side) in [("6999", "debit"), ("1000", "credit")] {
+        m.ok(
+            "books.add_line",
+            json!({"entry_id": dd, "account": account, "side": side, "amount": "5.00"}),
+        );
+    }
+    m.ok(
+        "books.set_draft_state",
+        json!({"entry_id": dd, "state": "awaiting_evidence", "note": "a receipt"}),
+    );
+    m.ok("books.list_drafts", json!({"state": "awaiting_evidence"}));
+    m.ok("books.preview_entry", json!({"entry_id": dd}));
+    m.ok(
+        "books.discard_draft",
+        json!({"entry_id": dd, "reason": "entered twice", "confirmed": true}),
+    );
+
     // A/R and A/P.
     let inv = m.ok(
         "books.create_invoice",
@@ -895,7 +919,7 @@ fn happy_path(name: &str) -> Mcp {
         .unwrap();
     m.ok(
         "books.receive_payment",
-        json!({"document_id": inv, "date": "2026-02-10", "amount": "200.00", "cash_account": "1000"}),
+        json!({"confirmed": true, "document_id": inv, "date": "2026-02-10", "amount": "200.00", "cash_account": "1000"}),
     );
     let vendor_invoice = m.upload(
         b"vendor invoice",
@@ -914,7 +938,7 @@ fn happy_path(name: &str) -> Mcp {
         .unwrap();
     m.ok(
         "books.pay_bill",
-        json!({"document_id": bill, "date": "2026-02-05", "amount": "300.00", "cash_account": "1000"}),
+        json!({"confirmed": true, "document_id": bill, "date": "2026-02-05", "amount": "300.00", "cash_account": "1000"}),
     );
     m.ok("books.ar_aging", json!({"as_of": "2026-06-30"}));
     m.ok("books.ap_aging", json!({"as_of": "2026-06-30"}));
@@ -1258,11 +1282,13 @@ fn happy_path(name: &str) -> Mcp {
     );
     m.ok(
         "books.export_cpa_package",
-        json!({"as_of": "2026-12-31", "include_receipts": false, "include_tins": false}),
+        json!({"as_of": "2026-12-31", "include_receipts": false, "include_tins": false,
+                "allow_open_drafts": {"reason": "the test books keep drafts open"}}),
     );
     m.ok(
         "books.export_cpa_package",
-        json!({"as_of": "2026-12-31", "include_receipts": false}),
+        json!({"as_of": "2026-12-31", "include_receipts": false,
+                "allow_open_drafts": {"reason": "the test books keep drafts open"}}),
     );
 
     // The access log, the backups' status, and a backup now (none is set
@@ -1666,7 +1692,7 @@ fn run_op(m: &mut Mcp, k: &mut Known, op: &Op) {
         ),
         Op::PayBill { doc, amount } => (
             "books.pay_bill",
-            json!({"document_id": doc.resolve(&k.bills), "date": "2026-03-15", "amount": amount,
+            json!({"confirmed": true, "document_id": doc.resolve(&k.bills), "date": "2026-03-15", "amount": amount,
                    "cash_account": "1000"}),
         ),
         Op::Payout { deposit } => (
@@ -2636,7 +2662,7 @@ fn documents_void_and_tie_out_over_the_wire() {
         .unwrap();
     let paid = m.ok(
         "books.receive_payment",
-        json!({"document_id": inv, "date": "2026-02-10", "amount": "200.00",
+        json!({"confirmed": true, "document_id": inv, "date": "2026-02-10", "amount": "200.00",
                "cash_account": "1000", "instrument": "Harbor checking", "reference": "tr_8812"}),
     );
     assert_eq!(paid["remaining"], "300.00", "{paid}");
@@ -2738,7 +2764,7 @@ fn documents_list_and_timeline_over_the_wire() {
     let later = invoice(&mut m, "2026-02-05", "2026-04-30", "80.00");
     let pay = m.ok(
         "books.receive_payment",
-        json!({"document_id": late, "date": "2026-02-10", "amount": "200.00", "cash_account": "1000"}),
+        json!({"confirmed": true, "document_id": late, "date": "2026-02-10", "amount": "200.00", "cash_account": "1000"}),
     )["entry_id"]
         .as_u64()
         .unwrap();

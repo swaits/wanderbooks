@@ -1201,6 +1201,7 @@ impl BooksServer {
                 .map_err(|e| e.to_string())?;
         }
         let mut out = PurgeTinOut {
+            preview: None,
             status: "preview".into(),
             party_id: id,
             name: party.name.clone(),
@@ -1227,6 +1228,13 @@ impl BooksServer {
                 }
             ),
         };
+        let digest = self.preview_of(
+            &store,
+            "books.purge_tin",
+            p.confirmed.unwrap_or(false),
+            p.preview.as_deref(),
+        )?;
+        out.preview = Some(digest);
         if !p.confirmed.unwrap_or(false) {
             return Ok(Json(out));
         }

@@ -331,11 +331,18 @@ impl BooksServer {
             })
             .collect();
         let withdrawn = out_groups.iter().map(|g| g.withdraw.len()).sum();
+        let digest = self.preview_of(
+            &store,
+            "books.consolidate_duplicates",
+            confirmed,
+            params.0.preview.as_deref(),
+        )?;
         if !confirmed {
             return Ok(Json(ConsolidateDuplicatesOut {
                 status: "preview".into(),
                 groups: out_groups,
                 withdrawn,
+                preview: Some(digest),
             }));
         }
         for g in &groups {
@@ -373,6 +380,7 @@ impl BooksServer {
             status: "consolidated".into(),
             groups: out_groups,
             withdrawn,
+            preview: Some(digest),
         }))
     }
 }

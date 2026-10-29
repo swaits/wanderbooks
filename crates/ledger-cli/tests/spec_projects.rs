@@ -152,7 +152,7 @@ impl Mcp {
     /// must match the outputSchema.
     fn tool(&mut self, name: &str, args: Value) -> Out {
         let before = self.journal();
-        let resp = self.rpc("tools/call", json!({"name": name, "arguments": args}));
+        let resp = common::tools_call(|m, p| self.rpc(m, p), name, args.clone());
         let out = if let Some(err) = resp.get("error") {
             Out::RpcErr(err.clone())
         } else {
@@ -1284,11 +1284,11 @@ fn invoice_and_bill_lines_count_toward_their_projects() {
     // Payments are balance-sheet only: no project.
     let got = m.ok(
         "books.receive_payment",
-        json!({"document_id": inv["id"], "date": "2026-03-20", "amount": "3800.00", "cash_account": "1000"}),
+        json!({"confirmed": true, "document_id": inv["id"], "date": "2026-03-20", "amount": "3800.00", "cash_account": "1000"}),
     );
     let paid = m.ok(
         "books.pay_bill",
-        json!({"document_id": bill["id"], "date": "2026-03-30", "amount": "1250.00", "cash_account": "1000"}),
+        json!({"confirmed": true, "document_id": bill["id"], "date": "2026-03-30", "amount": "1250.00", "cash_account": "1000"}),
     );
     for e in [&got["entry_id"], &paid["entry_id"]] {
         let e = e.as_u64().unwrap();

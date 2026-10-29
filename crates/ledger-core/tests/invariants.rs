@@ -1609,3 +1609,75 @@ fn replayed_documents_and_payments_rebuild_the_records() {
     assert_eq!(b.status, DocumentStatus::Paid);
     assert_eq!(l.entry_vendor(last), Some(v));
 }
+
+// ---------------------------------------------------------------------------
+// Drafts: a state, and a way out (plan P4, rules.md B-43).
+// ---------------------------------------------------------------------------
+
+/// Spec (rules.md B-43; Lean `Step.discard` and `hdrafts`): a period with
+/// an open draft can't close; once the draft is discarded it can, and
+/// nothing posted moved: balances, order and ids are as they were.
+#[test]
+fn discard_unblocks_close() {
+    let c = fixture_company();
+    let mut ledger = c.ledger.clone();
+    let jan = ledger.create_period("2026-01", date(1), date(31)).unwrap();
+    let draft = ledger.create_entry(date(20), "Figma annual plan");
+    ledger
+        .add_line(draft, c.rent, Side::Debit, usd(40))
+        .unwrap();
+    ledger
+        .add_line(draft, c.cash, Side::Credit, usd(40))
+        .unwrap();
+    // A state is a note on the draft: it moves nothing and doesn't unblock.
+    ledger
+        .set_draft_state(
+            draft,
+            ledger_core::DraftState::AwaitingEvidence {
+                note: "invoice due from Figma".into(),
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        ledger.get_entry(draft).unwrap().draft_state().key(),
+        "awaiting_evidence"
+    );
+    assert_eq!(
+        ledger.close_period(jan).unwrap_err(),
+        LedgerError::DraftsInPeriod(jan)
+    );
+    let tb_before = snapshot(&ledger).unwrap();
+    let posted_before: Vec<u64> = ledger.posted_entries().map(|e| e.id()).collect();
+    let next_before = ledger.next_entry_id();
+    // A reason is required; a posted entry is never discarded.
+    assert!(matches!(
+        ledger.discard_draft(draft, "  "),
+        Err(LedgerError::InvalidDraft(_))
+    ));
+    assert_eq!(
+        ledger.discard_draft(posted_before[0], "oops").unwrap_err(),
+        LedgerError::EntryAlreadyPosted(posted_before[0])
+    );
+    ledger.discard_draft(draft, "never billed").unwrap();
+    assert!(ledger.get_entry(draft).is_none());
+    assert_eq!(snapshot(&ledger).unwrap(), tb_before);
+    assert_eq!(
+        ledger.posted_entries().map(|e| e.id()).collect::<Vec<_>>(),
+        posted_before
+    );
+    assert_eq!(ledger.next_entry_id(), next_before, "ids are never reused");
+    assert!(ledger.close_period(jan).unwrap().is_some());
+    // A state on a posted entry, or on none, is refused.
+    assert_eq!(
+        ledger
+            .set_draft_state(posted_before[0], ledger_core::DraftState::Building)
+            .unwrap_err(),
+        LedgerError::PostedEntryImmutable
+    );
+    assert_eq!(
+        ledger
+            .set_draft_state(9999, ledger_core::DraftState::Building)
+            .unwrap_err(),
+        LedgerError::UnknownEntry(9999)
+    );
+}

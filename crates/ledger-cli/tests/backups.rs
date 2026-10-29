@@ -232,7 +232,22 @@ async fn connect(home: &Home, book: &str, token: String) -> Agent {
 }
 
 /// Call a tool: Ok(structured result) or Err(the error text).
-async fn call(c: &Client, tool: &str, args: Value) -> Result<Value, String> {
+/// Call a tool the way an agent confirms (plan P4, D-50): a call with
+/// `confirmed: true` and no `preview` is made first without `confirmed`,
+/// then with the `preview` it returned. A refused preview is the answer.
+async fn call(c: &Client, tool: &str, mut args: Value) -> Result<Value, String> {
+    if args.get("confirmed") == Some(&json!(true)) && args.get("preview").is_none() {
+        let mut first = args.clone();
+        first["confirmed"] = json!(false);
+        let seen = call_once(c, tool, first).await?;
+        if let Some(digest) = seen.get("preview").and_then(Value::as_str) {
+            args["preview"] = json!(digest);
+        }
+    }
+    call_once(c, tool, args).await
+}
+
+async fn call_once(c: &Client, tool: &str, args: Value) -> Result<Value, String> {
     let args = args.as_object().cloned().unwrap_or_default();
     let r = tokio::time::timeout(
         Duration::from_secs(60),

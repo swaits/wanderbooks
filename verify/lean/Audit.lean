@@ -101,3 +101,6 @@ open Wanderbooks
 #print axioms Documents.Reachable.control_is_documents
 #print axioms Documents.Step.writeOff_unattached
 #print axioms Documents.writeOff_within_bounds
+#print axioms Step.discard_keeps_books
+#print axioms Step.discard_drafts
+#print axioms Step.discard_unblocks_close

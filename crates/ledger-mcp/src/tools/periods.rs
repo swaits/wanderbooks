@@ -94,6 +94,12 @@ impl BooksServer {
                 members,
             })
         };
+        let digest = self.preview_of(
+            &store,
+            "books.close_period",
+            p.confirmed,
+            p.preview.as_deref(),
+        )?;
         if !p.confirmed {
             // Preview: run the real close on a copy of the ledger, so the
             // preview is exactly what confirming would post.
@@ -107,6 +113,7 @@ impl BooksServer {
                 closing_entry: None,
                 lines: describe(&scratch, closing),
                 members: split(&scratch),
+                preview: Some(digest),
             }));
         }
         let closing = store
@@ -119,6 +126,7 @@ impl BooksServer {
             closing_entry: closing,
             lines,
             members: split(store.ledger()),
+            preview: Some(digest),
         }))
     }
 

@@ -35,6 +35,14 @@ pub enum StoreError {
     #[error("asset {0} already has depreciation posted; correct it with entries instead")]
     AssetDepreciationPosted(u64),
 
+    /// The receipt policy covers the entry and it has no receipt (plan P4,
+    /// I-5; rules.md B-43): refused before anything is journaled.
+    #[error(
+        "entry {} needs a receipt before it posts: {} ({}); attach one with books.attach_receipt",
+        .0.entry_id, .0.reason, .0.policy
+    )]
+    ReceiptRequired(Box<ReceiptRequiredInfo>),
+
     /// Filesystem error.
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
@@ -198,4 +206,19 @@ fn newer_journal_text(seq: u64, event_type: &str, need: &str, verified: bool) ->
              verify to tell which"
         )
     }
+}
+
+/// What a refused post tells (boxed in [`StoreError::ReceiptRequired`]).
+#[derive(Debug)]
+pub struct ReceiptRequiredInfo {
+    /// The entry that needs the receipt.
+    pub entry_id: u64,
+    /// Its total debits, `None` when they pass exact arithmetic.
+    pub debits: Option<rust_decimal::Decimal>,
+    /// The policy that triggered, in words.
+    pub policy: String,
+    /// Why this entry is covered.
+    pub reason: String,
+    /// The posted entries it appears to split (anti-splitting).
+    pub split_group: Vec<u64>,
 }

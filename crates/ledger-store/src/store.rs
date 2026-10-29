@@ -1261,7 +1261,15 @@ impl Store {
         line_type: &str,
         payload: Value,
     ) -> Result<JournalLine, StoreError> {
-        self.journal.append(line_type, payload)
+        let line = self.journal.append(line_type, payload)?;
+        // The command that posts the entry runs after its line is
+        // journaled: tell the ledger which line that is (plan P4).
+        if matches!(line_type, "entry.posted" | "entry.reversed")
+            && let Some(id) = line.payload.get("id").and_then(Value::as_u64)
+        {
+            self.ledger.expect_posted_seq(id, line.seq);
+        }
+        Ok(line)
     }
 
     /// Add an account to the chart, with no tax category (see
@@ -1431,6 +1439,67 @@ impl Store {
         Ok(())
     }
 
+    /// Set where a draft stands (`entry.draft_state_set`, plan P4): still
+    /// being built, or awaiting its evidence with a note saying what.
+    /// Journaled with the feature `drafts_v2` (an older version refuses
+    /// the type). A state moves no figure and projects nowhere but the
+    /// `draft_states` table.
+    ///
+    /// ```text
+    /// GOAL: a draft that is finished and waiting on its receipt says so,
+    ///       durably, and replays the same.
+    /// SOURCE: docs/spec/rules.md B-27, B-43; plan P4.
+    /// SCENARIOS:
+    ///   1. IF the engine refuses it (unknown or posted entry, a note the
+    ///      books won't keep): SHOULD refuse, journaling nothing.
+    ///   2. IF the books haven't declared drafts_v2: SHOULD need the
+    ///      feature, journaling nothing.
+    /// ```
+    pub fn set_draft_state(
+        &mut self,
+        entry: EntryId,
+        state: ledger_core::DraftState,
+    ) -> Result<(), StoreError> {
+        self.ensure_feature(crate::format::DRAFTS_V2)?;
+        self.rehearse(|l| l.set_draft_state(entry, state.clone()))?;
+        let line = self.append_journal(
+            "entry.draft_state_set",
+            crate::meta::draft_state_set(entry, &state),
+        )?;
+        self.ledger.set_draft_state(entry, state)?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(())
+    }
+
+    /// Throw a draft away (`entry.draft_discarded`, plan P4), with the
+    /// reason; journaled with the feature `drafts_v2`. The draft's lines
+    /// stay in the journal; the draft leaves the ledger. A posted entry is
+    /// never discarded.
+    ///
+    /// ```text
+    /// GOAL: a draft that will never post can go, so it stops holding its
+    ///       period open, and the journal still says why.
+    /// SOURCE: docs/spec/rules.md B-8, B-43; plan P4.
+    /// SCENARIOS:
+    ///   1. IF the entry is unknown or posted, or the reason is empty or
+    ///      breaks the books' text rule: SHOULD refuse, journaling
+    ///      nothing.
+    ///   2. IF the books haven't declared drafts_v2: SHOULD need the
+    ///      feature, journaling nothing.
+    /// ```
+    pub fn discard_draft(&mut self, entry: EntryId, reason: &str) -> Result<(), StoreError> {
+        self.ensure_feature(crate::format::DRAFTS_V2)?;
+        self.rehearse(|l| l.discard_draft(entry, reason))?;
+        let reason = reason.trim();
+        let line = self.append_journal(
+            "entry.draft_discarded",
+            crate::meta::draft_discarded(entry, reason),
+        )?;
+        self.ledger.discard_draft(entry, reason)?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(())
+    }
+
     /// Validate, journal, and post a draft entry. An entry an enforced
     /// approval rule covers posts only once its approvers approved it as
     /// it stands (ledger_core::conventions INVARIANT 3).
@@ -1448,6 +1517,49 @@ impl Store {
             .into());
         }
         self.post_entry_unchecked(entry)
+    }
+
+    /// [`Self::post_entry`] behind the evidence gate (plan P4, I-5, D-47;
+    /// rules.md B-43): refuses, journaling nothing, a draft that
+    /// [`ledger_core::evidence::requirement`] says needs evidence while it
+    /// has no receipt filed on it or linked to it. This is the path the
+    /// server posts a hand-made draft by; [`Self::post_entry`] stays the
+    /// primitive that commands and fixtures post through, which carry
+    /// their evidence another way.
+    ///
+    /// ```text
+    /// GOAL: no draft the receipt policy covers posts without the
+    ///       document that supports it, decided in one place.
+    /// SOURCE: docs/spec/rules.md B-43; IRS Pub. 583.
+    /// SCENARIOS:
+    ///   1. IF the entry is covered and has no receipt: SHOULD refuse
+    ///      (ReceiptRequired), NEVER journal.
+    ///   2. IF it is exempt (a reversal, a document's entry, a close) or
+    ///      has a receipt: SHOULD post as post_entry does.
+    /// ```
+    pub fn post_entry_checked(&mut self, entry: EntryId) -> Result<(), StoreError> {
+        let e = self
+            .ledger
+            .get_entry(entry)
+            .ok_or(LedgerError::UnknownEntry(entry))?
+            .clone();
+        if e.status() == EntryStatus::Draft
+            && let ledger_core::evidence::Requirement::Required { reason } =
+                ledger_core::evidence::requirement(&self.ledger, &e, self.ledger.settings())
+            && self.list_attachments(Some(entry))?.is_empty()
+        {
+            let policy = ledger_core::evidence::Policy::from_settings(self.ledger.settings());
+            return Err(StoreError::ReceiptRequired(Box::new(
+                crate::error::ReceiptRequiredInfo {
+                    entry_id: entry,
+                    debits: ledger_core::evidence::Policy::entry_debits(&e).ok(),
+                    policy: policy.describe(),
+                    split_group: policy.split_group(&self.ledger, entry, &e),
+                    reason,
+                },
+            )));
+        }
+        self.post_entry(entry)
     }
 
     /// Approval rules (ledger_core::conventions INVARIANT 3): refuse an
@@ -2764,6 +2876,8 @@ impl Store {
             }),
         )?;
         self.ledger.dispose_asset(asset_id, date, proceeds)?;
+        self.ledger
+            .note_entry_origin(entry_id, ledger_core::evidence::Origin::AssetDisposal);
         apply_line_to_sqlite(&self.conn, &line)?;
         Ok(entry_id)
     }
@@ -2905,6 +3019,8 @@ impl Store {
             }),
         )?;
         self.ledger = next;
+        // The closing entry was posted by this line (plan P4, posted_seq).
+        self.ledger.stamp_unstamped(line.seq);
         apply_line_to_sqlite(&self.conn, &line)?;
         Ok(closing_entry)
     }
@@ -4327,6 +4443,8 @@ impl Store {
         )?);
         let live = self.ledger.remit_payroll_taxes(date, cash_account)?;
         debug_assert_eq!(live, entry_id, "id allocator diverged from journal");
+        self.ledger
+            .note_entry_origin(live, ledger_core::evidence::Origin::PayrollRemittance);
         for line in &journaled {
             apply_line_to_sqlite(&self.conn, line)?;
         }
@@ -4859,6 +4977,8 @@ impl Store {
             }),
         )?;
         self.ledger = next;
+        // The month's entry was posted by this line (plan P4, posted_seq).
+        self.ledger.stamp_unstamped(line.seq);
         apply_line_to_sqlite(&self.conn, &line)?;
         Ok(entry)
     }
@@ -7091,7 +7211,10 @@ pub(crate) fn replay_line_into_ledger(
     line: &JournalLine,
     base_currency: Currency,
 ) -> Result<(), StoreError> {
-    ledger_core::parties::replaying(|| replay_line(ledger, line, base_currency))
+    ledger_core::parties::replaying(|| replay_line(ledger, line, base_currency))?;
+    // Whatever this line posted was posted by it (plan P4, posted_seq).
+    ledger.stamp_unstamped(line.seq);
+    Ok(())
 }
 
 /// [`replay_line_into_ledger`]'s work.
@@ -7205,6 +7328,14 @@ fn replay_line(
                 }
             }
             ledger.replay_post_entry(id)?;
+        }
+        "entry.draft_state_set" => {
+            let (id, state) = crate::meta::draft_state_set_of(line)?;
+            ledger.replay_set_draft_state(id, state)?;
+        }
+        "entry.draft_discarded" => {
+            let (id, _) = crate::meta::draft_discarded_of(p)?;
+            ledger.replay_discard_draft(id)?;
         }
         "entry.reversed" => {
             let want = get_u64(p, "id")?;
@@ -7408,7 +7539,11 @@ fn replay_line(
         }
         "payroll.taxes_remitted" => {
             // Names the remittance entry (rebuilt by the entry events just
-            // before it) for readers; no ledger state of its own.
+            // before it): the ledger keeps what posted it (plan P4), so
+            // the evidence gate can tell it from a hand entry.
+            if let Some(eid) = p.get("entry_id").and_then(Value::as_u64) {
+                ledger.note_entry_origin(eid, ledger_core::evidence::Origin::PayrollRemittance);
+            }
         }
         "asset.registered" => {
             let want = get_u64(p, "id")?;
@@ -7579,6 +7714,10 @@ fn replay_line(
                 parse_date(get_str(p, "date")?)?,
                 parse_money(p, "proceeds")?,
             )?;
+            // The disposal's own entry, as the journal names it (plan P4).
+            if let Some(eid) = p.get("entry_id").and_then(Value::as_u64) {
+                ledger.note_entry_origin(eid, ledger_core::evidence::Origin::AssetDisposal);
+            }
         }
         "period.created" => {
             let want = get_u64(p, "id")?;
@@ -7994,11 +8133,16 @@ fn close_to_from_journal(line: &JournalLine, v: Option<&Value>) -> Result<CloseT
 /// Record a posted entry that rides inside another event's payload (a
 /// closing entry, a schedule posting) in the projection, like any posted
 /// entry.
-fn project_posted_entry(conn: &Connection, e: &Value) -> Result<(), StoreError> {
+fn project_posted_entry(conn: &Connection, e: &Value, seq: u64) -> Result<(), StoreError> {
     let eid = get_u64(e, "id")? as i64;
     conn.execute(
-        "INSERT INTO entries(id, date, description, status, reversal_of) VALUES (?,?,?,'posted',NULL)",
-        params![eid, get_str(e, "date")?, get_str(e, "description")?],
+        "INSERT INTO entries(id, date, description, status, reversal_of, posted_seq) VALUES (?,?,?,'posted',NULL,?)",
+        params![
+            eid,
+            get_str(e, "date")?,
+            get_str(e, "description")?,
+            seq as i64
+        ],
     )?;
     for l in e
         .get("lines")
@@ -8109,15 +8253,52 @@ fn apply_line_rows(conn: &Connection, line: &JournalLine) -> Result<(), StoreErr
         // Draft lines are durable in the journal but never touch the
         // projection until posted.
         "entry.line_added" => {}
+        // A draft awaiting its evidence has a row; one being built (the
+        // default) has none; a posted or discarded draft none (plan P4).
+        "entry.draft_state_set" => {
+            let (id, state) = crate::meta::draft_state_set_of(line)?;
+            match state {
+                ledger_core::DraftState::Building => {
+                    conn.execute(
+                        "DELETE FROM draft_states WHERE entry_id = ?",
+                        params![id as i64],
+                    )?;
+                }
+                ledger_core::DraftState::AwaitingEvidence { note } => {
+                    conn.execute(
+                        "INSERT INTO draft_states(entry_id, state, note) VALUES (?,?,?) \
+                         ON CONFLICT(entry_id) DO UPDATE SET state = excluded.state, note = excluded.note",
+                        params![
+                            id as i64,
+                            ledger_core::DraftState::AwaitingEvidence { note: note.clone() }.key(),
+                            (!note.is_empty()).then_some(note),
+                        ],
+                    )?;
+                }
+            }
+        }
+        "entry.draft_discarded" => {
+            let (id, _) = crate::meta::draft_discarded_of(p)?;
+            conn.execute(
+                "DELETE FROM draft_states WHERE entry_id = ?",
+                params![id as i64],
+            )?;
+        }
         "entry.posted" => {
             conn.execute(
-                "INSERT INTO entries(id, date, description, status, reversal_of) VALUES (?,?,?,'posted',?)",
+                "INSERT INTO entries(id, date, description, status, reversal_of, posted_seq) VALUES (?,?,?,'posted',?,?)",
                 params![
                     get_u64(p, "id")? as i64,
                     get_str(p, "date")?,
                     get_str(p, "description")?,
                     p.get("reversal_of").and_then(|v| v.as_u64()).map(|v| v as i64),
+                    line.seq as i64,
                 ],
+            )?;
+            // A posted entry waits on nothing (plan P4).
+            conn.execute(
+                "DELETE FROM draft_states WHERE entry_id = ?",
+                params![get_u64(p, "id")? as i64],
             )?;
             for l in p
                 .get("lines")
@@ -8153,12 +8334,13 @@ fn apply_line_rows(conn: &Connection, line: &JournalLine) -> Result<(), StoreErr
                 params![get_u64(p, "id")? as i64, get_u64(p, "reverses")? as i64],
             )?;
             conn.execute(
-                "INSERT INTO entries(id, date, description, status, reversal_of) VALUES (?,?,?,'posted',?)",
+                "INSERT INTO entries(id, date, description, status, reversal_of, posted_seq) VALUES (?,?,?,'posted',?,?)",
                 params![
                     get_u64(p, "id")? as i64,
                     get_str(p, "date")?,
                     get_str(p, "description")?,
                     get_u64(p, "reverses")? as i64,
+                    line.seq as i64,
                 ],
             )?;
             for l in p
@@ -8498,7 +8680,7 @@ fn apply_line_rows(conn: &Connection, line: &JournalLine) -> Result<(), StoreErr
         "schedule.registered" | "recurring.registered" | "recurring.generated" => {
             // Master data and drafts: the ledger holds them; no report rows.
         }
-        "schedule.posted" => project_posted_entry(conn, &p["entry"])?,
+        "schedule.posted" => project_posted_entry(conn, &p["entry"], line.seq)?,
         "receipt.unlinked" => {
             conn.execute(
                 "UPDATE attachments SET entry_id = NULL WHERE id = ?",
@@ -8624,7 +8806,7 @@ fn apply_line_rows(conn: &Connection, line: &JournalLine) -> Result<(), StoreErr
             // posted entry so the projection stays complete, then mark the
             // period row closed.
             if !p.get("entry").map(|v| v.is_null()).unwrap_or(true) {
-                project_posted_entry(conn, &p["entry"])?;
+                project_posted_entry(conn, &p["entry"], line.seq)?;
             }
             conn.execute(
                 "UPDATE periods SET status = 'closed', closing_entry = ? WHERE id = ?",

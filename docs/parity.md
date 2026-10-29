@@ -207,3 +207,19 @@ what a payment settles (`entry.settles`, the only source of "reimbursed"),
 and gives company records four more homes (`notices`, `correspondence`,
 `plans`, `history`, D-20). Rules.md B-44 states it; `docs/testing.md`'s P6
 section lists its tests and the P12 mutation targets.
+
+### P4: drafts, the evidence gate, the preview digest (2026-10-29)
+
+Three new rows, none above changed status, and the floor stands.
+
+| Area | Counterpart (a cross-check, not the spec) | Status | Notes |
+|---|---|---|---|
+| Draft states and discard (`books.set_draft_state`, `books.discard_draft`, `books.list_drafts`; Lean `Step.discard`) | Draft/pending transactions (QBO "pending"), voiding an unposted entry | partial | `entry.draft_state_set` and `entry.draft_discarded` under `drafts_v2`; B-43; tests `discard_unblocks_close`, `draft_states_replay_and_project`, `a_draft_waits_for_its_receipt_and_posts`; the fixture `p4_before` was written by the version before and opens to the same figures; `partial` until a hand-verified golden covers a discard |
+| One evidence gate (`evidence::requirement`) | Attach-required rules on posting | partial | the store, the previews, the digest, the viewer and Needs attention call one function; `gui_and_server_gate_agree`, `a_reversal_needs_no_receipt_of_its_own` (D-47); same tests as above for the golden |
+| Preview digest on every confirm (D-50) | Confirm dialogs | partial | `stale_preview_refused`, `every_confirm_tool_takes_a_preview`; detects drift, not a human's look |
+
+The digest also gained `since_seq` (what was posted since a journal line,
+backdated entries included: defect 6), `zero_net_accounts`,
+`drafts_by_state` and the reconciliation split; reports gained
+`as_of_status` and `strict`; the CPA package is refused while a draft
+dated in it is open (4.8).

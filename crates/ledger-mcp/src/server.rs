@@ -584,6 +584,7 @@ impl BooksServer {
             + Self::tax_router()
             + Self::write_offs_router()
             + Self::drafts_router()
+            + Self::journal_router()
     }
 
     /// The settings in force for this request: the books' own, taken from
@@ -1403,6 +1404,8 @@ mod backup_tools;
 mod files;
 #[path = "tools/instruments.rs"]
 mod instruments;
+#[path = "tools/journal.rs"]
+mod journal_tools;
 #[path = "tools/kept.rs"]
 mod kept;
 #[path = "tools/projects.rs"]
@@ -1537,6 +1540,34 @@ impl BooksServer {
                         as_of: None,
                     }))
                     .await?;
+                json(&out)
+            }
+            _ if path.starts_with("books://entries/") => {
+                let id: u64 = path["books://entries/".len()..]
+                    .parse()
+                    .map_err(|_| format!("bad entry resource URI: {uri}"))?;
+                let Json(out) = self
+                    .get_entry(Parameters(GetEntryParams { entry_id: id }))
+                    .await?;
+                json(&out)
+            }
+            _ if path.starts_with("books://journal/") => {
+                let seq: u64 = path["books://journal/".len()..]
+                    .parse()
+                    .map_err(|_| format!("bad journal resource URI: {uri}"))?;
+                if seq == 0 {
+                    return Err("journal seqs start at 1".into());
+                }
+                let Json(out) = self
+                    .journal_history(Parameters(journal_tools::JournalHistoryParams {
+                        after_seq: Some(seq - 1),
+                        limit: Some(1),
+                        ..Default::default()
+                    }))
+                    .await?;
+                if out.lines.first().is_none_or(|l| l.seq != seq) {
+                    return Err(format!("the journal has no line {seq}"));
+                }
                 json(&out)
             }
             handbook::URI => {

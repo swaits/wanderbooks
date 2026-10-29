@@ -2648,3 +2648,44 @@ state and discard tools wait for the books' format upgrade).
 drafts_open_on_or_before: [draft], unreconciled: [...], settings_problems:
 [...] }` for the report's end date, and take `strict: true` to be refused,
 naming what is open, instead of warned.
+
+## Tools — the journal in words (P5)
+
+- `books.journal_history { after_seq?, types?, subject?, limit? }` → `{
+  lines: [{ seq, ts, type, summary, subject?, entry_id? }], more, head_seq,
+  tail_repairs: [{ at, bytes }] }`. The journal in order, a sentence for
+  each line (`summary`: what it did, to what, the short names a person
+  typed; never a setting's value, never a full TIN), the line's own
+  `subject` (`entry:12`, `invoice:3`, `bill:3`, `account:10`, `party:5`,
+  `asset:2`) and the entry it belongs to. `types` takes an exact type
+  (`entry.posted`) or a group ending in a dot (`entry.`); `subject` keeps
+  the lines about one thing (a line is about the subject its type names and
+  every one its payload refers to); `limit` is 50 by default, 200 at most;
+  `more` says to ask again with the last `seq` as `after_seq`. Read-only,
+  `books:read`. It is how a figure is traced to what produced it and the
+  only way to read the journal; `tail_repairs` lists torn tails set aside
+  when the books opened (when, how many bytes). The sentences come from
+  `ledger-store`'s `describe.rs`.
+
+## Prompts (P5)
+
+The server advertises the prompts capability (also in the bridge's cold
+`initialize`). `prompts/list` and `prompts/get` need a token that may read.
+Each prompt's text is a file in `ledger-mcp/prompts/`, with the company's
+name and the arguments filled in; it names only tools that exist (a test
+checks). An argument is one token (letters, digits, `-`, `_`, `.`, `:`; at
+most 40 characters) of the shape the prompt asks for, so an argument can
+never rewrite the text; an unknown prompt, a missing, extra or malformed
+argument is refused.
+
+| Prompt | Arguments | Drives |
+|---|---|---|
+| `onboard` | none | the company's facts, the chart, the policies, the opening balances, the trial-balance check |
+| `reconcile` | `account` (a code), `month` (YYYY-MM) | the statement, `books.record_statement`, `books.mark_cleared`, `books.reconcile` |
+| `month_end_close` | `month` (YYYY-MM) | the company's own close steps, reconciliations, drafts, schedules, checks, `books.close_period` |
+| `cpa_handoff` | `year` (YYYY) | `books.verify`, the periods, 1099 work, `books.export_cpa_package` |
+| `annual_compliance` | `year` (YYYY) | the year's filings, 1099s, assets, open items |
+| `audit` | `scope` (`month`, `annual`, `cpa_handoff` or `full`) | `books.verify`, `books.control_check`, the digest, evidence against entries (P8 fills in its own tools) |
+
+`migrate`, `process_inbox` and `receipts_from_email` are not built (D-46,
+D-28, D-17).

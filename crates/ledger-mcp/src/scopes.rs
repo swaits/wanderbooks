@@ -56,7 +56,7 @@ const C: Needs = PostWhenConfirmed;
 const K: Needs = PostForApprovalRules;
 
 /// Every tool and what it needs (INVARIANT 1).
-pub const TABLE: [(&str, Needs); 133] = [
+pub const TABLE: [(&str, Needs); 134] = [
     ("books.handbook", R),
     ("books.start", R),
     // Settings are committed at once: the settings commit of the plan.
@@ -200,6 +200,8 @@ pub const TABLE: [(&str, Needs); 133] = [
     ("books.list_drafts", R),
     ("books.set_draft_state", W),
     ("books.discard_draft", C),
+    // P5
+    ("books.journal_history", R),
     ("books.preview_entry", R),
 ];
 

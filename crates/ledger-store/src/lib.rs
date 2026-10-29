@@ -23,6 +23,7 @@ pub mod auth;
 pub mod backup;
 pub mod blob;
 pub mod chain;
+pub mod describe;
 pub mod error;
 pub mod exports;
 pub mod form1099;

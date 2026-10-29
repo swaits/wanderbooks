@@ -1549,3 +1549,39 @@ fn an_older_version_stops_at_invoice_sent() {
     drop(store);
     Store::open(&dir).unwrap().verify().unwrap();
 }
+
+/// The weekly fuzz run of 2026-10-26 (`fuzz_store_replay`, crash
+/// 0dfab1cc): a journal whose `convention.set` names a kind this version
+/// doesn't know. The writer says NewerJournal (B-27: newer content is
+/// newer, never corrupt); the viewer must say the same, since the two
+/// share one reading of the journal (rules.md B-27, docs/architecture.md
+/// "The journal format gate").
+#[test]
+fn an_unknown_convention_kind_is_newer_for_the_writer_and_the_viewer_alike() {
+    let dir = tempfile::tempdir().unwrap();
+    let dir = dir.path();
+    {
+        let mut w =
+            ledger_store::JournalWriter::open(&dir.join(ledger_store::JOURNAL_FILE)).unwrap();
+        w.append("store.created", serde_json::json!({"base_currency": "USD"}))
+            .unwrap();
+        w.append(
+            "convention.set",
+            serde_json::json!({"id": "c-1", "kind": "1000", "title": "t", "body_md": "b",
+                               "source": {"decided_by": "x", "decided_on": "2026-01-01"}}),
+        )
+        .unwrap();
+    }
+    let store = ledger_store::Store::open(dir);
+    let snap = ledger_store::Snapshot::load(dir);
+    let newer = |e: &ledger_store::StoreError| matches!(e, ledger_store::StoreError::NewerJournal { .. });
+    match (store, snap) {
+        (Err(a), Err(b)) => assert!(
+            newer(&a) && newer(&b),
+            "the writer says {a}; the viewer says {b}"
+        ),
+        (Ok(_), Ok(_)) => panic!("both opened a journal with an unknown convention kind"),
+        (Ok(_), Err(e)) => panic!("the writer opens books the viewer refuses: {e}"),
+        (Err(e), Ok(_)) => panic!("the viewer loads books the writer refuses: {e}"),
+    }
+}

@@ -18,11 +18,13 @@ impl BooksServer {
     ) -> Result<Json<HandbookOut>, String> {
         let settings = self.settings();
         let declared = self.document_line_projects();
+        let documents_v2 = self.documents_v2();
         let sections = handbook::SECTIONS
             .iter()
             .map(|(id, _)| {
                 let text =
-                    handbook::section(id, &settings, self.currency(), declared).unwrap_or_default();
+                    handbook::section_with(id, &settings, self.currency(), declared, documents_v2)
+                        .unwrap_or_default();
                 HandbookSectionOut {
                     id: id.to_string(),
                     title: handbook::title(&text).to_string(),
@@ -34,7 +36,7 @@ impl BooksServer {
         let section = match params.0.section.as_deref().map(str::trim) {
             None => None,
             Some(id) => {
-                let text = handbook::section(id, &settings, self.currency(), declared).ok_or_else(|| {
+                let text = handbook::section_with(id, &settings, self.currency(), declared, documents_v2).ok_or_else(|| {
                     let ids: Vec<&str> = handbook::SECTIONS.iter().map(|(id, _)| *id).collect();
                     format!(
                         "no handbook section {id:?}: the sections are {}, or \"{}\" for all of them",

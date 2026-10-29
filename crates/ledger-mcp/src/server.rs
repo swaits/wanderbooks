@@ -601,6 +601,15 @@ impl BooksServer {
         })
     }
 
+    /// Whether the books declared the journal feature `documents_v2` (the
+    /// handbook's invoices-and-bills section says what waits for it).
+    fn documents_v2(&self) -> bool {
+        self.lock().is_ok_and(|s| {
+            s.journal_format()
+                .has_feature(ledger_store::format::DOCUMENTS_V2)
+        })
+    }
+
     /// The books' base currency code, e.g. "USD".
     fn currency(&self) -> &str {
         self.store.currency.code()
@@ -1519,11 +1528,12 @@ impl BooksServer {
             }
             _ if path.starts_with(&format!("{}/", handbook::URI)) => {
                 let id = &path[handbook::URI.len() + 1..];
-                handbook::section(
+                handbook::section_with(
                     id,
                     &self.settings(),
                     self.currency(),
                     self.document_line_projects(),
+                    self.documents_v2(),
                 )
                 .map(ResourceBody::Text)
                 .ok_or_else(|| format!("unknown handbook section: {id}"))

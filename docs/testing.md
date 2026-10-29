@@ -3273,8 +3273,8 @@ check, and the preview's clone; attention's year comparison and its
 ## P6: the evidence pipeline (2026-10-27)
 
 Extraction, dedup, annotations and company record categories (plan P6;
-rules.md B-44). One in-process extractor in `ledger-import`
-(`src/extract.rs`): `pdf_text` and `pdf_lines` (promoted from the PDF
+rules.md B-44). One in-process extractor in `ledger-reader`
+(`crates/ledger-reader/src/lib.rs`): `pdf_text` and `pdf_lines` (promoted from the PDF
 reader test), `page_count`, `page_png` (promoted from the viewer's private
 rasterizer), `xlsx_text` (cells as the exact decimal strings the sheet XML
 holds), `text_of` (moved from `tin_files`, now reading a PDF's text too)
@@ -3284,13 +3284,13 @@ reaching the server (D-32: no sandbox, and the plan says so). The viewer
 and the server's filing scan both read through it: `ledger-gui/src/receipts.rs`
 keeps no `hayro` use of its own.
 
-- **ledger-import:** `tests/extract.rs` `extraction_deterministic` (same
+- **ledger-reader (tests stay in `crates/ledger-import/tests/extract.rs`, which builds its PDFs with `ledger-import`):** `extraction_deterministic` (same
   bytes, same text and PNG bytes; plain text and an image's `none`),
   `xlsx_cells_are_decimal_strings` (proptest: the cell text is the decimal
   string written, never a float), `a_pdf_that_crashes_the_reader_is_failed_not_fatal`
   (garbage and truncated PDFs are `Err`, the too-large cap is refused
   before the reader, page 31 and a zero-size page are refused); unit tests
-  in `src/extract.rs` for the panic catch and the input cap. `tests/spec_import.rs`
+  in `crates/ledger-reader/src/lib.rs` for the panic catch and the input cap. `tests/spec_import.rs`
   keeps its script/RTL PDF test; its `pdf_lines` helper is now the
   extractor's.
 - **ledger-core:** `src/evidence.rs` (`Annotation`, `AnnotationFields`;

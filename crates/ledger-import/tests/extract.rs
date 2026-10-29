@@ -1,7 +1,7 @@
 //! The one extractor (plan P6 step 1): a PDF's text and pages, and an
 //! XLSX's cells as exact decimal strings.
 //!
-//! Expected behavior comes from `crates/ledger-import/src/extract.rs`'s
+//! Expected behavior comes from `crates/ledger-reader/src/lib.rs`'s
 //! INVARIANTS, which come from plan/served.md P6 step 1 and D-15, D-32 and
 //! D-53.
 

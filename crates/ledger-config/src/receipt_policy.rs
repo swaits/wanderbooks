@@ -5,6 +5,10 @@
 //! an exempt account. Selected accounts can require receipts regardless of
 //! amount. Reversals are exempt: the original entry carries the evidence.
 //!
+//! The decision itself lives in the engine
+//! (`ledger_core::evidence::requirement`, plan P4, I-5): this is the
+//! policy as the settings carry it, and the words that describe it.
+//!
 //! ```text
 //! GOAL: no entry posts without the document that supports it.
 //! SOURCE: docs/spec/sources/irs-records.md (Pub. 583: "you must keep
@@ -23,7 +27,7 @@
 //!      startup (validate).
 //! ```
 
-use ledger_core::{JournalEntry, Ledger, Side};
+use ledger_core::{JournalEntry, Ledger};
 use rust_decimal::Decimal;
 use serde::Deserialize;
 
@@ -78,44 +82,31 @@ impl ReceiptPolicy {
         crate::decimal(self.require_receipts_above.trim()).unwrap_or(Decimal::ZERO)
     }
 
-    fn account_codes(&self, ledger: &Ledger, entry: &JournalEntry) -> Vec<String> {
-        entry
-            .lines()
-            .iter()
-            .map(|l| {
-                ledger
-                    .chart()
-                    .get(l.account)
-                    .map(|a| a.code.clone())
-                    .unwrap_or_default()
-            })
-            .collect()
+    /// The policy as the engine evaluates it
+    /// ([`ledger_core::evidence::Policy`], plan P4): one decision, in the
+    /// core. A threshold that fails to parse requires a receipt on
+    /// everything, as an unvalidated policy always did.
+    pub fn engine(&self) -> ledger_core::evidence::Policy {
+        ledger_core::evidence::Policy {
+            threshold: self.threshold(),
+            required_accounts: self.receipt_required_accounts.clone(),
+            exempt_accounts: self.receipt_exempt_accounts.clone(),
+        }
     }
 
     /// Total debits of the entry (one side of the balanced entry). A
     /// draft's lines are as journaled, of any size (rules.md B-28): a total
     /// past exact arithmetic is refused (TooLargeToCompute), never a panic.
     pub fn entry_debits(entry: &JournalEntry) -> Result<Decimal, ledger_core::LedgerError> {
-        entry
-            .lines()
-            .iter()
-            .filter(|l| l.side == Side::Debit)
-            .try_fold(Decimal::ZERO, |sum, l| sum.checked_add(l.amount.amount))
-            .ok_or_else(|| {
-                ledger_core::LedgerError::TooLargeToCompute(format!(
-                    "entry {}'s debits",
-                    entry.id()
-                ))
-            })
+        ledger_core::evidence::Policy::entry_debits(entry)
     }
 
-    /// True when posting this entry requires at least one receipt. Debits
-    /// past exact arithmetic are past any threshold.
+    /// True when posting this entry requires at least one receipt by the
+    /// policy alone (the engine's [`ledger_core::evidence::requirement`]
+    /// also knows what posted it). Debits past exact arithmetic are past
+    /// any threshold.
     pub fn receipt_required(&self, ledger: &Ledger, entry: &JournalEntry) -> bool {
-        let codes = self.account_codes(ledger, entry);
-        let refs: Vec<&str> = codes.iter().map(|s| s.as_str()).collect();
-        let debits = Self::entry_debits(entry).unwrap_or(Decimal::MAX);
-        self.receipt_required_for(&refs, debits)
+        self.engine().receipt_required(ledger, entry)
     }
 
     /// True when an entry touching these account codes with this debit total
@@ -123,33 +114,12 @@ impl ReceiptPolicy {
     /// [`Self::receipt_required`], for postings (like disposals) computed
     /// without a draft entry in hand.
     pub fn receipt_required_for(&self, codes: &[&str], debits: Decimal) -> bool {
-        // Per-account override: any line in a required account → required.
-        if codes
-            .iter()
-            .any(|c| self.receipt_required_accounts.iter().any(|r| r == *c))
-        {
-            return true;
-        }
-        // Strictly greater than the threshold (owner: ">$25").
-        if debits <= self.threshold() {
-            return false;
-        }
-        // Exempt only when every line is in an exempt account.
-        !codes
-            .iter()
-            .all(|c| self.receipt_exempt_accounts.iter().any(|e| e == *c))
+        self.engine().receipt_required_for(codes, debits)
     }
 
     /// Human-readable policy summary for previews and errors.
     pub fn describe(&self) -> String {
-        if self.threshold().is_zero() {
-            "receipts required on every entry".to_string()
-        } else {
-            format!(
-                "receipts required when entry debits are strictly greater than {}",
-                self.threshold()
-            )
-        }
+        self.engine().describe()
     }
 
     /// The receipt rule in force, phrased for the agent's operating
@@ -206,76 +176,14 @@ impl ReceiptPolicy {
         rule
     }
 
-    /// Normalize a description for split detection.
-    fn normalize_description(desc: &str) -> String {
-        desc.split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
-            .to_lowercase()
-    }
-
-    /// Debit account ids of an entry, sorted.
-    fn debit_accounts(entry: &JournalEntry) -> Vec<u64> {
-        let mut ids: Vec<u64> = entry
-            .lines()
-            .iter()
-            .filter(|l| l.side == Side::Debit)
-            .map(|l| l.account)
-            .collect();
-        ids.sort_unstable();
-        ids.dedup();
-        ids
-    }
-
-    /// Detect a potential threshold split: posted entries on the same date
-    /// with the same normalized description and debit accounts, whose
-    /// combined debits with this entry exceed the threshold while this
-    /// entry alone does not. Returns the matching posted entry ids.
-    ///
-    /// This is the anti-gaming rule: splitting a $100 purchase into four
-    /// $25 entries does not dodge the receipt policy. Same-day,
-    /// same-description, same-accounts is the signature; recurring spending
-    /// spread across days is not flagged.
+    /// Detect a potential threshold split (see
+    /// [`ledger_core::evidence::Policy::split_group`]): posted entries on
+    /// the same date with the same normalized description and debit
+    /// accounts whose combined debits with this entry exceed the threshold
+    /// while this entry alone does not. Returns the matching posted entry
+    /// ids.
     pub fn split_group(&self, ledger: &Ledger, entry_id: u64, entry: &JournalEntry) -> Vec<u64> {
-        // Debits past exact arithmetic are past the threshold too.
-        let debits = Self::entry_debits(entry).unwrap_or(Decimal::MAX);
-        if debits > self.threshold() {
-            return Vec::new(); // Normal policy already applies.
-        }
-        let desc = Self::normalize_description(entry.description());
-        let accounts = Self::debit_accounts(entry);
-        let date = entry.date();
-        let mut group = Vec::new();
-        let mut total = debits;
-        for other in ledger.posted_entries() {
-            if other.id() == entry_id {
-                continue;
-            }
-            if other.date() != date {
-                continue;
-            }
-            if Self::normalize_description(other.description()) != desc {
-                continue;
-            }
-            if Self::debit_accounts(other) != accounts {
-                continue;
-            }
-            // Reversals are exempt from the policy; don't count them.
-            if other.reversal_of().is_some() {
-                continue;
-            }
-            group.push(other.id());
-            // A sum past exact arithmetic is past the threshold.
-            total = Self::entry_debits(other)
-                .ok()
-                .and_then(|d| total.checked_add(d))
-                .unwrap_or(Decimal::MAX);
-        }
-        if !group.is_empty() && total > self.threshold() {
-            group
-        } else {
-            Vec::new()
-        }
+        self.engine().split_group(ledger, entry_id, entry)
     }
 }
 

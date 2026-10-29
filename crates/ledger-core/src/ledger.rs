@@ -355,6 +355,10 @@ pub struct Ledger {
     /// What each entry settles (`entry.settles`, plan P6): the one record
     /// a member-paid entry's "reimbursed" is derived from (IZ-18).
     entry_settles: std::collections::BTreeMap<EntryId, Vec<EntryId>>,
+    /// What posted the entries the ledger's other state doesn't say
+    /// ([`crate::evidence::Origin`]): an asset's disposal, a payroll tax
+    /// remittance. Read by [`crate::evidence::requirement`].
+    entry_origins: std::collections::BTreeMap<EntryId, crate::evidence::Origin>,
     /// The journal line that posted each posted entry (`entry.posted` or
     /// `entry.reversed`, plan P4): what "posted since seq N" is read from,
     /// backdated entries included. An entry the journal's own posting
@@ -424,6 +428,7 @@ impl Ledger {
             conventions: crate::conventions::Conventions::default(),
             annotations: std::collections::BTreeMap::new(),
             entry_settles: std::collections::BTreeMap::new(),
+            entry_origins: std::collections::BTreeMap::new(),
             posted_seq: std::collections::BTreeMap::new(),
             expected_seq: std::collections::BTreeMap::new(),
             unstamped: Vec::new(),
@@ -843,6 +848,7 @@ impl Ledger {
             ("annotations", self.annotations == other.annotations),
             ("entry_settles", self.entry_settles == other.entry_settles),
             ("posted_seq", self.posted_seq == other.posted_seq),
+            ("entry_origins", self.entry_origins == other.entry_origins),
         ]
         .into_iter()
         .filter(|(_, same)| !same)
@@ -2100,6 +2106,57 @@ impl Ledger {
     /// read by a path that doesn't carry the sequence (plan P4).
     pub fn posted_seq(&self, entry: EntryId) -> Option<u64> {
         self.posted_seq.get(&entry).copied()
+    }
+
+    /// Record what posted `entry` where the ledger's other state doesn't
+    /// say: an asset's disposal entry, a payroll tax remittance (the store,
+    /// live, after the command; on replay, from the event that names the
+    /// entry). Read by [`crate::evidence::requirement`].
+    #[doc(hidden)]
+    pub fn note_entry_origin(&mut self, entry: EntryId, origin: crate::evidence::Origin) {
+        self.entry_origins.insert(entry, origin);
+    }
+
+    /// Why `entry` needs no evidence of its own, by what posted it, if
+    /// that is so ([`crate::evidence::requirement`] INVARIANT 1); `None`
+    /// for an entry the receipt policy covers (a hand entry, a recurring
+    /// draft, a payout).
+    pub(crate) fn origin_exemption(&self, entry: &JournalEntry) -> Option<&'static str> {
+        let id = entry.id();
+        if entry.reversal_of().is_some() {
+            return Some("a reversal: its evidence is its original's (B-43, D-47, D-12)");
+        }
+        if self.is_closing_entry(id) {
+            return Some("a period's closing entry: derived from the books (B-43)");
+        }
+        if self.schedule_month_of(id).is_some() {
+            return Some("a schedule month's posting: the schedule is the evidence (B-43)");
+        }
+        if self
+            .asset_runs
+            .values()
+            .any(|runs| runs.iter().any(|r| r.entry == id))
+        {
+            return Some("a depreciation run: the asset's schedule is the evidence (B-43)");
+        }
+        match self.entry_origins.get(&id) {
+            Some(crate::evidence::Origin::AssetDisposal) => {
+                return Some("an asset's disposal: the register is the evidence (B-43)");
+            }
+            Some(crate::evidence::Origin::PayrollRemittance) => {
+                return Some("a payroll tax remittance: the payroll runs are the evidence (B-43)");
+            }
+            None => {}
+        }
+        if (0..entry.lines().len()).any(|i| self.line_docs.contains_key(&(id, i))) {
+            return Some(
+                "a document's entry (invoice, bill, payment, write-off): the document is the evidence (B-43)",
+            );
+        }
+        if self.payroll_runs.values().any(|r| r.entry_id == id) {
+            return Some("a payroll run: the run is the evidence (B-43)");
+        }
+        None
     }
 
     /// Say that journal line `seq` will be `entry`'s posting line, ahead

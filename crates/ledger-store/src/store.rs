@@ -1519,6 +1519,47 @@ impl Store {
         self.post_entry_unchecked(entry)
     }
 
+    /// [`Self::post_entry`] behind the evidence gate (plan P4, I-5, D-47;
+    /// rules.md B-43): refuses, journaling nothing, a draft that
+    /// [`ledger_core::evidence::requirement`] says needs evidence while it
+    /// has no receipt filed on it or linked to it. This is the path the
+    /// server posts a hand-made draft by; [`Self::post_entry`] stays the
+    /// primitive that commands and fixtures post through, which carry
+    /// their evidence another way.
+    ///
+    /// ```text
+    /// GOAL: no draft the receipt policy covers posts without the
+    ///       document that supports it, decided in one place.
+    /// SOURCE: docs/spec/rules.md B-43; IRS Pub. 583.
+    /// SCENARIOS:
+    ///   1. IF the entry is covered and has no receipt: SHOULD refuse
+    ///      (ReceiptRequired), NEVER journal.
+    ///   2. IF it is exempt (a reversal, a document's entry, a close) or
+    ///      has a receipt: SHOULD post as post_entry does.
+    /// ```
+    pub fn post_entry_checked(&mut self, entry: EntryId) -> Result<(), StoreError> {
+        let e = self
+            .ledger
+            .get_entry(entry)
+            .ok_or(LedgerError::UnknownEntry(entry))?
+            .clone();
+        if e.status() == EntryStatus::Draft
+            && let ledger_core::evidence::Requirement::Required { reason } =
+                ledger_core::evidence::requirement(&self.ledger, &e, self.ledger.settings())
+            && self.list_attachments(Some(entry))?.is_empty()
+        {
+            let policy = ledger_core::evidence::Policy::from_settings(self.ledger.settings());
+            return Err(StoreError::ReceiptRequired {
+                entry_id: entry,
+                debits: ledger_core::evidence::Policy::entry_debits(&e).ok(),
+                policy: policy.describe(),
+                split_group: policy.split_group(&self.ledger, entry, &e),
+                reason,
+            });
+        }
+        self.post_entry(entry)
+    }
+
     /// Approval rules (ledger_core::conventions INVARIANT 3): refuse an
     /// operation that would post at once an entry an enforced rule covers
     /// (such an entry has no draft to approve: it must be drafted and
@@ -2833,6 +2874,8 @@ impl Store {
             }),
         )?;
         self.ledger.dispose_asset(asset_id, date, proceeds)?;
+        self.ledger
+            .note_entry_origin(entry_id, ledger_core::evidence::Origin::AssetDisposal);
         apply_line_to_sqlite(&self.conn, &line)?;
         Ok(entry_id)
     }
@@ -4398,6 +4441,8 @@ impl Store {
         )?);
         let live = self.ledger.remit_payroll_taxes(date, cash_account)?;
         debug_assert_eq!(live, entry_id, "id allocator diverged from journal");
+        self.ledger
+            .note_entry_origin(live, ledger_core::evidence::Origin::PayrollRemittance);
         for line in &journaled {
             apply_line_to_sqlite(&self.conn, line)?;
         }
@@ -7492,7 +7537,11 @@ fn replay_line(
         }
         "payroll.taxes_remitted" => {
             // Names the remittance entry (rebuilt by the entry events just
-            // before it) for readers; no ledger state of its own.
+            // before it): the ledger keeps what posted it (plan P4), so
+            // the evidence gate can tell it from a hand entry.
+            if let Some(eid) = p.get("entry_id").and_then(Value::as_u64) {
+                ledger.note_entry_origin(eid, ledger_core::evidence::Origin::PayrollRemittance);
+            }
         }
         "asset.registered" => {
             let want = get_u64(p, "id")?;
@@ -7663,6 +7712,10 @@ fn replay_line(
                 parse_date(get_str(p, "date")?)?,
                 parse_money(p, "proceeds")?,
             )?;
+            // The disposal's own entry, as the journal names it (plan P4).
+            if let Some(eid) = p.get("entry_id").and_then(Value::as_u64) {
+                ledger.note_entry_origin(eid, ledger_core::evidence::Origin::AssetDisposal);
+            }
         }
         "period.created" => {
             let want = get_u64(p, "id")?;

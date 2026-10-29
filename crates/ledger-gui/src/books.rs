@@ -705,14 +705,13 @@ impl Books {
                 .entry_vendor(id)
                 .and_then(|v| ledger.get_vendor(v))
                 .map(|v| v.name.clone());
-            // The receipt policy covers what is posted by hand (journal
-            // entries and recurring drafts); invoices, payments, closes,
-            // depreciation, and schedules carry their own evidence, and a
-            // reversal leans on its original's.
-            let missing_receipt = matches!(origin, "Journal entry" | "Recurring")
-                && e.reversal_of().is_none()
-                && rec.is_empty()
-                && policy.receipt_required(&ledger, e);
+            // The engine decides (plan P4, I-5): the receipt policy covers
+            // what is posted by hand (journal entries, recurring drafts);
+            // invoices, payments, closes, depreciation, and schedules carry
+            // their own evidence, and a reversal leans on its original's.
+            // The viewer asks the same function the server's gate asks.
+            let missing_receipt = rec.is_empty()
+                && ledger_core::evidence::requirement(&ledger, e, ledger.settings()).is_required();
             let cash_effect = e
                 .lines()
                 .iter()

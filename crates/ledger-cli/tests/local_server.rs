@@ -1179,8 +1179,8 @@ async fn a_token_does_only_what_its_scopes_allow() {
         "it may preview"
     );
     assert!(
-        !tools.contains(&"books.receive_payment".to_string()),
-        "it may preview an invoice, but not post a payment"
+        !tools.contains(&"books.void_document".to_string()),
+        "it may preview an invoice, but not void one"
     );
     let preview = call(&writer, "books.post_entry", json!({"entry_id": entry})).await;
     if let Err(e) = &preview {
@@ -1273,7 +1273,8 @@ async fn every_call_is_recorded_once_refusals_included() {
     assert_eq!(by("books.get_entry"), 1);
     assert_eq!(by("books.draft_entry"), 1);
     assert_eq!(by("books.add_line"), 2);
-    assert_eq!(by("books.post_entry"), 1);
+    // The preview, then the confirm (plan P4: each is a call, each recorded).
+    assert_eq!(by("books.post_entry"), 2);
     assert_eq!(by("books.access_log"), 0, "recorded once answered");
     let refused: Vec<&&Value> = tools
         .iter()

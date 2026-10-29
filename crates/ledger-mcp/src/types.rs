@@ -191,6 +191,11 @@ pub struct ListSchedulesOut {
 /// Parameters for `books.run_schedules`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RunSchedulesParams {
+    /// The `preview` the call without `confirmed` returned: the digest of
+    /// what was previewed. Required with confirmed=true; a changed
+    /// argument or books since the preview is refused (stale_preview).
+    #[serde(default)]
+    pub preview: Option<String>,
     /// Post months ending on or before this date (default today).
     pub through: Option<String>,
     /// Without true, a preview: nothing posts.
@@ -227,6 +232,10 @@ pub struct ScheduleSkippedOut {
 /// Result of `books.run_schedules`.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct RunSchedulesOut {
+    /// The digest of what this shows (SHA-256 of its canonical preview):
+    /// pass it back as `preview` with confirmed=true.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<String>,
     /// "preview" or "posted".
     pub status: String,
     /// Postings due (preview) or made.
@@ -1000,6 +1009,12 @@ pub struct TrialBalanceLineOut {
 /// Parameters for `books.trial_balance`.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct TrialBalanceParams {
+    /// True: refuse the report, naming what is open, while a draft dated
+    /// on or before its end, an unreconciled account or a settings
+    /// problem makes its figures not final (`as_of_status`). Default:
+    /// the report is given, with `as_of_status` as the warning.
+    #[serde(default)]
+    pub strict: Option<bool>,
     /// As of this day ([`AS_OF_DOC`]).
     #[serde(default)]
     #[schemars(description = AS_OF_DOC)]
@@ -1009,6 +1024,10 @@ pub struct TrialBalanceParams {
 /// Result of `books.trial_balance`.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct TrialBalanceOut {
+    /// What is open as of the report's end: drafts dated in it,
+    /// unreconciled accounts, settings problems (plan P4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub as_of_status: Option<AsOfStatusOut>,
     /// The as-of date, YYYY-MM-DD.
     pub as_of: String,
     /// Lines in code order.
@@ -1024,6 +1043,12 @@ pub struct TrialBalanceOut {
 /// Parameters for `books.profit_and_loss`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ProfitAndLossParams {
+    /// True: refuse the report, naming what is open, while a draft dated
+    /// on or before its end, an unreconciled account or a settings
+    /// problem makes its figures not final (`as_of_status`). Default:
+    /// the report is given, with `as_of_status` as the warning.
+    #[serde(default)]
+    pub strict: Option<bool>,
     /// Period start ([`START_DOC`]).
     #[schemars(description = START_DOC)]
     pub start: Option<String>,
@@ -1039,6 +1064,10 @@ pub struct ProfitAndLossParams {
 /// Result of `books.profit_and_loss`.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ProfitAndLossOut {
+    /// What is open as of the report's end: drafts dated in it,
+    /// unreconciled accounts, settings problems (plan P4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub as_of_status: Option<AsOfStatusOut>,
     /// Period start, YYYY-MM-DD.
     pub start: String,
     /// Period end, YYYY-MM-DD.
@@ -1069,6 +1098,12 @@ pub struct StatementLineOut {
 /// Parameters for `books.cash_flow`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CashFlowParams {
+    /// True: refuse the report, naming what is open, while a draft dated
+    /// on or before its end, an unreconciled account or a settings
+    /// problem makes its figures not final (`as_of_status`). Default:
+    /// the report is given, with `as_of_status` as the warning.
+    #[serde(default)]
+    pub strict: Option<bool>,
     /// Period start ([`START_DOC`]).
     #[schemars(description = START_DOC)]
     pub start: Option<String>,
@@ -1229,6 +1264,10 @@ pub struct CashFlowWarningOut {
 /// Result of `books.cash_flow`; `books.export` writes the same JSON.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct CashFlowOut {
+    /// What is open as of the report's end: drafts dated in it,
+    /// unreconciled accounts, settings problems (plan P4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub as_of_status: Option<AsOfStatusOut>,
     /// "direct" (ASC 230-10-45-25).
     pub method: String,
     /// Period start, YYYY-MM-DD.
@@ -1358,6 +1397,12 @@ pub struct ImportChartCsvOut {
 /// Parameters for `books.balance_sheet`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct BalanceSheetParams {
+    /// True: refuse the report, naming what is open, while a draft dated
+    /// on or before its end, an unreconciled account or a settings
+    /// problem makes its figures not final (`as_of_status`). Default:
+    /// the report is given, with `as_of_status` as the warning.
+    #[serde(default)]
+    pub strict: Option<bool>,
     /// As of this day ([`AS_OF_DOC`]).
     #[schemars(description = AS_OF_DOC)]
     pub as_of: Option<String>,
@@ -1366,6 +1411,10 @@ pub struct BalanceSheetParams {
 /// Result of `books.balance_sheet`.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct BalanceSheetOut {
+    /// What is open as of the report's end: drafts dated in it,
+    /// unreconciled accounts, settings problems (plan P4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub as_of_status: Option<AsOfStatusOut>,
     /// As of this date, YYYY-MM-DD.
     pub as_of: String,
     /// Total assets, decimal string.
@@ -1561,6 +1610,11 @@ pub struct PreviewReceipt {
 /// Parameters for `books.post_entry`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct PostEntryParams {
+    /// The `preview` the call without `confirmed` returned: the digest of
+    /// what was previewed. Required with confirmed=true; a changed
+    /// argument or books since the preview is refused (stale_preview).
+    #[serde(default)]
+    pub preview: Option<String>,
     /// Draft entry id.
     pub entry_id: u64,
     /// Pass true to post after reviewing the preview. Default false: returns
@@ -1574,6 +1628,10 @@ pub struct PostEntryParams {
 /// Result of `books.post_entry`: either a preview or a posted confirmation.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct PostEntryOut {
+    /// The digest of what this shows (SHA-256 of its canonical preview):
+    /// pass it back as `preview` with confirmed=true.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<String>,
     /// "preview" or "posted".
     pub status: String,
     /// The entry id.
@@ -1652,6 +1710,11 @@ pub struct PartySuggestionOut {
 /// Parameters for `books.reverse_entry`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ReverseEntryParams {
+    /// The `preview` the call without `confirmed` returned: the digest of
+    /// what was previewed. Required with confirmed=true; a changed
+    /// argument or books since the preview is refused (stale_preview).
+    #[serde(default)]
+    pub preview: Option<String>,
     /// Id of the posted entry to reverse.
     pub entry_id: u64,
     /// Date of the reversing entry, YYYY-MM-DD.
@@ -1665,6 +1728,10 @@ pub struct ReverseEntryParams {
 /// Result of `books.reverse_entry`.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ReverseEntryOut {
+    /// The digest of what this shows (SHA-256 of its canonical preview):
+    /// pass it back as `preview` with confirmed=true.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<String>,
     /// "preview" or "posted".
     pub status: String,
     /// The new reversing entry's id.
@@ -2040,8 +2107,19 @@ pub struct SearchEntriesOut {
 /// Parameters for `books.digest`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct DigestParams {
-    /// Include entries posted on or after this date, YYYY-MM-DD.
-    pub since: String,
+    /// Include entries dated on or after this date, YYYY-MM-DD (by entry
+    /// date). Give this or `since_seq`.
+    #[serde(default)]
+    pub since: Option<String>,
+    /// Include the entries posted after this journal sequence number: what
+    /// was posted since a session's head (`head.seq` of an earlier answer),
+    /// backdated entries included, which `since` by date would miss.
+    #[serde(default)]
+    pub since_seq: Option<u64>,
+    /// Count movement through this day ([`AS_OF_DOC`]); default today.
+    #[serde(default)]
+    #[schemars(description = AS_OF_DOC)]
+    pub as_of: Option<String>,
 }
 
 /// One entry in the digest.
@@ -2080,8 +2158,27 @@ pub struct DigestTotal {
 /// Result of `books.digest`: what changed, for human review.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct DigestOut {
-    /// The since date, YYYY-MM-DD.
+    /// The since date, YYYY-MM-DD (empty when asked by `since_seq`).
     pub since: String,
+    /// The journal sequence number the entries are after, when asked by
+    /// `since_seq`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since_seq: Option<u64>,
+    /// The journal's head now: pass its `seq` as `since_seq` next time.
+    pub head_seq: u64,
+    /// Accounts the entries touched whose net movement is zero ("CODE
+    /// Name"): they are not in totals_by_account, but something moved in
+    /// them and back.
+    pub zero_net_accounts: Vec<String>,
+    /// How many drafts are open, by state (`building`,
+    /// `awaiting_evidence`).
+    pub drafts_by_state: std::collections::BTreeMap<String, u64>,
+    /// Cash and card accounts (books.cash_accounts) that have a statement
+    /// recorded, by code.
+    pub reconciliation_tracked: Vec<String>,
+    /// Cash and card accounts with no statement ever recorded, by code:
+    /// reconciliation has not started for them.
+    pub never_reconciled: Vec<String>,
     /// Entries posted in the period, newest first.
     pub entries: Vec<DigestEntry>,
     /// Net movement per account over the period.
@@ -2117,7 +2214,7 @@ pub struct DigestOut {
 }
 
 /// An account due for reconciliation (`books.digest`).
-#[derive(Debug, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct UnreconciledAccountOut {
     /// Account code.
     pub code: String,
@@ -2741,6 +2838,11 @@ pub struct SkippedDepreciation {
 /// Parameters for `books.dispose_asset`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct DisposeAssetParams {
+    /// The `preview` the call without `confirmed` returned: the digest of
+    /// what was previewed. Required with confirmed=true; a changed
+    /// argument or books since the preview is refused (stale_preview).
+    #[serde(default)]
+    pub preview: Option<String>,
     /// Asset id (or pass `tag`).
     pub asset_id: Option<u64>,
     /// The asset's tag, instead of its id.
@@ -2771,6 +2873,10 @@ pub struct DisposeAssetParams {
 /// Result of `books.dispose_asset`.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct DisposeAssetOut {
+    /// The digest of what this shows (SHA-256 of its canonical preview):
+    /// pass it back as `preview` with confirmed=true.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<String>,
     /// "preview" or "posted".
     pub status: String,
     /// Asset id.
@@ -2864,6 +2970,11 @@ pub struct CreatePeriodOut {
 /// Parameters for `books.close_period`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ClosePeriodParams {
+    /// The `preview` the call without `confirmed` returned: the digest of
+    /// what was previewed. Required with confirmed=true; a changed
+    /// argument or books since the preview is refused (stale_preview).
+    #[serde(default)]
+    pub preview: Option<String>,
     /// The period to close.
     pub period_id: u64,
     /// Without confirmed=true, returns a preview (closing lines) and closes
@@ -2875,6 +2986,10 @@ pub struct ClosePeriodParams {
 /// Output of `books.close_period`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ClosePeriodOut {
+    /// The digest of what this shows (SHA-256 of its canonical preview):
+    /// pass it back as `preview` with confirmed=true.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<String>,
     /// "preview" or "closed".
     pub status: String,
     /// The period id.
@@ -2983,6 +3098,11 @@ pub struct MarkClearedOut {
 /// `statement_balance` for a check against any balance.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ReconcileParams {
+    /// The `preview` the call without `confirmed` returned: the digest of
+    /// what was previewed. Required with confirmed=true; a changed
+    /// argument or books since the preview is refused (stale_preview).
+    #[serde(default)]
+    pub preview: Option<String>,
     /// Account id or code (e.g. "1000") to reconcile. With
     /// statement_attachment, optional (it must be the statement's).
     pub account: Option<String>,
@@ -3021,6 +3141,10 @@ pub struct ReconcileLineOut {
 /// Output of `books.reconcile`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ReconcileOut {
+    /// The digest of what this shows (SHA-256 of its canonical preview):
+    /// pass it back as `preview` with confirmed=true.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<String>,
     /// "preview" (nothing recorded) or "reconciled" (recorded).
     pub status: String,
     /// Account code.
@@ -3134,6 +3258,11 @@ pub struct BillToParam {
 /// `confirmed`, and posts with it (A-1).
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct CreateInvoiceParams {
+    /// The `preview` the call without `confirmed` returned: the digest of
+    /// what was previewed. Required with confirmed=true; a changed
+    /// argument or books since the preview is refused (stale_preview).
+    #[serde(default)]
+    pub preview: Option<String>,
     /// The customer: a customer id, its party's id, or its name. A name
     /// that two customers answer to is refused.
     pub customer: Option<String>,
@@ -3164,6 +3293,11 @@ pub struct CreateInvoiceParams {
 /// and posts with it.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct CreateBillParams {
+    /// The `preview` the call without `confirmed` returned: the digest of
+    /// what was previewed. Required with confirmed=true; a changed
+    /// argument or books since the preview is refused (stale_preview).
+    #[serde(default)]
+    pub preview: Option<String>,
     /// The vendor: a vendor id, its party's id, or its name. A name that
     /// two vendors answer to is refused.
     pub vendor: Option<String>,
@@ -3240,6 +3374,15 @@ pub struct FeeParam {
 /// Parameters for `books.receive_payment` / `books.pay_bill`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PaymentParams {
+    /// The `preview` the call without `confirmed` returned: the digest of
+    /// what was previewed. Required with confirmed=true; a changed
+    /// argument or books since the preview is refused (stale_preview).
+    #[serde(default)]
+    pub preview: Option<String>,
+    /// Pass true to post after reviewing the preview. Without it, a
+    /// preview: nothing posts.
+    #[serde(default)]
+    pub confirmed: Option<bool>,
     /// Invoice id (receive_payment) or bill id (pay_bill); the older name
     /// of `invoice` / `bill`.
     #[serde(default)]
@@ -3311,6 +3454,10 @@ pub struct PaidDocumentOut {
 /// Output of `books.receive_payment` / `books.pay_bill`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PaymentOut {
+    /// The digest of what this shows (SHA-256 of its canonical preview):
+    /// pass it back as `preview` with confirmed=true.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<String>,
     /// The payment journal entry's id.
     pub entry_id: u64,
     /// Every document it settled, in application order.
@@ -4165,6 +4312,10 @@ pub struct ClassPnlOut {
 /// Output of `books.profit_and_loss_by_class`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ProfitAndLossByClassOut {
+    /// What is open as of the report's end: drafts dated in it,
+    /// unreconciled accounts, settings problems (plan P4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub as_of_status: Option<AsOfStatusOut>,
     /// Period start, YYYY-MM-DD.
     pub start: String,
     /// Period end, YYYY-MM-DD.
@@ -4180,6 +4331,12 @@ pub struct ProfitAndLossByClassOut {
 /// Parameters for `books.export_cpa_package`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ExportCpaPackageParams {
+    /// Hand the package over although drafts dated on or before `as_of`
+    /// are still open, and say why (journaled as a decision). Without it
+    /// the export is refused while any is open: a package with a draft
+    /// missing from its figures is not the CPA's final.
+    #[serde(default)]
+    pub allow_open_drafts: Option<AllowOpenDraftsParam>,
     /// As of this day ([`AS_OF_DOC`]); the period reports cover the
     /// fiscal year that holds it, through it.
     #[schemars(description = AS_OF_DOC)]
@@ -4477,6 +4634,11 @@ pub struct GetW9Out {
 /// Parameters for `books.purge_tin`.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct PurgeTinParams {
+    /// The `preview` the call without `confirmed` returned: the digest of
+    /// what was previewed. Required with confirmed=true; a changed
+    /// argument or books since the preview is refused (stale_preview).
+    #[serde(default)]
+    pub preview: Option<String>,
     /// The party: id or name.
     pub party: String,
     /// Why (retention period over, the payee asked, a wrong TIN):
@@ -4490,6 +4652,10 @@ pub struct PurgeTinParams {
 /// Result of `books.purge_tin`.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct PurgeTinOut {
+    /// The digest of what this shows (SHA-256 of its canonical preview):
+    /// pass it back as `preview` with confirmed=true.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<String>,
     /// "preview" or "purged".
     pub status: String,
     /// The party.
@@ -5174,9 +5340,11 @@ pub struct IssuedFileOut {
 /// posted invoice.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct InvoiceOut {
-    /// True: a preview, and nothing was posted.
+    /// The digest of what this shows (SHA-256 of its canonical preview):
+    /// present on a preview, which posted nothing; pass it back as
+    /// `preview` with confirmed=true.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub preview: Option<bool>,
+    pub preview: Option<String>,
     /// The invoice's id (confirm).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<u64>,
@@ -5219,9 +5387,11 @@ pub struct InvoiceOut {
 /// posted bill.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct BillOut {
-    /// True: a preview, and nothing was posted.
+    /// The digest of what this shows (SHA-256 of its canonical preview):
+    /// present on a preview, which posted nothing; pass it back as
+    /// `preview` with confirmed=true.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub preview: Option<bool>,
+    pub preview: Option<String>,
     /// The bill's id (confirm).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<u64>,
@@ -5331,6 +5501,11 @@ pub struct MarkSentOut {
 /// Parameters for `books.write_off_invoice`.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct WriteOffInvoiceParams {
+    /// The `preview` the call without `confirmed` returned: the digest of
+    /// what was previewed. Required with confirmed=true; a changed
+    /// argument or books since the preview is refused (stale_preview).
+    #[serde(default)]
+    pub preview: Option<String>,
     /// The invoice's id (books.documents).
     pub invoice: u64,
     /// The write-off's day, YYYY-MM-DD: not before the invoice, and in an
@@ -5379,6 +5554,10 @@ pub struct WriteOffDocumentOut {
 /// Output of `books.write_off_invoice`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct WriteOffInvoiceOut {
+    /// The digest of what this shows (SHA-256 of its canonical preview):
+    /// pass it back as `preview` with confirmed=true.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<String>,
     /// The write-off's journal entry's id (0 in a preview).
     pub entry_id: u64,
     /// The invoice's derived figures after it.
@@ -5527,6 +5706,11 @@ pub struct DuplicateGroupOut {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ConsolidateDuplicatesParams {
+    /// The `preview` the call without `confirmed` returned: the digest of
+    /// what was previewed. Required with confirmed=true; a changed
+    /// argument or books since the preview is refused (stale_preview).
+    #[serde(default)]
+    pub preview: Option<String>,
     /// True: consolidate. Without it, a preview that changes nothing.
     pub confirmed: Option<bool>,
 }
@@ -5534,10 +5718,155 @@ pub struct ConsolidateDuplicatesParams {
 /// Result of `books.consolidate_duplicates`.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ConsolidateDuplicatesOut {
+    /// The digest of what this shows (SHA-256 of its canonical preview):
+    /// pass it back as `preview` with confirmed=true.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<String>,
     /// "preview" or "consolidated".
     pub status: String,
     /// Each set of attachments holding one file's bytes.
     pub groups: Vec<DuplicateGroupOut>,
     /// How many attachments were (or would be) withdrawn.
     pub withdrawn: usize,
+}
+
+// ---------------------------------------------------------------------------
+// P4: draft states, the evidence gate, the preview digest, the digest tool
+// ---------------------------------------------------------------------------
+
+/// Parameters for `books.list_drafts`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ListDraftsParams {
+    /// Only drafts in this state: `building` or `awaiting_evidence`.
+    #[serde(default)]
+    pub state: Option<String>,
+    /// Only drafts dated on or before this day ([`AS_OF_DOC`]). Default:
+    /// all.
+    #[serde(default)]
+    #[schemars(description = AS_OF_DOC)]
+    pub as_of: Option<String>,
+}
+
+/// One open draft entry.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DraftOut {
+    /// The draft's id.
+    pub entry_id: u64,
+    /// Its date, YYYY-MM-DD.
+    pub date: String,
+    /// Its description.
+    pub description: String,
+    /// Total debits so far, decimal string ("too large" past exact
+    /// arithmetic).
+    pub total: String,
+    /// `building` or `awaiting_evidence`.
+    pub state: String,
+    /// What it waits for (empty when building or when none was said).
+    pub note: String,
+    /// The receipt policy covers it and it has no receipt yet.
+    pub missing_evidence: bool,
+}
+
+/// Result of `books.list_drafts`.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ListDraftsOut {
+    /// Open drafts, by date then id.
+    pub drafts: Vec<DraftOut>,
+}
+
+/// Parameters for `books.set_draft_state`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SetDraftStateParams {
+    /// The draft's id.
+    pub entry_id: u64,
+    /// `building` (still being worked on) or `awaiting_evidence` (finished
+    /// and waiting for its receipt or other document).
+    pub state: String,
+    /// What it waits for ("Figma invoice due 11/3"). Only with
+    /// `awaiting_evidence`.
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+/// Result of `books.set_draft_state`.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct SetDraftStateOut {
+    /// The draft's id.
+    pub entry_id: u64,
+    /// Its state now.
+    pub state: String,
+    /// Its note now.
+    pub note: String,
+}
+
+/// Parameters for `books.discard_draft`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DiscardDraftParams {
+    /// The draft's id.
+    pub entry_id: u64,
+    /// Why it will not post ("entered twice"); journaled with the discard.
+    pub reason: String,
+    /// True: discard it. Without it, a preview that changes nothing.
+    #[serde(default)]
+    pub confirmed: Option<bool>,
+    /// The `preview` the call without `confirmed` returned. Required with
+    /// confirmed=true; a changed draft or books since is refused
+    /// (stale_preview).
+    #[serde(default)]
+    pub preview: Option<String>,
+}
+
+/// Result of `books.discard_draft`.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct DiscardDraftOut {
+    /// "preview" or "discarded".
+    pub status: String,
+    /// The draft's id.
+    pub entry_id: u64,
+    /// Its description.
+    pub description: String,
+    /// Its total debits so far.
+    pub total: String,
+    /// Whether it held a period open, and the period's name.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub holds_open: Vec<String>,
+    /// The digest of what this shows: pass it back as `preview` with
+    /// confirmed=true.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<String>,
+}
+
+/// Parameters for `books.preview_entry`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PreviewEntryParams {
+    /// The draft's id.
+    pub entry_id: u64,
+}
+
+/// What a report leaves open as of its end date (`as_of_status`): shown
+/// on every report so a number is not taken for final while a draft
+/// dated in it waits.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AsOfStatusOut {
+    /// Drafts dated on or before the report's end: not in these figures,
+    /// but they will be.
+    pub drafts_open_on_or_before: Vec<DraftOut>,
+    /// Cash and card accounts with activity not reconciled through the
+    /// end of the month before the report's end.
+    pub unreconciled: Vec<UnreconciledAccountOut>,
+    /// Settings that disagree with the chart (books.settings).
+    pub settings_problems: Vec<String>,
+}
+
+/// `books.export_cpa_package`'s `allow_open_drafts`: hand the package over
+/// with drafts dated in it still open, and say why.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AllowOpenDraftsParam {
+    /// Why the package goes with these drafts open ("the CPA asked for it
+    /// before the Figma invoice arrives"); journaled as a decision.
+    pub reason: String,
 }

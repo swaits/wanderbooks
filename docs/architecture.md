@@ -135,6 +135,16 @@ extractions have a table of their own. The viewer's Documents page groups
 by category and filters by subject; Needs attention reads both through
 `PackageBooks`.
 
+**The evidence gate (P4, I-5).** `ledger_core::evidence::requirement`
+(with `Policy`, the settings' `policy.evidence.*` read in the core) is the
+one decision whether an entry needs a receipt; `Store::post_entry_checked`,
+the server's previews and digest, the viewer and Needs attention all call
+it, and `ReceiptPolicy` in `ledger-config` keeps only the words. A draft
+has a state (`DraftState`, `entry.draft_state_set`) and can be discarded
+(`entry.draft_discarded`); `Ledger::posted_seq` is the journal line that
+posted each entry. Every MCP tool with `confirmed` takes the digest
+`Preview` (`tools/helpers.rs`) its preview returned.
+
 ## The journal format gate (`ledger-store`, P0)
 
 Every journal line passes a gate after its parse, seq and chain checks

@@ -56,7 +56,7 @@ const C: Needs = PostWhenConfirmed;
 const K: Needs = PostForApprovalRules;
 
 /// Every tool and what it needs (INVARIANT 1).
-pub const TABLE: [(&str, Needs); 129] = [
+pub const TABLE: [(&str, Needs); 133] = [
     ("books.handbook", R),
     ("books.start", R),
     // Settings are committed at once: the settings commit of the plan.
@@ -163,8 +163,8 @@ pub const TABLE: [(&str, Needs); 129] = [
     // These preview, then post when confirmed (P4b S4.4, A-1).
     ("books.create_invoice", C),
     ("books.create_bill", C),
-    ("books.receive_payment", P),
-    ("books.pay_bill", P),
+    ("books.receive_payment", C),
+    ("books.pay_bill", C),
     ("books.void_document", P),
     // Records a send: changes the books' record, never a figure.
     ("books.mark_sent", W),
@@ -196,6 +196,11 @@ pub const TABLE: [(&str, Needs); 129] = [
     ("books.annotate_attachment", W),
     ("books.set_entry_settles", W),
     ("books.consolidate_duplicates", C),
+    // P4: drafts (plan P4; a discard previews, then acts).
+    ("books.list_drafts", R),
+    ("books.set_draft_state", W),
+    ("books.discard_draft", C),
+    ("books.preview_entry", R),
 ];
 
 /// What `tool` needs, given its arguments; None for a tool this server
@@ -381,11 +386,17 @@ mod tests {
         );
         assert_eq!(
             needs(
-                "books.receive_payment",
+                "books.void_document",
                 args(json!({"confirmed": false})).as_ref()
             ),
             Some(Scope::Post),
             "a tool that posts at once needs books:post whatever it is given"
+        );
+        // P4: a payment previews, then posts when confirmed.
+        assert_eq!(needs("books.receive_payment", None), Some(Scope::Write));
+        assert_eq!(
+            needs("books.pay_bill", args(json!({"confirmed": true})).as_ref()),
+            Some(Scope::Post)
         );
         assert_eq!(needs("books.access_log", None), Some(Scope::Admin));
         assert_eq!(needs("books.nonesuch", None), None);
@@ -435,7 +446,7 @@ mod tests {
             shown("books.create_invoice", &write),
             "it may preview an invoice"
         );
-        assert!(!shown("books.receive_payment", &write));
+        assert!(!shown("books.void_document", &write));
         let post = set(&[Scope::Post]);
         assert!(shown("books.post_entry", &post));
         assert!(!shown("books.chart", &post));

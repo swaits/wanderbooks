@@ -3594,3 +3594,78 @@ token" must die on `an_unreadable_token_file_is_an_error_never_no_token`),
 `Keeper::delete`'s `NotFound` arm, and `Account::key`'s three parts
 (`an_account_names_the_root_by_hash_and_the_book_and_token`);
 `bridge.rs::token_file_refusal`'s `holds_token` guard.
+
+## P4: draft states, the evidence gate, the preview digest (2026-10-29)
+
+A draft has a state (`building`, or `awaiting_evidence` with a note) and a
+way out (`books.discard_draft`); one function, `evidence::requirement`,
+decides whether an entry needs evidence; every tool with `confirmed` takes
+the `preview` digest it returned; `books.digest` can be asked "since a
+journal line". Journal feature `drafts_v2`; events `entry.draft_state_set`
+and `entry.draft_discarded`; schema 19 (taken as the next after the last,
+renumbered at merge): `entries.posted_seq` and the `draft_states` table
+(drafts are not rows of `entries`, so the plan's `entries.draft_state`
+column became a table).
+
+- **`ledger-core` `tests/invariants.rs`:** `discard_unblocks_close` (a
+  period with an open draft can't close, a state changes no figure,
+  discarded it closes; balances, order and ids as they were; a posted
+  entry is never discarded or given a state).
+- **Lean:** `Step.discard` (preservation of `Inv`, including
+  `draftsOpen`), `Step.discard_keeps_books`, `Step.discard_drafts`,
+  `Step.discard_unblocks_close`, in `Audit.lean`.
+- **`ledger-store` `tests/store.rs`:** `draft_states_replay_and_project`
+  (both events journaled as written, `draft_states` holds only the waiting
+  draft and loses it when it posts, live equals replay, the refusals),
+  `drafts_v2_waits_for_the_upgrade`, `posted_seq_is_the_posting_lines_seq`
+  (hand, backdated, reversal and closing entries: the number is the line
+  that posted them, live, replayed and projected);
+  `books_written_under_older_rules_still_open` hand-writes both events.
+  `tests/format.rs`: `an_older_version_stops_at_the_draft_events`;
+  `format.rs`'s `drafts_v2_is_its_own_feature`.
+- **8.0.6:** the fixture `old-books/p4_before` (writer
+  `old-books-writer/src/bin/p4_before.rs`, run against 25b52580) holds
+  hand entries posted late, a reversal, a document and its payment, a
+  schedule month, a recurring draft, two open drafts and a closed month;
+  `every_book_an_earlier_version_wrote_upgrades_and_still_verifies` opens
+  it to the writer's figures, so no figure moved (serialized entries omit
+  a building state). `books_p2_served_cut_over_whole` refuses the two draft
+  tools before consent and takes them after.
+- **`ledger-cli` `tests/drafts.rs`:** `a_draft_waits_for_its_receipt_and_posts`,
+  `the_gate_moved_and_the_mcp_error_is_unchanged`,
+  `a_reversal_needs_no_receipt_of_its_own` (D-47),
+  `discard_unblocks_the_close_over_the_wire`,
+  `report_warns_on_draft_before_as_of` (and `strict`),
+  `cpa_package_refuses_open_draft` (and `allow_open_drafts` journaling a
+  decision), `stale_preview_refused` (a changed line, a changed argument,
+  a write between preview and confirm, no preview), 
+  `every_confirm_tool_takes_a_preview`, `digest_since_seq_is_posting_time`
+  (with `zero_net_accounts`, `drafts_by_state`, `never_reconciled`),
+  `legacy_reversed_replays_identically` (the fixture over the wire),
+  `gui_and_server_gate_agree` (three policies over random books; the
+  viewer's missing-evidence set equals the engine's and equals the old
+  reading of an entry's origin from the journal's events).
+- **`ledger-cli` `tests/attention_parity.rs`:**
+  `a_waiting_draft_and_a_building_draft_are_two_items_on_both_lists`.
+- **The sweep:** every over-the-wire harness confirms the way an agent does
+  (`common::tools_call`: the call without `confirmed`, then with the
+  `preview`); `books.receive_payment` and `books.pay_bill` gained
+  `confirmed`; `ledger-mcp` `scopes.rs` tests pin them as preview-then-post.
+
+**For P12 (mutation targets):** `evidence::requirement`'s exemption arms
+(reversal, closing, schedule month, depreciation run, disposal origin,
+payroll remittance origin, a tagged document line, a payroll run) and
+their order, the split-group branch taken only for a `Draft`, and
+`Policy::reason_for`'s three comparisons (required account, `<=` the
+threshold, every code exempt); `Ledger::origin_exemption`; the replay
+arms that note `AssetDisposal` and `PayrollRemittance`;
+`Ledger::discard_draft`'s empty-reason and posted refusals and the side
+tables it clears; `set_draft_state`'s `check_text`; `stamp_unstamped` and
+`expect_posted_seq` (a mutant that stamps the wrong line shows in
+`posted_seq_is_the_posting_lines_seq`); `Preview::operation` (the keys it
+drops: `confirmed`, `preview`, nulls) and `Preview::check`'s three arms
+(missing, equal, different); `post_entry`'s draft payload (each field of
+it); the digest's `since_seq` comparison (`>`), its `as_of` bound, the
+`zero_net_accounts` branch and the `never_reconciled` split;
+`report_status`'s three open conditions; the open-drafts refusal's
+`<= as_of` and its decision; the attention `awaiting_evidence` branch.

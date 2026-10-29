@@ -1549,13 +1549,15 @@ impl Store {
             && self.list_attachments(Some(entry))?.is_empty()
         {
             let policy = ledger_core::evidence::Policy::from_settings(self.ledger.settings());
-            return Err(StoreError::ReceiptRequired {
-                entry_id: entry,
-                debits: ledger_core::evidence::Policy::entry_debits(&e).ok(),
-                policy: policy.describe(),
-                split_group: policy.split_group(&self.ledger, entry, &e),
-                reason,
-            });
+            return Err(StoreError::ReceiptRequired(Box::new(
+                crate::error::ReceiptRequiredInfo {
+                    entry_id: entry,
+                    debits: ledger_core::evidence::Policy::entry_debits(&e).ok(),
+                    policy: policy.describe(),
+                    split_group: policy.split_group(&self.ledger, entry, &e),
+                    reason,
+                },
+            )));
         }
         self.post_entry(entry)
     }

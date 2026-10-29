@@ -274,7 +274,7 @@ fn invoiced_and_billed_project_figures_are_the_same_in_the_viewer_and_from_the_s
     let bill = server.tool("books.create_bill", bill_args);
     server.tool(
         "books.receive_payment",
-        json!({"document_id": inv["id"], "date": "2026-02-20", "amount": "1830.00", "cash_account": "1000"}),
+        json!({"confirmed": true, "document_id": inv["id"], "date": "2026-02-20", "amount": "1830.00", "cash_account": "1000"}),
     );
     let b = data::load_once(&Source {
         data_dir: data.clone(),

@@ -354,7 +354,7 @@ Tool descriptions are at most 700 characters; eight longer ones are listed
 in `tool_descriptions_fit_700_characters`, to be shortened in P5.
 
 **Annotations.** Every tool has a `title` and a `readOnlyHint`; every tool
-that changes anything also has a `destructiveHint`, true for these 30:
+that changes anything also has a `destructiveHint`, true for these 31:
 `books.post_entry`, `books.reverse_entry`, `books.set_setting`, `books.retire_convention`, `books.unlink_receipt`,
 `books.unlink_attachment`, `books.withdraw_attachment`,
 `books.correct_asset`, `books.dispose_asset`, `books.run_depreciation`,
@@ -366,7 +366,7 @@ that changes anything also has a `destructiveHint`, true for these 30:
 `books.create_invoice`, `books.create_bill`, `books.receive_payment`,
 `books.pay_bill`, `books.void_document`, `books.write_off_invoice`,
 `books.run_payroll`, `books.remit_payroll_taxes`,
-`books.consolidate_duplicates`; and an
+`books.consolidate_duplicates`, `books.discard_draft`; and an
 `idempotentHint` on the ten that a repeat with the same arguments leaves
 the journal and the vault as they were: `books.verify`,
 `books.run_depreciation`, `books.run_schedules`, `books.run_recurring`,
@@ -428,6 +428,24 @@ every tool over every book in ledger-store's `tests/fixtures/old-books`.
   + resulting account balances) and post nothing. The agent must present the
   preview to the human before confirming. This encodes the standing
   fact-check rule in the protocol itself.
+- **The preview digest (P4, D-50).** Every tool called without
+  `confirmed` returns `preview`, the SHA-256 of what it shows: for a draft
+  entry, its canonical state (lines, classes, party, vendor, instrument,
+  the evidence linked) and the settings seq; for any other operation, the
+  tool, its arguments, the settings seq and the journal head seq. Every
+  call with `confirmed: true` takes that `preview` and is refused, before
+  anything is written, with the guard `{ code: "stale_preview", message,
+  remedy_tool }` when it is missing or no longer matches: an argument
+  changed, or another session wrote in between (a post by another session
+  forces a re-preview, by design). No key is involved: it detects drift;
+  it does not prove a human looked. The tools that take `preview` are all
+  those with `confirmed`: `books.post_entry`, `books.reverse_entry`,
+  `books.run_schedules`, `books.dispose_asset`, `books.reconcile`,
+  `books.close_period`, `books.create_invoice`, `books.create_bill`,
+  `books.receive_payment`, `books.pay_bill`, `books.write_off_invoice`,
+  `books.purge_tin`, `books.consolidate_duplicates` and
+  `books.discard_draft`. (`books.void_document`, `books.run_depreciation`
+  and `books.run_recurring` post at once and have no `confirmed`.)
 - **Errors are typed strings** mirroring `LedgerError` variants, with the
   offending values included (e.g. unbalanced totals).
 
@@ -460,7 +478,7 @@ every tool over every book in ledger-store's `tests/fixtures/old-books`.
 - `books.add_line { entry_id, account: "1000" | <id>, side: "debit" | "credit",
   amount: "123.45" }` → `{ ok: true }`. A refused line (unknown account or
   class, bad amount) adds nothing.
-- `books.post_entry { entry_id, confirmed?, expected_total? }` → `{ status, entry_id, date,
+- `books.post_entry { entry_id, confirmed?, preview?, expected_total? }` → `{ status, preview, entry_id, date,
   description, total, lines (with resulting balances), receipts,
   receipt_required, receipt_missing, split_detected, party_policy,
   party_id?, party?, parties, parties_error?, no_party_reason?,
@@ -473,7 +491,7 @@ every tool over every book in ledger-store's `tests/fixtures/old-books`.
   share: "amount" | "percent" | "derived", amount?, percent?, resolved }`);
   when the shares don't add up to what the entry moved, `parties_error`
   says why and confirming fails with code `party_shares`.
-- `books.reverse_entry { entry_id, date, description, confirmed }` → same
+- `books.reverse_entry { entry_id, date, description, confirmed, preview? }` → same
   preview/confirm pattern as post. A reversed depreciation run or schedule
   month is un-posted (its month is due again); refused, at the preview
   already (P3): an asset's disposal entry (it would stay disposed), a
@@ -578,10 +596,23 @@ every tool over every book in ledger-store's `tests/fixtures/old-books`.
     one; no registered asset's account as cash).
   - Changed in P3 (breaking): `net_income`, `depreciation` and
     `working_capital` are gone (net income is in `operating_reconciliation`).
-- `books.digest { since: "2026-10-01" }`
-  → `{ since, entries: [...], totals_by_account: [...], stale_rules: [...],
+- `books.digest { since: "2026-10-01" | since_seq: 412, as_of? }`
+  → `{ since, since_seq?, head_seq, entries: [...], totals_by_account: [...],
+  zero_net_accounts: [...], drafts_by_state: { building?, awaiting_evidence? },
+  reconciliation_tracked: [...], never_reconciled: [...], stale_rules: [...],
   journal_repairs: [...], settings_problems: [...], unreconciled_accounts:
-  [...], uncategorized_accounts: [...] }`.
+  [...], uncategorized_accounts: [...] }`. `since` selects entries by their
+  date; `since_seq` selects the entries posted after a journal line (the
+  `head_seq` of an earlier answer), backdated entries included, which a
+  date would miss (P4, defect 6). `as_of` (default today) bounds the
+  movement. An account the entries touched whose net movement is zero is
+  listed under `zero_net_accounts` rather than dropped silently.
+  `drafts_by_state` counts the open drafts; `reconciliation_tracked` and
+  `never_reconciled` split the cash and card accounts (`books.cash_accounts`)
+  by whether a statement was ever recorded for them. Each entry's
+  `receipt_required` is the engine's one decision
+  (`ledger_core::evidence::requirement`): a document's entry, a close, a
+  depreciation run and a reversal need none of their own.
   The human review surface: "what did the AI do with my books lately." The
   digest is the answer to "trust, but verify." `stale_rules` lists legal
   amounts wanderbooks may no longer know as of today (`{ name,
@@ -724,7 +755,7 @@ life's last day is 9999-12-31 at the latest.
   run-all's assets not yet in service and any whose schedule can't be
   computed. A run before the in-service date is refused.
 - `books.dispose_asset { asset_id | tag, date, proceeds, proceeds_account,
-  gain_loss_account, buyer?, confirmed?, receipt_attachment_ids? }` (the
+  gain_loss_account, buyer?, confirmed?, preview?, receipt_attachment_ids? }` (the
   date never before the acquired date) →
   without confirmation: `{ status: "preview", asset_id, entry_id (0 in a
   preview), accumulated, book_value,
@@ -808,7 +839,7 @@ through the policy.
   compute: then it says why, `remaining` and `next` are null and `months`
   empty, and `books.run_schedules` refuses until it is dealt with.
 - `books.list_schedules {}` → `{ schedules: [...] }`, same shape.
-- `books.run_schedules { through?, confirmed? }` → `{ status: "preview" |
+- `books.run_schedules { through?, confirmed?, preview? }` → `{ status: "preview" |
   "posted", postings: [{ schedule_id, date, description, amount,
   entry_id? }], skipped: [{ schedule_id, date, reason }] }`: every
   unposted month ending on or before `through` (default today).
@@ -1482,7 +1513,7 @@ and the CPA package carries them.
   of a binary file (a W-9 PDF re-saved or re-scanned), and a TIN the vault
   doesn't hold written another way, are not detected: P7 takes full
   TINs out of the agent's reach.
-- `books.purge_tin { party, reason, confirmed? }` → `{ status: "preview" |
+- `books.purge_tin { party, reason, confirmed?, preview? }` → `{ status: "preview" |
   "purged", party_id, name, tin_in_vault, w9_file_in_vault, tin_last4?,
   journaled, note }`. Without `confirmed`, a preview that changes nothing.
   Confirmed, deletes the party's vault records (needs no key) and, when the
@@ -1667,7 +1698,7 @@ checks the text blob's presence and hash.
   none may be the paying entry itself or be named twice. It changes no
   amount. "The member was paid back" is read from this record only, never
   guessed (IZ-18); Needs attention asks until it is recorded.
-- `books.consolidate_duplicates { confirmed? }` → `{ status: "preview" |
+- `books.consolidate_duplicates { confirmed?, preview? }` → `{ status: "preview" |
   "consolidated", groups: [{ sha256, keep, withdraw, links }], withdrawn
   }`. For every set of attachments holding the same bytes it keeps the
   oldest (`keep`), links it to every subject the others had, unlinks the
@@ -1707,10 +1738,18 @@ posting.
   violation, and the append-only audit log would show it anyway.
   (`asset_id` instead of `entry_id` for a disposal; `split_group: [ids]`
   when the split check triggered.)
-- **Not checked yet:** `books.receive_payment`, `books.pay_bill`,
-  `books.run_payroll` and `books.remit_payroll_taxes` post at once with no
-  receipt check: attach their evidence right after, to the entry they
-  return. (`books.create_invoice` and `books.create_bill` preview and
+- **One gate (P4, I-5, D-47).** `ledger_core::evidence::requirement`
+  decides whether an entry needs evidence; the store's gate
+  (`Store::post_entry_checked`), the previews, the digest, the viewer and
+  Needs attention all call it. A reversal needs no receipt of its own (its
+  evidence is its original's, D-12); neither does a closing entry, a
+  schedule month's or a depreciation run's posting, an asset's disposal,
+  a document's entry or a payroll run or remittance. A refusal is the
+  `receipt_required` error above, unchanged.
+- **Not checked:** `books.receive_payment`, `books.pay_bill`,
+  `books.run_payroll` and `books.remit_payroll_taxes` are exempt from the
+  receipt policy by origin (above): attach their evidence right after, to
+  the entry they return. (`books.create_invoice` and `books.create_bill` preview and
   confirm, and a bill's vendor invoice is required, in books that have
   declared `documents_v2`.)
 - **Anti-splitting.** Posting an entry triggers a split check: posted
@@ -1971,7 +2010,7 @@ accounting only: the caller supplies every figure), tax filing.
 
 - `books.create_period { name, start, end }` → `{ period_id }`.
   Dates are YYYY-MM-DD, inclusive.
-- `books.close_period { period_id, confirmed? }` → without confirmation:
+- `books.close_period { period_id, confirmed?, preview? }` → without confirmation:
   `{ status: "preview", period_id, closing_entry: null, lines: [...],
   members }`: the exact closing entry (the close run on a copy of the
   ledger), posting nothing; with `confirmed: true`: `{ status: "closed",
@@ -2030,7 +2069,7 @@ accounting only: the caller supplies every figure), tax filing.
   the same attachment can record it again. Refused while a reconciliation
   not voided rests on it.
 - `books.reconcile { statement_attachment? | account, statement_date,
-  statement_balance, confirmed? }` → `{ status: "preview" | "reconciled",
+  statement_balance, confirmed?, preview? }` → `{ status: "preview" | "reconciled",
   account_code, statement_date, statement_attachment?, book_balance,
   cleared_balance, statement_balance, difference, uncleared_lines,
   cleared_lines, problems, reconciliation? }`, each line `{ entry_id,
@@ -2069,7 +2108,7 @@ snapshots; see plan 8.2 S4.
   lines: [{ description, amount, quantity?, unit_price?, account?,
   class? }], customer_ref?, memo?, bill_to?: { name?, address?, email?,
   phone?, contact?, billing_address?, shipping_address?, billing_email? },
-  confirmed? }` → without `confirmed`: `{ preview: true, number?, total,
+  confirmed?, preview? }` → without `confirmed`: `{ preview, number?, total,
   due_date, terms?, lines: [{ account, name, side, amount, class? }],
   pdf }`, and nothing is written; with `confirmed: true`: `{ id, number?,
   total, due_date, terms?, entry_id, pdf: { attachment_id, sha256 },
@@ -2124,7 +2163,7 @@ snapshots; see plan 8.2 S4.
 - `books.create_bill { vendor | party_id, date, received_on?, vendor_ref?,
   terms? | due_date?, lines: [{ description, amount, account, class? }],
   memo?, upload_id | existing_attachment_id, duplicate_reason?,
-  confirmed? }` → without `confirmed`: `{ preview: true, total, due_date,
+  confirmed?, preview? }` → without `confirmed`: `{ preview, total, due_date,
   terms?, lines: [...], discount_by?, max_discount? }` and nothing is
   written; with `confirmed: true`: `{ id, total, due_date, terms?,
   entry_id, lines?, discount_by?, max_discount?, file: { attachment_id,
@@ -2158,9 +2197,12 @@ snapshots; see plan 8.2 S4.
 - `books.receive_payment { date, deposit_to | cash_account, instrument?,
   reference?, invoice | document_id, amount? | applications: [{ invoice,
   amount, discount?, discount_reason? }], fee?: { amount, account?,
-  vendor? }, paid_in_full_marking? }` → `{ entry_id, documents: [{ ref,
-  number?, outstanding, status }], deposited, remaining?, status?,
-  warnings? }`. Settles one or several invoices of one customer in one
+  vendor? }, paid_in_full_marking?, confirmed?, preview? }` → `{ preview?,
+  entry_id, documents: [{ ref, number?, outstanding, status }], deposited,
+  remaining?, status?, warnings? }`. Without `confirmed: true` a preview
+  (entry 0, the figures the documents would show, `preview` to pass
+  back) and nothing is written (P4: the S6 tools preview and confirm like
+  the create tools). Settles one or several invoices of one customer in one
   entry (B-42): Dr the deposit account the cash less the fee, Dr the
   payment-processing-fees account the fee, Dr sales allowances the
   discounts, Cr A/R each invoice's cash and discount, every receivable
@@ -2180,7 +2222,7 @@ snapshots; see plan 8.2 S4.
   payments; they never collect them (D-45).
 - `books.pay_bill { date, paid_from | cash_account, instrument?,
   reference?, bill | document_id, amount? | applications: [{ bill, amount,
-  discount?, discount_reason? }] }` → as `receive_payment`, per bill and
+  discount?, discount_reason? }], confirmed?, preview? }` → as `receive_payment`, per bill and
   one vendor (B-42): Dr A/P each bill's cash and discount, Cr the payer
   account the cash, Cr purchase discounts the discounts. A discount on a
   bill with an asset or prepaid line is refused with its remedy (record
@@ -2208,7 +2250,7 @@ snapshots; see plan 8.2 S4.
   (`format_upgrade_pending`). `sends` is every send on the invoice, in
   order, the new one last.
 - `books.write_off_invoice { invoice, date, amount?, reason, upload_id |
-  existing_attachment_id, confirmed? }` → `{ entry_id, document: { ref,
+  existing_attachment_id, confirmed?, preview? }` → `{ entry_id, document: { ref,
   status, paid, written_off, outstanding } }`. Writes off an invoice that
   will not be collected (a bad debt, P4b S7; rules.md B-41): posts Dr
   `6990` Bad Debt Expense / Cr `1200` Accounts Receivable, the receivable
@@ -2425,10 +2467,15 @@ until the owner upgrades them.
 ## Tools — CPA handoff
 
 - `books.export_cpa_package { as_of?, cash_accounts?, financing_accounts?,
-  investing_accounts?, include_receipts?, include_tins? }` → `{ file,
+  investing_accounts?, include_receipts?, include_tins?,
+  allow_open_drafts?: { reason } }` → `{ file,
   tins_included, tin_gaps, warnings?, note }`: the zip,
   `cpa-package-<as_of>.zip`, handed over as `file` (a `HandedFile`,
   "Tools — the TIN vault").
+  **Open drafts** (P4, plan 4.8): refused with `open_drafts` while a draft
+  dated on or before `as_of` is open (post it or discard it); with
+  `allow_open_drafts: { reason }` the package goes and the reason is
+  journaled as a decision.
   **As of one day** (`docs/spec/rules.md` B-33): nothing in it reflects
   anything dated after `as_of` (default today): no figure, entry,
   receipt or worksheet row; the chart and `documents/` are as they stand.
@@ -2520,3 +2567,40 @@ until the owner upgrades them.
   count and what each file is). Period reports cover the fiscal year
   holding `as_of`, through it.
   What the CPA needs; they never log into the system.
+
+## Tools — drafts (P4)
+
+A draft is an entry being built (`books.draft_entry`, `books.add_line`) that
+is not in any report until it posts. P4 gives it a state, a way out, and a
+read-only preview (rules.md B-43; the journal feature `drafts_v2`: the
+state and discard tools wait for the books' format upgrade).
+
+- `books.list_drafts { state?, as_of? }` → `{ drafts: [{ entry_id, date,
+  description, total, state, note, missing_evidence }] }`. `state` is
+  `building` or `awaiting_evidence`; `as_of` keeps drafts dated on or
+  before a day. `missing_evidence` is true when the receipt policy covers
+  the draft and it has no receipt yet.
+- `books.set_draft_state { entry_id, state, note? }` → `{ entry_id, state,
+  note }`. `awaiting_evidence` with a note ("Figma invoice due 11/3") says
+  the draft is finished and waits for its document; `building` says it is
+  being worked on. A state is a note: no line or figure changes, and the
+  receipt policy is still checked when the draft posts. Only a draft has
+  one.
+- `books.discard_draft { entry_id, reason, confirmed?, preview? }` →
+  `{ status: "preview" | "discarded", entry_id, description, total,
+  holds_open?, preview }`. Throws away a draft that will never post; only a
+  draft (a posted entry is reversed, never removed). Nothing in any report
+  moves, the id is not reused, and a period the draft held open can close
+  (`holds_open` names those). Previewed first, then confirmed with the
+  `preview` digest.
+- `books.preview_entry { entry_id }` → the `books.post_entry` preview
+  (`status: "preview"`, lines, receipts, `receipt_required`,
+  `receipt_missing`, party and approval checks, `preview`) as a read-only
+  call; pass its `preview` to `books.post_entry` with `confirmed: true`.
+
+**What a report leaves open.** `books.trial_balance`, `books.profit_and_loss`,
+`books.balance_sheet`, `books.cash_flow` and
+`books.profit_and_loss_by_class` return `as_of_status: {
+drafts_open_on_or_before: [draft], unreconciled: [...], settings_problems:
+[...] }` for the report's end date, and take `strict: true` to be refused,
+naming what is open, instead of warned.

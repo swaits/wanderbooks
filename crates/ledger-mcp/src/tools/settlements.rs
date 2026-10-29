@@ -296,6 +296,7 @@ fn payment_out(
         _ => (None, None),
     };
     Ok(Json(PaymentOut {
+        preview: None,
         entry_id,
         documents,
         deposited: money(deposited),
@@ -303,6 +304,20 @@ fn payment_out(
         status,
         warnings: Vec::new(),
     }))
+}
+
+/// A payment's preview: the figures the settled documents would show
+/// (entry 0: nothing is posted), with the digest to confirm it by.
+fn payment_preview(
+    probe: &Ledger,
+    settle: &ledger_core::SettleParams,
+    warnings: Vec<String>,
+    digest: String,
+) -> Result<Json<PaymentOut>, String> {
+    let mut out = payment_out(probe, 0, settle)?.0;
+    out.warnings = warnings;
+    out.preview = Some(digest);
+    Ok(Json(out))
 }
 
 #[tool_router(router = settlements_router, vis = "pub(super)")]
@@ -324,9 +339,25 @@ impl BooksServer {
         let p = params.0;
         let mut store = self.lock()?;
         let (settle, warnings) = settlement(&store, &p, true)?;
-        let entry_id = store.settle(settle.clone()).map_err(|e| e.to_string())?;
+        let confirmed = p.confirmed.unwrap_or(false);
+        let digest = self.preview_of(
+            &store,
+            "books.receive_payment",
+            confirmed,
+            p.preview.as_deref(),
+        )?;
+        let entry_id = if confirmed {
+            store.settle(settle.clone()).map_err(|e| e.to_string())?
+        } else {
+            // The engine on a clone: every refusal the post would give,
+            // and the figures it would leave. Nothing is written.
+            let mut probe = store.ledger().clone();
+            probe.settle(settle.clone()).map_err(|e| e.to_string())?;
+            return payment_preview(&probe, &settle, warnings, digest);
+        };
         let mut out = payment_out(store.ledger(), entry_id, &settle)?.0;
         out.warnings = warnings;
+        out.preview = Some(digest);
         Ok(Json(out))
     }
 
@@ -346,9 +377,18 @@ impl BooksServer {
     ) -> Result<Json<PaymentOut>, String> {
         let p = params.0;
         let mut store = self.lock()?;
-        let (settle, _) = settlement(&store, &p, false)?;
+        let (settle, warnings) = settlement(&store, &p, false)?;
+        let confirmed = p.confirmed.unwrap_or(false);
+        let digest = self.preview_of(&store, "books.pay_bill", confirmed, p.preview.as_deref())?;
+        if !confirmed {
+            let mut probe = store.ledger().clone();
+            probe.settle(settle.clone()).map_err(|e| e.to_string())?;
+            return payment_preview(&probe, &settle, warnings, digest);
+        }
         let entry_id = store.settle(settle.clone()).map_err(|e| e.to_string())?;
-        payment_out(store.ledger(), entry_id, &settle)
+        let mut out = payment_out(store.ledger(), entry_id, &settle)?.0;
+        out.preview = Some(digest);
+        Ok(Json(out))
     }
 
     #[tool(

@@ -366,8 +366,32 @@ impl Wire {
         resp
     }
 
-    /// Call a tool: the `tools/call` answer.
-    pub fn call(&mut self, tool: &str, args: Value) -> Value {
+    /// Call a tool: the `tools/call` answer. A call with `confirmed: true`
+    /// and no `preview` is made the way an agent makes it (plan P4, D-50):
+    /// the same call without `confirmed` first, then the confirm with the
+    /// `preview` it returned. A preview that is refused is the answer
+    /// (the refusal a confirm would have met); a tool that returns no
+    /// preview is called as given. Use [`Self::call_raw`] to send exactly
+    /// these arguments.
+    pub fn call(&mut self, tool: &str, mut args: Value) -> Value {
+        if args.get("confirmed") == Some(&json!(true)) && args.get("preview").is_none() {
+            let mut first = args.clone();
+            first["confirmed"] = json!(false);
+            let seen = self.call_raw(tool, first);
+            match answer_of(&seen) {
+                Err(_) => return seen,
+                Ok(out) => {
+                    if let Some(digest) = out.get("preview").and_then(Value::as_str) {
+                        args["preview"] = json!(digest);
+                    }
+                }
+            }
+        }
+        self.call_raw(tool, args)
+    }
+
+    /// Call a tool with exactly these arguments.
+    pub fn call_raw(&mut self, tool: &str, args: Value) -> Value {
         self.rpc("tools/call", json!({"name": tool, "arguments": args}))
     }
 
@@ -595,6 +619,28 @@ impl Wire {
 pub fn upload_args(bytes: &[u8], file_name: &str, mime_type: &str, purpose: &str) -> Value {
     json!({"sha256": ledger_store::journal::sha256_hex(bytes), "size": bytes.len(),
            "mime_type": mime_type, "file_name": file_name, "purpose": purpose})
+}
+
+/// `tools/call` through `rpc` (a harness's own request function), the way
+/// an agent confirms (plan P4, D-50): a call with `confirmed: true` and no
+/// `preview` is made first without `confirmed`, then with the `preview` it
+/// returned. A refused preview is the answer; a tool that returns no
+/// preview is called as given.
+pub fn tools_call(mut rpc: impl FnMut(&str, Value) -> Value, name: &str, mut args: Value) -> Value {
+    if args.get("confirmed") == Some(&json!(true)) && args.get("preview").is_none() {
+        let mut first = args.clone();
+        first["confirmed"] = json!(false);
+        let seen = rpc("tools/call", json!({"name": name, "arguments": first}));
+        match answer_of(&seen) {
+            Err(_) => return seen,
+            Ok(out) => {
+                if let Some(digest) = out.get("preview").and_then(Value::as_str) {
+                    args["preview"] = json!(digest);
+                }
+            }
+        }
+    }
+    rpc("tools/call", json!({"name": name, "arguments": args}))
 }
 
 /// A `tools/call` answer: Ok(its structured result) or Err(the refusal's
@@ -985,7 +1031,22 @@ pub async fn connect_at(run: &Path, book: &str, token: Option<String>) -> Result
 }
 
 /// Call a tool: Ok(structured result) or Err(the error text).
-pub async fn call(c: &Client, tool: &str, args: Value) -> Result<Value, String> {
+/// Call a tool the way an agent confirms (plan P4, D-50): a call with
+/// `confirmed: true` and no `preview` is made first without `confirmed`,
+/// then with the `preview` it returned. A refused preview is the answer.
+pub async fn call(c: &Client, tool: &str, mut args: Value) -> Result<Value, String> {
+    if args.get("confirmed") == Some(&json!(true)) && args.get("preview").is_none() {
+        let mut first = args.clone();
+        first["confirmed"] = json!(false);
+        let seen = call_once(c, tool, first).await?;
+        if let Some(digest) = seen.get("preview").and_then(Value::as_str) {
+            args["preview"] = json!(digest);
+        }
+    }
+    call_once(c, tool, args).await
+}
+
+async fn call_once(c: &Client, tool: &str, args: Value) -> Result<Value, String> {
     use rmcp::model::CallToolRequestParams;
     let args = args.as_object().cloned().unwrap_or_default();
     // A client whose server went away may wait forever: a call that

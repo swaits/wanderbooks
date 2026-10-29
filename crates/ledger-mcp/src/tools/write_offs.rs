@@ -18,6 +18,7 @@ fn write_off_out(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("invoice {invoice} not found"))?;
     Ok(WriteOffInvoiceOut {
+        preview: None,
         entry_id,
         document: WriteOffDocumentOut {
             r#ref: format!("invoice:{invoice}"),
@@ -77,6 +78,12 @@ impl BooksServer {
             }
             _ => {}
         }
+        let digest = self.preview_of(
+            &store,
+            "books.write_off_invoice",
+            p.confirmed.unwrap_or(false),
+            p.preview.as_deref(),
+        )?;
         if !p.confirmed.unwrap_or(false) {
             // The engine on a clone: every refusal the post would give, and
             // the figures the write-off would leave. Nothing is written.
@@ -84,7 +91,9 @@ impl BooksServer {
             probe
                 .write_off(p.invoice, date, amount, &p.reason)
                 .map_err(|e| e.to_string())?;
-            return Ok(Json(write_off_out(&probe, p.invoice, 0)?));
+            let mut out = write_off_out(&probe, p.invoice, 0)?;
+            out.preview = Some(digest);
+            return Ok(Json(out));
         }
         let entry_id = match p.upload_id.as_deref() {
             Some(upload_id) => {

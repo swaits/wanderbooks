@@ -152,7 +152,7 @@ impl Mcp {
     /// must match the outputSchema.
     fn tool(&mut self, name: &str, args: Value) -> Out {
         let before = self.journal();
-        let resp = self.rpc("tools/call", json!({"name": name, "arguments": args}));
+        let resp = common::tools_call(|m, p| self.rpc(m, p), name, args.clone());
         let out = if let Some(err) = resp.get("error") {
             Out::RpcErr(err.clone())
         } else {
@@ -842,7 +842,7 @@ fn party_totals_match_a_hand_computed_year() {
     );
     let pay = m.ok(
         "books.pay_bill",
-        json!({"document_id": bill["id"], "date": "2026-07-15", "amount": "300.00",
+        json!({"confirmed": true, "document_id": bill["id"], "date": "2026-07-15", "amount": "300.00",
                "cash_account": "1000"}),
     )["entry_id"]
         .as_u64()
@@ -923,7 +923,7 @@ fn party_totals_for_a_customer_a_member_and_a_prepaid() {
     );
     let pay = m.ok(
         "books.receive_payment",
-        json!({"document_id": inv["id"], "date": "2026-03-20", "amount": "600.00",
+        json!({"confirmed": true, "document_id": inv["id"], "date": "2026-03-20", "amount": "600.00",
                "cash_account": "1000"}),
     )["entry_id"]
         .as_u64()

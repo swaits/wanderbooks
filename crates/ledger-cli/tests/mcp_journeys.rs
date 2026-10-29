@@ -53,7 +53,7 @@ impl Mcp {
 
     /// Call a tool; panic on tool error. Returns structuredContent.
     fn call(&mut self, tool: &str, args: Value) -> Value {
-        let resp = self.request("tools/call", json!({"name": tool, "arguments": args}));
+        let resp = common::tools_call(|m, p| self.request(m, p), tool, args.clone());
         let result = &resp["result"];
         assert_ne!(
             result.get("isError"),
@@ -69,7 +69,7 @@ impl Mcp {
 
     /// Call a tool expecting an error; returns the error text.
     fn call_err(&mut self, tool: &str, args: Value) -> String {
-        let resp = self.request("tools/call", json!({"name": tool, "arguments": args}));
+        let resp = common::tools_call(|m, p| self.request(m, p), tool, args.clone());
         let result = &resp["result"];
         assert_eq!(
             result.get("isError"),
@@ -125,7 +125,7 @@ fn mcp_end_to_end() {
     // Tool listing: the narrow tools; chart is read-only.
     let list = mcp.request("tools/list", json!({}));
     let tools = list["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 129, "expected 129 tools, got {}", tools.len());
+    assert_eq!(tools.len(), 133, "expected 133 tools, got {}", tools.len());
     // Files come in as tool input: books.begin_upload, never a local path.
     assert!(tools.iter().any(|t| t["name"] == "books.begin_upload"));
     assert!(!tools.iter().any(|t| t["name"] == "books.import_local_file"));

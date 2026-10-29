@@ -55,7 +55,7 @@ impl Mcp {
     }
 
     fn result(&mut self, tool: &str, args: Value) -> Value {
-        let resp = self.request("tools/call", json!({"name": tool, "arguments": args}));
+        let resp = common::tools_call(|m, p| self.request(m, p), tool, args.clone());
         resp["result"].clone()
     }
 

@@ -199,7 +199,7 @@ impl Mcp {
     }
 
     fn ok(&mut self, tool: &str, args: Value) -> Value {
-        let r = self.rpc("tools/call", json!({"name": tool, "arguments": args}));
+        let r = common::tools_call(|m, p| self.rpc(m, p), tool, args.clone());
         assert!(
             r.get("error").is_none() && r["result"]["isError"] != json!(true),
             "fixture {tool} {args}: {r}"

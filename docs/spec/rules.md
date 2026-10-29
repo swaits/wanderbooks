@@ -3431,6 +3431,77 @@ check_discount}`, `arap::{Application, Fee, SettleParams, SettlementRow}`,
 The Lean step is `Documents.Step.document` with every control line tagged
 (`Documents.settle_unattached`); no new `Step` constructor.
 
+## B-43 A draft waits on its evidence, and one that will never post can be discarded
+
+**bookspec:** `BS-entry-5`
+
+**Status:** AUTHORITY (the evidence a draft waits for, Pub. 583 and Rev.
+Proc. 98-25); DECISION D-47 (owner-adopted recommendation, 2026-10-26:
+reversals stay posted and need no evidence of their own); CONVENTION (the
+two states, and discarding a draft rather than posting and reversing it).
+
+```text
+GOAL: no entry the receipt policy covers posts without the document that
+      supports it, decided in one place; a draft that is finished and
+      waits for that document says so; a draft that will never post can
+      be thrown away, so it stops holding its period open.
+SOURCE: IRS Pub. 583 (docs/spec/sources/irs-records.md: "you must keep
+        supporting documents ... they support the entries in your
+        books"); Rev. Proc. 98-25 §5.01 (the records must let the books be
+        demonstrated); DECISION D-47 (a reversal's evidence is its
+        original's, D-12); CONVENTION (a draft's state is a note: it moves
+        no figure).
+INVARIANTS:
+  1. One function, `evidence::requirement`, decides whether an entry needs
+     evidence: `Required` (with why) or `Exempt` (with the source of the
+     exemption). The store's gate, the server's previews and digest, the
+     viewer and Needs attention all call it; none decides on its own.
+  2. Exempt by origin, each with its source: a period's closing entry
+     (derived from the books), a schedule month's or a depreciation run's
+     posting (the schedule is the evidence), an asset's disposal, an entry
+     a document or a payroll command posts (it carries its own evidence
+     or is posted at once by design: an invoice, a bill, a payment, a
+     write-off, a payroll run or its tax remittance), and a reversal (its
+     evidence is its original's, D-47, D-12). Every other entry, hand
+     entries and recurring drafts included, is covered by the policy
+     settings (`policy.evidence.*`): required above the threshold, on a
+     required account, or as part of a split group; exempt only when every
+     line is on an exempt account.
+  3. A draft has a state: `building` (the default) or `awaiting_evidence`
+     with a note. A state is a note on the draft; it moves no line, no
+     balance and no report, and a posted entry has none.
+  4. A draft may be discarded, with a reason, and only a draft: a posted
+     entry is never removed (B-8). Discarding moves no balance and spends
+     no id, and what was recorded about the draft (its vendor, instrument
+     and parties) goes with it; the journal still holds its lines and why
+     it went. A discarded draft no longer holds a period open.
+  5. Evidence is checked when the entry posts, not when it is drafted: a
+     draft awaiting evidence posts the moment the evidence is attached
+     and the post is confirmed.
+  6. Every refusal leaves the journal unchanged.
+SCENARIOS:
+  1. A hand entry of 40.00 under a 25.00 threshold, no receipt: the post
+     is refused with `receipt_required`; the draft may be set
+     `awaiting_evidence` with the note "Figma invoice due".
+  2. The receipt is attached; the post succeeds; the entry has no state.
+  3. A reversal of that entry: it posts with no receipt of its own.
+  4. A draft dated in January, January closing: the close is refused
+     while the draft stands; discarded, the close succeeds.
+  5. A posted entry: set-state and discard are both refused.
+```
+
+**Enforced:** `ledger_core::evidence::{requirement, Requirement}`,
+`Ledger::{set_draft_state, discard_draft, posted_seq}`,
+`Store::{set_draft_state, discard_draft, post_entry_checked}` (the gate the server posts a hand draft by; `Store::post_entry` stays the primitive commands and fixtures post through); events
+`entry.draft_state_set`, `entry.draft_discarded` (feature `drafts_v2`).
+**Checked:** Lean `Step.discard`, `Step.discard_keeps_books`,
+`Step.discard_unblocks_close`; `ledger-core` `tests/invariants.rs`
+(`discard_unblocks_close`); `ledger-store` `tests/store.rs`
+(`draft_states_replay_and_project`, `drafts_v2_waits_for_the_upgrade`,
+`posted_seq_is_the_posting_lines_seq`); `ledger-cli` `tests/drafts.rs` (`a_draft_waits_for_its_receipt_and_posts`,
+`a_reversal_needs_no_receipt_of_its_own`, `gui_and_server_gate_agree`,
+`stale_preview_refused`).
+
 ## B-44 Evidence is read from the bytes, never trusted over them; identical files are kept once
 
 **bookspec:** `BS-ledger-12`

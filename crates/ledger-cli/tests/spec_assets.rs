@@ -151,7 +151,7 @@ impl Mcp {
     /// must match the outputSchema.
     fn tool(&mut self, name: &str, args: Value) -> Out {
         let before = self.journal();
-        let resp = self.rpc("tools/call", json!({"name": name, "arguments": args}));
+        let resp = common::tools_call(|m, p| self.rpc(m, p), name, args.clone());
         let out = if let Some(err) = resp.get("error") {
             Out::RpcErr(err.clone())
         } else {
@@ -605,6 +605,12 @@ fn dispose_asset_takes_the_tag_and_the_tag_stays_reserved() {
     by_tag["tag"] = json!(t.to_ascii_lowercase());
     let p1 = m.ok("books.dispose_asset", by_id.clone());
     let p2 = m.ok("books.dispose_asset", by_tag.clone());
+    // (The digest names the arguments as sent, so it differs by id and
+    // by tag; everything it shows is the same.)
+    let (mut p1, mut p2) = (p1, p2);
+    for p in [&mut p1, &mut p2] {
+        p.as_object_mut().unwrap().remove("preview");
+    }
     assert_eq!(p1, p2, "same preview by id and by tag");
     let mut both = by_id.clone();
     both["tag"] = json!(t);

@@ -930,6 +930,7 @@ impl BooksServer {
             .receipt_required_for(&code_refs, debits);
 
         let out = DisposeAssetOut {
+            preview: None,
             status: "preview".to_string(),
             asset_id,
             entry_id: 0,
@@ -942,6 +943,16 @@ impl BooksServer {
             catch_up_depreciation: money(preview.catch_up_depreciation),
             lines: preview_lines_for(&store, &raw)?,
             receipt_required,
+        };
+        let digest = self.preview_of(
+            &store,
+            "books.dispose_asset",
+            p.confirmed.unwrap_or(false),
+            p.preview.as_deref(),
+        )?;
+        let out = DisposeAssetOut {
+            preview: Some(digest),
+            ..out
         };
         if !p.confirmed.unwrap_or(false) {
             return Ok(Json(out));

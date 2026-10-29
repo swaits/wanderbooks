@@ -297,3 +297,56 @@ fn an_unsent_invoice_is_on_both_lists() {
     assert_eq!(step["tool"], json!("books.mark_sent"), "{answer}");
     assert_eq!(step["args"]["invoice"], json!("invoice:1"), "{answer}");
 }
+
+/// Plan P4 step 6 (R-F): a draft that says it waits for its evidence is
+/// one item, "draft awaiting receipt", and a draft still being built is
+/// another, "draft not posted": both on the viewer's list and in
+/// `books.start`'s next steps, from the one engine.
+#[test]
+fn a_waiting_draft_and_a_building_draft_are_two_items_on_both_lists() {
+    let today = ledger_core::settings::today_in(None);
+    let place = common::Place::new("attention-drafts-parity");
+    let dir = place.books_data();
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut st = ledger_store::Store::create(&dir, Currency::USD).unwrap();
+    let cash = st
+        .add_account("1000", "Checking", AccountType::Asset, None, false)
+        .unwrap();
+    let rent = st
+        .add_account("6000", "Rent", AccountType::Expense, None, false)
+        .unwrap();
+    let mut draft = |what: &str| {
+        let e = st.create_entry(today - chrono::Days::new(5), what).unwrap();
+        st.add_line(e, rent, Side::Debit, usd(4_000)).unwrap();
+        st.add_line(e, cash, Side::Credit, usd(4_000)).unwrap();
+        e
+    };
+    let waiting = draft("Figma annual plan");
+    let _building = draft("Coworking day pass");
+    st.set_draft_state(
+        waiting,
+        ledger_core::DraftState::AwaitingEvidence {
+            note: "invoice due".into(),
+        },
+    )
+    .unwrap();
+    drop(st);
+    let mut wire = place.start(Some(SETTINGS));
+    wire.initialize("attention-drafts-parity");
+    compare_and_expect(
+        &place,
+        &mut wire,
+        today,
+        &format!("Draft #{waiting} awaiting receipt: Figma annual plan"),
+    );
+    let titles: Vec<String> = start(&mut wire)["next_steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|s| s["why"].as_str().map(str::to_string))
+        .collect();
+    assert!(
+        titles.contains(&"Draft not posted: Coworking day pass".to_string()),
+        "{titles:?}"
+    );
+}

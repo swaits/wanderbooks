@@ -50,7 +50,7 @@ impl Mcp {
 
     /// Call a tool: its result, or the refusal's text.
     fn try_call(&mut self, tool: &str, args: Value) -> Result<Value, String> {
-        let resp = self.request("tools/call", json!({"name": tool, "arguments": args}));
+        let resp = common::tools_call(|m, p| self.request(m, p), tool, args.clone());
         let result = &resp["result"];
         if result.get("isError") == Some(&json!(true)) {
             let text = result["content"]
@@ -125,7 +125,10 @@ fn an_invoice_from_issue_to_paid() {
     // and due date the confirm will take.
     let before = books.journal();
     let preview = m.call("books.create_invoice", issue.clone());
-    assert_eq!(preview["preview"], json!(true), "{preview}");
+    assert!(
+        preview["preview"].is_string(),
+        "the digest to confirm by: {preview}"
+    );
     assert_eq!(preview["number"], "INV-0001", "{preview}");
     assert_eq!(preview["due_date"], "2026-03-03", "{preview}");
     assert_eq!(preview["terms"], "Net 30", "{preview}");
@@ -240,7 +243,7 @@ fn a_bill_with_its_vendor_invoice_and_terms() {
     let mut preview = bill.clone();
     preview["upload_id"] = json!(file);
     let p = m.call("books.create_bill", preview.clone());
-    assert_eq!(p["preview"], json!(true), "{p}");
+    assert!(p["preview"].is_string(), "the digest to confirm by: {p}");
     assert_eq!(p["due_date"], "2026-03-03", "{p}");
     assert_eq!(p["terms"], "2/10 net 30", "{p}");
     assert_eq!(p["discount_by"], "2026-02-11", "{p}");
@@ -933,7 +936,7 @@ mod paying_on_terms {
         let out = ok(
             &mut s.wire,
             "books.receive_payment",
-            json!({"date": "2026-02-10", "deposit_to": "1000",
+            json!({"confirmed": true, "date": "2026-02-10", "deposit_to": "1000",
             "reference": "one deposit",
             "applications": [
                 {"invoice": first, "amount": "300.00"},
@@ -997,14 +1000,14 @@ mod paying_on_terms {
         let why = err(
             &mut s.wire,
             "books.pay_bill",
-            json!({"date": "2026-02-05", "paid_from": "1000", "applications": applications(None)}),
+            json!({"confirmed": true, "date": "2026-02-05", "paid_from": "1000", "applications": applications(None)}),
         );
         assert!(why.contains("needs a reason"), "{why}");
         assert!(why.contains("discount_reason"), "{why}");
         ok(
             &mut s.wire,
             "books.pay_bill",
-            json!({"date": "2026-02-05", "paid_from": "1000",
+            json!({"confirmed": true, "date": "2026-02-05", "paid_from": "1000",
                "applications": applications(Some("the vendor honoured it late"))}),
         );
     }
@@ -1018,7 +1021,7 @@ mod paying_on_terms {
         let out = ok(
             &mut s.wire,
             "books.receive_payment",
-            json!({"date": "2026-02-05", "deposit_to": "1000",
+            json!({"confirmed": true, "date": "2026-02-05", "deposit_to": "1000",
                "invoice": invoice, "amount": "100.00",
                "fee": {"amount": "3.00"}}),
         );
@@ -1053,7 +1056,7 @@ mod paying_on_terms {
         ok(
             &mut s.wire,
             "books.pay_bill",
-            json!({"date": "2026-02-05", "paid_from": "2050", "bill": bill, "amount": "100.00",
+            json!({"confirmed": true, "date": "2026-02-05", "paid_from": "2050", "bill": bill, "amount": "100.00",
                "instrument": "Visa"}),
         );
         let worksheet = ok(
@@ -1081,7 +1084,7 @@ mod paying_on_terms {
         ok(
             &mut s.wire,
             "books.pay_bill",
-            json!({"date": "2026-02-05", "paid_from": "1000",
+            json!({"confirmed": true, "date": "2026-02-05", "paid_from": "1000",
             "applications": [
                 {"bill": first, "amount": "100.00"},
                 {"bill": second, "amount": "200.00"}
@@ -1118,7 +1121,7 @@ mod paying_on_terms {
         let why = err(
             &mut s.wire,
             "books.receive_payment",
-            json!({"date": "2026-02-05", "deposit_to": "1000", "invoice": invoice, "amount": "150.00"}),
+            json!({"confirmed": true, "date": "2026-02-05", "deposit_to": "1000", "invoice": invoice, "amount": "150.00"}),
         );
         assert!(why.contains("150.00"), "{why}");
         assert!(why.contains("100.00"), "{why}");
@@ -1189,7 +1192,7 @@ mod paying_on_terms {
         ok(
             &mut s.wire,
             "books.receive_payment",
-            json!({"date": "2026-02-05", "deposit_to": "1000", "invoice": invoice, "amount": "200.00"}),
+            json!({"confirmed": true, "date": "2026-02-05", "deposit_to": "1000", "invoice": invoice, "amount": "200.00"}),
         );
         let out = ok(
             &mut s.wire,
@@ -1282,7 +1285,7 @@ mod bad_debts {
         ok(
             &mut wire,
             "books.receive_payment",
-            json!({
+            json!({"confirmed": true,
                 "document_id": inv,
                 "date": "2026-01-20",
                 "amount": "40.00",
@@ -1357,7 +1360,7 @@ mod bad_debts {
         ok(
             &mut wire,
             "books.receive_payment",
-            json!({
+            json!({"confirmed": true,
                 "document_id": inv,
                 "date": "2026-03-02",
                 "amount": "60.00",

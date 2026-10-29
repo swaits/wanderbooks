@@ -47,7 +47,7 @@ impl Mcp {
 
     /// Call a tool; panic on tool error. Returns structuredContent.
     fn call(&mut self, tool: &str, args: Value) -> Value {
-        let resp = self.request("tools/call", json!({"name": tool, "arguments": args}));
+        let resp = common::tools_call(|m, p| self.request(m, p), tool, args.clone());
         let result = &resp["result"];
         assert_ne!(
             result.get("isError"),
@@ -63,7 +63,7 @@ impl Mcp {
 
     /// Call a tool expecting an error; returns the error text.
     fn call_err(&mut self, tool: &str, args: Value) -> String {
-        let resp = self.request("tools/call", json!({"name": tool, "arguments": args}));
+        let resp = common::tools_call(|m, p| self.request(m, p), tool, args.clone());
         let result = &resp["result"];
         assert_eq!(
             result.get("isError"),

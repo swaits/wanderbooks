@@ -179,8 +179,8 @@ impl std::fmt::Display for BookId {
 }
 
 /// This account's home folder, from the password database on Unix (never
-/// `$HOME`, which the process that started us chose), or the Windows
-/// profile.
+/// `$HOME`, which the process that started us chose), or the profile
+/// folder the Windows shell reports.
 pub fn account_home() -> Result<PathBuf, RootError> {
     #[cfg(unix)]
     {
@@ -190,11 +190,9 @@ pub fn account_home() -> Result<PathBuf, RootError> {
     }
     #[cfg(windows)]
     {
-        // Read from the environment until the Windows build (P11) takes it
-        // from the known-folder API.
-        std::env::var_os("USERPROFILE")
-            .map(PathBuf::from)
-            .ok_or(RootError::NoHome)
+        // The known-folder API, never `%USERPROFILE%`, which the process
+        // that started us chose (the Unix arm's rule).
+        crate::winsec::profile_folder().ok_or(RootError::NoHome)
     }
     #[cfg(not(any(unix, windows)))]
     {
@@ -256,6 +254,15 @@ fn unix_account() -> Option<(PathBuf, Vec<u8>)> {
 
 /// The platform's data folder under `home`: where the default root sits.
 pub fn platform_data_dir(home: &Path) -> PathBuf {
+    // This account's own home on Windows: `%LOCALAPPDATA%` as the shell
+    // reports it (a redirected profile included). Any other home (tests)
+    // gets the default place under it.
+    #[cfg(windows)]
+    if account_home().is_ok_and(|own| own == home)
+        && let Some(local) = crate::winsec::local_app_data()
+    {
+        return local;
+    }
     if cfg!(target_os = "macos") {
         home.join("Library").join("Application Support")
     } else if cfg!(windows) {
@@ -295,7 +302,7 @@ pub fn private_book_folder(book_dir: &Path, name: &str) -> Result<PathBuf, RootE
     let dir = book_dir.join(name);
     match std::fs::symlink_metadata(&dir) {
         Ok(meta) => {
-            let open = check_private_dir(&meta, true, "a folder inside the books")?;
+            let open = check_private_dir(&dir, &meta, true, "a folder inside the books")?;
             tighten_if(&dir, open)?;
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -404,7 +411,7 @@ impl Root {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(RootError::Missing),
             Err(e) => return Err(e.into()),
         };
-        check_private_dir(&meta, false, THE_ROOT)?;
+        check_private_dir(path, &meta, false, THE_ROOT)?;
         check_ancestors(path)?;
         if !path.join(MARKER_FILE).is_file() {
             return Err(RootError::Unsafe(format!(
@@ -473,7 +480,8 @@ impl Root {
             Ok(meta) => {
                 // Checked before anything is changed: a folder that holds
                 // other things is left exactly as it is.
-                let open = check_private_dir(&meta, true, "the folder chosen for the books")?;
+                let open =
+                    check_private_dir(&path, &meta, true, "the folder chosen for the books")?;
                 if !path.join(MARKER_FILE).is_file() && std::fs::read_dir(&path)?.next().is_some() {
                     return Err(RootError::Unsafe(
                         "the folder chosen for the books already holds other things: choose an \
@@ -562,7 +570,7 @@ impl Root {
         let tightened = match std::fs::symlink_metadata(&dir) {
             Ok(meta) => tighten_if(
                 &dir,
-                check_private_dir(&meta, tighten, "a folder inside it")?,
+                check_private_dir(&dir, &meta, tighten, "a folder inside it")?,
             )?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 make_private_dir(&dir)?;
@@ -1223,6 +1231,8 @@ impl Root {
                         )));
                     }
                 }
+                // Windows: a move to another disk is refused by the move
+                // itself (no copy fallback is asked for).
                 // A vault or its key among the other paths would go aside
                 // unchecked: each comes by its own name, and is checked.
                 let k = items.len();
@@ -1473,10 +1483,17 @@ fn rename_new(from: &Path, to: &Path) -> std::io::Result<()> {
             return Err(e);
         }
     }
-    if std::fs::symlink_metadata(to).is_ok() {
-        return Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists));
+    // Windows: MoveFileExW without the replace flag refuses an existing
+    // target itself.
+    #[cfg(windows)]
+    return crate::winsec::rename_new(from, to);
+    #[cfg(not(windows))]
+    {
+        if std::fs::symlink_metadata(to).is_ok() {
+            return Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists));
+        }
+        std::fs::rename(from, to)
     }
-    std::fs::rename(from, to)
 }
 
 /// Whether the stored files under `old` (a books' `blobs/`) are all in
@@ -1771,6 +1788,12 @@ fn recorded_root(home: &Path) -> Result<Option<PathBuf>, RootError> {
             return Err(unsafe_pointer());
         }
     }
+    // Windows: this account's own file that no one else can write (the
+    // DACL says who can open it at all; INVARIANT 3).
+    #[cfg(windows)]
+    if !crate::winsec::is_private(&pointer).unwrap_or(false) {
+        return Err(unsafe_pointer());
+    }
     let text = std::fs::read_to_string(&pointer)?;
     let path = PathBuf::from(text.trim_end_matches(['\n', '\r']));
     if path.is_absolute() {
@@ -1868,9 +1891,16 @@ fn set_mode(path: &Path, mode: u32) -> std::io::Result<()> {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
 }
 
-#[cfg(not(unix))]
+/// Windows: the mode is the DACL, this account's alone, protected, and
+/// inherited into a folder's contents (`mode` says only that the caller
+/// wants it private; a folder or a file is told by what `path` is).
+#[cfg(windows)]
+fn set_mode(path: &Path, _mode: u32) -> std::io::Result<()> {
+    crate::winsec::set_owner_only(path)
+}
+
+#[cfg(not(any(unix, windows)))]
 fn set_mode(_path: &Path, _mode: u32) -> std::io::Result<()> {
-    // Windows: the owner-only DACL comes with the Windows build (P11).
     Ok(())
 }
 
@@ -1879,10 +1909,12 @@ fn set_mode(_path: &Path, _mode: u32) -> std::io::Result<()> {
 /// to make 0700 with [`tighten_if`]; without, it is refused. `what` names
 /// it in messages.
 fn check_private_dir(
+    path: &Path,
     meta: &std::fs::Metadata,
     tighten: bool,
     what: &str,
 ) -> Result<bool, RootError> {
+    let _ = path; // Unix reads the mode from `meta`; Windows reads the DACL at `path`.
     if meta.file_type().is_symlink() {
         return Err(RootError::Unsafe(format!(
             "{what} is a symlink: it must be a real folder"
@@ -1910,8 +1942,18 @@ fn check_private_dir(
             return Ok(true);
         }
     }
-    #[cfg(not(unix))]
-    let _ = tighten;
+    // Windows: this account's own, with no one else on its access list.
+    #[cfg(windows)]
+    if !crate::winsec::is_private(path).unwrap_or(false) {
+        if !tighten {
+            return Err(RootError::Unsafe(format!(
+                "other users can open {what}: run `wanderbooks setup` to make it private"
+            )));
+        }
+        return Ok(true);
+    }
+    #[cfg(not(any(unix, windows)))]
+    let _ = (path, tighten);
     Ok(false)
 }
 
@@ -1929,6 +1971,11 @@ fn check_ancestors(path: &Path) -> Result<(), RootError> {
 /// sticky bit (like `/tmp`); group write only when the group is this
 /// account's own private group (its primary group, with no other members:
 /// the usual umask-002 setup on many Linux systems).
+///
+/// Windows: nothing above the root is checked. The root sits under the
+/// account's own profile, whose folders the system gives that account
+/// and the Administrators alone; another place is the owner's choice
+/// (CHOICE, P11c: no authority states a Windows rule for ancestors).
 fn check_dir_and_above(dir: &Path) -> Result<(), RootError> {
     #[cfg(unix)]
     {
@@ -1999,6 +2046,7 @@ fn is_private_group(gid: u32) -> bool {
 /// it is the account's primary group, is named as the account's login is,
 /// and lists no members. A shared primary group (openSUSE's `users`) has
 /// another name, so it isn't.
+#[cfg(unix)]
 fn private_group_rule(gid: u32, primary: u32, name: &[u8], login: &[u8], members: bool) -> bool {
     gid == primary && name == login && !members
 }

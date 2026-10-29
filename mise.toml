@@ -4,7 +4,7 @@
 [tools]
 # Workspace toolchain (clippy and rustfmt for `just check`).
 rust = [
-  { version = "1.99", components = "clippy,rustfmt" },
+  { version = "1.99", components = "clippy,rustfmt", targets = "x86_64-pc-windows-msvc" },
   # Fuzzing (cargo-fuzz) and Miri need nightly; pinned so runs repeat.
   { version = "nightly-2026-10-01", components = "miri,rust-src" },
 ]

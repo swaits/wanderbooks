@@ -188,6 +188,7 @@ impl ChainLog {
         genesis_text: &str,
     ) -> Result<(Self, Vec<Map<String, Value>>), ChainError> {
         let read = read(path, genesis_text)?;
+        #[cfg(unix)]
         let new = !path.exists();
         let mut options = OpenOptions::new();
         options.create(true).append(true);
@@ -204,6 +205,10 @@ impl ChainLog {
             if file.metadata()?.permissions().mode() & 0o077 != 0 {
                 file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
             }
+        }
+        #[cfg(windows)]
+        if !crate::winsec::is_private(path).unwrap_or(false) {
+            crate::winsec::set_owner_only(path)?;
         }
         if read.torn {
             file.set_len(read.good_len)?;

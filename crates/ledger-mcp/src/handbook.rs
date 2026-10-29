@@ -132,11 +132,25 @@ pub const ALL: &str = "all";
 /// The section `id` (or [`ALL`]), rendered for these settings, the
 /// books' base currency, and whether they declared the journal feature
 /// `document_line_projects` (None: no such section).
+#[cfg(test)]
 pub fn section(
     id: &str,
     settings: &Settings,
     currency: &str,
     document_line_projects: bool,
+) -> Option<String> {
+    section_with(id, settings, currency, document_line_projects, true)
+}
+
+/// [`section`], also saying whether the books declared the journal
+/// feature `documents_v2` (the invoices-and-bills section says what
+/// waits for the owner's upgrade by it).
+pub fn section_with(
+    id: &str,
+    settings: &Settings,
+    currency: &str,
+    document_line_projects: bool,
+    documents_v2: bool,
 ) -> Option<String> {
     let render = |md: &str| {
         md.replace("{evidence_rule}", &evidence_rule(settings, currency))
@@ -145,6 +159,7 @@ pub fn section(
                 "{document_projects}",
                 document_projects_rule(document_line_projects),
             )
+            .replace("{documents_v2}", documents_v2_rule(documents_v2))
     };
     if id == ALL {
         let parts: Vec<String> = SECTIONS.iter().map(|(_, md)| render(md)).collect();
@@ -175,6 +190,17 @@ pub fn document_projects_rule(declared: bool) -> &'static str {
         "Tag an invoice's or bill's lines the same way (books.create_invoice and books.create_bill take class on each line): its revenue or cost counts toward the project, and it stays an invoice or bill in the agings; its payments take no project. Each line names one project or none: a document spanning several projects is one line per project, each with its own amount, never a percentage; a cost truly shared among projects names none on the document and reaches them only as entries of their own under the company's monthly allocation convention, when books.conventions has one. An invoice line naming an on-spec project returns a note: ask the human whether there is now an agreement, since a hoped-for payment is no receivable."
     } else {
         "An invoice or a bill takes no project in these books until their format upgrade (books.start's format_upgrade): link its document to the project, and when its lines must count, book it as a hand-built entry instead (books.draft_entry, books.add_line class), which then is no invoice or bill in the agings: ask the human which matters more."
+    }
+}
+
+/// What the books have of the document upgrade (journal feature
+/// `documents_v2`, plan P4b S4), as the invoices-and-bills section says
+/// it: on, or waiting for the owner's go-ahead.
+pub fn documents_v2_rule(declared: bool) -> &'static str {
+    if declared {
+        "These books have declared documents_v2: an invoice takes a number, terms and a purchase-order reference, a bill takes the vendor's number, and every bill line names its account."
+    } else {
+        "Your books have not declared documents_v2 yet: numbers, terms and line accounts wait for the owner's upgrade (books.start's format_upgrade). Until then an invoice is \"Invoice {id}\", a bill's lines post to 6999, and a document carrying a new field is refused with format_upgrade_pending; the issued PDF is still filed with the invoice."
     }
 }
 
@@ -487,6 +513,7 @@ mod tests {
             assert!(!text.contains("{evidence_rule}"), "{id}");
             assert!(!text.contains("{period_rule}"), "{id}");
             assert!(!text.contains("{document_projects}"), "{id}");
+            assert!(!text.contains("{documents_v2}"), "{id}");
         }
         // The default period, in the descriptions' own words (B-30).
         assert!(
@@ -500,6 +527,51 @@ mod tests {
                 .contains("every entry needs at least one receipt")
         );
         assert!(section("nope", &s, "USD", true).is_none());
+    }
+
+    /// The invoices-and-bills section says what waits for the owner's
+    /// upgrade (`documents_v2`) before the go-ahead and what is on after;
+    /// the procedure around it is the same text, and no other section
+    /// changes (plan P4b S4.5).
+    #[test]
+    fn documents_v2_follows_the_books_feature() {
+        let s = settings("Co", Decimal::ZERO);
+        let with = section_with("invoices-and-bills", &s, "USD", true, true).unwrap();
+        let without = section_with("invoices-and-bills", &s, "USD", true, false).unwrap();
+        assert!(without.contains(
+            "Your books have not declared documents_v2 yet: numbers, terms and line accounts wait for the owner's upgrade"
+        ));
+        assert!(!with.contains("have not declared documents_v2"));
+        assert!(with.contains("These books have declared documents_v2"));
+        // Every step of the procedure is there either way, in order.
+        for text in [&with, &without] {
+            let at = |needle: &str| {
+                text.find(needle)
+                    .unwrap_or_else(|| panic!("{needle:?} missing from:\n{text}"))
+            };
+            let steps = [
+                "## 1. Issue and send an invoice",
+                "## 2. Record a customer payment",
+                "## 3. Pay a vendor bill",
+                "## 4. Void, write off, or reverse",
+                "## 5. A processor's fee",
+                "## 6. What the CPA will check",
+            ];
+            let places: Vec<usize> = steps.iter().map(|h| at(h)).collect();
+            assert!(places.windows(2).all(|w| w[0] < w[1]), "{places:?}");
+            assert!(text.contains("books.mark_sent") && text.contains("books.control_check"));
+            assert!(text.contains("An abandoned preview uses up no number"));
+        }
+        for (id, _) in SECTIONS
+            .iter()
+            .filter(|(id, _)| *id != "invoices-and-bills")
+        {
+            assert_eq!(
+                section_with(id, &s, "USD", true, true),
+                section_with(id, &s, "USD", true, false),
+                "{id}"
+            );
+        }
     }
 
     /// INVARIANT 6: the projects section tells books that declared

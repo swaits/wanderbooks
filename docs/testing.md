@@ -3052,6 +3052,70 @@ and `BooksServer::new`'s copy (a dropped field must fail
 extension and `parse_args`' passthrough of `--isolation` and its optional
 `--http` value.
 
+## P4b S4.5: the issued PDF, the viewer and the handbook (2026-10-29)
+
+The page a customer pays from carries what the books know of the invoice
+and nothing internal (no account code, project or id). `InvoiceDoc` gains
+the quantity and unit price per line, the customer's reference, memo,
+footer, the ways to pay (a QR code through `labels::qr_svg` when a method
+has a link and asks for one), the seller's email and website, a Ship-to
+block, and `InvoiceVersion` (`Issued`, or `Current { as_of }` whose
+"Re-created on" note prints `as_of`, never the wall clock).
+`ledger_package::page_of` builds every copy from the invoice's own
+snapshots, so the issued copy, the DRAFT and the current copy cannot
+disagree. No journal shape changed, so 8.0.6 does not apply and no golden
+moved.
+
+- **`ledger-import` unit tests (`src/invoice_pdf.rs`):**
+  `an_invoice_renders_deterministically` (two renders, equal bytes; the
+  plan's "golden sha updated once" has nothing to update: this test never
+  held a hash, it compares two renders), `labels_are_data` (an item
+  description `#import "x"`, a memo, footer, reference and a payment
+  method's label and lines print literally and break nothing),
+  `a_quantity_prints_beside_its_price` ("3 × $11.50"; a price of $0.125
+  prints exactly), `only_the_current_copy_says_it_was_re_created`,
+  `two_hundred_lines_paginate` (more than one page, a valid PDF).
+- **`ledger-import` `tests/spec_import.rs`:** `invoice_pdf_prints_what_it_should`
+  reads the PDF back with the hayro text reader: number, both dates, the
+  total, terms, the PO, the seller's email and website, the quantity
+  detail, each payment method's label and lines, the Ship-to, memo and
+  footer, a CJK name and a right-to-left name; no stamp and no
+  "Re-created" on the issued copy; no project, account code or id.
+- **`ledger-package` unit tests (`src/invoice.rs`):**
+  `an_invoice_prints_its_figures_as_of_a_day` now asserts the version
+  (`Current { as_of }`) instead of the wall-clock note, and
+  `the_sample_invoice_in_each_state` still renders every state.
+- **`ledger-gui` `tests/invoices.rs`:**
+  `a_numbered_invoice_shows_its_number_terms_bill_to_and_po` (screenshot
+  `invoice-numbered`; the list names the invoice by number; the page offers
+  Save issued copy beside Save invoice PDF; a legacy invoice keeps
+  "Invoice {id}", shows no Details card and has no issued copy to save).
+  `the_list_shows_the_ledgers_figures` and `a_documents_page_shows_its_timeline`
+  pass unchanged.
+- **`ledger-gui` `tests/view_model.rs`:**
+  `the_viewer_holds_a_numbered_invoice_as_the_store_does` (the viewer's
+  replay equals the live store's invoice: number, terms, bill-to, PO, memo,
+  quantity).
+- **`ledger-mcp/src/handbook.rs`:** `documents_v2_follows_the_books_feature`
+  (the placeholder says what waits before the upgrade and what is on after;
+  the six steps are in order either way; no other section changes);
+  `handbook_sections_render_the_rule_in_force` also checks no placeholder
+  is left.
+
+**For P12 (mutation targets):** `invoice_pdf::dollars` (the negative arm)
+and `unit_price` (`scale() <= 2`, the exact arm), `quantity_detail`'s
+both-or-neither match, `note_text`'s three arms (re-created, both, note
+only); `ledger_package::invoice::payment_methods` (the `qr` flag read,
+`link` appended as a last line, the QR only when a link exists);
+`page_of`'s snapshot-else-party choice for the bill-to, the contact, address,
+phone, email order of the bill-to lines, the seller email's snapshot-else-
+company fallback, and the blank-footer filter; `invoice_document`'s stamp
+arms and `InvoiceVersion::Current { as_of }`; the viewer's `details`
+(each field's presence test, the bill-to join order), `invoice_name`'s
+number-else-id and `issued_copy`'s PDF-and-description match; the
+handbook's `documents_v2_rule` both arms and the server's `documents_v2`
+feature test.
+
 ## P4b S5: sent tracking (2026-10-27)
 
 The books record that an invoice went out; they never send it (A-4). A

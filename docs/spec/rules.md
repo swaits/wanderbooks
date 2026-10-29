@@ -3124,6 +3124,112 @@ coding of `DocRef`), and an account becoming a control account by its
 first document, holding lines from before, is outside it (those lines are
 listed as unattached).
 
+## B-39 Terms give one due date and one discount date, exactly
+
+**bookspec:** `BS-arap-3`
+
+**Status:** CONVENTION (standard trade-terms notation: "Net 30", "Net 15
+EOM", "2/10 net 30", "Due on receipt"). Sources cited and not yet
+vendored, so this rule keeps the CONVENTION label (the Open list in
+`README.md`): UCC §2-310(a) (for goods with no agreed terms, payment is
+due when the buyer receives them); for services, the contract sets the
+terms. Sending an invoice late never moves its due date.
+
+```text
+GOAL: terms give one due date and one discount date, exactly.
+SOURCE: CONVENTION: standard trade-terms notation; UCC §2-310(a) for
+        goods; for services, the contract.
+INVARIANTS:
+  1. Net n = date + n; Net n EOM = last day of date's month + n; due on
+     receipt = date; Custom = the given date. Always at least date, in the
+     calendar (calendar::check); n in 0..=3650.
+  2. discount_by = date + d, d below the net days (none for due on
+     receipt or EOM); a taken discount is at most
+     kernel::discount_max(total, percent_bp), the caller's exact cents;
+     after discount_by only with a reason.
+  3. The canonical spellings read back as they print.
+  4. A line given as a quantity and a unit price has
+     quantity x unit price = amount exactly (kernel::line_amount, neither
+     rounded); a line's account is a revenue or deferred-revenue account
+     on an invoice, an expense or a non-cash asset on a bill, never a role
+     account, cash or a placeholder.
+SCENARIOS:
+  1. 2026-01-31 net 30 -> 2026-03-02; 2026-10-23 net 15 EOM ->
+     2026-11-15; a leap day; due on receipt = the day.
+  2. The 9999-12 bound is refused, not a panic.
+```
+
+**Enforced:** `ledger_core::Terms` (`new`, `parse`, `due_date`,
+`discount_by`, `describe`), `kernel::discount_max`, `kernel::line_amount`,
+`Ledger::check_document_line_account`; the settings
+`invoicing.default_terms` and a party's terms per side; in the store
+behind the feature `documents_v2`.
+**Checked:** `ledger-core` `tests/spec_documents.rs`
+(`terms_derive_due_dates`, `discount_bounds_and_late_reason`,
+`terms_describe_and_parse_round_trip`, `qty_times_price_must_equal_amount`,
+`document_line_account_refuses_roles_cash_and_placeholders`,
+`bill_lines_post_to_their_accounts`); Kani `discount_max_is_bounded`,
+`line_amount_is_exact` and their bridge properties; over the wire
+`crates/ledger-cli/tests/documents.rs` (`terms_fall_back_in_order`,
+`a_bill_with_its_vendor_invoice_and_terms`, `a_line_account_must_be_allowed`).
+
+## B-40 An invoice number names one invoice forever; the copy sent is kept; a vendor invoice is entered once
+
+**bookspec:** `BS-arap-4`
+
+**Status:** CONVENTION (sequential invoice numbers with voids kept, and a
+duplicate-payment control). Sources cited and not yet vendored, so this
+rule keeps the CONVENTION label (the Open list in `README.md`): IRS Pub.
+583 (invoices are among the records to keep); Rev. Proc. 98-25 (an
+electronic record keeps its audit trail: why the PDF as issued is filed
+with its hash and a void keeps its number).
+
+```text
+GOAL: an invoice number names one invoice forever; the copy sent is kept;
+      a vendor invoice is entered once.
+SOURCE: Pub. 583; Rev. Proc. 98-25; CONVENTION: sequential numbers, voids
+        kept; duplicate-payment control.
+INVARIANTS:
+  1. Numbers are unique, in issue order, never reused; a void keeps its
+     number. Four digits, wider past 9,999, never truncated.
+  2. Number, snapshots, terms and lines never change after issue.
+  3. The issued PDF is filed in the issuing call as receipt.attached on
+     the entry and linked to the invoice; its sha256 is in that event. The
+     copy a later look prints is re-created from the books as of a day,
+     says so (that day, never the wall clock), and never replaces it.
+  4. (vendor, normalized vendor_ref) is unique among standing bills unless
+     a duplicate_reason is journaled; the normalization drops case and
+     spaces.
+  5. Sends never change a figure.
+SCENARIOS:
+  1. Three invoices, the second voided: INV-0001, INV-0002 (void), INV-0003.
+  2. A second bill from the same vendor with the same number: refused
+     unless a reason says why.
+  3. The page prints the number the preview showed; a number another
+     session took in between is refused as a duplicate.
+```
+
+**Enforced:** `Ledger::next_invoice_number`, `Ledger::check_vendor_ref`,
+`PartySnapshot::from_party` (the snapshots at issue, D-55);
+`Store::create_invoice_issued` (feature `documents_v2`; the PDF is
+rendered before anything is journaled, so a Typst failure changes
+nothing); `ledger_package::{issued_invoice_document,
+draft_invoice_document, invoice_document}` and
+`ledger_import::invoice_pdf` (deterministic bytes, every string data,
+every amount through `amount_parts`).
+**Checked:** `ledger-core` `tests/spec_documents.rs`
+(`numbers_run_and_voids_keep_theirs`, `number_widens_past_9999`,
+`duplicate_vendor_ref_refused_unless_a_reason_is_given`); `ledger-store`
+`tests/arap_standing.rs` (`documents_v2_waits_for_the_upgrade`,
+`issued_pdf_is_filed_with_the_invoice_or_nothing_is`); over the wire
+`crates/ledger-cli/tests/documents.rs` (`an_invoice_from_issue_to_paid`,
+`duplicate_vendor_invoice_refused`); the page `ledger-import`
+`tests/spec_import.rs::invoice_pdf_prints_what_it_should` and the unit tests
+`labels_are_data`, `an_invoice_renders_deterministically`,
+`two_hundred_lines_paginate`; the viewer
+`a_numbered_invoice_shows_its_number_terms_bill_to_and_po` and
+`the_viewer_holds_a_numbered_invoice_as_the_store_does`.
+
 ## B-41 A debt that will not be collected is written off, and a recovery is income
 
 **bookspec:** `BS-arap-5`

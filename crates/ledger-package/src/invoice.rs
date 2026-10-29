@@ -19,8 +19,15 @@
 //!   4. Stamps: void VOID; paid in full PAID with the day the last
 //!      payment came in; owing and past due PAST DUE (over PARTIALLY
 //!      PAID); part paid PARTIALLY PAID; otherwise none.
-//!   5. Until invoices keep the copy issued (P4b S4), every render says it
-//!      was re-created from the books, and on which day.
+//!   5. The current copy says it was re-created from the books, and as of
+//!      which day (the `as_of` given, never the wall clock); the issued
+//!      copy and the draft say no such thing. A legacy invoice (no
+//!      number, no snapshots) prints "Invoice {id}" and the party record.
+//!   7. The number, terms, the customer's reference, memo, seller and
+//!      bill-to (contact, address, phone, email, a Ship-to block) are the
+//!      invoice's own snapshots (A-13, D-55), never today's party record
+//!      when a snapshot exists; the ways to pay and the footer are the
+//!      settings now.
 //!   6. The seller is the company (`company.name`, `company.address`); the
 //!      customer is its party's display name and address when it has
 //!      them, else the customer's name.
@@ -28,8 +35,10 @@
 
 use chrono::NaiveDate;
 use ledger_core::settings::Company;
-use ledger_core::{DocRef, DocStatus, Invoice, InvoiceId, Ledger};
-use ledger_import::{InvoiceDoc, InvoiceItem, InvoiceParty, InvoiceStamp};
+use ledger_core::{DocRef, DocStatus, Invoice, InvoiceId, Ledger, PartySnapshot};
+use ledger_import::{
+    InvoiceDoc, InvoiceItem, InvoiceParty, InvoiceStamp, InvoiceVersion, PaymentMethodDoc, labels,
+};
 
 /// A date as an invoice prints it: "Feb 1, 2026".
 fn printed(d: NaiveDate) -> String {
@@ -47,13 +56,184 @@ fn address_lines(address: Option<&str>) -> Vec<String> {
         .collect()
 }
 
-/// Invoice `id` as of `as_of`, re-created on `today` (INVARIANT 4).
+/// The company's own line from the profile (`company.email`,
+/// `company.website`, the address), blank ones dropped.
+fn profile<'a>(company: &'a Company, key: &str) -> Option<&'a str> {
+    company
+        .profile
+        .iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.trim())
+        .filter(|v| !v.is_empty())
+}
+
+/// The ways to pay (`invoicing.payment_methods`) as the page prints them:
+/// the label, its lines, its link as a last line, and a QR code of the
+/// link when the method asks for one.
+fn payment_methods(ledger: &Ledger) -> Result<Vec<PaymentMethodDoc>, String> {
+    let Some(list) = ledger
+        .settings()
+        .get("invoicing.payment_methods")
+        .and_then(|r| r.value.as_array())
+    else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::new();
+    for m in list {
+        let text = |k: &str| m.get(k).and_then(|v| v.as_str()).map(str::to_string);
+        let mut lines: Vec<String> = m
+            .get("lines")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|l| l.as_str())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let link = text("link");
+        if let Some(l) = &link {
+            lines.push(l.clone());
+        }
+        let qr_wanted = m.get("qr").and_then(|v| v.as_bool()).unwrap_or(false);
+        let qr_svg = match (&link, qr_wanted) {
+            (Some(l), true) => Some(labels::qr_svg(l).map_err(|e| e.to_string())?),
+            _ => None,
+        };
+        out.push(PaymentMethodDoc {
+            label: text("label").unwrap_or_default(),
+            lines,
+            qr_svg,
+        });
+    }
+    Ok(out)
+}
+
+/// What every copy of an invoice prints about the document itself: its
+/// number, dates, terms, the seller and bill-to as the snapshots at issue
+/// kept them (never today's party record when a snapshot exists, A-13),
+/// the lines, the reference and memo, the ways to pay and the footer. The
+/// figures that move (settled, balance, stamp) are the caller's.
+fn page_of(ledger: &Ledger, company: &Company, invoice: &Invoice) -> Result<InvoiceDoc, String> {
+    let total = invoice.total().map_err(|e| e.to_string())?;
+    let party = ledger
+        .party_of_customer(invoice.customer_id)
+        .and_then(|p| ledger.get_party(p));
+    let seller_address = profile(company, "address");
+    let (seller_name, seller_lines, seller_email) = match &invoice.seller {
+        Some(s) => (
+            s.name.clone(),
+            address_lines(s.address.as_deref()),
+            s.email
+                .clone()
+                .or_else(|| profile(company, "email").map(str::to_string)),
+        ),
+        None => (
+            company.name.clone(),
+            address_lines(seller_address),
+            profile(company, "email").map(str::to_string),
+        ),
+    };
+    // The bill-to: the snapshot when there is one, else the party record
+    // as the snapshot would have taken it (D-55's one rule).
+    let snapshot = match &invoice.bill_to {
+        Some(b) => Some(b.clone()),
+        None => party.map(PartySnapshot::from_party),
+    };
+    let (bill_to, ship_to) = match snapshot {
+        Some(b) => {
+            let mut lines = Vec::new();
+            lines.extend(
+                b.contact
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|c| !c.is_empty())
+                    .map(str::to_string),
+            );
+            lines.extend(address_lines(b.address.as_deref()));
+            lines.extend(
+                b.phone
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|c| !c.is_empty())
+                    .map(str::to_string),
+            );
+            lines.extend(
+                b.email
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|c| !c.is_empty())
+                    .map(str::to_string),
+            );
+            (
+                InvoiceParty {
+                    name: b.name.clone(),
+                    lines,
+                },
+                address_lines(b.shipping_address.as_deref()),
+            )
+        }
+        None => (
+            InvoiceParty {
+                name: ledger
+                    .get_customer(invoice.customer_id)
+                    .map(|c| c.name.clone())
+                    .unwrap_or_default(),
+                lines: Vec::new(),
+            },
+            Vec::new(),
+        ),
+    };
+    let footer = ledger
+        .settings()
+        .get("invoicing.footer")
+        .and_then(|r| r.value.as_str())
+        .map(str::to_string)
+        .filter(|f| !f.trim().is_empty());
+    Ok(InvoiceDoc {
+        number: invoice
+            .number
+            .clone()
+            .unwrap_or_else(|| format!("Invoice {}", invoice.id)),
+        issue_date: printed(invoice.date),
+        due_date: printed(invoice.due_date),
+        terms: invoice.terms.as_ref().map(ledger_core::Terms::describe),
+        seller: InvoiceParty {
+            name: seller_name,
+            lines: seller_lines,
+        },
+        seller_email,
+        seller_website: profile(company, "website").map(str::to_string),
+        bill_to,
+        ship_to,
+        customer_ref: invoice.customer_ref.clone(),
+        memo: invoice.memo.clone(),
+        items: invoice
+            .lines
+            .iter()
+            .map(|l| InvoiceItem {
+                description: l.description.clone(),
+                amount: l.amount,
+                quantity: l.quantity,
+                unit_price: l.unit_price,
+            })
+            .collect(),
+        total,
+        settled: Vec::new(),
+        balance: total,
+        payment_methods: payment_methods(ledger)?,
+        footer,
+        ..InvoiceDoc::default()
+    })
+}
+
+/// Invoice `id` as of `as_of`: the current copy (INVARIANT 4). It says it
+/// was re-created, and on `as_of`, never the wall clock.
 pub fn invoice_document(
     ledger: &Ledger,
     company: &Company,
     id: InvoiceId,
     as_of: NaiveDate,
-    today: NaiveDate,
 ) -> Result<InvoiceDoc, String> {
     let inv = ledger
         .get_invoice(id)
@@ -63,27 +243,6 @@ pub fn invoice_document(
         .doc_state(doc, as_of.max(inv.date))
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("invoice {id} is not in the ledger"))?;
-    let customer = ledger.get_customer(inv.customer_id);
-    let party = ledger
-        .party_of_customer(inv.customer_id)
-        .and_then(|p| ledger.get_party(p));
-    let bill_to = InvoiceParty {
-        name: party
-            .and_then(|p| p.display_name.clone())
-            .or_else(|| customer.map(|c| c.name.clone()))
-            .unwrap_or_default(),
-        lines: address_lines(party.and_then(|p| p.address.as_deref())),
-    };
-    let seller = InvoiceParty {
-        name: company.name.clone(),
-        lines: address_lines(
-            company
-                .profile
-                .iter()
-                .find(|(k, _)| k == "address")
-                .map(|(_, v)| v.as_str()),
-        ),
-    };
     // Each payment that stands, oldest first (INVARIANT 3): a payment
     // reversed later, and its reversal, print nothing.
     let mut settled = Vec::new();
@@ -128,46 +287,29 @@ pub fn invoice_document(
         DocStatus::Partial => (Some(InvoiceStamp::PartiallyPaid), None),
         _ => (None, None),
     };
-    Ok(InvoiceDoc {
-        number: format!("Invoice {id}"),
-        issue_date: printed(inv.date),
-        due_date: printed(inv.due_date),
-        terms: None,
-        seller,
-        bill_to,
-        items: inv
-            .lines
-            .iter()
-            .map(|l| InvoiceItem {
-                description: l.description.clone(),
-                amount: l.amount,
-            })
-            .collect(),
-        total: st.total,
-        settled,
-        balance: st.outstanding,
-        stamp,
-        stamp_line,
-        note: Some(format!(
-            "Re-created on {} from the books; not a copy of the one sent.",
-            printed(today)
-        )),
-    })
+    let mut page = page_of(ledger, company, inv)?;
+    page.total = st.total;
+    page.settled = settled;
+    page.balance = st.outstanding;
+    page.stamp = stamp;
+    page.stamp_line = stamp_line;
+    page.version = InvoiceVersion::Current { as_of };
+    Ok(page)
 }
 
 /// The copy of an invoice that is being issued (plan P4b S4.4; A-7): the
 /// page the confirm renders before the invoice exists in the ledger, and
-/// files with it. No stamp and no note, because this is the copy the
-/// customer gets. Its number is the one the issue will take (A-2), its
-/// seller and bill-to the snapshots the issue will store (A-13) — read
-/// from `ledger` when a document made before snapshots has none — and
-/// nothing is settled on it yet.
+/// files with it. No stamp, no re-created note and nothing settled,
+/// because this is the copy the customer gets. Its number is the one the
+/// issue will take (A-2), its seller and bill-to the snapshots the issue
+/// will store (A-13) -- read from `ledger` when a document made before
+/// snapshots has none.
 pub fn issued_invoice_document(
     ledger: &Ledger,
     company: &Company,
     invoice: &Invoice,
 ) -> Result<InvoiceDoc, String> {
-    unissued_document(ledger, company, invoice, None, None)
+    page_of(ledger, company, invoice)
 }
 
 /// The DRAFT copy of an invoice not yet issued (plan P4b S4.4): the PDF a
@@ -178,90 +320,11 @@ pub fn draft_invoice_document(
     company: &Company,
     invoice: &Invoice,
 ) -> Result<InvoiceDoc, String> {
-    unissued_document(
-        ledger,
-        company,
-        invoice,
-        Some(InvoiceStamp::Draft),
-        Some("Draft for review: nothing is posted, and this is not the copy sent.".to_string()),
-    )
-}
-
-/// [`issued_invoice_document`]'s and [`draft_invoice_document`]'s page:
-/// the invoice as the books would hold it, with the stamp and note given.
-fn unissued_document(
-    ledger: &Ledger,
-    company: &Company,
-    invoice: &Invoice,
-    stamp: Option<InvoiceStamp>,
-    note: Option<String>,
-) -> Result<InvoiceDoc, String> {
-    let total = invoice.total().map_err(|e| e.to_string())?;
-    // The snapshots at issue are what prints (A-13); the party record and
-    // the company are the fallbacks for a document made before they were
-    // kept.
-    let seller = match &invoice.seller {
-        Some(s) => InvoiceParty {
-            name: s.name.clone(),
-            lines: address_lines(s.address.as_deref()),
-        },
-        None => InvoiceParty {
-            name: company.name.clone(),
-            lines: address_lines(
-                company
-                    .profile
-                    .iter()
-                    .find(|(k, _)| k == "address")
-                    .map(|(_, v)| v.as_str()),
-            ),
-        },
-    };
-    let (name, address) = match &invoice.bill_to {
-        Some(b) => (Some(b.name.clone()), b.address.clone()),
-        None => {
-            let party = ledger
-                .party_of_customer(invoice.customer_id)
-                .and_then(|p| ledger.get_party(p));
-            let name = party
-                .and_then(|p| p.display_name.clone())
-                .or_else(|| {
-                    ledger
-                        .get_customer(invoice.customer_id)
-                        .map(|c| c.name.clone())
-                })
-                .unwrap_or_default();
-            (Some(name), party.and_then(|p| p.address.clone()))
-        }
-    };
-    let bill_to = InvoiceParty {
-        name: name.unwrap_or_default(),
-        lines: address_lines(address.as_deref()),
-    };
-    Ok(InvoiceDoc {
-        number: invoice
-            .number
-            .clone()
-            .unwrap_or_else(|| format!("Invoice {}", invoice.id)),
-        issue_date: printed(invoice.date),
-        due_date: printed(invoice.due_date),
-        terms: invoice.terms.as_ref().map(ledger_core::Terms::describe),
-        seller,
-        bill_to,
-        items: invoice
-            .lines
-            .iter()
-            .map(|l| InvoiceItem {
-                description: l.description.clone(),
-                amount: l.amount,
-            })
-            .collect(),
-        total,
-        settled: Vec::new(),
-        balance: total,
-        stamp,
-        stamp_line: None,
-        note,
-    })
+    let mut page = page_of(ledger, company, invoice)?;
+    page.stamp = Some(InvoiceStamp::Draft);
+    page.note =
+        Some("Draft for review: nothing is posted, and this is not the copy sent.".to_string());
+    Ok(page)
 }
 
 #[cfg(test)]
@@ -305,10 +368,10 @@ mod tests {
         company
             .profile
             .push(("address".into(), "12 Orchard Lane\nSpringfield, UT".into()));
-        let before = invoice_document(&l, &company, inv, d(2026, 2, 5), d(2026, 3, 1)).unwrap();
+        let before = invoice_document(&l, &company, inv, d(2026, 2, 5)).unwrap();
         assert_eq!(before.balance, Decimal::new(50_000, 2));
         assert!(before.settled.is_empty() && before.stamp.is_none());
-        let after = invoice_document(&l, &company, inv, d(2026, 2, 28), d(2026, 3, 1)).unwrap();
+        let after = invoice_document(&l, &company, inv, d(2026, 2, 28)).unwrap();
         assert_eq!(after.balance, Decimal::ZERO);
         assert_eq!(
             after.settled,
@@ -319,7 +382,12 @@ mod tests {
         assert_eq!(after.seller.lines, ["12 Orchard Lane", "Springfield, UT"]);
         assert_eq!(after.bill_to.name, "Harbor Client");
         assert_eq!(after.issue_date, "Feb 1, 2026");
-        assert!(after.note.as_deref().unwrap().contains("Mar 1, 2026"));
+        assert_eq!(
+            after.version,
+            InvoiceVersion::Current {
+                as_of: d(2026, 2, 28)
+            }
+        );
         assert!(ledger_import::invoice_pdf(&after).is_ok());
     }
 
@@ -416,13 +484,13 @@ mod tests {
             }
         };
         let today = d(2026, 10, 24);
-        let part = invoice_document(&l, &company, inv, today, today).unwrap();
+        let part = invoice_document(&l, &company, inv, today).unwrap();
         assert_eq!(part.stamp, Some(InvoiceStamp::PastDue));
         assert_eq!(part.balance, Decimal::new(453_900, 2));
         assert_eq!(part.settled[0].0, "Payment Oct 6, 2026 · ACH · ref tr_8812");
         save("sample-part-paid.pdf", &part);
         pay(&mut l, 20, 453_900, "tr_9310");
-        let paid = invoice_document(&l, &company, inv, today, today).unwrap();
+        let paid = invoice_document(&l, &company, inv, today).unwrap();
         assert_eq!(paid.stamp, Some(InvoiceStamp::Paid));
         assert_eq!(paid.stamp_line.as_deref(), Some("Oct 20, 2026"));
         assert_eq!(paid.balance, Decimal::ZERO);
@@ -437,7 +505,7 @@ mod tests {
             .unwrap();
         l.void_document(DocRef::Invoice(spare), d(2026, 10, 2), "entered twice")
             .unwrap();
-        let void = invoice_document(&l, &company, spare, today, today).unwrap();
+        let void = invoice_document(&l, &company, spare, today).unwrap();
         assert_eq!(void.stamp, Some(InvoiceStamp::Void));
         save("sample-void.pdf", &void);
     }

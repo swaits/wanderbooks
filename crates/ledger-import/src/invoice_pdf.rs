@@ -17,6 +17,14 @@
 //!   3. Money is formatted here ([`format_amount`], with "$"); the template
 //!      does no arithmetic, so the printed total is the total given.
 //!   4. Refused: no lines.
+//!   5. The issued copy (`InvoiceVersion::Issued`) is the page the
+//!      customer got: no "re-created" note and no settled rows. The
+//!      current copy (`InvoiceVersion::Current { as_of }`) says on which
+//!      day it was re-created, and that day is the `as_of` it was given,
+//!      never the wall clock, so the bytes stay deterministic.
+//!   6. A line given as a quantity and a unit price prints "3 × $33.33"
+//!      under its description; the amount beside it is the line's own.
+//!      Nothing internal prints: no account code, project or id.
 //! SCENARIOS:
 //!   - An open invoice: total, nothing settled, balance due = total.
 //!   - Part paid: a "Payments received" line, the balance due the rest.
@@ -26,7 +34,8 @@
 //! ```
 
 use crate::pdf::PdfError;
-use crate::report::format_amount;
+use crate::report::amount_parts;
+use chrono::NaiveDate;
 use rust_decimal::Decimal;
 use std::sync::OnceLock;
 use typst::foundations::{Dict, IntoValue};
@@ -49,6 +58,38 @@ pub struct InvoiceItem {
     pub description: String,
     /// Its amount.
     pub amount: Decimal,
+    /// How many units, when the line was given as a quantity and a unit
+    /// price (both or neither).
+    pub quantity: Option<Decimal>,
+    /// The price of one unit, with [`Self::quantity`].
+    pub unit_price: Option<Decimal>,
+}
+
+/// One way to pay, as the page prints it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PaymentMethodDoc {
+    /// Its name ("Bank transfer", "Card").
+    pub label: String,
+    /// The lines under it (bank details, a link).
+    pub lines: Vec<String>,
+    /// A QR code for it, as an SVG document (`labels::qr_svg`), when it
+    /// has one.
+    pub qr_svg: Option<String>,
+}
+
+/// Which copy of the invoice this is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum InvoiceVersion {
+    /// The copy issued to the customer (or its draft): no "re-created"
+    /// note, nothing settled on it.
+    #[default]
+    Issued,
+    /// The invoice re-created from the books as of a day; the page says
+    /// so, with that day.
+    Current {
+        /// The day the figures are as of, printed in the note.
+        as_of: NaiveDate,
+    },
 }
 
 /// A stamp across the invoice, as a rubber stamp would mark it.
@@ -80,7 +121,7 @@ impl InvoiceStamp {
 }
 
 /// Everything an invoice prints.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct InvoiceDoc {
     /// Its number, as printed ("Invoice 7"; "INV-0007" once numbered).
     pub number: String,
@@ -92,8 +133,25 @@ pub struct InvoiceDoc {
     pub terms: Option<String>,
     /// The company.
     pub seller: InvoiceParty,
+    /// The seller's email, when it has one.
+    pub seller_email: Option<String>,
+    /// The seller's website, when it has one.
+    pub seller_website: Option<String>,
     /// The customer.
     pub bill_to: InvoiceParty,
+    /// Where goods go, when the customer said so: printed as a Ship-to
+    /// block.
+    pub ship_to: Vec<String>,
+    /// The customer's own reference (their purchase order), when given.
+    pub customer_ref: Option<String>,
+    /// A memo printed under the lines, when given.
+    pub memo: Option<String>,
+    /// The ways to pay.
+    pub payment_methods: Vec<PaymentMethodDoc>,
+    /// Text at the foot of the page (`invoicing.footer`).
+    pub footer: Option<String>,
+    /// Which copy this is.
+    pub version: InvoiceVersion,
     /// Its lines.
     pub items: Vec<InvoiceItem>,
     /// The sum of its lines.
@@ -109,7 +167,8 @@ pub struct InvoiceDoc {
     /// A line under the stamp's word: for PAID, the day it was paid in
     /// full.
     pub stamp_line: Option<String>,
-    /// A note under it (for a re-created copy, saying so).
+    /// A note under it, besides the re-created note a current copy always
+    /// carries.
     pub note: Option<String>,
 }
 
@@ -125,12 +184,50 @@ fn engine() -> &'static TypstEngine<TypstTemplateMainFile> {
     })
 }
 
-/// An amount as printed: "$1,234.56".
+/// An amount as printed: "$1,234.56". Every amount on the page comes
+/// through [`amount_parts`].
 fn dollars(d: Decimal) -> String {
-    let s = format_amount(d);
-    match s.strip_prefix('(').and_then(|s| s.strip_suffix(')')) {
-        Some(inner) => format!("-${inner}"),
-        None => format!("${s}"),
+    let p = amount_parts(d);
+    if p.negative {
+        format!("-${}", p.digits)
+    } else {
+        format!("${}", p.digits)
+    }
+}
+
+/// A unit price as printed: to the cent when it is one, else exactly (a
+/// price of $0.125 must not print as $0.13 beside a total it multiplies
+/// to).
+fn unit_price(d: Decimal) -> String {
+    if d.normalize().scale() <= 2 {
+        dollars(d)
+    } else {
+        format!("${}", d.normalize())
+    }
+}
+
+/// "3 × $33.33" for a line given as a quantity and a price.
+fn quantity_detail(i: &InvoiceItem) -> Option<String> {
+    match (i.quantity, i.unit_price) {
+        (Some(q), Some(p)) => Some(format!("{} × {}", q.normalize(), unit_price(p))),
+        _ => None,
+    }
+}
+
+/// The note under the totals: the re-created line of a current copy, then
+/// whatever note the document carries.
+fn note_text(doc: &InvoiceDoc) -> Option<String> {
+    let recreated = match doc.version {
+        InvoiceVersion::Current { as_of } => Some(format!(
+            "Re-created on {} from the books; not a copy of the one sent.",
+            as_of.format("%b %-d, %Y")
+        )),
+        InvoiceVersion::Issued => None,
+    };
+    match (recreated, &doc.note) {
+        (Some(r), Some(n)) => Some(format!("{r} {n}")),
+        (Some(r), None) => Some(r),
+        (None, n) => n.clone(),
     }
 }
 
@@ -149,11 +246,23 @@ pub fn template_data(doc: &InvoiceDoc) -> Result<serde_json::Value, PdfError> {
         "due_date": doc.due_date,
         "terms": doc.terms,
         "seller": party(&doc.seller),
+        "seller_email": doc.seller_email,
+        "seller_website": doc.seller_website,
         "bill_to": party(&doc.bill_to),
+        "ship_to": doc.ship_to,
+        "customer_ref": doc.customer_ref,
+        "memo": doc.memo,
         "lines": doc.items.iter().map(|i| serde_json::json!({
             "description": i.description,
+            "detail": quantity_detail(i),
             "amount": dollars(i.amount),
         })).collect::<Vec<_>>(),
+        "payment_methods": doc.payment_methods.iter().map(|m| serde_json::json!({
+            "label": m.label,
+            "lines": m.lines,
+            "qr": m.qr_svg,
+        })).collect::<Vec<_>>(),
+        "footer": doc.footer,
         "total": dollars(doc.total),
         "settled": doc.settled.iter().map(|(label, a)| serde_json::json!({
             "label": label,
@@ -164,7 +273,7 @@ pub fn template_data(doc: &InvoiceDoc) -> Result<serde_json::Value, PdfError> {
         "stamp": doc.stamp.map(InvoiceStamp::text),
         "stamp_draft": doc.stamp == Some(InvoiceStamp::Draft),
         "stamp_line": doc.stamp_line,
-        "note": doc.note,
+        "note": note_text(doc),
     }))
 }
 
@@ -207,10 +316,14 @@ mod tests {
                 InvoiceItem {
                     description: "Consulting, January".into(),
                     amount: Decimal::new(120_000, 2),
+                    quantity: None,
+                    unit_price: None,
                 },
                 InvoiceItem {
                     description: "#panic(\"no\") *not bold* $x$".into(),
                     amount: Decimal::new(3_450, 2),
+                    quantity: Some(Decimal::new(3, 0)),
+                    unit_price: Some(Decimal::new(1_150, 2)),
                 },
             ],
             total: Decimal::new(123_450, 2),
@@ -219,6 +332,7 @@ mod tests {
             stamp: None,
             stamp_line: None,
             note: None,
+            ..InvoiceDoc::default()
         }
     }
 
@@ -263,5 +377,84 @@ mod tests {
         assert!(invoice_pdf(&d).is_ok());
         d.items.clear();
         assert!(invoice_pdf(&d).is_err());
+    }
+
+    /// INVARIANT 2 for every string the page takes: Typst syntax in an
+    /// item, a party, a memo, a payment method or a footer prints as
+    /// written and breaks nothing.
+    #[test]
+    fn labels_are_data() {
+        let mut d = doc();
+        d.items[0].description = "#import \"x\": *".into();
+        d.memo = Some("#panic(\"memo\") $x$ ]".into());
+        d.footer = Some("#panic(\"footer\")".into());
+        d.customer_ref = Some("PO #{1}".into());
+        d.payment_methods = vec![PaymentMethodDoc {
+            label: "#panic(\"label\")".into(),
+            lines: vec!["#import \"y\"".into()],
+            qr_svg: None,
+        }];
+        let data = template_data(&d).unwrap();
+        assert_eq!(data["lines"][0]["description"], "#import \"x\": *");
+        assert_eq!(data["memo"], "#panic(\"memo\") $x$ ]");
+        assert_eq!(data["payment_methods"][0]["label"], "#panic(\"label\")");
+        assert!(invoice_pdf(&d).is_ok());
+    }
+
+    /// A line given as a quantity and a price prints both; the amount is
+    /// the line's own, never recomputed here.
+    #[test]
+    fn a_quantity_prints_beside_its_price() {
+        let data = template_data(&doc()).unwrap();
+        assert_eq!(data["lines"][1]["detail"], "3 × $11.50");
+        assert_eq!(data["lines"][1]["amount"], "$34.50");
+        assert!(data["lines"][0]["detail"].is_null());
+        let mut d = doc();
+        d.items[1].quantity = Some(Decimal::new(8, 0));
+        d.items[1].unit_price = Some(Decimal::new(125, 3));
+        d.items[1].amount = Decimal::new(100, 2);
+        let data = template_data(&d).unwrap();
+        assert_eq!(data["lines"][1]["detail"], "8 × $0.125");
+    }
+
+    /// The current copy says on which day it was re-created, from the
+    /// `as_of` it was given; the issued copy says nothing of the kind.
+    #[test]
+    fn only_the_current_copy_says_it_was_re_created() {
+        let mut d = doc();
+        assert!(template_data(&d).unwrap()["note"].is_null());
+        d.version = InvoiceVersion::Current {
+            as_of: NaiveDate::from_ymd_opt(2026, 3, 1).unwrap(),
+        };
+        let note = template_data(&d).unwrap()["note"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(note.starts_with("Re-created on Mar 1, 2026"), "{note}");
+        d.note = Some("Voided.".into());
+        let note = template_data(&d).unwrap()["note"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(note.ends_with(" Voided."), "{note}");
+    }
+
+    #[test]
+    fn two_hundred_lines_paginate() {
+        let mut d = doc();
+        d.items = (1..=200)
+            .map(|n| InvoiceItem {
+                description: format!("Line {n}"),
+                amount: Decimal::new(100, 2),
+                quantity: None,
+                unit_price: None,
+            })
+            .collect();
+        d.total = Decimal::new(20_000, 2);
+        d.settled.clear();
+        d.balance = d.total;
+        let pages = typeset_invoice(&d).unwrap();
+        assert!(pages.pages().len() > 1, "{} pages", pages.pages().len());
+        assert!(invoice_pdf(&d).unwrap().starts_with(b"%PDF"));
     }
 }

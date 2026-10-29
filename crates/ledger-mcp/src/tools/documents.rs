@@ -1038,13 +1038,8 @@ impl BooksServer {
             }
             (true, ledger_core::DocRef::Invoice(id)) => {
                 let settings = self.settings();
-                let printed = ledger_package::invoice_document(
-                    ledger,
-                    &settings.company,
-                    id,
-                    as_of,
-                    today(),
-                )?;
+                let printed =
+                    ledger_package::invoice_document(ledger, &settings.company, id, as_of)?;
                 let bytes =
                     ledger_import::invoice_pdf::invoice_pdf(&printed).map_err(|e| e.to_string())?;
                 Some(self.hand_over(

@@ -34,8 +34,8 @@ No other statuses.
 | Bank reconciliation (cleared flags + report) | Reconcile | done | — |
 | QuickBooks CSV import (bank txns, chart of accounts) | Banking → Upload | done | R-FUTURE-4 |
 | QuickBooks IIF + XLSX export | Export / reports | done | R-FUTURE-4 |
-| A/R invoices + payments + aging | Business → Invoices | done | R-FUTURE-5; since P4b S1 (D-45) a document's paid, outstanding and status are read from its tagged ledger lines, hand lines on the receivables account are refused, `books.void_document` and `books.control_check` tie the subledger to the control account (rules.md B-38); S2 `books.documents`/`books.document` and the viewer pages; S3 the invoice PDF; S4.1-S4.3 terms, numbers, line accounts, the issued PDF filed at issue (behind `documents_v2`, the owner's next upgrade); numbers, terms, line accounts, the party snapshots and the issued PDF filed with the invoice, through `books.create_invoice`'s preview and confirm (P4b S4.4) |
-| A/P bills + payments + aging | Business → Bills | done | R-FUTURE-5; the same S1 derivation and control guard on the payables account; S4.1-S4.3 the vendor's invoice number, terms, every line on its own account (behind `documents_v2`); the vendor's own invoice number (a duplicate refused), terms, line accounts and the vendor's invoice filed as the bill's evidence, through `books.create_bill`'s preview and confirm (P4b S4.4) |
+| A/R invoices + payments + aging | Business → Invoices | done | R-FUTURE-5; since P4b S1 (D-45) a document's paid, outstanding and status are read from its tagged ledger lines, hand lines on the receivables account are refused, `books.void_document` and `books.control_check` tie the subledger to the control account (rules.md B-38); S2 `books.documents`/`books.document` and the viewer pages; S3 the invoice PDF; S4.1-S4.3 terms, numbers, line accounts, the issued PDF filed at issue (behind `documents_v2`, the owner's next upgrade); numbers, terms, line accounts, the party snapshots and the issued PDF filed with the invoice, through `books.create_invoice`'s preview and confirm (P4b S4.4); S4.5 the issued PDF carries the number, terms, PO, quantity and price, the bill-to's contact block and ship-to, the ways to pay with QR codes, the memo and the footer, and the viewer shows the number, terms, bill-to and PO and saves the issued copy |
+| A/P bills + payments + aging | Business → Bills | done | R-FUTURE-5; the same S1 derivation and control guard on the payables account; S4.1-S4.3 the vendor's invoice number, terms, every line on its own account (behind `documents_v2`); the vendor's own invoice number (a duplicate refused), terms, line accounts and the vendor's invoice filed as the bill's evidence, through `books.create_bill`'s preview and confirm (P4b S4.4); S4.5 the viewer shows the vendor's number, the day received, terms and memo, and the handbook's procedure (numbers, terms, line accounts) |
 | Payroll runs (accounting only, no tax tables) + tax remittance | Payroll | done | — |
 | Tracking classes (divisional P&L) | Class tracking | done | invoice and bill lines take a class too (projects, rules.md B-37 item 8; QBO/Xero class or tracking per line) |
 | CPA handoff package (TB + GL xlsx, P&L + BS pdf, zip) | Reports → export | done | — |
@@ -126,6 +126,23 @@ a `mailto` link for a human to send it, since the books never send (A-4).
 the owner's full contact block (D-55: phone, contact person, billing and
 shipping addresses, billing email), which an invoice's bill-to copies at
 issue.
+
+### P4b S4.5: the issued PDF, the viewer and the handbook (2026-10-29)
+
+The A/R and A/P rows above gain their note rather than a new row: no
+parity item changed status, so the floor stands. The invoice a customer
+pays from now prints its number, both dates, the terms (an early
+discount reads in them), the customer's purchase order, each line's quantity beside its
+price, the customer as it was at issue (contact, billing address, phone,
+email and a Ship-to block), the company's email and website, the ways to
+pay (each with a QR code when it has a link), the memo and the footer. The
+current copy says it was re-created as of a day (never the wall clock).
+The viewer's invoice page shows the number, terms, bill-to and PO and
+saves the issued copy beside the re-created one; the Money in list names an
+invoice by its number. The handbook's invoices-and-bills procedure is
+complete (issue, collect, pay on terms, void or write off, the fee, the
+CPA's list) and says what waits for the owner's upgrade. rules.md gains
+B-39 (terms) and B-40 (numbers and the issued copy). No golden moved.
 
 ### P9a self-host deployment (2026-10-26)
 

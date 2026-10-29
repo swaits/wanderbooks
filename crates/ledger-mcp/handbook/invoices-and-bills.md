@@ -7,12 +7,34 @@ own figures are read from the ledger lines tagged with it, never kept on
 the document: a reversed payment, a void or a write-off comes out right
 without another copy to correct (B-38).
 
-## 1. Send an invoice
+{documents_v2}
 
-- The books never send mail, and never say they did. To send an invoice,
-  create and post it (`books.create_invoice`), hand its PDF to the human
-  (`books.document` with `pdf: true`), and let the owner or a delegate
-  send it.
+## 1. Issue and send an invoice
+
+- Preview first: `books.create_invoice` without `confirmed` writes
+  nothing. It returns the posting, the number and due date the invoice
+  will take, and its DRAFT PDF; show the human the PDF and the posting.
+  An abandoned preview uses up no number.
+- Confirm with `confirmed: true` only after the human has seen it. The
+  invoice posts Dr Accounts Receivable / Cr each line's account, takes the
+  next number (B-40), and the issued PDF, the page the customer gets, is
+  filed with it. That filed copy never changes: a later look at the
+  invoice (`books.document` with `pdf: true`, or the viewer's Save invoice
+  PDF) is a re-created copy as of that day, says so, and shows what has
+  been paid since.
+- Give a line a quantity and a unit price when the work is billed that way
+  (`quantity` times `unit_price` must equal the line's amount exactly); the
+  page prints "3 × $33.33" under its description. The customer's purchase
+  order goes in `customer_ref`; `memo` prints under the lines. The
+  company's email, website, payment methods (each can show a QR code) and
+  footer come from the settings, not from the call.
+- The page prints the customer as it was when the invoice was issued (its
+  name, billing address, contact, phone and billing email, and a Ship-to
+  line when it has a shipping address); changing the customer's record
+  later never changes an issued invoice.
+- The books never send mail, and never say they did. Hand the issued PDF
+  to the human (`books.document` with `pdf: true`; the viewer's Save
+  issued copy), and let the owner or a delegate send it.
 - Then record the send with `books.mark_sent`: the invoice (`invoice:7`),
   the day it went out, who sent it (`by`: the owner, or the agent acting
   for them), how (`via`: `email`, or `mail`, `portal`, `hand`, or another
@@ -138,11 +160,26 @@ if it was reversed, that it no longer stands).
    `deposit_to: "2300"`, dated on or after the bounce, against the
    invoices it pays. The 2300 balance returns to zero.
 
-## What the CPA will check
+## 6. What the CPA will check
 
-The agings tie to 1200 and 2000 at month and year end (they do by
-construction: the control check says so). Every write-off carries its
-reason and its evidence of collection efforts. Write-offs are not used in
+- The agings tie to 1200 and 2000 at month and year end (they do by
+  construction: `books.control_check` says so; run it at month end and
+  tie the aging to the trial balance before the CPA asks).
+- Invoice numbers are unique and sequential, voids stay visible with
+  their number, nothing is deleted.
+- Every bill is coded to its real account (the Form 1065 lines, B-32),
+  never a catch-all, with the vendor's invoice attached and its number
+  recorded, and no bill is paid twice (the same vendor and number twice is
+  refused).
+- Payments are matched to documents, and card payments are identified
+  (excluded from 1099-NEC: Treas. Reg. §1.6041-1(a)(1)(iv)).
+- Customer deposits are liabilities (2300), never netted inside
+  receivables; Schedule L lines 2a and 15 come straight from the control
+  accounts.
+- Approvals and three-way matching are deliberately not adopted for a
+  two-member LLC: light governance, by decision.
+- Every write-off carries its reason and its evidence of collection
+  efforts. Write-offs are not used in
 place of a credit memo for a valid invoice, and never to hide a mistake
 that a void would show. Whether a debt is worthless, and in which year, is
 a tax judgment that stays with the CPA: the books flag each write-off made

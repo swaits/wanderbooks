@@ -2254,7 +2254,14 @@ snapshots; see plan 8.2 S4.
   back as a handed file (`pdf`: run its download): re-created from the
   books as of the day, each standing payment on its own line with its
   date, method and reference, stamped PAID (with the day), PARTIALLY
-  PAID, PAST DUE or VOID (P4b S3); refused for a bill.
+  PAID, PAST DUE or VOID (P4b S3); refused for a bill. The page prints
+  the invoice's own number, terms (an early discount reads in them), the customer's PO,
+  each line's quantity beside its price, the customer as at issue
+  (contact, billing address, phone, email, a Ship-to block), the
+  company's email, website, ways to pay (a QR code for a method with a
+  link) and footer; it says "Re-created on" the `as_of` day, never the
+  day it was printed, and the filed issued copy is never replaced by it
+  (P4b S4.5).
 - `books.control_check { as_of? }` → `{ as_of, agrees, accounts: [{ role,
   code, name, balance, documents_total, unattached: [{ entry_id, line,
   date, amount }], difference, attention: [{ kind, id, status, total,

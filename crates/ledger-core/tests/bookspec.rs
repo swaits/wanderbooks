@@ -33,7 +33,7 @@
 
 use std::borrow::Borrow;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use chrono::{Datelike, NaiveDate};
 use ledger_core::calendar::{PeriodDefaults, period_defaults};
@@ -214,8 +214,14 @@ fn store_refusal(e: &StoreError) -> String {
     }
 }
 
-fn examples_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../bookspec/examples")
+/// The text of the bookspec example file `file`, carried by the pinned
+/// `bookspec-checker` crate.
+fn example_text(file: &str) -> &'static str {
+    bookspec_checker::examples()
+        .into_iter()
+        .find(|(name, _)| *name == file)
+        .unwrap_or_else(|| panic!("no bookspec example {file}"))
+        .1
 }
 
 fn date(s: &str, what: &str) -> NaiveDate {
@@ -3840,16 +3846,9 @@ fn run(ex: &Example) -> Vec<(String, Option<&'static str>)> {
 /// this proves the trait path, which is what another engine supplies.
 #[test]
 fn the_runner_reports_every_claimed_rule_green() {
-    let mut files: Vec<PathBuf> = std::fs::read_dir(examples_dir())
-        .expect("bookspec/examples")
-        .map(|e| e.unwrap().path())
-        .filter(|p| p.extension().is_some_and(|x| x == "toml"))
-        .collect();
-    files.sort();
     let mut examples = Vec::new();
-    for f in &files {
-        let text = std::fs::read_to_string(f).unwrap();
-        examples.push(Example::from_toml(&text).unwrap_or_else(|e| panic!("{}: {e}", f.display())));
+    for (name, text) in bookspec_checker::examples() {
+        examples.push(Example::from_toml(text).unwrap_or_else(|e| panic!("{name}: {e}")));
     }
     assert!(examples.len() >= 56, "the seed has at least 56 examples");
     let report = bookspec_runner::run(&examples, bookspec_checker::rules(), Books::blank);
@@ -3877,19 +3876,13 @@ fn the_runner_reports_every_claimed_rule_green() {
 
 #[test]
 fn every_bookspec_example_holds() {
-    let mut files: Vec<PathBuf> = std::fs::read_dir(examples_dir())
-        .expect("bookspec/examples")
-        .map(|e| e.unwrap().path())
-        .filter(|p| p.extension().is_some_and(|x| x == "toml"))
-        .collect();
-    files.sort();
+    let files = bookspec_checker::examples();
     let mut ids = BTreeSet::new();
     let mut checked: BTreeMap<String, usize> = BTreeMap::new();
-    for f in &files {
-        let text = std::fs::read_to_string(f).unwrap();
-        let ex = Example::from_toml(&text).unwrap_or_else(|e| panic!("{}: {e}", f.display()));
-        let stem = f.file_stem().unwrap().to_string_lossy();
-        assert_eq!(ex.id, stem, "{}: the file is named for its id", f.display());
+    for (name, text) in &files {
+        let ex = Example::from_toml(text).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let stem = name.strip_suffix(".toml").unwrap();
+        assert_eq!(ex.id, stem, "{name}: the file is named for its id");
         assert!(ids.insert(ex.id.clone()), "{}: id used twice", ex.id);
         assert!(
             !ex.title.is_empty() && !ex.rule.is_empty() && !ex.tags.is_empty(),
@@ -4038,19 +4031,16 @@ fn reverses_zero_is_refused() {
 /// ignored: an example can't silently run with other roles than it says.
 #[test]
 fn an_unknown_key_is_refused() {
-    let text = std::fs::read_to_string(
-        examples_dir().join("cash-flow.reversed-property-contribution.toml"),
-    )
-    .unwrap()
-    .replace("cash_accounts = ", "cash_account = ");
+    let text = example_text("cash-flow.reversed-property-contribution.toml")
+        .replace("cash_accounts = ", "cash_account = ");
     assert!(toml::from_str::<Example>(&text).is_err());
 }
 
 /// The example `file`'s text, changed by `edit`, loaded and its
 /// expectations checked as `every_bookspec_example_holds` checks them.
 fn run_edited(file: &str, edit: impl Fn(String) -> String) {
-    let text = edit(std::fs::read_to_string(examples_dir().join(file)).unwrap());
-    let before = std::fs::read_to_string(examples_dir().join(file)).unwrap();
+    let before = example_text(file).to_string();
+    let text = edit(before.clone());
     assert_ne!(text, before, "the edit changed nothing");
     let ex: Example = toml::from_str(&text).unwrap();
     run(&ex);
@@ -4585,5 +4575,73 @@ fn an_invoice_lines_project_is_what_the_project_counts() {
                 1,
             )
         },
+    );
+}
+
+/// Whitespace and typographic quotes made plain, so a pin copied from a
+/// wrapped or curly-quoted source still matches.
+fn squash(s: &str) -> String {
+    let plain = s
+        .replace(['\u{2019}', '\u{2018}'], "'")
+        .replace(['\u{201c}', '\u{201d}'], "\"");
+    plain.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Every vendored citation in the specification names a file in
+/// `docs/spec/sources`, and each quoted pin is verbatim in it. (The
+/// specification crate checks the citations' form; the vendored texts live
+/// here.)
+#[test]
+fn every_vendored_pin_is_verbatim() {
+    let sources = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/spec/sources");
+    let mut vendored = 0;
+    let mut bad = Vec::new();
+    for (name, text) in bookspec_checker::spec_files() {
+        for line in text.lines() {
+            let Some(rest) = line.strip_prefix("  - vendored `") else {
+                continue;
+            };
+            let (file, rest) = rest
+                .split_once("`:")
+                .unwrap_or_else(|| panic!("{name}: {line}"));
+            let path = sources.join(file.strip_prefix("sources/").unwrap_or(file));
+            let hay = squash(
+                &std::fs::read_to_string(&path)
+                    .unwrap_or_else(|_| panic!("{name}: {file} is not vendored")),
+            );
+            for q in rest.split('"').skip(1).step_by(2) {
+                if !hay.contains(&squash(q)) {
+                    bad.push(format!("{name}: {q:?} is not in {file}"));
+                }
+            }
+            vendored += 1;
+        }
+    }
+    assert!(bad.is_empty(), "pins not found:\n{}", bad.join("\n"));
+    assert!(vendored >= 30, "vendored citations: {vendored}");
+}
+
+/// `docs/spec/rules.md` carries every stated rule's id under its heading,
+/// and no longer calls a choice a decision (P13 step 3).
+#[test]
+fn rules_md_carries_every_id() {
+    let text = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/spec/rules.md"),
+    )
+    .expect("docs/spec/rules.md");
+    for rule in bookspec_checker::rules()
+        .iter()
+        .filter(|r| r.status.is_some())
+    {
+        assert!(
+            text.contains(&format!("**bookspec:** `{}`", rule.id)),
+            "B-{} carries {}",
+            rule.b,
+            rule.id
+        );
+    }
+    assert!(
+        !text.contains("DECISION"),
+        "rules.md speaks bookspec's CHOICE"
     );
 }

@@ -3971,3 +3971,19 @@ sign-off) is the owner's and has no CI equivalent.
 lines above it) and the scopes-line scan in `defect_20_*`. A mutant that
 widens the window or drops the `ignore` check survives only if no ignored
 or untested name is in the table; the table is the oracle.
+
+## P13 step 6: the specification in its own repository (2026-10-29)
+
+The specification (text, examples, checker, runner, Lean, GnuCash adapter)
+lives at https://git.swaits.com/swaits/bookspec (CC BY 4.0 for `spec/` and `examples/`, MIT OR Apache-2.0 for the
+code) and is pinned by commit in `crates/ledger-core/Cargo.toml` and
+`crates/ledger-package/Cargo.toml`. `just check` runs the examples exactly as
+before: `cargo test --workspace` includes `ledger-core` `tests/bookspec.rs`
+(`every_bookspec_example_holds`, `the_runner_reports_every_claimed_rule_green`),
+which reads them through `bookspec_checker::examples()`, and `ledger-package`
+`tests/package.rs` reads the IIF example the same way. Two checks that need
+this repository's files live in `tests/bookspec.rs`: `every_vendored_pin_is_verbatim`
+(each vendored pin in the spec is verbatim in `docs/spec/sources`) and
+`rules_md_carries_every_id`. The examples named `bookspec/examples/...` in the
+older sections above are files of that repository. The checker's, the
+runner's and the derivation tests run in its own CI.

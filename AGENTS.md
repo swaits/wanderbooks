@@ -199,7 +199,7 @@ clone, with status. Rules:
 | `docs/receipt-store.md` | Blob store + `ledger-store` SQLite persistence spec |
 | `docs/testing.md` | Every test layer, each unit's test record, and what P12 must mutate |
 | `docs/parties-and-attachments.md` | The party directory, roles, the TIN vault, attachments to any subject |
-| `bookspec/README.md` | The formal accounting specification's examples, checker and runner (P13) |
+| https://git.swaits.com/swaits/bookspec | The formal accounting specification's own repository: README, examples, checker, runner (P13); pinned in `crates/ledger-core/Cargo.toml` |
 | `deploy/README.md` | Running the books on a machine of your own (P9a) |
 | `docs/glossary.md` | Debit/credit and friends, for agents new to accounting |
 | `plan/STATUS.md` | Where the project stands right now |

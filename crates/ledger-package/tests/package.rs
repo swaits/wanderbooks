@@ -2142,18 +2142,19 @@ proptest::proptest! {
     }
 }
 
-/// The bookspec example `bookspec/examples/iif-quickbooks-journal-file.toml`
+/// The bookspec example `iif-quickbooks-journal-file.toml` (bookspec's `examples/`)
 /// (P3's accept: each regression test also a bookspec example), its
 /// expected values derived by hand, against the engine: the example's
 /// books, built from its setup and events, export the very file and
 /// changes it says.
 #[test]
 fn the_bookspec_iif_example_matches_the_engine() {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../bookspec/examples/iif-quickbooks-journal-file.toml"
-    );
-    let spec: toml::Value = toml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let text = bookspec_checker::examples()
+        .into_iter()
+        .find(|(name, _)| *name == "iif-quickbooks-journal-file.toml")
+        .expect("the bookspec IIF example")
+        .1;
+    let spec: toml::Value = toml::from_str(text).unwrap();
     let setup = &spec["setup"];
     let mut l = Ledger::new(Currency::USD);
     for a in setup["accounts"].as_array().unwrap() {

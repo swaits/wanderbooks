@@ -3987,3 +3987,83 @@ this repository's files live in `tests/bookspec.rs`: `every_vendored_pin_is_verb
 `rules_md_carries_every_id`. The examples named `bookspec/examples/...` in the
 older sections above are files of that repository. The checker's, the
 runner's and the derivation tests run in its own CI.
+
+## P11b: books homes, the agent dock, the first run (2026-10-29)
+
+Three layers, none touching the owner's books or data root: a home is made
+under a scratch "documents" folder the test gives (`make_books_home_in`
+takes it as an argument, so no test writes in an account's real
+`~/Documents`); the dock runs a stand-in `claude` (a bash script) on a real
+PTY under the viewer's harness; the first run is driven page by page
+against an owner over a real scratch data root.
+
+`crates/ledger-host/tests/books_home.rs`:
+
+- `books_home_holds_no_books_data`: exactly four files
+  (`.claude/settings.json`, `.mcp.json`, `AGENTS.md`, `CLAUDE.md`); none
+  names the data root (a root with a journal sits beside the home), a token,
+  a key, a vault or a journal; `AGENTS.md` is three lines and names the
+  company and `books.start`; `.mcp.json` holds `wanderbooks-acme` running
+  `<exe> mcp --book acme` and no `--root`; the settings allow
+  `mcp__wanderbooks-acme__*`.
+- `a_books_home_made_again_keeps_what_a_person_kept`: a person's
+  `AGENTS.md`, their other MCP server and their other settings stay; the
+  entry and the rule are refreshed and appear once.
+- `a_books_home_is_never_made_for_a_name_that_is_not_an_id`: `../x`,
+  `a/b`, the empty id and `A B` make nothing; a relative documents folder is
+  refused.
+- `an_agent_is_found_on_the_path_or_where_its_installer_puts_it`
+  (`agent_missing_offers_the_installer`'s host half): not found gives the
+  vendor's installer; found on the PATH, a file that cannot be run is not
+  the agent, `~/.local/bin` is searched; `start_agent_in` returns the books
+  home as the directory and marks nothing trusted (Q-7).
+- `a_first_run_reads_where_it_stands_and_sets_the_first_passphrase_once`.
+
+`crates/ledger-gui/tests/dock.rs` (Linux and macOS; a PTY):
+
+- `dock_runs_the_chosen_agent`: closed, nothing runs; opened, the owner is
+  asked for Claude Code on book `acme`, the program starts in the books
+  home (its own `pwd`), its output reaches the panel, typed text and Enter
+  reach it, a Ctrl-C key reaches it as an interrupt (`got-interrupt`; the
+  agent goes on), narrowing the window resizes the terminal and the program
+  is told the new size (`stty size` on its `WINCH` matches `Dock::cells`);
+  the journal is byte for byte as it was.
+- `agent_missing_offers_the_installer`: the page names the agent, shows the
+  vendor's install command with a Copy button and starts nothing.
+- `a_chosen_agent_and_an_open_dock_are_kept`: the preferences round trip,
+  Claude Code the default.
+- Unit tests in `dock.rs`: `keys_become_what_a_terminal_sends`,
+  `colors_follow_the_terminals_palette`.
+
+`crates/ledger-gui/tests/welcome.rs`:
+
+- `first_run_onboards_with_no_terminal`: from nothing, "Set it up" makes the
+  private folder, two matching passphrase fields set the passphrase (the
+  owner is handed 20 characters, once), "Make the books" makes `acme` and
+  holds it, Codex is refused with its reason and Claude Code connects,
+  "Open the books" shows the books (Needs attention) and the page is gone;
+  the owner was asked exactly: set up, passphrase, new, hold, connect
+  Codex, connect Claude.
+- `first_run_starts_at_the_first_step_missing_and_asks_nothing_done_again`.
+- `a_passphrase_too_short_or_not_repeated_is_not_sent_and_can_wait`.
+
+Existing tests that cover the unchanged parts: `owner_menu.rs` (the menu
+still hands each action to the owner), `read_only.rs`, `sidenav.rs` (the
+sidebar's shape golden is unchanged: the dock sits right of the sidebar).
+
+**Not tested here:** macOS and Windows (no machine); the real `claude` and
+`codex` (not installed on CI); the real `wanderbooks gui` first run
+through the AppImage on a clean machine (the EM's).
+
+**For P12 (mutation targets):** `commands::make_books_home_in` (the
+`!path.exists()` test that keeps a person's `AGENTS.md`; the merge that
+dedupes the allow rule; `BookId::parse` before any path is joined);
+`find_agent_in` (the order PATH then the installer folders; `is_program`'s
+mode test); `start_agent_in` (the `Missing` arm); `first_run_state`'s three
+fields; `set_first_passphrase`'s already-set refusal; `dock::key_bytes` (the
+modifier parameter's arithmetic, the Ctrl-letter byte, the app-cursor
+switch, the Alt escape); `dock::color`'s cube and gray ramps and its bold
+brightening; `Session::resize`'s equality early return; the panel's
+open/closed ids (a remembered size must not leak between them);
+`Welcome::steps`' choice of `now` (each arm), the passphrase length and
+equality gates, the `agent_later` flag.

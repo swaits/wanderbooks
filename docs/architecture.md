@@ -36,8 +36,8 @@ the specification in `bookspec/` (which never depends on the engine).
 | `ledger-import` | formats: QuickBooks CSV in; IIF, XLSX, Typst PDFs (statements, the invoice, labels, the audit workpaper) out | `ledger-core`, `ledger-reader` |
 | `ledger-package` | the shared read-only view over `Store` or `Snapshot` (`PackageBooks`): the CPA package, the 1099 worksheet, the invoice document, Needs attention | `ledger-core`, `ledger-store`, `ledger-config`, `ledger-import`, `ledger-vault` |
 | `ledger-mcp` | the books server: the MCP tools (122), resources, the handbook, scopes, the door and the access log, backups' scheduling | all of the above |
-| `ledger-host` | the host and its leases, the agent bridge (`wanderbooks mcp`), tokens in 0600 files under the data root (D-63), the owner's commands, uploads and downloads, `update` and `rollback` (P11a) | `ledger-store`, `ledger-mcp`, `ledger-config` |
-| `ledger-gui` | the viewer: read-only, live, egui; the Books menu hands work to the server | `ledger-core`, `ledger-store`, `ledger-config`, `ledger-import`, `ledger-package`, `ledger-vault`, `ledger-host` |
+| `ledger-host` | the host and its leases, the agent bridge (`wanderbooks mcp`), tokens in 0600 files under the data root (D-63), the owner's commands, uploads and downloads, `update` and `rollback` (P11a), books homes and how to start an agent in one (P11b) | `ledger-store`, `ledger-mcp`, `ledger-config` |
+| `ledger-gui` | the viewer: read-only, live, egui; the Books menu hands work to the server; the agent dock and the first-run page (P11b) | `ledger-core`, `ledger-store`, `ledger-config`, `ledger-import`, `ledger-package`, `ledger-vault`, `ledger-host` |
 | `ledger-cli` | `wanderbooks`, the one executable: every mode (`serve`, `server`, `host`, `mcp`, `gui`, `setup`, `books`, `token`, `connect`, `doctor`, …) and the over-the-wire test suites | everything |
 | `bookspec/checker`, `bookspec/runner` | the example schema and parser, the rule catalogue, the `Engine` trait; the per-rule runner | nothing of ours (the adapter in `ledger-core`'s tests depends on them) |
 
@@ -115,6 +115,31 @@ to the data directory. A loader thread watches the directory and applies
 appended journal lines; the UI renders an immutable view model rebuilt per
 change. Statements and series come from `ledger-core` (`reports`,
 `analysis`); the GUI only arranges them. See `plan/gui.md`.
+
+Two things sit beside the read-only view, both through the `Owner` the
+program gives the viewer (never a write of the books by the viewer):
+
+- **The agent dock** (`dock.rs`, P11b, D-27): a terminal panel along the
+  bottom of the window (`alacritty_terminal` over a PTY; ConPTY on Windows,
+  not offered until its four checks are recorded) that runs Claude Code or
+  Codex in the book's **books home**. The agent is an ordinary child process
+  of the viewer's program (D-32: no helper, no confinement) and writes the
+  books through the server like any other agent. The CLIs are found or
+  offered through their vendors' installers, never bundled; the app marks
+  no folder trusted (Q-7). Never required: any agent, anywhere, reaches the
+  same books through the MCP.
+- **The first-run page** (`welcome.rs`): with no books and an owner to ask,
+  `wanderbooks gui` shows a page that sets up the private folder, the owner
+  passphrase, the first books and an agent, then opens the books, so an
+  installed app onboards with no terminal.
+
+A **books home** (`ledger_host::commands::books_home`) is a visible folder,
+`<Documents>/Wanderbooks/<book id>`, made by the viewer's "New books…" and by
+`wanderbooks connect` (and again whenever the dock starts an agent). It holds
+exactly `AGENTS.md`, `CLAUDE.md` (three lines), `.mcp.json` (the
+project-level entry, `wanderbooks mcp --book ID`) and `.claude/settings.json`
+(allowing `mcp__wanderbooks-ID__*`): no books data, key, token or path into
+the data root (I-1 stays: the books are hidden, not here).
 
 ## Shared read-only views (`ledger-package`)
 

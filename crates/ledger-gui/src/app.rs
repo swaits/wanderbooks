@@ -151,22 +151,73 @@ pub struct App {
     menu: crate::menu::Menu,
     /// The owner's Books menu (owner.rs).
     owner_menu: crate::owner::OwnerMenu,
+    /// The agent dock along the bottom (dock.rs).
+    dock: crate::dock::Dock,
+    /// The first-run page, while there are no books to show (welcome.rs).
+    welcome: Option<crate::welcome::Welcome>,
+    /// What a first run opens its books with: the data root named, and
+    /// "today".
+    first_run_source: (Option<std::path::PathBuf>, Option<chrono::NaiveDate>),
 }
 
 impl App {
     /// The live app over a books directory.
     pub fn new(cc: &eframe::CreationContext<'_>, source: Source) -> Self {
-        // The scheme kept from last time; before schemes, a light/dark
-        // choice; else the system's mode (schemes INVARIANT 4).
+        let mut app = Self::new_without_books(cc);
+        app.loader = Some(Loader::spawn(source, cc.egui_ctx.clone()));
+        app
+    }
+
+    /// The app on a first run: no books yet, so the page that sets them up
+    /// (welcome.rs), which opens them once they are made. `root` is the data
+    /// root named on the command line, if any.
+    pub fn first_run(
+        cc: &eframe::CreationContext<'_>,
+        root: Option<std::path::PathBuf>,
+        today: Option<chrono::NaiveDate>,
+        state: crate::owner::FirstRun,
+    ) -> Self {
+        let mut app = Self::new_without_books(cc);
+        app.welcome = Some(crate::welcome::Welcome::new(state));
+        app.first_run_source = (root, today);
+        app
+    }
+
+    /// An app with no books and no loader yet: the scheme kept from last
+    /// time (before schemes, a light/dark choice; else the system's mode:
+    /// schemes INVARIANT 4) and the dock as it was left.
+    pub fn new_without_books(cc: &eframe::CreationContext<'_>) -> Self {
         let (scheme, filter) = restored(
             |key| cc.storage.and_then(|s| s.get_string(key)),
             cc.egui_ctx.global_style().visuals.dark_mode,
         );
         let mut app = Self::bare(&cc.egui_ctx, scheme);
         app.filter = filter;
+        app.dock = crate::dock::Dock::restored(|key| cc.storage.and_then(|s| s.get_string(key)));
         app.receipts.thumb_dir = crate::receipts::thumb_dir();
-        app.loader = Some(Loader::spawn(source, cc.egui_ctx.clone()));
         app
+    }
+
+    /// The first-run page, if it is up (tests).
+    pub fn welcome(&self) -> Option<&crate::welcome::Welcome> {
+        self.welcome.as_ref()
+    }
+
+    /// Open the books `id` of the data root named, as the first-run page
+    /// was asked to: the books come in as the loader reads them.
+    fn open_first_books(&mut self, ctx: &egui::Context, id: &str) {
+        let (root, today) = self.first_run_source.clone();
+        match crate::book_in_root(root.as_deref(), Some(id)) {
+            Ok(data_dir) => {
+                self.loader = Some(Loader::spawn(Source { data_dir, today }, ctx.clone()));
+                self.welcome = None;
+            }
+            Err(why) => {
+                if let Some(w) = self.welcome.as_mut() {
+                    w.refused(why);
+                }
+            }
+        }
     }
 
     /// An app showing fixed books (tests and screenshots).
@@ -198,6 +249,28 @@ impl App {
             live_label: false,
             menu: Default::default(),
             owner_menu: Default::default(),
+            dock: Default::default(),
+            welcome: None,
+            first_run_source: (None, None),
+        }
+    }
+
+    /// The agent dock (tests).
+    pub fn dock_mut(&mut self) -> &mut crate::dock::Dock {
+        &mut self.dock
+    }
+
+    /// The dock along the bottom, for books of a data root with an owner
+    /// to start the agent (dock.rs).
+    fn dock(&mut self, ui: &mut Ui) {
+        if !crate::dock::offered() {
+            return;
+        }
+        let (Some(owner), Some(books)) = (crate::owner::current(), self.books.clone()) else {
+            return;
+        };
+        if let Some(book) = crate::owner::book_id(&books) {
+            self.dock.show(ui, &owner, &book);
         }
     }
 
@@ -556,6 +629,10 @@ impl App {
     }
 
     fn handle_keys(&mut self, ui: &Ui) {
+        // The agent in the dock has the keyboard while it is clicked on.
+        if self.dock.has_keyboard() {
+            return;
+        }
         let (back, fwd, palette) = ui.input(|i| {
             (
                 (i.modifiers.alt && i.key_pressed(Key::ArrowLeft))
@@ -1636,6 +1713,22 @@ fn checks(b: &Books) -> Vec<(bool, String, String)> {
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+        // A first run: the page that sets the books up, until there are some.
+        if self.welcome.is_some() && self.books.is_none() {
+            let p = pal(ui.ctx());
+            let owner = crate::owner::current();
+            let mut open = None;
+            if let (Some(w), Some(owner)) = (self.welcome.as_mut(), owner) {
+                egui::CentralPanel::no_frame()
+                    .frame(Frame::new().fill(p.bg))
+                    .show(ui, |ui| w.show(ui, &owner));
+                open = w.take_open();
+            }
+            if let Some(id) = open {
+                self.open_first_books(&ui.ctx().clone(), &id);
+            }
+            return;
+        }
         let updates = self.loader.as_ref().map(|l| l.poll()).unwrap_or_default();
         for u in updates {
             match u {
@@ -1656,6 +1749,7 @@ impl eframe::App for App {
         let compact = ui.available_width() < COMPACT_BELOW;
         self.sidebar(ui, compact);
         self.topbar(ui);
+        self.dock(ui);
         let p = pal(ui.ctx());
         let since_update = ui.input(|i| i.time) - self.updated_at;
         if since_update < 6.0 {
@@ -1706,6 +1800,7 @@ impl eframe::App for App {
         storage.set_string(SCHEME_KEY, self.scheme.key());
         storage.set_string(FILTER_KEY, self.filter.name().to_string());
         storage.set_string("dark", self.scheme.dark.to_string());
+        self.dock.keep(&mut |k, v| storage.set_string(k, v));
     }
 }
 

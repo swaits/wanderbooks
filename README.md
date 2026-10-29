@@ -93,7 +93,13 @@ curl -fsSL https://wanderbooks.ai/install.sh | sh -s -- acme
 Already installed, three commands: `wanderbooks setup`, `wanderbooks books
 create acme`, `wanderbooks connect claude --book acme` (or `connect codex`).
 Then talk to the agent; `wanderbooks gui acme` shows the books, and its
-Books menu backs them up, restores, starts new books and closes them.
+Books menu backs them up, restores, starts new books and closes them. With
+no terminal (the AppImage, a menu entry), opening the app with no books
+shows a first-run page that does the same three steps (the private folder,
+an owner passphrase, the first books) and connects an agent; a panel along
+the bottom of the window then runs Claude Code or Codex in the books' own
+folder, `~/Documents/Wanderbooks/<id>` (optional: any agent can use the
+books).
 
 Updating: an AppImage, or a `wanderbooks` you put somewhere yourself, brings
 itself to the newest release with `wanderbooks update` (it checks the

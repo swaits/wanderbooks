@@ -144,11 +144,20 @@ column and the tie-out badge (S6), write-offs on the timeline (S7),
 documents grouped by category and subject (P6). S4.5 adds the number,
 terms, bill-to and the issued copy to Save.
 
+Landed 2026-10-29 (P11b): **the agent dock** along the bottom of the window
+(Claude Code or Codex in the book's books home, over a PTY with
+`alacritty_terminal`; collapsible and resizable; the choice remembered;
+Linux checked, macOS by CI, Windows not offered until its ConPTY checks are
+recorded; `dock.rs`, `tests/dock.rs`) and **the first-run page** (no books yet:
+the private folder, the owner passphrase, the first books, an agent, then
+the books open; `welcome.rs`, `tests/welcome.rs`), which is what lets an
+installed app onboard with no terminal. Both go through the `Owner`; the
+viewer still writes nothing of the books.
+
 Next, in the plan's order: S4.5's page changes; P4's draft states in
 Needs attention; P11a (the installed app: the viewer is its face, with
-"Check for updates" in the menu) and P11b (the agent dock along the
-bottom of the window, Claude Code or Codex in it, started in the book's
-books home; D-27). Not planned: a web build, which belongs to the hosted
+"Check for updates" in the menu; P11b, the dock and the first run, is
+landed, above). Not planned: a web build, which belongs to the hosted
 service (`plan/served.md` section 11, a browser viewer); the remote
 viewer replica (D-51: a backup clone opened read-only serves instead).
 Still open from the first version's list: a cash forecast with a

@@ -1355,14 +1355,11 @@ pub fn installer(agent: &str) -> Option<Installer> {
     }
 }
 
-/// The folder holding the user's documents: `$XDG_DOCUMENTS_DIR` if
-/// absolute, else `Documents` in the home (the same word on every system
-/// this program runs on).
+/// The folder holding the user's documents: `Documents` in the home (the
+/// word the spec uses on every system this program runs on; nothing in the
+/// environment moves it, so a test's own `HOME` is all a test needs).
 pub fn documents_dir() -> Option<PathBuf> {
-    std::env::var_os("XDG_DOCUMENTS_DIR")
-        .map(PathBuf::from)
-        .filter(|d| d.is_absolute())
-        .or_else(|| home_dir_env().map(|h| h.join("Documents")))
+    home_dir_env().map(|h| h.join("Documents"))
 }
 
 /// The books home of `book` (D-27): a visible folder,

@@ -47,12 +47,74 @@ pub enum Agent {
 }
 
 impl Agent {
-    fn label(self) -> &'static str {
+    /// The key it is kept under (the viewer's preference) and the word
+    /// the owner's commands know it by.
+    pub fn key(self) -> &'static str {
+        match self {
+            Agent::Claude => "claude",
+            Agent::Codex => "codex",
+        }
+    }
+
+    /// The agent kept under `key`.
+    pub fn from_key(key: &str) -> Option<Agent> {
+        [Agent::Claude, Agent::Codex]
+            .into_iter()
+            .find(|a| a.key() == key)
+    }
+
+    /// Its name.
+    pub fn label(self) -> &'static str {
         match self {
             Agent::Claude => "Claude Code",
             Agent::Codex => "Codex",
         }
     }
+}
+
+/// Where a first run stands: what exists already (the viewer's welcome
+/// page starts from the first missing step).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FirstRun {
+    /// The books' private folder is there.
+    pub root: bool,
+    /// The ids of the books in it.
+    pub books: Vec<String>,
+    /// The owner passphrase is set.
+    pub passphrase_set: bool,
+}
+
+/// How a person gets an agent's program: the vendor's own installer, never
+/// bundled (D-27).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Installer {
+    /// The agent's name.
+    pub label: String,
+    /// The vendor's install command, for a terminal.
+    pub command: String,
+    /// The vendor's page about it.
+    pub page: String,
+}
+
+/// What it takes to run an agent in a books home (the dock runs it on a
+/// terminal of its own; nothing here starts a process).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AgentStart {
+    /// Run `program args` in `dir` with `env` added.
+    Ready {
+        /// The agent's name.
+        label: String,
+        /// The program.
+        program: std::path::PathBuf,
+        /// Its arguments.
+        args: Vec<String>,
+        /// The books home it starts in.
+        dir: std::path::PathBuf,
+        /// Environment to add.
+        env: Vec<(String, String)>,
+    },
+    /// The agent isn't installed: the vendor's installer.
+    Missing(Installer),
 }
 
 /// A restore previewed: what it would do, and what it is of (INVARIANT 3).
@@ -95,6 +157,26 @@ pub trait Owner: Send + Sync {
     /// The owner's go-ahead for the books `book`'s format upgrade, with the
     /// owner passphrase they typed (the server checks it).
     fn upgrade_format(&self, book: &str, passphrase: &str) -> Result<Vec<String>, String>;
+    /// Where a first run stands (P11b: onboarding with no terminal).
+    fn first_run(&self) -> FirstRun {
+        FirstRun::default()
+    }
+    /// Make the books' private folder (what `wanderbooks setup` does).
+    fn set_up(&self) -> Result<Vec<String>, String> {
+        Err("not here".into())
+    }
+    /// Set the owner passphrase for the first time, as typed (twice) in the
+    /// viewer.
+    fn set_passphrase(&self, _new: &str) -> Result<(), String> {
+        Err("not here".into())
+    }
+    /// Hold the books `book` open while the viewer runs (the viewer's lease).
+    fn hold(&self, _book: &str) {}
+    /// How to run `agent` in the books home of `book` (made if need be): the
+    /// dock starts it on a terminal of its own (D-27).
+    fn agent_start(&self, _agent: Agent, _book: &str) -> Result<AgentStart, String> {
+        Err("not here".into())
+    }
 }
 
 static OWNER: OnceLock<Arc<dyn Owner>> = OnceLock::new();
@@ -102,6 +184,11 @@ static OWNER: OnceLock<Arc<dyn Owner>> = OnceLock::new();
 /// Give the viewer its owner (once, at start; INVARIANT 4).
 pub fn set_owner(owner: Arc<dyn Owner>) {
     let _ = OWNER.set(owner);
+}
+
+/// The viewer's owner, if the program gave it one.
+pub fn current() -> Option<Arc<dyn Owner>> {
+    owner()
 }
 
 fn owner() -> Option<Arc<dyn Owner>> {

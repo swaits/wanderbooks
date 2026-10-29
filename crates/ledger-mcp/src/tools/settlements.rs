@@ -39,35 +39,17 @@ fn doc_party(ledger: &Ledger, doc: ledger_core::DocRef) -> Result<u64, String> {
     }
 }
 
-/// The one id a payment tool's single form names: `invoice`/`bill`, or
-/// the older `document_id`. Both at once is refused unless they agree.
-fn single_document(primary: Option<u64>, alias: Option<u64>, what: &str) -> Result<u64, String> {
-    match (primary, alias) {
-        (Some(a), Some(b)) if a != b => Err(format!(
-            "pass {what} or document_id, not both: {} and {b} differ",
-            a
-        )),
-        (Some(id), _) | (None, Some(id)) => Ok(id),
-        (None, None) => Err(format!(
-            "pass {what} (or an applications list): see books.documents"
-        )),
-    }
+/// The one id a payment tool's single form names: `invoice` or `bill`.
+fn single_document(primary: Option<u64>, what: &str) -> Result<u64, String> {
+    primary.ok_or_else(|| format!("pass {what} (or an applications list): see books.documents"))
 }
 
-/// The one account a payment tool's single form names: `deposit_to`/
-/// `paid_from`, or the older `cash_account`.
-fn single_account(
-    primary: &Option<String>,
-    alias: &Option<String>,
-    what: &str,
-) -> Result<String, String> {
-    match (primary, alias) {
-        (Some(a), Some(b)) if a != b => Err(format!(
-            "pass {what} or cash_account, not both: {a:?} and {b:?} differ"
-        )),
-        (Some(a), _) | (None, Some(a)) => Ok(a.clone()),
-        (None, None) => Err(format!("pass {what} (or cash_account)")),
-    }
+/// The one account a payment tool's single form names: `deposit_to` or
+/// `paid_from`.
+fn single_account(primary: &Option<String>, what: &str) -> Result<String, String> {
+    primary
+        .clone()
+        .ok_or_else(|| format!("pass {what}: the account the cash moves through"))
 }
 
 /// Every document a payment tool's parameters name, as the core takes
@@ -128,7 +110,6 @@ fn applications(
     }
     let id = single_document(
         if invoices { p.invoice } else { p.bill },
-        p.document_id,
         if invoices { "invoice" } else { "bill" },
     )?;
     let amount = p
@@ -178,7 +159,6 @@ fn settlement(
             } else {
                 &p.paid_from
             },
-            &p.cash_account,
             if invoices { "deposit_to" } else { "paid_from" },
         )?,
     )?;

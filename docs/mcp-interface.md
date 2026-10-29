@@ -2195,8 +2195,8 @@ snapshots; see plan 8.2 S4.
   receivable line tagged with the invoice and the receivable side one line
   per (account, project) part.
   - `customer` is the customer's id, its party's id or its name (a name
-    two customers answer to is refused); `party_id` is the old spelling of
-    the same thing (a customer id), kept until P5.
+    two customers answer to is refused); it is required (the old `party_id`
+    spelling is gone, P5).
   - The due date: `due_date` as given (and it overrides `terms`); else
     `terms` ("Net 30", "Net 15 EOM", "2/10 net 30", "Due on receipt",
     "Due 2026-11-15", rules.md B-39); else the customer's
@@ -2247,8 +2247,8 @@ snapshots; see plan 8.2 S4.
   sha256 }, warnings?, notes? }`.
   Confirmed it posts Dr each line's account / Cr `2000` Accounts Payable,
   the payable line tagged with the bill and one debit line per (account,
-  project) part; `vendor` is a vendor id, its party's id or its name, and
-  `party_id` the old spelling (a vendor id).
+  project) part; `vendor` is a vendor id, its party's id or its name
+  (required; the old `party_id` spelling is gone, P5).
   - `vendor_ref` is the vendor's own invoice number: required in books
     that have declared `documents_v2` (B-40). The same vendor and number
     twice is refused unless `duplicate_reason` says why, which is
@@ -2271,8 +2271,8 @@ snapshots; see plan 8.2 S4.
   - `warnings` names an expense account it created with no tax category;
     `notes` one per finished or abandoned project a line names (none for
     on-spec: a cost of on-spec work is an expense like any other).
-- `books.receive_payment { date, deposit_to | cash_account, instrument?,
-  reference?, invoice | document_id, amount? | applications: [{ invoice,
+- `books.receive_payment { date, deposit_to, instrument?,
+  reference?, invoice, amount? | applications: [{ invoice,
   amount, discount?, discount_reason? }], fee?: { amount, account?,
   vendor? }, paid_in_full_marking?, confirmed?, preview? }` → `{ preview?,
   entry_id, documents: [{ ref, number?, outstanding, status }], deposited,
@@ -2294,11 +2294,11 @@ snapshots; see plan 8.2 S4.
   repeat the single document's figures. An overpayment is refused with the
   excess and the remedy (a plain entry to 2300 Customer Deposits).
   `paid_in_full_marking: true` adds a UCC §3-311 warning and records
-  nothing else. `document_id` and `cash_account` are the older names of
-  `invoice`/`bill` and `deposit_to`/`paid_from`. The books record
+  nothing else. (The older names `document_id` and `cash_account` are
+  gone, P5.) The books record
   payments; they never collect them (D-45).
-- `books.pay_bill { date, paid_from | cash_account, instrument?,
-  reference?, bill | document_id, amount? | applications: [{ bill, amount,
+- `books.pay_bill { date, paid_from, instrument?,
+  reference?, bill, amount? | applications: [{ bill, amount,
   discount?, discount_reason? }], confirmed?, preview? }` → as `receive_payment`, per bill and
   one vendor (B-42): Dr A/P each bill's cash and discount, Cr the payer
   account the cash, Cr purchase discounts the discounts. A discount on a

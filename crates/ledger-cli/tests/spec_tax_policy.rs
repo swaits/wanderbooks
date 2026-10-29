@@ -278,7 +278,7 @@ fn require_tax_category_refuses_defect_8() {
     );
     let bill = m.call(
         "books.create_bill",
-        json!({"party_id": vendor["id"], "date": "2026-02-01", "due_date": "2026-03-01",
+        json!({"vendor": (vendor["id"]).to_string(), "date": "2026-02-01", "due_date": "2026-03-01",
                "vendor_ref": "CH-1",
                "lines": [{"description": "hosting", "amount": "42.00", "account": "6150"}],
                "upload_id": first_invoice, "confirmed": true}),
@@ -303,7 +303,7 @@ fn require_tax_category_refuses_defect_8() {
     );
     let again = m.call(
         "books.create_bill",
-        json!({"party_id": vendor["id"], "date": "2026-02-02", "due_date": "2026-03-02",
+        json!({"vendor": (vendor["id"]).to_string(), "date": "2026-02-02", "due_date": "2026-03-02",
                "vendor_ref": "CH-2",
                "lines": [{"description": "hosting", "amount": "1.00", "account": "6150"}],
                "upload_id": second_invoice, "confirmed": true}),

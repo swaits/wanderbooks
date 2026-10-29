@@ -455,17 +455,7 @@ impl BooksServer {
     ) -> Result<Json<InvoiceOut>, String> {
         let p = params.0;
         let mut store = self.lock()?;
-        let customer = match (&p.customer, p.party_id) {
-            (Some(c), None) => c.trim().to_string(),
-            (None, Some(id)) => id.to_string(),
-            (Some(c), Some(id)) if c.trim() == id.to_string() => c.trim().to_string(),
-            (Some(_), Some(_)) => {
-                return Err("give the customer once: customer or party_id, not both".into());
-            }
-            (None, None) => {
-                return Err("give customer: a customer id, a party id or a name".into());
-            }
-        };
+        let customer = p.customer.trim().to_string();
         let customer_id = resolve_customer(&store, &customer)?;
         let date = parse_date(&p.date)?;
         let lines = document_lines(&store, p.lines)?;
@@ -606,17 +596,7 @@ impl BooksServer {
     ) -> Result<Json<BillOut>, String> {
         let p = params.0;
         let mut store = self.lock()?;
-        let vendor = match (&p.vendor, p.party_id) {
-            (Some(v), None) => v.trim().to_string(),
-            (None, Some(id)) => id.to_string(),
-            (Some(v), Some(id)) if v.trim() == id.to_string() => v.trim().to_string(),
-            (Some(_), Some(_)) => {
-                return Err("give the vendor once: vendor or party_id, not both".into());
-            }
-            (None, None) => {
-                return Err("give vendor: a vendor id, a party id or a name".into());
-            }
-        };
+        let vendor = p.vendor.trim().to_string();
         let vendor_id = resolve_vendor_arg(&store, &vendor)?;
         let date = parse_date(&p.date)?;
         let received_on = p.received_on.as_deref().map(parse_date).transpose()?;

@@ -167,7 +167,7 @@ fuzz_target!(|data: &[u8]| {
             w.append(t, p).unwrap();
         }
     }
-    let _ = std::fs::remove_file(dir.join(ledger_store::DB_FILE));
+    let _ = std::fs::remove_file(dir.join(ledger_store::db_file()));
     let store = ledger_store::Store::open(&dir);
     let snap = ledger_store::Snapshot::load(&dir);
     match (store, snap) {

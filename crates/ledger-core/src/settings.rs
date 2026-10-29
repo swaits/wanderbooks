@@ -146,6 +146,9 @@ pub enum Kind {
     Terms,
     /// Payment methods (A-3): a list of `{kind, label, lines, link?, qr?}`.
     PaymentMethods,
+    /// What counts as an attestation ([`crate::audit::AttestationBar`]),
+    /// in its one canonical spelling.
+    AttestationBar,
 }
 
 /// One setting the books know.
@@ -170,6 +173,7 @@ const PARTY_POLICY: &[(&str, &[&str])] =
 const APPROVAL_MODE: &[(&str, &[&str])] = &[("off", &[]), ("enforce", &[])];
 const TAX_CATEGORY_POLICY: &[(&str, &[&str])] =
     &[("warn", &[]), ("refuse", &["required", "require"])];
+const AUDIT_REQUIRED: &[(&str, &[&str])] = &[("refuse", &["required", "require"]), ("warn", &[])];
 const SCHEDULE_CONVENTION: &[(&str, &[&str])] = &[("daily", &[]), ("monthly_even", &[])];
 
 /// A return's key as a setting keeps it.
@@ -400,6 +404,21 @@ pub static KEYS: &[Key] = &[
         kind: Kind::Choice(APPROVAL_MODE),
         sensitivity: Sensitivity::Public,
         doc: "off: approval_rule conventions are recorded but never block a post. enforce: an entry a rule covers posts only once its approver approves it (books.approve_entry). Unset: off.",
+    },
+    // P8: audits and attestations.
+    Key {
+        name: "policy.attestation_bar",
+        toml: ("books", "attestation_bar"),
+        kind: Kind::AttestationBar,
+        sensitivity: Sensitivity::Public,
+        doc: "What counts as an attestation (plan D-9): the least reasoning effort a checker reports (low, medium, high, xhigh, max), and for a year-level audit the fewest independent verifier agents and whether the check was adversarial, written like effort=high verifiers=2 adversarial=true (a word left out keeps its default). The client reports how it checked; the books record that claim and say whether it meets this bar when asked, so a change here changes what counts, earlier attestations too. Unset: effort=high verifiers=2 adversarial=true.",
+    },
+    Key {
+        name: "policy.cpa_package_requires_audit",
+        toml: ("books", "cpa_package_requires_audit"),
+        kind: Kind::Choice(AUDIT_REQUIRED),
+        sensitivity: Sensitivity::Public,
+        doc: "Whether books.export_cpa_package waits for an audit: refuse (the package is refused unless an audit for the handoff or a full audit at the current books has its period attested; a reason given for the export overrides it and is recorded as a decision) or warn (the package is made and says so). Unset: refuse.",
     },
     Key {
         name: "backup.git_remote",
@@ -1103,6 +1122,11 @@ pub fn check(key: &Key, v: &Value) -> Result<Value, String> {
             Ok(json!(terms.describe()))
         }
         Kind::PaymentMethods => payment_methods(name, want_list(name, v)?),
+        Kind::AttestationBar => {
+            let bar = crate::audit::AttestationBar::parse(want_str(name, v)?)
+                .map_err(|e| format!("{name}: {e}"))?;
+            Ok(json!(bar.describe()))
+        }
         Kind::TimeZone => {
             let s = want_str(name, v)?.trim();
             let zone = jiff::tz::TimeZone::get(s).map_err(|_| {
@@ -1230,6 +1254,9 @@ pub fn shape(key: &Key, v: &Value) -> Result<(), String> {
                 .ok_or_else(|| format!("{name} {s:?} is not a decimal"))
         }
         Kind::Count => count_of(name, v).map(|_| ()),
+        Kind::AttestationBar => crate::audit::AttestationBar::parse(want_str(name, v)?)
+            .map(|_| ())
+            .map_err(|e| format!("{name}: {e}")),
         Kind::PaymentMethods => {
             for (i, m) in want_list(name, v)?.iter().enumerate() {
                 let n = format!("{name} method {}", i + 1);
@@ -1603,6 +1630,18 @@ impl Settings {
             Some("enforce") => ApprovalMode::Enforce,
             _ => ApprovalMode::Off,
         }
+    }
+
+    /// `policy.attestation_bar` (unset: the default bar, D-9).
+    pub fn attestation_bar(&self) -> crate::audit::AttestationBar {
+        self.str("policy.attestation_bar")
+            .and_then(|s| crate::audit::AttestationBar::parse(s).ok())
+            .unwrap_or_default()
+    }
+
+    /// `policy.cpa_package_requires_audit` (unset: refuse).
+    pub fn cpa_package_requires_audit(&self) -> bool {
+        self.str("policy.cpa_package_requires_audit") != Some("warn")
     }
 
     /// `backup.git_remote`, if set.

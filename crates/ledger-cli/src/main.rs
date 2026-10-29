@@ -331,7 +331,9 @@ fn run_local(mode: &str, args: Vec<String>) -> i32 {
         "token" => ledger_host::commands::token(&prog, args),
         "connect" => ledger_host::commands::connect(&prog, args),
         "passphrase" => ledger_host::commands::passphrase(&prog, args),
-        "update" => ledger_host::update::update(&prog, env!("CARGO_PKG_VERSION"), args),
+        "update" => {
+            ledger_host::update::update(&prog, ledger_host::update::program_version(), args)
+        }
         "rollback" => ledger_host::update::rollback(&prog, args),
         _ => ledger_host::commands::books(&prog, args),
     };
@@ -399,6 +401,7 @@ fn is_bare_launch(words: &[String], stdin_is_terminal: bool) -> bool {
 }
 
 fn main() {
+    ledger_host::update::set_program_version(env!("CARGO_PKG_VERSION"));
     // A file's path may be any name the system takes: the file commands
     // get the words as given. Everything else is text.
     let given: Vec<std::ffi::OsString> = env::args_os().skip(1).collect();

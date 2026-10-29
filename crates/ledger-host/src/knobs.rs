@@ -33,6 +33,9 @@ pub struct Knobs {
     /// How long after books open the server first looks for a drill due
     /// (60 s), passed to the server as `--drill-first`.
     pub drill_first: Duration,
+    /// How long between the host's looks for a newer release (plan
+    /// P11a step 4: a day).
+    pub update_check: Duration,
 }
 
 impl Default for Knobs {
@@ -47,6 +50,7 @@ impl Default for Knobs {
             open_wait: Duration::from_secs(120),
             backup_quiet: Duration::from_secs(30),
             drill_first: Duration::from_secs(60),
+            update_check: Duration::from_secs(24 * 60 * 60),
         }
     }
 }
@@ -76,6 +80,7 @@ impl Knobs {
                 "open_wait" => k.open_wait = d,
                 "backup_quiet" => k.backup_quiet = d,
                 "drill_first" => k.drill_first = d,
+                "update_check" => k.update_check = d,
                 other => return Err(format!("{FLAG}: there is no knob {other:?}")),
             }
         }
@@ -97,6 +102,7 @@ impl Knobs {
             ("open_wait", self.open_wait, d.open_wait),
             ("backup_quiet", self.backup_quiet, d.backup_quiet),
             ("drill_first", self.drill_first, d.drill_first),
+            ("update_check", self.update_check, d.update_check),
         ] {
             if now != default {
                 parts.push(format!("{name}={}", now.as_millis()));
@@ -130,6 +136,7 @@ mod tests {
         assert_eq!(k.open_wait, Duration::from_secs(120));
         assert_eq!(k.backup_quiet, Duration::from_secs(30));
         assert_eq!(k.drill_first, Duration::from_secs(60));
+        assert_eq!(k.update_check, Duration::from_secs(86_400));
         assert_eq!(k.to_arg(), None);
         assert!(k.args().is_empty());
         assert_eq!(Knobs::parse("").unwrap(), k);
@@ -138,7 +145,7 @@ mod tests {
     #[test]
     fn knobs_pass_on_exactly() {
         let k = Knobs::parse(
-            "close_after=500,backoff=20,server_delay=3000,init_wait=100,queue_wait=900,exe_poll=50,open_wait=70,backup_quiet=40,drill_first=50",
+            "close_after=500,backoff=20,server_delay=3000,init_wait=100,queue_wait=900,exe_poll=50,open_wait=70,backup_quiet=40,drill_first=50,update_check=60",
         )
         .unwrap();
         assert_eq!(k.close_after, Duration::from_millis(500));
@@ -150,6 +157,7 @@ mod tests {
         assert_eq!(k.open_wait, Duration::from_millis(70));
         assert_eq!(k.backup_quiet, Duration::from_millis(40));
         assert_eq!(k.drill_first, Duration::from_millis(50));
+        assert_eq!(k.update_check, Duration::from_millis(60));
         let args = k.args();
         assert_eq!(args[0], FLAG);
         assert_eq!(Knobs::parse(&args[1]).unwrap(), k);

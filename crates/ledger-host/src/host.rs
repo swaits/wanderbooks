@@ -500,6 +500,12 @@ impl Host {
         let started_as = running_identity();
         let mut exe_poll = tokio::time::interval(self.knobs.exe_poll);
         exe_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // The daily look for a newer release (P11a step 4): the work is
+        // a thread of its own, one at a time, and only stages a file.
+        let mut update_poll =
+            tokio::time::interval((self.knobs.update_check / 4).max(Duration::from_millis(10)));
+        update_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let looking = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let mut idle_at = Some(Instant::now() + self.knobs.close_after);
         let server_start = tokio::time::sleep(self.knobs.server_delay);
         tokio::pin!(server_start);
@@ -655,6 +661,20 @@ impl Host {
                         if self.server_pid.is_none() {
                             return self.finish(connections, Ending::Closed).await;
                         }
+                    }
+                }
+                _ = update_poll.tick(), if matches!(self.phase, Phase::Open) => {
+                    use std::sync::atomic::Ordering;
+                    if !looking.swap(true, Ordering::SeqCst) {
+                        let (root, every, looking) = (self.root.clone(), self.knobs.update_check, looking.clone());
+                        std::thread::spawn(move || {
+                            match crate::update::stage_if_due(&root, crate::update::program_version(), every) {
+                                Ok(Some(version)) => eprintln!("wanderbooks host: version {version} is downloaded and checked; it starts the next time the books open, or at `wanderbooks update`"),
+                                Ok(None) => {}
+                                Err(why) => eprintln!("wanderbooks host: the look for a newer version failed: {why}"),
+                            }
+                            looking.store(false, Ordering::SeqCst);
+                        });
                     }
                 }
                 _ = exe_poll.tick(), if matches!(self.phase, Phase::Open) => {

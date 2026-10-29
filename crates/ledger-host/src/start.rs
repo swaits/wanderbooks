@@ -205,6 +205,10 @@ pub fn start_host(
     let found = ledger_store::root::Root::find(root).map_err(|e| e.to_string())?;
     let run = found.run_dir().map_err(|e| e.to_string())?;
     let home = ledger_store::root::account_home().map_err(|e| e.to_string())?;
+    // A staged update is applied here and nowhere while books are open:
+    // no host runs now, so no call is cut off (update.rs INVARIANT 9). A
+    // failure leaves the program as it was.
+    let _ = crate::update::apply_staged(&found, crate::update::program_version());
     let exe = this_executable()?;
     let mut args: Vec<std::ffi::OsString> = vec!["host".into()];
     // An explicit root goes on as found (absolute): the host starts in /.

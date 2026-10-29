@@ -4,7 +4,8 @@
 //! and host.rs; the P11a tests update_is_atomic, failed_update_rolls_back,
 //! unsigned_update_refused, bridge_survives_update,
 //! update_waits_for_a_running_call, package_managed_install_refuses_update,
-//! and the rollback laws (kept version, the format gate).
+//! and the rollback laws (kept version, the format gate); and step 4's
+//! daily check, staged update and apply-at-next-start.
 #![cfg(target_os = "linux")]
 
 mod common;
@@ -16,8 +17,7 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-const KNOBS: &str =
-    "close_after=2500,backoff=50,exe_poll=100,init_wait=5000,queue_wait=30000,backup_quiet=300";
+const KNOBS: &str = "close_after=2500,backoff=50,exe_poll=100,init_wait=5000,queue_wait=30000,backup_quiet=300,update_check=400";
 
 /// The platform key a manifest names, as the program computes it.
 fn platform() -> String {
@@ -834,4 +834,162 @@ fn update_waits_for_a_running_call() {
         in_books, written,
         "a write lost, or made twice, across the update"
     );
+}
+
+/// Name `release` as this home's local feed, as the owner would
+/// (`<root>/updates/feed`: the address, then the key file).
+fn name_feed(home: &Home, release: &Release) {
+    std::fs::create_dir_all(home.updates()).unwrap();
+    std::fs::write(
+        home.updates().join("feed"),
+        format!(
+            "file://{}\n{}\n",
+            release.dir.path().join("manifest.json").display(),
+            release.dir.path().join("release.pub").display()
+        ),
+    )
+    .unwrap();
+}
+
+fn staged_version(home: &Home) -> Option<String> {
+    let meta = std::fs::read(home.updates().join("staged/meta.json")).ok()?;
+    let v: Value = serde_json::from_slice(&meta).ok()?;
+    v["version"].as_str().map(str::to_string)
+}
+
+#[test]
+fn the_host_stages_a_daily_update_and_the_next_start_applies_it() {
+    let home = Home::new("daily");
+    home.create("acme");
+    let old = home.program();
+    let release = Release::new();
+    let next = newer(&home, "daily");
+    release.publish("9.0.0", &next, |_| {});
+    name_feed(&home, &release);
+    let mut agent = Agent::start(&home, "acme");
+    agent.add_account("4000").unwrap();
+    let host = wait_host(&home);
+
+    // The host looks, downloads, verifies and stages; nothing running
+    // changes: not the file, not the host.
+    assert!(
+        wait_for(30, || staged_version(&home).as_deref() == Some("9.0.0")),
+        "nothing was staged"
+    );
+    assert_eq!(home.program(), old, "the program was swapped while open");
+    assert!(!home.updates().join("previous").exists());
+    std::thread::sleep(Duration::from_millis(1200));
+    assert_eq!(home.pids("host"), vec![host], "the host restarted");
+    assert!(agent.add_account("4001").is_ok());
+
+    // The books close; the next opener applies it before the host starts.
+    drop(agent);
+    let out = home.cmd("close").output().unwrap();
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(wait_for(20, || home.pids("host").is_empty()));
+    let mut agent = Agent::start(&home, "acme");
+    assert_eq!(home.program(), next, "the staged update wasn't applied");
+    assert!(!home.updates().join("staged").exists());
+    assert!(
+        home.updates()
+            .join("previous")
+            .join("wanderbooks")
+            .is_file()
+    );
+    assert_eq!(
+        std::fs::read(home.updates().join("previous/wanderbooks")).unwrap(),
+        old
+    );
+    let host = wait_host(&home);
+    assert!(
+        !std::fs::read_link(format!("/proc/{host}/exe"))
+            .unwrap()
+            .to_string_lossy()
+            .contains("(deleted)")
+    );
+    let chart = agent.call("books.chart", json!({})).unwrap();
+    let codes: Vec<&str> = chart["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|a| a["code"].as_str())
+        .collect();
+    assert!(codes.contains(&"4000") && codes.contains(&"4001"));
+}
+
+#[test]
+fn a_daily_update_that_is_not_ours_is_not_staged() {
+    let home = Home::new("daily-bad");
+    home.create("acme");
+    let release = Release::new();
+    let next = newer(&home, "daily-bad");
+    let other = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+    // Signed by another key; and, separately, a wrong checksum.
+    let sig = Release::b64(&Release::sign_with(&other, &next));
+    release.publish("9.0.0", &next, |e| e["signature"] = json!(sig));
+    name_feed(&home, &release);
+    let _agent = Agent::start(&home, "acme");
+    assert!(
+        wait_for(30, || home.updates().join("checked").exists()),
+        "no look"
+    );
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(staged_version(&home), None);
+    assert!(!home.updates().join("staged").exists());
+    release.publish("9.0.1", &next, |e| e["sha256"] = json!("00".repeat(32)));
+    std::fs::remove_file(home.updates().join("checked")).unwrap();
+    assert!(
+        wait_for(30, || home.updates().join("checked").exists()),
+        "no second look"
+    );
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(staged_version(&home), None);
+}
+
+#[test]
+fn update_installs_the_copy_the_host_staged_without_downloading_again() {
+    let home = Home::new("daily-use");
+    home.create("acme");
+    let release = Release::new();
+    let next = newer(&home, "daily-use");
+    release.publish("9.0.0", &next, |_| {});
+    name_feed(&home, &release);
+    let _agent = Agent::start(&home, "acme");
+    assert!(wait_for(30, || staged_version(&home).is_some()));
+    // The program file is gone from the feed: only the staged copy is left.
+    std::fs::remove_file(release.dir.path().join("wanderbooks-9.0.0")).unwrap();
+    let out = home.run("update", None);
+    assert!(out.status.success(), "{}", text(&out));
+    assert_eq!(home.program(), next);
+    assert!(!home.updates().join("staged").exists());
+}
+
+#[test]
+fn a_staged_update_that_was_tampered_with_is_dropped_not_applied() {
+    let home = Home::new("daily-tamper");
+    home.create("acme");
+    let old = home.program();
+    let release = Release::new();
+    let next = newer(&home, "daily-tamper");
+    release.publish("9.0.0", &next, |_| {});
+    name_feed(&home, &release);
+    let agent = Agent::start(&home, "acme");
+    assert!(wait_for(30, || staged_version(&home).is_some()));
+    drop(agent);
+    let out = home.cmd("close").output().unwrap();
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(wait_for(20, || home.pids("host").is_empty()));
+    // The staged file changes, its recorded checksum with it: the
+    // signature no longer holds.
+    let staged = home.updates().join("staged");
+    let mut bytes = std::fs::read(staged.join("wanderbooks")).unwrap();
+    bytes.extend_from_slice(b"tamper");
+    std::fs::write(staged.join("wanderbooks"), &bytes).unwrap();
+    let mut meta: Value =
+        serde_json::from_slice(&std::fs::read(staged.join("meta.json")).unwrap()).unwrap();
+    meta["sha256"] = json!(sha256(&bytes));
+    std::fs::write(staged.join("meta.json"), meta.to_string()).unwrap();
+    let _agent = Agent::start(&home, "acme");
+    assert_eq!(home.program(), old, "a tampered update was applied");
+    assert!(!staged.exists(), "and kept");
 }

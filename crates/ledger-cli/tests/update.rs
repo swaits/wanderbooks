@@ -76,6 +76,10 @@ fn base_program() -> &'static Path {
 struct Home {
     dir: tempfile::TempDir,
     exe: PathBuf,
+    /// A pretend AppImage (P11a step 4): the programs run from `exe`, as
+    /// from an image's mount, and `APPIMAGE` names this other file, the
+    /// one an update replaces.
+    image: Option<PathBuf>,
 }
 
 impl Home {
@@ -95,7 +99,22 @@ impl Home {
         std::fs::create_dir(&bin).unwrap();
         let exe = bin.join("wanderbooks");
         std::fs::copy(base_program(), &exe).unwrap();
-        let home = Self { dir, exe };
+        let home = Self {
+            dir,
+            exe,
+            image: None,
+        };
+        home.runnable();
+        home
+    }
+
+    /// A home whose program is an AppImage: the same program twice, one
+    /// copy to run (the mount's) and one the image file `APPIMAGE` names.
+    fn new_image(tag: &str) -> Self {
+        let mut home = Self::new(tag);
+        let image = home.dir.path().join("Wanderbooks.AppImage");
+        std::fs::copy(base_program(), &image).unwrap();
+        home.image = Some(image);
         home.runnable();
         home
     }
@@ -103,22 +122,32 @@ impl Home {
     /// Wait until the copy can be run (a child another test thread forked
     /// while it was written may hold it open for a moment).
     fn runnable(&self) {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            match Command::new(&self.exe)
-                .arg("--help")
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-            {
-                Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
-                    assert!(Instant::now() < deadline, "the copy stayed busy");
-                    std::thread::sleep(Duration::from_millis(20));
+        for exe in std::iter::once(&self.exe).chain(self.image.as_ref()) {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                match Command::new(exe)
+                    .arg("--help")
+                    .env("APPIMAGE_EXTRACT_AND_RUN", "1")
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status()
+                {
+                    Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                        assert!(Instant::now() < deadline, "the copy stayed busy");
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
+                    Err(e) => panic!("the copy can't be run: {e}"),
+                    Ok(_) => break,
                 }
-                Err(e) => panic!("the copy can't be run: {e}"),
-                Ok(_) => return,
             }
+        }
+    }
+
+    /// The environment of the pretend AppImage, if this is one.
+    fn image_env(&self, c: &mut Command) {
+        if let Some(image) = &self.image {
+            c.env("APPIMAGE", image);
         }
     }
 
@@ -139,11 +168,13 @@ impl Home {
             .env_clear()
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", self.dir.path());
+        self.image_env(&mut c);
         c
     }
 
+    /// The program that updates replace: the image, if there is one.
     fn program(&self) -> Vec<u8> {
-        std::fs::read(&self.exe).unwrap()
+        std::fs::read(self.image.as_ref().unwrap_or(&self.exe)).unwrap()
     }
 
     fn create(&self, id: &str) {
@@ -180,6 +211,7 @@ impl Home {
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", self.dir.path())
             .stdin(Stdio::null());
+        self.image_env(&mut c);
         c.output().unwrap()
     }
 
@@ -655,7 +687,11 @@ impl Drop for Agent {
 /// host and server run the new file afterwards, and the head is the one
 /// the writes made.
 fn update_under_writes(tag: &str) -> (Home, Agent, Vec<String>) {
-    let home = Home::new(tag);
+    update_under_writes_in(Home::new(tag))
+}
+
+fn update_under_writes_in(home: Home) -> (Home, Agent, Vec<String>) {
+    let tag = "under-writes";
     home.create("acme");
     let release = Release::new();
     let next = newer(&home, tag);
@@ -673,18 +709,21 @@ fn update_under_writes(tag: &str) -> (Home, Agent, Vec<String>) {
             release.dir.path().join("manifest.json").display()
         );
         let key = release.dir.path().join("release.pub");
+        let image = home.image.clone();
         std::thread::spawn(move || {
             let _keep = &release;
-            Command::new(exe)
-                .args(["update", "--root"])
+            let mut c = Command::new(exe);
+            c.args(["update", "--root"])
                 .arg(root)
                 .args(["--feed", &feed, "--trusted-key"])
                 .arg(key)
                 .env_clear()
                 .env("PATH", "/usr/bin:/bin")
-                .env("HOME", dir)
-                .output()
-                .unwrap()
+                .env("HOME", dir);
+            if let Some(image) = image {
+                c.env("APPIMAGE", image);
+            }
+            c.output().unwrap()
         })
     };
     let mut written = vec!["4000".to_string()];
@@ -740,6 +779,39 @@ fn bridge_survives_update() {
     let chart = agent.call("books.chart", json!({})).unwrap();
     let in_books = chart["accounts"].as_array().unwrap().len();
     assert!(in_books >= written.len(), "{in_books} < {}", written.len());
+}
+
+#[test]
+fn a_replaced_appimage_restarts_the_books() {
+    // The programs run from one file (an image's mount) while `APPIMAGE`
+    // names another (the image). Replacing the image alone must restart
+    // the host onto it, with the session and every write intact.
+    let home = Home::new_image("appimage");
+    let image = home.image.clone().unwrap();
+    home.create("acme");
+    let release = Release::new();
+    let next = newer(&home, "appimage");
+    release.publish("9.0.0", &next, |_| {});
+    let mut agent = Agent::start(&home, "acme");
+    agent.add_account("4000").unwrap();
+    let host_before = wait_host(&home);
+    let out = home.run("update", Some(&release));
+    assert!(out.status.success(), "{}", text(&out));
+    assert_eq!(std::fs::read(&image).unwrap(), next);
+    // The mount's copy is untouched; only the image changed.
+    assert_ne!(std::fs::read(&home.exe).unwrap(), next);
+    assert!(
+        wait_for(60, || {
+            home.pids("host").len() == 1 && home.pids("host")[0] != host_before
+        }),
+        "the host never restarted onto the replaced image"
+    );
+    let host = wait_host(&home);
+    assert_eq!(
+        std::fs::read_link(format!("/proc/{host}/exe")).unwrap(),
+        image
+    );
+    assert!(agent.add_account("4001").is_ok(), "the session carries on");
 }
 
 #[test]

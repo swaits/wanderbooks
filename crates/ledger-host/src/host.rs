@@ -196,28 +196,46 @@ fn children_executable() -> PathBuf {
     }
 }
 
+/// A program file's identity: device and inode, size and last write. A
+/// replaced file differs in the inode, and a rewritten one in the rest.
+type Identity = (u64, u64, u64, i64, i64);
+
+fn identity_from(meta: &std::fs::Metadata) -> Identity {
+    (
+        meta.dev(),
+        meta.ino(),
+        meta.len(),
+        meta.mtime(),
+        meta.mtime_nsec(),
+    )
+}
+
 /// The running executable's file identity, and its file's now: they
-/// differ once the file was replaced (INVARIANT 7).
-fn running_identity() -> Option<(u64, u64)> {
+/// differ once the file was replaced (INVARIANT 7). An AppImage is its
+/// image file (`APPIMAGE`), not the program inside the mount.
+fn running_identity() -> Option<Identity> {
+    if let Some(image) = crate::start::own_appimage(std::env::var_os("APPIMAGE").as_deref()) {
+        return Some(identity_from(&std::fs::metadata(image).ok()?));
+    }
     let running = if cfg!(target_os = "linux") {
         std::fs::metadata("/proc/self/exe").ok()?
     } else {
         std::fs::metadata(std::env::current_exe().ok()?).ok()?
     };
-    Some((running.dev(), running.ino()))
+    Some(identity_from(&running))
 }
 
 /// The identity of the file at this executable's path, if it is a
 /// program (a file half-written or gone doesn't count yet).
-fn file_identity() -> Option<(u64, u64)> {
+fn file_identity() -> Option<Identity> {
     identity_of(&crate::start::this_executable().ok()?)
 }
 
-/// The identity (device, inode) of the program at `path`: a file someone
-/// may run; else None.
-fn identity_of(path: &Path) -> Option<(u64, u64)> {
+/// The identity of the program at `path`: a file someone may run; else
+/// None.
+fn identity_of(path: &Path) -> Option<Identity> {
     let meta = std::fs::metadata(path).ok()?;
-    (meta.is_file() && meta.permissions().mode() & 0o111 != 0).then(|| (meta.dev(), meta.ino()))
+    (meta.is_file() && meta.permissions().mode() & 0o111 != 0).then(|| identity_from(&meta))
 }
 
 /// Wait at most `wait` for a host to answer on the lease socket: whether

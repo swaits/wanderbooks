@@ -13,7 +13,8 @@
 //!      it names a socket this account owns (the owner's ssh agent, so the
 //!      server's backups reach a private git repository, D-30). Nothing
 //!      else passes (a scope's own identifiers, such as INVOCATION_ID, are
-//!      systemd's).
+//!      systemd's). One more: APPIMAGE, only when it names an absolute
+//!      file, so the host knows its own AppImage (below).
 //!   2. Its standard input and output are null, its errors go to
 //!      run/host.log (0600); it starts a new session with umask 077. Every
 //!      other descriptor is closed (std opens them close-on-exec, and the
@@ -23,7 +24,11 @@
 //!      scope couldn't be made (systemd-run failed without the host ever
 //!      writing its first line), or there is no such scope, directly. A
 //!      host that ran and stopped is never started a second time.
-//!   4. It runs this executable's file as it is on disk now.
+//!   4. It runs this executable's file as it is on disk now; for an
+//!      AppImage that is the image file (APPIMAGE), not the program inside
+//!      its mount, which goes away with the image it came from. The host
+//!      reads that path about itself and never tells it to an agent (I-2),
+//!      so a replaced image restarts the books like any replaced program.
 //!   5. The opener doesn't wait for it, and reaps it when it ends.
 //! ```
 
@@ -49,6 +54,9 @@ const LOG_LIMIT: u64 = 8 * 1024 * 1024;
 /// replaced file reads as "… (deleted)"; the path, not the old file, is
 /// what a new host runs.
 pub fn this_executable() -> Result<PathBuf, String> {
+    if let Some(image) = own_appimage(std::env::var_os("APPIMAGE").as_deref()) {
+        return Ok(PathBuf::from(image));
+    }
     let exe = std::env::current_exe().map_err(|e| format!("can't find this program: {e}"))?;
     let text = exe.to_string_lossy();
     if let Some(path) = text.strip_suffix(" (deleted)")
@@ -57,6 +65,13 @@ pub fn this_executable() -> Result<PathBuf, String> {
         return Ok(PathBuf::from(path));
     }
     Ok(exe)
+}
+
+/// The AppImage this process runs from: `APPIMAGE` when it is an
+/// absolute path to a file.
+pub fn own_appimage(value: Option<&std::ffi::OsStr>) -> Option<std::ffi::OsString> {
+    let path = Path::new(value?);
+    (path.is_absolute() && path.is_file()).then(|| path.as_os_str().to_os_string())
 }
 
 /// This account's user ID.
@@ -128,7 +143,11 @@ fn own_agent(named: Option<&std::ffi::OsStr>) -> Option<std::ffi::OsString> {
 
 /// The host's environment (INVARIANT 1), given the opener's
 /// `SSH_AUTH_SOCK`.
-fn host_env(home: &Path, ssh_agent: Option<&std::ffi::OsStr>) -> Vec<(String, std::ffi::OsString)> {
+fn host_env(
+    home: &Path,
+    ssh_agent: Option<&std::ffi::OsStr>,
+    appimage: Option<&std::ffi::OsStr>,
+) -> Vec<(String, std::ffi::OsString)> {
     let mut env = vec![
         ("PATH".to_string(), PATH.into()),
         ("HOME".to_string(), home.as_os_str().to_os_string()),
@@ -141,6 +160,9 @@ fn host_env(home: &Path, ssh_agent: Option<&std::ffi::OsStr>) -> Vec<(String, st
     }
     if let Some(agent) = own_agent(ssh_agent) {
         env.push(("SSH_AUTH_SOCK".into(), agent));
+    }
+    if let Some(image) = own_appimage(appimage) {
+        env.push(("APPIMAGE".into(), image));
     }
     env
 }
@@ -227,6 +249,7 @@ pub fn start_host(
             .envs(host_env(
                 &home,
                 std::env::var_os("SSH_AUTH_SOCK").as_deref(),
+                std::env::var_os("APPIMAGE").as_deref(),
             ))
             .current_dir("/")
             .stdin(Stdio::null())
@@ -385,7 +408,7 @@ mod tests {
 
     #[test]
     fn the_host_environment_carries_nothing_else() {
-        let env = host_env(Path::new("/home/someone"), None);
+        let env = host_env(Path::new("/home/someone"), None, None);
         let names: Vec<&str> = env.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(&names[..2], ["PATH", "HOME"]);
         for n in &names[2..] {
@@ -393,7 +416,8 @@ mod tests {
                 [
                     "XDG_RUNTIME_DIR",
                     "DBUS_SESSION_BUS_ADDRESS",
-                    "SSH_AUTH_SOCK"
+                    "SSH_AUTH_SOCK",
+                    "APPIMAGE"
                 ]
                 .contains(n),
                 "{n}"
@@ -401,6 +425,22 @@ mod tests {
         }
         assert_eq!(env[0].1, PATH);
         assert_eq!(env[1].1, "/home/someone");
+    }
+
+    #[test]
+    fn only_an_absolute_file_passes_as_the_appimage() {
+        let dir = tempfile::tempdir().unwrap();
+        let image = dir.path().join("W.AppImage");
+        std::fs::write(&image, b"x").unwrap();
+        let home = Path::new("/home/someone");
+        let has = |v: Option<&std::ffi::OsStr>| {
+            host_env(home, None, v).iter().any(|(n, _)| n == "APPIMAGE")
+        };
+        assert!(has(Some(image.as_os_str())));
+        assert!(!has(None));
+        assert!(!has(Some("W.AppImage".as_ref())), "relative");
+        assert!(!has(Some(dir.path().as_os_str())), "a folder");
+        assert!(!has(Some(dir.path().join("gone").as_os_str())));
     }
 
     #[test]
@@ -413,7 +453,7 @@ mod tests {
             Some(sock.clone().into_os_string())
         );
         // It reaches the host's environment, once.
-        let env = host_env(Path::new("/home/someone"), Some(sock.as_os_str()));
+        let env = host_env(Path::new("/home/someone"), Some(sock.as_os_str()), None);
         let agents: Vec<_> = env.iter().filter(|(n, _)| n == "SSH_AUTH_SOCK").collect();
         assert_eq!(agents.len(), 1);
         assert_eq!(agents[0].1, sock.as_os_str());
@@ -422,7 +462,7 @@ mod tests {
         let link = dir.path().join("link.sock");
         std::os::unix::fs::symlink(&sock, &link).unwrap();
         assert_eq!(own_agent(Some(link.as_os_str())), None);
-        let env = host_env(Path::new("/home/someone"), Some(link.as_os_str()));
+        let env = host_env(Path::new("/home/someone"), Some(link.as_os_str()), None);
         assert!(env.iter().all(|(n, _)| n != "SSH_AUTH_SOCK"));
         // Named relative to here: not taken, even where it leads to one.
         let here = std::env::current_dir().unwrap();

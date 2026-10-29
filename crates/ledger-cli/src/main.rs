@@ -389,6 +389,15 @@ fn run_server(_args: Vec<String>) -> i32 {
     2
 }
 
+/// Whether the program was launched with nothing to say and no terminal
+/// to say it to: a menu entry, a double-click, an AppImage (whose launcher
+/// runs the desktop file's command and appends what it was given, so the
+/// desktop file says plain `wanderbooks`). At a terminal it is the usage,
+/// as ever.
+fn is_bare_launch(words: &[String], stdin_is_terminal: bool) -> bool {
+    words.is_empty() && !stdin_is_terminal
+}
+
 fn main() {
     // A file's path may be any name the system takes: the file commands
     // get the words as given. Everything else is text.
@@ -405,6 +414,10 @@ fn main() {
         eprintln!("error: an argument isn't UTF-8 text");
         std::process::exit(2);
     };
+    // A bare launch is the viewer.
+    if is_bare_launch(&words, std::io::IsTerminal::is_terminal(&std::io::stdin())) {
+        std::process::exit(run_gui(Vec::new()));
+    }
     // The modes run in this process and take their own flags.
     let mut all = words.clone().into_iter();
     match all.next().as_deref() {
@@ -477,5 +490,20 @@ mod gui_args_tests {
         ] {
             assert_eq!(gui_args(args.clone()), args);
         }
+    }
+}
+
+#[cfg(test)]
+mod bare_launch_tests {
+    use super::is_bare_launch;
+
+    #[test]
+    fn only_nothing_at_all_with_no_terminal_is_the_viewer() {
+        assert!(is_bare_launch(&[], false));
+        // At a terminal it is the usage, as ever.
+        assert!(!is_bare_launch(&[], true));
+        // Anything said is a mode or a mistake, never the viewer.
+        assert!(!is_bare_launch(&["--help".to_string()], false));
+        assert!(!is_bare_launch(&["update".to_string()], false));
     }
 }

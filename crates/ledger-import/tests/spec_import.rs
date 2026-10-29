@@ -3347,64 +3347,10 @@ fn pdf_keeps_chinese_japanese_and_korean_names() {
 
 /// The text a PDF draws, each line from the top of each page down, its
 /// glyphs left to right, each the text its font's ToUnicode map gives
-/// back, read with hayro (the viewer's own PDF reader): what a reader
-/// copies, searches and speaks.
+/// back: the one extractor (`ledger_import::extract`, plan P6), which the
+/// server and the viewer read receipts through too.
 fn pdf_lines(pdf: &[u8]) -> Vec<Vec<String>> {
-    use hayro_interpret::font::GlyphRun;
-    use hayro_interpret::hayro_cmap::BfString;
-    use hayro_interpret::hayro_syntax::Pdf;
-    use hayro_interpret::{
-        BlendMode, ClipPath, Context, Device, DrawMode, DrawProps, Image, ImageDrawProps,
-        InterpreterCache, InterpreterSettings, SoftMask, interpret_page,
-    };
-    use kurbo::{Affine, BezPath, Point, Rect};
-    /// Each glyph drawn: its baseline (tenths of a point), x, and text.
-    struct Glyphs(Vec<(i64, f64, String)>);
-    impl<'a> Device<'a> for Glyphs {
-        fn draw_path(&mut self, _: &BezPath, _: DrawProps<'a>, _: &DrawMode) {}
-        fn push_clip_path(&mut self, _: &ClipPath) {}
-        fn push_transparency_group(&mut self, _: f32, _: Option<SoftMask<'a>>, _: BlendMode) {}
-        fn draw_glyph_run(&mut self, run: &GlyphRun<'_, 'a>, props: DrawProps<'a>, _: &DrawMode) {
-            for g in run.glyphs() {
-                let at = (props.transform * g.transform()) * Point::ZERO;
-                let text = match g.as_unicode() {
-                    Some(BfString::Char(c)) => c.to_string(),
-                    Some(BfString::String(s)) => s,
-                    // A mark or a ligature's second glyph: its text is
-                    // with the cluster's first.
-                    None => String::new(),
-                };
-                self.0.push(((at.y * 10.0).round() as i64, at.x, text));
-            }
-        }
-        fn draw_image(&mut self, _: Image<'a, '_>, _: ImageDrawProps<'a>) {}
-        fn pop_clip(&mut self) {}
-        fn pop_transparency_group(&mut self) {}
-    }
-    let pdf = Pdf::new(pdf.to_vec()).unwrap();
-    let cache = InterpreterCache::new();
-    let mut out = Vec::new();
-    for page in pdf.pages().iter() {
-        let mut ctx = Context::new(
-            Affine::IDENTITY,
-            Rect::new(0.0, 0.0, 1.0, 1.0),
-            &cache,
-            pdf.xref(),
-            InterpreterSettings::default(),
-        );
-        let mut glyphs = Glyphs(Vec::new());
-        interpret_page(page, &mut ctx, &mut glyphs);
-        // PDF space runs up the page: the highest baseline first.
-        let mut lines: BTreeMap<std::cmp::Reverse<i64>, Vec<(f64, String)>> = BTreeMap::new();
-        for (y, x, t) in glyphs.0 {
-            lines.entry(std::cmp::Reverse(y)).or_default().push((x, t));
-        }
-        for (_, mut line) in lines {
-            line.sort_by(|a, b| a.0.total_cmp(&b.0));
-            out.push(line.into_iter().map(|(_, t)| t).collect());
-        }
-    }
-    out
+    ledger_import::extract::pdf_lines(pdf).unwrap()
 }
 
 /// statement_pdf INVARIANT 4 (P3 review round 2): a company and accounts

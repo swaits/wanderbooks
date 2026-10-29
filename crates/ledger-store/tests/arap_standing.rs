@@ -912,6 +912,9 @@ fn issued_pdf_is_filed_with_the_invoice_or_nothing_is() {
             "entry.posted",
             "invoice.created",
             "receipt.attached",
+            // P6: a filed PDF's text is read at attach time in books that
+            // declared `attachment_text`, journaled right after the filing.
+            "attachment.text_extracted",
             "attachment.linked",
         ]
     );
@@ -925,7 +928,7 @@ fn issued_pdf_is_filed_with_the_invoice_or_nothing_is() {
     assert_eq!(got[5].1["description"], json!("Issued invoice"));
     assert_eq!(got[5].1["size_bytes"], json!(pdf.len() as u64));
     assert_eq!(
-        got[6].1["subject"],
+        got[7].1["subject"],
         json!({"kind": "invoice", "id": inv}),
         "the copy is linked to the invoice"
     );

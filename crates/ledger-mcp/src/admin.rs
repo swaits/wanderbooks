@@ -165,6 +165,15 @@ pub enum Request {
         /// The owner passphrase, checked by the server (INVARIANT 7).
         passphrase: Passphrase,
     },
+    /// Read one attachment's text now and journal it (plan P6 step 2):
+    /// the backfill, one attachment at a time, so a long books dir can be
+    /// resumed.
+    Extract {
+        /// The books.
+        id: String,
+        /// The attachment to read.
+        attachment_id: u64,
+    },
     /// End a token.
     TokenRevoke {
         /// Its books.
@@ -477,6 +486,18 @@ pub enum Response {
     },
     /// A format upgrade made (or none needed).
     FormatUpgraded(FormatUpgraded),
+    /// An attachment's text read and journaled (plan P6 step 2).
+    Extracted {
+        /// The attachment.
+        attachment_id: u64,
+        /// "ok", "none" or "failed".
+        status: String,
+        /// How many pages it has.
+        pages: u32,
+        /// The text blob's SHA-256, when there is text.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text_sha256: Option<String>,
+    },
     /// Refused, with why (no path in the data root: INVARIANT 3).
     Refused(String),
 }
@@ -530,6 +551,9 @@ pub fn call_within(
         Request::UpgradeFormat { .. } => {
             Some("`wanderbooks books list` says whether the books still wait for it")
         }
+        Request::Extract { .. } => Some(
+            "`wanderbooks books extract BOOK ATTACHMENT` reads it again; it journals once per extractor version",
+        ),
     };
     let unknown = move |why: String| match look {
         None => CallError::Unknown(why),

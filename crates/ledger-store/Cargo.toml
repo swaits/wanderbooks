@@ -8,6 +8,11 @@ description = "Durable persistence for wanderbooks: a hash-chained JSONL journal
 
 [dependencies]
 ledger-core = { path = "../ledger-core" }
+# The one extractor (plan P6 step 1, D-53): the writer journals a file's
+# text at attach time and on `wanderbooks books extract`, so the extractor
+# must be callable here rather than only from the server. It is pure and
+# deterministic (no I/O, no network, no time source).
+ledger-import = { path = "../ledger-import" }
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

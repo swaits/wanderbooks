@@ -138,7 +138,7 @@ impl BooksServer {
     #[tool(
         name = "books.file_document",
         title = "File a document",
-        description = "File a document: category formation, legal, tax, accounting, statement (a bank or card statement: then books.record_statement), contract, photo, warranty, import_source (a bank export), or other. link_to links it to subjects in the same call (an account, an asset, a party, a project, the company: see books.link_attachment), all checked first. The bytes: upload_id, from books.begin_upload and `wanderbooks upload` (a file never passes through you). Never a W-9 (books.set_w9 w9_upload_id puts it in the vault). A file holding a full TIN is refused: one the server read or wrote with TINs, or text with a TIN the vault keeps or an SSN or EIN printed 3-2-4 or 2-7 with hyphens.",
+        description = "File a document: category formation, legal, tax, accounting, statement (then books.record_statement), contract, photo, warranty, import_source (a bank export), notices, correspondence, plans, history, or other. link_to links it to subjects in the same call (see books.link_attachment), all checked first. The bytes: upload_id, from books.begin_upload and `wanderbooks upload` (a file never passes through you). Never a W-9 (books.set_w9). A file holding a full TIN is refused, as is text with one the vault keeps or an SSN or EIN printed 3-2-4 or 2-7.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -152,10 +152,11 @@ impl BooksServer {
         let p = params.0;
         match p.category.as_str() {
             "formation" | "legal" | "tax" | "accounting" | "statement" | "contract" | "photo"
-            | "warranty" | "import_source" | "other" => {}
+            | "warranty" | "import_source" | "notices" | "correspondence" | "plans" | "history"
+            | "other" => {}
             _ => {
                 return Err(format!(
-                    "bad category {:?}: expected formation, legal, tax, accounting, statement, contract, photo, warranty, import_source, or other",
+                    "bad category {:?}: expected formation, legal, tax, accounting, statement, contract, photo, warranty, import_source, notices, correspondence, plans, history, or other",
                     p.category
                 ));
             }
@@ -454,7 +455,7 @@ impl BooksServer {
     #[tool(
         name = "books.get_receipt",
         title = "Get a receipt",
-        description = "A receipt or document: what it is and everything it is linked to. view bytes adds the file, handed over: run its download (wanderbooks download) to save a copy in a folder you name; its bytes never come back here.",
+        description = "A receipt or document: what it is, what it is linked to, its first 8 KiB of text and its pages. view text gives the whole extracted text (past 64 KiB as a handed-over text file); view page_image with page (1 is the first) gives one page as a PNG, handed over (D-46, D-15: no OCR). view bytes hands over the file itself. Text first; a page picture only when the text is empty or wrong; never read a file's bytes into your context.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(super) async fn get_receipt(
@@ -462,29 +463,90 @@ impl BooksServer {
         params: Parameters<GetReceiptParams>,
     ) -> Result<Json<GetReceiptOut>, String> {
         let p = params.0;
-        let bytes_wanted = match p.view.as_deref().unwrap_or("meta") {
-            "meta" => false,
-            "bytes" => true,
-            other => {
-                return Err(format!(
-                    "view {:?}: meta (the default) or bytes",
-                    other.chars().take(20).collect::<String>()
-                ));
-            }
-        };
+        let view = p.view.as_deref().unwrap_or("meta");
+        if !matches!(view, "meta" | "text" | "page_image" | "bytes") {
+            return Err(format!(
+                "view {:?}: meta (the default), text, page_image or bytes",
+                view.chars().take(20).collect::<String>()
+            ));
+        }
         let store = self.lock()?;
         let meta = find_attachment(&store, p.attachment_id)?;
+        let extraction = store.extraction(meta.id).map_err(|e| e.to_string())?;
+        let pages = extraction.as_ref().map_or(0, |x| x.pages);
+        let text_status = extraction
+            .as_ref()
+            .map_or("not_extracted", |x| x.status.key())
+            .to_string();
+        let annotation = store.ledger().annotation(meta.id).cloned();
+        let full_text = store.extraction_text(meta.id).map_err(|e| e.to_string())?;
+        let book = book_name(&store);
         // Handed over, read hash-verified (D-46): never its bytes here.
-        let file = if bytes_wanted {
-            let bytes = store
-                .attachment_bytes(p.attachment_id)
+        let mut file = None;
+        // Every view carries the meta answer's first 8 KiB of text (view
+        // `text` replaces it with the whole text, or hands a file over).
+        let mut text = None;
+        let mut text_truncated = false;
+        if let Some(t) = &full_text {
+            let cut = floor_char_boundary(t, 8 * 1024);
+            text_truncated = cut < t.len();
+            text = Some(t[..cut].to_string());
+        }
+        match view {
+            "meta" => {}
+            "text" => match full_text {
+                None => {
+                    return Err(format!(
+                        "attachment {} has no extracted text (text_status {text_status}); view page_image to read its pages",
+                        meta.id
+                    ));
+                }
+                Some(t) if t.len() <= 64 * 1024 => text = Some(t),
+                Some(t) => {
+                    // Past 64 KiB the whole text is the handed file, not
+                    // the preview.
+                    text = None;
+                    text_truncated = false;
+                    let name = format!("{}-text.txt", stem(&meta.file_name));
+                    file = Some(self.hand_over(&book, &name, "text/plain", t.into_bytes())?);
+                }
+            },
+            "page_image" => {
+                let page = p.page.ok_or("view page_image needs page: 1 is the first")?;
+                let max_px = p.max_px.unwrap_or(1600);
+                if !(1..=8192).contains(&max_px) {
+                    return Err("max_px must be 1 to 8192".into());
+                }
+                let bytes = store.attachment_bytes(meta.id).map_err(|e| e.to_string())?;
+                if meta.mime_type != "application/pdf" && !bytes.starts_with(b"%PDF") {
+                    return Err(format!(
+                        "attachment {} isn't a PDF: view bytes for the file itself",
+                        meta.id
+                    ));
+                }
+                let png = ledger_import::extract::page_png(
+                    &bytes,
+                    usize::try_from(page - 1).unwrap_or(usize::MAX),
+                    max_px,
+                )
                 .map_err(|e| e.to_string())?;
-            Some(self.hand_over(&book_name(&store), &meta.file_name, &meta.mime_type, bytes)?)
-        } else {
-            None
-        };
+                let name = format!("{}-p{page}.png", stem(&meta.file_name));
+                file = Some(self.hand_over(&book, &name, "image/png", png)?);
+            }
+            "bytes" => {
+                let bytes = store.attachment_bytes(meta.id).map_err(|e| e.to_string())?;
+                file = Some(self.hand_over(&book, &meta.file_name, &meta.mime_type, bytes)?);
+            }
+            _ => unreachable!("view checked"),
+        }
         Ok(Json(GetReceiptOut {
             file,
+            text,
+            text_truncated,
+            text_status,
+            pages,
+            receipt_number: annotation.as_ref().and_then(|a| a.fields.receipt_number),
+            annotation: annotation.as_ref().map(annotation_out),
             links: links_out(&store, meta.id)?,
             description: meta.description.clone(),
             attachment_id: meta.id,

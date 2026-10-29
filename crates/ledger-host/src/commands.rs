@@ -477,6 +477,7 @@ fn books_usage(prog: &str) {
     eprintln!("       {prog} restore BACKUP [--id ID] [--replace] [--yes]");
     eprintln!("       {prog} back-up ID [--new-disk]");
     eprintln!("       {prog} upgrade ID");
+    eprintln!("       {prog} extract BOOK ATTACHMENT");
     eprintln!(
         "       {prog} put-aside ID DATA-DIR [--vault DIR --vault-key FILE] [PATH...] [--yes]"
     );
@@ -491,6 +492,9 @@ fn books_usage(prog: &str) {
     );
     eprintln!(
         "  upgrade give the go-ahead, with the owner passphrase, for books an older wanderbooks wrote to move to this version's journal format (a verified backup with the vault and keys first)"
+    );
+    eprintln!(
+        "  extract read one attachment's text (a PDF, XLSX or text file) and journal it, one at a time; books an older version filed are read this way after an upgrade"
     );
     eprintln!(
         "  put-aside move the old copies of adopted books (their data folder, their vault and its key, and other paths given: settings file, git history) whole into the legacy folder, once the books hold everything they do, byte for byte; nothing is deleted"
@@ -580,6 +584,19 @@ pub fn books(
         }
         ["restore", source] => return restore(&common, source, id, replace, yes),
         ["upgrade", book] => return upgrade(&common, book),
+        ["extract", book, attachment] => {
+            let attachment_id: u64 = attachment.parse().map_err(|_| {
+                eprintln!("error: extract takes an attachment id: {attachment}");
+                exit(2)
+            })?;
+            with_server(
+                &common,
+                Request::Extract {
+                    id: (*book).to_string(),
+                    attachment_id,
+                },
+            )
+        }
         ["put-aside", book, source, also @ ..] => {
             let also: Vec<PathBuf> = also.iter().map(PathBuf::from).collect();
             let old = ledger_store::root::OldCopies {
@@ -633,6 +650,25 @@ pub fn books(
                 "error: new books \"{id}\" were made but didn't open: {why}. Closing the books and opening them again tries again."
             );
             Err(exit(1))
+        }
+        Ok(Response::Extracted {
+            attachment_id,
+            status,
+            pages,
+            text_sha256,
+        }) => {
+            match (&text_sha256, status.as_str()) {
+                (Some(sha), "ok") => {
+                    println!("Read attachment {attachment_id}: {pages} page(s), text {sha}.")
+                }
+                (_, "none") => println!(
+                    "Read attachment {attachment_id}: no text to read ({pages} page(s)); view its pages as pictures."
+                ),
+                _ => println!(
+                    "Read attachment {attachment_id}: the reader failed ({pages} page(s)); a human must read it."
+                ),
+            }
+            Ok(())
         }
         Ok(Response::Refused(why)) | Err(why) => {
             eprintln!("error: {why}");

@@ -1849,11 +1849,21 @@ pub struct ListReceiptsOut {
 pub struct GetReceiptParams {
     /// Attachment id.
     pub attachment_id: u64,
-    /// What to return: "meta" (default: what it is and what it's linked
-    /// to), or "bytes" (also the file, handed over: the command that
-    /// saves a copy, never its bytes; D-46).
+    /// What to return: "meta" (default: what it is, what it's linked to,
+    /// the first 8 KiB of its text and its page count), "text" (the whole
+    /// extracted text, or a handed-over text file past 64 KiB),
+    /// "page_image" (one page as a PNG, handed over: give `page`), or
+    /// "bytes" (the file itself, handed over: the command that saves a
+    /// copy, never its bytes; D-46).
     #[serde(default)]
     pub view: Option<String>,
+    /// For view "page_image": the page, 1 for the first.
+    #[serde(default)]
+    pub page: Option<u32>,
+    /// For view "page_image": the picture's longest side in pixels
+    /// (default 1600, at most 8192).
+    #[serde(default)]
+    pub max_px: Option<u32>,
 }
 
 /// Result of `books.get_receipt`: what it is and what it's linked to, and
@@ -1878,10 +1888,31 @@ pub struct GetReceiptOut {
     pub description: Option<String>,
     /// Everything it is linked to (the entry it is filed on first).
     pub links: Vec<SubjectOut>,
-    /// With view `bytes`: the file, handed over: run its `download` to
-    /// save a copy in a folder you name.
+    /// With view `bytes` or `page_image`: the file (or the page picture),
+    /// handed over: run its `download` to save a copy in a folder you
+    /// name.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub file: Option<HandedFile>,
+    /// The first 8 KiB of the extracted text (view `meta`), or the whole
+    /// text (view `text`, when it fits in 64 KiB).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// True when `text` is only the first 8 KiB of a longer extraction.
+    #[serde(default)]
+    pub text_truncated: bool,
+    /// What reading the file found: "ok", "none", "failed", or
+    /// "not_extracted" (books this version didn't read yet:
+    /// `wanderbooks books extract`).
+    pub text_status: String,
+    /// How many pages the file has (0 when it has none).
+    #[serde(default)]
+    pub pages: u32,
+    /// The receipt number annotated on it, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub receipt_number: Option<u32>,
+    /// Everything annotated about it, if anything.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub annotation: Option<AnnotationOut>,
 }
 
 // ---------------------------------------------------------------------------
@@ -5352,4 +5383,161 @@ pub struct WriteOffInvoiceOut {
     pub entry_id: u64,
     /// The invoice's derived figures after it.
     pub document: WriteOffDocumentOut,
+}
+
+// P6: evidence (plan/served.md P6: extraction, dedup, annotations)
+// ---------------------------------------------------------------------------
+
+/// One annotation's fields, as a human reads them off a file (plan P6 step
+/// 5). Every field is optional; the amount is an exact decimal string in
+/// the books' own currency.
+#[derive(Debug, Default, Clone, Deserialize, JsonSchema)]
+pub struct AnnotationFieldsParam {
+    /// The number printed on the receipt. Engine numbers run from the
+    /// highest one annotated (`next_receipt_number` in the answer).
+    pub receipt_number: Option<u32>,
+    /// Who was paid.
+    pub payee: Option<String>,
+    /// The amount printed on the receipt, a decimal string such as
+    /// "12.34".
+    pub amount: Option<String>,
+    /// The date printed on the receipt, YYYY-MM-DD.
+    pub date: Option<String>,
+    /// How it was paid: a payment method's id or label.
+    pub instrument: Option<String>,
+    /// What kind of record it is (the document categories).
+    pub category: Option<String>,
+    /// Where it came from.
+    pub source: Option<String>,
+    /// Who is to be reimbursed for it, if anyone.
+    pub reimbursable_to: Option<String>,
+}
+
+/// One recorded annotation, as read back.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct AnnotationOut {
+    /// The number printed on the receipt, if recorded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub receipt_number: Option<u32>,
+    /// Who was paid, if recorded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payee: Option<String>,
+    /// The amount printed on the receipt, decimal string, if recorded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub amount: Option<String>,
+    /// The date printed on the receipt, if recorded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub date: Option<String>,
+    /// How it was paid, if recorded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instrument: Option<String>,
+    /// What kind of record it is, if recorded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    /// Where it came from, if recorded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// Who is to be reimbursed for it, if recorded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reimbursable_to: Option<String>,
+    /// A free note, if recorded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// Parameters for `books.find_attachment`: exactly one of its three.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FindAttachmentParams {
+    /// The exact SHA-256 of the file's bytes.
+    pub sha256: Option<String>,
+    /// The receipt number recorded on it (books.annotate_attachment).
+    pub receipt_number: Option<u32>,
+    /// Text it says, case-insensitively (its extracted text; see
+    /// books.get_receipt view text).
+    pub text: Option<String>,
+}
+
+/// Result of `books.find_attachment`.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct FindAttachmentOut {
+    /// Every match, withdrawn ones included (marked), oldest first.
+    pub attachments: Vec<ReceiptOut>,
+}
+
+/// Parameters for `books.annotate_attachment`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AnnotateAttachmentParams {
+    /// The attachment.
+    pub attachment_id: u64,
+    /// What was read off it (the closed field list).
+    pub fields: AnnotationFieldsParam,
+    /// A free note.
+    pub note: Option<String>,
+}
+
+/// Result of `books.annotate_attachment`.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct AnnotateAttachmentOut {
+    /// The attachment.
+    pub attachment_id: u64,
+    /// The annotation as stored (it replaces an earlier one).
+    pub fields: AnnotationOut,
+    /// The next receipt number the books would give: one past the highest
+    /// annotated.
+    pub next_receipt_number: u32,
+}
+
+/// Parameters for `books.set_entry_settles`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SetEntrySettlesParams {
+    /// The entry that pays, such as a reimbursement to a member.
+    pub entry_id: u64,
+    /// The entries it settles (what it pays back). Empty clears the record.
+    pub settles: Vec<u64>,
+}
+
+/// Result of `books.set_entry_settles`.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct SetEntrySettlesOut {
+    /// True when recorded.
+    pub ok: bool,
+    /// The entry that pays.
+    pub entry_id: u64,
+    /// The entries it settles now.
+    pub settles: Vec<u64>,
+}
+
+/// One set of attachments holding the same bytes (plan P6 step 4).
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct DuplicateGroupOut {
+    /// The SHA-256 they share.
+    pub sha256: String,
+    /// The attachment kept (the oldest).
+    pub keep: u64,
+    /// The attachments withdrawn as duplicates of it.
+    pub withdraw: Vec<u64>,
+    /// The subjects the kept file is linked to on their behalf.
+    pub links: Vec<SubjectOut>,
+}
+
+/// Parameters for `books.consolidate_duplicates`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ConsolidateDuplicatesParams {
+    /// True: consolidate. Without it, a preview that changes nothing.
+    pub confirmed: Option<bool>,
+}
+
+/// Result of `books.consolidate_duplicates`.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ConsolidateDuplicatesOut {
+    /// "preview" or "consolidated".
+    pub status: String,
+    /// Each set of attachments holding one file's bytes.
+    pub groups: Vec<DuplicateGroupOut>,
+    /// How many attachments were (or would be) withdrawn.
+    pub withdrawn: usize,
 }

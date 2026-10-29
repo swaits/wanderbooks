@@ -100,6 +100,10 @@ impl ledger_package::PackageBooks for View<'_> {
         Ok(self.0.attachments.clone())
     }
 
+    fn extractions(&self) -> Result<Vec<ledger_store::Extraction>, StoreError> {
+        Ok(self.0.extractions.clone())
+    }
+
     fn links_of(&self, attachment_id: u64) -> Result<Vec<Subject>, StoreError> {
         Ok(self.0.links_of(attachment_id).to_vec())
     }

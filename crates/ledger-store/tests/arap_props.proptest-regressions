@@ -6,3 +6,4 @@
 # everyone who runs the test benefits from these saved cases.
 cc 704ab49c9bea84359475c3afa56c3354275a353670fc71156fba151f846f4f73 # shrinks to first = [Create(false, 0, 1), Create(false, 0, 1)], then = [Close(1), Hand(false, 1)]
 cc f678814ec34db3abef40116e17e562fe5abe652c09f12600e19841beaf9d6fe6 # shrinks to first = [Create(false, 0, 13902), Settle { a: 0, b: 0, n: 0, cash: 6676, discount: 551, fee: 0 }], then = []
+cc fade94264cb4e769ef3d72573baff01fc2f78483a32e8424e56251d96c4af57e # shrinks to first = [Create(true, 0, 27747), WriteOff(0, 0, 1), Create(false, 0, 1)], then = [Create(false, 0, 7), WriteOff(3, 66, 2761)]

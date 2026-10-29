@@ -5,7 +5,7 @@
 //! is the current version.
 
 /// Current schema version.
-pub const SCHEMA_VERSION: u32 = 17;
+pub const SCHEMA_VERSION: u32 = 18;
 
 /// Migrations, in order. `MIGRATIONS[i]` migrates from version `i` to `i+1`.
 pub const MIGRATIONS: &[&str] = &[
@@ -434,5 +434,39 @@ CREATE TABLE IF NOT EXISTS invoice_sends(
   reference TEXT NULL,
   note TEXT NULL
 );
+"#,
+    r#"
+-- v18: evidence (plan P6, feature attachment_text): what was read out of
+-- a file (`attachment.text_extracted`), the facts a human annotated it
+-- with (`attachment.annotated`), and the duplicate an attachment was
+-- withdrawn as. Extraction is its own record per (attachment, extractor,
+-- version): an extractor upgrade adds one, never replaces one. A text
+-- hash is the extraction's blob; the text itself is content-addressed in
+-- the blob store. Amounts stay TEXT (exact decimal), never REAL.
+CREATE TABLE IF NOT EXISTS extractions(
+  attachment_id INTEGER NOT NULL,
+  extractor TEXT NOT NULL,
+  version TEXT NOT NULL,
+  text_sha256 TEXT NULL,
+  pages INTEGER NOT NULL,
+  status TEXT NOT NULL,
+  seq INTEGER NOT NULL,
+  PRIMARY KEY(attachment_id, extractor, version)
+);
+CREATE INDEX IF NOT EXISTS idx_extractions_text ON extractions(text_sha256);
+CREATE TABLE IF NOT EXISTS annotations(
+  attachment_id INTEGER PRIMARY KEY,
+  receipt_number INTEGER NULL,
+  payee TEXT NULL,
+  amount TEXT NULL,
+  date TEXT NULL,
+  instrument TEXT NULL,
+  category TEXT NULL,
+  source TEXT NULL,
+  reimbursable_to TEXT NULL,
+  note TEXT NULL,
+  seq INTEGER NOT NULL
+);
+ALTER TABLE attachments ADD COLUMN duplicate_of INTEGER NULL;
 "#,
 ];

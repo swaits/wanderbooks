@@ -497,6 +497,34 @@ impl Books {
                 expect_head,
             } => self.restore(id, source, replace, confirmed, expect_head),
             Request::UpgradeFormat { id, passphrase } => self.upgrade_format(id, &passphrase),
+            Request::Extract { id, attachment_id } => {
+                let id = match BookId::parse(&id) {
+                    Ok(id) => id,
+                    Err(e) => return refused(e),
+                };
+                let store = match self.held().get(id.as_str()) {
+                    Some(Book::Open { store, .. }) => store.clone(),
+                    Some(Book::Failed(why)) => {
+                        return Response::Refused(format!("those books didn't open: {why}"));
+                    }
+                    None => {
+                        return Response::Refused(format!(
+                            "there are no books called {:?}",
+                            id.as_str()
+                        ));
+                    }
+                };
+                match store.with_store_mut(|s| s.extract_attachment(attachment_id)) {
+                    Ok(Ok(x)) => Response::Extracted {
+                        attachment_id: x.attachment_id,
+                        status: x.status.key().to_string(),
+                        pages: x.pages,
+                        text_sha256: x.text_sha256,
+                    },
+                    Ok(Err(e)) => Response::Refused(self.hide(e.to_string())),
+                    Err(why) => Response::Refused(self.hide(why)),
+                }
+            }
             Request::BackUpNow { id, new_disk } => {
                 let id = match BookId::parse(&id) {
                     Ok(id) => id,

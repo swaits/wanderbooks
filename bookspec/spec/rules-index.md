@@ -56,5 +56,5 @@ without moving anyone else's number.
 | B-41 | `BS-arap-5` | arap | CHOICE | A debt that will not be collected is written off, and a recovery is income | `bad-debt-direct-write-off` |
 | B-42 | `BS-arap-6` | arap | CONVENTION | A settlement is exact, one party, and names its lines; the gross discount and the gross fee | — |
 | B-43 | `BS-entry-5` | entry | — | Drafts and evidence (allocated, not yet stated) | — |
-| B-44 | `BS-ledger-12` | ledger | — | Extraction and dedup (allocated, not yet stated) | — |
+| B-44 | `BS-ledger-12` | ledger | — | Evidence: extraction, dedup, annotations, settlements (stated in rules.md; its bookspec example comes with P13 step 5) | — |
 | B-45 | `BS-ledger-13` | ledger | — | Audits and attestations (allocated, not yet stated) | — |

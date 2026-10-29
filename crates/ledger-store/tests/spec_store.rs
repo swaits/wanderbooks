@@ -940,11 +940,14 @@ fn attach_stores_under_sha256() {
     assert_eq!(b.store.verify_blobs().unwrap(), 1);
 }
 
-/// Oracle: Store::attach_receipt INVARIANTS 2 and 3 — the same bytes filed
-/// twice share one stored file, the second says deduplicated, and each
-/// filing is its own journaled attachment with its name, type, description.
+/// Oracle: Store::attach_receipt INVARIANTS 2 and 3, as plan P6 step 4
+/// changes them — the same bytes filed twice share one stored file and one
+/// live attachment, the second says deduplicated, and that attachment is
+/// linked to the second subject (its name, type and description are the
+/// first filing's). Records an older version filed twice stay as written
+/// (`legacy_duplicates_replay_as_written`).
 #[test]
-fn attach_dedups_bytes_but_not_attachments() {
+fn same_bytes_are_one_attachment_linked_to_both() {
     let dir = test_dir("attach-dedup");
     let mut b = books(&dir);
     let bytes = b"same bytes";
@@ -962,52 +965,61 @@ fn attach_dedups_bytes_but_not_attachments() {
         .store
         .attach_receipt(Some(b.e2), "two.png", "image/png", bytes, Some("second"))
         .unwrap();
+    assert_eq!((a1, a2), (a1, a1), "one attachment");
     assert_eq!(s1, s2);
     assert!(!d1);
     assert!(d2);
-    assert_ne!(a1, a2);
     let blob_files: Vec<_> = tree(&dir)
         .into_keys()
         .filter(|p| p.starts_with("blobs"))
         .collect();
     assert_eq!(blob_files.len(), 1, "one stored file: {blob_files:?}");
     let all = b.store.list_attachments(None).unwrap();
-    let one = all.iter().find(|a| a.id == a1).expect("first listed");
-    let two = all.iter().find(|a| a.id == a2).expect("second listed");
+    assert_eq!(all.len(), 1, "one record: {all:?}");
+    let one = all.iter().find(|a| a.id == a1).expect("listed");
     assert_eq!(one.entry_id, Some(b.e1));
-    assert_eq!(two.entry_id, Some(b.e2));
     assert_eq!(
         (one.file_name.as_str(), one.mime_type.as_str()),
         ("one.pdf", "application/pdf")
     );
     assert_eq!(one.description.as_deref(), Some("first"));
-    assert_eq!(two.description.as_deref(), Some("second"));
     assert_eq!(one.size_bytes, bytes.len() as u64);
     assert_eq!(one.blob_sha, s1);
+    // The second subject is linked, and counts as its receipt.
+    assert!(
+        b.store
+            .attachment_links(a1)
+            .unwrap()
+            .contains(&ledger_store::Subject::Entry(b.e2))
+    );
+    assert_eq!(
+        b.store
+            .attachments_for(ledger_store::Subject::Entry(b.e2))
+            .unwrap()
+            .len(),
+        1
+    );
+    // One filing line: the second added a link, not a record.
     let attached: Vec<Value> = parsed_lines(&dir)
         .into_iter()
         .filter(|l| l["type"] == "receipt.attached")
         .collect();
-    assert_eq!(attached.len(), 2);
-    for (l, (name, mime, desc)) in attached.iter().zip([
-        ("one.pdf", "application/pdf", "first"),
-        ("two.png", "image/png", "second"),
-    ]) {
-        for needle in [name, mime, desc, s1.as_str()] {
-            assert!(
-                contains_value(&l["payload"], needle),
-                "{needle} missing from {l}"
-            );
-        }
+    assert_eq!(attached.len(), 1);
+    for needle in ["one.pdf", "application/pdf", "first", s1.as_str()] {
+        assert!(
+            contains_value(&attached[0]["payload"], needle),
+            "{needle} missing from {}",
+            attached[0]
+        );
     }
-    assert_eq!(b.store.attachment_bytes(a2).unwrap(), bytes);
+    assert_eq!(b.store.attachment_bytes(a1).unwrap(), bytes);
 }
 
-/// Oracle: Store::attach_receipt INVARIANT 3 — each filing is its own
-/// attachment with ITS name and type, even when its bytes deduplicate
-/// against an earlier filing.
+/// Oracle: Store::attach_receipt INVARIANT 3, as plan P6 step 4 changes
+/// it — one file, one record: the first filing's own name and type stay,
+/// in the writer and in the viewer.
 #[test]
-fn attach_dedup_keeps_each_filings_name_and_type() {
+fn the_first_filings_name_and_type_stay() {
     let dir = test_dir("attach-dedup-name");
     let mut b = books(&dir);
     let bytes = b"same bytes, two names";
@@ -1019,28 +1031,25 @@ fn attach_dedup_keeps_each_filings_name_and_type() {
         .store
         .attach_receipt(Some(b.e2), "two.png", "image/png", bytes, None)
         .unwrap();
+    assert_eq!((a1, a2), (a1, a1));
     assert!(d2);
     let all = b.store.list_attachments(None).unwrap();
+    assert_eq!(all.len(), 1);
     let one = all.iter().find(|a| a.id == a1).unwrap();
-    let two = all.iter().find(|a| a.id == a2).unwrap();
     assert_eq!(
         (one.file_name.as_str(), one.mime_type.as_str()),
         ("one.pdf", "application/pdf")
     );
-    assert_eq!(
-        (two.file_name.as_str(), two.mime_type.as_str()),
-        ("two.png", "image/png")
-    );
     let snap = Snapshot::load(&dir).unwrap();
-    let s2 = snap
+    let s1 = snap
         .attachments(None)
         .unwrap()
         .into_iter()
-        .find(|a| a.id == a2)
+        .find(|a| a.id == a1)
         .unwrap();
     assert_eq!(
-        (s2.file_name.as_str(), s2.mime_type.as_str()),
-        ("two.png", "image/png")
+        (s1.file_name.as_str(), s1.mime_type.as_str()),
+        ("one.pdf", "application/pdf")
     );
 }
 

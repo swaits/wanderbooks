@@ -822,6 +822,37 @@ fn happy_path(name: &str) -> Mcp {
     );
     assert_eq!(up["existing_attachment_id"], json!(local), "{up}");
 
+    // P6: the evidence pipeline. Find the local receipt by its text, give
+    // it a receipt number, settle nothing, and consolidate (there are no
+    // duplicates here: a preview and a no-op confirm still exercise both
+    // answers).
+    let found = m.ok("books.find_attachment", json!({"text": "local receipt"}));
+    assert_eq!(
+        found["attachments"][0]["attachment_id"],
+        json!(local),
+        "{found}"
+    );
+    let annotated = m.ok(
+        "books.annotate_attachment",
+        json!({"attachment_id": local, "fields": {"receipt_number": 1,
+               "payee": "Landlord", "amount": "12.34", "date": "2026-01-10"}}),
+    );
+    assert_eq!(annotated["next_receipt_number"], 2, "{annotated}");
+    m.ok(
+        "books.find_attachment",
+        json!({"receipt_number": annotated["fields"]["receipt_number"]}),
+    );
+    m.ok(
+        "books.find_attachment",
+        json!({"sha256": ledger_store::journal::sha256_hex(b"a local receipt")}),
+    );
+    m.ok(
+        "books.set_entry_settles",
+        json!({"entry_id": e1, "settles": []}),
+    );
+    m.ok("books.consolidate_duplicates", json!({}));
+    m.ok("books.consolidate_duplicates", json!({"confirmed": true}));
+
     // Reversal: preview, then confirmed.
     let e3 = m.draft(
         "2026-01-20",

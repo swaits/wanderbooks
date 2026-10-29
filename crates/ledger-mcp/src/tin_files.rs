@@ -157,7 +157,7 @@ pub fn refuse(
     if holds_sha(vault_dir, &ledger_store::journal::sha256_hex(bytes))? {
         return Err(TIN_FILE.to_string());
     }
-    let Some(text) = text_of(bytes, mime_type, file_name) else {
+    let Some(text) = ledger_import::extract::text_of(bytes, mime_type, file_name) else {
         return Ok(());
     };
     let text: Vec<char> = text.chars().map(fold).collect();
@@ -278,97 +278,10 @@ fn holds_printed_tin(text: &[char], own_ein: Option<u32>) -> bool {
     })
 }
 
-/// Whether a file of this type or name is text: csv, tsv, txt, json, iif,
-/// xml, html, md and their kin.
-fn text_like(mime_type: &str, file_name: &str) -> bool {
-    let mime = mime_type.trim().to_ascii_lowercase();
-    let ext = Path::new(file_name)
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(str::to_ascii_lowercase)
-        .unwrap_or_default();
-    mime.starts_with("text/")
-        || [
-            "json",
-            "xml",
-            "csv",
-            "x-iif",
-            "javascript",
-            "x-yaml",
-            "yaml",
-        ]
-        .iter()
-        .any(|t| mime.ends_with(&format!("/{t}")) || mime.ends_with(&format!("+{t}")))
-        || [
-            "csv", "tsv", "txt", "text", "json", "iif", "xml", "html", "htm", "md", "markdown",
-            "yaml", "yml", "tab", "prn", "log", "ofx", "qfx", "qif",
-        ]
-        .contains(&ext.as_str())
-}
-
-/// The bytes as text, if they are text (INVARIANT 3): UTF-16 with its
-/// byte-order mark, UTF-8, or, for a text type or name, whatever they
-/// decode to. Text with NUL bytes and no byte-order mark (UTF-16 written
-/// without one is valid UTF-8, its digits split by NULs) is read every
-/// way it can be (as it is, as UTF-16 both ways round, and with its NULs
-/// taken out), each reading on a line of its own: so is bytes that aren't
-/// UTF-8 but are NUL-interleaved as UTF-16 is.
-fn text_of(bytes: &[u8], mime_type: &str, file_name: &str) -> Option<String> {
-    let utf16 = |body: &[u8], le: bool| {
-        let units: Vec<u16> = body
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|&c| {
-                if le {
-                    u16::from_le_bytes(c)
-                } else {
-                    u16::from_be_bytes(c)
-                }
-            })
-            .collect();
-        String::from_utf16_lossy(&units)
-    };
-    match bytes {
-        [0xFF, 0xFE, body @ ..] => Some(utf16(body, true)),
-        [0xFE, 0xFF, body @ ..] => Some(utf16(body, false)),
-        _ => {
-            let plain = match std::str::from_utf8(bytes) {
-                Ok(t) => Some(t.to_string()),
-                Err(_) if text_like(mime_type, file_name) => {
-                    Some(String::from_utf8_lossy(bytes).into_owned())
-                }
-                Err(_) => None,
-            };
-            if !bytes.contains(&0) || plain.is_none() && !nul_interleaved(bytes) {
-                return plain;
-            }
-            let without_nuls: Vec<u8> = bytes.iter().copied().filter(|&b| b != 0).collect();
-            let readings = [
-                plain.unwrap_or_default(),
-                utf16(bytes, true),
-                utf16(bytes, false),
-                String::from_utf8_lossy(&without_nuls).into_owned(),
-            ];
-            Some(readings.join("\n"))
-        }
-    }
-}
-
-/// Whether `bytes` look like UTF-16 without a byte-order mark: of their
-/// byte pairs, at least half have a NUL on one side (the high byte of a
-/// Latin character) and at most an eighth on the other.
-fn nul_interleaved(bytes: &[u8]) -> bool {
-    let pairs = bytes.as_chunks::<2>().0;
-    let nuls = |side: usize| pairs.iter().filter(|p| p[side] == 0).count();
-    let (first, second) = (nuls(0), nuls(1));
-    let n = pairs.len();
-    n > 0 && (2 * first >= n && 8 * second <= n || 2 * second >= n && 8 * first <= n)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ledger_import::extract::nul_interleaved;
 
     /// A test's dir, removed when the test ends, pass or panic.
     struct TestDir(std::path::PathBuf);

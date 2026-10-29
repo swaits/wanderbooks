@@ -1452,3 +1452,319 @@ fn a_file_linked_to_an_entry_cannot_also_be_filed_on_it() {
     s.link_receipt(a, fx.e3).unwrap();
     s.verify().unwrap();
 }
+
+// ---------------------------------------------------------------- evidence (P6)
+
+use ledger_store::format::{ATTACHMENT_TEXT, JournalFormat, current};
+use ledger_store::{BlobStore, ExtractionStatus, JournalWriter};
+
+/// Plan P6 step 2: reading a file's text is journaled once per extractor
+/// and version; the text is a content-addressed blob; `verify` checks it.
+#[test]
+fn extraction_is_journaled_once_per_version() {
+    let dir = test_dir("extract-once");
+    let (mut s, fx) = fixture(&dir);
+    let text = b"Zelle payment to Harbor Design, 12.34, 2026-02-10\n";
+    let (id, _, _) = s
+        .attach_receipt(Some(fx.e2), "zelle.txt", "text/plain", text, None)
+        .unwrap();
+    let x = s.extraction(id).unwrap().expect("an extraction record");
+    assert_eq!(x.status, ExtractionStatus::Ok);
+    assert_eq!(x.pages, 1);
+    assert_eq!(x.extractor, ledger_import::extract::EXTRACTOR);
+    assert_eq!(x.version, ledger_import::extract::VERSION);
+    assert_eq!(
+        s.extraction_text(id).unwrap().as_deref(),
+        Some(String::from_utf8_lossy(text).as_ref())
+    );
+    // One record: journaled once, and the text is a stored blob.
+    let records = s
+        .extractions()
+        .unwrap()
+        .into_iter()
+        .filter(|x| x.attachment_id == id)
+        .count();
+    assert_eq!(records, 1);
+    let sha = x.text_sha256.expect("text");
+    assert!(s.stored_blob_shas().unwrap().contains(&sha));
+    let seq = s.journal_seq();
+    let again = s.extract_attachment(id).unwrap();
+    assert_eq!(again.seq, x.seq, "the same record");
+    assert_eq!(s.journal_seq(), seq, "a repeat journals nothing");
+    s.verify().unwrap();
+    // And it survives a reopen: the record and the text are the journal's.
+    drop(s);
+    let s = Store::open(&dir).unwrap();
+    assert_eq!(
+        s.extraction_text(id).unwrap().as_deref(),
+        Some("Zelle payment to Harbor Design, 12.34, 2026-02-10\n")
+    );
+    assert_eq!(s.extractions().unwrap().len(), 1);
+    s.verify().unwrap();
+}
+
+/// Plan P6 step 2, R-A: reading a file's text waits for the books to
+/// declare `attachment_text`, journaling nothing until then; attaching a
+/// file works on old books (the extraction is the backfill's job).
+#[test]
+fn extract_waits_for_attachment_text() {
+    let dir = test_dir("extract-upgrade");
+    let mut s = Store::create_in_format(&dir, Currency::USD, &JournalFormat::default()).unwrap();
+    let (id, _, _) = s
+        .attach_receipt(None, "note.txt", "text/plain", b"a note", None)
+        .unwrap();
+    assert!(s.extractions().unwrap().is_empty(), "no feature, no record");
+    let head = journal_bytes(&dir);
+    match s.extract_attachment(id) {
+        Err(StoreError::FormatUpgradePending { need }) => {
+            assert_eq!(need, format!("the journal feature {ATTACHMENT_TEXT}"))
+        }
+        other => panic!("expected FormatUpgradePending, got {other:?}"),
+    }
+    assert_eq!(journal_bytes(&dir), head, "a refusal journals nothing");
+    s.upgrade_format().unwrap();
+    assert_eq!(s.journal_format(), &current());
+    let x = s.extract_attachment(id).unwrap();
+    assert_eq!(x.status, ExtractionStatus::Ok);
+    assert_eq!(s.extraction_text(id).unwrap().as_deref(), Some("a note"));
+    // The books replay as written, live and in the projection.
+    s.verify().unwrap();
+    drop(s);
+    let s = Store::open(&dir).unwrap();
+    assert_eq!(s.extraction_text(id).unwrap().as_deref(), Some("a note"));
+    s.verify().unwrap();
+}
+
+// Plan P6 step 4: identical bytes are one live attachment, linked to
+// every subject they support (property: for any number of filings).
+proptest::proptest! {
+    // Each case makes books on disk (fsync per line): eight is a property
+    // over the count, not a bulk run.
+    #![proptest_config(proptest::prelude::ProptestConfig::with_cases(8))]
+
+    #[test]
+    fn same_bytes_one_record_many_links(n in 1usize..=4) {
+        let dir = test_dir(&format!("dedup-{n}"));
+        let (mut s, fx) = fixture(&dir);
+        let entries = [fx.e1, fx.e2, fx.e3, fx.e4];
+        let bytes = b"one receipt, four takers";
+        let mut ids = Vec::new();
+        for e in entries.iter().take(n) {
+            let (id, sha, dedup) = s
+                .attach_receipt(Some(*e), "r.txt", "text/plain", bytes, None)
+                .unwrap();
+            proptest::prop_assert_eq!(
+                sha,
+                ledger_store::journal::sha256_hex(bytes)
+            );
+            proptest::prop_assert!(dedup || ids.is_empty());
+            ids.push(id);
+        }
+        let all: Vec<Attachment> = s.list_attachments(None).unwrap();
+        proptest::prop_assert_eq!(all.len(), 1, "one record");
+        proptest::prop_assert!(ids.iter().all(|id| *id == all[0].id));
+        let links = s.attachment_links(all[0].id).unwrap();
+        proptest::prop_assert_eq!(links.len(), n);
+        proptest::prop_assert_eq!(
+            s.extractions().unwrap().len(),
+            1,
+            "extraction once"
+        );
+        s.verify().unwrap();
+    }
+}
+
+/// Plan P6 step 4: records an older version filed twice open as written;
+/// withdrawing one as a duplicate records what it duplicates.
+#[test]
+fn legacy_duplicates_replay_as_written() {
+    let dir = test_dir("legacy-dupes");
+    let s = Store::create(&dir, Currency::USD).unwrap();
+    drop(s);
+    let bytes = b"filed twice by an older version";
+    let (sha, _) = BlobStore::open(&dir.join("blobs"))
+        .unwrap()
+        .put(bytes)
+        .unwrap();
+    let mut w = JournalWriter::open(&dir.join(JOURNAL_FILE)).unwrap();
+    for (id, name) in [(1, "one.pdf"), (2, "two.pdf")] {
+        w.append(
+            "receipt.attached",
+            json!({
+                "attachment_id": id, "blob_sha": sha, "entry_id": null,
+                "category": "receipts", "file_name": name,
+                "mime_type": "application/pdf", "size_bytes": bytes.len() as u64,
+                "description": null,
+            }),
+        )
+        .unwrap();
+    }
+    drop(w);
+    let mut s = Store::open(&dir).unwrap();
+    let all = s.list_attachments(None).unwrap();
+    assert_eq!(all.len(), 2, "both, as written");
+    assert_eq!(all[0].blob_sha, all[1].blob_sha);
+    assert!(all.iter().all(|a| a.duplicate_of.is_none()));
+    s.withdraw_attachment_duplicate(2, "duplicate of #1", 1)
+        .unwrap();
+    assert_eq!(
+        s.attachment_by_id(2).unwrap().unwrap().duplicate_of,
+        Some(1)
+    );
+    s.verify().unwrap();
+    drop(s);
+    let s = Store::open(&dir).unwrap();
+    let again = s.attachment_by_id(2).unwrap().unwrap();
+    assert_eq!(again.duplicate_of, Some(1));
+    assert!(again.withdrawn_at.is_some());
+    s.verify().unwrap();
+}
+
+/// Plan P6 step 5: annotations replay and project, replacing an earlier
+/// one, and the engine's next receipt number runs from the highest.
+#[test]
+fn annotations_replay_and_project() {
+    let dir = test_dir("annotations");
+    let (mut s, fx) = fixture(&dir);
+    let (id, _, _) = s
+        .attach_receipt(Some(fx.e2), "r.pdf", "application/pdf", b"%PDF r", None)
+        .unwrap();
+    let first = ledger_core::Annotation {
+        attachment_id: id,
+        fields: ledger_core::AnnotationFields {
+            receipt_number: Some(4),
+            payee: Some("Harbor Design".into()),
+            amount: Some(dec("12.34")),
+            date: Some(date(2026, 2, 1)),
+            instrument: Some("Check 1234".into()),
+            category: None,
+            source: Some("the owner's email".into()),
+            reimbursable_to: Some("Avery Quill".into()),
+        },
+        note: Some("read on 2026-02-10".into()),
+    };
+    s.annotate_attachment(first.clone()).unwrap();
+    assert_eq!(s.ledger().annotation(id), Some(&first), "the live ledger");
+    assert_eq!(s.annotations().unwrap(), vec![first.clone()]);
+    assert_eq!(s.ledger().next_receipt_number(), 5);
+    // A later annotation replaces it (one projection row, one ledger map
+    // entry).
+    let second = ledger_core::Annotation {
+        attachment_id: id,
+        fields: ledger_core::AnnotationFields {
+            receipt_number: Some(6),
+            payee: Some("Harbor Design LLC".into()),
+            ..Default::default()
+        },
+        note: None,
+    };
+    s.annotate_attachment(second.clone()).unwrap();
+    assert_eq!(s.annotations().unwrap(), vec![second.clone()]);
+    assert_eq!(s.ledger().next_receipt_number(), 7);
+    s.verify().unwrap();
+    drop(s);
+    let s = Store::open(&dir).unwrap();
+    assert_eq!(s.ledger().annotation(id), Some(&second));
+    assert_eq!(s.annotations().unwrap(), vec![second]);
+    s.verify().unwrap();
+}
+
+/// Plan P6 step 5: receipt numbers run from the maximum annotated.
+#[test]
+fn receipt_numbers_run_from_the_max() {
+    let dir = test_dir("receipt-numbers");
+    let (mut s, fx) = fixture(&dir);
+    let price = |n: u32| ledger_core::Annotation {
+        attachment_id: 0,
+        fields: ledger_core::AnnotationFields {
+            receipt_number: Some(n),
+            ..Default::default()
+        },
+        note: None,
+    };
+    assert_eq!(s.ledger().next_receipt_number(), 1, "nothing annotated");
+    let ids: Vec<u64> = (0..3)
+        .map(|i| {
+            s.attach_receipt(
+                Some([fx.e1, fx.e2, fx.e3][i]),
+                &format!("r{i}.txt"),
+                "text/plain",
+                format!("receipt {i}").as_bytes(),
+                None,
+            )
+            .unwrap()
+            .0
+        })
+        .collect();
+    for (id, (n, next)) in ids.iter().zip([(3, 4), (9, 10), (7, 10)]) {
+        let mut a = price(n);
+        a.attachment_id = *id;
+        s.annotate_attachment(a).unwrap();
+        assert_eq!(s.ledger().next_receipt_number(), next, "{n}");
+    }
+    assert_eq!(s.ledger().next_receipt_number(), 10);
+    s.verify().unwrap();
+}
+
+/// Plan P6 step 5: "reimbursed" is derived from `entry.settles` only;
+/// nothing about a member-paid entry's shape makes it paid back.
+#[test]
+fn reimbursed_is_derived_from_settles_only() {
+    let dir = test_dir("settles");
+    let mut s = Store::create(&dir, Currency::USD).unwrap();
+    let cash = s
+        .add_account("1000", "Cash", AccountType::Asset, None, false)
+        .unwrap();
+    let due = s
+        .add_account(
+            "2100",
+            "Due to Members",
+            AccountType::Liability,
+            None,
+            false,
+        )
+        .unwrap();
+    let expense = s
+        .add_account("6000", "Hosting", AccountType::Expense, None, false)
+        .unwrap();
+    let paid = post(
+        &mut s,
+        date(2026, 2, 1),
+        "Hosting, paid by a member",
+        expense,
+        due,
+        "20.00",
+    );
+    let reimb = post(
+        &mut s,
+        date(2026, 2, 10),
+        "Reimburse the member",
+        due,
+        cash,
+        "20.00",
+    );
+    assert!(!s.ledger().settles_entry(paid), "no record yet");
+    assert!(s.ledger().entry_settles(reimb).is_empty());
+    s.set_entry_settles(reimb, &[paid]).unwrap();
+    assert!(s.ledger().settles_entry(paid));
+    assert_eq!(s.ledger().entry_settles(reimb), [paid]);
+    // Refusals journal nothing and change no record.
+    let head = journal_bytes(&dir);
+    for (entry, settles) in [
+        (paid, vec![paid]),
+        (reimb, vec![paid, paid]),
+        (reimb, vec![999]),
+    ] {
+        assert!(
+            s.set_entry_settles(entry, &settles).is_err(),
+            "{entry} {settles:?}"
+        );
+    }
+    assert_eq!(journal_bytes(&dir), head, "refusals journal nothing");
+    s.verify().unwrap();
+    drop(s);
+    let s = Store::open(&dir).unwrap();
+    assert!(s.ledger().settles_entry(paid));
+    assert_eq!(s.ledger().entry_settles(reimb), [paid]);
+    s.verify().unwrap();
+}

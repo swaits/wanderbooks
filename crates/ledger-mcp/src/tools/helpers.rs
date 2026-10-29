@@ -726,3 +726,41 @@ pub(crate) fn sent_out(s: &ledger_core::arap::Sent) -> SentOut {
 pub(crate) fn last_sent(sends: &[ledger_core::arap::Sent]) -> Option<String> {
     sends.iter().map(|s| s.on).max().map(|d| d.to_string())
 }
+
+/// An annotation as a tool answers with it (plan P6 step 5).
+pub(crate) fn annotation_out(a: &ledger_core::Annotation) -> AnnotationOut {
+    AnnotationOut {
+        receipt_number: a.fields.receipt_number,
+        payee: a.fields.payee.clone(),
+        amount: a.fields.amount.map(money),
+        date: a.fields.date.map(|d| d.to_string()),
+        instrument: a.fields.instrument.clone(),
+        category: a.fields.category.clone(),
+        source: a.fields.source.clone(),
+        reimbursable_to: a.fields.reimbursable_to.clone(),
+        note: a.note.clone(),
+    }
+}
+
+/// A file name's stem, for a page picture's or a text file's name: what is
+/// before the last dot, or "attachment" when there is nothing.
+pub(crate) fn stem(file_name: &str) -> String {
+    let stem = file_name
+        .rsplit_once('.')
+        .map_or(file_name, |(stem, _)| stem)
+        .trim();
+    if stem.is_empty() {
+        "attachment".to_string()
+    } else {
+        stem.chars().take(80).collect()
+    }
+}
+
+/// The largest character boundary at or below `at` in `text`.
+pub(crate) fn floor_char_boundary(text: &str, at: usize) -> usize {
+    let mut cut = at.min(text.len());
+    while !text.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    cut
+}

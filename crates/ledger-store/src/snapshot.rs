@@ -19,10 +19,10 @@ use crate::error::StoreError;
 use crate::format::JournalFormat;
 use crate::journal::{GENESIS_PREV, JournalLine};
 use crate::store::{
-    Attachment, BLOBS_DIR, JOURNAL_FILE, Reconciliation, Statement, Store, Subject,
-    apply_line_to_sqlite, compare_projections, projection_rows, query_attachment_links,
-    query_attachments, query_reconciliations, query_statements, read_attachment_bytes,
-    replay_line_into_ledger,
+    Attachment, BLOBS_DIR, Extraction, JOURNAL_FILE, Reconciliation, Statement, Store, Subject,
+    apply_line_to_sqlite, compare_projections, projection_rows, query_annotations,
+    query_attachment_links, query_attachments, query_extractions, query_reconciliations,
+    query_statements, read_attachment_bytes, replay_line_into_ledger,
 };
 use ledger_core::AccountId;
 use ledger_core::{Currency, EntryId, Ledger};
@@ -259,6 +259,16 @@ impl Snapshot {
     /// optionally only one entry's.
     pub fn attachments(&self, entry_id: Option<EntryId>) -> Result<Vec<Attachment>, StoreError> {
         query_attachments(&self.conn, entry_id)
+    }
+
+    /// Every extraction record, in seq order (as [`Store::extractions`]).
+    pub fn extractions(&self) -> Result<Vec<Extraction>, StoreError> {
+        query_extractions(&self.conn)
+    }
+
+    /// Every annotation, by attachment id (as [`Store::annotations`]).
+    pub fn annotations(&self) -> Result<Vec<ledger_core::Annotation>, StoreError> {
+        query_annotations(&self.conn)
     }
 
     /// Every attachment link beyond a receipt's filing entry, as

@@ -1,0 +1,3 @@
+# Tests compare text and checked-in hashes byte for byte: every OS checks out LF (the
+# Windows job of check.yml would otherwise get CRLF from autocrlf).
+* text=auto eol=lf

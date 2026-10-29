@@ -1,6 +1,24 @@
 # STATUS — 2026-10-28: nine units landed, five built on paused branches; P11a starts
 
-## Now (2026-10-29): the wave has landed; S4.5 next, P11a step 0 beside it
+## Now (2026-10-29, evening): wave 1 of the rest of the plan is landing
+
+**Who builds.** The owner chose (the question tool) that this planning
+session is the EM and launches Sonnet subagents in parallel worktrees,
+one per unit, briefed from `plan/HANDOFF.md`; it reviews each against
+the unit's Done-when, merges with a compile and the unit's own tests
+(D-60), and runs one exhaustive gate per wave. Wave 1 so far: U0d
+(`39c76d3f`), P11a step 0 (`5e220cca`; see below), S4.5 (`ac0c949b`:
+P4b S4 is complete), P13 steps 4-5 (`d839e709`); P4 is still building.
+
+**Two decisions the wave forced.** D-62: native Windows is a port, not
+cfg fixes (the host, the MCP transport, the store's locking and
+permissions, the data root are Unix-only), so the first bundled app is
+macOS and Linux and the port is unit P11c, beside P11b. D-63: agents'
+tokens live in a 0600 file under the data root on every OS, no OS
+keyring; the owner's standing view, which the plan had never recorded,
+so P11a step 0 had built two more keyring stores. Unit U0e removes all
+three stores and the `file_keyring` knob; it starts now beside P4.
+
 
 **Where things stand.** `main` is `bfd453b6`. The five branches paused
 on 2026-10-27 are merged, in the 8.0.2 order, each with `just check`

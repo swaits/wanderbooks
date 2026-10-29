@@ -39,6 +39,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 ledger-config = { path = "../ledger-config" }
 ledger-core = { path = "../ledger-core" }
 ledger-package = { path = "../ledger-package" }
+ledger-import = { path = "../ledger-import" }
 ledger-vault = { path = "../ledger-vault" }
 serde_json = "1"
 sha2 = "0.10"

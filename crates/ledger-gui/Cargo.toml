@@ -24,7 +24,6 @@ egui-phosphor = "0.14"
 # Markdown documents, drawn as text. No image loading (no `load-images`,
 # no `fetch`): a document never makes the viewer read a file or the network.
 egui_commonmark = { version = "0.25", default-features = false, features = ["pulldown_cmark"] }
-hayro = { version = "0.8", features = ["embed-fonts"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 notify = "8"
 jiff = "0.2"

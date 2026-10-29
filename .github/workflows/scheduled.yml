@@ -34,7 +34,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [fuzz_journal_line, fuzz_entry_validate, fuzz_op_sequence, fuzz_core_serde, fuzz_store_open, fuzz_store_replay, fuzz_settings_replay, fuzz_import_csv, fuzz_config_parse]
+        target: [fuzz_journal_line, fuzz_entry_validate, fuzz_op_sequence, fuzz_core_serde, fuzz_store_open, fuzz_store_replay, fuzz_settings_replay, fuzz_import_csv, fuzz_config_parse, fuzz_extract_pdf, fuzz_extract_xlsx]
     steps:
       - uses: actions/checkout@v4
       - uses: jdx/mise-action@v2

@@ -576,6 +576,7 @@ impl BooksServer {
             + Self::reconciliation_router()
             + Self::parties_router()
             + Self::attachments_router()
+            + Self::evidence_router()
             + Self::settings_router()
             + Self::chart_router()
             + Self::payroll_router()
@@ -1407,6 +1408,8 @@ mod chart;
 mod documents;
 #[path = "tools/entries.rs"]
 mod entries;
+#[path = "tools/evidence.rs"]
+mod evidence;
 #[path = "tools/helpers.rs"]
 mod helpers;
 #[path = "tools/parties.rs"]
@@ -1442,44 +1445,58 @@ pub(crate) use helpers::*;
 // ServerHandler
 // ---------------------------------------------------------------------------
 
+/// What a resource read gives: JSON/Markdown text, or a file's bytes (a
+/// receipt's page picture, plan P6).
+enum ResourceBody {
+    /// Text the agent reads.
+    Text(String),
+    /// Bytes, base64 in the MCP answer.
+    Blob { mime: String, bytes: Vec<u8> },
+}
+
 impl BooksServer {
-    /// Render a resource URI to its JSON text. Used by `read_resource`.
-    async fn resource_text(&self, uri: &str) -> Result<String, String> {
+    /// Render a resource URI to what it gives. Used by `read_resource`.
+    async fn resource_body(&self, uri: &str) -> Result<ResourceBody, String> {
         // Split off the query string for URIs like books://digest?since=...
         let (path, query) = match uri.split_once('?') {
             Some((p, q)) => (p, q),
             None => (uri, ""),
         };
+        fn json<T: serde::Serialize>(v: &T) -> Result<ResourceBody, String> {
+            serde_json::to_string_pretty(v)
+                .map(ResourceBody::Text)
+                .map_err(|e| e.to_string())
+        }
         match path {
             "books://start" => {
                 let Json(out) = self.start(Parameters(kept::StartParams::default())).await?;
-                serde_json::to_string_pretty(&out).map_err(|e| e.to_string())
+                json(&out)
             }
             "books://settings" => {
                 let Json(out) = self.settings_tool().await?;
-                serde_json::to_string_pretty(&out).map_err(|e| e.to_string())
+                json(&out)
             }
             "books://conventions" => {
                 let Json(out) = self
                     .conventions(Parameters(kept::ConventionsParams::default()))
                     .await?;
-                serde_json::to_string_pretty(&out).map_err(|e| e.to_string())
+                json(&out)
             }
             "books://chart" => {
                 let Json(out) = self.chart().await?;
-                serde_json::to_string_pretty(&out).map_err(|e| e.to_string())
+                json(&out)
             }
             "books://reports/trial-balance" => {
                 let Json(out) = self
                     .trial_balance(Parameters(TrialBalanceParams::default()))
                     .await?;
-                serde_json::to_string_pretty(&out).map_err(|e| e.to_string())
+                json(&out)
             }
             "books://reports/balance-sheet" => {
                 let Json(out) = self
                     .balance_sheet(Parameters(BalanceSheetParams { as_of: None }))
                     .await?;
-                serde_json::to_string_pretty(&out).map_err(|e| e.to_string())
+                json(&out)
             }
             "books://reports/profit-and-loss" => {
                 let Json(out) = self
@@ -1489,16 +1506,16 @@ impl BooksServer {
                         class: None,
                     }))
                     .await?;
-                serde_json::to_string_pretty(&out).map_err(|e| e.to_string())
+                json(&out)
             }
             "books://digest" => {
                 let since = digest_since(query, today());
                 let Json(out) = self.digest(Parameters(DigestParams { since })).await?;
-                serde_json::to_string_pretty(&out).map_err(|e| e.to_string())
+                json(&out)
             }
             handbook::URI => {
                 let Json(out) = self.handbook(Parameters(HandbookParams::default())).await?;
-                serde_json::to_string_pretty(&out).map_err(|e| e.to_string())
+                json(&out)
             }
             _ if path.starts_with(&format!("{}/", handbook::URI)) => {
                 let id = &path[handbook::URI.len() + 1..];
@@ -1508,21 +1525,59 @@ impl BooksServer {
                     self.currency(),
                     self.document_line_projects(),
                 )
+                .map(ResourceBody::Text)
                 .ok_or_else(|| format!("unknown handbook section: {id}"))
             }
-            _ if path.starts_with("books://receipts/") => {
-                let id: u64 = path
-                    .strip_prefix("books://receipts/")
-                    .unwrap_or("")
+            _ if (path.starts_with("books://receipts/")
+                || path.starts_with("books://attachments/")) =>
+            {
+                // `books://attachments/{id}/page/{n}`: one page as a PNG
+                // (plan P6; D-46: a file is handed over, but a resource
+                // read is the agent's own fetch of a picture, never a
+                // path).
+                let prefix = if path.starts_with("books://receipts/") {
+                    "books://receipts/"
+                } else {
+                    "books://attachments/"
+                };
+                let rest = &path[prefix.len()..];
+                if let Some((id, page)) = rest.split_once("/page/") {
+                    let id: u64 = id
+                        .parse()
+                        .map_err(|_| format!("bad attachment resource URI: {uri}"))?;
+                    let page: u32 = page
+                        .parse()
+                        .map_err(|_| format!("bad page in {uri}: give a page number from 1"))?;
+                    if page == 0 {
+                        return Err("page numbers start at 1".into());
+                    }
+                    let store = self.lock()?;
+                    let meta = find_attachment(&store, id)?;
+                    let bytes = store.attachment_bytes(id).map_err(|e| e.to_string())?;
+                    let png = ledger_import::extract::page_png(
+                        &bytes,
+                        usize::try_from(page - 1).unwrap_or(usize::MAX),
+                        1600,
+                    )
+                    .map_err(|e| e.to_string())?;
+                    let _ = meta;
+                    return Ok(ResourceBody::Blob {
+                        mime: "image/png".into(),
+                        bytes: png,
+                    });
+                }
+                let id: u64 = rest
                     .parse()
-                    .map_err(|_| format!("bad receipt resource URI: {uri}"))?;
+                    .map_err(|_| format!("bad attachment resource URI: {uri}"))?;
                 let Json(out) = self
                     .get_receipt(Parameters(GetReceiptParams {
                         attachment_id: id,
                         view: None,
+                        page: None,
+                        max_px: None,
                     }))
                     .await?;
-                serde_json::to_string_pretty(&out).map_err(|e| e.to_string())
+                json(&out)
             }
             _ => Err(format!("unknown resource: {uri}")),
         }
@@ -1842,29 +1897,43 @@ impl BooksServer {
         let uri = request.uri.clone();
         let server = self.clone();
         let at = uri.clone();
-        let text = run_blocking(&self.store, move || {
-            Box::pin(async move { in_timezone_async(timezone, server.resource_text(&at)).await })
+        let body = run_blocking(&self.store, move || {
+            Box::pin(async move { in_timezone_async(timezone, server.resource_body(&at)).await })
         })
         .await?;
         // A refusal quotes the URI it was given: masked like a tool's.
-        let text = text.map_err(|e| {
+        let body = body.map_err(|e| {
             redact_error(rmcp::ErrorData::resource_not_found(
                 uri.clone(),
                 Some(serde_json::json!({"reason": e})),
             ))
         })?;
-        let mime_type = if uri.starts_with(&format!("{}/", handbook::URI)) {
-            "text/markdown"
-        } else {
-            "application/json"
+        let contents = match body {
+            ResourceBody::Text(text) => {
+                let mime_type = if uri.starts_with(&format!("{}/", handbook::URI)) {
+                    "text/markdown"
+                } else {
+                    "application/json"
+                };
+                ResourceContents::TextResourceContents {
+                    uri,
+                    mime_type: Some(mime_type.to_string()),
+                    text,
+                    meta: None,
+                }
+            }
+            ResourceBody::Blob { mime, bytes } => {
+                use base64::Engine;
+                ResourceContents::BlobResourceContents {
+                    uri,
+                    mime_type: Some(mime),
+                    blob: base64::engine::general_purpose::STANDARD.encode(bytes),
+                    meta: None,
+                }
+            }
         };
         Ok(ReadResourceResponse::Complete(ReadResourceResult::new(
-            vec![ResourceContents::TextResourceContents {
-                uri,
-                mime_type: Some(mime_type.to_string()),
-                text,
-                meta: None,
-            }],
+            vec![contents],
         )))
     }
 }

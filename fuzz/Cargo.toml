@@ -79,6 +79,20 @@ doc = false
 bench = false
 
 [[bin]]
+name = "fuzz_extract_pdf"
+path = "fuzz_targets/fuzz_extract_pdf.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_extract_xlsx"
+path = "fuzz_targets/fuzz_extract_xlsx.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "fuzz_config_parse"
 path = "fuzz_targets/fuzz_config_parse.rs"
 test = false

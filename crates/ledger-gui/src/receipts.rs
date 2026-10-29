@@ -1,7 +1,7 @@
 //! Rendering receipts and documents to textures, off the UI thread.
 //!
-//! PDFs are rasterized with `hayro` (pure Rust), images decoded with
-//! `image`; Markdown and plain text are read as UTF-8 and drawn as text
+//! PDFs are rasterized by the one extractor in `ledger-import` (pure Rust,
+//! plan P6), images decoded with `image`; Markdown and plain text are read as UTF-8 and drawn as text
 //! (Markdown by `egui_commonmark`), so they follow the theme and select
 //! like any text. Results are cached by blob hash: the same bytes never render
 //! twice, and a hash is the content, so the cache never goes stale. Bytes
@@ -60,6 +60,10 @@ pub const MAX_SIDE: f32 = 8192.0;
 /// A text thumbnail keeps only this much of its text: a tile shows a few
 /// lines.
 const THUMB_TEXT_BYTES: usize = 2048;
+
+/// A page shown in full is rendered at most this many pixels on its
+/// longest side: a letter page at twice its points (612 x 792).
+const PAGE_PX: u32 = 1584;
 
 /// Where the live viewer keeps thumbnails: the user's cache directory
 /// (`$XDG_CACHE_HOME`, else `~/.cache`), `wanderbooks/thumbs/v1-560`;
@@ -322,22 +326,26 @@ fn render_thumb(job: &Job, dir: Option<&std::path::Path>) -> Result<Rendered, St
         return Ok(Rendered::Pages(vec![to_color_image(img.to_rgba8())]));
     }
     let img = if job.mime == "application/pdf" || bytes.starts_with(b"%PDF") {
-        let png = pdf_first_page_png(bytes)?;
+        // A page rendered twice the tile's width, then cut down here: the
+        // same pixels a picture is, and one extractor for every reader
+        // (plan P6).
+        let png = ledger_import::extract::page_png(&bytes, 0, (THUMB_PX * 2.0) as u32)
+            .map_err(|e| e.to_string())?;
         image::load_from_memory(&png).map_err(|e| e.to_string())?
     } else if job.mime.starts_with("image/") {
-        let img = image::load_from_memory(&bytes).map_err(|e| e.to_string())?;
-        if img.width() as f32 > THUMB_PX {
-            let h = (img.height() as f32 * THUMB_PX / img.width() as f32).max(1.0);
-            img.resize_exact(
-                THUMB_PX as u32,
-                h as u32,
-                image::imageops::FilterType::Triangle,
-            )
-        } else {
-            img
-        }
+        image::load_from_memory(&bytes).map_err(|e| e.to_string())?
     } else {
         return Err(format!("{} can't be previewed", job.mime));
+    };
+    let img = if img.width() as f32 > THUMB_PX {
+        let h = (img.height() as f32 * THUMB_PX / img.width() as f32).max(1.0);
+        img.resize_exact(
+            THUMB_PX as u32,
+            h as u32,
+            image::imageops::FilterType::Triangle,
+        )
+    } else {
+        img
     };
     let img = img.crop_imm(0, 0, img.width(), img.height().min(THUMB_MAX_H));
     if let Some(path) = &kept {
@@ -385,43 +393,13 @@ fn keep(path: &std::path::Path, png: &[u8]) {
     }
 }
 
-/// A PDF's first page as a PNG, [`THUMB_PX`] wide.
-fn pdf_first_page_png(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
-    use hayro::hayro_interpret::InterpreterSettings;
-    use hayro::hayro_syntax::Pdf;
-    use hayro::vello_cpu::color::palette::css::WHITE;
-    use hayro::{PixmapSettings, RenderCache, RenderSettings, render};
-    let pdf = Pdf::new(bytes).map_err(|e| format!("not a readable PDF: {e:?}"))?;
-    let pages = pdf.pages();
-    let page = pages.first().ok_or("the PDF has no pages")?;
-    let (w, h) = page.render_dimensions();
-    // THUMB_PX wide, but never past a texture's side on a long page (the
-    // picture is cut to THUMB_MAX_H after), and never nothing.
-    let scale = (THUMB_PX / w.max(1.0))
-        .min(MAX_SIDE / h.max(1.0))
-        .max(1.0 / w.max(h).max(1.0));
-    let px = PixmapSettings {
-        x_scale: scale,
-        y_scale: scale,
-        bg_color: WHITE,
-    };
-    let pixmap = render(
-        page,
-        &RenderCache::new(),
-        &InterpreterSettings::default(),
-        &RenderSettings::default(),
-        &px,
-    );
-    pixmap.into_png().map_err(|e| format!("{e:?}"))
-}
-
 fn render(job: &Job) -> Result<Rendered, String> {
     let bytes = BlobStore::open_read_only(&job.root)
         .get(&job.sha)
         .map_err(|e| e.to_string())?;
     let is_pdf = job.mime == "application/pdf" || bytes.starts_with(b"%PDF");
     if is_pdf {
-        render_pdf(bytes).map(Rendered::Pages)
+        render_pdf(&bytes).map(Rendered::Pages)
     } else if job.mime.starts_with("image/") {
         let img = image::load_from_memory(&bytes).map_err(|e| e.to_string())?;
         // Past a texture's side, scaled down to fit (aspect kept).
@@ -478,27 +456,15 @@ pub fn text_of(bytes: Vec<u8>) -> Result<String, String> {
     Ok(text)
 }
 
-fn render_pdf(bytes: Vec<u8>) -> Result<Vec<ColorImage>, String> {
-    use hayro::hayro_interpret::InterpreterSettings;
-    use hayro::hayro_syntax::Pdf;
-    use hayro::vello_cpu::color::palette::css::WHITE;
-    use hayro::{PixmapSettings, RenderCache, RenderSettings, render};
-    let pdf = Pdf::new(bytes).map_err(|e| format!("not a readable PDF: {e:?}"))?;
-    let cache = RenderCache::new();
-    let interp = InterpreterSettings::default();
-    let settings = RenderSettings::default();
+/// A PDF's pages, in order, through the one extractor (`ledger-import`,
+/// plan P6): each at most [`PAGE_PX`] pixels on its longest side, at most
+/// [`ledger_import::extract::MAX_PAGES`] pages.
+fn render_pdf(bytes: &[u8]) -> Result<Vec<ColorImage>, String> {
+    let pages = ledger_import::extract::page_count(bytes).map_err(|e| e.to_string())?;
     let mut out = Vec::new();
-    for page in pdf.pages().iter().take(30) {
-        // Twice the page's size, but never past a texture's side.
-        let (w, h) = page.render_dimensions();
-        let scale = 2.0f32.min(MAX_SIDE / w.max(h).max(1.0));
-        let px = PixmapSettings {
-            x_scale: scale,
-            y_scale: scale,
-            bg_color: WHITE,
-        };
-        let pixmap = render(page, &cache, &interp, &settings, &px);
-        let png = pixmap.into_png().map_err(|e| format!("{e:?}"))?;
+    for page in 0..pages.min(ledger_import::extract::MAX_PAGES) {
+        let png =
+            ledger_import::extract::page_png(bytes, page, PAGE_PX).map_err(|e| e.to_string())?;
         let img = image::load_from_memory(&png).map_err(|e| e.to_string())?;
         out.push(to_color_image(img.to_rgba8()));
     }

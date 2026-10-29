@@ -57,13 +57,11 @@ apply is safe — on startup the applier replays every journal line with
 - `seq`: 1-based, gapless, assigned by the writer.
 - `ts`: UTC, RFC 3339. Recorded, never trusted for ordering (`seq` orders).
 - `type`: `account.added`, `entry.posted`, `entry.reversed`, `invoice.created`,
-  `bill.created`, `receipt.attached`, `receipt.linked`, `receipt.unlinked`,
-  `document.filed`, `attachment.withdrawn`, `invoice.sent` (a recorded
-  send: a document's record, never a ledger line or a figure; P4b S5)
-  (plus the A/R, A/P, asset, period, payroll, and class events listed on
-  `JournalLine`).
-  `invoice.written_off`, `bill.created`, `receipt.attached`, `receipt.linked`, `receipt.unlinked`,
-  `document.filed`, `attachment.withdrawn` (plus the A/R, A/P, asset,
+  `bill.created`, `invoice.sent` (a recorded send: a document's record,
+  never a ledger line or a figure; P4b S5), `invoice.written_off` (P4b S7),
+  `receipt.attached`, `receipt.linked`, `receipt.unlinked`,
+  `document.filed`, `attachment.withdrawn`, `attachment.text_extracted`,
+  `attachment.annotated`, `entry.settles` (P6) (plus the A/R, A/P, asset,
   period, payroll, and class events listed on `JournalLine`).
 - `payload`: the full domain facts (account fields, entry with lines, blob
   sha, ...). Everything the applier needs; nothing it must look up elsewhere.
@@ -114,9 +112,12 @@ a backup is then proven where it lands, by a drill (docs/mcp-interface.md,
 - **Immutable.** Blobs are never modified or deleted by the application. A
   retention/deletion policy is an explicit future human decision, not an
   accident of implementation.
-- **Deduplicated.** Attaching the same receipt twice stores one blob and two
-  attachment rows. `attach_receipt` / `file_document` return
-  `deduplicated: true` when the blob already existed.
+- **Deduplicated.** The same bytes are one blob, and since P6 one live
+  attachment record: filing them again returns that record (with
+  `deduplicated: true`) and links it to the new subject instead of adding
+  a second row. Records an older version filed twice stay as written until
+  `books.consolidate_duplicates` links the oldest to every subject the
+  others had and withdraws the rest (`duplicate_of`).
 - **Limits.** 25 MiB per file, as an upload (`books.begin_upload`): the
   only way a file comes in (D-46: nothing is given inline). The name and MIME type are the client's, checked
   when the file is filed: a name of 1 to 255 bytes, no `/` or `\`, not
@@ -135,17 +136,33 @@ a backup is then proven where it lands, by a drill (docs/mcp-interface.md,
     exists, then linked with `books.link_receipt`.
   - `category` mirrors today's Drive layout: `formation`, `legal`, `tax`,
     `accounting` (today's 01 Formation / 02 Legal / 03 Tax / 04 Accounting),
-    plus `receipts`.
+    plus `receipts`, and every other company record (D-20): `statement`,
+    `contract`, `photo`, `warranty`, `import_source`, `notices`,
+    `correspondence`, `plans`, `history`, `other`.
+  - `duplicate_of` names the attachment a withdrawn duplicate stands for
+    (`attachment.withdrawn`'s optional `duplicate_of`, schema v16).
 - Documents filed via `books.file_document` and receipts via
   `books.attach_receipt` share the blob store; they differ only in metadata.
 - **Receipts change by events, never by edits.** `receipt.unlinked`
   (`attachment_id`, `entry_id`, `reason`) detaches a receipt from its entry;
-  `attachment.withdrawn` (`attachment_id`, `reason`) retires an unlinked
-  receipt or a document (`withdrawn_at`, `withdrawn_reason` columns, schema
-  v5). Linking requires an unlinked, non-withdrawn attachment, so evidence
+  `attachment.withdrawn` (`attachment_id`, `reason`, `duplicate_of?`)
+  retires an unlinked receipt or a document (`withdrawn_at`,
+  `withdrawn_reason`, `duplicate_of` columns, schema v5 and v16). Linking requires an unlinked, non-withdrawn attachment, so evidence
   only leaves an entry through a recorded unlink. Blobs are untouched: a
   withdrawn file is still hash-verified and readable, and the journal shows
   when it was filed, linked, unlinked, and withdrawn, and why.
+- **Extraction is derived, and journaled** (P6, rules.md B-44):
+  `attachment.text_extracted {attachment_id, text_sha256, extractor,
+  version, pages, status}` records what reading a file found (`ok`,
+  `none`, `failed`); the text itself is a content-addressed blob like any
+  other, and `books.verify` checks its presence and hash, never re-derives
+  it. One record per attachment, extractor and version: an extractor
+  upgrade adds a record, never replaces one.
+- **Annotations and settlements are records, not edits** (P6):
+  `attachment.annotated {attachment_id, fields, note?}` is what a human
+  read off a file (the closed field list; a later annotation replaces the
+  earlier record), and `entry.settles {entry_id, settles[]}` says which
+  entries a payment pays back (the only source of "reimbursed").
 - The store is policy-free: it records attachments faithfully. Whether a
   posting *requires* a receipt is decided by the MCP layer's receipt policy
   (`docs/mcp-interface.md`), which reads the `attachments` table.
@@ -168,7 +185,11 @@ Suspected corruption is fixed by rebuild, never by forensics.
   `integrity_check` on startup.
 - **Schema.** `meta(key, value)` — `schema_version`, `base_currency`,
   `last_applied_seq`; `accounts`, `entries`, `lines`, `blobs`, `attachments`
-  as above; `events(seq, type, payload, created_at)` — the applier's output,
+  as above; `extractions(attachment_id, extractor, version, text_sha256,
+  pages, status, seq)` and `annotations(attachment_id, receipt_number,
+  payee, amount, date, instrument, category, source, reimbursable_to,
+  note, seq)` (P6; amounts TEXT, never REAL); `events(seq, type, payload,
+  created_at)` — the applier's output,
   a queryable mirror of the journal stream and the feed the future GUI
   tails. (Poll `WHERE seq > ?`; later SSE over the HTTP transport. This is
   the correct answer to "watch its files to update live" — watch the event

@@ -19,7 +19,9 @@ use chrono::NaiveDate;
 use ledger_core::arap::{SendKind, Sent, SentVia};
 use ledger_core::conventions::{Approval, ConventionKind, NewConvention, NewDecision, NewOpenItem};
 use ledger_core::settings::{Change, Source};
-use ledger_core::{ClassId, ProjectFacts, ProjectKind, ProjectStatus};
+use ledger_core::{
+    Annotation, AnnotationFields, ClassId, ProjectFacts, ProjectKind, ProjectStatus,
+};
 use serde_json::{Map, Value, json};
 
 /// The journal format these events need: an older reader stops at the
@@ -466,6 +468,162 @@ pub fn invoice_written_off_of(p: &Value) -> Result<WrittenOff, StoreError> {
     })
 }
 
+/// `attachment.text_extracted {attachment_id, text_sha256, extractor,
+/// version, pages, status}` (plan P6, feature `attachment_text`).
+pub fn text_extracted(
+    attachment_id: u64,
+    text_sha256: Option<&str>,
+    extractor: &str,
+    version: &str,
+    pages: u32,
+    status: &str,
+) -> Value {
+    json!({
+        "attachment_id": attachment_id,
+        "text_sha256": text_sha256,
+        "extractor": extractor,
+        "version": version,
+        "pages": pages,
+        "status": status,
+    })
+}
+
+/// Read an `attachment.text_extracted`: `(attachment_id, text_sha256,
+/// extractor, version, pages, status)`. A status this version doesn't know
+/// is newer (B-27: never "corrupt" for newer).
+pub fn text_extracted_of(line: &crate::journal::JournalLine) -> Result<TextExtracted, StoreError> {
+    const E: &str = "attachment.text_extracted";
+    let p = &line.payload;
+    let status = str_of(p, E, "status")?;
+    if !matches!(status.as_str(), "ok" | "none" | "failed") {
+        return Err(crate::format::newer_content(
+            line,
+            format!("the extraction status {status:?}"),
+        ));
+    }
+    Ok((
+        u64_of(p, E, "attachment_id")?,
+        opt_str(p, E, "text_sha256")?,
+        str_of(p, E, "extractor")?,
+        str_of(p, E, "version")?,
+        u32::try_from(u64_of(p, E, "pages")?).map_err(|_| corrupt(E, "pages"))?,
+        status,
+    ))
+}
+
+/// What an `attachment.text_extracted` says: attachment id, text blob,
+/// extractor, version, pages, status.
+pub type TextExtracted = (u64, Option<String>, String, String, u32, String);
+
+/// The annotation fields this version knows (the closed list, plan P6
+/// step 5).
+const ANNOTATION_FIELDS: &[&str] = &[
+    "receipt_number",
+    "payee",
+    "amount",
+    "date",
+    "instrument",
+    "category",
+    "source",
+    "reimbursable_to",
+];
+
+/// `attachment.annotated {attachment_id, fields{...}, note?}`: only the
+/// fields given are written, so a canonical payload.
+pub fn annotated(a: &Annotation) -> Value {
+    let mut fields = Map::new();
+    put(&mut fields, "receipt_number", a.fields.receipt_number);
+    put(&mut fields, "payee", a.fields.payee.clone());
+    put(
+        &mut fields,
+        "amount",
+        a.fields.amount.map(|v| v.to_string()),
+    );
+    put(&mut fields, "date", a.fields.date.map(|d| d.to_string()));
+    put(&mut fields, "instrument", a.fields.instrument.clone());
+    put(&mut fields, "category", a.fields.category.clone());
+    put(&mut fields, "source", a.fields.source.clone());
+    put(
+        &mut fields,
+        "reimbursable_to",
+        a.fields.reimbursable_to.clone(),
+    );
+    let mut o = Map::new();
+    o.insert("attachment_id".into(), json!(a.attachment_id));
+    o.insert("fields".into(), Value::Object(fields));
+    put(&mut o, "note", a.note.clone());
+    Value::Object(o)
+}
+
+/// Read an `attachment.annotated`. A field this version doesn't know, or a
+/// mistyped one, is judged by its kind: unknown is newer (a later version
+/// wrote it, B-27), mistyped is corrupt.
+pub fn annotated_of(line: &crate::journal::JournalLine) -> Result<Annotation, StoreError> {
+    const E: &str = "attachment.annotated";
+    let p = &line.payload;
+    let fields = p
+        .get("fields")
+        .filter(|v| v.is_object())
+        .ok_or_else(|| corrupt(E, "fields"))?;
+    for key in fields.as_object().expect("object").keys() {
+        if !ANNOTATION_FIELDS.contains(&key.as_str()) {
+            return Err(crate::format::newer_content(
+                line,
+                format!("the annotation field {key:?}"),
+            ));
+        }
+    }
+    let text = |k: &str| opt_str(fields, E, k);
+    let receipt_number = match fields.get("receipt_number") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(
+            v.as_u64()
+                .and_then(|n| u32::try_from(n).ok())
+                .ok_or_else(|| corrupt(E, "receipt_number"))?,
+        ),
+    };
+    let amount = match text("amount")? {
+        None => None,
+        Some(s) => Some(
+            s.parse()
+                .map_err(|_| StoreError::JournalCorrupt(format!("{E}: amount")))?,
+        ),
+    };
+    let date = opt_date(fields, E, "date")?;
+    Ok(Annotation {
+        attachment_id: u64_of(p, E, "attachment_id")?,
+        fields: AnnotationFields {
+            receipt_number,
+            payee: text("payee")?,
+            amount,
+            date,
+            instrument: text("instrument")?,
+            category: text("category")?,
+            source: text("source")?,
+            reimbursable_to: text("reimbursable_to")?,
+        },
+        note: opt_str(p, E, "note")?,
+    })
+}
+
+/// `entry.settles {entry_id, settles: [entry_id]}` (plan P6).
+pub fn entry_settles(entry: u64, settles: &[u64]) -> Value {
+    json!({ "entry_id": entry, "settles": settles })
+}
+
+/// Read an `entry.settles`: `(entry, settles)`.
+pub fn entry_settles_of(p: &Value) -> Result<(u64, Vec<u64>), StoreError> {
+    const E: &str = "entry.settles";
+    let settles = p
+        .get("settles")
+        .and_then(Value::as_array)
+        .ok_or_else(|| corrupt(E, "settles"))?
+        .iter()
+        .map(|v| v.as_u64().ok_or_else(|| corrupt(E, "settles")))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((u64_of(p, E, "entry_id")?, settles))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -548,6 +706,50 @@ mod tests {
         assert_eq!(
             entry_approved_of(&entry_approved(5, &a), 9).unwrap(),
             (5, a)
+        );
+        let line = crate::journal::JournalLine {
+            seq: 11,
+            ts: "2026-10-27T00:00:00Z".into(),
+            line_type: "attachment.annotated".into(),
+            payload: annotated(&Annotation {
+                attachment_id: 3,
+                fields: AnnotationFields {
+                    receipt_number: Some(7),
+                    payee: Some("Harbor Design".into()),
+                    amount: Some("12.34".parse().unwrap()),
+                    date: NaiveDate::from_ymd_opt(2026, 3, 1),
+                    instrument: Some("Check 1234".into()),
+                    category: None,
+                    source: Some("a folder".into()),
+                    reimbursable_to: Some("Avery Quill".into()),
+                },
+                note: Some("read on 2026-03-02".into()),
+            }),
+            prev: String::new(),
+        };
+        let read = annotated_of(&line).unwrap();
+        assert_eq!(annotated(&read), line.payload);
+        assert_eq!(
+            entry_settles_of(&entry_settles(4, &[1, 2])).unwrap(),
+            (4, vec![1, 2])
+        );
+        let x = crate::journal::JournalLine {
+            seq: 12,
+            ts: "2026-10-27T00:00:00Z".into(),
+            line_type: "attachment.text_extracted".into(),
+            payload: text_extracted(3, Some("00ff"), "wanderbooks", "1", 2, "ok"),
+            prev: String::new(),
+        };
+        assert_eq!(
+            text_extracted_of(&x).unwrap(),
+            (
+                3,
+                Some("00ff".into()),
+                "wanderbooks".into(),
+                "1".into(),
+                2,
+                "ok".into()
+            )
         );
     }
 

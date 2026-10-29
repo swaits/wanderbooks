@@ -391,9 +391,63 @@ pub fn describe(b: &Books, line: &JournalLine) -> Option<Event> {
         }
         "attachment.withdrawn" => ev(
             icon::ARCHIVE,
-            format!("Withdrew {}: {}", attachment_name(b, att), s(p, "reason")),
+            format!(
+                "Withdrew {}{}",
+                attachment_name(b, att),
+                match p.get("duplicate_of").and_then(|v| v.as_u64()) {
+                    Some(first) => format!(", a duplicate of #{first}: {}", s(p, "reason")),
+                    None => format!(": {}", s(p, "reason")),
+                }
+            ),
             Some(Route::Document(att)),
         ),
+        "attachment.text_extracted" => ev(
+            icon::FILE_TEXT,
+            format!(
+                "Read {}: {}",
+                attachment_name(b, att),
+                match s(p, "status") {
+                    "ok" => "its text".to_string(),
+                    "none" => "no text to read".to_string(),
+                    _ => "the reader failed".to_string(),
+                }
+            ),
+            Some(Route::Document(att)),
+        ),
+        "attachment.annotated" => ev(
+            icon::PENCIL_SIMPLE,
+            match p
+                .get("fields")
+                .and_then(|f| f.get("receipt_number"))
+                .and_then(|v| v.as_u64())
+            {
+                Some(n) => format!("Annotated {} as receipt {n}", attachment_name(b, att)),
+                None => format!("Annotated {}", attachment_name(b, att)),
+            },
+            Some(Route::Document(att)),
+        ),
+        "entry.settles" => {
+            let settles: Vec<String> = p
+                .get("settles")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_u64())
+                        .map(|e| format!("#{e}"))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let text = if settles.is_empty() {
+                format!("Cleared what #{} settles", entry_id.unwrap_or(0))
+            } else {
+                format!(
+                    "Entry #{} settles {}",
+                    entry_id.unwrap_or(0),
+                    settles.join(", ")
+                )
+            };
+            ev(icon::CHECK, text, entry_id.map(Route::Entry))
+        }
         "account.added" => ev(
             icon::PLUS_CIRCLE,
             format!("Added account {} {}", s(p, "code"), s(p, "name")),

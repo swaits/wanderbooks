@@ -56,7 +56,7 @@ const C: Needs = PostWhenConfirmed;
 const K: Needs = PostForApprovalRules;
 
 /// Every tool and what it needs (INVARIANT 1).
-pub const TABLE: [(&str, Needs); 125] = [
+pub const TABLE: [(&str, Needs); 129] = [
     ("books.handbook", R),
     ("books.start", R),
     // Settings are committed at once: the settings commit of the plan.
@@ -191,6 +191,11 @@ pub const TABLE: [(&str, Needs); 125] = [
     ("books.back_up_now", A),
     // P4b S7: a bad-debt write-off (preview, then post).
     ("books.write_off_invoice", C),
+    // P6: evidence (plan/served.md P6).
+    ("books.find_attachment", R),
+    ("books.annotate_attachment", W),
+    ("books.set_entry_settles", W),
+    ("books.consolidate_duplicates", C),
 ];
 
 /// What `tool` needs, given its arguments; None for a tool this server

@@ -1893,6 +1893,21 @@ fn books_written_under_older_rules_still_open() {
         json!({"id": 1, "name": "Tobin Harlow Supply"}),
     )
     .unwrap();
+    // P6's new shapes, hand-written as a later version writes them: a file's
+    // extraction record, an annotation of it, and a settlement. This reader
+    // takes them; the version before it stopped at the declaration.
+    w.append(
+        "attachment.text_extracted",
+        json!({"attachment_id": 5, "text_sha256": null, "extractor": "wanderbooks",
+               "version": "1", "pages": 0, "status": "none"}),
+    )
+    .unwrap();
+    w.append(
+        "attachment.annotated",
+        json!({"attachment_id": 5, "fields": {"receipt_number": 3, "payee": "Acme"},
+               "note": "read by hand"}),
+    )
+    .unwrap();
     w.append(
         "entry.created",
         json!({"id": 2, "date": "2026-04-01", "description": "Invoice 1"}),
@@ -2070,6 +2085,30 @@ fn books_written_under_older_rules_still_open() {
                "amount": "30.00", "reason": "uncollectible"}),
     )
     .unwrap();
+    // P6's new shapes, hand-written as a later version writes them: an
+    // entry a member was reimbursed by, and the record of what it settles.
+    w.append(
+        "entry.created",
+        json!({"id": 7, "date": "2026-03-02", "description": "Reimburse"}),
+    )
+    .unwrap();
+    for side in ["debit", "credit"] {
+        w.append(
+            "entry.line_added",
+            json!({"id": 7, "account": 2, "side": side, "amount": "5.00", "currency": "USD"}),
+        )
+        .unwrap();
+    }
+    w.append(
+        "entry.posted",
+        json!({"id": 7, "date": "2026-03-02", "description": "Reimburse",
+               "lines": [{"account": 2, "side": "debit", "amount": "5.00", "currency": "USD"},
+                         {"account": 2, "side": "credit", "amount": "5.00", "currency": "USD"}],
+               "reversal_of": null}),
+    )
+    .unwrap();
+    w.append("entry.settles", json!({"entry_id": 7, "settles": [1]}))
+        .unwrap();
     drop(w);
     // Opening rebuilds from the journal; it must accept all of it.
     let _ = std::fs::remove_file(dir.join(ledger_store::db_file()));
@@ -2086,6 +2125,21 @@ fn books_written_under_older_rules_still_open() {
         "108.34567".parse::<Decimal>().unwrap()
     );
     // The new shapes replay as written: the party's facts and the setting.
+    // P6's shapes replayed: the extraction, the annotation and the
+    // settlement.
+    let extractions = store.extractions().unwrap();
+    assert_eq!(extractions.len(), 1);
+    assert_eq!(extractions[0].attachment_id, 5);
+    assert_eq!(extractions[0].status, ledger_store::ExtractionStatus::None);
+    let annotation = store
+        .ledger()
+        .annotation(5)
+        .expect("the annotation, replayed");
+    assert_eq!(annotation.fields.receipt_number, Some(3));
+    assert_eq!(annotation.fields.payee.as_deref(), Some("Acme"));
+    assert_eq!(store.ledger().next_receipt_number(), 4);
+    assert_eq!(store.ledger().entry_settles(7), [1]);
+    assert!(store.ledger().settles_entry(1));
     let acme = store.ledger().get_party(1).expect("the party");
     assert_eq!(acme.email.as_deref(), Some("billing@acme.example"));
     assert_eq!(acme.phone.as_deref(), Some("555-0142"));

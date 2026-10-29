@@ -876,3 +876,17 @@ each harness's whole run, its compile of about 50 s included):
 | `bounds_kept_is_the_definition_on_books_in_bounds` | 34 | prove | (as above) |
 | `settle_is_exact` | 36 | prove | 1 |
 | `kani_symbolic_copy_canary` | (the checker: "Trusting the checker") | prove | 3 |
+
+
+## P6: the evidence pipeline
+
+No kernel arithmetic, `Ledger` command in the formal sense, or Lean step
+changed (P6 moves no money): `just prove` is unchanged and stays green.
+The new `Ledger` methods (`annotate_attachment`, `set_entry_settles`) are
+replay-side records with validation only, covered by
+`annotations_replay_and_project` and `reimbursed_is_derived_from_settles_only`;
+the arithmetic-shaped work (the extraction caps and the page scale) is in
+`ledger-import`, outside the kernel, and is tested and fuzzed rather than
+proved. The formal bar for the next unit that touches these paths is
+unchanged; the P12 paragraph in `docs/testing.md` lists the mutation
+targets.

@@ -63,6 +63,7 @@ pub const KNOWN_FEATURES: &[&str] = &[
     DOCUMENT_LINE_PROJECTS,
     DOCUMENT_STANDING,
     DOCUMENTS_V2,
+    ATTACHMENT_TEXT,
 ];
 
 /// Feature: `period.closed` closes to members with `"rounding":
@@ -198,6 +199,15 @@ pub const DOCUMENT_STANDING: &str = "document_standing";
 /// discount and the fee, or refuse the unknown values, silently.
 pub const DOCUMENTS_V2: &str = "documents_v2";
 
+/// Feature: the evidence pipeline (plan P6): `attachment.text_extracted`
+/// (a file's text, journaled as an extraction record), `attachment.annotated`
+/// (the facts a human read off a file), `entry.settles` (which entries a
+/// payment pays back), and `attachment.withdrawn` carrying `duplicate_of`.
+/// An older version doesn't know those event types, or would withdraw a
+/// duplicate without saying what it duplicates; it stops at the
+/// declaration instead (rules.md B-27, B-44).
+pub const ATTACHMENT_TEXT: &str = "attachment_text";
+
 /// The line type that declares the journal format.
 pub const FORMAT_SET: &str = "journal.format_set";
 
@@ -218,7 +228,9 @@ pub const EVENT_TYPES: &[&str] = &[
     "asset.serial_set",
     "asset.tagged",
     "asset.tax_basis_set",
+    "attachment.annotated",
     "attachment.linked",
+    "attachment.text_extracted",
     "attachment.unlinked",
     "attachment.withdrawn",
     "bill.created",
@@ -239,6 +251,7 @@ pub const EVENT_TYPES: &[&str] = &[
     "entry.party_set",
     "entry.posted",
     "entry.reversed",
+    "entry.settles",
     "entry.vendor_set",
     "fx.rate_set",
     "invoice.created",
@@ -858,6 +871,40 @@ mod tests {
         ));
         let up = older.upgrade().expect("waits for it");
         assert_eq!(up.adds(), vec!["the journal feature document_standing"]);
+    }
+
+    /// The version before P6 (every feature through `documents_v2`) stops
+    /// at a declaration of `attachment_text` as newer, never dropping a
+    /// file's extraction, annotations or settlements; and books that
+    /// declared every earlier feature still wait for it (B-27, D-39).
+    #[test]
+    fn attachment_text_is_its_own_feature() {
+        assert!(KNOWN_FEATURES.contains(&ATTACHMENT_TEXT));
+        let before: Vec<&str> = KNOWN_FEATURES
+            .iter()
+            .copied()
+            .filter(|f| *f != ATTACHMENT_TEXT)
+            .collect();
+        let l = line(
+            FORMAT_SET,
+            json!({"format": 2, "features": [DOCUMENTS_V2, ATTACHMENT_TEXT]}),
+        );
+        match declared_knowing(&l, &before) {
+            Err(StoreError::NewerJournal { need, .. }) => {
+                assert_eq!(need, "journal features attachment_text")
+            }
+            other => panic!("expected NewerJournal, got {other:?}"),
+        }
+        let older = JournalFormat {
+            format: 2,
+            features: before.iter().map(|f| f.to_string()).collect(),
+        };
+        assert!(matches!(
+            older.require_feature(ATTACHMENT_TEXT),
+            Err(StoreError::FormatUpgradePending { .. })
+        ));
+        let up = older.upgrade().expect("waits for it");
+        assert_eq!(up.adds(), vec!["the journal feature attachment_text"]);
     }
 
     /// The version before P4b S4.2 (every feature through

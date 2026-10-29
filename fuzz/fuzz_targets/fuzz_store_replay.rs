@@ -24,7 +24,8 @@ use serde_json::{Map, Value, json};
 const TYPES: &[&str] = &[
     "account.added", "account.renamed", "account.tax_set", "asset.depreciation_posted",
     "asset.disposed",
-    "asset.registered", "attachment.withdrawn", "bill.created", "bill.paid", "class.added",
+    "asset.registered", "attachment.annotated", "attachment.text_extracted", "attachment.withdrawn",
+    "bill.created", "bill.paid", "class.added",
     "customer.added", "document.filed", "entry.created", "entry.line_added",
     "entry.line_class_set", "entry.posted", "entry.reversed", "entry.vendor_set",
     "fx.rate_set", "invoice.created", "invoice.payment_received", "invoice.sent",
@@ -41,7 +42,9 @@ const TYPES: &[&str] = &[
     "entry.party_set", "party.added", "party.role_set", "party.tin_set", "party.updated",
     "party.w4_set", "party.w9_set", "payroll.taxes_remitted", "reconciliation.completed",
     "reconciliation.voided", "role.assigned", "statement.recorded", "statement.voided",
-    "project.set",
+    "project.set", "entry.settles",
+    // Merged 2026-10-28 (S7, P6): every type EVENT_TYPES names.
+    "invoice.written_off",
 ];
 
 const FIELDS: &[&str] = &[

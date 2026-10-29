@@ -365,7 +365,8 @@ that changes anything also has a `destructiveHint`, true for these 30:
 `books.set_tin` (both overwrite a vault record), `books.purge_tin`,
 `books.create_invoice`, `books.create_bill`, `books.receive_payment`,
 `books.pay_bill`, `books.void_document`, `books.write_off_invoice`,
-`books.run_payroll`, `books.remit_payroll_taxes`; and an
+`books.run_payroll`, `books.remit_payroll_taxes`,
+`books.consolidate_duplicates`; and an
 `idempotentHint` on the ten that a repeat with the same arguments leaves
 the journal and the vault as they were: `books.verify`,
 `books.run_depreciation`, `books.run_schedules`, `books.run_recurring`,
@@ -1598,22 +1599,82 @@ and no control or invisible (Unicode format) characters; a MIME type
   subject it is linked to, its filing entry first). Withdrawn attachments
   are omitted unless `include_withdrawn` is true. `entry_id` lists the
   files filed on the entry and linked to it.
-- `books.get_receipt { attachment_id, view?: "meta" | "bytes" }` → `{
-  attachment_id, sha256, entry_id?, category, file_name, mime_type,
-  size_bytes, description?, links, file? }`. `meta` (the default) returns
-  no file. `bytes` adds `file`, the file handed over (a `HandedFile`, read
-  hash-verified, whatever its size: D-46), whose `download` saves a copy
-  as a new file in a folder the human names. The stored file is also
-  fetched by `wanderbooks download --book B <id> --to <a folder>` (`GET
+- `books.get_receipt { attachment_id, view?: "meta" | "text" |
+  "page_image" | "bytes", page?, max_px? }` → `{ attachment_id, sha256,
+  entry_id?, category, file_name, mime_type, size_bytes, description?,
+  links, text?, text_truncated, text_status, pages, receipt_number?,
+  annotation?, file? }`. `meta` (the default) returns no file: the first
+  8 KiB of the file's extracted text (`text`, `text_truncated` when cut),
+  its page count (`pages`), and `text_status` (`ok`, `none`, `failed`, or
+  `not_extracted` for books filed before this version: `wanderbooks books
+  extract`). `text` gives the whole extracted text (past 64 KiB it comes
+  as a handed-over `.txt` instead). `page_image` with `page` (1 is the
+  first) and `max_px` (default 1600, longest side) gives one page as a
+  PNG, handed over (D-46; D-15: no OCR, so a picture-only receipt is read
+  from its pages). Read the text first; a page picture only when the text
+  is empty or looks wrong; never `bytes` into context. `bytes` adds
+  `file`, the file handed over (a `HandedFile`, read hash-verified,
+  whatever its size: D-46), whose `download` saves a copy as a new file
+  in a folder the human names. The stored file is also fetched by
+  `wanderbooks download --book B <id> --to <a folder>` (`GET
   /b/{book}/a/{attachment}`, books:read, "Transports").
 - `books.file_document { category: "formation" | "legal" | "tax" |
   "accounting" | "statement" | "contract" | "photo" | "warranty" |
-  "import_source" | "other", file_name?, mime_type?, upload_id,
-  description?, link_to? }` → `{ attachment_id,
-  sha256, deduplicated, links }`. The bytes, name and type as in
-  `books.attach_receipt`. The Drive-folder replacement (today's 01
-  Formation / 02 Legal / 03 Tax / 04 Accounting). Never a W-9: it shows
-  the full TIN (`books.set_w9 w9_upload_id`).
+  "import_source" | "notices" | "correspondence" | "plans" | "history" |
+  "other", file_name?, mime_type?, upload_id, description?, link_to? }` →
+  `{ attachment_id, sha256, deduplicated, links }`. The bytes, name and
+  type as in `books.attach_receipt`. Every company record has a home
+  (D-20): the Drive folders' replacement, and formation papers,
+  registrations, plans, notices, correspondence and history besides what
+  the CPA asks for. Never a W-9: it shows the full TIN (`books.set_w9
+  w9_upload_id`).
+- **One file, one record** (plan P6 step 4): filing bytes already stored
+  (and not withdrawn) returns that attachment's `attachment_id` with
+  `deduplicated: true` and links it to the new subject, instead of filing
+  a second record. Records an older version filed twice stay as written
+  until `books.consolidate_duplicates`.
+
+## Tools — evidence
+
+What the books know about a filed file beyond its bytes (plan P6): its
+extracted text, the facts a human read off it, and which entries a payment
+settles. Extraction is journaled as it is made (`attachment.text_extracted`,
+content-addressed, one record per attachment, extractor and version): an
+extractor upgrade adds a record, never replaces one, and `books.verify`
+checks the text blob's presence and hash.
+
+- `books.find_attachment { sha256 | receipt_number | text }` → `{
+  attachments: [...] }`. Exactly one of the three: the file's exact
+  SHA-256 (64 hex digits), the number recorded with
+  `books.annotate_attachment`, or words its extracted text says
+  (case-insensitively). Withdrawn files are listed too, marked, so a
+  duplicate is found before it is consolidated. Each attachment is as in
+  `books.list_receipts`, with its links.
+- `books.annotate_attachment { attachment_id, fields { receipt_number?,
+  payee?, amount?, date?, instrument?, category?, source?,
+  reimbursable_to? }, note? }` → `{ attachment_id, fields,
+  next_receipt_number }`. The closed list of what a human reads off a
+  file: `amount` an exact decimal string, `date` YYYY-MM-DD, `instrument`
+  a payment method's id or label. It changes no amount, no file and no
+  posting; a later annotation replaces it, journaled as
+  `attachment.annotated`. `next_receipt_number` is one past the highest
+  number annotated, so numbers run without reuse. At least one field or
+  the note is required; an unknown or withdrawn attachment is refused.
+- `books.set_entry_settles { entry_id, settles }` → `{ ok, entry_id,
+  settles }`. Records which entries an entry pays back (a reimbursement
+  settling the expenses a member paid personally), journaled as
+  `entry.settles`; an empty list clears it. Every named entry must exist,
+  none may be the paying entry itself or be named twice. It changes no
+  amount. "The member was paid back" is read from this record only, never
+  guessed (IZ-18); Needs attention asks until it is recorded.
+- `books.consolidate_duplicates { confirmed? }` → `{ status: "preview" |
+  "consolidated", groups: [{ sha256, keep, withdraw, links }], withdrawn
+  }`. For every set of attachments holding the same bytes it keeps the
+  oldest (`keep`), links it to every subject the others had, unlinks the
+  others and withdraws them as duplicates (`attachment.withdrawn` with
+  `duplicate_of`; nothing is deleted). A posted entry that would be left
+  with no receipt the policy requires refuses the whole call, journaling
+  nothing. Without `confirmed`, a preview that changes nothing.
 
 ## Receipt enforcement
 
@@ -1868,8 +1929,12 @@ Hand-rolled on `ServerHandler` (rmcp 3.x has no resource macros):
   this month so far
 - `books://handbook` (the index) and `books://handbook/{section}` (one per
   section, Markdown)
-- `books://receipts/{id}` — receipt metadata (as `books.get_receipt`
+- `books://receipts/{id}` (an alias of `books://attachments/{id}`) —
+  receipt metadata and the first 8 KiB of its text (as `books.get_receipt`
   view `meta`; no bytes)
+- `books://attachments/{id}/page/{n}` — page `n` (from 1) as a PNG blob,
+  the first binary resource (plan P6; D-46: the bytes are the resource's
+  contents, never a path)
 
 Resources exist so read-only clients (dashboards, the viewer,
 auditors) never need tool credentials. Tested end to end through a real

@@ -177,9 +177,6 @@ control guard requires of every entry a command posts. -/
 def Tagged (control : List Nat) (ls : List TLine) : Prop :=
   ∀ l ∈ ls, l.line.account ∈ control → l.doc ≠ none
 
-/-- The books: the control accounts (the receivables and payables roles),
-every posted line in order, and the sends recorded (each on its invoice;
-plan P4b S5). -/
 /-- A tagged list moves nothing that is unattached on a control account:
 no line it adds on one carries no document. -/
 theorem unattached_zero_of_tagged {control : List Nat} {e : List TLine} (h : Tagged control e)
@@ -202,8 +199,9 @@ def writeOffLines (control expense d D : Nat) (amount : Int) : List TLine :=
   [ { line := { account := control, side := .credit, amount := amount }, date := D, doc := some d },
     { line := { account := expense, side := .debit, amount := amount }, date := D, doc := none } ]
 
-/-- The books: the control accounts (the receivables and payables roles)
-and every posted line, in order. -/
+/-- The books: the control accounts (the receivables and payables roles),
+every posted line in order, and the sends recorded (each on its invoice;
+plan P4b S5). -/
 structure Books where
   control : List Nat
   lines : List TLine

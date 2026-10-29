@@ -1,0 +1,18 @@
+[package]
+name = "bookspec-gnucash"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "A second engine for bookspec: GnuCash, driven through the oracle container's files."
+
+[dependencies]
+bookspec-checker = { path = "../checker" }
+serde_json = "1"
+rust_decimal = "1"
+
+[dev-dependencies]
+bookspec-runner = { path = "../runner" }
+
+[lints]
+workspace = true

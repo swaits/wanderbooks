@@ -3429,6 +3429,11 @@ The Lean step is `Documents.Step.document` with every control line tagged
 
 ## B-44 Evidence is read from the bytes, never trusted over them; identical files are kept once
 
+**bookspec:** `BS-ledger-12`
+
+**Status:** CONVENTION (the SOURCE block below; Rev. Proc. 98-25 and Pub. 583 for
+the audit trail)
+
 ```text
 GOAL: a receipt's text and the facts read off it are derived records the
       books can re-make; the file's bytes stay the authority; the same

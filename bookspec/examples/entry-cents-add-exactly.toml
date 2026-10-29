@@ -1,0 +1,68 @@
+id = "entry-cents-add-exactly"
+title = "Amounts are kept exactly: ten cents and twenty cents make thirty"
+rule = "The books MUST keep every amount exactly and add exactly, so that no sum of cents differs from its true total by any amount, however small; rounding MUST NOT occur inside the books."
+status = "AUTHORITY"
+sources = [
+  "IRS Form 1065 instructions: \"include cents when adding the amounts and round off only the total\" (docs/spec/sources/irs-partnerships.md)",
+  "Pacioli, Summa (1494), ch. 36: the credits equal the debits, which no float sum guarantees (docs/spec/sources/pacioli-1494.md)",
+]
+tags = ["accrual", "book", "us", "entry", "exact"]
+
+[setup]
+currency = "USD"
+fiscal_year_start = "01-01"
+basis = "accrual"
+rounding = "half-even"
+
+[[setup.accounts]]
+code = "1000"
+name = "Cash"
+type = "asset"
+
+[[setup.accounts]]
+code = "2000"
+name = "Loan"
+type = "liability"
+
+[[setup.accounts]]
+code = "3000"
+name = "Capital"
+type = "equity"
+
+[[setup.accounts]]
+code = "4000"
+name = "Sales"
+type = "revenue"
+tax_category = "gross_receipts"
+
+[[setup.accounts]]
+code = "6000"
+name = "Rent"
+type = "expense"
+tax_category = "rent_property"
+
+# In binary floating point 0.1 + 0.2 is 0.30000000000000004. Two debits of
+# 0.10 and 0.20 against one credit of 0.30 balance exactly.
+[[events]]
+date = "2026-01-05"
+description = "Three small sales"
+lines = [
+  { account = "1000", side = "debit", amount = "0.10" },
+  { account = "1000", side = "debit", amount = "0.20" },
+  { account = "4000", side = "credit", amount = "0.30" },
+]
+
+[[events]]
+date = "2026-01-06"
+description = "A sale of a trillion and a cent"
+lines = [
+  { account = "1000", side = "debit", amount = "1000000000000.01" },
+  { account = "4000", side = "credit", amount = "1000000000000.01" },
+]
+
+[[expect]]
+query = "balances"
+as_of = "2026-12-31"
+[expect.values]
+"1000" = "1000000000000.31"
+"4000" = "1000000000000.31"

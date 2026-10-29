@@ -1,0 +1,76 @@
+id = "entry-an-unbalanced-entry-is-refused"
+title = "An entry whose debits and credits differ is refused and posts nothing"
+rule = "An entry MUST have debits equal to credits, exactly, and an entry that does not MUST be refused whole, leaving the books as they were."
+status = "AUTHORITY"
+sources = [
+  "Pacioli, Summa (1494), ch. 36: \"All entries made in the ledger have to be double entries\" (docs/spec/sources/pacioli-1494.md)",
+  "IRS Publication 583: \"the total debits must equal the total credits\" (docs/spec/sources/irs-records.md)",
+]
+tags = ["accrual", "book", "us", "entry", "double-entry"]
+
+[setup]
+currency = "USD"
+fiscal_year_start = "01-01"
+basis = "accrual"
+rounding = "half-even"
+
+[[setup.accounts]]
+code = "1000"
+name = "Cash"
+type = "asset"
+
+[[setup.accounts]]
+code = "3000"
+name = "Capital"
+type = "equity"
+
+[[setup.accounts]]
+code = "4000"
+name = "Sales"
+type = "revenue"
+tax_category = "gross_receipts"
+
+[[setup.accounts]]
+code = "6000"
+name = "Rent"
+type = "expense"
+tax_category = "rent_property"
+
+[[events]]
+date = "2026-01-02"
+description = "Opening contribution"
+lines = [
+  { account = "1000", side = "debit", amount = "1000.00" },
+  { account = "3000", side = "credit", amount = "1000.00" },
+]
+
+# Debits 100.00, credits 90.00: ten dollars short on the credit side.
+[[events]]
+date = "2026-01-05"
+description = "A sale that does not balance"
+refused = "unbalanced"
+lines = [
+  { account = "1000", side = "debit", amount = "100.00" },
+  { account = "4000", side = "credit", amount = "90.00" },
+]
+
+# One cent over is just as wrong: there is no epsilon.
+[[events]]
+date = "2026-01-06"
+description = "A sale a cent over"
+refused = "unbalanced"
+lines = [
+  { account = "1000", side = "debit", amount = "100.01" },
+  { account = "4000", side = "credit", amount = "100.00" },
+]
+
+# By hand: only event 1 posted, so cash holds 1,000.00 (a debit), capital
+# 1,000.00 (a credit, shown negative), and sales nothing.
+[[expect]]
+query = "trial_balance"
+as_of = "2026-12-31"
+[expect.values]
+"1000" = "1000.00"
+"3000" = "-1000.00"
+"4000" = "0.00"
+"6000" = "0.00"

@@ -35,6 +35,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "bookspec-gnucash"
+version = "0.1.0"
+dependencies = [
+ "bookspec-checker",
+ "bookspec-runner",
+ "rust_decimal",
+ "serde_json",
+]
+
+[[package]]
 name = "bookspec-runner"
 version = "0.1.0"
 dependencies = [

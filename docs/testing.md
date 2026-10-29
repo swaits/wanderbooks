@@ -2917,6 +2917,71 @@ span (acquisition through as-of, 0.00 where the schedule reaches no month)
 and every `answer_*` figure against the loader's same check (the two must
 agree on all 56 examples).
 
+## P13 steps 4 and 5: the specification text, the laws, the derivation, GnuCash (2026-10-29)
+
+Step 4 writes the first edition (`bookspec/spec/*.md`, 667 lines of the 3,300
+its 60 pages allow), puts the five laws in Lean (`bookspec/lean`, ported from
+`verify/lean`: debits equal credits, the accounting equation, the trial
+balance balances, net income articulates to equity, the cash-flow sections
+sum to the change in cash) and adds eight examples for the laws that had
+none (`entry-an-unbalanced-entry-is-refused`,
+`entry-a-line-amount-is-positive`, `entry-cents-add-exactly`,
+`ledger-a-fraction-of-a-cent-is-refused`,
+`ledger-a-child-account-has-its-parents-type`,
+`ledger-a-mistake-is-reversed-never-erased`,
+`statement-the-books-balance-and-the-equation-holds`,
+`period-a-close-sweeps-the-year-into-capital`); every figure is worked by
+hand in the file and the adapter checks the engine against it. Step 5 adds
+the checker's own derivation (`bookspec/checker/src/derive.rs`) and GnuCash
+as a second engine (`bookspec/gnucash`). Not done: step 6 (the repository of
+its own), and the examples for rules whose events or queries the schema does
+not have (BS-entry-4, BS-ledger-7, -9, -12, BS-asset-2, -3, BS-revenue-1,
+BS-arap-1, -6, BS-format-1); each says so in its section.
+
+- **`bookspec/checker` `tests/spec.rs`:** `every_rule_has_its_section` (45
+  sections, in the file of their area, headed with the B-number),
+  `every_stated_rule_is_complete` (status agrees with the catalogue, MUST /
+  SHOULD / MAY, a symbolic form, applicability; a reserved rule says so),
+  `the_examples_are_the_catalogues` (a section lists exactly the catalogue's
+  examples; "none yet" says why), `every_citation_resolves` (every vendored
+  source exists and every quoted pin is verbatim in it, after whitespace and
+  typographic quotes; an external reference is exact), `the_edition_fits_its_page_budget`,
+  `rules_without_examples_are_not_claimable`.
+- **`bookspec/checker` `tests/lean.rs`:** `the_five_laws_are_stated_and_audited`
+  (no `sorry`), `the_laws_use_standard_axioms_only` (runs `lake build` and
+  `lake env lean Audit.lean` when Lean is installed; skips with a message
+  otherwise).
+- **`bookspec/checker` `tests/derive.rs`:** `no_example_disagrees_with_its_derivation`,
+  `the_law_examples_are_derived_in_full` (no skipped result),
+  `a_wrong_expectation_is_caught` (one cent moved; a refusal the rules do not
+  justify).
+- **`bookspec/gnucash` `tests/gnucash.rs`** (ignored: needs Docker and the
+  image `just oracle` builds; run with `cargo test -p bookspec-gnucash --
+  --ignored`): `gnucash_differs_only_where_it_was_adjudicated` (the three
+  differences, no others, and BS-entry-3, BS-ledger-3, BS-statement-1 and
+  BS-statement-2 pass) and
+  `what_gnucash_did_with_the_entries_the_specification_refuses` (the
+  evidence: ten dollars and 200.00 parked in an Imbalance account, 10.005
+  rounded to 10.01).
+- **`ledger-core` `tests/bookspec.rs`:** `every_bookspec_example_holds` and
+  `the_runner_reports_every_claimed_rule_green`, unchanged in what they
+  prove, now over 66 examples; `BS-entry-1` to `BS-entry-3`, `BS-ledger-1` to
+  `-6`, `BS-ledger-8`, `BS-statement-1`, `-2`, `BS-period-1` and `-2` are now
+  claimed. The adapter's `refusal` maps eight more engine errors to the
+  examples' words.
+
+**For P12 (mutation targets, none run, D-33):** the adapter's `refusal` arms
+(`UnbalancedEntry`, `NegativeAmountLine`, `ZeroAmountLine`,
+`FinerThanMinorUnit`, `ParentTypeMismatch`, `EntryAlreadyReversed`,
+`ClosedPeriod`), each pinned by the example that expects it, and the
+`money` closure's positivity test for an accepted entry; `rule_for_refusal`'s
+new arms; `schema::check_amount`'s `positive` flag for a refused entry;
+`derive`'s `refusal_justified` arms (each reason against its symbolic
+condition), `Model::post`'s close (a debit-normal balance credits, the
+equity line's sign), `signed`'s date window and `closings` flag, and the
+accounting-equation check; the spec test's pin search (a mutant that skips
+the quote check passes only if `every_citation_resolves` has no bad pin).
+
 ## U0b: one attention engine over `PackageBooks` (2026-10-26)
 
 Needs attention moved out of the viewer into `ledger-package::attention`

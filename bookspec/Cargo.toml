@@ -3,7 +3,7 @@
 # repository (P13 step 6, D-34).
 [workspace]
 resolver = "2"
-members = ["checker", "runner"]
+members = ["checker", "runner", "gnucash"]
 
 [workspace.package]
 edition = "2024"

@@ -14,10 +14,12 @@
 //! store. That is what lets a second engine (the GnuCash oracle, later) be
 //! checked by the same examples.
 
+pub mod derive;
 pub mod engine;
 pub mod rules;
 pub mod schema;
 
+pub use derive::{Derivation, Derived, derive};
 pub use engine::{Claims, Engine, Refusal, RuleId, RuleIdError, fallback_refusal};
 pub use rules::{Area, Rule, Status, covered_rules, rule, rule_for_id, rule_for_refusal, rules};
 pub use schema::*;

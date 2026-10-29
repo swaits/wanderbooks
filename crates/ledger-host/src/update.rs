@@ -36,7 +36,17 @@
 //!      newer one: the only way back is a restore, plan 3.9).
 //!   7. A package-managed install is never touched.
 //!   8. A program with no release key compiled in updates from nothing
-//!      but a local (`file://`) feed whose key the owner names.
+//!      but a local (`file://`) feed whose key the owner names: on the
+//!      command line, or in `<root>/updates/feed` (the feed's address on
+//!      the first line, the key file's path on the second).
+//!   9. The host looks for a newer release at most once a day while the
+//!      books are open, and only downloads and verifies it (the same
+//!      checks as INVARIANT 1) into `<root>/updates/staged/`. It never
+//!      swaps: a staged update is applied only (a) by `wanderbooks
+//!      update`, the owner's say-so, or (b) by an opener just before it
+//!      starts a host, when no host is running, so no call is ever cut
+//!      off. A staged file is checked again against the key before it is
+//!      applied; one that fails, or does not start, is dropped.
 //! SCENARIOS:
 //!   1. IF the feed offers a higher version, signed by our key: SHOULD
 //!      replace the program and keep the old one.
@@ -44,6 +54,10 @@
 //!      is by another key or missing: SHOULD refuse, changing nothing.
 //!   3. IF the new program can't start: SHOULD put the old one back.
 //!   4. IF a book consented to a newer format: SHOULD refuse to roll back.
+//!   5. IF the host's daily look finds a signed newer release: SHOULD
+//!      stage it and change nothing running; the next host start runs it.
+//!   6. IF the daily look finds a bad signature or checksum: SHOULD stage
+//!      nothing.
 //! ```
 
 use serde::Deserialize;
@@ -72,6 +86,26 @@ const UPDATES: &str = "updates";
 const PREVIOUS: &str = "previous";
 const PROGRAM: &str = "wanderbooks";
 const META: &str = "meta.json";
+const STAGED: &str = "staged";
+const FEED_FILE: &str = "feed";
+const CHECKED: &str = "checked";
+
+/// The version of the program being run, set by its `main` (this crate's
+/// own is the fallback: the packages rewrite only the program's).
+static PROGRAM_VERSION: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+
+/// Say which version this program is.
+pub fn set_program_version(version: &'static str) {
+    let _ = PROGRAM_VERSION.set(version);
+}
+
+/// This program's version.
+pub fn program_version() -> &'static str {
+    PROGRAM_VERSION
+        .get()
+        .copied()
+        .unwrap_or(env!("CARGO_PKG_VERSION"))
+}
 
 const MAX_MANIFEST: usize = 1 << 20;
 const MAX_PROGRAM: u64 = 1 << 30;
@@ -244,11 +278,18 @@ pub fn update(
         Install::SelfUpdating(target) => target,
     };
     let current_v = parse_version(current).ok_or("this program's version isn't one of ours")?;
-    let feed = flags.feed.as_deref().unwrap_or(DEFAULT_FEED);
-    let key = trusted_key(feed, flags.key_file.as_deref())?;
-    let manifest_bytes = fetch(feed, MAX_MANIFEST as u64)?;
-    let manifest: Manifest = serde_json::from_slice(&manifest_bytes)
-        .map_err(|e| format!("the release manifest isn't one we can read: {e}"))?;
+    let found_root = ledger_store::root::Root::find(flags.root.as_deref()).ok();
+    let local = found_root
+        .as_ref()
+        .and_then(|r| local_feed(&r.path().join(UPDATES)));
+    let (feed, key_file) = match (&flags.feed, &local) {
+        (Some(feed), _) => (feed.clone(), flags.key_file.clone()),
+        (None, Some((feed, key))) => (feed.clone(), Some(key.clone())),
+        (None, None) => (DEFAULT_FEED.to_string(), flags.key_file.clone()),
+    };
+    let feed = feed.as_str();
+    let key = trusted_key(feed, key_file.as_deref())?;
+    let manifest = fetch_manifest(feed)?;
     let offered = parse_version(&manifest.version).ok_or_else(|| {
         format!(
             "the manifest's version {:?} isn't one of ours",
@@ -272,9 +313,14 @@ pub fn update(
         .get(&platform)
         .ok_or_else(|| format!("release {} has no build for {platform}", manifest.version))?;
     if flags.check {
+        let ready = found_root
+            .as_ref()
+            .and_then(|r| staged_bytes(&r.path().join(UPDATES), &manifest.version))
+            .is_some();
         println!(
-            "wanderbooks {} is available (this is {current}). Run `{}` to install it.",
+            "wanderbooks {} is available{} (this is {current}). Run `{}` to install it.",
             manifest.version,
+            if ready { ", already downloaded" } else { "" },
             prog.trim_end_matches(" --check")
         );
         if !manifest.notes.trim().is_empty() {
@@ -284,9 +330,14 @@ pub fn update(
     }
     let root = ledger_store::root::Root::find(flags.root.as_deref()).map_err(|e| e.to_string())?;
     let updates = updates_dir(&root)?;
-    let _lock = take_lock(&updates)?;
+    let _lock = take_lock_within(&updates, Duration::from_secs(10))?;
 
-    let bytes = fetch(&resolve(feed, &entry.url)?, MAX_PROGRAM)?;
+    // A copy the host already downloaded and verified is used as it is
+    // found (and verified again below); else the download.
+    let bytes = match staged_bytes(&updates, &manifest.version) {
+        Some(bytes) => bytes,
+        None => fetch(&resolve(feed, &entry.url)?, MAX_PROGRAM)?,
+    };
     verify(&bytes, entry, &key)?;
 
     // Verified: from here the files are ours to write. Staged, then the
@@ -313,6 +364,7 @@ pub fn update(
         .into());
     }
     let _ = std::fs::remove_dir_all(&staged_dir);
+    let _ = std::fs::remove_dir_all(updates.join(STAGED));
     println!(
         "Updated wanderbooks from {current} to {}.",
         manifest.version
@@ -321,6 +373,182 @@ pub fn update(
         "The books that are open restart onto it by themselves when they are idle; nothing in progress is cut off. `wanderbooks rollback` goes back."
     );
     Ok(())
+}
+
+/// The manifest at `feed`.
+fn fetch_manifest(feed: &str) -> Result<Manifest, Failure> {
+    let bytes = fetch(feed, MAX_MANIFEST as u64)?;
+    serde_json::from_slice(&bytes)
+        .map_err(|e| format!("the release manifest isn't one we can read: {e}").into())
+}
+
+/// The feed the owner named for this root (INVARIANT 8): a `file://`
+/// address, and the file of the key to check it against.
+fn local_feed(updates: &Path) -> Option<(String, PathBuf)> {
+    let text = std::fs::read_to_string(updates.join(FEED_FILE)).ok()?;
+    let mut lines = text.lines().map(str::trim).filter(|l| !l.is_empty());
+    let feed = lines.next()?;
+    let key = lines.next()?;
+    feed.starts_with("file://")
+        .then(|| (feed.to_string(), PathBuf::from(key)))
+}
+
+/// The staged program, if it is the one for `version` and whole.
+fn staged_bytes(updates: &Path, version: &str) -> Option<Vec<u8>> {
+    let dir = updates.join(STAGED);
+    let meta: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.join(META)).ok()?).ok()?;
+    if meta["version"].as_str() != Some(version) {
+        return None;
+    }
+    let bytes = std::fs::read(dir.join(PROGRAM)).ok()?;
+    sha256_hex(&bytes)
+        .eq_ignore_ascii_case(meta["sha256"].as_str()?)
+        .then_some(bytes)
+}
+
+/// The version staged, if any.
+pub fn staged_version(root: &ledger_store::root::Root) -> Option<String> {
+    let meta = std::fs::read(root.path().join(UPDATES).join(STAGED).join(META)).ok()?;
+    let meta: serde_json::Value = serde_json::from_slice(&meta).ok()?;
+    meta["version"].as_str().map(str::to_string)
+}
+
+/// INVARIANT 9, the host's daily look: stage a newer release if there is
+/// one and `every` has passed since the last look. Returns the version
+/// newly staged. Changes nothing that runs.
+pub fn stage_if_due(
+    root: &ledger_store::root::Root,
+    current: &str,
+    every: Duration,
+) -> Result<Option<String>, Failure> {
+    let Install::SelfUpdating(_) = this_install()? else {
+        return Ok(None);
+    };
+    let updates = updates_dir(root)?;
+    let checked = updates.join(CHECKED);
+    if std::fs::metadata(&checked)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .is_some_and(|age| age < every)
+    {
+        return Ok(None);
+    }
+    // Marked first: a failed look waits a day too.
+    std::fs::write(&checked, b"").map_err(|e| format!("can't note the look: {}", e.kind()))?;
+    let current_v = parse_version(current).ok_or("this program's version isn't one of ours")?;
+    let (feed, key_file) = match local_feed(&updates) {
+        Some((feed, key)) => (feed, Some(key)),
+        None => (DEFAULT_FEED.to_string(), None),
+    };
+    let key = trusted_key(&feed, key_file.as_deref())?;
+    let Ok(_lock) = take_lock(&updates) else {
+        return Ok(None);
+    };
+    let manifest = fetch_manifest(&feed)?;
+    let offered =
+        parse_version(&manifest.version).ok_or("the manifest's version isn't one of ours")?;
+    if offered <= current_v {
+        let _ = std::fs::remove_dir_all(updates.join(STAGED));
+        return Ok(None);
+    }
+    if staged_bytes(&updates, &manifest.version).is_some() {
+        return Ok(None);
+    }
+    let platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
+    let entry = manifest
+        .platforms
+        .get(&platform)
+        .ok_or_else(|| format!("release {} has no build for {platform}", manifest.version))?;
+    let bytes = fetch(&resolve(&feed, &entry.url)?, MAX_PROGRAM)?;
+    verify(&bytes, entry, &key)?;
+    let dir = updates.join(STAGED);
+    let _ = std::fs::remove_dir_all(&dir);
+    private_dir(&dir)?;
+    write_program(&dir.join(PROGRAM), &bytes)?;
+    let meta = serde_json::json!({
+        "version": manifest.version,
+        "sha256": sha256_hex(&bytes),
+        "signature": entry.signature,
+        "notes": manifest.notes,
+    });
+    std::fs::write(dir.join(META), meta.to_string())
+        .map_err(|e| format!("can't stage the update: {}", e.kind()))?;
+    Ok(Some(manifest.version))
+}
+
+/// INVARIANT 9, applying: swap in the staged program, if there is one
+/// for a newer version. The caller guarantees no host is running (it is
+/// about to start one) or is the owner running `update`. Returns the
+/// version applied.
+pub fn apply_staged(
+    root: &ledger_store::root::Root,
+    current: &str,
+) -> Result<Option<String>, Failure> {
+    let updates = root.path().join(UPDATES);
+    let dir = updates.join(STAGED);
+    if !dir.join(META).is_file() {
+        return Ok(None);
+    }
+    let Install::SelfUpdating(target) = this_install()? else {
+        return Ok(None);
+    };
+    let Ok(_lock) = take_lock(&updates) else {
+        return Ok(None);
+    };
+    let meta: serde_json::Value = std::fs::read(dir.join(META))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
+    let drop_staged = || {
+        let _ = std::fs::remove_dir_all(&dir);
+    };
+    let (Some(version), Some(sha256), Some(signature)) = (
+        meta["version"].as_str(),
+        meta["sha256"].as_str(),
+        meta["signature"].as_str(),
+    ) else {
+        drop_staged();
+        return Ok(None);
+    };
+    let current_v = parse_version(current).ok_or("this program's version isn't one of ours")?;
+    if parse_version(version).is_none_or(|v| v <= current_v) {
+        drop_staged();
+        return Ok(None);
+    }
+    let local = local_feed(&updates);
+    let key = trusted_key(
+        local.as_ref().map_or(DEFAULT_FEED, |(f, _)| f.as_str()),
+        local.as_ref().map(|(_, k)| k.as_path()),
+    )?;
+    let Some(bytes) = staged_bytes(&updates, version) else {
+        drop_staged();
+        return Err("the staged update is damaged: dropped".into());
+    };
+    let entry = Entry {
+        url: String::new(),
+        sha256: sha256.to_string(),
+        signature: signature.to_string(),
+    };
+    if let Err(e) = verify(&bytes, &entry, &key) {
+        drop_staged();
+        return Err(e);
+    }
+    drop(bytes);
+    keep_previous(&updates, &target, current)?;
+    swap_in(&target, &dir.join(PROGRAM))?;
+    if let Err(why) = healthy(&target) {
+        let back = swap_in(&target, &updates.join(PREVIOUS).join(PROGRAM));
+        drop_staged();
+        return Err(match back {
+            Ok(()) => format!("the staged version {version} didn't start ({why}); the old one is back"),
+            Err(e) => format!("the staged version {version} didn't start ({why}) and the old one couldn't be put back ({e})"),
+        }
+        .into());
+    }
+    drop_staged();
+    Ok(Some(version.to_string()))
 }
 
 /// `wanderbooks rollback`: go back to the version the last update
@@ -337,7 +565,7 @@ pub fn rollback(prog: &str, args: impl IntoIterator<Item = String>) -> Result<()
     };
     let root = ledger_store::root::Root::find(flags.root.as_deref()).map_err(|e| e.to_string())?;
     let updates = updates_dir(&root)?;
-    let _lock = take_lock(&updates)?;
+    let _lock = take_lock_within(&updates, Duration::from_secs(10))?;
     let previous = updates.join(PREVIOUS);
     let meta: serde_json::Value = std::fs::read(previous.join(META))
         .ok()
@@ -562,6 +790,24 @@ fn private_dir(dir: &Path) -> Result<(), Failure> {
 
 /// One update or rollback at a time.
 fn take_lock(updates: &Path) -> Result<std::fs::File, Failure> {
+    take_lock_within(updates, Duration::ZERO)
+}
+
+/// The same, waiting up to `wait` for another to finish (the host's
+/// look at the feed is a short holder).
+fn take_lock_within(updates: &Path, wait: Duration) -> Result<std::fs::File, Failure> {
+    let deadline = Instant::now() + wait;
+    loop {
+        match take_lock_once(updates) {
+            Err(e) if Instant::now() < deadline && e.to_string().contains("running") => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            other => return other,
+        }
+    }
+}
+
+fn take_lock_once(updates: &Path) -> Result<std::fs::File, Failure> {
     let file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)

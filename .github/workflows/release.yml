@@ -3,8 +3,11 @@
 # program linked on a newer one does not start on an older one), attach
 # them to the GitHub release, and add them to the apt and dnf repositories
 # on the gh-pages branch (GitHub Pages serves them). Unsigned: step 5 of
-# the unit (the release key, Q-4) signs the manifest and the indexes, and
-# step 6 adds the macOS and Windows jobs. The release holds no key today.
+# the unit (the release key, Q-4) signs the manifest and the indexes. The
+# macOS job builds the .dmg UNSIGNED (no Developer ID, no notarization:
+# step 5); the Windows job is unit P11c. The release holds no key today.
+# To see the artifacts without a tag: Actions > release > Run workflow,
+# pick the branch; each job uploads its files as a run artifact.
 name: release
 
 on:
@@ -75,3 +78,46 @@ jobs:
           git add -A
           git commit -m "wanderbooks $v"
           git push origin HEAD:gh-pages
+      - name: Keep them with the run (a dispatch has no release)
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-packages
+          path: target/packages/${{ steps.version.outputs.version }}/
+
+  macos:
+    # UNSIGNED: a .dmg that Gatekeeper refuses until step 5 signs and
+    # notarizes it. Apple silicon (macos-latest); an Intel build is not
+    # made yet.
+    runs-on: macos-latest
+    env:
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+        with:
+          install_args: "rust just cargo:cargo-packager"
+      - name: The tag is the program's version
+        id: version
+        run: |
+          own=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/ledger-cli/Cargo.toml | head -n1)
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "${GITHUB_REF_TYPE}" = tag ] && [ "$tag" != "$own" ]; then
+            echo "tag $GITHUB_REF_NAME is not version $own" >&2
+            exit 1
+          fi
+          echo "version=$own" >> "$GITHUB_OUTPUT"
+      - name: Build the unsigned .dmg
+        run: just package-macos ${{ steps.version.outputs.version }}
+      - name: Attach it to the release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v=${{ steps.version.outputs.version }}
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes "wanderbooks $v"
+          gh release upload "$GITHUB_REF_NAME" --clobber target/packages/$v/*.dmg
+      - name: Keep it with the run (a dispatch has no release)
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg-unsigned
+          path: target/packages/${{ steps.version.outputs.version }}/*.dmg

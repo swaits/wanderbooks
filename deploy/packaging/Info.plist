@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Merged by cargo-packager into the Info.plist it generates for the
+     .app (P11a step 6): the keys the generated one lacks. -->
+<plist version="1.0">
+<dict>
+  <key>LSMultipleInstancesProhibited</key>
+  <true/>
+  <key>NSSupportsAutomaticGraphicsSwitching</key>
+  <true/>
+</dict>
+</plist>

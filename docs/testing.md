@@ -3922,3 +3922,33 @@ export gate (`cpa_audit_standing`'s four conditions and its feature test,
 the `refuse`/`warn` split, the reason's trim); `audit_items` in Needs
 attention (the declared test, the attested set, the last-ended fiscal
 year, the three year conditions).
+
+## P10: the re-audit runbook's mirror
+
+`docs/runbooks/re-audit.md` is the owner's acceptance, run on his books
+through the MCP alone. What CI can check of it is in
+`crates/ledger-cli/tests/defects.rs`:
+
+- `every_defect_reproduction_is_a_named_test`: a table of `(defect, test
+  name, file)` for the 2026-10-16 audit's defects 1 to 19, P0's 21 and 22
+  and P3's 23 and 24 (23 rows); each named function exists in its file, is
+  a `#[test]` (or inside `proptest!`) and is not `#[ignore]`d. Defect 2 is
+  closed by D-12 and D-47, so its row is the rule as it now stands
+  (`a_reversal_needs_no_receipt_of_its_own`).
+- `defect_20_no_migration_tool_exists`: defect 20 (the migration scripts)
+  was retired at the cutover; no tool of that kind is in the scopes table.
+- `the_re_audit_runbook_names_only_what_exists`: every `books.<name>` in
+  the runbook is in `crates/ledger-mcp/src/scopes.rs`, the commands it
+  names are dispatched by `main.rs`, and its eight steps are present.
+
+The mirror proves the tests exist, not that they pass; the runbook's step 4
+runs them by name. No CI job was added: the test runs in the existing
+`check` job's `cargo test --workspace`. The run itself (a counted
+attestation on every receipt and entry, the two CPA packages equal, the
+sign-off) is the owner's and has no CI equivalent.
+
+**For P12 (mutation targets):** the `DEFECTS` table's file/name lookup (a
+`starts_with` on `fn <name>(`; the `#[test]`/`#[ignore]` window of eight
+lines above it) and the scopes-line scan in `defect_20_*`. A mutant that
+widens the window or drops the `ignore` check survives only if no ignored
+or untested name is in the table; the table is the oracle.

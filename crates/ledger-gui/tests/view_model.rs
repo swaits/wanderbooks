@@ -924,3 +924,64 @@ fn a_write_off_is_flagged_for_the_cpa() {
     assert_eq!(st.status, ledger_core::DocStatus::WrittenOff);
     assert!(books.ledger.get_entry(entry).is_some());
 }
+
+/// Plan P4b S4.5: the viewer, which replays the journal itself, holds a
+/// numbered invoice exactly as the store that wrote it does: its number,
+/// terms, bill-to snapshot, the customer's PO and memo, and its lines'
+/// quantity and unit price. What the page shows is read from those, so
+/// the viewer and the server cannot disagree about them.
+#[test]
+fn the_viewer_holds_a_numbered_invoice_as_the_store_does() {
+    use ledger_core::arap::InvoiceFields;
+    use ledger_core::{PartySnapshot, Terms};
+    let d = dir("numbered-parity");
+    let today = NaiveDate::from_ymd_opt(2026, 3, 15).unwrap();
+    let mut s = Store::create(&d.join("books-data"), Currency::USD).unwrap();
+    s.add_account("1000", "Checking", AccountType::Asset, None, false)
+        .unwrap();
+    let cust = s.add_customer("Harbor Coffee").unwrap();
+    let inv = s
+        .create_invoice_with(
+            cust,
+            NaiveDate::from_ymd_opt(2026, 3, 1).unwrap(),
+            NaiveDate::from_ymd_opt(2026, 3, 31).unwrap(),
+            vec![DocumentLine {
+                description: "Beans".into(),
+                amount: Decimal::new(9_999, 2),
+                class_id: None,
+                account: None,
+                quantity: Some(Decimal::new(3, 0)),
+                unit_price: Some(Decimal::new(3_333, 2)),
+            }],
+            InvoiceFields {
+                number: Some("INV-0007".into()),
+                terms: Some(Terms::parse("2/10 net 30").unwrap()),
+                bill_to: Some(PartySnapshot {
+                    name: "Harbor Coffee Roasters, Inc.".into(),
+                    address: Some("455 Wharf Street".into()),
+                    email: Some("ap@harbor.example".into()),
+                    phone: None,
+                    contact: Some("Ana Reyes".into()),
+                    billing_address: None,
+                    shipping_address: Some("Dock 4".into()),
+                    billing_email: None,
+                }),
+                seller: None,
+                customer_ref: Some("PO-4471".into()),
+                memo: Some("Thanks".into()),
+            },
+        )
+        .unwrap();
+    let stored = s.ledger().get_invoice(inv).unwrap().clone();
+    drop(s);
+    let books = data::load_once(&Source {
+        data_dir: d.join("books-data"),
+        today: Some(today),
+    })
+    .unwrap();
+    let shown = books.ledger.get_invoice(inv).unwrap();
+    assert_eq!(shown, &stored);
+    assert_eq!(shown.number.as_deref(), Some("INV-0007"));
+    assert_eq!(shown.terms.as_ref().unwrap().describe(), "2/10 net 30");
+    assert_eq!(shown.lines[0].quantity, Some(Decimal::new(3, 0)));
+}

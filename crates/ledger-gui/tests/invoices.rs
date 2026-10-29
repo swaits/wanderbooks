@@ -390,3 +390,138 @@ fn a_write_off_shows_on_the_timeline() {
     h.run_steps(2);
     assert_eq!(h.state_mut().route(), &Route::Entry(entry));
 }
+
+/// Books with an invoice issued the way `books.create_invoice` issues it
+/// (plan P4b S4.5): numbered, on terms, the bill-to kept as a snapshot
+/// with its contact block, the customer's PO and a memo, and its issued
+/// PDF filed with it. A second invoice is a legacy one: no number, no
+/// issued copy.
+fn numbered_books(dir: &TempDir) -> (u64, u64) {
+    use ledger_core::{PartySnapshot, Terms};
+    let mut s = Store::create(&dir.0.join("books-data"), Currency::USD).unwrap();
+    s.add_account("1000", "Checking", AccountType::Asset, None, false)
+        .unwrap();
+    let client = s.add_customer("Harbor Coffee").unwrap();
+    let fields = InvoiceFields {
+        number: None,
+        terms: Some(Terms::parse("Net 30").unwrap()),
+        bill_to: Some(PartySnapshot {
+            name: "Harbor Coffee Roasters, Inc.".into(),
+            address: Some("455 Wharf Street\nPortland, OR 97209".into()),
+            email: Some("ap@harbor.example".into()),
+            phone: Some("503-555-0100".into()),
+            contact: Some("Ana Reyes".into()),
+            billing_address: None,
+            shipping_address: Some("Dock 4, Harbor Road".into()),
+            billing_email: None,
+        }),
+        seller: None,
+        customer_ref: Some("PO-4471".into()),
+        memo: Some("Thank you for the quick turnaround.".into()),
+    };
+    let lines = vec![line("Consulting", 50_000)];
+    let preview = s
+        .preview_invoice(
+            client,
+            d(2026, 3, 1),
+            d(2026, 3, 31),
+            lines.clone(),
+            fields.clone(),
+        )
+        .unwrap();
+    let fields = InvoiceFields {
+        number: preview.number.clone(),
+        ..fields
+    };
+    let page = ledger_package::issued_invoice_document(
+        s.ledger(),
+        &ledger_core::settings::Company::default(),
+        &preview.invoice,
+    )
+    .unwrap();
+    let pdf = ledger_import::invoice_pdf(&page).unwrap();
+    let (numbered, _, _) = s
+        .create_invoice_issued(client, d(2026, 3, 1), d(2026, 3, 31), lines, fields, pdf)
+        .unwrap();
+    let legacy = s
+        .create_invoice(
+            client,
+            d(2026, 3, 2),
+            d(2026, 4, 1),
+            vec![line("Support", 8_000)],
+        )
+        .unwrap();
+    (numbered, legacy)
+}
+
+/// Plan P4b S4.5: the invoice's page shows its number, terms, bill-to (the
+/// snapshot at issue, contact block included), ship-to and PO, and offers
+/// the issued copy beside the re-created one; the Money in list names it
+/// by its number. A legacy invoice keeps "Invoice {id}", shows no details
+/// card, and has no issued copy to save.
+#[test]
+fn a_numbered_invoice_shows_its_number_terms_bill_to_and_po() {
+    let dir = TempDir::new("numbered");
+    let (numbered, legacy) = numbered_books(&dir);
+    let number = {
+        let books = data::load_once(&Source {
+            data_dir: dir.0.join("books-data"),
+            today: Some(d(2026, 3, 15)),
+        })
+        .unwrap();
+        let inv = books.ledger.get_invoice(numbered).unwrap();
+        let n = inv.number.clone().expect("the issue numbered it");
+        // The page's facts are the invoice's own (view_model parity).
+        let facts = ledger_gui::pages::invoices::details(
+            &books.ledger,
+            ledger_core::DocRef::Invoice(numbered),
+        );
+        let get = |label: &str| {
+            facts
+                .iter()
+                .find(|(l, _)| *l == label)
+                .map(|(_, v)| v.clone())
+        };
+        assert_eq!(get("Number").as_deref(), Some(n.as_str()));
+        assert_eq!(get("Terms").as_deref(), Some("Net 30"));
+        assert_eq!(get("PO").as_deref(), Some("PO-4471"));
+        assert_eq!(
+            get("Bill to").as_deref(),
+            Some(
+                "Harbor Coffee Roasters, Inc., Ana Reyes, 455 Wharf Street, Portland, OR 97209, 503-555-0100, ap@harbor.example"
+            )
+        );
+        assert_eq!(get("Ship to").as_deref(), Some("Dock 4, Harbor Road"));
+        assert_eq!(
+            get("Memo").as_deref(),
+            Some("Thank you for the quick turnaround.")
+        );
+        n
+    };
+    let mut h = open(&dir, Route::Invoice(numbered));
+    shot(&mut h, "invoice-numbered");
+    assert!(h.query_all_by_label_contains(&number).count() >= 1);
+    assert!(h.query_by_label("Net 30").is_some());
+    assert!(h.query_by_label("PO-4471").is_some());
+    assert!(
+        h.query_by_label_contains("Harbor Coffee Roasters, Inc., Ana Reyes")
+            .is_some()
+    );
+    assert!(h.query_by_label_contains("Save invoice PDF").is_some());
+    assert!(h.query_by_label_contains("Save issued copy").is_some());
+
+    // The list names it by number; the legacy one keeps its old name.
+    let h = open(&dir, Route::Receivables);
+    assert!(h.query_all_by_label_contains(&number).count() >= 1);
+    assert!(
+        h.query_all_by_label_contains(&format!("Invoice {legacy}"))
+            .count()
+            >= 1
+    );
+
+    // A legacy invoice: no details, and no issued copy to save.
+    let h = open(&dir, Route::Invoice(legacy));
+    assert!(h.query_by_label("Details").is_none());
+    assert!(h.query_by_label_contains("Save invoice PDF").is_some());
+    assert!(h.query_by_label_contains("Save issued copy").is_none());
+}

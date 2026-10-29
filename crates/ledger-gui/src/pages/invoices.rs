@@ -59,6 +59,94 @@ struct Item {
     state: Result<Option<DocState>, ledger_core::LedgerError>,
 }
 
+/// What an invoice is called: its number, else "Invoice {id}" (a document
+/// made before numbers has none, A-2).
+fn invoice_name(d: &ledger_core::Invoice) -> String {
+    d.number
+        .clone()
+        .unwrap_or_else(|| format!("Invoice {}", d.id))
+}
+
+/// A document's facts beyond its figures, as label and value, in the
+/// order the page shows them (plan P4b S4.5): an invoice's number, terms,
+/// bill-to (the snapshot at issue), ship-to, the customer's PO and memo; a
+/// bill's vendor number, received day, terms and memo. Only what the
+/// document has.
+pub fn details(l: &ledger_core::Ledger, doc: DocRef) -> Vec<(&'static str, String)> {
+    let one_line = |s: &str| {
+        s.lines()
+            .map(str::trim)
+            .filter(|x| !x.is_empty())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut out: Vec<(&'static str, String)> = Vec::new();
+    match doc {
+        DocRef::Invoice(id) => {
+            let Some(inv) = l.get_invoice(id) else {
+                return out;
+            };
+            if let Some(n) = &inv.number {
+                out.push(("Number", n.clone()));
+            }
+            if let Some(t) = &inv.terms {
+                out.push(("Terms", t.describe()));
+            }
+            if let Some(b) = &inv.bill_to {
+                let mut parts = vec![b.name.clone()];
+                for x in [&b.contact, &b.address, &b.phone, &b.email]
+                    .into_iter()
+                    .flatten()
+                {
+                    let x = one_line(x);
+                    if !x.is_empty() {
+                        parts.push(x);
+                    }
+                }
+                out.push(("Bill to", parts.join(", ")));
+                if let Some(ship) = &b.shipping_address {
+                    out.push(("Ship to", one_line(ship)));
+                }
+            }
+            if let Some(r) = &inv.customer_ref {
+                out.push(("PO", r.clone()));
+            }
+            if let Some(m) = &inv.memo {
+                out.push(("Memo", m.clone()));
+            }
+        }
+        DocRef::Bill(id) => {
+            let Some(b) = l.get_bill(id) else {
+                return out;
+            };
+            if let Some(n) = &b.vendor_ref {
+                out.push(("Vendor's number", n.clone()));
+            }
+            if let Some(d) = b.received_on {
+                out.push(("Received", fmt::date(d)));
+            }
+            if let Some(t) = &b.terms {
+                out.push(("Terms", t.describe()));
+            }
+            if let Some(m) = &b.memo {
+                out.push(("Memo", m.clone()));
+            }
+        }
+    }
+    out
+}
+
+/// The copy of invoice `id` that was issued, when one is filed: found
+/// through its link to the invoice (a PDF described "Issued invoice"),
+/// never by guessing at names. The earliest, should there be several.
+fn issued_copy(b: &Books, id: ledger_core::InvoiceId) -> Option<&ledger_store::Attachment> {
+    b.documents_for(&[ledger_store::Subject::Invoice(id)])
+        .into_iter()
+        .find(|a| {
+            a.mime_type == "application/pdf" && a.description.as_deref() == Some("Issued invoice")
+        })
+}
+
 /// Every invoice (or bill) in the books, read as of today (one dated
 /// ahead, as of its own date: Books::doc_today).
 fn items(b: &Books, bills: bool) -> Vec<Item> {
@@ -84,7 +172,7 @@ fn items(b: &Books, bills: bool) -> Vec<Item> {
             .into_iter()
             .map(|d| Item {
                 doc: DocRef::Invoice(d.id),
-                name: format!("Invoice {}", d.id),
+                name: invoice_name(d),
                 party: l
                     .get_customer(d.customer_id)
                     .map(|c| c.name.clone())
@@ -428,7 +516,7 @@ pub fn show_doc(ui: &mut Ui, b: &Books, doc: DocRef, shell: &mut Shell<'_>) {
     ) = match doc {
         DocRef::Invoice(id) => match l.get_invoice(id) {
             Some(d) => (
-                format!("Invoice {id}"),
+                invoice_name(d),
                 l.get_customer(d.customer_id)
                     .map(|c| c.name.clone())
                     .unwrap_or_default(),
@@ -501,6 +589,27 @@ pub fn show_doc(ui: &mut Ui, b: &Books, doc: DocRef, shell: &mut Shell<'_>) {
             );
         });
         ui.add_space(8.0);
+        let facts = details(l, doc);
+        if !facts.is_empty() {
+            widgets::titled_card(
+                ui,
+                "Details",
+                |_| {},
+                |ui| {
+                    egui::Grid::new("invoice_details")
+                        .num_columns(2)
+                        .spacing([16.0, 4.0])
+                        .show(ui, |ui| {
+                            for (label, value) in &facts {
+                                ui.label(egui::RichText::new(*label).color(p.muted));
+                                ui.add(egui::Label::new(value.as_str()).wrap());
+                                ui.end_row();
+                            }
+                        });
+                },
+            );
+            ui.add_space(8.0);
+        }
         let amt = widgets::AMOUNT_MIN + 16.0;
         widgets::titled_card(
             ui,
@@ -641,37 +750,59 @@ pub fn show_doc(ui: &mut Ui, b: &Books, doc: DocRef, shell: &mut Shell<'_>) {
 
 /// "Save invoice PDF" and "Open": the invoice as of today, re-created
 /// from the books (ledger_package::invoice_document, the same data the
-/// server prints), saved in Downloads. Writes nothing to the books.
+/// server prints), saved in Downloads; and, when the invoice has its
+/// issued copy filed, "Save issued copy" and "Open issued copy", the very
+/// bytes the customer got (read from the blob store, checked against its
+/// SHA-256). Writes nothing to the books.
 fn pdf_actions(ui: &mut Ui, b: &Books, id: ledger_core::InvoiceId) {
     let p = pal(ui.ctx());
     let said = ui.id().with(("invoice-pdf-said", id));
+    let issued = issued_copy(b, id);
     ui.horizontal(|ui| {
         let save = ui
             .button(format!("{} Save invoice PDF", icon::FILE_PDF))
-            .on_hover_text("As of today, in your Downloads folder");
+            .on_hover_text("As of today, re-created from the books, in your Downloads folder");
         let open = ui
             .button(format!("{} Open", icon::ARROW_SQUARE_OUT))
             .on_hover_text("As of today, in your Downloads folder, opened with its app");
         if save.clicked() || open.clicked() {
-            let result = ledger_package::invoice_document(
-                &b.ledger,
-                &b.settings.company,
-                id,
-                b.today,
-            )
-            .and_then(|doc| {
-                ledger_import::invoice_pdf::invoice_pdf(&doc).map_err(|e| e.to_string())
-            })
-            .and_then(|bytes| {
-                let stem = format!("invoice-{id}");
-                if open.clicked() {
-                    crate::export::save_and_open(&stem, "pdf", &bytes)
-                } else {
-                    crate::export::save(&stem, "pdf", &bytes)
-                }
-            })
-            .map(|path| path.display().to_string());
+            let result =
+                ledger_package::invoice_document(&b.ledger, &b.settings.company, id, b.today)
+                    .and_then(|doc| {
+                        ledger_import::invoice_pdf::invoice_pdf(&doc).map_err(|e| e.to_string())
+                    })
+                    .and_then(|bytes| {
+                        let stem = format!("invoice-{id}");
+                        if open.clicked() {
+                            crate::export::save_and_open(&stem, "pdf", &bytes)
+                        } else {
+                            crate::export::save(&stem, "pdf", &bytes)
+                        }
+                    })
+                    .map(|path| path.display().to_string());
             ui.data_mut(|d| d.insert_temp(said, result));
+        }
+        if let Some(a) = issued {
+            let save = ui
+                .button(format!("{} Save issued copy", icon::FILE_PDF))
+                .on_hover_text("The copy that was sent, as it was filed, in your Downloads folder");
+            let open = ui
+                .button(format!("{} Open issued copy", icon::ARROW_SQUARE_OUT))
+                .on_hover_text("The copy that was sent, opened with its app");
+            if save.clicked() || open.clicked() {
+                let (stem, ext) = crate::export::split_name(&a.file_name);
+                let result = b
+                    .attachment_bytes(a)
+                    .and_then(|bytes| {
+                        if open.clicked() {
+                            crate::export::save_and_open(stem, ext, &bytes)
+                        } else {
+                            crate::export::save(stem, ext, &bytes)
+                        }
+                    })
+                    .map(|path| path.display().to_string());
+                ui.data_mut(|d| d.insert_temp(said, result));
+            }
         }
     });
     if let Some(result) = ui.data(|d| d.get_temp::<Result<String, String>>(said)) {

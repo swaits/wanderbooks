@@ -16,7 +16,8 @@
 pub mod asset_register;
 pub mod bank_csv;
 pub mod chart_csv;
-pub mod extract;
+/// The one reader, now the `ledger-reader` crate (D-61), kept at its old path.
+pub use ledger_reader as extract;
 pub mod fonts;
 pub mod iif;
 pub mod invoice_pdf;

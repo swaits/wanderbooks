@@ -31,8 +31,9 @@ the specification in `bookspec/` (which never depends on the engine).
 | `ledger-core` | the semantics engine: money, chart, journal, `Ledger` commands, reports, periods, assets, schedules, parties, A/R and A/P, payroll, projects, settings and conventions, the kernel and its Kani harnesses | nothing |
 | `ledger-vault` | the TIN vault: XChaCha20-Poly1305 records under the book's key | nothing |
 | `ledger-config` | the `wanderbooks.toml` codec (adoption in, `books.export_settings` out) and the receipt policy until P4 moves it into the core | `ledger-core` |
-| `ledger-store` | the source of truth: the hash-chained JSONL journal, its format gate, the SQLite projection (schema 18; a file per schema), the blob store, backups, the access log, `Snapshot` for readers | `ledger-core`, `ledger-import` (the file reader, P6; `ledger-reader` after U0d, D-61) |
-| `ledger-import` | formats: QuickBooks CSV in; IIF, XLSX, Typst PDFs (statements, the invoice, labels) out | `ledger-core` |
+| `ledger-store` | the source of truth: the hash-chained JSONL journal, its format gate, the SQLite projection (schema 18; a file per schema), the blob store, backups, the access log, `Snapshot` for readers | `ledger-core`, `ledger-reader` (P6, D-61) |
+| `ledger-reader` | the one reader: a PDF's text and pages, an XLSX's cells as exact decimal strings, plain text (P6; a plain library, in-process, D-61); `ledger-import` re-exports it as `extract` | none (`hayro`, `zip`, `quick-xml`) |
+| `ledger-import` | formats: QuickBooks CSV in; IIF, XLSX, Typst PDFs (statements, the invoice, labels) out | `ledger-core`, `ledger-reader` |
 | `ledger-package` | the shared read-only view over `Store` or `Snapshot` (`PackageBooks`): the CPA package, the 1099 worksheet, the invoice document, Needs attention | `ledger-core`, `ledger-store`, `ledger-config`, `ledger-import`, `ledger-vault` |
 | `ledger-mcp` | the books server: the MCP tools (122), resources, the handbook, scopes, the door and the access log, backups' scheduling | all of the above |
 | `ledger-host` | the host and its leases, the agent bridge (`wanderbooks mcp`), tokens in the OS keyring, the owner's commands, uploads and downloads | `ledger-store`, `ledger-mcp`, `ledger-config` |
@@ -50,14 +51,13 @@ test `crates/ledger-core/tests/oracle_gnucash.rs` with `oracle/gnucash/`
 (`PackageBooks` is the shared view; extraction is in-process in
 `ledger-import`, P6).
 
-Decided (Q-9 → D-61, 2026-10-29): P6 made `ledger-store` depend on
-`ledger-import` so the writer can extract a file's text at attach time
-and on the backfill command. That keeps the direction inward
-(`ledger-import` depends on the core alone and must never depend on the
-store) but pulls Typst, the fonts and hayro into the store's dependency
-closure. Unit U0d (plan 8.2, after S4.5) moves the reader into a small
-library crate, `ledger-reader`, that both depend on; until it lands the
-arrow stands as drawn above.
+Decided and done (Q-9 → D-61, unit U0d): P6 had made `ledger-store` depend
+on `ledger-import` so the writer can extract a file's text at attach time,
+which pulled Typst, the fonts and hayro into the store's dependency
+closure. The reader now lives in the small library crate `ledger-reader`;
+`ledger-store` and `ledger-import` both depend on it (`ledger-import`
+re-exports it as `extract`), the store no longer builds the typesetter,
+and `ledger-import` still never depends on the store.
 
 `ledger-core` itself (`crates/ledger-core/src/`): `money`, `account`,
 `journal`, `ledger` (the command surface and replay), `kernel` (every
@@ -117,13 +117,13 @@ the agent's cannot drift apart. The crate depends inward (`ledger-core`,
 `ledger-store`, `ledger-config`, `ledger-import`, `ledger-vault`), never on
 `ledger-mcp` or `ledger-gui`.
 
-## The evidence pipeline (`ledger-import`, `ledger-core`, `ledger-store`, P6)
+## The evidence pipeline (`ledger-reader`, `ledger-core`, `ledger-store`, P6)
 
-One extractor lives in `ledger-import` (`src/extract.rs`, D-53: in-process,
-no new crate): a PDF's text and pages, an XLSX's cells as exact decimal
+One extractor lives in `ledger-reader` (`src/lib.rs`, D-53, D-61: in-process,
+a plain library): a PDF's text and pages, an XLSX's cells as exact decimal
 strings, and plain text; the caps are 25 MiB in, 30 pages and 2 MiB of
 text, and a reader panic is caught there. `ledger-store` depends on
-`ledger-import` so the writer can read a file as it is filed and journal
+`ledger-reader` so the writer can read a file as it is filed and journal
 `attachment.text_extracted` (content-addressed text blob, extractor,
 version, pages, `ok`/`none`/`failed`), one record per attachment, extractor
 and version; `Store::verify` checks the text blob's hash and never

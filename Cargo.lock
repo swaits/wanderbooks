@@ -3989,13 +3989,10 @@ dependencies = [
  "chrono",
  "csv",
  "deunicode",
- "hayro 0.8.0",
- "hayro-interpret 0.8.0",
- "kurbo",
  "ledger-core",
+ "ledger-reader",
  "proptest",
  "qrcode",
- "quick-xml 0.38.4",
  "rqrr",
  "rust_decimal",
  "rust_xlsxwriter",
@@ -4059,6 +4056,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ledger-reader"
+version = "0.1.0"
+dependencies = [
+ "hayro 0.8.0",
+ "hayro-interpret 0.8.0",
+ "kurbo",
+ "quick-xml 0.38.4",
+ "thiserror 2.0.21",
+ "zip 9.0.2",
+]
+
+[[package]]
 name = "ledger-store"
 version = "0.1.0"
 dependencies = [
@@ -4068,7 +4077,7 @@ dependencies = [
  "getrandom 0.2.17",
  "hex",
  "ledger-core",
- "ledger-import",
+ "ledger-reader",
  "libc",
  "proptest",
  "rusqlite",

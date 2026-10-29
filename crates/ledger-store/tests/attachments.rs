@@ -1471,8 +1471,8 @@ fn extraction_is_journaled_once_per_version() {
     let x = s.extraction(id).unwrap().expect("an extraction record");
     assert_eq!(x.status, ExtractionStatus::Ok);
     assert_eq!(x.pages, 1);
-    assert_eq!(x.extractor, ledger_import::extract::EXTRACTOR);
-    assert_eq!(x.version, ledger_import::extract::VERSION);
+    assert_eq!(x.extractor, ledger_reader::EXTRACTOR);
+    assert_eq!(x.version, ledger_reader::VERSION);
     assert_eq!(
         s.extraction_text(id).unwrap().as_deref(),
         Some(String::from_utf8_lossy(text).as_ref())

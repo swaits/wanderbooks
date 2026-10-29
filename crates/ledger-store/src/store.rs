@@ -45,7 +45,7 @@ use ledger_core::{
     payroll::{PayrollAccounts, payroll_entry_plan, payroll_remit_plan},
     reports,
 };
-use ledger_import::extract::{EXTRACTOR as E_EXTRACTOR, VERSION as E_VERSION};
+use ledger_reader::{EXTRACTOR as E_EXTRACTOR, VERSION as E_VERSION};
 use rusqlite::{Connection, OptionalExtension, params};
 use rust_decimal::Decimal;
 use serde_json::{Value, json};
@@ -368,7 +368,7 @@ pub struct Extraction {
     pub attachment_id: u64,
     /// The text's blob (its SHA-256), when there is text.
     pub text_sha256: Option<String>,
-    /// What read it (`ledger_import::extract::EXTRACTOR`).
+    /// What read it (`ledger_reader::EXTRACTOR`).
     pub extractor: String,
     /// That extractor's version.
     pub version: String,
@@ -4620,7 +4620,7 @@ impl Store {
         if let Some(already) = self.extraction_for(attachment_id, E_EXTRACTOR, E_VERSION)? {
             return Ok(already);
         }
-        let got = ledger_import::extract::extract(bytes, mime_type, file_name);
+        let got = ledger_reader::extract(bytes, mime_type, file_name);
         let text_sha = match &got.text {
             Some(text) => Some(self.blobs.put(text.as_bytes())?.0),
             None => None,
@@ -4644,9 +4644,9 @@ impl Store {
             version: E_VERSION.into(),
             pages: got.pages,
             status: match got.status {
-                ledger_import::extract::ExtractStatus::Ok => ExtractionStatus::Ok,
-                ledger_import::extract::ExtractStatus::None => ExtractionStatus::None,
-                ledger_import::extract::ExtractStatus::Failed => ExtractionStatus::Failed,
+                ledger_reader::ExtractStatus::Ok => ExtractionStatus::Ok,
+                ledger_reader::ExtractStatus::None => ExtractionStatus::None,
+                ledger_reader::ExtractStatus::Failed => ExtractionStatus::Failed,
             },
             seq: line.seq,
         })

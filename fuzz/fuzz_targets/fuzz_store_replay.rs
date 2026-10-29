@@ -28,6 +28,7 @@ const TYPES: &[&str] = &[
     "customer.added", "document.filed", "entry.created", "entry.line_added",
     "entry.line_class_set", "entry.posted", "entry.reversed", "entry.vendor_set",
     "fx.rate_set", "invoice.created", "invoice.payment_received", "invoice.sent",
+    "invoice.written_off",
     "journal.tail_repaired",
     "line.cleared", "payroll.run", "period.closed", "period.created", "receipt.attached",
     "receipt.linked", "receipt.unlinked", "recurring.generated", "recurring.registered",

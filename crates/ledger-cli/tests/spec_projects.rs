@@ -1353,10 +1353,13 @@ fn a_document_naming_an_unknown_project_is_refused_whole() {
     m.ok("books.add_project", json!({"name": "Zeta site"}));
     let cedar = m.ok("books.add_customer", json!({"name": "Cedar"}))["id"].clone();
     let v = m.ok("books.add_vendor", json!({"name": "Dana"}))["id"].clone();
-    for (tool, party) in [("books.create_invoice", &cedar), ("books.create_bill", &v)] {
+    for (tool, key, party) in [
+        ("books.create_invoice", "customer", &cedar),
+        ("books.create_bill", "vendor", &v),
+    ] {
         let why = m.refuse(
             tool,
-            json!({"customer": (party).to_string(), "date": "2026-03-02", "due_date": "2026-04-01", "lines": [
+            json!({key: (party).to_string(), "date": "2026-03-02", "due_date": "2026-04-01", "lines": [
                 {"description": "a", "amount": "10.00", "class": "Zeta site"},
                 {"description": "b", "amount": "10.00", "class": "Nowhere"},
             ]}),
@@ -1472,10 +1475,13 @@ fn books_without_the_feature_refuse_a_tagged_document() {
     let cedar = m.ok("books.add_customer", json!({"name": "Cedar"}))["id"].clone();
     let v = m.ok("books.add_vendor", json!({"name": "Dana"}))["id"].clone();
     let head = m.journal();
-    for (tool, party) in [("books.create_invoice", &cedar), ("books.create_bill", &v)] {
+    for (tool, key, party) in [
+        ("books.create_invoice", "customer", &cedar),
+        ("books.create_bill", "vendor", &v),
+    ] {
         let why = m.refuse(
             tool,
-            json!({"customer": (party).to_string(), "date": "2026-03-02", "due_date": "2026-04-01", "lines": [
+            json!({key: (party).to_string(), "date": "2026-03-02", "due_date": "2026-04-01", "lines": [
                 {"description": "a", "amount": "10.00", "class": "Zeta site"},
             ]}),
         );

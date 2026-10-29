@@ -129,6 +129,11 @@ inductive Step : Ledger → Ledger → Prop
         = net (closings (nominalCodes L.chart) (allLines (through p.stop L.posted))))
       (id : Nat) :
       Step L { L with posted := L.posted ++ closingFor L p ts id, periods := closeIn p L.periods }
+  /-- `discard_draft`: a draft removed, with the reason it went. The
+  drafts shrink; the posted log, the chart, the periods and the records
+  are as they were, so no balance moves. -/
+  | discard (L : Ledger) (e : Entry) (hd : e ∈ L.drafts) :
+      Step L { L with drafts := L.drafts.filter (· ≠ e) }
   /-- `apply_settings`, `apply_convention`, `apply_decision`,
   `apply_open_item`, `apply_approval` and their retirements and
   resolutions, and the 1099 records `set_vendor_1099`,
@@ -242,6 +247,10 @@ theorem Step.inv {L L' : Ledger} (s : Step L L') (h : Inv L) : Inv L' := by
       rcases closedOn_closeIn L p d.date hcl with hcl | ⟨-, hc⟩
       · exact h.draftsOpen d hd hcl
       · simp [hdrafts d hd] at hc
+  | discard e hd =>
+    refine ⟨h.distinct, h.accepted, h.known, ?_⟩
+    intro d hd'
+    exact h.draftsOpen d ((List.mem_filter.1 hd').1)
   | record r => exact ⟨h.distinct, h.accepted, h.known, h.draftsOpen⟩
 
 /-- **The invariant holds in every reachable state.** -/
@@ -310,6 +319,7 @@ theorem Step.extends {L L' : Ledger} (s : Step L L') : ∃ t, L'.posted = L.post
   | reverse e _ r => exact ⟨[r], rfl⟩
   | openPeriod => exact ⟨[], by simp⟩
   | close p _ _ _ _ _ ts _ _ id => exact ⟨closingFor L p ts id, rfl⟩
+  | discard => exact ⟨[], by simp⟩
   | record => exact ⟨[], by simp⟩
 
 /-- Any number of steps. -/
@@ -327,6 +337,39 @@ theorem Steps.extends {L L' : Ledger} (s : Steps L L') : ∃ t, L'.posted = L.po
     obtain ⟨t, ht⟩ := ih
     obtain ⟨u, hu⟩ := s.extends
     exact ⟨t ++ u, by rw [hu, ht, List.append_assoc]⟩
+
+/-! ## A discarded draft takes nothing with it -/
+
+/-- **A discard moves no figure**: the posted log, the chart and the
+periods are the very same, so every balance, report and closing read from
+them is the same too. -/
+theorem Step.discard_keeps_books (L : Ledger) (e : Entry) :
+    ({ L with drafts := L.drafts.filter (· ≠ e) } : Ledger).posted = L.posted
+      ∧ ({ L with drafts := L.drafts.filter (· ≠ e) } : Ledger).chart = L.chart
+      ∧ ({ L with drafts := L.drafts.filter (· ≠ e) } : Ledger).periods = L.periods :=
+  ⟨rfl, rfl, rfl⟩
+
+/-- **A discard removes the draft and only it**: afterwards `e` is no
+draft, and every draft left was a draft before. -/
+theorem Step.discard_drafts (L : Ledger) (e : Entry) :
+    e ∉ L.drafts.filter (· ≠ e) ∧ ∀ d ∈ L.drafts.filter (· ≠ e), d ∈ L.drafts := by
+  refine ⟨?_, fun d hd => (List.mem_filter.1 hd).1⟩
+  intro h
+  simpa using (List.mem_filter.1 h).2
+
+/-- **Discarding unblocks a close**: if every draft left after a discard
+is outside the period `p`, then the draft discarded was the only one in it
+(the `hdrafts` hypothesis of `Step.close` holds once the drafts in `p`
+are discarded). -/
+theorem Step.discard_unblocks_close (L : Ledger) (p : Period) (e : Entry)
+    (hin : ∀ d ∈ L.drafts, p.contains d.date = true → d = e) :
+    ∀ d ∈ L.drafts.filter (· ≠ e), p.contains d.date = false := by
+  intro d hd
+  obtain ⟨h1, h2⟩ := List.mem_filter.1 hd
+  have hne : d ≠ e := by simpa using h2
+  cases hc : p.contains d.date with
+  | false => rfl
+  | true => exact absurd (hin d h1 hc) hne
 
 /-! ## Closed periods are frozen -/
 

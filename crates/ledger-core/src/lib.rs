@@ -76,7 +76,7 @@ pub use form1099::{
     Vendor1099Line, Vendor1099Report, vendor_1099_report,
 };
 pub use instruments::{Instrument, InstrumentId, InstrumentKind};
-pub use journal::{EntryId, EntryStatus, JournalEntry, JournalLine};
+pub use journal::{DraftState, EntryId, EntryStatus, JournalEntry, JournalLine};
 pub use kernel::{EntryFlows, Flow};
 pub use ledger::{
     BAD_DEBTS, ControlAccount, GENERAL_EXPENSES, Ledger, PAYABLES, PAYMENT_PROCESSING_FEES,

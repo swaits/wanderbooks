@@ -854,6 +854,12 @@ pub enum LedgerError {
     #[error("{0}")]
     InvalidVoid(String),
 
+    /// A draft's state or discard was refused: the message says why (a
+    /// note or reason that breaks the books' text rule, no reason given).
+    /// Plan P4, rules.md B-43.
+    #[error("{0}")]
+    InvalidDraft(String),
+
     /// A void invoice can't be recorded as sent: it was never a document
     /// the customer should have received (plan P4b S5, B-38).
     #[error("invoice {0} is void: a void invoice was never sent")]

@@ -608,6 +608,28 @@ credit, and the bounds are the existing date-sum's).
       books built from empty); the cash-basis refusal is a policy on the
       books' settings, not arithmetic, and is tested, not modelled.
 
+### Drafts: a discard moves no figure (P4)
+
+A draft's state (`Ledger::set_draft_state`) is a note on the draft and
+changes no line, so the model keeps nothing for it (like a record, it is
+outside the books' figures). `Ledger::discard_draft` removes a draft: a
+new command, so a new Lean step, and no kernel function.
+
+38. **A discard moves no figure and takes only its draft.** `Step.discard`
+    removes one entry from `drafts`; the posted log, the chart, the
+    periods and the records are the very same, so every balance, report
+    and closing read from them is the same. `Inv.draftsOpen` is kept
+    (the drafts left were drafts before), `Step.extends` and
+    `Step.frozen` hold with no new argument, and a period with exactly
+    one draft inside it can close once that draft is discarded
+    (`Step.discard_unblocks_close`, the `hdrafts` hypothesis of
+    `Step.close`).
+    - Lean `Step.discard`, `Step.discard_keeps_books`,
+      `Step.discard_drafts`, `Step.discard_unblocks_close` (in
+      `Audit.lean`) · tests `discard_unblocks_close` (the engine's side:
+      a period with an open draft can't close, discarded it can, and
+      every balance and id is as it was).
+
 ## What the proofs found
 
 The engine already had 190+ tests, property tests, mutation testing,

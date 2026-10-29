@@ -61,7 +61,7 @@ impl Home {
     }
 
     fn root(&self) -> PathBuf {
-        self.dir.path().join(".local/share/wanderbooks")
+        ledger_store::root::default_root(self.dir.path())
     }
 
     fn book_dir(&self, id: &str) -> PathBuf {

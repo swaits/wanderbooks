@@ -32,7 +32,7 @@ impl Home {
     }
 
     fn root(&self) -> PathBuf {
-        self.dir.path().join(".local/share/wanderbooks")
+        ledger_store::root::default_root(self.dir.path())
     }
 
     fn cmd(&self, mode: &str, path: &Path) -> Command {

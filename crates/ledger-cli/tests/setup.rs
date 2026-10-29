@@ -19,7 +19,7 @@ fn setup_makes_the_private_folder_and_never_names_it() {
         .prefix("wb-setup-")
         .tempdir()
         .unwrap();
-    let root = home.path().join(".local/share/wanderbooks");
+    let root = ledger_store::root::default_root(home.path());
     let out = wanderbooks()
         .args(["setup", "--home"])
         .arg(home.path())
@@ -91,8 +91,10 @@ fn a_root_elsewhere_is_noted_for_next_time() {
         "{out:?}"
     );
     assert_eq!(mode(&elsewhere), 0o700);
-    let noted =
-        std::fs::read_to_string(home.path().join(".local/share/wanderbooks.location")).unwrap();
+    let noted = std::fs::read_to_string(
+        ledger_store::root::platform_data_dir(home.path()).join("wanderbooks.location"),
+    )
+    .unwrap();
     assert_eq!(noted.trim_end(), elsewhere.display().to_string());
 }
 
@@ -142,8 +144,8 @@ fn another_home_ignores_this_accounts_data_home() {
         .unwrap();
     assert!(out.status.success(), "{out:?}");
     assert!(
-        home.path()
-            .join(".local/share/wanderbooks/.wanderbooks-root")
+        ledger_store::root::default_root(home.path())
+            .join(".wanderbooks-root")
             .is_file()
     );
     assert_eq!(
@@ -242,7 +244,7 @@ fn setup_at_a_terminal_sets_the_owner_passphrase() {
     assert!(shown.contains("The owner passphrase is set."), "{shown}");
     assert!(!shown.contains(FIRST), "the passphrase was shown: {shown}");
     assert!(!shown.contains(home.path().to_str().unwrap()), "{shown}");
-    let auth = home.path().join(".local/share/wanderbooks/auth");
+    let auth = ledger_store::root::default_root(home.path()).join("auth");
     assert!(ledger_store::passphrase::verify(&auth, FIRST).unwrap());
     assert_eq!(mode(&auth), 0o700);
     assert_eq!(mode(&auth.join("owner.json")), 0o600);
@@ -267,7 +269,7 @@ fn the_passphrase_is_typed_by_a_person_and_changed_only_with_the_one_in_force() 
         .unwrap();
     assert!(out.status.success(), "{out:?}");
     assert!(String::from_utf8_lossy(&out.stdout).contains("wanderbooks passphrase"));
-    let root = home.path().join(".local/share/wanderbooks");
+    let root = ledger_store::root::default_root(home.path());
     let auth = root.join("auth");
     assert!(!ledger_store::passphrase::is_set(&auth).unwrap());
     let args = vec![

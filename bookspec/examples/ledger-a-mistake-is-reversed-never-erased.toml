@@ -1,0 +1,101 @@
+id = "ledger-a-mistake-is-reversed-never-erased"
+title = "A reversal cancels an entry and leaves the original standing, and an entry is reversed only once"
+rule = "A posted entry MUST NOT be changed or erased; a mistake MUST be corrected by an entry opposite to it, which MUST leave the original's lines as written, and an entry MUST be reversed at most once."
+status = "AUTHORITY"
+sources = [
+  "Pacioli, Summa (1494), ch. 31: \"make another entry opposite this one\"; ch. 36: \"You should not write backward, but always forward\" (docs/spec/sources/pacioli-1494.md)",
+  "Rev. Proc. 98-25 section 5.01: the audit trail (docs/spec/sources/irs-records.md)",
+  "CHOICE, the owner, 2026-10-13 (docs/spec/rules.md B-10): a correction corrects once",
+]
+tags = ["accrual", "book", "us", "ledger", "reversal"]
+
+[setup]
+currency = "USD"
+fiscal_year_start = "01-01"
+basis = "accrual"
+rounding = "half-even"
+
+[[setup.accounts]]
+code = "1000"
+name = "Cash"
+type = "asset"
+
+[[setup.accounts]]
+code = "2000"
+name = "Loan"
+type = "liability"
+
+[[setup.accounts]]
+code = "3000"
+name = "Capital"
+type = "equity"
+
+[[setup.accounts]]
+code = "4000"
+name = "Sales"
+type = "revenue"
+tax_category = "gross_receipts"
+
+[[setup.accounts]]
+code = "6000"
+name = "Rent"
+type = "expense"
+tax_category = "rent_property"
+
+[[events]]
+date = "2026-01-10"
+description = "Rent paid twice by mistake"
+lines = [
+  { account = "6000", side = "debit", amount = "800.00" },
+  { account = "1000", side = "credit", amount = "800.00" },
+]
+
+[[events]]
+date = "2026-01-12"
+description = "Reverse entry 1"
+reverses = 1
+
+# A second reversal of the same entry would take the 800.00 out twice.
+[[events]]
+date = "2026-01-13"
+description = "Reverse entry 1 again"
+refused = "already_reversed"
+reverses = 1
+
+# The original still reads as it was written: posted is forever.
+[[expect]]
+query = "entry"
+entry = 1
+[expect.values]
+"6000.debit" = "800.00"
+"1000.credit" = "800.00"
+
+# The reversal is the original with its sides flipped.
+[[expect]]
+query = "entry"
+entry = 2
+[expect.values]
+"6000.credit" = "800.00"
+"1000.debit" = "800.00"
+
+# Net of the two, nothing: as if nothing had been written (ch. 31).
+[[expect]]
+query = "trial_balance"
+as_of = "2026-12-31"
+[expect.values]
+"1000" = "0.00"
+"2000" = "0.00"
+"3000" = "0.00"
+"4000" = "0.00"
+"6000" = "0.00"
+
+# Before the reversal's date the original stands alone.
+[[expect]]
+query = "trial_balance"
+as_of = "2026-01-11"
+[expect.values]
+"1000" = "-800.00"
+"2000" = "0.00"
+"3000" = "0.00"
+"4000" = "0.00"
+"6000" = "800.00"

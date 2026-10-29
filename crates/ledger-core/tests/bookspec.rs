@@ -192,6 +192,14 @@ fn refusal(e: &LedgerError) -> String {
         LedgerError::InvalidDepreciationPeriod(_) => "invalid_depreciation_period",
         LedgerError::InvalidSchedule(_) => "invalid_schedule",
         LedgerError::UntaggedControlLine { .. } => "untagged_control_line",
+        LedgerError::UnbalancedEntry { .. } => "unbalanced",
+        LedgerError::TooFewLines => "too_few_lines",
+        LedgerError::NegativeAmountLine => "negative_amount",
+        LedgerError::ZeroAmountLine => "zero_amount",
+        LedgerError::FinerThanMinorUnit { .. } => "finer_than_minor_unit",
+        LedgerError::ParentTypeMismatch { .. } => "parent_type_mismatch",
+        LedgerError::EntryAlreadyReversed(..) => "already_reversed",
+        LedgerError::ClosedPeriod(..) => "period_closed",
         other => return format!("another refusal: {other}"),
     }
     .to_string()
@@ -1029,7 +1037,12 @@ impl<'a> Books<'a> {
     ) -> Result<(), StoreError> {
         let money = |s: &str| {
             let amount = exact(s, what);
-            assert!(amount > Decimal::ZERO, "{what}: amounts are positive");
+            // Only a refused entry carries an amount the books refuse
+            // (the schema checks it).
+            assert!(
+                amount > Decimal::ZERO || e.refused.is_some(),
+                "{what}: amounts are positive"
+            );
             amount
         };
         let day = || when.expect("checked: dated");

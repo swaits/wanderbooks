@@ -1,0 +1,55 @@
+events = []
+
+id = "ledger-a-child-account-has-its-parents-type"
+title = "An account under a parent has the parent's type"
+rule = "An account MUST be one of the five elements (asset, liability, equity, revenue, expense), and an account under a parent MUST have its parent's type, so a rollup never mixes elements."
+status = "AUTHORITY"
+sources = [
+  "FASB Concepts Statement 8, Ch. 4, E16, E37, E61, E80, E81: the five elements (docs/spec/sources/fasb-asc.md)",
+  "CHOICE, the owner, 2026-10-13 (docs/spec/rules.md B-4): a child takes its parent's type",
+]
+tags = ["accrual", "book", "us", "ledger", "chart"]
+
+[setup]
+currency = "USD"
+fiscal_year_start = "01-01"
+basis = "accrual"
+rounding = "half-even"
+
+[[setup.accounts]]
+code = "6000"
+name = "Operating"
+type = "expense"
+header = true
+
+[[setup.accounts]]
+code = "6150"
+name = "Software"
+type = "expense"
+parent = "6000"
+tax_category = "office_expense"
+
+[[setup.accounts]]
+code = "1000"
+name = "Cash"
+type = "asset"
+
+# A revenue account under an expense header would mix two elements.
+[[expect]]
+query = "add_account"
+account = { code = "6200", name = "Refunds", type = "revenue", parent = "6000", tax_category = "gross_receipts" }
+refused = "parent_type_mismatch"
+
+# An expense under the expense header is a child of the same element.
+[[expect]]
+query = "add_account"
+account = { code = "6200", name = "Hosting", type = "expense", parent = "6000", tax_category = "office_expense" }
+accepted = true
+
+[[expect]]
+query = "trial_balance"
+as_of = "2026-12-31"
+[expect.values]
+"6000" = "0.00"
+"6150" = "0.00"
+"1000" = "0.00"

@@ -1193,7 +1193,9 @@ impl Example {
                 if !matches!(line.side.as_str(), "debit" | "credit") {
                     return Err(what(format!("side {:?}", line.side)));
                 }
-                check_amount(&line.amount, true, &what)?;
+                // A refused entry may carry the amount the books refuse (zero or
+                // negative, B-2); an accepted one carries a positive amount.
+                check_amount(&line.amount, ev.refused.is_none(), &what)?;
                 if let Some(p) = &line.project
                     && !projects.contains(p.as_str())
                 {

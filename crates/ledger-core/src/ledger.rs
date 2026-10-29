@@ -5751,6 +5751,108 @@ impl Ledger {
         Ok(())
     }
 
+    /// Record that an invoice went out (plan P4b S5): who sent it, how, to
+    /// whom, when, whether it was the original or a reminder, and the
+    /// channel's own reference (a message id). The books never send
+    /// anything themselves (A-4: "Wanderbooks just does books").
+    ///
+    /// ```text
+    /// GOAL: record a send as a fact of the document's life, without
+    ///       touching a figure: a send moves no money.
+    /// SOURCE: docs/spec/rules.md B-38 (a document keeps no figure of its
+    ///         own), B-27 (the invoice.sent line, feature documents_v2);
+    ///         plan P4b S5, A-4 (the books record sends; they never send).
+    /// INVARIANTS:
+    ///   1. The invoice MUST exist, and a send MUST NOT be dated before it.
+    ///   2. A void invoice MUST NOT be sent (DocumentVoid): it should never
+    ///      have reached the customer. Open, partial, paid and written-off
+    ///      invoices all may be (a receipt copy, a reminder).
+    ///   3. `to` MUST hold at least one recipient; every recipient, the
+    ///      reference and the note MUST pass parties::check_text (no full
+    ///      TIN, no control characters, at most 500 characters).
+    ///   4. A send MUST change no figure: the invoice's DocState is the
+    ///      same before and after, on every date.
+    ///   5. A refusal MUST leave the books unchanged.
+    /// SCENARIOS:
+    ///   1. IF the invoice is unknown, void, dated after the send, has no
+    ///      recipients, or a text breaks the books' rule: SHOULD refuse.
+    /// ```
+    pub fn mark_sent(&mut self, invoice: InvoiceId, sent: arap::Sent) -> Result<(), LedgerError> {
+        self.atomically(|l| l.mark_sent_steps(invoice, sent))
+    }
+
+    /// The steps of [`Self::mark_sent`], run inside [`Self::atomically`].
+    fn mark_sent_steps(&mut self, invoice: InvoiceId, sent: arap::Sent) -> Result<(), LedgerError> {
+        let issued = self
+            .invoices
+            .get(&invoice)
+            .ok_or(LedgerError::UnknownInvoice(invoice))?
+            .date;
+        if sent.on < issued {
+            return Err(LedgerError::InvalidSend(format!(
+                "invoice {invoice} is dated {issued}: a send can't be dated before it, on {}",
+                sent.on
+            )));
+        }
+        // The invoice's state on the day it went out: a void later than the
+        // send doesn't un-send it, and a void before it does.
+        let state = self
+            .doc_state(arap::DocRef::Invoice(invoice), sent.on)?
+            .ok_or(LedgerError::UnknownInvoice(invoice))?;
+        match state.status {
+            arap::DocStatus::Open
+            | arap::DocStatus::Partial
+            | arap::DocStatus::Paid
+            | arap::DocStatus::WrittenOff => {}
+            arap::DocStatus::Void => return Err(LedgerError::DocumentVoid(invoice)),
+            arap::DocStatus::Overpaid | arap::DocStatus::Unattached => {
+                return Err(LedgerError::InvalidSend(format!(
+                    "invoice {invoice} is {status} on {on}: only an open, partial, paid or written-off invoice can be sent",
+                    status = state.status.key(),
+                    on = sent.on
+                )));
+            }
+        }
+        if sent.to.is_empty() {
+            return Err(LedgerError::InvalidSend(format!(
+                "a send of invoice {invoice} needs at least one recipient"
+            )));
+        }
+        for to in &sent.to {
+            crate::parties::check_text("a recipient", to).map_err(LedgerError::InvalidSend)?;
+        }
+        if let Some(reference) = &sent.reference {
+            crate::parties::check_text("the reference", reference)
+                .map_err(LedgerError::InvalidSend)?;
+        }
+        if let Some(note) = &sent.note {
+            crate::parties::check_text("the note", note).map_err(LedgerError::InvalidSend)?;
+        }
+        self.invoices
+            .get_mut(&invoice)
+            .expect("checked above")
+            .sends
+            .push(sent);
+        Ok(())
+    }
+
+    /// Record a send without checking it: replay support for journaling
+    /// stores. Nothing is validated on replay (rules.md B-28); the invoice
+    /// must already have been replayed from its own events.
+    #[doc(hidden)]
+    pub fn replay_invoice_sent(
+        &mut self,
+        invoice_id: InvoiceId,
+        sent: arap::Sent,
+    ) -> Result<(), LedgerError> {
+        let invoice = self
+            .invoices
+            .get_mut(&invoice_id)
+            .ok_or(LedgerError::UnknownInvoice(invoice_id))?;
+        invoice.sends.push(sent);
+        Ok(())
+    }
+
     /// Look up an invoice.
     pub fn get_invoice(&self, id: InvoiceId) -> Option<&Invoice> {
         self.invoices.get(&id)

@@ -45,6 +45,7 @@ No other statuses.
 | 1099 vendor tracking + year-end worksheet | Vendors → Track payments for 1099; 1099 report | partial | hand-verified fixture (bill payments, card exclusion, reversal, year boundary); no golden file yet |
 | Prepaid expense + deferred revenue amortization | Amortization schedules (Xero/QBO add-ons) | partial | hand-verified fixture, to the cent; no golden file yet |
 | Automated cross-implementation diff harness (GnuCash first) | — (`just oracle`) | partial | live: `tests/oracle_gnucash.rs` runs 200 random books through GnuCash 5.10 in a pinned container, 15,800 exact comparisons, weekly in CI (docs/oracle.md Layer 5); open: fixture books diffed as `snapshot()` output, and the machine-readable catalog with CI enforcing this floor |
+| Invoice sent tracking (who, how, to whom, when, original or reminder, the channel's reference) | Business → Invoices (Xero's "Sent"; QBO's email) | done | P4b S5; records, never sends (A-4); a send changes no figure; `invoice.sent` under `documents_v2` (D-52) |
 
 Workflow/UI parity (QuickBooks/Xero reference) gets its own catalog when the
 egui phase starts; semantics come first.
@@ -135,3 +136,18 @@ door on loopback for Caddy or a tunnel. `crates/ledger-cli/tests/two_user.rs`
 proves the account boundary and the move's head in CI
 (`.github/workflows/two-user.yml`); the recipe is `deploy/README.md`.
 The cutover rule in `docs/capability-parity.md` is unchanged.
+
+### P4b S5: sent tracking (2026-10-27)
+
+The catalog gains one row: an invoice's recorded sends. The books never
+send (A-4): `books.mark_sent` records who sent an invoice, how, to whom,
+when, whether it was the original or a reminder, and the channel's own
+reference, for an owner or a delegate such as an agent. The record is
+`invoice.sent`, under `documents_v2` (D-52), and it moves no figure, so
+the A/R and A/P rows' figures are unchanged. The floor never decreases:
+the row is `done`, tested by `sends_replay_and_project`,
+`a_send_changes_no_figure` and `mark_sent_records_who_and_how`. Sent
+tracking also feeds Needs attention: an issued invoice nobody marked sent
+(past `invoicing.unsent_days`) and an overdue invoice not reminded within
+`invoicing.reminder_days` are one list in the viewer and in `books.start`,
+each offering `books.mark_sent` (step 4; U0b's one engine).

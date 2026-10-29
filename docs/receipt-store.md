@@ -58,8 +58,10 @@ apply is safe — on startup the applier replays every journal line with
 - `ts`: UTC, RFC 3339. Recorded, never trusted for ordering (`seq` orders).
 - `type`: `account.added`, `entry.posted`, `entry.reversed`, `invoice.created`,
   `bill.created`, `receipt.attached`, `receipt.linked`, `receipt.unlinked`,
-  `document.filed`, `attachment.withdrawn` (plus the A/R, A/P, asset,
-  period, payroll, and class events listed on `JournalLine`).
+  `document.filed`, `attachment.withdrawn`, `invoice.sent` (a recorded
+  send: a document's record, never a ledger line or a figure; P4b S5)
+  (plus the A/R, A/P, asset, period, payroll, and class events listed on
+  `JournalLine`).
 - `payload`: the full domain facts (account fields, entry with lines, blob
   sha, ...). Everything the applier needs; nothing it must look up elsewhere.
   An `invoice.created` or `bill.created` written after the `documents_v2`

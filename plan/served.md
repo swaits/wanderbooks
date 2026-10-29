@@ -1355,7 +1355,16 @@ Each unit follows the 8.0.4 template. "A-n" is an owner answer numbered in 8.3.1
 5. **Files:** owns the `Sent` types and `Ledger::mark_sent`, the `invoice.sent` arms, `books.mark_sent`; touches the 8.0.3 files.
 6. **Tests and proofs:** named above; no kernel change, no Lean change (a send moves no money). 8.0.6 items 1-4, 6.
 7. **Done when:** (1) the tests pass; (2) a send on a fixture book changes no report and no `DocState` (`a_send_changes_no_figure`); (3) an older version stops at the `invoice.sent` line with `NewerJournal` (the `tests/format.rs` arm); (4) `just check` green; (5) attention parity holds.
-8. **As built:** none yet.
+8. **As built** (2026-10-27, branch `S5`): Build steps 1-5 are done. ~~step 4 (the two attention items) is deferred until U0b lands~~ → built after U0b landed (`cc4f104f`), on main `ed637f0e` (D-55). Departures:
+   - ~~no Lean change (a send moves no money)~~ → AGENTS.md's formal-methods bar (I-13) wins: `Ledger::mark_sent` is a new `Ledger` command, so `verify/lean/Wanderbooks/Documents.lean` gains `sends` on `Books`, `Step.markSent` and `Step.markSent_changes_no_figure` (no axioms), listed in `Audit.lean` and in `docs/verification.md` rule 34.
+   - Step 4: `ledger-package::attention` gains `Target::Invoice` and two items, `invoice_never_sent` (an issued invoice still Open or Partial, no send, past `invoicing.unsent_days`; a legacy invoice with no number is exempt) and `invoice_not_reminded` (overdue, last send older than `invoicing.reminder_days`); both are Todo, open the invoice, and offer `books.mark_sent` with the invoice. The viewer maps the target (one line in its Target→Route table; it owns no item) and draws them; `books.start` turns them into next steps from the one function. Tests: `an_unsent_invoice_is_listed_until_a_send_clears_it` (`attention-unsent-invoice.png`), `a_legacy_invoice_with_no_number_is_never_listed_as_unsent`, `an_overdue_invoice_with_an_old_send_is_asked_to_remind`, `an_unsent_invoice_is_on_both_lists`; `the_viewer_and_books_start_see_the_same_attention` stays green.
+   - The MCP parameter for the recipients is `recipients`, not `to`: `no_tool_takes_a_path` refuses a parameter named `to` (a whole-word path-name rule, I-2). The journal event and the result keep the plan's `to`.
+   - `Ledger::mark_sent` also passes `note` through `parties::check_text`, beside `to` and `reference`: a note must not carry a full TIN (I-7).
+   - `LedgerError::DocumentVoid` (the plan's name) and `LedgerError::InvalidSend` (the text refusals) are new variants.
+   - Schema 17 at merge: S4.3 took 16 with the document fields, so this unit took the next number (8.0.3's numbering rule; the provisional 17 held).
+   - `books.mark_sent` lives in its own group, `crates/ledger-mcp/src/tools/sent.rs`, as the EM directed (S4.4 owns `documents.rs`); the EM approved the `sent` name and `docs/architecture.md` lists it. `sent_out` and `last_sent`, which the read tools share, sit in `tools/helpers.rs`.
+   - `books.document` shows every send in its own `sends` array; its `timeline` stays the ledger lines only (a send moves no line).
+   - `handbook/invoices-and-bills.md` is S4.5's file and had not landed, so this unit creates it (R-E) with the send procedure; S4.5 extends it with the rest of the procedure.
 
 #### P4b S6: paying on terms (multi-document payments, discounts, the processor fee, bills due, aging exports)
 

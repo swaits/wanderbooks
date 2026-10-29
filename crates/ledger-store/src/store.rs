@@ -3756,6 +3756,36 @@ impl Store {
         self.reverse_entry(target, date, &description)
     }
 
+    /// Record that an invoice went out ([`Ledger::mark_sent`], plan P4b
+    /// S5): journaled as `invoice.sent` (feature `documents_v2`: an older
+    /// version refuses the type), then applied to the books. A send moves
+    /// no figure, so it journals one line and no entry.
+    ///
+    /// ```text
+    /// GOAL: a send is journaled once and replays to the same record, in
+    ///       every version that can read the books.
+    /// SOURCE: docs/spec/rules.md B-27, B-38; plan P4b S5, A-4.
+    /// SCENARIOS:
+    ///   1. IF the engine refuses it (unknown or void invoice, a date
+    ///      before the invoice, no recipients, a text the books won't
+    ///      keep): SHOULD refuse, journaling nothing.
+    ///   2. IF the books haven't declared documents_v2: SHOULD need the
+    ///      feature, journaling nothing.
+    /// ```
+    pub fn mark_sent(
+        &mut self,
+        invoice_id: InvoiceId,
+        sent: ledger_core::arap::Sent,
+    ) -> Result<(), StoreError> {
+        self.ensure_feature(crate::format::DOCUMENTS_V2)?;
+        self.rehearse(|l| l.mark_sent(invoice_id, sent.clone()))?;
+        let line =
+            self.append_journal("invoice.sent", crate::meta::invoice_sent(invoice_id, &sent))?;
+        self.ledger.mark_sent(invoice_id, sent)?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(())
+    }
+
     // ------------------------------------------------------------------
     // Foreign exchange
     // ------------------------------------------------------------------
@@ -7037,6 +7067,11 @@ fn replay_line(
                 parse_bill_fields(p)?,
             )?;
         }
+        "invoice.sent" => {
+            // A send moves no figure: it only restores the invoice's sends.
+            let (invoice_id, sent) = crate::meta::invoice_sent_of(line)?;
+            ledger.replay_invoice_sent(invoice_id, sent)?;
+        }
         "invoice.payment_received" => {
             // The payment entry was already rebuilt; this only moves the
             // invoice's paid amount and status.
@@ -8016,6 +8051,26 @@ fn apply_line_rows(conn: &Connection, line: &JournalLine) -> Result<(), StoreErr
                 params![
                     get_u64(p, "entry_id")? as i64,
                     get_u64(p, "vendor_id")? as i64
+                ],
+            )?;
+        }
+        // A send is a document's own record, not a ledger line (plan P4b
+        // S5): one row each, for the projection to agree with replay.
+        "invoice.sent" => {
+            let to = p
+                .get("to")
+                .ok_or_else(|| StoreError::JournalCorrupt("invoice.sent without to".into()))?;
+            conn.execute(
+                "INSERT INTO invoice_sends(invoice_id, \"on\", \"by\", via, to_json, kind, reference, note) VALUES (?,?,?,?,?,?,?,?)",
+                params![
+                    get_u64(p, "invoice_id")? as i64,
+                    get_str(p, "on")?,
+                    get_str(p, "by")?,
+                    get_str(p, "via")?,
+                    to.to_string(),
+                    get_str(p, "kind")?,
+                    p.get("reference").and_then(|v| v.as_str()),
+                    p.get("note").and_then(|v| v.as_str()),
                 ],
             )?;
         }

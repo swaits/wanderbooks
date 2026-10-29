@@ -169,6 +169,7 @@ groups are:
 
 - `documents` — invoices, bills, payments, voids, `books.documents`,
   `books.document`, the control check and the agings;
+- `sent` — `books.mark_sent`, the record that an invoice went out (P4b S5);
 - `entries` — `books.draft_entry`, `books.add_line`, `books.post_entry`,
   `books.reverse_entry`, `books.get_entry`, `books.search_entries`, the
   bank CSV import;

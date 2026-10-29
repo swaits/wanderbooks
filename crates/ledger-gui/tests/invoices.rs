@@ -8,6 +8,7 @@
 use chrono::NaiveDate;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
+use ledger_core::arap::{InvoiceFields, SendKind, Sent, SentVia};
 use ledger_core::{AccountType, Currency, DocumentLine};
 use ledger_gui::nav::Route;
 use ledger_gui::{App, Source, data};
@@ -207,4 +208,129 @@ fn books_without_documents_show_no_overview_tiles_for_them() {
     let mut h = open(&dir, Route::Receivables);
     shot(&mut h, "receivables-empty");
     assert!(h.query_by_label("No invoices").is_some());
+}
+
+/// Books with one issued invoice (a number, so the sent-tracking items
+/// apply) and a checking account, for the attention items (plan P4b S5).
+fn issued_invoice(dir: &TempDir, due: NaiveDate) -> u64 {
+    let mut s = Store::create(&dir.0.join("books-data"), Currency::USD).unwrap();
+    s.add_account("1000", "Checking", AccountType::Asset, None, false)
+        .unwrap();
+    let client = s.add_customer("Harbor Client").unwrap();
+    s.create_invoice_with(
+        client,
+        d(2026, 2, 1),
+        due,
+        vec![line("Consulting", 50_000)],
+        InvoiceFields {
+            number: Some("INV-0001".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap()
+}
+
+/// A send as these tests record one.
+fn sent(on: NaiveDate) -> Sent {
+    Sent {
+        on,
+        by: "agent".into(),
+        via: SentVia::Email,
+        to: vec!["billing@harbor.example".into()],
+        kind: SendKind::Original,
+        reference: None,
+        note: None,
+    }
+}
+
+fn attention_titles(dir: &TempDir) -> Vec<String> {
+    data::load_once(&Source {
+        data_dir: dir.0.join("books-data"),
+        today: Some(d(2026, 3, 15)),
+    })
+    .unwrap()
+    .attention
+    .into_iter()
+    .map(|a| a.title)
+    .collect()
+}
+
+/// Plan P4b S5, step 4 (R-F): an issued invoice nobody marked sent, past
+/// `invoicing.unsent_days` (2 by default), is a to-do that opens the
+/// invoice; recording a send clears it. The overview draws it (the
+/// screenshot is the R-F pattern's).
+#[test]
+fn an_unsent_invoice_is_listed_until_a_send_clears_it() {
+    let dir = TempDir::new("attention-unsent");
+    let id = issued_invoice(&dir, d(2026, 4, 30));
+    let titles = attention_titles(&dir);
+    assert!(
+        titles
+            .iter()
+            .any(|t| t == "Invoice INV-0001 was never sent"),
+        "{titles:?}"
+    );
+    let mut h = open(&dir, Route::Overview);
+    assert!(
+        h.query_by_label_contains("Invoice INV-0001 was never sent")
+            .is_some()
+    );
+    shot(&mut h, "attention-unsent-invoice");
+    let mut s = Store::open(&dir.0.join("books-data")).unwrap();
+    s.mark_sent(id, sent(d(2026, 2, 10))).unwrap();
+    drop(s);
+    let titles = attention_titles(&dir);
+    assert!(
+        !titles.iter().any(|t| t.contains("never sent")),
+        "a send clears the item: {titles:?}"
+    );
+}
+
+/// The legacy case: an invoice with no number (issued before
+/// `documents_v2`) is exempt from "never sent", however old.
+#[test]
+fn a_legacy_invoice_with_no_number_is_never_listed_as_unsent() {
+    let dir = TempDir::new("attention-legacy");
+    let mut s = Store::create(&dir.0.join("books-data"), Currency::USD).unwrap();
+    s.add_account("1000", "Checking", AccountType::Asset, None, false)
+        .unwrap();
+    let client = s.add_customer("Harbor Client").unwrap();
+    s.create_invoice(
+        client,
+        d(2026, 1, 5),
+        d(2026, 4, 30),
+        vec![line("Consulting", 50_000)],
+    )
+    .unwrap();
+    drop(s);
+    let titles = attention_titles(&dir);
+    assert!(
+        !titles.iter().any(|t| t.contains("never sent")),
+        "{titles:?}"
+    );
+}
+
+/// An overdue invoice whose last send is older than
+/// `invoicing.reminder_days` (14 by default) asks for a reminder, on the
+/// invoice's page.
+#[test]
+fn an_overdue_invoice_with_an_old_send_is_asked_to_remind() {
+    let dir = TempDir::new("attention-remind");
+    let id = issued_invoice(&dir, d(2026, 3, 1));
+    let mut s = Store::open(&dir.0.join("books-data")).unwrap();
+    s.mark_sent(id, sent(d(2026, 2, 20))).unwrap();
+    drop(s);
+    let books = data::load_once(&Source {
+        data_dir: dir.0.join("books-data"),
+        today: Some(d(2026, 3, 15)),
+    })
+    .unwrap();
+    let item = books
+        .attention
+        .iter()
+        .find(|a| a.title.contains("remind the customer"))
+        .unwrap_or_else(|| panic!("no reminder item: {:?}", attention_titles(&dir)));
+    assert_eq!(item.target, Some(Route::Invoice(id)));
+    assert!(item.detail.contains("14 days overdue"), "{}", item.detail);
+    assert!(item.prompt.contains("books.mark_sent"), "{}", item.prompt);
 }

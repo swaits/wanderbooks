@@ -2107,9 +2107,24 @@ snapshots; see plan 8.2 S4.
   number and reads `void`. Refused while a payment stands on it (the
   refusal names the payment entry to reverse first), when void already,
   before its date or in a closed period (P4b S1, B-38).
+- `books.mark_sent { invoice, on?, by?, via?, recipients?: [string],
+  kind?, reference?, note? }` → `{ invoice, sends: [{ on, by, via, to, kind,
+  reference?, note? }] }`. Records that an invoice went out (P4b S5,
+  A-4): the books never send, so the owner or a delegate sends and this
+  records who (`by`: the token's name unless given), how (`via`: email
+  the default, or mail, portal, hand, another channel's name), to whom
+  (`recipients`: the invoice's bill-to email, else the customer's, else
+  required), when (`on`: today in the company's time zone), original or
+  reminder (`kind`: original on the first send, reminder after), and the
+  channel's own id (`reference`: a message id). `invoice` is
+  `invoice:N` or `N`. Several sends are allowed; none moves a figure or
+  the due date. Refused on a void invoice, dated before it, with no
+  recipients, or while the books wait for `documents_v2`
+  (`format_upgrade_pending`). `sends` is every send on the invoice, in
+  order, the new one last.
 - `books.documents { kind, status?, party?, due_by?, as_of? }` → `{ as_of,
   kind, documents: [{ ref, party, date, due_date, total, outstanding,
-  status, overdue_days }], outstanding_total }`. Invoices (`kind`
+  status, overdue_days, last_sent? }], outstanding_total }`. Invoices (`kind`
   `invoices`) or bills (`bills`), due date first, every figure derived
   from the document's lines that stand (B-38). `status` filters: `open`
   (default: anything still owed, partly paid and overdue included),
@@ -2117,11 +2132,14 @@ snapshots; see plan 8.2 S4.
   own `status` is one of `open`, `partial`, `paid`, `written_off`,
   `void`, `overpaid` or `unattached` (`DocStatus::key()`). `party` (a
   customer's or vendor's name, ignoring case) and `due_by` (due on or
-  before that day) narrow the list (P4b S2).
+  before that day) narrow the list (P4b S2). `last_sent` is the day the
+  invoice last went out, when a send is recorded (P4b S5); absent for an
+  invoice never sent and for every bill.
 - `books.document { ref, as_of?, pdf? }` → `{ ref, party, date, due_date,
   entry_id, lines: [{ description, amount, project? }], total, paid,
   discounted, written_off, outstanding, status, overdue_days, timeline:
-  [{ date, entry_id, kind, amount, reversal, stands }], pdf? }`. `ref` is
+  [{ date, entry_id, kind, amount, reversal, stands }], sends: [{ on, by,
+  via, to, kind, reference?, note? }], pdf? }`. `ref` is
   `invoice:N` or `bill:N`; `status` as `books.documents`' rows; the
   timeline is every ledger line tagged with the document, dated on or
   before the day, in posting order, each saying whether its entry still

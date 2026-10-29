@@ -708,3 +708,21 @@ pub(crate) fn resolve_instrument(store: &Store, r: &str) -> Result<InstrumentId,
         )),
     }
 }
+
+/// A recorded send on the wire (plan P4b S5).
+pub(crate) fn sent_out(s: &ledger_core::arap::Sent) -> SentOut {
+    SentOut {
+        on: s.on.to_string(),
+        by: s.by.clone(),
+        via: s.via.key(),
+        to: s.to.clone(),
+        kind: s.kind.key().to_string(),
+        reference: s.reference.clone(),
+        note: s.note.clone(),
+    }
+}
+
+/// The day an invoice last went out, when a send is recorded.
+pub(crate) fn last_sent(sends: &[ledger_core::arap::Sent]) -> Option<String> {
+    sends.iter().map(|s| s.on).max().map(|d| d.to_string())
+}

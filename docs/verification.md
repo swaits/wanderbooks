@@ -542,6 +542,24 @@ come from the kernel:
       No Lean model: these are two arithmetic laws, not a new `Ledger`
       command (S4.1 adds fields to the existing document commands).
 
+### Sent tracking (P4b S5)
+
+34. **A send changes no figure.** `Ledger::mark_sent` is a command, so it
+    is a `Step` in the model (AGENTS.md's formal-methods bar; the unit's
+    "no Lean change" phrase was overruled by it, and says so in its As
+    built block). `Documents.lean`'s `Books` gains `sends`, and
+    `Step.markSent` records one on a document the lines carry, touching
+    no line. Every control balance, every document's sum and what is
+    unattached are therefore the same before and after, through any day,
+    and `Reachable.tagged` (the control lines are all documents') covers
+    the new step; the engine's side is the same statement, checked by
+    `a_send_changes_no_figure` on the fixture book.
+    - Lean `Documents.Step.markSent_changes_no_figure` (no axioms) ·
+      `Documents.Reachable.tagged`, `Documents.Reachable.control_is_documents`
+      cover the new step · tests `sends_replay_and_project`,
+      `a_send_changes_no_figure`, `mark_sent_on_void_refused`,
+      `mark_sent_waits_for_documents_v2`
+
 ## What the proofs found
 
 The engine already had 190+ tests, property tests, mutation testing,

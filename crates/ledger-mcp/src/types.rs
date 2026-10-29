@@ -3249,6 +3249,10 @@ pub struct DocumentRowOut {
     pub status: String,
     /// Days past due while something is owed; 0 otherwise.
     pub overdue_days: i64,
+    /// The day it last went out, when a send is recorded (P4b S5);
+    /// absent for a document never sent and for every bill.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_sent: Option<String>,
 }
 
 /// Output of `books.documents`.
@@ -3342,6 +3346,11 @@ pub struct DocumentOut {
     pub overdue_days: i64,
     /// Every ledger line tagged with it, in posting order.
     pub timeline: Vec<DocumentEventOut>,
+    /// Every recorded send, in order (P4b S5): who, how, to whom, when,
+    /// original or reminder, and the channel's own reference. Empty for a
+    /// bill and for an invoice never sent.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sends: Vec<SentOut>,
     /// The invoice's PDF, handed over (with `pdf`): run its download.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pdf: Option<HandedFile>,
@@ -4839,7 +4848,7 @@ pub struct ReconciliationsOut {
 /// Parameters for `books.handbook`.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct HandbookParams {
-    /// The section to read: contract, entries, drafts-and-reversals, evidence-and-receipts, attachments, files-in-out, reconciliation, fixed-assets, prepaid-and-recurring, revenue-and-payouts, projects, parties-and-tins, 1099, cpa-handoff, settings-and-conventions, viewer, backups, self-host, format-upgrade, rules-that-change, control-roles, tracing-figures, or "all" for the whole handbook in order. Omit for the index.
+    /// The section to read: contract, entries, drafts-and-reversals, evidence-and-receipts, attachments, files-in-out, reconciliation, fixed-assets, prepaid-and-recurring, revenue-and-payouts, projects, parties-and-tins, 1099, cpa-handoff, settings-and-conventions, viewer, backups, self-host, format-upgrade, rules-that-change, control-roles, tracing-figures, invoices-and-bills, or "all" for the whole handbook in order. Omit for the index.
     #[serde(default)]
     pub section: Option<String>,
 }
@@ -5005,4 +5014,72 @@ pub struct BillOut {
     /// One per finished or abandoned project a line names.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
+}
+
+// P4b S5: sent tracking.
+
+/// Parameters for `books.mark_sent`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MarkSentParams {
+    /// The invoice: `invoice:7` (as books.documents names it) or its id,
+    /// `7`.
+    pub invoice: String,
+    /// The day it went out, YYYY-MM-DD (omitted: today in the company's
+    /// time zone).
+    #[serde(default)]
+    pub on: Option<String>,
+    /// Who sent it: the owner, or a named delegate such as an agent
+    /// (omitted: this session's token name).
+    #[serde(default)]
+    pub by: Option<String>,
+    /// The channel: email (the default), mail, portal, hand, or another
+    /// channel's own name.
+    #[serde(default)]
+    pub via: Option<String>,
+    /// The recipients (omitted: the invoice's bill-to email, else the
+    /// customer's email; refused when neither is set). The journal keeps
+    /// them as the send's `to`.
+    #[serde(default)]
+    pub recipients: Option<Vec<String>>,
+    /// original (the default for a first send) or reminder (the default
+    /// after one).
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// The channel's own id (a message id, a tracking number).
+    #[serde(default)]
+    pub reference: Option<String>,
+    /// A note about the send.
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+/// One recorded send of an invoice (P4b S5).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SentOut {
+    /// The day it went out.
+    pub on: String,
+    /// Who sent it.
+    pub by: String,
+    /// How: email, mail, portal, hand, or another channel's name.
+    pub via: String,
+    /// The recipients.
+    pub to: Vec<String>,
+    /// original or reminder.
+    pub kind: String,
+    /// The channel's own id, when given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<String>,
+    /// A note about the send, when given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// Output of `books.mark_sent`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MarkSentOut {
+    /// The invoice, as `invoice:7`.
+    pub invoice: String,
+    /// Every send on it, in order, the newest last.
+    pub sends: Vec<SentOut>,
 }

@@ -984,7 +984,13 @@ impl BooksServer {
         }
         let store = self.lock()?;
         let ledger = store.ledger();
-        let docs: Vec<(ledger_core::DocRef, String, NaiveDate, NaiveDate)> = if invoices {
+        let docs: Vec<(
+            ledger_core::DocRef,
+            String,
+            NaiveDate,
+            NaiveDate,
+            Option<String>,
+        )> = if invoices {
             ledger
                 .invoices()
                 .into_iter()
@@ -993,7 +999,13 @@ impl BooksServer {
                         .get_customer(i.customer_id)
                         .map(|c| c.name.clone())
                         .unwrap_or_default();
-                    (ledger_core::DocRef::Invoice(i.id), who, i.date, i.due_date)
+                    (
+                        ledger_core::DocRef::Invoice(i.id),
+                        who,
+                        i.date,
+                        i.due_date,
+                        last_sent(&i.sends),
+                    )
                 })
                 .collect()
         } else {
@@ -1005,14 +1017,20 @@ impl BooksServer {
                         .get_vendor(b.vendor_id)
                         .map(|v| v.name.clone())
                         .unwrap_or_default();
-                    (ledger_core::DocRef::Bill(b.id), who, b.date, b.due_date)
+                    (
+                        ledger_core::DocRef::Bill(b.id),
+                        who,
+                        b.date,
+                        b.due_date,
+                        None,
+                    )
                 })
                 .collect()
         };
         let party = p.party.as_deref().map(|s| s.trim().to_lowercase());
         let mut rows = Vec::new();
         let mut owed = Decimal::ZERO;
-        for (doc, who, date, due) in docs {
+        for (doc, who, date, due, last_sent) in docs {
             if let Some(want_party) = &party
                 && who.to_lowercase() != *want_party
                 && doc_id(doc).to_string() != *want_party
@@ -1050,6 +1068,7 @@ impl BooksServer {
                     outstanding: money(st.outstanding),
                     status: key.to_string(),
                     overdue_days: st.overdue_days,
+                    last_sent,
                 },
             ));
         }
@@ -1080,7 +1099,7 @@ impl BooksServer {
         let doc = parse_doc_ref(&p.r#ref)?;
         let store = self.lock()?;
         let ledger = store.ledger();
-        let (who, date, due, entry_id, lines) = match doc {
+        let (who, date, due, entry_id, lines, sends) = match doc {
             ledger_core::DocRef::Invoice(id) => {
                 let i = ledger
                     .get_invoice(id)
@@ -1089,7 +1108,14 @@ impl BooksServer {
                     .get_customer(i.customer_id)
                     .map(|c| c.name.clone())
                     .unwrap_or_default();
-                (who, i.date, i.due_date, i.entry_id, i.lines.clone())
+                (
+                    who,
+                    i.date,
+                    i.due_date,
+                    i.entry_id,
+                    i.lines.clone(),
+                    i.sends.iter().map(sent_out).collect(),
+                )
             }
             ledger_core::DocRef::Bill(id) => {
                 let b = ledger
@@ -1099,7 +1125,14 @@ impl BooksServer {
                     .get_vendor(b.vendor_id)
                     .map(|v| v.name.clone())
                     .unwrap_or_default();
-                (who, b.date, b.due_date, b.entry_id, b.lines.clone())
+                (
+                    who,
+                    b.date,
+                    b.due_date,
+                    b.entry_id,
+                    b.lines.clone(),
+                    Vec::new(),
+                )
             }
         };
         let st = ledger
@@ -1171,6 +1204,7 @@ impl BooksServer {
             status: st.status.key().to_string(),
             overdue_days: st.overdue_days,
             timeline,
+            sends,
             pdf,
         }))
     }

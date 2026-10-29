@@ -3050,3 +3050,67 @@ and `BooksServer::new`'s copy (a dropped field must fail
 `isolation_label_is_enforced_under_the_unit`); the host's `server_flags`
 extension and `parse_args`' passthrough of `--isolation` and its optional
 `--http` value.
+
+## P4b S5: sent tracking (2026-10-27)
+
+The books record that an invoice went out; they never send it (A-4). A
+send is `invoice.sent`, under `documents_v2` (D-52), and moves no figure:
+`Ledger::mark_sent` pushes a `Sent` onto the invoice, the store journals
+one line and no entry, replay restores it and the projection keeps it in
+`schema` v17's `invoice_sends` (S4.3 took 16).
+
+- **`ledger-store` `tests/arap_standing.rs`:** `mark_sent_waits_for_documents_v2`
+  (books with no features: refused, nothing journaled; after `upgrade`,
+  taken, and the reopen equals what was live), `sends_replay_and_project`
+  (two sends: the journal's `invoice.sent` carries the whole record in
+  order, `verify` passes, the reopened invoice holds both),
+  `a_send_changes_no_figure` (on the `p4-arap-before` fixture: the report
+  snapshot, the invoice's `DocState` and every derived cache are equal
+  before and after), `mark_sent_on_void_refused` (`DocumentVoid`,
+  nothing journaled; a send dated before the void is taken).
+- **`ledger-store` `tests/arap_props.rs`:** `status_is_a_function_of_journal_and_date`
+  gains `Op::MarkSent` (random sends on invoices, skipped on bills): every
+  figure, the control check and both agings still agree across live,
+  replay and snapshot.
+- **`ledger-store` `tests/format.rs`:** `an_older_version_stops_at_invoice_sent`
+  (`invoice.sent` is this version's, a reader without `documents_v2` waits,
+  and the books declare the feature before the first send line).
+- **8.0.6:** `books_written_under_older_rules_still_open` hand-writes an
+  `invoice.sent` and still opens; the fixture `old-books/p4_s5_before`
+  was written by eeee9658 (the revision before this unit) and opens to
+  the same figures; `books_p2_served_cut_over_whole` refuses a send before
+  consent and takes it after.
+- **`ledger-cli` `tests/documents.rs`:** `mark_sent_records_who_and_how`
+  (two sends over the wire: the token's name, email and original by
+  default, then a reminder with a message id; `books.documents` shows
+  `last_sent`, `books.document` both sends, and the invoice still owes its
+  total).
+- **`ledger-mcp/src/handbook.rs`:** the new `invoices-and-bills` section
+  renders, and its id is unique (the existing handbook tests).
+- **Step 4, Attention (R-F):** `ledger-gui/tests/invoices.rs`:
+  `an_unsent_invoice_is_listed_until_a_send_clears_it` (an issued invoice
+  past `invoicing.unsent_days` is one to-do opening the invoice; the
+  overview draws it, `attention-unsent-invoice.png`; a send clears it),
+  `a_legacy_invoice_with_no_number_is_never_listed_as_unsent` (exempt),
+  `an_overdue_invoice_with_an_old_send_is_asked_to_remind` (due Mar 1,
+  last sent Feb 20: 14 days overdue, target the invoice, prompt names
+  `books.mark_sent`). `ledger-cli/tests/attention_parity.rs`:
+  `an_unsent_invoice_is_on_both_lists` (the viewer's list and `books.start`
+  both carry the item, and the step is `books.mark_sent` on `invoice:1`).
+  `the_viewer_and_books_start_see_the_same_attention` stays green.
+
+**For P12 (mutation targets):** `Ledger::mark_sent`'s refusals (unknown
+invoice, a send dated before it, `DocumentVoid`, empty `to`, and each of
+the three `check_text` calls; the note's check is stricter than the plan's
+list, to keep a full TIN out of the journal); `SentVia::parse`'s arms and
+its `other:` prefix; `SendKind::parse`'s two arms; `sent_via`'s arms and
+its empty fallback; `send_kind`'s error arm; the handler's `kind` default
+(`original` when `sends` is empty, `reminder` after), its `to` fallback
+(bill-to, then party, then refused) and its `by` fallback; `invoice_id`'s
+`invoice:` strip; `last_sent`'s `max`; the replay reader's
+`newer_content` arms for an unknown channel or kind; and the two attention
+predicates in `ledger-package::attention`: `invoice.number.is_some()`
+(the legacy exemption), `Open | Partial`, `sends.is_empty()`, the
+`checked_add_days` `unsent_days` comparison (`>`), `overdue_days > 0`, the
+`sends.max()` last send, and the `reminder_days` comparison (`>`), plus
+each item's target (`Target::Invoice`) and `books.mark_sent` step args.

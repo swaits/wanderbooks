@@ -5,7 +5,7 @@
 //! is the current version.
 
 /// Current schema version.
-pub const SCHEMA_VERSION: u32 = 16;
+pub const SCHEMA_VERSION: u32 = 17;
 
 /// Migrations, in order. `MIGRATIONS[i]` migrates from version `i` to `i+1`.
 pub const MIGRATIONS: &[&str] = &[
@@ -417,5 +417,22 @@ ALTER TABLE bills ADD COLUMN received_on TEXT;
 ALTER TABLE bills ADD COLUMN terms TEXT;
 ALTER TABLE bills ADD COLUMN memo TEXT;
 ALTER TABLE bills ADD COLUMN duplicate_reason TEXT;
+"#,
+    r#"
+-- v17: sent tracking (plan P4b S5, `invoice.sent`): one row per recorded
+-- send of an invoice, in the order journaled. A send moves no figure and
+-- no ledger line, so this table is only the projection's copy of the
+-- journal's record (parity with replay). `on` and `by` are quoted: `on`
+-- is an SQL keyword.
+CREATE TABLE IF NOT EXISTS invoice_sends(
+  invoice_id INTEGER NOT NULL,
+  "on" TEXT NOT NULL,
+  "by" TEXT NOT NULL,
+  via TEXT NOT NULL,
+  to_json TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  reference TEXT NULL,
+  note TEXT NULL
+);
 "#,
 ];

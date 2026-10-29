@@ -67,6 +67,7 @@ fn route(t: ledger_package::Target) -> Option<Route> {
         ledger_package::Target::Assets => Route::Assets,
         ledger_package::Target::Asset(a) => Route::Asset(a),
         ledger_package::Target::Documents => Route::Documents,
+        ledger_package::Target::Invoice(i) => Route::Invoice(i),
         ledger_package::Target::Journal => Route::Journal,
         ledger_package::Target::Report(r) => Route::Reports(match r {
             ledger_package::Report::Vendor1099 => ReportKind::Vendor1099,

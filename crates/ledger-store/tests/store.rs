@@ -1957,6 +1957,15 @@ fn books_written_under_older_rules_still_open() {
                "memo": "A4 paper", "duplicate_reason": "the vendor sent it twice"}),
     )
     .unwrap();
+    // P4b S5's new shape: the record that the invoice went out
+    // (`invoice.sent`, feature documents_v2). A send moves no figure, so
+    // the document's figures are the same before and after it.
+    w.append(
+        "invoice.sent",
+        json!({"invoice_id": 1, "on": "2026-04-05", "by": "Avery Quill", "via": "email",
+               "to": ["billing@fernhill.example"], "kind": "original", "reference": "msg-1"}),
+    )
+    .unwrap();
     drop(w);
     // Opening rebuilds from the journal; it must accept all of it.
     let _ = std::fs::remove_file(dir.join(ledger_store::db_file()));
@@ -2023,6 +2032,14 @@ fn books_written_under_older_rules_still_open() {
     );
     assert_eq!(bill.memo.as_deref(), Some("A4 paper"));
     assert_eq!(bill.lines[0].account, Some(6));
+    // P4b S5's send replays as written, and moves no figure.
+    let sends = &store.ledger().get_invoice(1).expect("the invoice").sends;
+    assert_eq!(sends.len(), 1);
+    assert_eq!(sends[0].on, NaiveDate::from_ymd_opt(2026, 4, 5).unwrap());
+    assert_eq!(sends[0].by, "Avery Quill");
+    assert_eq!(sends[0].to, ["billing@fernhill.example"]);
+    assert_eq!(sends[0].kind, ledger_core::arap::SendKind::Original);
+    assert_eq!(sends[0].reference.as_deref(), Some("msg-1"));
 }
 
 /// The books an earlier wanderbooks wrote, one directory each under

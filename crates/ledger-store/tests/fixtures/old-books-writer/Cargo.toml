@@ -7,6 +7,8 @@
 #   cargo run --bin extras -- OUT     (the edges of chrono and Decimal)
 #   cargo run --bin extras2 -- OUT    (depreciation for 10000-01; 1,044 drafts)
 #   cargo run --bin older -- OUT      (x_older_rules, with its JournalWriter)
+#   cargo run --bin s5_before -- OUT   (p4_s5_before: run against eeee9658,
+#                                      the revision before P4b S5)
 #   cargo run --bin p2_1099 -- OUT    (p2_vendor_1099: P2's 1099 marks, run
 #                                      against 9c99a0cf, the revision before P3)
 #   cargo run --bin expect -- OUT     (expected.json beside each journal)

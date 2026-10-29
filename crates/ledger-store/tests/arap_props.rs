@@ -64,6 +64,9 @@ enum Op {
     Reverse(usize, u8),
     /// Void document `k` on day `n`.
     Void(usize, u8),
+    /// Record a send of document `k` (an invoice; a bill is skipped) on
+    /// day `n`, a reminder after its first send. A send moves no figure.
+    MarkSent(usize, u8),
     /// Close month `m` (January to March), in order.
     Close(u8),
     /// A hand line on receivables (true) or payables: always refused.
@@ -77,6 +80,7 @@ fn arb_op() -> impl Strategy<Value = Op> {
             .prop_map(|(k, n, c, card, r)| Op::Pay(k, n, c, card, r)),
         3 => (0usize..40, 0u8..90).prop_map(|(k, n)| Op::Reverse(k, n)),
         1 => (0usize..8, 0u8..90).prop_map(|(k, n)| Op::Void(k, n)),
+        2 => (0usize..8, 0u8..90).prop_map(|(k, n)| Op::MarkSent(k, n)),
         1 => (1u8..4).prop_map(Op::Close),
         1 => (any::<bool>(), 1i64..10_000).prop_map(|(r, c)| Op::Hand(r, c)),
     ]
@@ -173,6 +177,35 @@ fn run(s: &mut Store, k: &Setup, ops: &[Op], docs: &mut Vec<DocRef>) -> Result<(
             Op::Void(i, n) => s
                 .void_document(docs[i % docs.len()], day(n), "duplicate")
                 .map(drop),
+            Op::MarkSent(..) if docs.is_empty() => Ok(()),
+            Op::MarkSent(i, n) => match docs[i % docs.len()] {
+                // Bills get no sends: we receive them (plan P4b S5).
+                DocRef::Bill(_) => Ok(()),
+                DocRef::Invoice(id) => {
+                    let kind = if s
+                        .ledger()
+                        .get_invoice(id)
+                        .is_some_and(|i| !i.sends.is_empty())
+                    {
+                        ledger_core::arap::SendKind::Reminder
+                    } else {
+                        ledger_core::arap::SendKind::Original
+                    };
+                    s.mark_sent(
+                        id,
+                        ledger_core::arap::Sent {
+                            on: day(n),
+                            by: "agent".into(),
+                            via: ledger_core::arap::SentVia::Email,
+                            to: vec!["billing@fernhill.example".into()],
+                            kind,
+                            reference: None,
+                            note: None,
+                        },
+                    )
+                    .map(drop)
+                }
+            },
             Op::Close(m) => {
                 let start = NaiveDate::from_ymd_opt(2026, u32::from(m), 1).unwrap();
                 let end = start + chrono::Months::new(1) - chrono::Days::new(1);

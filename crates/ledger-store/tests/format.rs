@@ -16,8 +16,9 @@
 //! ```
 
 use chrono::NaiveDate;
+use ledger_core::arap::{DocumentLine, SendKind, Sent, SentVia};
 use ledger_core::{AccountType, Currency, Money, Side};
-use ledger_store::format::{EVENT_TYPES, FORMAT_SET, KNOWN_FEATURES};
+use ledger_store::format::{DOCUMENTS_V2, EVENT_TYPES, FORMAT_SET, KNOWN_FEATURES};
 use ledger_store::journal::{canonical_json, sha256_hex};
 use ledger_store::{
     JOURNAL_FILE, JournalFormat, JournalWriter, SUPPORTED_JOURNAL_FORMAT, Snapshot, Store,
@@ -1467,4 +1468,84 @@ fn the_replay_fuzzer_writes_every_event_type() {
         missing.is_empty(),
         "the replay fuzzer never writes {missing:?}"
     );
+}
+
+/// Done-when (plan P4b S5): the send event is this version's, it needs
+/// `documents_v2`, and the books declare that feature before the first
+/// `invoice.sent` line, so a version without it stops at the declaration
+/// and reports the books as newer, never corrupt (rules.md B-27).
+#[test]
+fn an_older_version_stops_at_invoice_sent() {
+    assert!(EVENT_TYPES.contains(&"invoice.sent"));
+    let older = JournalFormat {
+        format: SUPPORTED_JOURNAL_FORMAT,
+        features: KNOWN_FEATURES
+            .iter()
+            .copied()
+            .filter(|f| *f != DOCUMENTS_V2)
+            .map(str::to_string)
+            .collect(),
+    };
+    assert!(
+        matches!(
+            older.require_feature(DOCUMENTS_V2),
+            Err(StoreError::FormatUpgradePending { .. })
+        ),
+        "a reader without documents_v2 waits for it"
+    );
+    let dir = test_dir("sent-gate");
+    let mut store =
+        Store::create_in_format(&dir, Currency::USD, &JournalFormat::default()).unwrap();
+    let customer = store.add_customer("Fernhill Labs").unwrap();
+    let date = NaiveDate::from_ymd_opt(2026, 3, 1).unwrap();
+    let inv = store
+        .create_invoice(
+            customer,
+            date,
+            date + chrono::Days::new(30),
+            vec![DocumentLine {
+                description: "Design".into(),
+                amount: Decimal::new(10_000, 2),
+                class_id: None,
+                account: None,
+                quantity: None,
+                unit_price: None,
+            }],
+        )
+        .unwrap();
+    store.upgrade_format().unwrap().expect("the go-ahead");
+    store
+        .mark_sent(
+            inv,
+            Sent {
+                on: date,
+                by: "agent".into(),
+                via: SentVia::Email,
+                to: vec!["billing@fernhill.example".into()],
+                kind: SendKind::Original,
+                reference: None,
+                note: None,
+            },
+        )
+        .unwrap();
+    let journal = std::fs::read_to_string(dir.join(JOURNAL_FILE)).unwrap();
+    let mut declared = false;
+    let mut sent = false;
+    for line in journal.lines() {
+        let v: serde_json::Value = serde_json::from_str(line).unwrap();
+        if v["type"] == FORMAT_SET
+            && v["payload"]["features"]
+                .as_array()
+                .is_some_and(|f| f.iter().any(|x| x == DOCUMENTS_V2))
+        {
+            declared = true;
+        }
+        if v["type"] == "invoice.sent" {
+            assert!(declared, "documents_v2 must be declared before the send");
+            sent = true;
+        }
+    }
+    assert!(sent);
+    drop(store);
+    Store::open(&dir).unwrap().verify().unwrap();
 }

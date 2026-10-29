@@ -789,6 +789,36 @@ pub enum SentVia {
     Other(String),
 }
 
+impl SentVia {
+    /// Its key as the journal, the tools and the viewer name it: `email`,
+    /// `mail`, `portal`, `hand`, or `other:NAME` for another channel,
+    /// named (plan P4b S5).
+    pub fn key(&self) -> String {
+        match self {
+            SentVia::Email => "email".to_string(),
+            SentVia::Mail => "mail".to_string(),
+            SentVia::Portal => "portal".to_string(),
+            SentVia::Hand => "hand".to_string(),
+            SentVia::Other(name) => format!("other:{name}"),
+        }
+    }
+
+    /// [`Self::key`] the other way; `None` for a channel this version
+    /// doesn't know (a newer version's `sent_via`).
+    pub fn parse(key: &str) -> Option<SentVia> {
+        match key {
+            "email" => Some(SentVia::Email),
+            "mail" => Some(SentVia::Mail),
+            "portal" => Some(SentVia::Portal),
+            "hand" => Some(SentVia::Hand),
+            other => other
+                .strip_prefix("other:")
+                .filter(|name| !name.trim().is_empty())
+                .map(|name| SentVia::Other(name.to_string())),
+        }
+    }
+}
+
 /// Whether a send was the original or a reminder (plan P4b S5).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -797,6 +827,26 @@ pub enum SendKind {
     Original,
     /// It went out again.
     Reminder,
+}
+
+impl SendKind {
+    /// Its key as the journal, the tools and the viewer name it.
+    pub fn key(self) -> &'static str {
+        match self {
+            SendKind::Original => "original",
+            SendKind::Reminder => "reminder",
+        }
+    }
+
+    /// [`Self::key`] the other way; `None` for a kind this version
+    /// doesn't know.
+    pub fn parse(key: &str) -> Option<SendKind> {
+        match key {
+            "original" => Some(SendKind::Original),
+            "reminder" => Some(SendKind::Reminder),
+            _ => None,
+        }
+    }
 }
 
 /// One recorded send of an invoice (plan P4b S5): who sent it, how, to

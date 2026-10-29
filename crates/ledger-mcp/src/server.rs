@@ -1391,6 +1391,10 @@ enum ShownDates {
 // Tools
 // ---------------------------------------------------------------------------
 
+#[path = "guards.rs"]
+mod guards;
+#[path = "next_steps.rs"]
+mod next_steps;
 #[path = "tools/access.rs"]
 mod access_tools;
 #[path = "tools/backup.rs"]
@@ -1704,6 +1708,8 @@ impl ServerHandler for BooksServer {
         let running_call = call.clone();
         // Kept for the record of a call the server stopped before running.
         let request_args = request.arguments.clone();
+        let tool_name = request.name.to_string();
+        let envelope_args = request.arguments.clone();
         let result = run_blocking(&self.store, move || {
             Box::pin(async move {
                 WROTE.with(|w| w.borrow_mut().take());
@@ -1740,6 +1746,8 @@ impl ServerHandler for BooksServer {
                         std::panic::resume_unwind(panic)
                     }
                 };
+                // The result envelope (next_steps.rs INVARIANT 1).
+                let out = next_steps::apply(&server, &tool_name, envelope_args.as_ref(), out);
                 let mut c = running_call;
                 c.digested(digest);
                 let recorded = c.record_blocking(outcome_of(&out), wrote);

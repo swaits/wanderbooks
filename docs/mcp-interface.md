@@ -446,6 +446,34 @@ every tool over every book in ledger-store's `tests/fixtures/old-books`.
   `books.purge_tin`, `books.consolidate_duplicates` and
   `books.discard_draft`. (`books.void_document`, `books.run_depreciation`
   and `books.run_recurring` post at once and have no `confirmed`.)
+- **The result envelope (P5, plan 4.6).** Every tool result, whatever the
+  tool, is given the same four fields in one place (`call_tool`,
+  `next_steps.rs::apply`), after the tool has answered; a tool's own field of
+  the same name is kept, never overwritten:
+  `next_steps: [{ tool | prompt | command, args?, why, required }]` (what to
+  do next: after a preview, the same call with `confirmed: true` and the
+  returned `preview`; after a post, `books.show` of the entry, plus the
+  Needs-attention items about that entry or invoice, the viewer's own,
+  `required` when they are problems; after a close, `books.verify`; after
+  `books.export_cpa_package`, a `command` step carrying the download
+  command; every other tool that can change the books ends with
+  `books.digest`), `guards: [{ code, message, remedy_tool, remedy_args? }]`
+  (empty on success; on a refusal that is a guard, the refusal's
+  `structuredContent` is `{ guards: [..] }` and its text is unchanged),
+  `warnings: [..]` (a tool's own `warnings` is that field), and, on every
+  tool that is not read-only, `head: { seq, hash }`, the journal's head
+  after the call's last write (or as it stands, when the call wrote
+  nothing). The guard codes are the enum in `guards.rs`, each with its
+  remedy tool: `stale_preview` (the tool again, previewed),
+  `format_upgrade_pending` (`books.start`), `receipt_required`
+  (`books.attach_receipt`), `approval_required` (`books.approve_entry`),
+  `party_shares` and `party_required` (`books.set_entry_party`),
+  `open_drafts` (`books.list_drafts`), `untagged_control_line`
+  (`books.control_check`), `duplicate_vendor_ref` (`books.search_entries`)
+  and `first_number_locked` (`books.settings`). Tests:
+  `every_mutating_result_has_head_and_next_steps`,
+  `the_envelope_keeps_what_a_tool_said_and_carries_a_refusal_guard`,
+  `every_guard_names_an_existing_tool`.
 - **Errors are typed strings** mirroring `LedgerError` variants, with the
   offending values included (e.g. unbalanced totals).
 

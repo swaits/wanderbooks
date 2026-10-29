@@ -1528,3 +1528,95 @@ fn a_tool_list_is_cached_only_for_its_caller() {
         }
     });
 }
+
+/// Plan 4.6 (P5 step 1): the envelope is put on every result in one
+/// place; a tool that can change the books answers with the journal's
+/// `head` and at least one next step, whatever it said itself, and the
+/// text block says the same as the structured content.
+#[test]
+fn every_mutating_result_has_head_and_next_steps() {
+    use rmcp::model::{CallToolResponse, CallToolResult, ContentBlock};
+    let dir = unit_dir("envelope");
+    let server = served(store(&dir));
+    let (seq, hash) = server.lock().unwrap().head();
+    let mutating = next_steps::mutating_tools();
+    assert!(mutating.contains("books.post_entry") && !mutating.contains("books.trial_balance"));
+    let mut read_only = 0;
+    for tool in BooksServer::tool_router().list_all() {
+        let name = tool.name.to_string();
+        let answer = CallToolResponse::Complete(CallToolResult::structured(
+            serde_json::json!({"status": "ok"}),
+        ));
+        let CallToolResponse::Complete(r) = next_steps::apply(&server, &name, None, Ok(answer))
+            .expect("an answer stays an answer")
+        else {
+            panic!("{name}: not a complete answer");
+        };
+        let body = r.structured_content.expect("structured");
+        assert!(body["guards"].is_array() && body["warnings"].is_array(), "{name}");
+        let ContentBlock::Text(t) = &r.content[0] else {
+            panic!("{name}: no text block");
+        };
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&t.text).unwrap(),
+            body,
+            "{name}: the text says what the structure says"
+        );
+        if mutating.contains(&name) {
+            assert_eq!(body["head"]["seq"], seq, "{name}");
+            assert_eq!(body["head"]["hash"], hash.as_str(), "{name}");
+            let steps = body["next_steps"].as_array().expect("next_steps");
+            assert!(!steps.is_empty(), "{name}: no next step");
+            for s in steps {
+                assert!(s["why"].is_string() && s["required"].is_boolean(), "{name}");
+            }
+        } else {
+            read_only += 1;
+            assert!(body.get("head").is_none(), "{name}: a read has no head");
+        }
+    }
+    assert!(read_only > 20);
+}
+
+/// A tool's own `next_steps`, `warnings` and `head` are kept (the
+/// envelope fills only what the result lacks), and a refusal that is a
+/// guard carries it.
+#[test]
+fn the_envelope_keeps_what_a_tool_said_and_carries_a_refusal_guard() {
+    use rmcp::model::{CallToolResponse, CallToolResult};
+    let dir = unit_dir("envelope-keeps");
+    let server = served(store(&dir));
+    let own = serde_json::json!({
+        "next_steps": [{"tool": "books.digest", "why": "mine", "required": false}],
+        "warnings": ["careful"],
+        "head": {"seq": 0, "hash": "x"},
+    });
+    let CallToolResponse::Complete(r) = next_steps::apply(
+        &server,
+        "books.post_entry",
+        None,
+        Ok(CallToolResponse::Complete(CallToolResult::structured(own.clone()))),
+    )
+    .unwrap() else {
+        panic!()
+    };
+    let body = r.structured_content.unwrap();
+    assert_eq!(body["next_steps"], own["next_steps"]);
+    assert_eq!(body["warnings"], own["warnings"]);
+    assert_eq!(body["head"], own["head"]);
+    let refused = CallToolResponse::Complete(CallToolResult::error(vec![
+        rmcp::model::ContentBlock::text(
+            serde_json::json!({"code": "approval_required", "message": "needs approval", "remedy_tool": "books.approve_entry"})
+                .to_string(),
+        ),
+    ]));
+    let CallToolResponse::Complete(r) =
+        next_steps::apply(&server, "books.post_entry", None, Ok(refused)).unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(r.is_error, Some(true));
+    let g = &r.structured_content.unwrap()["guards"][0];
+    assert_eq!(g["code"], "approval_required");
+    assert_eq!(g["remedy_tool"], "books.approve_entry");
+}

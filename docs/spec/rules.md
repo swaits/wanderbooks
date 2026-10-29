@@ -3436,7 +3436,7 @@ The Lean step is `Documents.Step.document` with every control line tagged
 **bookspec:** `BS-entry-5`
 
 **Status:** AUTHORITY (the evidence a draft waits for, Pub. 583 and Rev.
-Proc. 98-25); DECISION D-47 (owner-adopted recommendation, 2026-10-26:
+Proc. 98-25); CHOICE D-47 (owner-adopted recommendation, 2026-10-26:
 reversals stay posted and need no evidence of their own); CONVENTION (the
 two states, and discarding a draft rather than posting and reversing it).
 
@@ -3448,7 +3448,7 @@ GOAL: no entry the receipt policy covers posts without the document that
 SOURCE: IRS Pub. 583 (docs/spec/sources/irs-records.md: "you must keep
         supporting documents ... they support the entries in your
         books"); Rev. Proc. 98-25 §5.01 (the records must let the books be
-        demonstrated); DECISION D-47 (a reversal's evidence is its
+        demonstrated); CHOICE D-47 (a reversal's evidence is its
         original's, D-12); CONVENTION (a draft's state is a note: it moves
         no figure).
 INVARIANTS:

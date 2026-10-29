@@ -2640,7 +2640,9 @@ mod tests {
 
     /// A socket with no other end: the system answers for it (Linux: no
     /// process, no user), and that answer names neither this process nor
-    /// this account; the client's check refuses it.
+    /// this account; the client's check refuses it. Linux only: the
+    /// answer and `SOCK_CLOEXEC` are Linux's (the portable job found it).
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_socket_with_no_other_end_names_no_process_and_isnt_us() {
         use std::os::fd::FromRawFd;

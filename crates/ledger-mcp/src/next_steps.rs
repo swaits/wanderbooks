@@ -119,8 +119,11 @@ pub(crate) fn tool_steps(
     let with_entry = |id: u64| Some(json!({ "entry_id": id }));
     // A preview: what is missing first, then the human confirms, then the
     // same call with the digest.
+    // An audit already run is not previewed: its run is the answer.
+    let already_run = tool == "books.audit"
+        && result.get("status").and_then(Value::as_str) == Some("already_run");
     if let (false, Some(preview), Some(args)) = (
-        confirmed,
+        confirmed || already_run,
         result.get("preview").and_then(Value::as_str),
         args,
     ) {
@@ -301,12 +304,79 @@ pub(crate) fn tool_steps(
                 }
             }
         }
-        "books.close_period" => steps.push(Step::tool(
-            "books.verify",
-            None,
-            "Verify the books after a close: the chain, the replay and every stored file.",
+        "books.close_period" => {
+            let period = result
+                .get("period_id")
+                .or_else(|| args.and_then(|a| a.get("period_id")))
+                .and_then(Value::as_u64);
+            steps.push(Step::tool(
+                "books.audit",
+                Some(json!({ "scope": "month" })),
+                "Audit the books through the month's end; the attestation rests on that run.",
+                false,
+            ));
+            steps.push(Step::tool(
+                "books.attest_period",
+                period.map(|p| json!({ "period": p.to_string() })),
+                "Once the audit is run and the receipts read, attest the period you closed.",
+                false,
+            ));
+        }
+        "books.audit" => {
+            if let Some(id) = result.pointer("/run/id").and_then(Value::as_u64) {
+                steps.push(Step::tool(
+                    "books.workpaper",
+                    Some(json!({ "id": id })),
+                    "Read the workpaper: what was checked and every finding. Fix findings with journaled corrections, then audit again.",
+                    false,
+                ));
+                steps.push(Step::tool(
+                    "books.attest_receipt",
+                    None,
+                    "Have separate verifier agents read each receipt (books.get_receipt, then its page image) and attest it.",
+                    false,
+                ));
+                steps.push(Step::tool(
+                    "books.review_entry",
+                    None,
+                    "Review each posted entry whole.",
+                    false,
+                ));
+                steps.push(Step::tool(
+                    "books.attest_period",
+                    None,
+                    "Then attest the period this audit covers.",
+                    false,
+                ));
+            }
+        }
+        "books.attest_receipt" => steps.push(Step::tool(
+            "books.review_entry",
+            args.and_then(|a| a.get("entry_id"))
+                .map(|e| json!({ "entry_id": e })),
+            "Review the whole entry the receipt supports.",
             false,
         )),
+        "books.review_entry" => steps.push(Step::tool(
+            "books.attestations",
+            None,
+            "See which claims count at the bar.",
+            false,
+        )),
+        "books.attest_period" => {
+            steps.push(Step::tool(
+                "books.attestations",
+                None,
+                "See which claims count at the bar before the CPA package.",
+                false,
+            ));
+            steps.push(Step::tool(
+                "books.export_cpa_package",
+                None,
+                "When the year is audited and attested at the bar, hand the books to the CPA.",
+                false,
+            ));
+        }
         "books.export_cpa_package" => {
             if let Some(cmd) = result.pointer("/file/download").and_then(Value::as_str) {
                 steps.push(Step {

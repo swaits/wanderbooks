@@ -683,7 +683,15 @@ impl BooksServer {
             .find(|q| q.name == named || q.id.to_string() == named)
             .map(|q| q.id)
             .ok_or_else(|| format!("no period {named:?}: books.list_periods lists them"))?;
-        let (a, _) = store.attest_period(period, claim).map_err(err)?;
+        let (a, _) = store.attest_period(period, claim).map_err(|e| match e {
+            ledger_store::StoreError::AuditRefused(why) => serde_json::json!({
+                "code": "audit_required",
+                "message": why,
+                "remedy_tool": "books.audit",
+            })
+            .to_string(),
+            other => other.to_string(),
+        })?;
         Ok(Json(attest_out(&store, &a)?))
     }
 

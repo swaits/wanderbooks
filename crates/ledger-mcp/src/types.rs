@@ -5248,7 +5248,7 @@ pub struct ReconciliationsOut {
 /// Parameters for `books.handbook`.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct HandbookParams {
-    /// The section to read: contract, entries, drafts-and-reversals, evidence-and-receipts, attachments, files-in-out, reconciliation, fixed-assets, prepaid-and-recurring, revenue-and-payouts, projects, parties-and-tins, 1099, cpa-handoff, settings-and-conventions, viewer, backups, self-host, format-upgrade, rules-that-change, control-roles, tracing-figures, invoices-and-bills, or "all" for the whole handbook in order. Omit for the index.
+    /// The section to read: contract, entries, drafts-and-reversals, evidence-and-receipts, attachments, files-in-out, reconciliation, fixed-assets, prepaid-and-recurring, revenue-and-payouts, projects, parties-and-tins, 1099, cpa-handoff, settings-and-conventions, viewer, backups, self-host, format-upgrade, rules-that-change, control-roles, tracing-figures, invoices-and-bills, attestations-and-audit, or "all" for the whole handbook in order. Omit for the index.
     #[serde(default)]
     pub section: Option<String>,
 }
@@ -5896,7 +5896,7 @@ pub struct AuditParams {
     pub through: Option<String>,
     /// month (a month-end attestation), annual (a fiscal year),
     /// cpa_handoff (the year, for the CPA package) or full (everything
-    /// since the first entry).
+    /// from the start of the books).
     pub scope: String,
     /// True: run the audit and file its workpaper. Without it, a preview
     /// that lists what will be checked and changes nothing.

@@ -418,7 +418,7 @@ pub static KEYS: &[Key] = &[
         toml: ("books", "cpa_package_requires_audit"),
         kind: Kind::Choice(AUDIT_REQUIRED),
         sensitivity: Sensitivity::Public,
-        doc: "Whether books.export_cpa_package waits for an audit: refuse (the package is refused unless an audit for the handoff or a full audit at the current books has its period attested; a reason given for the export overrides it and is recorded as a decision) or warn (the package is made and says so). Unset: refuse.",
+        doc: "Whether books.export_cpa_package waits for an audit: refuse (the package is refused unless an audit for the handoff or a full audit at the current books has its period attested; a reason given for the export overrides it and is recorded as a decision) or warn (the package is made and says so). Unset: refuse once the books hold an audit run, warn before.",
     },
     Key {
         name: "backup.git_remote",
@@ -1639,9 +1639,16 @@ impl Settings {
             .unwrap_or_default()
     }
 
-    /// `policy.cpa_package_requires_audit` (unset: refuse).
-    pub fn cpa_package_requires_audit(&self) -> bool {
-        self.str("policy.cpa_package_requires_audit") != Some("warn")
+    /// `policy.cpa_package_requires_audit`: `Some(true)` for refuse,
+    /// `Some(false)` for warn, `None` when unset (the package then refuses
+    /// once the books hold an audit run, and warns before: the owner has
+    /// not begun the programme).
+    pub fn cpa_package_requires_audit(&self) -> Option<bool> {
+        match self.str("policy.cpa_package_requires_audit") {
+            Some("warn") => Some(false),
+            Some(_) => Some(true),
+            None => None,
+        }
     }
 
     /// `backup.git_remote`, if set.

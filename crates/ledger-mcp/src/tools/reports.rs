@@ -1155,7 +1155,11 @@ impl BooksServer {
         // were: there is no audit to ask for.
         let mut audit_warning: Option<String> = None;
         if let Some(why) = self.cpa_audit_standing(&store)? {
-            if store.ledger().settings().cpa_package_requires_audit() {
+            let refuse = match store.ledger().settings().cpa_package_requires_audit() {
+                Some(explicit) => explicit,
+                None => !store.audit_runs().map_err(|e| e.to_string())?.is_empty(),
+            };
+            if refuse {
                 let Some(reason) = p
                     .without_audit_reason
                     .as_deref()

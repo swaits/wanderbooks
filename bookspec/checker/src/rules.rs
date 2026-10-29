@@ -123,7 +123,7 @@ pub struct Rule {
     /// Its normative title, as `docs/spec/rules.md` states it.
     pub title: &'static str,
     /// What its statement rests on; `None` for a rule allocated but not
-    /// yet stated (B-39 to B-45, `plan/served.md` 8.0.3).
+    /// yet stated (B-39, B-40 and B-43, `plan/served.md` 8.0.3).
     pub status: Option<Status>,
     /// The example ids that demonstrate it, by `Example::id`.
     pub examples: &'static [&'static str],
@@ -587,8 +587,8 @@ const SPEC: Spec = &[
     (
         45,
         Area::Ledger,
-        "Audits and attestations (allocated, not yet stated)",
-        None,
+        "An audit is deterministic over the books; an attestation is a claim by a named client",
+        Some(Status::Convention),
         &[],
     ),
 ];

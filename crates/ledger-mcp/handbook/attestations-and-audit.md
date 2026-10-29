@@ -7,7 +7,7 @@ The receipt rule in force: {evidence_rule}
 ## Running an audit
 
 - books.audit { through, scope } without confirmed lists the checks and changes nothing; show it to the human. Then call it again with confirmed: true and the preview. It files the workpaper (JSON and PDF, category workpaper) and journals the run. books.workpaper { id } gives it back: the JSON, and the PDF handed over (run its download command to save it).
-- scope: month (a month-end), annual (a fiscal year), cpa_handoff (the year, for the CPA package), full (everything since the first entry).
+- scope: month (a month-end), annual (a fiscal year), cpa_handoff (the year, for the CPA package), full (everything from the start of the books).
 - It checks the trial balance, the accounting equation, the profit and loss against equity, the cash flow's footing, the A/R and A/P control accounts, closes, schedules and depreciation, the asset register, every posted entry against the receipt rule, open drafts, tax categories, 1099 decisions and the settings; then the journal's chain, the stored files, the access log and the backups. A finding is a failure (the books are wrong or cannot be shown right), a warning (unfinished or a rule not met) or a note (listed so the workpaper is whole: a reversal rests on its original's receipt).
 - Fix findings with journaled corrections (a reversal, a receipt attached, a decision recorded), never by editing: posted entries stay as they are. Then audit again.
 - The same books, day and scope give the run that exists: asking again files nothing. The books are "the same" while no entry, document, close, settings or role change has been made; filing a receipt, an audit or an attestation does not change them.
@@ -18,7 +18,7 @@ The receipt rule in force: {evidence_rule}
 Use separate verifier agents; none of them should be the one that made the entry. For each receipt:
 
 1. books.get_receipt for the extracted text, then its page image, and read the total and the date off the receipt itself.
-2. books.attest_receipt { attachment_id, entry_id, amount, date, method, note }. The books compare what you read with the entry's amounts and date. A difference is recorded as disagrees and never counts: do not adjust your reading to fit.
+2. books.attest_receipt { attachment_id, entry_id, amount, date, method, note }. The books compare what you read with the entry's amounts and date. A difference is recorded as disagrees and never counts: never bend your reading to fit.
 3. books.review_entry { entry_id, method } for each posted entry, once its lines, accounts, party and evidence have been read whole.
 4. books.attest_period { period, method } last, on a stand-still: it is refused unless an audit through the period's end still stands, which it does only while nothing has been posted, created, closed or set since the audit. If it is refused, audit again.
 
@@ -30,4 +30,4 @@ books.attestations lists every claim with counted: whether it meets policy.attes
 
 ## The CPA package
 
-Under policy.cpa_package_requires_audit = refuse (the default once audits are declared), books.export_cpa_package is refused unless an audit for the handoff (scope cpa_handoff or full) stands at the current books with a period attested on it at the bar. Pass without_audit_reason only when the human says to hand it over anyway; the reason is journaled as a decision. Under warn the package is made and says so.
+Under policy.cpa_package_requires_audit = refuse (the default once the books hold an audit run; before one, the package is made and warns), books.export_cpa_package is refused unless an audit for the handoff (scope cpa_handoff or full) stands at the current books with a period attested on it at the bar. Pass without_audit_reason only when the human says to hand it over anyway; the reason is journaled as a decision. Under warn the package is made and says so.

@@ -3596,7 +3596,7 @@ withdraw_attachment_duplicate}` and `Store::attach`'s dedup; feature
 **bookspec:** `BS-ledger-13`
 
 **Status:** CONVENTION (the SOURCE block below; Pub. 583 and Rev. Proc. 98-25
-for the audit trail); DECISION D-9 (owner-adopted recommendation,
+for the audit trail); CHOICE D-9 (owner-adopted recommendation,
 2026-10-16: the attestation bar, and the CPA package waits for a counted
 audit unless given a reason).
 
@@ -3607,10 +3607,10 @@ GOAL: the books can be audited by a programme that gives the same
       and is weighed against the owner's bar when asked.
 SOURCE: IRS Pub. 583 (records that support the entries); Rev. Proc. 98-25
         §5.01 (the relationship between the records and the books must be
-        demonstrable: an audit trail); DECISION D-9 (the bar: reasoning
+        demonstrable: an audit trail); CHOICE D-9 (the bar: reasoning
         effort at least high; for a year, adversarial verification by at
         least two independent agents; no model allow-list; the CPA package
-        refuses without a counted audit unless given a reason); DECISION
+        refuses without a counted audit unless given a reason); CHOICE
         D-53 (an audit is a run, not a job); CONVENTION (the figure head,
         below; a client's method is its own claim).
 INVARIANTS:
@@ -3641,7 +3641,8 @@ INVARIANTS:
      year-level run (annual, cpa_handoff, full) needs the adversarial
      check and the verifier count too.
   6. The CPA package, on books that declared `audits` and under
-     `policy.cpa_package_requires_audit = refuse`, needs a run of scope
+     `policy.cpa_package_requires_audit = refuse` (unset: refuse once the
+     books hold an audit run, warn before), needs a run of scope
      cpa_handoff or full at the current head with a period attested on it
      that counts; otherwise it is refused, unless a reason is given,
      which is journaled as a decision.

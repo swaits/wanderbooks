@@ -91,7 +91,7 @@ pub(crate) const PROMPTS: [PromptDef; 6] = [
     PromptDef {
         name: "audit",
         title: "Audit the books",
-        description: "The adversarial procedure over a scope: verify, control checks, evidence against entries.",
+        description: "The adversarial procedure over a scope: the audit run, verify, control checks, evidence against entries, attestations.",
         args: &[(
             "scope",
             "month, annual, cpa_handoff or full.",

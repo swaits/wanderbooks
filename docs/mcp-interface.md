@@ -2797,7 +2797,7 @@ effort, and a period attested on a year-level audit (`annual`,
 
 `books.export_cpa_package` gains `without_audit_reason?`: on books that
 declared `audits`, with `policy.cpa_package_requires_audit` at `refuse` (the
-default), the package is refused (`audit_required`) unless an audit with
+default once the books hold an audit run; before one it warns), the package is refused (`audit_required`) unless an audit with
 scope `cpa_handoff` or `full` stands at the current head with a period
 attested on it at the bar; a reason overrides the refusal and is journaled
 as a decision. Under `warn` the package is made and its `warnings` say so.

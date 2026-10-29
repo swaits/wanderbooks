@@ -290,6 +290,14 @@ fn a_period_is_attested_on_a_standing_audit() {
 #[test]
 fn cpa_package_refuses_without_a_counted_audit_unless_a_reason_is_given() {
     let (_books, mut w, paper, rid, bare) = setup("p8-cpa");
+    // Unset, the package warns until the books hold an audit run; the
+    // owner who wants it refused from the start says so.
+    answer_of(&w.call(
+        "books.set_setting",
+        json!({"decided_by": "Avery Quill",
+               "changes": [{"key": "policy.cpa_package_requires_audit", "value": "refuse"}]}),
+    ))
+    .unwrap();
     let export = |w: &mut common::Wire, extra: Value| {
         let mut args = json!({"as_of": "2026-03-31", "cash_accounts": ["1000"],
                               "include_receipts": false, "include_tins": false});

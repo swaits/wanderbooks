@@ -19,3 +19,19 @@ opt-level = 3
 
 [profile.dev.package.blake2]
 opt-level = 3
+
+# `wanderbooks update` hashes and verifies a whole program (P11a); its
+# tests do it over a debug build's hundreds of megabytes.
+[profile.dev.package.sha2]
+opt-level = 3
+
+[profile.dev.package.minisign]
+opt-level = 3
+
+[profile.dev.package.minisign-verify]
+opt-level = 3
+
+# The program that ships in the packages (P11a): symbols stripped, so the
+# AppImage, .deb and .rpm are not carrying debug tables.
+[profile.release]
+strip = "symbols"

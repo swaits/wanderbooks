@@ -28,6 +28,7 @@ fn print_usage() {
     eprintln!("       wanderbooks upload --book ID [--token NAME] UPLOAD [--] FILE");
     eprintln!("       wanderbooks download --book ID [--token NAME] ATTACHMENT --to FOLDER");
     eprintln!("       wanderbooks serve | close | doctor");
+    eprintln!("       wanderbooks update [--check] | rollback");
     eprintln!();
     eprintln!("  setup      make the books' private folder (only your account can open it)");
     eprintln!("  gui        open the live, read-only view of the books (a book of the data root)");
@@ -43,6 +44,7 @@ fn print_usage() {
     eprintln!("  serve      hold the books open until Ctrl-C");
     eprintln!("  close      close the books now: everything holding them lets go");
     eprintln!("  doctor     whether the books are open, what holds them, what went wrong");
+    eprintln!("  update     bring this program to the newest release (`rollback` goes back)");
 }
 
 /// The viewer's arguments for `wanderbooks gui ARGS` (plan 3.6): a lone
@@ -329,6 +331,8 @@ fn run_local(mode: &str, args: Vec<String>) -> i32 {
         "token" => ledger_host::commands::token(&prog, args),
         "connect" => ledger_host::commands::connect(&prog, args),
         "passphrase" => ledger_host::commands::passphrase(&prog, args),
+        "update" => ledger_host::update::update(&prog, env!("CARGO_PKG_VERSION"), args),
+        "rollback" => ledger_host::update::rollback(&prog, args),
         _ => ledger_host::commands::books(&prog, args),
     };
     match result {
@@ -409,7 +413,7 @@ fn main() {
         Some("server") => std::process::exit(run_server(all.collect())),
         Some(
             mode @ ("host" | "mcp" | "serve" | "close" | "books" | "doctor" | "token" | "connect"
-            | "passphrase"),
+            | "passphrase" | "update" | "rollback"),
         ) => {
             let mode = mode.to_string();
             std::process::exit(run_local(&mode, all.collect()))
@@ -435,7 +439,8 @@ fn main() {
     {
         Some(
             mode @ ("gui" | "setup" | "server" | "host" | "mcp" | "serve" | "connect" | "close"
-            | "books" | "doctor" | "token" | "passphrase" | "upload" | "download"),
+            | "books" | "doctor" | "token" | "passphrase" | "update" | "rollback"
+            | "upload" | "download"),
         ) => {
             eprintln!("`{mode}` must come first: wanderbooks {mode} [its own flags]");
             std::process::exit(2);

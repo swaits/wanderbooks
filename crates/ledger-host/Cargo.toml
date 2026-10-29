@@ -22,6 +22,7 @@ tokio-util = { version = "0.7", features = ["rt"] }
 rpassword = "7"
 # Token texts and passphrases are wiped from memory when dropped.
 zeroize = "1"
+minisign-verify = "0.3.0"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

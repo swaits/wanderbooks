@@ -51,9 +51,9 @@ oracles, never ship what they haven't demonstrated.
   pass found three engine bugs that every test, fuzzer, and mutant had
   missed: negative amounts accepted, and two crashes on oversized
   amounts. It also caught a soundness bug in the model checker itself.
-- Mutation testing via cargo-mutants (paused for development until the
-  P12 max-testing pass, D-33; CI's weekly shards still run); fuzzing via
-  cargo-fuzz (11.5M+ executions, zero crashes).
+- Mutation testing via cargo-mutants, a local run (paused for development
+  until the P12 max-testing pass, D-33; not a CI job, D-59); fuzzing via
+  cargo-fuzz (11.5M+ executions, zero crashes), weekly in CI.
 - GnuCash is *a* behavioral cross-check, never the authority and never
   a code source (clean room, MIT OR Apache-2.0). Accounting principles,
   proved, are the spec. Where any other program disagrees, we work out

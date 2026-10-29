@@ -53,7 +53,7 @@ case: partial first/final months in different-length calendar months don't
 complement, so the lifetime total drifted by cents (fixed with the
 final-month true-up in `depreciation_schedule`).
 
-**Layer 3 — Mutation testing (paused for development until P12, D-33, 2026-10-20; CI's weekly shards still run).** `cargo mutants -p ledger-core`
+**Layer 3 — Mutation testing (a local run, never a CI job, D-59; paused for development until P12, D-33).** `cargo mutants -p ledger-core`
 (228 mutants as of 2026-10-10: 159 caught, 28 unviable, 2 timeouts from
 induced infinite loops, 39 missed). Every *missed* mutant is triaged:
 real gaps get new tests (this pass added parent-account validation,

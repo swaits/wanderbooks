@@ -1,0 +1,7 @@
+[Desktop Entry]
+Categories=Office;Finance;
+Comment=Double-entry bookkeeping your agent keeps and you can read.
+Exec=wanderbooks
+Name=Wanderbooks
+Terminal=false
+Type=Application

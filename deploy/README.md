@@ -32,8 +32,10 @@ sudo install -D -m 0644 deploy/wanderbooks-server.service \
 ```
 
 The executable is the server-only build: no viewer, no window libraries.
-On a Linux package install (P11) this is the same binary and the package
-manager writes the file; until then, copy it as above.
+The Linux packages (`.deb`, `.rpm`, AUR; `just package-linux`, docs/packaging.md)
+carry the viewer build, which also serves: on a package install the package
+manager writes the file and `wanderbooks update` refuses. A server with no
+window libraries is still this server-only build, copied as above.
 
 ## 2. Make the data root, once
 

@@ -70,14 +70,19 @@ jobs:
           as_books "$WB" serve --root /srv/desktop > /tmp/desktop.log 2>&1 &
           wait_open /tmp/desktop.log
           sudo cp -a crates/ledger-cli/tests/fixtures/p2-served /tmp/fixture
+          # The server account adopts it, so it must own the copy: adoption
+          # takes the source's lock (root.rs lock_source), which the runner's
+          # ownership from the checkout refused it (the job's first runs).
+          sudo chown -R wanderbooks:wanderbooks /tmp/fixture
           as_books "$WB" books adopt /tmp/fixture --root /srv/desktop --id acme --yes
           as_books "$WB" close --root /srv/desktop
 
-          # The backup clone that is the transport (plan D-31): readable by
+          # The backup clone that is the transport (plan D-31): owned by the
+          # server account, which adopts it (and locks it), and readable by
           # the agent account, because the test reads its journal to know
           # the head the move must keep.
           sudo cp -a /srv/desktop/books/acme /tmp/source
-          sudo chown -R "$(id -u):$(id -g)" /tmp/source
+          sudo chown -R wanderbooks:wanderbooks /tmp/source
           sudo chmod -R a+rX /tmp/source
 
           # The server's machine: the same books, moved, behind `enforced`.

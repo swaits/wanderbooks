@@ -3711,6 +3711,25 @@ it (the same program with a tail, so its hash differs). All in
   file now on disk (not a deleted one). The host's own restart laws stay
   `open_while_held.rs`'s (`a_restart_is_not_a_close`).
 
+Step 3's gap and step 4 (same file):
+
+- `a_replaced_appimage_restarts_the_books`: the programs run from one copy
+  (a mount's) while `APPIMAGE` names another (the image); `update`
+  replaces only the image; the host restarts onto it (its `/proc/PID/exe`
+  is the image), the mount's copy is untouched, the session writes on.
+- `the_host_stages_a_daily_update_and_the_next_start_applies_it`: with a
+  local feed named in `updates/feed`, the host stages 9.0.0 by itself;
+  the program, the host and the session are unchanged meanwhile; after
+  `close`, the next opener applies it (the old program is kept, the staged
+  folder gone) and the books are as they were.
+- `a_daily_update_that_is_not_ours_is_not_staged`: a signature by another
+  key, then a wrong sha256, each looked at and neither staged.
+- `update_installs_the_copy_the_host_staged_without_downloading_again`: the
+  release's file is deleted; `update` installs from the staged copy.
+- `a_staged_update_that_was_tampered_with_is_dropped_not_applied`: a staged
+  file edited together with its recorded checksum fails the signature; the
+  next start drops it and runs the old program.
+
 Unit tests in `update.rs`: `versions_are_three_numbers_and_order_by_number`,
 `a_package_marker_beside_the_program_makes_it_package_managed`,
 `a_manifest_address_is_resolved_beside_the_manifest`,

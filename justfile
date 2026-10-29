@@ -273,6 +273,11 @@ package-linux version="" formats="deb,appimage,pacman":
     cargo build --release -p ledger-cli
     deploy/packaging/build-linux.sh {{version}} {{formats}}
 
+# Build the unsigned macOS .dmg (on a Mac; CI does it on a tag or dispatch)
+package-macos version="":
+    cargo build --release -p ledger-cli
+    deploy/packaging/build-macos.sh {{version}}
+
 # A release folder on this machine signed with a throwaway key; then
 # `wanderbooks update --feed file://DIR/manifest.json --trusted-key DIR/release.pub`
 # Make a local release feed to try `wanderbooks update` against

@@ -355,9 +355,21 @@ downgrading is theirs). Anything else (an AppImage, whose file is named by
   without the agent noticing. The format gate stays the server's (3.9):
   `rollback` refuses while a book declares a format or feature the kept
   version does not know;
-- an AppImage is the exception to the restart: the host runs from the old
-  image's mount, whose path does not change, so it keeps running the old
-  version until the books are next closed and opened (docs/packaging.md).
+- an AppImage runs the program from a mount that goes away with the image,
+  so the host learns the image's own path from `APPIMAGE` (the one variable
+  `start.rs` adds to its scrubbed environment, only when it names an
+  absolute file; the host reads it about itself and never tells an agent),
+  runs and restarts from that file, and tells a replaced program by its
+  inode, size and last write, like any other;
+- updates are also **staged** (step 4): while the books are open the host
+  looks at the feed at most once a day (`update_check` knob; the look is
+  noted in `updates/checked`), and only downloads and verifies a newer
+  release into `<root>/updates/staged/`. It never swaps. The staged program
+  is applied by an opener just before it starts a host (no host runs, so no
+  call is cut off), after a second check against the key, or by
+  `wanderbooks update`, the owner's say-so, which reuses the staged copy. A
+  local release is named in `<root>/updates/feed` (a `file://` address, then
+  the key file), the same rule as `--trusted-key`.
 
 `deploy/packaging/` holds the Linux packaging: `packager.toml`
 (cargo-packager: `.deb`, AppImage, the pacman tarball with its PKGBUILD),
@@ -365,7 +377,9 @@ the rpm table in `crates/ledger-cli/Cargo.toml`, `aur/PKGBUILD` (the AUR
 package, which repacks the release's tarball), `build-linux.sh`,
 `repo-indexes.sh` (the apt and dnf indexes), `local-release.sh` (a
 throwaway-keyed feed on this machine) and `test-linux-packages.sh`.
-`.github/workflows/release.yml` builds them on a version tag.
+`.github/workflows/release.yml` builds them on a version tag. The macOS
+bundle is `packager-macos.toml`, `Info.plist` and `build-macos.sh` (an
+unsigned `.dmg` from CI's `macos` job; signing and notarization are step 5).
 
 ## The result envelope and the guards (`ledger-mcp`, P5)
 

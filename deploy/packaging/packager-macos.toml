@@ -1,0 +1,36 @@
+# cargo-packager's description of the macOS bundle (P11a step 6; D-24,
+# D-25): the .app and its .dmg, UNSIGNED. `deploy/packaging/build-macos.sh`
+# runs it on a Mac (CI: the `macos` job of .github/workflows/release.yml).
+# Developer ID signing and notarization are step 5 (the owner's Apple
+# certificate, Q-4): they add `signing-identity` under [macos] and the
+# certificate and notarization credentials as CI secrets.
+# Paths are relative to this file's copy that build-macos.sh writes.
+name = "wanderbooks"
+product-name = "Wanderbooks"
+version = "0.1.0"
+identifier = "ai.wanderbooks.app"
+description = "Double-entry bookkeeping your agent keeps and you can read."
+homepage = "https://wanderbooks.ai"
+authors = ["Stephen Waits"]
+license-file = "LICENSE-MIT"
+category = "Finance"
+binaries-dir = "target/release"
+out-dir = "target/packages"
+# A png is made into the .icns (cargo-packager does it); the 512 px
+# placeholder is the owner's to replace.
+icons = ["deploy/packaging/icons/512x512.png"]
+formats = ["dmg"]
+binaries = [{ path = "wanderbooks", main = true }]
+
+[macos]
+# The oldest macOS Rust's tier-1 aarch64-apple-darwin and x86-64 targets
+# run on; eframe's wgpu/Metal path needs 10.15 at least.
+minimum-system-version = "11.0"
+# Keys merged into the generated Info.plist: one viewer at a time, and the
+# discrete GPU is not woken for a ledger.
+info-plist-path = "deploy/packaging/Info.plist"
+
+[dmg]
+window-size = { width = 540, height = 380 }
+app-position = { x = 140, y = 180 }
+application-folder-position = { x = 400, y = 180 }

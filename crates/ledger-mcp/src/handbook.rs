@@ -79,6 +79,10 @@ pub const SECTIONS: &[(&str, &str)] = &[
         include_str!("../handbook/parties-and-tins.md"),
     ),
     ("1099", include_str!("../handbook/1099.md")),
+    (
+        "invoices-and-bills",
+        include_str!("../handbook/invoices-and-bills.md"),
+    ),
     ("cpa-handoff", include_str!("../handbook/cpa-handoff.md")),
     (
         "settings-and-conventions",
@@ -102,10 +106,6 @@ pub const SECTIONS: &[(&str, &str)] = &[
     (
         "tracing-figures",
         include_str!("../handbook/tracing-figures.md"),
-    ),
-    (
-        "invoices-and-bills",
-        include_str!("../handbook/invoices-and-bills.md"),
     ),
 ];
 

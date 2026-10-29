@@ -55,6 +55,7 @@ struct Item {
     party: String,
     date: NaiveDate,
     due: NaiveDate,
+    terms: Option<ledger_core::Terms>,
     state: Result<Option<DocState>, ledger_core::LedgerError>,
 }
 
@@ -74,6 +75,7 @@ fn items(b: &Books, bills: bool) -> Vec<Item> {
                     .unwrap_or_default(),
                 date: d.date,
                 due: d.due_date,
+                terms: d.terms.clone(),
                 state: b.doc_today(DocRef::Bill(d.id)),
             })
             .collect()
@@ -89,6 +91,7 @@ fn items(b: &Books, bills: bool) -> Vec<Item> {
                     .unwrap_or_default(),
                 date: d.date,
                 due: d.due_date,
+                terms: d.terms.clone(),
                 state: b.doc_today(DocRef::Invoice(d.id)),
             })
             .collect()
@@ -282,26 +285,23 @@ pub fn show_list(ui: &mut Ui, b: &Books, bills: bool, shell: &mut Shell<'_>) {
                 return;
             }
             let amt = widgets::AMOUNT_MIN + 16.0;
-            let fixed = 110.0 + 104.0 * 2.0 + 120.0 + amt * 2.0;
+            let fixed = 110.0 + 104.0 * 2.0 + 120.0 + amt * 2.0 + if bills { 104.0 } else { 0.0 };
             let w = ui.available_width().max(fixed + 160.0);
             widgets::min_width(ui, "invoice_list", w, |ui| {
                 let head = |t: &str, cw: f32, right: bool| (t.to_string(), cw, right, p.muted);
-                row(
-                    ui,
-                    w,
-                    &[
-                        head("Document", 110.0, false),
-                        head(if bills { "Vendor" } else { "Customer" }, 0.0, false),
-                        head("Date", 104.0, false),
-                        head("Due", 104.0, false),
-                        head("Status", 120.0, false),
-                        head("Total", amt, true),
-                        head("Still owed", amt, true),
-                    ],
-                    None,
-                    true,
-                    false,
-                );
+                let mut header = vec![
+                    head("Document", 110.0, false),
+                    head(if bills { "Vendor" } else { "Customer" }, 0.0, false),
+                    head("Date", 104.0, false),
+                    head("Due", 104.0, false),
+                    head("Status", 120.0, false),
+                    head("Total", amt, true),
+                    head("Still owed", amt, true),
+                ];
+                if bills {
+                    header.push(head("Discount by", 104.0, false));
+                }
+                row(ui, w, &header, None, true, false);
                 widgets::rule(ui);
                 for it in rows {
                     let (status, total, owed, late) = match &it.state {
@@ -314,28 +314,49 @@ pub fn show_list(ui: &mut Ui, b: &Books, bills: bool, shell: &mut Shell<'_>) {
                         Ok(None) => ("Unknown".into(), String::new(), String::new(), false),
                         Err(_) => ("Can't compute".into(), String::new(), String::new(), false),
                     };
+                    let discount_by = it.terms.as_ref().and_then(|t| t.discount_by(it.date));
+                    let discount_open = bills && discount_by.is_some_and(|d| d >= b.today);
+                    let discount_soon = discount_open
+                        && discount_by.is_some_and(|d| d <= b.today + chrono::Days::new(3));
+                    let due_soon = bills
+                        && matches!(&it.state, Ok(Some(s))
+                            if !s.outstanding.is_zero() && s.status != DocStatus::Void)
+                        && it.due <= b.today + chrono::Days::new(7);
                     let name = format!("{}, {}, {}, owes {}", it.name, it.party, status, owed);
-                    let resp = row(
-                        ui,
-                        w,
-                        &[
-                            (it.name.clone(), 110.0, false, p.text),
-                            (it.party.clone(), 0.0, false, p.text),
-                            (fmt::date(it.date), 104.0, false, p.text),
-                            (
-                                fmt::date(it.due),
-                                104.0,
-                                false,
-                                if late { p.warning } else { p.text },
-                            ),
-                            (status, 120.0, false, if late { p.warning } else { p.muted }),
-                            (total, amt, true, p.text),
-                            (owed, amt, true, p.text),
-                        ],
-                        None,
-                        false,
-                        true,
-                    );
+                    let mut cells = vec![
+                        (it.name.clone(), 110.0, false, p.text),
+                        (it.party.clone(), 0.0, false, p.text),
+                        (fmt::date(it.date), 104.0, false, p.text),
+                        (
+                            fmt::date(it.due),
+                            104.0,
+                            false,
+                            if late || due_soon { p.warning } else { p.text },
+                        ),
+                        (
+                            status.clone(),
+                            120.0,
+                            false,
+                            if late { p.warning } else { p.muted },
+                        ),
+                        (total, amt, true, p.text),
+                        (owed, amt, true, p.text),
+                    ];
+                    if bills {
+                        cells.push((
+                            discount_by.map(fmt::date).unwrap_or_default(),
+                            104.0,
+                            false,
+                            if discount_soon {
+                                p.warning
+                            } else if discount_open {
+                                p.text
+                            } else {
+                                p.muted
+                            },
+                        ));
+                    }
+                    let resp = row(ui, w, &cells, None, false, true);
                     // Named in full, for assistive tech (and the tests).
                     resp.widget_info(|| {
                         egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &name)

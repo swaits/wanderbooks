@@ -2914,26 +2914,6 @@ impl Store {
         })
     }
 
-    /// Journal an auto-posted two-line entry (debit one account, credit
-    /// another for the same amount): [`Self::journal_auto_lines`].
-    fn journal_auto_entry(
-        &mut self,
-        date: NaiveDate,
-        description: &str,
-        debit_account: AccountId,
-        credit_account: AccountId,
-        amount: Decimal,
-    ) -> Result<(EntryId, Vec<JournalLine>), StoreError> {
-        self.journal_auto_lines(
-            date,
-            description,
-            &[
-                (debit_account, Side::Debit, amount, None),
-                (credit_account, Side::Credit, amount, None),
-            ],
-        )
-    }
-
     /// Journal an auto-posted entry of `lines` (account, side, amount,
     /// project) through the standard entry.created / entry.line_added /
     /// entry.posted flow, a tagged line's `entry.line_class_set` right
@@ -3606,42 +3586,26 @@ impl Store {
         cash_account: AccountId,
         details: &ledger_core::PaymentDetails,
     ) -> Result<EntryId, StoreError> {
-        self.rehearse(|l| l.receive_payment_with(invoice_id, date, amount, cash_account, details))?;
-        self.approval_gate(
-            |l| l.receive_payment_with(invoice_id, date, amount, cash_account, details),
-            false,
-        )?;
-        // The rehearsal above is the whole check: hand-written mirrors of
-        // the engine's refusals drift from it (and were never reached).
-        self.ensure_payment_features(ledger_core::DocRef::Invoice(invoice_id), amount, details)?;
-        let ar = self.ensure_control_account(&ledger_core::RECEIVABLES)?;
-        let description = details.description(&format!("Payment on invoice {invoice_id}"));
-        let (entry_id, mut journaled) =
-            self.journal_auto_entry(date, &description, cash_account, ar, amount)?;
-        journaled.push(self.append_journal(
-            "invoice.payment_received",
-            json!({
-                "invoice_id": invoice_id,
-                "date": date.to_string(),
-                "amount": amount.to_string(),
-                "cash_account": cash_account,
-                "entry_id": entry_id,
-            }),
-        )?);
-        if details.instrument.is_some() {
-            journaled.push(self.append_journal(
-                "entry.instrument_set",
-                crate::form1099::entry_instrument_set(entry_id, details.instrument),
-            )?);
-        }
-        let live =
-            self.ledger
-                .receive_payment_with(invoice_id, date, amount, cash_account, details)?;
-        debug_assert_eq!(live, entry_id, "id allocator diverged from journal");
-        for line in &journaled {
-            apply_line_to_sqlite(&self.conn, line)?;
-        }
-        Ok(live)
+        let customer = self
+            .ledger
+            .get_invoice(invoice_id)
+            .ok_or(ledger_core::LedgerError::UnknownInvoice(invoice_id))?
+            .customer_id;
+        self.settle(ledger_core::SettleParams {
+            date,
+            description: details.description(&format!("Payment on invoice {invoice_id}")),
+            cash_account,
+            party: customer,
+            applications: vec![ledger_core::Application {
+                doc: ledger_core::DocRef::Invoice(invoice_id),
+                cash: amount,
+                discount: Decimal::ZERO,
+                discount_reason: None,
+            }],
+            fee: None,
+            instrument: details.instrument,
+            reference: details.reference.clone(),
+        })
     }
 
     /// Pay a vendor bill ([`Self::pay_bill_with`], with no payment method
@@ -3675,35 +3639,140 @@ impl Store {
         cash_account: AccountId,
         details: &ledger_core::PaymentDetails,
     ) -> Result<EntryId, StoreError> {
-        self.rehearse(|l| l.pay_bill_with(bill_id, date, amount, cash_account, details))?;
-        self.approval_gate(
-            |l| l.pay_bill_with(bill_id, date, amount, cash_account, details),
-            false,
-        )?;
-        self.ensure_payment_features(ledger_core::DocRef::Bill(bill_id), amount, details)?;
-        let ap = self.ensure_control_account(&ledger_core::PAYABLES)?;
-        let description = details.description(&format!("Payment on bill {bill_id}"));
+        let vendor = self
+            .ledger
+            .get_bill(bill_id)
+            .ok_or(ledger_core::LedgerError::UnknownBill(bill_id))?
+            .vendor_id;
+        self.settle(ledger_core::SettleParams {
+            date,
+            description: details.description(&format!("Payment on bill {bill_id}")),
+            cash_account,
+            party: vendor,
+            applications: vec![ledger_core::Application {
+                doc: ledger_core::DocRef::Bill(bill_id),
+                cash: amount,
+                discount: Decimal::ZERO,
+                discount_reason: None,
+            }],
+            fee: None,
+            instrument: details.instrument,
+            reference: details.reference.clone(),
+        })
+    }
+
+    /// Settle one or more invoices or bills in one entry (plan P4b S6;
+    /// rules.md B-42): the core posts it ([`ledger_core::Ledger::settle`]);
+    /// this journals its lines once and one `invoice.payment_received` or
+    /// `bill.paid` per application, each naming the control line it tags,
+    /// then the payment method. A single legacy-shaped payment is
+    /// journaled exactly as before; more than one application, a discount
+    /// or a fee needs `documents_v2`, and a payment accepted only because
+    /// an earlier one was reversed needs `document_standing`.
+    pub fn settle(&mut self, params: ledger_core::SettleParams) -> Result<EntryId, StoreError> {
+        self.rehearse(|l| l.settle(params.clone()))?;
+        self.approval_gate(|l| l.settle(params.clone()), false)?;
+        self.ensure_payment_features(&params)?;
+        let kind = match params.applications.first().map(|a| a.doc) {
+            Some(ledger_core::DocRef::Bill(_)) => ledger_core::DocumentKind::Bill,
+            _ => ledger_core::DocumentKind::Invoice,
+        };
+        let control_role = match kind {
+            ledger_core::DocumentKind::Invoice => ledger_core::RECEIVABLES,
+            ledger_core::DocumentKind::Bill => ledger_core::PAYABLES,
+        };
+        self.ensure_control_account(&control_role)?;
+        if params
+            .applications
+            .iter()
+            .any(|a| a.discount > Decimal::ZERO)
+        {
+            let role = match kind {
+                ledger_core::DocumentKind::Invoice => ledger_core::SALES_ALLOWANCES,
+                ledger_core::DocumentKind::Bill => ledger_core::PURCHASE_DISCOUNTS,
+            };
+            self.ensure_control_account(&role)?;
+        }
+        if params.fee.as_ref().is_some_and(|f| f.account.is_none()) {
+            self.ensure_control_account(&ledger_core::PAYMENT_PROCESSING_FEES)?;
+        }
+        let rows = self.ledger.settlement_lines(&params)?;
+        let simple: Vec<(AccountId, Side, Decimal, Option<ClassId>)> = rows
+            .iter()
+            .map(|&(account, side, amount, _)| (account, side, amount, None))
+            .collect();
+        let description = if params.description.trim().is_empty() {
+            format!(
+                "Settlement of {} document{}",
+                params.applications.len(),
+                if params.applications.len() == 1 {
+                    ""
+                } else {
+                    "s"
+                }
+            )
+        } else {
+            params.description.clone()
+        };
         let (entry_id, mut journaled) =
-            self.journal_auto_entry(date, &description, ap, cash_account, amount)?;
-        journaled.push(self.append_journal(
-            "bill.paid",
-            json!({
-                "bill_id": bill_id,
-                "date": date.to_string(),
-                "amount": amount.to_string(),
-                "cash_account": cash_account,
+            self.journal_auto_lines(params.date, &description, &simple)?;
+        let documents_v2 = params.applications.len() > 1
+            || params
+                .applications
+                .iter()
+                .any(|a| a.discount > Decimal::ZERO)
+            || params.fee.is_some();
+        let discounts = params
+            .applications
+            .iter()
+            .filter(|a| a.discount > Decimal::ZERO)
+            .count();
+        let fee_line = params.applications.len() + discounts;
+        let (event, id_key) = match kind {
+            ledger_core::DocumentKind::Invoice => ("invoice.payment_received", "invoice_id"),
+            ledger_core::DocumentKind::Bill => ("bill.paid", "bill_id"),
+        };
+        for (i, app) in params.applications.iter().enumerate() {
+            let doc_id = match app.doc {
+                ledger_core::DocRef::Invoice(id) | ledger_core::DocRef::Bill(id) => id,
+            };
+            let mut payload = json!({
+                "date": params.date.to_string(),
+                "amount": app.cash.to_string(),
+                "cash_account": params.cash_account,
                 "entry_id": entry_id,
-            }),
-        )?);
-        if details.instrument.is_some() {
+            });
+            payload[id_key] = json!(doc_id);
+            if documents_v2 {
+                payload["line"] = json!(i);
+                if app.discount > Decimal::ZERO {
+                    let line = params.applications.len()
+                        + params.applications[..i]
+                            .iter()
+                            .filter(|a| a.discount > Decimal::ZERO)
+                            .count();
+                    payload["discount"] = json!(app.discount.to_string());
+                    payload["discount_line"] = json!(line);
+                    if let Some(reason) = &app.discount_reason {
+                        payload["discount_reason"] = json!(reason);
+                    }
+                }
+                if let Some(fee) = &params.fee
+                    && i == 0
+                {
+                    payload["fee"] = json!(fee.amount.to_string());
+                    payload["fee_line"] = json!(fee_line);
+                }
+            }
+            journaled.push(self.append_journal(event, payload)?);
+        }
+        if params.instrument.is_some() {
             journaled.push(self.append_journal(
                 "entry.instrument_set",
-                crate::form1099::entry_instrument_set(entry_id, details.instrument),
+                crate::form1099::entry_instrument_set(entry_id, params.instrument),
             )?);
         }
-        let live = self
-            .ledger
-            .pay_bill_with(bill_id, date, amount, cash_account, details)?;
+        let live = self.ledger.settle(params)?;
         debug_assert_eq!(live, entry_id, "id allocator diverged from journal");
         for line in &journaled {
             apply_line_to_sqlite(&self.conn, line)?;
@@ -3711,29 +3780,39 @@ impl Store {
         Ok(live)
     }
 
-    /// The journal features a payment of `amount` on `doc` needs
-    /// ([`Self::receive_payment_with`] SCENARIOS 2 and 3): document_standing
-    /// when more than an older version thinks is still owed (the
-    /// document's total less every payment event it recorded, reversed
-    /// or not, its line tagged or not: `Ledger::payments_recorded`),
-    /// payment_instruments when it names a payment method.
+    /// The journal features a settlement needs (rules.md B-27, B-42):
+    /// `documents_v2` for more than one application, a discount or a fee
+    /// (an older version would drop them, and the balance would be wrong),
+    /// `document_standing` when an application pays more than an older
+    /// version thinks is still owed (the document's total less every
+    /// payment event it recorded, reversed or not, its line tagged or
+    /// not), and `payment_instruments` when it names a payment method.
     fn ensure_payment_features(
         &self,
-        doc: ledger_core::DocRef,
-        amount: Decimal,
-        details: &ledger_core::PaymentDetails,
+        params: &ledger_core::SettleParams,
     ) -> Result<(), StoreError> {
-        let total = match doc {
-            ledger_core::DocRef::Invoice(id) => self.ledger.get_invoice(id).map(|i| i.total()),
-            ledger_core::DocRef::Bill(id) => self.ledger.get_bill(id).map(|b| b.total()),
-        };
-        if let Some(total) = total {
-            let older_owed = total?.checked_sub(self.ledger.payments_recorded(doc)?);
-            if older_owed.is_none_or(|owed| amount > owed) {
-                self.ensure_feature(crate::format::DOCUMENT_STANDING)?;
+        if params.applications.len() > 1
+            || params
+                .applications
+                .iter()
+                .any(|a| a.discount > Decimal::ZERO)
+            || params.fee.is_some()
+        {
+            self.ensure_feature(crate::format::DOCUMENTS_V2)?;
+        }
+        for app in &params.applications {
+            let total = match app.doc {
+                ledger_core::DocRef::Invoice(id) => self.ledger.get_invoice(id).map(|i| i.total()),
+                ledger_core::DocRef::Bill(id) => self.ledger.get_bill(id).map(|b| b.total()),
+            };
+            if let Some(total) = total {
+                let older_owed = total?.checked_sub(self.ledger.payments_recorded(app.doc)?);
+                if older_owed.is_none_or(|owed| app.cash > owed) {
+                    self.ensure_feature(crate::format::DOCUMENT_STANDING)?;
+                }
             }
         }
-        if details.instrument.is_some() {
+        if params.instrument.is_some() {
             self.ensure_feature(crate::format::PAYMENT_INSTRUMENTS)?;
         }
         Ok(())
@@ -6489,6 +6568,31 @@ fn get_str<'a>(p: &'a Value, key: &str) -> Result<&'a str, StoreError> {
         .ok_or_else(|| StoreError::JournalCorrupt(format!("missing/invalid '{key}'")))
 }
 
+/// An optional integer a newer payment event carries (its `line` or
+/// `discount_line`): absent or null is none; anything else must be an
+/// integer.
+fn get_opt_usize(p: &Value, key: &str) -> Result<Option<usize>, StoreError> {
+    match p.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v
+            .as_u64()
+            .map(|n| Some(n as usize))
+            .ok_or_else(|| StoreError::JournalCorrupt(format!("invalid '{key}'"))),
+    }
+}
+
+/// An optional decimal string a newer payment event carries (its
+/// `discount`): absent or null is zero.
+fn get_opt_decimal(p: &Value, key: &str) -> Result<Decimal, StoreError> {
+    match p.get(key) {
+        None | Some(Value::Null) => Ok(Decimal::ZERO),
+        Some(v) => v
+            .as_str()
+            .and_then(|s| s.parse().ok())
+            .ok_or_else(|| StoreError::JournalCorrupt(format!("invalid '{key}'"))),
+    }
+}
+
 /// Replay one journal line into a ledger, asserting recorded ids. Used by
 /// hydration, `verify`, and `rebuild`: the journal is the script, the engine
 /// is the actor.
@@ -7073,23 +7177,30 @@ fn replay_line(
             ledger.replay_invoice_sent(invoice_id, sent)?;
         }
         "invoice.payment_received" => {
-            // The payment entry was already rebuilt; this only moves the
-            // invoice's paid amount and status.
-            ledger.replay_invoice_payment(
+            // The payment entry was already rebuilt; this only tags its
+            // receivables lines (the line the event names, or the first
+            // untagged one for a legacy event) and moves the invoice.
+            ledger.replay_invoice_payment_at(
                 get_u64(p, "invoice_id")?,
                 get_str(p, "amount")?
                     .parse()
                     .map_err(|_| StoreError::JournalCorrupt("bad amount".into()))?,
                 get_u64(p, "entry_id")?,
+                get_opt_usize(p, "line")?,
+                get_opt_decimal(p, "discount")?,
+                get_opt_usize(p, "discount_line")?,
             )?;
         }
         "bill.paid" => {
-            ledger.replay_bill_payment(
+            ledger.replay_bill_payment_at(
                 get_u64(p, "bill_id")?,
                 get_str(p, "amount")?
                     .parse()
                     .map_err(|_| StoreError::JournalCorrupt("bad amount".into()))?,
                 get_u64(p, "entry_id")?,
+                get_opt_usize(p, "line")?,
+                get_opt_decimal(p, "discount")?,
+                get_opt_usize(p, "discount_line")?,
             )?;
         }
         "fx.rate_set" => {

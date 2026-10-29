@@ -1922,3 +1922,380 @@ fn duplicate_vendor_ref_refused_unless_a_reason_is_given() {
     )
     .unwrap();
 }
+
+// ---------------------------------------------------------------------------
+// P4b S6: paying on terms (rules.md B-42)
+// ---------------------------------------------------------------------------
+
+/// A bill on "2/10 net 30", paid within the discount window: the gross
+/// method's entry is Dr A/P the full amount, Cr purchase discounts what
+/// was taken, Cr the bank the rest; the bill reads paid and discounted.
+/// A discount larger than the terms allow needs a reason (B-42).
+#[test]
+fn bill_on_terms_with_discount() {
+    use ledger_core::{Application, DocRef, SettleParams};
+    let mut b = books();
+    let terms = Terms::parse("2/10 net 30").unwrap();
+    let on = d(2026, 4, 1);
+    let bill =
+        b.l.create_bill_with(
+            b.vendor,
+            on,
+            terms.due_date(on).unwrap(),
+            line("Paper", 10_000),
+            BillFields {
+                terms: Some(terms),
+                ..BillFields::default()
+            },
+        )
+        .unwrap();
+    let entry =
+        b.l.settle(SettleParams {
+            date: d(2026, 4, 5),
+            description: "Bill 1, early".into(),
+            cash_account: b.bank,
+            party: b.vendor,
+            applications: vec![Application {
+                doc: DocRef::Bill(bill),
+                cash: cents(9_800),
+                discount: cents(200),
+                discount_reason: None,
+            }],
+            fee: None,
+            instrument: None,
+            reference: None,
+        })
+        .unwrap();
+    let lines = b.l.get_entry(entry).unwrap().lines();
+    assert_eq!(lines.len(), 4);
+    assert_eq!(
+        (lines[0].account, lines[0].side),
+        (b.account("2000"), Side::Debit)
+    );
+    assert_eq!(lines[0].amount.amount, cents(9_800));
+    assert_eq!(
+        (lines[1].account, lines[1].side),
+        (b.account("2000"), Side::Debit)
+    );
+    assert_eq!(lines[1].amount.amount, cents(200));
+    assert_eq!(
+        (lines[2].account, lines[2].side),
+        (b.account("6995"), Side::Credit)
+    );
+    assert_eq!(lines[2].amount.amount, cents(200));
+    assert_eq!((lines[3].account, lines[3].side), (b.bank, Side::Credit));
+    assert_eq!(lines[3].amount.amount, cents(9_800));
+    let st = b.state(DocRef::Bill(bill), d(2026, 4, 5));
+    assert_eq!(
+        (st.status, st.paid, st.discounted, st.outstanding),
+        (DocStatus::Paid, cents(9_800), cents(200), Decimal::ZERO)
+    );
+    assert_eq!(b.l.line_doc(entry, 0).unwrap().movement, Movement::Payment);
+    assert_eq!(b.l.line_doc(entry, 1).unwrap().movement, Movement::Discount);
+    b.ties(d(2026, 4, 5));
+
+    // 3% off is more than 2/10 allows: refused without a reason, taken
+    // with one (a vendor honouring it anyway).
+    let bill2 =
+        b.l.create_bill_with(
+            b.vendor,
+            on,
+            Terms::parse("2/10 net 30").unwrap().due_date(on).unwrap(),
+            line("Paper", 10_000),
+            BillFields {
+                terms: Some(Terms::parse("2/10 net 30").unwrap()),
+                ..BillFields::default()
+            },
+        )
+        .unwrap();
+    let params = |reason: Option<String>| SettleParams {
+        date: d(2026, 4, 6),
+        description: "Bill 2, late".into(),
+        cash_account: b.bank,
+        party: b.vendor,
+        applications: vec![Application {
+            doc: DocRef::Bill(bill2),
+            cash: cents(9_700),
+            discount: cents(300),
+            discount_reason: reason,
+        }],
+        fee: None,
+        instrument: None,
+        reference: None,
+    };
+    assert!(matches!(
+        b.l.settle(params(None)),
+        Err(LedgerError::DiscountNeedsReason { .. })
+    ));
+    b.l.settle(params(Some("the vendor honoured 3%".into())))
+        .unwrap();
+}
+
+/// A discount taken after the discount date needs a reason (B-42
+/// INVARIANT 2); a bill with an asset or prepaid line refuses one with the
+/// D-49 remedy, and none of the refusals changes the books.
+#[test]
+fn late_discount_needs_a_reason() {
+    use ledger_core::{Application, DocRef, SettleParams};
+    let mut b = books();
+    let equipment =
+        b.l.add_account("1500", "Equipment", AccountType::Asset, None, false)
+            .unwrap();
+    let terms = Terms::parse("2/10 net 30").unwrap();
+    let on = d(2026, 4, 1);
+    let bill =
+        b.l.create_bill_with(
+            b.vendor,
+            on,
+            terms.due_date(on).unwrap(),
+            line("Paper", 10_000),
+            BillFields {
+                terms: Some(terms.clone()),
+                ..BillFields::default()
+            },
+        )
+        .unwrap();
+    let late = |reason: Option<String>| SettleParams {
+        date: d(2026, 4, 20),
+        description: "Bill 1, late discount".into(),
+        cash_account: b.bank,
+        party: b.vendor,
+        applications: vec![Application {
+            doc: DocRef::Bill(bill),
+            cash: cents(9_800),
+            discount: cents(200),
+            discount_reason: reason,
+        }],
+        fee: None,
+        instrument: None,
+        reference: None,
+    };
+    assert!(matches!(
+        b.l.settle(late(None)),
+        Err(LedgerError::DiscountNeedsReason { .. })
+    ));
+    b.l.settle(late(Some("the vendor honoured it late".into())))
+        .unwrap();
+
+    // A bill whose line is equipment: no apportioning (D-49).
+    let asset_bill =
+        b.l.create_bill_with(
+            b.vendor,
+            on,
+            terms.due_date(on).unwrap(),
+            vec![DocumentLine {
+                description: "Laptop".into(),
+                amount: cents(10_000),
+                class_id: None,
+                account: Some(equipment),
+                quantity: None,
+                unit_price: None,
+            }],
+            BillFields {
+                terms: Some(terms),
+                ..BillFields::default()
+            },
+        )
+        .unwrap();
+    let before = b.l.doc_state(DocRef::Bill(asset_bill), d(2026, 4, 5));
+    let refused = b.l.settle(SettleParams {
+        date: d(2026, 4, 5),
+        description: "Laptop, discounted".into(),
+        cash_account: b.bank,
+        party: b.vendor,
+        applications: vec![Application {
+            doc: DocRef::Bill(asset_bill),
+            cash: cents(9_800),
+            discount: cents(200),
+            discount_reason: Some("vendor honoured it".into()),
+        }],
+        fee: None,
+        instrument: None,
+        reference: None,
+    });
+    match refused {
+        Err(LedgerError::DiscountOnAssetBill { code, .. }) => assert_eq!(code, "1500"),
+        other => panic!("expected DiscountOnAssetBill, got {other:?}"),
+    }
+    assert_eq!(
+        b.l.doc_state(DocRef::Bill(asset_bill), d(2026, 4, 5)),
+        before
+    );
+    assert_eq!(
+        b.state(DocRef::Bill(asset_bill), d(2026, 4, 5)).outstanding,
+        cents(10_000)
+    );
+}
+
+/// The processor's fee posts gross (A-4): Dr the bank the net, Dr the
+/// processing-fee expense the fee, Cr A/R the gross; the invoice reads
+/// paid and the deposit account has only the net.
+#[test]
+fn a_fee_posts_gross_to_receivables_and_net_to_the_bank() {
+    use ledger_core::{Application, DocRef, Fee, SettleParams};
+    let mut b = books();
+    let invoice = b.invoice(d(2026, 4, 1), 10_000);
+    let entry =
+        b.l.settle(SettleParams {
+            date: d(2026, 4, 3),
+            description: "Card payment, fee withheld".into(),
+            cash_account: b.bank,
+            party: b.customer,
+            applications: vec![Application {
+                doc: DocRef::Invoice(invoice),
+                cash: cents(10_000),
+                discount: Decimal::ZERO,
+                discount_reason: None,
+            }],
+            fee: Some(Fee {
+                amount: cents(300),
+                account: None,
+                vendor: None,
+            }),
+            instrument: None,
+            reference: None,
+        })
+        .unwrap();
+    let lines = b.l.get_entry(entry).unwrap().lines();
+    assert_eq!(lines.len(), 3);
+    assert_eq!(
+        (lines[0].account, lines[0].side),
+        (b.account("1200"), Side::Credit)
+    );
+    assert_eq!(lines[0].amount.amount, cents(10_000));
+    assert_eq!(
+        (lines[1].account, lines[1].side),
+        (b.account("6060"), Side::Debit)
+    );
+    assert_eq!(lines[1].amount.amount, cents(300));
+    assert_eq!((lines[2].account, lines[2].side), (b.bank, Side::Debit));
+    assert_eq!(lines[2].amount.amount, cents(9_700));
+    assert_eq!(
+        b.state(DocRef::Invoice(invoice), d(2026, 4, 3)).status,
+        DocStatus::Paid
+    );
+    assert_eq!(b.l.account_balance(b.bank).unwrap(), cents(9_700));
+}
+
+/// A payment that settles more than one document names its lines in
+/// application order, and two applications on one document are refused:
+/// each document's bound is one bound (B-42 INVARIANTS 1 and 2).
+#[test]
+fn a_settlement_names_its_lines_and_refuses_a_document_twice() {
+    use ledger_core::{Application, DocRef, SettleParams};
+    let mut b = books();
+    let first = b.invoice(d(2026, 4, 1), 10_000);
+    let second = b.invoice(d(2026, 4, 2), 5_000);
+    let entry =
+        b.l.settle(SettleParams {
+            date: d(2026, 4, 5),
+            description: "Two invoices, one deposit".into(),
+            cash_account: b.bank,
+            party: b.customer,
+            applications: vec![
+                Application {
+                    doc: DocRef::Invoice(first),
+                    cash: cents(10_000),
+                    discount: Decimal::ZERO,
+                    discount_reason: None,
+                },
+                Application {
+                    doc: DocRef::Invoice(second),
+                    cash: cents(5_000),
+                    discount: Decimal::ZERO,
+                    discount_reason: None,
+                },
+            ],
+            fee: None,
+            instrument: None,
+            reference: None,
+        })
+        .unwrap();
+    let lines = b.l.get_entry(entry).unwrap().lines();
+    assert_eq!(lines.len(), 3);
+    assert_eq!(b.l.line_doc(entry, 0).unwrap().doc, DocRef::Invoice(first));
+    assert_eq!(b.l.line_doc(entry, 1).unwrap().doc, DocRef::Invoice(second));
+    assert!(b.l.line_doc(entry, 2).is_none());
+    assert_eq!(b.l.account_balance(b.bank).unwrap(), cents(15_000));
+
+    let thrice = b.invoice(d(2026, 4, 3), 10_000);
+    let before = b.l.account_balance(b.bank).unwrap();
+    let refused = b.l.settle(SettleParams {
+        date: d(2026, 4, 5),
+        description: "Twice".into(),
+        cash_account: b.bank,
+        party: b.customer,
+        applications: vec![
+            Application {
+                doc: DocRef::Invoice(thrice),
+                cash: cents(5_000),
+                discount: Decimal::ZERO,
+                discount_reason: None,
+            },
+            Application {
+                doc: DocRef::Invoice(thrice),
+                cash: cents(5_000),
+                discount: Decimal::ZERO,
+                discount_reason: None,
+            },
+        ],
+        fee: None,
+        instrument: None,
+        reference: None,
+    });
+    assert!(matches!(
+        refused,
+        Err(LedgerError::SettlementDuplicateDocument(_))
+    ));
+    assert_eq!(b.l.account_balance(b.bank).unwrap(), before);
+}
+
+/// A discount on a bill with an asset line is refused, never apportioned
+/// (D-49): the refusal names the asset account and both remedies (record
+/// the bill net, or reclassify Dr 6995 / Cr the asset).
+#[test]
+fn discount_on_an_asset_bill_is_refused_with_the_remedy() {
+    use ledger_core::{Application, DocRef, SettleParams};
+    let mut b = books();
+    let equipment =
+        b.l.add_account("1500", "Equipment", AccountType::Asset, None, false)
+            .unwrap();
+    let bill =
+        b.l.create_bill(
+            b.vendor,
+            d(2026, 4, 1),
+            d(2026, 5, 1),
+            vec![DocumentLine {
+                description: "Laptop".into(),
+                amount: cents(10_000),
+                class_id: None,
+                account: Some(equipment),
+                quantity: None,
+                unit_price: None,
+            }],
+        )
+        .unwrap();
+    match b.l.settle(SettleParams {
+        date: d(2026, 4, 5),
+        description: "Laptop, discounted".into(),
+        cash_account: b.bank,
+        party: b.vendor,
+        applications: vec![Application {
+            doc: DocRef::Bill(bill),
+            cash: cents(9_800),
+            discount: cents(200),
+            discount_reason: Some("the vendor honoured it".into()),
+        }],
+        fee: None,
+        instrument: None,
+        reference: None,
+    }) {
+        Err(LedgerError::DiscountOnAssetBill { code, .. }) => assert_eq!(code, "1500"),
+        other => panic!("expected DiscountOnAssetBill, got {other:?}"),
+    }
+    assert_eq!(
+        b.state(DocRef::Bill(bill), d(2026, 4, 5)).outstanding,
+        cents(10_000)
+    );
+    b.ties(d(2026, 4, 5));
+}

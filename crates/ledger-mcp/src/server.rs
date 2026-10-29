@@ -567,6 +567,7 @@ impl BooksServer {
             + Self::projects_router()
             + Self::documents_router()
             + Self::sent_router()
+            + Self::settlements_router()
             + Self::entries_router()
             + Self::reports_router()
             + Self::assets_router()
@@ -1425,6 +1426,8 @@ mod schedules;
 mod sent;
 #[path = "tools/settings.rs"]
 mod settings_tools;
+#[path = "tools/settlements.rs"]
+mod settlements;
 #[path = "tools/tax.rs"]
 mod tax;
 

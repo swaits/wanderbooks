@@ -1222,6 +1222,8 @@ fn mcp_statement_pdfs_and_cpa_package() {
         [
             "1099-worksheet-2026.csv",
             "README.txt",
+            "ap_aging.csv",
+            "ar_aging.csv",
             "balance-sheet.pdf",
             "balance-sheet.xlsx",
             "cash-flow.pdf",

@@ -1688,7 +1688,11 @@ posting.
     `journal`: each entry posted in the period, line by line; `iif`:
     every posted entry from the first through `as_of`, never a period),
     `tax_summary` (see "Tools — tax categories"), `fixed_asset_register`
-    (as of a day; see "Tools — fixed assets").
+    (as of a day; see "Tools — fixed assets"), `ar_aging`, `ap_aging`
+    (as of a day: columns `number,party,date,due_date,terms,total,paid,
+    discounted,outstanding,bucket,days_overdue`, one row per open
+    document, then a tie-out line `TOTAL,,,,,,,,<Σ outstanding>,GL
+    <account> <balance>,difference 0.00`; B-23, 8.3.10).
   - Formats: `pdf` and `xlsx` for `profit_and_loss`,
     `balance_sheet`, `cash_flow`, `trial_balance`, `members_equity`,
     `tax_summary` and `fixed_asset_register`; `xlsx`, `csv`, `json` for
@@ -2086,21 +2090,37 @@ snapshots; see plan 8.2 S4.
   - `warnings` names an expense account it created with no tax category;
     `notes` one per finished or abandoned project a line names (none for
     on-spec: a cost of on-spec work is an expense like any other).
-- `books.receive_payment { document_id, date, amount, cash_account,
-  instrument?, reference? }` → `{ entry_id, remaining, status }`. Posts
-  Dr Cash / Cr A/R, the receivable line tagged with the invoice (B-38),
-  neither line tagged with a project (balance-sheet only: the invoice's
-  lines carry its projects). `instrument` (id or label) is tagged on the
-  entry in the same call; `reference` (one line, at most 200 characters:
-  a charge id, a trace number) goes into its description. `remaining`
-  and `status` (open, partial, paid, written_off, void, overpaid,
-  unattached) are the invoice's derived figures after it. The books
-  record payments; they never collect them (D-45).
-- `books.pay_bill { document_id, date, amount, cash_account, instrument?,
-  reference? }` → `{ entry_id, remaining, status }`. Posts Dr A/P / Cr
-  Cash, the payable line tagged with the bill, neither line tagged with a
-  project; `instrument` and `reference` as for `receive_payment` (a card
-  payment is left out of 1099-NEC, D-40).
+- `books.receive_payment { date, deposit_to | cash_account, instrument?,
+  reference?, invoice | document_id, amount? | applications: [{ invoice,
+  amount, discount?, discount_reason? }], fee?: { amount, account?,
+  vendor? }, paid_in_full_marking? }` → `{ entry_id, documents: [{ ref,
+  number?, outstanding, status }], deposited, remaining?, status?,
+  warnings? }`. Settles one or several invoices of one customer in one
+  entry (B-42): Dr the deposit account the cash less the fee, Dr the
+  payment-processing-fees account the fee, Dr sales allowances the
+  discounts, Cr A/R each invoice's cash and discount, every receivable
+  line tagged with its invoice (payment lines in application order, then
+  the discount lines). The `amount`s are cash only; a discount goes beside
+  one. A discount at most the invoice's terms allow and dated by their
+  discount date needs no reason; a larger or later one needs
+  `discount_reason`. `fee.vendor` (a processor the books know as a vendor)
+  is named in the entry's description; only cash movements count toward a
+  1099, so the fee is not a payment to the processor. `deposited` is the
+  cash less the fee (A-4's gross presentation); `remaining` and `status`
+  repeat the single document's figures. An overpayment is refused with the
+  excess and the remedy (a plain entry to 2300 Customer Deposits).
+  `paid_in_full_marking: true` adds a UCC §3-311 warning and records
+  nothing else. `document_id` and `cash_account` are the older names of
+  `invoice`/`bill` and `deposit_to`/`paid_from`. The books record
+  payments; they never collect them (D-45).
+- `books.pay_bill { date, paid_from | cash_account, instrument?,
+  reference?, bill | document_id, amount? | applications: [{ bill, amount,
+  discount?, discount_reason? }] }` → as `receive_payment`, per bill and
+  one vendor (B-42): Dr A/P each bill's cash and discount, Cr the payer
+  account the cash, Cr purchase discounts the discounts. A discount on a
+  bill with an asset or prepaid line is refused with its remedy (record
+  the bill net, or reclassify Dr 6995 / Cr the asset, D-49); a processor's
+  fee is refused on a bill.
 - `books.void_document { kind, id, date, reason }` → `{ entry_id, status }`.
   Voids an invoice or bill (`kind` `invoice` or `bill`) that should never
   have existed by reversing its own entry with the reason; it keeps its
@@ -2156,9 +2176,22 @@ snapshots; see plan 8.2 S4.
   there is no unattached line and nothing needing attention.
   `books.verify` checks the same identity and `books.digest` lists its
   problems (`control_problems`).
-- `books.ar_aging { as_of? }` → `{ as_of, rows: [{ name, current, days_30,
-  days_60, days_90, days_90_plus, total }] }` (`as_of` omitted: today).
-- `books.ap_aging { as_of? }` → same, per vendor (`as_of` omitted: today).
+- `books.ar_aging { as_of?, detail? }` → `{ as_of, rows: [{ name,
+  current, days_30, days_60, days_90, days_90_plus, total }], documents?:
+  [{ ref, number?, party, date, due_date, terms?, total, paid,
+  discounted, outstanding, bucket, days_overdue }], control: { account,
+  balance, documents_total, unattached, difference } }` (`as_of` omitted:
+  today). `detail: true` adds one row per open invoice; `control` is the
+  receivables account's tie-out (B-23, B-38 INVARIANT 1), `difference`
+  always `0.00`.
+- `books.ap_aging { as_of?, detail? }` → same, per vendor and bill.
+- `books.bills_due { through?, as_of? }` → `{ as_of, through, bills:
+  [{ ref, vendor, vendor_ref?, due_date, outstanding, discount_by?,
+  max_discount?, pay_by_discount_date_amount? }], by_date: [{ date,
+  amount }] }`. Every open bill due on or before `through` (omitted:
+  today), due date first, with its terms' early-payment discount when it
+  is still open (`discount_by`, the most off, what to pay to take it);
+  `by_date` is the running total of what falls due through each date.
 
 ## Tools — foreign exchange
 

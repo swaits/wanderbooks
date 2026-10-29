@@ -3114,3 +3114,80 @@ predicates in `ledger-package::attention`: `invoice.number.is_some()`
 `checked_add_days` `unsent_days` comparison (`>`), `overdue_days > 0`, the
 `sends.max()` last send, and the `reminder_days` comparison (`>`), plus
 each item's target (`Target::Invoice`) and `books.mark_sent` step args.
+
+## P4b S6: paying on terms (2026-10-27)
+
+rules.md B-42; plan 8.2 P4b S6. One payment settles several documents of
+one party, with the early-payment discounts their terms allow, the
+processor's fee posted gross, a bills-due list, the agings' detail and
+tie-out, and the aging exports.
+
+- **Core (`crates/ledger-core/tests/spec_documents.rs`):**
+  `bill_on_terms_with_discount` (the gross-method entry for a bill on
+  "2/10 net 30", and a 3% discount refused without a reason, taken with
+  one), `late_discount_needs_a_reason` (after the discount date, and the
+  asset-line refusal's unchanged books),
+  `discount_on_an_asset_bill_is_refused_with_the_remedy` (D-49: the code
+  and both remedies), `a_fee_posts_gross_to_receivables_and_net_to_the_bank`
+  (Dr bank 97, Dr 6060 3, Cr A/R 100),
+  `a_settlement_names_its_lines_and_refuses_a_document_twice` (control
+  lines in application order; one document twice refused).
+  `spec_cash_flow.rs::equipment_bill_payment_is_investing_cash` keeps
+  D-35 through a settlement.
+- **Kernel:** `kernel_bridge.rs::settle_agrees`; Kani
+  `settle_is_exact` (a nonzero discount and a nonzero fee covered).
+- **Store (`crates/ledger-store/tests/arap_standing.rs`):**
+  `a_settlement_names_its_lines_and_replays` (one entry, two invoices, a
+  discount and a fee; each event's `line`, `discount_line` and `fee_line`
+  point at the rows the plan posts; replay equals live);
+  `settlement_waits_for_documents_v2` (refused with the feature remedy and
+  no journal line, then accepted after the upgrade);
+  `legacy_payment_events_keep_the_positional_rule` (the old fixture's
+  events carry no `line`, and replay still tags in order).
+  `arap_props.rs`'s history gains `Settle` (two documents, a discount and,
+  on invoices, a fee), so `subledger_equals_control`, the bounds and
+  replay-equals-live run over settlements.
+- **Store's older shapes:** `tests/store.rs::books_written_under_older_rules_still_open`
+  writes a payment event of S6's shape by hand through `JournalWriter`
+  and opens the books, the invoice reading paid and discounted.
+- **Over the wire (`crates/ledger-cli/tests/documents.rs`):**
+  `one_payment_settles_two_invoices`, `late_discount_needs_a_reason`,
+  `a_fee_posts_gross_to_receivables_and_net_to_the_bank`,
+  `card_paid_bill_is_not_1099_nec`,
+  `multi_document_payment_counts_once_for_1099_and_party_totals`,
+  `overpayment_refused_with_the_excess`,
+  `bills_due_orders_by_due_and_discount` (the list and its running total;
+  no terms, so no discount fields), `the_aging_export_ties_out` (the CSV
+  header, row and `TOTAL` tie-out).
+- **CPA package (`crates/ledger-package/tests/package.rs`):**
+  `the_aging_csvs_tie_to_the_control_check`.
+- **Viewer (`crates/ledger-gui/tests/invoices.rs`):**
+  `the_list_shows_the_ledgers_figures` re-renders the Money out list's
+  screenshot with the new "Discount by" column (blank until S4.3
+  journals terms).
+- **Not yet possible through the MCP (depends on S4.3/S4.4):**
+  `bill_on_terms_with_discount` and `bills_due_orders_by_due_and_discount`'s
+  discount half need a journaled `terms` field (S4.3) and
+  `equipment_bill_payment_is_investing_cash` needs a bill line's account
+  in `books.create_bill` (S4.4). The core tests named for them stand in
+  until those land; see the unit's report.
+- **Older books (8.0.6):** the pre-S1 fixture
+  `tests/fixtures/p4-arap-before` is also pre-S6 and holds payments; its
+  golden figures still hold (`legacy_reversal_now_counts`), and S6 moves
+  no figure. Its journal has no declared `documents_v2`, so the store test
+  above proves the refusal and the upgrade.
+
+**For P12 (mutation targets):** `kernel::settle`'s length check, each
+negative check, the fee-above-cash test and both checked adds;
+`Ledger::settlement_lines`'s kind/party checks, the duplicate-document
+check, the per-application `cash + discount` bound, the discount window
+(`<= max`, `<= by`, "has a reason"), the asset-bill loop, the fee-on-bill
+refusal and the row order (payment lines, discounts, fee, cash);
+`check_discount`'s `within` conjunction and its `because` arms;
+`replay_*_payment_at`'s line/amount/account/side match and the discount
+line's tag; the store's `documents_v2` condition (more than one
+application, any discount, a fee) and the `line`/`discount_line`/`fee_line`
+arithmetic; `bills_due`'s `through` filter, the discount-window test and
+the running-total grouping; `aging_documents`'s outstanding filter and
+bucket; `aging_csv`'s tie-out columns and `aging_statement`'s totals; the
+viewer's `discount_by` and `days_overdue` flags.

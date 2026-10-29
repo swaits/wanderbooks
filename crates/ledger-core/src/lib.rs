@@ -48,10 +48,11 @@ pub mod tax_capital;
 
 pub use account::{Account, AccountId, AccountType, ChartOfAccounts, Side};
 pub use arap::{
-    AgingRow, Bill, BillFields, BillId, ControlCheck, Customer, CustomerId, DocLine, DocRef,
-    DocState, DocStatus, DocTag, DocumentKind, DocumentLine, DocumentPartKey, DocumentStatus,
-    EarlyDiscount, Invoice, InvoiceFields, InvoiceId, Movement, PartySnapshot, PaymentDetails,
-    SendKind, Sent, SentVia, Terms, TermsKind, UnattachedLine, Vendor, VendorId,
+    AgingDocument, AgingRow, Application, Bill, BillFields, BillId, ControlCheck, Customer,
+    CustomerId, DocLine, DocRef, DocState, DocStatus, DocTag, DocumentKind, DocumentLine,
+    DocumentPartKey, DocumentStatus, EarlyDiscount, Fee, Invoice, InvoiceFields, InvoiceId,
+    Movement, PartySnapshot, PaymentDetails, SendKind, Sent, SentVia, SettleParams, SettlementRow,
+    Terms, TermsKind, UnattachedLine, Vendor, VendorId,
 };
 pub use assets::{
     Asset, AssetBasis, AssetCorrection, AssetId, AssetStatus, BasisRule, DepreciationMethod,
@@ -76,8 +77,9 @@ pub use instruments::{Instrument, InstrumentId, InstrumentKind};
 pub use journal::{EntryId, EntryStatus, JournalEntry, JournalLine};
 pub use kernel::{EntryFlows, Flow};
 pub use ledger::{
-    ControlAccount, GENERAL_EXPENSES, Ledger, PAYABLES, PAYROLL, RECEIVABLES, RETAINED_EARNINGS,
-    REVENUE, ReconciliationReport, UnclearedLine, control_account, control_accounts,
+    ControlAccount, GENERAL_EXPENSES, Ledger, PAYABLES, PAYMENT_PROCESSING_FEES, PAYROLL,
+    PURCHASE_DISCOUNTS, RECEIVABLES, RETAINED_EARNINGS, REVENUE, ReconciliationReport,
+    SALES_ALLOWANCES, UnclearedLine, control_account, control_accounts,
 };
 pub use money::{Currency, Money};
 pub use parties::{Party, PartyField, PartyId, Role, TinFacts, TinType, W4Facts, W9Facts};

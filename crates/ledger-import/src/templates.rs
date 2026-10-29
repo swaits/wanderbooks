@@ -308,6 +308,12 @@ pub fn chart_template(entity: EntityType, owners: &[String]) -> Result<ChartTemp
             Some("nondeductible"),
         ),
         acct(
+            "6995",
+            "Purchase Discounts",
+            "expense",
+            Some("other_deductions"),
+        ),
+        acct(
             "7100",
             "Employee Benefits",
             "expense",

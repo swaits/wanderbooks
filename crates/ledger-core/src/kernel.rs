@@ -269,6 +269,63 @@ pub fn discount_max<T: Amount>(total: T, percent_bp: u32) -> Option<T> {
     total.checked_mul(bp)?.checked_div_exact(ten_thousand)
 }
 
+/// What a settlement of one or more documents comes to: the applications'
+/// total (cash plus discounts taken) and what reaches the deposit account
+/// (the cash less the processor's fee).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Settlement<T> {
+    /// Σ cash + Σ discounts: what the settlement applies to the documents.
+    pub applications_total: T,
+    /// Σ cash − fee: what the deposit account receives (never negative).
+    pub deposit: T,
+}
+
+/// The arithmetic of a settlement (rules.md B-42; plan P4b S6): each
+/// document's cash and discount, and the processor's fee withheld from the
+/// cash that reaches the bank.
+///
+/// ```text
+/// GOAL: a settlement is exact: what the documents are settled by is the
+///       cash plus the discounts, and the deposit is the cash less the fee.
+/// SOURCE: docs/spec/rules.md B-42; plan/served.md 8.3.6, 8.3.13 (B-42);
+///         CONVENTION; DECISION: the gross method (A-8) and the fee's
+///         gross presentation (A-4).
+/// INVARIANTS:
+///   1. Some(s): s.applications_total = Σ cash + Σ discounts and
+///      s.deposit = Σ cash − fee, exactly, with s.deposit >= 0.
+///   2. None on overflow, a negative amount, a negative fee, a fee above
+///      the cash, or arrays of different lengths: never a wrapped or
+///      rounded figure.
+/// ```
+pub fn settle<T: Amount>(cash: &[T], discounts: &[T], fee: T) -> Option<Settlement<T>> {
+    if cash.len() != discounts.len() || fee < T::ZERO {
+        return None;
+    }
+    let mut total_cash = T::ZERO;
+    for &amount in cash {
+        if amount < T::ZERO {
+            return None;
+        }
+        total_cash = total_cash.checked_add(amount)?;
+    }
+    let mut total_discounts = T::ZERO;
+    for &amount in discounts {
+        if amount < T::ZERO {
+            return None;
+        }
+        total_discounts = total_discounts.checked_add(amount)?;
+    }
+    let applications_total = total_cash.checked_add(total_discounts)?;
+    let deposit = total_cash.checked_sub(fee)?;
+    if deposit < T::ZERO {
+        return None;
+    }
+    Some(Settlement {
+        applications_total,
+        deposit,
+    })
+}
+
 /// A document line's amount from its quantity and unit price: the exact
 /// product, never rounded.
 ///

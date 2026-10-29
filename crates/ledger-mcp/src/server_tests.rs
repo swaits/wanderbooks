@@ -42,7 +42,7 @@ fn annotations_complete() {
     const D: Hints = (Some(false), Some(true), None);
     const WI: Hints = (Some(false), Some(false), Some(true));
     const DI: Hints = (Some(false), Some(true), Some(true));
-    let table: [(&str, Hints); 123] = [
+    let table: [(&str, Hints); 124] = [
         ("books.handbook", R),
         ("books.start", R),
         ("books.set_setting", DI),
@@ -151,6 +151,7 @@ fn annotations_complete() {
         ("books.document", R),
         ("books.ar_aging", R),
         ("books.ap_aging", R),
+        ("books.bills_due", R),
         ("books.set_fx_rate", W),
         ("books.run_payroll", D),
         ("books.remit_payroll_taxes", D),

@@ -3119,3 +3119,98 @@ starts from empty books (legacy lines are covered by the identity
 coding of `DocRef`), and an account becoming a control account by its
 first document, holding lines from before, is outside it (those lines are
 listed as unattached).
+
+## B-42 A settlement is exact and names its lines
+
+**bookspec:** `BS-arap-6`
+
+**Status:** CONVENTION (a payment that settles several documents at once is
+still one balanced entry, and each control line carries its document; the
+subledger tie-out is B-38's); CHOICE (the gross method for an
+early-payment discount, A-8; the processor's fee posted gross, A-4; D-49's
+refusal to apportion a discount across a bill's asset lines). ASC
+606-10-32-5 to 32-9 are the strict treatment of an expected discount;
+this company's size makes the gross method immaterial (A-8). Sources are
+cited and not yet vendored, so this rule keeps the CONVENTION label (the
+Open list in `README.md`).
+
+1. **One party, one kind.** A settlement applies to one or more invoices
+   of one customer, or one or more bills of one vendor, never a mix, and
+   never the same document twice. Deposits: Σ cash + Σ discounts is what
+   it applies to the documents; Σ cash − fee is what reaches the deposit
+   account (`kernel::settle`). The arithmetic is exact: no epsilon, no
+   rounding, and a fee above the cash is refused.
+2. **Bounds.** Each application's cash + discount is at most what its
+   document owes on every day from the settlement's date on
+   (`payment_room`), so no day is overpaid. A payment is never dated
+   before its document, and never in a closed period.
+3. **Discounts.** A discount is at most `kernel::discount_max(total,
+   percent_bp)` for the document's terms and is dated on or before
+   `terms.discount_by(date)`; outside that it needs a reason, journaled
+   with the payment (a vendor honouring a late discount). Terms that
+   state no discount are the same: any discount needs a reason. A discount
+   on a bill whose lines include an asset or prepaid account is refused
+   with D-49's remedy: record the bill net of the discount, or reclassify
+   Dr 6995 Purchase Discounts / Cr the asset.
+4. **The fee.** A processor's fee is a customer payment's only. It posts
+   gross: Dr the processing-fee expense, Dr the deposit account the net,
+   Cr accounts receivable the gross. Only cash movements count toward a
+   1099, so the fee is not a payment to the processor.
+5. **Lines and journal.** The entry's rows are the payment lines in
+   application order, then the discount lines, then the fee line, then
+   the cash line; a new payment event names the line it tags (`line`) and,
+   when it took one, its discount and discount line (`discount`,
+   `discount_line`, `discount_reason`), and the fee's on the first
+   application's event (`fee`, `fee_line`). Replay tags exactly those
+   lines; a legacy event with no `line` takes the first untagged control
+   line for its amount (B-38 item 1). A line replay cannot match stays
+   untagged and the control check lists it: replay never refuses (B-28).
+6. **Exports.** An aging as of a day lists one row per open document with
+   its number, party, dates, terms, total, paid, discounted, outstanding,
+   bucket and days overdue, then a tie-out line against its control
+   account (B-23, B-38 INVARIANT 1). The CPA package and `books.export`
+   write the same CSV.
+
+```text
+GOAL: a settlement is exact and names its lines.
+SOURCE: CONVENTION; ASC 606-10-32-5 to 32-9 noted; CHOICE: the gross
+        method (A-8), the fee's gross presentation (A-4).
+INVARIANTS:
+  1. Σ cash + Σ discounts = Σ applications; deposit = Σ cash − fee
+     (kernel::settle); one party per settlement; one application per
+     document.
+  2. Each application's cash + discount ≤ what the document owes on every
+     day from the payment's date on.
+  3. Each new payment event names the line it tags; replay tags that line;
+     a legacy event without one takes the first untagged control line for
+     its amount.
+  4. A discount on a bill with an asset or prepaid line is refused.
+SCENARIOS:
+  1. Two invoices of one customer, 300 and 80, paid 380 by one deposit:
+     two payment lines, each tagged, one cash line.
+  2. "2/10 net 30" bill 100, paid 98 within ten days: Dr A/P 98 (payment)
+     and 2 (discount), Cr purchase discounts 2, Cr bank 98.
+  3. The same discount after the tenth day without a reason: refused,
+     naming discount_reason; with one: taken and journaled.
+  4. An invoice 100 paid through a processor keeping 3: Dr bank 97, Dr
+     processing fees 3, Cr A/R 100.
+  5. A discount on a bill whose line is equipment: refused with the
+     record-net or reclassify remedy (D-49).
+```
+
+**Enforced:** `kernel::settle`, `Ledger::{settle, settlement_lines,
+check_discount}`, `arap::{Application, Fee, SettleParams, SettlementRow}`,
+`Ledger::{replay_invoice_payment_at, replay_bill_payment_at}`,
+`Store::settle`, the aging builders (`Ledger::aging_documents`,
+`ledger_package::{aging_csv, aging_statement}`). **Checked:** `ledger-core` `tests/spec_documents.rs`
+(`bill_on_terms_with_discount`, `late_discount_needs_a_reason`,
+`discount_on_an_asset_bill_is_refused_with_the_remedy`,
+`a_fee_posts_gross_to_receivables_and_net_to_the_bank`,
+`a_settlement_names_its_lines_and_refuses_a_document_twice`),
+`tests/kernel_bridge.rs::settle_agrees`; Kani `settle_is_exact`;
+`ledger-store` `tests/arap_standing.rs`
+(`a_settlement_names_its_lines_and_replays`, `settlement_waits_for_documents_v2`,
+`legacy_payment_events_keep_the_positional_rule`), `tests/arap_props.rs`;
+`ledger-cli` `tests/documents.rs`; `ledger-package`'s aging tie-out test.
+The Lean step is `Documents.Step.document` with every control line tagged
+(`Documents.settle_unattached`); no new `Step` constructor.

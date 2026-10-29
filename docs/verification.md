@@ -544,7 +544,7 @@ come from the kernel:
 
 ### Sent tracking (P4b S5)
 
-34. **A send changes no figure.** `Ledger::mark_sent` is a command, so it
+35. **A send changes no figure.** `Ledger::mark_sent` is a command, so it
     is a `Step` in the model (AGENTS.md's formal-methods bar; the unit's
     "no Lean change" phrase was overruled by it, and says so in its As
     built block). `Documents.lean`'s `Books` gains `sends`, and
@@ -559,6 +559,25 @@ come from the kernel:
       cover the new step · tests `sends_replay_and_project`,
       `a_send_changes_no_figure`, `mark_sent_on_void_refused`,
       `mark_sent_waits_for_documents_v2`
+
+### Settlements (P4b S6)
+
+36. **A settlement is exact.** The applications' total is Σ cash + Σ
+    discounts and the deposit is Σ cash − fee, with exact arithmetic; a
+    fee above the cash, a negative amount, or arrays of different lengths
+    is refused (None), never wrapped or rounded. The core's posting is a
+    document step: every control line a settlement posts carries its
+    document, so `Documents.control_agrees` covers it and no new `Step`
+    constructor is needed.
+    - Kani `settle_is_exact` (at i32, fixed arrays of three applications,
+      a nonzero discount and a nonzero fee covered) · bridge
+      `settle_agrees` · tests `bill_on_terms_with_discount`,
+      `late_discount_needs_a_reason`,
+      `discount_on_an_asset_bill_is_refused_with_the_remedy`,
+      `a_fee_posts_gross_to_receivables_and_net_to_the_bank`,
+      `a_settlement_names_its_lines_and_refuses_a_document_twice` · Lean
+      `Documents.settle_posts_a_document_step`,
+      `Documents.settle_unattached`.
 
 ## What the proofs found
 
@@ -757,7 +776,9 @@ headline theorems) and `just prove-slow` 467 s (8 harnesses, the slowest
 
 P4b S4.1's two harnesses were measured on 2026-10-26 (a busy machine);
 the rest are the 2026-10-22 run. `discount_max_is_bounded`'s 163 s is
-Kani's verification time (it runs in `prove-slow`).
+Kani's verification time (it runs in `prove-slow`). P4b S6 adds
+`settle_is_exact` to `prove` and two Lean theorems to the audit
+(`Documents.settle_posts_a_document_step`, `Documents.settle_unattached`).
 
 Every harness, the law it proves, the recipe that runs it, and its time
 in that quiet run (`prove`: each harness's verification time; `prove-slow`:
@@ -824,4 +845,5 @@ each harness's whole run, its compile of about 50 s included):
 | `line_amount_is_exact` | 33 | prove | 6 |
 | `bounds_check_matches_definition` | 34 | prove | (not in the 2026-10-22 run; P4b S1, 2026-10-24) |
 | `bounds_kept_is_the_definition_on_books_in_bounds` | 34 | prove | (as above) |
+| `settle_is_exact` | 36 | prove | 1 |
 | `kani_symbolic_copy_canary` | (the checker: "Trusting the checker") | prove | 3 |

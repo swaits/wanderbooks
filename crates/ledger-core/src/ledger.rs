@@ -91,6 +91,34 @@ pub const GENERAL_EXPENSES: ControlAccount = control(
     "bill expense",
     AccountType::Expense,
 );
+/// A control account: discounts given to customers (plan P4b S6, A-8; plan
+/// 8.3.4): a debit-balance revenue account, the gross method's allowance
+/// when a customer takes an early-payment discount.
+pub const SALES_ALLOWANCES: ControlAccount = control(
+    "sales_allowances",
+    "4100",
+    "Refunds and Allowances",
+    "sales allowances",
+    AccountType::Revenue,
+);
+/// A control account: discounts taken from vendors (plan P4b S6, A-8): a
+/// credit-balance expense account, the gross method's purchase discount.
+pub const PURCHASE_DISCOUNTS: ControlAccount = control(
+    "purchase_discounts",
+    "6995",
+    "Purchase Discounts",
+    "purchase discounts",
+    AccountType::Expense,
+);
+/// A control account: the processor's fee on a payment received (plan P4b
+/// S6, A-4): the gross presentation's fee expense.
+pub const PAYMENT_PROCESSING_FEES: ControlAccount = control(
+    "payment_processing_fees",
+    "6060",
+    "Platform and Payment Processing Fees",
+    "payment processing fees",
+    AccountType::Expense,
+);
 /// A control account; see [`ControlAccount`].
 pub const RETAINED_EARNINGS: ControlAccount = control(
     "retained_earnings",
@@ -6223,6 +6251,415 @@ impl Ledger {
         }
     }
 
+    /// Settle one or more invoices or bills in one entry (plan P4b S6;
+    /// rules.md B-42): cash against each, an early-payment discount where
+    /// the document's terms allow it (or a reason says why), and the
+    /// processor's fee on a customer payment, posted gross.
+    ///
+    /// ```text
+    /// GOAL: record a payment that settles several documents at once, with
+    ///       the early-payment discounts and the processor's fee, exactly.
+    /// SOURCE: docs/spec/rules.md B-42; plan/served.md 8.3.6, 8.3.13;
+    ///         CONVENTION; DECISION: the gross method (A-8) and the fee's
+    ///         gross presentation (A-4).
+    /// INVARIANTS:
+    ///   1. Σ cash + Σ discounts = Σ applications and deposit = Σ cash −
+    ///      fee (kernel::settle); one party per settlement.
+    ///   2. Each application's cash + discount ≤ what the document owes on
+    ///      every day from the payment's date on.
+    ///   3. Posting rows: payment lines in application order, then the
+    ///      discount lines, then the fee line, then the cash line, so a
+    ///      journaled event's line indices are stable.
+    ///   4. A discount is at most kernel::discount_max(total, percent_bp)
+    ///      and dated on or before terms.discount_by(date), else a reason
+    ///      is required; a discount on a bill with an asset line is
+    ///      refused (D-49); a fee is refused on a bill.
+    ///   5. A refusal MUST leave the books unchanged.
+    /// ```
+    pub fn settle(&mut self, params: arap::SettleParams) -> Result<EntryId, LedgerError> {
+        self.atomically(|l| l.settle_steps(params))
+    }
+
+    /// The lines [`Self::settle`] would post, after every check, in its
+    /// order (payment lines, discount lines, the fee line, the cash line).
+    /// A store journals exactly these before it mutates; it must have
+    /// created the role accounts [`Self::settle`] would create first.
+    pub fn settlement_lines(
+        &self,
+        params: &arap::SettleParams,
+    ) -> Result<Vec<arap::SettlementRow>, LedgerError> {
+        use arap::{DocRef, DocTag, Movement};
+
+        if params.applications.is_empty() {
+            return Err(LedgerError::SettlementEmpty);
+        }
+        let kind = match params.applications[0].doc {
+            DocRef::Invoice(_) => arap::DocumentKind::Invoice,
+            DocRef::Bill(_) => arap::DocumentKind::Bill,
+        };
+        let control = match kind {
+            arap::DocumentKind::Invoice => RECEIVABLES,
+            arap::DocumentKind::Bill => PAYABLES,
+        };
+        let discount_role = match kind {
+            arap::DocumentKind::Invoice => SALES_ALLOWANCES,
+            arap::DocumentKind::Bill => PURCHASE_DISCOUNTS,
+        };
+        for app in &params.applications {
+            let same = matches!(
+                (kind, app.doc),
+                (arap::DocumentKind::Invoice, DocRef::Invoice(_))
+                    | (arap::DocumentKind::Bill, DocRef::Bill(_))
+            );
+            if !same {
+                return Err(LedgerError::SettlementMixedKinds(app.doc.to_string()));
+            }
+            let party = match app.doc {
+                DocRef::Invoice(id) => {
+                    self.invoices
+                        .get(&id)
+                        .ok_or(LedgerError::UnknownInvoice(id))?
+                        .customer_id
+                }
+                DocRef::Bill(id) => {
+                    self.bills
+                        .get(&id)
+                        .ok_or(LedgerError::UnknownBill(id))?
+                        .vendor_id
+                }
+            };
+            if party != params.party {
+                return Err(LedgerError::SettlementPartiesDiffer(
+                    app.doc.to_string(),
+                    params.party,
+                ));
+            }
+        }
+        crate::calendar::check(params.date)?;
+        if let Some(pid) = self.closed_period_containing(params.date) {
+            return Err(LedgerError::ClosedPeriod(pid, params.date.to_string()));
+        }
+        let details = arap::PaymentDetails {
+            instrument: params.instrument,
+            reference: params.reference.clone(),
+        };
+        details.check()?;
+        if let Some(i) = params.instrument
+            && !self.instruments.contains_key(&i)
+        {
+            return Err(LedgerError::UnknownInstrument(i));
+        }
+        self.check_controls(&[control])?;
+        self.check_payment_account(params.cash_account)?;
+        let control_account = self.role_account(&control).ok_or_else(|| {
+            LedgerError::InvalidSettlement(format!(
+                "{} has no account in these books yet",
+                control.role
+            ))
+        })?;
+
+        let mut cash = Vec::with_capacity(params.applications.len());
+        let mut discounts = Vec::with_capacity(params.applications.len());
+        for (i, app) in params.applications.iter().enumerate() {
+            if params.applications[..i]
+                .iter()
+                .any(|earlier| earlier.doc == app.doc)
+            {
+                return Err(LedgerError::SettlementDuplicateDocument(
+                    app.doc.to_string(),
+                ));
+            }
+            if app.cash <= Decimal::ZERO {
+                return Err(LedgerError::InvalidPaymentAmount(app.cash));
+            }
+            if app.discount < Decimal::ZERO {
+                return Err(LedgerError::InvalidSettlement(format!(
+                    "{}: a discount cannot be negative",
+                    app.doc
+                )));
+            }
+            let (doc_date, _, _, total) = self.doc_header(app.doc)?;
+            if params.date < doc_date {
+                return Err(LedgerError::PaymentBeforeDocument {
+                    date: params.date,
+                    document_date: doc_date,
+                });
+            }
+            let room = self.payment_room(app.doc, params.date)?;
+            let applied = app.cash.checked_add(app.discount).ok_or_else(|| {
+                LedgerError::TooLargeToCompute(format!("{}'s settlement", app.doc))
+            })?;
+            if applied > room {
+                return Err(LedgerError::Overpayment(applied, room));
+            }
+            if let Some(reason) = &app.discount_reason
+                && (reason.contains(['\n', '\r'])
+                    || reason.chars().count() > arap::MAX_REFERENCE_CHARS)
+            {
+                return Err(LedgerError::InvalidDiscountReason(
+                    arap::MAX_REFERENCE_CHARS,
+                ));
+            }
+            if app.discount > Decimal::ZERO {
+                self.check_discount(app, kind, total, doc_date, params.date)?;
+            }
+            cash.push(app.cash);
+            discounts.push(app.discount);
+        }
+        let fee_amount = params.fee.as_ref().map_or(Decimal::ZERO, |f| f.amount);
+        let settlement = kernel::settle(&cash, &discounts, fee_amount).ok_or_else(|| {
+            LedgerError::InvalidSettlement(
+                "the cash and discounts don't cover the applications exactly, or the fee is above the cash"
+                    .into(),
+            )
+        })?;
+        if settlement.deposit <= Decimal::ZERO {
+            return Err(LedgerError::InvalidSettlement(
+                "the processor's fee can't take the whole payment: the deposit would be nothing"
+                    .into(),
+            ));
+        }
+        let any_discount = discounts.iter().any(|d| *d > Decimal::ZERO);
+        let mut total_discount = Decimal::ZERO;
+        for app in &params.applications {
+            if app.discount > Decimal::ZERO {
+                total_discount = total_discount
+                    .checked_add(app.discount)
+                    .ok_or_else(|| LedgerError::TooLargeToCompute("the discounts".into()))?;
+            }
+        }
+        let discount_account = if any_discount {
+            Some(self.role_account(&discount_role).ok_or_else(|| {
+                LedgerError::InvalidSettlement(format!(
+                    "{} has no account in these books yet",
+                    discount_role.role
+                ))
+            })?)
+        } else {
+            None
+        };
+        let fee_account = match &params.fee {
+            None => None,
+            Some(fee) => Some(match fee.account {
+                Some(a) => {
+                    self.check_line_account(a)?;
+                    let account = self.chart.get(a).expect("check_line_account passed");
+                    if account.account_type != AccountType::Expense || account.placeholder {
+                        return Err(LedgerError::InvalidFee(format!(
+                            "{} {} is not an expense account: the fee goes to an expense",
+                            account.code, account.name
+                        )));
+                    }
+                    a
+                }
+                None => {
+                    self.check_controls(&[PAYMENT_PROCESSING_FEES])?;
+                    self.role_account(&PAYMENT_PROCESSING_FEES).ok_or_else(|| {
+                        LedgerError::InvalidSettlement(
+                            "payment_processing_fees has no account in these books yet".into(),
+                        )
+                    })?
+                }
+            }),
+        };
+
+        let (control_side, discount_side, cash_side) = match kind {
+            arap::DocumentKind::Invoice => (Side::Credit, Side::Debit, Side::Debit),
+            arap::DocumentKind::Bill => (Side::Debit, Side::Credit, Side::Credit),
+        };
+        let mut rows: Vec<arap::SettlementRow> =
+            Vec::with_capacity(2 * params.applications.len() + 3);
+        for (app, cash) in params.applications.iter().zip(cash.iter()) {
+            rows.push((
+                control_account,
+                control_side,
+                *cash,
+                Some(DocTag {
+                    doc: app.doc,
+                    movement: Movement::Payment,
+                }),
+            ));
+        }
+        for app in &params.applications {
+            if app.discount > Decimal::ZERO {
+                rows.push((
+                    control_account,
+                    control_side,
+                    app.discount,
+                    Some(DocTag {
+                        doc: app.doc,
+                        movement: Movement::Discount,
+                    }),
+                ));
+            }
+        }
+        if let Some(fee) = &params.fee {
+            rows.push((
+                fee_account.expect("a fee has its account"),
+                Side::Debit,
+                fee.amount,
+                None,
+            ));
+        }
+        if let Some(account) = discount_account {
+            rows.push((account, discount_side, total_discount, None));
+        }
+        rows.push((params.cash_account, cash_side, settlement.deposit, None));
+        Ok(rows)
+    }
+
+    /// Refuse a discount the document's terms don't allow without a reason
+    /// ([`Self::settlement_lines`] SCENARIO 4), and a discount on a bill
+    /// with an asset or prepaid line (D-49).
+    fn check_discount(
+        &self,
+        app: &arap::Application,
+        kind: arap::DocumentKind,
+        total: Decimal,
+        doc_date: NaiveDate,
+        date: NaiveDate,
+    ) -> Result<(), LedgerError> {
+        if kind == arap::DocumentKind::Bill
+            && let arap::DocRef::Bill(id) = app.doc
+            && let Some(bill) = self.bills.get(&id)
+        {
+            for line in &bill.lines {
+                let account = match line.account {
+                    Some(a) => a,
+                    None => continue,
+                };
+                if self
+                    .chart
+                    .get(account)
+                    .is_some_and(|a| a.account_type == AccountType::Asset)
+                {
+                    let a = self.chart.get(account).expect("checked above");
+                    return Err(LedgerError::DiscountOnAssetBill {
+                        doc: app.doc.to_string(),
+                        code: a.code.clone(),
+                        name: a.name.clone(),
+                    });
+                }
+            }
+        }
+        let terms = match app.doc {
+            arap::DocRef::Invoice(id) => self.invoices.get(&id).and_then(|i| i.terms.clone()),
+            arap::DocRef::Bill(id) => self.bills.get(&id).and_then(|b| b.terms.clone()),
+        };
+        let (max, by) = match terms {
+            Some(t) => {
+                let max = t
+                    .discount()
+                    .and_then(|d| kernel::discount_max(total, d.percent_bp));
+                (max, t.discount_by(doc_date))
+            }
+            None => (None, None),
+        };
+        let within = max.is_some_and(|m| app.discount <= m) && by.is_some_and(|b| date <= b);
+        let has_reason = app
+            .discount_reason
+            .as_deref()
+            .is_some_and(|r| !r.trim().is_empty());
+        if !within && !has_reason {
+            let because = match (max, by) {
+                (None, _) => {
+                    "its terms state no early-payment discount this version can bound".to_string()
+                }
+                (Some(m), _) if app.discount > m => {
+                    format!("it is more than the terms' {m}")
+                }
+                (Some(_), None) => "its terms state no discount date".to_string(),
+                (Some(_), Some(b)) => format!("it is after the discount date {b}"),
+            };
+            return Err(LedgerError::DiscountNeedsReason {
+                doc: app.doc.to_string(),
+                discount: app.discount,
+                because,
+            });
+        }
+        Ok(())
+    }
+
+    /// Create the accounts a settlement posts to: the control role, the
+    /// discount role when a discount is taken, and the fee's default role.
+    fn ensure_settlement_accounts(
+        &mut self,
+        params: &arap::SettleParams,
+    ) -> Result<(), LedgerError> {
+        let kind = match params.applications.first().map(|a| a.doc) {
+            Some(arap::DocRef::Bill(_)) => arap::DocumentKind::Bill,
+            _ => arap::DocumentKind::Invoice,
+        };
+        let control = match kind {
+            arap::DocumentKind::Invoice => RECEIVABLES,
+            arap::DocumentKind::Bill => PAYABLES,
+        };
+        self.check_controls(&[control])?;
+        self.ensure_control(&control);
+        if params
+            .applications
+            .iter()
+            .any(|a| a.discount > Decimal::ZERO)
+        {
+            let discount_role = match kind {
+                arap::DocumentKind::Invoice => SALES_ALLOWANCES,
+                arap::DocumentKind::Bill => PURCHASE_DISCOUNTS,
+            };
+            self.check_controls(&[discount_role])?;
+            self.ensure_control(&discount_role);
+        }
+        if let Some(fee) = &params.fee
+            && fee.account.is_none()
+        {
+            self.check_controls(&[PAYMENT_PROCESSING_FEES])?;
+            self.ensure_control(&PAYMENT_PROCESSING_FEES);
+        }
+        Ok(())
+    }
+
+    /// [`Self::settle`]'s steps, run inside [`Self::atomically`].
+    fn settle_steps(&mut self, params: arap::SettleParams) -> Result<EntryId, LedgerError> {
+        self.ensure_settlement_accounts(&params)?;
+        let rows = self.settlement_lines(&params)?;
+        let description = if params.description.trim().is_empty() {
+            format!(
+                "Settlement of {} document{}",
+                params.applications.len(),
+                if params.applications.len() == 1 {
+                    ""
+                } else {
+                    "s"
+                }
+            )
+        } else {
+            params.description.clone()
+        };
+        let entry = self.create_entry(params.date, &description);
+        for (account, side, amount, tag) in &rows {
+            let money = Money::new(*amount, self.base_currency);
+            match tag {
+                Some(tag) => self.add_tagged_line(entry, *account, *side, money, *tag)?,
+                None => self.add_line(entry, *account, *side, money)?,
+            }
+        }
+        self.post_entry(entry)?;
+        match params.applications[0].doc {
+            arap::DocRef::Invoice(_) => self.tag_customer(entry, params.party),
+            arap::DocRef::Bill(_) => self.tag_vendor(entry, params.party),
+        }
+        if params.instrument.is_some() {
+            self.set_entry_instrument(entry, params.instrument)?;
+        }
+        for app in &params.applications {
+            self.payment_events
+                .entry(app.doc)
+                .or_default()
+                .push(app.cash);
+            self.refresh_doc(app.doc);
+        }
+        Ok(entry)
+    }
+
     /// Record a customer payment against an invoice. Posts: Dr Cash,
     /// Cr A/R ([`Self::receive_payment_with`], with no payment method or
     /// reference).
@@ -6276,14 +6713,25 @@ impl Ledger {
         cash_account: AccountId,
         details: &arap::PaymentDetails,
     ) -> Result<EntryId, LedgerError> {
-        self.atomically(|l| {
-            l.payment_steps(
-                arap::DocRef::Invoice(invoice_id),
-                date,
-                amount,
-                cash_account,
-                details,
-            )
+        let customer = self
+            .invoices
+            .get(&invoice_id)
+            .ok_or(LedgerError::UnknownInvoice(invoice_id))?
+            .customer_id;
+        self.settle(arap::SettleParams {
+            date,
+            description: details.description(&format!("Payment on invoice {invoice_id}")),
+            cash_account,
+            party: customer,
+            applications: vec![arap::Application {
+                doc: arap::DocRef::Invoice(invoice_id),
+                cash: amount,
+                discount: Decimal::ZERO,
+                discount_reason: None,
+            }],
+            fee: None,
+            instrument: details.instrument,
+            reference: details.reference.clone(),
         })
     }
 
@@ -6335,98 +6783,26 @@ impl Ledger {
         cash_account: AccountId,
         details: &arap::PaymentDetails,
     ) -> Result<EntryId, LedgerError> {
-        self.atomically(|l| {
-            l.payment_steps(
-                arap::DocRef::Bill(bill_id),
-                date,
-                amount,
-                cash_account,
-                details,
-            )
+        let vendor = self
+            .bills
+            .get(&bill_id)
+            .ok_or(LedgerError::UnknownBill(bill_id))?
+            .vendor_id;
+        self.settle(arap::SettleParams {
+            date,
+            description: details.description(&format!("Payment on bill {bill_id}")),
+            cash_account,
+            party: vendor,
+            applications: vec![arap::Application {
+                doc: arap::DocRef::Bill(bill_id),
+                cash: amount,
+                discount: Decimal::ZERO,
+                discount_reason: None,
+            }],
+            fee: None,
+            instrument: details.instrument,
+            reference: details.reference.clone(),
         })
-    }
-
-    /// The steps of a payment ([`Self::receive_payment_with`],
-    /// [`Self::pay_bill_with`]), run inside [`Self::atomically`].
-    fn payment_steps(
-        &mut self,
-        doc: arap::DocRef,
-        date: NaiveDate,
-        amount: Decimal,
-        account: AccountId,
-        details: &arap::PaymentDetails,
-    ) -> Result<EntryId, LedgerError> {
-        if amount <= Decimal::ZERO {
-            return Err(LedgerError::InvalidPaymentAmount(amount));
-        }
-        let (doc_date, ..) = self.doc_header(doc)?;
-        let room = self.payment_room(doc, date)?;
-        if amount > room {
-            return Err(LedgerError::Overpayment(amount, room));
-        }
-        if let Some(pid) = self.closed_period_containing(date) {
-            return Err(LedgerError::ClosedPeriod(pid, date.to_string()));
-        }
-        if date < doc_date {
-            return Err(LedgerError::PaymentBeforeDocument {
-                date,
-                document_date: doc_date,
-            });
-        }
-        details.check()?;
-        if let Some(i) = details.instrument
-            && !self.instruments.contains_key(&i)
-        {
-            return Err(LedgerError::UnknownInstrument(i));
-        }
-        let role = match doc {
-            arap::DocRef::Invoice(_) => RECEIVABLES,
-            arap::DocRef::Bill(_) => PAYABLES,
-        };
-        self.check_controls(&[role])?;
-        // Every check before the entry exists: a refusal leaves no draft.
-        self.check_payment_account(account)?;
-        let control = self.ensure_control(&role);
-        let money = Money::new(amount, self.base_currency);
-        let tag = arap::DocTag {
-            doc,
-            movement: arap::Movement::Payment,
-        };
-        let entry = match doc {
-            arap::DocRef::Invoice(id) => {
-                let entry = self.create_entry(
-                    date,
-                    &details.description(&format!("Payment on invoice {id}")),
-                );
-                self.add_line(entry, account, Side::Debit, money)?;
-                self.add_tagged_line(entry, control, Side::Credit, money, tag)?;
-                entry
-            }
-            arap::DocRef::Bill(id) => {
-                let entry =
-                    self.create_entry(date, &details.description(&format!("Payment on bill {id}")));
-                self.add_tagged_line(entry, control, Side::Debit, money, tag)?;
-                self.add_line(entry, account, Side::Credit, money)?;
-                entry
-            }
-        };
-        self.post_entry(entry)?;
-        match doc {
-            arap::DocRef::Invoice(id) => {
-                let customer = self.invoices[&id].customer_id;
-                self.tag_customer(entry, customer);
-            }
-            arap::DocRef::Bill(id) => {
-                let vendor = self.bills[&id].vendor_id;
-                self.tag_vendor(entry, vendor);
-            }
-        }
-        if details.instrument.is_some() {
-            self.set_entry_instrument(entry, details.instrument)?;
-        }
-        self.payment_events.entry(doc).or_default().push(amount);
-        self.refresh_doc(doc);
-        Ok(entry)
     }
 
     /// Void a document: reverse its own entry (B-9), described "Void
@@ -6741,6 +7117,35 @@ impl Ledger {
         }
     }
 
+    /// Tag the line a new payment event names (plan P4b S6; rules.md B-42
+    /// INVARIANT 3): line `index` of `entry`, when it is on the role's
+    /// account, on the side the movement posts, untagged, and for `amount`.
+    /// Otherwise it stays untagged and the control check lists it; replay
+    /// never refuses (B-28).
+    fn tag_replayed_at(
+        &mut self,
+        entry: EntryId,
+        role: &ControlAccount,
+        index: usize,
+        amount: Decimal,
+        tag: arap::DocTag,
+    ) {
+        let (Some(account), Some(e)) = (self.role_account(role), self.entries.get(&entry)) else {
+            return;
+        };
+        let side = match tag.movement {
+            arap::Movement::Origin => tag.doc.owed_side(),
+            _ => kernel::flip(tag.doc.owed_side()),
+        };
+        let matches = e
+            .lines()
+            .get(index)
+            .is_some_and(|l| l.account == account && l.side == side && l.amount.amount == amount);
+        if matches && !self.line_docs.contains_key(&(entry, index)) {
+            self.tag_line(entry, index, tag);
+        }
+    }
+
     /// Record an invoice without posting: replay support for journaling
     /// stores. The invoice's entry was already rebuilt from its own
     /// `entry.created` / `entry.line_added` / `entry.posted` events; this
@@ -6918,21 +7323,54 @@ impl Ledger {
         amount: Decimal,
         entry_id: EntryId,
     ) -> Result<(), LedgerError> {
+        self.replay_invoice_payment_at(invoice_id, amount, entry_id, None, Decimal::ZERO, None)
+    }
+
+    /// [`Self::replay_invoice_payment`] with the line a new event names and
+    /// the discount it took (plan P4b S6; rules.md B-42 INVARIANT 3). A
+    /// line the event names but that can't be matched (no such line, the
+    /// wrong account or side, or already tagged) stays untagged, and the
+    /// control check lists it: replay never refuses (B-28).
+    #[doc(hidden)]
+    pub fn replay_invoice_payment_at(
+        &mut self,
+        invoice_id: InvoiceId,
+        amount: Decimal,
+        entry_id: EntryId,
+        line: Option<usize>,
+        discount: Decimal,
+        discount_line: Option<usize>,
+    ) -> Result<(), LedgerError> {
         let customer = self
             .invoices
             .get(&invoice_id)
             .ok_or(LedgerError::UnknownInvoice(invoice_id))?
             .customer_id;
         let doc = arap::DocRef::Invoice(invoice_id);
-        self.tag_replayed(
-            entry_id,
-            &RECEIVABLES,
-            Some(amount),
-            arap::DocTag {
-                doc,
-                movement: arap::Movement::Payment,
-            },
-        );
+        let payment = arap::DocTag {
+            doc,
+            movement: arap::Movement::Payment,
+        };
+        match line {
+            Some(line) => {
+                self.tag_replayed_at(entry_id, &RECEIVABLES, line, amount, payment);
+            }
+            None => self.tag_replayed(entry_id, &RECEIVABLES, Some(amount), payment),
+        }
+        if discount > Decimal::ZERO
+            && let Some(line) = discount_line
+        {
+            self.tag_replayed_at(
+                entry_id,
+                &RECEIVABLES,
+                line,
+                discount,
+                arap::DocTag {
+                    doc,
+                    movement: arap::Movement::Discount,
+                },
+            );
+        }
         self.tag_customer(entry_id, customer);
         self.payment_events.entry(doc).or_default().push(amount);
         self.refresh_doc(doc);
@@ -6948,21 +7386,51 @@ impl Ledger {
         amount: Decimal,
         entry_id: EntryId,
     ) -> Result<(), LedgerError> {
+        self.replay_bill_payment_at(bill_id, amount, entry_id, None, Decimal::ZERO, None)
+    }
+
+    /// [`Self::replay_bill_payment`] with the line a new event names and
+    /// the discount it took; as [`Self::replay_invoice_payment_at`].
+    #[doc(hidden)]
+    pub fn replay_bill_payment_at(
+        &mut self,
+        bill_id: BillId,
+        amount: Decimal,
+        entry_id: EntryId,
+        line: Option<usize>,
+        discount: Decimal,
+        discount_line: Option<usize>,
+    ) -> Result<(), LedgerError> {
         let vendor = self
             .bills
             .get(&bill_id)
             .ok_or(LedgerError::UnknownBill(bill_id))?
             .vendor_id;
         let doc = arap::DocRef::Bill(bill_id);
-        self.tag_replayed(
-            entry_id,
-            &PAYABLES,
-            Some(amount),
-            arap::DocTag {
-                doc,
-                movement: arap::Movement::Payment,
-            },
-        );
+        let payment = arap::DocTag {
+            doc,
+            movement: arap::Movement::Payment,
+        };
+        match line {
+            Some(line) => {
+                self.tag_replayed_at(entry_id, &PAYABLES, line, amount, payment);
+            }
+            None => self.tag_replayed(entry_id, &PAYABLES, Some(amount), payment),
+        }
+        if discount > Decimal::ZERO
+            && let Some(line) = discount_line
+        {
+            self.tag_replayed_at(
+                entry_id,
+                &PAYABLES,
+                line,
+                discount,
+                arap::DocTag {
+                    doc,
+                    movement: arap::Movement::Discount,
+                },
+            );
+        }
         self.tag_vendor(entry_id, vendor);
         self.payment_events.entry(doc).or_default().push(amount);
         self.refresh_doc(doc);
@@ -7042,6 +7510,69 @@ impl Ledger {
         let mut rows: Vec<AgingRow> = by_party.into_values().collect();
         rows.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(rows)
+    }
+
+    /// One row per open document in an aging, as of `as_of` (plan P4b S6,
+    /// 8.3.10): the same figures the party rows sum, with the document's
+    /// own number, dates, terms and bucket. Invoices (`invoices` true) or
+    /// bills; due date first.
+    pub fn aging_documents(
+        &self,
+        as_of: NaiveDate,
+        invoices: bool,
+    ) -> Result<Vec<arap::AgingDocument>, LedgerError> {
+        let mut out = Vec::new();
+        for doc in self.documents() {
+            let (name, date, due_date, terms) = match doc {
+                arap::DocRef::Invoice(id) if invoices => {
+                    let i = &self.invoices[&id];
+                    (
+                        self.customers.get(&i.customer_id).map(|c| c.name.clone()),
+                        i.date,
+                        i.due_date,
+                        i.terms.as_ref().map(|t| t.describe()),
+                    )
+                }
+                arap::DocRef::Bill(id) if !invoices => {
+                    let b = &self.bills[&id];
+                    (
+                        self.vendors.get(&b.vendor_id).map(|v| v.name.clone()),
+                        b.date,
+                        b.due_date,
+                        b.terms.as_ref().map(|t| t.describe()),
+                    )
+                }
+                _ => continue,
+            };
+            let Some(st) = self.doc_state(doc, as_of)? else {
+                continue;
+            };
+            if st.outstanding <= Decimal::ZERO {
+                continue;
+            }
+            out.push(arap::AgingDocument {
+                doc,
+                party: name.unwrap_or_default(),
+                date,
+                due_date,
+                terms,
+                total: st.total,
+                paid: st.paid,
+                discounted: st.discounted,
+                outstanding: st.outstanding,
+                bucket: arap::bucket_key(due_date, as_of),
+                days_overdue: st.overdue_days,
+            });
+        }
+        out.sort_by_key(|d| {
+            (
+                d.due_date,
+                match d.doc {
+                    arap::DocRef::Invoice(id) | arap::DocRef::Bill(id) => id,
+                },
+            )
+        });
+        Ok(out)
     }
 
     // ------------------------------------------------------------------

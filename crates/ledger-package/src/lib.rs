@@ -23,6 +23,7 @@
 //!      whichever [`PackageBooks`] they are read through.
 //! ```
 
+mod aging;
 mod attention;
 mod books;
 mod iif;
@@ -34,6 +35,7 @@ mod text;
 mod tins;
 mod vendor_1099;
 
+pub use aging::{AGING_CSV_HEADER, aging_csv, aging_statement};
 pub use attention::{
     Attention, Integrity, Report, Severity, Target, files_1099, find, find_with, reconcile_prompt,
     w9_missing, w9_prompt,

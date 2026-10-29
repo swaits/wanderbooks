@@ -1,47 +1,12 @@
 //! `books.documents`' group: the A/R and A/P documents (invoices and
-//! bills), the payments and voids against them, the read tools
-//! (`books.documents`, `books.document`), the control check and the
-//! agings. Split whole out of `server.rs` (plan/served.md 8.2 U0a): the
-//! tools, their names, descriptions and rules are unchanged
-//! (`docs/mcp-interface.md`; rules.md B-38).
+//! bills), their voids, the read tools (`books.documents`,
+//! `books.document`) and the control check. Split whole out of
+//! `server.rs` (plan/served.md 8.2 U0a); the payments and the agings live
+//! in `tools/settlements.rs` (P4b S6).
 
 use super::*;
 use ledger_core::Terms;
 use ledger_core::arap::{self, PartySnapshot};
-
-/// A payment's method and reference from its parameters (the method by
-/// id or label, books.instruments).
-fn payment_details(
-    store: &Store,
-    p: &PaymentParams,
-) -> Result<ledger_core::PaymentDetails, String> {
-    Ok(ledger_core::PaymentDetails {
-        instrument: p
-            .instrument
-            .as_deref()
-            .map(|r| resolve_instrument(store, r))
-            .transpose()?,
-        reference: p.reference.clone(),
-    })
-}
-
-/// What a payment tool answers: the document's figures after it, derived
-/// from its lines that stand (rules.md B-38), as of the end of the books.
-fn payment_out(
-    ledger: &Ledger,
-    doc: ledger_core::DocRef,
-    entry_id: u64,
-) -> Result<Json<PaymentOut>, String> {
-    let st = ledger
-        .doc_state(doc, chrono::NaiveDate::MAX)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("{} not found", doc_label(doc)))?;
-    Ok(Json(PaymentOut {
-        entry_id,
-        remaining: money(st.outstanding),
-        status: st.status.key().to_string(),
-    }))
-}
 
 /// A document's id.
 fn doc_id(doc: ledger_core::DocRef) -> u64 {
@@ -68,14 +33,6 @@ fn movement_key(m: ledger_core::Movement) -> &'static str {
         ledger_core::Movement::WriteOff => "write_off",
         ledger_core::Movement::Adopted => "adopted",
         ledger_core::Movement::RoleMove => "role_move",
-    }
-}
-
-/// A document's kind and id for people ("invoice 7").
-fn doc_label(doc: ledger_core::DocRef) -> String {
-    match doc {
-        ledger_core::DocRef::Invoice(id) => format!("invoice {id}"),
-        ledger_core::DocRef::Bill(id) => format!("bill {id}"),
     }
 }
 
@@ -848,74 +805,6 @@ impl BooksServer {
     }
 
     #[tool(
-        name = "books.receive_payment",
-        title = "Receive an invoice payment",
-        description = "Record a customer payment against an invoice. Posts Dr Cash / Cr A/R, the receivable line tagged with the invoice (its figures are derived from its lines that stand: a reversed payment no longer counts). Name instrument (how the money moved, books.instruments) and the processor's or bank's reference when known. The books record payments; they never collect them (D-45). Refused above what it owes, before its date, or into an account that isn't cash.",
-        annotations(
-            read_only_hint = false,
-            destructive_hint = true,
-            open_world_hint = false
-        )
-    )]
-    async fn receive_payment(
-        &self,
-        params: Parameters<PaymentParams>,
-    ) -> Result<Json<PaymentOut>, String> {
-        let p = params.0;
-        let mut store = self.lock()?;
-        let cash = resolve_account(&store, &p.cash_account)?;
-        let details = payment_details(&store, &p)?;
-        let entry_id = store
-            .receive_payment_with(
-                p.document_id,
-                parse_date(&p.date)?,
-                parse_amount(&p.amount)?,
-                cash,
-                &details,
-            )
-            .map_err(|e| e.to_string())?;
-        payment_out(
-            store.ledger(),
-            ledger_core::DocRef::Invoice(p.document_id),
-            entry_id,
-        )
-    }
-
-    #[tool(
-        name = "books.pay_bill",
-        title = "Pay a bill",
-        description = "Record a payment of a vendor bill. Posts Dr A/P / Cr Cash, the payable line tagged with the bill (its figures are derived from its lines that stand: a reversed payment no longer counts). Name instrument (how the money moved, books.instruments: a card payment is left out of 1099-NEC) and the payment's reference when known. The books record payments; they never make them (D-45). Refused above what it owes, before its date, or from an account that isn't cash.",
-        annotations(
-            read_only_hint = false,
-            destructive_hint = true,
-            open_world_hint = false
-        )
-    )]
-    async fn pay_bill(
-        &self,
-        params: Parameters<PaymentParams>,
-    ) -> Result<Json<PaymentOut>, String> {
-        let p = params.0;
-        let mut store = self.lock()?;
-        let cash = resolve_account(&store, &p.cash_account)?;
-        let details = payment_details(&store, &p)?;
-        let entry_id = store
-            .pay_bill_with(
-                p.document_id,
-                parse_date(&p.date)?,
-                parse_amount(&p.amount)?,
-                cash,
-                &details,
-            )
-            .map_err(|e| e.to_string())?;
-        payment_out(
-            store.ledger(),
-            ledger_core::DocRef::Bill(p.document_id),
-            entry_id,
-        )
-    }
-
-    #[tool(
         name = "books.void_document",
         title = "Void an invoice or bill",
         description = "Void an invoice or bill that should never have existed (a duplicate, the wrong customer or vendor): reverses its own entry, dated as given, with the reason. It keeps its number and shows as void; nothing is deleted. Refused while a payment stands on it (reverse that payment first: the refusal names it), when it is void already, before its date, or in a closed period. To lower a valid document, not void it: a credit memo (later). Posts at once.",
@@ -1228,79 +1117,5 @@ impl BooksServer {
         let ledger = store.ledger();
         let checks = ledger.control_check(as_of).map_err(|e| e.to_string())?;
         Ok(Json(control_check_out(ledger, as_of, &checks)))
-    }
-
-    #[tool(
-        name = "books.ar_aging",
-        title = "Receivables aging",
-        description = described(
-            "A/R aging report as of a date: outstanding balances per customer, bucketed by days past due (current, 30, 60, 90, 90+).",
-            ledger_core::calendar::PeriodKind::AsOf
-        ),
-        annotations(read_only_hint = true, open_world_hint = false)
-    )]
-    async fn ar_aging(&self, params: Parameters<AgingParams>) -> Result<Json<AgingOut>, String> {
-        let p = params.0;
-        let as_of = self.as_of(p.as_of.as_deref())?;
-        let store = self.lock()?;
-        let rows = store
-            .ledger()
-            .ar_aging(as_of)
-            .map_err(|e| e.to_string())?
-            .into_iter()
-            .map(|r| {
-                let total = r.total().map_err(|e| e.to_string())?.to_string();
-                Ok(AgingRowOut {
-                    name: r.name,
-                    current: money(r.current),
-                    days_30: money(r.days_30),
-                    days_60: money(r.days_60),
-                    days_90: money(r.days_90),
-                    days_90_plus: money(r.days_90_plus),
-                    total,
-                })
-            })
-            .collect::<Result<_, String>>()?;
-        Ok(Json(AgingOut {
-            as_of: as_of.to_string(),
-            rows,
-        }))
-    }
-
-    #[tool(
-        name = "books.ap_aging",
-        title = "Payables aging",
-        description = described(
-            "A/P aging report as of a date: outstanding balances per vendor, bucketed by days past due (current, 30, 60, 90, 90+).",
-            ledger_core::calendar::PeriodKind::AsOf
-        ),
-        annotations(read_only_hint = true, open_world_hint = false)
-    )]
-    async fn ap_aging(&self, params: Parameters<AgingParams>) -> Result<Json<AgingOut>, String> {
-        let p = params.0;
-        let as_of = self.as_of(p.as_of.as_deref())?;
-        let store = self.lock()?;
-        let rows = store
-            .ledger()
-            .ap_aging(as_of)
-            .map_err(|e| e.to_string())?
-            .into_iter()
-            .map(|r| {
-                let total = r.total().map_err(|e| e.to_string())?.to_string();
-                Ok(AgingRowOut {
-                    name: r.name,
-                    current: money(r.current),
-                    days_30: money(r.days_30),
-                    days_60: money(r.days_60),
-                    days_90: money(r.days_90),
-                    days_90_plus: money(r.days_90_plus),
-                    total,
-                })
-            })
-            .collect::<Result<_, String>>()?;
-        Ok(Json(AgingOut {
-            as_of: as_of.to_string(),
-            rows,
-        }))
     }
 }

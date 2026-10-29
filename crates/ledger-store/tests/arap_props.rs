@@ -71,6 +71,16 @@ enum Op {
     Close(u8),
     /// A hand line on receivables (true) or payables: always refused.
     Hand(bool, i64),
+    /// One payment settling two documents of one party, the first with a
+    /// discount and (on invoices) a processor's fee.
+    Settle {
+        a: usize,
+        b: usize,
+        n: u8,
+        cash: i64,
+        discount: i64,
+        fee: i64,
+    },
 }
 
 fn arb_op() -> impl Strategy<Value = Op> {
@@ -83,6 +93,15 @@ fn arb_op() -> impl Strategy<Value = Op> {
         2 => (0usize..8, 0u8..90).prop_map(|(k, n)| Op::MarkSent(k, n)),
         1 => (1u8..4).prop_map(Op::Close),
         1 => (any::<bool>(), 1i64..10_000).prop_map(|(r, c)| Op::Hand(r, c)),
+        2 => (0usize..8, 0usize..8, 0u8..90, 1i64..20_000, 0i64..2_000, 0i64..500)
+            .prop_map(|(a, b, n, cash, discount, fee)| Op::Settle {
+                a,
+                b,
+                n,
+                cash,
+                discount,
+                fee,
+            }),
     ]
 }
 
@@ -219,6 +238,67 @@ fn run(s: &mut Store, k: &Setup, ops: &[Op], docs: &mut Vec<DocRef>) -> Result<(
                         })
                     })
                     .map(drop)
+            }
+            Op::Settle { .. } if docs.is_empty() => Ok(()),
+            Op::Settle {
+                a,
+                b,
+                n,
+                cash,
+                discount,
+                fee,
+            } => {
+                let first = docs[a % docs.len()];
+                let mut second = docs[b % docs.len()];
+                if second == first && docs.len() > 1 {
+                    second = docs[(b + 1) % docs.len()];
+                }
+                let same_kind = matches!(
+                    (first, second),
+                    (DocRef::Invoice(_), DocRef::Invoice(_)) | (DocRef::Bill(_), DocRef::Bill(_))
+                );
+                if !same_kind {
+                    // One party and one kind per settlement: not this pair.
+                    Ok(())
+                } else {
+                    let party = match first {
+                        DocRef::Invoice(id) => s.ledger().get_invoice(id).map(|i| i.customer_id),
+                        DocRef::Bill(id) => s.ledger().get_bill(id).map(|v| v.vendor_id),
+                    }
+                    .unwrap();
+                    let invoices = matches!(first, DocRef::Invoice(_));
+                    let money = cents(cash);
+                    let apps = vec![
+                        ledger_core::Application {
+                            doc: first,
+                            cash: money,
+                            discount: cents(discount),
+                            discount_reason: (discount > 0)
+                                .then(|| format!("a late discount, n {n}")),
+                        },
+                        ledger_core::Application {
+                            doc: second,
+                            cash: money,
+                            discount: Decimal::ZERO,
+                            discount_reason: None,
+                        },
+                    ];
+                    s.settle(ledger_core::SettleParams {
+                        date: day(n),
+                        description: "two documents, one payment".into(),
+                        cash_account: k.bank,
+                        party,
+                        applications: apps,
+                        fee: (invoices && fee > 0).then_some(ledger_core::Fee {
+                            amount: cents(fee),
+                            account: None,
+                            vendor: None,
+                        }),
+                        instrument: None,
+                        reference: None,
+                    })
+                    .map(drop)
+                }
             }
             Op::Hand(receivables, c) => {
                 let code = if receivables { "1200" } else { "2000" };

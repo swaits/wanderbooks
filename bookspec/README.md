@@ -421,6 +421,16 @@ the 1st, among others) and `untagged_control_line` (a hand line on a
 receivables or payables control account, which only a document may post
 to: rules.md B-38's control guard).
 
+The refusals of the ledger's own laws (BS-entry, BS-ledger, BS-period)
+are spelled `unbalanced` (debits differ from credits), `too_few_lines`,
+`negative_amount` and `zero_amount` (BS-entry-2), `finer_than_minor_unit`
+(an amount finer than the currency's smallest unit, BS-ledger-1),
+`parent_type_mismatch` (a child account of another type than its parent,
+BS-ledger-2), `already_reversed` (BS-ledger-6) and `period_closed` (an
+entry dated inside a closed period, BS-period-2). A refused entry may
+carry the amount the books refuse (zero or negative, in the amount's
+exact decimal spelling); an accepted one carries a positive amount.
+
 `cash_flow` (rules.md B-14): the statement of cash flows for `[from, to]`.
 
 | key | the value |
@@ -452,6 +462,68 @@ its shape (a key the shape doesn't have is refused), its setup, and every
 event taken or refused as it says, on the books' own store. Each query is
 then checked by the crate that answers it (the table above), so the shape
 never rots either.
+
+## The specification, the laws, the checks (P13 steps 4 and 5)
+
+- `spec/` is the specification text: `00-model.md` (definitions, the
+  model, the five laws, how an example is checked) and one file per area
+  (`entry.md`, `ledger.md`, ... `format.md`), each rule a section with its
+  status, its MUST/MUST NOT/MAY statement, its sources (a vendored source
+  with a verbatim pin, or an exact external reference), its symbolic form,
+  its examples by id and its applicability. `spec/rules-index.md` is the
+  table from `docs/spec/rules.md`'s B-1 to B-45. The checker's
+  `tests/spec.rs` fails the build when a rule lacks its section, a
+  statement lacks MUST/SHOULD/MAY, a pin is not verbatim in its vendored
+  source, a rule's examples differ from the catalogue's, or the edition
+  passes 60 pages.
+- `lean/` is the five laws as Lean theorems (`Bookspec.law_*`), ported
+  from `verify/lean`; `lake build` in that directory builds them and
+  `lake env lean Audit.lean` prints their axioms, which the checker's
+  `tests/lean.rs` requires to be only `propext`, `Quot.sound` and
+  `Classical.choice`.
+- The checker derives expected figures itself (`checker/src/derive.rs`):
+  an engine-free reference model with exact decimals replays an example's
+  entries, reversals, close, bills and invoices and computes its
+  `trial_balance`, `balances`, `profit_and_loss` and `entry` figures from
+  the rules' symbolic forms, and checks that each refusal the example
+  expects is justified by its rule. An example whose figure disagrees
+  fails `checker/tests/derive.rs`, before any engine is consulted. What
+  the model does not cover is reported as skipped, never passed.
+- `gnucash/` is the second engine: GnuCash 5.10 in the oracle container
+  (`just oracle` builds it), driven through `oracle/gnucash/books.py`.
+  `cargo test -p bookspec-gnucash -- --ignored` runs it (it needs
+  Docker). It claims the rules whose examples ask only for balances and
+  passes `BS-entry-3`, `BS-ledger-3`, `BS-statement-1` and
+  `BS-statement-2`.
+
+### GnuCash, the second engine: where it differs
+
+GnuCash is a cross-check, never the authority (`docs/oracle.md`, "Who is
+right"). It differs from three examples, each settled from the sources
+and pinned by `gnucash/tests/gnucash.rs`:
+
+- **`entry-an-unbalanced-entry-is-refused`.** GnuCash accepts debits of
+  100.00 against credits of 90.00 and parks the ten dollars in an
+  `Imbalance-USD` account of its own making; the accounts it lists no
+  longer net to zero. BS-entry-1 (Pacioli ch. 36; IRS Pub. 583: "the
+  total debits must equal the total credits") says such an entry is
+  refused. The example stands; GnuCash records a difference, flagged for
+  the user to repair, instead of refusing it.
+- **`entry-a-line-amount-is-positive`.** GnuCash takes a credit of
+  minus 100.00 as a debit of 100.00, both lines debits, and parks 200.00
+  in the Imbalance account. BS-entry-2 is a CONVENTION (no authority
+  forbids a negative amount); the example stands as the convention the
+  specification chose, and GnuCash's reading is the very ambiguity the
+  convention removes.
+- **`ledger-a-fraction-of-a-cent-is-refused`.** GnuCash rounds 10.005 to
+  10.01 silently. BS-ledger-1 is a CHOICE (the owner, 2026-10-13, found
+  by the first GnuCash cross-check): the books never round silently. An
+  engine's pick is its own; GnuCash's is the other option, recorded.
+
+The example `ledger-a-mistake-is-reversed-never-erased` and the others
+that need an engine's own reversal link or entry query are not claimed by
+the GnuCash adapter: GnuCash has no reversal link, so it cannot answer
+`already_reversed`.
 
 ## Licence and sources
 

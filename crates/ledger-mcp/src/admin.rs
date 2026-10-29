@@ -144,7 +144,7 @@ pub enum Request {
     },
     /// The live tokens.
     TokenList,
-    /// Whether a token kept elsewhere (this computer's keyring) is the
+    /// Whether a token kept elsewhere (its token file) is the
     /// live one of its books and name: asked by its SHA-256 alone, never
     /// its text (INVARIANT 6).
     TokenCheck {

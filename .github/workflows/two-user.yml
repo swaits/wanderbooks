@@ -7,10 +7,8 @@
 # job sets it, so a skip here is a failure's cousin: the job only goes
 # green when both tests ran.
 #
-# The token is minted with the test knob `file_keyring=1` (a file under
-# the root's run/, 0600, ledger-host tokens.rs INVARIANT 3), because a
-# runner has no Secret Service; deploy/README.md says what a real server
-# does instead.
+# The token is minted as on a real server: `token create` keeps it in a
+# 0600 file under the root's run/ (ledger-host tokens.rs INVARIANT 3).
 name: two-user
 on:
   push:
@@ -93,16 +91,13 @@ jobs:
           as_books "$WB" books adopt /tmp/source --root /srv/wanderbooks --id acme --yes
           as_books "$WB" books create tunnel --root /srv/wanderbooks
 
-          # Tokens for the agent account (the test), kept in the root's
-          # run/ by the test knob; a real server uses its OS keyring.
-          as_books "$WB" token create --root /srv/wanderbooks --book acme --name ci \
-                     --test-knobs file_keyring=1 >/dev/null
+          # Tokens for the agent account (the test), kept in the root's run/.
+          as_books "$WB" token create --root /srv/wanderbooks --book acme --name ci >/dev/null
           TOKEN=$(as_books "$WB" token print --root /srv/wanderbooks --book acme \
-                     --name ci --test-knobs file_keyring=1)
-          as_books "$WB" token create --root /srv/wanderbooks --book tunnel --name ci \
-                     --test-knobs file_keyring=1 >/dev/null
+                     --name ci)
+          as_books "$WB" token create --root /srv/wanderbooks --book tunnel --name ci >/dev/null
           WRITE_TOKEN=$(as_books "$WB" token print --root /srv/wanderbooks --book tunnel \
-                     --name ci --test-knobs file_keyring=1)
+                     --name ci)
 
           # The check, as the agent account, over the loopback door.
           WB_TWO_USER=1 \

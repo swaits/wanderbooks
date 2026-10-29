@@ -255,7 +255,7 @@ impl Books {
         let Some(presented) = presented else {
             return Err((
                 crate::access::UNAUTHORIZED,
-                "these books need a token, and this request carried none: the human makes one with `wanderbooks token create` (if one was made, `wanderbooks token check` says whether this computer's keyring still gives it)"
+                "these books need a token, and this request carried none: the human makes one with `wanderbooks token create` (if one was made, `wanderbooks token check` says whether its token file still gives it)"
                     .into(),
             ));
         };

@@ -27,9 +27,6 @@ pub struct Knobs {
     pub queue_wait: Duration,
     /// How long a command waits for the books to open.
     pub open_wait: Duration,
-    /// Keep agents' tokens in files in the root's `run/`, not the OS
-    /// keyring (tests: tokens.rs INVARIANT 3). `file_keyring=1`.
-    pub file_keyring: bool,
     /// How long the books stay unwritten before the server backs them up
     /// (plan 3.7: 30 s), passed to the server as `--backup-quiet`.
     pub backup_quiet: Duration,
@@ -48,7 +45,6 @@ impl Default for Knobs {
             init_wait: Duration::from_secs(5),
             queue_wait: Duration::from_secs(60),
             open_wait: Duration::from_secs(120),
-            file_keyring: false,
             backup_quiet: Duration::from_secs(30),
             drill_first: Duration::from_secs(60),
         }
@@ -66,14 +62,6 @@ impl Knobs {
             let (name, value) = pair
                 .split_once('=')
                 .ok_or_else(|| format!("{FLAG}: {pair:?} isn't name=milliseconds"))?;
-            if name == "file_keyring" {
-                k.file_keyring = match value {
-                    "1" => true,
-                    "0" => false,
-                    _ => return Err(format!("{FLAG}: file_keyring is 1 or 0")),
-                };
-                continue;
-            }
             let ms: u64 = value
                 .parse()
                 .map_err(|_| format!("{FLAG}: {value:?} isn't a number of milliseconds"))?;
@@ -113,9 +101,6 @@ impl Knobs {
             if now != default {
                 parts.push(format!("{name}={}", now.as_millis()));
             }
-        }
-        if self.file_keyring {
-            parts.push("file_keyring=1".into());
         }
         (!parts.is_empty()).then(|| parts.join(","))
     }
@@ -168,10 +153,6 @@ mod tests {
         let args = k.args();
         assert_eq!(args[0], FLAG);
         assert_eq!(Knobs::parse(&args[1]).unwrap(), k);
-        let keyring = Knobs::parse("file_keyring=1,backoff=5").unwrap();
-        assert!(keyring.file_keyring);
-        assert_eq!(Knobs::parse(&keyring.args()[1]).unwrap(), keyring);
-        assert!(!Knobs::parse("file_keyring=0").unwrap().file_keyring);
         let one = Knobs::parse("close_after=1").unwrap();
         assert_eq!(one.to_arg().as_deref(), Some("close_after=1"));
     }
@@ -183,7 +164,7 @@ mod tests {
             "close_after=x",
             "nope=1",
             "close_after=-1",
-            "file_keyring=yes",
+            "token_file=1",
         ] {
             assert!(Knobs::parse(bad).is_err(), "{bad}");
         }

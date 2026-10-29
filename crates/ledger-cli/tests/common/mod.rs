@@ -16,7 +16,7 @@
 //!      the test temp dir finds it), made by `wanderbooks setup --home`;
 //!      its server runs with an empty environment but PATH, and HOME and
 //!      XDG_CONFIG_HOME inside the home, on that home's root alone: never
-//!      this account's root, keyring, or sockets.
+//!      this account's root, tokens, or sockets.
 //!   2. A server is ended by its own child's PID, never by a search.
 //!   3. Settings a test gives as a settings file's text go into the books
 //!      as an agent puts them there: the changes ledger-config's import

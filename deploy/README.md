@@ -123,27 +123,12 @@ sudo -u wanderbooks -H /usr/local/bin/wanderbooks token print \
      --root /srv/wanderbooks --book acme --name laptop
 ```
 
-`token create` keeps the text in the server account's OS keyring and
-`token print` shows it once; copy it to that client and nowhere else.
-Revoke it with `token revoke --book acme --name laptop` when a client is
-lost.
-
-A headless machine has no Secret Service by default, and `token create`
-refuses to mint a token it cannot keep. Run the two commands inside a
-session that has one, for example:
-
-```sh
-sudo -u wanderbooks -H dbus-run-session -- sh -c '
-  gnome-keyring-daemon --unlock --components=secrets >/dev/null
-  /usr/local/bin/wanderbooks token create --root /srv/wanderbooks --book acme --name laptop
-  /usr/local/bin/wanderbooks token print  --root /srv/wanderbooks --book acme --name laptop
-'
-```
-
-The keyring lives only for that session, which is enough: the text is
-copied to the laptop, and the server checks the token's SHA-256 from the
-books, not from the keyring. (Making a token without keeping it anywhere
-is not a command; if your machine has a persistent Secret Service, use it.)
+`token create` keeps the text in a file in the server account's private
+data root (mode 0600, readable by that account alone) and `token print`
+shows it once; copy it to that client and nowhere else. It works on a
+headless machine as it is. The server checks the token's SHA-256 from the
+books. Revoke it with `token revoke --book acme --name laptop` when a
+client is lost.
 
 ## 6. TLS and the door
 
@@ -201,8 +186,8 @@ export WANDERBOOKS_ACME_TOKEN='<the token from step 5>'
 ```
 
 The plan's local rule is that no client configuration holds a token (the
-bridge reads the keyring). For a remote machine there is no command yet
-that keeps a remote token in the client's keyring, so this recipe puts it
+bridge reads its token file). For a remote machine there is no command yet
+that keeps a remote token in the client's own token file, so this recipe puts it
 in Claude's configuration (mode 0600) or in Codex's environment. That
 gap is recorded in `plan/served.md` 8.2 P9a's As-built block.
 

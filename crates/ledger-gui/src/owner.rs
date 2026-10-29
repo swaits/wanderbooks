@@ -339,7 +339,7 @@ impl OwnerMenu {
                         if ui
                             .button(format!("{} Connect {}", icon::PLUGS_CONNECTED, agent.label()))
                             .on_hover_text(format!(
-                                "Let {} reach these books (it keeps their token in this computer's keyring)",
+                                "Let {} reach these books (it keeps their token in a file in the data root)",
                                 agent.label()
                             ))
                             .clicked()

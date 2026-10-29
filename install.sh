@@ -3,11 +3,8 @@
 #
 #   curl -fsSL https://wanderbooks.ai/install.sh | sh -s -- acme
 #
-# Linux, and macOS with one gap: agents' tokens live in the OS keyring and
-# only the Linux store exists until the macOS app (plan P11a), so on macOS
-# this installs, sets up and starts the books but cannot connect an agent
-# yet (it says so instead of failing). On Windows, run it inside WSL2
-# (Ubuntu): the viewer opens as a normal window on Windows 11.
+# Linux and macOS. On Windows, run it inside WSL2 (Ubuntu): the viewer
+# opens as a normal window on Windows 11.
 #
 # Installs Rust if needed, then the one `wanderbooks` program (into
 # ~/.cargo/bin), then makes the books' private folder (`wanderbooks setup`).
@@ -79,9 +76,7 @@ if [ $# -gt 0 ]; then
     if ! "$wb" books list | cut -d' ' -f1 | grep -qx "$1"; then
         "$wb" books create "$1"
     fi
-    if [ "$os" = macos ]; then
-        say "Done. Your books \"$1\" exist and 'wanderbooks gui $1' shows them. Connecting Claude Code waits for the macOS keyring store (the app, plan P11a); until then agents connect from Linux."
-    elif command -v claude >/dev/null 2>&1; then
+    if command -v claude >/dev/null 2>&1; then
         "$wb" connect claude --book "$1"
         say "Done. Start Claude Code and say hello: your books \"$1\" are ready."
     else

@@ -494,7 +494,9 @@ recorded once with refusals, a damaged token log refusing every agent),
 `open_while_held.rs` (the bridge picking up a token made mid-session),
 `setup.rs` (the passphrase prompts, at a real terminal).
 
-**One keyring item per token (2026-10-22).** On the live books a
+**One keyring item per token (2026-10-22; superseded by U0e, D-63: there
+is no keyring, so no second item and no locked or unreachable one, and
+the tests named below were replaced, see "U0e" at the end).** On the live books a
 reconnected bridge got no token from a keyring that couldn't be read,
 was told to "make a token", and after `token create --replace` ran on a
 token the keyring no longer gave while `download` read a revoked one.
@@ -3086,14 +3088,14 @@ loopback door (`--http`) for Caddy or a tunnel.
   the repository's `p2-served` fixture into a desktop root at this version,
   copies the book as the transport (D-31), adopts it into
   `/srv/wanderbooks` behind `--isolation enforced --http`, mints a token
-  with the `file_keyring` test knob (a runner has no Secret Service), and
-  runs the test as the runner. `deploy/README.md` is the same recipe by
+  with `token create` as on a real server (the knob that once kept it in a
+  file is gone, U0e: D-63), and runs the test as the runner. `deploy/README.md` is the same recipe by
   hand; the job does not install the systemd unit (it drives `serve` with
   the same flags), so the unit's lines are checked by the test's file read
   and by review, not executed as a unit.
 - **Not covered:** the recipe walked on a clean VM by someone other than
   its author (Done when 2), a real TLS tunnel (Tailscale Funnel or Caddy)
-  and a real Secret Service on a headless server. Those are the owner's
+  and a headless server of the owner's own. Those are the owner's
   and the EM's checks; the As-built block says so.
 - **Docs:** `docs/architecture.md` "Self-host", `docs/mcp-interface.md`
   (`books.start`'s two `isolation` values), `docs/parity.md` (no semantic
@@ -3533,6 +3535,11 @@ arms, the 8 KiB cut, the 64 KiB hand-over threshold and `page - 1`.
 
 ## P11a step 0: keyring stores for macOS and Windows (2026-10-29)
 
+*Superseded the same day by D-63 (unit U0e, below): the `file_keyring`
+knob, the `Items` trait, the OS stores, `os_keyring_keeps_and_forgets`
+and the `portable` job's step that ran it are gone; the tests named here
+no longer exist.*
+
 No new test body: the keeper's laws are tested once, over the `Items`
 trait, through the `file_keyring` knob (`the_test_keyring_keeps_and_forgets`,
 `two_items_for_one_token_are_said_never_one_of_them_given`,
@@ -3549,3 +3556,41 @@ Secret Service run needs a desktop): the CI run is the evidence.
 **For P12 (mutation targets, none run, D-33):** `tokens.rs`'s `os` modules
 are not reachable by mutation testing (they need the real OS store); the
 `Items` logic they share is, through the file store.
+
+## U0e: tokens in a file, the OS keyring removed (2026-10-29, D-63)
+
+An agent's token is a 0600 file under the root's `run/tokens/`, on every
+OS, written atomically (a temporary file made 0600 before any byte is
+written, synced, then renamed over the old one). Tests, all in
+`crates/ledger-host/src/tokens.rs` unless noted:
+`an_account_names_the_root_by_hash_and_the_book_and_token` (kept);
+`the_token_file_keeps_and_forgets` (was `the_test_keyring_keeps_and_forgets`,
+no knob); `a_token_file_is_owner_only` (new: mode 0600, folder 0700, a
+second create for the same name replaces the first, one file and no
+temporary left); `an_unreadable_token_file_is_an_error_never_no_token`
+(new: a folder in the file's place; replaces
+`a_locked_or_unreachable_keyring_is_an_error_never_no_token`). Deleted
+because the case cannot exist with one file per token:
+`two_items_for_one_token_are_said_never_one_of_them_given`,
+`a_token_kept_is_read_back_or_refused` (the read-back is still done by
+`commands.rs::make_token`, and the CLI test below covers a token the file
+cannot keep) and the ignored `os_keyring_keeps_and_forgets`.
+`bridge.rs`: `a_token_file_that_cant_be_read_is_said_never_make_a_token`
+and `each_new_session_reads_the_token_file_again` (renamed from the
+keyring versions; the unreadable case is a folder in the file's place).
+`crates/ledger-cli/tests/open_while_held.rs`:
+`token_check_says_where_the_token_file_stands_and_an_unreadable_one_is_said`
+(was `token_check_one_item_per_token_and_a_keyring_that_cant_be_read`; the
+second-item parts are gone, the file's mode is asserted) and
+`connect_makes_anew_a_token_whose_file_is_gone_and_says_when_an_agent_refuses`
+(renamed). `knobs.rs`: `file_keyring` is now refused like any unknown knob.
+`two-user.yml` mints its tokens with no knob (provable only on GitHub).
+
+**For P12 (mutation targets, none run, D-33):** `tokens.rs`'s `Keeper::set`
+(the temporary file's mode and the rename: a mutant that writes the final
+file directly or with a wider mode must die on `a_token_file_is_owner_only`),
+`Keeper::get`'s `NotFound` arm (a mutant that turns any error into "no
+token" must die on `an_unreadable_token_file_is_an_error_never_no_token`),
+`Keeper::delete`'s `NotFound` arm, and `Account::key`'s three parts
+(`an_account_names_the_root_by_hash_and_the_book_and_token`);
+`bridge.rs::token_file_refusal`'s `holds_token` guard.

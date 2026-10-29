@@ -1316,10 +1316,9 @@ fn prompt_reader(context: &RequestContext<RoleServer>) -> Result<(), rmcp::Error
             crate::access::UNAUTHORIZED,
             None,
         )),
-        Some(c) if !c.may(ledger_store::auth::Scope::Read) => Err(rmcp::ErrorData::invalid_request(
-            crate::access::INSUFFICIENT_SCOPE,
-            None,
-        )),
+        Some(c) if !c.may(ledger_store::auth::Scope::Read) => Err(
+            rmcp::ErrorData::invalid_request(crate::access::INSUFFICIENT_SCOPE, None),
+        ),
         Some(_) => Ok(()),
     }
 }
@@ -1468,26 +1467,26 @@ enum ShownDates {
 // Tools
 // ---------------------------------------------------------------------------
 
-#[path = "guards.rs"]
-mod guards;
-#[path = "next_steps.rs"]
-mod next_steps;
 #[path = "tools/access.rs"]
 mod access_tools;
 #[path = "tools/backup.rs"]
 mod backup_tools;
 #[path = "tools/files.rs"]
 mod files;
+#[path = "guards.rs"]
+mod guards;
 #[path = "tools/instruments.rs"]
 mod instruments;
 #[path = "tools/journal.rs"]
 mod journal_tools;
-#[path = "tools/prompts.rs"]
-mod prompts;
 #[path = "tools/kept.rs"]
 mod kept;
+#[path = "next_steps.rs"]
+mod next_steps;
 #[path = "tools/projects.rs"]
 mod projects;
+#[path = "tools/prompts.rs"]
+mod prompts;
 pub use kept::SettingKeyOut;
 
 // The tool groups: one file each (plan/served.md 8.2 U0a). A unit adds a
@@ -1616,7 +1615,10 @@ impl BooksServer {
                 // `since_seq` (what was posted since a journal line) wins
                 // over `since`; with neither, this month so far.
                 let since_seq = query_param(query, "since_seq")
-                    .map(|n| n.parse::<u64>().map_err(|_| format!("bad since_seq in {uri}")))
+                    .map(|n| {
+                        n.parse::<u64>()
+                            .map_err(|_| format!("bad since_seq in {uri}"))
+                    })
                     .transpose()?;
                 let since = if since_seq.is_some() {
                     None

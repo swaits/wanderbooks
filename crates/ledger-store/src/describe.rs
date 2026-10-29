@@ -61,11 +61,24 @@ pub struct HistoryFilter {
 
 /// A subject as `kind:id`, parsed.
 pub fn parse_subject(text: &str) -> Result<(String, u64), String> {
-    let bad = || format!("subject {text:?}: give kind:id, like entry:12, invoice:3, bill:3, account:10, party:5 or asset:2");
+    let bad = || {
+        format!(
+            "subject {text:?}: give kind:id, like entry:12, invoice:3, bill:3, account:10, party:5 or asset:2"
+        )
+    };
     let (kind, id) = text.split_once(':').ok_or_else(bad)?;
     let kinds = [
-        "entry", "invoice", "bill", "account", "party", "asset", "period", "schedule",
-        "reconciliation", "payroll_run", "project",
+        "entry",
+        "invoice",
+        "bill",
+        "account",
+        "party",
+        "asset",
+        "period",
+        "schedule",
+        "reconciliation",
+        "payroll_run",
+        "project",
     ];
     if !kinds.contains(&kind.trim()) {
         return Err(bad());
@@ -335,12 +348,19 @@ mod tests {
             json!({"changes": [{"key": "company.ein", "value": "12-3456789"}]}),
         );
         let s = describe(&l);
-        assert!(s.contains("company.ein") && !s.contains("12-3456789"), "{s}");
+        assert!(
+            s.contains("company.ein") && !s.contains("12-3456789"),
+            "{s}"
+        );
     }
 
     #[test]
     fn a_full_tin_in_a_description_is_masked() {
-        let l = line(3, "entry.created", json!({"id": 1, "description": "TIN 123-45-6789"}));
+        let l = line(
+            3,
+            "entry.created",
+            json!({"id": 1, "description": "TIN 123-45-6789"}),
+        );
         assert!(!describe(&l).contains("6789"), "{}", describe(&l));
     }
 
@@ -350,7 +370,11 @@ mod tests {
             .map(|i| {
                 line(
                     i,
-                    if i % 2 == 0 { "entry.posted" } else { "entry.created" },
+                    if i % 2 == 0 {
+                        "entry.posted"
+                    } else {
+                        "entry.created"
+                    },
                     json!({"entry_id": i % 3, "id": i % 3}),
                 )
             })

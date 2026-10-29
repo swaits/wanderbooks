@@ -8789,10 +8789,7 @@ impl Ledger {
             )));
         }
         if old.source == c.source {
-            return Err(bad(format!(
-                "convention {} already has that source",
-                c.id
-            )));
+            return Err(bad(format!("convention {} already has that source", c.id)));
         }
         let reason = crate::settings::long_text("reason", reason, crate::settings::MAX_LONG_TEXT)
             .map_err(bad)?;
@@ -8821,10 +8818,11 @@ impl Ledger {
         reason: &str,
     ) -> Result<(crate::conventions::DecisionSource, String), LedgerError> {
         let bad = LedgerError::InvalidConvention;
-        let old = self
-            .conventions
-            .decision(id)
-            .ok_or_else(|| bad(format!("decision {id} doesn't exist: books.decisions lists them")))?;
+        let old = self.conventions.decision(id).ok_or_else(|| {
+            bad(format!(
+                "decision {id} doesn't exist: books.decisions lists them"
+            ))
+        })?;
         let source = crate::conventions::check_decision_source(source).map_err(bad)?;
         if old.new.source() == source {
             return Err(bad(format!("decision {id} already has that source")));
@@ -8858,7 +8856,9 @@ impl Ledger {
         let bad = LedgerError::InvalidConvention;
         source.check().map_err(bad)?;
         let old = self.conventions.open_item(id).ok_or_else(|| {
-            bad(format!("unknown open item {id}: books.open_items lists them"))
+            bad(format!(
+                "unknown open item {id}: books.open_items lists them"
+            ))
         })?;
         if old.new.source == *source {
             return Err(bad(format!("open item {id} already has that source")));

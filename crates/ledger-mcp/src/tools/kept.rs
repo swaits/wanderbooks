@@ -1552,11 +1552,9 @@ impl BooksServer {
         if let Some(id) = p.revises {
             // A source correction: the decision's words stay (the ones
             // given, if any, must be the ones it has).
-            let old = store
-                .ledger()
-                .conventions()
-                .decision(id)
-                .ok_or_else(|| format!("decision {id} doesn't exist: books.decisions lists them"))?;
+            let old = store.ledger().conventions().decision(id).ok_or_else(|| {
+                format!("decision {id} doesn't exist: books.decisions lists them")
+            })?;
             if (!p.subject.is_empty() && p.subject != old.new.subject)
                 || (!p.decision_md.is_empty() && p.decision_md != old.new.decision_md)
             {

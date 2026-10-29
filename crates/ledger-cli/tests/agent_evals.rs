@@ -62,18 +62,14 @@ fn resolve(w: &mut Wire, vars: &HashMap<String, Value>, v: &Value) -> Value {
 
 /// Play one transcript; returns the tools it called after `books.start`.
 fn play(name: &str, script: &Value) -> Vec<String> {
-    let books = Books::with(
-        &format!("eval-{name}"),
-        "USD",
-        script["settings"].as_str(),
-    );
+    let books = Books::with(&format!("eval-{name}"), "USD", script["settings"].as_str());
     let mut w = books.session("agent-evals");
     let mut vars: HashMap<String, Value> = HashMap::new();
     for s in script["setup"].as_array().into_iter().flatten() {
         let args = resolve(&mut w, &vars, &s["args"]);
         let tool = s["call"].as_str().unwrap();
-        let out = answer_of(&w.call(tool, args))
-            .unwrap_or_else(|e| panic!("{name}: setup {tool}: {e}"));
+        let out =
+            answer_of(&w.call(tool, args)).unwrap_or_else(|e| panic!("{name}: setup {tool}: {e}"));
         for (var, pointer) in s["save"].as_object().into_iter().flatten() {
             vars.insert(
                 var.clone(),
@@ -85,15 +81,26 @@ fn play(name: &str, script: &Value) -> Vec<String> {
     }
     let mut last: Option<Value> = None;
     let mut called = Vec::new();
-    for (i, step) in script["steps"].as_array().expect("steps").iter().enumerate() {
+    for (i, step) in script["steps"]
+        .as_array()
+        .expect("steps")
+        .iter()
+        .enumerate()
+    {
         let here = format!("{name} step {i}");
         if let Some(tool) = step["call"].as_str() {
-            assert_eq!(i, 0, "{here}: only the first step may call without following");
+            assert_eq!(
+                i, 0,
+                "{here}: only the first step may call without following"
+            );
             assert_eq!(tool, "books.start", "{here}: the first call is books.start");
             let args = resolve(&mut w, &vars, &step["args"]);
-            last = Some(answer_of(&w.call_raw(tool, args)).unwrap_or_else(|e| panic!("{here}: {e}")));
+            last =
+                Some(answer_of(&w.call_raw(tool, args)).unwrap_or_else(|e| panic!("{here}: {e}")));
         } else if let Some(want) = step["follow"].as_str() {
-            let prev = last.as_ref().unwrap_or_else(|| panic!("{here}: follow before start"));
+            let prev = last
+                .as_ref()
+                .unwrap_or_else(|| panic!("{here}: follow before start"));
             let offered = prev["next_steps"].as_array().cloned().unwrap_or_default();
             let named = offered
                 .iter()
@@ -101,10 +108,14 @@ fn play(name: &str, script: &Value) -> Vec<String> {
                 .unwrap_or_else(|| {
                     panic!(
                         "{here}: {want} is not in the previous result's next_steps: {:?}",
-                        offered.iter().map(|s| s["tool"].clone()).collect::<Vec<_>>()
+                        offered
+                            .iter()
+                            .map(|s| s["tool"].clone())
+                            .collect::<Vec<_>>()
                     )
                 });
-            let mut args: Map<String, Value> = named["args"].as_object().cloned().unwrap_or_default();
+            let mut args: Map<String, Value> =
+                named["args"].as_object().cloned().unwrap_or_default();
             for (k, v) in step["with"].as_object().into_iter().flatten() {
                 args.insert(k.clone(), resolve(&mut w, &vars, v));
             }
@@ -113,7 +124,9 @@ fn play(name: &str, script: &Value) -> Vec<String> {
             called.push(want.to_string());
             last = Some(out);
         } else if let Some(want) = step["follow_prompt"].as_str() {
-            let prev = last.as_ref().unwrap_or_else(|| panic!("{here}: follow before start"));
+            let prev = last
+                .as_ref()
+                .unwrap_or_else(|| panic!("{here}: follow before start"));
             assert!(
                 prev["next_steps"]
                     .as_array()
@@ -141,7 +154,11 @@ fn play(name: &str, script: &Value) -> Vec<String> {
         } else if let Some(expect) = step["expect"].as_object() {
             let prev = last.as_ref().unwrap();
             for (pointer, want) in expect {
-                assert_eq!(prev.pointer(pointer), Some(want), "{here}: {pointer} in {prev}");
+                assert_eq!(
+                    prev.pointer(pointer),
+                    Some(want),
+                    "{here}: {pointer} in {prev}"
+                );
             }
         } else {
             panic!("{here}: not a step: {step}");

@@ -2270,8 +2270,15 @@ fn books_written_under_older_rules_still_open() {
         .expect("the convention");
     assert_eq!(c.source.decided_by, "Pat Smith");
     assert_eq!(c.source.citation.as_deref(), Some("IRS Pub. 538"));
-    assert_eq!((c.body_md.as_str(), c.revision), ("Reconcile, then close.", 1));
-    let d = store.ledger().conventions().decision(1).expect("the decision");
+    assert_eq!(
+        (c.body_md.as_str(), c.revision),
+        ("Reconcile, then close.", 1)
+    );
+    let d = store
+        .ledger()
+        .conventions()
+        .decision(1)
+        .expect("the decision");
     assert_eq!(d.new.decided_by, ["Owner", "Pat Smith"]);
     assert_eq!(d.new.citation.as_deref(), Some("IRS Pub. 538"));
     assert_eq!(d.new.decision_md, "Five hundred dollars.");

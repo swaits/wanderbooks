@@ -99,7 +99,11 @@ pub(crate) fn mutating_tools() -> &'static HashSet<String> {
 
 /// The steps a tool's own result implies (no books needed): the confirm
 /// after a preview, and what follows a particular act.
-pub(crate) fn tool_steps(tool: &str, args: Option<&Map<String, Value>>, result: &Value) -> Vec<Step> {
+pub(crate) fn tool_steps(
+    tool: &str,
+    args: Option<&Map<String, Value>>,
+    result: &Value,
+) -> Vec<Step> {
     let mut steps = Vec::new();
     let confirmed = args
         .and_then(|a| a.get("confirmed"))
@@ -319,7 +323,11 @@ pub(crate) fn tool_steps(tool: &str, args: Option<&Map<String, Value>>, result: 
 }
 
 /// The attention items about the subject of the call, as steps.
-fn attention_steps(server: &BooksServer, subject: Subject, store: &ledger_store::Store) -> Vec<Step> {
+fn attention_steps(
+    server: &BooksServer,
+    subject: Subject,
+    store: &ledger_store::Store,
+) -> Vec<Step> {
     let cfg = server.settings();
     let settings = ledger_package::Settings {
         company: &cfg.company,
@@ -342,7 +350,9 @@ fn attention_steps(server: &BooksServer, subject: Subject, store: &ledger_store:
                 match (a.target, tool.as_str()) {
                     (
                         Target::Entry(id),
-                        "books.attach_receipt" | "books.set_entry_party" | "books.set_entry_settles",
+                        "books.attach_receipt"
+                        | "books.set_entry_party"
+                        | "books.set_entry_settles",
                     ) => Some(json!({ "entry_id": id })),
                     _ => None,
                 }
@@ -350,7 +360,12 @@ fn attention_steps(server: &BooksServer, subject: Subject, store: &ledger_store:
                 Some(args)
             };
             let title: String = a.title.chars().take(160).collect();
-            Some(Step::tool(&tool, args, &title, a.severity == Severity::Problem))
+            Some(Step::tool(
+                &tool,
+                args,
+                &title,
+                a.severity == Severity::Problem,
+            ))
         })
         .take(4)
         .collect()
@@ -493,7 +508,10 @@ mod tests {
                 .chain([digest_step()])
             {
                 if let Some(t) = s.tool {
-                    assert!(names.contains(&t), "{tool}: step names {t}, which is no tool");
+                    assert!(
+                        names.contains(&t),
+                        "{tool}: step names {t}, which is no tool"
+                    );
                 }
             }
         }

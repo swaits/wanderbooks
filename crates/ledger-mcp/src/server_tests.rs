@@ -19,7 +19,12 @@ fn books_start_is_always_loaded() {
             .as_ref()
             .and_then(|m| m.0.get("anthropic/alwaysLoad"))
             .and_then(serde_json::Value::as_bool);
-        assert_eq!(always == Some(true), tool.name == "books.start", "{}", tool.name);
+        assert_eq!(
+            always == Some(true),
+            tool.name == "books.start",
+            "{}",
+            tool.name
+        );
     }
 }
 
@@ -727,7 +732,10 @@ fn tool_descriptions_fit_700_characters() {
         .map(|t| t.name.to_string())
         .collect();
     over.sort();
-    assert!(over.is_empty(), "tool descriptions over 700 characters: {over:?}");
+    assert!(
+        over.is_empty(),
+        "tool descriptions over 700 characters: {over:?}"
+    );
 }
 
 /// The tools docs/mcp-interface.md documents: a line (or a bullet)
@@ -1549,13 +1557,16 @@ fn every_mutating_result_has_head_and_next_steps() {
         let answer = CallToolResponse::Complete(CallToolResult::structured(
             serde_json::json!({"status": "ok"}),
         ));
-        let CallToolResponse::Complete(r) = next_steps::apply(&server, &name, None, Ok(answer))
-            .expect("an answer stays an answer")
+        let CallToolResponse::Complete(r) =
+            next_steps::apply(&server, &name, None, Ok(answer)).expect("an answer stays an answer")
         else {
             panic!("{name}: not a complete answer");
         };
         let body = r.structured_content.expect("structured");
-        assert!(body["guards"].is_array() && body["warnings"].is_array(), "{name}");
+        assert!(
+            body["guards"].is_array() && body["warnings"].is_array(),
+            "{name}"
+        );
         let ContentBlock::Text(t) = &r.content[0] else {
             panic!("{name}: no text block");
         };
@@ -1597,7 +1608,9 @@ fn the_envelope_keeps_what_a_tool_said_and_carries_a_refusal_guard() {
         &server,
         "books.post_entry",
         None,
-        Ok(CallToolResponse::Complete(CallToolResult::structured(own.clone()))),
+        Ok(CallToolResponse::Complete(CallToolResult::structured(
+            own.clone(),
+        ))),
     )
     .unwrap() else {
         panic!()

@@ -7,9 +7,11 @@
 //! and rules.md B-27 (a feature is declared before its first line).
 
 use chrono::NaiveDate;
-use ledger_core::conventions::{ConventionKind, DecisionSource, NewConvention, NewDecision, NewOpenItem};
-use ledger_core::settings::Source;
 use ledger_core::Currency;
+use ledger_core::conventions::{
+    ConventionKind, DecisionSource, NewConvention, NewDecision, NewOpenItem,
+};
+use ledger_core::settings::Source;
 use ledger_store::format::{KNOWN_FEATURES, SOURCE_REVISIONS};
 use ledger_store::{JournalFormat, SUPPORTED_JOURNAL_FORMAT, Store, StoreError};
 use std::path::PathBuf;
@@ -97,7 +99,8 @@ fn item(src: Source) -> NewOpenItem {
 fn a_source_only_revision_is_journaled() {
     let dir = test_dir("source-revised");
     let mut s = Store::create(&dir, Currency::USD).unwrap();
-    s.set_convention(&convention(source("Owner", 20, None))).unwrap();
+    s.set_convention(&convention(source("Owner", 20, None)))
+        .unwrap();
     let decision_id = s.record_decision(&decision()).unwrap();
     let item_id = s.raise_open_item(&item(source("Owner", 20, None))).unwrap();
     let before = lines_of(&dir).len();
@@ -133,18 +136,33 @@ fn a_source_only_revision_is_journaled() {
         ]
     );
     assert_eq!(lines[before]["payload"]["reason"], "the CPA decided it");
-    assert_eq!(lines[before]["payload"]["source"]["decided_by"], "Pat Smith");
+    assert_eq!(
+        lines[before]["payload"]["source"]["decided_by"],
+        "Pat Smith"
+    );
 
     // The words and the revision are as they were; the source is new.
-    let c = s.ledger().conventions().convention("close-checklist").unwrap();
-    assert_eq!((c.body_md.as_str(), c.revision), ("Reconcile, then close.", 1));
+    let c = s
+        .ledger()
+        .conventions()
+        .convention("close-checklist")
+        .unwrap();
+    assert_eq!(
+        (c.body_md.as_str(), c.revision),
+        ("Reconcile, then close.", 1)
+    );
     assert_eq!(c.source.decided_by, "Pat Smith");
     let d = s.ledger().conventions().decision(decision_id).unwrap();
     assert_eq!(d.new.decision_md, "Five hundred dollars.");
     assert_eq!(d.new.decided_by, ["Owner", "Pat Smith"]);
     assert_eq!(d.new.citation.as_deref(), Some("IRS Pub. 538"));
     assert_eq!(
-        s.ledger().conventions().open_item(item_id).unwrap().new.source,
+        s.ledger()
+            .conventions()
+            .open_item(item_id)
+            .unwrap()
+            .new
+            .source,
         cpa
     );
 
@@ -167,7 +185,8 @@ fn a_source_only_revision_is_journaled() {
 fn a_source_revision_must_change_only_the_source() {
     let dir = test_dir("source-refused");
     let mut s = Store::create(&dir, Currency::USD).unwrap();
-    s.set_convention(&convention(source("Owner", 20, None))).unwrap();
+    s.set_convention(&convention(source("Owner", 20, None)))
+        .unwrap();
     let id = s.record_decision(&decision()).unwrap();
     let item_id = s.raise_open_item(&item(source("Owner", 20, None))).unwrap();
     let len = lines_of(&dir).len();
@@ -202,10 +221,7 @@ fn a_source_revision_must_change_only_the_source() {
         s.revise_open_item_source(99, &source("Pat Smith", 21, None), "why"),
         s.revise_open_item_source(item_id, &source("Owner", 20, None), "same source"),
     ] {
-        assert!(
-            matches!(refused, Err(StoreError::Ledger(_))),
-            "{refused:?}"
-        );
+        assert!(matches!(refused, Err(StoreError::Ledger(_))), "{refused:?}");
     }
     assert_eq!(lines_of(&dir).len(), len, "a refusal journals nothing");
 }
@@ -227,7 +243,8 @@ fn source_revisions_wait_for_the_upgrade() {
             .collect(),
     };
     let mut s = Store::create_in_format(&dir, Currency::USD, &before).unwrap();
-    s.set_convention(&convention(source("Owner", 20, None))).unwrap();
+    s.set_convention(&convention(source("Owner", 20, None)))
+        .unwrap();
     let id = s.record_decision(&decision()).unwrap();
     let item_id = s.raise_open_item(&item(source("Owner", 20, None))).unwrap();
     let head = s.head();
@@ -256,7 +273,8 @@ fn source_revisions_wait_for_the_upgrade() {
     assert_eq!(s.head(), head, "a refusal journals nothing");
     assert_eq!(lines_of(&dir).len(), len);
     assert!(s.upgrade_format().unwrap().is_some(), "the go-ahead");
-    s.revise_convention_source(&convention(cpa.clone()), "why").unwrap();
+    s.revise_convention_source(&convention(cpa.clone()), "why")
+        .unwrap();
     s.revise_open_item_source(item_id, &cpa, "why").unwrap();
     let live = s.ledger().clone();
     drop(s);

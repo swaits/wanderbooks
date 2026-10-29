@@ -149,8 +149,11 @@ impl BooksServer {
                             .with_required(true)
                     })
                     .collect::<Vec<_>>();
-                let mut prompt =
-                    Prompt::new(p.name, Some(p.description), (!args.is_empty()).then_some(args));
+                let mut prompt = Prompt::new(
+                    p.name,
+                    Some(p.description),
+                    (!args.is_empty()).then_some(args),
+                );
                 prompt.title = Some(p.title.to_string());
                 prompt
             })
@@ -171,7 +174,11 @@ impl BooksServer {
                 format!(
                     "there is no prompt {:?}: {}",
                     request.name.chars().take(40).collect::<String>(),
-                    PROMPTS.iter().map(|p| p.name).collect::<Vec<_>>().join(", ")
+                    PROMPTS
+                        .iter()
+                        .map(|p| p.name)
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 )
             })?;
         let mut text = def.text.trim_end().to_string();
@@ -214,7 +221,10 @@ mod tests {
             .collect();
         for p in &PROMPTS {
             let mut seen = 0;
-            for word in p.text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '.')) {
+            for word in p
+                .text
+                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '.'))
+            {
                 if let Some(tool) = word.strip_prefix("books.") {
                     let tool = tool.trim_end_matches('.');
                     if !tool.is_empty() {
@@ -229,7 +239,11 @@ mod tests {
             }
             assert!(seen > 0, "{} names no tool", p.name);
             for (name, _, _) in p.args {
-                assert!(p.text.contains(&format!("{{{{{name}}}}}")), "{}: {name}", p.name);
+                assert!(
+                    p.text.contains(&format!("{{{{{name}}}}}")),
+                    "{}: {name}",
+                    p.name
+                );
             }
         }
     }

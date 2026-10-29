@@ -1180,6 +1180,14 @@ impl<'a> Books<'a> {
                             .outstanding
                     }
                 };
+                // Each write-off's own notice: identical bytes would be one
+                // record (plan P6 step 4), and a receipt evidences one entry
+                // (B-38), so a second write-off with the first's letter is
+                // refused before anything is journaled.
+                let letter = format!(
+                    "%PDF-1.4\nFinal demand for invoice {invoice}: {}\n%%EOF\n",
+                    w.reason
+                );
                 self.store
                     .write_off_invoice(
                         invoice,
@@ -1189,7 +1197,7 @@ impl<'a> Books<'a> {
                         Some(ledger_store::WriteOffEvidence::File {
                             file_name: "collection-letter.pdf",
                             mime_type: "application/pdf",
-                            bytes: b"%PDF-1.4\nFinal demand\n%%EOF\n",
+                            bytes: letter.as_bytes(),
                             description: Some("Evidence of worthlessness"),
                         }),
                     )

@@ -224,12 +224,16 @@ fn reconcile(
     };
     let opening = report(s, month_start.pred_opt().unwrap());
     let closing = report(s, through);
+    // Each call files a new statement (a wrong one is voided and another
+    // comes), so each has its own bytes: identical bytes would be one
+    // record (plan P6 step 4), and a record is one statement.
+    let filing = s.statements(None).unwrap().len() + 1;
     let (att, _, _) = s
         .file_document(
             "statement",
             &format!("statement-{through}.pdf"),
             "application/pdf",
-            format!("statement {through}").as_bytes(),
+            format!("statement {filing}: {through} for account {account}").as_bytes(),
             None,
         )
         .unwrap();

@@ -4488,9 +4488,11 @@ impl Store {
     /// INVARIANTS:
     ///   1. The bytes MUST be stored under their SHA-256 and read back
     ///      identical, verified against it.
-    ///   2. The same bytes filed twice MUST share one stored file, and the
-    ///      second filing MUST say deduplicated.
-    ///   3. Each filing MUST be its own attachment, journaled
+    ///   2. The same bytes filed twice MUST be one record (plan P6 step 4):
+    ///      the second filing returns the first's id, says deduplicated,
+    ///      and links that record to the new subject (`attachment.linked`)
+    ///      when it isn't linked there yet.
+    ///   3. The first filing of bytes MUST be journaled
     ///      (`receipt.attached`), with its name, type, and description.
     /// SCENARIOS:
     ///   1. IF `entry_id` names no entry: SHOULD refuse

@@ -235,6 +235,19 @@ fn damage_before_the_last_newline_still_refuses_to_open() {
     assert_eq!(std::fs::read(&journal).unwrap(), raw);
 }
 
+/// Every file and directory under `from`, under `to`.
+fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for e in std::fs::read_dir(from).unwrap() {
+        let e = e.unwrap();
+        if e.file_type().unwrap().is_dir() {
+            copy_tree(&e.path(), &to.join(e.file_name()));
+        } else {
+            std::fs::copy(e.path(), to.join(e.file_name())).unwrap();
+        }
+    }
+}
+
 /// Power loss at any byte of the last append: whatever prefix reached the
 /// disk, the books open with exactly what was acknowledged before it.
 #[test]
@@ -246,14 +259,11 @@ fn power_loss_at_any_byte_of_the_last_append_is_recovered() {
     let before = ledger_core::reports::snapshot(store.ledger()).unwrap();
     drop(store);
     // The books as they were on disk before the last append (the database
-    // is never ahead of the journal: the line is written first).
+    // is never ahead of the journal: the line is written first), blobs
+    // included: verify reads the receipt's extracted text from them (plan
+    // P6 step 2).
     let pre = test_dir("tornevery-pre");
-    for e in std::fs::read_dir(&dir).unwrap() {
-        let e = e.unwrap();
-        if e.file_type().unwrap().is_file() {
-            std::fs::copy(e.path(), pre.join(e.file_name())).unwrap();
-        }
-    }
+    copy_tree(&dir, &pre);
     let mut store = Store::open(&dir).unwrap();
     store.add_customer("Acme").unwrap();
     drop(store);
@@ -262,12 +272,7 @@ fn power_loss_at_any_byte_of_the_last_append_is_recovered() {
     assert_eq!(last.last(), Some(&b'\n'));
     for cut in 1..last.len() {
         let case = test_dir(&format!("tornevery-{cut}"));
-        for e in std::fs::read_dir(&pre).unwrap() {
-            let e = e.unwrap();
-            if e.file_type().unwrap().is_file() {
-                std::fs::copy(e.path(), case.join(e.file_name())).unwrap();
-            }
-        }
+        copy_tree(&pre, &case);
         let mut torn = before_bytes.clone();
         torn.extend_from_slice(&last[..cut]);
         std::fs::write(case.join(ledger_store::JOURNAL_FILE), &torn).unwrap();
@@ -326,9 +331,12 @@ fn blob_dedup_and_hash_verification() {
     assert!(!dedup1);
     assert!(dedup2);
     assert_eq!(sha1, sha2);
-    // Only one blob row; two attachment rows.
+    // One blob row and one attachment row: the same bytes filed twice are
+    // one record (plan P6 step 4), under the first filing's name.
     assert_eq!(store.verify_blobs().unwrap(), 1);
-    assert_eq!(store.list_attachments(None).unwrap().len(), 2);
+    let records = store.list_attachments(None).unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].file_name, "w2.pdf");
 
     // Corrupt the blob file on disk → the next read detects it.
     let shard = dir
@@ -1691,7 +1699,8 @@ mod refusals {
             // The converse law: an accepted command is on the record, or
             // changed nothing at all (a batch run with nothing due; a
             // setting changed to the value it has; a 1099 decision, W-9
-            // flag or payment method already so).
+            // flag or payment method already so; bytes already on file,
+            // which are the record they were, plan P6 step 4).
             if result.is_ok() {
                 let after = std::fs::read_to_string(&journal).unwrap();
                 if after.len() == before.len() {
@@ -1711,6 +1720,8 @@ mod refusals {
                                 | Op::SetVendor1099(..)
                                 | Op::SetW9Flag(..)
                                 | Op::SetEntryInstrument(..)
+                                | Op::AttachReceipt(..)
+                                | Op::FileDocument(..)
                         ),
                         "accepted {:?} but journaled nothing",
                         op

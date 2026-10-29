@@ -909,6 +909,16 @@ fn books_p2_served_cut_over_whole() {
             json!({"attachment_id": 1, "fields": {"payee": "Harbor Design LLC",
                    "amount": "12.34", "date": "2026-02-01"}}),
         ),
+        // An audit run and an attestation (audits, P8): an older version
+        // doesn't know the events.
+        (
+            "books.audit",
+            json!({"scope": "full", "through": "2026-02-28", "confirmed": true}),
+        ),
+        (
+            "books.review_entry",
+            json!({"entry_id": 1, "method": {"reasoning_effort": "high"}}),
+        ),
     ];
     for (tool, args) in &refused {
         let e = a.call(tool, args.clone()).unwrap_err();

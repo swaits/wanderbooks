@@ -78,7 +78,12 @@
 //!      pages); a posted entry a member paid personally (a credit on a
 //!      "due to"/"owed to" liability) that no entry records settling
 //!      (Todo, one per entry; `entry.settles` only, no FIFO guess,
-//!      IZ-18).
+//!      IZ-18); for books that declared `audits` (plan P8): a closed
+//!      period no `period.attested` names (Todo, one per period, "Month-end
+//!      attestation due"), the last fiscal year that ended with entries,
+//!      closed, and no audit run of scope cpa_handoff or full through its
+//!      end ("Full audit due before the CPA handoff"), else with no run of
+//!      scope annual, cpa_handoff or full ("Annual audit due").
 //!   3. Nothing else: books with none of those yield no items, except
 //!      that a figure behind an item that can't be computed (an
 //!      amortization plan past chrono's last day, an aging past exact
@@ -1375,7 +1380,130 @@ pub fn find_with(
             });
         }
     }
+    out.extend(audit_items(books, &journal, today, settings));
     out.sort_by_key(|a| a.severity);
+    out
+}
+
+/// The audit items (plan P8, R-F), for books that declared `audits` (the
+/// others can't act on them): a closed month with no attestation, a closed
+/// fiscal year with no audit for the handoff, and a finished year with no
+/// annual audit. Read from the journal's `audit.run` and `period.attested`
+/// lines, so the viewer and `books.start` read the same facts.
+fn audit_items(
+    books: &impl PackageBooks,
+    journal: &[JournalLine],
+    today: NaiveDate,
+    settings: &Settings,
+) -> Vec<Attention> {
+    let declared = journal
+        .iter()
+        .rev()
+        .find(|l| l.line_type == "journal.format_set")
+        .is_some_and(|l| {
+            l.payload["features"]
+                .as_array()
+                .is_some_and(|f| f.iter().any(|x| x == "audits"))
+        });
+    if !declared {
+        return Vec::new();
+    }
+    let ledger = books.ledger();
+    let attested: HashSet<u64> = journal
+        .iter()
+        .filter(|l| l.line_type == "period.attested")
+        .filter_map(|l| l.payload["period_id"].as_u64())
+        .collect();
+    // (scope, through) of every run.
+    let runs: Vec<(String, NaiveDate)> = journal
+        .iter()
+        .filter(|l| l.line_type == "audit.run")
+        .filter_map(|l| {
+            let through =
+                NaiveDate::parse_from_str(l.payload["through"].as_str()?, "%Y-%m-%d").ok()?;
+            Some((l.payload["scope"].as_str()?.to_string(), through))
+        })
+        .collect();
+    let mut out = Vec::new();
+    for p in ledger.list_periods() {
+        if p.status != PeriodStatus::Closed || attested.contains(&p.id) {
+            continue;
+        }
+        out.push(Attention {
+            severity: Severity::Todo,
+            kind: "month_attestation_due",
+            title: format!("Month-end attestation due: {}", p.name),
+            detail: format!(
+                "{} ({} to {}) is closed and no one has attested it.",
+                p.name,
+                date(p.start),
+                date(p.end)
+            ),
+            target: Target::Journal,
+            prompt: format!(
+                "In wanderbooks, {} is closed and has no attestation. Audit the books through {} (books.audit with scope month), then have separate verifier agents read each receipt (books.get_receipt, then attest_receipt), review the entries (books.review_entry) and attest the period (books.attest_period). Read the attestations-and-audit section of the handbook first.",
+                p.name,
+                p.end
+            ),
+            tool: Some((
+                "books.audit".into(),
+                serde_json::json!({ "scope": "month", "through": p.end.to_string() }),
+            )),
+        });
+    }
+    // The last fiscal year that ended, if the books have entries in it.
+    let (this_start, _) = settings.company.fiscal_year_containing(today);
+    if let Some(before) = this_start.pred_opt() {
+        let (fy_start, fy_end) = settings.company.fiscal_year_containing(before);
+        let has_entries = ledger
+            .posted_entries()
+            .any(|e| e.date() >= fy_start && e.date() <= fy_end);
+        let closed = ledger
+            .list_periods()
+            .iter()
+            .any(|p| p.status == PeriodStatus::Closed && p.end >= fy_end);
+        let year_audit = |scopes: &[&str]| {
+            runs.iter()
+                .any(|(s, t)| scopes.contains(&s.as_str()) && *t >= fy_end)
+        };
+        if has_entries && closed && !year_audit(&["cpa_handoff", "full"]) {
+            out.push(Attention {
+                severity: Severity::Todo,
+                kind: "handoff_audit_due",
+                title: format!("Full audit due before the CPA handoff: {}", fy_end.year()),
+                detail: format!(
+                    "The fiscal year ended {} and is closed; the CPA package waits for an audit for the handoff attested at the bar.",
+                    date(fy_end)
+                ),
+                target: Target::Journal,
+                prompt: format!(
+                    "In wanderbooks, the fiscal year ending {fy_end} is closed and has no audit for the CPA handoff. Run books.audit with scope cpa_handoff through {fy_end}, have independent adversarial verifier agents attest the receipts and the entries, and attest the year (books.attest_period). Read the attestations-and-audit section of the handbook first."
+                ),
+                tool: Some((
+                    "books.audit".into(),
+                    serde_json::json!({ "scope": "cpa_handoff", "through": fy_end.to_string() }),
+                )),
+            });
+        } else if has_entries && !year_audit(&["annual", "cpa_handoff", "full"]) {
+            out.push(Attention {
+                severity: Severity::Todo,
+                kind: "annual_audit_due",
+                title: format!("Annual audit due: {}", fy_end.year()),
+                detail: format!(
+                    "The fiscal year ended {} and no audit covers it.",
+                    date(fy_end)
+                ),
+                target: Target::Journal,
+                prompt: format!(
+                    "In wanderbooks, the fiscal year ending {fy_end} has no annual audit. Run books.audit with scope annual through {fy_end} and fix what it finds. Read the attestations-and-audit section of the handbook first."
+                ),
+                tool: Some((
+                    "books.audit".into(),
+                    serde_json::json!({ "scope": "annual", "through": fy_end.to_string() }),
+                )),
+            });
+        }
+    }
     out
 }
 

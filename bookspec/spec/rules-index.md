@@ -6,8 +6,8 @@ what its statement rests on and the examples that demonstrate it.
 
 A rule whose only source is a human choice carries rules.md's **CHOICE**, bookspec's status of the same name:
 the specification names the options, an engine declares its pick
-(`claims.choices`, `bookspec_checker::Claims`). Rules B-39, B-40, B-43
-and B-45 are allocated in `plan/served.md` 8.0.3 and not yet stated: their
+(`claims.choices`, `bookspec_checker::Claims`). Rules B-39, B-40 and B-43
+are allocated in `plan/served.md` 8.0.3 and not yet stated: their
 identifier and area are fixed here so a later unit fills them in
 without moving anyone else's number.
 
@@ -57,4 +57,4 @@ without moving anyone else's number.
 | B-42 | `BS-arap-6` | arap | CONVENTION | A settlement is exact, one party, and names its lines; the gross discount and the gross fee | — |
 | B-43 | `BS-entry-5` | entry | — | Drafts and evidence (allocated, not yet stated) | — |
 | B-44 | `BS-ledger-12` | ledger | CONVENTION | Evidence is read from the bytes, never trusted over them; identical files are kept once | — |
-| B-45 | `BS-ledger-13` | ledger | — | Audits and attestations (allocated, not yet stated) | — |
+| B-45 | `BS-ledger-13` | ledger | CONVENTION | An audit is deterministic over the books; an attestation is a claim by a named client | — |

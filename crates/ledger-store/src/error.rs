@@ -162,6 +162,12 @@ pub enum StoreError {
     )]
     WriteOffNeedsEvidence,
 
+    /// An audit or an attestation the books refuse (plan P8; rules.md
+    /// B-45): a stale head, an entry not posted, a receipt not on the
+    /// entry. The words say what to do.
+    #[error("{0}")]
+    AuditRefused(String),
+
     /// The requested base currency differs from the store's.
     #[error("base currency mismatch: store is {0}, requested {1}")]
     CurrencyMismatch(String, String),

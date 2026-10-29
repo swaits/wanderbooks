@@ -1,0 +1,461 @@
+{
+  "assets": [],
+  "bills": [],
+  "entries": [
+    {
+      "date": "2026-01-01",
+      "description": "Opening capital",
+      "id": 1,
+      "lines": [
+        {
+          "account": 1,
+          "amount": {
+            "amount": "1000.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Debit"
+        },
+        {
+          "account": 2,
+          "amount": {
+            "amount": "1000.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Credit"
+        }
+      ],
+      "reversal_of": null,
+      "status": "Posted"
+    },
+    {
+      "date": "2026-01-05",
+      "description": "January rent",
+      "id": 2,
+      "lines": [
+        {
+          "account": 4,
+          "amount": {
+            "amount": "500.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Debit"
+        },
+        {
+          "account": 1,
+          "amount": {
+            "amount": "500.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Credit"
+        }
+      ],
+      "reversal_of": null,
+      "status": "Posted"
+    },
+    {
+      "date": "2026-01-07",
+      "description": "Printer paper",
+      "id": 3,
+      "lines": [
+        {
+          "account": 5,
+          "amount": {
+            "amount": "40.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Debit"
+        },
+        {
+          "account": 1,
+          "amount": {
+            "amount": "40.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Credit"
+        }
+      ],
+      "reversal_of": null,
+      "status": "Posted"
+    },
+    {
+      "date": "2026-01-08",
+      "description": "Stamps",
+      "id": 4,
+      "lines": [
+        {
+          "account": 5,
+          "amount": {
+            "amount": "12.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Debit"
+        },
+        {
+          "account": 1,
+          "amount": {
+            "amount": "12.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Credit"
+        }
+      ],
+      "reversal_of": null,
+      "status": "Posted"
+    },
+    {
+      "date": "2026-01-12",
+      "description": "Rent paid twice",
+      "id": 5,
+      "lines": [
+        {
+          "account": 4,
+          "amount": {
+            "amount": "500.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Debit"
+        },
+        {
+          "account": 1,
+          "amount": {
+            "amount": "500.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Credit"
+        }
+      ],
+      "reversal_of": null,
+      "status": "Posted"
+    },
+    {
+      "date": "2026-01-14",
+      "description": "Entered twice",
+      "id": 6,
+      "lines": [
+        {
+          "account": 4,
+          "amount": {
+            "amount": "500.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Credit"
+        },
+        {
+          "account": 1,
+          "amount": {
+            "amount": "500.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Debit"
+        }
+      ],
+      "reversal_of": 5,
+      "status": "Posted"
+    },
+    {
+      "date": "2026-01-10",
+      "description": "Invoice 1",
+      "id": 7,
+      "lines": [
+        {
+          "account": 6,
+          "amount": {
+            "amount": "1200.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Debit"
+        },
+        {
+          "account": 3,
+          "amount": {
+            "amount": "1200.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Credit"
+        }
+      ],
+      "reversal_of": null,
+      "status": "Posted"
+    },
+    {
+      "date": "2026-01-20",
+      "description": "Payment on invoice 1",
+      "id": 8,
+      "lines": [
+        {
+          "account": 6,
+          "amount": {
+            "amount": "400.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Credit"
+        },
+        {
+          "account": 1,
+          "amount": {
+            "amount": "400.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Debit"
+        }
+      ],
+      "reversal_of": null,
+      "status": "Posted"
+    },
+    {
+      "date": "2026-02-12",
+      "description": "Coworking day pass",
+      "id": 9,
+      "lines": [
+        {
+          "account": 4,
+          "amount": {
+            "amount": "35.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Debit"
+        },
+        {
+          "account": 1,
+          "amount": {
+            "amount": "35.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Credit"
+        }
+      ],
+      "reversal_of": null,
+      "status": "Draft"
+    },
+    {
+      "date": "2026-01-31",
+      "description": "Close period 2026-01",
+      "id": 10,
+      "lines": [
+        {
+          "account": 3,
+          "amount": {
+            "amount": "1200.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Debit"
+        },
+        {
+          "account": 4,
+          "amount": {
+            "amount": "500.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Credit"
+        },
+        {
+          "account": 5,
+          "amount": {
+            "amount": "52.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Credit"
+        },
+        {
+          "account": 7,
+          "amount": {
+            "amount": "648.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Credit"
+        }
+      ],
+      "reversal_of": null,
+      "status": "Posted"
+    }
+  ],
+  "entry_parties": [
+    [
+      7,
+      [
+        {
+          "party_id": 1,
+          "share": "derived"
+        }
+      ]
+    ],
+    [
+      8,
+      [
+        {
+          "party_id": 1,
+          "share": "derived"
+        }
+      ]
+    ]
+  ],
+  "invoices": [
+    {
+      "amount_paid": "400.00",
+      "customer_id": 1,
+      "date": "2026-01-10",
+      "due_date": "2026-02-09",
+      "entry_id": 7,
+      "id": 1,
+      "lines": [
+        {
+          "amount": "1200.00",
+          "description": "Design"
+        }
+      ],
+      "status": "Partial"
+    }
+  ],
+  "payroll_runs": [],
+  "periods": [
+    {
+      "close_seq": 1,
+      "closing_entry": 10,
+      "end": "2026-01-31",
+      "id": 1,
+      "member_close": null,
+      "name": "2026-01",
+      "start": "2026-01-01",
+      "status": "Closed"
+    }
+  ],
+  "recurring": [],
+  "schedules": [],
+  "snapshot": {
+    "Ok": {
+      "balance_sheet": {
+        "assets": "1648",
+        "balanced": true,
+        "current_earnings": "0",
+        "equity": "1648",
+        "liabilities": "0"
+      },
+      "profit_and_loss": {
+        "expenses": "0",
+        "net_income": "0",
+        "revenue": "0"
+      },
+      "trial_balance": {
+        "lines": [
+          {
+            "code": "1000",
+            "credit": "0",
+            "debit": "848",
+            "name": "Bank"
+          },
+          {
+            "code": "1200",
+            "credit": "0",
+            "debit": "800",
+            "name": "Accounts Receivable"
+          },
+          {
+            "code": "3000",
+            "credit": "1000",
+            "debit": "0",
+            "name": "Capital"
+          },
+          {
+            "code": "3999",
+            "credit": "648",
+            "debit": "0",
+            "name": "Retained Earnings"
+          }
+        ],
+        "total_credits": "1648",
+        "total_debits": "1648"
+      }
+    }
+  },
+  "verify": {
+    "Ok": null
+  }
+}

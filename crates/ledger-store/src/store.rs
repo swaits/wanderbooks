@@ -51,6 +51,9 @@ use rust_decimal::Decimal;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
+#[path = "audit.rs"]
+pub mod audit;
+
 /// File names inside the data directory.
 pub const JOURNAL_FILE: &str = "journal.jsonl";
 
@@ -7594,6 +7597,21 @@ fn replay_line(
             let a = crate::meta::annotated_of(line)?;
             ledger.replay_annotate_attachment(a)?;
         }
+        "audit.run" => {
+            // Not accounting state; the projection records it. Checked
+            // for shape here (an unknown scope is newer, rules.md B-27).
+            crate::meta::audit_run_of(line)?;
+        }
+        // A claim that someone checked; no figure moves.
+        "receipt.attested" => {
+            crate::meta::attestation_of(line)?;
+        }
+        "entry.reviewed" => {
+            crate::meta::attestation_of(line)?;
+        }
+        "period.attested" => {
+            crate::meta::attestation_of(line)?;
+        }
         "entry.settles" => {
             let (entry, settles) = crate::meta::entry_settles_of(p)?;
             ledger.replay_set_entry_settles(entry, settles)?;
@@ -8808,6 +8826,22 @@ fn apply_line_rows(conn: &Connection, line: &JournalLine) -> Result<(), StoreErr
                     line.seq as i64,
                 ],
             )?;
+        }
+        "audit.run" => {
+            let run = crate::meta::audit_run_of(line)?;
+            audit::insert_run(conn, &run)?;
+        }
+        "receipt.attested" => {
+            let a = crate::meta::attestation_of(line)?;
+            audit::insert_attestation(conn, &a)?;
+        }
+        "entry.reviewed" => {
+            let a = crate::meta::attestation_of(line)?;
+            audit::insert_attestation(conn, &a)?;
+        }
+        "period.attested" => {
+            let a = crate::meta::attestation_of(line)?;
+            audit::insert_attestation(conn, &a)?;
         }
         "entry.settles" => {
             // Rebuilt into the ledger by replay; no report rows.

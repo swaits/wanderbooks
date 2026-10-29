@@ -3831,3 +3831,94 @@ equal-source refusals and the empty-reason refusals; the three
 `apply_*_source` arms (a mutant that also bumps `revision` or `seq` shows
 in `a_source_only_revision_is_journaled`); `books.start`'s fit order and
 `reconciliation` split (`reconciled_through.is_some()`).
+## P8: audit and attestations (2026-10-29)
+
+An audit run is a deterministic programme of checks over the books through
+a day, filed as a JSON and a PDF workpaper; attestations are claims by a
+named client that it checked a receipt, an entry or a period, weighed
+against `policy.attestation_bar` when asked. Journal feature `audits`;
+events `audit.run`, `receipt.attested`, `entry.reviewed`, `period.attested`
+(no figure moves); schema 20 (taken as the next after the last, renumbered
+at merge): the `audits` and `attestations` tables; settings
+`policy.attestation_bar` (a new `Kind::AttestationBar`) and
+`policy.cpa_package_requires_audit`. No kernel change, no Kani harness, no
+Lean theorem: the audit calls kernel functions and adds none, and the laws
+it checks are already theorems.
+
+- **`ledger-core` `tests/audit.rs`:** `audit_detects_each_seeded_defect`
+  (the code table `audit::CODES` has a row per check and the test iterates
+  it: a seeding fixture for each, exactly that code found, its severity the
+  row's; the checks a correct engine never lets happen are seeded through
+  the predicate each check is built on, `check_trial_balance`,
+  `check_equation`, `check_articulation`, `check_cash_flow`,
+  `check_control`, `check_split`, `check_register`),
+  `a_whole_book_gives_no_failure_or_warning`,
+  `findings_come_in_one_order`, `below_bar_not_counted` (the bar's effort,
+  the year-level adversarial check and verifier count, a lowered bar, the
+  parse), `amount_mismatch_never_counts`.
+- **`ledger-store` `tests/audit.rs`:** `audit_writes_wait_for_audits`
+  (R-A: every write refused with `FormatUpgradePending`, nothing
+  journaled, taken after `upgrade_format`, replay equal to live),
+  `a_run_is_idempotent_on_the_figure_head` (a filing and a run do not move
+  the head, an entry does, asking again journals nothing),
+  `amount_mismatch_never_counts` (a wrong amount and a wrong date are
+  recorded as disagreeing; a receipt not on the entry, a draft and an
+  unknown entry are refused), `stale_head_period_attestation_refused`
+  (no audit, an audit that stops short of the period, a standing one, an
+  entry since), `integrity_detects_each_seeded_defect` (every code of
+  `ledger_store::audit::CODES`: a missing and a damaged stored file, a
+  missing extraction text, a duplicate file written by an older version,
+  a damaged access log, a database that differs from a replay, a damaged
+  journal, a stale backup, a failed drill),
+  `books_the_version_before_p8_wrote_wait_for_the_upgrade` (8.0.6 item 2).
+  `tests/store.rs::books_written_under_older_rules_still_open` hand-writes
+  the four events (8.0.6 item 1); `tests/format.rs` and
+  `format.rs::audits_is_its_own_feature` (8.0.6 item 4). The four event
+  names are now this version's, so the tests that need an event type no
+  version has written use `ledger.not_yet_written` instead of
+  `period.attested` (`tests/format.rs`, `ledger-gui/tests/newer_journal.rs`).
+- **8.0.6:** the fixture `old-books/p8_before` (writer
+  `old-books-writer/src/bin/p8_before.rs`, run against b97234ac) holds
+  receipted entries, a 40.00 purchase with no receipt, a small one, a
+  reversal, an invoice part paid, an open draft and a closed month;
+  `books_an_earlier_version_wrote_open_to_its_figures` opens it to that
+  version's figures, so no figure moved and no golden changed;
+  `books_p2_served_cut_over_whole` refuses `books.audit` and
+  `books.review_entry` before consent and takes them after.
+- **`ledger-import` `workpaper.rs`:** `workpaper_pdf_is_deterministic`,
+  `a_different_finding_is_a_different_document`.
+- **`ledger-cli` `tests/audit.rs`:** `audit_is_deterministic` (preview,
+  run, the same run and findings again with nothing journaled, the
+  workpaper and its PDF hash equal twice, a new entry makes a new audit),
+  `attestations_count_against_the_bar_when_asked` (a disagreeing reading,
+  a medium effort, no claim, a lowered bar read retroactively),
+  `a_period_is_attested_on_a_standing_audit`,
+  `cpa_package_refuses_without_a_counted_audit_unless_a_reason_is_given`
+  (refused, a reason journaled as a decision, an audit alone not enough, a
+  year attested below the whole bar not enough, the whole bar, an entry
+  since, `warn`), `audits_wait_for_the_upgrade` (the fixture over the
+  wire; the package is not held up by an audit it cannot ask for).
+- **`ledger-cli` `tests/attention_parity.rs`:**
+  `audit_items_are_on_both_lists_once_audits_are_declared`.
+
+**For P12 (mutation targets):** `audit::statements`' order of checks and
+`sort` (severity, then code, subject, message); each `check_*` predicate's
+comparison (`check_trial_balance`'s `balanced`, `check_articulation`'s
+`!=`, `check_split`'s `> unit`, `check_register`'s two conditions,
+`check_cash_flow`'s three arms, `check_control`'s `difference`, unattached
+and `Overpaid` arms); `evidence`'s three arms (Required, the reversal
+exemption and the policy test that lists it, the plain exemption) and its
+receipt-set lookup; `closed_net`'s sign for revenue and expense;
+`AttestationBar::counts` (each of the four conditions, `>=`, the `full`
+branch, the `disagrees` early return) and `parse`; `Scope::full_bar` and
+`serves_handoff`; `Store::figure_head` (the `NOT_FIGURES` list: a type
+wrongly in it lets a stale audit stand, a type wrongly out of it makes an
+audit stale at its own filing), `find_audit_run`'s four equalities,
+`record_audit_run`'s idempotence return, `attest_receipt`'s amount rule
+(the debit total or any one line) and date equality, `run_for_period`'s
+`through_seq == head` and `through >= period.end`;
+`integrity_findings`'s eight arms; `backup_findings`' three conditions; the
+export gate (`cpa_audit_standing`'s four conditions and its feature test,
+the `refuse`/`warn` split, the reason's trim); `audit_items` in Needs
+attention (the declared test, the attested set, the last-ended fiscal
+year, the three year conditions).

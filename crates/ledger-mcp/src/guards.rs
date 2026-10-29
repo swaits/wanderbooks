@@ -40,11 +40,14 @@ pub(crate) enum Guard {
     DuplicateVendorRef,
     /// The first invoice number cannot change once one is issued.
     FirstNumberLocked,
+    /// No audit stands at the books' current head to rest this on (plan
+    /// P8): run `books.audit`.
+    AuditRequired,
 }
 
 impl Guard {
     /// Every guard, for the registry test.
-    pub(crate) const ALL: [Guard; 10] = [
+    pub(crate) const ALL: [Guard; 11] = [
         Guard::StalePreview,
         Guard::FormatUpgradePending,
         Guard::ReceiptRequired,
@@ -55,6 +58,7 @@ impl Guard {
         Guard::UntaggedControlLine,
         Guard::DuplicateVendorRef,
         Guard::FirstNumberLocked,
+        Guard::AuditRequired,
     ];
 
     /// The code an agent reads.
@@ -70,6 +74,7 @@ impl Guard {
             Guard::UntaggedControlLine => "untagged_control_line",
             Guard::DuplicateVendorRef => "duplicate_vendor_ref",
             Guard::FirstNumberLocked => "first_number_locked",
+            Guard::AuditRequired => "audit_required",
         }
     }
 
@@ -91,6 +96,7 @@ impl Guard {
             Guard::UntaggedControlLine => "books.control_check",
             Guard::DuplicateVendorRef => "books.search_entries",
             Guard::FirstNumberLocked => "books.settings",
+            Guard::AuditRequired => "books.audit",
         }
         .to_string()
     }

@@ -238,3 +238,12 @@ golden covers it:
 | Area | Counterpart (a cross-check, not the spec) | Status | Notes |
 |---|---|---|---|
 | Audit trail in words (`books.journal_history`, the `describe` sentences) | QBO "Audit log", Xero "History and notes" | partial | tests `journal_history_traces_what_the_books_did`, `every_event_type_has_a_sentence`; the viewer keeps its own sentences (the shared describer is the server's) |
+### P8: audit and attestations (2026-10-29)
+
+Three new rows, none above changed status, and the floor stands.
+
+| Area | Counterpart (a cross-check, not the spec) | Status | Notes |
+|---|---|---|---|
+| Audit run: one programme of checks over the statements, the control accounts, closes, schedules, assets, evidence, drafts, tax categories, 1099 decisions, settings and the store's integrity (`books.audit`, `books.workpaper`) | An auditor's workpaper; QBO "Audit log"/"Review" and Xero's "Reports review" are a cross-check only | partial | rules.md B-45; `ledger_core::audit`, `ledger_store::audit`; tests `audit_detects_each_seeded_defect` (every code seeded), `audit_is_deterministic`, `workpaper_pdf_is_deterministic`; the fixture `p8_before` was written by the version before; `partial` until a hand-verified golden covers a workpaper |
+| Attestations of receipts, entries and periods, weighed against `policy.attestation_bar` when asked (`books.attest_receipt`, `books.review_entry`, `books.attest_period`, `books.attestations`) | An accountant's sign-off on a month | partial | `below_bar_not_counted`, `amount_mismatch_never_counts`, `stale_head_period_attestation_refused`; the method is the client's own claim, and the books say so |
+| The CPA package waits for a counted audit (`policy.cpa_package_requires_audit`) | A close checklist before handoff | partial | `cpa_package_refuses_without_a_counted_audit_unless_a_reason_is_given`; behind the feature `audits` |

@@ -4323,6 +4323,13 @@ pub struct ExportCpaPackageParams {
     /// missing from its figures is not the CPA's final.
     #[serde(default)]
     pub allow_open_drafts: Option<AllowOpenDraftsParam>,
+    /// Hand the package over although no audit for the handoff (scope
+    /// cpa_handoff or full) at the books' current head has its period
+    /// attested at the bar, and say why (journaled as a decision). Without
+    /// it the export is refused while `policy.cpa_package_requires_audit`
+    /// is refuse and books have declared audits.
+    #[serde(default)]
+    pub without_audit_reason: Option<String>,
     /// As of this day ([`AS_OF_DOC`]); the period reports cover the
     /// fiscal year that holds it, through it.
     #[schemars(description = AS_OF_DOC)]
@@ -5241,7 +5248,7 @@ pub struct ReconciliationsOut {
 /// Parameters for `books.handbook`.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct HandbookParams {
-    /// The section to read: contract, entries, drafts-and-reversals, evidence-and-receipts, attachments, files-in-out, reconciliation, fixed-assets, prepaid-and-recurring, revenue-and-payouts, projects, parties-and-tins, 1099, cpa-handoff, settings-and-conventions, viewer, backups, self-host, format-upgrade, rules-that-change, control-roles, tracing-figures, invoices-and-bills, or "all" for the whole handbook in order. Omit for the index.
+    /// The section to read: contract, entries, drafts-and-reversals, evidence-and-receipts, attachments, files-in-out, reconciliation, fixed-assets, prepaid-and-recurring, revenue-and-payouts, projects, parties-and-tins, 1099, cpa-handoff, settings-and-conventions, viewer, backups, self-host, format-upgrade, rules-that-change, control-roles, tracing-figures, invoices-and-bills, attestations-and-audit, or "all" for the whole handbook in order. Omit for the index.
     #[serde(default)]
     pub section: Option<String>,
 }
@@ -5855,4 +5862,276 @@ pub struct AllowOpenDraftsParam {
     /// Why the package goes with these drafts open ("the CPA asked for it
     /// before the Figma invoice arrives"); journaled as a decision.
     pub reason: String,
+}
+
+// P8
+
+/// How an attestation was made, as the client says. The books record the
+/// claim; they cannot check it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AttestMethodParam {
+    /// The model that checked, as it names itself ("claude-opus-4").
+    #[serde(default)]
+    pub model: Option<String>,
+    /// How hard it thought: low, medium, high, xhigh or max.
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
+    /// True when the check was adversarial: a verifier set to find what
+    /// is wrong, not to confirm it.
+    #[serde(default)]
+    pub adversarial: Option<bool>,
+    /// How many independent verifier agents checked.
+    #[serde(default)]
+    pub verifier_agents: Option<u32>,
+}
+
+/// Parameters for `books.audit`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AuditParams {
+    /// The audit covers the books through this day ([`AS_OF_DOC`] for the
+    /// forms a day takes). Defaults to today.
+    #[serde(default)]
+    pub through: Option<String>,
+    /// month (a month-end attestation), annual (a fiscal year),
+    /// cpa_handoff (the year, for the CPA package) or full (everything
+    /// from the start of the books).
+    pub scope: String,
+    /// True: run the audit and file its workpaper. Without it, a preview
+    /// that lists what will be checked and changes nothing.
+    #[serde(default)]
+    pub confirmed: Option<bool>,
+    /// The `preview` the call without `confirmed` returned. Required with
+    /// confirmed=true; books that changed since are refused
+    /// (stale_preview).
+    #[serde(default)]
+    pub preview: Option<String>,
+}
+
+/// One check the audit runs.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuditCheckOut {
+    /// The finding code the check reports.
+    pub code: String,
+    /// failure, warning or info.
+    pub severity: String,
+    /// What is true when it is reported.
+    pub predicate: String,
+}
+
+/// One thing an audit found.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuditFindingOut {
+    /// failure, warning or info.
+    pub severity: String,
+    /// The finding code.
+    pub code: String,
+    /// What it is about: `entry 7`, `account 12`, `books`.
+    pub subject: String,
+    /// What was found, with the exact figures.
+    pub message: String,
+}
+
+/// An audit run as the journal records it.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AuditRunOut {
+    /// Its id.
+    pub id: u64,
+    /// The books it covers through this day.
+    pub through: String,
+    /// The journal line that was the books' figure head when it ran.
+    pub through_seq: u64,
+    /// month, annual, cpa_handoff or full.
+    pub scope: String,
+    /// The audit programme's version.
+    pub program_version: String,
+    /// SHA-256 of the trial balance through the day.
+    pub tb_hash: String,
+    /// SHA-256 of the findings.
+    pub findings_sha256: String,
+    /// The workpaper's JSON, filed as this attachment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workpaper_attachment: Option<u64>,
+    /// The workpaper's PDF, filed as this attachment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workpaper_pdf: Option<u64>,
+    /// True while no entry, document, close, settings or role change has
+    /// been made since: attestations rest on a run only while it is.
+    pub at_current_head: bool,
+}
+
+/// Result of `books.audit`.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct AuditOut {
+    /// "preview", "audited" or "already_run" (the same books, day, scope
+    /// and programme were audited before: that run is returned and
+    /// nothing is journaled).
+    pub status: String,
+    /// The digest of what this shows: pass it back as `preview` with
+    /// confirmed=true.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<String>,
+    /// The books' figure head the audit rests on.
+    pub head: u64,
+    /// The checks it runs (a preview lists them; so does a run).
+    pub checks: Vec<AuditCheckOut>,
+    /// The run, once made.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<AuditRunOut>,
+    /// What it found; empty when the books are whole. Not in a preview.
+    #[serde(default)]
+    pub findings: Vec<AuditFindingOut>,
+    /// How many failures, warnings and notes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+}
+
+/// Parameters for `books.workpaper`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WorkpaperParams {
+    /// The audit run's id (`books.audit`'s run.id).
+    pub id: u64,
+}
+
+/// Result of `books.workpaper`.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct WorkpaperOut {
+    /// The run.
+    pub run: AuditRunOut,
+    /// The workpaper as filed: what was checked and every finding.
+    pub workpaper: serde_json::Value,
+    /// The workpaper's PDF, handed over.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pdf: Option<HandedFile>,
+}
+
+/// Parameters for `books.attest_receipt`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AttestReceiptParams {
+    /// The filed receipt.
+    pub attachment_id: u64,
+    /// The posted entry it supports.
+    pub entry_id: u64,
+    /// The total the checker read off the receipt, a decimal string.
+    pub amount: String,
+    /// The date the checker read off the receipt, YYYY-MM-DD.
+    pub date: String,
+    /// How the check was made.
+    #[serde(default)]
+    pub method: Option<AttestMethodParam>,
+    /// Anything the next reader should know.
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+/// Parameters for `books.review_entry`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewEntryParams {
+    /// The posted entry reviewed.
+    pub entry_id: u64,
+    /// How the review was made.
+    #[serde(default)]
+    pub method: Option<AttestMethodParam>,
+    /// Anything the next reader should know.
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+/// Parameters for `books.attest_period`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AttestPeriodParams {
+    /// The period: its id or its name ("2026-10"), from
+    /// `books.list_periods`.
+    pub period: String,
+    /// How the attestation was made.
+    #[serde(default)]
+    pub method: Option<AttestMethodParam>,
+    /// Anything the next reader should know.
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+/// One attestation, and whether it counts.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AttestationOut {
+    /// Its journal line.
+    pub seq: u64,
+    /// receipt, entry or period.
+    pub kind: String,
+    /// Who made it: the token's name.
+    pub by: String,
+    /// When, UTC.
+    pub at: String,
+    /// The attachment, for a receipt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment_id: Option<u64>,
+    /// The entry, for a receipt or an entry review.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry_id: Option<u64>,
+    /// The period, for a period attestation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub period_id: Option<u64>,
+    /// The audit run, for a period attestation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audit_run_id: Option<u64>,
+    /// The amount read off the receipt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amount_checked: Option<String>,
+    /// The date read off the receipt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub date_checked: Option<String>,
+    /// True when the reading differs from the entry's amount or date: it
+    /// never counts.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub disagrees: bool,
+    /// How the client says it checked (self-reported; the books cannot
+    /// verify it).
+    pub method: AttestMethodParam,
+    /// The note.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    /// Whether it meets `policy.attestation_bar` as the bar stands now.
+    pub counted: bool,
+}
+
+/// Result of `books.attest_receipt`, `books.review_entry` and
+/// `books.attest_period`.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct AttestOut {
+    /// What was recorded.
+    pub attestation: AttestationOut,
+    /// The bar it was weighed against.
+    pub bar: String,
+    /// Why it does not count, when it does not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why_not_counted: Option<String>,
+}
+
+/// Parameters for `books.attestations`.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AttestationsParams {
+    /// Only attestations of entries dated, or periods ending, on or
+    /// before this day.
+    #[serde(default)]
+    pub through: Option<String>,
+    /// Only this kind: receipt, entry or period.
+    #[serde(default)]
+    pub kind: Option<String>,
+}
+
+/// Result of `books.attestations`.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct AttestationsOut {
+    /// The bar `counted` is weighed against, as it stands now.
+    pub bar: String,
+    /// The attestations, oldest first.
+    pub attestations: Vec<AttestationOut>,
+    /// How many count.
+    pub counted: usize,
 }

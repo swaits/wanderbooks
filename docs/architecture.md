@@ -33,7 +33,7 @@ the specification in `bookspec/` (which never depends on the engine).
 | `ledger-config` | the `wanderbooks.toml` codec (adoption in, `books.export_settings` out) and the receipt policy until P4 moves it into the core | `ledger-core` |
 | `ledger-store` | the source of truth: the hash-chained JSONL journal, its format gate, the SQLite projection (schema 18; a file per schema), the blob store, backups, the access log, `describe.rs` (the journal in words, for `books.journal_history`), `Snapshot` for readers | `ledger-core`, `ledger-reader` (P6, D-61) |
 | `ledger-reader` | the one reader: a PDF's text and pages, an XLSX's cells as exact decimal strings, plain text (P6; a plain library, in-process, D-61); `ledger-import` re-exports it as `extract` | none (`hayro`, `zip`, `quick-xml`) |
-| `ledger-import` | formats: QuickBooks CSV in; IIF, XLSX, Typst PDFs (statements, the invoice, labels) out | `ledger-core`, `ledger-reader` |
+| `ledger-import` | formats: QuickBooks CSV in; IIF, XLSX, Typst PDFs (statements, the invoice, labels, the audit workpaper) out | `ledger-core`, `ledger-reader` |
 | `ledger-package` | the shared read-only view over `Store` or `Snapshot` (`PackageBooks`): the CPA package, the 1099 worksheet, the invoice document, Needs attention | `ledger-core`, `ledger-store`, `ledger-config`, `ledger-import`, `ledger-vault` |
 | `ledger-mcp` | the books server: the MCP tools (122), resources, the handbook, scopes, the door and the access log, backups' scheduling | all of the above |
 | `ledger-host` | the host and its leases, the agent bridge (`wanderbooks mcp`), tokens in 0600 files under the data root (D-63), the owner's commands, uploads and downloads, `update` and `rollback` (P11a) | `ledger-store`, `ledger-mcp`, `ledger-config` |
@@ -59,13 +59,26 @@ closure. The reader now lives in the small library crate `ledger-reader`;
 re-exports it as `extract`), the store no longer builds the typesetter,
 and `ledger-import` still never depends on the store.
 
+Audits (P8, rules.md B-45) are split by what each layer can see. The pure
+checks over a ledger are `ledger_core::audit` (`statements`, with the facts
+a ledger cannot know handed in by the caller: the receipts filed, the
+statement of cash flows the role settings give, the settings problems, the
+undecided 1099 vendors); what only the store can see (the chain, the
+database against a replay, the stored files, the access log, duplicate
+files) and the audit and attestation events are `ledger_store::audit` (a
+child module of `store`, because it reads the store's private state); the
+workpaper's PDF is `ledger_import::workpaper` with its Typst template in
+`ledger-import`'s `templates/` beside the other documents; the backups'
+standing is read by the server, which alone knows the backups
+(`BackupStanding`), and the tools are `ledger-mcp`'s `tools/audit.rs`.
+
 `ledger-core` itself (`crates/ledger-core/src/`): `money`, `account`,
 `journal`, `ledger` (the command surface and replay), `kernel` (every
 money arithmetic, generic over `Amount`) and `proofs` (its Kani
 harnesses), `reports`, `cashflow`, `analysis`, `periods`, `assets`,
 `schedules`, `recurring`, `payouts`, `payroll`, `form1099`, `tax`,
 `classes`, `parties`, `arap`, `settings`, `conventions`, `calendar`,
-`shares`, `tax_capital`, `rules`, `error`; its tests in `tests/`
+`shares`, `tax_capital`, `rules`, `audit` (the audit programme's pure checks, P8), `error`; its tests in `tests/`
 (`invariants.rs`, `properties.rs`, `spec_*.rs`, `kernel_bridge.rs`,
 `model.rs`, `bookspec.rs`, `golden/`).
 

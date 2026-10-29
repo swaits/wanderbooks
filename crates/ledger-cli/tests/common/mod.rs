@@ -205,7 +205,13 @@ impl Server {
         BufReader::new(child.stdout.take().unwrap())
             .read_line(&mut line)
             .unwrap();
-        assert_eq!(line, "ready\n", "the server didn't say ready");
+        if line != "ready\n" {
+            // Say why (the portable jobs run this on macOS and Windows,
+            // where the only evidence is what the server wrote).
+            let said =
+                std::fs::read_to_string(home.dir.path().join("server.log")).unwrap_or_default();
+            panic!("the server didn't say ready (got {line:?}); its log:\n{said}");
+        }
         Self { child }
     }
 

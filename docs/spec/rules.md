@@ -13,7 +13,7 @@ Foundation").
 
 Spec blocks in the code cite these as `SOURCE: rules.md B-n`. Every rule
 also has a bookspec identifier, `**bookspec:** BS-<area>-<n>`: the table
-from B-1 to B-45 is `bookspec/spec/rules-index.md` (P13, D-34).
+from B-1 to B-45 is `spec/rules-index.md` in the bookspec repository, https://git.swaits.com/swaits/bookspec (P13, D-34).
 
 ---
 
@@ -1761,7 +1761,15 @@ saying what it duplicates, B-44). P4's is `drafts_v2` (an
 `entry.draft_state_set` or `entry.draft_discarded`, both new event types:
 an older version would refuse them, or, reading around them, keep a
 discarded draft that holds a period open and call a waiting draft one
-being built, B-43). A command asks for
+being built, B-43). P5's is `source_revisions` (a
+`convention.source_revised`, `decision.source_revised` or
+`open_item.source_revised`, new event types: an older version would
+refuse them, or show the old source as the record's authority). A command asks for
+being built, B-43). P8's is `audits` (an `audit.run`, `receipt.attested`,
+`entry.reviewed` or `period.attested`, all new event types, and the
+settings `policy.attestation_bar` and `policy.cpa_package_requires_audit`:
+an older version would refuse the types and the keys, or drop the claims a
+handoff rests on, B-45). A command asks for
 the feature it needs (`Store::ensure_feature`) before its first journaled
 line, and only when the line it is about to write uses it, so a write
 refused for waiting on the upgrade journals nothing, never an entry
@@ -3582,3 +3590,93 @@ withdraw_attachment_duplicate}` and `Store::attach`'s dedup; feature
 `page_image_is_a_png_of_the_page`,
 `consolidation_never_removes_an_entrys_only_evidence`); fuzz targets
 `fuzz_extract_pdf` and `fuzz_extract_xlsx`.
+
+## B-45 An audit is deterministic over the books; an attestation is a claim by a named client
+
+**bookspec:** `BS-ledger-13`
+
+**Status:** CONVENTION (the SOURCE block below; Pub. 583 and Rev. Proc. 98-25
+for the audit trail); CHOICE D-9 (owner-adopted recommendation,
+2026-10-16: the attestation bar, and the CPA package waits for a counted
+audit unless given a reason).
+
+```text
+GOAL: the books can be audited by a programme that gives the same
+      findings for the same books, and a claim that someone checked rests
+      on the books as they were when the audit ran, says how it was made,
+      and is weighed against the owner's bar when asked.
+SOURCE: IRS Pub. 583 (records that support the entries); Rev. Proc. 98-25
+        §5.01 (the relationship between the records and the books must be
+        demonstrable: an audit trail); CHOICE D-9 (the bar: reasoning
+        effort at least high; for a year, adversarial verification by at
+        least two independent agents; no model allow-list; the CPA package
+        refuses without a counted audit unless given a reason); CHOICE
+        D-53 (an audit is a run, not a job); CONVENTION (the figure head,
+        below; a client's method is its own claim).
+INVARIANTS:
+  1. An audit is a pure function of the journal's figures: its findings
+     (`ledger_core::audit::statements`, the store's integrity checks) are
+     a list in a fixed order, and the same books, day, scope and
+     programme give the same findings, the same trial balance hash and
+     the same workpaper bytes. A check that cannot be made is itself a
+     finding, never a silent pass.
+  2. The figure head is the seq of the last journal line that bears on a
+     figure. Audit runs, attestations, filings of evidence (receipts,
+     documents, statements, reconciliations, extraction, annotations,
+     links), decisions and open items, and the format declaration do not
+     move it; an entry, a draft, a document, a close, a schedule, an
+     asset, a settings change or a role change does. A run is idempotent
+     on (through, head, scope, programme): asking again returns it and
+     journals nothing.
+  3. A period is attested only on a run at the current head whose day is
+     on or after the period's end.
+  4. An attestation is a claim by the token that made it (`by`); its
+     method (model, reasoning effort, adversarial, verifier agents) is
+     the client's own, recorded and never verified. A receipt attestation
+     whose amount or date differs from the entry's is recorded with
+     `disagrees` and never counts.
+  5. `counted` is derived against `policy.attestation_bar` as it stands
+     when asked and never stored: a bar change changes what counts, past
+     claims too. Every attestation needs the reasoning effort; one on a
+     year-level run (annual, cpa_handoff, full) needs the adversarial
+     check and the verifier count too.
+  6. The CPA package, on books that declared `audits` and under
+     `policy.cpa_package_requires_audit = refuse` (unset: refuse once the
+     books hold an audit run, warn before), needs a run of scope
+     cpa_handoff or full at the current head with a period attested on it
+     that counts; otherwise it is refused, unless a reason is given,
+     which is journaled as a decision.
+  7. Nothing here moves a figure. Every refusal leaves the journal
+     unchanged; every write waits for the feature `audits`.
+SCENARIOS:
+  1. The same books audited twice through one day: one run, one
+     workpaper; the second call files and journals nothing.
+  2. An entry posted after the audit: the period cannot be attested until
+     the audit is run again.
+  3. A receipt read as 41.00 against a 40.00 entry: recorded, `disagrees`,
+     not counted, however hard the checker says it thought.
+  4. The bar lowered afterwards: earlier attestations that now meet it
+     count.
+  5. A CPA package with no counted audit: refused (`audit_required`);
+     with a reason, made, and the reason is a decision in the journal.
+  6. Books that never declared `audits`: the package is as it was; the
+     audit run and the attestations are refused with
+     `format_upgrade_pending`.
+```
+
+**Enforced:** `ledger_core::audit` (`statements`, `Finding`, `CODES`,
+`AttestationBar::counts`, `Scope`, `Method`), `ledger_store::audit`
+(`Store::figure_head`, `integrity_findings`, `record_audit_run`,
+`attest_receipt`, `review_entry`, `attest_period`, `run_for_period`,
+`attestations`, `PROGRAM_VERSION`), `ledger_import::workpaper_pdf`,
+ledger-mcp `tools/audit.rs` and the gate in `books.export_cpa_package`,
+journal feature `audits`.
+**Checked:** `ledger-core` `tests/audit.rs`
+(`audit_detects_each_seeded_defect`, `below_bar_not_counted`,
+`amount_mismatch_never_counts`); `ledger-store` `tests/audit.rs`
+(`audit_writes_wait_for_audits`, `a_run_is_idempotent_on_the_figure_head`,
+`stale_head_period_attestation_refused`, `integrity_detects_each_seeded_defect`,
+`books_the_version_before_p8_wrote_wait_for_the_upgrade`); `ledger-import`
+`workpaper_pdf_is_deterministic`; `ledger-cli` `tests/audit.rs`
+(`audit_is_deterministic`, `cpa_package_refuses_without_a_counted_audit_unless_a_reason_is_given`,
+`audits_wait_for_the_upgrade`).

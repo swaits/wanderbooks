@@ -9,7 +9,7 @@
 use std::collections::HashSet;
 use std::time::Instant;
 
-use chrono::NaiveDate;
+use chrono::{Datelike, NaiveDate};
 use ledger_core::{AccountType, Currency, Money, Side};
 use ledger_gui::{Source, data};
 use rust_decimal::Decimal;
@@ -349,4 +349,80 @@ fn a_waiting_draft_and_a_building_draft_are_two_items_on_both_lists() {
         titles.contains(&"Draft not posted: Coworking day pass".to_string()),
         "{titles:?}"
     );
+}
+
+/// Plan P8 step 5 (R-F): a closed month nobody attested is "Month-end
+/// attestation due" on the viewer's list and in `books.start`'s next steps,
+/// from the one engine; the fiscal year that ended closed with no audit
+/// for the handoff is "Full audit due before the CPA handoff"; an
+/// attestation clears the month. Books that never declared `audits` get
+/// none of them (they cannot act on them).
+#[test]
+fn audit_items_are_on_both_lists_once_audits_are_declared() {
+    let today = ledger_core::settings::today_in(None);
+    let place = common::Place::new("attention-audit-parity");
+    let dir = place.books_data();
+    let _ = std::fs::remove_dir_all(&dir);
+    let year = today.year() - 1;
+    let day = |m: u32, d: u32| NaiveDate::from_ymd_opt(year, m, d).unwrap();
+    let mut st = ledger_store::Store::create(&dir, Currency::USD).unwrap();
+    let cash = st
+        .add_account("1000", "Checking", AccountType::Asset, None, false)
+        .unwrap();
+    let capital = st
+        .add_account("3000", "Capital", AccountType::Equity, None, false)
+        .unwrap();
+    let e = st.create_entry(day(1, 5), "Capital").unwrap();
+    st.add_line(e, cash, Side::Debit, usd(100_000)).unwrap();
+    st.add_line(e, capital, Side::Credit, usd(100_000)).unwrap();
+    st.post_entry(e).unwrap();
+    let jan = st.create_period("Jan", day(1, 1), day(1, 31)).unwrap();
+    st.close_period(jan).unwrap();
+    let dec = st.create_period("Dec", day(12, 1), day(12, 31)).unwrap();
+    st.close_period(dec).unwrap();
+    drop(st);
+    let mut wire = place.start(Some(SETTINGS));
+    wire.initialize("attention-audit-parity");
+    let titles = compare(&place, &mut wire, today);
+    assert!(
+        titles
+            .iter()
+            .any(|t| t.starts_with("Month-end attestation due")),
+        "{titles:?}"
+    );
+    assert!(
+        titles
+            .iter()
+            .any(|t| t.starts_with("Full audit due before the CPA handoff")),
+        "{titles:?}"
+    );
+    // Audit and attest January: that month's item goes, the year's stays.
+    let run = common::answer_of(&wire.call(
+        "books.audit",
+        json!({"scope": "month", "through": day(1, 31).to_string(), "confirmed": true}),
+    ))
+    .unwrap();
+    assert_eq!(run["status"], "audited", "{run}");
+    common::answer_of(&wire.call(
+        "books.attest_period",
+        json!({"period": "Jan", "method": {"reasoning_effort": "high"}}),
+    ))
+    .unwrap();
+    let after = compare(&place, &mut wire, today);
+    let due: Vec<&String> = after
+        .iter()
+        .filter(|t| t.starts_with("Month-end attestation due"))
+        .collect();
+    assert_eq!(due.len(), 1, "{after:?}");
+    assert!(due[0].contains("Dec"), "{after:?}");
+    // The step offers the audit.
+    let answer = start(&mut wire);
+    let step = answer["next_steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["why"] == json!(due[0].as_str()))
+        .unwrap_or_else(|| panic!("no step: {answer}"));
+    assert_eq!(step["tool"], json!("books.audit"), "{answer}");
+    assert_eq!(step["args"]["scope"], json!("month"), "{answer}");
 }

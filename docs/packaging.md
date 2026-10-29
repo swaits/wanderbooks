@@ -16,8 +16,8 @@ not a tool, so there is nothing for a recipe to call.
 | `.rpm` | `cargo-generate-rpm` (table in `crates/ledger-cli/Cargo.toml`) | same paths, marker `rpm`; 36 MB | dnf repository (`repo-indexes.sh dnf`) | unsigned until step 5 (`--signing-key` takes the PGP key then) |
 | AUR `PKGBUILD` | `cargo packager` makes the tarball (`pacman` format) and a PKGBUILD for it; ours is `deploy/packaging/aur/PKGBUILD`, which repacks the release's tarball (package `wanderbooks-bin`) | same paths, marker `aur`; built with `makepkg` | pacman (the AUR keeps old PKGBUILDs) | n/a (pacman trusts the AUR's checksums) |
 | AppImage | `cargo packager` (`appimage`); 44 MB | one file the owner puts anywhere and runs; needs no admin password | `wanderbooks update` (`$APPIMAGE` is the file replaced) against the manifest; minisign | minisign by the release key (step 5) |
-| `.dmg` | `cargo packager` (`dmg`) | (trial) needs a Mac | `wanderbooks update` | Developer ID and notarization (step 5) |
-| NSIS `.exe` | `cargo packager` (`nsis`) | (trial) needs Windows, and native Windows is unit P11c (D-62) | `wanderbooks update` | the Windows identity (step 5) |
+| `.dmg` | `cargo packager` (`dmg`), `deploy/packaging/build-macos.sh`; **built in CI, unsigned; the trial on a Mac is the owner's** | `Wanderbooks.app` dragged to Applications; no admin password (the trial will say) | `wanderbooks update` (it replaces the program inside the `.app`: see the note below) | **unsigned**; Developer ID and notarization are step 5 |
+| NSIS `.exe` | `cargo packager` (`nsis`) | **not built**: native Windows is unit P11c (D-62) | `wanderbooks update` | the Windows identity (step 5) |
 
 `just package-linux` builds the first four (`deploy/packaging/build-linux.sh`,
 about a minute after the release build, itself 8 to 12 minutes on a
@@ -64,21 +64,18 @@ What the trial found, each of which is built around now:
    manifest's `signature` is that `.sig` as written, and `update` reads the
    public key in either form. Checked end to end by hand (below), and by
    `a_public_key_is_read_in_every_form_minisign_and_the_packager_write_it`.
-7. **The AppImage updates itself but the books it holds do not restart
-   onto the new image.** `update` replaces `$APPIMAGE`, and an AppImage run
-   from a shell (`Wanderbooks.AppImage update`, or the one that was running)
-   proves the swap and the rollback: after `update`, the AppImage on disk
-   is the new file, the old one is kept, and `rollback` restores it. But the
-   host that is open runs from the old image's mount
+7. **The AppImage updates itself, and (since step 4) the books it holds
+   restart onto the new image.** `update` replaces `$APPIMAGE`. The host
+   that is open used to run from the old image's mount
    (`/tmp/.mount_*/usr/bin/wanderbooks`), a path that does not change, so
-   `host.rs` never sees a replaced file and the open books keep the old
-   version until they are closed and opened again (`wanderbooks close`).
-   Fixing it means the host learning the image's path (its environment is
-   scrubbed on purpose; `APPIMAGE` would join the allow-list of `start.rs`,
-   or the path would come from the mount table) and starting its successor
-   from it: a decision about what the host may trust, left to the EM (the
-   unit's report names it). Package installs and a hand-placed executable
-   restart as designed (`bridge_survives_update`).
+   it never saw a replaced file. The host now reads `APPIMAGE` (it is in
+   the allow-list of `start.rs`'s scrubbed environment, only when it names
+   an absolute file; a path the host reads about itself and never tells an
+   agent), runs and restarts from that file, and tells a replaced program
+   by its inode, size and last write. Tested without FUSE by
+   `a_replaced_appimage_restarts_the_books` (the programs run from one
+   copy while `APPIMAGE` names another, as a mount does); not run against
+   a real image mount in this wave.
 8. **Onboarding with no terminal does not exist yet.** The unit's Done-when
    (1) says an AppImage "opens, onboards and posts an entry with no
    terminal". The AppImage opens (a bare launch is the viewer), but the viewer
@@ -117,6 +114,43 @@ byte-for-byte unchanged, and `wanderbooks update` exits non-zero naming the
 package manager. Not tested: Ubuntu, openSUSE, a package-manager
 *downgrade* (the repositories keep every release by construction), and the
 `.rpm` and `.deb` under their real signatures (step 5).
+
+## The macOS bundle (step 6, built in CI, unsigned)
+
+`deploy/packaging/packager-macos.toml` (cargo-packager: the `dmg` format,
+which makes the `.app` first; the icon is the 512 px PNG, made into an
+`.icns` by the packager; `minimum-system-version` 11.0), `Info.plist`
+(merged into the generated one: one viewer at a time, no discrete GPU),
+`build-macos.sh` (the same shape as the Linux script, in portable shell
+because macOS has BSD `sed`) and `just package-macos`. The `macos` job of
+`.github/workflows/release.yml` runs on `macos-latest` (Apple silicon: the
+manifest key is `macos-aarch64`; an Intel build is not made), uploads the
+`.dmg` as a run artifact (named `macos-dmg-unsigned`) and, on a tag,
+attaches it to the release. **It is not signed or notarized** (step 5: the
+owner's Developer ID and Q-4), so Gatekeeper refuses it on a Mac that
+downloaded it; the owner opens it with right-click, Open. What was checked
+here, on Linux: the config parses under cargo-packager 0.11.8's strict
+schema (unknown keys are errors) and the script's `sed` is the portable
+subset. **Not checked: that the `.dmg` builds, mounts or runs**: that needs
+the CI run (Actions, release, Run workflow, this branch) and then a Mac.
+Open items for the trial on a Mac: whether `wanderbooks update` replacing
+the program inside a signed `.app` breaks its signature (it will: step 5
+must decide, probably by updating a whole `.app`); the translocated-app
+check (`translocated_app_refuses_to_connect`) is not built.
+
+## Updates staged by the host (step 4)
+
+The host looks at the feed at most once a day while the books are open
+(`update_check`), and downloads and verifies a newer release into
+`<root>/updates/staged/` with a `meta.json` (version, sha256, signature,
+notes). It never swaps. The next opener that starts a host applies it
+first; `wanderbooks update` applies it too and reuses the staged copy;
+`update --check` says "already downloaded". A local release is named by
+`<root>/updates/feed` (a `file://` address, then the key file). Without a
+compiled-in release key and without that file, the look does nothing but
+log why. Not built: the in-app "restart now to update" choice and the
+viewer's notice, which need an admin-socket intent and a place in the
+viewer (see the unit's As-built block).
 
 ## What `update` and `rollback` need from a release
 

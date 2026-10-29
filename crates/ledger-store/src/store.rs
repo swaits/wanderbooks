@@ -51,6 +51,9 @@ use rust_decimal::Decimal;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
+#[path = "audit.rs"]
+pub mod audit;
+
 /// File names inside the data directory.
 pub const JOURNAL_FILE: &str = "journal.jsonl";
 
@@ -1113,6 +1116,67 @@ impl Store {
         )?;
         self.ledger
             .apply_retire_convention(id, reason, source.clone(), line.seq)?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(())
+    }
+
+    /// Correct who decided a convention, when and on what
+    /// (`convention.source_revised`, journal feature `source_revisions`),
+    /// its text unchanged: `c` is the convention as it stands, with the
+    /// corrected source. The reason is journaled with it.
+    pub fn revise_convention_source(
+        &mut self,
+        c: &ledger_core::conventions::NewConvention,
+        reason: &str,
+    ) -> Result<(), StoreError> {
+        self.ensure_feature(crate::format::SOURCE_REVISIONS)?;
+        let (source, reason) = self.ledger.check_convention_source(c, reason)?;
+        self.ensure_format()?;
+        let line = self.append_journal(
+            "convention.source_revised",
+            crate::meta::convention_source_revised(&c.id, &source, &reason),
+        )?;
+        self.ledger.apply_convention_source(&c.id, source)?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(())
+    }
+
+    /// Correct who decided a decision, when and on what
+    /// (`decision.source_revised`, journal feature `source_revisions`).
+    pub fn revise_decision_source(
+        &mut self,
+        id: u64,
+        source: &ledger_core::conventions::DecisionSource,
+        reason: &str,
+    ) -> Result<(), StoreError> {
+        self.ensure_feature(crate::format::SOURCE_REVISIONS)?;
+        let (source, reason) = self.ledger.check_decision_source(id, source, reason)?;
+        self.ensure_format()?;
+        let line = self.append_journal(
+            "decision.source_revised",
+            crate::meta::decision_source_revised(id, &source, &reason),
+        )?;
+        self.ledger.apply_decision_source(id, source)?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(())
+    }
+
+    /// Correct who raised an open item, when and on what
+    /// (`open_item.source_revised`, journal feature `source_revisions`).
+    pub fn revise_open_item_source(
+        &mut self,
+        id: u64,
+        source: &ledger_core::settings::Source,
+        reason: &str,
+    ) -> Result<(), StoreError> {
+        self.ensure_feature(crate::format::SOURCE_REVISIONS)?;
+        let (source, reason) = self.ledger.check_open_item_source(id, source, reason)?;
+        self.ensure_format()?;
+        let line = self.append_journal(
+            "open_item.source_revised",
+            crate::meta::open_item_source_revised(id, &source, &reason),
+        )?;
+        self.ledger.apply_open_item_source(id, source)?;
         apply_line_to_sqlite(&self.conn, &line)?;
         Ok(())
     }
@@ -7533,6 +7597,21 @@ fn replay_line(
             let a = crate::meta::annotated_of(line)?;
             ledger.replay_annotate_attachment(a)?;
         }
+        "audit.run" => {
+            // Not accounting state; the projection records it. Checked
+            // for shape here (an unknown scope is newer, rules.md B-27).
+            crate::meta::audit_run_of(line)?;
+        }
+        // A claim that someone checked; no figure moves.
+        "receipt.attested" => {
+            crate::meta::attestation_of(line)?;
+        }
+        "entry.reviewed" => {
+            crate::meta::attestation_of(line)?;
+        }
+        "period.attested" => {
+            crate::meta::attestation_of(line)?;
+        }
         "entry.settles" => {
             let (entry, settles) = crate::meta::entry_settles_of(p)?;
             ledger.replay_set_entry_settles(entry, settles)?;
@@ -7944,6 +8023,18 @@ fn replay_line(
         "convention.retired" => {
             let (id, reason, source) = crate::meta::convention_retired_of(p)?;
             ledger.apply_retire_convention(&id, reason, source, line.seq)?;
+        }
+        "convention.source_revised" => {
+            let (id, source, _reason) = crate::meta::convention_source_revised_of(p)?;
+            ledger.apply_convention_source(&id, source)?;
+        }
+        "decision.source_revised" => {
+            let (id, source, _reason) = crate::meta::decision_source_revised_of(p)?;
+            ledger.apply_decision_source(id, source)?;
+        }
+        "open_item.source_revised" => {
+            let (id, source, _reason) = crate::meta::open_item_source_revised_of(p)?;
+            ledger.apply_open_item_source(id, source)?;
         }
         "decision.recorded" => {
             let (id, d) = crate::meta::decision_recorded_of(p)?;
@@ -8736,6 +8827,22 @@ fn apply_line_rows(conn: &Connection, line: &JournalLine) -> Result<(), StoreErr
                 ],
             )?;
         }
+        "audit.run" => {
+            let run = crate::meta::audit_run_of(line)?;
+            audit::insert_run(conn, &run)?;
+        }
+        "receipt.attested" => {
+            let a = crate::meta::attestation_of(line)?;
+            audit::insert_attestation(conn, &a)?;
+        }
+        "entry.reviewed" => {
+            let a = crate::meta::attestation_of(line)?;
+            audit::insert_attestation(conn, &a)?;
+        }
+        "period.attested" => {
+            let a = crate::meta::attestation_of(line)?;
+            audit::insert_attestation(conn, &a)?;
+        }
         "entry.settles" => {
             // Rebuilt into the ledger by replay; no report rows.
         }
@@ -9040,6 +9147,32 @@ fn apply_line_rows(conn: &Connection, line: &JournalLine) -> Result<(), StoreErr
                     line.seq as i64,
                     id
                 ],
+            )?;
+        }
+        "convention.source_revised" => {
+            let (id, source, _reason) = crate::meta::convention_source_revised_of(p)?;
+            conn.execute(
+                "UPDATE conventions SET source_json = ? WHERE id = ?",
+                params![crate::meta::source_json(&source).to_string(), id],
+            )?;
+        }
+        "decision.source_revised" => {
+            let (id, source, _reason) = crate::meta::decision_source_revised_of(p)?;
+            conn.execute(
+                "UPDATE decisions SET decided_by_json = ?, decided_on = ?, citation = ? WHERE id = ?",
+                params![
+                    serde_json::to_string(&source.decided_by)?,
+                    source.decided_on.to_string(),
+                    source.citation,
+                    id as i64
+                ],
+            )?;
+        }
+        "open_item.source_revised" => {
+            let (id, source, _reason) = crate::meta::open_item_source_revised_of(p)?;
+            conn.execute(
+                "UPDATE open_items SET source_json = ? WHERE id = ?",
+                params![crate::meta::source_json(&source).to_string(), id as i64],
             )?;
         }
         "decision.recorded" => {

@@ -277,6 +277,30 @@ pub struct NewDecision {
     pub projects: Vec<crate::ClassId>,
 }
 
+/// Where a decision comes from: who decided, when, and what it rests on.
+/// A correction of these three is journaled on its own
+/// (`decision.source_revised`), the decision itself unchanged.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DecisionSource {
+    /// Who decided (names), at least one.
+    pub decided_by: Vec<String>,
+    /// When.
+    pub decided_on: NaiveDate,
+    /// The rule or document it rests on, if any.
+    pub citation: Option<String>,
+}
+
+impl NewDecision {
+    /// The decision's source.
+    pub fn source(&self) -> DecisionSource {
+        DecisionSource {
+            decided_by: self.decided_by.clone(),
+            decided_on: self.decided_on,
+            citation: self.citation.clone(),
+        }
+    }
+}
+
 /// A decision as the journal holds it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Decision {
@@ -645,6 +669,39 @@ impl Conventions {
         Ok(())
     }
 
+    /// Correct a convention's source as journaled (`convention.source_revised`):
+    /// who decided it, when and on what; its text, revision and line stay.
+    pub fn apply_convention_source(&mut self, id: &str, source: Source) -> Result<(), String> {
+        let c = self
+            .conventions
+            .get_mut(id)
+            .ok_or_else(|| format!("unknown convention {id:?}"))?;
+        c.source = source;
+        Ok(())
+    }
+
+    /// Correct a decision's source as journaled (`decision.source_revised`).
+    pub fn apply_decision_source(&mut self, id: u64, source: DecisionSource) -> Result<(), String> {
+        let d = self
+            .decisions
+            .get_mut(&id)
+            .ok_or_else(|| format!("unknown decision {id}"))?;
+        d.new.decided_by = source.decided_by;
+        d.new.decided_on = source.decided_on;
+        d.new.citation = source.citation;
+        Ok(())
+    }
+
+    /// Correct an open item's source as journaled (`open_item.source_revised`).
+    pub fn apply_open_item_source(&mut self, id: u64, source: Source) -> Result<(), String> {
+        let i = self
+            .open_items
+            .get_mut(&id)
+            .ok_or_else(|| format!("unknown open item {id}"))?;
+        i.new.source = source;
+        Ok(())
+    }
+
     /// Record an approval as journaled.
     pub fn apply_approval(&mut self, entry: EntryId, a: Approval) {
         self.approvals.entry(entry).or_default().push(a);
@@ -797,6 +854,28 @@ pub fn check_decision(d: &NewDecision) -> Result<NewDecision, String> {
             .map(|c| long_text("citation", c, MAX_LONG_TEXT))
             .transpose()?,
         projects: d.projects.clone(),
+    })
+}
+
+/// Check a decision's corrected source (the same rules as a new
+/// decision's own).
+pub fn check_decision_source(s: &DecisionSource) -> Result<DecisionSource, String> {
+    if s.decided_by.is_empty() {
+        return Err("decided_by names at least one person".into());
+    }
+    crate::calendar::check(s.decided_on).map_err(|e| e.to_string())?;
+    Ok(DecisionSource {
+        decided_by: s
+            .decided_by
+            .iter()
+            .map(|n| line_text("decided_by", n, MAX_TEXT))
+            .collect::<Result<_, _>>()?,
+        decided_on: s.decided_on,
+        citation: s
+            .citation
+            .as_deref()
+            .map(|c| long_text("citation", c, MAX_LONG_TEXT))
+            .transpose()?,
     })
 }
 

@@ -1,0 +1,102 @@
+{
+  "description": "A draft that waits for its receipt, and posts when it arrives.",
+  "settings": "[company]\nname = \"Eval Co\"\nfiscal_year_start = \"01-01\"\n[books]\ncash_accounts = [\"1000\"]\n",
+  "setup": [
+    {
+      "call": "books.add_account",
+      "args": {
+        "code": "1000",
+        "name": "Cash",
+        "account_type": "asset"
+      }
+    },
+    {
+      "call": "books.add_account",
+      "args": {
+        "code": "3000",
+        "name": "Capital",
+        "account_type": "equity"
+      }
+    },
+    {
+      "call": "books.add_account",
+      "args": {
+        "code": "6000",
+        "name": "Rent",
+        "account_type": "expense"
+      }
+    }
+  ],
+  "steps": [
+    {
+      "call": "books.start",
+      "args": {}
+    },
+    {
+      "follow": "books.draft_entry",
+      "with": {
+        "date": "2026-01-10",
+        "description": "Landlord, January",
+        "no_party_reason": "test"
+      }
+    },
+    {
+      "follow": "books.add_line",
+      "with": {
+        "account": "6000",
+        "side": "debit",
+        "amount": "40.00"
+      }
+    },
+    {
+      "follow": "books.add_line",
+      "with": {
+        "account": "1000",
+        "side": "credit",
+        "amount": "40.00"
+      }
+    },
+    {
+      "follow": "books.post_entry",
+      "with": {}
+    },
+    {
+      "follow": "books.set_draft_state",
+      "with": {
+        "state": "awaiting_evidence",
+        "note": "the landlord's receipt"
+      }
+    },
+    {
+      "expect": {
+        "/state": "awaiting_evidence"
+      }
+    },
+    {
+      "follow": "books.attach_receipt",
+      "with": {
+        "upload_id": {
+          "$upload": {
+            "name": "receipt.pdf",
+            "mime": "application/pdf",
+            "text": "%PDF-1.4 a receipt for rent",
+            "purpose": "receipt"
+          }
+        }
+      }
+    },
+    {
+      "follow": "books.post_entry",
+      "with": {}
+    },
+    {
+      "follow": "books.post_entry",
+      "with": {}
+    },
+    {
+      "expect": {
+        "/status": "posted"
+      }
+    }
+  ]
+}

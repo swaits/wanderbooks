@@ -12,12 +12,16 @@ locked to one assistant.
 
 | Crate | Role | Spec |
 |---|---|---|
+| `ledger-core` | the engine: money, entries, the laws; every rule the tools enforce | `docs/spec/rules.md`, `docs/verification.md` |
+| `ledger-package` | the read-only views shared with the viewer: reports, aging, the CPA package, Needs attention (the one list `books.start` and the viewer both draw) | `docs/architecture.md` |
 | `ledger-store` | the hash-chained journal (the source of truth), the SQLite projection, the blob store | `docs/receipt-store.md` |
 | `ledger-mcp` | the books server: the tools, resources and handbook over store + core | this document |
 | `ledger-host` | the agent bridge (`wanderbooks mcp`), the host and its leases, tokens | `plan/served.md` 3.3, 3.9 |
 
-(The overview sections of this document date from the first MCP phase; P5
-rewrites them. The per-tool sections are held to the code by a test.)
+(P5 rewrote the overview sections for the surface as it is: the result
+envelope, `books.start` v2, the prompts, the resource templates and the
+journal in words, below. The per-tool sections are held to the code by a
+test: `every_tool_is_documented_and_every_documented_tool_exists`.)
 
 Rust, `rmcp` SDK (the Rust MCP SDK). The MCP crate holds no accounting
 logic: it translates tool calls into `Ledger` commands and formats results.
@@ -106,15 +110,37 @@ Conventions, decisions, open items and approvals live in the books too
 when; `books.start` lists them, and the handbook's
 settings-and-conventions section says how to use them.
 
-- `books.start { focus? }` (read-only, at most 8 KB) → `{ book: { name,
-  timezone, today, fiscal_year, base_currency, basis }, head: { seq, hash },
+- `books.start { focus?, agent? }` (read-only, at most 8 KB; `_meta`
+  `anthropic/alwaysLoad: true`, so a client that defers tools loads it up
+  front) → `{ book: { id, url, name,
+  timezone, today, fiscal_year, base_currency, basis }, you?: { principal,
+  kind, scopes, client_id? }, head: { seq, hash },
   state ("needs_onboarding" or "active"), rules: {
   evidence, parties, approval_rules }, settings_summary: [{ key, value,
   set_by, seq }], conventions: [{ id, kind, title, summary }], open_items:
   [{ id, title, due }], projects: [{ id, name, status, kind? }],
-  truncated?, handbook_sections, format_upgrade?: {
-  guard, format, adds, how }, next_steps: [{ tool, args?, why }],
-  isolation }`. The connect text names it as the first call.
+  drafts: { building, awaiting_evidence: [{ entry_id, date, amount, note
+  }] }, reconciliation: { tracked, never_reconciled, behind } (account
+  codes), backup: { last_at, through_seq, stale }, prompts: [{ name, args
+  }], needs_attention: { items: [{ id, severity, kind, title, tool?, args?
+  }], counts: { kind: n } }, truncated?, handbook_sections,
+  format_upgrade?: { guard, format, adds, how }, next_steps: [{ tool |
+  prompt, args?, why, required }], isolation }`. The connect text names it
+  as the first call. `book.url` is the book's path on this server
+  (`/b/ID/mcp`), never a path on a disk. `you` is the token's own facts
+  (its name, the kind `agent`, its scopes) and the client program's name; it is
+  absent on the `books://start` resource, which no token's call made.
+  `agent: { model?, reasoning_effort?, harness? }` is what the agent says
+  about itself: self-reported, never checked, written to the call's access
+  record (`books.access_log` shows it as `agent`) and used for nothing
+  else. `drafts` lists the first ten drafts waiting on their evidence;
+  `reconciliation` the accounts reconciled to statements and which are
+  behind or never reconciled; `needs_attention` the twelve most urgent
+  items (problems first) with every item counted by kind: the same list
+  the viewer draws, from one function (`ledger_package::attention`). If
+  the answer would pass 8 KiB it shortens, in this order: convention
+  summaries, attention items (to four), waiting drafts (to three), then
+  the lists below, each saying how many more in `truncated`.
   `format_upgrade` is there only for books waiting for a format upgrade
   (below); its next step comes first, before anything else, at every
   start until it is done: `books.handbook {section: "format-upgrade"}`,
@@ -128,8 +154,9 @@ settings-and-conventions section says how to use them.
   `projects` lists the active and paused projects by name, at most 20
   ("projects: N more (books.projects)" past that).
   `next_steps`, in order: the format upgrade's (when waiting); the
-  onboarding step (`books.handbook {section: "contract"}`, when the chart
-  is empty or `focus` is `onboarding`); `books.open_items` (an item due
+  onboarding steps (the `onboard` prompt, `books.set_setting`,
+  `books.chart_template` and `books.handbook {section: "contract"}`, when
+  the chart is empty or `focus` is `onboarding`); `books.open_items` (an item due
   within 30 days or overdue); `books.backup` (none set up, or one stale,
   failing, paused or failing its drill); then Needs attention, by
   severity, at most 12, each one `{tool, args?, why}` whose `why` is the
@@ -138,11 +165,11 @@ settings-and-conventions section says how to use them.
   server's own damage check and are not repeated); then the focus's step
   (`close`:
   `books.conventions {kind: "close_step"}`; `audit`: `books.verify`); then
-  always `books.handbook {section: "contract"}` and `books.digest`.
+  `books.draft_entry` (the books are set up), `books.handbook {section:
+  "contract"}` and `books.digest`. Attention steps are `required` when the
+  item is a problem.
   `focus` is `daily` (the default), `onboarding`, `close` or `audit`;
-  anything else is refused. Not built yet (P5):
-  `book.id`, `book.url`, `head.last_handoff`, the `agent` input, and
-  loading it up front under tool search. Also `books://start`.
+  anything else is refused. Also `books://start`.
 **The format upgrade** (plan 3.9, D-39, rules.md B-27). Books an older
 wanderbooks wrote are in an older journal format: they are served on it,
 and every tool that needs nothing new works as before. A tool whose
@@ -173,6 +200,16 @@ as it is made.
   `policy`, `close_step`, `calendar`, `mapping`, `note`, in words). An id is
   a slug, revised in place (same kind), never reused once retired:
   `books.retire_convention { id, reason, decided_by, ... }` (destructive).
+  **Correcting a source** (P5, journal feature `source_revisions`):
+  `books.set_convention` with `reason` and the text exactly as it stands
+  changes only who decided it, when and on what (`decided_by`,
+  `decided_on`, `citation`, `note`), journaled as `convention.source_revised
+  {id, source, reason}`; the revision number and the words do not move.
+  Without `reason` the same call is refused ("already says exactly that;
+  to correct only who decided it, when or on what, add reason"), and with
+  `reason` and different words it is refused ("changes more than its
+  source"). Books that have not had the owner's upgrade refuse it with
+  `format_upgrade_pending`.
 - `books.draft_from_template { template_id, date, amount, accounts?,
   description?, party?, no_party_reason? }` → `{ entry_id, description,
   lines }`: a draft whose lines split the amount (at most a line's) by the
@@ -190,8 +227,14 @@ as it is made.
   decision without them journals the bytes it always did, and one with
   them needs the journal feature `projects`. `books.decisions` gives each
   decision's `projects: [{ id, name }]` (left out when none); `project`
-  filters to the decisions naming one.
-- `books.raise_item { title, detail_md?, due?, decided_by, ... }` → `{ id }`,
+  filters to the decisions naming one. `books.record_decision { revises:
+  ID, reason, decided_by: [..], decided_on, citation? }` corrects only
+  that decision's source (who decided it, when, on what; its words stay,
+  and `subject` and `decision_md`, if given, must be the ones it has):
+  `decision.source_revised {id, source, reason}`, returning `{ id }`.
+- `books.raise_item { title, detail_md?, due?, decided_by, ... }` → `{ id }`
+  (`books.raise_item { revises: ID, reason, decided_by, ... }` corrects
+  only that item's source: `open_item.source_revised`),
   `books.resolve_item { id, resolution, decided_by, ... }`,
   `books.open_items { include_resolved? }`.
 - `books.approve_entry { entry_id, approver, note?, approved_on? }`: the
@@ -350,8 +393,8 @@ books' files; no tool title or description, connect text or handbook
 section names `wanderbooks.toml` (`tool_text_lint`). A rule set by law that the books
 don't know for a year names its official source (the statute or
 publication, with its address) and says to tell the human.
-Tool descriptions are at most 700 characters; eight longer ones are listed
-in `tool_descriptions_fit_700_characters`, to be shortened in P5.
+Tool descriptions are at most 700 characters (`tool_descriptions_fit_700_characters`
+allows none longer; the long text lives in the handbook).
 
 **Annotations.** Every tool has a `title` and a `readOnlyHint`; every tool
 that changes anything also has a `destructiveHint`, true for these 31:
@@ -443,9 +486,44 @@ every tool over every book in ledger-store's `tests/fixtures/old-books`.
   `books.run_schedules`, `books.dispose_asset`, `books.reconcile`,
   `books.close_period`, `books.create_invoice`, `books.create_bill`,
   `books.receive_payment`, `books.pay_bill`, `books.write_off_invoice`,
-  `books.purge_tin`, `books.consolidate_duplicates` and
-  `books.discard_draft`. (`books.void_document`, `books.run_depreciation`
+  `books.purge_tin`, `books.consolidate_duplicates`,
+  `books.discard_draft` and `books.audit`. (`books.void_document`, `books.run_depreciation`
   and `books.run_recurring` post at once and have no `confirmed`.)
+- **The result envelope (P5, plan 4.6).** Every tool result, whatever the
+  tool, is given the same fields in one place (`call_tool`,
+  `next_steps.rs::apply`), after the tool has answered; a tool's own field of
+  the same name is kept, never overwritten:
+  `next_steps: [{ tool | prompt | command, args?, why, required }]` (what to
+  do next: after a preview, the same call with `confirmed: true` and the
+  returned `preview`; after a post, `books.show` of the entry, plus the
+  Needs-attention items about that entry or invoice, the viewer's own,
+  `required` when they are problems; after a close, `books.verify`; after
+  `books.export_cpa_package`, a `command` step carrying the download
+  command; every other tool that can change the books ends with
+  `books.digest`), `guards: [{ code, message, remedy_tool, remedy_args? }]`
+  (empty on success; on a refusal that is a guard, the refusal's
+  `structuredContent` is `{ guards: [..] }` and its text is unchanged),
+  `warnings: [..]` (a tool's own `warnings` is that field), and, on every
+  tool that is not read-only, `head: { seq, hash }`, the journal's head
+  after the call's last write (or as it stands, when the call wrote
+  nothing). A tool that can change the books always has `head` and
+  `next_steps`; a read has `next_steps` only when something follows it, so
+  a resource and its tool say the same (`books://settings` is
+  `books.settings`). `guards` is on a refusal; a success that has no
+  warnings has no `warnings` key. A tool that can change the books always answers with all four;
+  a read has `next_steps` only when something follows it and no `guards`
+  or `warnings` of the envelope's, so a resource and its tool say the same
+  (`books://settings` is `books.settings`). The guard codes are the enum in `guards.rs`, each with its
+  remedy tool: `stale_preview` (the tool again, previewed),
+  `format_upgrade_pending` (`books.start`), `receipt_required`
+  (`books.attach_receipt`), `approval_required` (`books.approve_entry`),
+  `party_shares` and `party_required` (`books.set_entry_party`),
+  `open_drafts` (`books.list_drafts`), `untagged_control_line`
+  (`books.control_check`), `duplicate_vendor_ref` (`books.search_entries`)
+  and `first_number_locked` (`books.settings`). Tests:
+  `every_mutating_result_has_head_and_next_steps`,
+  `the_envelope_keeps_what_a_tool_said_and_carries_a_refusal_guard`,
+  `every_guard_names_an_existing_tool`.
 - **Errors are typed strings** mirroring `LedgerError` variants, with the
   offending values included (e.g. unbalanced totals).
 
@@ -1958,7 +2036,17 @@ posting.
 ## Resources (read-only)
 
 Hand-rolled on `ServerHandler` (rmcp 3.x has no resource macros):
-`list_resources` advertises, `read_resource` renders.
+`list_resources` advertises, `list_resource_templates` advertises the
+templates below (P5), `read_resource` renders.
+
+- Templates: `books://entries/{id}` (as `books.get_entry`),
+  `books://attachments/{id}` (as below), `books://journal/{seq}` (that line
+  in words: `books.journal_history`'s answer for it),
+  `books://reports/{kind}{?start,end,as_of}` (`kind` is `trial-balance`,
+  `balance-sheet` or `profit-and-loss`; `as_of` for the first two, `start`
+  and `end` for the third; omitted: today, or the fiscal year to date) and
+  `books://digest{?since,since_seq,as_of}` (`since_seq` wins over `since`;
+  bare: this month so far).
 
 - `books://start`, `books://settings`, `books://conventions`
 - `books://chart`
@@ -2118,8 +2206,8 @@ snapshots; see plan 8.2 S4.
   receivable line tagged with the invoice and the receivable side one line
   per (account, project) part.
   - `customer` is the customer's id, its party's id or its name (a name
-    two customers answer to is refused); `party_id` is the old spelling of
-    the same thing (a customer id), kept until P5.
+    two customers answer to is refused); it is required (the old `party_id`
+    spelling is gone, P5).
   - The due date: `due_date` as given (and it overrides `terms`); else
     `terms` ("Net 30", "Net 15 EOM", "2/10 net 30", "Due on receipt",
     "Due 2026-11-15", rules.md B-39); else the customer's
@@ -2170,8 +2258,8 @@ snapshots; see plan 8.2 S4.
   sha256 }, warnings?, notes? }`.
   Confirmed it posts Dr each line's account / Cr `2000` Accounts Payable,
   the payable line tagged with the bill and one debit line per (account,
-  project) part; `vendor` is a vendor id, its party's id or its name, and
-  `party_id` the old spelling (a vendor id).
+  project) part; `vendor` is a vendor id, its party's id or its name
+  (required; the old `party_id` spelling is gone, P5).
   - `vendor_ref` is the vendor's own invoice number: required in books
     that have declared `documents_v2` (B-40). The same vendor and number
     twice is refused unless `duplicate_reason` says why, which is
@@ -2194,8 +2282,8 @@ snapshots; see plan 8.2 S4.
   - `warnings` names an expense account it created with no tax category;
     `notes` one per finished or abandoned project a line names (none for
     on-spec: a cost of on-spec work is an expense like any other).
-- `books.receive_payment { date, deposit_to | cash_account, instrument?,
-  reference?, invoice | document_id, amount? | applications: [{ invoice,
+- `books.receive_payment { date, deposit_to, instrument?,
+  reference?, invoice, amount? | applications: [{ invoice,
   amount, discount?, discount_reason? }], fee?: { amount, account?,
   vendor? }, paid_in_full_marking?, confirmed?, preview? }` → `{ preview?,
   entry_id, documents: [{ ref, number?, outstanding, status }], deposited,
@@ -2217,11 +2305,11 @@ snapshots; see plan 8.2 S4.
   repeat the single document's figures. An overpayment is refused with the
   excess and the remedy (a plain entry to 2300 Customer Deposits).
   `paid_in_full_marking: true` adds a UCC §3-311 warning and records
-  nothing else. `document_id` and `cash_account` are the older names of
-  `invoice`/`bill` and `deposit_to`/`paid_from`. The books record
+  nothing else. (The older names `document_id` and `cash_account` are
+  gone, P5.) The books record
   payments; they never collect them (D-45).
-- `books.pay_bill { date, paid_from | cash_account, instrument?,
-  reference?, bill | document_id, amount? | applications: [{ bill, amount,
+- `books.pay_bill { date, paid_from, instrument?,
+  reference?, bill, amount? | applications: [{ bill, amount,
   discount?, discount_reason? }], confirmed?, preview? }` → as `receive_payment`, per bill and
   one vendor (B-42): Dr A/P each bill's cash and discount, Cr the payer
   account the cash, Cr purchase discounts the discounts. A discount on a
@@ -2466,7 +2554,7 @@ until the owner upgrades them.
 
 ## Tools — CPA handoff
 
-- `books.export_cpa_package { as_of?, cash_accounts?, financing_accounts?,
+- `books.export_cpa_package { as_of?, without_audit_reason?, cash_accounts?, financing_accounts?,
   investing_accounts?, include_receipts?, include_tins?,
   allow_open_drafts?: { reason } }` → `{ file,
   tins_included, tin_gaps, warnings?, note }`: the zip,
@@ -2604,3 +2692,112 @@ state and discard tools wait for the books' format upgrade).
 drafts_open_on_or_before: [draft], unreconciled: [...], settings_problems:
 [...] }` for the report's end date, and take `strict: true` to be refused,
 naming what is open, instead of warned.
+
+## Tools — the journal in words (P5)
+
+- `books.journal_history { after_seq?, types?, subject?, limit? }` → `{
+  lines: [{ seq, ts, type, summary, subject?, entry_id? }], more, head_seq,
+  tail_repairs: [{ at, bytes }] }`. The journal in order, a sentence for
+  each line (`summary`: what it did, to what, the short names a person
+  typed; never a setting's value, never a full TIN), the line's own
+  `subject` (`entry:12`, `invoice:3`, `bill:3`, `account:10`, `party:5`,
+  `asset:2`) and the entry it belongs to. `types` takes an exact type
+  (`entry.posted`) or a group ending in a dot (`entry.`); `subject` keeps
+  the lines about one thing (a line is about the subject its type names and
+  every one its payload refers to); `limit` is 50 by default, 200 at most;
+  `more` says to ask again with the last `seq` as `after_seq`. Read-only,
+  `books:read`. It is how a figure is traced to what produced it and the
+  only way to read the journal; `tail_repairs` lists torn tails set aside
+  when the books opened (when, how many bytes). The sentences come from
+  `ledger-store`'s `describe.rs`.
+
+## Prompts (P5)
+
+The server advertises the prompts capability (also in the bridge's cold
+`initialize`). `prompts/list` and `prompts/get` need a token that may read.
+Each prompt's text is a file in `ledger-mcp/prompts/`, with the company's
+name and the arguments filled in; it names only tools that exist (a test
+checks). An argument is one token (letters, digits, `-`, `_`, `.`, `:`; at
+most 40 characters) of the shape the prompt asks for, so an argument can
+never rewrite the text; an unknown prompt, a missing, extra or malformed
+argument is refused.
+
+| Prompt | Arguments | Drives |
+|---|---|---|
+| `onboard` | none | the company's facts, the chart, the policies, the opening balances, the trial-balance check |
+| `reconcile` | `account` (a code), `month` (YYYY-MM) | the statement, `books.record_statement`, `books.mark_cleared`, `books.reconcile` |
+| `month_end_close` | `month` (YYYY-MM) | the company's own close steps, reconciliations, drafts, schedules, checks, `books.close_period` |
+| `cpa_handoff` | `year` (YYYY) | `books.verify`, the periods, 1099 work, `books.export_cpa_package` |
+| `annual_compliance` | `year` (YYYY) | the year's filings, 1099s, assets, open items |
+| `audit` | `scope` (`month`, `annual`, `cpa_handoff` or `full`) | `books.verify`, `books.control_check`, the digest, evidence against entries (P8 fills in its own tools) |
+
+`migrate`, `process_inbox` and `receipts_from_email` are not built (D-46,
+D-28, D-17).
+## Tools — audit and attestations (P8)
+
+An audit is the books read as an auditor reads them, through a day, in one
+run: the same books give the same findings and the same workpaper. An
+attestation is a claim by a checker that it looked at something. The audit
+finds; the attestations stand behind it; the CPA package waits for both
+(rules.md B-45; decision D-9; the journal feature `audits`: the audit run
+and the attestations wait for the books' format upgrade, refused with
+`format_upgrade_pending` until then).
+
+- `books.audit { scope, through?, confirmed?, preview? }` → `{ status:
+  "preview" | "audited" | "already_run", preview, head, checks: [{ code,
+  severity, predicate }], run?: { id, through, through_seq, scope,
+  program_version, tb_hash, findings_sha256, workpaper_attachment,
+  workpaper_pdf, at_current_head }, findings: [{ severity, code, subject,
+  message }], summary }`. `scope` is `month`, `annual`, `cpa_handoff` or
+  `full`; `through` defaults to today. Without `confirmed` it lists the
+  checks and changes nothing; with `confirmed` and the `preview` digest it
+  runs them, files the workpaper as two documents (category `workpaper`:
+  JSON, and a PDF whose bytes depend only on the findings) and journals
+  `audit.run`. The checks are the statements (trial balance, the
+  accounting equation, the profit and loss against equity, the cash flow's
+  footing), the A/R and A/P control accounts, closes, schedules and
+  depreciation, the asset register, each posted entry against the receipt
+  policy, open drafts, tax categories, 1099 decisions and the settings;
+  then the journal's chain, the database against a replay, the stored
+  files, the access log, duplicate files and the backups. The same books
+  (the figure head), day, scope and programme return the run that exists
+  (`already_run`) and file and journal nothing. "The same books" means no
+  entry, document, close, settings or role change since: an audit, an
+  attestation or a filed receipt does not change them. Needs books:write to
+  preview, books:post to run.
+- `books.workpaper { id }` → `{ run, workpaper, pdf? }`: the workpaper as
+  filed (what was checked, through which day and state, every finding) and
+  its PDF handed over (`pdf` is a download command; kept 15 minutes).
+  Read-only.
+- `books.attest_receipt { attachment_id, entry_id, amount, date, method?,
+  note? }` → `{ attestation, bar, why_not_counted? }`. The checker's
+  reading of the receipt's total and date, compared by the books with the
+  posted entry's amounts (its debits, or any one line) and date; a
+  difference is recorded with `disagrees: true` and never counts. The
+  receipt must be filed on or linked to the entry.
+- `books.review_entry { entry_id, method?, note? }` → the same shape: a
+  posted entry reviewed whole.
+- `books.attest_period { period, method?, note? }` → the same shape.
+  `period` is an id or a name from `books.list_periods`. Refused unless an
+  audit through the period's end stands at the books' current head; the
+  attestation names that run.
+- `books.attestations { through?, kind? }` → `{ bar, attestations: [{ seq,
+  kind, by, at, attachment_id?, entry_id?, period_id?, audit_run_id?,
+  amount_checked?, date_checked?, disagrees, method, note?, counted }],
+  counted }`. `kind` is `receipt`, `entry` or `period`. `counted` is read
+  against `policy.attestation_bar` as it stands when asked and never
+  stored: a bar change changes what counts, earlier claims too.
+
+`method` is `{ model?, reasoning_effort?, adversarial?, verifier_agents? }`
+and is the client's own claim: the books record it and cannot verify it.
+`by` is the token's name. The bar (`policy.attestation_bar`, default
+`effort=high verifiers=2 adversarial=true`) holds every attestation to the
+effort, and a period attested on a year-level audit (`annual`,
+`cpa_handoff`, `full`) to the adversarial check and the verifier count too.
+
+`books.export_cpa_package` gains `without_audit_reason?`: on books that
+declared `audits`, with `policy.cpa_package_requires_audit` at `refuse` (the
+default once the books hold an audit run; before one it warns), the package is refused (`audit_required`) unless an audit with
+scope `cpa_handoff` or `full` stands at the current head with a period
+attested on it at the bar; a reason overrides the refusal and is journaled
+as a decision. Under `warn` the package is made and its `warnings` say so.

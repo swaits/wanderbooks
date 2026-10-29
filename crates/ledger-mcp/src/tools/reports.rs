@@ -405,7 +405,7 @@ impl BooksServer {
     #[tool(
         name = "books.show",
         title = "Show in the viewer",
-        description = "Show something in the human's viewer (the read-only desktop app): an entry (with its lines, receipt, and history), an account's register (optionally for start/end dates), a report (optionally for start/end dates, split into month/quarter/year columns, compared with the prior period or prior year), a stored receipt or document, a fixed asset (by tag or id), a party (by id or name: who they are and everything the company did with them), a project (by id or name), a reconciliation (by id: its account with its statements and reconciliations), a search of the transactions, or a page. Give exactly one target; work out dates yourself (\"last quarter\" means its first and last day). Use it whenever the human asks to see something, and after posting so they can look at what you did. Changes nothing in the books.",
+        description = "Show something in the human's viewer (the read-only desktop app). Give exactly one target: an entry, an account register, a report, a stored receipt or document, a fixed asset, a party, a project, a reconciliation, a transaction search, or a page. Work out dates yourself (\"last quarter\" is its first and last day). Use it when the human asks to see something, and after posting so they can look at what you did. Changes nothing in the books. The targets and their options are in books.handbook section viewer.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn show(&self, params: Parameters<ShowParams>) -> Result<Json<ShowOut>, String> {
@@ -929,7 +929,7 @@ impl BooksServer {
     #[tool(
         name = "books.export",
         title = "Export a report",
-        description = "Export a report. Reports: profit_and_loss, balance_sheet, cash_flow (direct method, with its reconciliation and noncash schedules; needs cash_accounts), trial_balance (as_of), members_equity (multi-member LLC; members from the settings), tax_summary, general_ledger (by account: running balances, splits), general_journal (each entry posted in the period; alias journal), fixed_asset_register (as_of: every asset with tag, serial, cost, depreciation, book value, reconciled to the books), ar_aging and ap_aging (as_of: one row per open invoice or bill, with a tie-out line to its control account). The file is handed over (run its download to save it; never its bytes). Formats: pdf and xlsx for the statements, tax_summary, fixed_asset_register and the agings; xlsx, csv, json for every report; iif for general_journal or journal (QuickBooks Desktop: plain ASCII text, CR LF; every posted entry from the first through as_of (start and end are refused), period closes left out, DOCNUM the entry id; names, numbers and memos fit QuickBooks' limits; warnings says what is written differently from the books, memos grouped, to tell the human). Dates: start/end for period reports (omitted: the fiscal year to date), as_of for balance_sheet, trial_balance, fixed_asset_register, ar_aging, ap_aging and iif (omitted: today).",
+        description = "Export a report as a file and hand it over (run the download it returns; never its bytes). Reports: profit_and_loss, balance_sheet, cash_flow, trial_balance, members_equity, tax_summary, general_ledger, general_journal, fixed_asset_register, ar_aging, ap_aging. Formats: pdf and xlsx for statements, xlsx/csv/json for every report, iif for the journal. Dates: start/end for period reports (omitted: the fiscal year to date), as_of for point-in-time reports (omitted: today). Each report's contents and the IIF limits are in books.handbook section files-in-out.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn export(&self, params: Parameters<ExportParams>) -> Result<Json<ExportOut>, String> {
@@ -1133,7 +1133,7 @@ impl BooksServer {
     #[tool(
         name = "books.export_cpa_package",
         title = "CPA handoff package",
-        description = "Build the CPA handoff package as a zip: the profit and loss, balance sheet, cash flow (direct method, with its reconciliation and noncash schedules), statement of changes in members' equity (multi-member LLCs), tax summary, and trial balance, each as PDF and XLSX; the fixed asset register as PDF and XLSX when an asset was acquired by as_of; the general ledger (by account) and general journal (entry by entry) as XLSX; the journal through as_of as IIF (imports into QuickBooks Desktop; plain ASCII within its limits: warnings says what is written differently from the books, and so does the README); the 1099 worksheet as CSV (payments from January 1 through as_of); with members, the K-1 worksheet (k1-members.csv: per member their party, share, capital account, TIN, and beginning capital, contributions in cash and in property, share of income, distributions, and ending capital for the fiscal year to date) and its tax-basis capital beside the book figures (k1-tax-basis-capital.csv: Schedule K-1 Item L on the tax basis, property at its §723 basis, with the reconciliation; what only the CPA can supply, like tax depreciation, left open and named); every receipt behind the year's entries, filed on them or linked to them (receipts/, with an index.csv tying each file to its entry) and the company's documents (documents/), unless include_receipts is false; and a README with the journal's verified hash. By default (include_tins) the K-1 and 1099 worksheets carry every member's and payee's full TIN from the TIN vault; include_tins: false, last fours only. The zip is handed over: run its download command to save it in a folder. Never file it into the books. A locked vault or a missing TIN doesn't stop the package: tin_gaps lists each one (collect them with books.set_tin or books.set_w9 and export again). cash_accounts (e.g. [\"1000\"]) is required: the cash flow statement reconciles to them. as_of defaults to today; period reports cover the fiscal year to date.",
+        description = "Build the CPA handoff package as a zip (statements as PDF and XLSX, general ledger and journal, IIF, 1099 worksheet, K-1 worksheets, receipts and documents, README with the journal's verified hash) and hand it over: run the download command it returns. cash_accounts is required; as_of defaults to today. Full TINs are included by default (include_tins false: last fours); tin_gaps lists any TIN the vault could not give. Never file the zip into the books. What the package holds, and the order of work, is in books.handbook section cpa-handoff.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -1147,6 +1147,55 @@ impl BooksServer {
         let p = params.0;
         let as_of = self.as_of(p.as_of.as_deref())?;
         let mut store = self.lock()?;
+        // A package no counted audit stands behind is not final either
+        // (plan P8, D-9): on books that declared `audits`, refused under
+        // policy.cpa_package_requires_audit = refuse unless a reason is
+        // given, which is journaled as a decision; under warn it goes and
+        // says so. Books that haven't declared the feature are as they
+        // were: there is no audit to ask for.
+        let mut audit_warning: Option<String> = None;
+        if let Some(why) = self.cpa_audit_standing(&store)? {
+            let refuse = match store.ledger().settings().cpa_package_requires_audit() {
+                Some(explicit) => explicit,
+                None => !store.audit_runs().map_err(|e| e.to_string())?.is_empty(),
+            };
+            if refuse {
+                let Some(reason) = p
+                    .without_audit_reason
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|r| !r.is_empty())
+                else {
+                    return Err(serde_json::json!({
+                        "code": "audit_required",
+                        "message": why,
+                        "remedy_tool": "books.audit",
+                    })
+                    .to_string());
+                };
+                let by = CALLER
+                    .with(|c| c.borrow().as_ref().map(|(_, name)| name.clone()))
+                    .unwrap_or_else(|| ledger_store::auth::DEFAULT_NAME.to_string());
+                store
+                    .record_decision(&ledger_core::conventions::NewDecision {
+                        subject: format!("CPA package as of {as_of} without a counted audit"),
+                        decision_md: format!(
+                            "The CPA package as of {as_of} was exported without an audit at the books' current head attested at the bar. Reason: {reason}"
+                        ),
+                        decided_by: vec![by],
+                        decided_on: today(),
+                        evidence_attachment: None,
+                        supersedes: None,
+                        citation: None,
+                        projects: Vec::new(),
+                    })
+                    .map_err(|e| e.to_string())?;
+            } else {
+                audit_warning = Some(format!(
+                    "No counted audit stands behind this package: {why}."
+                ));
+            }
+        }
         // A package with a draft missing from its figures is not final
         // (plan P4, 4.8): refused unless the human says why it goes anyway,
         // and that is journaled as a decision.
@@ -1245,7 +1294,8 @@ impl BooksServer {
                 "The package, with full TINs, for the CPA. {n} TIN(s) are missing (tin_gaps): collect them with books.set_tin or books.set_w9 and export again."
             ),
         };
-        let warnings = package.warnings;
+        let mut warnings = package.warnings;
+        warnings.extend(audit_warning);
         if package.iif_changes > 0 {
             note.push_str(&format!(
                 " {} account or class name(s), number(s), place(s) or memo(s) are written differently in general-journal.iif to fit QuickBooks Desktop (warnings says how; so does the README): tell the human.",

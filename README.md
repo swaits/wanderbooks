@@ -130,7 +130,7 @@ crates/ledger-package/ # the shared read-only view: the CPA package, the invoice
 crates/ledger-vault/   # the TIN vault (XChaCha20-Poly1305 under the book's key)
 crates/ledger-gui/     # the viewer: read-only, live (egui)
 verify/lean/           # the accounting laws as Lean theorems (`just prove`)
-bookspec/              # the formal accounting specification: checker, runner, examples (P13)
+# the formal accounting specification lives in its own repository, https://git.swaits.com/swaits/bookspec (pinned dev-dependency, P13)
 fuzz/, oracle/         # fuzz targets; the GnuCash differential (`just oracle`)
 deploy/                # the self-host recipe and system unit (P9a)
 site/                  # wanderbooks.ai and install.sh

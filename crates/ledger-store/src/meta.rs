@@ -17,7 +17,9 @@ use crate::error::StoreError;
 use crate::journal::JournalLine;
 use chrono::NaiveDate;
 use ledger_core::arap::{SendKind, Sent, SentVia};
-use ledger_core::conventions::{Approval, ConventionKind, NewConvention, NewDecision, NewOpenItem};
+use ledger_core::conventions::{
+    Approval, ConventionKind, DecisionSource, NewConvention, NewDecision, NewOpenItem,
+};
 use ledger_core::settings::{Change, Source};
 use ledger_core::{
     Annotation, AnnotationFields, ClassId, DraftState, ProjectFacts, ProjectKind, ProjectStatus,
@@ -171,6 +173,71 @@ pub fn convention_retired_of(p: &Value) -> Result<(String, String, Source), Stor
         str_of(p, E, "id")?,
         str_of(p, E, "reason")?,
         source_of(p, E, "source")?,
+    ))
+}
+
+/// `convention.source_revised {id, source, reason}` (journal feature
+/// `source_revisions`): the convention's text is unchanged.
+pub fn convention_source_revised(id: &str, source: &Source, reason: &str) -> Value {
+    json!({ "id": id, "source": source_json(source), "reason": reason })
+}
+
+/// Read a `convention.source_revised`: `(id, source, reason)`.
+pub fn convention_source_revised_of(p: &Value) -> Result<(String, Source, String), StoreError> {
+    const E: &str = "convention.source_revised";
+    Ok((
+        str_of(p, E, "id")?,
+        source_of(p, E, "source")?,
+        str_of(p, E, "reason")?,
+    ))
+}
+
+/// `decision.source_revised {id, source: {decided_by, decided_on,
+/// citation?}, reason}`.
+pub fn decision_source_revised(id: u64, s: &DecisionSource, reason: &str) -> Value {
+    let mut src = Map::new();
+    src.insert("decided_by".into(), json!(s.decided_by));
+    src.insert("decided_on".into(), json!(s.decided_on.to_string()));
+    put(&mut src, "citation", s.citation.clone());
+    json!({ "id": id, "source": Value::Object(src), "reason": reason })
+}
+
+/// Read a `decision.source_revised`: `(id, source, reason)`.
+pub fn decision_source_revised_of(p: &Value) -> Result<(u64, DecisionSource, String), StoreError> {
+    const E: &str = "decision.source_revised";
+    let src = p.get("source").ok_or_else(|| corrupt(E, "source"))?;
+    let decided_by = src
+        .get("decided_by")
+        .and_then(Value::as_array)
+        .and_then(|a| {
+            a.iter()
+                .map(|v| v.as_str().map(str::to_string))
+                .collect::<Option<Vec<_>>>()
+        })
+        .ok_or_else(|| corrupt(E, "source.decided_by"))?;
+    Ok((
+        u64_of(p, E, "id")?,
+        DecisionSource {
+            decided_by,
+            decided_on: date_of(&str_of(src, E, "decided_on")?, E, "source.decided_on")?,
+            citation: opt_str(src, E, "citation")?,
+        },
+        str_of(p, E, "reason")?,
+    ))
+}
+
+/// `open_item.source_revised {id, source, reason}`.
+pub fn open_item_source_revised(id: u64, source: &Source, reason: &str) -> Value {
+    json!({ "id": id, "source": source_json(source), "reason": reason })
+}
+
+/// Read an `open_item.source_revised`: `(id, source, reason)`.
+pub fn open_item_source_revised_of(p: &Value) -> Result<(u64, Source, String), StoreError> {
+    const E: &str = "open_item.source_revised";
+    Ok((
+        u64_of(p, E, "id")?,
+        source_of(p, E, "source")?,
+        str_of(p, E, "reason")?,
     ))
 }
 
@@ -660,6 +727,198 @@ pub fn draft_discarded(id: u64, reason: &str) -> Value {
 pub fn draft_discarded_of(p: &Value) -> Result<(u64, String), StoreError> {
     const E: &str = "entry.draft_discarded";
     Ok((u64_of(p, E, "id")?, str_of(p, E, "reason")?))
+}
+
+// ---------------------------------------------------------------------------
+// Audits and attestations (plan P8, feature `audits`)
+// ---------------------------------------------------------------------------
+
+/// A method as journaled: only the parts the client gave.
+pub fn method_json(m: &ledger_core::audit::Method) -> Value {
+    let mut o = Map::new();
+    put(&mut o, "model", m.model.clone());
+    put(
+        &mut o,
+        "reasoning_effort",
+        m.reasoning_effort.map(|e| e.key()),
+    );
+    put(&mut o, "adversarial", m.adversarial);
+    put(&mut o, "verifier_agents", m.verifier_agents);
+    Value::Object(o)
+}
+
+/// Read a method. A key or an effort this version doesn't know is newer
+/// when a line is at hand (B-27), else corrupt.
+fn method_of(
+    line: Option<&crate::journal::JournalLine>,
+    m: &Value,
+    event: &str,
+) -> Result<ledger_core::audit::Method, StoreError> {
+    let o = m.as_object().ok_or_else(|| corrupt(event, "method"))?;
+    let unknown = |what: String| match line {
+        Some(l) => crate::format::newer_content(l, what),
+        None => corrupt(event, "method"),
+    };
+    let mut out = ledger_core::audit::Method::default();
+    for (k, v) in o {
+        match k.as_str() {
+            "model" => {
+                out.model = Some(
+                    v.as_str()
+                        .ok_or_else(|| corrupt(event, "method.model"))?
+                        .to_string(),
+                )
+            }
+            "reasoning_effort" => {
+                let s = v
+                    .as_str()
+                    .ok_or_else(|| corrupt(event, "method.reasoning_effort"))?;
+                out.reasoning_effort = Some(
+                    ledger_core::audit::Effort::parse(s)
+                        .ok_or_else(|| unknown(format!("the reasoning effort {s:?}")))?,
+                );
+            }
+            "adversarial" => {
+                out.adversarial = Some(
+                    v.as_bool()
+                        .ok_or_else(|| corrupt(event, "method.adversarial"))?,
+                )
+            }
+            "verifier_agents" => {
+                out.verifier_agents = Some(
+                    v.as_u64()
+                        .and_then(|n| u32::try_from(n).ok())
+                        .ok_or_else(|| corrupt(event, "method.verifier_agents"))?,
+                )
+            }
+            other => return Err(unknown(format!("the method key {other:?}"))),
+        }
+    }
+    Ok(out)
+}
+
+/// A method read back from the projection.
+pub fn method_from_value(m: &Value) -> Result<ledger_core::audit::Method, StoreError> {
+    method_of(None, m, "attestations")
+}
+
+/// `audit.run {id, through, through_seq, scope, program_version, tb_hash,
+/// findings_sha256, workpaper_attachment?, workpaper_pdf?}`.
+pub fn audit_run(r: &crate::audit::AuditRun) -> Value {
+    let mut o = Map::new();
+    o.insert("id".into(), json!(r.id));
+    o.insert("through".into(), json!(r.through.to_string()));
+    o.insert("through_seq".into(), json!(r.through_seq));
+    o.insert("scope".into(), json!(r.scope.key()));
+    o.insert("program_version".into(), json!(r.program_version));
+    o.insert("tb_hash".into(), json!(r.tb_hash));
+    o.insert("findings_sha256".into(), json!(r.findings_sha256));
+    put(&mut o, "workpaper_attachment", r.workpaper_attachment);
+    put(&mut o, "workpaper_pdf", r.workpaper_pdf);
+    Value::Object(o)
+}
+
+/// Read an `audit.run`. A scope this version doesn't know is newer.
+pub fn audit_run_of(
+    line: &crate::journal::JournalLine,
+) -> Result<crate::audit::AuditRun, StoreError> {
+    const E: &str = "audit.run";
+    let p = &line.payload;
+    let scope_key = str_of(p, E, "scope")?;
+    let scope = ledger_core::audit::Scope::parse(&scope_key).ok_or_else(|| {
+        crate::format::newer_content(line, format!("the audit scope {scope_key:?}"))
+    })?;
+    Ok(crate::audit::AuditRun {
+        id: u64_of(p, E, "id")?,
+        through: date_of(&str_of(p, E, "through")?, E, "through")?,
+        through_seq: u64_of(p, E, "through_seq")?,
+        scope,
+        program_version: str_of(p, E, "program_version")?,
+        tb_hash: str_of(p, E, "tb_hash")?,
+        findings_sha256: str_of(p, E, "findings_sha256")?,
+        workpaper_attachment: opt_u64(p, E, "workpaper_attachment")?,
+        workpaper_pdf: opt_u64(p, E, "workpaper_pdf")?,
+        seq: line.seq,
+    })
+}
+
+/// The payload of `receipt.attested`, `entry.reviewed` or `period.attested`.
+pub fn attestation(a: &crate::audit::Attestation) -> Value {
+    use crate::audit::Attested;
+    let mut o = Map::new();
+    match &a.what {
+        Attested::Receipt {
+            attachment_id,
+            entry_id,
+            amount_checked,
+            date_checked,
+            disagrees,
+        } => {
+            o.insert("attachment_id".into(), json!(attachment_id));
+            o.insert("entry_id".into(), json!(entry_id));
+            o.insert("amount_checked".into(), json!(amount_checked.to_string()));
+            o.insert("date_checked".into(), json!(date_checked.to_string()));
+            o.insert("disagrees".into(), json!(disagrees));
+        }
+        Attested::Entry { entry_id } => {
+            o.insert("entry_id".into(), json!(entry_id));
+        }
+        Attested::Period {
+            period_id,
+            audit_run_id,
+        } => {
+            o.insert("period_id".into(), json!(period_id));
+            o.insert("audit_run_id".into(), json!(audit_run_id));
+        }
+    }
+    o.insert("by".into(), json!(a.by));
+    o.insert("at".into(), json!(a.at));
+    o.insert("method".into(), method_json(&a.method));
+    put(&mut o, "note", a.note.clone());
+    Value::Object(o)
+}
+
+/// Read one of the three attestation events by its line.
+pub fn attestation_of(
+    line: &crate::journal::JournalLine,
+) -> Result<crate::audit::Attestation, StoreError> {
+    use crate::audit::Attested;
+    let p = &line.payload;
+    let e = line.line_type.as_str();
+    let what = match e {
+        "receipt.attested" => Attested::Receipt {
+            attachment_id: u64_of(p, e, "attachment_id")?,
+            entry_id: u64_of(p, e, "entry_id")?,
+            amount_checked: str_of(p, e, "amount_checked")?
+                .parse()
+                .map_err(|_| corrupt(e, "amount_checked"))?,
+            date_checked: date_of(&str_of(p, e, "date_checked")?, e, "date_checked")?,
+            disagrees: p
+                .get("disagrees")
+                .and_then(Value::as_bool)
+                .ok_or_else(|| corrupt(e, "disagrees"))?,
+        },
+        "entry.reviewed" => Attested::Entry {
+            entry_id: u64_of(p, e, "entry_id")?,
+        },
+        "period.attested" => Attested::Period {
+            period_id: u64_of(p, e, "period_id")?,
+            audit_run_id: u64_of(p, e, "audit_run_id")?,
+        },
+        _ => return Err(crate::format::unknown_type(line)),
+    };
+    Ok(crate::audit::Attestation {
+        seq: line.seq,
+        by: str_of(p, e, "by")?,
+        at: str_of(p, e, "at")?,
+        method: method_of(
+            Some(line),
+            p.get("method").ok_or_else(|| corrupt(e, "method"))?,
+            e,
+        )?,
+        note: opt_str(p, e, "note")?,
+        what,
+    })
 }
 
 #[cfg(test)]

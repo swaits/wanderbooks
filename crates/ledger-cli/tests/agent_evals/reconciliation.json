@@ -1,0 +1,148 @@
+{
+  "description": "A cash account reconciled to its statement: record it, mark the lines, reconcile.",
+  "settings": "[company]\nname = \"Eval Co\"\nfiscal_year_start = \"01-01\"\n[books]\ncash_accounts = [\"1000\"]\n",
+  "setup": [
+    {
+      "call": "books.add_account",
+      "args": {
+        "code": "1000",
+        "name": "Cash",
+        "account_type": "asset"
+      }
+    },
+    {
+      "call": "books.add_account",
+      "args": {
+        "code": "3000",
+        "name": "Capital",
+        "account_type": "equity"
+      }
+    },
+    {
+      "call": "books.add_account",
+      "args": {
+        "code": "6000",
+        "name": "Rent",
+        "account_type": "expense"
+      }
+    },
+    {
+      "call": "books.draft_entry",
+      "args": {
+        "date": "2026-01-05",
+        "description": "Opening capital",
+        "no_party_reason": "opening balance"
+      },
+      "save": {
+        "entry": "/entry_id"
+      }
+    },
+    {
+      "call": "books.add_line",
+      "args": {
+        "entry_id": {
+          "$var": "entry"
+        },
+        "account": "1000",
+        "side": "debit",
+        "amount": "10.00"
+      }
+    },
+    {
+      "call": "books.add_line",
+      "args": {
+        "entry_id": {
+          "$var": "entry"
+        },
+        "account": "3000",
+        "side": "credit",
+        "amount": "10.00"
+      }
+    },
+    {
+      "call": "books.post_entry",
+      "args": {
+        "entry_id": {
+          "$var": "entry"
+        },
+        "confirmed": true
+      }
+    },
+    {
+      "call": "books.file_document",
+      "args": {
+        "category": "statement",
+        "file_name": "jan.pdf",
+        "mime_type": "application/pdf",
+        "upload_id": {
+          "$upload": {
+            "name": "jan.pdf",
+            "mime": "application/pdf",
+            "text": "%PDF-1.4 January statement",
+            "purpose": "document"
+          }
+        }
+      },
+      "save": {
+        "statement": "/attachment_id"
+      }
+    }
+  ],
+  "steps": [
+    {
+      "call": "books.start",
+      "args": {}
+    },
+    {
+      "expect_next_steps_contains": "books.record_statement"
+    },
+    {
+      "follow": "books.record_statement",
+      "with": {
+        "attachment_id": {
+          "$var": "statement"
+        },
+        "account": "1000",
+        "period_start": "2026-01-01",
+        "period_end": "2026-01-31",
+        "opening_balance": "0.00",
+        "closing_balance": "10.00"
+      }
+    },
+    {
+      "follow": "books.mark_cleared",
+      "with": {
+        "entry_id": {
+          "$var": "entry"
+        },
+        "line_index": 0,
+        "cleared": true
+      }
+    },
+    {
+      "follow": "books.reconcile",
+      "with": {
+        "account": "1000",
+        "statement_date": "2026-01-31",
+        "statement_balance": "10.00",
+        "statement_attachment": {
+          "$var": "statement"
+        }
+      }
+    },
+    {
+      "expect": {
+        "/status": "preview"
+      }
+    },
+    {
+      "follow": "books.reconcile",
+      "with": {}
+    },
+    {
+      "expect": {
+        "/status": "reconciled"
+      }
+    }
+  ]
+}

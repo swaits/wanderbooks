@@ -2140,6 +2140,78 @@ fn books_written_under_older_rules_still_open() {
         json!({"id": 9, "reason": "entered twice"}),
     )
     .unwrap();
+    // P5's new shapes, hand-written as this version writes them: a
+    // convention, a decision and an open item, each with its source
+    // corrected (`source_revisions`). This reader takes them; the version
+    // before it stopped at the declaration.
+    let owner = json!({"decided_by": "Owner", "decided_on": "2026-10-26"});
+    w.append(
+        "convention.set",
+        json!({"id": "close-checklist", "kind": "close_step", "title": "Close checklist",
+               "body_md": "Reconcile, then close.", "source": owner}),
+    )
+    .unwrap();
+    w.append(
+        "decision.recorded",
+        json!({"id": 1, "subject": "Materiality", "decision_md": "Five hundred dollars.",
+               "decided_by": ["Owner"], "decided_on": "2026-10-26"}),
+    )
+    .unwrap();
+    w.append(
+        "open_item.raised",
+        json!({"id": 1, "title": "Ask the CPA", "source": owner}),
+    )
+    .unwrap();
+    let cpa = json!({"decided_by": "Pat Smith", "decided_on": "2026-10-27",
+                     "citation": "IRS Pub. 538"});
+    w.append(
+        "convention.source_revised",
+        json!({"id": "close-checklist", "source": cpa, "reason": "the CPA decided it"}),
+    )
+    .unwrap();
+    w.append(
+        "decision.source_revised",
+        json!({"id": 1, "source": {"decided_by": ["Owner", "Pat Smith"],
+               "decided_on": "2026-10-27", "citation": "IRS Pub. 538"},
+               "reason": "both decided it"}),
+    )
+    .unwrap();
+    w.append(
+        "open_item.source_revised",
+        json!({"id": 1, "source": cpa, "reason": "raised by the CPA"}),
+    )
+    .unwrap();
+    // P8's new shapes, hand-written as this version writes them: an audit
+    // run and the three kinds of attestation (the method is the client's
+    // own claim). This reader takes them; the version before it stopped at
+    // the declaration.
+    let method = json!({"model": "opus", "reasoning_effort": "high",
+                        "adversarial": true, "verifier_agents": 2});
+    w.append(
+        "audit.run",
+        json!({"id": 1, "through": "2026-05-31", "through_seq": 30, "scope": "month",
+               "program_version": "audit-0.1.0-1", "tb_hash": "aa", "findings_sha256": "bb",
+               "workpaper_attachment": 6, "workpaper_pdf": 7}),
+    )
+    .unwrap();
+    w.append(
+        "receipt.attested",
+        json!({"attachment_id": 5, "entry_id": 2, "by": "verifier", "at": "2026-06-01T00:00:00Z",
+               "method": method, "amount_checked": "99.99", "date_checked": "2026-04-01",
+               "disagrees": false, "note": "read the page"}),
+    )
+    .unwrap();
+    w.append(
+        "entry.reviewed",
+        json!({"entry_id": 2, "by": "verifier", "at": "2026-06-01T00:00:01Z", "method": {}}),
+    )
+    .unwrap();
+    w.append(
+        "period.attested",
+        json!({"period_id": 1, "by": "verifier", "at": "2026-06-01T00:00:02Z",
+               "method": method, "audit_run_id": 1}),
+    )
+    .unwrap();
     drop(w);
     // Opening rebuilds from the journal; it must accept all of it.
     let _ = std::fs::remove_file(dir.join(ledger_store::db_file()));
@@ -2169,6 +2241,17 @@ fn books_written_under_older_rules_still_open() {
     assert_eq!(annotation.fields.receipt_number, Some(3));
     assert_eq!(annotation.fields.payee.as_deref(), Some("Acme"));
     assert_eq!(store.ledger().next_receipt_number(), 4);
+    // P8's shapes replayed: the run and the three claims, as written.
+    let runs = store.audit_runs().unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].scope, ledger_core::audit::Scope::Month);
+    assert_eq!(runs[0].workpaper_pdf, Some(7));
+    let claims = store.attestations().unwrap();
+    assert_eq!(claims.len(), 3);
+    assert_eq!(claims[0].kind(), "receipt");
+    assert_eq!(claims[0].method.verifier_agents, Some(2));
+    assert_eq!(claims[1].method, ledger_core::audit::Method::default());
+    assert_eq!(claims[2].kind(), "period");
     assert_eq!(store.ledger().entry_settles(7), [1]);
     assert!(store.ledger().settles_entry(1));
     let acme = store.ledger().get_party(1).expect("the party");
@@ -2221,6 +2304,28 @@ fn books_written_under_older_rules_still_open() {
     );
     assert_eq!(bill.memo.as_deref(), Some("A4 paper"));
     assert_eq!(bill.lines[0].account, Some(6));
+    // P5's source corrections replay as written; the text stays as it was.
+    let c = store
+        .ledger()
+        .conventions()
+        .convention("close-checklist")
+        .expect("the convention");
+    assert_eq!(c.source.decided_by, "Pat Smith");
+    assert_eq!(c.source.citation.as_deref(), Some("IRS Pub. 538"));
+    assert_eq!(
+        (c.body_md.as_str(), c.revision),
+        ("Reconcile, then close.", 1)
+    );
+    let d = store
+        .ledger()
+        .conventions()
+        .decision(1)
+        .expect("the decision");
+    assert_eq!(d.new.decided_by, ["Owner", "Pat Smith"]);
+    assert_eq!(d.new.citation.as_deref(), Some("IRS Pub. 538"));
+    assert_eq!(d.new.decision_md, "Five hundred dollars.");
+    let i = store.ledger().conventions().open_item(1).expect("the item");
+    assert_eq!(i.new.source.decided_by, "Pat Smith");
     // P4b S5's send replays as written, and moves no figure.
     let sends = &store.ledger().get_invoice(1).expect("the invoice").sends;
     assert_eq!(sends.len(), 1);

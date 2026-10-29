@@ -449,6 +449,55 @@ pub fn describe(b: &Books, line: &JournalLine) -> Option<Event> {
             format!("Draft #{id} discarded: {}", s(p, "reason")),
             None,
         ),
+        // Audits and attestations (plan P8): claims about the books, not
+        // figures.
+        "audit.run" => ev(
+            icon::MAGNIFYING_GLASS,
+            format!(
+                "Audit {} through {}",
+                s(p, "scope").replace('_', " "),
+                s(p, "through")
+            ),
+            None,
+        ),
+        "receipt.attested" => ev(
+            icon::CHECK_CIRCLE,
+            if p.get("disagrees").and_then(|v| v.as_bool()) == Some(true) {
+                format!(
+                    "{} read {} against entry #{}: it disagrees",
+                    s(p, "by"),
+                    attachment_name(b, att),
+                    p.get("entry_id").and_then(|v| v.as_u64()).unwrap_or(0)
+                )
+            } else {
+                format!(
+                    "{} attested {} for entry #{}",
+                    s(p, "by"),
+                    attachment_name(b, att),
+                    p.get("entry_id").and_then(|v| v.as_u64()).unwrap_or(0)
+                )
+            },
+            Some(Route::Document(att)),
+        ),
+        "entry.reviewed" => ev(
+            icon::CHECK_CIRCLE,
+            format!(
+                "{} reviewed entry #{}",
+                s(p, "by"),
+                p.get("entry_id").and_then(|v| v.as_u64()).unwrap_or(0)
+            ),
+            p.get("entry_id").and_then(|v| v.as_u64()).map(Route::Entry),
+        ),
+        "period.attested" => ev(
+            icon::CHECK_CIRCLE,
+            format!(
+                "{} attested period #{} on audit #{}",
+                s(p, "by"),
+                p.get("period_id").and_then(|v| v.as_u64()).unwrap_or(0),
+                p.get("audit_run_id").and_then(|v| v.as_u64()).unwrap_or(0)
+            ),
+            None,
+        ),
         "entry.settles" => {
             let settles: Vec<String> = p
                 .get("settles")
@@ -1170,6 +1219,26 @@ pub fn describe(b: &Books, line: &JournalLine) -> Option<Event> {
         "open_item.resolved" => ev(
             icon::CHECK_CIRCLE,
             format!("Open item #{id} resolved: {}", s(p, "resolution")),
+            Some(Route::Company),
+        ),
+        "convention.source_revised" => ev(
+            icon::SCROLL,
+            format!(
+                "Source of convention {} corrected to {}: {}",
+                s(p, "id"),
+                s(&p["source"], "decided_by"),
+                s(p, "reason")
+            ),
+            Some(Route::Company),
+        ),
+        "decision.source_revised" => ev(
+            icon::GAVEL,
+            format!("Source of decision #{id} corrected: {}", s(p, "reason")),
+            Some(Route::Company),
+        ),
+        "open_item.source_revised" => ev(
+            icon::CHECK_CIRCLE,
+            format!("Source of open item #{id} corrected: {}", s(p, "reason")),
             Some(Route::Company),
         ),
         "entry.approved" => ev(

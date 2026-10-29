@@ -1,0 +1,154 @@
+{
+  "assets": [],
+  "bills": [],
+  "entries": [
+    {
+      "date": "2026-01-01",
+      "description": "Opening capital",
+      "id": 1,
+      "lines": [
+        {
+          "account": 1,
+          "amount": {
+            "amount": "1000.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Debit"
+        },
+        {
+          "account": 2,
+          "amount": {
+            "amount": "1000.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Credit"
+        }
+      ],
+      "reversal_of": null,
+      "status": "Posted"
+    },
+    {
+      "date": "2026-01-05",
+      "description": "January rent",
+      "id": 2,
+      "lines": [
+        {
+          "account": 3,
+          "amount": {
+            "amount": "500.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Debit"
+        },
+        {
+          "account": 1,
+          "amount": {
+            "amount": "500.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Credit"
+        }
+      ],
+      "reversal_of": null,
+      "status": "Posted"
+    },
+    {
+      "date": "2026-02-03",
+      "description": "Awaiting a receipt",
+      "id": 3,
+      "lines": [
+        {
+          "account": 3,
+          "amount": {
+            "amount": "40.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Debit"
+        },
+        {
+          "account": 1,
+          "amount": {
+            "amount": "40.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Credit"
+        }
+      ],
+      "reversal_of": null,
+      "status": "Draft"
+    }
+  ],
+  "entry_parties": [],
+  "invoices": [],
+  "payroll_runs": [],
+  "periods": [],
+  "recurring": [],
+  "schedules": [],
+  "snapshot": {
+    "Ok": {
+      "balance_sheet": {
+        "assets": "500",
+        "balanced": true,
+        "current_earnings": "-500",
+        "equity": "500",
+        "liabilities": "0"
+      },
+      "profit_and_loss": {
+        "expenses": "500",
+        "net_income": "-500",
+        "revenue": "0"
+      },
+      "trial_balance": {
+        "lines": [
+          {
+            "code": "1000",
+            "credit": "0",
+            "debit": "500",
+            "name": "Bank"
+          },
+          {
+            "code": "3000",
+            "credit": "1000",
+            "debit": "0",
+            "name": "Capital"
+          },
+          {
+            "code": "6000",
+            "credit": "0",
+            "debit": "500",
+            "name": "Rent"
+          }
+        ],
+        "total_credits": "1000",
+        "total_debits": "1000"
+      }
+    }
+  },
+  "verify": {
+    "Ok": null
+  }
+}

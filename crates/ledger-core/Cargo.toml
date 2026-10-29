@@ -26,8 +26,10 @@ proptest = "1"
 # store (a dev-dependency only: the store depends on this crate), each in
 # a directory of its own.
 toml = "1"
-bookspec-checker = { path = "../../bookspec/checker" }
-bookspec-runner = { path = "../../bookspec/runner" }
+# The specification lives in its own repository (P13 step 6, D-34, D-65),
+# pinned to a commit.
+bookspec-checker = { git = "https://git.swaits.com/swaits/bookspec", rev = "74f2853d5f0db0066147c17fed8033cfe3d83a24" }
+bookspec-runner = { git = "https://git.swaits.com/swaits/bookspec", rev = "74f2853d5f0db0066147c17fed8033cfe3d83a24" }
 ledger-package = { path = "../ledger-package" }
 ledger-import = { path = "../ledger-import" }
 ledger-store = { path = "../ledger-store" }

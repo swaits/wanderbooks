@@ -5,7 +5,7 @@
 //! is the current version.
 
 /// Current schema version.
-pub const SCHEMA_VERSION: u32 = 19;
+pub const SCHEMA_VERSION: u32 = 20;
 
 /// Migrations, in order. `MIGRATIONS[i]` migrates from version `i` to `i+1`.
 pub const MIGRATIONS: &[&str] = &[
@@ -483,6 +483,42 @@ ALTER TABLE entries ADD COLUMN posted_seq INTEGER NULL;
 CREATE TABLE IF NOT EXISTS draft_states(
   entry_id INTEGER PRIMARY KEY,
   state TEXT NOT NULL,
+  note TEXT NULL
+);
+"#,
+    r#"
+-- v20: audits and attestations (plan P8, feature `audits`). An audit run
+-- is a row per `audit.run`: the date it covers, the figure head it was
+-- made at, the hashes that make it reproducible and the filed workpaper.
+-- An attestation is a row per `receipt.attested`, `entry.reviewed` or
+-- `period.attested`; whether one counts is derived against
+-- `policy.attestation_bar` when asked and never stored. The method is the
+-- client's own claim, kept as canonical JSON. Amounts stay TEXT.
+CREATE TABLE IF NOT EXISTS audits(
+  id INTEGER PRIMARY KEY,
+  through TEXT NOT NULL,
+  through_seq INTEGER NOT NULL,
+  scope TEXT NOT NULL,
+  program_version TEXT NOT NULL,
+  tb_hash TEXT NOT NULL,
+  findings_sha256 TEXT NOT NULL,
+  workpaper_attachment INTEGER NULL,
+  workpaper_pdf INTEGER NULL,
+  seq INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS attestations(
+  seq INTEGER PRIMARY KEY,
+  kind TEXT NOT NULL,
+  attachment_id INTEGER NULL,
+  entry_id INTEGER NULL,
+  period_id INTEGER NULL,
+  audit_run_id INTEGER NULL,
+  by_who TEXT NOT NULL,
+  at_ts TEXT NOT NULL,
+  method TEXT NOT NULL,
+  amount_checked TEXT NULL,
+  date_checked TEXT NULL,
+  disagrees INTEGER NULL,
   note TEXT NULL
 );
 "#,

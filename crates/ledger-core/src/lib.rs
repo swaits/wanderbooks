@@ -20,6 +20,7 @@ pub mod account;
 pub mod analysis;
 pub mod arap;
 pub mod assets;
+pub mod audit;
 pub mod calendar;
 pub mod cashflow;
 pub mod classes;

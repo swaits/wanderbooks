@@ -31,9 +31,9 @@ the specification in `bookspec/` (which never depends on the engine).
 | `ledger-core` | the semantics engine: money, chart, journal, `Ledger` commands, reports, periods, assets, schedules, parties, A/R and A/P, payroll, projects, settings and conventions, the kernel and its Kani harnesses | nothing |
 | `ledger-vault` | the TIN vault: XChaCha20-Poly1305 records under the book's key | nothing |
 | `ledger-config` | the `wanderbooks.toml` codec (adoption in, `books.export_settings` out) and the receipt policy until P4 moves it into the core | `ledger-core` |
-| `ledger-store` | the source of truth: the hash-chained JSONL journal, its format gate, the SQLite projection (schema 18; a file per schema), the blob store, backups, the access log, `Snapshot` for readers | `ledger-core`, `ledger-reader` (P6, D-61) |
+| `ledger-store` | the source of truth: the hash-chained JSONL journal, its format gate, the SQLite projection (schema 18; a file per schema), the blob store, backups, the access log, `describe.rs` (the journal in words, for `books.journal_history`), `Snapshot` for readers | `ledger-core`, `ledger-reader` (P6, D-61) |
 | `ledger-reader` | the one reader: a PDF's text and pages, an XLSX's cells as exact decimal strings, plain text (P6; a plain library, in-process, D-61); `ledger-import` re-exports it as `extract` | none (`hayro`, `zip`, `quick-xml`) |
-| `ledger-import` | formats: QuickBooks CSV in; IIF, XLSX, Typst PDFs (statements, the invoice, labels) out | `ledger-core`, `ledger-reader` |
+| `ledger-import` | formats: QuickBooks CSV in; IIF, XLSX, Typst PDFs (statements, the invoice, labels, the audit workpaper) out | `ledger-core`, `ledger-reader` |
 | `ledger-package` | the shared read-only view over `Store` or `Snapshot` (`PackageBooks`): the CPA package, the 1099 worksheet, the invoice document, Needs attention | `ledger-core`, `ledger-store`, `ledger-config`, `ledger-import`, `ledger-vault` |
 | `ledger-mcp` | the books server: the MCP tools (122), resources, the handbook, scopes, the door and the access log, backups' scheduling | all of the above |
 | `ledger-host` | the host and its leases, the agent bridge (`wanderbooks mcp`), tokens in 0600 files under the data root (D-63), the owner's commands, uploads and downloads, `update` and `rollback` (P11a) | `ledger-store`, `ledger-mcp`, `ledger-config` |
@@ -59,13 +59,26 @@ closure. The reader now lives in the small library crate `ledger-reader`;
 re-exports it as `extract`), the store no longer builds the typesetter,
 and `ledger-import` still never depends on the store.
 
+Audits (P8, rules.md B-45) are split by what each layer can see. The pure
+checks over a ledger are `ledger_core::audit` (`statements`, with the facts
+a ledger cannot know handed in by the caller: the receipts filed, the
+statement of cash flows the role settings give, the settings problems, the
+undecided 1099 vendors); what only the store can see (the chain, the
+database against a replay, the stored files, the access log, duplicate
+files) and the audit and attestation events are `ledger_store::audit` (a
+child module of `store`, because it reads the store's private state); the
+workpaper's PDF is `ledger_import::workpaper` with its Typst template in
+`ledger-import`'s `templates/` beside the other documents; the backups'
+standing is read by the server, which alone knows the backups
+(`BackupStanding`), and the tools are `ledger-mcp`'s `tools/audit.rs`.
+
 `ledger-core` itself (`crates/ledger-core/src/`): `money`, `account`,
 `journal`, `ledger` (the command surface and replay), `kernel` (every
 money arithmetic, generic over `Amount`) and `proofs` (its Kani
 harnesses), `reports`, `cashflow`, `analysis`, `periods`, `assets`,
 `schedules`, `recurring`, `payouts`, `payroll`, `form1099`, `tax`,
 `classes`, `parties`, `arap`, `settings`, `conventions`, `calendar`,
-`shares`, `tax_capital`, `rules`, `error`; its tests in `tests/`
+`shares`, `tax_capital`, `rules`, `audit` (the audit programme's pure checks, P8), `error`; its tests in `tests/`
 (`invariants.rs`, `properties.rs`, `spec_*.rs`, `kernel_bridge.rs`,
 `model.rs`, `bookspec.rs`, `golden/`).
 
@@ -365,9 +378,21 @@ downgrading is theirs). Anything else (an AppImage, whose file is named by
   without the agent noticing. The format gate stays the server's (3.9):
   `rollback` refuses while a book declares a format or feature the kept
   version does not know;
-- an AppImage is the exception to the restart: the host runs from the old
-  image's mount, whose path does not change, so it keeps running the old
-  version until the books are next closed and opened (docs/packaging.md).
+- an AppImage runs the program from a mount that goes away with the image,
+  so the host learns the image's own path from `APPIMAGE` (the one variable
+  `start.rs` adds to its scrubbed environment, only when it names an
+  absolute file; the host reads it about itself and never tells an agent),
+  runs and restarts from that file, and tells a replaced program by its
+  inode, size and last write, like any other;
+- updates are also **staged** (step 4): while the books are open the host
+  looks at the feed at most once a day (`update_check` knob; the look is
+  noted in `updates/checked`), and only downloads and verifies a newer
+  release into `<root>/updates/staged/`. It never swaps. The staged program
+  is applied by an opener just before it starts a host (no host runs, so no
+  call is cut off), after a second check against the key, or by
+  `wanderbooks update`, the owner's say-so, which reuses the staged copy. A
+  local release is named in `<root>/updates/feed` (a `file://` address, then
+  the key file), the same rule as `--trusted-key`.
 
 `deploy/packaging/` holds the Linux packaging: `packager.toml`
 (cargo-packager: `.deb`, AppImage, the pacman tarball with its PKGBUILD),
@@ -375,4 +400,23 @@ the rpm table in `crates/ledger-cli/Cargo.toml`, `aur/PKGBUILD` (the AUR
 package, which repacks the release's tarball), `build-linux.sh`,
 `repo-indexes.sh` (the apt and dnf indexes), `local-release.sh` (a
 throwaway-keyed feed on this machine) and `test-linux-packages.sh`.
-`.github/workflows/release.yml` builds them on a version tag.
+`.github/workflows/release.yml` builds them on a version tag. The macOS
+bundle is `packager-macos.toml`, `Info.plist` and `build-macos.sh` (an
+unsigned `.dmg` from CI's `macos` job; signing and notarization are step 5).
+
+## The result envelope and the guards (`ledger-mcp`, P5)
+
+Every tool result is given the same fields in one place: `call_tool` runs the
+tool, then `next_steps::apply` adds `next_steps`, `guards`, `warnings` and
+(on a tool that is not read-only) `head`, in the structured content and in
+the text block alike, never overwriting a field the tool wrote. Next steps
+come from the tool's own result (`next_steps::tool_steps`: the confirm after
+a preview, what a post, a draft, a statement or a close leads to) and, after
+a change to an entry or an invoice, from the viewer's own Needs-attention
+items about it (`ledger_package::find_with`). `guards.rs` is the registry of
+named refusals, each with the tool that remedies it; a refusal whose text
+carries a guard gets it as `structuredContent.guards`. The prompts
+(`tools/prompts.rs`, text in `prompts/*.md`) and the resource templates are
+served by the same `ServerHandler`; `books.start` is loaded up front by
+clients that defer tools (`_meta`). `ledger-store`'s `describe.rs` is the
+one place that turns a journal line into a sentence for an agent.

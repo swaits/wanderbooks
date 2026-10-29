@@ -3769,6 +3769,25 @@ it (the same program with a tail, so its hash differs). All in
   file now on disk (not a deleted one). The host's own restart laws stay
   `open_while_held.rs`'s (`a_restart_is_not_a_close`).
 
+Step 3's gap and step 4 (same file):
+
+- `a_replaced_appimage_restarts_the_books`: the programs run from one copy
+  (a mount's) while `APPIMAGE` names another (the image); `update`
+  replaces only the image; the host restarts onto it (its `/proc/PID/exe`
+  is the image), the mount's copy is untouched, the session writes on.
+- `the_host_stages_a_daily_update_and_the_next_start_applies_it`: with a
+  local feed named in `updates/feed`, the host stages 9.0.0 by itself;
+  the program, the host and the session are unchanged meanwhile; after
+  `close`, the next opener applies it (the old program is kept, the staged
+  folder gone) and the books are as they were.
+- `a_daily_update_that_is_not_ours_is_not_staged`: a signature by another
+  key, then a wrong sha256, each looked at and neither staged.
+- `update_installs_the_copy_the_host_staged_without_downloading_again`: the
+  release's file is deleted; `update` installs from the staged copy.
+- `a_staged_update_that_was_tampered_with_is_dropped_not_applied`: a staged
+  file edited together with its recorded checksum fails the signature; the
+  next start drops it and runs the old program.
+
 Unit tests in `update.rs`: `versions_are_three_numbers_and_order_by_number`,
 `a_package_marker_beside_the_program_makes_it_package_managed`,
 `a_manifest_address_is_resolved_beside_the_manifest`,
@@ -3803,3 +3822,226 @@ covers the feature one; a case with a higher format number is a gap to
 add), `swap_in`'s temporary-then-rename (`update_is_atomic`), `healthy`
 (`failed_update_rolls_back`), `install_kind` (the marker test), and
 `parse_version`'s rejections.
+
+## P5: the agent surface (2026-10-29)
+
+Every tool result carries the envelope (`next_steps`, `guards`, `warnings`,
+`head`), `books.start` is v2, the prompts and resource templates are
+served, `books.journal_history` reads the journal in words, and a
+convention, decision or open item can have its source corrected. Journal
+feature `source_revisions`; events `convention.source_revised`,
+`decision.source_revised`, `open_item.source_revised`; no schema change
+(the projection updates the rows' existing source columns).
+
+- **`ledger-mcp` `src/server_tests.rs`:**
+  `every_mutating_result_has_head_and_next_steps` (every tool of the
+  router is given the envelope; the non-read-only ones have `head` equal to
+  the journal's and a step each with `why` and `required`; the text block
+  says what the structure says),
+  `the_envelope_keeps_what_a_tool_said_and_carries_a_refusal_guard`,
+  `books_start_is_always_loaded`, `tool_descriptions_fit_700_characters`
+  (the allowance list is gone: every description is at most 700
+  characters). `guards.rs`: `every_guard_names_an_existing_tool`,
+  `a_refusal_becomes_its_guard`. `next_steps.rs`:
+  `a_preview_gets_its_confirm_step`, `every_step_a_tool_names_exists`.
+  `tools/prompts.rs`: `the_prompts_name_only_tools_that_exist`,
+  `an_argument_is_one_token_of_the_right_shape`.
+- **`ledger-store`:** `tests/source_revisions.rs`:
+  `a_source_only_revision_is_journaled` (the three events, words and
+  revision unchanged, live equals replay equals a rebuilt database),
+  `a_source_revision_must_change_only_the_source` (other words, the same
+  source, no reason, unknown record: refused, journal unchanged),
+  `source_revisions_wait_for_the_upgrade` (refused before the go-ahead with
+  `format_upgrade_pending`, journaling nothing). `format.rs`:
+  `source_revisions_is_its_own_feature`. `describe.rs`:
+  `every_event_type_has_a_sentence`, `settings_show_their_keys_never_their_values`,
+  `a_full_tin_in_a_description_is_masked`,
+  `history_filters_in_order_and_says_when_more_remain`.
+- **8.0.6:** `books_written_under_older_rules_still_open` hand-writes the
+  three events; the fixture `old-books/p5_before` (writer
+  `old-books-writer/src/bin/p5_before.rs`, run against b97234ac, the
+  revision before P5: a convention revised once, two decisions, two open
+  items, a draft) opens to that version's figures, so no figure moved;
+  `books_p2_served_cut_over_whole` refuses `books.raise_item` with `revises`
+  before consent and takes it after.
+- **`ledger-cli` `tests/agent_surface.rs`:**
+  `journal_history_traces_what_the_books_did`,
+  `a_source_only_revision_over_the_wire`, `the_prompts_list_and_render`
+  (each prompt rendered equals its file with the blanks filled; an
+  argument that is not one token of the right shape, a missing or extra
+  one, and a struck prompt are refused),
+  `the_resource_templates_are_advertised_and_read`,
+  `books_start_v2_is_whole_and_fits` (at most 8 KiB on the P2 fixture; the
+  agent's self-report in the access log only),
+  `a_new_book_is_told_to_onboard`,
+  `a_mutating_call_answers_with_the_head_and_a_refusal_names_its_remedy`.
+- **`ledger-cli` `tests/agent_evals.rs`** (transcripts in `tests/agent_evals/`):
+  `agent_evals_follow_only_next_steps` plays six scripted transcripts (no
+  model): onboarding to a first post, a receipt-backed post, a draft that
+  waits for its receipt and posts when it arrives, a reversal, a
+  reconciliation, a month-end close. After `books.start` a transcript may
+  call only a tool (or fetch only a prompt) the previous result's
+  `next_steps` named, with the arguments the step gave and the ones the
+  agent decides. `setup` calls (the chart, the books an agent finds) are
+  not the agent's moves.
+- **The sweep:** the `party_id`, `document_id` and `cash_account` aliases of
+  `books.create_invoice`, `books.create_bill`, `books.receive_payment` and
+  `books.pay_bill` are gone (S4, S6 said "until P5"); the over-the-wire
+  tests that used them name `customer`/`vendor`, `invoice`/`bill` and
+  `deposit_to`/`paid_from`.
+
+**For P12 (mutation targets):** `next_steps::apply`'s three branches (an
+error, a result without an object, the normal path) and the `mutating`
+test that gives `head`; `tool_steps`'s confirm branch (`!confirmed` and a
+`preview`), the `receipt_missing` pair before it, and each tool's arm;
+`attention_steps`'s subject match (entry against invoice) and its
+`Problem` severity for `required`; `subject_of`'s precedence;
+`guards::from_refusal`'s structured and worded branches and
+`Guard::remedy_tool`'s table; `prompts::checked`'s token test and each
+`Check` shape (month length and calendar, year length, the word list);
+`prompt_get`'s extra-argument and missing-argument refusals;
+`describe::subjects`'s per-prefix id choice, `describe`'s `settings.set`
+key list and TIN mask, `history`'s `>` on `after_seq`, its `limit` cut and
+`more`; `check_convention_source`'s three equalities (title/body/structure,
+source, kind), `check_decision_source` and `check_open_item_source`'s
+equal-source refusals and the empty-reason refusals; the three
+`apply_*_source` arms (a mutant that also bumps `revision` or `seq` shows
+in `a_source_only_revision_is_journaled`); `books.start`'s fit order and
+`reconciliation` split (`reconciled_through.is_some()`).
+## P8: audit and attestations (2026-10-29)
+
+An audit run is a deterministic programme of checks over the books through
+a day, filed as a JSON and a PDF workpaper; attestations are claims by a
+named client that it checked a receipt, an entry or a period, weighed
+against `policy.attestation_bar` when asked. Journal feature `audits`;
+events `audit.run`, `receipt.attested`, `entry.reviewed`, `period.attested`
+(no figure moves); schema 20 (taken as the next after the last, renumbered
+at merge): the `audits` and `attestations` tables; settings
+`policy.attestation_bar` (a new `Kind::AttestationBar`) and
+`policy.cpa_package_requires_audit`. No kernel change, no Kani harness, no
+Lean theorem: the audit calls kernel functions and adds none, and the laws
+it checks are already theorems.
+
+- **`ledger-core` `tests/audit.rs`:** `audit_detects_each_seeded_defect`
+  (the code table `audit::CODES` has a row per check and the test iterates
+  it: a seeding fixture for each, exactly that code found, its severity the
+  row's; the checks a correct engine never lets happen are seeded through
+  the predicate each check is built on, `check_trial_balance`,
+  `check_equation`, `check_articulation`, `check_cash_flow`,
+  `check_control`, `check_split`, `check_register`),
+  `a_whole_book_gives_no_failure_or_warning`,
+  `findings_come_in_one_order`, `below_bar_not_counted` (the bar's effort,
+  the year-level adversarial check and verifier count, a lowered bar, the
+  parse), `amount_mismatch_never_counts`.
+- **`ledger-store` `tests/audit.rs`:** `audit_writes_wait_for_audits`
+  (R-A: every write refused with `FormatUpgradePending`, nothing
+  journaled, taken after `upgrade_format`, replay equal to live),
+  `a_run_is_idempotent_on_the_figure_head` (a filing and a run do not move
+  the head, an entry does, asking again journals nothing),
+  `amount_mismatch_never_counts` (a wrong amount and a wrong date are
+  recorded as disagreeing; a receipt not on the entry, a draft and an
+  unknown entry are refused), `stale_head_period_attestation_refused`
+  (no audit, an audit that stops short of the period, a standing one, an
+  entry since), `integrity_detects_each_seeded_defect` (every code of
+  `ledger_store::audit::CODES`: a missing and a damaged stored file, a
+  missing extraction text, a duplicate file written by an older version,
+  a damaged access log, a database that differs from a replay, a damaged
+  journal, a stale backup, a failed drill),
+  `books_the_version_before_p8_wrote_wait_for_the_upgrade` (8.0.6 item 2).
+  `tests/store.rs::books_written_under_older_rules_still_open` hand-writes
+  the four events (8.0.6 item 1); `tests/format.rs` and
+  `format.rs::audits_is_its_own_feature` (8.0.6 item 4). The four event
+  names are now this version's, so the tests that need an event type no
+  version has written use `ledger.not_yet_written` instead of
+  `period.attested` (`tests/format.rs`, `ledger-gui/tests/newer_journal.rs`).
+- **8.0.6:** the fixture `old-books/p8_before` (writer
+  `old-books-writer/src/bin/p8_before.rs`, run against b97234ac) holds
+  receipted entries, a 40.00 purchase with no receipt, a small one, a
+  reversal, an invoice part paid, an open draft and a closed month;
+  `books_an_earlier_version_wrote_open_to_its_figures` opens it to that
+  version's figures, so no figure moved and no golden changed;
+  `books_p2_served_cut_over_whole` refuses `books.audit` and
+  `books.review_entry` before consent and takes them after.
+- **`ledger-import` `workpaper.rs`:** `workpaper_pdf_is_deterministic`,
+  `a_different_finding_is_a_different_document`.
+- **`ledger-cli` `tests/audit.rs`:** `audit_is_deterministic` (preview,
+  run, the same run and findings again with nothing journaled, the
+  workpaper and its PDF hash equal twice, a new entry makes a new audit),
+  `attestations_count_against_the_bar_when_asked` (a disagreeing reading,
+  a medium effort, no claim, a lowered bar read retroactively),
+  `a_period_is_attested_on_a_standing_audit`,
+  `cpa_package_refuses_without_a_counted_audit_unless_a_reason_is_given`
+  (refused, a reason journaled as a decision, an audit alone not enough, a
+  year attested below the whole bar not enough, the whole bar, an entry
+  since, `warn`), `audits_wait_for_the_upgrade` (the fixture over the
+  wire; the package is not held up by an audit it cannot ask for).
+- **`ledger-cli` `tests/attention_parity.rs`:**
+  `audit_items_are_on_both_lists_once_audits_are_declared`.
+
+**For P12 (mutation targets):** `audit::statements`' order of checks and
+`sort` (severity, then code, subject, message); each `check_*` predicate's
+comparison (`check_trial_balance`'s `balanced`, `check_articulation`'s
+`!=`, `check_split`'s `> unit`, `check_register`'s two conditions,
+`check_cash_flow`'s three arms, `check_control`'s `difference`, unattached
+and `Overpaid` arms); `evidence`'s three arms (Required, the reversal
+exemption and the policy test that lists it, the plain exemption) and its
+receipt-set lookup; `closed_net`'s sign for revenue and expense;
+`AttestationBar::counts` (each of the four conditions, `>=`, the `full`
+branch, the `disagrees` early return) and `parse`; `Scope::full_bar` and
+`serves_handoff`; `Store::figure_head` (the `NOT_FIGURES` list: a type
+wrongly in it lets a stale audit stand, a type wrongly out of it makes an
+audit stale at its own filing), `find_audit_run`'s four equalities,
+`record_audit_run`'s idempotence return, `attest_receipt`'s amount rule
+(the debit total or any one line) and date equality, `run_for_period`'s
+`through_seq == head` and `through >= period.end`;
+`integrity_findings`'s eight arms; `backup_findings`' three conditions; the
+export gate (`cpa_audit_standing`'s four conditions and its feature test,
+the `refuse`/`warn` split, the reason's trim); `audit_items` in Needs
+attention (the declared test, the attested set, the last-ended fiscal
+year, the three year conditions).
+
+## P10: the re-audit runbook's mirror
+
+`docs/runbooks/re-audit.md` is the owner's acceptance, run on his books
+through the MCP alone. What CI can check of it is in
+`crates/ledger-cli/tests/defects.rs`:
+
+- `every_defect_reproduction_is_a_named_test`: a table of `(defect, test
+  name, file)` for the 2026-10-16 audit's defects 1 to 19, P0's 21 and 22
+  and P3's 23 and 24 (23 rows); each named function exists in its file, is
+  a `#[test]` (or inside `proptest!`) and is not `#[ignore]`d. Defect 2 is
+  closed by D-12 and D-47, so its row is the rule as it now stands
+  (`a_reversal_needs_no_receipt_of_its_own`).
+- `defect_20_no_migration_tool_exists`: defect 20 (the migration scripts)
+  was retired at the cutover; no tool of that kind is in the scopes table.
+- `the_re_audit_runbook_names_only_what_exists`: every `books.<name>` in
+  the runbook is in `crates/ledger-mcp/src/scopes.rs`, the commands it
+  names are dispatched by `main.rs`, and its eight steps are present.
+
+The mirror proves the tests exist, not that they pass; the runbook's step 4
+runs them by name. No CI job was added: the test runs in the existing
+`check` job's `cargo test --workspace`. The run itself (a counted
+attestation on every receipt and entry, the two CPA packages equal, the
+sign-off) is the owner's and has no CI equivalent.
+
+**For P12 (mutation targets):** the `DEFECTS` table's file/name lookup (a
+`starts_with` on `fn <name>(`; the `#[test]`/`#[ignore]` window of eight
+lines above it) and the scopes-line scan in `defect_20_*`. A mutant that
+widens the window or drops the `ignore` check survives only if no ignored
+or untested name is in the table; the table is the oracle.
+
+## P13 step 6: the specification in its own repository (2026-10-29)
+
+The specification (text, examples, checker, runner, Lean, GnuCash adapter)
+lives at https://git.swaits.com/swaits/bookspec (CC BY 4.0 for `spec/` and `examples/`, MIT OR Apache-2.0 for the
+code) and is pinned by commit in `crates/ledger-core/Cargo.toml` and
+`crates/ledger-package/Cargo.toml`. `just check` runs the examples exactly as
+before: `cargo test --workspace` includes `ledger-core` `tests/bookspec.rs`
+(`every_bookspec_example_holds`, `the_runner_reports_every_claimed_rule_green`),
+which reads them through `bookspec_checker::examples()`, and `ledger-package`
+`tests/package.rs` reads the IIF example the same way. Two checks that need
+this repository's files live in `tests/bookspec.rs`: `every_vendored_pin_is_verbatim`
+(each vendored pin in the spec is verbatim in `docs/spec/sources`) and
+`rules_md_carries_every_id`. The examples named `bookspec/examples/...` in the
+older sections above are files of that repository. The checker's, the
+runner's and the derivation tests run in its own CI.

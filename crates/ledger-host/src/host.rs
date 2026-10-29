@@ -203,19 +203,39 @@ fn children_executable() -> PathBuf {
     }
 }
 
-/// A program file's identity: what changes when the file is replaced.
+/// A program file's identity: device and inode, size and last write. A
+/// replaced file differs in the inode, and a rewritten one in the rest.
+#[cfg(unix)]
+type Identity = (u64, u64, u64, i64, i64);
+/// Windows: size and last write (nanoseconds).
+#[cfg(windows)]
 type Identity = (u64, u64);
 
+#[cfg(unix)]
+fn identity_from(meta: &std::fs::Metadata) -> Identity {
+    (
+        meta.dev(),
+        meta.ino(),
+        meta.len(),
+        meta.mtime(),
+        meta.mtime_nsec(),
+    )
+}
+
 /// The running executable's file identity, and its file's now: they
-/// differ once the file was replaced (INVARIANT 7).
+/// differ once the file was replaced (INVARIANT 7). An AppImage is its
+/// image file (`APPIMAGE`), not the program inside the mount.
 #[cfg(unix)]
 fn running_identity() -> Option<Identity> {
+    if let Some(image) = crate::start::own_appimage(std::env::var_os("APPIMAGE").as_deref()) {
+        return Some(identity_from(&std::fs::metadata(image).ok()?));
+    }
     let running = if cfg!(target_os = "linux") {
         std::fs::metadata("/proc/self/exe").ok()?
     } else {
         std::fs::metadata(std::env::current_exe().ok()?).ok()?
     };
-    Some((running.dev(), running.ino()))
+    Some(identity_from(&running))
 }
 
 /// Windows can't replace a program that runs, so an update puts the new
@@ -232,12 +252,12 @@ fn file_identity() -> Option<Identity> {
     identity_of(&crate::start::this_executable().ok()?)
 }
 
-/// The identity (device, inode) of the program at `path`: a file someone
-/// may run; else None.
+/// The identity of the program at `path`: a file someone may run; else
+/// None.
 #[cfg(unix)]
 fn identity_of(path: &Path) -> Option<Identity> {
     let meta = std::fs::metadata(path).ok()?;
-    (meta.is_file() && meta.permissions().mode() & 0o111 != 0).then(|| (meta.dev(), meta.ino()))
+    (meta.is_file() && meta.permissions().mode() & 0o111 != 0).then(|| identity_from(&meta))
 }
 
 /// The identity (size, last write in nanoseconds) of the program at
@@ -521,6 +541,13 @@ impl Host {
         let started_as = running_identity();
         let mut exe_poll = tokio::time::interval(self.knobs.exe_poll);
         exe_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // The daily look for a newer release (P11a step 4): the work is
+        // a thread of its own, one at a time, and only stages a file.
+        let mut update_poll =
+            tokio::time::interval((self.knobs.update_check / 4).max(Duration::from_millis(10)));
+        update_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        #[cfg(unix)]
+        let looking = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let mut idle_at = Some(Instant::now() + self.knobs.close_after);
         let server_start = tokio::time::sleep(self.knobs.server_delay);
         tokio::pin!(server_start);
@@ -675,6 +702,25 @@ impl Host {
                         idle_at = None;
                         if self.server_pid.is_none() {
                             return self.finish(connections, Ending::Closed).await;
+                        }
+                    }
+                }
+                _ = update_poll.tick(), if matches!(self.phase, Phase::Open) => {
+                    // Staging an update replaces the program's file, which
+                    // Windows forbids while it runs: P11a step 5.
+                    #[cfg(unix)]
+                    {
+                        use std::sync::atomic::Ordering;
+                        if !looking.swap(true, Ordering::SeqCst) {
+                            let (root, every, looking) = (self.root.clone(), self.knobs.update_check, looking.clone());
+                            std::thread::spawn(move || {
+                                match crate::update::stage_if_due(&root, crate::update::program_version(), every) {
+                                    Ok(Some(version)) => eprintln!("wanderbooks host: version {version} is downloaded and checked; it starts the next time the books open, or at `wanderbooks update`"),
+                                    Ok(None) => {}
+                                    Err(why) => eprintln!("wanderbooks host: the look for a newer version failed: {why}"),
+                                }
+                                looking.store(false, Ordering::SeqCst);
+                            });
                         }
                     }
                 }

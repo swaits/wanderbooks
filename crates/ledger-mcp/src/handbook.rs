@@ -88,6 +88,10 @@ pub const SECTIONS: &[(&str, &str)] = &[
     ("1099", include_str!("../handbook/1099.md")),
     ("cpa-handoff", include_str!("../handbook/cpa-handoff.md")),
     (
+        "attestations-and-audit",
+        include_str!("../handbook/attestations-and-audit.md"),
+    ),
+    (
         "settings-and-conventions",
         include_str!("../handbook/settings-and-conventions.md"),
     ),

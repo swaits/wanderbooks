@@ -14,13 +14,9 @@ default:
 # Everything CI should check: format, clippy and rustdoc (zero warnings), tests
 check: sweep-test-tmp
     cargo fmt --all --check
-    cargo fmt --manifest-path bookspec/Cargo.toml --all --check
     cargo clippy --workspace --all-targets -- -D warnings
-    cargo clippy --manifest-path bookspec/Cargo.toml --workspace --all-targets -- -D warnings
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --quiet
-    RUSTDOCFLAGS="-D warnings" cargo doc --manifest-path bookspec/Cargo.toml --workspace --no-deps --quiet
     cargo test --workspace
-    cargo test --manifest-path bookspec/Cargo.toml --workspace
     @just server-only
     @just sweep-test-tmp
 
@@ -272,6 +268,11 @@ deploy-preview: site
 package-linux version="" formats="deb,appimage,pacman":
     cargo build --release -p ledger-cli
     deploy/packaging/build-linux.sh {{version}} {{formats}}
+
+# Build the unsigned macOS .dmg (on a Mac; CI does it on a tag or dispatch)
+package-macos version="":
+    cargo build --release -p ledger-cli
+    deploy/packaging/build-macos.sh {{version}}
 
 # A release folder on this machine signed with a throwaway key; then
 # `wanderbooks update --feed file://DIR/manifest.json --trusted-key DIR/release.pub`

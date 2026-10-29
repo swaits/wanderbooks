@@ -521,6 +521,9 @@ fn files_under(dir: &Path) -> Vec<PathBuf> {
         let p = e.path();
         if p.is_dir() {
             out.extend(files_under(&p));
+        } else if p.extension().is_some_and(|x| x == "lock") {
+            // A lock file holds no data, and on Windows a held lock is
+            // mandatory: reading it is refused while the server runs.
         } else {
             out.push(p);
         }

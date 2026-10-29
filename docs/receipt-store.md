@@ -64,7 +64,16 @@ apply is safe — on startup the applier replays every journal line with
   `attachment.annotated`, `entry.settles` (P6), `entry.draft_state_set`
   (a draft building or awaiting its evidence: a note on the draft, no
   figure) and `entry.draft_discarded` (a draft thrown away, with why; the
-  draft's earlier lines stay in the journal) (P4, feature `drafts_v2`)
+  draft's earlier lines stay in the journal) (P4, feature `drafts_v2`),
+  and `convention.source_revised {id, source, reason}`,
+  `decision.source_revised {id, source: {decided_by: [..], decided_on,
+  citation?}, reason}` and `open_item.source_revised {id, source, reason}`
+  (P5, feature `source_revisions`: who decided a convention, a decision or
+  an open item, when and on what, corrected without touching its words;
+  replay sets the source and nothing else, and the projection updates the
+  row's existing source columns, so no schema changed)
+  `audit.run`, `receipt.attested`, `entry.reviewed` and `period.attested`
+  (P8, feature `audits`: claims about the books, no figure)
   (plus the A/R, A/P, asset,
   period, payroll, and class events listed on `JournalLine`).
 - `payload`: the full domain facts (account fields, entry with lines, blob
@@ -167,6 +176,20 @@ a backup is then proven where it lands, by a drill (docs/mcp-interface.md,
   read off a file (the closed field list; a later annotation replaces the
   earlier record), and `entry.settles {entry_id, settles[]}` says which
   entries a payment pays back (the only source of "reimbursed").
+- **Audits and attestations are records, not figures** (P8, rules.md B-45,
+  feature `audits`): `audit.run {id, through, through_seq, scope,
+  program_version, tb_hash, findings_sha256, workpaper_attachment?,
+  workpaper_pdf?}` says a programme of checks was run through a day at the
+  books' figure head `through_seq` (the last line that bears on a figure;
+  audits, attestations and filings of evidence do not move it), and which
+  two filed documents (category `workpaper`) hold its findings;
+  `receipt.attested {attachment_id, entry_id, by, at, method,
+  amount_checked, date_checked, disagrees, note?}`, `entry.reviewed
+  {entry_id, by, at, method, note?}` and `period.attested {period_id, by,
+  at, method, audit_run_id}` are a named client's claim that it checked.
+  `method` ({model?, reasoning_effort?, adversarial?, verifier_agents?}) is
+  that client's own word. Whether a claim counts is never journaled: it is
+  derived against `policy.attestation_bar` when asked.
 - The store is policy-free: it records attachments faithfully. Whether a
   posting *requires* a receipt is decided by the MCP layer's receipt policy
   (`docs/mcp-interface.md`), which reads the `attachments` table.
@@ -192,7 +215,11 @@ Suspected corruption is fixed by rebuild, never by forensics.
   as above; `extractions(attachment_id, extractor, version, text_sha256,
   pages, status, seq)` and `annotations(attachment_id, receipt_number,
   payee, amount, date, instrument, category, source, reimbursable_to,
-  note, seq)` (P6; amounts TEXT, never REAL); `events(seq, type, payload,
+  note, seq)` (P6; amounts TEXT, never REAL); `audits(id, through,
+  through_seq, scope, program_version, tb_hash, findings_sha256,
+  workpaper_attachment, workpaper_pdf, seq)` and `attestations(seq, kind,
+  attachment_id, entry_id, period_id, audit_run_id, by_who, at_ts, method,
+  amount_checked, date_checked, disagrees, note)` (P8, schema 20); `events(seq, type, payload,
   created_at)` — the applier's output,
   a queryable mirror of the journal stream and the feed the future GUI
   tails. (Poll `WHERE seq > ?`; later SSE over the HTTP transport. This is

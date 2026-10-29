@@ -25,6 +25,7 @@ pub mod labels;
 pub mod pdf;
 pub mod report;
 pub mod templates;
+pub mod workpaper;
 pub mod xlsx;
 
 pub use asset_register::{asset_register_pdf, asset_register_xlsx};
@@ -43,4 +44,5 @@ pub use labels::{AssetLabel, LabelSheet, asset_labels_pdf};
 pub use pdf::{PdfError, statement_pdf};
 pub use report::{Member, ReportMeta, Row, RowKind, Statement, YearEarnings, format_amount};
 pub use templates::{ChartTemplate, EntityType, chart_template};
+pub use workpaper::{Workpaper, WorkpaperCheck, WorkpaperFinding, workpaper_pdf};
 pub use xlsx::{XlsxReport, report_to_xlsx};

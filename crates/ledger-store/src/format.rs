@@ -65,6 +65,8 @@ pub const KNOWN_FEATURES: &[&str] = &[
     DOCUMENTS_V2,
     ATTACHMENT_TEXT,
     DRAFTS_V2,
+    SOURCE_REVISIONS,
+    AUDITS,
 ];
 
 /// Feature: `period.closed` closes to members with `"rounding":
@@ -104,6 +106,9 @@ pub(crate) fn setting_feature(key: &str) -> Option<&'static str> {
         | "bills.discount_warn_days"
         | "company.email"
         | "company.website" => Some(DOCUMENTS_V2),
+        // P8: what counts as an attestation, and whether the CPA package
+        // waits for an audit.
+        "policy.attestation_bar" | "policy.cpa_package_requires_audit" => Some(AUDITS),
         _ => None,
     }
 }
@@ -218,6 +223,26 @@ pub const ATTACHMENT_TEXT: &str = "attachment_text";
 /// (rules.md B-27, B-43).
 pub const DRAFTS_V2: &str = "drafts_v2";
 
+/// Feature: `source_revisions` (plan P5): `convention.source_revised`,
+/// `decision.source_revised` and `open_item.source_revised` correct who
+/// decided a convention, a decision or an open item, when and on what,
+/// leaving its text as it was. An older version doesn't know those event
+/// types: it would refuse them as unknown, or, replaying around them,
+/// show the old source as the decision's authority; it stops at the
+/// declaration instead (rules.md B-27).
+pub const SOURCE_REVISIONS: &str = "source_revisions";
+
+/// Feature: `audits` (plan P8): `audit.run` (a programme of checks run
+/// through a date, with the hash of its findings and its workpaper),
+/// `receipt.attested`, `entry.reviewed` and `period.attested` (claims by
+/// an authenticated client that it checked), and the two settings that
+/// say what counts (`policy.attestation_bar`) and whether the CPA package
+/// waits for an audit (`policy.cpa_package_requires_audit`). An older
+/// version doesn't know those event types or settings; it stops at the
+/// declaration instead of dropping the claims a handoff rests on
+/// (rules.md B-27, B-45).
+pub const AUDITS: &str = "audits";
+
 /// The line type that declares the journal format.
 pub const FORMAT_SET: &str = "journal.format_set";
 
@@ -243,13 +268,16 @@ pub const EVENT_TYPES: &[&str] = &[
     "attachment.text_extracted",
     "attachment.unlinked",
     "attachment.withdrawn",
+    "audit.run",
     "bill.created",
     "bill.paid",
     "class.added",
     "convention.retired",
     "convention.set",
+    "convention.source_revised",
     "customer.added",
     "decision.recorded",
+    "decision.source_revised",
     "document.filed",
     "entry.approved",
     "entry.created",
@@ -263,6 +291,7 @@ pub const EVENT_TYPES: &[&str] = &[
     "entry.party_set",
     "entry.posted",
     "entry.reversed",
+    "entry.reviewed",
     "entry.settles",
     "entry.vendor_set",
     "fx.rate_set",
@@ -276,6 +305,7 @@ pub const EVENT_TYPES: &[&str] = &[
     "line.cleared",
     "open_item.raised",
     "open_item.resolved",
+    "open_item.source_revised",
     "party.added",
     "party.creditor_set",
     "party.role_set",
@@ -285,10 +315,12 @@ pub const EVENT_TYPES: &[&str] = &[
     "party.w9_set",
     "payroll.run",
     "payroll.taxes_remitted",
+    "period.attested",
     "period.closed",
     "period.created",
     "project.set",
     "receipt.attached",
+    "receipt.attested",
     "receipt.linked",
     "receipt.unlinked",
     "reconciliation.completed",
@@ -987,6 +1019,72 @@ mod tests {
         ));
         let up = older.upgrade().expect("waits for it");
         assert_eq!(up.adds(), vec!["the journal feature drafts_v2"]);
+    }
+
+    /// The version before P5 (every feature through `drafts_v2`) stops at a
+    /// declaration of `source_revisions` as newer, and books that declared
+    /// every earlier feature still wait for it (B-27, D-39).
+    #[test]
+    fn source_revisions_is_its_own_feature() {
+        assert!(KNOWN_FEATURES.contains(&SOURCE_REVISIONS));
+        let before: Vec<&str> = KNOWN_FEATURES
+            .iter()
+            .copied()
+            .filter(|f| *f != SOURCE_REVISIONS)
+            .collect();
+        let l = line(
+            FORMAT_SET,
+            json!({"format": 2, "features": [DRAFTS_V2, SOURCE_REVISIONS]}),
+        );
+        match declared_knowing(&l, &before) {
+            Err(StoreError::NewerJournal { need, .. }) => {
+                assert_eq!(need, "journal features source_revisions")
+            }
+            other => panic!("expected NewerJournal, got {other:?}"),
+        }
+        let older = JournalFormat {
+            format: 2,
+            features: before.iter().map(|f| f.to_string()).collect(),
+        };
+        assert!(matches!(
+            older.require_feature(SOURCE_REVISIONS),
+            Err(StoreError::FormatUpgradePending { .. })
+        ));
+        let up = older.upgrade().expect("waits for it");
+        assert_eq!(up.adds(), vec!["the journal feature source_revisions"]);
+    }
+
+    /// The version before P8 stops at a declaration of `audits` as newer,
+    /// never dropping an attestation a handoff rests on; books that
+    /// declared every earlier feature still wait for it (B-27, D-39).
+    #[test]
+    fn audits_is_its_own_feature() {
+        assert!(KNOWN_FEATURES.contains(&AUDITS));
+        let before: Vec<&str> = KNOWN_FEATURES
+            .iter()
+            .copied()
+            .filter(|f| *f != AUDITS)
+            .collect();
+        let l = line(
+            FORMAT_SET,
+            json!({"format": 2, "features": [DRAFTS_V2, AUDITS]}),
+        );
+        match declared_knowing(&l, &before) {
+            Err(StoreError::NewerJournal { need, .. }) => {
+                assert_eq!(need, "journal features audits")
+            }
+            other => panic!("expected NewerJournal, got {other:?}"),
+        }
+        let older = JournalFormat {
+            format: 2,
+            features: before.iter().map(|f| f.to_string()).collect(),
+        };
+        assert!(matches!(
+            older.require_feature(AUDITS),
+            Err(StoreError::FormatUpgradePending { .. })
+        ));
+        let up = older.upgrade().expect("waits for it");
+        assert_eq!(up.adds(), vec!["the journal feature audits"]);
     }
 
     /// This version's format: the newest it reads, every feature it

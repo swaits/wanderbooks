@@ -1172,6 +1172,26 @@ pub fn describe(b: &Books, line: &JournalLine) -> Option<Event> {
             format!("Open item #{id} resolved: {}", s(p, "resolution")),
             Some(Route::Company),
         ),
+        "convention.source_revised" => ev(
+            icon::SCROLL,
+            format!(
+                "Source of convention {} corrected to {}: {}",
+                s(p, "id"),
+                s(&p["source"], "decided_by"),
+                s(p, "reason")
+            ),
+            Some(Route::Company),
+        ),
+        "decision.source_revised" => ev(
+            icon::GAVEL,
+            format!("Source of decision #{id} corrected: {}", s(p, "reason")),
+            Some(Route::Company),
+        ),
+        "open_item.source_revised" => ev(
+            icon::CHECK_CIRCLE,
+            format!("Source of open item #{id} corrected: {}", s(p, "reason")),
+            Some(Route::Company),
+        ),
         "entry.approved" => ev(
             icon::SEAL_CHECK,
             format!(

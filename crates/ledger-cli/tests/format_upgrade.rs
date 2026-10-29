@@ -767,7 +767,7 @@ fn books_p2_served_cut_over_whole() {
     let invoice = a
         .call(
             "books.create_invoice",
-            json!({"party_id": 1, "date": "2026-01-05", "due_date": "2026-02-04",
+            json!({"customer": (1).to_string(), "date": "2026-01-05", "due_date": "2026-02-04",
                    "lines": [{"description": "Design", "amount": "400.00"}], "confirmed": true}),
         )
         .unwrap()["id"]
@@ -789,7 +789,7 @@ fn books_p2_served_cut_over_whole() {
     let unpaid = a
         .call(
             "books.create_invoice",
-            json!({"party_id": customer, "date": "2026-01-10", "due_date": "2026-02-09",
+            json!({"customer": (customer).to_string(), "date": "2026-01-10", "due_date": "2026-02-09",
                    "lines": [{"description": "Survey", "amount": "300.00"}], "confirmed": true}),
         )
         .unwrap()["id"]
@@ -812,8 +812,24 @@ fn books_p2_served_cut_over_whole() {
         )
         .unwrap();
     }
+    // An open item P2 reads: the correction of its source is
+    // source_revisions' (P5), and waits.
+    let item = a
+        .call(
+            "books.raise_item",
+            json!({"title": "Ask the CPA about the vehicle", "decided_by": "Avery Quill"}),
+        )
+        .unwrap()["id"]
+        .clone();
     let waiting = journal(&dir);
     let refused: Vec<(&str, Value)> = vec![
+        // A source correction (source_revisions, P5): an older version
+        // refuses the type.
+        (
+            "books.raise_item",
+            json!({"revises": item, "reason": "it was the CPA who raised it",
+                   "decided_by": "Pat Smith"}),
+        ),
         // A draft's state and its discard (drafts_v2, P4): an older
         // version refuses the types.
         (

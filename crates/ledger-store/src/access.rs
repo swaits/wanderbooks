@@ -67,6 +67,22 @@ pub struct Client {
     pub version: String,
 }
 
+/// What an agent said about itself when it began its session
+/// (`books.start`'s `agent`): self-reported, never checked, kept beside the
+/// access so a record shows which model and harness made it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Agent {
+    /// The model's name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// The reasoning effort it ran at.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+    /// The program driving it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<String>,
+}
+
 /// What came of a call.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -105,6 +121,9 @@ pub struct Access {
     /// (whatever it answered).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub head_after: Option<Head>,
+    /// What the agent said about itself, on a `books.start` that said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<Agent>,
 }
 
 /// Mask any full TIN in a client's text, then cut it to
@@ -186,6 +205,11 @@ impl AccessLog {
             c.name = asserted(&c.name);
             c.version = asserted(&c.version);
         }
+        if let Some(a) = &mut access.agent {
+            for f in [&mut a.model, &mut a.reasoning_effort, &mut a.harness] {
+                *f = f.as_deref().map(asserted);
+            }
+        }
         access.request_id = access.request_id.as_deref().map(asserted);
         access.subject = asserted(&access.subject);
         let Value::Object(fields) = serde_json::to_value(&access).expect("a record serializes")
@@ -261,6 +285,7 @@ mod tests {
             args_digest: Some(digest(&serde_json::json!({"as_of": "2026-10-19"}))),
             result: Outcome::Ok,
             head_after: None,
+            agent: None,
         }
     }
 

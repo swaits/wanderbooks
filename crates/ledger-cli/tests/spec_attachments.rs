@@ -424,7 +424,7 @@ fn a_file_links_to_every_kind_of_subject() {
     let rent_invoice = m.upload(b"rent invoice", "rent.pdf", "application/pdf", "receipt");
     let bill = m.ok(
         "books.create_bill",
-        json!({"party_id": vendor, "date": "2026-02-01", "due_date": "2026-02-28",
+        json!({"vendor": (vendor).to_string(), "date": "2026-02-01", "due_date": "2026-02-28",
                "vendor_ref": "RENT-2",
                "lines": [{"description": "Rent", "amount": "300.00", "account": "6000"}],
                "upload_id": rent_invoice, "confirmed": true}),
@@ -432,7 +432,7 @@ fn a_file_links_to_every_kind_of_subject() {
         .clone();
     let invoice = m.ok(
         "books.create_invoice",
-        json!({"party_id": customer, "date": "2026-02-01", "due_date": "2026-03-01",
+        json!({"customer": (customer).to_string(), "date": "2026-02-01", "due_date": "2026-03-01",
                "lines": [{"description": "Work", "amount": "500.00"}],
                "confirmed": true}),
     )["id"]

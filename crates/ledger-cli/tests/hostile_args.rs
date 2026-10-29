@@ -1017,13 +1017,13 @@ fn inputs_that_once_panicked_are_refused_or_answered() {
         ),
         (
             "books.create_invoice",
-            json!({"party_id": client, "date": "2026-05-01", "due_date": "2026-06-01",
+            json!({"customer": (client).to_string(), "date": "2026-05-01", "due_date": "2026-06-01",
                    "lines": [{"description": "a", "amount": MAX},
                              {"description": "b", "amount": "1"}], "confirmed": true}),
         ),
         (
             "books.create_bill",
-            json!({"party_id": acme, "date": "2026-05-01", "due_date": "2026-06-01",
+            json!({"vendor": (acme).to_string(), "date": "2026-05-01", "due_date": "2026-06-01",
                    "vendor_ref": "H-1",
                    "lines": [{"description": "a", "amount": MAX, "account": "6000"},
                              {"description": "b", "amount": "1", "account": "6000"}],
@@ -1031,7 +1031,7 @@ fn inputs_that_once_panicked_are_refused_or_answered() {
         ),
         (
             "books.create_invoice",
-            json!({"party_id": client, "date": "2026-05-01", "due_date": "+262142-12-31",
+            json!({"customer": (client).to_string(), "date": "2026-05-01", "due_date": "+262142-12-31",
                    "lines": [{"description": "a", "amount": "1"}], "confirmed": true}),
         ),
         (

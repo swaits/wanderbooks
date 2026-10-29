@@ -1206,6 +1206,7 @@ async fn refused_at_door(
             args_digest: None,
             result: Outcome::Refused(code.into()),
             head_after: None,
+            agent: None,
         };
         let written = tokio::task::spawn_blocking(move || access.record(&record)).await;
         if !matches!(written, Ok(Ok(_))) {
@@ -1435,6 +1436,7 @@ async fn upload(
             args_digest: None,
             result: outcome.clone(),
             head_after: None,
+            agent: None,
         };
         let recorded = access.record(&record).is_ok();
         if !recorded && received.is_ok() {
@@ -1609,6 +1611,7 @@ async fn fetch(
                 Err((_, code, _)) => Outcome::Refused((*code).into()),
             },
             head_after: None,
+            agent: None,
         };
         let recorded = access.record(&record).is_ok();
         (found, recorded)

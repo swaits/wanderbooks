@@ -1761,7 +1761,10 @@ saying what it duplicates, B-44). P4's is `drafts_v2` (an
 `entry.draft_state_set` or `entry.draft_discarded`, both new event types:
 an older version would refuse them, or, reading around them, keep a
 discarded draft that holds a period open and call a waiting draft one
-being built, B-43). A command asks for
+being built, B-43). P5's is `source_revisions` (a
+`convention.source_revised`, `decision.source_revised` or
+`open_item.source_revised`, new event types: an older version would
+refuse them, or show the old source as the record's authority). A command asks for
 the feature it needs (`Store::ensure_feature`) before its first journaled
 line, and only when the line it is about to write uses it, so a write
 refused for waiting on the upgrade journals nothing, never an entry

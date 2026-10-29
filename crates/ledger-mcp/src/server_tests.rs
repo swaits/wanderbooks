@@ -9,6 +9,25 @@
 use super::*;
 use crate::server::test_support::*;
 
+/// Plan 4.2 (P5 step 2): `books.start` is loaded up front by clients that
+/// defer tools, and no other tool asks for that.
+#[test]
+fn books_start_is_always_loaded() {
+    for tool in BooksServer::tool_router().list_all() {
+        let always = tool
+            .meta
+            .as_ref()
+            .and_then(|m| m.0.get("anthropic/alwaysLoad"))
+            .and_then(serde_json::Value::as_bool);
+        assert_eq!(
+            always == Some(true),
+            tool.name == "books.start",
+            "{}",
+            tool.name
+        );
+    }
+}
+
 /// An upload's limit, 25 MiB exactly (plan 4.7); nothing comes inline
 /// (D-46).
 #[test]
@@ -42,7 +61,7 @@ fn annotations_complete() {
     const D: Hints = (Some(false), Some(true), None);
     const WI: Hints = (Some(false), Some(false), Some(true));
     const DI: Hints = (Some(false), Some(true), Some(true));
-    let table: [(&str, Hints); 133] = [
+    let table: [(&str, Hints); 134] = [
         ("books.handbook", R),
         ("books.start", R),
         ("books.set_setting", DI),
@@ -178,6 +197,7 @@ fn annotations_complete() {
         ("books.list_drafts", R),
         ("books.set_draft_state", W),
         ("books.discard_draft", D),
+        ("books.journal_history", R),
         ("books.preview_entry", R),
     ];
     let tools = BooksServer::tool_router().list_all();
@@ -701,23 +721,10 @@ fn tool_text_lint() {
     }
 }
 
-/// Tool descriptions are at most 700 characters (plan I-12). The
-/// ones over it today are listed, each to be shortened in P5 when its
-/// text moves into the handbook; no new one may join them, and one
-/// that shrinks under the cap must leave the list.
+/// Tool descriptions are at most 700 characters (plan I-12); the long
+/// text lives in the handbook (P5 moved the last eight there).
 #[test]
 fn tool_descriptions_fit_700_characters() {
-    // Shorten in P5.
-    const OVER: &[&str] = &[
-        "books.export",
-        "books.export_cpa_package",
-        "books.import_bank_csv",
-        "books.reconcile",
-        "books.set_entry_party",
-        "books.set_w9",
-        "books.show",
-        "books.vendor_1099",
-    ];
     let mut over: Vec<String> = BooksServer::tool_router()
         .list_all()
         .iter()
@@ -725,7 +732,10 @@ fn tool_descriptions_fit_700_characters() {
         .map(|t| t.name.to_string())
         .collect();
     over.sort();
-    assert_eq!(over, OVER, "tool descriptions over 700 characters");
+    assert!(
+        over.is_empty(),
+        "tool descriptions over 700 characters: {over:?}"
+    );
 }
 
 /// The tools docs/mcp-interface.md documents: a line (or a bullet)
@@ -1527,4 +1537,101 @@ fn a_tool_list_is_cached_only_for_its_caller() {
             );
         }
     });
+}
+
+/// Plan 4.6 (P5 step 1): the envelope is put on every result in one
+/// place; a tool that can change the books answers with the journal's
+/// `head` and at least one next step, whatever it said itself, and the
+/// text block says the same as the structured content.
+#[test]
+fn every_mutating_result_has_head_and_next_steps() {
+    use rmcp::model::{CallToolResponse, CallToolResult, ContentBlock};
+    let dir = unit_dir("envelope");
+    let server = served(store(&dir));
+    let (seq, hash) = server.lock().unwrap().head();
+    let mutating = next_steps::mutating_tools();
+    assert!(mutating.contains("books.post_entry") && !mutating.contains("books.trial_balance"));
+    let mut read_only = 0;
+    for tool in BooksServer::tool_router().list_all() {
+        let name = tool.name.to_string();
+        let answer = CallToolResponse::Complete(CallToolResult::structured(
+            serde_json::json!({"status": "ok"}),
+        ));
+        let CallToolResponse::Complete(r) =
+            next_steps::apply(&server, &name, None, Ok(answer)).expect("an answer stays an answer")
+        else {
+            panic!("{name}: not a complete answer");
+        };
+        let body = r.structured_content.expect("structured");
+        assert!(
+            body.get("guards").is_none() && body.get("warnings").is_none(),
+            "{name}: a success without them says none"
+        );
+        let ContentBlock::Text(t) = &r.content[0] else {
+            panic!("{name}: no text block");
+        };
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&t.text).unwrap(),
+            body,
+            "{name}: the text says what the structure says"
+        );
+        if mutating.contains(&name) {
+            assert_eq!(body["head"]["seq"], seq, "{name}");
+            assert_eq!(body["head"]["hash"], hash.as_str(), "{name}");
+            let steps = body["next_steps"].as_array().expect("next_steps");
+            assert!(!steps.is_empty(), "{name}: no next step");
+            for s in steps {
+                assert!(s["why"].is_string() && s["required"].is_boolean(), "{name}");
+            }
+        } else {
+            read_only += 1;
+            assert!(body.get("head").is_none(), "{name}: a read has no head");
+        }
+    }
+    assert!(read_only > 20);
+}
+
+/// A tool's own `next_steps`, `warnings` and `head` are kept (the
+/// envelope fills only what the result lacks), and a refusal that is a
+/// guard carries it.
+#[test]
+fn the_envelope_keeps_what_a_tool_said_and_carries_a_refusal_guard() {
+    use rmcp::model::{CallToolResponse, CallToolResult};
+    let dir = unit_dir("envelope-keeps");
+    let server = served(store(&dir));
+    let own = serde_json::json!({
+        "next_steps": [{"tool": "books.digest", "why": "mine", "required": false}],
+        "warnings": ["careful"],
+        "head": {"seq": 0, "hash": "x"},
+    });
+    let CallToolResponse::Complete(r) = next_steps::apply(
+        &server,
+        "books.post_entry",
+        None,
+        Ok(CallToolResponse::Complete(CallToolResult::structured(
+            own.clone(),
+        ))),
+    )
+    .unwrap() else {
+        panic!()
+    };
+    let body = r.structured_content.unwrap();
+    assert_eq!(body["next_steps"], own["next_steps"]);
+    assert_eq!(body["warnings"], own["warnings"]);
+    assert_eq!(body["head"], own["head"]);
+    let refused = CallToolResponse::Complete(CallToolResult::error(vec![
+        rmcp::model::ContentBlock::text(
+            serde_json::json!({"code": "approval_required", "message": "needs approval", "remedy_tool": "books.approve_entry"})
+                .to_string(),
+        ),
+    ]));
+    let CallToolResponse::Complete(r) =
+        next_steps::apply(&server, "books.post_entry", None, Ok(refused)).unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(r.is_error, Some(true));
+    let g = &r.structured_content.unwrap()["guards"][0];
+    assert_eq!(g["code"], "approval_required");
+    assert_eq!(g["remedy_tool"], "books.approve_entry");
 }

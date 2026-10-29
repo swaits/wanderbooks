@@ -25,6 +25,7 @@ pub(crate) fn capabilities() -> ServerCapabilities {
     ServerCapabilities::builder()
         .enable_tools()
         .enable_resources()
+        .enable_prompts()
         .build()
 }
 
@@ -85,5 +86,6 @@ mod tests {
         );
         assert!(r["capabilities"]["tools"].is_object());
         assert!(r["capabilities"]["resources"].is_object());
+        assert!(r["capabilities"]["prompts"].is_object());
     }
 }

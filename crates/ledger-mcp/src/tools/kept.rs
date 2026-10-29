@@ -94,11 +94,35 @@ pub struct StartParams {
     /// (shapes next_steps). Default: daily.
     #[serde(default)]
     pub focus: Option<String>,
+    /// What the agent says about itself: its model, reasoning effort and
+    /// harness. Self-reported and never checked; written to the access
+    /// log beside the call and used for nothing else.
+    #[serde(default)]
+    pub agent: Option<AgentIn>,
+}
+
+/// What an agent says about itself (`books.start`'s `agent`).
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct AgentIn {
+    /// The model's name ("claude-opus-4").
+    #[serde(default)]
+    pub model: Option<String>,
+    /// The reasoning effort it runs at ("high").
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
+    /// The program driving it ("claude-code").
+    #[serde(default)]
+    pub harness: Option<String>,
 }
 
 /// The books, in brief.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct StartBookOut {
+    /// The books' id on this server.
+    pub id: String,
+    /// Where these books answer on this server (`/b/ID/mcp`): never a
+    /// path on any disk.
+    pub url: String,
     /// The company's name.
     pub name: String,
     /// Its time zone (IANA), or null: the computer's.
@@ -222,12 +246,115 @@ pub struct FormatUpgradeOut {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct NextStepOut {
     /// The tool to call.
-    pub tool: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
+    /// Or the prompt to run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
     /// Its arguments, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub args: Option<Value>,
     /// Why.
     pub why: String,
+    /// Whether the work is not done without it.
+    pub required: bool,
+}
+
+/// Who is asking, as the books know them (the token's own facts).
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct YouOut {
+    /// The token's name.
+    pub principal: String,
+    /// Always `agent` here.
+    pub kind: String,
+    /// What the token may do: books:read, books:write, books:post,
+    /// books:admin.
+    pub scopes: Vec<String>,
+    /// The client program, as it named itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+}
+
+/// A draft waiting on its evidence.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct StartDraftOut {
+    /// The draft entry.
+    pub entry_id: u64,
+    /// Its date.
+    pub date: String,
+    /// Its total debits.
+    pub amount: String,
+    /// What it waits for.
+    pub note: String,
+}
+
+/// The open drafts.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct StartDraftsOut {
+    /// Drafts being built.
+    pub building: u32,
+    /// Drafts finished and waiting for their documents (books.list_drafts
+    /// has every one).
+    pub awaiting_evidence: Vec<StartDraftOut>,
+}
+
+/// Where reconciliation stands.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct StartReconciliationOut {
+    /// The accounts reconciled to statements (codes).
+    pub tracked: Vec<String>,
+    /// Of those, never reconciled.
+    pub never_reconciled: Vec<String>,
+    /// Of those, reconciled but behind.
+    pub behind: Vec<String>,
+}
+
+/// Where the books' backups stand.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct StartBackupOut {
+    /// When the latest backup took (UTC), if any did.
+    pub last_at: Option<String>,
+    /// The journal seq the latest holds.
+    pub through_seq: Option<u64>,
+    /// Whether one is stale or failing, or none is set up.
+    pub stale: bool,
+}
+
+/// A prompt, in brief.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct StartPromptOut {
+    /// Its name.
+    pub name: String,
+    /// The arguments it takes.
+    pub args: Vec<String>,
+}
+
+/// One thing the books need.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct AttentionBriefOut {
+    /// What it is, by kind and subject.
+    pub id: String,
+    /// problem, todo or info.
+    pub severity: String,
+    /// Its kind (`missing_receipt`, `reconcile`, ...).
+    pub kind: String,
+    /// What is wrong, in a line.
+    pub title: String,
+    /// The tool that starts the fix, if there is one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
+    /// Its arguments, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args: Option<Value>,
+}
+
+/// What needs attention: the most urgent, and how many of each kind.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct NeedsAttentionOut {
+    /// The most urgent (problems first), at most 12.
+    pub items: Vec<AttentionBriefOut>,
+    /// Every item by kind.
+    pub counts: std::collections::BTreeMap<String, u32>,
 }
 
 /// Result of `books.start`.
@@ -264,6 +391,19 @@ pub struct StartOut {
     /// the owner gives the go-ahead. No tool can: tell the human.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub format_upgrade: Option<FormatUpgradeOut>,
+    /// Who is asking.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub you: Option<YouOut>,
+    /// The drafts open.
+    pub drafts: StartDraftsOut,
+    /// Where reconciliation stands.
+    pub reconciliation: StartReconciliationOut,
+    /// Where the backups stand.
+    pub backup: StartBackupOut,
+    /// The prompts: whole procedures (`prompts/get`).
+    pub prompts: Vec<StartPromptOut>,
+    /// What needs attention, most urgent first.
+    pub needs_attention: NeedsAttentionOut,
     /// What to do next, in order.
     pub next_steps: Vec<NextStepOut>,
     /// How the books are kept from agents: "same_user (advisory)" locally
@@ -392,6 +532,11 @@ pub struct SetConventionParams {
     /// amount_over?}. Other kinds take none.
     #[serde(default)]
     pub structured: Option<Value>,
+    /// Only to correct who decided it, when or on what (the text exactly
+    /// as it stands): why the source is wrong. The correction is journaled
+    /// as such, the convention's revision unchanged.
+    #[serde(default)]
+    pub reason: Option<String>,
     /// Who decided, and when.
     #[serde(flatten)]
     pub source: SourceIn,
@@ -412,9 +557,12 @@ pub struct RetireConventionParams {
 /// Parameters for `books.record_decision`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RecordDecisionParams {
-    /// What it is about ("Materiality policy").
+    /// What it is about ("Materiality policy"). Left out when `revises` is
+    /// given.
+    #[serde(default)]
     pub subject: String,
-    /// The decision in words (Markdown).
+    /// The decision in words (Markdown). Left out when `revises` is given.
+    #[serde(default)]
     pub decision_md: String,
     /// Who decided (names), at least one.
     pub decided_by: Vec<String>,
@@ -432,6 +580,14 @@ pub struct RecordDecisionParams {
     /// The projects it is about (ids or names), if any.
     #[serde(default)]
     pub projects: Vec<String>,
+    /// To correct only who decided an earlier decision, when and on what
+    /// (decided_by, decided_on, citation: the new source), give its id here
+    /// with `reason`; its words stay. Journaled as a source correction.
+    #[serde(default)]
+    pub revises: Option<u64>,
+    /// With `revises`: why the source was wrong.
+    #[serde(default)]
+    pub reason: Option<String>,
 }
 
 /// A decision.
@@ -487,7 +643,8 @@ pub struct DecisionsOut {
 /// Parameters for `books.raise_item`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RaiseItemParams {
-    /// What is open, in a line.
+    /// What is open, in a line. Left out when `revises` is given.
+    #[serde(default)]
     pub title: String,
     /// More, if any (Markdown).
     #[serde(default)]
@@ -495,6 +652,14 @@ pub struct RaiseItemParams {
     /// When it is due, YYYY-MM-DD, if it is.
     #[serde(default)]
     pub due: Option<String>,
+    /// To correct only who raised an item, when and on what (the source
+    /// given here), give the item's id with `reason`; the item stays as it
+    /// is. Journaled as a source correction.
+    #[serde(default)]
+    pub revises: Option<u64>,
+    /// With `revises`: why the source was wrong.
+    #[serde(default)]
+    pub reason: Option<String>,
     /// Who raised it, and when.
     #[serde(flatten)]
     pub source: SourceIn,
@@ -693,6 +858,15 @@ fn open_item_out(i: &ledger_core::conventions::OpenItem) -> OpenItemOut {
     }
 }
 
+/// `books.start`'s `_meta`: a client that defers tools (tool search) loads
+/// this one up front, as the connect text says to call it first.
+fn always_load() -> rmcp::model::MetaObject {
+    let mut meta = rmcp::model::MetaObject::new();
+    meta.0
+        .insert("anthropic/alwaysLoad".into(), serde_json::json!(true));
+    meta
+}
+
 impl BooksServer {
     /// The books' `books.start` (INVARIANT 4).
     fn start_out(&self, store: &Store, focus: Option<&str>) -> StartOut {
@@ -759,9 +933,11 @@ impl BooksServer {
         projects.truncate(START_PROJECTS);
         let focus = focus.unwrap_or("daily");
         let step = |tool: &str, args: Option<serde_json::Value>, why: &str| NextStepOut {
-            tool: tool.into(),
+            tool: Some(tool.into()),
+            prompt: None,
             args,
             why: why.into(),
+            required: false,
         };
         // An attention title can carry a free-text description; keep the
         // step short so books.start stays within START_MAX (INVARIANT 4).
@@ -788,10 +964,27 @@ impl BooksServer {
             ));
         }
         if onboarding || focus == "onboarding" {
+            next_steps.push(NextStepOut {
+                tool: None,
+                prompt: Some("onboard".into()),
+                args: None,
+                why: "New books: run the onboarding procedure with the human.".into(),
+                required: true,
+            });
+            next_steps.push(step(
+                "books.set_setting",
+                None,
+                "Record the company's facts the human gives (name, entity type, fiscal year, time zone); each change is a preview first.",
+            ));
+            next_steps.push(step(
+                "books.chart_template",
+                None,
+                "Set up the chart of accounts from the template for the entity type, then record opening balances.",
+            ));
             next_steps.push(step(
                 "books.handbook",
                 Some(serde_json::json!({"section": "contract"})),
-                "New books: onboard first. Ask the human for the company's facts (books.set_setting), set up the chart (books.chart_template), and record opening balances.",
+                "The rules, before anything is recorded.",
             ));
         }
         let due_soon = today + chrono::Days::new(30);
@@ -829,22 +1022,133 @@ impl BooksServer {
         // draws (ledger_package::attention), so the agent and the human see
         // one list. The most urgent first (the list is sorted by severity),
         // at most 12: `books.start` stays small (INVARIANT 4).
-        {
+        let attention = {
             let attention_settings = ledger_package::Settings {
                 company: &cfg.company,
                 cash_accounts: &cfg.roles.cash,
                 financing_accounts: &cfg.roles.financing,
                 investing_accounts: &cfg.roles.investing,
             };
-            let attention = ledger_package::find(store, today, &attention_settings);
-            for a in attention.iter().filter(|a| a.tool.is_some()).take(12) {
-                let Some((tool, args)) = &a.tool else {
-                    continue;
-                };
-                let args = (!args.is_null()).then(|| args.clone());
-                next_steps.push(step(tool, args, &step_title(&a.title)));
-            }
+            ledger_package::find(store, today, &attention_settings)
+        };
+        for a in attention.iter().filter(|a| a.tool.is_some()).take(12) {
+            let Some((tool, args)) = &a.tool else {
+                continue;
+            };
+            let args = (!args.is_null()).then(|| args.clone());
+            let mut s = step(tool, args, &step_title(&a.title));
+            s.required = a.severity == ledger_package::Severity::Problem;
+            next_steps.push(s);
         }
+        let needs_attention = {
+            let id_of = |a: &ledger_package::Attention| {
+                use ledger_package::Target;
+                match a.target {
+                    Target::Entry(n) => format!("{}:entry:{n}", a.kind),
+                    Target::Invoice(n) => format!("{}:invoice:{n}", a.kind),
+                    Target::Account(n) => format!("{}:account:{n}", a.kind),
+                    Target::Party(n) => format!("{}:party:{n}", a.kind),
+                    _ => a.kind.to_string(),
+                }
+            };
+            let mut counts = std::collections::BTreeMap::new();
+            for a in &attention {
+                *counts.entry(a.kind.to_string()).or_insert(0u32) += 1;
+            }
+            NeedsAttentionOut {
+                items: attention
+                    .iter()
+                    .take(12)
+                    .map(|a| AttentionBriefOut {
+                        id: id_of(a),
+                        severity: match a.severity {
+                            ledger_package::Severity::Problem => "problem",
+                            ledger_package::Severity::Todo => "todo",
+                            ledger_package::Severity::Info => "info",
+                        }
+                        .into(),
+                        kind: a.kind.to_string(),
+                        title: step_title(&a.title),
+                        tool: a.tool.as_ref().map(|(t, _)| t.clone()),
+                        args: a
+                            .tool
+                            .as_ref()
+                            .map(|(_, args)| args.clone())
+                            .filter(|v| !v.is_null()),
+                    })
+                    .collect(),
+                counts,
+            }
+        };
+        // Drafts: building, and those waiting for their documents.
+        let drafts = {
+            let mut building = 0u32;
+            let mut awaiting = Vec::new();
+            for e in ledger.drafts() {
+                if e.draft_state().key() == "awaiting_evidence" {
+                    awaiting.push(StartDraftOut {
+                        entry_id: e.id(),
+                        date: e.date().to_string(),
+                        amount: ledger_core::evidence::Policy::entry_debits(e)
+                            .map(money)
+                            .unwrap_or_else(|_| "too large".to_string()),
+                        note: e.draft_state().note().chars().take(100).collect(),
+                    });
+                } else {
+                    building += 1;
+                }
+            }
+            awaiting.sort_by_key(|d| (d.date.clone(), d.entry_id));
+            awaiting.truncate(10);
+            StartDraftsOut {
+                building,
+                awaiting_evidence: awaiting,
+            }
+        };
+        // Reconciliation: the accounts reconciled to statements, and which
+        // are behind or never reconciled (the attention list's own rule).
+        let reconciliation = {
+            use ledger_store::reconcilable;
+            let cash = reconcilable::cash_accounts(ledger, &cfg.roles.cash);
+            let statements = store.statements(None).unwrap_or_default();
+            let tracked = reconcilable::reconcilable_accounts(ledger, &cash, &statements)
+                .into_iter()
+                .map(|id| code_name(store, id).0)
+                .collect();
+            let (mut never, mut behind) = (Vec::new(), Vec::new());
+            for u in self.unreconciled_accounts(store, today).unwrap_or_default() {
+                if u.reconciled_through.is_some() {
+                    behind.push(u.code);
+                } else {
+                    never.push(u.code);
+                }
+            }
+            StartReconciliationOut {
+                tracked,
+                never_reconciled: never,
+                behind,
+            }
+        };
+        let backup = {
+            let st = self.backups.standing(store);
+            StartBackupOut {
+                last_at: st.targets.iter().filter_map(|t| t.last_ok_at.clone()).max(),
+                through_seq: st.targets.iter().filter_map(|t| t.through_seq).max(),
+                stale: st.needs_attention(),
+            }
+        };
+        let you = YOU.with(|y| y.borrow().clone()).and_then(|v| {
+            Some(YouOut {
+                principal: v["principal"].as_str()?.to_string(),
+                kind: v["kind"].as_str()?.to_string(),
+                scopes: v["scopes"]
+                    .as_array()?
+                    .iter()
+                    .filter_map(|s| s.as_str().map(str::to_string))
+                    .collect(),
+                client_id: v["client_id"].as_str().map(str::to_string),
+            })
+        });
         match focus {
             "close" => next_steps.push(step(
                 "books.conventions",
@@ -858,6 +1162,13 @@ impl BooksServer {
             )),
             _ => {}
         }
+        if !onboarding {
+            next_steps.push(step(
+                "books.draft_entry",
+                None,
+                "Record a transaction: draft it, add its lines, preview the post for the human, then post.",
+            ));
+        }
         next_steps.push(step(
             "books.handbook",
             Some(serde_json::json!({"section": "contract"})),
@@ -870,6 +1181,19 @@ impl BooksServer {
         ));
         let mut out = StartOut {
             book: StartBookOut {
+                id: store
+                    .data_dir()
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+                url: format!(
+                    "/b/{}/mcp",
+                    store
+                        .data_dir()
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default()
+                ),
                 // A settings file's name is unbounded; the books' at most
                 // 200 characters (INVARIANT 4).
                 name: cfg
@@ -922,6 +1246,18 @@ impl BooksServer {
                 adds: u.adds(),
                 how: "only the owner, with the owner passphrase: in the app (it asks when it opens the books) or `wanderbooks books upgrade ID` at a terminal; a verified backup with the keys is made first. No tool can.".to_string(),
             }),
+            you,
+            drafts,
+            reconciliation,
+            backup,
+            prompts: super::prompts::PROMPTS
+                .iter()
+                .map(|p| StartPromptOut {
+                    name: p.name.to_string(),
+                    args: p.args.iter().map(|(n, _, _)| n.to_string()).collect(),
+                })
+                .collect(),
+            needs_attention,
             next_steps,
             isolation: self.isolation.label().to_string(),
         };
@@ -949,6 +1285,14 @@ impl BooksServer {
             for c in &mut out.conventions {
                 c.summary.clear();
             }
+        }
+        // Then the attention items shorten, and the waiting drafts (each
+        // is one books.list_drafts or the attention tools away).
+        while size(&out) > START_MAX && out.needs_attention.items.len() > 4 {
+            out.needs_attention.items.pop();
+        }
+        while size(&out) > START_MAX && out.drafts.awaiting_evidence.len() > 3 {
+            out.drafts.awaiting_evidence.pop();
         }
         let (mut c_cut, mut i_cut, mut s_cut) = (0usize, 0usize, 0usize);
         while size(&out) > START_MAX {
@@ -993,7 +1337,8 @@ impl BooksServer {
         name = "books.start",
         title = "Start here",
         description = "Call first in every session. The books in brief: company, today in its time zone, fiscal year, the journal's head, whether they need onboarding, where settings come from, the rules in force (receipts, parties, approvals), every setting with who set it, this company's conventions (how it keeps its books: posting templates, policies, close steps), open items, the projects under way, the handbook's sections, a format upgrade the books wait for (only the owner can agree to it: tell them), and next steps. Read-only; at most 8 KB.",
-        annotations(read_only_hint = true, open_world_hint = false)
+        annotations(read_only_hint = true, open_world_hint = false),
+        meta = always_load()
     )]
     pub(super) async fn start(
         &self,
@@ -1003,6 +1348,17 @@ impl BooksServer {
             && !["daily", "onboarding", "close", "audit"].contains(&f.as_str())
         {
             return Err(format!("focus {f:?}: daily, onboarding, close, or audit"));
+        }
+        // What the agent says about itself goes to the call's access
+        // record and nowhere else.
+        if let Some(a) = params.0.agent {
+            AGENT_NOTE.with(|n| {
+                *n.borrow_mut() = Some(ledger_store::access::Agent {
+                    model: a.model,
+                    reasoning_effort: a.reasoning_effort,
+                    harness: a.harness,
+                });
+            });
         }
         let store = self.lock()?;
         Ok(Json(self.start_out(&store, params.0.focus.as_deref())))
@@ -1104,7 +1460,7 @@ impl BooksServer {
     #[tool(
         name = "books.set_convention",
         title = "Set a convention",
-        description = "Record how this company keeps its books, as the human decided: a posting template (structured {description?, lines: [{account, side, share}]}, each side's shares summing to 1), an approval rule (structured {approver, accounts?, amount_over?}), or a policy, close step, calendar item, mapping or note (words only). An id already set is revised (same kind); retire one with books.retire_convention.",
+        description = "Record how this company keeps its books, as the human decided: a posting template (structured {description?, lines: [{account, side, share}]}, each side's shares summing to 1), an approval rule (structured {approver, accounts?, amount_over?}), or a policy, close step, calendar item, mapping or note (words only). An id already set is revised (same kind); retire one with books.retire_convention. To correct only its source (who decided it, when, on what), pass reason.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -1131,7 +1487,20 @@ impl BooksServer {
             source: p.source.source()?,
         };
         let mut store = self.lock()?;
-        let c = store.set_convention(&c).map_err(bad)?;
+        let c = match p.reason.as_deref() {
+            Some(reason) => {
+                store.revise_convention_source(&c, reason).map_err(bad)?;
+                c
+            }
+            None => store.set_convention(&c).map_err(|e| {
+                let text = bad(e);
+                if text.contains("already says exactly that") {
+                    format!("{text}; to correct only who decided it, when or on what, add reason")
+                } else {
+                    text
+                }
+            })?,
+        };
         let set = store
             .ledger()
             .conventions()
@@ -1167,7 +1536,7 @@ impl BooksServer {
     #[tool(
         name = "books.record_decision",
         title = "Record a decision",
-        description = "Record a decision the owners made about the books (a policy, a treatment, a cutover), with who decided, when, and the document behind it if one is filed. A decision that replaces an earlier one names it in supersedes. No signatures or memos needed: the record is the decision with its source. projects names the projects it is about.",
+        description = "Record a decision the owners made about the books (a policy, a treatment, a cutover), with who decided, when, and the document behind it if one is filed. A decision that replaces an earlier one names it in supersedes. No signatures or memos needed: the record is the decision with its source. projects names the projects it is about. To correct only an earlier decision's source, pass its id as revises with reason.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -1180,6 +1549,32 @@ impl BooksServer {
     ) -> Result<Json<IdOut>, String> {
         let p = params.0;
         let mut store = self.lock()?;
+        if let Some(id) = p.revises {
+            // A source correction: the decision's words stay (the ones
+            // given, if any, must be the ones it has).
+            let old = store.ledger().conventions().decision(id).ok_or_else(|| {
+                format!("decision {id} doesn't exist: books.decisions lists them")
+            })?;
+            if (!p.subject.is_empty() && p.subject != old.new.subject)
+                || (!p.decision_md.is_empty() && p.decision_md != old.new.decision_md)
+            {
+                return Err(format!(
+                    "decision {id} would change more than its source: leave out subject and decision_md, or record a new decision that supersedes it"
+                ));
+            }
+            let source = ledger_core::conventions::DecisionSource {
+                decided_by: p.decided_by,
+                decided_on: parse_date(&p.decided_on)?,
+                citation: p.citation,
+            };
+            let reason = p
+                .reason
+                .ok_or("revises needs a reason: why the source was wrong")?;
+            store
+                .revise_decision_source(id, &source, &reason)
+                .map_err(bad)?;
+            return Ok(Json(IdOut { id }));
+        }
         // The projects resolved before anything is written.
         let projects = p
             .projects
@@ -1232,7 +1627,7 @@ impl BooksServer {
     #[tool(
         name = "books.raise_item",
         title = "Raise an open item",
-        description = "Record something open: waiting on someone, due later, or to look into (a letter to mail, a reply expected, a question for the CPA), with a due date if it has one. books.start lists open items; resolve each with books.resolve_item.",
+        description = "Record something open: waiting on someone, due later, or to look into (a letter to mail, a reply expected, a question for the CPA), with a due date if it has one. books.start lists open items; resolve each with books.resolve_item. To correct only an item's source, pass its id as revises with reason.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -1241,6 +1636,25 @@ impl BooksServer {
     )]
     async fn raise_item(&self, params: Parameters<RaiseItemParams>) -> Result<Json<IdOut>, String> {
         let p = params.0;
+        if let Some(id) = p.revises {
+            let reason = p
+                .reason
+                .ok_or("revises needs a reason: why the source was wrong")?;
+            let source = p.source.source()?;
+            let mut store = self.lock()?;
+            if let Some(old) = store.ledger().conventions().open_item(id)
+                && !p.title.is_empty()
+                && p.title != old.new.title
+            {
+                return Err(format!(
+                    "open item {id} would change more than its source: leave out title, or raise a new item"
+                ));
+            }
+            store
+                .revise_open_item_source(id, &source, &reason)
+                .map_err(bad)?;
+            return Ok(Json(IdOut { id }));
+        }
         let item = NewOpenItem {
             title: p.title,
             detail_md: p.detail_md,

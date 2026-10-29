@@ -45,6 +45,7 @@ const TYPES: &[&str] = &[
  "reconciliation.voided", "role.assigned", "statement.recorded", "statement.voided",
  "project.set", "entry.settles",
  "entry.draft_state_set", "entry.draft_discarded",
+ "convention.source_revised", "decision.source_revised", "open_item.source_revised",
     // Merged 2026-10-28 (S7, P6): every type EVENT_TYPES names.
 ];
 

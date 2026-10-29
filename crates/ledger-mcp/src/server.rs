@@ -584,6 +584,7 @@ impl BooksServer {
             + Self::tax_router()
             + Self::write_offs_router()
             + Self::drafts_router()
+            + Self::journal_router()
     }
 
     /// The settings in force for this request: the books' own, taken from
@@ -1264,6 +1265,64 @@ fn resource_list() -> Vec<Resource> {
     resources
 }
 
+/// The advertised resource templates (plan 4.5; RFC 6570): the URIs a
+/// client can build, each read by `resource_body`.
+fn resource_templates() -> Vec<rmcp::model::ResourceTemplate> {
+    use rmcp::model::ResourceTemplate;
+    let mk = |uri: &str, name: &str, title: &str, description: &str| {
+        ResourceTemplate::new(uri, name)
+            .with_title(title)
+            .with_description(description)
+            .with_mime_type("application/json")
+    };
+    vec![
+        mk(
+            "books://entries/{id}",
+            "entry",
+            "An entry",
+            "One entry with its lines, receipts and history (books.get_entry).",
+        ),
+        mk(
+            "books://attachments/{id}",
+            "attachment",
+            "A stored file",
+            "A receipt or document: its metadata and the start of its text (books.get_receipt); its pages are books://attachments/{id}/page/{n}.",
+        ),
+        mk(
+            "books://journal/{seq}",
+            "journal-line",
+            "A journal line",
+            "One journal line in words (books.journal_history).",
+        ),
+        mk(
+            "books://reports/{kind}{?start,end,as_of}",
+            "report",
+            "A report",
+            "trial-balance, balance-sheet or profit-and-loss, for a day (as_of) or a range (start, end); without them as of today, or the year to date.",
+        ),
+        mk(
+            "books://digest{?since,since_seq,as_of}",
+            "digest",
+            "The activity digest",
+            "What changed, since a date, since a journal line (since_seq), as of a day; bare, this month so far.",
+        ),
+    ]
+}
+
+/// Prompts are listed and read by a token that may read the books.
+fn prompt_reader(context: &RequestContext<RoleServer>) -> Result<(), rmcp::ErrorData> {
+    match crate::access::caller(context) {
+        None => Err(rmcp::ErrorData::invalid_request(
+            crate::access::UNAUTHORIZED,
+            None,
+        )),
+        Some(c) if !c.may(ledger_store::auth::Scope::Read) => Err(
+            rmcp::ErrorData::invalid_request(crate::access::INSUFFICIENT_SCOPE, None),
+        ),
+        Some(_) => Ok(()),
+    }
+}
+
 /// The subject kinds, for messages.
 const SUBJECT_KINDS: &str = "entry, account, asset, party, project, invoice, bill, period, payroll_run, schedule, reconciliation, company";
 
@@ -1321,6 +1380,13 @@ thread_local! {
     /// The journal's head after the last write made by the request
     /// running on this thread (StoreGuard's drop), for its access record.
     static WROTE: std::cell::RefCell<Option<(u64, String)>> = const { std::cell::RefCell::new(None) };
+    /// Who the request running on this thread is, as `books.start` shows
+    /// it: `{principal, kind, scopes, client_id}`. The token's own facts
+    /// and the client's name; set at the start of the request.
+    static YOU: std::cell::RefCell<Option<serde_json::Value>> = const { std::cell::RefCell::new(None) };
+    /// What the agent said about itself in a `books.start` this request is
+    /// running (`agent`), for the call's access record.
+    static AGENT_NOTE: std::cell::RefCell<Option<ledger_store::access::Agent>> = const { std::cell::RefCell::new(None) };
     /// The company's time zone for the request running on this thread
     /// (set at its start from the settings in force: one version per
     /// request), so every "today" in it agrees.
@@ -1356,6 +1422,16 @@ async fn in_timezone_async<T>(
 /// is already tomorrow, and "through today" must not include it.
 fn today() -> NaiveDate {
     TIMEZONE.with(|z| ledger_core::settings::today_in(z.borrow().as_deref()))
+}
+
+/// A resource URI's query parameter `key`, when given and not empty.
+fn query_param(query: &str, key: &str) -> Option<String> {
+    query
+        .split('&')
+        .find_map(|kv| kv.strip_prefix(&format!("{key}=")))
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
 }
 
 /// The `since` of a `books://digest` read: the query's `since=`, or, bare
@@ -1397,12 +1473,20 @@ mod access_tools;
 mod backup_tools;
 #[path = "tools/files.rs"]
 mod files;
+#[path = "guards.rs"]
+mod guards;
 #[path = "tools/instruments.rs"]
 mod instruments;
+#[path = "tools/journal.rs"]
+mod journal_tools;
 #[path = "tools/kept.rs"]
 mod kept;
+#[path = "next_steps.rs"]
+mod next_steps;
 #[path = "tools/projects.rs"]
 mod projects;
+#[path = "tools/prompts.rs"]
+mod prompts;
 pub use kept::SettingKeyOut;
 
 // The tool groups: one file each (plan/served.md 8.2 U0a). A unit adds a
@@ -1500,14 +1584,17 @@ impl BooksServer {
             }
             "books://reports/trial-balance" => {
                 let Json(out) = self
-                    .trial_balance(Parameters(TrialBalanceParams::default()))
+                    .trial_balance(Parameters(TrialBalanceParams {
+                        as_of: query_param(query, "as_of"),
+                        ..TrialBalanceParams::default()
+                    }))
                     .await?;
                 json(&out)
             }
             "books://reports/balance-sheet" => {
                 let Json(out) = self
                     .balance_sheet(Parameters(BalanceSheetParams {
-                        as_of: None,
+                        as_of: query_param(query, "as_of"),
                         strict: None,
                     }))
                     .await?;
@@ -1516,8 +1603,8 @@ impl BooksServer {
             "books://reports/profit-and-loss" => {
                 let Json(out) = self
                     .profit_and_loss(Parameters(ProfitAndLossParams {
-                        start: None,
-                        end: None,
+                        start: query_param(query, "start"),
+                        end: query_param(query, "end"),
                         class: None,
                         strict: None,
                     }))
@@ -1525,14 +1612,54 @@ impl BooksServer {
                 json(&out)
             }
             "books://digest" => {
-                let since = digest_since(query, today());
+                // `since_seq` (what was posted since a journal line) wins
+                // over `since`; with neither, this month so far.
+                let since_seq = query_param(query, "since_seq")
+                    .map(|n| {
+                        n.parse::<u64>()
+                            .map_err(|_| format!("bad since_seq in {uri}"))
+                    })
+                    .transpose()?;
+                let since = if since_seq.is_some() {
+                    None
+                } else {
+                    Some(digest_since(query, today()))
+                };
                 let Json(out) = self
                     .digest(Parameters(DigestParams {
-                        since: Some(since),
-                        since_seq: None,
-                        as_of: None,
+                        since,
+                        since_seq,
+                        as_of: query_param(query, "as_of"),
                     }))
                     .await?;
+                json(&out)
+            }
+            _ if path.starts_with("books://entries/") => {
+                let id: u64 = path["books://entries/".len()..]
+                    .parse()
+                    .map_err(|_| format!("bad entry resource URI: {uri}"))?;
+                let Json(out) = self
+                    .get_entry(Parameters(GetEntryParams { entry_id: id }))
+                    .await?;
+                json(&out)
+            }
+            _ if path.starts_with("books://journal/") => {
+                let seq: u64 = path["books://journal/".len()..]
+                    .parse()
+                    .map_err(|_| format!("bad journal resource URI: {uri}"))?;
+                if seq == 0 {
+                    return Err("journal seqs start at 1".into());
+                }
+                let Json(out) = self
+                    .journal_history(Parameters(journal_tools::JournalHistoryParams {
+                        after_seq: Some(seq - 1),
+                        limit: Some(1),
+                        ..Default::default()
+                    }))
+                    .await?;
+                if out.lines.first().is_none_or(|l| l.seq != seq) {
+                    return Err(format!("the journal has no line {seq}"));
+                }
                 json(&out)
             }
             handbook::URI => {
@@ -1704,6 +1831,8 @@ impl ServerHandler for BooksServer {
         let running_call = call.clone();
         // Kept for the record of a call the server stopped before running.
         let request_args = request.arguments.clone();
+        let tool_name = request.name.to_string();
+        let envelope_args = request.arguments.clone();
         let result = run_blocking(&self.store, move || {
             Box::pin(async move {
                 WROTE.with(|w| w.borrow_mut().take());
@@ -1712,6 +1841,17 @@ impl ServerHandler for BooksServer {
                     .caller()
                     .map(|c| (c.token.id.clone(), c.token.name.clone()));
                 CALLER.with(|c| *c.borrow_mut() = caller);
+                AGENT_NOTE.with(|a| a.borrow_mut().take());
+                YOU.with(|y| {
+                    *y.borrow_mut() = running_call.caller().map(|c| {
+                        serde_json::json!({
+                            "principal": c.token.name,
+                            "kind": "agent",
+                            "scopes": c.token.scopes.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+                            "client_id": running_call.client_name(),
+                        })
+                    })
+                });
                 // Counted as running by now (run_blocking): hashed here.
                 let digest = Call::digest_of(request.arguments.as_ref());
                 let tcc =
@@ -1740,8 +1880,14 @@ impl ServerHandler for BooksServer {
                         std::panic::resume_unwind(panic)
                     }
                 };
+                // The result envelope (next_steps.rs INVARIANT 1).
+                let out = next_steps::apply(&server, &tool_name, envelope_args.as_ref(), out);
+                // Who asked is the request's alone: a later request on this
+                // thread (a resource read) must not see it.
+                YOU.with(|y| y.borrow_mut().take());
                 let mut c = running_call;
                 c.digested(digest);
+                c.with_agent(AGENT_NOTE.with(|a| a.borrow_mut().take()));
                 let recorded = c.record_blocking(outcome_of(&out), wrote);
                 (out, recorded)
             })
@@ -1823,6 +1969,36 @@ impl ServerHandler for BooksServer {
         _context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, rmcp::ErrorData> {
         Ok(ListResourcesResult::with_all_items(resource_list()))
+    }
+
+    async fn list_resource_templates(
+        &self,
+        _request: Option<rmcp::model::PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<rmcp::model::ListResourceTemplatesResult, rmcp::ErrorData> {
+        Ok(rmcp::model::ListResourceTemplatesResult::with_all_items(
+            resource_templates(),
+        ))
+    }
+
+    async fn list_prompts(
+        &self,
+        _request: Option<rmcp::model::PaginatedRequestParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<rmcp::model::ListPromptsResult, rmcp::ErrorData> {
+        prompt_reader(&context)?;
+        Ok(Self::prompt_list())
+    }
+
+    async fn get_prompt(
+        &self,
+        request: rmcp::model::GetPromptRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<rmcp::model::GetPromptResponse, rmcp::ErrorData> {
+        prompt_reader(&context)?;
+        self.prompt_get(&request)
+            .map(Into::into)
+            .map_err(|e| rmcp::ErrorData::invalid_params(e, None))
     }
 
     async fn read_resource(
@@ -1922,7 +2098,10 @@ impl BooksServer {
         let server = self.clone();
         let at = uri.clone();
         let body = run_blocking(&self.store, move || {
-            Box::pin(async move { in_timezone_async(timezone, server.resource_body(&at)).await })
+            Box::pin(async move {
+                YOU.with(|y| y.borrow_mut().take());
+                in_timezone_async(timezone, server.resource_body(&at)).await
+            })
         })
         .await?;
         // A refusal quotes the URI it was given: masked like a tool's.

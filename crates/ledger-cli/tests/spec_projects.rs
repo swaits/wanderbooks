@@ -1231,7 +1231,7 @@ fn invoice_and_bill_lines_count_toward_their_projects() {
     );
     let inv = m.ok(
         "books.create_invoice",
-        json!({"party_id": cedar, "date": "2026-03-02", "due_date": "2026-04-01", "lines": [
+        json!({"customer": (cedar).to_string(), "date": "2026-03-02", "due_date": "2026-04-01", "lines": [
             {"description": "Design", "amount": "3000.00", "class": "Zeta site"},
             {"description": "Hosting", "amount": "200.00", "class": harbor.to_string()},
             {"description": "Rush fee", "amount": "100.00"},
@@ -1264,7 +1264,7 @@ fn invoice_and_bill_lines_count_toward_their_projects() {
     );
     let bill = m.ok(
         "books.create_bill",
-        json!({"party_id": dana_vendor, "date": "2026-03-09", "due_date": "2026-04-08",
+        json!({"vendor": (dana_vendor).to_string(), "date": "2026-03-09", "due_date": "2026-04-08",
                "vendor_ref": "DANA-77",
                "lines": [
             {"description": "Illustration", "amount": "1200.00", "account": "6000", "class": "Zeta site"},
@@ -1284,11 +1284,11 @@ fn invoice_and_bill_lines_count_toward_their_projects() {
     // Payments are balance-sheet only: no project.
     let got = m.ok(
         "books.receive_payment",
-        json!({"confirmed": true, "document_id": inv["id"], "date": "2026-03-20", "amount": "3800.00", "cash_account": "1000"}),
+        json!({"confirmed": true, "invoice": inv["id"], "date": "2026-03-20", "amount": "3800.00", "deposit_to": "1000"}),
     );
     let paid = m.ok(
         "books.pay_bill",
-        json!({"confirmed": true, "document_id": bill["id"], "date": "2026-03-30", "amount": "1250.00", "cash_account": "1000"}),
+        json!({"confirmed": true, "bill": bill["id"], "date": "2026-03-30", "amount": "1250.00", "paid_from": "1000"}),
     );
     for e in [&got["entry_id"], &paid["entry_id"]] {
         let e = e.as_u64().unwrap();
@@ -1353,10 +1353,13 @@ fn a_document_naming_an_unknown_project_is_refused_whole() {
     m.ok("books.add_project", json!({"name": "Zeta site"}));
     let cedar = m.ok("books.add_customer", json!({"name": "Cedar"}))["id"].clone();
     let v = m.ok("books.add_vendor", json!({"name": "Dana"}))["id"].clone();
-    for (tool, party) in [("books.create_invoice", &cedar), ("books.create_bill", &v)] {
+    for (tool, key, party) in [
+        ("books.create_invoice", "customer", &cedar),
+        ("books.create_bill", "vendor", &v),
+    ] {
         let why = m.refuse(
             tool,
-            json!({"party_id": party, "date": "2026-03-02", "due_date": "2026-04-01", "lines": [
+            json!({key: (party).to_string(), "date": "2026-03-02", "due_date": "2026-04-01", "lines": [
                 {"description": "a", "amount": "10.00", "class": "Zeta site"},
                 {"description": "b", "amount": "10.00", "class": "Nowhere"},
             ]}),
@@ -1379,7 +1382,7 @@ fn a_document_for_a_finished_project_says_so() {
     let cedar = m.ok("books.add_customer", json!({"name": "Cedar"}))["id"].clone();
     let out = m.ok(
         "books.create_invoice",
-        json!({"party_id": cedar, "date": "2026-10-05", "due_date": "2026-11-04", "lines": [
+        json!({"customer": (cedar).to_string(), "date": "2026-10-05", "due_date": "2026-11-04", "lines": [
             {"description": "Final", "amount": "10.00", "class": "Harbor"},
             {"description": "Again", "amount": "10.00", "class": "harbor"},
             {"description": "Old", "amount": "10.00", "class": "Dock"},
@@ -1424,7 +1427,7 @@ fn an_invoice_for_an_on_spec_project_asks_about_an_agreement() {
     let v = m.ok("books.add_vendor", json!({"name": "Dana"}))["id"].clone();
     let out = m.ok(
         "books.create_invoice",
-        json!({"party_id": cedar, "date": "2026-10-05", "due_date": "2026-11-04", "lines": [
+        json!({"customer": (cedar).to_string(), "date": "2026-10-05", "due_date": "2026-11-04", "lines": [
             {"description": "Build", "amount": "10.00", "class": "Kestrel"},
             {"description": "More", "amount": "5.00", "class": "kestrel"},
             {"description": "Site", "amount": "7.00", "class": "Zeta"},
@@ -1450,7 +1453,7 @@ fn an_invoice_for_an_on_spec_project_asks_about_an_agreement() {
     );
     let bill = m.ok(
         "books.create_bill",
-        json!({"party_id": v, "date": "2026-10-05", "due_date": "2026-11-04",
+        json!({"vendor": (v).to_string(), "date": "2026-10-05", "due_date": "2026-11-04",
                "vendor_ref": "V-512",
                "lines": [
             {"description": "Icons", "amount": "10.00", "account": "6000", "class": "Kestrel"},
@@ -1472,10 +1475,13 @@ fn books_without_the_feature_refuse_a_tagged_document() {
     let cedar = m.ok("books.add_customer", json!({"name": "Cedar"}))["id"].clone();
     let v = m.ok("books.add_vendor", json!({"name": "Dana"}))["id"].clone();
     let head = m.journal();
-    for (tool, party) in [("books.create_invoice", &cedar), ("books.create_bill", &v)] {
+    for (tool, key, party) in [
+        ("books.create_invoice", "customer", &cedar),
+        ("books.create_bill", "vendor", &v),
+    ] {
         let why = m.refuse(
             tool,
-            json!({"party_id": party, "date": "2026-03-02", "due_date": "2026-04-01", "lines": [
+            json!({key: (party).to_string(), "date": "2026-03-02", "due_date": "2026-04-01", "lines": [
                 {"description": "a", "amount": "10.00", "class": "Zeta site"},
             ]}),
         );
@@ -1487,7 +1493,7 @@ fn books_without_the_feature_refuse_a_tagged_document() {
     assert_eq!(m.journal(), head, "nothing journaled");
     m.ok(
         "books.create_invoice",
-        json!({"party_id": cedar, "date": "2026-03-02", "due_date": "2026-04-01", "lines": [
+        json!({"customer": (cedar).to_string(), "date": "2026-03-02", "due_date": "2026-04-01", "lines": [
             {"description": "a", "amount": "10.00"},
         ], "confirmed": true}),
     );

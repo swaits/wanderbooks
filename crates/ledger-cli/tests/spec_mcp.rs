@@ -911,7 +911,7 @@ fn happy_path(name: &str) -> Mcp {
     // A/R and A/P.
     let inv = m.ok(
         "books.create_invoice",
-        json!({"party_id": customer, "date": "2026-02-01", "due_date": "2026-03-01",
+        json!({"customer": (customer).to_string(), "date": "2026-02-01", "due_date": "2026-03-01",
                "lines": [{"description": "Consulting", "amount": "500.00"}],
                "confirmed": true}),
     )["id"]
@@ -919,7 +919,7 @@ fn happy_path(name: &str) -> Mcp {
         .unwrap();
     m.ok(
         "books.receive_payment",
-        json!({"confirmed": true, "document_id": inv, "date": "2026-02-10", "amount": "200.00", "cash_account": "1000"}),
+        json!({"confirmed": true, "invoice": inv, "date": "2026-02-10", "amount": "200.00", "deposit_to": "1000"}),
     );
     let vendor_invoice = m.upload(
         b"vendor invoice",
@@ -929,7 +929,7 @@ fn happy_path(name: &str) -> Mcp {
     );
     let bill = m.ok(
         "books.create_bill",
-        json!({"party_id": vendor, "date": "2026-02-01", "due_date": "2026-02-28",
+        json!({"vendor": (vendor).to_string(), "date": "2026-02-01", "due_date": "2026-02-28",
                "vendor_ref": "V-1001",
                "lines": [{"description": "Office rent", "amount": "300.00", "account": "6000"}],
                "upload_id": vendor_invoice, "confirmed": true}),
@@ -938,7 +938,7 @@ fn happy_path(name: &str) -> Mcp {
         .unwrap();
     m.ok(
         "books.pay_bill",
-        json!({"confirmed": true, "document_id": bill, "date": "2026-02-05", "amount": "300.00", "cash_account": "1000"}),
+        json!({"confirmed": true, "bill": bill, "date": "2026-02-05", "amount": "300.00", "paid_from": "1000"}),
     );
     m.ok("books.ar_aging", json!({"as_of": "2026-06-30"}));
     m.ok("books.ap_aging", json!({"as_of": "2026-06-30"}));
@@ -946,7 +946,7 @@ fn happy_path(name: &str) -> Mcp {
     // P4b S1: a document voided, and the control accounts' tie-out.
     let dup = m.ok(
         "books.create_invoice",
-        json!({"party_id": customer, "date": "2026-02-02", "due_date": "2026-03-02",
+        json!({"customer": (customer).to_string(), "date": "2026-02-02", "due_date": "2026-03-02",
                "lines": [{"description": "Consulting, entered twice", "amount": "500.00"}],
                "confirmed": true}),
     )["id"]
@@ -972,7 +972,7 @@ fn happy_path(name: &str) -> Mcp {
     // P4b S7: a bad debt, its evidence uploaded and filed with it.
     let bad = m.ok(
         "books.create_invoice",
-        json!({"party_id": customer, "date": "2026-02-03", "due_date": "2026-03-03",
+        json!({"customer": (customer).to_string(), "date": "2026-02-03", "due_date": "2026-03-03",
                "lines": [{"description": "Consulting, never paid", "amount": "400.00"}],
                "confirmed": true}),
     )["id"]
@@ -1294,6 +1294,8 @@ fn happy_path(name: &str) -> Mcp {
     // The access log, the backups' status, and a backup now (none is set
     // up: it says so).
     m.ok("books.access_log", json!({}));
+    // P5: the journal in words.
+    m.ok("books.journal_history", json!({"limit": 5}));
     m.ok("books.backup", json!({}));
     m.ok("books.back_up_now", json!({}));
 
@@ -1685,15 +1687,15 @@ fn run_op(m: &mut Mcp, k: &mut Known, op: &Op) {
             vendor_ref,
         } => (
             "books.create_bill",
-            json!({"party_id": party.resolve(&k.vendors), "date": "2026-03-01",
+            json!({"vendor": (party.resolve(&k.vendors)).to_string(), "date": "2026-03-01",
                    "due_date": "2026-03-31", "vendor_ref": vendor_ref,
                    "lines": [{"description": "thing", "amount": amount, "account": "6000"}],
                    "existing_attachment_id": k.vendor_invoice, "confirmed": true}),
         ),
         Op::PayBill { doc, amount } => (
             "books.pay_bill",
-            json!({"confirmed": true, "document_id": doc.resolve(&k.bills), "date": "2026-03-15", "amount": amount,
-                   "cash_account": "1000"}),
+            json!({"confirmed": true, "bill": doc.resolve(&k.bills), "date": "2026-03-15", "amount": amount,
+                   "paid_from": "1000"}),
         ),
         Op::Payout { deposit } => (
             "books.record_payout",
@@ -1834,7 +1836,7 @@ fn inv3_other_tools_refuse_ungrammatical_amounts() {
         );
         m.refuse(
             "books.create_bill",
-            json!({"party_id": vendor, "date": "2026-03-01", "due_date": "2026-03-31",
+            json!({"vendor": (vendor).to_string(), "date": "2026-03-01", "due_date": "2026-03-31",
                    "lines": [{"description": "x", "amount": bad}]}),
         );
         m.refuse(
@@ -2591,7 +2593,7 @@ fn assigned_roles_steer_invoices() {
         .unwrap();
     m.ok(
         "books.create_invoice",
-        json!({"party_id": customer, "date": "2026-02-01", "due_date": "2026-03-01",
+        json!({"customer": (customer).to_string(), "date": "2026-02-01", "due_date": "2026-03-01",
                "lines": [{"description": "Consulting", "amount": "500.00"}],
                "confirmed": true}),
     );
@@ -2654,7 +2656,7 @@ fn documents_void_and_tie_out_over_the_wire() {
     );
     let inv = m.ok(
         "books.create_invoice",
-        json!({"party_id": customer, "date": "2026-02-01", "due_date": "2026-03-01",
+        json!({"customer": (customer).to_string(), "date": "2026-02-01", "due_date": "2026-03-01",
                "lines": [{"description": "Consulting", "amount": "500.00"}],
                "confirmed": true}),
     )["id"]
@@ -2662,8 +2664,8 @@ fn documents_void_and_tie_out_over_the_wire() {
         .unwrap();
     let paid = m.ok(
         "books.receive_payment",
-        json!({"confirmed": true, "document_id": inv, "date": "2026-02-10", "amount": "200.00",
-               "cash_account": "1000", "instrument": "Harbor checking", "reference": "tr_8812"}),
+        json!({"confirmed": true, "invoice": inv, "date": "2026-02-10", "amount": "200.00",
+               "deposit_to": "1000", "instrument": "Harbor checking", "reference": "tr_8812"}),
     );
     assert_eq!(paid["remaining"], "300.00", "{paid}");
     assert_eq!(paid["status"], "partial", "{paid}");
@@ -2685,7 +2687,7 @@ fn documents_void_and_tie_out_over_the_wire() {
 
     let dup = m.ok(
         "books.create_invoice",
-        json!({"party_id": customer, "date": "2026-02-02", "due_date": "2026-03-02",
+        json!({"customer": (customer).to_string(), "date": "2026-02-02", "due_date": "2026-03-02",
                "lines": [{"description": "Consulting, entered twice", "amount": "500.00"}],
                "confirmed": true}),
     )["id"]
@@ -2753,7 +2755,7 @@ fn documents_list_and_timeline_over_the_wire() {
     let invoice = |m: &mut Mcp, date: &str, due: &str, amount: &str| {
         m.ok(
             "books.create_invoice",
-            json!({"party_id": customer, "date": date, "due_date": due,
+            json!({"customer": (customer).to_string(), "date": date, "due_date": due,
                    "lines": [{"description": "Consulting", "amount": amount}],
                    "confirmed": true}),
         )["id"]
@@ -2764,7 +2766,7 @@ fn documents_list_and_timeline_over_the_wire() {
     let later = invoice(&mut m, "2026-02-05", "2026-04-30", "80.00");
     let pay = m.ok(
         "books.receive_payment",
-        json!({"confirmed": true, "document_id": late, "date": "2026-02-10", "amount": "200.00", "cash_account": "1000"}),
+        json!({"confirmed": true, "invoice": late, "date": "2026-02-10", "amount": "200.00", "deposit_to": "1000"}),
     )["entry_id"]
         .as_u64()
         .unwrap();

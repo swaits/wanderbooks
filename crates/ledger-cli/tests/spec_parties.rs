@@ -835,15 +835,15 @@ fn party_totals_match_a_hand_computed_year() {
     );
     let bill = m.ok(
         "books.create_bill",
-        json!({"party_id": v, "date": "2026-07-01", "due_date": "2026-07-31",
+        json!({"vendor": (v).to_string(), "date": "2026-07-01", "due_date": "2026-07-31",
                "vendor_ref": "D-1041",
                "lines": [{"description": "Logo", "amount": "800.00", "account": "6000"}],
                "upload_id": logo_invoice, "confirmed": true}),
     );
     let pay = m.ok(
         "books.pay_bill",
-        json!({"confirmed": true, "document_id": bill["id"], "date": "2026-07-15", "amount": "300.00",
-               "cash_account": "1000"}),
+        json!({"confirmed": true, "bill": bill["id"], "date": "2026-07-15", "amount": "300.00",
+               "paid_from": "1000"}),
     )["entry_id"]
         .as_u64()
         .unwrap();
@@ -917,14 +917,14 @@ fn party_totals_for_a_customer_a_member_and_a_prepaid() {
         .unwrap();
     let inv = m.ok(
         "books.create_invoice",
-        json!({"party_id": c, "date": "2026-03-01", "due_date": "2026-03-31",
+        json!({"customer": (c).to_string(), "date": "2026-03-01", "due_date": "2026-03-31",
                "lines": [{"description": "Work", "amount": "1000.00"}],
                "confirmed": true}),
     );
     let pay = m.ok(
         "books.receive_payment",
-        json!({"confirmed": true, "document_id": inv["id"], "date": "2026-03-20", "amount": "600.00",
-               "cash_account": "1000"}),
+        json!({"confirmed": true, "invoice": inv["id"], "date": "2026-03-20", "amount": "600.00",
+               "deposit_to": "1000"}),
     )["entry_id"]
         .as_u64()
         .unwrap();

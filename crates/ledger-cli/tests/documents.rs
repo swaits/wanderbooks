@@ -496,18 +496,18 @@ fn terms_fall_back_in_order() {
     assert_eq!(bill["terms"], "Net 10", "{bill}");
 }
 
-/// `party_id` is the old spelling of `customer`/`vendor` and still names
-/// the same record (until P5); a number that is one record's id and
+/// A customer given by id and by name is the same record (the old
+/// `party_id` spelling is gone, P5); a number that is one record's id and
 /// another's name is refused, never guessed.
 #[test]
-fn party_id_alias_still_works() {
+fn a_customer_by_id_and_by_name_is_one_record() {
     let books = Books::new("documents-alias");
     let mut m = Mcp::spawn(&books);
     let harbor = m.customer("Harbor Coffee");
     let line = json!([{"description": "Work", "amount": "10.00"}]);
-    let by_alias = m.call(
+    let by_id = m.call(
         "books.create_invoice",
-        json!({"party_id": harbor, "date": "2026-02-01", "terms": "Net 30",
+        json!({"customer": (harbor).to_string(), "date": "2026-02-01", "terms": "Net 30",
                "lines": line, "confirmed": true}),
     );
     let by_name = m.call(
@@ -520,8 +520,8 @@ fn party_id_alias_still_works() {
         .iter()
         .map(|e| e["payload"]["customer_id"].as_u64().unwrap())
         .collect();
-    assert_eq!(parties, [harbor, harbor], "one customer, two spellings");
-    assert_eq!(by_alias["total"], by_name["total"]);
+    assert_eq!(parties, [harbor, harbor], "one customer, an id and a name");
+    assert_eq!(by_id["total"], by_name["total"]);
 
     // A customer named "2" that is not customer 2: the number is
     // ambiguous, and is refused rather than guessed.
@@ -730,7 +730,7 @@ fn mark_sent_records_who_and_how() {
             .unwrap();
     let invoice = common::answer_of(&wire.call(
         "books.create_invoice",
-        json!({"party_id": customer, "date": "2026-03-01", "due_date": "2026-03-31",
+        json!({"customer": (customer).to_string(), "date": "2026-03-01", "due_date": "2026-03-31",
                "lines": [{"description": "Design", "amount": "1200.00"}], "confirmed": true}),
     ))
     .unwrap()["id"]
@@ -876,7 +876,7 @@ mod paying_on_terms {
             ok(
                 &mut self.wire,
                 "books.create_invoice",
-                json!({"party_id": self.customer, "date": date, "due_date": due,
+                json!({"customer": (self.customer).to_string(), "date": date, "due_date": due,
                    "lines": [{"description": "Consulting", "amount": amount}],
                    "confirmed": true}),
             )["id"]
@@ -897,7 +897,7 @@ mod paying_on_terms {
             ok(
                 &mut self.wire,
                 "books.create_bill",
-                json!({"party_id": self.vendor, "date": date, "due_date": due,
+                json!({"vendor": (self.vendor).to_string(), "date": date, "due_date": due,
                    "vendor_ref": format!("TH-{}", self.bills),
                    "lines": [{"description": "Paper", "amount": amount, "account": "6999"}],
                    "upload_id": file, "confirmed": true}),
@@ -1258,7 +1258,7 @@ mod bad_debts {
             wire,
             "books.create_invoice",
             json!({
-                "party_id": customer,
+                "customer": (customer).to_string(),
                 "date": "2026-01-05",
                 "due_date": "2026-02-04",
                 "lines": [{ "description": "Design", "amount": "100.00" }],
@@ -1286,10 +1286,10 @@ mod bad_debts {
             &mut wire,
             "books.receive_payment",
             json!({"confirmed": true,
-                "document_id": inv,
+                "invoice": inv,
                 "date": "2026-01-20",
                 "amount": "40.00",
-                "cash_account": "1000",
+                "deposit_to": "1000",
             }),
         );
         // The write-off's evidence, uploaded as an agent uploads it (D-46).
@@ -1361,10 +1361,10 @@ mod bad_debts {
             &mut wire,
             "books.receive_payment",
             json!({"confirmed": true,
-                "document_id": inv,
+                "invoice": inv,
                 "date": "2026-03-02",
                 "amount": "60.00",
-                "cash_account": "1000",
+                "deposit_to": "1000",
             }),
         );
         let doc = ok(

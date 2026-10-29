@@ -3265,10 +3265,7 @@ pub struct CreateInvoiceParams {
     pub preview: Option<String>,
     /// The customer: a customer id, its party's id, or its name. A name
     /// that two customers answer to is refused.
-    pub customer: Option<String>,
-    /// The old spelling of `customer` (accepted until P5): a customer id.
-    #[serde(default)]
-    pub party_id: Option<u64>,
+    pub customer: String,
     /// The invoice date, YYYY-MM-DD.
     pub date: String,
     /// Its payment terms ("Net 30", "Net 15 EOM", "2/10 net 30", "Due on
@@ -3300,10 +3297,7 @@ pub struct CreateBillParams {
     pub preview: Option<String>,
     /// The vendor: a vendor id, its party's id, or its name. A name that
     /// two vendors answer to is refused.
-    pub vendor: Option<String>,
-    /// The old spelling of `vendor` (accepted until P5): a vendor id.
-    #[serde(default)]
-    pub party_id: Option<u64>,
+    pub vendor: String,
     /// The bill's date, YYYY-MM-DD.
     pub date: String,
     /// The day the bill was received, when it differs from its date.
@@ -3383,10 +3377,6 @@ pub struct PaymentParams {
     /// preview: nothing posts.
     #[serde(default)]
     pub confirmed: Option<bool>,
-    /// Invoice id (receive_payment) or bill id (pay_bill); the older name
-    /// of `invoice` / `bill`.
-    #[serde(default)]
-    pub document_id: Option<u64>,
     /// The invoice, by id (books.receive_payment).
     #[serde(default)]
     pub invoice: Option<u64>,
@@ -3399,10 +3389,6 @@ pub struct PaymentParams {
     /// applications' amounts are the cash; a discount is beside it.
     #[serde(default)]
     pub amount: Option<String>,
-    /// Cash account id or code; the older name of `deposit_to` /
-    /// `paid_from`.
-    #[serde(default)]
-    pub cash_account: Option<String>,
     /// The account the cash reaches (receive_payment): a bank or card that
     /// holds no role.
     #[serde(default)]

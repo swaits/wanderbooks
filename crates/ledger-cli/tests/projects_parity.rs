@@ -230,8 +230,8 @@ fn invoiced_and_billed_project_figures_are_the_same_in_the_viewer_and_from_the_s
     server.tool("books.add_project", json!({"name": "Heron"}));
     let cedar = server.tool("books.add_customer", json!({"name": "Cedar Client"}))["id"].clone();
     let dana = server.tool("books.add_vendor", json!({"name": "Dana Illustration"}))["id"].clone();
-    let doc = |party: &Value, date: &str, lines: Value| {
-        json!({"party_id": party, "date": date, "due_date": date, "lines": lines,
+    let doc = |key: &str, party: &Value, date: &str, lines: Value| {
+        json!({key: party.to_string(), "date": date, "due_date": date, "lines": lines,
                "confirmed": true})
     };
     server.tool(
@@ -241,6 +241,7 @@ fn invoiced_and_billed_project_figures_are_the_same_in_the_viewer_and_from_the_s
     let inv = server.tool(
         "books.create_invoice",
         doc(
+            "customer",
             &cedar,
             "2026-02-02",
             json!([
@@ -253,6 +254,7 @@ fn invoiced_and_billed_project_figures_are_the_same_in_the_viewer_and_from_the_s
     let inv2 = server.tool(
         "books.create_invoice",
         doc(
+            "customer",
             &cedar,
             "2026-05-04",
             json!([{"description": "Build", "amount": "4321.09", "class": "kestrel"}]),
@@ -262,6 +264,7 @@ fn invoiced_and_billed_project_figures_are_the_same_in_the_viewer_and_from_the_s
         .wire
         .upload(b"Dana's invoice", "dana.pdf", "application/pdf", "receipt");
     let mut bill_args = doc(
+        "vendor",
         &dana,
         "2026-03-09",
         json!([
@@ -274,7 +277,7 @@ fn invoiced_and_billed_project_figures_are_the_same_in_the_viewer_and_from_the_s
     let bill = server.tool("books.create_bill", bill_args);
     server.tool(
         "books.receive_payment",
-        json!({"confirmed": true, "document_id": inv["id"], "date": "2026-02-20", "amount": "1830.00", "cash_account": "1000"}),
+        json!({"confirmed": true, "invoice": inv["id"], "date": "2026-02-20", "amount": "1830.00", "deposit_to": "1000"}),
     );
     let b = data::load_once(&Source {
         data_dir: data.clone(),

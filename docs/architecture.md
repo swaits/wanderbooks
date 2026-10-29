@@ -31,7 +31,7 @@ the specification in `bookspec/` (which never depends on the engine).
 | `ledger-core` | the semantics engine: money, chart, journal, `Ledger` commands, reports, periods, assets, schedules, parties, A/R and A/P, payroll, projects, settings and conventions, the kernel and its Kani harnesses | nothing |
 | `ledger-vault` | the TIN vault: XChaCha20-Poly1305 records under the book's key | nothing |
 | `ledger-config` | the `wanderbooks.toml` codec (adoption in, `books.export_settings` out) and the receipt policy until P4 moves it into the core | `ledger-core` |
-| `ledger-store` | the source of truth: the hash-chained JSONL journal, its format gate, the SQLite projection (schema 18; a file per schema), the blob store, backups, the access log, `Snapshot` for readers | `ledger-core`, `ledger-reader` (P6, D-61) |
+| `ledger-store` | the source of truth: the hash-chained JSONL journal, its format gate, the SQLite projection (schema 18; a file per schema), the blob store, backups, the access log, `describe.rs` (the journal in words, for `books.journal_history`), `Snapshot` for readers | `ledger-core`, `ledger-reader` (P6, D-61) |
 | `ledger-reader` | the one reader: a PDF's text and pages, an XLSX's cells as exact decimal strings, plain text (P6; a plain library, in-process, D-61); `ledger-import` re-exports it as `extract` | none (`hayro`, `zip`, `quick-xml`) |
 | `ledger-import` | formats: QuickBooks CSV in; IIF, XLSX, Typst PDFs (statements, the invoice, labels) out | `ledger-core`, `ledger-reader` |
 | `ledger-package` | the shared read-only view over `Store` or `Snapshot` (`PackageBooks`): the CPA package, the 1099 worksheet, the invoice document, Needs attention | `ledger-core`, `ledger-store`, `ledger-config`, `ledger-import`, `ledger-vault` |
@@ -353,3 +353,20 @@ package, which repacks the release's tarball), `build-linux.sh`,
 `repo-indexes.sh` (the apt and dnf indexes), `local-release.sh` (a
 throwaway-keyed feed on this machine) and `test-linux-packages.sh`.
 `.github/workflows/release.yml` builds them on a version tag.
+
+## The result envelope and the guards (`ledger-mcp`, P5)
+
+Every tool result is given the same fields in one place: `call_tool` runs the
+tool, then `next_steps::apply` adds `next_steps`, `guards`, `warnings` and
+(on a tool that is not read-only) `head`, in the structured content and in
+the text block alike, never overwriting a field the tool wrote. Next steps
+come from the tool's own result (`next_steps::tool_steps`: the confirm after
+a preview, what a post, a draft, a statement or a close leads to) and, after
+a change to an entry or an invoice, from the viewer's own Needs-attention
+items about it (`ledger_package::find_with`). `guards.rs` is the registry of
+named refusals, each with the tool that remedies it; a refusal whose text
+carries a guard gets it as `structuredContent.guards`. The prompts
+(`tools/prompts.rs`, text in `prompts/*.md`) and the resource templates are
+served by the same `ServerHandler`; `books.start` is loaded up front by
+clients that defer tools (`_meta`). `ledger-store`'s `describe.rs` is the
+one place that turns a journal line into a sentence for an agent.

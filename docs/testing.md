@@ -3745,3 +3745,89 @@ covers the feature one; a case with a higher format number is a gap to
 add), `swap_in`'s temporary-then-rename (`update_is_atomic`), `healthy`
 (`failed_update_rolls_back`), `install_kind` (the marker test), and
 `parse_version`'s rejections.
+
+## P5: the agent surface (2026-10-29)
+
+Every tool result carries the envelope (`next_steps`, `guards`, `warnings`,
+`head`), `books.start` is v2, the prompts and resource templates are
+served, `books.journal_history` reads the journal in words, and a
+convention, decision or open item can have its source corrected. Journal
+feature `source_revisions`; events `convention.source_revised`,
+`decision.source_revised`, `open_item.source_revised`; no schema change
+(the projection updates the rows' existing source columns).
+
+- **`ledger-mcp` `src/server_tests.rs`:**
+  `every_mutating_result_has_head_and_next_steps` (every tool of the
+  router is given the envelope; the non-read-only ones have `head` equal to
+  the journal's and a step each with `why` and `required`; the text block
+  says what the structure says),
+  `the_envelope_keeps_what_a_tool_said_and_carries_a_refusal_guard`,
+  `books_start_is_always_loaded`, `tool_descriptions_fit_700_characters`
+  (the allowance list is gone: every description is at most 700
+  characters). `guards.rs`: `every_guard_names_an_existing_tool`,
+  `a_refusal_becomes_its_guard`. `next_steps.rs`:
+  `a_preview_gets_its_confirm_step`, `every_step_a_tool_names_exists`.
+  `tools/prompts.rs`: `the_prompts_name_only_tools_that_exist`,
+  `an_argument_is_one_token_of_the_right_shape`.
+- **`ledger-store`:** `tests/source_revisions.rs`:
+  `a_source_only_revision_is_journaled` (the three events, words and
+  revision unchanged, live equals replay equals a rebuilt database),
+  `a_source_revision_must_change_only_the_source` (other words, the same
+  source, no reason, unknown record: refused, journal unchanged),
+  `source_revisions_wait_for_the_upgrade` (refused before the go-ahead with
+  `format_upgrade_pending`, journaling nothing). `format.rs`:
+  `source_revisions_is_its_own_feature`. `describe.rs`:
+  `every_event_type_has_a_sentence`, `settings_show_their_keys_never_their_values`,
+  `a_full_tin_in_a_description_is_masked`,
+  `history_filters_in_order_and_says_when_more_remain`.
+- **8.0.6:** `books_written_under_older_rules_still_open` hand-writes the
+  three events; the fixture `old-books/p5_before` (writer
+  `old-books-writer/src/bin/p5_before.rs`, run against b97234ac, the
+  revision before P5: a convention revised once, two decisions, two open
+  items, a draft) opens to that version's figures, so no figure moved;
+  `books_p2_served_cut_over_whole` refuses `books.raise_item` with `revises`
+  before consent and takes it after.
+- **`ledger-cli` `tests/agent_surface.rs`:**
+  `journal_history_traces_what_the_books_did`,
+  `a_source_only_revision_over_the_wire`, `the_prompts_list_and_render`
+  (each prompt rendered equals its file with the blanks filled; an
+  argument that is not one token of the right shape, a missing or extra
+  one, and a struck prompt are refused),
+  `the_resource_templates_are_advertised_and_read`,
+  `books_start_v2_is_whole_and_fits` (at most 8 KiB on the P2 fixture; the
+  agent's self-report in the access log only),
+  `a_new_book_is_told_to_onboard`,
+  `a_mutating_call_answers_with_the_head_and_a_refusal_names_its_remedy`.
+- **`ledger-cli` `tests/agent_evals.rs`** (transcripts in `tests/agent_evals/`):
+  `agent_evals_follow_only_next_steps` plays six scripted transcripts (no
+  model): onboarding to a first post, a receipt-backed post, a draft that
+  waits for its receipt and posts when it arrives, a reversal, a
+  reconciliation, a month-end close. After `books.start` a transcript may
+  call only a tool (or fetch only a prompt) the previous result's
+  `next_steps` named, with the arguments the step gave and the ones the
+  agent decides. `setup` calls (the chart, the books an agent finds) are
+  not the agent's moves.
+- **The sweep:** the `party_id`, `document_id` and `cash_account` aliases of
+  `books.create_invoice`, `books.create_bill`, `books.receive_payment` and
+  `books.pay_bill` are gone (S4, S6 said "until P5"); the over-the-wire
+  tests that used them name `customer`/`vendor`, `invoice`/`bill` and
+  `deposit_to`/`paid_from`.
+
+**For P12 (mutation targets):** `next_steps::apply`'s three branches (an
+error, a result without an object, the normal path) and the `mutating`
+test that gives `head`; `tool_steps`'s confirm branch (`!confirmed` and a
+`preview`), the `receipt_missing` pair before it, and each tool's arm;
+`attention_steps`'s subject match (entry against invoice) and its
+`Problem` severity for `required`; `subject_of`'s precedence;
+`guards::from_refusal`'s structured and worded branches and
+`Guard::remedy_tool`'s table; `prompts::checked`'s token test and each
+`Check` shape (month length and calendar, year length, the word list);
+`prompt_get`'s extra-argument and missing-argument refusals;
+`describe::subjects`'s per-prefix id choice, `describe`'s `settings.set`
+key list and TIN mask, `history`'s `>` on `after_seq`, its `limit` cut and
+`more`; `check_convention_source`'s three equalities (title/body/structure,
+source, kind), `check_decision_source` and `check_open_item_source`'s
+equal-source refusals and the empty-reason refusals; the three
+`apply_*_source` arms (a mutant that also bumps `revision` or `seq` shows
+in `a_source_only_revision_is_journaled`); `books.start`'s fit order and
+`reconciliation` split (`reconciled_through.is_some()`).

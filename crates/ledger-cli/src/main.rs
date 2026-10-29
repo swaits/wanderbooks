@@ -71,7 +71,7 @@ impl ledger_gui::owner::Owner for ViewerOwner {
     }
 
     fn new_books(&self, id: &str, currency: &str) -> Result<String, String> {
-        ledger_host::commands::new_books(&self.0, id, currency)
+        ledger_host::commands::new_books_and_home(&self.0, id, currency)
     }
 
     fn back_up_now(&self, book: &str) -> Result<Vec<String>, String> {
@@ -113,7 +113,60 @@ impl ledger_gui::owner::Owner for ViewerOwner {
             ledger_gui::owner::Agent::Claude => "claude",
             ledger_gui::owner::Agent::Codex => "codex",
         };
-        ledger_host::commands::connect_agent(&self.0, agent, book)
+        ledger_host::commands::connect_and_home(&self.0, agent, book)
+    }
+
+    fn first_run(&self) -> ledger_gui::owner::FirstRun {
+        let s = ledger_host::commands::first_run_state(&self.0);
+        ledger_gui::owner::FirstRun {
+            root: s.root,
+            books: s.books,
+            passphrase_set: s.passphrase_set,
+        }
+    }
+
+    fn set_up(&self) -> Result<Vec<String>, String> {
+        ledger_host::commands::set_up_root(&self.0)
+    }
+
+    fn set_passphrase(&self, new: &str) -> Result<(), String> {
+        ledger_host::commands::set_first_passphrase(&self.0, new)
+    }
+
+    fn hold(&self, book: &str) {
+        ledger_host::commands::hold_for_viewer(&self.0, Some(book.to_string()));
+    }
+
+    fn agent_start(
+        &self,
+        agent: ledger_gui::owner::Agent,
+        book: &str,
+    ) -> Result<ledger_gui::owner::AgentStart, String> {
+        use ledger_gui::owner::{AgentStart, Installer};
+        let agent = match agent {
+            ledger_gui::owner::Agent::Claude => "claude",
+            ledger_gui::owner::Agent::Codex => "codex",
+        };
+        Ok(match ledger_host::commands::start_agent(agent, book)? {
+            ledger_host::commands::AgentStart::Ready {
+                label,
+                program,
+                args,
+                dir,
+                env,
+            } => AgentStart::Ready {
+                label: label.to_string(),
+                program,
+                args,
+                dir,
+                env,
+            },
+            ledger_host::commands::AgentStart::Missing(i) => AgentStart::Missing(Installer {
+                label: i.label.to_string(),
+                command: i.command.to_string(),
+                page: i.page.to_string(),
+            }),
+        })
     }
 
     fn upgrade_format(&self, book: &str, passphrase: &str) -> Result<Vec<String>, String> {
@@ -147,14 +200,18 @@ fn run_gui(args: Vec<String>) -> i32 {
         }
         let root = value("--root").map(PathBuf::from);
         let book = value("--book");
-        if known && ledger_gui::book_in_root(root.as_deref(), book.as_deref()).is_ok() {
-            // The viewer asks about a format upgrade in its own window.
+        if known {
+            // The viewer asks about a format upgrade in its own window, makes
+            // the first books when there are none, and starts the agent in
+            // its dock.
             let common = ledger_host::commands::Common {
-                root,
+                root: root.clone(),
                 ..Default::default()
             };
             ledger_gui::owner::set_owner(std::sync::Arc::new(ViewerOwner(common.clone())));
-            ledger_host::commands::hold_for_viewer(&common, book);
+            if ledger_gui::book_in_root(root.as_deref(), book.as_deref()).is_ok() {
+                ledger_host::commands::hold_for_viewer(&common, book);
+            }
         }
     }
     match ledger_gui::run("wanderbooks gui", args) {

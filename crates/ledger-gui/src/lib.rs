@@ -9,6 +9,7 @@ pub mod books;
 pub mod charts;
 pub mod data;
 pub mod demo;
+pub mod dock;
 pub mod export;
 pub mod fmt;
 pub mod menu;
@@ -22,6 +23,7 @@ mod schemes;
 #[cfg(test)]
 mod test_support;
 mod theme;
+pub mod welcome;
 mod widgets;
 
 pub use app::App;
@@ -53,8 +55,10 @@ impl std::error::Error for Exit {}
 /// a book of the data root (plan 3.6), the only books it opens (D-44):
 /// `--root`, else the root `wanderbooks setup` made, never the current
 /// directory or a settings file; `--book` names one, else the root's only
-/// one (or the first, by id). `--demo` builds a demo company in a temp
-/// directory and opens that.
+/// one (or the first, by id). With no books yet, and an owner to set them
+/// up (`wanderbooks gui`), it opens the first-run page (welcome.rs) instead
+/// of ending. `--demo` builds a demo company in a temp directory and opens
+/// that.
 pub fn run(
     prog: &str,
     args: impl IntoIterator<Item = String>,
@@ -94,17 +98,26 @@ pub fn run(
         eprintln!("demo books: {}", dir.display());
         data_dir = Some(dir.join("books-data"));
     }
+    // The books to show, or a first run (no books yet, and the program gave
+    // the viewer an owner to set them up: plan P11b), or the reason not.
+    let mut first_run = None;
     let data_dir = match data_dir {
-        Some(d) => d,
+        Some(d) => Some(d),
         None => match book_in_root(root.as_deref(), book.as_deref()) {
-            Ok(d) => d,
-            Err(why) => {
-                eprintln!("{why}");
-                return Err(Box::new(Exit(2)));
-            }
+            Ok(d) => Some(d),
+            Err(why) => match owner::current() {
+                // Named books that aren't there are a mistake, not a first run.
+                Some(owner) if book.is_none() => {
+                    first_run = Some(owner.first_run());
+                    None
+                }
+                _ => {
+                    eprintln!("{why}");
+                    return Err(Box::new(Exit(2)));
+                }
+            },
         },
     };
-    let source = Source { data_dir, today };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("wanderbooks")
@@ -121,7 +134,12 @@ pub fn run(
     Ok(eframe::run_native(
         "wanderbooks",
         options,
-        Box::new(move |cc| Ok(Box::new(App::new(cc, source)))),
+        Box::new(move |cc| {
+            Ok(Box::new(match (data_dir, first_run) {
+                (Some(data_dir), _) => App::new(cc, Source { data_dir, today }),
+                (None, state) => App::first_run(cc, root, today, state.unwrap_or_default()),
+            }))
+        }),
     )?)
 }
 

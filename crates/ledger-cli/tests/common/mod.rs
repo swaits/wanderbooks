@@ -74,6 +74,10 @@ impl Home {
         }
     }
 
+    /// The root `setup --home` made: the platform's data folder under the
+    /// home (`.local/share` on Linux, `Library/Application Support` on
+    /// macOS), never a Linux path spelled out (the portable macOS job
+    /// found the server refusing a root that was never set up).
     pub fn root(&self) -> PathBuf {
         ledger_store::root::default_root(self.dir.path())
     }

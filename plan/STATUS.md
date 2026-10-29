@@ -1,6 +1,24 @@
 # STATUS — 2026-10-28: nine units landed, five built on paused branches; P11a starts
 
-## Now (2026-10-29, evening): wave 1 of the rest of the plan is landing
+## Now (2026-10-29, night): waves 1 to 3 landed; P11c and P12 left
+
+**Landed today**, each merged with a compile and the unit's own tests
+(D-60) and gated by GitHub's `check` on the push: U0d, U0e, S4.5, P4,
+P5, P6 (from the paused wave), P8, P10's runbook, P11a steps 0-4 and
+the unsigned macOS bundle job, P11b, P13 steps 4-6. The plan's units
+still open: **P11c** (the native Windows port; its branch compiles and
+runs the suite on windows-latest, two lock-semantics failures fixed,
+macOS still refuses to start the server in CI and the next run prints
+why), **P11a** steps 5-7 (signing deferred by D-64; the in-app accept
+and the viewer's update notice need names; the Mac trial is the
+owner's), **P12** (max testing, after P11c), and P10's re-audit itself
+(the owner's run). Decisions today: D-60 to D-65.
+
+**The CI state** is the measure of the day: `main` must be green on
+`check`; the portable macOS and Windows jobs are the two ports' gates
+and red until they land. Every push is watched; a docs-only push is
+never made alone (it cancels the running gate).
+
 
 **Who builds.** The owner chose (the question tool) that this planning
 session is the EM and launches Sonnet subagents in parallel worktrees,

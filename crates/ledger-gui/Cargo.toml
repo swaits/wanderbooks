@@ -32,6 +32,8 @@ rust_decimal = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 zeroize = "1"
+# The dock: a terminal emulator over a PTY (ConPTY on Windows), P11b
+alacritty_terminal = "0.26"
 
 [dev-dependencies]
 chrono = "0.4"

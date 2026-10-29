@@ -1,0 +1,451 @@
+import Bookspec.Statements
+
+/-!
+# Closing a period, and splitting the net
+
+Mirrors `kernel::closing_line`, `kernel::credit_line`, `kernel::plug_last`,
+`periods::allocate`, and `Ledger::close_period_to` (income closing, net to
+one equity account or split among members).
+-/
+
+namespace Bookspec
+
+/-- The line that zeroes an account with movement `m`: the opposite side,
+same amount; nothing for zero (`kernel::closing_line`). It is also the
+line that credits `m` to an account (`kernel::credit_line`). -/
+def closingLine (a : Nat) (m : Int) : List Line :=
+  if 0 < m then [⟨a, .credit, m⟩] else if m < 0 then [⟨a, .debit, -m⟩] else []
+
+theorem net_closingLine (a : Nat) (m : Int) : net (closingLine a m) = -m := by
+  unfold closingLine
+  split
+  · simp [Line.signed]
+  · split <;> simp [Line.signed] <;> omega
+
+theorem movement_closingLine (b a : Nat) (m : Int) :
+    movement b (closingLine a m) = if b = a then -m else 0 := by
+  by_cases e : b = a
+  · subst e
+    rcases (by omega : 0 < m ∨ m < 0 ∨ m = 0) with h | h | h
+    · simp [closingLine, h, Line.signed]
+    · have : ¬ 0 < m := by omega
+      simp [closingLine, h, this, Line.signed]
+    · simp [closingLine, h]
+  · have e' : ¬ a = b := fun x => e x.symm
+    unfold closingLine
+    split <;> (try split) <;> simp [e']
+
+theorem closingLine_pos (a : Nat) (m : Int) : ∀ l ∈ closingLine a m, 0 < l.amount := by
+  unfold closingLine
+  split
+  · simp; omega
+  · split
+    · simp; omega
+    · simp
+
+theorem closingLine_account (a : Nat) (m : Int) : ∀ l ∈ closingLine a m, l.account = a := by
+  unfold closingLine
+  split
+  · simp
+  · split <;> simp
+
+theorem closingLine_eq_nil (a : Nat) (m : Int) : closingLine a m = [] ↔ m = 0 := by
+  unfold closingLine
+  split
+  · simp; omega
+  · split
+    · simp; omega
+    · simp; omega
+
+/-- The closing lines for some accounts: one per account with a nonzero
+movement. -/
+def closings (as : List Nat) (ls : List Line) : List Line :=
+  match as with
+  | [] => []
+  | a :: as => closingLine a (movement a ls) ++ closings as ls
+
+theorem net_closings (as : List Nat) (ls : List Line) :
+    net (closings as ls) = -sumOver (fun a => movement a ls) as := by
+  induction as with
+  | nil => rfl
+  | cons a as ih => simp only [closings, net_append, net_closingLine, ih, sumOver_cons]; omega
+
+theorem movement_closings (b : Nat) (as : List Nat) (ls : List Line) (hd : Distinct as) :
+    movement b (closings as ls) = if b ∈ as then -movement b ls else 0 := by
+  induction as with
+  | nil => simp [closings]
+  | cons a as ih =>
+    obtain ⟨ha, hd⟩ := hd
+    simp only [closings, movement_append, movement_closingLine, ih hd]
+    by_cases e : b = a
+    · subst e; simp [ha]
+    · simp [e]
+
+theorem closings_pos (as : List Nat) (ls : List Line) : ∀ l ∈ closings as ls, 0 < l.amount := by
+  induction as with
+  | nil => simp [closings]
+  | cons a as ih =>
+    intro l hl
+    simp only [closings, List.mem_append] at hl
+    cases hl with
+    | inl h => exact closingLine_pos _ _ l h
+    | inr h => exact ih l h
+
+theorem closings_account (as : List Nat) (ls : List Line) : ∀ l ∈ closings as ls, l.account ∈ as := by
+  induction as with
+  | nil => simp [closings]
+  | cons a as ih =>
+    intro l hl
+    simp only [closings, List.mem_append] at hl
+    cases hl with
+    | inl h => rw [closingLine_account _ _ l h]; simp
+    | inr h => exact List.mem_cons_of_mem _ (ih l h)
+
+/-- Nothing to close means every closed account was already at zero. -/
+theorem closings_eq_nil (as : List Nat) (ls : List Line) (h : closings as ls = []) :
+    ∀ a ∈ as, movement a ls = 0 := by
+  induction as with
+  | nil => simp
+  | cons a as ih =>
+    simp only [closings, List.append_eq_nil_iff] at h
+    intro b hb
+    cases hb with
+    | head => exact (closingLine_eq_nil _ _).1 h.1
+    | tail _ hb => exact ih h.2 b hb
+
+/-! ## The net to equity -/
+
+/-- The sum of some amounts. -/
+def total : List Int → Int
+  | [] => 0
+  | x :: xs => x + total xs
+
+/-- Lines crediting each target its part (`kernel::credit_line` per
+member). -/
+def equityLines : List (Nat × Int) → List Line
+  | [] => []
+  | (t, c) :: ts => closingLine t c ++ equityLines ts
+
+theorem net_equityLines (ts : List (Nat × Int)) :
+    net (equityLines ts) = -total (ts.map Prod.snd) := by
+  induction ts with
+  | nil => rfl
+  | cons x ts ih =>
+    obtain ⟨t, c⟩ := x
+    simp only [equityLines, net_append, net_closingLine, ih, List.map_cons, total]; omega
+
+theorem movement_equityLines_absent (b : Nat) (ts : List (Nat × Int))
+    (h : ∀ x ∈ ts, x.1 ≠ b) : movement b (equityLines ts) = 0 := by
+  induction ts with
+  | nil => rfl
+  | cons x ts ih =>
+    obtain ⟨t, c⟩ := x
+    have ht : b ≠ t := fun e => h (t, c) (by simp) e.symm
+    simp only [equityLines, movement_append, movement_closingLine, ht, ite_false,
+      ih (fun y hy => h y (List.mem_cons_of_mem _ hy))]
+    rfl
+
+theorem equityLines_pos (ts : List (Nat × Int)) : ∀ l ∈ equityLines ts, 0 < l.amount := by
+  induction ts with
+  | nil => simp [equityLines]
+  | cons x ts ih =>
+    obtain ⟨t, c⟩ := x
+    intro l hl
+    simp only [equityLines, List.mem_append] at hl
+    cases hl with
+    | inl h => exact closingLine_pos _ _ l h
+    | inr h => exact ih l h
+
+theorem equityLines_account (ts : List (Nat × Int)) :
+    ∀ l ∈ equityLines ts, ∃ x ∈ ts, l.account = x.1 := by
+  induction ts with
+  | nil => simp [equityLines]
+  | cons x ts ih =>
+    obtain ⟨t, c⟩ := x
+    intro l hl
+    simp only [equityLines, List.mem_append] at hl
+    cases hl with
+    | inl h => exact ⟨(t, c), by simp, closingLine_account _ _ l h⟩
+    | inr h =>
+      obtain ⟨y, hy, e⟩ := ih l h
+      exact ⟨y, List.mem_cons_of_mem _ hy, e⟩
+
+theorem equityLines_eq_nil (ts : List (Nat × Int)) (h : equityLines ts = []) :
+    total (ts.map Prod.snd) = 0 := by
+  induction ts with
+  | nil => rfl
+  | cons x ts ih =>
+    obtain ⟨t, c⟩ := x
+    simp only [equityLines, List.append_eq_nil_iff] at h
+    simp only [List.map_cons, total, (closingLine_eq_nil _ _).1 h.1, ih h.2]; rfl
+
+/-- The closing entry: zero the closed accounts, credit the net to the
+targets. -/
+def closingEntry (as : List Nat) (ts : List (Nat × Int)) (ls : List Line) : List Line :=
+  closings as ls ++ equityLines ts
+
+/-- **A closing entry balances** when the targets' parts sum to the net
+of the closing lines (the net income), however that net was split. -/
+theorem closingEntry_net (as : List Nat) (ts : List (Nat × Int)) (ls : List Line)
+    (hsum : total (ts.map Prod.snd) = net (closings as ls)) :
+    net (closingEntry as ts ls) = 0 := by
+  rw [closingEntry, net_append, net_equityLines, hsum]; omega
+
+/-- **A closing entry zeroes every account it closes.** -/
+theorem closingEntry_zeroes (as : List Nat) (ts : List (Nat × Int)) (ls : List Line)
+    (hd : Distinct as) (b : Nat) (hb : b ∈ as) (ht : ∀ x ∈ ts, x.1 ≠ b) :
+    movement b (ls ++ closingEntry as ts ls) = 0 := by
+  rw [movement_append, closingEntry, movement_append, movement_closings b as ls hd,
+    movement_equityLines_absent b ts ht]
+  simp only [hb, ite_true]; omega
+
+/-- **A non-empty closing entry is acceptable**: two or more lines, every
+amount positive, debits equal to credits. -/
+theorem closingEntry_accepted (as : List Nat) (ts : List (Nat × Int)) (ls : List Line)
+    (hsum : total (ts.map Prod.snd) = net (closings as ls)) (hne : closings as ls ≠ []) :
+    Accepted (closingEntry as ts ls) := by
+  refine ⟨?_, ?_, ?_⟩
+  · rw [closingEntry, List.length_append]
+    match hc : closings as ls with
+    | [] => exact absurd hc hne
+    | [l] =>
+      have hl : 0 < l.amount := closings_pos as ls l (by rw [hc]; simp)
+      have hnet : net (closings as ls) ≠ 0 := by
+        rw [hc]; obtain ⟨a, s, m⟩ := l
+        cases s <;> simp [Line.signed] at hl ⊢ <;> omega
+      have : equityLines ts ≠ [] := fun h => hnet (hsum ▸ equityLines_eq_nil ts h)
+      have : 1 ≤ (equityLines ts).length := by
+        cases h : equityLines ts with
+        | nil => exact absurd h this
+        | cons _ _ => simp
+      simp; omega
+    | _ :: _ :: _ => simp; omega
+  · intro l hl
+    simp only [closingEntry, List.mem_append] at hl
+    cases hl with
+    | inl h => exact closings_pos as ls l h
+    | inr h => exact equityLines_pos ts l h
+  · have := closingEntry_net as ts ls hsum
+    rw [net_eq_debits_sub_credits] at this; omega
+
+/-! ## Net income -/
+
+/-- The chart's revenue and expense codes: what a close zeroes. -/
+def nominalCodes : Chart → List Nat
+  | [] => []
+  | (a, t) :: c => if t = .revenue ∨ t = .expense then a :: nominalCodes c else nominalCodes c
+
+theorem nominalCodes_sub (c : Chart) : ∀ a ∈ nominalCodes c, a ∈ codes c := by
+  induction c with
+  | nil => simp [nominalCodes]
+  | cons x c ih =>
+    obtain ⟨a, t⟩ := x
+    intro b hb
+    simp only [nominalCodes] at hb
+    split at hb
+    · cases hb with
+      | head => simp
+      | tail _ h => exact List.mem_cons_of_mem _ (ih b h)
+    · exact List.mem_cons_of_mem _ (ih b hb)
+
+theorem nominalCodes_distinct (c : Chart) (hd : Distinct (codes c)) : Distinct (nominalCodes c) := by
+  induction c with
+  | nil => trivial
+  | cons x c ih =>
+    obtain ⟨a, t⟩ := x
+    obtain ⟨ha, hd⟩ := hd
+    simp only [nominalCodes]
+    split
+    · exact ⟨fun h => ha (nominalCodes_sub c a h), ih hd⟩
+    · exact ih hd
+
+/-- **The net a close credits to equity is the period's net income**:
+revenue balances minus expense balances. -/
+theorem net_closings_is_net_income (c : Chart) (ls : List Line) :
+    net (closings (nominalCodes c) ls) = typeTotal .revenue ls c - typeTotal .expense ls c := by
+  rw [net_closings]
+  induction c with
+  | nil => rfl
+  | cons x c ih =>
+    obtain ⟨a, t⟩ := x
+    cases t <;> simp [nominalCodes, typeTotal, balance, AccountType.normal, signed] at ih ⊢ <;> omega
+
+/-! ## Splitting among members -/
+
+/-- Make rounded parts sum to the whole: the last becomes the whole minus
+the others (`kernel::plug_last`). -/
+def plugLast (whole : Int) : List Int → List Int
+  | [] => []
+  | [_] => [whole]
+  | p :: q :: rest => p :: plugLast (whole - p) (q :: rest)
+
+/-- **An allocation's parts sum to the whole, exactly**, however the
+other parts were rounded. -/
+theorem plugLast_total (whole : Int) (ps : List Int) (h : ps ≠ []) :
+    total (plugLast whole ps) = whole := by
+  induction ps generalizing whole with
+  | nil => exact absurd rfl h
+  | cons p rest ih =>
+    match rest, ih with
+    | [], _ => show total [whole] = whole; simp [total]
+    | q :: rest, ih =>
+      simp only [plugLast, total]
+      have := ih (whole - p) (by simp)
+      omega
+
+theorem plugLast_length (whole : Int) (ps : List Int) : (plugLast whole ps).length = ps.length := by
+  induction ps generalizing whole with
+  | nil => rfl
+  | cons p rest ih =>
+    match rest, ih with
+    | [], _ => rfl
+    | q :: rest, ih => simp only [plugLast, List.length_cons]; rw [ih]; rfl
+
+/-- Only the last part changes. -/
+theorem plugLast_keeps (whole : Int) (ps : List Int) :
+    (plugLast whole ps).dropLast = ps.dropLast := by
+  induction ps generalizing whole with
+  | nil => rfl
+  | cons p rest ih =>
+    match rest, ih with
+    | [], _ => rfl
+    | q :: rest, ih =>
+      have hne : plugLast (whole - p) (q :: rest) ≠ [] := by
+        intro h
+        have := plugLast_length (whole - p) (q :: rest)
+        rw [h] at this; simp at this
+      rw [show plugLast whole (p :: q :: rest) = p :: plugLast (whole - p) (q :: rest) from rfl,
+        List.dropLast_cons_of_ne_nil hne, ih, List.dropLast_cons_cons]
+
+/-! ## Cumulative member closes
+
+A run of members closes under the run rule of 2026-10-13 to P3
+(`CloseTo::MembersRun`, journaled `"cumulative"`; rules.md B-13) gives each
+member, at each close, their allocation of the run's total so far minus
+their allocation of the total before it. `alloc` is any allocation of an
+amount to members (member `i` gets `alloc x i`), such as
+`periods::allocate`. -/
+
+/-- What one close gives member `i`: `before` is the run's total before
+it, `net` what it closes. -/
+def closePart (alloc : Int → Nat → Int) (before net : Int) (i : Nat) : Int :=
+  alloc (before + net) i - alloc before i
+
+/-- What a run of closes with these nets, starting after `before`, gives
+member `i` in all. -/
+def runPart (alloc : Int → Nat → Int) : Int → List Int → Nat → Int
+  | _, [], _ => 0
+  | before, net :: rest, i => closePart alloc before net i + runPart alloc (before + net) rest i
+
+/-- **A run telescopes**: member `i`'s total from a run is their allocation
+of everything the run closed, less their allocation of where it started.
+From an empty start (`alloc 0 = 0`), it is exactly their allocation of
+the run's total, so its rounding is one allocation's rounding, never a
+sum of them. -/
+theorem runPart_telescopes (alloc : Int → Nat → Int) (before : Int) (nets : List Int) (i : Nat) :
+    runPart alloc before nets i = alloc (before + nets.sum) i - alloc before i := by
+  induction nets generalizing before with
+  | nil => simp [runPart]
+  | cons n rest ih =>
+    simp only [runPart, closePart, ih, List.sum_cons]
+    rw [show before + n + rest.sum = before + (n + rest.sum) by omega]
+    omega
+
+/-- A sum of differences is the difference of the sums. -/
+theorem sum_map_sub (f g : Nat → Int) (ms : List Nat) :
+    (ms.map (fun i => f i - g i)).sum = (ms.map f).sum - (ms.map g).sum := by
+  induction ms with
+  | nil => simp
+  | cons m ms ih => simp only [List.map_cons, List.sum_cons, ih]; omega
+
+/-- **Each close hands out exactly its net** when every allocation sums
+to its amount (`periods::allocate` does: `kernel::apportion`). -/
+theorem closePart_total (alloc : Int → Nat → Int) (members : List Nat)
+    (sums : ∀ x, (members.map (alloc x)).sum = x) (before net : Int) :
+    (members.map (closePart alloc before net)).sum = net := by
+  have h := sum_map_sub (alloc (before + net)) (alloc before) members
+  unfold closePart
+  rw [h, sums, sums]
+  omega
+
+/-! ## Members closes counted from a count's start (P3)
+
+The rule since P3 (`CloseTo::Members`, rules.md B-13; D-10): a close gives
+member `i` their allocation of everything the count has closed (`closed`
+before it, plus its `net`), less what the count's earlier closes gave them
+(`given i`), whatever rule those closes were made under
+(`periods::allocate_cumulative`, `kernel::apportion_cumulative`). The run
+rule of 2026-10-13 (`CloseTo::MembersRun`, `closePart`) is the special case
+where the earlier closes gave exactly the allocation. -/
+
+/-- What a cumulative close gives member `i`. -/
+def trueUp (alloc : Int → Nat → Int) (closed net : Int) (given : Nat → Int) (i : Nat) : Int :=
+  alloc (closed + net) i - given i
+
+/-- **A cumulative close hands out exactly its net**, whatever rule the
+earlier closes used, as long as they handed out what they closed. -/
+theorem trueUp_total (alloc : Int → Nat → Int) (members : List Nat)
+    (sums : ∀ x, (members.map (alloc x)).sum = x) (closed net : Int) (given : Nat → Int)
+    (hg : (members.map given).sum = closed) :
+    (members.map (trueUp alloc closed net given)).sum = net := by
+  have h := sum_map_sub (alloc (closed + net)) given members
+  unfold trueUp
+  rw [h, sums, hg]
+  omega
+
+/-- **A running total is one allocation**: after the close, what the count
+has given member `i` is their allocation of everything it closed, so its
+rounding is one allocation's, never a sum of them. -/
+theorem trueUp_running (alloc : Int → Nat → Int) (closed net : Int) (given : Nat → Int)
+    (i : Nat) : given i + trueUp alloc closed net given i = alloc (closed + net) i := by
+  unfold trueUp
+  omega
+
+/-- The run rule is the special case `given = alloc closed`. -/
+theorem closePart_eq_trueUp (alloc : Int → Nat → Int) (before net : Int) (i : Nat) :
+    closePart alloc before net i = trueUp alloc before net (alloc before) i := rfl
+
+/-- **Bounded drift, for any history**: when every allocation is under one
+unit from exact (scaled by `W`, the shares being `w i / W`), so is every
+member's running total after a cumulative close, whatever the earlier
+closes gave (`Apportion.allocW_drift` supplies the hypothesis). -/
+theorem cumulative_drift (alloc : Int → Nat → Int) (w : Nat → Int) (W : Int)
+    (hd : ∀ x i, -W < alloc x i * W - x * w i ∧ alloc x i * W - x * w i < W)
+    (closed net : Int) (given : Nat → Int) (i : Nat) :
+    -W < (given i + trueUp alloc closed net given i) * W - (closed + net) * w i ∧
+    (given i + trueUp alloc closed net given i) * W - (closed + net) * w i < W := by
+  rw [trueUp_running]
+  exact hd _ _
+
+/-- The statement of members' equity's share of the earnings `U` not yet
+closed, as of a day: what the count's next close would give of them, its
+allocation of `closed + U` less its allocation of `closed` (D-38; P3 review
+R-1: never the true-up a close hasn't posted). -/
+def unclosedShare (alloc : Int → Nat → Int) (closed U : Int) (i : Nat) : Int :=
+  alloc (closed + U) i - alloc closed i
+
+/-- **Closing a period moves a member's capital on a day by exactly the
+true-up the close posts** (D-38, R-1): before, their capital `cap` plus
+their share of the unclosed `U`; after closing `net` of it, `cap` plus the
+close's part plus their share of the rest. The difference is
+`alloc closed i - given i`. -/
+theorem statement_after_close (alloc : Int → Nat → Int) (cap closed net U : Int)
+    (given : Nat → Int) (i : Nat) :
+    cap + trueUp alloc closed net given i + unclosedShare alloc (closed + net) (U - net) i
+      = cap + unclosedShare alloc closed U i + (alloc closed i - given i) := by
+  unfold trueUp unclosedShare
+  rw [show closed + net + (U - net) = closed + U by omega]
+  omega
+
+/-- **A member's capital on a day never moves when its period is closed**
+(D-38), once the count's closes gave what the cumulative rule gives
+(`given = alloc closed`: every count the rule began, and every count after
+its first close that posts). -/
+theorem statement_unmoved_by_close (alloc : Int → Nat → Int) (cap closed net U : Int)
+    (i : Nat) :
+    cap + trueUp alloc closed net (alloc closed) i + unclosedShare alloc (closed + net) (U - net) i
+      = cap + unclosedShare alloc closed U i := by
+  rw [statement_after_close]
+  omega
+
+end Bookspec

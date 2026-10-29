@@ -812,8 +812,24 @@ fn books_p2_served_cut_over_whole() {
         )
         .unwrap();
     }
+    // An open item P2 reads: the correction of its source is
+    // source_revisions' (P5), and waits.
+    let item = a
+        .call(
+            "books.raise_item",
+            json!({"title": "Ask the CPA about the vehicle", "decided_by": "Avery Quill"}),
+        )
+        .unwrap()["id"]
+        .clone();
     let waiting = journal(&dir);
     let refused: Vec<(&str, Value)> = vec![
+        // A source correction (source_revisions, P5): an older version
+        // refuses the type.
+        (
+            "books.raise_item",
+            json!({"revises": item, "reason": "it was the CPA who raised it",
+                   "decided_by": "Pat Smith"}),
+        ),
         // A draft's state and its discard (drafts_v2, P4): an older
         // version refuses the types.
         (

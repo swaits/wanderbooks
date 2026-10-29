@@ -173,6 +173,16 @@ as it is made.
   `policy`, `close_step`, `calendar`, `mapping`, `note`, in words). An id is
   a slug, revised in place (same kind), never reused once retired:
   `books.retire_convention { id, reason, decided_by, ... }` (destructive).
+  **Correcting a source** (P5, journal feature `source_revisions`):
+  `books.set_convention` with `reason` and the text exactly as it stands
+  changes only who decided it, when and on what (`decided_by`,
+  `decided_on`, `citation`, `note`), journaled as `convention.source_revised
+  {id, source, reason}`; the revision number and the words do not move.
+  Without `reason` the same call is refused ("already says exactly that;
+  to correct only who decided it, when or on what, add reason"), and with
+  `reason` and different words it is refused ("changes more than its
+  source"). Books that have not had the owner's upgrade refuse it with
+  `format_upgrade_pending`.
 - `books.draft_from_template { template_id, date, amount, accounts?,
   description?, party?, no_party_reason? }` → `{ entry_id, description,
   lines }`: a draft whose lines split the amount (at most a line's) by the
@@ -190,8 +200,14 @@ as it is made.
   decision without them journals the bytes it always did, and one with
   them needs the journal feature `projects`. `books.decisions` gives each
   decision's `projects: [{ id, name }]` (left out when none); `project`
-  filters to the decisions naming one.
-- `books.raise_item { title, detail_md?, due?, decided_by, ... }` → `{ id }`,
+  filters to the decisions naming one. `books.record_decision { revises:
+  ID, reason, decided_by: [..], decided_on, citation? }` corrects only
+  that decision's source (who decided it, when, on what; its words stay,
+  and `subject` and `decision_md`, if given, must be the ones it has):
+  `decision.source_revised {id, source, reason}`, returning `{ id }`.
+- `books.raise_item { title, detail_md?, due?, decided_by, ... }` → `{ id }`
+  (`books.raise_item { revises: ID, reason, decided_by, ... }` corrects
+  only that item's source: `open_item.source_revised`),
   `books.resolve_item { id, resolution, decided_by, ... }`,
   `books.open_items { include_resolved? }`.
 - `books.approve_entry { entry_id, approver, note?, approved_on? }`: the

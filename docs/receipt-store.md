@@ -64,7 +64,14 @@ apply is safe — on startup the applier replays every journal line with
   `attachment.annotated`, `entry.settles` (P6), `entry.draft_state_set`
   (a draft building or awaiting its evidence: a note on the draft, no
   figure) and `entry.draft_discarded` (a draft thrown away, with why; the
-  draft's earlier lines stay in the journal) (P4, feature `drafts_v2`)
+  draft's earlier lines stay in the journal) (P4, feature `drafts_v2`),
+  and `convention.source_revised {id, source, reason}`,
+  `decision.source_revised {id, source: {decided_by: [..], decided_on,
+  citation?}, reason}` and `open_item.source_revised {id, source, reason}`
+  (P5, feature `source_revisions`: who decided a convention, a decision or
+  an open item, when and on what, corrected without touching its words;
+  replay sets the source and nothing else, and the projection updates the
+  row's existing source columns, so no schema changed)
   (plus the A/R, A/P, asset,
   period, payroll, and class events listed on `JournalLine`).
 - `payload`: the full domain facts (account fields, entry with lines, blob

@@ -14,6 +14,9 @@
 #   cargo run --bin p4_before -- OUT  (p4_before: run against 25b52580, the
 #                                      revision before P4: hand entries posted
 #                                      late, a reversal, open drafts, a close)
+#   cargo run --bin p5_before -- OUT  (p5_before: run against b97234ac, the
+#                                      revision before P5: a revised
+#                                      convention, two decisions, two open items)
 #   cargo run --bin expect -- OUT     (expected.json beside each journal)
 # and copy each journal.jsonl, blobs/ and expected.json into old-books/.
 # x_member_closes was written later, the same way, by main 00226a4c

@@ -17,7 +17,9 @@ use crate::error::StoreError;
 use crate::journal::JournalLine;
 use chrono::NaiveDate;
 use ledger_core::arap::{SendKind, Sent, SentVia};
-use ledger_core::conventions::{Approval, ConventionKind, NewConvention, NewDecision, NewOpenItem};
+use ledger_core::conventions::{
+    Approval, ConventionKind, DecisionSource, NewConvention, NewDecision, NewOpenItem,
+};
 use ledger_core::settings::{Change, Source};
 use ledger_core::{
     Annotation, AnnotationFields, ClassId, DraftState, ProjectFacts, ProjectKind, ProjectStatus,
@@ -171,6 +173,71 @@ pub fn convention_retired_of(p: &Value) -> Result<(String, String, Source), Stor
         str_of(p, E, "id")?,
         str_of(p, E, "reason")?,
         source_of(p, E, "source")?,
+    ))
+}
+
+/// `convention.source_revised {id, source, reason}` (journal feature
+/// `source_revisions`): the convention's text is unchanged.
+pub fn convention_source_revised(id: &str, source: &Source, reason: &str) -> Value {
+    json!({ "id": id, "source": source_json(source), "reason": reason })
+}
+
+/// Read a `convention.source_revised`: `(id, source, reason)`.
+pub fn convention_source_revised_of(p: &Value) -> Result<(String, Source, String), StoreError> {
+    const E: &str = "convention.source_revised";
+    Ok((
+        str_of(p, E, "id")?,
+        source_of(p, E, "source")?,
+        str_of(p, E, "reason")?,
+    ))
+}
+
+/// `decision.source_revised {id, source: {decided_by, decided_on,
+/// citation?}, reason}`.
+pub fn decision_source_revised(id: u64, s: &DecisionSource, reason: &str) -> Value {
+    let mut src = Map::new();
+    src.insert("decided_by".into(), json!(s.decided_by));
+    src.insert("decided_on".into(), json!(s.decided_on.to_string()));
+    put(&mut src, "citation", s.citation.clone());
+    json!({ "id": id, "source": Value::Object(src), "reason": reason })
+}
+
+/// Read a `decision.source_revised`: `(id, source, reason)`.
+pub fn decision_source_revised_of(p: &Value) -> Result<(u64, DecisionSource, String), StoreError> {
+    const E: &str = "decision.source_revised";
+    let src = p.get("source").ok_or_else(|| corrupt(E, "source"))?;
+    let decided_by = src
+        .get("decided_by")
+        .and_then(Value::as_array)
+        .and_then(|a| {
+            a.iter()
+                .map(|v| v.as_str().map(str::to_string))
+                .collect::<Option<Vec<_>>>()
+        })
+        .ok_or_else(|| corrupt(E, "source.decided_by"))?;
+    Ok((
+        u64_of(p, E, "id")?,
+        DecisionSource {
+            decided_by,
+            decided_on: date_of(&str_of(src, E, "decided_on")?, E, "source.decided_on")?,
+            citation: opt_str(src, E, "citation")?,
+        },
+        str_of(p, E, "reason")?,
+    ))
+}
+
+/// `open_item.source_revised {id, source, reason}`.
+pub fn open_item_source_revised(id: u64, source: &Source, reason: &str) -> Value {
+    json!({ "id": id, "source": source_json(source), "reason": reason })
+}
+
+/// Read an `open_item.source_revised`: `(id, source, reason)`.
+pub fn open_item_source_revised_of(p: &Value) -> Result<(u64, Source, String), StoreError> {
+    const E: &str = "open_item.source_revised";
+    Ok((
+        u64_of(p, E, "id")?,
+        source_of(p, E, "source")?,
+        str_of(p, E, "reason")?,
     ))
 }
 

@@ -8753,6 +8753,135 @@ impl Ledger {
             .map_err(LedgerError::InvalidConvention)
     }
 
+    /// Check a correction of a convention's source before it is journaled
+    /// (P5; `convention.source_revised`): the convention is live, `c` says
+    /// exactly what it says now (title, text, structure; a change of any is
+    /// a revision, not a correction) and a source that differs from the
+    /// one it has. Returns the source as it will be journaled, with the
+    /// reason; changes nothing.
+    pub fn check_convention_source(
+        &self,
+        c: &crate::conventions::NewConvention,
+        reason: &str,
+    ) -> Result<(crate::settings::Source, String), LedgerError> {
+        let bad = LedgerError::InvalidConvention;
+        let c = crate::conventions::check_new(c).map_err(bad)?;
+        let old = self.conventions.convention(&c.id).ok_or_else(|| {
+            bad(format!(
+                "unknown convention {:?}: books.conventions lists them",
+                c.id
+            ))
+        })?;
+        if old.retired.is_some() {
+            return Err(bad(format!("convention {} is retired", c.id)));
+        }
+        if old.kind != c.kind {
+            return Err(bad(format!(
+                "convention {} is a {}; its kind can't change",
+                c.id,
+                old.kind.key()
+            )));
+        }
+        if old.title != c.title || old.body_md != c.body_md || old.structured != c.structured {
+            return Err(bad(format!(
+                "convention {} changes more than its source: revise it without a reason, or give the text it has now",
+                c.id
+            )));
+        }
+        if old.source == c.source {
+            return Err(bad(format!(
+                "convention {} already has that source",
+                c.id
+            )));
+        }
+        let reason = crate::settings::long_text("reason", reason, crate::settings::MAX_LONG_TEXT)
+            .map_err(bad)?;
+        if reason.is_empty() {
+            return Err(bad("a source correction needs a reason".into()));
+        }
+        Ok((c.source, reason))
+    }
+
+    /// Apply a journaled `convention.source_revised`.
+    pub fn apply_convention_source(
+        &mut self,
+        id: &str,
+        source: crate::settings::Source,
+    ) -> Result<(), LedgerError> {
+        self.conventions
+            .apply_convention_source(id, source)
+            .map_err(LedgerError::InvalidConvention)
+    }
+
+    /// Check a correction of a decision's source (`decision.source_revised`).
+    pub fn check_decision_source(
+        &self,
+        id: u64,
+        source: &crate::conventions::DecisionSource,
+        reason: &str,
+    ) -> Result<(crate::conventions::DecisionSource, String), LedgerError> {
+        let bad = LedgerError::InvalidConvention;
+        let old = self
+            .conventions
+            .decision(id)
+            .ok_or_else(|| bad(format!("decision {id} doesn't exist: books.decisions lists them")))?;
+        let source = crate::conventions::check_decision_source(source).map_err(bad)?;
+        if old.new.source() == source {
+            return Err(bad(format!("decision {id} already has that source")));
+        }
+        let reason = crate::settings::long_text("reason", reason, crate::settings::MAX_LONG_TEXT)
+            .map_err(bad)?;
+        if reason.is_empty() {
+            return Err(bad("a source correction needs a reason".into()));
+        }
+        Ok((source, reason))
+    }
+
+    /// Apply a journaled `decision.source_revised`.
+    pub fn apply_decision_source(
+        &mut self,
+        id: u64,
+        source: crate::conventions::DecisionSource,
+    ) -> Result<(), LedgerError> {
+        self.conventions
+            .apply_decision_source(id, source)
+            .map_err(LedgerError::InvalidConvention)
+    }
+
+    /// Check a correction of an open item's source (`open_item.source_revised`).
+    pub fn check_open_item_source(
+        &self,
+        id: u64,
+        source: &crate::settings::Source,
+        reason: &str,
+    ) -> Result<(crate::settings::Source, String), LedgerError> {
+        let bad = LedgerError::InvalidConvention;
+        source.check().map_err(bad)?;
+        let old = self.conventions.open_item(id).ok_or_else(|| {
+            bad(format!("unknown open item {id}: books.open_items lists them"))
+        })?;
+        if old.new.source == *source {
+            return Err(bad(format!("open item {id} already has that source")));
+        }
+        let reason = crate::settings::long_text("reason", reason, crate::settings::MAX_LONG_TEXT)
+            .map_err(bad)?;
+        if reason.is_empty() {
+            return Err(bad("a source correction needs a reason".into()));
+        }
+        Ok((source.clone(), reason))
+    }
+
+    /// Apply a journaled `open_item.source_revised`.
+    pub fn apply_open_item_source(
+        &mut self,
+        id: u64,
+        source: crate::settings::Source,
+    ) -> Result<(), LedgerError> {
+        self.conventions
+            .apply_open_item_source(id, source)
+            .map_err(LedgerError::InvalidConvention)
+    }
+
     /// Check a retirement before it is journaled: the convention is live,
     /// the reason and source are sound.
     pub fn check_retire_convention(

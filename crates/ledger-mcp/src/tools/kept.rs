@@ -392,6 +392,11 @@ pub struct SetConventionParams {
     /// amount_over?}. Other kinds take none.
     #[serde(default)]
     pub structured: Option<Value>,
+    /// Only to correct who decided it, when or on what (the text exactly
+    /// as it stands): why the source is wrong. The correction is journaled
+    /// as such, the convention's revision unchanged.
+    #[serde(default)]
+    pub reason: Option<String>,
     /// Who decided, and when.
     #[serde(flatten)]
     pub source: SourceIn,
@@ -412,9 +417,12 @@ pub struct RetireConventionParams {
 /// Parameters for `books.record_decision`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RecordDecisionParams {
-    /// What it is about ("Materiality policy").
+    /// What it is about ("Materiality policy"). Left out when `revises` is
+    /// given.
+    #[serde(default)]
     pub subject: String,
-    /// The decision in words (Markdown).
+    /// The decision in words (Markdown). Left out when `revises` is given.
+    #[serde(default)]
     pub decision_md: String,
     /// Who decided (names), at least one.
     pub decided_by: Vec<String>,
@@ -432,6 +440,14 @@ pub struct RecordDecisionParams {
     /// The projects it is about (ids or names), if any.
     #[serde(default)]
     pub projects: Vec<String>,
+    /// To correct only who decided an earlier decision, when and on what
+    /// (decided_by, decided_on, citation: the new source), give its id here
+    /// with `reason`; its words stay. Journaled as a source correction.
+    #[serde(default)]
+    pub revises: Option<u64>,
+    /// With `revises`: why the source was wrong.
+    #[serde(default)]
+    pub reason: Option<String>,
 }
 
 /// A decision.
@@ -487,7 +503,8 @@ pub struct DecisionsOut {
 /// Parameters for `books.raise_item`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RaiseItemParams {
-    /// What is open, in a line.
+    /// What is open, in a line. Left out when `revises` is given.
+    #[serde(default)]
     pub title: String,
     /// More, if any (Markdown).
     #[serde(default)]
@@ -495,6 +512,14 @@ pub struct RaiseItemParams {
     /// When it is due, YYYY-MM-DD, if it is.
     #[serde(default)]
     pub due: Option<String>,
+    /// To correct only who raised an item, when and on what (the source
+    /// given here), give the item's id with `reason`; the item stays as it
+    /// is. Journaled as a source correction.
+    #[serde(default)]
+    pub revises: Option<u64>,
+    /// With `revises`: why the source was wrong.
+    #[serde(default)]
+    pub reason: Option<String>,
     /// Who raised it, and when.
     #[serde(flatten)]
     pub source: SourceIn,
@@ -1104,7 +1129,7 @@ impl BooksServer {
     #[tool(
         name = "books.set_convention",
         title = "Set a convention",
-        description = "Record how this company keeps its books, as the human decided: a posting template (structured {description?, lines: [{account, side, share}]}, each side's shares summing to 1), an approval rule (structured {approver, accounts?, amount_over?}), or a policy, close step, calendar item, mapping or note (words only). An id already set is revised (same kind); retire one with books.retire_convention.",
+        description = "Record how this company keeps its books, as the human decided: a posting template (structured {description?, lines: [{account, side, share}]}, each side's shares summing to 1), an approval rule (structured {approver, accounts?, amount_over?}), or a policy, close step, calendar item, mapping or note (words only). An id already set is revised (same kind); retire one with books.retire_convention. To correct only its source (who decided it, when, on what), pass reason.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -1131,7 +1156,20 @@ impl BooksServer {
             source: p.source.source()?,
         };
         let mut store = self.lock()?;
-        let c = store.set_convention(&c).map_err(bad)?;
+        let c = match p.reason.as_deref() {
+            Some(reason) => {
+                store.revise_convention_source(&c, reason).map_err(bad)?;
+                c
+            }
+            None => store.set_convention(&c).map_err(|e| {
+                let text = bad(e);
+                if text.contains("already says exactly that") {
+                    format!("{text}; to correct only who decided it, when or on what, add reason")
+                } else {
+                    text
+                }
+            })?,
+        };
         let set = store
             .ledger()
             .conventions()
@@ -1167,7 +1205,7 @@ impl BooksServer {
     #[tool(
         name = "books.record_decision",
         title = "Record a decision",
-        description = "Record a decision the owners made about the books (a policy, a treatment, a cutover), with who decided, when, and the document behind it if one is filed. A decision that replaces an earlier one names it in supersedes. No signatures or memos needed: the record is the decision with its source. projects names the projects it is about.",
+        description = "Record a decision the owners made about the books (a policy, a treatment, a cutover), with who decided, when, and the document behind it if one is filed. A decision that replaces an earlier one names it in supersedes. No signatures or memos needed: the record is the decision with its source. projects names the projects it is about. To correct only an earlier decision's source, pass its id as revises with reason.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -1180,6 +1218,34 @@ impl BooksServer {
     ) -> Result<Json<IdOut>, String> {
         let p = params.0;
         let mut store = self.lock()?;
+        if let Some(id) = p.revises {
+            // A source correction: the decision's words stay (the ones
+            // given, if any, must be the ones it has).
+            let old = store
+                .ledger()
+                .conventions()
+                .decision(id)
+                .ok_or_else(|| format!("decision {id} doesn't exist: books.decisions lists them"))?;
+            if (!p.subject.is_empty() && p.subject != old.new.subject)
+                || (!p.decision_md.is_empty() && p.decision_md != old.new.decision_md)
+            {
+                return Err(format!(
+                    "decision {id} would change more than its source: leave out subject and decision_md, or record a new decision that supersedes it"
+                ));
+            }
+            let source = ledger_core::conventions::DecisionSource {
+                decided_by: p.decided_by,
+                decided_on: parse_date(&p.decided_on)?,
+                citation: p.citation,
+            };
+            let reason = p
+                .reason
+                .ok_or("revises needs a reason: why the source was wrong")?;
+            store
+                .revise_decision_source(id, &source, &reason)
+                .map_err(bad)?;
+            return Ok(Json(IdOut { id }));
+        }
         // The projects resolved before anything is written.
         let projects = p
             .projects
@@ -1232,7 +1298,7 @@ impl BooksServer {
     #[tool(
         name = "books.raise_item",
         title = "Raise an open item",
-        description = "Record something open: waiting on someone, due later, or to look into (a letter to mail, a reply expected, a question for the CPA), with a due date if it has one. books.start lists open items; resolve each with books.resolve_item.",
+        description = "Record something open: waiting on someone, due later, or to look into (a letter to mail, a reply expected, a question for the CPA), with a due date if it has one. books.start lists open items; resolve each with books.resolve_item. To correct only an item's source, pass its id as revises with reason.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -1241,6 +1307,25 @@ impl BooksServer {
     )]
     async fn raise_item(&self, params: Parameters<RaiseItemParams>) -> Result<Json<IdOut>, String> {
         let p = params.0;
+        if let Some(id) = p.revises {
+            let reason = p
+                .reason
+                .ok_or("revises needs a reason: why the source was wrong")?;
+            let source = p.source.source()?;
+            let mut store = self.lock()?;
+            if let Some(old) = store.ledger().conventions().open_item(id)
+                && !p.title.is_empty()
+                && p.title != old.new.title
+            {
+                return Err(format!(
+                    "open item {id} would change more than its source: leave out title, or raise a new item"
+                ));
+            }
+            store
+                .revise_open_item_source(id, &source, &reason)
+                .map_err(bad)?;
+            return Ok(Json(IdOut { id }));
+        }
         let item = NewOpenItem {
             title: p.title,
             detail_md: p.detail_md,

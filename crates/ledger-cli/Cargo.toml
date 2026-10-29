@@ -45,6 +45,20 @@ serde_json = "1"
 sha2 = "0.10"
 tempfile = "3"
 zip = "9.0.1"
+minisign = "0.10.0"
 
 [lints]
 workspace = true
+
+# The .rpm (P11a step 3), built by cargo-generate-rpm from the release
+# program: `just package-linux`. Paths are relative to the workspace root.
+[package.metadata.generate-rpm]
+name = "wanderbooks"
+summary = "Double-entry bookkeeping your agent keeps and you can read"
+license = "MIT OR Apache-2.0"
+url = "https://wanderbooks.ai"
+assets = [
+  { source = "target/release/wanderbooks", dest = "/usr/bin/wanderbooks", mode = "0755" },
+  { source = "deploy/packaging/install-method-rpm", dest = "/usr/share/wanderbooks/install-method", mode = "0644" },
+  { source = "deploy/packaging/wanderbooks-static.desktop", dest = "/usr/share/applications/wanderbooks.desktop", mode = "0644" },
+]

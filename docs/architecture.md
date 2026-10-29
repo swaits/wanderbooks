@@ -36,7 +36,7 @@ the specification in `bookspec/` (which never depends on the engine).
 | `ledger-import` | formats: QuickBooks CSV in; IIF, XLSX, Typst PDFs (statements, the invoice, labels) out | `ledger-core`, `ledger-reader` |
 | `ledger-package` | the shared read-only view over `Store` or `Snapshot` (`PackageBooks`): the CPA package, the 1099 worksheet, the invoice document, Needs attention | `ledger-core`, `ledger-store`, `ledger-config`, `ledger-import`, `ledger-vault` |
 | `ledger-mcp` | the books server: the MCP tools (122), resources, the handbook, scopes, the door and the access log, backups' scheduling | all of the above |
-| `ledger-host` | the host and its leases, the agent bridge (`wanderbooks mcp`), tokens in 0600 files under the data root (D-63), the owner's commands, uploads and downloads | `ledger-store`, `ledger-mcp`, `ledger-config` |
+| `ledger-host` | the host and its leases, the agent bridge (`wanderbooks mcp`), tokens in 0600 files under the data root (D-63), the owner's commands, uploads and downloads, `update` and `rollback` (P11a) | `ledger-store`, `ledger-mcp`, `ledger-config` |
 | `ledger-gui` | the viewer: read-only, live, egui; the Books menu hands work to the server | `ledger-core`, `ledger-store`, `ledger-config`, `ledger-import`, `ledger-package`, `ledger-vault`, `ledger-host` |
 | `ledger-cli` | `wanderbooks`, the one executable: every mode (`serve`, `server`, `host`, `mcp`, `gui`, `setup`, `books`, `token`, `connect`, `doctor`, …) and the over-the-wire test suites | everything |
 | `bookspec/checker`, `bookspec/runner` | the example schema and parser, the rule catalogue, the `Engine` trait; the per-rule runner | nothing of ours (the adapter in `ledger-core`'s tests depends on them) |
@@ -336,3 +336,43 @@ still run on the server). The recipe, the head check for the move and the
 two-account CI job are in `deploy/README.md`, `deploy/wanderbooks-server.service`
 and `.github/workflows/two-user.yml`; the checks are
 `crates/ledger-cli/tests/two_user.rs`.
+
+## Packaging and updates (`ledger-host`'s `update.rs`, `deploy/packaging/`, P11a)
+
+One program, installed one of two ways, updated one of two ways
+(plan D-24). The install says which: a package ships
+`share/wanderbooks/install-method` beside `bin/`, and a file there makes
+the program package-managed; `wanderbooks update` and `rollback` refuse it
+and name the manager (apt, dnf and the AUR keep every release, so
+downgrading is theirs). Anything else (an AppImage, whose file is named by
+`$APPIMAGE`; an executable put somewhere by hand) updates itself:
+
+- the feed is a `manifest.json` (a version, and per platform a file's
+  address, sha256 and minisign signature; the shape `cargo-packager`'s
+  updater reads, with the sha256 added) at GitHub Releases' fixed address
+  (D-26); `--feed` reads another, and only with a `file://` feed may
+  `--trusted-key` name the key;
+- the key a release is checked against is compiled in
+  (`WANDERBOOKS_RELEASE_PUBKEY`, set by the release workflow once the
+  owner's key exists; step 5): a build without one updates from nothing;
+- a download is accepted only if its sha256 matches AND its signature
+  verifies; then it is staged, the running version kept under
+  `<root>/updates/previous/` with the journal format it understood, and the
+  file replaced by a rename of a complete copy made beside it;
+- nothing tells the books to stop. The host notices its executable's file
+  was replaced and restarts as it does for a package upgrade (host.rs
+  INVARIANT 7), finishing calls in progress; bridges reconnect upstream
+  without the agent noticing. The format gate stays the server's (3.9):
+  `rollback` refuses while a book declares a format or feature the kept
+  version does not know;
+- an AppImage is the exception to the restart: the host runs from the old
+  image's mount, whose path does not change, so it keeps running the old
+  version until the books are next closed and opened (docs/packaging.md).
+
+`deploy/packaging/` holds the Linux packaging: `packager.toml`
+(cargo-packager: `.deb`, AppImage, the pacman tarball with its PKGBUILD),
+the rpm table in `crates/ledger-cli/Cargo.toml`, `aur/PKGBUILD` (the AUR
+package, which repacks the release's tarball), `build-linux.sh`,
+`repo-indexes.sh` (the apt and dnf indexes), `local-release.sh` (a
+throwaway-keyed feed on this machine) and `test-linux-packages.sh`.
+`.github/workflows/release.yml` builds them on a version tag.

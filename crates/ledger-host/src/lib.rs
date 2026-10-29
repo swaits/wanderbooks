@@ -20,6 +20,8 @@ pub mod lease;
 pub mod opener;
 mod start;
 pub mod tokens;
+#[cfg(unix)]
+pub mod update;
 
 /// How a mode stops when it can't go on: the reason is already printed,
 /// and the number is the process's exit code.

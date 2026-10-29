@@ -23,3 +23,7 @@ node = "26"
 # A compile cache shared by every jj workspace's target dir: point
 # cargo's build.rustc-wrapper at it (~/.cargo/config.toml).
 sccache = "0.18.0"
+# `just package-linux` (docs/packaging.md): the AppImage and .deb by
+# cargo-packager, the .rpm by cargo-generate-rpm (D-25).
+"cargo:cargo-packager" = "0.11.8"
+"cargo:cargo-generate-rpm" = "0.21.1"

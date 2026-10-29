@@ -263,3 +263,35 @@ deploy: site
 # Deploy a preview of the website and print its URL
 deploy-preview: site
     {{netlify}} deploy --dir site/dist --no-build
+
+# The Linux packages (P11a step 3), in target/packages/VERSION. Builds the
+# release program first; needs the tools `mise install` pins. A VERSION other
+# than the program's repackages the same program under it (the upgrade
+# test's second release).
+# Build the AppImage, .deb, pacman tarball and .rpm
+package-linux version="" formats="deb,appimage,pacman":
+    cargo build --release -p ledger-cli
+    deploy/packaging/build-linux.sh {{version}} {{formats}}
+
+# A release folder on this machine signed with a throwaway key; then
+# `wanderbooks update --feed file://DIR/manifest.json --trusted-key DIR/release.pub`
+# Make a local release feed to try `wanderbooks update` against
+local-release file version dir:
+    deploy/packaging/local-release.sh {{file}} {{version}} {{dir}}
+
+# A program linked here does not start on Debian (docs/packaging.md); this
+# builds it in rust:1.99-trixie, into target/container. Needs docker.
+# Build the release program in a Debian trixie container
+release-trixie:
+    mkdir -p target/container
+    docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -e CARGO_HOME=/tmp/cargo-home -e CARGO_TARGET_DIR=/target -v "$PWD:/src:ro" -v "$PWD/target/container:/target" -w /src rust:1.99-trixie cargo build --release --locked -p ledger-cli
+
+# Install each Linux package in a clean Arch, Debian and Fedora container,
+# open the books, upgrade to the next release, and check the books' head is
+# unchanged and the open books restarted onto the new program. Builds the
+# program in a trixie container, then releases 0.1.0 and 0.1.1 of it.
+# Install and upgrade the Linux packages in Arch, Debian and Fedora containers
+test-linux-packages: release-trixie
+    WB_PROGRAM=target/container/release/wanderbooks deploy/packaging/build-linux.sh 0.1.0 deb,pacman
+    WB_PROGRAM=target/container/release/wanderbooks deploy/packaging/build-linux.sh 0.1.1 deb,pacman
+    deploy/packaging/test-linux-packages.sh

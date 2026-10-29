@@ -3727,3 +3727,79 @@ arm; `Listener`'s `IDLE_INSTANCES` pool (a mutant that makes it 1 passes
 every test but `many_clients_at_once_all_connect`); `start.rs::host_env`'s
 list. None of the Windows arms is reachable by `cargo mutants` on Linux:
 they run on the Windows job only.
+
+## P11a steps 2 and 3: update, rollback, the Linux packages (2026-10-29)
+
+`wanderbooks update` and `rollback` (`ledger-host/src/update.rs`) are
+tested over a local release folder (a `file://` feed) and a minisign key
+the test makes, with real programs: each test makes a home, a stripped
+copy of the program in its `bin/`, and a manifest naming a newer copy of
+it (the same program with a tail, so its hash differs). All in
+`crates/ledger-cli/tests/update.rs` (Linux only):
+
+- `an_update_replaces_the_program_keeps_the_old_one_and_rollback_brings_it_back`:
+  no key and no feed is refused ("no release key"); the same version is "the
+  newest"; an older offer is refused and nothing is kept; an update puts
+  the new bytes in place, keeps the old under `updates/previous/` with the
+  format it understood, leaves no temporary or staged file; rollback puts
+  the old bytes back and consumes what was kept; a second rollback says
+  there is nothing to go back to.
+- `update_is_atomic`: a reader polling the program file all through the
+  update sees, on every read, the old file whole or the new whole.
+- `failed_update_rolls_back`: a validly signed file that does not start
+  (`exit 3`) is swapped in, fails `--help`, and the old program is put
+  back; nothing is staged or left beside the program.
+- `unsigned_update_refused`: five bad manifests (a good signature by
+  another key; a signature of other bytes; a sha256 that differs; an empty
+  signature; a signature that is not one), each refused with the program
+  unchanged and nothing kept or staged; `--trusted-key` with an `https`
+  feed is refused.
+- `package_managed_install_refuses_update`: a
+  `share/wanderbooks/install-method` marker beside `bin/` makes both
+  commands refuse, naming the manager, with nothing made in the data root.
+- `rollback_refuses_after_a_book_consented_to_a_newer_format`: with a
+  book that declares this version's format and a kept version that knows
+  one feature less, rollback refuses and the program stays; with the kept
+  version knowing everything the book declares, it goes back.
+- `bridge_survives_update` and `update_waits_for_a_running_call`: an
+  agent's bridge session writes without pause while `update` runs and the
+  host restarts onto the new file; every write is answered and made once
+  (the account is in the chart exactly once), the session needs no
+  reconnect, its tool list is unchanged, and the host and server run the
+  file now on disk (not a deleted one). The host's own restart laws stay
+  `open_while_held.rs`'s (`a_restart_is_not_a_close`).
+
+Unit tests in `update.rs`: `versions_are_three_numbers_and_order_by_number`,
+`a_package_marker_beside_the_program_makes_it_package_managed`,
+`a_manifest_address_is_resolved_beside_the_manifest`,
+`a_swap_leaves_the_whole_new_file_and_no_temporary`,
+`a_public_key_is_read_in_every_form_minisign_and_the_packager_write_it`.
+`main.rs`: `only_nothing_at_all_with_no_terminal_is_the_viewer` (the bare
+launch an AppImage's launcher makes; it cannot be run as a test, because the
+viewer finds the account's real data root from the password database).
+
+Not tests, run by hand on this machine and recorded in `docs/packaging.md`:
+the AppImage updating and rolling back itself against a feed signed by
+`cargo packager signer` (`just local-release`), which is the check that the
+packager's signature format is the one `update` verifies.
+
+**`linux_packages_install_and_upgrade`** is `deploy/packaging/test-linux-packages.sh`
+(`just test-linux-packages`, needs docker; not part of `just check`): in a
+clean Debian, Fedora and Arch container it installs release 0.1.0 (Debian
+and Fedora from an apt and a dnf repository made by `repo-indexes.sh`, the
+same script the release workflow runs; Arch by `makepkg` from the
+packager's PKGBUILD), makes books as an ordinary user, holds them open,
+adds 0.1.1 to the repository and upgrades; then checks the host restarted
+onto the new file, `wanderbooks books list` is unchanged, and
+`wanderbooks update` refuses and names the package manager. The programs
+are built in a `rust:1.99-trixie` container (`just release-trixie`):
+see `docs/packaging.md` for why the build machine's own binary is not used.
+
+**For P12 (mutation targets, none run, D-33):** `update.rs`'s `verify`
+(a mutant that drops the sha check or the signature check must die on
+`unsigned_update_refused`'s sha and key cases), `refuse_if_consented`'s
+two comparisons (`rollback_refuses_after_a_book_consented_to_a_newer_format`
+covers the feature one; a case with a higher format number is a gap to
+add), `swap_in`'s temporary-then-rename (`update_is_atomic`), `healthy`
+(`failed_update_rolls_back`), `install_kind` (the marker test), and
+`parse_version`'s rejections.

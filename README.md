@@ -97,6 +97,15 @@ create acme`, `wanderbooks connect claude --book acme` (or `connect codex`).
 Then talk to the agent; `wanderbooks gui acme` shows the books, and its
 Books menu backs them up, restores, starts new books and closes them.
 
+Updating: an AppImage, or a `wanderbooks` you put somewhere yourself, brings
+itself to the newest release with `wanderbooks update` (it checks the
+download against our release key, keeps the version it replaces, and the
+open books restart onto the new one when idle); `wanderbooks rollback` goes
+back, unless a book has since moved to a newer journal format. A `.deb`,
+`.rpm` or AUR install is updated by its package manager and `update` says
+so. The Linux packages are built here with `just package-linux`
+(docs/packaging.md); none is published yet.
+
 ## Developing
 
 Every tool the recipes use (Rust, just, Kani, Lean, cargo-mutants,

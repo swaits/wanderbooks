@@ -1,0 +1,77 @@
+# Releases (plan P11a, D-24, D-26): on a version tag, build the Linux
+# packages on the oldest system they claim (ubuntu-24.04, glibc 2.39; a
+# program linked on a newer one does not start on an older one), attach
+# them to the GitHub release, and add them to the apt and dnf repositories
+# on the gh-pages branch (GitHub Pages serves them). Unsigned: step 5 of
+# the unit (the release key, Q-4) signs the manifest and the indexes, and
+# step 6 adds the macOS and Windows jobs. The release holds no key today.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    # Same disk discipline as check.yml: no incremental caches.
+    env:
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Room for the build (the image ships toolchains we never use)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /opt/hostedtoolcache/CodeQL /usr/local/.ghcup
+          df -h / | tail -1
+      - uses: jdx/mise-action@v2
+        with:
+          # Only what packaging needs, not the proof and fuzz tools.
+          install_args: "rust just cargo:cargo-packager cargo:cargo-generate-rpm"
+      - name: GUI build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libgtk-3-dev apt-utils createrepo-c
+      - name: The tag is the program's version
+        id: version
+        run: |
+          own=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/ledger-cli/Cargo.toml | head -n1)
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "${GITHUB_REF_TYPE}" = tag ] && [ "$tag" != "$own" ]; then
+            echo "tag $GITHUB_REF_NAME is not version $own" >&2
+            exit 1
+          fi
+          echo "version=$own" >> "$GITHUB_OUTPUT"
+      - name: Build the packages
+        run: just package-linux ${{ steps.version.outputs.version }}
+      - name: Attach them to the release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v=${{ steps.version.outputs.version }}
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes "wanderbooks $v"
+          gh release upload "$GITHUB_REF_NAME" --clobber target/packages/$v/*.AppImage target/packages/$v/*.deb target/packages/$v/*.rpm target/packages/$v/*.tar.gz
+      - name: Add them to the apt and dnf repositories (gh-pages)
+        if: github.ref_type == 'tag'
+        run: |
+          v=${{ steps.version.outputs.version }}
+          git fetch origin gh-pages || true
+          if git rev-parse --verify origin/gh-pages >/dev/null 2>&1; then
+            git worktree add repo origin/gh-pages
+          else
+            git worktree add --detach repo && git -C repo checkout --orphan gh-pages && git -C repo rm -rfq . || true
+          fi
+          mkdir -p repo/apt/pool repo/dnf
+          cp target/packages/$v/*.deb repo/apt/pool/
+          cp target/packages/$v/*.rpm repo/dnf/
+          deploy/packaging/repo-indexes.sh apt repo/apt
+          deploy/packaging/repo-indexes.sh dnf repo/dnf
+          cd repo
+          git config user.name "wanderbooks release"
+          git config user.email "release@wanderbooks.ai"
+          git add -A
+          git commit -m "wanderbooks $v"
+          git push origin HEAD:gh-pages

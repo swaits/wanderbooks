@@ -1,0 +1,25 @@
+# Maintainer: Stephen Waits
+# The AUR package (P11a step 3, D-24, D-26): it repacks the tarball of the
+# release's files that GitHub Releases serves; nothing is built from source.
+# `updpkgsums` fills the checksum when a release is published.
+pkgname=wanderbooks-bin
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Double-entry bookkeeping your agent keeps and you can read"
+arch=('x86_64')
+url="https://wanderbooks.ai"
+license=('MIT' 'Apache-2.0')
+depends=('gcc-libs' 'glibc')
+provides=('wanderbooks')
+conflicts=('wanderbooks')
+options=('!lto' '!strip')
+# The tarball holds usr/bin/wanderbooks, usr/share/applications/ and
+# usr/share/wanderbooks/install-method (which makes `wanderbooks update`
+# refuse and send the owner to pacman).
+source=("wanderbooks_${pkgver}_x86_64.tar.gz::https://github.com/swaits/wanderbooks/releases/download/v${pkgver}/wanderbooks_${pkgver}_x86_64.tar.gz")
+sha256sums=('SKIP')
+noextract=()
+
+package() {
+	cp -r "${srcdir}/usr" "${pkgdir}/usr"
+}

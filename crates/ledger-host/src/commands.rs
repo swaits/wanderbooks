@@ -1146,7 +1146,7 @@ pub fn connect(
     };
     // The owner's command (INVARIANT 6).
     common.ask_upgrades = true;
-    match connect_agent(&common, agent, &book) {
+    match connect_and_home(&common, agent, &book) {
         Ok(lines) => {
             for line in lines {
                 println!("{line}");
@@ -1173,40 +1173,11 @@ pub fn connect_agent(common: &Common, agent: &str, book: &str) -> Result<Vec<Str
     let book = ledger_store::root::BookId::parse(book)
         .map_err(|e| e.to_string())?
         .to_string();
-    // The PATH first; then where the agents' installers put them (a
-    // viewer started from the desktop has a short PATH).
-    // ($HOME: a test's own home is never the account's.)
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .filter(|h| h.is_absolute());
-    let usual = [
-        ".local/bin",
-        ".npm-global/bin",
-        ".bun/bin",
-        ".cargo/bin",
-        ".volta/bin",
-    ]
-    .into_iter()
-    .filter_map(|d| home.as_ref().map(|h| h.join(d)))
-    .chain(
-        ["/usr/local/bin", "/opt/homebrew/bin"]
-            .into_iter()
-            .map(PathBuf::from),
-    );
-    let program = std::env::var_os("PATH")
-        .map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
-        .unwrap_or_default()
-        .into_iter()
-        .chain(usual)
-        .filter(|d| d.is_absolute())
-        .map(|d| d.join(cli))
-        .find(|p| {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-        })
-        .ok_or_else(|| {
-            format!("{label} isn't installed here (no `{cli}` on the PATH, nor where its installer puts it)")
-        })?;
+    let program = find_agent_program(cli).ok_or_else(|| {
+        format!(
+            "{label} isn't installed here (no `{cli}` on the PATH, nor where its installer puts it)"
+        )
+    })?;
     let mut lines = Vec::new();
     // The token: kept in its file, or made now.
     let found =
@@ -1287,6 +1258,404 @@ pub fn connect_agent(common: &Common, agent: &str, book: &str) -> Result<Vec<Str
         "{label} reaches the books {book} as \"{name}\" (restart {label} to see it)."
     ));
     Ok(lines)
+}
+
+/// Where an agent's program is: on the PATH, else where its own
+/// installer puts it (a viewer started from the desktop has a short
+/// PATH). `home` is the account's home (`$HOME`: a test's own home is never
+/// the account's).
+pub fn find_agent_in(
+    cli: &str,
+    path: Option<&std::ffi::OsStr>,
+    home: Option<&Path>,
+) -> Option<PathBuf> {
+    let usual = [
+        ".local/bin",
+        ".npm-global/bin",
+        ".bun/bin",
+        ".cargo/bin",
+        ".volta/bin",
+    ]
+    .into_iter()
+    .filter_map(|d| home.map(|h| h.join(d)))
+    .chain(
+        ["/usr/local/bin", "/opt/homebrew/bin"]
+            .into_iter()
+            .map(PathBuf::from),
+    );
+    path.map(|p| std::env::split_paths(p).collect::<Vec<_>>())
+        .unwrap_or_default()
+        .into_iter()
+        .chain(usual)
+        .filter(|d| d.is_absolute())
+        .map(|d| d.join(cli))
+        .find(|p| is_program(p))
+}
+
+/// Whether `p` is a file this account can run.
+fn is_program(p: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    {
+        p.is_file()
+    }
+}
+
+/// This account's home, from the environment.
+fn home_dir_env() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .filter(|h| h.is_absolute())
+}
+
+/// The agent program `cli` ("claude" or "codex") for this account.
+fn find_agent_program(cli: &str) -> Option<PathBuf> {
+    find_agent_in(
+        cli,
+        std::env::var_os("PATH").as_deref(),
+        home_dir_env().as_deref(),
+    )
+}
+
+/// How a person gets an agent's program: the vendor's own installer,
+/// never bundled (D-27).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Installer {
+    /// The agent's name.
+    pub label: &'static str,
+    /// The vendor's install command, to run in a terminal.
+    pub command: &'static str,
+    /// The vendor's page about it.
+    pub page: &'static str,
+}
+
+/// The vendor's installer for `agent` ("claude" or "codex").
+pub fn installer(agent: &str) -> Option<Installer> {
+    match agent {
+        "claude" => Some(Installer {
+            label: "Claude Code",
+            command: if cfg!(windows) {
+                "irm https://claude.ai/install.ps1 | iex"
+            } else {
+                "curl -fsSL https://claude.ai/install.sh | bash"
+            },
+            page: "https://code.claude.com/docs/en/setup",
+        }),
+        "codex" => Some(Installer {
+            label: "Codex",
+            command: "npm install -g @openai/codex",
+            page: "https://developers.openai.com/codex/cli",
+        }),
+        _ => None,
+    }
+}
+
+/// The folder holding the user's documents: `Documents` in the home (the
+/// word the spec uses on every system this program runs on; nothing in the
+/// environment moves it, so a test's own `HOME` is all a test needs).
+pub fn documents_dir() -> Option<PathBuf> {
+    home_dir_env().map(|h| h.join("Documents"))
+}
+
+/// The books home of `book` (D-27): a visible folder,
+/// `<Documents>/Wanderbooks/<book>`, where an agent works on that book. It
+/// holds the agent's pointer and settings for the book and nothing of the
+/// books themselves (see [`make_books_home_in`]). Named by the book's id,
+/// which never changes, not by the company's name, which is set after the
+/// books are made and can change.
+pub fn books_home(book: &str) -> PathBuf {
+    books_home_in(
+        &documents_dir().unwrap_or_else(|| PathBuf::from("Documents")),
+        book,
+    )
+}
+
+/// [`books_home`] under the given documents folder.
+pub fn books_home_in(documents: &Path, book: &str) -> PathBuf {
+    documents.join("Wanderbooks").join(book)
+}
+
+/// The program an agent's pointer file names: the AppImage's own file when
+/// this runs from one (its mount goes away with the process), else this
+/// executable as it is on disk.
+fn pointer_program() -> Result<PathBuf, String> {
+    if let Some(image) = std::env::var_os("APPIMAGE")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute() && p.is_file())
+    {
+        return Ok(image);
+    }
+    crate::start::this_executable()
+}
+
+/// Make (or refresh) the books home of `book` under `documents`, for the
+/// program `exe` (D-27). It holds exactly four files:
+///
+/// ```text
+/// AGENTS.md, CLAUDE.md   three lines saying whose books these are and
+///                        how to reach them (written when absent: a
+///                        person's edits stay)
+/// .mcp.json              the project-level MCP entry: `<exe> mcp --book <id>`
+/// .claude/settings.json  allows `mcp__wanderbooks-<id>__*`, so the daily
+///                        flow doesn't prompt
+/// ```
+///
+/// No books data, no key, no token, no path into the data root: the entry
+/// finds the root the way every `wanderbooks` command does. The two JSON
+/// files are merged into, so anything else a person keeps in them stays.
+/// Trust in the folder is the person's to give: nothing here marks it
+/// trusted for any agent (Q-7).
+pub fn make_books_home_in(
+    documents: &Path,
+    book: &str,
+    company: Option<&str>,
+    exe: &Path,
+) -> Result<PathBuf, String> {
+    let book = ledger_store::root::BookId::parse(book)
+        .map_err(|e| e.to_string())?
+        .to_string();
+    if !documents.is_absolute() {
+        return Err("there is no documents folder to make the books home in".into());
+    }
+    let home = books_home_in(documents, &book);
+    let write_err =
+        |what: &Path, e: std::io::Error| format!("couldn't write {}: {}", what.display(), e.kind());
+    std::fs::create_dir_all(home.join(".claude")).map_err(|e| write_err(&home, e))?;
+    let name = format!("wanderbooks-{book}");
+    // The three lines, for both agents' file names.
+    let whose = company
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+        .unwrap_or(&book);
+    let text = format!(
+        "These are {whose}'s books.\nConnect the wanderbooks MCP and call `books.start`.\nThe books live in the app's private folder, not here.\n"
+    );
+    for file in ["AGENTS.md", "CLAUDE.md"] {
+        let path = home.join(file);
+        if !path.exists() {
+            std::fs::write(&path, &text).map_err(|e| write_err(&path, e))?;
+        }
+    }
+    let merge = |path: PathBuf,
+                 edit: &dyn Fn(&mut serde_json::Map<String, serde_json::Value>)|
+     -> Result<(), String> {
+        let mut doc = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+            .filter(serde_json::Value::is_object)
+            .unwrap_or_else(|| serde_json::json!({}));
+        if let Some(map) = doc.as_object_mut() {
+            edit(map);
+        }
+        let mut out = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
+        out.push('\n');
+        std::fs::write(&path, out).map_err(|e| write_err(&path, e))
+    };
+    let entry = serde_json::json!({
+        "command": exe.to_string_lossy(),
+        "args": ["mcp", "--book", book],
+    });
+    merge(home.join(".mcp.json"), &|doc| {
+        let servers = doc
+            .entry("mcpServers")
+            .or_insert_with(|| serde_json::json!({}));
+        if let Some(servers) = servers.as_object_mut() {
+            servers.insert(name.clone(), entry.clone());
+        }
+    })?;
+    let rule = format!("mcp__{name}__*");
+    merge(home.join(".claude").join("settings.json"), &|doc| {
+        let perms = doc
+            .entry("permissions")
+            .or_insert_with(|| serde_json::json!({}));
+        if let Some(perms) = perms.as_object_mut() {
+            let allow = perms
+                .entry("allow")
+                .or_insert_with(|| serde_json::json!([]));
+            if let Some(allow) = allow.as_array_mut()
+                && !allow.iter().any(|r| r.as_str() == Some(rule.as_str()))
+            {
+                allow.push(serde_json::Value::String(rule.clone()));
+            }
+        }
+    })?;
+    Ok(home)
+}
+
+/// [`make_books_home_in`] for this account: its documents folder and this
+/// program.
+pub fn make_books_home(book: &str, company: Option<&str>) -> Result<PathBuf, String> {
+    let documents = documents_dir().ok_or("this account has no documents folder")?;
+    make_books_home_in(&documents, book, company, &pointer_program()?)
+}
+
+/// [`connect_agent`], and the books home made beside it (D-27: the agent's
+/// own list gets the user-scope entry as ever; the home adds the
+/// project-level one). What was done, a line each.
+pub fn connect_and_home(common: &Common, agent: &str, book: &str) -> Result<Vec<String>, String> {
+    let mut lines = connect_agent(common, agent, book)?;
+    lines.push(home_line(book));
+    Ok(lines)
+}
+
+/// [`new_books`], and the books home made beside them (D-27): the viewer's
+/// "New books…". The home is a convenience: its trouble is said, and the
+/// books stay made.
+pub fn new_books_and_home(common: &Common, id: &str, currency: &str) -> Result<String, String> {
+    let made = new_books(common, id, currency)?;
+    Ok(format!("{made} {}", home_line(id.trim())))
+}
+
+/// The books home made, said in a line (its trouble, too: the home is a
+/// convenience, never a reason to fail what was asked).
+fn home_line(book: &str) -> String {
+    match make_books_home(book, None) {
+        Ok(home) => format!(
+            "The books home is {}: start your agent there.",
+            home.display()
+        ),
+        Err(why) => format!("The books home wasn't made: {why}."),
+    }
+}
+
+/// What starting an agent in a books home needs (the dock runs it on a
+/// terminal of its own).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AgentStart {
+    /// The program, its arguments, the folder it starts in and the
+    /// environment it is given.
+    Ready {
+        /// The agent's name.
+        label: &'static str,
+        /// The program.
+        program: PathBuf,
+        /// Its arguments.
+        args: Vec<String>,
+        /// The books home.
+        dir: PathBuf,
+        /// Environment to add.
+        env: Vec<(String, String)>,
+    },
+    /// The agent isn't installed: how to get it.
+    Missing(Installer),
+}
+
+/// Start `agent` ("claude" or "codex") on `book` (D-27): make sure the
+/// books home is there, and say how to run the agent in it. Claude Code
+/// and Codex ask about trusting the folder themselves the first time (Q-7:
+/// the app marks nothing trusted).
+pub fn start_agent(agent: &str, book: &str) -> Result<AgentStart, String> {
+    let documents = documents_dir().ok_or("this account has no documents folder")?;
+    start_agent_in(
+        &documents,
+        &pointer_program()?,
+        std::env::var_os("PATH").as_deref(),
+        home_dir_env().as_deref(),
+        agent,
+        book,
+    )
+}
+
+/// [`start_agent`] with its surroundings given: the documents folder, the
+/// program the books home points at, the `PATH` and the home that find the
+/// agent.
+pub fn start_agent_in(
+    documents: &Path,
+    exe: &Path,
+    path: Option<&std::ffi::OsStr>,
+    home: Option<&Path>,
+    agent: &str,
+    book: &str,
+) -> Result<AgentStart, String> {
+    let how = installer(agent).ok_or_else(|| format!("{agent:?}: claude or codex"))?;
+    let cli = if agent == "claude" { "claude" } else { "codex" };
+    let dir = make_books_home_in(documents, book, None, exe)?;
+    let Some(program) = find_agent_in(cli, path, home) else {
+        return Ok(AgentStart::Missing(how));
+    };
+    Ok(AgentStart::Ready {
+        label: how.label,
+        program,
+        args: Vec::new(),
+        dir,
+        env: vec![
+            ("TERM".into(), "xterm-256color".into()),
+            ("COLORTERM".into(), "truecolor".into()),
+        ],
+    })
+}
+
+/// Where a first run stands (P11b: onboarding with no terminal): whether
+/// the books' private folder is there, which books it holds, and whether
+/// the owner passphrase is set.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FirstRun {
+    /// The private folder (data root) exists and can be opened.
+    pub root: bool,
+    /// The ids of the books it holds.
+    pub books: Vec<String>,
+    /// The owner passphrase is set.
+    pub passphrase_set: bool,
+}
+
+/// [`FirstRun`] for the root `common` names (else the one setup recorded).
+pub fn first_run_state(common: &Common) -> FirstRun {
+    let Ok(found) = ledger_store::root::Root::find(common.root.as_deref()) else {
+        return FirstRun::default();
+    };
+    FirstRun {
+        root: true,
+        books: found
+            .list_books()
+            .map(|b| b.iter().map(|id| id.as_str().to_string()).collect())
+            .unwrap_or_default(),
+        passphrase_set: found
+            .auth_dir()
+            .ok()
+            .and_then(|a| ledger_store::passphrase::is_set(&a).ok())
+            .unwrap_or(false),
+    }
+}
+
+/// `wanderbooks setup` for a viewer with no terminal: make the books'
+/// private folder (`common.root`, else this account's default; plan 3.4).
+/// What was done, a line each. The folder's place is not said.
+pub fn set_up_root(common: &Common) -> Result<Vec<String>, String> {
+    let home = ledger_store::root::account_home().map_err(|e| e.to_string())?;
+    let xdg = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from);
+    let (_, report) =
+        ledger_store::root::Root::setup(&home, common.root.as_deref(), xdg.as_deref())
+            .map_err(|e| e.to_string())?;
+    Ok(vec![
+        if report.created {
+            "Made the books' private folder. Only your account can open it."
+        } else {
+            "The books' private folder is there. Only your account can open it."
+        }
+        .to_string(),
+    ])
+}
+
+/// Set the owner passphrase for the first time, from a viewer (a person
+/// typed it there, twice). Changing one in force is `wanderbooks
+/// passphrase`'s: it asks for the one in force.
+pub fn set_first_passphrase(common: &Common, new: &str) -> Result<(), String> {
+    use ledger_store::passphrase;
+    let found =
+        ledger_store::root::Root::find(common.root.as_deref()).map_err(|e| e.to_string())?;
+    let auth = found.auth_dir().map_err(|e| e.to_string())?;
+    if passphrase::is_set(&auth).map_err(|e| e.to_string())? {
+        return Err(
+            "an owner passphrase is set already: `wanderbooks passphrase` changes it".into(),
+        );
+    }
+    passphrase::check_length(new).map_err(|e| e.to_string())?;
+    passphrase::set(&auth, new, None).map_err(|e| e.to_string())
 }
 
 /// Make the token `name` for `book` (the server does) and keep it in its

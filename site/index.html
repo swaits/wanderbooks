@@ -292,7 +292,7 @@ footer { padding: 72px 0 48px; color: var(--faint); font-size: 14px; display: fl
     <p class="sub">The one line at the top does everything: installs Rust if you don't have it, builds wanderbooks, makes a private folder for your books, starts them, and connects Claude Code. Nothing needs administrator rights, and nothing keeps running in the background once you're done.</p>
     <div class="grid">
       <div class="card"><h3>Linux</h3><p>Needs a C compiler and git (<code class="inline">build-essential</code> on Debian and Ubuntu). The installer tells you if anything's missing.</p></div>
-      <div class="card"><h3>macOS</h3><p>Needs Apple's command line tools: <code class="inline">xcode-select --install</code>.</p></div>
+      <div class="card"><h3>macOS</h3><p>Needs Apple's command line tools: <code class="inline">xcode-select --install</code>. The install, your books and the viewer work today; connecting Claude Code or Codex waits for the macOS keyring store, which comes with the app (soon).</p></div>
       <div class="card"><h3>Windows</h3><p>Run it inside WSL2 (<code class="inline">wsl --install</code>, then Ubuntu). On Windows 11 the viewer opens as a normal window. Native Windows is on the way.</p></div>
     </div>
     <p class="note" style="margin-top:24px">Already installed? <code class="inline">wanderbooks books create another</code>, then <code class="inline">wanderbooks connect claude --book another</code>. <code class="inline">wanderbooks gui</code> opens the viewer; its Books menu backs up, restores, starts new books and closes them.</p>

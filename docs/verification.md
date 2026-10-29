@@ -479,6 +479,44 @@ one kernel function, `kernel::unrecovered_cost`:
     `unrecovered_cost_only_for_on_spec_and_never_negative`. No Lean model:
     the function is one subtraction and a `max`.
 
+### Documents and their control accounts (P4b S1, D-45)
+
+**Law 34. A control account is its documents.** For a receivables or
+payables account A and any day D, the account's balance on D equals the
+sum over documents of `outstanding(d, D)` (the signed sum of the lines
+tagged with d and dated on or before D, whatever their entries' standing:
+a reversal's mirror carries the same tag and cancels) plus the legacy
+untagged lines that still stand. A document never owes less than nothing
+or more than its total on any day a payment path or a reversal touches
+it. Rule: `docs/spec/rules.md` B-38.
+
+- Kernel: `kernel::running_bounds(total, deltas)` and
+  `kernel::bounds_kept(total, before, after)` decide, at every date in
+  date order, whether 0 ≤ outstanding ≤ total holds; `Ledger::
+  check_item_bounds` runs them on the documents a step touches. Kani:
+  `bounds_check_matches_definition` (the check equals the definition on a
+  symbolic sequence of deltas) and
+  `bounds_kept_is_the_definition_on_books_in_bounds` (on books already
+  within bounds, `bounds_kept` is exactly the definition over the new
+  deltas), both with covers reaching a refused and an accepted sequence.
+  Bridge: `crates/ledger-store/tests/bounds.rs` and the properties in
+  `crates/ledger-store/tests/arap_props.rs` (`subledger_equals_control`
+  after every operation, at every date; `status_is_a_function_of_journal
+  _and_date`; `reversal_twice_restores_state`).
+- Lean, `verify/lean/Wanderbooks/Documents.lean`: `control_agrees` and
+  `control_agrees_through` (the identity, for every account and through
+  every day), `Step.document_unattached` (an untagged legacy line only
+  grows `unattached`, never a document), `Step.reverse_moves` and
+  `reverse_twice` (a reversal moves exactly the opposite of its tagged
+  lines from its date; reversing it restores them),
+  `Reachable.control_is_documents` (the identity on every reachable
+  book). Listed in `Audit.lean`; standard axioms only.
+- Laws 35 to 37 are taken, in the order the paused branches merge, by
+  S5 (`Step.markSent`: a send changes no figure), S6
+  (`settle_is_exact`: a settlement's cash, discounts and fee are exact)
+  and S7 (`writeOff_within_bounds`); the branches wrote 34 and are
+  renumbered at merge (`plan/served.md` 8.0.2).
+
 ### Payment terms and document lines (P4b S4.1)
 
 Payment terms (rules.md B-39) give a due date and a discount date by
@@ -660,8 +698,8 @@ Lean carrying any weights.
 
 ```sh
 mise install   # once: Kani, Lean, and the rest, pinned in mise.toml
-just prove       # 48 Kani harnesses and Lean
-just prove-slow  # the other 8: the justfile's kani_slow
+just prove       # 51 Kani harnesses and Lean
+just prove-slow  # the other 9: the justfile's kani_slow
 just prove-all   # both
 ```
 
@@ -766,4 +804,6 @@ each harness's whole run, its compile of about 50 s included):
 | `unrecovered_cost_laws` | 32 | prove | 0 |
 | `discount_max_is_bounded` | 33 | prove-slow | 163 |
 | `line_amount_is_exact` | 33 | prove | 6 |
+| `bounds_check_matches_definition` | 34 | prove | (not in the 2026-10-22 run; P4b S1, 2026-10-24) |
+| `bounds_kept_is_the_definition_on_books_in_bounds` | 34 | prove | (as above) |
 | `kani_symbolic_copy_canary` | (the checker: "Trusting the checker") | prove | 3 |

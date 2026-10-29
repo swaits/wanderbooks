@@ -8,7 +8,7 @@ Statuses: `done` = implemented + invariant-tested + golden-covered.
 `partial` = implemented but missing tests or goldens. `todo` = not started.
 No other statuses.
 
-**Floor: 10 done** (2026-10-10; fixed-asset register added).
+**Floor: 21 done** (2026-10-28; it was 10 on 2026-10-10, when the fixed-asset register was added, and the sections below record each rise).
 
 | Area | GnuCash counterpart (a cross-check, not the spec) | Status | Notes |
 |---|---|---|---|
@@ -34,8 +34,8 @@ No other statuses.
 | Bank reconciliation (cleared flags + report) | Reconcile | done | — |
 | QuickBooks CSV import (bank txns, chart of accounts) | Banking → Upload | done | R-FUTURE-4 |
 | QuickBooks IIF + XLSX export | Export / reports | done | R-FUTURE-4 |
-| A/R invoices + payments + aging | Business → Invoices | done | R-FUTURE-5 |
-| A/P bills + payments + aging | Business → Bills | done | R-FUTURE-5 |
+| A/R invoices + payments + aging | Business → Invoices | done | R-FUTURE-5; since P4b S1 (D-45) a document's paid, outstanding and status are read from its tagged ledger lines, hand lines on the receivables account are refused, `books.void_document` and `books.control_check` tie the subledger to the control account (rules.md B-38); S2 `books.documents`/`books.document` and the viewer pages; S3 the invoice PDF; S4.1-S4.3 terms, numbers, line accounts, the issued PDF filed at issue (behind `documents_v2`, the owner's next upgrade) |
+| A/P bills + payments + aging | Business → Bills | done | R-FUTURE-5; the same S1 derivation and control guard on the payables account; S4.1-S4.3 the vendor's invoice number, terms, every line on its own account (behind `documents_v2`) |
 | Payroll runs (accounting only, no tax tables) + tax remittance | Payroll | done | — |
 | Tracking classes (divisional P&L) | Class tracking | done | invoice and bill lines take a class too (projects, rules.md B-37 item 8; QBO/Xero class or tracking per line) |
 | CPA handoff package (TB + GL xlsx, P&L + BS pdf, zip) | Reports → export | done | — |
@@ -44,7 +44,7 @@ No other statuses.
 | Payout gross-up (deposit → revenue, fees, adjustments) | Bank deposit with fee lines; Xero/QBO Stripe & Shopify integrations | partial | hand-verified fixture incl. classes and a negative payout; no statement parsers yet |
 | 1099 vendor tracking + year-end worksheet | Vendors → Track payments for 1099; 1099 report | partial | hand-verified fixture (bill payments, card exclusion, reversal, year boundary); no golden file yet |
 | Prepaid expense + deferred revenue amortization | Amortization schedules (Xero/QBO add-ons) | partial | hand-verified fixture, to the cent; no golden file yet |
-| Automated cross-implementation diff harness (GnuCash first) | — (our `xtask oracle`) | todo | roadmap phase 3 |
+| Automated cross-implementation diff harness (GnuCash first) | — (`just oracle`) | partial | live: `tests/oracle_gnucash.rs` runs 200 random books through GnuCash 5.10 in a pinned container, 15,800 exact comparisons, weekly in CI (docs/oracle.md Layer 5); open: fixture books diffed as `snapshot()` output, and the machine-readable catalog with CI enforcing this floor |
 
 Workflow/UI parity (QuickBooks/Xero reference) gets its own catalog when the
 egui phase starts; semantics come first.
@@ -62,6 +62,21 @@ key (P2 slice 5 removed local paths: files now come in only as uploads,
 D-46); no file with a full TIN is filed into the books (B-26); the agent is
 told the rules in force in a short connect text and a handbook, and no
 agent text points at the books' files, git or the repo.
+
+## P4b: receivables and payables, first class (D-45; 2026-10-23 to 2026-10-27)
+
+The two A/R and A/P rows above were `done` before P4b and stay `done`;
+what moved is their notes, so the floor stands at 21. S1 changed what the
+figures *are* (derived from tagged standing lines, so a reversed payment
+no longer counts and a void is exact; proven by Lean `control_agrees`
+and Kani `bounds_kept_is_the_definition_on_books_in_bounds`), S2 and S3
+added the read tools, the viewer pages and the PDF, and S4.1 to S4.3
+added terms, numbers, line accounts, the parties' snapshots and the
+issued copy, journaled only when set so an old-shape document is byte
+for byte the same. The rest of P4b (S4.4 and S4.5, S5 sent tracking, S6
+paying on terms, S7 bad debts) is built on paused branches or open as
+`plan/served.md` 8.0.1 says; each adds a note to these rows when it
+lands. No golden moved.
 
 ## U0b: one attention engine (D-53, 2026-10-26)
 

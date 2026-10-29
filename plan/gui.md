@@ -1,6 +1,6 @@
 # ledger-gui — design
 
-Phase 4 of the roadmap. A desktop app (egui/eframe; web later) for the
+Phase 4 of the roadmap (`plan/roadmap.md`). A desktop app (egui/eframe) for the
 people who own the books and the accountant who checks them. Same
 audience as QuickBooks, none of its visual language.
 
@@ -86,7 +86,7 @@ document, or report; back/forward (Alt+←/→); light and dark themes.
   new journal lines (or reloads if the file was rewritten).
 - `ledger-config` (moved out of `ledger-mcp`): `wanderbooks.toml`.
 - `ledger-gui`:
-  - `data` — a loader thread polls the journal and sends new snapshots.
+  - `data` — a loader thread follows the journal (notify-driven, polling as the fallback) and sends new snapshots.
   - `model` — view models built from a snapshot (pure, unit-tested).
   - `ui/*` — one module per screen; `widgets` (money, tiles, sparkline,
     tables, charts); `theme`; `receipts` (PDF via `hayro`, images via
@@ -95,17 +95,62 @@ document, or report; back/forward (Alt+←/→); light and dark themes.
     against a fixture book.
 - Web build later: the model is plain data, so a server can ship it.
 
-## Status (2026-10-12)
+## Status (2026-10-28)
 
-Built: every screen above, the palette, history, themes, live updates
-(tested end to end: a store write reaches the view model in ~30 ms),
-receipt rendering for PDFs and images, a deterministic demo company
-(`ledger-gui --demo`; also the screenshot fixture), and a screenshot test
-(`SHOT_DIR=… cargo test -p ledger-gui --test screens`, optionally
-`SHOT_BOOKS`, `SHOT_ONLY`, `SHOT_DARK`).
+Built 2026-10-12 (the first version): every screen above, the palette,
+history, themes, live updates (a store write reaches the view model in
+~30 ms), receipt rendering for PDFs and images, a deterministic demo
+company (`wanderbooks gui --demo`; also the screenshot fixture), and a
+screenshot test (`SHOT_DIR=… cargo test -p ledger-gui --test screens`,
+optionally `SHOT_BOOKS`, `SHOT_ONLY`, `SHOT_DARK`).
 
-Next, in rough order: a budget-free cash forecast with a confidence band;
-reconciliation view (cleared vs. uncleared per bank account); receipt
-zoom and multi-page navigation; keyboard navigation in lists;
-virtualized lists for very large books; the web build (ship the view
-model from a server).
+Built since, by the "Served" plan (`plan/served.md`):
+
+- **The data root is the only source** (D-44): `wanderbooks gui <book>`
+  opens a book of the data root, read-only, its settings from the
+  journal and its vault from its own `vault/` and `keys/`; `--data-dir`
+  and `--books-toml` are gone. The viewer holds the books open (a lease
+  of kind app) and still opens with the server stopped.
+- **The Books menu** (P2 slice 8, D-19): Back up now, Restore…, New
+  books…, Connect Claude Code, Connect Codex, Close the books, each
+  handed to the server through the same functions the command line
+  uses; the Export menu (the CPA package, the 1099 worksheet, Save a
+  copy, Save the W-9), each a new file in Downloads. The viewer writes
+  nothing of the books (`tests/read_only.rs`, `tests/owner_menu.rs`).
+- **The format-upgrade dialog** (D-39): asked at every open of waiting
+  books, a standing notice, the owner passphrase typed in the viewer.
+- **Color schemes** (D-19's menu): the viewer's own family and twenty
+  editor families, 80 schemes, each at WCAG AA contrast, worn live on
+  hover (`tests/schemes.rs`, `docs/color-schemes.md`).
+- **Needs attention is the engine's** (U0b, D-53): one function in
+  `ledger-package::attention` over `PackageBooks`, read by the viewer and
+  by `books.start`; the viewer only maps each item's target to a route,
+  and `the_viewer_and_books_start_see_the_same_attention` proves the two
+  lists equal. Principle 4's "ready-to-paste prompt" now comes from that
+  engine.
+- **Pages added:** Invoices & Bills (Money in, Money out, a document's
+  page with its timeline, overview tiles; P4b S2) and Save invoice PDF
+  (S3); Projects and a project's snapshot (D-43); parties with roles,
+  W-9 and the TIN clipboard copy (D-29); fixed assets with the tax-basis
+  figures (P3); reconciliation; the journal page describing every event
+  in plain words.
+- **Compatibility tests:** `tests/old_books.rs` (books an earlier version
+  wrote open to their figures), `tests/newer_journal.rs` (a newer journal
+  says "update wanderbooks", never half-read), `tests/view_model.rs`
+  (every figure shown is the engine's).
+
+On the paused branches (2026-10-27): the invoice page shows sends (S5),
+a discount-deadline column and the tie-out badge (S6), write-offs on the
+timeline (S7), documents grouped by category and subject (P6). S4.5 adds
+the number, terms, bill-to and the issued copy to Save.
+
+Next, in the plan's order: S4.5's page changes; P4's draft states in
+Needs attention; P11a (the installed app: the viewer is its face, with
+"Check for updates" in the menu) and P11b (the agent dock along the
+bottom of the window, Claude Code or Codex in it, started in the book's
+books home; D-27). Not planned: a web build, which belongs to the hosted
+service (`plan/served.md` section 11, a browser viewer); the remote
+viewer replica (D-51: a backup clone opened read-only serves instead).
+Still open from the first version's list: a cash forecast with a
+confidence band, receipt zoom and multi-page navigation, keyboard
+navigation in lists, virtualized lists for very large books.

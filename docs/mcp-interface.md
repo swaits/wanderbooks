@@ -8,12 +8,16 @@ exposes both over the Model Context Protocol — the open standard, so the
 books are drivable by any MCP client (Muse, Claude Code, IDE agents), not
 locked to one assistant.
 
-## Crates in this phase
+## Crates
 
 | Crate | Role | Spec |
 |---|---|---|
-| `ledger-store` | SQLite persistence, blob metadata, event log | `docs/receipt-store.md` |
-| `ledger-mcp` | MCP server wrapping store + core | this document |
+| `ledger-store` | the hash-chained journal (the source of truth), the SQLite projection, the blob store | `docs/receipt-store.md` |
+| `ledger-mcp` | the books server: the tools, resources and handbook over store + core | this document |
+| `ledger-host` | the agent bridge (`wanderbooks mcp`), the host and its leases, tokens | `plan/served.md` 3.3, 3.9 |
+
+(The overview sections of this document date from the first MCP phase; P5
+rewrites them. The per-tool sections are held to the code by a test.)
 
 Rust, `rmcp` SDK (the Rust MCP SDK). The MCP crate holds no accounting
 logic: it translates tool calls into `Ledger` commands and formats results.

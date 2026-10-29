@@ -53,7 +53,7 @@ case: partial first/final months in different-length calendar months don't
 complement, so the lifetime total drifted by cents (fixed with the
 final-month true-up in `depreciation_schedule`).
 
-**Layer 3 — Mutation testing (live now).** `cargo mutants -p ledger-core`
+**Layer 3 — Mutation testing (paused for development until P12, D-33, 2026-10-20; CI's weekly shards still run).** `cargo mutants -p ledger-core`
 (228 mutants as of 2026-10-10: 159 caught, 28 unviable, 2 timeouts from
 induced infinite loops, 39 missed). Every *missed* mutant is triaged:
 real gaps get new tests (this pass added parent-account validation,
@@ -94,12 +94,11 @@ built through wanderbooks (entries, foreign lines, reversals, closes),
 every account's balance at month ends and random dates, and each month's
 P&L, compared exactly (15,800 comparisons). Its first run found one real
 difference, adjudicated from principles: wanderbooks kept sub-cent
-amounts on foreign lines; it now books in cents (rules.md B-3). The
-original plan follows. A
-`ledger-oracle` crate will run fixture books through our engine and through
-other implementations (GnuCash headless first), then diff `snapshot()`
-output automatically: `cargo xtask oracle`. This is the direct analog of
-storytold's `cargo xtask corpus` / `oracle_diff`, with one difference: a
+amounts on foreign lines; it now books in cents (rules.md B-3). What the
+original plan still owes (roadmap phase 3): fixture books, not only random
+ones, diffed as `snapshot()` output automatically, inside the harness as
+it is (no `ledger-oracle` crate is planned: D-53). This is the direct analog
+of storytold's `cargo xtask corpus` / `oracle_diff`, with one difference: a
 diff does not mean we are wrong. Each one is adjudicated from principles
 (see "Who is right"). Note also: GnuCash is *a* behavioral cross-check, not
 a file-format target
@@ -113,8 +112,10 @@ evidence. It never overrides them.
 ## What the oracle does NOT cover (yet)
 
 - **Workflows**, only semantics: that an invoice *posts the right lines* is
-  oracle-covered; that the invoice *screen* is usable is a UI concern for the
-  egui phase, where storytold's screenshot-in-the-loop comes back.
+  oracle-covered; that the invoice *screen* is usable is the viewer's
+  concern (since 2026-10-12: `crates/ledger-gui/tests/*.rs` render every
+  page with `shot(..)` and `tests/view_model.rs` holds every figure shown
+  to the engine's).
 - **Tax law.** The engine computes what you tell it; it does not know the
   tax code. Tax-adjacent logic gets its own fixtures and its own goldens
   when it arrives, sourced from IRS publications — never from memory.

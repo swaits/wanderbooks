@@ -43,7 +43,16 @@ Statuses: `covered` (built and tested), `partial` (built, known gaps listed),
 - Row 12 is deliberately excluded. Email filing is a mail problem, not a
   books problem; it stays where it is.
 
-## Cutover rule
+## Cutover: done 2026-10-20
+
+The three conditions below were met and the owner said so: the books were
+adopted into the server's data root as the first company's live books on
+2026-10-20 (P2 slice 9), the Sheet is frozen as of 2026-10-11 with the
+final `verify-sheet` run filed as a workpaper, and the old copies moved
+into the data root's `legacy/` (Q-3, D-2). The rule is kept for the record
+and for the next company.
+
+## Cutover rule (as it was)
 
 The sheet does not retire on a date. It retires when **all three** hold:
 

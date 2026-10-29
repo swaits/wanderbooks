@@ -1,6 +1,75 @@
-# STATUS — 2026-10-26: "Served" P0 to P3 and P4b S1-S3 live; the plan reworked for a team
+# STATUS — 2026-10-28: nine units landed, five built on paused branches; P11a starts
 
-## Now: the plan is a hand-off (plan/served.md §8.0); P4b S4 next
+## Now (2026-10-28): land the paused wave, then S4.5; start P11a beside it
+
+**Where things stand.** `main` is `44ee4083`. Since the hand-off of
+2026-10-26, nine units landed in two days: U0c (`198aa2a1`), P7
+(`3e65c83f`), P13 steps 1-3 (`579d0eed`), P4b S4.1 (`13282cf8`), S4.2
+(`bf91c5a7`), U0a (`45396bdc`), U0b (`26d3a994`), P9a (`c8541ea9`) and
+S4.3 (`d19fb464`); the owner made D-55 (the party contact block). Five
+more units are built to their Done-when lists on branches the owner
+paused on 2026-10-27 to free the machine, none merged: S4.4 (`002fb9f8`),
+S5 (`ad649be3`), S6 (`6c4480cd`), S7 (`4b4fecb9`), and P6 checkpointed as
+`ce366408` (feature complete, its gate interrupted, "not for merge" as
+is). Not started: S4.5, P4, P5, P8, P10, P11a, P11b, P12, P13 steps 4-6.
+The live books are unchanged since the P3 cutover and the
+`document_standing` upgrade of 2026-10-24; `documents_v2` waits for Q-5.
+
+**The 2026-10-28 review.** The planning session read the whole plan and
+every design document against `main`, the five branches and dry-run
+merges; the result is `plan/2026-10-28_DRIFT_REPORT.md`, and the plan
+and docs were brought up to date in the same change (served.md section
+0, "What changed on 2026-10-28"). The gate on `main` at `44ee4083`:
+green (`exit 0`, 70 minutes on a loaded machine: fmt, clippy and
+rustdoc for both workspaces, 167 test suites, 2,871 tests passed, 0
+failed, 7 ignored, the server-only build with no window libraries).
+The five branches' gates are being re-run in their worktrees, one at a
+time, and each is recorded in 8.0.1 when it lands.
+
+**What the review judged.** Every departure the workers recorded was
+reasonable and is kept (the drift report lists them with the reason);
+three are owed back (S4.3's missing journal transaction across a
+multi-line command; S6's `confirmed`, deferred to P4's sweep; S6's
+three bookspec examples); one needs a decision (P6 made `ledger-store`
+depend on `ledger-import` so the writer can extract at attach time).
+No golden moved, no kernel arithmetic left `kernel.rs`, no unit touched
+the owner's books.
+
+**The merge hazards the pause left** (dry-run merges, nothing touched):
+every P4b branch created `crates/ledger-cli/tests/documents.rs` from
+8.0.3's one allocated file (add/add on every merge after the first);
+`types.rs` appends collide; P6 branched before S4.3 and took schema 16,
+which S4.3 holds (S5 took 17), so P6 retakes 18; S5 and S6 both numbered
+their law 34 in `docs/verification.md` (S1's documents law is now 34 on
+`main`; S5 becomes 35, S6 36, S7's write-off 37). The order and the
+resolutions are in served.md 8.0.2, "Resuming the paused wave".
+
+**The destination (D-56).** The owner, 2026-10-28: the work is
+"ultimately taking it to a single bundled server+GUI installation for
+Mac/Windows/Linux and then beyond". The installed app (P11a, then P11b)
+is the plan's destination and the hosted service (served.md section 11)
+what follows. Today the executable is Linux-first: tokens live in the OS
+keyring and only the Linux Secret Service store exists, so on macOS
+`wanderbooks connect` and the agent bridge fail (`tokens.rs`,
+`NOT_YET`), Windows is WSL2 only, and no macOS or Windows build runs in
+CI. P11a gains step 0 for exactly that groundwork and starts now, beside
+the P4b finish; the P10 chain (P4, P5, P8) keeps its order.
+
+**Next, in order:** (1) resume the five branches in the 8.0.2 order,
+each rebased and `just check`ed again (the pause killed every gate),
+P6 last with its gate run to the end and its dependency reviewed; (2)
+ask the owner Q-5 and Q-8 when S4.4 lands; (3) S4.5; (4) P11a step 0
+and the packaging trial, staffed now; (5) P4 (adding `confirmed` to the
+settlement tools too), P5, P8, P10; P13 steps 4-6 beside; P11b after
+P11a; P12 last.
+
+**Housekeeping found:** about 1 TB of `target/` directories across the
+six checkouts (1.7 TB free); 27 registered jj workspaces whose folders
+are gone (`jj workspace forget`); branch `rescue/p4-invproj-20261026`
+holds nothing `main` lacks (its bookspec example landed) and can go
+after a last look.
+
+## 2026-10-26 to 2026-10-27: the hand-off and its first wave
 
 **2026-10-26: the plan was reviewed and rewritten for a team of engineers
 working in parallel worktrees.** A nine-stage Elephant-Goldfish review

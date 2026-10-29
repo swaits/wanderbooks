@@ -1,5 +1,11 @@
 # Parallel-run readiness
 
+> **Historical (2026-10-28).** The run happened; the books cut over on
+> 2026-10-20 (P2 slice 9, `plan/STATUS.md`): the Google Sheet is frozen
+> as of 2026-10-11, its final comparison (`verify-sheet`) is a filed
+> workpaper, and the books are the system of record. Kept as the record
+> of how cutover was decided. The counts below are of 2026-10-11.
+
 The Google Sheet stays the system of record until the parallel run passes
 and the owner explicitly approves cutover. This doc is the plan; the run
 itself needs the owner's go-ahead.

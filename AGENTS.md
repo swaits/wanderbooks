@@ -149,8 +149,10 @@ clone, with status. Rules:
   `post_entry`, `reverse_entry`, `add_account`). Struct fields stay private;
   no other mutation path may exist.
 - `ledger-core` depends only on `rust_decimal`, `thiserror`, `chrono`,
-  `serde`, `serde_json`. New dependencies need justification in the commit
-  message. No I/O, no networking, no time-source in the core.
+  `serde`, `serde_json`, and `jiff` (the bundled time-zone database for
+  `company.timezone`: "today" is computed by the caller and passed in;
+  the core still reads no clock). New dependencies need justification in
+  the commit message. No I/O, no networking, no time-source in the core.
 - Future crates (`ledger-store`, `ledger-import`, `ledger-oracle`, `books-app`)
   depend inward toward the core, never the reverse. See `docs/architecture.md`.
 
@@ -174,6 +176,8 @@ clone, with status. Rules:
 
 | Read this | When you need |
 |---|---|
+| `plan/served.md` | The plan every remaining unit is built from: section 8.0 (status, order, recipes), 8.2 (the units), 10 (decisions) |
+| `plan/HANDOFF.md` | The prompt for the implementing team, and how to resume the paused worktrees |
 | `docs/requirements.md` | What the engine must do (R-1…), what is future work |
 | `docs/architecture.md` | Crate layout, command pattern, dependency rules |
 | `docs/oracle.md` | How we check correctness: golden files, property tests, fuzzing, cross-checks against other implementations (and who is right) |
@@ -183,9 +187,13 @@ clone, with status. Rules:
 | `docs/capability-parity.md` | Parity vs the GSheet+GDrive system + the cutover rule |
 | `docs/mcp-interface.md` | The MCP tool surface: the primary interface spec |
 | `docs/receipt-store.md` | Blob store + `ledger-store` SQLite persistence spec |
+| `docs/testing.md` | Every test layer, each unit's test record, and what P12 must mutate |
+| `docs/parties-and-attachments.md` | The party directory, roles, the TIN vault, attachments to any subject |
+| `bookspec/README.md` | The formal accounting specification's examples, checker and runner (P13) |
+| `deploy/README.md` | Running the books on a machine of your own (P9a) |
 | `docs/glossary.md` | Debit/credit and friends, for agents new to accounting |
 | `plan/STATUS.md` | Where the project stands right now |
-| `plan/roadmap.md` | Phase plan: semantics → oracle harness → egui app → workflow parity |
+| `plan/roadmap.md` | Where the project has been and is going: the installed app, then the hosted service |
 
 ## License
 

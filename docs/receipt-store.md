@@ -184,11 +184,12 @@ Suspected corruption is fixed by rebuild, never by forensics.
   projection from the journal and comparing reports before/after. A newer
   schema version than the binary understands is a hard error, not a guess.
 
-## Migration from Google Drive
+## Migration from Google Drive (done)
 
-Backfill walks the Drive `the first company` folders and files each
-document via the equivalent of `books.file_document` with its category.
-The Drive folders stay exactly as they are until the capability-parity
-cutover rule (see `docs/capability-parity.md`) is satisfied. Migration is an
-implementation task, not part of this spec — but the spec is written so the
-migration is a straightforward script, not a redesign.
+The company's records were filed into the books at the P1 cutover
+(2026-10-17, D-20: formation papers, notices, plans and history, through
+`books.file_document` with their categories) and the books cut over on
+2026-10-20. The Drive manifest and comparison tools once planned for P6
+were struck (`plan/served.md` 8.4): the Drive folder is frozen history.
+P6 (on its branch) adds the categories `notices`, `correspondence`,
+`plans`, `history` and text extraction for every filed document.

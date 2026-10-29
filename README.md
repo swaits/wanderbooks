@@ -16,7 +16,7 @@ through MCP. Self-hosted, no rent.
   append-only, hash-chained JSONL journal; SQLite is a disposable
   projection rebuilt from it; receipts live in a content-addressed blob
   store. Drafts are durable, corrupt projections self-heal.
-- **`ledger-mcp`** — the AI-first interface. 118 MCP tools, served by the
+- **`ledger-mcp`** — the AI-first interface. 122 MCP tools (2026-10-28), served by the
   books server (`wanderbooks server`) on the data root's local sockets and
   reached through the agents' bridge (`wanderbooks mcp --book ID`): draft →
   preview → post workflow, server-side receipt
@@ -39,7 +39,7 @@ through MCP. Self-hosted, no rent.
 This is the storytold way applied to accounting: agents verify against
 oracles, never ship what they haven't demonstrated.
 
-- 190+ workspace tests: invariant tests encoding accounting law, golden-file
+- About 2,700 tests across the two workspaces (2026-10-28): invariant tests encoding accounting law, golden-file
   report snapshots, property tests (proptest), end-to-end MCP tests through
   a real books server.
 - **Formal proofs of the accounting laws** (`just prove`,
@@ -51,8 +51,9 @@ oracles, never ship what they haven't demonstrated.
   pass found three engine bugs that every test, fuzzer, and mutant had
   missed: negative amounts accepted, and two crashes on oversized
   amounts. It also caught a soundness bug in the model checker itself.
-- Mutation testing via cargo-mutants; fuzzing via cargo-fuzz (11.5M+
-  executions, zero crashes).
+- Mutation testing via cargo-mutants (paused for development until the
+  P12 max-testing pass, D-33; CI's weekly shards still run); fuzzing via
+  cargo-fuzz (11.5M+ executions, zero crashes).
 - GnuCash is *a* behavioral cross-check, never the authority and never
   a code source (clean room, MIT OR Apache-2.0). Accounting principles,
   proved, are the spec. Where any other program disagrees, we work out
@@ -60,10 +61,16 @@ oracles, never ship what they haven't demonstrated.
 
 ## Status
 
-Parity is 12 of 12 against the spreadsheet workflow it replaces
-(`docs/capability-parity.md`). The parallel-run plan
-(`docs/parallel-run.md`) is written; the Google Sheet stays the system of
-record until a clean month and explicit cutover approval.
+Parity is 12 of 12 against the spreadsheet workflow it replaced
+(`docs/capability-parity.md`); the books cut over on 2026-10-20 and the
+Sheet is frozen as of 2026-10-11. The remaining work, its order and its
+hand-off are `plan/served.md` section 8.0; the destination is one
+installed app for Mac, Windows and Linux (P11), then the hosted service
+the plan describes and does not build. Today the agent path runs on
+Linux: tokens live in the OS keyring and only the Linux Secret Service
+store exists, so on macOS the viewer and server run but `wanderbooks
+connect` and the agent bridge wait for P11's keyring stores; Windows is
+WSL2 only.
 
 See [`plan/STATUS.md`](plan/STATUS.md) for where things stand and
 [`plan/roadmap.md`](plan/roadmap.md) for where it's going.
@@ -81,6 +88,10 @@ them; nothing needs sudo):
 ```bash
 curl -fsSL https://wanderbooks.ai/install.sh | sh -s -- acme
 ```
+
+(Linux today. On macOS the same line installs and sets up, and the
+viewer runs, but connecting an agent waits for P11's keyring store; on
+Windows run it inside WSL2.)
 
 Already installed, three commands: `wanderbooks setup`, `wanderbooks books
 create acme`, `wanderbooks connect claude --book acme` (or `connect codex`).
@@ -102,15 +113,21 @@ just          # lists the recipes: check, build, prove, demo, ...
 ```
 crates/ledger-core/    # engine: money, accounts, journal, ledger, reports
 crates/ledger-store/   # journal + SQLite projection + blob store
-crates/ledger-mcp/     # MCP server: 118 tools, resources, handbook, receipt policy
+crates/ledger-mcp/     # MCP server: 122 tools, resources, handbook, receipt policy
 crates/ledger-import/  # QBO CSV import, IIF/XLSX export
 crates/ledger-config/  # wanderbooks.toml company settings
 crates/ledger-cli/     # `wanderbooks`: the one executable (every mode)
 crates/ledger-host/    # the host, the agents' bridge, the owner's commands
-crates/ledger-package/ # The CPA package and the 1099 worksheet (server and viewer)
+crates/ledger-package/ # the shared read-only view: the CPA package, the invoice PDF, Needs attention
+crates/ledger-vault/   # the TIN vault (XChaCha20-Poly1305 under the book's key)
 crates/ledger-gui/     # the viewer: read-only, live (egui)
-docs/                  # requirements, architecture, oracle, parity, glossary
-plan/                  # STATUS.md, roadmap.md
+verify/lean/           # the accounting laws as Lean theorems (`just prove`)
+bookspec/              # the formal accounting specification: checker, runner, examples (P13)
+fuzz/, oracle/         # fuzz targets; the GnuCash differential (`just oracle`)
+deploy/                # the self-host recipe and system unit (P9a)
+site/                  # wanderbooks.ai and install.sh
+docs/                  # requirements, architecture, oracle, parity, testing, verification, spec, glossary
+plan/                  # served.md (the plan), STATUS.md, roadmap.md, HANDOFF.md, gui.md
 AGENTS.md              # operating manual for agents working here
 ```
 

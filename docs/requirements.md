@@ -97,11 +97,14 @@ requirement conflict, the requirement wins.
   receipts and documents are withdrawn with a reason. Unlinking may never
   leave an entry the policy (R-13) requires a receipt for with none. Every
   step is a journal event; no blob is deleted.
-- **R-13 — Receipt enforcement.** The MCP layer (not the engine — the engine
-  stays policy-free) enforces a configurable receipt policy: postings at or
-  above a threshold (`require_receipts_above`, default `"25.00"` in base
-  currency) must have at least one attached receipt, with per-account
-  overrides. `post_entry` with `confirmed: true` refuses with a typed
+- **R-13 — Receipt enforcement.** The server (not the engine — the engine
+  stays policy-free) enforces the books' evidence policy: postings at or
+  above a threshold (the journaled setting `policy.evidence.threshold`,
+  with required and exempt accounts; P1, rules.md B-29) must have at least
+  one attached receipt. Evaluated by `ledger-config`'s `ReceiptPolicy`
+  today; P4 moves the evaluation into `ledger_core::evidence` so the
+  store, the server and the viewer call one function (plan I-5, D-47:
+  reversals, closes, schedule and depreciation runs are exempt by origin). `post_entry` with `confirmed: true` refuses with a typed
   `receipt_required` error otherwise. The draft preview always includes the
   receipt checklist (`attached: [...]`, `required_but_missing: bool`), so the
   human sees it before confirming. Full spec: `docs/mcp-interface.md`.
@@ -162,7 +165,14 @@ requirement conflict, the requirement wins.
   overridable threshold. Schema v7.
 - **R-? — A/R and A/P workflows.** Was R-FUTURE-5.
   `ledger-core::arap`: customers, vendors, invoices, bills, payments,
-  AR/AP aging. MCP tools for the full workflow.
+  AR/AP aging. MCP tools for the full workflow. Since P4b S1 (D-45,
+  rules.md B-38): a document's figures are the signed sum of its tagged
+  ledger lines dated on or before the day asked about, so reversals,
+  voids and write-offs are right by construction; a hand line on a
+  control account is refused; `books.control_check` ties the subledger to
+  the control account. S4 to S7 add terms, numbers, line accounts, the
+  issued PDF, sends, settlements with discounts and the processor's fee,
+  and bad debts, behind the `documents_v2` journal feature.
 - **R-? — Bank reconciliation.** Cleared flags on posted lines,
   `reconciliation_report` with uncleared-line detail.
 - **R-? — Payroll (accounting only).** `ledger-core::payroll`:
@@ -173,9 +183,13 @@ requirement conflict, the requirement wins.
   `JournalLine.class_id`, `add_class`, `set_line_class` (drafts only),
   `profit_and_loss_filtered`, `profit_and_loss_by_class`. Shared costs are
   split explicitly across lines at entry time.
-- **R-? — CPA handoff package.** `books.export_cpa_package`: zip with
-  trial-balance XLSX, general-ledger XLSX (every posted line), P&L and
-  balance-sheet PDFs (printpdf, MIT).
+- **R-? — CPA handoff package.** `books.export_cpa_package` (and the
+  viewer's Export menu, D-29): a zip, built by `ledger-package` for both,
+  as of a day (B-33), with the trial balance and general ledger as XLSX,
+  the statements as Typst PDFs, the journal as IIF (B-34), every receipt
+  behind the period's entries with an index, the company's documents, the
+  1099 worksheet, the members' equity and K-1 worksheets (book and tax
+  basis, B-36), and a README; handed over as a download (D-46).
 
 ## Non-goals (all phases of the engine)
 

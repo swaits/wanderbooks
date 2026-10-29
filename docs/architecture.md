@@ -21,21 +21,51 @@ are free functions: pure, total, and deterministic. Same ledger in, same
 report out, every time, on every platform. That determinism is the entire
 basis of `docs/oracle.md`.
 
-## Current crate layout
+## The crates (2026-10-28)
 
-```
-crates/ledger-core/
-  src/
-    lib.rs        # crate docs, re-exports, design rules
-    money.rs      # Currency + Money (Decimal, checked arithmetic)
-    account.rs    # AccountType, Side, Account, ChartOfAccounts
-    journal.rs    # JournalLine, JournalEntry, validate()
-    ledger.rs     # Ledger: the command surface, append-only log
-    reports.rs    # trial_balance, unclosed_earnings, balance_sheet, snapshot
-  tests/
-    invariants.rs # accounting-law tests + randomized property test
-    golden/       # hand-verified expected report snapshots
-```
+Two Cargo workspaces: the engine and its application in `crates/`, and
+the specification in `bookspec/` (which never depends on the engine).
+
+| Crate | Role | Depends on (ours) |
+|---|---|---|
+| `ledger-core` | the semantics engine: money, chart, journal, `Ledger` commands, reports, periods, assets, schedules, parties, A/R and A/P, payroll, projects, settings and conventions, the kernel and its Kani harnesses | nothing |
+| `ledger-vault` | the TIN vault: XChaCha20-Poly1305 records under the book's key | nothing |
+| `ledger-config` | the `wanderbooks.toml` codec (adoption in, `books.export_settings` out) and the receipt policy until P4 moves it into the core | `ledger-core` |
+| `ledger-store` | the source of truth: the hash-chained JSONL journal, its format gate, the SQLite projection (schema 16; a file per schema), the blob store, backups, the access log, `Snapshot` for readers | `ledger-core` |
+| `ledger-import` | formats: QuickBooks CSV in; IIF, XLSX, Typst PDFs (statements, the invoice, labels) out | `ledger-core` |
+| `ledger-package` | the shared read-only view over `Store` or `Snapshot` (`PackageBooks`): the CPA package, the 1099 worksheet, the invoice document, Needs attention | `ledger-core`, `ledger-store`, `ledger-config`, `ledger-import`, `ledger-vault` |
+| `ledger-mcp` | the books server: the MCP tools (122), resources, the handbook, scopes, the door and the access log, backups' scheduling | all of the above |
+| `ledger-host` | the host and its leases, the agent bridge (`wanderbooks mcp`), tokens in the OS keyring, the owner's commands, uploads and downloads | `ledger-store`, `ledger-mcp`, `ledger-config` |
+| `ledger-gui` | the viewer: read-only, live, egui; the Books menu hands work to the server | `ledger-core`, `ledger-store`, `ledger-config`, `ledger-import`, `ledger-package`, `ledger-vault`, `ledger-host` |
+| `ledger-cli` | `wanderbooks`, the one executable: every mode (`serve`, `server`, `host`, `mcp`, `gui`, `setup`, `books`, `token`, `connect`, `doctor`, …) and the over-the-wire test suites | everything |
+| `bookspec/checker`, `bookspec/runner` | the example schema and parser, the rule catalogue, the `Engine` trait; the per-rule runner | nothing of ours (the adapter in `ledger-core`'s tests depends on them) |
+
+Dependency direction is always inward toward `ledger-core`; nothing in
+the core depends on another crate of ours. UI concerns (formatting,
+locale, widgets) never leak into the core; the core speaks `Decimal` and
+ISO codes. A crate that was planned and never created is not missing:
+`ledger-export` became part of `ledger-import`; `ledger-oracle` is the
+test `crates/ledger-core/tests/oracle_gnucash.rs` with `oracle/gnucash/`
+(`just oracle`); `ledger-view` and `ledger-extract` were closed by D-53
+(`PackageBooks` is the shared view; extraction is in-process in
+`ledger-import`, P6).
+
+Pending (the P6 branch, 2026-10-27, unmerged): P6 made `ledger-store`
+depend on `ledger-import` so the writer can extract a file's text at
+attach time and on the backfill command. That keeps the direction inward
+but pulls Typst, the fonts and hayro into the store's dependency closure;
+whether it stands, or extraction moves to the server before the store
+call, is decided at P6's review.
+
+`ledger-core` itself (`crates/ledger-core/src/`): `money`, `account`,
+`journal`, `ledger` (the command surface and replay), `kernel` (every
+money arithmetic, generic over `Amount`) and `proofs` (its Kani
+harnesses), `reports`, `cashflow`, `analysis`, `periods`, `assets`,
+`schedules`, `recurring`, `payouts`, `payroll`, `form1099`, `tax`,
+`classes`, `parties`, `arap`, `settings`, `conventions`, `calendar`,
+`shares`, `tax_capital`, `rules`, `error`; its tests in `tests/`
+(`invariants.rs`, `properties.rs`, `spec_*.rs`, `kernel_bridge.rs`,
+`model.rs`, `bookspec.rs`, `golden/`).
 
 ## Dependency rules
 
@@ -45,23 +75,13 @@ crates/ledger-core/
 - `thiserror` — the error type
 - `chrono` — dates (`NaiveDate`; no wall-clock reads in the core)
 - `serde` / `serde_json` — the oracle interchange format
+- `jiff` — the bundled time-zone database behind `company.timezone`
+  ("today" is computed by the caller and passed in; the core reads no
+  clock)
 
 New dependencies need justification in the commit message. In particular:
 no I/O, no networking, no async runtime, no logging framework in the core.
 The core is a pure domain library and stays that way.
-
-## Future crates (do not create until the roadmap says so)
-
-| Crate | Purpose | Depends on |
-|---|---|---|
-| `ledger-store` | Journal (hash-chained JSONL) + SQLite projection, blob store | `ledger-core` |
-| `ledger-import` | QuickBooks CSV read-only import (bank transactions, chart of accounts) | `ledger-core` |
-| `ledger-export` | Format renderers: CSV, XLSX, IIF journal entries (QuickBooks Desktop) | `ledger-core` |
-| `ledger-oracle` | Cross-check harness: our engine vs other implementations (GnuCash first) on fixture books; diffs are adjudicated, not obeyed | `ledger-core`, `ledger-import` |
-
-Dependency direction is always inward toward `ledger-core`. Nothing in the
-core may depend on a future crate. UI concerns (formatting, locale, widgets)
-never leak into the core; the core speaks `Decimal` and ISO codes.
 
 ## Why Rust
 
@@ -127,7 +147,7 @@ engine keeps them beside the ledger (`ledger_core::settings::Settings`,
 `ledger_core::conventions::Conventions`, fields of `Ledger`), so the store,
 its replay and the viewer's `Snapshot` share one reading; `Ledger::
 differs_from` and `verify` compare them, and the projection has a table
-for each (schema v12). `ledger-config` is the codec between them and a
+for each (schema 16 on 2026-10-28; a file per schema). `ledger-config` is the codec between them and a
 `wanderbooks.toml` (`codec::import`, `codec::export`): adoption (`wanderbooks
 books adopt`) moves an older books dir's file in through it, once, and
 `books.export_settings` writes the books' settings out as one. The books

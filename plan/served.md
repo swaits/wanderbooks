@@ -57,6 +57,8 @@ Written 2026-10-26, when the plan was reworked for a team of engineers working i
 
 **What changed on 2026-10-26.** A nine-stage review (`plan/review-2026-10-26/`) found the plan sound as a design record and not executable as a hand-off. Section 8 was rewritten: 8.0 to 8.4 are new; P4 was rewritten against the P4b slices built after it and D-47 (reversals stay posted); P6, P7, P8, P9, P10, P11 were cut to what the owner's decisions ask for; superseded sentences in sections 1 to 7 and 9 were struck through; the owner's P4b answers were numbered; decisions D-47 to D-54 and questions Q-4 to Q-7 were added. The review's reports list every finding and what was done with it.
 
+**What changed on 2026-10-28.** The team's first wave was paused on 2026-10-27 (`plan/STATUS.md`). This revision records where that left things: 8.0.1 and the unit Status lines name the five branches built but unmerged (S4.4, S5, S6, S7, P6) and 8.0.2 the merge hazards between them, the owner's destination (D-56: the installed app; P11a starts now) and the resume order; 8.0.3 lists the names the EM approved during the wave (`tools/sent.rs`, `tools/settlements.rs`, `books.set_entry_settles`, `recipients`); P11a gains step 0 (the platform groundwork the design had assigned to P11 without a step); Q-5 is marked due and Q-8 added; superseded Landlock sentences in section 2 and `server.toml` in 3.2 and 3.4 are struck. The full comparison of plan, code and documents is `plan/2026-10-28_DRIFT_REPORT.md`.
+
 ---
 
 ## 1. Summary
@@ -83,14 +85,14 @@ Written 2026-10-26, when the plan was reworked for a team of engineers working i
 
 | # | Invariant | Enforced by |
 |---|---|---|
-| I-1 | **The MCP is the only agent interface to the books.** Locally this is **advisory** (owner decision 2026-10-16): the server runs as the human, and the books are hidden, not locked. Mechanical enforcement is the self-host deployment on another machine, where agents have no access to the data root. | A data root outside every project directory (3.4), mode 0700, created with an explicit `set_permissions` call (not the umask). No tool, instruction, handbook text or result names a filesystem path (I-2, I-12). The stdio data-dir transport is gone (D-44): books are served only by the books server. `books.start`, `wanderbooks doctor` and the docs report `isolation: "same_user (advisory)"`. Landlock and seccomp confine the server itself where available; they do not restrict the agent and are never described as if they did. Test `agent_uid_cannot_read_tenant`, run in CI against the two-user self-host deployment, not the desktop default. |
-| I-2 | **No tool takes or returns a server filesystem path.** | Schema lint `no_path_params`: the build fails on any parameter matching `*path*`, `save_to` or `*_file`. Landlock harness `no_tool_touches_outside_tenant`, run with fuzzed arguments. Static check: no `std::fs` in `ledger-mcp/src/tools/**` outside the ledger-store APIs. |
+| I-1 | **The MCP is the only agent interface to the books.** Locally this is **advisory** (owner decision 2026-10-16): the server runs as the human, and the books are hidden, not locked. Mechanical enforcement is the self-host deployment on another machine, where agents have no access to the data root. | A data root outside every project directory (3.4), mode 0700, created with an explicit `set_permissions` call (not the umask). No tool, instruction, handbook text or result names a filesystem path (I-2, I-12). The stdio data-dir transport is gone (D-44): books are served only by the books server. `books.start`, `wanderbooks doctor` and the docs report `isolation: "same_user (advisory)"`. ~~Landlock and seccomp confine the server itself where available; they do not restrict the agent and are never described as if they did.~~ → D-32 (no confinement). Test `agent_uid_cannot_read_tenant`, run in CI against the two-user self-host deployment, not the desktop default. |
+| I-2 | **No tool takes or returns a server filesystem path.** | Schema lint `no_path_params`: the build fails on any parameter matching `*path*`, `save_to` or `*_file`. ~~Landlock harness `no_tool_touches_outside_tenant`, run with fuzzed arguments.~~ → D-32. Static check: no `std::fs` in `ledger-mcp/src/tools/**` outside the ledger-store APIs. |
 | I-3 | **The journal holds all books state.** Settings, conventions, decisions, draft states, evidence links, annotations, extraction records and attestations are journaled. Reports are pure functions of the journal. `wanderbooks.toml` is import/export text only. The server never reads a toml file. | `ledger-core::settings` replay. Property test `settings_replay_is_pure` (Store, Snapshot and the view are identical). Test `toml_round_trip_zero_events`. The daemon binary contains no toml file-read code path. |
 | I-4 | **Money is exact Decimal, every entry balances, and posted entries are permanent.** Corrections are posted reversals; a reversal's evidence is its original's (D-47). ~~Corrections are reversal drafts that need evidence.~~ → D-47 | Existing kernel, Kani and Lean. New `Step.discard` (P4) with its preservation proof. ~~`Step.draftReversal`~~ → D-47 |
 | I-5 | **Evidence gate.** One function, `ledger_core::evidence::requirement` (P4), decides whether a draft entry may post. Store, MCP and GUI all call it. Reversals are exempt: their evidence is the original's (D-47, D-12). Depreciation, amortization, closes and the entries the document, payroll, payout and disposal commands post are exempt by origin, and the exemption is sourced. ~~Reversals are not exempt.~~ → D-47 | The gate is called from `Store::post_entry` (P4 step 2). Test `gui_and_server_gate_agree`. Test `a_reversal_needs_no_receipt_of_its_own`. ~~`reversal_needs_evidence`~~ → D-47 |
 | I-6 | **A confirmed commit is bound to the server's most recent preview of that exact draft or operation** (a stale or altered preview is refused). It does not prove that a human saw the preview; it detects drift (D-50). | `preview` = SHA-256 of the canonical preview payload (a draft's state and the settings seq; or the tool, its canonical arguments, the settings seq and the journal head seq), returned by every preview and required by every confirm from P4 on; a mismatch is refused with guard `stale_preview`. ~~`preview_token` = HMAC-SHA256 … keyed with a server secret held in `keys/`~~ → D-50 (a same-user key proves nothing; a digest detects the same drift). |
 | I-7 | **A TIN passes through the agent only on its way into the vault; no result shows one except the TIN-bearing exports the owner chose (D-28, D-29).** ~~The agent never holds a full TIN or vault key material.~~ → D-28 | The v1 vault (`ledger-vault`, one key in `keys/legacy.key`, carried in every backup: D-31, D-48). A pattern-based TIN scanner (`has_full_tin`, `redact_full_tins`; P7 fixes its separators) fails closed on every result and masks the access log. The canary TIN tests in `crates/ledger-cli/tests/spec_vault.rs`. ~~HPKE, keyslots, human-page handlers, the GUI unlock path~~ → D-48 |
-| I-8 | **The GUI never mutates and never uses the MCP.** Locally it reads the data root directly, read-only, as today. It finds the root from the platform's well-known location or from `wanderbooks gui <book>`, never from a project directory or `wanderbooks.toml`. `books.show` reaches it through `ops/show.jsonl` in the book's own data root, never through the MCP. Remote books (self-host) are viewed through a read-only replica stream (P9). | `ledger-gui/tests/read_only.rs`. Tests `gui_works_under_read_only_landlock` and `gui_finds_root_without_project_dir`. Test `replica_snapshot_equals_store_snapshot` (P9). The GUI writes nothing under the data root and leaves no files under `$HOME` except eframe preferences. |
+| I-8 | **The GUI never mutates and never uses the MCP.** Locally it reads the data root directly, read-only, as today. It finds the root from the platform's well-known location or from `wanderbooks gui <book>`, never from a project directory or `wanderbooks.toml`. `books.show` reaches it through `ops/show.jsonl` in the book's own data root, never through the MCP. Remote books (self-host) are viewed through a read-only replica stream (P9). | `ledger-gui/tests/read_only.rs` (the viewer's read-only proof). ~~Tests `gui_works_under_read_only_landlock`~~ → D-32; `gui_finds_root_without_project_dir`. Test `replica_snapshot_equals_store_snapshot` (P9). The GUI writes nothing under the data root and leaves no files under `$HOME` except eframe preferences. |
 | I-9 | **Every access through the server is logged, and logging fails closed.** | A hash-chained `access.jsonl` (own genesis). Property: exactly one record per tool call, upload, download, human action, remote replica connection and backup, refusals included (as built, slice 7: a backup's own runs are records of `ops/backup.jsonl`; `books.back_up_now`, a tool call, is in the access log). The local viewer's direct reads are not logged, because the GUI never writes; the docs say so. |
 | I-10 | **Tamper evidence.** Every mutating result carries `head {seq, hash}`. The head is handed off when a session goes quiet. The customer can clone the archive and run `wanderbooks verify-archive --expect-head`. Backup and access records stay out of the journal, so they never advance the head they report. (As built, slice 7, D-31: each backup commit records its head; a restore's preview proves a clone and names its head, and weekly drills prove each target; no separate `verify-archive`.) | Test `backup_does_not_advance_head`. Test `clone_verify_expect_head` (as built: `a_restore_is_of_the_backup_previewed_only`, the drills). |
 | I-11 | **No loss of ease of use.** Local setup is at most 3 commands on a clean machine, with no sudo, no system account and no container, beyond installing the app itself (D-24: on Linux the package manager asks for `sudo` as it does for every package; the dmg, the Windows installer and the AppImage ask for nothing). There is nothing to do per session, it works from any directory, the daily flow adds no client permission prompts (no `requiresUserInteraction`), and the viewer updates within 1 s of a post. | Acceptance criteria in P2 and P5. Tests `setup_needs_no_root` and `annotations_complete`. The agent-eval harness. |
@@ -169,7 +171,7 @@ The data root is `$XDG_DATA_HOME/wanderbooks` on Linux (default `~/.local/share/
 ### 3.2 Transport (one code path, local and remote)
 
 Replaces `StreamableHttpServerConfig::default()` in `serve_http` (`ledger-mcp/src/main.rs:154-180`) with an explicit configuration:
-- `allowed_hosts` taken from `server.toml` (deployment config only).
+- ~~`allowed_hosts` taken from `server.toml` (deployment config only).~~ → not built: there is no `server.toml`; the deployment flags are `wanderbooks serve --http [ADDR]` (loopback only) and `--isolation` (P9a as built, 8.2).
 - `enforce_origin_validation()` with an explicit list: loopback by default, plus `https://claude.ai` once OAuth exists in P9. Today's empty list turns the Origin check off.
 - `json_response=true`.
 - `legacy_session_mode=true` while Cursor and claude.ai stay on ≤ 2025-11-25.
@@ -231,7 +233,7 @@ Both protocol eras are served: `initialize` and `server/discover` are both built
 <root>/                         Linux: $XDG_DATA_HOME/wanderbooks (default ~/.local/share/wanderbooks)
                                 macOS: ~/Library/Application Support/wanderbooks
                                 self-host (P9): /srv/wanderbooks
-  server.toml                   deployment only: listen, public_url, allowed_hosts/origins, archive targets, issuer
+  (server.toml: not built → `serve --http`, `--isolation` carry the deployment flags, P9a; backup targets are book settings, D-30)
   auth/principals.jsonl         principals, sha256(token), scopes, labels; passkeys (hash-chained)
   run/admin.sock
   legacy/<id>-<date>/           old copies moved here at adoption if the owner agrees (Q-3); the server never deletes them
@@ -570,7 +572,7 @@ Report results also carry `as_of_status {drafts_open_on_or_before, unreconciled,
 - Every mention of `just` or `wanderbooks.toml` in tool text: S:340, 390, 525, 546, 637, 640, 1902, 3061, 3251, 3374, 4060, 4315, 4568, 5194, 5829.
 - `server.rs` (12,566 lines on 2026-10-26; six groups in `tools/` so far) is split by tool group in one go (U0a) before the remaining units open.
 
-The tool count is 118 (2026-10-26) and grows by about 15. Only `books.start` and `books.handbook` load upfront under tool search.
+The tool count is 122 on `main` (2026-10-28; the 118 of 2026-10-26 was stale, U0a's As-built) and becomes 130 when the paused S5, S6, S7 and P6 branches merge; P4, P5 and P8 add about 15 more. Only `books.start` and `books.handbook` load upfront under tool search.
 
 ---
 
@@ -798,7 +800,7 @@ Phases are labelled P0 to P13, with P4b (receivables and payables) between P4 an
 
 ### 8.0 How the work is organized
 
-#### 8.0.1 Status and dependency table (2026-10-26)
+#### 8.0.1 Status and dependency table (2026-10-28)
 
 One row per unit of work. A unit is what one engineer takes into one git worktree and brings back as one or a few reviewed pull requests. "Depends on" lists the units that must be merged into `main` first. "Beside" lists units that may run at the same time in other worktrees because they share no exclusive file (8.0.3 lists the shared files every unit appends to by rule). "Go-ahead" is the owner's format upgrade a unit's writes need on the live books (D-39); merging never waits for it.
 
@@ -815,20 +817,20 @@ One row per unit of work. A unit is what one engineer takes into one git worktre
 | U0a | Split `server.rs` by tool group | landed 2026-10-27 (`45396bdc`) | none | U0b, U0c, S4.1, S4.2, S7.1 (core steps only) | none | 3-4 |
 | U0b | The attention engine over `PackageBooks` | landed 2026-10-27 (`26d3a994`) | none | U0a, U0c, S4.1, S4.2 | none | 4-6 |
 | U0c | `docs/testing.md` sections for S1-B, S2, S3; `docs/mcp-interface.md` cleanup of stale P4b notes | landed 2026-10-26 (`198aa2a1`) | none | everything | none | 0.5-1 |
-| P4b S4 | `documents_v2`: numbers, terms, line accounts, snapshots, preview and confirm, the issued PDF filed, party email and terms, invoicing settings | in progress: S4.1, S4.2, S4.3 landed 2026-10-27 (`d19fb464`); S4.4-S4.5 open | S4.1 and S4.2 need nothing; S4.3 needs S4.1, S4.2; S4.4 needs U0a, S4.3; S4.5 needs S4.4 | S5 (after S4.2), S7 (core after S1), P6, P9a, P11a, P13 | `documents_v2` (one upgrade after S7, D-52) | 12-16 |
-| P4b S5 | Sent tracking | not started | S1; S4.2 for the defaults (works without it, see the unit) | S4.3 onward, S6 | `documents_v2` | 3-4 |
-| P4b S6 | Paying on terms: multi-document payments, discounts, the processor fee, bills due, aging exports | not started | S4.1 (`Terms`), U0a | S5, S7, P6 | `documents_v2` | 8-10 |
-| P4b S7 | Bad debts (write-offs) | not started | S1; S4.3 for the same-call evidence attach; U0a | S4.4 onward, S5, S6 | `documents_v2` | 4-6 |
+| P4b S4 | `documents_v2`: numbers, terms, line accounts, snapshots, preview and confirm, the issued PDF filed, party email and terms, invoicing settings | in progress: S4.1-S4.3 landed 2026-10-27 (`d19fb464`); S4.4 built on branch `S4.4` (`002fb9f8`), paused 2026-10-27, unmerged; S4.5 not started | S4.1 and S4.2 need nothing; S4.3 needs S4.1, S4.2; S4.4 needs U0a, S4.3; S4.5 needs S4.4 | S5 (after S4.2), S7 (core after S1), P6, P9a, P11a, P13 | `documents_v2` (one upgrade after S7, D-52) | 12-16 |
+| P4b S5 | Sent tracking | built on branch `S5` (`ad649be3`), paused 2026-10-27, unmerged; schema 17 | S1; S4.2 for the defaults (works without it, see the unit) | S4.3 onward, S6 | `documents_v2` | 3-4 |
+| P4b S6 | Paying on terms: multi-document payments, discounts, the processor fee, bills due, aging exports | built on branch `S6` (`6c4480cd`), paused 2026-10-27, unmerged; no schema change; `confirmed` deferred to P4 | S4.1 (`Terms`), U0a | S5, S7, P6 | `documents_v2` | 8-10 |
+| P4b S7 | Bad debts (write-offs) | built on branch `S7` (`4b4fecb9`), paused 2026-10-27, unmerged | S1; S4.3 for the same-call evidence attach; U0a | S4.4 onward, S5, S6 | `documents_v2` | 4-6 |
 | P4 | Draft states, the evidence gate in one place, the preview digest, the digest tool | not started | S4-S7 merged (one sweep over every confirm tool), U0b | P6, P9a, P11a, P13 | `drafts_v2` (same upgrade as `documents_v2`, D-52) | 8-10 |
 | P5 | Agent surface complete: the result envelope, prompts, `books.start` v2, journal history, agent evals | not started | P4, U0b; the envelope step is single-owner and merges when no other MCP branch is open | P6, P9a, P11a, P13 | `source_revisions` | 10-12 |
-| P6 | Evidence pipeline: extraction, dedup, annotations, company record categories | not started | U0a, U0b | S4-S7, P4, P5 (not its envelope step), P9a, P11a, P13 | `attachment_text` | 8-10 |
+| P6 | Evidence pipeline: extraction, dedup, annotations, company record categories | built on branch `P6`, checkpointed `ce366408` (gate interrupted; not for merge as is: rebase, retake schema 18, run `just check` to the end, review the store → import dependency) | U0a, U0b | S4-S7, P4, P5 (not its envelope step), P9a, P11a, P13 | `attachment_text` | 8-10 |
 | P7 | The TIN scanner's separators; vault v2 closed (D-48) | landed 2026-10-26 (`3e65c83f`) | none | everything | none | 1 |
 | P8 | Audit and attestations | not started | P6 (extraction), P4 (drafts), U0b | P9a, P11a, P13 | `audits` | 10-12 |
 | P9a | Self-host recipe, `books adopt` move with the head check, static bearer over a tunnel, the two-user CI job | landed 2026-10-27 (`c8541ea9`); Done-when 1-2 are owner/EM to verify | none (code); a second machine to try it on | everything | none | 3-4 |
 | P9b | claude.ai through an external identity provider (D-7 b, Q-6) | not planned until Q-6 is answered | P9a | | | |
 | P9c | Remote viewer replica, invitations | not planned (D-51) | | | | |
 | P10 | The re-audit runbook and its CI mirror; the owner runs the re-audit | not started | P5, P6, P8 | P11a, P13 | none | 1 (+ owner days) |
-| P11a | Packaging and updates: the trial, `wanderbooks update`/`rollback`, Linux packages, signing, macOS and Windows bundles | not started | none (code); certificates and keys from the owner for the signing steps; Q-4 before the manifest step | everything | none | 20-25 |
+| P11a | Packaging and updates: step 0 the platform groundwork, the trial, `wanderbooks update`/`rollback`, Linux packages, signing, macOS and Windows bundles | not started; **starts now, beside the P4b finish (D-56, 2026-10-28)** | none (code); certificates and keys from the owner for the signing steps; Q-4 before the manifest step | everything | none | 20-25 |
 | P11b | The agent dock and books homes | not started | P11a (an installed app to dock into) | P12 | none | 8-10 |
 | P12 | Max testing, again | not started | everything else merged | | none | 2-3 (+ machine time) |
 | P13 | bookspec: checker crate, `Engine` trait, rule ids, the spec text, the runner | in progress: steps 1-3 landed 2026-10-26 (`579d0eed`); steps 4-6 open | none for steps 1-4; the engine stable for step 5 | everything | none | 15-20 |
@@ -853,6 +855,10 @@ everything ─> P12
 
 The shortest path to P10 (the owner's goal: the whole re-audit through the MCP alone) is U0a, U0b → S4 (S5, S6, S7 beside it) → P4 → P5 → P6 (can start earlier) → P8 → P10. P9a, P11a, P13 and P7 run beside that chain whenever an engineer is free. P11b and P12 come last.
 
+**The destination (D-56, 2026-10-28).** The owner's destination is one installed app for Mac, Windows and Linux (P11a, then P11b), and after it the hosted service of section 11. P11a is therefore staffed now, beside the P4b finish, not "any time"; its step 0 (the platform groundwork) comes first, because today the executable's agent path works on Linux alone (the keyring store exists for Linux only). The P10 chain keeps its order and runs beside it.
+
+**Resuming the paused wave (paused 2026-10-27; see `plan/STATUS.md`).** Five units are built on branches and unmerged. Land them in this order, each rebased on `main` with its `just check` (and `just prove` where the unit says) re-run after the rebase, since the pause killed every gate: (1) S4.4 (`002fb9f8`; merges clean); (2) S5 (`ad649be3`; conflicts: `crates/ledger-cli/tests/documents.rs` add/add, which every P4b branch created from 8.0.3's one allocated file, so concatenate; `crates/ledger-mcp/src/types.rs`, both appends kept; schema 17 stands); (3) S6 (`6c4480cd`; `documents.rs`, `docs/mcp-interface.md`); (4) S7 (`4b4fecb9`; `documents.rs`, `types.rs`, `crates/ledger-store/src/lib.rs`; `just prove` for `writeOff_within_bounds`); (5) P6 (`ce366408` is a checkpoint, not a reviewed unit: rebase, resolve `types.rs`, `store/src/lib.rs`, `store/src/schema.rs` (retake schema 18: it took 16, which S4.3 holds), `store/tests/store.rs`, `docs/parity.md`, `docs/receipt-store.md`, `docs/spec/rules.md`, `docs/testing.md`; run its gate to the end; review its `ledger-store` → `ledger-import` dependency before merging). Law numbers in `docs/verification.md` at merge: S1's documents law is 34 (added on `main` 2026-10-28); S5's `Step.markSent` becomes 35 and S6's `settle_is_exact` 36 (both branches wrote 34); S7's write-off 37. Then S4.5, the only unstarted P4b slice. The single-owner rule of U0a holds throughout: no two of these merge at once.
+
 Recommended staffing for a team of five: engineer A on U0a then S4.4/S4.5; B on U0b then P6; C on S4.1/S4.3 then S6; D on S4.2 then S5 then S7; E on P13 steps 1-3, then P9a, then P11a. The EM merges in the order above and holds the three single-owner moments: U0a (before any MCP-touching branch opens), P4's one sweep over the confirm tools, and P5's envelope step.
 
 #### 8.0.3 Shared files, owners, and allocated names
@@ -861,7 +867,7 @@ These files are edited by nearly every unit. Each has one owner (the EM, or a na
 
 | File | What every unit adds | Rule |
 |---|---|---|
-| `crates/ledger-mcp/src/server.rs` and `crates/ledger-mcp/src/tools/<group>.rs` | tool handlers | after U0a, a unit adds handlers only in its own group file (`tools/documents.rs`, `tools/drafts.rs`, `tools/evidence.rs`, `tools/audit.rs`, ...); `server.rs` keeps the router and the shared helpers |
+| `crates/ledger-mcp/src/server.rs` and `crates/ledger-mcp/src/tools/<group>.rs` | tool handlers | after U0a, a unit adds handlers only in its own group file (`tools/documents.rs`; `tools/sent.rs` and `tools/settlements.rs`, which the EM approved during the first wave so S5 and S6 did not share S4.4's file, the payment and aging tools now in `settlements.rs`; `tools/drafts.rs`, `tools/evidence.rs`, `tools/audit.rs`, ...); `server.rs` keeps the router and the shared helpers |
 | `crates/ledger-mcp/src/types.rs` | params and output structs | append at the end, under a `// <unit>` comment |
 | `crates/ledger-mcp/src/scopes.rs` | one row per tool and the array length | append at the end of `TABLE`; bump the length |
 | `crates/ledger-store/src/format.rs` | `KNOWN_FEATURES`, `EVENT_TYPES`, `setting_feature` arms | feature and event names are the ones allocated below; append |
@@ -897,7 +903,7 @@ These files are edited by nearly every unit. Each has one owner (the EM, or a na
 | setting keys | `invoicing.number_prefix`, `invoicing.first_number`, `invoicing.default_terms`, `invoicing.payment_methods`, `invoicing.footer`, `invoicing.unsent_days`, `invoicing.reminder_days`, `bills.remind_days`, `bills.discount_warn_days`, `company.email`, `company.website` | S4 (S5 and S6 read the day counts) |
 | setting key | `policy.attestation_bar` | P8 |
 | roles | `bad_debts` (6990), `purchase_discounts` (6995), `sales_allowances` (4100, existing account), `payment_processing_fees` (the account payouts' fee lines already use) | S7, S6 |
-| MCP tools, new | `books.mark_sent` (S5); `books.bills_due` (S6); `books.write_off_invoice` (S7); `books.preview_entry`, `books.list_drafts`, `books.set_draft_state`, `books.discard_draft` (P4); `books.journal_history` (P5); `books.find_attachment`, `books.annotate_attachment`, `books.consolidate_duplicates` (P6); `books.audit`, `books.workpaper`, `books.attest_receipt`, `books.review_entry`, `books.attest_period`, `books.attestations` (P8) | |
+| MCP tools, new | `books.mark_sent` (S5; its recipients parameter is `recipients`, since the path lint refuses `to`); `books.bills_due` (S6); `books.write_off_invoice` (S7); `books.preview_entry`, `books.list_drafts`, `books.set_draft_state`, `books.discard_draft` (P4); `books.journal_history` (P5); `books.find_attachment`, `books.annotate_attachment`, `books.consolidate_duplicates`, `books.set_entry_settles` (P6; the last named in its Build step, allocated here 2026-10-28); `books.audit`, `books.workpaper`, `books.attest_receipt`, `books.review_entry`, `books.attest_period`, `books.attestations` (P8) | |
 | MCP tools, changed | `books.create_invoice`, `books.create_bill`, `books.update_party` (S4); `books.receive_payment`, `books.pay_bill`, `books.ar_aging`, `books.ap_aging`, `books.export` (S6); `books.post_entry`, `books.reverse_entry`, `books.digest`, every tool with `confirmed` (P4); `books.start`, `books.set_convention`, `books.record_decision`, `books.raise_item` (P5); `books.get_receipt`, `books.attach_receipt`, `books.file_document` (P6); `books.export_cpa_package`, `books.verify` (P8) | |
 | handbook sections | `invoices-and-bills` (S4; S5, S6, S7 add their steps to it), `drafts-and-reversals` rewritten (P4), `evidence-and-receipts` extended (P6), `attestations-and-audit` (P8), `self-host` (P9a) | |
 | rules.md | B-39 terms (S4), B-40 numbers and the issued copy (S4), B-41 write-offs (S7), B-42 settlements and the fee (S6), B-43 drafts and evidence (P4), B-44 extraction and dedup (P6), B-45 audits and attestations (P8) | |
@@ -1279,7 +1285,7 @@ Each unit follows the 8.0.4 template. "A-n" is an owner answer numbered in 8.3.1
 
 #### P4b S4: `documents_v2`
 
-1. **Status:** not started.
+1. **Status:** in progress: S4.1 (`13282cf8`), S4.2 (`bf91c5a7`) and S4.3 (`d19fb464`) landed 2026-10-27; S4.4 built on branch `S4.4` (`002fb9f8`), paused 2026-10-27, unmerged (its As-built block is on the branch); S4.5 not started.
 2. **Depends on:** S1-S3 (landed). Inside the unit: S4.1 and S4.2 need nothing and may run in two worktrees; S4.3 needs both; S4.4 needs U0a and S4.3; S4.5 needs S4.4. S6 may start when S4.1 has merged; S5 when S4.2 has; S7.2 when S4.3 has. Go-ahead: `documents_v2`, one upgrade after S7 (D-52; Q-5 asks the owner whether to upgrade earlier). Until the go-ahead, on the owner's books a document carrying any new field is refused with `format_upgrade_pending`; a document carrying none posts exactly as before.
 3. **Feature and schema:** feature `documents_v2` (R-A; shared with S5, S6, S7, so S4 creates the constant and the test and the later slices add their call sites). New fields on `invoice.created` and `bill.created` and on their lines, and on `party.updated`, as 8.0.3 lists; no new event type. Provisional schema 16: columns on the documents and document lines tables, a `parties.email` and two terms columns.
 4. **Build:**
@@ -1327,7 +1333,7 @@ Each unit follows the 8.0.4 template. "A-n" is an owner answer numbered in 8.3.1
 
 #### P4b S5: sent tracking (`invoice.sent`)
 
-1. **Status:** not started.
+1. **Status:** built on branch `S5` (`ad649be3`, 2026-10-27), paused, unmerged; its As-built block is on the branch.
 2. **Depends on:** S1. S4.2 gives the defaults (`to` from the party's email; `invoicing.unsent_days`, `invoicing.reminder_days`); if S5 merges before S4.2, `to` is required and the day counts are the constants 2 and 14, and both paths are tested. MCP step needs U0a. Go-ahead: `documents_v2` (D-52).
 3. **Feature and schema:** feature `documents_v2` (S5 adds its `ensure_feature` call site; the constant is S4's, or S5 creates it per R-A if S5 merges first); new event type `invoice.sent { invoice_id, on, by, via, to: [String], kind, reference?, note? }` (R-B); provisional schema 17: table `invoice_sends`.
 4. **Build:**
@@ -1343,7 +1349,7 @@ Each unit follows the 8.0.4 template. "A-n" is an owner answer numbered in 8.3.1
 
 #### P4b S6: paying on terms (multi-document payments, discounts, the processor fee, bills due, aging exports)
 
-1. **Status:** not started.
+1. **Status:** built on branch `S6` (`6c4480cd`, 2026-10-27), paused, unmerged; its As-built block is on the branch (`confirmed` deferred to P4's sweep; handlers in `tools/settlements.rs`).
 2. **Depends on:** S4.1 (`Terms`, `discount_by`, `kernel::discount_max`), U0a. Go-ahead: `documents_v2` (D-52).
 3. **Feature and schema:** feature `documents_v2` (call site in `Store::ensure_payment_features`); no new event type: `invoice.payment_received` and `bill.paid` gain `line` (the index of the control line this event tags), `discount`, `discount_line`, `discount_reason`, `fee`, `fee_line` (8.0.3). A payment entry that settles N documents is N events naming the same entry, each with its `line`; legacy events without `line` keep the positional rule ("the first untagged control line for the amount", rules.md B-38 item 1, test `several_payment_events_on_one_entry_tag_its_lines_in_order`). Provisional schema 18 if a column is needed for discounts and fees in the projection's payments table.
 4. **Build:**
@@ -1362,7 +1368,7 @@ Each unit follows the 8.0.4 template. "A-n" is an owner answer numbered in 8.3.1
 
 #### P4b S7: bad debts (`write_off_invoice`)
 
-1. **Status:** not started.
+1. **Status:** built on branch `S7` (`4b4fecb9`, 2026-10-27), paused, unmerged; its As-built block is on the branch.
 2. **Depends on:** S1; S4.3 for the same-call attach (the write-off needs its evidence filed in the same store call); U0a for the MCP step. Go-ahead: `documents_v2`.
 3. **Feature and schema:** feature `documents_v2`; new event type `invoice.written_off { invoice_id, entry_id, date, amount, reason }` (R-B). No schema change expected (the entry and its tag carry the figures; a column only if the projection's documents table needs `written_off`).
 4. **Build:**
@@ -1420,7 +1426,7 @@ Each unit follows the 8.0.4 template. "A-n" is an owner answer numbered in 8.3.1
 
 #### P6: evidence pipeline
 
-1. **Status:** not started. Rewritten 2026-10-26 (D-32: no sandbox; D-46: no inline bytes; D-17: no email-in; no migration tools).
+1. **Status:** built on branch `P6`, checkpointed `ce366408` (2026-10-27, "not for merge": its `just check` was interrupted by the pause and must run to the end after a rebase that retakes schema 18); its As-built block is on the branch. Rewritten 2026-10-26 (D-32: no sandbox; D-46: no inline bytes; D-17: no email-in; no migration tools).
 2. **Depends on:** U0a, U0b. Independent of P4b and P4. Go-ahead: `attachment_text`.
 3. **Feature and schema:** feature `attachment_text`; event types `attachment.text_extracted { attachment_id, text_sha256, extractor, version, pages, status: ok | none | failed }`, `attachment.annotated { attachment_id, fields { receipt_number?, payee?, amount?, date?, instrument?, category?, source?, reimbursable_to? }, note? }`, `entry.settles { entry_id, settles: [entry_id] }` (R-B); `attachment.withdrawn` gains `duplicate_of?`. Provisional schema 20: tables `extractions`, `annotations`.
 4. **Build:**
@@ -1512,10 +1518,11 @@ Each unit follows the 8.0.4 template. "A-n" is an owner answer numbered in 8.3.1
 
 #### P11a: packaging and updates (D-19, D-22, D-24, D-25, D-26)
 
-1. **Status:** not started. P11 was split 2026-10-26 (D-54): P11a is installers and updates; P11b the agent dock and books homes.
+1. **Status:** not started; starts now, beside the P4b finish (D-56, 2026-10-28). P11 was split 2026-10-26 (D-54): P11a is installers and updates; P11b the agent dock and books homes.
 2. **Depends on:** none in code. From the owner before the signing steps: the Apple Developer ID certificate and notarization credentials as CI secrets; the Windows signing identity (Azure Artifact Signing if eligible, else an OV certificate); GitHub Releases enabled on the public mirror; the release hardware token; clean VMs or runners for the install tests. Q-4 (keep the two-key release manifest of D-25, or minisign alone) before step 5.
 3. **Feature and schema:** none.
 4. **Build:**
+   0. **Platform groundwork** (added 2026-10-28, D-56; the design assigned it to P11 in 3.3, 3.4, 3.9 and D-19 without a step): the macOS and Windows keyring stores behind `crates/ledger-host/src/tokens.rs::Keeper` (today every OS but Linux gets `NOT_YET`, so `wanderbooks connect` and the bridge fail there; `keyring-core`'s native stores, the same one-item-per-account rule and the same tests through the `file_keyring` knob); the Windows data root from the known-folder API under `%LOCALAPPDATA%` with an owner-only DACL (3.4) and named pipes with the SID check for `run/` (3.9); a CI matrix that builds and runs `cargo test --workspace` on `macos-latest` and `windows-latest` beside `ubuntu-24.04` (`.github/workflows/check.yml`), with the `cfg` gaps that build finds fixed. Done when `wanderbooks setup`, `books create`, `connect claude`, a bridge session, an upload and `wanderbooks gui` work on each OS from a source build, and the matrix is green. Independent of the trial; may run beside it. `crates/ledger-host/src/tokens.rs (changed)`, `crates/ledger-store/src/root.rs (changed)`, `crates/ledger-host/src/lease.rs` and the sockets (changed), `.github/workflows/check.yml (changed)`.
    1. **The trial** (2-3 days): build all six formats with `cargo packager` (pinned in `mise.toml`: `cargo-packager`, `cargo-packager-updater`, `cargo-generate-rpm`) on clean VMs; record in `docs/packaging.md (new)` what each produced, what failed, and the decision for each format (a table: format | built by | installs as | updated by | signed by). Anything the tooling cannot meet is written there before anything is built around it.
    2. **`wanderbooks update` and `rollback`** (`crates/ledger-host/src/commands.rs (changed)`, a new `update.rs`): check the feed (`releases/latest/download/manifest.json` on GitHub Releases, D-26), download and verify (step 5's signatures), stage under `<root>/updates/<version>/`, swap the executable atomically, then trigger the restart the host already has (`host.rs` INVARIANT 7: `run/update.lock`, `Ending::Restart`, `restart()`; `bridge.rs` `with_list_changed`: these exist; the updater only triggers them). `rollback` swaps back to the kept previous executable and refuses for a book that consented to a newer format (3.9). A package-managed install (AUR, apt, dnf) refuses `update` and says to use the package manager; the host notices the replaced executable and restarts when idle (exists). The format gate is unchanged (3.9). Tested against a `file://` feed: `update_is_atomic`, `failed_update_rolls_back`, `unsigned_update_refused` (a bad signature, a sha that differs from the manifest, each refused, nothing changed), `bridge_survives_update`, `update_waits_for_a_running_call`, `package_managed_install_refuses_update`.
    3. **Linux packages** in CI containers (unsigned first): `.deb` with an apt repository index and `.rpm` with a dnf index served from GitHub Pages; the AUR `PKGBUILD`; the AppImage with self-update. `linux_packages_install_and_upgrade` (Arch, Debian, Fedora containers: install, open, upgrade, the host restarts, the books' head unchanged).
@@ -2019,6 +2026,7 @@ The owner decisions of 2026-10-16 (at the top of this document) replace the form
 | D-53 | No `books.job` locally; no `ledger-view` or `ledger-extract` crate (2026-10-26 review) | Jobs, the 20 s rule and jobs as lease holders are not built locally (no call over the bridge approaches a client limit; 3.9 as built lets a running call finish before a close); they come with P9b if measured necessary. Needs attention lives in `ledger-package` over `PackageBooks` (U0b), not a new crate; extraction is in-process in `ledger-import` (P6), not a sandboxed subprocess (D-32). |
 | D-54 | P11 split (2026-10-26 review; D-24 to D-27 unchanged) | **P11a:** installers and updates. **P11b:** the agent dock and books homes. The dock starts the agent as an ordinary child process of the viewer's `Owner` (D-32 removed the helper and the confinement); the viewer stays read-only by design and by test. The two-key release manifest of D-25 is built unless the owner answers Q-4 "minisign only". |
 | D-55 | Party contact details (owner, 2026-10-27: asked which fields, chose "Full contact block") | A party carries, all optional and journaled on `party.updated` behind `documents_v2`: `phone`, `contact` (a named person), `billing_address`, `shipping_address`, `billing_email`. The existing `email` stays the general address and the existing `address` the general/business one; when `billing_email` or `billing_address` is set, an invoice's bill-to uses it, else the general one. `PartySnapshot` carries the same at issue; the issued PDF prints the contact person, phone, billing address and billing email, and prints a Ship-to line when a shipping address is set. `books.update_party` and `books.create_invoice`'s `bill_to` override take all six; `""` clears a text field. Both emails go through `parties::check_email` (one `@`, no spaces, the full-TIN scan). S4.4 builds the core, store, journal and MCP parts; S4.5 the PDF. Folded into `documents_v2` because the owner's upgrade has not happened (D-52), so no second go-ahead. No projection columns: there is no parties table in the SQLite projection, and replay plus `differs_from` carry the facts. Terms per side are already D-52/S4.2's and are unchanged. |
+| D-56 | The destination, and when P11a starts (owner, 2026-10-28: the work is "ultimately taking it to a single bundled server+GUI installation for Mac/Windows/Linux and then beyond") | **The installed app is this plan's destination** (D-19, D-22 and D-24 to D-27 unchanged), and the hosted service of section 11 is what comes after it. So P11a is no longer "any time": it starts as soon as an engineer is free, beside the P4b finish, with its new step 0 first (the macOS and Windows keyring stores, the Windows data root and pipes, a macOS and Windows CI build), because today the executable's agent path works on Linux alone. The P10 chain (P4, P5, P8) keeps its order and runs beside it. |
 
 ### 10.2 Deferred
 
@@ -2027,15 +2035,17 @@ The owner decisions of 2026-10-16 (at the top of this document) replace the form
 
 ### 10.3 Open questions for the owner, and the closed ones
 
-**Open (2026-10-26).** Each is asked when its unit starts, one at a time, in plain English; none blocks the units before it.
+**Open (2026-10-28).** Each is asked when its unit starts, one at a time, in plain English; none blocks the units before it.
 
 **Q-4 (before P11a step 5).** Releases: should the app check updates against our own signed release list as well (two keys, one on your hardware token and one offline, a version that only goes up, an expiry), as decided on 2026-10-18 (D-25), or is the packaging tool's own single-key signature plus Apple's and Microsoft's code signing enough? The second is simpler and already refuses an older version; the first also stops a frozen or replayed update list. Recommended: the first, as decided, since the key work is small once the token exists.
 
-**Q-5 (when S4 lands).** The receivables and payables work needs one more go-ahead to switch your books to the new format (numbers, terms, line accounts, sent records, discounts, write-offs). Should we ask once, after everything is built (write-offs and discounts included), or earlier, after invoice numbers and terms land, with a second ask later? Recommended: once, after everything, unless you need numbered invoices sooner.
+**Q-5 (due now: S4.1-S4.3 landed 2026-10-27 and S4.4 is built).** The receivables and payables work needs one more go-ahead to switch your books to the new format (numbers, terms, line accounts, sent records, discounts, write-offs). Should we ask once, after everything is built (write-offs and discounts included), or earlier, after invoice numbers and terms land, with a second ask later? Recommended: once, after everything, unless you need numbered invoices sooner.
 
 **Q-6 (before P9b).** For claude.ai on the web to reach the books on your own server, it needs a sign-in service. Should we run an existing one (Authentik, Ory or Keycloak) beside the books, which we only trust tokens from, or write our own small one into the books? Recommended: an existing one (D-7 b): no security-critical code of ours, no outside review needed.
 
 **Q-7 (when P11b starts).** When the app connects Codex to a company's books folder, may it mark that folder as trusted in Codex's own settings, or should Codex ask you itself the first time? Recommended: let Codex ask.
+
+**Q-8 (now, with Q-5).** The 2026-10-26 review made eight engineering decisions in your name (D-47 to D-54: reversals stay posted with no reversal drafts; the vault stays v1; the P4b deferrals; the preview digest with no key; the P9 and P11 splits; one `documents_v2` upgrade; no jobs and no new crates), and S5, S6, S7 and P6 were built on them. Do they stand? Recommended: yes, as built; any you reverse becomes a new unit.
 
 **Closed: the P2 cutover questions (Q-1 to Q-3).** Answered 2026-10-17 and 2026-10-20; the cutover happened 2026-10-20 (P2 slice 9). Kept for the record:
 
@@ -2080,7 +2090,7 @@ The cutover's check adds: the project folder holds none of the above, and `wande
 | P8 | D-9, D-12, D-39 |
 | P9a, P9b, P9c | top decision 4; D-7, D-27, D-28, D-31, D-32, D-51 |
 | P10 | D-9, D-12, D-29, D-31, D-47 |
-| P11a, P11b | D-19, D-22, D-24, D-25, D-26, D-27, D-32, D-54; Q-4, Q-7 |
+| P11a, P11b | D-19, D-22, D-24, D-25, D-26, D-27, D-32, D-54, D-56; Q-4, Q-7 |
 | P12 | D-33 |
 | P13 | D-34 |
 

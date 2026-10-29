@@ -1,6 +1,6 @@
 # Hand-off: the remaining wanderbooks work, for a team running in parallel
 
-This file is the prompt to give the implementing team's harness (an engineering-manager agent that coordinates worker agents, each in its own git worktree). Paste the block under "The prompt" as the manager's instructions. Everything it refers to is in this repository. Written 2026-10-26.
+This file is the prompt to give the implementing team's harness (an engineering-manager agent that coordinates worker agents, each in its own git worktree). Paste the block under "The prompt" as the manager's instructions. Everything it refers to is in this repository. Written 2026-10-26; revised 2026-10-28 after the first wave was paused (see "Resuming the paused worktrees").
 
 ## The prompt
 
@@ -10,16 +10,22 @@ You are the engineering manager (EM) of a team implementing the remaining work o
 
 1. `AGENTS.md` (the repo's operating manual: the six non-negotiables, the verification protocol, the formal-methods bar).
 2. `plan/served.md` section 0 ("How to read this document") and section 8.0 ("How the work is organized"): the status and dependency table (8.0.1), the dependency graph and merge order (8.0.2), the shared files, their owners and the allocated names (8.0.3), every unit's bar and the eight-field template (8.0.4), the recipes R-A to R-G (8.0.5), the journal-safety checklist (8.0.6), how to work in a worktree (8.0.7).
-3. `plan/served.md` section 10 (the decisions, D-1 to D-54; the open questions Q-4 to Q-7; the decisions-by-unit index 10.4) and section 2 (the invariants I-1 to I-13).
+3. `plan/served.md` section 10 (the decisions, D-1 to D-56; the open questions Q-4 to Q-8; the decisions-by-unit index 10.4) and section 2 (the invariants I-1 to I-13).
 4. `plan/STATUS.md` (where the live books stand) and `docs/architecture.md`.
 5. Only when a unit is assigned: that unit's section in `plan/served.md` 8.2, and the parts of 8.3 (the P4b reference design) it points into.
 
-### What is true today (2026-10-26)
+### What is true today (2026-10-28)
 
-- `main` is at the commit that landed P4b S3 or later. P0, P1, P2, P3, Projects and P4b S1, S2, S3 are built and live on the owner's books. Nothing after that is built.
-- The plan's section 8 was rewritten on 2026-10-26 for this hand-off. Sections 1 to 7 are the older design and carry strike-throughs (`~~text~~ → D-n`) and "As built" notes where the build or a decision departed; where section 8 and an earlier section disagree, section 8 is right.
+- `main` is `44ee4083`. Landed since the hand-off: U0a, U0b, U0c, P7, P9a, P13 steps 1-3, P4b S4.1, S4.2, S4.3 (all 2026-10-26 to 2026-10-27). Live on the owner's books: P0 to P3, Projects, P4b S1 (`document_standing`); everything behind `documents_v2` waits for the owner's upgrade (Q-5).
+- Built but unmerged, on branches paused 2026-10-27: S4.4 (`002fb9f8`), S5 (`ad649be3`), S6 (`6c4480cd`), S7 (`4b4fecb9`), P6 (`ce366408`, a checkpoint whose gate never finished). Their worktrees are `../wb-<unit>`. "Resuming the paused worktrees" below is the first thing to do.
+- Not started: S4.5, P4, P5, P8, P10, P11a (starts now: D-56), P11b, P12, P13 steps 4-6.
+- The plan's section 8 was rewritten on 2026-10-26 for this hand-off and revised on 2026-10-28 (section 0, "What changed on 2026-10-28"; `plan/2026-10-28_DRIFT_REPORT.md`). Sections 1 to 7 are the older design and carry strike-throughs (`~~text~~ → D-n`) and "As built" notes where the build or a decision departed; where section 8 and an earlier section disagree, section 8 is right.
 - Mutation testing is paused until unit P12 (decision D-33). Workers never run `cargo mutants`; each unit writes a "For P12" paragraph in `docs/testing.md` instead (recipe R-G).
 - The owner's live books are never touched by anyone on this team. The only books a worker uses are test fixtures and throwaway books made by `wanderbooks setup` in a scratch root. A unit's new writes are refused on the owner's books until the owner's format upgrade; merging never waits for that.
+
+### Resuming the paused worktrees (2026-10-27 pause)
+
+The five branches were stopped mid-gate; nothing was merged, rebased or discarded. Resume in this order, one at a time (the single-owner rule): S4.4, S5, S6, S7, P6, then S4.5. For each: rebase on `main`; resolve the known conflicts (served.md 8.0.2, "Resuming the paused wave": `crates/ledger-cli/tests/documents.rs` is an add/add on every P4b branch after the first, concatenate; `types.rs` keeps both appends; P6 retakes schema 18 and resolves eight files); renumber the laws in `docs/verification.md` at merge (S1 is 34 on `main`; S5 35, S6 36, S7 37); re-run `just check`, and `just prove` for S7 and any branch that touched `verify/lean/` or a `Ledger` command, after the rebase, since the pause killed the running gates; review against the unit's text and its As-built block (each branch carries its own); merge; move the 8.0.1 row to landed and append to `plan/STATUS.md`. P6's checkpoint is not a reviewed unit: run its gate to the end and review its `ledger-store` → `ledger-import` dependency before merging (ask the owner if you would keep it). Ask Q-5 and Q-8 when S4.4 lands.
 
 ### How to run things
 
@@ -30,7 +36,7 @@ You are the engineering manager (EM) of a team implementing the remaining work o
 
 ### Assigning work
 
-Use the table in 8.0.1 and the graph in 8.0.2. The order that is forced:
+Use the table in 8.0.1 and the graph in 8.0.2. The first wave below ran 2026-10-26 to 2026-10-27; start from "Resuming the paused worktrees", and staff P11a (step 0 first) as soon as an engineer is free (D-56). The order that is forced:
 
 1. First, in parallel: **U0a** (split `server.rs` by tool group; single owner), **U0b** (the attention engine over `PackageBooks`; single owner), **U0c** (three missing `docs/testing.md` sections), **P4b S4.1** (core: terms, numbers, line accounts) and **P4b S4.2** (settings and party fields), **P13** steps 1 to 3 (the bookspec checker crate), **P7** (the TIN scanner's separators), **P9a** (the self-host recipe).
 2. When U0a has merged: no other branch may add MCP handlers before it; after it, every unit adds handlers only in its own `crates/ledger-mcp/src/tools/<group>.rs`.
@@ -77,4 +83,4 @@ Weekly, or when asked: the 8.0.1 table as it stands (which units landed, with co
 
 - The review that produced this plan is in `plan/review-2026-10-26/`; `consolidated_review_report.md` lists every finding and what was done with it. Nothing in the code changed on 2026-10-26.
 - The sizes in 8.0.1 are rough, for an entry-level engineer new to the codebase; the recipes exist to make them hold.
-- Four owner questions are open (Q-4 to Q-7, section 10.3). None blocks the first wave of units.
+- Five owner questions are open (Q-4 to Q-8, section 10.3); Q-5 and Q-8 are due when S4.4 lands. None blocks the merges.

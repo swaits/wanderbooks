@@ -1,0 +1,431 @@
+{
+  "assets": [],
+  "bills": [
+    {
+      "amount_paid": "80.00",
+      "date": "2026-02-07",
+      "due_date": "2026-03-09",
+      "entry_id": 6,
+      "id": 1,
+      "lines": [
+        {
+          "amount": "80.00",
+          "description": "Paper"
+        }
+      ],
+      "memo": "A4 paper",
+      "received_on": "2026-02-08",
+      "status": "Paid",
+      "terms": {
+        "kind": {
+          "net": 30
+        },
+        "text": "Net 30"
+      },
+      "vendor_id": 1,
+      "vendor_ref": "TOBIN-77"
+    }
+  ],
+  "entries": [
+    {
+      "date": "2026-01-01",
+      "description": "Opening capital",
+      "id": 1,
+      "lines": [
+        {
+          "account": 1,
+          "amount": {
+            "amount": "1000.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Debit"
+        },
+        {
+          "account": 2,
+          "amount": {
+            "amount": "1000.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Credit"
+        }
+      ],
+      "reversal_of": null,
+      "status": "Posted"
+    },
+    {
+      "date": "2026-02-01",
+      "description": "Invoice 1",
+      "id": 2,
+      "lines": [
+        {
+          "account": 3,
+          "amount": {
+            "amount": "500.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Debit"
+        },
+        {
+          "account": 4,
+          "amount": {
+            "amount": "500.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Credit"
+        }
+      ],
+      "reversal_of": null,
+      "status": "Posted"
+    },
+    {
+      "date": "2026-02-10",
+      "description": "Payment on invoice 1",
+      "id": 3,
+      "lines": [
+        {
+          "account": 1,
+          "amount": {
+            "amount": "200.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Debit"
+        },
+        {
+          "account": 3,
+          "amount": {
+            "amount": "200.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Credit"
+        }
+      ],
+      "reversal_of": null,
+      "status": "Posted"
+    },
+    {
+      "date": "2026-02-05",
+      "description": "Invoice 2",
+      "id": 4,
+      "lines": [
+        {
+          "account": 3,
+          "amount": {
+            "amount": "40.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Debit"
+        },
+        {
+          "account": 4,
+          "amount": {
+            "amount": "40.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Credit"
+        }
+      ],
+      "reversal_of": null,
+      "status": "Posted"
+    },
+    {
+      "date": "2026-02-06",
+      "description": "Void invoice 2: wrong customer",
+      "id": 5,
+      "lines": [
+        {
+          "account": 3,
+          "amount": {
+            "amount": "40.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Credit"
+        },
+        {
+          "account": 4,
+          "amount": {
+            "amount": "40.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Debit"
+        }
+      ],
+      "reversal_of": 4,
+      "status": "Posted"
+    },
+    {
+      "date": "2026-02-07",
+      "description": "Bill 1",
+      "id": 6,
+      "lines": [
+        {
+          "account": 5,
+          "amount": {
+            "amount": "80.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Debit"
+        },
+        {
+          "account": 6,
+          "amount": {
+            "amount": "80.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Credit"
+        }
+      ],
+      "reversal_of": null,
+      "status": "Posted"
+    },
+    {
+      "date": "2026-03-01",
+      "description": "Payment on bill 1",
+      "id": 7,
+      "lines": [
+        {
+          "account": 6,
+          "amount": {
+            "amount": "80.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Debit"
+        },
+        {
+          "account": 1,
+          "amount": {
+            "amount": "80.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Credit"
+        }
+      ],
+      "reversal_of": null,
+      "status": "Posted"
+    }
+  ],
+  "entry_parties": [
+    [
+      2,
+      [
+        {
+          "party_id": 1,
+          "share": "derived"
+        }
+      ]
+    ],
+    [
+      3,
+      [
+        {
+          "party_id": 1,
+          "share": "derived"
+        }
+      ]
+    ],
+    [
+      4,
+      [
+        {
+          "party_id": 1,
+          "share": "derived"
+        }
+      ]
+    ],
+    [
+      5,
+      [
+        {
+          "party_id": 1,
+          "share": "derived"
+        }
+      ]
+    ],
+    [
+      6,
+      [
+        {
+          "party_id": 2,
+          "share": "derived"
+        }
+      ]
+    ],
+    [
+      7,
+      [
+        {
+          "party_id": 2,
+          "share": "derived"
+        }
+      ]
+    ]
+  ],
+  "invoices": [
+    {
+      "amount_paid": "200.00",
+      "bill_to": {
+        "address": "9 Ridgeway Rd",
+        "email": "ap@fernhill.example",
+        "name": "Fernhill Labs"
+      },
+      "customer_id": 1,
+      "customer_ref": "PO-7",
+      "date": "2026-02-01",
+      "due_date": "2026-03-03",
+      "entry_id": 2,
+      "id": 1,
+      "lines": [
+        {
+          "amount": "500.00",
+          "description": "Design"
+        }
+      ],
+      "memo": "Thanks",
+      "number": "INV-0001",
+      "seller": {
+        "address": "1 Main St",
+        "name": "Wanderbooks Test Co"
+      },
+      "status": "Partial",
+      "terms": {
+        "discount": {
+          "days": 10,
+          "percent_bp": 200
+        },
+        "kind": {
+          "net": 30
+        },
+        "text": "2/10 net 30"
+      }
+    },
+    {
+      "amount_paid": "0",
+      "customer_id": 1,
+      "date": "2026-02-05",
+      "due_date": "2026-03-07",
+      "entry_id": 4,
+      "id": 2,
+      "lines": [
+        {
+          "amount": "40.00",
+          "description": "Setup"
+        }
+      ],
+      "status": "Open"
+    }
+  ],
+  "payroll_runs": [],
+  "periods": [],
+  "recurring": [],
+  "schedules": [],
+  "snapshot": {
+    "Ok": {
+      "balance_sheet": {
+        "assets": "1420",
+        "balanced": true,
+        "current_earnings": "420",
+        "equity": "1420",
+        "liabilities": "0"
+      },
+      "profit_and_loss": {
+        "expenses": "80",
+        "net_income": "420",
+        "revenue": "500"
+      },
+      "trial_balance": {
+        "lines": [
+          {
+            "code": "1000",
+            "credit": "0",
+            "debit": "1120",
+            "name": "Checking"
+          },
+          {
+            "code": "1200",
+            "credit": "0",
+            "debit": "300",
+            "name": "Accounts Receivable"
+          },
+          {
+            "code": "3000",
+            "credit": "1000",
+            "debit": "0",
+            "name": "Capital"
+          },
+          {
+            "code": "4000",
+            "credit": "500",
+            "debit": "0",
+            "name": "Revenue"
+          },
+          {
+            "code": "6999",
+            "credit": "0",
+            "debit": "80",
+            "name": "General Expenses"
+          }
+        ],
+        "total_credits": "1500",
+        "total_debits": "1500"
+      }
+    }
+  },
+  "verify": {
+    "Ok": null
+  }
+}

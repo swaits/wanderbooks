@@ -191,6 +191,7 @@ fn refusal(e: &LedgerError) -> String {
         LedgerError::AssetAlreadyDisposed(_) => "already_disposed",
         LedgerError::InvalidDepreciationPeriod(_) => "invalid_depreciation_period",
         LedgerError::InvalidSchedule(_) => "invalid_schedule",
+        LedgerError::UntaggedControlLine { .. } => "untagged_control_line",
         other => return format!("another refusal: {other}"),
     }
     .to_string()
@@ -787,6 +788,7 @@ impl<'a> Books<'a> {
             ("close", e.close.is_some()),
             ("bill", e.bill.is_some()),
             ("invoice", e.invoice.is_some()),
+            ("write_off", e.write_off.is_some()),
             ("run_depreciation", e.run_depreciation.is_some()),
             ("dispose_asset", e.dispose_asset.is_some()),
             ("run_schedules", e.run_schedules.is_some()),
@@ -795,7 +797,7 @@ impl<'a> Books<'a> {
         match kinds.iter().filter(|(_, given)| *given).collect::<Vec<_>>()[..] {
             [(kind, _)] => kind,
             _ => panic!(
-                "{} event {n}: an event is one of lines, reverses, close, bill, invoice, run_depreciation, dispose_asset, run_schedules or register_schedule",
+                "{} event {n}: an event is one of lines, reverses, close, bill, invoice, write_off, run_depreciation, dispose_asset, run_schedules or register_schedule",
                 self.ex.id
             ),
         }
@@ -809,11 +811,12 @@ impl<'a> Books<'a> {
         // disposal is dated; the other commands date their own entries,
         // and every command describes its own.
         let own = matches!(kind, "lines" | "reverses" | "close" | "bill" | "invoice");
+        let dated = own || matches!(kind, "dispose_asset" | "write_off");
         assert_eq!(
             e.date.is_some(),
-            own || kind == "dispose_asset",
+            dated,
             "{ex} event {n}: {kind} {}",
-            if own || kind == "dispose_asset" {
+            if dated {
                 "is dated (date)"
             } else {
                 "dates its own entries: no date"
@@ -846,8 +849,16 @@ impl<'a> Books<'a> {
             "{ex} event {n}: {kind} is tagged with no parties or payment method"
         );
         assert!(
-            e.refused.is_none() || !matches!(kind, "lines" | "close" | "bill" | "invoice"),
-            "{ex} event {n}: refused is for a reversal or a command, which the books take whole or not at all"
+            e.refused.is_none() || !matches!(kind, "close" | "bill" | "invoice"),
+            "{ex} event {n}: refused is for a reversal, an entry or a command, which the books take whole or not at all"
+        );
+        assert!(
+            !(e.older && e.refused.is_some()),
+            "{ex} event {n}: an entry posted as an earlier version wrote it (older) can't also be refused"
+        );
+        assert!(
+            e.write_off.is_none() || kind == "write_off",
+            "{ex} event {n}: a write_off is its own event"
         );
     }
 
@@ -957,7 +968,7 @@ impl<'a> Books<'a> {
                 "{what}: entry {id}, which it made, is posted"
             );
         }
-        if own && e.refused.is_none() {
+        if (own || kind == "write_off") && e.refused.is_none() {
             assert_eq!(posted.len(), 1, "{what}: {kind} posts one entry");
         }
     }
@@ -1023,6 +1034,30 @@ impl<'a> Books<'a> {
         };
         let day = || when.expect("checked: dated");
         match kind {
+            "lines" if e.refused.is_some() => {
+                // The books take an entry whole or not at all, so a
+                // refused one leaves no draft behind: it is tried on a
+                // clone, which is how the engine refuses it.
+                let mut probe = self.store.ledger().clone();
+                let entry = probe.create_entry(day(), description);
+                for (i, line) in e.lines.iter().enumerate() {
+                    let side = match line.side.as_str() {
+                        "debit" => Side::Debit,
+                        "credit" => Side::Credit,
+                        other => panic!("{what}: side {other:?}"),
+                    };
+                    let amount = Money::new(money(&line.amount), self.currency);
+                    let account = self.id(&line.account);
+                    probe.add_line(entry, account, side, amount)?;
+                    if let Some(p) = &line.project {
+                        let class = *self.projects.get(p).unwrap_or_else(|| {
+                            panic!("{what}: project {p:?} not in setup.projects")
+                        });
+                        probe.set_line_class(entry, i, Some(class))?;
+                    }
+                }
+                Ok(probe.post_entry(entry)?)
+            }
             "lines" => {
                 let post = |this: &mut Self| -> Result<(), StoreError> {
                     let entry = this.store.create_entry(day(), description)?;
@@ -1122,6 +1157,43 @@ impl<'a> Books<'a> {
                 self.store
                     .create_invoice(customer, day(), day(), lines)
                     .map(|_| ())
+            }
+            "write_off" => {
+                let w = e.write_off.as_ref().expect("checked: a write-off");
+                let invoice_entry = self.entry_of(w.invoice, what);
+                let invoice = self
+                    .store
+                    .ledger()
+                    .invoices()
+                    .into_iter()
+                    .find(|i| i.entry_id == invoice_entry)
+                    .map(|i| i.id)
+                    .unwrap_or_else(|| panic!("{what}: event {} posted no invoice", w.invoice));
+                let amount = match &w.amount {
+                    Some(a) => exact(a, what),
+                    None => {
+                        self.store
+                            .ledger()
+                            .invoice_state(invoice, day())
+                            .expect("the invoice's figures")
+                            .expect("dated by its own day")
+                            .outstanding
+                    }
+                };
+                self.store
+                    .write_off_invoice(
+                        invoice,
+                        day(),
+                        amount,
+                        &w.reason,
+                        Some(ledger_store::WriteOffEvidence::File {
+                            file_name: "collection-letter.pdf",
+                            mime_type: "application/pdf",
+                            bytes: b"%PDF-1.4\nFinal demand\n%%EOF\n",
+                            description: Some("Evidence of worthlessness"),
+                        }),
+                    )
+                    .map(drop)
             }
             "run_depreciation" => {
                 let r = e.run_depreciation.as_ref().expect("checked: a run");

@@ -165,6 +165,7 @@ pub fn rule_for_refusal(reason: &str) -> Option<&'static Rule> {
         | "already_disposed"
         | "invalid_depreciation_period" => 15,
         "invalid_schedule" => 16,
+        "untagged_control_line" => 38,
         _ => return None,
     };
     rule(b)
@@ -529,7 +530,7 @@ const SPEC: Spec = &[
         Area::Arap,
         "A document's figures are its ledger lines that stand; a control account is its documents",
         Some(Status::Choice),
-        &[],
+        &["arap-hand-control-posting-refused"],
     ),
     (
         39,
@@ -548,9 +549,9 @@ const SPEC: Spec = &[
     (
         41,
         Area::Arap,
-        "Write-offs (allocated, not yet stated)",
-        None,
-        &[],
+        "A debt that will not be collected is written off, and a recovery is income",
+        Some(Status::Choice),
+        &["bad-debt-direct-write-off"],
     ),
     (
         42,

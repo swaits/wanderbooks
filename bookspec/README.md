@@ -264,6 +264,8 @@ the side gives the direction.
   on a receivables or payables account, where only an invoice, a bill or
   their payments post now (rules.md B-38, the control guard). Books that
   hold one must still read right, so the books take it as replay does.
+  The same line written today is a `refused = "untagged_control_line"`
+  event instead. An event cannot be both.
 - `close = { start, to, rounding? }` as an event: closes the period from
   `start` through the event's `date` (rules.md B-11, B-13), `to`
   `"members"` (split by share, in the order listed) or
@@ -303,9 +305,18 @@ the side gives the direction.
   the disposal entry.
 - `run_schedules = { through }` as an event: every schedule's months due
   through `through` posted (B-16).
-- `refused = "<reason>"` on a reversal or a command: the books refuse it,
-  for that reason (below); it changes nothing, posts nothing, and the
-  example goes on without it.
+- `write_off = { invoice, amount?, reason }` as an event, dated: writes
+  off the invoice event `invoice` (1-based; an `invoice` event before it)
+  posted, as a bad debt (rules.md B-41): Bad Debt Expense (6990) is
+  debited and Accounts Receivable credited, the receivable line tagged
+  with the invoice, and the evidence of worthlessness filed in the same
+  call. `amount` (an exact decimal above zero; left out, all the invoice
+  owes on the day) makes it partial. Refused on cash-basis books and
+  above what is owed.
+- `refused = "<reason>"` on a reversal, an entry or a command: the books
+  refuse it, for that reason (below); it changes nothing, posts nothing,
+  and the example goes on without it. An entry posts whole or not at all,
+  so a refused one leaves no draft behind.
 - `[[changes]]` `{ after, rename?, require_tax_category?, correct_asset?
   }`: a change that posts no entry, exactly one of `rename = { code, name
   }` (rename the account `code`, B-31), `require_tax_category = "warn"`
@@ -405,8 +416,10 @@ stands, or a run's change dated after the disposal's month isn't undone),
 disposal, a disposed asset's depreciation, a run re-instated twice or past
 its schedule, or a reversal dated before its run), `already_disposed`,
 `invalid_depreciation_period` (a month that ends before the asset is in
-service) and `invalid_schedule` (an equal-months schedule not starting on
-the 1st, among others).
+service), `invalid_schedule` (an equal-months schedule not starting on
+the 1st, among others) and `untagged_control_line` (a hand line on a
+receivables or payables control account, which only a document may post
+to: rules.md B-38's control guard).
 
 `cash_flow` (rules.md B-14): the statement of cash flows for `[from, to]`.
 

@@ -67,6 +67,9 @@ enum Op {
     /// Record a send of document `k` (an invoice; a bill is skipped) on
     /// day `n`, a reminder after its first send. A send moves no figure.
     MarkSent(usize, u8),
+    /// Write off an invoice `k` (mod the documents) on day `n` for `c`
+    /// cents, with its evidence filed in the same call.
+    WriteOff(usize, u8, i64),
     /// Close month `m` (January to March), in order.
     Close(u8),
     /// A hand line on receivables (true) or payables: always refused.
@@ -91,6 +94,8 @@ fn arb_op() -> impl Strategy<Value = Op> {
         3 => (0usize..40, 0u8..90).prop_map(|(k, n)| Op::Reverse(k, n)),
         1 => (0usize..8, 0u8..90).prop_map(|(k, n)| Op::Void(k, n)),
         2 => (0usize..8, 0u8..90).prop_map(|(k, n)| Op::MarkSent(k, n)),
+        2 => (0usize..8, 0u8..90, 1i64..40_000)
+            .prop_map(|(k, n, c)| Op::WriteOff(k, n, c)),
         1 => (1u8..4).prop_map(Op::Close),
         1 => (any::<bool>(), 1i64..10_000).prop_map(|(r, c)| Op::Hand(r, c)),
         2 => (0usize..8, 0usize..8, 0u8..90, 1i64..20_000, 0i64..2_000, 0i64..500)
@@ -224,6 +229,25 @@ fn run(s: &mut Store, k: &Setup, ops: &[Op], docs: &mut Vec<DocRef>) -> Result<(
                     )
                     .map(drop)
                 }
+            },
+            Op::WriteOff(..) if docs.is_empty() => Ok(()),
+            Op::WriteOff(i, n, c) => match docs[i % docs.len()] {
+                // A bill is never written off: the API takes an invoice.
+                DocRef::Bill(_) => Ok(()),
+                DocRef::Invoice(id) => s
+                    .write_off_invoice(
+                        id,
+                        day(n),
+                        cents(c),
+                        "uncollectible",
+                        Some(ledger_store::WriteOffEvidence::File {
+                            file_name: "collection-letter.pdf",
+                            mime_type: "application/pdf",
+                            bytes: b"%PDF-1.4\nFinal demand\n%%EOF\n",
+                            description: Some("Collection attempts"),
+                        }),
+                    )
+                    .map(drop),
             },
             Op::Close(m) => {
                 let start = NaiveDate::from_ymd_opt(2026, u32::from(m), 1).unwrap();

@@ -2675,7 +2675,7 @@ it calls what part A proved and tested.
   check, so both output schemas are exercised on every run.
 - **The tool surface, `crates/ledger-mcp/src/server.rs`'s tests:**
   `annotations_complete` pins `books.void_document` destructive and
-  posting, `books.control_check` read-only, and counts the 29
+  posting, `books.control_check` read-only, and counts the 30
   destructive tools the doc names; `period_tools_describe_the_one_default`
   holds `books.control_check` to the one `as_of` sentence. The generic
   lints cover the rest without a change of their own:
@@ -2726,11 +2726,11 @@ strikethrough, and the test asserts the labels.
   The happy-path journey lists and reads one, so both output schemas are
   exercised on every run.
 - **The tool surface:** `annotations_complete` pins both read-only
-  (table, now 122 tools); `period_tools_describe_the_one_default` holds
+  (table, now 123 tools); `period_tools_describe_the_one_default` holds
   both to the `as_of` sentence;
   `every_tool_is_documented_and_every_documented_tool_exists` and the
   text lints cover the doc; `scopes.rs`'s table and
-  `mcp_journeys.rs::mcp_end_to_end` count 122.
+  `mcp_journeys.rs::mcp_end_to_end` count 123.
 - **The viewer, `crates/ledger-gui/tests/invoices.rs`:**
   `the_list_shows_the_ledgers_figures` (the reversed payment no longer
   counts: $580 owed, $500 of it late; "Invoice 1, Harbor Client, 14 days
@@ -3192,3 +3192,80 @@ arithmetic; `bills_due`'s `through` filter, the discount-window test and
 the running-total grouping; `aging_documents`'s outstanding filter and
 bucket; `aging_csv`'s tie-out columns and `aging_statement`'s totals; the
 viewer's `discount_by` and `days_overdue` flags.
+
+## P4b S7: bad debts (write-offs), 2026-10-27
+
+The write-off (plan 8.2 S7; rules.md B-41): an invoice that will not be
+collected leaves the receivables as a deduction, with its evidence filed
+in the same call.
+
+- **ledger-core, `tests/spec_documents.rs`:**
+  `half_paid_rest_written_off_is_written_off` (B-38 SCENARIO 7: 50 paid,
+  50 written off, one balanced entry Dr 6990 / Cr 1200, the receivable
+  line tagged `WriteOff`, receivables down by exactly the write-off);
+  `write_off_refused_on_cash_basis` (B-41 INVARIANT 3: refused, the
+  snapshot unchanged, no draft left); `write_off_above_outstanding_refused`
+  (the bound at the day, a zero and a negative amount, then the exact
+  amount owed taken); `write_off_then_recovery_same_year` (D-49: the
+  reversal re-instates the debt, the payment settles it, the invoice reads
+  Paid and the write-off entry no longer stands). The first test's book
+  is also the identity's: `control_check` agrees after the write-off.
+- **ledger-store, `tests/arap_standing.rs`:**
+  `write_off_waits_for_documents_v2` (R-A: refused with
+  `FormatUpgradePending`, journal and head unchanged, in the old-books
+  fixture; taken after the upgrade; the evidence filed on the entry and
+  linked to the invoice; replay equals live);
+  `write_off_replays_and_projects` (the journal holds one
+  `invoice.written_off` with its five facts, `receipt.attached` then
+  `attachment.linked`; 6990 carries the expense, 1200 is zero, the
+  control check agrees, `verify` passes and a reopened store has the same
+  books and the same figures); `write_off_without_evidence_is_refused`
+  (no evidence, and an attachment that isn't there, journal nothing; one
+  already filed is linked to the entry and the invoice).
+  `tests/arap_props.rs` gains `Op::WriteOff`: random write-offs (partial
+  and over-large, refused ones included) run through the store, which is
+  then reopened and read by a `Snapshot`; `status_is_a_function_of_journal_and_date`
+  still holds at every date.
+- **Over the wire, `crates/ledger-cli/tests/documents.rs`:**
+  `write_off_then_recovery` (an upload as the evidence, `confirmed`, the
+  invoice reading written_off with its figures and its timeline, the
+  receipt on the entry, the reversal and the payment, the control check
+  agreeing) and `write_off_needs_evidence` (neither or both evidence
+  arguments refused; an already-filed attachment linked to the entry and
+  the invoice).
+- **The viewer, `crates/ledger-gui/tests/invoices.rs`:**
+  `a_write_off_shows_on_the_timeline` (the shipped screenshot
+  `invoice-written-off`: status Written off, still owed $0.00, the
+  timeline's "Written off" row opening its entry).
+  `crates/ledger-gui/tests/view_model.rs`: `a_write_off_is_flagged_for_the_cpa`
+  (one item, "Write-off awaiting the CPA's note", the same through the
+  server's read of the store and the viewer's snapshot).
+- **Lean, `Wanderbooks/Documents.lean`:** `Step.writeOff` (a tagged
+  control line and an untagged expense line: a `Step.document` in shape),
+  `Step.writeOff_unattached` (it moves nothing unattached, so
+  `control_agrees` and `Reachable.control_is_documents` still hold),
+  `through_append`, `docSum_writeOffLines`, and `writeOff_within_bounds`
+  (a write-off of at most what is owed leaves nothing owed below zero over
+  the date-sum). Both theorems are in `Audit.lean`. No kernel function
+  was added, so no Kani harness.
+- **bookspec:** `bad-debt-direct-write-off` (B-41, CHOICE: invoice 100,
+  two partial write-offs, the balances and the trial balance) and
+  `arap-hand-control-posting-refused` (B-38: an entry an earlier version
+  wrote on receivables replays, attempts the control guard now refuses,
+  and the books still tie out). The example schema gained the `write_off`
+  event and lets a refused `lines` event say so (an entry posts whole or
+  not at all); the refusal vocabulary gained `untagged_control_line`,
+  which belongs to B-38.
+
+**For P12 (mutation targets, none run, D-33):** `Ledger::write_off_steps`'
+cash-basis comparison (the `eq_ignore_ascii_case`, the early return), its
+order of checks (amount before the day, the day before the room), the
+`amount > room` bound and its `room < owed` message arm, the `WriteOff`
+tag, `least_owed_from`'s `max` and its `min` over later days (the refactor
+`payment_room` now shares), `replay_invoice_write_off`'s movement, and
+`doc_state`'s `written_off` arm; `Store::write_off_invoice`'s evidence
+arms (the `check_linkable` call, the already-linked-to-the-invoice check,
+the blob-before-journal order, the `File`/`Existing` link steps) and the
+feature gate; the MCP handler's amount default, the exactly-one evidence
+check, and the preview's clone; attention's year comparison and its
+`stands_on` filter; the bookspec loader's `may_refuse` arm.

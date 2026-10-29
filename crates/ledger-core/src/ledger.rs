@@ -119,6 +119,16 @@ pub const PAYMENT_PROCESSING_FEES: ControlAccount = control(
     "payment processing fees",
     AccountType::Expense,
 );
+/// A control account; see [`ControlAccount`]. Bad-debt expense (plan P4b
+/// S7, 8.3.4; rules.md B-41): where a write-off's debit goes, created on
+/// demand like the others.
+pub const BAD_DEBTS: ControlAccount = control(
+    "bad_debts",
+    "6990",
+    "Bad Debt Expense",
+    "bad debt expense",
+    AccountType::Expense,
+);
 /// A control account; see [`ControlAccount`].
 pub const RETAINED_EARNINGS: ControlAccount = control(
     "retained_earnings",
@@ -134,6 +144,7 @@ pub fn control_accounts() -> impl Iterator<Item = &'static ControlAccount> {
         &REVENUE,
         &PAYABLES,
         &GENERAL_EXPENSES,
+        &BAD_DEBTS,
         &RETAINED_EARNINGS,
     ]
     .into_iter()
@@ -6184,6 +6195,14 @@ impl Ledger {
     /// least it owes on any day from then on (from its own date, for a
     /// payment dated before it), so no later day is overpaid.
     fn payment_room(&self, doc: arap::DocRef, date: NaiveDate) -> Result<Decimal, LedgerError> {
+        self.least_owed_from(doc, date)
+    }
+
+    /// The least `doc` owes on any day from `date` on (from its own date,
+    /// for a date before it): what a payment may be, and what a write-off
+    /// may be, so no later day ends out of bounds (rules.md B-38
+    /// INVARIANT 2, B-41 INVARIANT 1).
+    fn least_owed_from(&self, doc: arap::DocRef, date: NaiveDate) -> Result<Decimal, LedgerError> {
         let (doc_date, ..) = self.doc_header(doc)?;
         let from = date.max(doc_date);
         let lines = self.doc_lines(doc);
@@ -6805,6 +6824,141 @@ impl Ledger {
         })
     }
 
+    /// Write off an invoice as a bad debt (plan P4b S7; rules.md B-41).
+    ///
+    /// ```text
+    /// GOAL: take an invoice off the receivables when it will not be
+    ///       collected, and deduct it (the direct write-off method).
+    /// SOURCE: IRC §166(a) (a worthless debt is deductible); Treas. Reg.
+    ///         §1.166-1(e) (a debt never counted as income has no basis),
+    ///         §1.166-2(a) (worthlessness on all the pertinent evidence),
+    ///         §1.166-3(a) (a partial write-off, to the extent charged
+    ///         off); docs/spec/rules.md B-41; plan/served.md P4b S7,
+    ///         A-5 (the direct write-off method); ASC 326-20 noted (an
+    ///         allowance is the GAAP preference; a small company's CPA
+    ///         accepts the direct method, stated).
+    /// INVARIANTS:
+    ///   1. MUST post one balanced entry: Dr the bad_debts role (6990 Bad
+    ///      Debt Expense), Cr receivables, for the amount, dated the
+    ///      write-off's day; the receivable line MUST carry the invoice
+    ///      (WriteOff), so what it owes falls by the amount from that day
+    ///      and its written-off figure rises by it.
+    ///   2. Refused on cash-basis books (WriteOffOnCashBasis): the
+    ///      invoice was never income, so there is nothing to deduct.
+    ///   3. 0 < amount <= the least the invoice owes on any day from
+    ///      `date` on (on the day, when nothing later lowers it): a
+    ///      partial write-off is allowed (§1.166-3(a)), and no day may
+    ///      owe less than nothing (B-38 INVARIANT 2).
+    ///   4. The day MUST be in the calendar, in an open period, and not
+    ///      before the invoice.
+    ///   5. A refusal MUST leave the books unchanged.
+    /// SCENARIOS:
+    ///   1. IF the books are on the cash basis: SHOULD refuse
+    ///      (WriteOffOnCashBasis).
+    ///   2. IF the amount is zero, negative or above what is owed: SHOULD
+    ///      refuse (InvalidWriteOff), saying what is owed.
+    ///   3. IF a payment after the day leaves less to write off: SHOULD
+    ///      refuse, saying how much can be.
+    ///   4. IF it is dated before the invoice or in a closed period:
+    ///      SHOULD refuse.
+    ///   5. Half paid, the rest written off: Written off, with 50 paid and
+    ///      50 written off (B-38 SCENARIO 7).
+    /// ```
+    pub fn write_off(
+        &mut self,
+        invoice: InvoiceId,
+        date: NaiveDate,
+        amount: Decimal,
+        reason: &str,
+    ) -> Result<EntryId, LedgerError> {
+        self.atomically(|l| l.write_off_steps(invoice, date, amount, reason))
+    }
+
+    /// The steps of [`Self::write_off`], run inside [`Self::atomically`].
+    fn write_off_steps(
+        &mut self,
+        invoice: InvoiceId,
+        date: NaiveDate,
+        amount: Decimal,
+        reason: &str,
+    ) -> Result<EntryId, LedgerError> {
+        // A debt never counted as income has no basis to deduct: the cash
+        // basis collects as it goes, so nothing is receivable to write off.
+        if self
+            .settings
+            .company(self.base_currency.code())
+            .basis
+            .eq_ignore_ascii_case("Cash")
+        {
+            return Err(LedgerError::WriteOffOnCashBasis);
+        }
+        let reason = reason.trim();
+        if reason.is_empty()
+            || reason.contains(['\n', '\r'])
+            || reason.chars().count() > arap::MAX_REFERENCE_CHARS
+        {
+            return Err(LedgerError::InvalidWriteOff(format!(
+                "a write-off needs its reason: one line of at most {} characters",
+                arap::MAX_REFERENCE_CHARS
+            )));
+        }
+        if amount <= Decimal::ZERO {
+            return Err(LedgerError::InvalidWriteOff(format!(
+                "a write-off's amount must be above zero, got {amount}"
+            )));
+        }
+        crate::calendar::check(date)?;
+        let doc = arap::DocRef::Invoice(invoice);
+        let (doc_date, ..) = self.doc_header(doc)?;
+        if date < doc_date {
+            return Err(LedgerError::InvalidWriteOff(format!(
+                "a write-off dated {date} can't be before invoice {invoice}, dated {doc_date}"
+            )));
+        }
+        if let Some(pid) = self.closed_period_containing(date) {
+            return Err(LedgerError::ClosedPeriod(pid, date.to_string()));
+        }
+        let owed = self
+            .doc_state(doc, date)?
+            .map_or(Decimal::ZERO, |st| st.outstanding);
+        let room = self.least_owed_from(doc, date)?;
+        if amount > room {
+            let beyond = if room < owed {
+                format!(" ({room}, once the payments after it are counted)")
+            } else {
+                String::new()
+            };
+            return Err(LedgerError::InvalidWriteOff(format!(
+                "a write-off of {amount} is more than invoice {invoice} owes on {date}: {owed}{beyond}"
+            )));
+        }
+        self.check_controls(&[RECEIVABLES, BAD_DEBTS])?;
+        let ar = self.ensure_control(&RECEIVABLES);
+        let bad = self.ensure_control(&BAD_DEBTS);
+        let customer = self
+            .invoices
+            .get(&invoice)
+            .ok_or(LedgerError::UnknownInvoice(invoice))?
+            .customer_id;
+        let money = Money::new(amount, self.base_currency);
+        let entry = self.create_entry(date, &format!("Write off invoice {invoice}: {reason}"));
+        self.add_line(entry, bad, Side::Debit, money)?;
+        self.add_tagged_line(
+            entry,
+            ar,
+            Side::Credit,
+            money,
+            arap::DocTag {
+                doc,
+                movement: arap::Movement::WriteOff,
+            },
+        )?;
+        self.post_entry(entry)?;
+        self.tag_customer(entry, customer);
+        self.refresh_doc(doc);
+        Ok(entry)
+    }
+
     /// Void a document: reverse its own entry (B-9), described "Void
     /// invoice 7: reason". It keeps its id (and, later, its number); its
     /// status as of the void's date on is Void. Plain
@@ -7373,6 +7527,40 @@ impl Ledger {
         }
         self.tag_customer(entry_id, customer);
         self.payment_events.entry(doc).or_default().push(amount);
+        self.refresh_doc(doc);
+        Ok(())
+    }
+
+    /// Apply a write-off without posting: replay support for journaling
+    /// stores (plan P4b S7; rules.md B-41). The write-off's entry was
+    /// already rebuilt from its own entry events; this tags its
+    /// receivables line with the invoice (the first untagged control line
+    /// for `amount`, on the credit side), tags the entry with the
+    /// customer, and refreshes the invoice's figures. Nothing is bounded
+    /// on replay (rules.md B-28).
+    #[doc(hidden)]
+    pub fn replay_invoice_write_off(
+        &mut self,
+        invoice_id: InvoiceId,
+        amount: Decimal,
+        entry_id: EntryId,
+    ) -> Result<(), LedgerError> {
+        let customer = self
+            .invoices
+            .get(&invoice_id)
+            .ok_or(LedgerError::UnknownInvoice(invoice_id))?
+            .customer_id;
+        let doc = arap::DocRef::Invoice(invoice_id);
+        self.tag_replayed(
+            entry_id,
+            &RECEIVABLES,
+            Some(amount),
+            arap::DocTag {
+                doc,
+                movement: arap::Movement::WriteOff,
+            },
+        );
+        self.tag_customer(entry_id, customer);
         self.refresh_doc(doc);
         Ok(())
     }

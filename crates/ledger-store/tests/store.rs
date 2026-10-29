@@ -1877,6 +1877,7 @@ fn books_written_under_older_rules_still_open() {
         (6, "6500", "Supplies", "Expense"),
         (7, "4100", "Refunds and Allowances", "Revenue"),
         (8, "1020", "Bank", "Asset"),
+        (9, "6990", "Bad Debt Expense", "Expense"),
     ] {
         w.append(
             "account.added",
@@ -1990,6 +1991,50 @@ fn books_written_under_older_rules_still_open() {
         )
         .unwrap();
     }
+    // A second invoice (50.00) for P4b S7's write-off below, so S6's full
+    // payment of invoice 1 and S7's write-off never touch the same document.
+    w.append(
+        "entry.created",
+        json!({"id": 5, "date": "2026-04-03", "description": "Invoice 2"}),
+    )
+    .unwrap();
+    for (account, side) in [(3, "debit"), (4, "credit")] {
+        w.append(
+            "entry.line_added",
+            json!({"id": 5, "account": account, "side": side, "amount": "50.00", "currency": "USD"}),
+        )
+        .unwrap();
+    }
+    w.append(
+        "entry.posted",
+        json!({"id": 5, "date": "2026-04-03", "description": "Invoice 2", "reversal_of": null,
+               "lines": [
+                   {"account": 3, "side": "debit", "amount": "50.00", "currency": "USD"},
+                   {"account": 4, "side": "credit", "amount": "50.00", "currency": "USD"}]}),
+    )
+    .unwrap();
+    w.append(
+        "invoice.created",
+        json!({"id": 2, "customer_id": 1, "date": "2026-04-03", "due_date": "2026-05-03",
+               "lines": [{"description": "Survey", "amount": "50.00"}], "entry_id": 5}),
+    )
+    .unwrap();
+    // P4b S7's new shape, hand-written as this version writes it: a
+    // bad-debt write-off of invoice 1 (its entry, then the event). This
+    // reader tags the receivable line WriteOff and derives the figures;
+    // the version before it stopped at the declaration.
+    w.append(
+        "entry.created",
+        json!({"id": 6, "date": "2026-04-10", "description": "Write off invoice 2: uncollectible"}),
+    )
+    .unwrap();
+    for (account, side) in [(9, "debit"), (3, "credit")] {
+        w.append(
+            "entry.line_added",
+            json!({"id": 6, "account": account, "side": side, "amount": "30.00", "currency": "USD"}),
+        )
+        .unwrap();
+    }
     w.append(
         "entry.posted",
         json!({"id": 4, "date": "2026-04-05", "description": "Payment on invoice 1",
@@ -2010,13 +2055,28 @@ fn books_written_under_older_rules_still_open() {
                "discount_reason": "the customer paid the rest late"}),
     )
     .unwrap();
+    w.append(
+        "entry.posted",
+        json!({"id": 6, "date": "2026-04-10",
+               "description": "Write off invoice 2: uncollectible", "reversal_of": null,
+               "lines": [
+                   {"account": 9, "side": "debit", "amount": "30.00", "currency": "USD"},
+                   {"account": 3, "side": "credit", "amount": "30.00", "currency": "USD"}]}),
+    )
+    .unwrap();
+    w.append(
+        "invoice.written_off",
+        json!({"invoice_id": 2, "entry_id": 6, "date": "2026-04-10",
+               "amount": "30.00", "reason": "uncollectible"}),
+    )
+    .unwrap();
     drop(w);
     // Opening rebuilds from the journal; it must accept all of it.
     let _ = std::fs::remove_file(dir.join(ledger_store::db_file()));
     let store = Store::open(&dir).expect("older books still open");
     store.verify().unwrap();
     assert_eq!(store.journal_format().format, 1);
-    assert_eq!(store.ledger().chart().len(), 8);
+    assert_eq!(store.ledger().chart().len(), 9);
     assert_eq!(store.ledger().list_periods().len(), 2);
     let lines = store.ledger().get_entry(1).unwrap().lines();
     assert_eq!(lines.len(), 2);
@@ -2108,6 +2168,20 @@ fn books_written_under_older_rules_still_open() {
         store.ledger().line_doc(4, 1).unwrap().movement,
         ledger_core::Movement::Discount
     );
+    // The write-off replays as written: its line is the invoice's
+    // (WriteOff), so what it owes fell by 30.00 and what was written off
+    // rose by it (B-41, B-38).
+    let st = store
+        .ledger()
+        .invoice_state(2, NaiveDate::from_ymd_opt(2026, 6, 30).unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!(st.written_off, "30.00".parse::<Decimal>().unwrap());
+    assert_eq!(st.outstanding, "20.00".parse::<Decimal>().unwrap());
+    assert_eq!(
+        store.ledger().line_doc(6, 1).map(|t| t.movement),
+        Some(ledger_core::Movement::WriteOff)
+    );
 }
 
 /// The books an earlier wanderbooks wrote, one directory each under
@@ -2123,7 +2197,11 @@ fn books_written_under_older_rules_still_open() {
 /// 10,000 years, schedules and assets running into chrono's last month,
 /// depreciation posted for 10000-01, one recurring run of 1,044 drafts.
 /// tests/fixtures/old-books-writer is the harness that wrote them; each
-/// later phase adds the books its version writes.
+/// later phase adds the books its version writes. `p4_s7_before` is P4b
+/// S7's: the books main 4cad2cfc (the version before it) wrote — a
+/// numbered invoice with terms and snapshots, a partial payment, a voided
+/// invoice and a paid bill, no write-off — with that version's
+/// expected.json.
 fn old_books() -> Vec<PathBuf> {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/old-books");
     let mut dirs: Vec<PathBuf> = std::fs::read_dir(&root)

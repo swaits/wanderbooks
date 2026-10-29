@@ -579,6 +579,35 @@ come from the kernel:
       `Documents.settle_posts_a_document_step`,
       `Documents.settle_unattached`.
 
+### Bad debts (P4b S7)
+
+A write-off (rules.md B-41) is `Ledger::write_off`: a new command, so a new
+Lean step, and no new kernel function (its two lines are one debit and one
+credit, and the bounds are the existing date-sum's).
+
+37. **A write-off of at most what is owed leaves nothing owed below
+    zero.** The step posts the document's control line credited (tagged
+    with it, so it is the same sum B-38 fixed) and the amount of
+    bad-debt expense debited (untagged, off the control accounts).
+    `through_append` reads the write-off's own two lines through the day
+    separately; `docSum_writeOffLines` gives the control line's −amount;
+    `writeOff_within_bounds` then follows by arithmetic from the command's
+    own premise (the amount is at most the date-sum through the day).
+    `Step.writeOff_unattached` shows the step moves nothing unattached, so
+    `control_agrees` and `Reachable.control_is_documents` hold for it with
+    no new proof. A reversal re-instates: the same `reverse_twice` that
+    covers payments (`Step.reverse` mirrors every tagged line).
+    - Lean `Documents.Step.writeOff`, `Documents.Step.writeOff_unattached`,
+      `Documents.through_append`, `Documents.docSum_writeOffLines`,
+      `Documents.writeOff_within_bounds` (in `Audit.lean`) · tests
+      `half_paid_rest_written_off_is_written_off`,
+      `write_off_above_outstanding_refused`,
+      `write_off_then_recovery_same_year`, and the store's
+      `write_off_replays_and_projects` (live, replay and snapshot agree).
+      The model's limits are the documents model's (one `Nat` id space,
+      books built from empty); the cash-basis refusal is a policy on the
+      books' settings, not arithmetic, and is tested, not modelled.
+
 ## What the proofs found
 
 The engine already had 190+ tests, property tests, mutation testing,
@@ -667,7 +696,7 @@ Be precise about the claims:
   `tests/properties.rs` (trial balance, balance sheet, reversals,
   immutability) and the golden files.
 - **Out of scope:** currency (the ledger is single-currency, enforced
-  structurally), A/R and A/P documents, payroll, the calendar walk around
+  structurally), payroll, the calendar walk around
   the proration kernel (`calendar::month_parts`, `assets::depreciation_schedule`,
   `schedules::daily_plan`: property tests, `tests/properties.rs`, P3), and
   persistence (the journal store's hash chain is tested in `ledger-store`).

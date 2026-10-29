@@ -6,10 +6,10 @@ what its statement rests on and the examples that demonstrate it.
 
 A rule whose only source is a human choice carries rules.md's **CHOICE**, bookspec's status of the same name:
 the specification names the options, an engine declares its pick
-(`claims.choices`, `bookspec_checker::Claims`). Rules B-39 to B-45 are
-allocated in `plan/served.md` 8.0.3; those not yet stated keep only
-their identifier and area here, so a later unit fills them in without
-moving anyone else's number.
+(`claims.choices`, `bookspec_checker::Claims`). Rules B-39, B-40 and B-43
+to B-45 are allocated in `plan/served.md` 8.0.3 and not yet stated: their
+identifier and area are fixed here so a later unit fills them in
+without moving anyone else's number.
 
 | B | bookspec id | area | status | rule | examples |
 |---|---|---|---|---|---|
@@ -50,10 +50,10 @@ moving anyone else's number.
 | B-35 | `BS-partner-3` | partner | CONVENTION | A party's part of an entry, and a party's totals | `p3-party-accrual-counts-once`, `p3-party-distribution-still-owed`, `p3-party-gift-card-is-a-promise`, `p3-party-members-equity-and-k1`, `p3-party-own-liability-never-pays`, `p3-party-reversed-card-payment`, `p3-party-signs-and-reversals` |
 | B-36 | `BS-partner-4` | partner | AUTHORITY | The K-1 worksheet reports tax-basis capital beside book capital | `partnership-k1-tax-basis-capital`, `partnership-k1-tax-basis-odd-cents` |
 | B-37 | `BS-statement-5` | statement | CHOICE | A project is a class with its facts; its figures are its tagged lines | `projects-invoice-and-bill-lines-count-by-project`, `projects-net-is-its-tagged-lines`, `projects-on-spec-costs-are-expenses` |
-| B-38 | `BS-arap-2` | arap | CHOICE | A document's figures are its ledger lines that stand; a control account is its documents | — |
+| B-38 | `BS-arap-2` | arap | CHOICE | A document's figures are its ledger lines that stand; a control account is its documents | `arap-hand-control-posting-refused` |
 | B-39 | `BS-arap-3` | arap | — | Terms: when a document is due (allocated, not yet stated) | — |
 | B-40 | `BS-arap-4` | arap | — | Numbers and the issued copy (allocated, not yet stated) | — |
-| B-41 | `BS-arap-5` | arap | — | Write-offs (allocated, not yet stated) | — |
+| B-41 | `BS-arap-5` | arap | CHOICE | A debt that will not be collected is written off, and a recovery is income | `bad-debt-direct-write-off` |
 | B-42 | `BS-arap-6` | arap | CONVENTION | A settlement is exact, one party, and names its lines; the gross discount and the gross fee | — |
 | B-43 | `BS-entry-5` | entry | — | Drafts and evidence (allocated, not yet stated) | — |
 | B-44 | `BS-ledger-12` | ledger | — | Extraction and dedup (allocated, not yet stated) | — |

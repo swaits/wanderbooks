@@ -125,7 +125,7 @@ fn mcp_end_to_end() {
     // Tool listing: the narrow tools; chart is read-only.
     let list = mcp.request("tools/list", json!({}));
     let tools = list["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 124, "expected 124 tools, got {}", tools.len());
+    assert_eq!(tools.len(), 125, "expected 125 tools, got {}", tools.len());
     // Files come in as tool input: books.begin_upload, never a local path.
     assert!(tools.iter().any(|t| t["name"] == "books.begin_upload"));
     assert!(!tools.iter().any(|t| t["name"] == "books.import_local_file"));

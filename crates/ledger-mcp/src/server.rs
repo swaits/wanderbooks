@@ -581,6 +581,7 @@ impl BooksServer {
             + Self::payroll_router()
             + Self::payouts_router()
             + Self::tax_router()
+            + Self::write_offs_router()
     }
 
     /// The settings in force for this request: the books' own, taken from
@@ -1430,6 +1431,8 @@ mod settings_tools;
 mod settlements;
 #[path = "tools/tax.rs"]
 mod tax;
+#[path = "tools/write_offs.rs"]
+mod write_offs;
 
 // The shared helpers are re-exported so every group file reaches them
 // through `use super::*`, and no group file reaches into another.

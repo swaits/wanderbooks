@@ -1,0 +1,76 @@
+id = "bad-debt-direct-write-off"
+title = "An invoice that will not be collected is written off, in parts"
+rule = "A debt that becomes worthless MUST be written off in the year it becomes worthless, a partial write-off MUST be deductible to the extent charged off, and no write-off may exceed what is owed."
+status = "CHOICE"
+sources = [
+  "IRC §166(a)",
+  "IRC §111",
+  "Treas. Reg. §1.166-1(e)",
+  "Treas. Reg. §1.166-2(a)",
+  "Treas. Reg. §1.166-3(a)",
+  "plan/served.md 8.3.1 A-5: the direct write-off method",
+  "ASC 326-20 (noted: an allowance is the GAAP preference)",
+]
+tags = ["accrual", "book", "us", "receivables"]
+
+[setup]
+currency = "USD"
+fiscal_year_start = "01-01"
+basis = "accrual"
+rounding = "half-even"
+
+[[setup.accounts]]
+code = "1000"
+name = "Checking"
+type = "asset"
+
+[[setup.accounts]]
+code = "1200"
+name = "Accounts Receivable"
+type = "asset"
+
+[[setup.accounts]]
+code = "4000"
+name = "Revenue"
+type = "revenue"
+
+[[setup.accounts]]
+code = "6990"
+name = "Bad Debt Expense"
+type = "expense"
+tax_category = "bad_debts"
+
+# The work was done and billed: the invoice is income already counted.
+[[events]]
+date = "2026-01-10"
+description = "Survey work"
+invoice = { customer = "Ridgeway Co", amount = "100.00" }
+
+# Part of it is charged off when the collection efforts end; the rest
+# stays owed and aged.
+[[events]]
+date = "2026-03-15"
+write_off = { invoice = 1, amount = "40.00", reason = "No answer; the collection agency closed the file" }
+
+# The liquidation notice makes the rest worthless, and it is written off.
+[[events]]
+date = "2026-04-20"
+write_off = { invoice = 1, amount = "60.00", reason = "Liquidation notice received" }
+
+[[expect]]
+query = "balances"
+as_of = "2026-12-31"
+[expect.values]
+"1000" = "0.00"
+"1200" = "0.00"
+"4000" = "100.00"
+"6990" = "100.00"
+
+[[expect]]
+query = "trial_balance"
+as_of = "2026-12-31"
+[expect.values]
+"1000" = "0.00"
+"1200" = "0.00"
+"4000" = "-100.00"
+"6990" = "100.00"

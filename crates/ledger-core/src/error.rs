@@ -859,6 +859,21 @@ pub enum LedgerError {
     /// books' text rule). Plan P4b S5.
     #[error("{0}")]
     InvalidSend(String),
+    /// A bad debt can't be written off on cash-basis books (rules.md
+    /// B-41 INVARIANT 3; IRC §166(a); Treas. Reg. §1.166-1(e)): the
+    /// invoice was never counted as income, so there is no basis to
+    /// deduct.
+    #[error(
+        "a bad debt can't be written off on cash-basis books: the invoice was never counted as \
+         income, so there is nothing to deduct (IRC §166; Treas. Reg. §1.166-1(e)); these books \
+         are on the cash basis (books.accounting_basis)"
+    )]
+    WriteOffOnCashBasis,
+
+    /// A write-off the books can't take: its amount, its day, or its
+    /// reason. The message says which, and what the invoice owes.
+    #[error("{0}")]
+    InvalidWriteOff(String),
 
     /// Invoice/bill due date is before its date.
     #[error("due date {0} is before document date")]

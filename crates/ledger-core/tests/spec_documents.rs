@@ -1201,6 +1201,206 @@ fn a_chain_counts_in_order() {
 }
 
 // ---------------------------------------------------------------------------
+// Write-offs (plan P4b S7; rules.md B-41)
+// ---------------------------------------------------------------------------
+
+/// B-38 SCENARIO 7 and B-41 INVARIANT 1: half of an invoice paid, the rest
+/// written off, reads Written off with 50 paid and 50 written off, and
+/// receivables falls by the write-off alone.
+#[test]
+fn half_paid_rest_written_off_is_written_off() {
+    let mut b = books();
+    let inv =
+        b.l.create_invoice(
+            b.customer,
+            d(2026, 1, 5),
+            d(2026, 2, 4),
+            line("Design", 10_000),
+        )
+        .unwrap();
+    b.l.receive_payment(inv, d(2026, 1, 20), cents(5_000), b.bank)
+        .unwrap();
+    let ar = b.l.chart().find_by_code("1200").unwrap().id;
+    let before = b.l.account_balance(ar).unwrap();
+    let entry =
+        b.l.write_off(inv, d(2026, 1, 31), cents(5_000), "collection exhausted")
+            .unwrap();
+    // One balanced entry: Dr 6990 Bad Debt Expense / Cr 1200.
+    let e = b.l.get_entry(entry).unwrap();
+    assert_eq!(e.lines().len(), 2);
+    let bad = b.l.chart().find_by_code("6990").unwrap().id;
+    assert_eq!(
+        (
+            b.l.get_entry(entry).unwrap().lines()[0].account,
+            b.l.get_entry(entry).unwrap().lines()[0].side,
+            b.l.get_entry(entry).unwrap().lines()[0].amount.amount
+        ),
+        (bad, Side::Debit, cents(5_000))
+    );
+    assert_eq!(
+        b.l.line_doc(entry, 1).map(|t| t.movement),
+        Some(Movement::WriteOff)
+    );
+    assert_eq!(
+        b.l.account_balance(ar).unwrap(),
+        before.checked_sub(cents(5_000)).unwrap()
+    );
+    let st = b.l.invoice_state(inv, d(2026, 2, 1)).unwrap().unwrap();
+    assert_eq!(st.status, DocStatus::WrittenOff);
+    assert_eq!(
+        (st.paid, st.written_off, st.outstanding),
+        (cents(5_000), cents(5_000), Decimal::ZERO)
+    );
+    // The write-off counts toward no payment: the customer paid 50.
+    assert_eq!(
+        b.l.payments_recorded(DocRef::Invoice(inv)),
+        Ok(cents(5_000))
+    );
+    // And the control account still equals its documents.
+    let check = b.l.control_check(d(2026, 2, 1)).unwrap();
+    assert!(check.iter().all(|c| c.difference.is_zero()));
+}
+
+/// B-41 INVARIANT 3: a cash-basis company never counted the invoice as
+/// income, so it has no basis to deduct (IRC §166; Treas. Reg.
+/// §1.166-1(e)).
+#[test]
+fn write_off_refused_on_cash_basis() {
+    use ledger_core::settings::{Change, Source};
+    let mut b = books();
+    let src = Source {
+        decided_by: "Owner".into(),
+        decided_on: d(2026, 1, 1),
+        citation: None,
+        note: None,
+    };
+    let changes =
+        b.l.check_settings(
+            &[Change {
+                key: "books.accounting_basis".into(),
+                value: Some(serde_json::json!("cash")),
+            }],
+            &src,
+        )
+        .unwrap();
+    b.l.apply_settings(&changes, &src, 1).unwrap();
+    let inv =
+        b.l.create_invoice(
+            b.customer,
+            d(2026, 1, 5),
+            d(2026, 2, 4),
+            line("Design", 10_000),
+        )
+        .unwrap();
+    let before = ledger_core::reports::snapshot(&b.l).unwrap();
+    let err =
+        b.l.write_off(inv, d(2026, 1, 31), cents(1_000), "uncollectible")
+            .unwrap_err();
+    assert!(matches!(err, LedgerError::WriteOffOnCashBasis), "{err}");
+    // Nothing changed, no draft left behind.
+    assert_eq!(ledger_core::reports::snapshot(&b.l).unwrap(), before);
+    assert_eq!(
+        b.l.invoice_state(inv, d(2026, 2, 1))
+            .unwrap()
+            .unwrap()
+            .status,
+        DocStatus::Open
+    );
+}
+
+/// B-41 INVARIANT 1: at most what is owed, a partial write-off allowed
+/// (Treas. Reg. §1.166-3(a)); more is refused, naming what is owed, and
+/// nothing changes.
+#[test]
+fn write_off_above_outstanding_refused() {
+    let mut b = books();
+    let inv =
+        b.l.create_invoice(
+            b.customer,
+            d(2026, 1, 5),
+            d(2026, 2, 4),
+            line("Design", 10_000),
+        )
+        .unwrap();
+    b.l.receive_payment(inv, d(2026, 1, 20), cents(4_000), b.bank)
+        .unwrap();
+    let before = ledger_core::reports::snapshot(&b.l).unwrap();
+    // 60 is owed on the day; 60.01 is not.
+    let err =
+        b.l.write_off(inv, d(2026, 1, 31), cents(6_001), "uncollectible")
+            .unwrap_err();
+    assert!(
+        matches!(&err, LedgerError::InvalidWriteOff(why) if why.contains("60")),
+        "{err}"
+    );
+    assert_eq!(ledger_core::reports::snapshot(&b.l).unwrap(), before);
+    // Zero and a negative amount are refused too.
+    for amount in [Decimal::ZERO, cents(-1)] {
+        assert!(matches!(
+            b.l.write_off(inv, d(2026, 1, 31), amount, "uncollectible"),
+            Err(LedgerError::InvalidWriteOff(_))
+        ));
+    }
+    assert_eq!(ledger_core::reports::snapshot(&b.l).unwrap(), before);
+    // What is owed on the day is taken, and the invoice reads partly paid
+    // and partly written off.
+    b.l.write_off(inv, d(2026, 1, 31), cents(6_000), "uncollectible")
+        .unwrap();
+    let st = b.l.invoice_state(inv, d(2026, 2, 1)).unwrap().unwrap();
+    assert_eq!(st.status, DocStatus::WrittenOff);
+    assert_eq!((st.paid, st.written_off), (cents(4_000), cents(6_000)));
+}
+
+/// D-49's same-year recovery, and B-41 INVARIANT 2: reversing the
+/// write-off re-instates the debt (it is not a new movement), and the
+/// payment then recorded settles it; a recovery is income, never a
+/// payment event.
+#[test]
+fn write_off_then_recovery_same_year() {
+    let mut b = books();
+    let inv =
+        b.l.create_invoice(
+            b.customer,
+            d(2026, 1, 5),
+            d(2026, 2, 4),
+            line("Design", 10_000),
+        )
+        .unwrap();
+    let write_off =
+        b.l.write_off(inv, d(2026, 1, 31), cents(10_000), "uncollectible")
+            .unwrap();
+    assert_eq!(
+        b.l.invoice_state(inv, d(2026, 2, 1))
+            .unwrap()
+            .unwrap()
+            .status,
+        DocStatus::WrittenOff
+    );
+    // The recovery came in the same tax year: reverse the write-off, and
+    // the invoice reopens.
+    b.l.reverse_entry(write_off, d(2026, 3, 1), "paid after all")
+        .unwrap();
+    let st = b.l.invoice_state(inv, d(2026, 3, 2)).unwrap().unwrap();
+    assert_eq!(
+        (st.status, st.written_off, st.outstanding),
+        (DocStatus::Open, Decimal::ZERO, cents(10_000))
+    );
+    // Then the payment is recorded as any payment.
+    b.l.receive_payment(inv, d(2026, 3, 2), cents(10_000), b.bank)
+        .unwrap();
+    let st = b.l.invoice_state(inv, d(2026, 3, 3)).unwrap().unwrap();
+    assert_eq!(
+        (st.status, st.paid, st.written_off),
+        (DocStatus::Paid, cents(10_000), Decimal::ZERO)
+    );
+    // Receivables is back to nothing, and the write-off entry no longer
+    // stands (posted is forever: it is reversed, never deleted).
+    let ar = b.l.chart().find_by_code("1200").unwrap().id;
+    assert_eq!(b.l.account_balance(ar).unwrap(), Decimal::ZERO);
+    assert!(!b.l.in_effect(write_off));
+}
+
+// ---------------------------------------------------------------------------
 // Properties
 // ---------------------------------------------------------------------------
 

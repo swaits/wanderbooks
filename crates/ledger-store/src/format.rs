@@ -244,6 +244,7 @@ pub const EVENT_TYPES: &[&str] = &[
     "invoice.created",
     "invoice.payment_received",
     "invoice.sent",
+    "invoice.written_off",
     "instrument.added",
     FORMAT_SET,
     "journal.tail_repaired",

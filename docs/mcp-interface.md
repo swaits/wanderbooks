@@ -486,8 +486,8 @@ every tool over every book in ledger-store's `tests/fixtures/old-books`.
   `books.run_schedules`, `books.dispose_asset`, `books.reconcile`,
   `books.close_period`, `books.create_invoice`, `books.create_bill`,
   `books.receive_payment`, `books.pay_bill`, `books.write_off_invoice`,
-  `books.purge_tin`, `books.consolidate_duplicates` and
-  `books.discard_draft`. (`books.void_document`, `books.run_depreciation`
+  `books.purge_tin`, `books.consolidate_duplicates`,
+  `books.discard_draft` and `books.audit`. (`books.void_document`, `books.run_depreciation`
   and `books.run_recurring` post at once and have no `confirmed`.)
 - **The result envelope (P5, plan 4.6).** Every tool result, whatever the
   tool, is given the same fields in one place (`call_tool`,
@@ -2554,7 +2554,7 @@ until the owner upgrades them.
 
 ## Tools — CPA handoff
 
-- `books.export_cpa_package { as_of?, cash_accounts?, financing_accounts?,
+- `books.export_cpa_package { as_of?, without_audit_reason?, cash_accounts?, financing_accounts?,
   investing_accounts?, include_receipts?, include_tins?,
   allow_open_drafts?: { reason } }` → `{ file,
   tins_included, tin_gaps, warnings?, note }`: the zip,
@@ -2733,3 +2733,71 @@ argument is refused.
 
 `migrate`, `process_inbox` and `receipts_from_email` are not built (D-46,
 D-28, D-17).
+## Tools — audit and attestations (P8)
+
+An audit is the books read as an auditor reads them, through a day, in one
+run: the same books give the same findings and the same workpaper. An
+attestation is a claim by a checker that it looked at something. The audit
+finds; the attestations stand behind it; the CPA package waits for both
+(rules.md B-45; decision D-9; the journal feature `audits`: the audit run
+and the attestations wait for the books' format upgrade, refused with
+`format_upgrade_pending` until then).
+
+- `books.audit { scope, through?, confirmed?, preview? }` → `{ status:
+  "preview" | "audited" | "already_run", preview, head, checks: [{ code,
+  severity, predicate }], run?: { id, through, through_seq, scope,
+  program_version, tb_hash, findings_sha256, workpaper_attachment,
+  workpaper_pdf, at_current_head }, findings: [{ severity, code, subject,
+  message }], summary }`. `scope` is `month`, `annual`, `cpa_handoff` or
+  `full`; `through` defaults to today. Without `confirmed` it lists the
+  checks and changes nothing; with `confirmed` and the `preview` digest it
+  runs them, files the workpaper as two documents (category `workpaper`:
+  JSON, and a PDF whose bytes depend only on the findings) and journals
+  `audit.run`. The checks are the statements (trial balance, the
+  accounting equation, the profit and loss against equity, the cash flow's
+  footing), the A/R and A/P control accounts, closes, schedules and
+  depreciation, the asset register, each posted entry against the receipt
+  policy, open drafts, tax categories, 1099 decisions and the settings;
+  then the journal's chain, the database against a replay, the stored
+  files, the access log, duplicate files and the backups. The same books
+  (the figure head), day, scope and programme return the run that exists
+  (`already_run`) and file and journal nothing. "The same books" means no
+  entry, document, close, settings or role change since: an audit, an
+  attestation or a filed receipt does not change them. Needs books:write to
+  preview, books:post to run.
+- `books.workpaper { id }` → `{ run, workpaper, pdf? }`: the workpaper as
+  filed (what was checked, through which day and state, every finding) and
+  its PDF handed over (`pdf` is a download command; kept 15 minutes).
+  Read-only.
+- `books.attest_receipt { attachment_id, entry_id, amount, date, method?,
+  note? }` → `{ attestation, bar, why_not_counted? }`. The checker's
+  reading of the receipt's total and date, compared by the books with the
+  posted entry's amounts (its debits, or any one line) and date; a
+  difference is recorded with `disagrees: true` and never counts. The
+  receipt must be filed on or linked to the entry.
+- `books.review_entry { entry_id, method?, note? }` → the same shape: a
+  posted entry reviewed whole.
+- `books.attest_period { period, method?, note? }` → the same shape.
+  `period` is an id or a name from `books.list_periods`. Refused unless an
+  audit through the period's end stands at the books' current head; the
+  attestation names that run.
+- `books.attestations { through?, kind? }` → `{ bar, attestations: [{ seq,
+  kind, by, at, attachment_id?, entry_id?, period_id?, audit_run_id?,
+  amount_checked?, date_checked?, disagrees, method, note?, counted }],
+  counted }`. `kind` is `receipt`, `entry` or `period`. `counted` is read
+  against `policy.attestation_bar` as it stands when asked and never
+  stored: a bar change changes what counts, earlier claims too.
+
+`method` is `{ model?, reasoning_effort?, adversarial?, verifier_agents? }`
+and is the client's own claim: the books record it and cannot verify it.
+`by` is the token's name. The bar (`policy.attestation_bar`, default
+`effort=high verifiers=2 adversarial=true`) holds every attestation to the
+effort, and a period attested on a year-level audit (`annual`,
+`cpa_handoff`, `full`) to the adversarial check and the verifier count too.
+
+`books.export_cpa_package` gains `without_audit_reason?`: on books that
+declared `audits`, with `policy.cpa_package_requires_audit` at `refuse` (the
+default), the package is refused (`audit_required`) unless an audit with
+scope `cpa_handoff` or `full` stands at the current head with a period
+attested on it at the bar; a reason overrides the refusal and is journaled
+as a decision. Under `warn` the package is made and its `warnings` say so.

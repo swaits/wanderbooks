@@ -132,10 +132,11 @@ how the books are kept.
 
 ### BS-ledger-13: Audits and attestations (B-45)
 
-- **Status:** reserved
-- **Statement:** Reserved: allocated in the wanderbooks plan (8.0.3), not yet stated in `docs/spec/rules.md`.
+- **Status:** CONVENTION
+- **Statement:** An audit of the books through a day MUST give the same findings for the same books and programme; a claim that someone checked MUST rest on the books as they were when the audit ran, MUST NOT count when what it read disagrees with the books, and its method is the claimant's own word.
 - **Sources:**
-  - none yet
-- **Symbolic form:** none yet.
-- **Examples:** none yet
-- **Applicability:** none yet.
+  - external: Revenue Procedure 98-25, section 5.01, machine-sensible records with an audit trail
+  - vendored `sources/irs-records.md`: "In addition, you must keep supporting documents"
+- **Symbolic form:** `findings(books, through) = f(books, through, programme)`; `counted(a, bar) = meets(method(a), bar) and not disagrees(a)`.
+- **Examples:** none yet. The example schema has no audit event or query; an audit example waits on a schema extension.
+- **Applicability:** engines that are audited.

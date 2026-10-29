@@ -585,6 +585,7 @@ impl BooksServer {
             + Self::write_offs_router()
             + Self::drafts_router()
             + Self::journal_router()
+            + Self::audit_router()
     }
 
     /// The settings in force for this request: the books' own, taken from
@@ -1496,6 +1497,8 @@ pub use kept::SettingKeyOut;
 mod assets;
 #[path = "tools/attachments.rs"]
 mod attachments;
+#[path = "tools/audit.rs"]
+mod audit_tools;
 #[path = "tools/chart.rs"]
 mod chart;
 #[path = "tools/documents.rs"]

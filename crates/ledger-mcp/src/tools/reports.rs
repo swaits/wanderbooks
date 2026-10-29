@@ -1147,6 +1147,51 @@ impl BooksServer {
         let p = params.0;
         let as_of = self.as_of(p.as_of.as_deref())?;
         let mut store = self.lock()?;
+        // A package no counted audit stands behind is not final either
+        // (plan P8, D-9): on books that declared `audits`, refused under
+        // policy.cpa_package_requires_audit = refuse unless a reason is
+        // given, which is journaled as a decision; under warn it goes and
+        // says so. Books that haven't declared the feature are as they
+        // were: there is no audit to ask for.
+        let mut audit_warning: Option<String> = None;
+        if let Some(why) = self.cpa_audit_standing(&store)? {
+            if store.ledger().settings().cpa_package_requires_audit() {
+                let Some(reason) = p
+                    .without_audit_reason
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|r| !r.is_empty())
+                else {
+                    return Err(serde_json::json!({
+                        "code": "audit_required",
+                        "message": why,
+                        "remedy_tool": "books.audit",
+                    })
+                    .to_string());
+                };
+                let by = CALLER
+                    .with(|c| c.borrow().as_ref().map(|(_, name)| name.clone()))
+                    .unwrap_or_else(|| ledger_store::auth::DEFAULT_NAME.to_string());
+                store
+                    .record_decision(&ledger_core::conventions::NewDecision {
+                        subject: format!("CPA package as of {as_of} without a counted audit"),
+                        decision_md: format!(
+                            "The CPA package as of {as_of} was exported without an audit at the books' current head attested at the bar. Reason: {reason}"
+                        ),
+                        decided_by: vec![by],
+                        decided_on: today(),
+                        evidence_attachment: None,
+                        supersedes: None,
+                        citation: None,
+                        projects: Vec::new(),
+                    })
+                    .map_err(|e| e.to_string())?;
+            } else {
+                audit_warning = Some(format!(
+                    "No counted audit stands behind this package: {why}."
+                ));
+            }
+        }
         // A package with a draft missing from its figures is not final
         // (plan P4, 4.8): refused unless the human says why it goes anyway,
         // and that is journaled as a decision.
@@ -1245,7 +1290,8 @@ impl BooksServer {
                 "The package, with full TINs, for the CPA. {n} TIN(s) are missing (tin_gaps): collect them with books.set_tin or books.set_w9 and export again."
             ),
         };
-        let warnings = package.warnings;
+        let mut warnings = package.warnings;
+        warnings.extend(audit_warning);
         if package.iif_changes > 0 {
             note.push_str(&format!(
                 " {} account or class name(s), number(s), place(s) or memo(s) are written differently in general-journal.iif to fit QuickBooks Desktop (warnings says how; so does the README): tell the human.",

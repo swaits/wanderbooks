@@ -61,7 +61,7 @@ fn annotations_complete() {
     const D: Hints = (Some(false), Some(true), None);
     const WI: Hints = (Some(false), Some(false), Some(true));
     const DI: Hints = (Some(false), Some(true), Some(true));
-    let table: [(&str, Hints); 134] = [
+    let table: [(&str, Hints); 140] = [
         ("books.handbook", R),
         ("books.start", R),
         ("books.set_setting", DI),
@@ -199,6 +199,13 @@ fn annotations_complete() {
         ("books.discard_draft", D),
         ("books.journal_history", R),
         ("books.preview_entry", R),
+        // P8: audits and attestations.
+        ("books.audit", W),
+        ("books.workpaper", R),
+        ("books.attest_receipt", W),
+        ("books.review_entry", W),
+        ("books.attest_period", W),
+        ("books.attestations", R),
     ];
     let tools = BooksServer::tool_router().list_all();
     assert_eq!(tools.len(), table.len());

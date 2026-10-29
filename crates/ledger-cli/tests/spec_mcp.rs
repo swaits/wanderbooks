@@ -1146,6 +1146,28 @@ fn happy_path(name: &str) -> Mcp {
         json!({"period_id": p, "confirmed": true}),
     );
 
+    // P8: an audit of the month, its workpaper, and the claims that stand
+    // behind it.
+    let audit_run = m.ok(
+        "books.audit",
+        json!({"scope": "month", "through": "2026-01-31", "confirmed": true}),
+    )["run"]["id"]
+        .as_u64()
+        .unwrap();
+    m.ok("books.workpaper", json!({"id": audit_run}));
+    let audited = m.attach(Some(e1), b"audit receipt");
+    m.ok(
+        "books.attest_receipt",
+        json!({"attachment_id": audited, "entry_id": e1, "amount": "10000.00",
+               "date": "2026-01-02", "method": {"reasoning_effort": "high"}}),
+    );
+    m.ok(
+        "books.review_entry",
+        json!({"entry_id": e1, "method": {"reasoning_effort": "high"}}),
+    );
+    m.ok("books.attestations", json!({}));
+    m.ok("books.attest_period", json!({"period": "2026-01"}));
+
     // How the books are kept: start, conventions, decisions, open items,
     // a template and an approval, and the settings file moving in.
     m.ok("books.start", json!({}));

@@ -1,6 +1,66 @@
 # STATUS — 2026-10-28: nine units landed, five built on paused branches; P11a starts
 
-## Now (2026-10-28): land the paused wave, then S4.5; start P11a beside it
+## Now (2026-10-29): the wave has landed; S4.5 next, P11a step 0 beside it
+
+**Where things stand.** `main` is `bfd453b6`. The five branches paused
+on 2026-10-27 are merged, in the 8.0.2 order, each with `just check`
+green after it: S4.4 (`d329bd6f`, 2,883 tests), S5 (`3a3f03d8`, 2,893),
+S6 (`be580598`, 2,912), S7 (`7ebeeed2`, 2,923; `just prove` green: 52
+Kani harnesses, 95 Lean theorems) and P6 (`9351f89d` with its fixes;
+the batch's one full gate on `bfd453b6`: 170 suites, 2,944 tests
+passed, 0 failed, 7 ignored, 77 minutes). Landed since the hand-off of 2026-10-26: fourteen
+units. Not started: S4.5, P4, P5, P8, P10, P11a, P11b, P12, P13 steps
+4-6. The live books are unchanged since the P3 cutover and the
+`document_standing` upgrade of 2026-10-24; `documents_v2`, `drafts_v2`
+and `attachment_text` wait for the one upgrade after P4 (D-57).
+
+**What the merges found.** The P4b branches merged as the dry runs
+predicted (the `documents.rs` add/add, the `types.rs` appends, laws 35
+to 37, schema 17 then 18). P6 was different: its checkpoint's gate had
+never run to the end, and the four units merged before it did not know
+its dedup rule (the same bytes filed twice are one record, linked to
+each subject). Three things followed, all fixed on `main` and recorded
+in P6's As-built block: S7's write-off attached its evidence after
+journaling the entry, so a notice whose bytes were already on file was
+refused by the one-receipt-one-entry rule after the money had moved
+(the check now runs before the journal line); the replay fuzzer and the
+journeys count lagged the new event; and five tests the interrupted
+gate never reached still encoded the invariant P6 replaced, or counts
+from before extraction records existed (`bfd453b6`). No golden with a
+figure in it moved; the one golden re-blessed is the sidebar's shape
+hash, whose attention, event and file counts changed with the fixture.
+
+**CI.** `check` and `two-user` are green on every push since
+`fb83af59`; the two-user job needed the fixture copies owned by the
+server account (`79fb7ff2`), and its first green run is P9a's Done-when
+1. The weekly mutation shards are gone from `scheduled.yml` (D-59). The
+weekly `fuzz_settings_replay` crash is fixed on branch `ci-fixes`
+(`76285434`: the fuzzer used the renamed database path) with a
+regression test for the one `fuzz_store_replay` finding, a writer and a
+viewer disagreeing on an unknown convention kind, which does not
+reproduce locally (the hand-written case passes; ten local minutes
+found nothing); the job now keeps its crash input as an artifact for
+the next run.
+
+**Open for the owner (the question tool):** Q-9, whether
+`ledger-store` keeps its dependency on `ledger-import` (P6 made the
+writer read a file's text as it is filed).
+
+**Next, in order:** (1) merge `ci-fixes`; (2) S4.5, the last P4b slice;
+(3) P11a step 0 (the macOS and Windows keyring stores, the Windows data
+root and pipes, a cross-platform CI build) and the packaging trial,
+staffed now; (4) P4 (adding `confirmed` to the settlement tools too),
+then the owner's one format upgrade (D-57), P5, P8, P10; P13 steps 4-6
+beside; P11b after P11a; P12 last.
+
+**Housekeeping done 2026-10-29:** the five unit worktrees and their
+`target/` directories removed (about 800 GB), 26 dead jj workspaces
+forgotten, branch `S4.4` deleted. Still to delete once `ci-fixes`
+lands: branches `S5`, `S6`, `S7`, `P6`, `merge-queue`, the `wb-merge`
+worktree; `rescue/p4-invproj-20261026` holds nothing `main` lacks
+(owner's call).
+
+## 2026-10-28: the drift review and the merge plan
 
 **Where things stand.** `main` is `44ee4083`. Since the hand-off of
 2026-10-26, nine units landed in two days: U0c (`198aa2a1`), P7

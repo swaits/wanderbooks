@@ -48,15 +48,16 @@ audit defects), projects, receivables and payables first class
 (documents read their figures from tagged standing lines), the invoice
 PDF, terms, numbers and line accounts in the core and the journal.
 
-## In flight (2026-10-28)
+## Landed 2026-10-29
 
-Built on paused branches, to be rebased and landed in order: P4b S4.4
-(the create tools preview and confirm; the party contact block, D-55),
-S5 (sent tracking), S6 (paying on terms: multi-document payments,
+The wave paused on 2026-10-27, merged in order on `main`: P4b S4.4 (the
+create tools preview and confirm; the party contact block, D-55), S5
+(sent tracking), S6 (paying on terms: multi-document payments,
 discounts, the processor fee, bills due, aging exports), S7 (bad debts),
-P6 (the evidence pipeline: extraction, dedup, annotations). Then S4.5
-(the PDF, viewer and handbook of `documents_v2`) and the owner's one
-`documents_v2` upgrade of the live books (Q-5).
+P6 (the evidence pipeline: extraction, dedup, annotations). In flight:
+nothing. Next: S4.5 (the PDF, viewer and handbook of `documents_v2`),
+P11a step 0 beside it, and after P4 the owner's one upgrade of the live
+books (D-57).
 
 ## Next
 

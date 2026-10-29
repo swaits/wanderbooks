@@ -39,7 +39,7 @@ through MCP. Self-hosted, no rent.
 This is the storytold way applied to accounting: agents verify against
 oracles, never ship what they haven't demonstrated.
 
-- About 2,700 tests across the two workspaces (2026-10-28): invariant tests encoding accounting law, golden-file
+- About 2,950 tests across the two workspaces (2026-10-29): invariant tests encoding accounting law, golden-file
   report snapshots, property tests (proptest), end-to-end MCP tests through
   a real books server.
 - **Formal proofs of the accounting laws** (`just prove`,
@@ -113,7 +113,7 @@ just          # lists the recipes: check, build, prove, demo, ...
 ```
 crates/ledger-core/    # engine: money, accounts, journal, ledger, reports
 crates/ledger-store/   # journal + SQLite projection + blob store
-crates/ledger-mcp/     # MCP server: 122 tools, resources, handbook, receipt policy
+crates/ledger-mcp/     # MCP server: 129 tools, resources, handbook, receipt policy
 crates/ledger-import/  # QBO CSV import, IIF/XLSX export
 crates/ledger-config/  # wanderbooks.toml company settings
 crates/ledger-cli/     # `wanderbooks`: the one executable (every mode)

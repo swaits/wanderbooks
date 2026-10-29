@@ -4,7 +4,8 @@ Design for two features built together (the owner, 2026-10-15): a directory
 of the parties the company deals with, and attachments that link to any
 subject. Status: built (2026-10-15 to 2026-10-17: parties with roles, the
 TIN vault, attachments linked to any subject; the party's contact block,
-D-55, is built on branch S4.4 as of 2026-10-28). The design is kept as
+D-55, landed with P4b S4.4 on 2026-10-29; the same bytes filed twice are
+one attachment since P6, the same day). The design is kept as
 written; departures are in `plan/served.md` and `docs/spec/rules.md` B-26.
 
 ## Why together

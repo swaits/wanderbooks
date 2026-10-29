@@ -3354,6 +3354,30 @@ use in `ledger-gui` or `ledger-mcp` (the extract crate is the only one);
 backfill command test; (5) the PR carries the 8.0.6 checklist; (6)
 `just check` green and both fuzz targets run ten minutes clean.
 
+**At merge (2026-10-29, `9351f89d`, `bfd453b6`).** The branch's gate had
+been interrupted, so the merge ran it to the end for the first time.
+Five tests from before P6 still encoded the invariant its step 4
+replaced, or counts from before extraction records existed, and were
+brought to the new rule rather than the rule to them:
+`blob_dedup_and_hash_verification` expects one attachment row under the
+first filing's name; `power_loss_at_any_byte_of_the_last_append_is_recovered`
+copies `blobs/` with the journal and the database, since `verify` now
+reads an extraction's text blob; `refused_commands_never_reach_the_journal`
+allows `AttachReceipt` and `FileDocument` to journal nothing when the
+bytes are already on file; the viewer's reconciliation helper files each
+statement with its own bytes; and the tall sidebar's shapes golden
+(`crates/ledger-gui/tests/goldens/sidenav-1440x920.shapes`, re-blessed
+with `SIDENAV_BLESS=1`) carries the fixture's new attention, event and
+file counts, no layout change. One interaction with S7 was a defect, not
+a test: `write_off_invoice` attached its notice after journaling the
+entry, so a notice whose bytes were already on file and linked to
+another entry was refused by the one-receipt-one-entry rule after the
+money had moved; the store now runs `check_linkable` on the
+deduplicated record before the journal line, and
+`a_write_off_whose_notice_is_anothers_receipt_is_refused_before_posting`
+(`tests/arap_standing.rs`) pins it. The bookspec adapter and the old-books
+fixture file each write-off's notice with its own bytes.
+
 **For P12 (mutation targets, none run, D-33):** `ledger-import::extract`:
 the caps' comparisons (`MAX_BYTES`, `MAX_PAGES`, `MAX_TEXT_BYTES`, the
 `cap_text` boundary walk), `extract`'s order (PDF by type or magic, XLSX

@@ -139,10 +139,10 @@ Built since, by the "Served" plan (`plan/served.md`):
   says "update wanderbooks", never half-read), `tests/view_model.rs`
   (every figure shown is the engine's).
 
-On the paused branches (2026-10-27): the invoice page shows sends (S5),
-a discount-deadline column and the tie-out badge (S6), write-offs on the
-timeline (S7), documents grouped by category and subject (P6). S4.5 adds
-the number, terms, bill-to and the issued copy to Save.
+Landed 2026-10-29: the invoice page shows sends (S5), a discount-deadline
+column and the tie-out badge (S6), write-offs on the timeline (S7),
+documents grouped by category and subject (P6). S4.5 adds the number,
+terms, bill-to and the issued copy to Save.
 
 Next, in the plan's order: S4.5's page changes; P4's draft states in
 Needs attention; P11a (the installed app: the viewer is its face, with

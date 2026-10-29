@@ -128,8 +128,15 @@ So the bar, for every agent, every change:
    leave it with more formal coverage than you found it. Proptest,
    mutation testing, fuzzing, Kani, and Lean all stack. Use all of them.
 
-`just check` and `just prove` both pass before every commit that touches
-`ledger-core`.
+`just check` and `just prove` both pass before a batch of work touching
+`ledger-core` is pushed: once, at the end of the batch, with everything
+they find fixed in one pass. Inside a batch (a merge, a fix, a unit's
+commits), the check is proportional to the change: the workspace
+compiles and the tests the change touched pass. The owner's rule
+(plan D-60, 2026-10-29): the first wave's five branches took twelve
+hours to land with a full gate around every merge, and the one gate at
+the end found the same five tests. GitHub's `check` job runs `just
+check` on every push and is the exhaustive gate in the background.
 
 ## Parity tracking
 
@@ -162,7 +169,10 @@ clone, with status. Rules:
   just, Kani, Lean, cargo-mutants, cargo-fuzz. If a recipe needs a tool,
   it goes in `mise.toml`; nothing gets installed by hand.
 - Rust stable, edition 2024. `just check` must pass: fmt, clippy with zero
-  warnings, every test. `just prove` must pass for core changes.
+  warnings, every test. `just prove` must pass for core changes. Both run
+  once per batch, before the push, never around every merge or commit
+  inside one (D-60); the cheap checks (compile, the touched tests, clippy
+  on the touched crate) run as you go.
 - Conventional commits: `feat:`, `fix:`, `docs:`, `test:`, `refactor:`.
   One logical change per commit. The commit message explains the *accounting*
   reasoning, not just the code.

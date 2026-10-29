@@ -12,12 +12,16 @@ locked to one assistant.
 
 | Crate | Role | Spec |
 |---|---|---|
+| `ledger-core` | the engine: money, entries, the laws; every rule the tools enforce | `docs/spec/rules.md`, `docs/verification.md` |
+| `ledger-package` | the read-only views shared with the viewer: reports, aging, the CPA package, Needs attention (the one list `books.start` and the viewer both draw) | `docs/architecture.md` |
 | `ledger-store` | the hash-chained journal (the source of truth), the SQLite projection, the blob store | `docs/receipt-store.md` |
 | `ledger-mcp` | the books server: the tools, resources and handbook over store + core | this document |
 | `ledger-host` | the agent bridge (`wanderbooks mcp`), the host and its leases, tokens | `plan/served.md` 3.3, 3.9 |
 
-(The overview sections of this document date from the first MCP phase; P5
-rewrites them. The per-tool sections are held to the code by a test.)
+(P5 rewrote the overview sections for the surface as it is: the result
+envelope, `books.start` v2, the prompts, the resource templates and the
+journal in words, below. The per-tool sections are held to the code by a
+test: `every_tool_is_documented_and_every_documented_tool_exists`.)
 
 Rust, `rmcp` SDK (the Rust MCP SDK). The MCP crate holds no accounting
 logic: it translates tool calls into `Ledger` commands and formats results.
@@ -389,8 +393,8 @@ books' files; no tool title or description, connect text or handbook
 section names `wanderbooks.toml` (`tool_text_lint`). A rule set by law that the books
 don't know for a year names its official source (the statute or
 publication, with its address) and says to tell the human.
-Tool descriptions are at most 700 characters; eight longer ones are listed
-in `tool_descriptions_fit_700_characters`, to be shortened in P5.
+Tool descriptions are at most 700 characters (`tool_descriptions_fit_700_characters`
+allows none longer; the long text lives in the handbook).
 
 **Annotations.** Every tool has a `title` and a `readOnlyHint`; every tool
 that changes anything also has a `destructiveHint`, true for these 31:

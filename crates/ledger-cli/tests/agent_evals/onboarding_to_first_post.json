@@ -1,0 +1,102 @@
+{
+  "description": "A new book: onboarding to the first posted entry, following only next_steps.",
+  "steps": [
+    {
+      "call": "books.start",
+      "args": {
+        "agent": {
+          "model": "scripted",
+          "reasoning_effort": "none",
+          "harness": "agent_evals"
+        }
+      }
+    },
+    {
+      "expect": {
+        "/state": "needs_onboarding"
+      }
+    },
+    {
+      "expect_next_steps_contains": "books.set_setting"
+    },
+    {
+      "follow_prompt": "onboard"
+    },
+    {
+      "follow": "books.set_setting",
+      "with": {
+        "changes": [
+          {
+            "key": "company.name",
+            "value": "Eval Co"
+          }
+        ],
+        "decided_by": "Avery Quill"
+      }
+    },
+    {
+      "expect_next_steps_contains": "books.add_account"
+    },
+    {
+      "follow": "books.add_account",
+      "with": {
+        "code": "1000",
+        "name": "Cash",
+        "account_type": "asset"
+      }
+    },
+    {
+      "follow": "books.add_account",
+      "with": {
+        "code": "3000",
+        "name": "Capital",
+        "account_type": "equity"
+      }
+    },
+    {
+      "follow": "books.draft_entry",
+      "with": {
+        "date": "2026-01-05",
+        "description": "Opening capital",
+        "no_party_reason": "opening balance"
+      }
+    },
+    {
+      "follow": "books.add_line",
+      "with": {
+        "account": "1000",
+        "side": "debit",
+        "amount": "10.00"
+      }
+    },
+    {
+      "follow": "books.add_line",
+      "with": {
+        "account": "3000",
+        "side": "credit",
+        "amount": "10.00"
+      }
+    },
+    {
+      "follow": "books.post_entry",
+      "with": {}
+    },
+    {
+      "expect": {
+        "/status": "preview"
+      }
+    },
+    {
+      "follow": "books.post_entry",
+      "with": {}
+    },
+    {
+      "expect": {
+        "/status": "posted"
+      }
+    },
+    {
+      "expect_next_steps_contains": "books.show"
+    }
+  ]
+}

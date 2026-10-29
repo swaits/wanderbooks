@@ -1,0 +1,83 @@
+{
+  "description": "A period that ended is closed: the open period is found, previewed, closed, and the books verified.",
+  "settings": "[company]\nname = \"Eval Co\"\nfiscal_year_start = \"01-01\"\n[books]\ncash_accounts = [\"1000\"]\n",
+  "setup": [
+    {
+      "call": "books.add_account",
+      "args": {
+        "code": "1000",
+        "name": "Cash",
+        "account_type": "asset"
+      }
+    },
+    {
+      "call": "books.add_account",
+      "args": {
+        "code": "3000",
+        "name": "Capital",
+        "account_type": "equity"
+      }
+    },
+    {
+      "call": "books.add_account",
+      "args": {
+        "code": "6000",
+        "name": "Rent",
+        "account_type": "expense"
+      }
+    },
+    {
+      "call": "books.create_period",
+      "args": {
+        "name": "2025-12",
+        "start": "2025-12-01",
+        "end": "2025-12-31"
+      }
+    }
+  ],
+  "steps": [
+    {
+      "call": "books.start",
+      "args": {
+        "focus": "close"
+      }
+    },
+    {
+      "expect_next_steps_contains": "books.list_periods"
+    },
+    {
+      "follow": "books.list_periods",
+      "with": {}
+    },
+    {
+      "follow": "books.close_period",
+      "with": {}
+    },
+    {
+      "expect": {
+        "/status": "preview"
+      }
+    },
+    {
+      "follow": "books.close_period",
+      "with": {}
+    },
+    {
+      "expect": {
+        "/status": "closed"
+      }
+    },
+    {
+      "expect_next_steps_contains": "books.verify"
+    },
+    {
+      "follow": "books.verify",
+      "with": {}
+    },
+    {
+      "expect": {
+        "/status": "ok"
+      }
+    }
+  ]
+}

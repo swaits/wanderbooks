@@ -1468,6 +1468,62 @@ fn collection_letter() -> &'static [u8] {
     b"%PDF-1.4\nFinal demand, unpaid\n%%EOF\n"
 }
 
+/// A notice whose bytes are already another entry's receipt is that one
+/// record (plan P6 step 4), and the one-receipt-one-entry rule refuses it
+/// before the write-off is journaled: no entry, no link, no journal line
+/// (found merging S7 and P6, 2026-10-28: the refusal came after the entry
+/// had posted).
+#[test]
+fn a_write_off_whose_notice_is_anothers_receipt_is_refused_before_posting() {
+    let dir = fixture("write-off-dedup");
+    let mut s = Store::open(&dir.0).unwrap();
+    s.upgrade_format().unwrap();
+    // The letter's bytes, filed first as a receipt on an unrelated entry.
+    let other = s.ledger().posted_entries().next().unwrap().id();
+    let (letter, _, dedup) = s
+        .attach_receipt(
+            Some(other),
+            "letter.pdf",
+            "application/pdf",
+            collection_letter(),
+            None,
+        )
+        .unwrap();
+    assert!(!dedup);
+    let head = s.head();
+    let len = journal_len(&dir.0);
+    let next_entry = s.ledger().next_entry_id();
+    match s.write_off_invoice(
+        1,
+        d(2026, 2, 1),
+        cents(10_000),
+        "uncollectible",
+        Some(WriteOffEvidence::File {
+            file_name: "collection-letter.pdf",
+            mime_type: "application/pdf",
+            bytes: collection_letter(),
+            description: Some("Collection attempts"),
+        }),
+    ) {
+        Err(StoreError::AttachmentLinked(a, e)) => {
+            assert_eq!(a, letter);
+            assert_eq!(e, other);
+        }
+        other => panic!("expected AttachmentLinked, got {other:?}"),
+    }
+    assert_eq!(s.head(), head, "nothing journaled");
+    assert_eq!(journal_len(&dir.0), len);
+    assert_eq!(s.ledger().next_entry_id(), next_entry, "no entry posted");
+    let st = s
+        .ledger()
+        .invoice_state(1, d(2026, 12, 31))
+        .unwrap()
+        .unwrap();
+    assert_eq!(st.status, ledger_core::DocStatus::Open);
+    assert!(s.attachments_for(Subject::Invoice(1)).unwrap().is_empty());
+    s.verify().unwrap();
+}
+
 /// A write-off needs journal feature documents_v2 (its event type is new;
 /// an older version refuses the unknown type): refused, journaling
 /// nothing, until the owner's upgrade; then it is taken and replays to the

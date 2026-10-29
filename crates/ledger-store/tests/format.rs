@@ -1574,7 +1574,8 @@ fn an_unknown_convention_kind_is_newer_for_the_writer_and_the_viewer_alike() {
     }
     let store = ledger_store::Store::open(dir);
     let snap = ledger_store::Snapshot::load(dir);
-    let newer = |e: &ledger_store::StoreError| matches!(e, ledger_store::StoreError::NewerJournal { .. });
+    let newer =
+        |e: &ledger_store::StoreError| matches!(e, ledger_store::StoreError::NewerJournal { .. });
     match (store, snap) {
         (Err(a), Err(b)) => assert!(
             newer(&a) && newer(&b),

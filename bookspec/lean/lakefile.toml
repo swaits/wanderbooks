@@ -1,5 +1,0 @@
-name = "bookspec"
-defaultTargets = ["Bookspec"]
-
-[[lean_lib]]
-name = "Bookspec"

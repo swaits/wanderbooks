@@ -13,7 +13,7 @@ Foundation").
 
 Spec blocks in the code cite these as `SOURCE: rules.md B-n`. Every rule
 also has a bookspec identifier, `**bookspec:** BS-<area>-<n>`: the table
-from B-1 to B-45 is `bookspec/spec/rules-index.md` (P13, D-34).
+from B-1 to B-45 is `spec/rules-index.md` in the bookspec repository, https://git.swaits.com/swaits/bookspec (P13, D-34).
 
 ---
 

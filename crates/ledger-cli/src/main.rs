@@ -28,6 +28,7 @@ fn print_usage() {
     eprintln!("       wanderbooks upload --book ID [--token NAME] UPLOAD [--] FILE");
     eprintln!("       wanderbooks download --book ID [--token NAME] ATTACHMENT --to FOLDER");
     eprintln!("       wanderbooks serve | close | doctor");
+    eprintln!("       wanderbooks update [--check] | rollback");
     eprintln!();
     eprintln!("  setup      make the books' private folder (only your account can open it)");
     eprintln!("  gui        open the live, read-only view of the books (a book of the data root)");
@@ -43,6 +44,7 @@ fn print_usage() {
     eprintln!("  serve      hold the books open until Ctrl-C");
     eprintln!("  close      close the books now: everything holding them lets go");
     eprintln!("  doctor     whether the books are open, what holds them, what went wrong");
+    eprintln!("  update     bring this program to the newest release (`rollback` goes back)");
 }
 
 /// The viewer's arguments for `wanderbooks gui ARGS` (plan 3.6): a lone
@@ -329,6 +331,8 @@ fn run_local(mode: &str, args: Vec<String>) -> i32 {
         "token" => ledger_host::commands::token(&prog, args),
         "connect" => ledger_host::commands::connect(&prog, args),
         "passphrase" => ledger_host::commands::passphrase(&prog, args),
+        "update" => ledger_host::update::update(&prog, env!("CARGO_PKG_VERSION"), args),
+        "rollback" => ledger_host::update::rollback(&prog, args),
         _ => ledger_host::commands::books(&prog, args),
     };
     match result {
@@ -385,6 +389,15 @@ fn run_server(_args: Vec<String>) -> i32 {
     2
 }
 
+/// Whether the program was launched with nothing to say and no terminal
+/// to say it to: a menu entry, a double-click, an AppImage (whose launcher
+/// runs the desktop file's command and appends what it was given, so the
+/// desktop file says plain `wanderbooks`). At a terminal it is the usage,
+/// as ever.
+fn is_bare_launch(words: &[String], stdin_is_terminal: bool) -> bool {
+    words.is_empty() && !stdin_is_terminal
+}
+
 fn main() {
     // A file's path may be any name the system takes: the file commands
     // get the words as given. Everything else is text.
@@ -401,6 +414,10 @@ fn main() {
         eprintln!("error: an argument isn't UTF-8 text");
         std::process::exit(2);
     };
+    // A bare launch is the viewer.
+    if is_bare_launch(&words, std::io::IsTerminal::is_terminal(&std::io::stdin())) {
+        std::process::exit(run_gui(Vec::new()));
+    }
     // The modes run in this process and take their own flags.
     let mut all = words.clone().into_iter();
     match all.next().as_deref() {
@@ -409,7 +426,7 @@ fn main() {
         Some("server") => std::process::exit(run_server(all.collect())),
         Some(
             mode @ ("host" | "mcp" | "serve" | "close" | "books" | "doctor" | "token" | "connect"
-            | "passphrase"),
+            | "passphrase" | "update" | "rollback"),
         ) => {
             let mode = mode.to_string();
             std::process::exit(run_local(&mode, all.collect()))
@@ -435,7 +452,8 @@ fn main() {
     {
         Some(
             mode @ ("gui" | "setup" | "server" | "host" | "mcp" | "serve" | "connect" | "close"
-            | "books" | "doctor" | "token" | "passphrase" | "upload" | "download"),
+            | "books" | "doctor" | "token" | "passphrase" | "update" | "rollback"
+            | "upload" | "download"),
         ) => {
             eprintln!("`{mode}` must come first: wanderbooks {mode} [its own flags]");
             std::process::exit(2);
@@ -472,5 +490,20 @@ mod gui_args_tests {
         ] {
             assert_eq!(gui_args(args.clone()), args);
         }
+    }
+}
+
+#[cfg(test)]
+mod bare_launch_tests {
+    use super::is_bare_launch;
+
+    #[test]
+    fn only_nothing_at_all_with_no_terminal_is_the_viewer() {
+        assert!(is_bare_launch(&[], false));
+        // At a terminal it is the usage, as ever.
+        assert!(!is_bare_launch(&[], true));
+        // Anything said is a mode or a mistake, never the viewer.
+        assert!(!is_bare_launch(&["--help".to_string()], false));
+        assert!(!is_bare_launch(&["update".to_string()], false));
     }
 }

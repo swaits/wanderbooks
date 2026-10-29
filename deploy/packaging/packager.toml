@@ -1,0 +1,36 @@
+# cargo-packager's description of the Linux bundles (P11a step 3; D-25).
+# `just package-linux` builds the release program and runs
+#   cargo packager --config deploy/packaging/packager.toml
+# from the repository root. The .rpm is cargo-generate-rpm's, from the
+# [package.metadata.generate-rpm] table of crates/ledger-cli/Cargo.toml.
+name = "wanderbooks"
+product-name = "Wanderbooks"
+version = "0.1.0"
+identifier = "ai.wanderbooks.app"
+description = "Double-entry bookkeeping your agent keeps and you can read."
+long-description = "One program: the viewer, the books server, and the bridge that lets Claude Code or Codex keep the books."
+homepage = "https://wanderbooks.ai"
+authors = ["Stephen Waits"]
+license-file = "LICENSE-MIT"
+category = "Finance"
+binaries-dir = "target/release"
+out-dir = "target/packages"
+icons = ["deploy/packaging/icons/512x512.png"]
+formats = ["deb", "appimage", "pacman"]
+binaries = [{ path = "wanderbooks", main = true }]
+
+[deb]
+section = "utils"
+# A deb marks itself package-managed: `wanderbooks update` refuses on it
+# and says to use apt (plan 3.9).
+desktop-template = "deploy/packaging/wanderbooks.desktop"
+depends = ["libc6", "libgcc-s1"]
+
+[deb.files]
+"deploy/packaging/install-method-deb" = "usr/share/wanderbooks/install-method"
+
+[pacman]
+depends = ["gcc-libs", "glibc"]
+
+[pacman.files]
+"deploy/packaging/install-method-aur" = "usr/share/wanderbooks/install-method"

@@ -3669,3 +3669,61 @@ it); the digest's `since_seq` comparison (`>`), its `as_of` bound, the
 `zero_net_accounts` branch and the `never_reconciled` split;
 `report_status`'s three open conditions; the open-drafts refusal's
 `<= as_of` and its decision; the attention `awaiting_evidence` branch.
+
+## P11c: the native Windows port (2026-10-29, D-62)
+
+The Windows arms were written on Linux and type-checked and linted for
+`x86_64-pc-windows-msvc` (`cargo check` and `cargo clippy --workspace
+--all-targets --target x86_64-pc-windows-msvc -D warnings`, both clean);
+they have not run. The `portable (windows-latest)` job, now a gate, is the
+evidence, and its first run is the first run of every test marked
+"Windows" below.
+
+- **`ledger-store` `tests/windows_root.rs`** (Windows only):
+  `the_default_root_sits_under_local_app_data`,
+  `setup_makes_a_private_root_and_its_folders` (the DACL of the root and of
+  `books`, `run`, `legacy`), `a_root_others_can_open_is_refused_and_setup_makes_it_private_again`
+  (Everyone granted with `icacls`, then refused, then tightened),
+  `what_is_made_in_a_private_folder_is_private` (inheritance),
+  `a_file_made_owner_only_is_private_and_a_loosened_one_is_not`,
+  `a_rename_never_goes_over_what_is_there`,
+  `this_process_runs_as_the_account_that_the_token_says`.
+- **`ledger-store` `src/ops.rs`:** `a_viewer_s_presence_is_a_shared_lock_others_can_see`
+  (every OS; the lock seam).
+- **`ledger-mcp` `src/ipc.rs`** (every OS):
+  `a_listener_and_a_client_talk_and_each_knows_the_other_is_us`,
+  `a_blocking_client_times_out_and_reads_the_end_when_the_server_goes`,
+  `many_clients_at_once_all_connect` (48 at once: the idle pool),
+  `nothing_listening_is_not_found`; Windows only:
+  `a_pipe_is_per_root_and_cannot_be_taken_twice`.
+  `admin.rs`'s fake-server tests (`an_answer_is_one_line_of_at_most_four_mib`,
+  `no_server_means_nothing_was_sent`) now run over `ipc` on every OS.
+- **`ledger-host` `tests/windows_pipe.rs`:** `a_second_user_cannot_open_the_pipe`
+  (Windows only). A second account cannot be made on the runner, so it
+  checks the two things that keep one out: the pipe's DACL names this
+  account alone, and a SYSTEM process (`services.exe`) is not taken for
+  this account by the SID check.
+- **`ledger-host`:** `start.rs` `windows_tests`, `host.rs`
+  `a_folder_the_host_can_write_isnt_a_sandbox` and
+  `only_a_file_has_an_identity_and_a_replaced_one_another` (Windows
+  variants of the Unix tests of the same names).
+- **The over-the-wire suite** (`ledger-cli` `tests/common/mod.rs`) now
+  runs on Windows: `Home` finds its root by `default_root`, children get
+  `clean_env`, `mcp_http` reaches the server over its pipe, folders are
+  made private by `private_folder`. Tests that signal processes
+  (`libc::kill`), use Unix sockets, modes, symlinks or `/proc` stay
+  `cfg(unix)` / `cfg(target_os = "linux")`. `one_executable.rs`'s
+  `without_local_sockets_the_modes_that_hold_the_books_say_so` is gone (the
+  modes work); `the_books_server_needs_a_root` runs everywhere.
+  `ledger-gui` `read_only` marks files read-only (not folders) on Windows.
+
+**For P12 (mutation targets, none run, D-33):** `winsec::is_private`'s
+three refusals (owner, missing DACL, an allow entry for anyone else) and the
+ACE types it skips; `ipc::Endpoint::new`'s hash input (a mutant that drops
+the lower-casing or the prefix strip splits one root into two pipes: found
+only by two processes spelling the path differently); the Windows
+`StdStream::read_some`'s deadline comparison and its `BROKEN_PIPE`
+arm; `Listener`'s `IDLE_INSTANCES` pool (a mutant that makes it 1 passes
+every test but `many_clients_at_once_all_connect`); `start.rs::host_env`'s
+list. None of the Windows arms is reachable by `cargo mutants` on Linux:
+they run on the Windows job only.

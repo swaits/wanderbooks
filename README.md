@@ -67,9 +67,11 @@ Sheet is frozen as of 2026-10-11. The remaining work, its order and its
 hand-off are `plan/served.md` section 8.0; the destination is one
 installed app for Mac, Windows and Linux (P11), then the hosted service
 the plan describes and does not build. Today the agent path runs on
-Linux and macOS: tokens live in a 0600 file under the private data root
-(D-63); the rest of the host is Unix-only, so Windows is WSL2 only until
-its sockets and data root are ported.
+Linux, macOS and Windows from a source build: tokens live in a file under
+the private data root (D-63), the data root is `%LOCALAPPDATA%\wanderbooks`
+with an owner-only access list on Windows (P11c, D-62), and the books'
+local channels are named pipes there. Windows is not yet packaged: no
+installer, no signing (P11a).
 
 See [`plan/STATUS.md`](plan/STATUS.md) for where things stand and
 [`plan/roadmap.md`](plan/roadmap.md) for where it's going.
@@ -88,7 +90,7 @@ them; nothing needs sudo):
 curl -fsSL https://wanderbooks.ai/install.sh | sh -s -- acme
 ```
 
-(Linux and macOS. On Windows run it inside WSL2.)
+(Linux and macOS. On Windows build from source: `cargo install --path crates/ledger-cli`, then the three commands below.)
 
 Already installed, three commands: `wanderbooks setup`, `wanderbooks books
 create acme`, `wanderbooks connect claude --book acme` (or `connect codex`).

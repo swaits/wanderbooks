@@ -1294,6 +1294,8 @@ fn happy_path(name: &str) -> Mcp {
     // The access log, the backups' status, and a backup now (none is set
     // up: it says so).
     m.ok("books.access_log", json!({}));
+    // P5: the journal in words.
+    m.ok("books.journal_history", json!({"limit": 5}));
     m.ok("books.backup", json!({}));
     m.ok("books.back_up_now", json!({}));
 

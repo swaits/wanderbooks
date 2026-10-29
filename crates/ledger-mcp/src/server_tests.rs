@@ -1564,8 +1564,8 @@ fn every_mutating_result_has_head_and_next_steps() {
         };
         let body = r.structured_content.expect("structured");
         assert!(
-            body["guards"].is_array() && body["warnings"].is_array(),
-            "{name}"
+            body.get("guards").is_none() && body.get("warnings").is_none(),
+            "{name}: a success without them says none"
         );
         let ContentBlock::Text(t) = &r.content[0] else {
             panic!("{name}: no text block");

@@ -490,7 +490,7 @@ every tool over every book in ledger-store's `tests/fixtures/old-books`.
   `books.discard_draft`. (`books.void_document`, `books.run_depreciation`
   and `books.run_recurring` post at once and have no `confirmed`.)
 - **The result envelope (P5, plan 4.6).** Every tool result, whatever the
-  tool, is given the same four fields in one place (`call_tool`,
+  tool, is given the same fields in one place (`call_tool`,
   `next_steps.rs::apply`), after the tool has answered; a tool's own field of
   the same name is kept, never overwritten:
   `next_steps: [{ tool | prompt | command, args?, why, required }]` (what to
@@ -506,7 +506,14 @@ every tool over every book in ledger-store's `tests/fixtures/old-books`.
   `warnings: [..]` (a tool's own `warnings` is that field), and, on every
   tool that is not read-only, `head: { seq, hash }`, the journal's head
   after the call's last write (or as it stands, when the call wrote
-  nothing). The guard codes are the enum in `guards.rs`, each with its
+  nothing). A tool that can change the books always has `head` and
+  `next_steps`; a read has `next_steps` only when something follows it, so
+  a resource and its tool say the same (`books://settings` is
+  `books.settings`). `guards` is on a refusal; a success that has no
+  warnings has no `warnings` key. A tool that can change the books always answers with all four;
+  a read has `next_steps` only when something follows it and no `guards`
+  or `warnings` of the envelope's, so a resource and its tool say the same
+  (`books://settings` is `books.settings`). The guard codes are the enum in `guards.rs`, each with its
   remedy tool: `stale_preview` (the tool again, previewed),
   `format_upgrade_pending` (`books.start`), `receipt_required`
   (`books.attach_receipt`), `approval_required` (`books.approve_entry`),

@@ -12,7 +12,10 @@
 //!   1. The envelope is applied in one place (`apply`, called by
 //!      `call_tool`), so no tool can forget it.
 //!   2. Every result of a tool that is not read-only has a `head` (the
-//!      journal after the call's last write) and at least one next step.
+//!      journal after the call's last write) and at least one next step; a
+//!      read has `next_steps` when something follows it and nothing else (a
+//!      resource and its tool agree). `guards` is on a refusal, and a
+//!      success without warnings has no `warnings` key.
 //!   3. A tool's own fields are never overwritten: a payload that already
 //!      has `next_steps`, `guards`, `warnings` or `head` keeps it.
 //!   4. A refused call has no head and no steps; a refusal that is a
@@ -451,14 +454,18 @@ pub(crate) fn apply(
     if mutating && steps.is_empty() {
         steps.push(digest_step());
     }
-    if !body.contains_key("next_steps") {
+    // A tool that can change the books always says what follows; a read
+    // says it only when something does, so what it says is what a resource
+    // of the same name says (`books://settings` is `books.settings`).
+    // `guards` is on a refusal (above) and `warnings` is the tool's own:
+    // a success that has none says none, as the tools always did.
+    if !body.contains_key("next_steps") && (mutating || !steps.is_empty()) {
         body.insert(
             "next_steps".into(),
             Value::Array(steps.iter().map(Step::to_json).collect()),
         );
     }
-    body.entry("guards").or_insert_with(|| json!([]));
-    body.entry("warnings").or_insert_with(|| json!([]));
+
     if let Some(head) = head {
         body.entry("head").or_insert(head);
     }

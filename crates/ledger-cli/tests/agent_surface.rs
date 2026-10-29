@@ -429,8 +429,8 @@ fn books_start_v2_is_whole_and_fits() {
         assert!(s["why"].is_string() && s["required"].is_boolean(), "{s}");
         assert!(s["tool"].is_string() || s["prompt"].is_string(), "{s}");
     }
-    // The envelope: a read has steps and no head.
-    assert!(start.get("guards").is_some_and(Value::is_array));
+    // The envelope: a read has no head of the envelope's (its own stays).
+    assert!(start["head"]["seq"].is_u64());
 
     // The self-report is in the access log, beside the call.
     let log = answer_of(&w.call("books.access_log", json!({"limit": 50}))).unwrap();
@@ -501,4 +501,45 @@ fn a_mutating_call_answers_with_the_head_and_a_refusal_names_its_remedy() {
     let guard = &refused["result"]["structuredContent"]["guards"][0];
     assert_eq!(guard["code"], "stale_preview", "{refused}");
     assert_eq!(guard["remedy_tool"], "books.post_entry");
+}
+
+/// Done-when (3): `books.start` is at most 8 KiB on the demo company too
+/// (the books the viewer ships with, a loose end of every kind), and says
+/// what it cut.
+#[test]
+fn books_start_fits_8_kib_on_the_demo_books() {
+    let today = ledger_core::settings::today_in(None);
+    let place = common::Place::new("p5-start-demo");
+    let source = tempfile::Builder::new()
+        .prefix("wb-p5-demo-")
+        .tempdir()
+        .unwrap();
+    ledger_gui::demo::build(source.path(), today).unwrap();
+    std::fs::create_dir_all(place.books_data().parent().unwrap()).unwrap();
+    std::fs::rename(source.path().join("books-data"), place.books_data()).unwrap();
+    let mut wire = place.start(None);
+    wire.initialize("p5");
+    let raw = wire.call("books.start", json!({}));
+    let text = raw["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.len() <= 8 * 1024,
+        "books.start is {} bytes",
+        text.len()
+    );
+    let start = answer_of(&raw).unwrap();
+    assert_eq!(start["state"], "active");
+    assert!(
+        !start["needs_attention"]["items"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "the demo has loose ends: {start}"
+    );
+    assert!(
+        start["needs_attention"]["counts"]
+            .as_object()
+            .unwrap()
+            .len()
+            >= 2
+    );
 }

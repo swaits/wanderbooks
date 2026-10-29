@@ -3401,3 +3401,22 @@ arms, the 8 KiB cut, the 64 KiB hand-over threshold and `page - 1`.
 `ledger-package::attention`: the extraction `seq` comparison and the
 `Failed` filter, the owed-account name test, the credit side and the
 `settles_entry` skip.
+
+## P11a step 0: keyring stores for macOS and Windows (2026-10-29)
+
+No new test body: the keeper's laws are tested once, over the `Items`
+trait, through the `file_keyring` knob (`the_test_keyring_keeps_and_forgets`,
+`two_items_for_one_token_are_said_never_one_of_them_given`,
+`a_locked_or_unreachable_keyring_is_an_error_never_no_token`,
+`a_token_kept_is_read_back_or_refused`, all in `ledger-host/src/tokens.rs`),
+and the macOS Keychain and Windows Credential Manager stores implement
+that same trait. The ignored `os_keyring_keeps_and_forgets` (same file) is
+now compiled on all three OSes; the `portable` job of
+`.github/workflows/check.yml` runs it on `macos-latest` and
+`windows-latest` beside `cargo build --workspace --all-targets` and
+`cargo test --workspace`. Not run on the author's machine (Linux only; the
+Secret Service run needs a desktop): the CI run is the evidence.
+
+**For P12 (mutation targets, none run, D-33):** `tokens.rs`'s `os` modules
+are not reachable by mutation testing (they need the real OS store); the
+`Items` logic they share is, through the file store.

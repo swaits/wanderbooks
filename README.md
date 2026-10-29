@@ -67,10 +67,11 @@ Sheet is frozen as of 2026-10-11. The remaining work, its order and its
 hand-off are `plan/served.md` section 8.0; the destination is one
 installed app for Mac, Windows and Linux (P11), then the hosted service
 the plan describes and does not build. Today the agent path runs on
-Linux: tokens live in the OS keyring and only the Linux Secret Service
-store exists, so on macOS the viewer and server run but `wanderbooks
-connect` and the agent bridge wait for P11's keyring stores; Windows is
-WSL2 only.
+Linux: tokens live in the OS keyring (the Secret Service on Linux, the
+login Keychain on macOS, the Credential Manager on Windows; the last two
+are written and compiled by the CI matrix, P11a step 0, and not yet
+proven on a machine of ours); the rest of the host is Unix-only, so
+Windows is WSL2 only until its sockets and data root are ported.
 
 See [`plan/STATUS.md`](plan/STATUS.md) for where things stand and
 [`plan/roadmap.md`](plan/roadmap.md) for where it's going.
@@ -90,8 +91,9 @@ curl -fsSL https://wanderbooks.ai/install.sh | sh -s -- acme
 ```
 
 (Linux today. On macOS the same line installs and sets up, and the
-viewer runs, but connecting an agent waits for P11's keyring store; on
-Windows run it inside WSL2.)
+viewer runs; connecting an agent uses the login Keychain, new with
+P11a step 0 and proven only by the CI matrix so far. On Windows run it
+inside WSL2.)
 
 Already installed, three commands: `wanderbooks setup`, `wanderbooks books
 create acme`, `wanderbooks connect claude --book acme` (or `connect codex`).

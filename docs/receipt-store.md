@@ -62,6 +62,9 @@ apply is safe — on startup the applier replays every journal line with
   send: a document's record, never a ledger line or a figure; P4b S5)
   (plus the A/R, A/P, asset, period, payroll, and class events listed on
   `JournalLine`).
+  `invoice.written_off`, `bill.created`, `receipt.attached`, `receipt.linked`, `receipt.unlinked`,
+  `document.filed`, `attachment.withdrawn` (plus the A/R, A/P, asset,
+  period, payroll, and class events listed on `JournalLine`).
 - `payload`: the full domain facts (account fields, entry with lines, blob
   sha, ...). Everything the applier needs; nothing it must look up elsewhere.
   An `invoice.created` or `bill.created` written after the `documents_v2`
@@ -76,7 +79,13 @@ apply is safe — on startup the applier replays every journal line with
   entry exists): it is a `receipt.attached` on the invoice's own entry
   (`INV-0007.pdf`, `application/pdf`, "Issued invoice"), its SHA-256 the
   `blob_sha`, linked to the invoice with `attachment.linked` and found
-  through that link (plan 8.3.11).
+  through that link (plan 8.3.11). An `invoice.written_off` (plan 8.3.6,
+  P4b S7) carries `{invoice_id, entry_id, date, amount, reason}`; replay
+  tags the entry's receivables line `WriteOff`, and the projection keeps
+  no written-off figure either: it is the tagged lines' sum (rules.md
+  B-38, B-41). Its evidence of worthlessness rides beside it, as a
+  `receipt.attached` on the write-off's entry and an `attachment.linked`
+  to the invoice, filed in the same call.
 - `prev`: hex SHA-256 of the previous line's canonical JSON (keys sorted, no
   whitespace). The genesis line uses `"prev": "000...0"` (64 zeros).
 

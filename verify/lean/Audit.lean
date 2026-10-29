@@ -99,3 +99,5 @@ open Wanderbooks
 #print axioms Documents.Step.markSent_changes_no_figure
 #print axioms Documents.Reachable.unattached_zero
 #print axioms Documents.Reachable.control_is_documents
+#print axioms Documents.Step.writeOff_unattached
+#print axioms Documents.writeOff_within_bounds

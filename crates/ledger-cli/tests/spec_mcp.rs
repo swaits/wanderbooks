@@ -914,6 +914,21 @@ fn happy_path(name: &str) -> Mcp {
                "by": "Avery Quill", "recipients": ["billing@client.example"],
                "reference": "msg-1"}),
     );
+    // P4b S7: a bad debt, its evidence uploaded and filed with it.
+    let bad = m.ok(
+        "books.create_invoice",
+        json!({"party_id": customer, "date": "2026-02-03", "due_date": "2026-03-03",
+               "lines": [{"description": "Consulting, never paid", "amount": "400.00"}],
+               "confirmed": true}),
+    )["id"]
+        .as_u64()
+        .unwrap();
+    let letter = m.upload(b"Final demand", "letter.txt", "text/plain", "document");
+    m.ok(
+        "books.write_off_invoice",
+        json!({"invoice": bad, "date": "2026-03-01", "reason": "collection exhausted",
+               "upload_id": letter, "confirmed": true}),
+    );
 
     // Fixed assets.
     let registered = m.ok(

@@ -77,8 +77,8 @@ pub use instruments::{Instrument, InstrumentId, InstrumentKind};
 pub use journal::{EntryId, EntryStatus, JournalEntry, JournalLine};
 pub use kernel::{EntryFlows, Flow};
 pub use ledger::{
-    ControlAccount, GENERAL_EXPENSES, Ledger, PAYABLES, PAYMENT_PROCESSING_FEES, PAYROLL,
-    PURCHASE_DISCOUNTS, RECEIVABLES, RETAINED_EARNINGS, REVENUE, ReconciliationReport,
+    BAD_DEBTS, ControlAccount, GENERAL_EXPENSES, Ledger, PAYABLES, PAYMENT_PROCESSING_FEES,
+    PAYROLL, PURCHASE_DISCOUNTS, RECEIVABLES, RETAINED_EARNINGS, REVENUE, ReconciliationReport,
     SALES_ALLOWANCES, UnclearedLine, control_account, control_accounts,
 };
 pub use money::{Currency, Money};

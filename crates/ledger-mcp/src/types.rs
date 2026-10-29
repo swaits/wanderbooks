@@ -892,7 +892,7 @@ pub struct SettingsOut {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct AssignRoleParams {
     /// The role, from books.roles: receivables, revenue, payables,
-    /// general_expense, retained_earnings, salary_expense,
+    /// general_expense, bad_debts, retained_earnings, salary_expense,
     /// payroll_tax_expense, federal_withholding, state_withholding,
     /// social_security_payable, medicare_payable, other_deductions_payable.
     pub role: String,
@@ -5292,4 +5292,64 @@ pub struct MarkSentOut {
     pub invoice: String,
     /// Every send on it, in order, the newest last.
     pub sends: Vec<SentOut>,
+}
+
+// P4b S7: bad debts (books.write_off_invoice)
+// ---------------------------------------------------------------------------
+
+/// Parameters for `books.write_off_invoice`.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct WriteOffInvoiceParams {
+    /// The invoice's id (books.documents).
+    pub invoice: u64,
+    /// The write-off's day, YYYY-MM-DD: not before the invoice, and in an
+    /// open period.
+    pub date: String,
+    /// How much to write off, a decimal string (at most what the invoice
+    /// owes on the day); left out, all of it.
+    #[serde(default)]
+    pub amount: Option<String>,
+    /// Why it will not be collected: the collection attempts, a bankruptcy
+    /// notice, the customer's liquidation. One line, journaled with the
+    /// write-off.
+    pub reason: String,
+    /// The evidence's bytes: an upload_id from books.begin_upload (purpose
+    /// document or receipt) and the command it returns. Exactly one of
+    /// this and existing_attachment_id.
+    #[serde(default)]
+    pub upload_id: Option<String>,
+    /// An attachment already filed and not linked to an entry
+    /// (books.list_receipts): it is linked to the write-off's entry and
+    /// to the invoice, the same call. Exactly one of this and upload_id.
+    #[serde(default)]
+    pub existing_attachment_id: Option<u64>,
+    /// false or left out: a preview (the posting and the figures it would
+    /// leave), writing nothing; true: post it.
+    #[serde(default)]
+    pub confirmed: Option<bool>,
+}
+
+/// An invoice's figures after a write-off, derived from its tagged lines
+/// that stand.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct WriteOffDocumentOut {
+    /// "invoice:N", as books.document names it.
+    pub r#ref: String,
+    /// Its status after the write-off: written_off, partial, paid, ...
+    pub status: String,
+    /// Cash paid against it that stands, decimal string.
+    pub paid: String,
+    /// What was written off that stands, decimal string.
+    pub written_off: String,
+    /// What is still owed, decimal string.
+    pub outstanding: String,
+}
+
+/// Output of `books.write_off_invoice`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct WriteOffInvoiceOut {
+    /// The write-off's journal entry's id (0 in a preview).
+    pub entry_id: u64,
+    /// The invoice's derived figures after it.
+    pub document: WriteOffDocumentOut,
 }

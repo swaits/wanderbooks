@@ -354,7 +354,7 @@ Tool descriptions are at most 700 characters; eight longer ones are listed
 in `tool_descriptions_fit_700_characters`, to be shortened in P5.
 
 **Annotations.** Every tool has a `title` and a `readOnlyHint`; every tool
-that changes anything also has a `destructiveHint`, true for these 29:
+that changes anything also has a `destructiveHint`, true for these 30:
 `books.post_entry`, `books.reverse_entry`, `books.set_setting`, `books.retire_convention`, `books.unlink_receipt`,
 `books.unlink_attachment`, `books.withdraw_attachment`,
 `books.correct_asset`, `books.dispose_asset`, `books.run_depreciation`,
@@ -364,8 +364,8 @@ that changes anything also has a `destructiveHint`, true for these 29:
 `books.void_statement`, `books.void_reconciliation`, `books.set_w9`,
 `books.set_tin` (both overwrite a vault record), `books.purge_tin`,
 `books.create_invoice`, `books.create_bill`, `books.receive_payment`,
-`books.pay_bill`, `books.void_document`, `books.run_payroll`,
-`books.remit_payroll_taxes`; and an
+`books.pay_bill`, `books.void_document`, `books.write_off_invoice`,
+`books.run_payroll`, `books.remit_payroll_taxes`; and an
 `idempotentHint` on the ten that a repeat with the same arguments leaves
 the journal and the vault as they were: `books.verify`,
 `books.run_depreciation`, `books.run_schedules`, `books.run_recurring`,
@@ -2142,6 +2142,28 @@ snapshots; see plan 8.2 S4.
   recipients, or while the books wait for `documents_v2`
   (`format_upgrade_pending`). `sends` is every send on the invoice, in
   order, the new one last.
+- `books.write_off_invoice { invoice, date, amount?, reason, upload_id |
+  existing_attachment_id, confirmed? }` → `{ entry_id, document: { ref,
+  status, paid, written_off, outstanding } }`. Writes off an invoice that
+  will not be collected (a bad debt, P4b S7; rules.md B-41): posts Dr
+  `6990` Bad Debt Expense / Cr `1200` Accounts Receivable, the receivable
+  line tagged with the invoice (`WriteOff`), so the invoice reads
+  `written_off` and its figures stay derived (B-38). `amount` (a decimal
+  string, default all it owes) is at most what is owed and may be partial
+  (§1.166-3(a)). Its evidence of worthlessness (collection
+  correspondence, a bankruptcy notice: §1.166-2(a)) is filed in the same
+  call, as `upload_id` (books.begin_upload, purpose `document` or
+  `receipt`, then `wanderbooks upload`) or as an
+  `existing_attachment_id` already filed and not linked; it becomes a
+  receipt on the write-off's entry and a link to the invoice. Refused on
+  cash-basis books (§1.166-1(e)), above what it owes, before the
+  invoice's date or in a closed period. Without `confirmed: true` it
+  answers `entry_id` 0 and the figures the write-off would leave, writing
+  nothing. A recovery is not a new command (D-49): the same tax year,
+  reverse the write-off (`books.reverse_entry`, the invoice reopens) and
+  record the payment; a later year, a plain entry Dr the deposit account /
+  Cr a "Bad debt recoveries" revenue account, the invoice staying written
+  off (§111).
 - `books.documents { kind, status?, party?, due_by?, as_of? }` → `{ as_of,
   kind, documents: [{ ref, party, date, due_date, total, outstanding,
   status, overdue_days, last_sent? }], outstanding_total }`. Invoices (`kind`

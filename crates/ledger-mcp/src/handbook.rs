@@ -73,16 +73,19 @@ pub const SECTIONS: &[(&str, &str)] = &[
         "revenue-and-payouts",
         include_str!("../handbook/revenue-and-payouts.md"),
     ),
+    // S4.5 gives invoices and bills their first three and fifth steps; S7
+    // adds step 4 (void, write off or reverse) and the recovery
+    // procedures (plan 8.2).
+    (
+        "invoices-and-bills",
+        include_str!("../handbook/invoices-and-bills.md"),
+    ),
     ("projects", include_str!("../handbook/projects.md")),
     (
         "parties-and-tins",
         include_str!("../handbook/parties-and-tins.md"),
     ),
     ("1099", include_str!("../handbook/1099.md")),
-    (
-        "invoices-and-bills",
-        include_str!("../handbook/invoices-and-bills.md"),
-    ),
     ("cpa-handoff", include_str!("../handbook/cpa-handoff.md")),
     (
         "settings-and-conventions",

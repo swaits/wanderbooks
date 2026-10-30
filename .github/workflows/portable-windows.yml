@@ -1,16 +1,16 @@
 # The portable builds (plan P11a step 0, D-56): the workspace builds and
 # passes its tests on macOS and Windows, not only on Linux. A workflow of
-# its own, not a job beside `check`: GitHub serves a job's log only when
-# its whole run has completed, and `check` takes over an hour, so a macOS
-# failure's reason was unreadable for that long while it sat in the same
-# run. Here each OS's run completes on its own.
-name: portable
+# its own per OS, not a job beside `check` or beside the other OS: GitHub
+# serves a job's log only when its whole run has completed, and `check`
+# takes over an hour (the Windows suite most of one), so a failure's reason
+# was unreadable for that long while it sat in a shared run.
+name: portable-windows
 on:
   push:
   pull_request:
   workflow_dispatch:
 concurrency:
-  group: portable-${{ github.ref }}
+  group: portable-windows-${{ github.ref }}
   cancel-in-progress: true
 jobs:
   # The destination is one installation for macOS, Windows and Linux (D-56,
@@ -24,8 +24,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-latest
-            experimental: false
           - os: windows-latest
             experimental: false
     runs-on: ${{ matrix.os }}

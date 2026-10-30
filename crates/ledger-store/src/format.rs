@@ -719,8 +719,9 @@ mod tests {
                 "{t}: no projection arm"
             );
         }
-        // A type a later phase adds (plan/served.md 5.2, P8).
-        let l = line("period.attested", json!({}));
+        // A type no version knows yet (`period.attested` was the example
+        // until P8 wrote it).
+        let l = line("ledger.not_yet_written", json!({}));
         let mut ledger = Ledger::new(Currency::USD);
         assert!(is_newer(&replay_line_into_ledger(
             &mut ledger,

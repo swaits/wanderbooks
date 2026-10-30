@@ -35,7 +35,11 @@ fn the_default_root_sits_under_local_app_data() {
 fn setup_makes_a_private_root_and_its_folders() {
     let home = tmp("setup");
     let (root, report) = Root::setup(home.path(), None, None).unwrap();
-    assert_eq!(root.path(), default_root(home.path()));
+    // The default root of the home as the system names it (its long name,
+    // no `\\?\` prefix; TEMP may hold an 8.3 short name).
+    let real_home = ledger_store::root::canonical(home.path()).unwrap();
+    assert_eq!(root.path(), default_root(&real_home));
+    assert!(!root.path().to_string_lossy().starts_with(r"\\?\"));
     assert!(report.created && !report.tightened && !report.recorded);
     assert!(winsec::is_private(root.path()).unwrap());
     for sub in ["books", "run", "legacy"] {

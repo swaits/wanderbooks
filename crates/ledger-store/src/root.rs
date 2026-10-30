@@ -290,7 +290,7 @@ pub fn inside_a_root(path: &Path) -> bool {
     let Some(existing) = path.ancestors().find(|dir| dir.exists()) else {
         return false;
     };
-    let real = std::fs::canonicalize(existing).unwrap_or_else(|_| existing.to_path_buf());
+    let real = canonical(existing).unwrap_or_else(|_| existing.to_path_buf());
     real.ancestors().any(|dir| dir.join(MARKER_FILE).is_file())
 }
 
@@ -321,6 +321,13 @@ pub fn private_book_folder(book_dir: &Path, name: &str) -> Result<PathBuf, RootE
 /// returned as it is, on every system (so the rule is tested everywhere).
 pub fn without_extended_prefix(text: &str) -> String {
     text.replace(r"\\?\UNC\", r"\\").replace(r"\\?\", "")
+}
+
+/// `std::fs::canonicalize` with Windows' extended-length prefix taken off
+/// (`\\?\C:\dir` is `C:\dir`): no root, record, message or git argument
+/// ever keeps the prefix.
+pub fn canonical(path: &Path) -> std::io::Result<PathBuf> {
+    std::fs::canonicalize(path).map(|real| plain_path(&real))
 }
 
 /// [`without_extended_prefix`] for a path (the same path on Unix).
@@ -388,7 +395,7 @@ pub fn short_link_for(dir: &Path) -> std::io::Result<PathBuf> {
         }
         Err(e) => return Err(e),
     }
-    let dir = std::fs::canonicalize(dir)?;
+    let dir = canonical(dir)?;
     let link = base.join(&hex::encode(Sha256::digest(dir.as_os_str().as_encoded_bytes()))[..16]);
     match std::fs::symlink_metadata(&link) {
         Ok(meta) => {
@@ -533,8 +540,7 @@ impl Root {
         // resolved that way too: on macOS `/tmp` is `/private/tmp`, and a
         // root chosen at the default must read as the default (so the
         // record goes), not as somewhere else.
-        let default =
-            default_root(&std::fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf()));
+        let default = default_root(&canonical(home).unwrap_or_else(|_| home.to_path_buf()));
         let recorded = recorded_root(home)?;
         let current = recorded.clone().unwrap_or_else(|| default.clone());
         let path = match (chosen, &recorded, xdg_data_home) {
@@ -1209,9 +1215,9 @@ impl Root {
     /// The source of an adoption, made absolute: books outside the root
     /// (and not holding it) with a journal.
     fn adoptable(&self, source: &Path) -> Result<PathBuf, RootError> {
-        let source = std::fs::canonicalize(source)
+        let source = canonical(source)
             .map_err(|e| RootError::Adopt(format!("can't read the books given: {}", e.kind())))?;
-        let root = std::fs::canonicalize(&self.path)?;
+        let root = canonical(&self.path)?;
         if source.starts_with(&root) || root.starts_with(&source) {
             return Err(RootError::Adopt(format!(
                 "those books are inside {THE_ROOT} (or hold it): adopt books from outside it"
@@ -1275,7 +1281,7 @@ impl Root {
         confirm: bool,
     ) -> Result<PutAside, RootError> {
         (|| {
-            let root = std::fs::canonicalize(&self.path)?;
+            let root = canonical(&self.path)?;
             let book = self.book_dir(id);
             if !book.join(JOURNAL_FILE).is_file() {
                 return Err(RootError::Adopt(format!(
@@ -1298,7 +1304,7 @@ impl Root {
                 let (Some(parent), Some(name)) = (given.parent(), given.file_name()) else {
                     return Err(RootError::Adopt(format!("{shown} can't be put aside")));
                 };
-                let path = std::fs::canonicalize(parent)
+                let path = canonical(parent)
                     .map_err(|e| RootError::Adopt(format!("{shown}: {}", e.kind())))?
                     .join(name);
                 let meta = std::fs::symlink_metadata(&path)
@@ -1932,7 +1938,7 @@ fn resolve_new(path: &Path) -> Result<PathBuf, RootError> {
             _ => break,
         }
     }
-    let mut out = std::fs::canonicalize(existing)?;
+    let mut out = canonical(existing)?;
     for n in rest.into_iter().rev() {
         out.push(n);
     }

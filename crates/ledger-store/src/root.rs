@@ -314,12 +314,80 @@ const SOCKET_PATH_MAX: usize = 100;
 /// The path to a socket named `name` in `dir`, short enough for the
 /// system: the path itself when it fits; else, on Linux, the same place
 /// reached through `/proc/self/fd` and a handle on `dir` kept open while
-/// this lives (it is good only in this process). Elsewhere a path too
-/// long is refused, saying so plainly (no path named).
+/// this lives (it is good only in this process); on the other Unixes
+/// (macOS), the same place reached through a short link of this
+/// account's under `/tmp` (`short_link_for`), which the server and its
+/// clients compute alike. A root in a deep home on a Mac (the portable
+/// job found it: a test home under the runner's temp folder plus
+/// `Library/Application Support/wanderbooks/run/`) is served as any other.
 #[derive(Debug)]
 pub struct SocketPath {
     path: PathBuf,
     _dir: Option<std::fs::File>,
+}
+
+/// A short path that reaches `dir`: the symbolic link
+/// `/tmp/wanderbooks-<uid>/<sha256 of dir, 16 hex>` → `dir`, inside a
+/// folder of this account's alone (made 0700; refused if it is anyone
+/// else's, writable by others, or not a folder, since `/tmp` is shared),
+/// and the link itself refused unless it is this account's and names
+/// `dir` exactly (a stale or foreign link is replaced). Short enough for
+/// a socket under it with the longest name in use.
+#[cfg(unix)]
+pub fn short_link_for(dir: &Path) -> std::io::Result<PathBuf> {
+    use sha2::{Digest, Sha256};
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+    let not_ours = |what: &str| {
+        std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("{what} under /tmp isn't this account's own private one: remove it"),
+        )
+    };
+    // SAFETY: getuid has no preconditions and never fails.
+    let uid = unsafe { libc::getuid() };
+    let base = PathBuf::from("/tmp").join(format!("wanderbooks-{uid}"));
+    match std::fs::symlink_metadata(&base) {
+        Ok(meta) => {
+            if !meta.file_type().is_dir()
+                || meta.uid() != uid
+                || meta.permissions().mode() & 0o077 != 0
+            {
+                return Err(not_ours("the sockets' folder"));
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::DirBuilder::new().mode(0o700).create(&base)?;
+            let meta = std::fs::symlink_metadata(&base)?;
+            if meta.uid() != uid || meta.permissions().mode() & 0o077 != 0 {
+                return Err(not_ours("the sockets' folder"));
+            }
+        }
+        Err(e) => return Err(e),
+    }
+    let dir = std::fs::canonicalize(dir)?;
+    let link = base.join(&hex::encode(Sha256::digest(dir.as_os_str().as_encoded_bytes()))[..16]);
+    match std::fs::symlink_metadata(&link) {
+        Ok(meta) => {
+            let same = meta.file_type().is_symlink()
+                && meta.uid() == uid
+                && std::fs::read_link(&link).map(|t| t == dir).unwrap_or(false);
+            if same {
+                return Ok(link);
+            }
+            if meta.uid() != uid {
+                return Err(not_ours("the socket link"));
+            }
+            if meta.file_type().is_dir() {
+                std::fs::remove_dir(&link)?;
+            } else {
+                std::fs::remove_file(&link)?;
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+    std::os::unix::fs::symlink(&dir, &link)?;
+    Ok(link)
 }
 
 impl SocketPath {
@@ -342,7 +410,15 @@ impl SocketPath {
                 _dir: Some(handle),
             })
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(all(unix, not(target_os = "linux")))]
+        {
+            let short = short_link_for(dir)?;
+            Ok(Self {
+                path: short.join(name),
+                _dir: None,
+            })
+        }
+        #[cfg(not(unix))]
         Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "the books' private folder's path is too long for its sockets: choose a shorter place with `wanderbooks setup --root`",

@@ -154,7 +154,7 @@ fn the_root_is_found_without_the_environment() {
     );
     assert_eq!(
         default_root(home.path()),
-        home.path().join(".local/share/wanderbooks")
+        platform_data_dir(home.path()).join("wanderbooks")
     );
     // An explicit root wins.
     let elsewhere = home.path().join("elsewhere");
@@ -203,6 +203,8 @@ fn setup_records_a_root_chosen_elsewhere_and_forgets_it_when_back_to_default() {
     let home = tmp("setup-elsewhere");
     let chosen = home.path().join("my books");
     let (_, report) = Root::setup(home.path(), Some(&chosen), None).unwrap();
+    // Roots are kept as the system spells them (macOS: /tmp is /private/tmp).
+    let chosen = std::fs::canonicalize(&chosen).unwrap();
     assert!(report.recorded);
     let pointer = platform_data_dir(home.path()).join(LOCATION_FILE);
     assert_eq!(mode(&pointer), 0o600);
@@ -605,6 +607,7 @@ fn setup_run_again_keeps_the_recorded_root_and_never_moves_books() {
     let home = tmp("setup-keep");
     let chosen = home.path().join("chosen");
     let (root, _) = Root::setup(home.path(), Some(&chosen), None).unwrap();
+    let chosen = std::fs::canonicalize(&chosen).unwrap();
     drop(root.create_book(&id("acme"), Currency::USD).unwrap());
     // Run again with nothing given (and XDG set): the recorded root stays.
     let (again, report) = Root::setup(home.path(), None, Some(&home.path().join("xdg"))).unwrap();
@@ -669,8 +672,12 @@ fn a_root_another_user_could_swap_is_refused() {
 fn missing_folders_above_the_root_are_made_private() {
     let home = tmp("parents");
     let (root, _) = Root::setup(home.path(), None, None).unwrap();
-    assert_eq!(mode(&home.path().join(".local")), 0o700);
-    assert_eq!(mode(&home.path().join(".local/share")), 0o700);
+    // Every folder setup made between the home and the root (`.local` and
+    // `.local/share` on Linux; `Library/Application Support` on macOS).
+    let data = platform_data_dir(home.path());
+    for dir in data.ancestors().take_while(|d| *d != home.path()) {
+        assert_eq!(mode(dir), 0o700, "{}", dir.display());
+    }
     assert_eq!(mode(&root.path().join(MARKER_FILE)), 0o600);
 }
 
@@ -1119,8 +1126,9 @@ fn errors_other_than_not_found_are_never_taken_for_it() {
     ));
     // The data folder is a file: finding the root fails, never falls back.
     let odd = tmp("not-not-found-home");
-    std::fs::create_dir(odd.path().join(".local")).unwrap();
-    std::fs::write(odd.path().join(".local/share"), "x").unwrap();
+    let data = platform_data_dir(odd.path());
+    std::fs::create_dir_all(data.parent().unwrap()).unwrap();
+    std::fs::write(&data, "x").unwrap();
     assert!(matches!(
         Root::locate(odd.path(), None),
         Err(RootError::Io(..))

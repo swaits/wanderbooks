@@ -139,10 +139,11 @@ impl Home {
     /// asked for (a prompt ending ": " or "] "): its exit code and what
     /// the terminal showed.
     fn at_terminal(&self, words: &[String], lines: &[&str]) -> (i32, String) {
-        let command = std::iter::once(env!("CARGO_BIN_EXE_wanderbooks").to_string())
-            .chain(words.iter().cloned())
-            .collect::<Vec<_>>()
-            .join(" ");
+        let command = shell_join(
+            &std::iter::once(env!("CARGO_BIN_EXE_wanderbooks").to_string())
+                .chain(words.iter().cloned())
+                .collect::<Vec<_>>(),
+        );
         let mut child = Command::new("script")
             .args(script_args(&command))
             .env_clear()
@@ -984,4 +985,21 @@ fn script_args(command: &str) -> Vec<String> {
         &["-qefc", command, "/dev/null"]
     };
     args.iter().map(|a| a.to_string()).collect()
+}
+
+/// `words` as one shell command line, each word single-quoted (a macOS
+/// root has a space in it: `Library/Application Support`), except a
+/// word that is a shell operator a test means as one (`>`, `2>&1`, `|`).
+fn shell_join(words: &[String]) -> String {
+    words
+        .iter()
+        .map(|w| {
+            if matches!(w.as_str(), ">" | ">>" | "<" | "|" | "2>&1") {
+                w.clone()
+            } else {
+                format!("'{}'", w.replace('\'', "'\\''"))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }

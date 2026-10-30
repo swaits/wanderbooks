@@ -176,10 +176,11 @@ fn script_args(command: &str) -> Vec<String> {
 /// showed.
 fn at_terminal(args: &[String], lines: &[&str]) -> (i32, String) {
     use std::io::Write;
-    let command = std::iter::once(env!("CARGO_BIN_EXE_wanderbooks").to_string())
-        .chain(args.iter().cloned())
-        .collect::<Vec<_>>()
-        .join(" ");
+    let command = shell_join(
+        &std::iter::once(env!("CARGO_BIN_EXE_wanderbooks").to_string())
+            .chain(args.iter().cloned())
+            .collect::<Vec<_>>(),
+    );
     let mut child = Command::new("script")
         .args(script_args(&command))
         .env_remove("XDG_DATA_HOME")
@@ -322,4 +323,21 @@ fn the_passphrase_is_typed_by_a_person_and_changed_only_with_the_one_in_force() 
     assert!(!ledger_store::passphrase::verify(&auth, FIRST).unwrap());
     let kept = std::fs::read_to_string(auth.join("owner.json")).unwrap();
     assert!(!kept.contains("staple"), "the text itself was kept");
+}
+
+/// `words` as one shell command line, each word single-quoted (a macOS
+/// root has a space in it: `Library/Application Support`), except a
+/// word that is a shell operator a test means as one (`>`, `2>&1`, `|`).
+fn shell_join(words: &[String]) -> String {
+    words
+        .iter()
+        .map(|w| {
+            if matches!(w.as_str(), ">" | ">>" | "<" | "|" | "2>&1") {
+                w.clone()
+            } else {
+                format!("'{}'", w.replace('\'', "'\\''"))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }

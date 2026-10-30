@@ -1944,7 +1944,7 @@ fn the_books_command_takes_its_flags_and_asks_before_adopting() {
             args.push(a.to_string());
         }
         let mut child = Command::new("script")
-            .args(script_args(&args.join(" ")))
+            .args(script_args(&shell_join(&args)))
             .env_clear()
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", home.dir.path())
@@ -2959,4 +2959,21 @@ fn script_args(command: &str) -> Vec<String> {
         &["-qefc", command, "/dev/null"]
     };
     args.iter().map(|a| a.to_string()).collect()
+}
+
+/// `words` as one shell command line, each word single-quoted (a macOS
+/// root has a space in it: `Library/Application Support`), except a
+/// word that is a shell operator a test means as one (`>`, `2>&1`, `|`).
+fn shell_join(words: &[String]) -> String {
+    words
+        .iter()
+        .map(|w| {
+            if matches!(w.as_str(), ">" | ">>" | "<" | "|" | "2>&1") {
+                w.clone()
+            } else {
+                format!("'{}'", w.replace('\'', "'\\''"))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }

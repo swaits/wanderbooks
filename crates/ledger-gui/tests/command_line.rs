@@ -10,6 +10,13 @@ use std::process::Command;
 fn viewer(home: &std::path::Path) -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_ledger-gui"));
     c.env_clear().env("PATH", "/usr/bin:/bin").env("HOME", home);
+    // A Windows program started with no environment at all can't load.
+    #[cfg(windows)]
+    for name in ["SystemRoot", "windir"] {
+        if let Some(value) = std::env::var_os(name) {
+            c.env(name, value);
+        }
+    }
     c
 }
 

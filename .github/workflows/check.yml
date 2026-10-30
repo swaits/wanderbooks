@@ -30,6 +30,11 @@ jobs:
       - uses: jdx/mise-action@v2
       - name: GUI build dependencies
         run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libgtk-3-dev
+      # Temporary (2026-10-30): one update test fails only on this runner
+      # (passes locally, pinned to one slow core too) and the gate's step
+      # log loses its message. Run that file first, alone, with output.
+      - name: The update tests, alone, with output (temporary)
+        run: cargo test -p ledger-cli --test update -- --nocapture --test-threads=1
       - run: just check
       - name: What the build used
         if: always()

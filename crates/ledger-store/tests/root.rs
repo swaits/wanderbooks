@@ -189,7 +189,11 @@ fn the_root_is_found_without_the_environment() {
 fn setup_makes_a_private_root_and_its_folders() {
     let home = tmp("setup");
     let (root, report) = Root::setup(home.path(), None, None).unwrap();
-    assert_eq!(root.path(), default_root(home.path()));
+    // The root as the system spells it (macOS: /tmp is /private/tmp).
+    assert_eq!(
+        root.path(),
+        default_root(&std::fs::canonicalize(home.path()).unwrap())
+    );
     assert!(report.created && !report.tightened && !report.recorded);
     assert_eq!(mode(root.path()), 0o700);
     for sub in ["books", "run", "legacy"] {
@@ -225,7 +229,10 @@ fn setup_records_a_root_chosen_elsewhere_and_forgets_it_when_back_to_default() {
     let fresh = tmp("setup-xdg");
     let xdg = fresh.path().join("xdg");
     let (root, report) = Root::setup(fresh.path(), None, Some(&xdg)).unwrap();
-    assert_eq!(root.path(), xdg.join("wanderbooks"));
+    assert_eq!(
+        root.path(),
+        std::fs::canonicalize(&xdg).unwrap().join("wanderbooks")
+    );
     assert!(report.recorded);
     assert_eq!(
         Root::find_in(fresh.path(), None).unwrap().path(),

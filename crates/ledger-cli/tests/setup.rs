@@ -163,14 +163,12 @@ fn another_home_ignores_this_accounts_data_home() {
 /// with the command's exit code as its own: util-linux's spelling on
 /// Linux, BSD's on macOS (no `-f`, no `-c`; the command after the file).
 fn script_args(command: &str) -> Vec<String> {
-    if cfg!(target_os = "macos") {
-        ["-qeF", "/dev/null", "/bin/sh", "-c", command]
+    let args: &[&str] = if cfg!(target_os = "macos") {
+        &["-qeF", "/dev/null", "/bin/sh", "-c", command]
     } else {
-        ["-qefc", command, "/dev/null"]
-    }
-    .into_iter()
-    .map(String::from)
-    .collect()
+        &["-qefc", command, "/dev/null"]
+    };
+    args.iter().map(|a| a.to_string()).collect()
 }
 
 /// Run `args` at a terminal (a pseudo-terminal, through `script`),

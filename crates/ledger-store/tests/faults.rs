@@ -7,6 +7,11 @@
 //! write fails; the parent then checks the books.
 //!
 //! Its own file: the child mode needs a test binary of its own to re-run.
+//!
+//! Unix only: the cap is `ulimit -f` under a Unix shell and the signal is
+//! SIGXFSZ; Windows has neither (its `bash` is WSL's, when one exists).
+//! The books' own full-disk behavior is the same code on every OS.
+#![cfg(unix)]
 
 use chrono::NaiveDate;
 use ledger_core::{AccountType, Currency, Money, Side};

@@ -387,10 +387,16 @@ fn the_viewer_finds_its_book_in_the_root() {
         .unwrap();
     }
     // As the system spells it: `book_in_root` answers a canonical path
-    // (macOS writes /tmp as /private/tmp).
+    // (macOS writes /tmp as /private/tmp), with no Windows `\\?\` prefix
+    // (the books never keep one).
     let dir = |id: &str| {
-        std::fs::canonicalize(root.book_dir(&ledger_store::root::BookId::parse(id).unwrap()))
-            .unwrap()
+        let p =
+            std::fs::canonicalize(root.book_dir(&ledger_store::root::BookId::parse(id).unwrap()))
+                .unwrap();
+        match p.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
+            Some(plain) if cfg!(windows) => std::path::PathBuf::from(plain),
+            _ => p,
+        }
     };
     assert_eq!(
         ledger_gui::book_in_root(Some(&r), Some("zeta")).unwrap(),

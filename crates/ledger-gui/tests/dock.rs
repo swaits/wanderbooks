@@ -105,8 +105,10 @@ echo "fake-agent in $(basename "$(pwd)")"
 trap 'echo got-interrupt' INT
 trap 'echo "size $(stty size)"' WINCH
 echo ready
+# A whole second: macOS's /bin/bash is 3.2, whose `read -t` takes no
+# fraction (the portable job found it).
 while true; do
-  if read -r -t 0.1 line; then echo "you-said: $line"; fi
+  if read -r -t 1 line; then echo "you-said: $line"; fi
 done
 "#,
     )

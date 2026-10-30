@@ -144,7 +144,7 @@ impl Home {
             .collect::<Vec<_>>()
             .join(" ");
         let mut child = Command::new("script")
-            .args(["-qefc", &command, "/dev/null"])
+            .args(script_args(&command))
             .env_clear()
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", self.dir.path())
@@ -972,4 +972,18 @@ fn books_p2_served_cut_over_whole() {
         p2_db,
         "and never after"
     );
+}
+
+/// `script`'s arguments to run `command` on a pseudo-terminal, quietly,
+/// with the command's exit code as its own: util-linux's spelling on
+/// Linux, BSD's on macOS (no `-f`, no `-c`; the command after the file).
+fn script_args(command: &str) -> Vec<String> {
+    if cfg!(target_os = "macos") {
+        ["-qeF", "/dev/null", "/bin/sh", "-c", command]
+    } else {
+        ["-qefc", command, "/dev/null"]
+    }
+    .into_iter()
+    .map(String::from)
+    .collect()
 }

@@ -95,7 +95,11 @@ fn a_root_elsewhere_is_noted_for_next_time() {
         ledger_store::root::platform_data_dir(home.path()).join("wanderbooks.location"),
     )
     .unwrap();
-    assert_eq!(noted.trim_end(), elsewhere.display().to_string());
+    // As the system spells it (macOS writes /tmp as /private/tmp).
+    assert_eq!(
+        std::path::PathBuf::from(noted.trim_end()),
+        std::fs::canonicalize(&elsewhere).unwrap()
+    );
 }
 
 #[test]
@@ -155,9 +159,23 @@ fn another_home_ignores_this_accounts_data_home() {
     );
 }
 
-/// Run `args` at a terminal (a pseudo-terminal, through util-linux
-/// `script`), typing `lines` one at a time: its exit code and what the
-/// terminal showed.
+/// `script`'s arguments to run `command` on a pseudo-terminal, quietly,
+/// with the command's exit code as its own: util-linux's spelling on
+/// Linux, BSD's on macOS (no `-f`, no `-c`; the command after the file).
+fn script_args(command: &str) -> Vec<String> {
+    if cfg!(target_os = "macos") {
+        ["-qeF", "/dev/null", "/bin/sh", "-c", command]
+    } else {
+        ["-qefc", command, "/dev/null"]
+    }
+    .into_iter()
+    .map(String::from)
+    .collect()
+}
+
+/// Run `args` at a terminal (a pseudo-terminal, through `script`),
+/// typing `lines` one at a time: its exit code and what the terminal
+/// showed.
 fn at_terminal(args: &[String], lines: &[&str]) -> (i32, String) {
     use std::io::Write;
     let command = std::iter::once(env!("CARGO_BIN_EXE_wanderbooks").to_string())
@@ -165,7 +183,7 @@ fn at_terminal(args: &[String], lines: &[&str]) -> (i32, String) {
         .collect::<Vec<_>>()
         .join(" ");
     let mut child = Command::new("script")
-        .args(["-qefc", &command, "/dev/null"])
+        .args(script_args(&command))
         .env_remove("XDG_DATA_HOME")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())

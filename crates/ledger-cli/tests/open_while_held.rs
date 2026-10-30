@@ -1944,7 +1944,7 @@ fn the_books_command_takes_its_flags_and_asks_before_adopting() {
             args.push(a.to_string());
         }
         let mut child = Command::new("script")
-            .args(["-qefc", &args.join(" "), "/dev/null"])
+            .args(script_args(&args.join(" ")))
             .env_clear()
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", home.dir.path())
@@ -2947,4 +2947,18 @@ fn token_check_says_where_the_token_file_stands_and_an_unreadable_one_is_said() 
     std::fs::remove_dir(&item).unwrap();
     let (_, listed, _) = token(&["list"]);
     assert!(listed.contains("No tokens yet"), "{listed}");
+}
+
+/// `script`'s arguments to run `command` on a pseudo-terminal, quietly,
+/// with the command's exit code as its own: util-linux's spelling on
+/// Linux, BSD's on macOS (no `-f`, no `-c`; the command after the file).
+fn script_args(command: &str) -> Vec<String> {
+    if cfg!(target_os = "macos") {
+        ["-qeF", "/dev/null", "/bin/sh", "-c", command]
+    } else {
+        ["-qefc", command, "/dev/null"]
+    }
+    .into_iter()
+    .map(String::from)
+    .collect()
 }

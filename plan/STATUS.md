@@ -37,6 +37,9 @@ compiles and runs the suite on Windows; its Linux gate is green; the
 Windows job's remaining failures were tests of other units spelled for
 Unix (the backup remote check, a books home's listing), fixed on
 `main`. The two-user HTTP door on Windows is its last unverified piece.
+**2026-10-30, 11:00 UTC: `main` is green on the Linux gate and on
+macOS at `ad2ac824`** (the whole workspace's tests on `macos-latest`);
+the macOS half of P11a step 0 is met. Windows waits for P11c.
 
 
 **Who builds.** The owner chose (the question tool) that this planning

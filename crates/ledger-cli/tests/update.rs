@@ -24,6 +24,9 @@ fn platform() -> String {
     format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
 }
 
+/// A program's hash: the tests compare whole programs by it, never by
+/// their bytes, so a failure's message is a line, not the two binaries
+/// (GitHub dropped a step's whole log on one such message).
 fn sha256(bytes: &[u8]) -> String {
     ledger_store::journal::sha256_hex(bytes)
 }
@@ -371,7 +374,7 @@ fn an_update_replaces_the_program_keeps_the_old_one_and_rollback_brings_it_back(
     release.publish("0.0.1", &old, |_| {});
     let older = home.run("update", Some(&release));
     assert!(!older.status.success(), "{}", text(&older));
-    assert_eq!(home.program(), old);
+    assert_eq!(sha256(&home.program()), sha256(&old));
     assert!(!home.updates().join("previous").exists());
     release.publish("9.0.0", &next, |_| {});
 
@@ -382,9 +385,16 @@ fn an_update_replaces_the_program_keeps_the_old_one_and_rollback_brings_it_back(
     let out = home.run("update", Some(&release));
     assert!(out.status.success(), "{}", text(&out));
     assert!(text(&out).contains("from 0.1.0 to 9.0.0"), "{}", text(&out));
-    assert_eq!(home.program(), next, "the new program is in place");
+    assert_eq!(
+        sha256(&home.program()),
+        sha256(&next),
+        "the new program is in place"
+    );
     let kept = home.updates().join("previous");
-    assert_eq!(std::fs::read(kept.join("wanderbooks")).unwrap(), old);
+    assert_eq!(
+        sha256(&std::fs::read(kept.join("wanderbooks")).unwrap()),
+        sha256(&old)
+    );
     let meta: Value =
         serde_json::from_slice(&std::fs::read(kept.join("meta.json")).unwrap()).unwrap();
     assert_eq!(meta["version"], "0.1.0");
@@ -397,7 +407,7 @@ fn an_update_replaces_the_program_keeps_the_old_one_and_rollback_brings_it_back(
     // Rollback: the old program is back, and nothing is kept to go back to.
     let out = home.run("rollback", None);
     assert!(out.status.success(), "{}", text(&out));
-    assert_eq!(home.program(), old);
+    assert_eq!(sha256(&home.program()), sha256(&old));
     assert!(!kept.exists());
     let nothing = home.run("rollback", None);
     assert!(!nothing.status.success());
@@ -446,7 +456,7 @@ fn update_is_atomic() {
     assert!(out.status.success(), "{}", text(&out));
     assert!(reads > 0);
     assert!(bad.is_empty(), "a reader saw a part of a program: {bad:?}");
-    assert_eq!(home.program(), next);
+    assert_eq!(sha256(&home.program()), sha256(&next));
 }
 
 #[test]
@@ -459,7 +469,11 @@ fn failed_update_rolls_back() {
     let out = home.run("update", Some(&release));
     assert!(!out.status.success(), "{}", text(&out));
     assert!(text(&out).contains("didn't start"), "{}", text(&out));
-    assert_eq!(home.program(), old, "the old program is back");
+    assert_eq!(
+        sha256(&home.program()),
+        sha256(&old),
+        "the old program is back"
+    );
     assert_eq!(names(home.exe.parent().unwrap()), ["wanderbooks"]);
     // And it still works.
     home.runnable();
@@ -500,7 +514,11 @@ fn unsigned_update_refused() {
         let out = home.run("update", Some(&release));
         assert!(!out.status.success(), "{name}: {}", text(&out));
         assert!(text(&out).contains("refused"), "{name}: {}", text(&out));
-        assert_eq!(home.program(), old, "{name}: the program changed");
+        assert_eq!(
+            sha256(&home.program()),
+            sha256(&old),
+            "{name}: the program changed"
+        );
         assert!(!home.updates().join("previous").exists(), "{name}: kept");
         assert!(!home.updates().join("9.0.0").exists(), "{name}: staged");
         assert_eq!(names(home.exe.parent().unwrap()), ["wanderbooks"], "{name}");
@@ -550,7 +568,7 @@ fn package_managed_install_refuses_update() {
             text(&out)
         );
     }
-    assert_eq!(home.program(), old);
+    assert_eq!(sha256(&home.program()), sha256(&old));
     assert!(!home.updates().exists(), "nothing was made");
 }
 
@@ -578,7 +596,7 @@ fn rollback_refuses_after_a_book_consented_to_a_newer_format() {
         "{}",
         text(&out)
     );
-    assert_eq!(home.program(), next, "the program stayed");
+    assert_eq!(sha256(&home.program()), sha256(&next), "the program stayed");
     assert!(home.updates().join("previous/wanderbooks").is_file());
     // Declared what the kept version knows: it goes back.
     let mut meta: Value = serde_json::from_slice(&std::fs::read(&meta_path).unwrap()).unwrap();
@@ -749,7 +767,7 @@ fn update_under_writes_in(home: Home) -> (Home, Agent, Vec<String>) {
     }
     let out = updating.join().unwrap();
     assert!(out.status.success(), "{}", text(&out));
-    assert_eq!(home.program(), next);
+    assert_eq!(sha256(&home.program()), sha256(&next));
     // The host and the server run the program now on disk.
     let host = wait_host(&home);
     assert_ne!(host, host_before);
@@ -797,9 +815,9 @@ fn a_replaced_appimage_restarts_the_books() {
     let host_before = wait_host(&home);
     let out = home.run("update", Some(&release));
     assert!(out.status.success(), "{}", text(&out));
-    assert_eq!(std::fs::read(&image).unwrap(), next);
+    assert_eq!(sha256(&std::fs::read(&image).unwrap()), sha256(&next));
     // The mount's copy is untouched; only the image changed.
-    assert_ne!(std::fs::read(&home.exe).unwrap(), next);
+    assert_ne!(sha256(&std::fs::read(&home.exe).unwrap()), sha256(&next));
     assert!(
         wait_for(60, || {
             home.pids("host").len() == 1 && home.pids("host")[0] != host_before
@@ -876,7 +894,11 @@ fn the_host_stages_a_daily_update_and_the_next_start_applies_it() {
         wait_for(30, || staged_version(&home).as_deref() == Some("9.0.0")),
         "nothing was staged"
     );
-    assert_eq!(home.program(), old, "the program was swapped while open");
+    assert_eq!(
+        sha256(&home.program()),
+        sha256(&old),
+        "the program was swapped while open"
+    );
     assert!(!home.updates().join("previous").exists());
     std::thread::sleep(Duration::from_millis(1200));
     assert_eq!(home.pids("host"), vec![host], "the host restarted");
@@ -888,8 +910,14 @@ fn the_host_stages_a_daily_update_and_the_next_start_applies_it() {
     assert!(out.status.success(), "{}", text(&out));
     assert!(wait_for(20, || home.pids("host").is_empty()));
     let mut agent = Agent::start(&home, "acme");
-    assert_eq!(home.program(), next, "the staged update wasn't applied");
-    assert!(!home.updates().join("staged").exists());
+    // The opener applies the staged copy before its host starts; the
+    // session's start returns as soon as the books answer, so give the
+    // apply its moment (the runner is slow).
+    assert!(
+        wait_for(10, || sha256(&home.program()) == sha256(&next)),
+        "the staged update wasn't applied"
+    );
+    assert!(wait_for(10, || !home.updates().join("staged").exists()));
     assert!(
         home.updates()
             .join("previous")
@@ -897,8 +925,8 @@ fn the_host_stages_a_daily_update_and_the_next_start_applies_it() {
             .is_file()
     );
     assert_eq!(
-        std::fs::read(home.updates().join("previous/wanderbooks")).unwrap(),
-        old
+        sha256(&std::fs::read(home.updates().join("previous/wanderbooks")).unwrap()),
+        sha256(&old)
     );
     let host = wait_host(&home);
     assert!(
@@ -960,7 +988,7 @@ fn update_installs_the_copy_the_host_staged_without_downloading_again() {
     std::fs::remove_file(release.dir.path().join("wanderbooks-9.0.0")).unwrap();
     let out = home.run("update", None);
     assert!(out.status.success(), "{}", text(&out));
-    assert_eq!(home.program(), next);
+    assert_eq!(sha256(&home.program()), sha256(&next));
     assert!(!home.updates().join("staged").exists());
 }
 
@@ -990,6 +1018,21 @@ fn a_staged_update_that_was_tampered_with_is_dropped_not_applied() {
     meta["sha256"] = json!(sha256(&bytes));
     std::fs::write(staged.join("meta.json"), meta.to_string()).unwrap();
     let _agent = Agent::start(&home, "acme");
-    assert_eq!(home.program(), old, "a tampered update was applied");
-    assert!(!staged.exists(), "and kept");
+    assert_eq!(
+        sha256(&home.program()),
+        sha256(&old),
+        "a tampered update was applied"
+    );
+    // Dropped: the tampered bytes are gone. The new host may look at the
+    // feed again and stage a fresh, true copy in their place; that is not
+    // the tampered one kept.
+    let tampered = sha256(&bytes);
+    assert!(
+        wait_for(10, || {
+            std::fs::read(staged.join("wanderbooks"))
+                .map(|b| sha256(&b) != tampered)
+                .unwrap_or(true)
+        }),
+        "the tampered copy was kept"
+    );
 }

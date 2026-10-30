@@ -14,7 +14,13 @@ fn names(dir: &Path) -> Vec<String> {
             if p.is_dir() {
                 walk(base, &p, out);
             } else {
-                out.push(p.strip_prefix(base).unwrap().to_string_lossy().into_owned());
+                // One spelling on every OS (Windows walks with backslashes).
+                out.push(
+                    p.strip_prefix(base)
+                        .unwrap()
+                        .to_string_lossy()
+                        .replace('\\', "/"),
+                );
             }
         }
     }

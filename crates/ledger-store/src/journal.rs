@@ -228,8 +228,7 @@ impl JournalWriter {
             .and_then(|()| self.file.write_all(b"\n"))
             .and_then(|()| self.file.sync_all());
         if let Err(e) = written {
-            let _ = self.file.set_len(before);
-            let _ = self.file.sync_all();
+            let _ = crate::chain::truncate(&self.file, &self.path, before);
             return Err(e.into());
         }
         self.prev_hash = sha256_hex(bytes.as_bytes());

@@ -213,4 +213,12 @@ not a `cfg` gap. Today Unix-only, found by grep (2026-10-29):
   host's `close_range` stay Linux-only on purpose (D-32: nothing here
   confines a process, so nothing is promised where they are absent).
   macOS, which has no `renameat2`, still looks before it moves.
+- Windows file semantics the port met (P11c): an `append(true)` handle has
+  no right to truncate, so the chain log and the journal cut a torn tail
+  or roll back a failed write through a short-lived write handle
+  (`chain::truncate`); a held `LockFileEx` lock is mandatory, so locks sit
+  on dedicated `*.lock` files and tests never read those; git refuses the
+  `\\?\` path `canonicalize` returns (`root::plain_path`). std opens every
+  file with read, write and delete sharing, so a rename never meets an
+  open handle of ours.
 - The `portable` job runs Windows as a gate (`experimental: false`), since the port landed (P11c).

@@ -1198,13 +1198,22 @@ pub fn check(key: &Key, v: &Value) -> Result<Value, String> {
             }
             // A path on this computer is named from the root of its disk:
             // the server's working folder is no place to name one from.
-            let networked = match s.split_once("://") {
-                Some((scheme, _)) => scheme != "file",
-                None => s
-                    .split_once(':')
-                    .is_some_and(|(host, _)| !host.contains('/')),
-            };
-            if !networked && !s.starts_with("file://") && !std::path::Path::new(&s).is_absolute() {
+            // `C:\books` is a Windows drive path, not the host `C` (git
+            // reads it the same way), and `/srv/books` is rooted on every
+            // system git runs on (on Windows through its own shell).
+            let drive_path = s.len() > 2
+                && s.as_bytes()[0].is_ascii_alphabetic()
+                && &s[1..2] == ":"
+                && matches!(&s[2..3], "\\" | "/");
+            let networked = !drive_path
+                && match s.split_once("://") {
+                    Some((scheme, _)) => scheme != "file",
+                    None => s
+                        .split_once(':')
+                        .is_some_and(|(host, _)| !host.contains('/')),
+                };
+            let rooted = drive_path || s.starts_with('/') || std::path::Path::new(&s).is_absolute();
+            if !networked && !s.starts_with("file://") && !rooted {
                 return Err(format!(
                     "{name} {s:?}: a repository on this computer is named from the root of its disk (such as /srv/books)"
                 ));
@@ -1854,6 +1863,8 @@ mod tests {
             "git@host:owner/books.git",
             "https://host/owner/books",
             "/srv/books.git",
+            "C:\\books\\acme.git",
+            "D:/books/acme.git",
         ] {
             assert_eq!(check(remote, &json!(ok)).unwrap(), json!(ok), "{ok}");
         }

@@ -386,7 +386,12 @@ fn the_viewer_finds_its_book_in_the_root() {
         )
         .unwrap();
     }
-    let dir = |id: &str| root.book_dir(&ledger_store::root::BookId::parse(id).unwrap());
+    // As the system spells it: `book_in_root` answers a canonical path
+    // (macOS writes /tmp as /private/tmp).
+    let dir = |id: &str| {
+        std::fs::canonicalize(root.book_dir(&ledger_store::root::BookId::parse(id).unwrap()))
+            .unwrap()
+    };
     assert_eq!(
         ledger_gui::book_in_root(Some(&r), Some("zeta")).unwrap(),
         dir("zeta")

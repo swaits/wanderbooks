@@ -156,11 +156,14 @@ fn the_root_is_found_without_the_environment() {
         default_root(home.path()),
         platform_data_dir(home.path()).join("wanderbooks")
     );
-    // An explicit root wins.
+    // An explicit root wins (answered as the system spells it: macOS
+    // keeps /tmp as /private/tmp).
     let elsewhere = home.path().join("elsewhere");
     assert_eq!(
         Root::locate(home.path(), Some(&elsewhere)).unwrap(),
-        elsewhere
+        std::fs::canonicalize(home.path())
+            .unwrap()
+            .join("elsewhere")
     );
     // A recorded root is used when none is given.
     std::fs::create_dir_all(platform_data_dir(home.path())).unwrap();
@@ -211,7 +214,10 @@ fn setup_records_a_root_chosen_elsewhere_and_forgets_it_when_back_to_default() {
     assert_eq!(Root::find_in(home.path(), None).unwrap().path(), chosen);
     // Back to the default (it holds no books): the record goes.
     let (root, report) = Root::setup(home.path(), Some(&default_root(home.path())), None).unwrap();
-    assert_eq!(root.path(), default_root(home.path()));
+    assert_eq!(
+        root.path(),
+        default_root(&std::fs::canonicalize(home.path()).unwrap())
+    );
     assert!(!report.recorded && !pointer.exists());
 
     // $XDG_DATA_HOME is honoured at setup, when nothing is recorded, and

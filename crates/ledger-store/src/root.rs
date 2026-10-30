@@ -512,7 +512,12 @@ impl Root {
         chosen: Option<&Path>,
         xdg_data_home: Option<&Path>,
     ) -> Result<(Self, SetupReport), RootError> {
-        let default = default_root(home);
+        // The default as the system spells it, since a chosen root is
+        // resolved that way too: on macOS `/tmp` is `/private/tmp`, and a
+        // root chosen at the default must read as the default (so the
+        // record goes), not as somewhere else.
+        let default =
+            default_root(&std::fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf()));
         let recorded = recorded_root(home)?;
         let current = recorded.clone().unwrap_or_else(|| default.clone());
         let path = match (chosen, &recorded, xdg_data_home) {

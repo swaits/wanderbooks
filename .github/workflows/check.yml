@@ -31,10 +31,12 @@ jobs:
       - name: GUI build dependencies
         run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libgtk-3-dev
       # Temporary (2026-10-30): one update test fails only on this runner
-      # (passes locally, pinned to one slow core too) and the gate's step
-      # log loses its message. Run that file first, alone, with output.
-      - name: The update tests, alone, with output (temporary)
-        run: cargo test -p ledger-cli --test update -- --nocapture --test-threads=1
+      # and only inside the whole run (alone it passed here; locally it
+      # passes even on two slow cores), and the gate's step log loses its
+      # message. Run the CLI crate's suites first, in their own step, so
+      # the message survives.
+      - name: The CLI crate's tests, in their own step (temporary)
+        run: cargo test -p ledger-cli --no-fail-fast
       - run: just check
       - name: What the build used
         if: always()

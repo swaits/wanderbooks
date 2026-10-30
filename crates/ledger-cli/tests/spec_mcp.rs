@@ -1302,15 +1302,20 @@ fn happy_path(name: &str) -> Mcp {
         "books.export",
         json!({"format": "iif", "report": "general_journal", "as_of": "2026-12-31"}),
     );
+    // The script ran an audit above, so the package's gate (P8) is live
+    // and the run no longer stands at the head: the owner's override, as
+    // a human would give it.
     m.ok(
         "books.export_cpa_package",
         json!({"as_of": "2026-12-31", "include_receipts": false, "include_tins": false,
-                "allow_open_drafts": {"reason": "the test books keep drafts open"}}),
+                "allow_open_drafts": {"reason": "the test books keep drafts open"},
+                "without_audit_reason": "the script's audit is behind the head; the test exports anyway"}),
     );
     m.ok(
         "books.export_cpa_package",
         json!({"as_of": "2026-12-31", "include_receipts": false,
-                "allow_open_drafts": {"reason": "the test books keep drafts open"}}),
+                "allow_open_drafts": {"reason": "the test books keep drafts open"},
+                "without_audit_reason": "the script's audit is behind the head; the test exports anyway"}),
     );
 
     // The access log, the backups' status, and a backup now (none is set

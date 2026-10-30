@@ -314,6 +314,23 @@ pub fn private_book_folder(book_dir: &Path, name: &str) -> Result<PathBuf, RootE
     Ok(dir)
 }
 
+/// `text` with Windows' extended-length prefix taken off the paths in it:
+/// `\\?\C:\dir` becomes `C:\dir` and `\\?\UNC\server\share` becomes
+/// `\\server\share`. `std::fs::canonicalize` returns that form on Windows,
+/// and programs such as git refuse it. Text without the prefix is
+/// returned as it is, on every system (so the rule is tested everywhere).
+pub fn without_extended_prefix(text: &str) -> String {
+    text.replace(r"\\?\UNC\", r"\\").replace(r"\\?\", "")
+}
+
+/// [`without_extended_prefix`] for a path (the same path on Unix).
+pub fn plain_path(path: &Path) -> PathBuf {
+    match path.to_str() {
+        Some(text) if text.contains(r"\\?\") => PathBuf::from(without_extended_prefix(text)),
+        _ => path.to_path_buf(),
+    }
+}
+
 /// The longest socket path used as it is: a Unix socket's address holds
 /// 104 bytes on macOS and 108 on Linux, the terminating zero included.
 const SOCKET_PATH_MAX: usize = 100;
@@ -2263,6 +2280,21 @@ fn copy_flat_private(from: &Path, to: &Path) -> Result<u64, RootError> {
 #[cfg(all(test, unix))]
 mod unit {
     use super::*;
+
+    #[test]
+    fn the_extended_length_prefix_is_taken_off_paths() {
+        assert_eq!(without_extended_prefix(r"\\?\C:\a\b"), r"C:\a\b");
+        assert_eq!(
+            without_extended_prefix(r"--git-dir=\\?\C:\a\archive.git"),
+            r"--git-dir=C:\a\archive.git"
+        );
+        assert_eq!(
+            without_extended_prefix(r"\\?\UNC\server\share\x"),
+            r"\\server\share\x"
+        );
+        assert_eq!(without_extended_prefix("/usr/bin/git"), "/usr/bin/git");
+        assert_eq!(plain_path(Path::new("/a/b")), Path::new("/a/b"));
+    }
 
     #[test]
     fn a_buffer_grows_while_the_lookup_says_too_small() {

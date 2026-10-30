@@ -223,7 +223,13 @@ impl Git {
     fn run(&self, what: &str, args: &[&std::ffi::OsStr]) -> Result<String, BackupError> {
         use std::sync::atomic::{AtomicU64, Ordering};
         let mut c = self.command();
-        c.args(args);
+        // A path made canonical on Windows carries `\\?\`, which git refuses.
+        c.args(args.iter().map(|a| match a.to_str() {
+            Some(text) if text.contains(r"\\?\") => {
+                std::ffi::OsString::from(crate::root::without_extended_prefix(text))
+            }
+            _ => (*a).to_os_string(),
+        }));
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;

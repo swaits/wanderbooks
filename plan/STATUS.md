@@ -19,6 +19,25 @@ owner's), **P12** (max testing, after P11c), and P10's re-audit itself
 and red until they land. Every push is watched; a docs-only push is
 never made alone (it cancels the running gate).
 
+**2026-10-30, early.** The Linux gate on `main` is green again
+(`659a4266`, `cc6bb25d`) after a day of fixes the waves' merges owed:
+P8's gate on the spec script's package export, P8's event
+`period.attested` no longer an "unknown" example, the eval's close
+step, P5's demo-books test out of the server-only build, the update
+tests' races with the host's staging (and their messages: programs
+compared by hash, never by bytes, which had cost GitHub a whole step
+log). macOS, in its own workflow now so its log is readable at once,
+went from "the server didn't say ready" to one store test: the harness
+spelled Linux's data folder and joined words without quoting (a macOS
+root has a space), BSD `script` and bash 3.2 differ, `/tmp` is
+`/private/tmp`, and a deep root's sockets needed a short private link
+under `/tmp` (a product fix, `root.rs::short_link_for`); setup now
+reads the default root canonically (a product fix too). P11c's branch
+compiles and runs the suite on Windows; its Linux gate is green; the
+Windows job's remaining failures were tests of other units spelled for
+Unix (the backup remote check, a books home's listing), fixed on
+`main`. The two-user HTTP door on Windows is its last unverified piece.
+
 
 **Who builds.** The owner chose (the question tool) that this planning
 session is the EM and launches Sonnet subagents in parallel worktrees,

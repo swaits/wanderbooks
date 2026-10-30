@@ -917,7 +917,11 @@ fn the_host_stages_a_daily_update_and_the_next_start_applies_it() {
         wait_for(10, || sha256(&home.program()) == sha256(&next)),
         "the staged update wasn't applied"
     );
-    assert!(wait_for(10, || !home.updates().join("staged").exists()));
+    // Whether `staged/` is gone is not asserted: the test's "newer"
+    // program is this binary with bytes appended, so its compiled version
+    // never catches up with the feed's, and the new host's next look (the
+    // knob makes it soon) may stage 9.0.0 again. The kept copy below and
+    // the program in place are what the apply means.
     assert!(
         home.updates()
             .join("previous")

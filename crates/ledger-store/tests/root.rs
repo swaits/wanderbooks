@@ -236,12 +236,15 @@ fn setup_records_a_root_chosen_elsewhere_and_forgets_it_when_back_to_default() {
     assert!(report.recorded);
     assert_eq!(
         Root::find_in(fresh.path(), None).unwrap().path(),
-        xdg.join("wanderbooks")
+        std::fs::canonicalize(&xdg).unwrap().join("wanderbooks")
     );
     // A relative XDG_DATA_HOME is ignored, as the spec says.
     let other = tmp("setup-rel");
     let (root, report) = Root::setup(other.path(), None, Some(Path::new("rel"))).unwrap();
-    assert_eq!(root.path(), default_root(other.path()));
+    assert_eq!(
+        root.path(),
+        default_root(&std::fs::canonicalize(other.path()).unwrap())
+    );
     assert!(!report.recorded);
 }
 

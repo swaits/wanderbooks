@@ -3171,7 +3171,11 @@ mod tests {
     /// git, on the books' own archive: what it said.
     fn archive_git(dir: &Path, args: &[&str]) -> String {
         let out = std::process::Command::new("git")
-            .arg(format!("--git-dir={}", dir.join("archive.git").display()))
+            .arg(format!(
+                "--git-dir={}",
+                // A canonical path on Windows carries `\\?\`, which git refuses.
+                ledger_store::root::plain_path(&dir.join("archive.git")).display()
+            ))
             .args(args)
             .output()
             .unwrap();

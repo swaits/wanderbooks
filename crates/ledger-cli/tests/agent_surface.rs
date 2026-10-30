@@ -505,7 +505,9 @@ fn a_mutating_call_answers_with_the_head_and_a_refusal_names_its_remedy() {
 
 /// Done-when (3): `books.start` is at most 8 KiB on the demo company too
 /// (the books the viewer ships with, a loose end of every kind), and says
-/// what it cut.
+/// what it cut. (The demo books are the viewer's: not in the server-only
+/// build.)
+#[cfg(feature = "gui")]
 #[test]
 fn books_start_fits_8_kib_on_the_demo_books() {
     let today = ledger_core::settings::today_in(None);

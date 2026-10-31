@@ -125,13 +125,36 @@ fn line_types(dir: &Path) -> Vec<String> {
         .collect()
 }
 
-/// Every file under `dir` (relative path → bytes).
+/// Whether `p` is a lock file (`wanderbooks.lock`, `books.lock`, and any
+/// other `*.lock`): it holds no data.
+fn is_lock_file(p: &Path) -> bool {
+    p.extension().is_some_and(|x| x == "lock")
+}
+
+/// Whether `p` is the live SQLite database or one of its companions.
+fn is_live_database(p: &Path) -> bool {
+    let name = p.file_name().unwrap().to_string_lossy().into_owned();
+    let db = db_file();
+    name == db
+        || ["-wal", "-shm", "-journal"]
+            .iter()
+            .any(|x| name == format!("{db}{x}"))
+}
+
+/// Every file under `dir` (relative path → bytes), the live database, its
+/// companions and the lock files left out.
 fn tree(dir: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     fn walk(root: &Path, d: &Path, out: &mut BTreeMap<PathBuf, Vec<u8>>) {
         for e in std::fs::read_dir(d).unwrap() {
             let p = e.unwrap().path();
             if p.is_dir() {
                 walk(root, &p, out);
+            } else if is_live_database(&p) || is_lock_file(&p) {
+                // An open SQLite connection holds byte-range locks on its
+                // database file on Windows, and so does the store on its
+                // lock files (LockFileEx is mandatory there): a plain read
+                // is refused. The tests compare the journal, blobs and
+                // kept-aside files.
             } else {
                 out.insert(
                     p.strip_prefix(root).unwrap().to_path_buf(),

@@ -11,17 +11,13 @@
 //! viewer's Books menu does). Agents' tokens are kept in files under the data root
 //! ([`tokens`]).
 
-#[cfg(unix)]
 pub mod bridge;
-#[cfg(unix)]
+pub mod channel;
 pub mod commands;
-#[cfg(unix)]
 pub mod host;
 pub mod knobs;
 pub mod lease;
-#[cfg(unix)]
 pub mod opener;
-#[cfg(unix)]
 mod start;
 pub mod tokens;
 #[cfg(unix)]

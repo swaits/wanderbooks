@@ -1,6 +1,7 @@
 //! Books homes (P11b, D-27): the folder an agent works in for a book. It
 //! holds the agent's pointer and settings and nothing of the books.
 
+#[cfg_attr(not(unix), allow(unused_imports))]
 use ledger_host::commands::{
     AgentStart, books_home_in, find_agent_in, installer, make_books_home_in, start_agent_in,
 };

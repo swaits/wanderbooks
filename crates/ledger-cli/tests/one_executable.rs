@@ -2,6 +2,7 @@
 //! (`server`) and the viewer (`gui`) as modes of itself, each with its own
 //! flags, and the server-only build has no viewer.
 
+#[cfg_attr(not(unix), allow(unused_imports))]
 use std::process::{Command, Stdio};
 
 #[cfg(all(feature = "gui", target_os = "linux"))]
@@ -105,13 +106,12 @@ fn a_viewer_that_cannot_open_a_window_exits_1() {
     let server = common::Server::start(&home);
     home.create(common::BOOK, "USD");
     assert!(server.close().success());
-    let mut child = wanderbooks()
-        .args(["gui", "--root"])
+    let mut gui = wanderbooks();
+    gui.args(["gui", "--root"])
         .arg(home.root())
-        .args(["--book", common::BOOK])
-        .env_clear()
-        .env("PATH", "/usr/bin:/bin")
-        .env("HOME", home.dir.path())
+        .args(["--book", common::BOOK]);
+    common::clean_env(&mut gui, home.dir.path());
+    let mut child = gui
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
@@ -147,7 +147,6 @@ fn the_server_only_build_has_no_viewer() {
 }
 
 /// The books server needs a data root: with none, it says to run setup.
-#[cfg(unix)]
 #[test]
 fn the_books_server_needs_a_root() {
     // No root yet: the books server says to run setup.
@@ -257,53 +256,4 @@ fn the_file_commands_end_with_the_code_that_says_how() {
         "{out:?}"
     );
     assert!(!root.exists(), "the books were reached for");
-}
-
-/// Where local sockets aren't built yet (P11, Windows): the modes that
-/// hold the books say so and end with 2, never a success; setup makes
-/// the folder and ends with 0, asking for no passphrase (nothing there
-/// asks for one yet).
-#[cfg(not(unix))]
-#[test]
-fn without_local_sockets_the_modes_that_hold_the_books_say_so() {
-    for mode in [
-        "server",
-        "host",
-        "mcp",
-        "serve",
-        "close",
-        "books",
-        "doctor",
-        "token",
-        "connect",
-        "passphrase",
-        "upload",
-        "download",
-    ] {
-        let out = wanderbooks()
-            .arg(mode)
-            .stdin(Stdio::null())
-            .output()
-            .unwrap();
-        assert_eq!(out.status.code(), Some(2), "{mode}: {out:?}");
-        assert!(
-            String::from_utf8_lossy(&out.stderr).contains("to this system with P11"),
-            "{mode}: {out:?}"
-        );
-    }
-    let home = tempfile::Builder::new()
-        .prefix("wb-one-nosock-")
-        .tempdir()
-        .unwrap();
-    let out = wanderbooks()
-        .args(["setup", "--home"])
-        .arg(home.path())
-        .env_remove("XDG_DATA_HOME")
-        .stdin(Stdio::null())
-        .output()
-        .unwrap();
-    assert_eq!(out.status.code(), Some(0), "{out:?}");
-    let text = String::from_utf8_lossy(&out.stdout);
-    assert!(text.contains("The books' private folder: made"), "{text}");
-    assert!(!text.contains("passphrase"), "{text}");
 }

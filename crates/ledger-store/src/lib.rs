@@ -29,6 +29,7 @@ pub mod exports;
 pub mod form1099;
 pub mod format;
 pub mod journal;
+pub mod lock;
 pub mod meta;
 pub mod ops;
 pub mod passphrase;
@@ -41,6 +42,8 @@ pub mod schema;
 pub mod snapshot;
 pub mod store;
 pub mod uploads;
+#[cfg(windows)]
+pub mod winsec;
 
 pub use blob::BlobStore;
 pub use error::StoreError;

@@ -28,6 +28,22 @@ argon2 = "0.6"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# Owner-only DACLs, the account's SID, the known-folder API and
+# MoveFileExW (P11c, D-62). The raw bindings, no runtime: the smallest
+# Microsoft crate that covers them, already in the lockfile.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Com",
+  "Win32_System_Pipes",
+  "Win32_System_SystemServices",
+  "Win32_System_Threading",
+  "Win32_UI_Shell",
+] }
+
 [dev-dependencies]
 tempfile = "3"
 proptest = "1"

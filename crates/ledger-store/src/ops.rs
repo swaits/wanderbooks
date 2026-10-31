@@ -238,13 +238,8 @@ impl Presence {
     /// (None until it has: the viewer makes nothing).
     pub fn hold(data_dir: &Path) -> Option<Presence> {
         let f = std::fs::File::open(ops_dir(data_dir).join(VIEWER_LOCK)).ok()?;
-        #[cfg(unix)]
-        {
-            use std::os::fd::AsRawFd;
-            // SAFETY: flock on a descriptor this function owns.
-            if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) } != 0 {
-                return None;
-            }
+        if !crate::lock::try_shared(&f) {
+            return None;
         }
         Some(Presence(f))
     }
@@ -256,23 +251,7 @@ pub fn viewer_open(data_dir: &Path) -> bool {
     let Ok(f) = std::fs::File::open(ops_dir(data_dir).join(VIEWER_LOCK)) else {
         return false;
     };
-    #[cfg(unix)]
-    {
-        use std::os::fd::AsRawFd;
-        // SAFETY: flock on a descriptor this function owns; a lock taken
-        // is let go at once (and with the descriptor anyway).
-        let free = unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0;
-        if free {
-            // SAFETY: as above.
-            unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_UN) };
-        }
-        !free
-    }
-    #[cfg(not(unix))]
-    {
-        drop(f);
-        false
-    }
+    crate::lock::held_elsewhere(&f)
 }
 
 #[cfg(test)]
@@ -306,6 +285,23 @@ mod tests {
         text.push_str("{\"seq\": 99, \"at\"");
         std::fs::write(&file, text).unwrap();
         assert_eq!(requests(dir.path()).len(), KEPT);
+    }
+
+    /// The lock seam on every system: a viewer's presence is seen by
+    /// another handle, shared between viewers, and let go with its file.
+    #[test]
+    fn a_viewer_s_presence_is_a_shared_lock_others_can_see() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(Presence::hold(dir.path()).is_none());
+        prepare(dir.path()).unwrap();
+        assert!(!viewer_open(dir.path()));
+        let held = Presence::hold(dir.path()).unwrap();
+        assert!(viewer_open(dir.path()));
+        let second = Presence::hold(dir.path()).unwrap();
+        drop(held);
+        assert!(viewer_open(dir.path()));
+        drop(second);
+        assert!(!viewer_open(dir.path()));
     }
 
     #[cfg(unix)]

@@ -60,6 +60,7 @@
 //! ```
 
 use crate::admin::{self, Request, Response};
+use crate::ipc::{self, Peer};
 use crate::server::{BooksServer, Isolation, Served, SharedStore};
 use ledger_store::Store;
 use ledger_store::access::{Access, AccessLog, Outcome, Principal};
@@ -69,7 +70,6 @@ use rmcp::transport::streamable_http_server::{
     StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
 };
 use std::collections::BTreeMap;
-use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -994,110 +994,25 @@ fn moved_in_at_adoption(
     }
 }
 
-/// The user ID at the other end of a Unix socket.
-pub fn peer_uid(fd: &impl AsRawFd) -> std::io::Result<u32> {
-    let fd = fd.as_raw_fd();
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    {
-        let mut cred = libc::ucred {
-            pid: 0,
-            uid: 0,
-            gid: 0,
-        };
-        let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
-        // SAFETY: `cred` and `len` are valid for writes of the sizes given.
-        let rc = unsafe {
-            libc::getsockopt(
-                fd,
-                libc::SOL_SOCKET,
-                libc::SO_PEERCRED,
-                (&mut cred as *mut libc::ucred).cast(),
-                &mut len,
-            )
-        };
-        if rc != 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        if len as usize != std::mem::size_of::<libc::ucred>() {
-            return Err(std::io::Error::other(
-                "the peer's credentials came back short",
-            ));
-        }
-        Ok(cred.uid)
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "android")))]
-    {
-        let mut uid: libc::uid_t = 0;
-        let mut gid: libc::gid_t = 0;
-        // SAFETY: `uid` and `gid` are valid for writes.
-        if unsafe { libc::getpeereid(fd, &mut uid, &mut gid) } != 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        Ok(uid)
-    }
-}
-
-/// The process at the other end of a Unix socket, where the system says
-/// (Linux); `None` elsewhere or if it can't be read.
-pub fn peer_pid(fd: &impl AsRawFd) -> Option<u32> {
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    {
-        let mut cred = libc::ucred {
-            pid: 0,
-            uid: 0,
-            gid: 0,
-        };
-        let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
-        // SAFETY: `cred` and `len` are valid for writes of the sizes given.
-        let rc = unsafe {
-            libc::getsockopt(
-                fd.as_raw_fd(),
-                libc::SOL_SOCKET,
-                libc::SO_PEERCRED,
-                (&mut cred as *mut libc::ucred).cast(),
-                &mut len,
-            )
-        };
-        (rc == 0 && len as usize == std::mem::size_of::<libc::ucred>() && cred.pid > 0)
-            .then_some(cred.pid as u32)
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "android")))]
-    {
-        let _ = fd;
-        None
-    }
-}
-
-/// This process's user ID.
-fn own_uid() -> u32 {
-    // SAFETY: geteuid has no preconditions and can't fail.
-    unsafe { libc::geteuid() }
-}
-
-/// Whether the other end of a socket is this account (INVARIANT 2).
-pub fn peer_is_us(fd: &impl AsRawFd) -> bool {
-    peer_uid(fd).is_ok_and(|uid| uid == own_uid())
-}
-
 /// The client's check of the server (plan 3.9: both ends check).
-pub(crate) fn check_peer_std(stream: &std::os::unix::net::UnixStream) -> Result<(), String> {
-    if peer_is_us(stream) {
+pub(crate) fn check_peer_std(stream: &ipc::StdStream) -> Result<(), String> {
+    if stream.peer_is_us() {
         Ok(())
     } else {
         Err("the books server's socket belongs to another account: not used".into())
     }
 }
 
-/// A Unix listener that hands on only this account's connections
+/// A listener that hands on only this account's connections
 /// (INVARIANT 2).
-struct OwnerOnly(tokio::net::UnixListener);
+struct OwnerOnly(ipc::Listener);
 
 impl OwnerOnly {
-    async fn next(&mut self) -> tokio::net::UnixStream {
+    async fn next(&mut self) -> ipc::Accepted {
         loop {
             match self.0.accept().await {
-                Ok((stream, _)) if peer_is_us(&stream) => return stream,
-                Ok((stream, _)) => {
+                Ok(stream) if stream.peer_is_us() => return stream,
+                Ok(stream) => {
                     eprintln!("wanderbooks server: refused a connection from another account");
                     drop(stream);
                 }
@@ -1120,13 +1035,13 @@ impl OwnerOnly {
 }
 
 impl axum::serve::Listener for OwnerOnly {
-    type Io = tokio::net::UnixStream;
-    type Addr = tokio::net::unix::SocketAddr;
+    type Io = ipc::Accepted;
+    type Addr = ipc::Addr;
 
     async fn accept(&mut self) -> (Self::Io, Self::Addr) {
         loop {
             let stream = self.next().await;
-            if let Ok(addr) = stream.peer_addr() {
+            if let Ok(addr) = ipc::Listener::addr_of(&stream) {
                 return (stream, addr);
             }
         }
@@ -1821,9 +1736,9 @@ async fn not_found() -> (axum::http::StatusCode, &'static str) {
 }
 
 /// One admin connection: one request, one answer (admin INVARIANT 1).
-async fn serve_admin(stream: tokio::net::UnixStream, books: Arc<Books>) {
+async fn serve_admin(stream: ipc::Accepted, books: Arc<Books>) {
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
-    let (read, mut write) = stream.into_split();
+    let (read, mut write) = ipc::split_accepted(stream);
     let mut reader = tokio::io::BufReader::new(read.take(admin::MAX_LINE as u64 + 1));
     let mut line = String::new();
     // A request still arriving when closing begins is turned away.
@@ -1872,18 +1787,8 @@ async fn serve_admin(stream: tokio::net::UnixStream, books: Arc<Books>) {
 
 /// Bind a socket in `run/`, replacing a stale one (INVARIANT 1: only the
 /// server holding the lock gets here).
-fn bind(run: &Path, name: &str) -> std::io::Result<tokio::net::UnixListener> {
-    let path = run.join(name);
-    match std::fs::remove_file(&path) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e),
-    }
-    let short = ledger_store::root::SocketPath::new(run, name)?;
-    let listener = tokio::net::UnixListener::bind(short.path())?;
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
-    Ok(listener)
+fn bind(run: &Path, name: &str) -> std::io::Result<ipc::Listener> {
+    ipc::Listener::bind(&ipc::Endpoint::new(run, name)?)
 }
 
 /// The address `--http` takes: loopback only (plan 3.9, P9a).
@@ -2028,8 +1933,14 @@ pub fn run(
     }
     {
         // Only once it is ours: a refused server touches nothing.
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&lock_path, std::fs::Permissions::from_mode(0o600))
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&lock_path, std::fs::Permissions::from_mode(0o600))
+                .map_err(|e| format!("can't make the server lock private: {}", e.kind()))?;
+        }
+        #[cfg(windows)]
+        ledger_store::winsec::set_owner_only(&lock_path)
             .map_err(|e| format!("can't make the server lock private: {}", e.kind()))?;
     }
     let books = Arc::new(Books {
@@ -2295,7 +2206,6 @@ async fn serve(
 /// SIGTERM, SIGINT or SIGHUP; hurry on the next signal. Runs inside the
 /// runtime, before the books are opened.
 fn watch_for_close(stops: &Stops) -> std::io::Result<()> {
-    use tokio::signal::unix::{SignalKind, signal};
     let on_eof = stops.close.clone();
     // A plain thread: a blocked read must never hold up the runtime's end.
     std::thread::Builder::new()
@@ -2314,12 +2224,7 @@ fn watch_for_close(stops: &Stops) -> std::io::Result<()> {
             }
             on_eof.cancel();
         })?;
-    for kind in [
-        SignalKind::terminate(),
-        SignalKind::interrupt(),
-        SignalKind::hangup(),
-    ] {
-        let mut signals = signal(kind)?;
+    for mut signals in ipc::stop_signals()? {
         let (close, hurry) = (stops.close.clone(), stops.hurry.clone());
         tokio::spawn(async move {
             while signals.recv().await.is_some() {
@@ -2616,29 +2521,32 @@ mod tests {
         assert_eq!(backup_due(Some(&w), 5, at(9 + retry * 3), quiet), None);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_socket_pair_is_this_account_at_both_ends() {
         let (a, b) = std::os::unix::net::UnixStream::pair().unwrap();
-        assert_eq!(peer_uid(&a).unwrap(), own_uid());
-        assert!(peer_is_us(&b));
+        assert_eq!(ipc::peer_uid(&a).unwrap(), ipc::own_uid());
+        assert!(ipc::peer_is_us(&b));
         assert!(check_peer_std(&a).is_ok());
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_socket_pair_names_this_process() {
         let (a, _b) = std::os::unix::net::UnixStream::pair().unwrap();
         if cfg!(target_os = "linux") {
-            assert_eq!(peer_pid(&a), Some(std::process::id()));
+            assert_eq!(ipc::peer_pid(&a), Some(std::process::id()));
         }
         let file = std::fs::File::open("/dev/null").unwrap();
-        assert_eq!(peer_pid(&file), None);
+        assert_eq!(ipc::peer_pid(&file), None);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_descriptor_that_isnt_a_socket_is_never_taken_for_us() {
         let file = std::fs::File::open("/dev/null").unwrap();
-        assert!(peer_uid(&file).is_err());
-        assert!(!peer_is_us(&file));
+        assert!(ipc::peer_uid(&file).is_err());
+        assert!(!ipc::peer_is_us(&file));
     }
 
     /// A socket with no other end: the system answers for it (Linux: no
@@ -2655,8 +2563,8 @@ mod tests {
         assert!(fd >= 0);
         // SAFETY: a fresh descriptor of a Unix stream socket, owned by none.
         let lone = unsafe { std::os::unix::net::UnixStream::from_raw_fd(fd) };
-        assert_eq!(peer_pid(&lone), None);
-        assert!(!peer_is_us(&lone));
+        assert_eq!(ipc::peer_pid(&lone), None);
+        assert!(!ipc::peer_is_us(&lone));
         assert_eq!(
             check_peer_std(&lone).unwrap_err(),
             "the books server's socket belongs to another account: not used"
@@ -3201,6 +3109,7 @@ mod tests {
         let id = BookId::parse(id).unwrap();
         let dir = books.root.book_dir(&id);
         std::fs::create_dir(&dir).unwrap();
+        #[cfg(unix)]
         std::fs::set_permissions(&dir, std::os::unix::fs::PermissionsExt::from_mode(0o700))
             .unwrap();
         let mut s =
@@ -3262,7 +3171,11 @@ mod tests {
     /// git, on the books' own archive: what it said.
     fn archive_git(dir: &Path, args: &[&str]) -> String {
         let out = std::process::Command::new("git")
-            .arg(format!("--git-dir={}", dir.join("archive.git").display()))
+            .arg(format!(
+                "--git-dir={}",
+                // A canonical path on Windows carries `\\?\`, which git refuses.
+                ledger_store::root::plain_path(&dir.join("archive.git")).display()
+            ))
             .args(args)
             .output()
             .unwrap();

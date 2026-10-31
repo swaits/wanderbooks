@@ -19,6 +19,7 @@ use ledger_gui::data::{self, Loader, Update};
 use ledger_gui::nav::{ReportKind, Route};
 use ledger_gui::{App, Source};
 use std::collections::BTreeMap;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -46,22 +47,36 @@ fn tree(root: &Path) -> Tree {
 }
 
 /// Every file 0444 and folder 0555 (`read_only`), or back to 0644/0755.
+/// On Windows a file gets its read-only attribute (which stops a write
+/// to it) and a folder is left as it is: a folder can't be made
+/// read-only there.
 fn set_read_only(root: &Path, read_only: bool) {
     fn walk(p: &Path, ro: bool) {
         let m = std::fs::symlink_metadata(p).unwrap();
         if m.is_dir() {
+            #[cfg(unix)]
             if !ro {
                 std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755)).unwrap();
             }
             for e in std::fs::read_dir(p).unwrap() {
                 walk(&e.unwrap().path(), ro);
             }
+            #[cfg(unix)]
             if ro {
                 std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o555)).unwrap();
             }
         } else {
-            let mode = if ro { 0o444 } else { 0o644 };
-            std::fs::set_permissions(p, std::fs::Permissions::from_mode(mode)).unwrap();
+            #[cfg(unix)]
+            {
+                let mode = if ro { 0o444 } else { 0o644 };
+                std::fs::set_permissions(p, std::fs::Permissions::from_mode(mode)).unwrap();
+            }
+            #[cfg(windows)]
+            {
+                let mut permissions = m.permissions();
+                permissions.set_readonly(ro);
+                std::fs::set_permissions(p, permissions).unwrap();
+            }
         }
     }
     walk(root, read_only);

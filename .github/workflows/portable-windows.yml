@@ -25,7 +25,7 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            experimental: true
+            experimental: false
     runs-on: ${{ matrix.os }}
     continue-on-error: ${{ matrix.experimental }}
     # Same disk discipline as above: no incremental caches, line tables only.

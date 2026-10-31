@@ -162,8 +162,8 @@ struct Bridge {
     next_id: std::sync::atomic::AtomicU64,
     /// The agent's requests not yet answered, by id (INVARIANT 8).
     pending: Mutex<std::collections::HashMap<String, Pending>>,
-    /// The server's socket, for its owner check (INVARIANT 9).
-    socket: PathBuf,
+    /// The server's channel, for its owner check (INVARIANT 9).
+    endpoint: ledger_mcp::ipc::Endpoint,
 }
 
 /// Who has the server's socket, when it isn't plainly this account.
@@ -1034,9 +1034,9 @@ impl Bridge {
 
     /// Whether the server's socket belongs to this account (INVARIANT 9).
     fn socket_is_ours(&self) -> Result<(), Owner> {
-        let stream = std::os::unix::net::UnixStream::connect(&self.socket)
-            .map_err(|_| Owner::Unreachable)?;
-        if ledger_mcp::local::peer_is_us(&stream) {
+        let stream =
+            ledger_mcp::ipc::connect_std(&self.endpoint).map_err(|_| Owner::Unreachable)?;
+        if ledger_mcp::ipc::peer_is_us(&stream) {
             Ok(())
         } else {
             Err(Owner::Other(
@@ -1314,18 +1314,16 @@ pub fn run(
         .map_err(|e| e.to_string())?
         .to_string();
     let opener = Opener::new(root.as_deref(), knobs, Kind::Bridge, Some(book.clone()))?;
-    // Kept for the whole session: the client reaches the socket by it.
-    let socket =
-        ledger_store::root::SocketPath::new(opener.run_dir(), ledger_mcp::local::MCP_SOCKET)
-            .map_err(|e| format!("can't reach the books server: {e}"))?;
+    // Kept for the whole session: the client reaches the channel by it.
+    let endpoint = ledger_mcp::ipc::Endpoint::new(opener.run_dir(), ledger_mcp::local::MCP_SOCKET)
+        .map_err(|e| format!("can't reach the books server: {e}"))?;
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
     let result = rt.block_on(async move {
         // A connection per call: one the server closes while idle can't
         // swallow a call (INVARIANT 4).
-        let http = reqwest::Client::builder()
-            .unix_socket(socket.path())
+        let http = crate::channel::http_builder(&endpoint)
             .pool_max_idle_per_host(0)
             .no_proxy()
             .build()
@@ -1347,7 +1345,7 @@ pub fn run(
             tools_seen: Mutex::new(None),
             next_id: std::sync::atomic::AtomicU64::new(1),
             pending: Mutex::new(std::collections::HashMap::new()),
-            socket: socket.path().to_path_buf(),
+            endpoint,
         });
         let keeper = tokio::spawn(bridge.clone().keep(opener));
         let writer = tokio::spawn(async move {
@@ -1363,12 +1361,7 @@ pub fn run(
         // A client that stops the bridge with a signal (most do) still has
         // its session ended upstream (INVARIANT 10).
         let stop = Arc::new(Notify::new());
-        for kind in [
-            tokio::signal::unix::SignalKind::terminate(),
-            tokio::signal::unix::SignalKind::interrupt(),
-            tokio::signal::unix::SignalKind::hangup(),
-        ] {
-            let mut signals = tokio::signal::unix::signal(kind).map_err(|e| e.to_string())?;
+        for mut signals in ledger_mcp::ipc::stop_signals().map_err(|e| e.to_string())? {
             let stop = stop.clone();
             tokio::spawn(async move {
                 if signals.recv().await.is_some() {
@@ -1537,7 +1530,7 @@ mod tests {
 
 /// The bridge against a scripted server on a Unix socket: every way an
 /// answer can come back, and the bridge's own bookkeeping.
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod against_a_server {
     use super::*;
     use std::collections::{HashMap, VecDeque};
@@ -1669,8 +1662,12 @@ mod against_a_server {
     }
 
     fn bridge_at(socket: &Path, knobs: Knobs) -> (Arc<Bridge>, mpsc::UnboundedReceiver<Value>) {
-        let http = reqwest::Client::builder()
-            .unix_socket(socket)
+        let endpoint = ledger_mcp::ipc::Endpoint::new(
+            socket.parent().unwrap(),
+            socket.file_name().and_then(|n| n.to_str()).unwrap(),
+        )
+        .unwrap();
+        let http = crate::channel::http_builder(&endpoint)
             .pool_max_idle_per_host(0)
             .no_proxy()
             .build()
@@ -1693,7 +1690,7 @@ mod against_a_server {
             tools_seen: Mutex::new(None),
             next_id: std::sync::atomic::AtomicU64::new(1),
             pending: Mutex::new(std::collections::HashMap::new()),
-            socket: socket.to_path_buf(),
+            endpoint,
         });
         (bridge, rx)
     }

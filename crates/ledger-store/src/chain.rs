@@ -188,6 +188,7 @@ impl ChainLog {
         genesis_text: &str,
     ) -> Result<(Self, Vec<Map<String, Value>>), ChainError> {
         let read = read(path, genesis_text)?;
+        #[cfg(unix)]
         let new = !path.exists();
         let mut options = OpenOptions::new();
         options.create(true).append(true);
@@ -205,9 +206,12 @@ impl ChainLog {
                 file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
             }
         }
+        #[cfg(windows)]
+        if !crate::winsec::is_private(path).unwrap_or(false) {
+            crate::winsec::set_owner_only(path)?;
+        }
         if read.torn {
-            file.set_len(read.good_len)?;
-            file.sync_all()?;
+            truncate(&file, path, read.good_len)?;
         }
         // A log just made is in its folder for good (its entry synced).
         #[cfg(unix)]
@@ -275,12 +279,33 @@ impl ChainLog {
             .and_then(|()| self.file.sync_data());
         if let Err(e) = written {
             self.broken = true;
-            let _ = self.file.set_len(before);
-            let _ = self.file.sync_all();
+            let _ = truncate(&self.file, &self.path, before);
             return Err(e.into());
         }
         self.head = Head { seq, hash };
         Ok((record, self.head.clone()))
+    }
+}
+
+/// Cut the log `path` (open as `file`) to `len` bytes and sync it. On
+/// Windows an append-only handle (which is what `append(true)` opens) has
+/// no right to truncate, so a short-lived handle with write access does it;
+/// the log is opened with the sharing std gives every handle (read, write
+/// and delete), so both can be open at once.
+pub(crate) fn truncate(file: &File, path: &Path, len: u64) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        let cutter = OpenOptions::new().write(true).open(path)?;
+        cutter.set_len(len)?;
+        cutter.sync_all()?;
+        let _ = file;
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        file.set_len(len)?;
+        file.sync_all()
     }
 }
 

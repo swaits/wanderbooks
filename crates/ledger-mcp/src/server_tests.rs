@@ -1159,7 +1159,9 @@ fn logged(tag: &str) -> (BooksServer, TestDir) {
 }
 
 /// Books whose access log can't be written: its file is a FIFO no one
-/// reads, so every record fails (as on a full disk).
+/// reads, so every record fails (as on a full disk). Unix only: there is
+/// no FIFO in a file's place on Windows.
+#[cfg(unix)]
 fn unwritable(tag: &str) -> (BooksServer, TestDir) {
     let books = unit_dir(tag);
     let store = store(&books);
@@ -1430,7 +1432,9 @@ fn a_call_the_books_close_or_stop_under_is_refused_as_not_run() {
 /// access.rs INVARIANT 3: a record that can't be written stops the
 /// books, and the answer says so; a call or read refused as not run
 /// (closing) keeps its not-run code, so the bridge still sends it
-/// again; anything else is an error in words.
+/// again; anything else is an error in words. Unix only: its fixture is a
+/// FIFO (the refusal path itself is the same on every system).
+#[cfg(unix)]
 #[test]
 fn an_access_record_that_cant_be_written_stops_the_books_and_says_so() {
     rt().block_on(async {

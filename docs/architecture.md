@@ -286,6 +286,29 @@ request (its task, or while it holds the guard) sets `stopped`, and every
 later request, on every session, is refused until a restart, which
 re-verifies the journal.
 
+## The local transport and the Windows arms (`ledger-mcp::ipc`, `ledger-store::winsec`, P11c, D-62)
+
+The books server, the host and everything that talks to them meet on
+channels only this account can open (plan 3.9). `ledger_mcp::ipc` is the
+one seam: `Endpoint` (a socket in the root's `run/` on Unix; the pipe
+`\\.\pipe\wanderbooks-<hash of run/>-<name>` on Windows), `Listener`
+(`bind`, `accept`), `connect` and `connect_std` (blocking, with a read
+limit), the `Peer` trait (`peer_is_us`: the effective uid on Unix; the
+user SID of the process at the other end of the pipe on Windows), and
+`stop_signals`. No other file names a socket or a pipe, a peer check or a
+signal. HTTP to the server goes through `ledger_host::channel::http_builder`
+(reqwest's Unix socket or named pipe).
+
+`ledger_store::winsec` (Windows only) holds the rest of the Windows FFI:
+the owner-only DACL (`set_owner_only`, `is_private`), the account's SID,
+the shell's known folders, `MoveFileExW` for the move that must not
+replace, and the pipe process ids. `ledger_store::lock` is the one file
+lock seam (std's, which is `flock` and `LockFileEx`). `seccomp` and
+`close_range` remain Linux-only, doing nothing elsewhere (D-32). Windows
+CI is the evidence for every arm that cannot run on the Linux machines
+that wrote it; `cargo check --target x86_64-pc-windows-msvc` (the target is
+pinned in `mise.toml`) type-checks them, clippy included.
+
 ## bookspec (`bookspec/`, P13)
 
 bookspec is the formal accounting specification (D-34): every rule stated

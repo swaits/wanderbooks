@@ -178,16 +178,47 @@ keyring on every OS (tokens are 0600 files under the data root, unit U0e),
 so nothing about tokens is OS-specific now. The Windows host is a port,
 not a `cfg` gap. Today Unix-only, found by grep (2026-10-29):
 
-- `ledger-host`: `bridge`, `host`, `start`, `opener` and others are
+- ~~`ledger-host`: `bridge`, `host`, `start`, `opener` and others are
   `#[cfg(unix)]` modules; `host.rs`/`start.rs` use `setsid`, `umask`,
   `close_range`, `geteuid`, Unix sockets and `libc` unguarded;
-  `commands.rs` calls `isatty`/`tcgetpgrp`.
-- `ledger-mcp`: the owner-only socket check reads peer credentials
+  `commands.rs` calls `isatty`/`tcgetpgrp`.~~ Landed (P11c): every module
+  builds on every OS. The channels are `ledger_mcp::ipc` (below); the host
+  starts detached (`DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP`, leaving
+  the opener's job if it lets it) where Unix uses `setsid`, with a
+  Windows environment list in `start.rs::host_env`; `close_range` and the
+  `umask` have nothing to do there (a Windows child inherits no handle it
+  is not given); the terminal checks use `IsTerminal`; the stop signals
+  are Ctrl+C, Ctrl+Break, console close and shutdown
+  (`ipc::stop_signals`); a replaced program is told by its size and last
+  write, since a running program cannot be replaced in place.
+- ~~`ledger-mcp`: the owner-only socket check reads peer credentials
   (`SO_PEERCRED`, `getpeereid`); `admin`/`local` listen on Unix sockets.
-  Windows needs named pipes with a peer SID check (plan 3.9).
-- `ledger-store`: `ops.rs` takes `flock` locks; `root.rs` has no owner-only
-  DACL (`set_mode` is a no-op off Unix) and the data root falls back to
-  `%USERPROFILE%`, not the known-folder `%LOCALAPPDATA%`; `refuse.rs`
-  (seccomp) and `renameat2` are Linux-only (macOS needs its own
-  equivalents or `cfg` fences).
-- The `portable` job runs Windows as allowed-to-fail until that port lands.
+  Windows needs named pipes with a peer SID check (plan 3.9).~~ Landed
+  (P11c): `ledger_mcp::ipc` is the one seam. A pipe is
+  `\\.\pipe\wanderbooks-<hash of the root's run/ folder>-<name>`, made with
+  a DACL of one allow entry (this account's SID), remote clients refused,
+  the first instance made once, and 16 idle instances waiting; each end
+  checks the other's process (`GetNamedPipeClientProcessId` /
+  `GetNamedPipeServerProcessId`, then that process's token user) against
+  its own SID. Clients open with `SECURITY_IDENTIFICATION`.
+- ~~`ledger-store`: `ops.rs` takes `flock` locks; `root.rs` has no
+  owner-only DACL (`set_mode` is a no-op off Unix) and the data root falls
+  back to `%USERPROFILE%`, not the known-folder `%LOCALAPPDATA%`;
+  `refuse.rs` (seccomp) and `renameat2` are Linux-only (macOS needs its
+  own equivalents or `cfg` fences).~~ Landed (P11c): `lock.rs` is the one
+  lock seam (std's `try_lock`, `LockFileEx` on Windows); `winsec.rs` sets
+  and reads the owner-only DACL and finds the profile and `LocalAppData`
+  from the shell's known folders; `rename_new` is `MoveFileExW` without
+  the replace flag. `refuse.rs` (seccomp, a test fault injector) and the
+  host's `close_range` stay Linux-only on purpose (D-32: nothing here
+  confines a process, so nothing is promised where they are absent).
+  macOS, which has no `renameat2`, still looks before it moves.
+- Windows file semantics the port met (P11c): an `append(true)` handle has
+  no right to truncate, so the chain log and the journal cut a torn tail
+  or roll back a failed write through a short-lived write handle
+  (`chain::truncate`); a held `LockFileEx` lock is mandatory, so locks sit
+  on dedicated `*.lock` files and tests never read those; git refuses the
+  `\\?\` path `canonicalize` returns (`root::plain_path`). std opens every
+  file with read, write and delete sharing, so a rename never meets an
+  open handle of ours.
+- The `portable` job runs Windows as a gate (`experimental: false`), since the port landed (P11c).

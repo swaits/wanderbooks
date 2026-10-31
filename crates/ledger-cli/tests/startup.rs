@@ -15,10 +15,9 @@ mod common;
 /// New books `id` written in `home`'s root by the store itself, before a
 /// server opens them; the store, still open.
 fn written(home: &Home, id: &str) -> ledger_store::Store {
-    use std::os::unix::fs::PermissionsExt;
     let dir = home.book_dir(id);
     let store = ledger_store::Store::create(&dir, ledger_core::Currency::USD).unwrap();
-    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    common::private_folder(&dir);
     store
 }
 

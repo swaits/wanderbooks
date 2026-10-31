@@ -380,6 +380,10 @@ fn keep(path: &std::path::Path, png: &[u8]) {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
     }
+    // Windows: this account's alone (an owner-only DACL, inherited by the
+    // thumbnails written inside).
+    #[cfg(windows)]
+    let _ = ledger_store::winsec::set_owner_only(dir);
     // One name per write, across viewers (the pid) and this one's workers.
     static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let tmp = dir.join(format!(

@@ -439,14 +439,12 @@ fn the_backfill_reads_an_old_fixtures_files_once() {
     // host does.
     books.stop();
     let run = || {
-        std::process::Command::new(env!("CARGO_BIN_EXE_wanderbooks"))
+        let mut extract = std::process::Command::new(env!("CARGO_BIN_EXE_wanderbooks"));
+        extract
             .args(["books", "extract", &books.id, "3", "--root"])
-            .arg(books.home.root())
-            .env_clear()
-            .env("PATH", "/usr/bin:/bin")
-            .env("HOME", books.home.dir.path())
-            .output()
-            .unwrap()
+            .arg(books.home.root());
+        common::clean_env(&mut extract, books.home.dir.path());
+        extract.output().unwrap()
     };
     let before = books.journal();
     let out = run();

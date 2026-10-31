@@ -136,14 +136,14 @@ impl FlaggedServer {
             .append(true)
             .open(home.dir.path().join("server.log"))
             .unwrap();
-        let mut child = Command::new(env!("CARGO_BIN_EXE_wanderbooks"))
+        let mut server = Command::new(env!("CARGO_BIN_EXE_wanderbooks"));
+        server
             .arg("server")
             .arg("--root")
             .arg(home.root())
-            .args(args)
-            .env_clear()
-            .env("PATH", "/usr/bin:/bin")
-            .env("HOME", home.dir.path())
+            .args(args);
+        common::clean_env(&mut server, home.dir.path());
+        let mut child = server
             .env("XDG_CONFIG_HOME", home.dir.path().join(".config"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -184,14 +184,14 @@ impl Drop for FlaggedServer {
 /// Run the server with `args` that should be refused before it serves
 /// anything: its status, stdout and stderr.
 fn refused_server(home: &Home, args: &[String]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_wanderbooks"))
+    let mut server = Command::new(env!("CARGO_BIN_EXE_wanderbooks"));
+    server
         .arg("server")
         .arg("--root")
         .arg(home.root())
-        .args(args)
-        .env_clear()
-        .env("PATH", "/usr/bin:/bin")
-        .env("HOME", home.dir.path())
+        .args(args);
+    common::clean_env(&mut server, home.dir.path());
+    server
         .env("XDG_CONFIG_HOME", home.dir.path().join(".config"))
         .output()
         .unwrap()
@@ -240,13 +240,13 @@ fn the_tunnel_door_binds_loopback_only() {
     }
 
     // The same refusal through `serve`, before it starts a host at all.
-    let out = Command::new(env!("CARGO_BIN_EXE_wanderbooks"))
+    let mut serve = Command::new(env!("CARGO_BIN_EXE_wanderbooks"));
+    serve
         .args(["serve", "--root"])
         .arg(home.root())
-        .args(["--http", "0.0.0.0:0"])
-        .env_clear()
-        .env("PATH", "/usr/bin:/bin")
-        .env("HOME", home.dir.path())
+        .args(["--http", "0.0.0.0:0"]);
+    common::clean_env(&mut serve, home.dir.path());
+    let out = serve
         .env("XDG_CONFIG_HOME", home.dir.path().join(".config"))
         .output()
         .unwrap();

@@ -179,8 +179,8 @@ impl std::fmt::Display for BookId {
 }
 
 /// This account's home folder, from the password database on Unix (never
-/// `$HOME`, which the process that started us chose), or the Windows
-/// profile.
+/// `$HOME`, which the process that started us chose), or the profile
+/// folder the Windows shell reports.
 pub fn account_home() -> Result<PathBuf, RootError> {
     #[cfg(unix)]
     {
@@ -190,11 +190,9 @@ pub fn account_home() -> Result<PathBuf, RootError> {
     }
     #[cfg(windows)]
     {
-        // Read from the environment until the Windows build (P11) takes it
-        // from the known-folder API.
-        std::env::var_os("USERPROFILE")
-            .map(PathBuf::from)
-            .ok_or(RootError::NoHome)
+        // The known-folder API, never `%USERPROFILE%`, which the process
+        // that started us chose (the Unix arm's rule).
+        crate::winsec::profile_folder().ok_or(RootError::NoHome)
     }
     #[cfg(not(any(unix, windows)))]
     {
@@ -256,6 +254,15 @@ fn unix_account() -> Option<(PathBuf, Vec<u8>)> {
 
 /// The platform's data folder under `home`: where the default root sits.
 pub fn platform_data_dir(home: &Path) -> PathBuf {
+    // This account's own home on Windows: `%LOCALAPPDATA%` as the shell
+    // reports it (a redirected profile included). Any other home (tests)
+    // gets the default place under it.
+    #[cfg(windows)]
+    if account_home().is_ok_and(|own| own == home)
+        && let Some(local) = crate::winsec::local_app_data()
+    {
+        return local;
+    }
     if cfg!(target_os = "macos") {
         home.join("Library").join("Application Support")
     } else if cfg!(windows) {
@@ -283,7 +290,7 @@ pub fn inside_a_root(path: &Path) -> bool {
     let Some(existing) = path.ancestors().find(|dir| dir.exists()) else {
         return false;
     };
-    let real = std::fs::canonicalize(existing).unwrap_or_else(|_| existing.to_path_buf());
+    let real = canonical(existing).unwrap_or_else(|_| existing.to_path_buf());
     real.ancestors().any(|dir| dir.join(MARKER_FILE).is_file())
 }
 
@@ -295,7 +302,7 @@ pub fn private_book_folder(book_dir: &Path, name: &str) -> Result<PathBuf, RootE
     let dir = book_dir.join(name);
     match std::fs::symlink_metadata(&dir) {
         Ok(meta) => {
-            let open = check_private_dir(&meta, true, "a folder inside the books")?;
+            let open = check_private_dir(&dir, &meta, true, "a folder inside the books")?;
             tighten_if(&dir, open)?;
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -305,6 +312,30 @@ pub fn private_book_folder(book_dir: &Path, name: &str) -> Result<PathBuf, RootE
         Err(e) => return Err(e.into()),
     }
     Ok(dir)
+}
+
+/// `text` with Windows' extended-length prefix taken off the paths in it:
+/// `\\?\C:\dir` becomes `C:\dir` and `\\?\UNC\server\share` becomes
+/// `\\server\share`. `std::fs::canonicalize` returns that form on Windows,
+/// and programs such as git refuse it. Text without the prefix is
+/// returned as it is, on every system (so the rule is tested everywhere).
+pub fn without_extended_prefix(text: &str) -> String {
+    text.replace(r"\\?\UNC\", r"\\").replace(r"\\?\", "")
+}
+
+/// `std::fs::canonicalize` with Windows' extended-length prefix taken off
+/// (`\\?\C:\dir` is `C:\dir`): no root, record, message or git argument
+/// ever keeps the prefix.
+pub fn canonical(path: &Path) -> std::io::Result<PathBuf> {
+    std::fs::canonicalize(path).map(|real| plain_path(&real))
+}
+
+/// [`without_extended_prefix`] for a path (the same path on Unix).
+pub fn plain_path(path: &Path) -> PathBuf {
+    match path.to_str() {
+        Some(text) if text.contains(r"\\?\") => PathBuf::from(without_extended_prefix(text)),
+        _ => path.to_path_buf(),
+    }
 }
 
 /// The longest socket path used as it is: a Unix socket's address holds
@@ -364,7 +395,7 @@ pub fn short_link_for(dir: &Path) -> std::io::Result<PathBuf> {
         }
         Err(e) => return Err(e),
     }
-    let dir = std::fs::canonicalize(dir)?;
+    let dir = canonical(dir)?;
     let link = base.join(&hex::encode(Sha256::digest(dir.as_os_str().as_encoded_bytes()))[..16]);
     match std::fs::symlink_metadata(&link) {
         Ok(meta) => {
@@ -480,7 +511,7 @@ impl Root {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(RootError::Missing),
             Err(e) => return Err(e.into()),
         };
-        check_private_dir(&meta, false, THE_ROOT)?;
+        check_private_dir(path, &meta, false, THE_ROOT)?;
         check_ancestors(path)?;
         if !path.join(MARKER_FILE).is_file() {
             return Err(RootError::Unsafe(format!(
@@ -509,8 +540,7 @@ impl Root {
         // resolved that way too: on macOS `/tmp` is `/private/tmp`, and a
         // root chosen at the default must read as the default (so the
         // record goes), not as somewhere else.
-        let default =
-            default_root(&std::fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf()));
+        let default = default_root(&canonical(home).unwrap_or_else(|_| home.to_path_buf()));
         let recorded = recorded_root(home)?;
         let current = recorded.clone().unwrap_or_else(|| default.clone());
         let path = match (chosen, &recorded, xdg_data_home) {
@@ -554,7 +584,8 @@ impl Root {
             Ok(meta) => {
                 // Checked before anything is changed: a folder that holds
                 // other things is left exactly as it is.
-                let open = check_private_dir(&meta, true, "the folder chosen for the books")?;
+                let open =
+                    check_private_dir(&path, &meta, true, "the folder chosen for the books")?;
                 if !path.join(MARKER_FILE).is_file() && std::fs::read_dir(&path)?.next().is_some() {
                     return Err(RootError::Unsafe(
                         "the folder chosen for the books already holds other things: choose an \
@@ -643,7 +674,7 @@ impl Root {
         let tightened = match std::fs::symlink_metadata(&dir) {
             Ok(meta) => tighten_if(
                 &dir,
-                check_private_dir(&meta, tighten, "a folder inside it")?,
+                check_private_dir(&dir, &meta, tighten, "a folder inside it")?,
             )?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 make_private_dir(&dir)?;
@@ -1184,9 +1215,9 @@ impl Root {
     /// The source of an adoption, made absolute: books outside the root
     /// (and not holding it) with a journal.
     fn adoptable(&self, source: &Path) -> Result<PathBuf, RootError> {
-        let source = std::fs::canonicalize(source)
+        let source = canonical(source)
             .map_err(|e| RootError::Adopt(format!("can't read the books given: {}", e.kind())))?;
-        let root = std::fs::canonicalize(&self.path)?;
+        let root = canonical(&self.path)?;
         if source.starts_with(&root) || root.starts_with(&source) {
             return Err(RootError::Adopt(format!(
                 "those books are inside {THE_ROOT} (or hold it): adopt books from outside it"
@@ -1250,7 +1281,7 @@ impl Root {
         confirm: bool,
     ) -> Result<PutAside, RootError> {
         (|| {
-            let root = std::fs::canonicalize(&self.path)?;
+            let root = canonical(&self.path)?;
             let book = self.book_dir(id);
             if !book.join(JOURNAL_FILE).is_file() {
                 return Err(RootError::Adopt(format!(
@@ -1273,7 +1304,7 @@ impl Root {
                 let (Some(parent), Some(name)) = (given.parent(), given.file_name()) else {
                     return Err(RootError::Adopt(format!("{shown} can't be put aside")));
                 };
-                let path = std::fs::canonicalize(parent)
+                let path = canonical(parent)
                     .map_err(|e| RootError::Adopt(format!("{shown}: {}", e.kind())))?
                     .join(name);
                 let meta = std::fs::symlink_metadata(&path)
@@ -1304,6 +1335,8 @@ impl Root {
                         )));
                     }
                 }
+                // Windows: a move to another disk is refused by the move
+                // itself (no copy fallback is asked for).
                 // A vault or its key among the other paths would go aside
                 // unchecked: each comes by its own name, and is checked.
                 let k = items.len();
@@ -1554,10 +1587,17 @@ fn rename_new(from: &Path, to: &Path) -> std::io::Result<()> {
             return Err(e);
         }
     }
-    if std::fs::symlink_metadata(to).is_ok() {
-        return Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists));
+    // Windows: MoveFileExW without the replace flag refuses an existing
+    // target itself.
+    #[cfg(windows)]
+    return crate::winsec::rename_new(from, to);
+    #[cfg(not(windows))]
+    {
+        if std::fs::symlink_metadata(to).is_ok() {
+            return Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists));
+        }
+        std::fs::rename(from, to)
     }
-    std::fs::rename(from, to)
 }
 
 /// Whether the stored files under `old` (a books' `blobs/`) are all in
@@ -1852,6 +1892,12 @@ fn recorded_root(home: &Path) -> Result<Option<PathBuf>, RootError> {
             return Err(unsafe_pointer());
         }
     }
+    // Windows: this account's own file that no one else can write (the
+    // DACL says who can open it at all; INVARIANT 3).
+    #[cfg(windows)]
+    if !crate::winsec::is_private(&pointer).unwrap_or(false) {
+        return Err(unsafe_pointer());
+    }
     let text = std::fs::read_to_string(&pointer)?;
     let path = PathBuf::from(text.trim_end_matches(['\n', '\r']));
     if path.is_absolute() {
@@ -1892,7 +1938,7 @@ fn resolve_new(path: &Path) -> Result<PathBuf, RootError> {
             _ => break,
         }
     }
-    let mut out = std::fs::canonicalize(existing)?;
+    let mut out = canonical(existing)?;
     for n in rest.into_iter().rev() {
         out.push(n);
     }
@@ -1949,9 +1995,16 @@ fn set_mode(path: &Path, mode: u32) -> std::io::Result<()> {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
 }
 
-#[cfg(not(unix))]
+/// Windows: the mode is the DACL, this account's alone, protected, and
+/// inherited into a folder's contents (`mode` says only that the caller
+/// wants it private; a folder or a file is told by what `path` is).
+#[cfg(windows)]
+fn set_mode(path: &Path, _mode: u32) -> std::io::Result<()> {
+    crate::winsec::set_owner_only(path)
+}
+
+#[cfg(not(any(unix, windows)))]
 fn set_mode(_path: &Path, _mode: u32) -> std::io::Result<()> {
-    // Windows: the owner-only DACL comes with the Windows build (P11).
     Ok(())
 }
 
@@ -1960,10 +2013,12 @@ fn set_mode(_path: &Path, _mode: u32) -> std::io::Result<()> {
 /// to make 0700 with [`tighten_if`]; without, it is refused. `what` names
 /// it in messages.
 fn check_private_dir(
+    path: &Path,
     meta: &std::fs::Metadata,
     tighten: bool,
     what: &str,
 ) -> Result<bool, RootError> {
+    let _ = path; // Unix reads the mode from `meta`; Windows reads the DACL at `path`.
     if meta.file_type().is_symlink() {
         return Err(RootError::Unsafe(format!(
             "{what} is a symlink: it must be a real folder"
@@ -1991,8 +2046,18 @@ fn check_private_dir(
             return Ok(true);
         }
     }
-    #[cfg(not(unix))]
-    let _ = tighten;
+    // Windows: this account's own, with no one else on its access list.
+    #[cfg(windows)]
+    if !crate::winsec::is_private(path).unwrap_or(false) {
+        if !tighten {
+            return Err(RootError::Unsafe(format!(
+                "other users can open {what}: run `wanderbooks setup` to make it private"
+            )));
+        }
+        return Ok(true);
+    }
+    #[cfg(not(any(unix, windows)))]
+    let _ = (path, tighten);
     Ok(false)
 }
 
@@ -2010,6 +2075,11 @@ fn check_ancestors(path: &Path) -> Result<(), RootError> {
 /// sticky bit (like `/tmp`); group write only when the group is this
 /// account's own private group (its primary group, with no other members:
 /// the usual umask-002 setup on many Linux systems).
+///
+/// Windows: nothing above the root is checked. The root sits under the
+/// account's own profile, whose folders the system gives that account
+/// and the Administrators alone; another place is the owner's choice
+/// (CHOICE, P11c: no authority states a Windows rule for ancestors).
 fn check_dir_and_above(dir: &Path) -> Result<(), RootError> {
     #[cfg(unix)]
     {
@@ -2080,6 +2150,7 @@ fn is_private_group(gid: u32) -> bool {
 /// it is the account's primary group, is named as the account's login is,
 /// and lists no members. A shared primary group (openSUSE's `users`) has
 /// another name, so it isn't.
+#[cfg(unix)]
 fn private_group_rule(gid: u32, primary: u32, name: &[u8], login: &[u8], members: bool) -> bool {
     gid == primary && name == login && !members
 }
@@ -2215,6 +2286,21 @@ fn copy_flat_private(from: &Path, to: &Path) -> Result<u64, RootError> {
 #[cfg(all(test, unix))]
 mod unit {
     use super::*;
+
+    #[test]
+    fn the_extended_length_prefix_is_taken_off_paths() {
+        assert_eq!(without_extended_prefix(r"\\?\C:\a\b"), r"C:\a\b");
+        assert_eq!(
+            without_extended_prefix(r"--git-dir=\\?\C:\a\archive.git"),
+            r"--git-dir=C:\a\archive.git"
+        );
+        assert_eq!(
+            without_extended_prefix(r"\\?\UNC\server\share\x"),
+            r"\\server\share\x"
+        );
+        assert_eq!(without_extended_prefix("/usr/bin/git"), "/usr/bin/git");
+        assert_eq!(plain_path(Path::new("/a/b")), Path::new("/a/b"));
+    }
 
     #[test]
     fn a_buffer_grows_while_the_lookup_says_too_small() {

@@ -40,6 +40,17 @@ Unix (the backup remote check, a books home's listing), fixed on
 **2026-10-30, 11:00 UTC: `main` is green on the Linux gate and on
 macOS at `ad2ac824`** (the whole workspace's tests on `macos-latest`);
 the macOS half of P11a step 0 is met. Windows waits for P11c.
+**2026-10-31, 02:00 UTC: P11c landed (`05aece9f`)**: the Windows port
+built blind, type-checked here against the Windows target and proven
+by sixteen runs of the `portable-windows` job, each one failing later
+than the last (the lock seam, git's plain paths, SQLite's and
+LockFileEx's mandatory locks in test helpers, the `\\?\` prefix, the
+full-disk simulation, BSD and Unix test details on the way). The job
+gates now: `main` must be green on Linux, macOS and Windows. P11a step
+0 is complete. Left in the plan: P11a steps 5-7 (signing deferred,
+D-64; the in-app accept and the viewer's update notice need names),
+P12 (max testing, last), the owner's re-audit (P10) and the trials on
+a Mac and a Windows machine.
 
 
 **Who builds.** The owner chose (the question tool) that this planning

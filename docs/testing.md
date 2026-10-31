@@ -622,6 +622,7 @@ scratch (`ledger-store` `backup.rs` and `root.rs`, `ledger-core`
 `settings.rs`, `ledger-mcp` `backup.rs`, `tools/backup.rs`, `local.rs`,
 `admin.rs`, `ledger-host` `commands.rs`, `ledger-cli`). The survivor lists
 are kept with the run's output, outside the repository.
+*(Consolidated, with the other units' targets, in "P12: the checklists" at the end of this file.)*
 
 ## P3: odd cents (2026-10-20)
 
@@ -729,6 +730,7 @@ parse; a tag that isn't text; the feature declaration);
 fields; `Currency::allocation_places`. P3's accept counts `ledger-core` and
 `ledger-import` (R-6); the store and MCP mutants above are for the whole
 pass.
+*(Consolidated, with the other units' targets, in "P12: the checklists" at the end of this file.)*
 
 ## P3: the IIF and as-of (2026-10-20)
 
@@ -934,6 +936,7 @@ condition and `receivable_payable`; `fonts.rs` and `theme.rs`
 `font_definitions`; the README's A/R and A/P sentence; `ledger-core`
 `parties.rs` `tin_separator`'s arms and `tin_invisible`, and the gap that
 doesn't count them.
+*(Consolidated, with the other units' targets, in "P12: the checklists" at the end of this file.)*
 
 ## P3: cash flow (defect 1, 2026-10-20)
 
@@ -1080,6 +1083,7 @@ the end.
 `export_cash_flow` and `settings_problems`; zero unexplained survivors
 (plan P3 accept). Likely equivalent, to adjudicate: `min` against `max`
 in `take` where both bounds coincide, and the kind order's tie-breaks.
+*(Consolidated, with the other units' targets, in "P12: the checklists" at the end of this file.)*
 
 ## P3: rename, defaults and tax categories (2026-10-20)
 
@@ -1267,6 +1271,7 @@ range, `export_journal`'s period, `described`, `uncategorized_warning`,
 `created_uncategorized`, the digest's `uncategorized_accounts`,
 `handbook::period_rule`. The viewer is not mutated (owner, 2026-10-18):
 `view_model.rs` and `show.rs` cover it.
+*(Consolidated, with the other units' targets, in "P12: the checklists" at the end of this file.)*
 
 ## P3: parties (defects 14, 24, 11; 2026-10-20)
 
@@ -1316,6 +1321,7 @@ cash, in_kind) and `update_party`'s creditor_of diff; the viewer's
 `party_what_for` and `share_text`. Expected equivalent:
 `Party::tin_last4`'s `or_else` order swapped (TIN facts and W-9 facts
 never disagree, parties INVARIANT 2a, enforced on replay).
+*(Consolidated, with the other units' targets, in "P12: the checklists" at the end of this file.)*
 
 ## P3: 1099s (defects 23, 12 and 18; 2026-10-20)
 
@@ -1375,6 +1381,7 @@ unchanged path, `set_vendor_w9_flag`, `add_instrument`,
 first, only when the flag changes); `ledger-package` `vendor_1099.rs` (the CSV columns, every note's
 guard, `may_file`, `missing_w9`'s suffix) and `package.rs` (tin_gaps, the
 README line). The viewer has no mutation job (its musts are tested).
+*(Consolidated, with the other units' targets, in "P12: the checklists" at the end of this file.)*
 
 ## P3: parties and 1099s landed together (2026-10-21)
 
@@ -1398,6 +1405,7 @@ fallback); the server's `vendor_1099` (`through`'s year check, the
 unknown-code check, the accounts passed) and `update_party`'s feature
 declaration; the bookspec loader's party, payee, decision and payment
 method setup.
+*(Consolidated, with the other units' targets, in "P12: the checklists" at the end of this file.)*
 
 ## P3: depreciation and schedules (defects 22 and 9, 2026-10-20)
 
@@ -1584,6 +1592,7 @@ version's journal format (rules.md B-27). Mutation testing waits for P12
 (`consent_now`, `upgrade_format`, `offer_upgrades`, `offer_upgrade`,
 `upgrade`, `book_line`, `upgraded_lines`, `upgrade_explained`,
 `ASKED_UPGRADES`). None run.
+*(Consolidated, with the other units' targets, in "P12: the checklists" at the end of this file.)*
 
 ## P3: asset basis and tax-basis capital (2026-10-20)
 
@@ -1715,6 +1724,7 @@ reversal's take-back) and
 `entry_property` (the mismatch branch, the unknown sum), the open-item
 conditions (`in_service`, the disposal window), and the reconciliation's
 signs.
+*(Consolidated, with the other units' targets, in "P12: the checklists" at the end of this file.)*
 
 ## P3: the seams between the pieces (2026-10-21)
 
@@ -1818,6 +1828,7 @@ before); the bookspec loader's exact-spelling filters and `check_k1`'s
 `cash_accounts` check; `documented_tools` (its own sample checks it).
 The earlier P3 sections' lists stand (one name corrected:
 `Ledger::depreciation_runs`, which was `depreciation_runs_ever`).
+*(Consolidated, with the other units' targets, in "P12: the checklists" at the end of this file.)*
 
 ## P3: projects (2026-10-21)
 
@@ -1957,6 +1968,7 @@ balance-sheet zero; `project_set_of` (newer vs corrupt);
 `set_project`'s unchanged short-cut; `subject_feature`; `check_link_to`'s
 feature check; the decision `projects` omit-when-empty;
 `late_tag_note`'s `is_over`; `remember_footer`'s threshold.
+*(Consolidated, with the other units' targets, in "P12: the checklists" at the end of this file.)*
 
 ## P3: the project snapshot (2026-10-22)
 
@@ -2068,6 +2080,7 @@ fail.
 **For P12 (mutation targets):** `contribution_margin_pct`'s `<=` and
 rounding strategy; `project_figures`' opening net and running sum;
 `profit_and_loss_counted`'s counts; `Standing::of`'s order.
+*(Consolidated, with the other units' targets, in "P12: the checklists" at the end of this file.)*
 
 ## Invoices and bills take a project (2026-10-22)
 
@@ -2178,6 +2191,7 @@ order, the `contains` test); `add_document_parts`' tag index;
 `document_notes`' dedup and its `invoice` flag; `on_spec_invoice_note`'s
 kind test; `document_projects_rule`'s branch; the viewer's
 `document_of` (invoice before bill).
+*(Consolidated, with the other units' targets, in "P12: the checklists" at the end of this file.)*
 
 ## After P3: the cutover review's open points 1 and 2 (2026-10-22)
 
@@ -2650,6 +2664,7 @@ amount match and one-line rule; `refresh_doc`'s settled sum;
 `doc_status`'s Overpaid and Unattached arms; the aging's `<= 0`;
 `ensure_payment_features`' comparison; `check_document_reversal`'s date
 check; `control_check`'s chain netting.
+*(Consolidated, with the other units' targets, in "P12: the checklists" at the end of this file.)*
 
 ## P4b S1, part B: void, control check, and each payment's details (2026-10-24)
 
@@ -2702,6 +2717,7 @@ line and nothing needing attention, each field's mapping, the
 invoice/bill kind); `control_problems` (one message per unattached line
 and per document, both loops); the `digest` that includes it and the
 `verify` check that refuses a nonzero difference.
+*(Consolidated, with the other units' targets, in "P12: the checklists" at the end of this file.)*
 
 ## P4b S2: reading documents, in the tools and in the viewer (2026-10-24)
 
@@ -2758,6 +2774,7 @@ Overdue's `overdue_days > 0`, Paid, Void, All), a document after the day
 shown only under All (`Ok(None)`), the list's `(due, date, name)` sort
 and the timeline's movement×reversal labels with their `(reversed later)`
 condition (`!t.reversal && !stands_on(t.entry, b.today)`).
+*(Consolidated, with the other units' targets, in "P12: the checklists" at the end of this file.)*
 
 ## P4b S3: the invoice PDF (2026-10-24)
 
@@ -2811,6 +2828,7 @@ one does: `PartiallyPaid` (no sample is part paid and not yet due) and
 `Draft` (only S4's preview reaches it; the renderer's own test renders
 it but asserts only that it succeeds).
 ## P7: the TIN scanner's separators (2026-10-26)
+*(Consolidated, with the other units' targets, in "P12: the checklists" at the end of this file.)*
 
 rules.md B-26; plan 8.2 P7, with vault v2 closed by D-48 (nothing of
 HPKE, keyslots or human pages is built here). The scanner
@@ -2851,6 +2869,7 @@ Deleting any one of them leaves a TIN that the old scanner passed
 either readable or unmasked, which the truth table and the property
 catch.
 ## P13: bookspec, the checker crate and the runner (2026-10-26)
+*(Consolidated, with the other units' targets, in "P12: the checklists" at the end of this file.)*
 
 bookspec's example schema moved out of the loader into
 `bookspec/checker`, its own Cargo workspace inside the repository (P13
@@ -2918,6 +2937,7 @@ example" arm; the adapter's `event_of`, its `depreciation_schedule` month
 span (acquisition through as-of, 0.00 where the schedule reaches no month)
 and every `answer_*` figure against the loader's same check (the two must
 agree on all 56 examples).
+*(Consolidated, with the other units' targets, in "P12: the checklists" at the end of this file.)*
 
 ## P13 steps 4 and 5: the specification text, the laws, the derivation, GnuCash (2026-10-29)
 
@@ -2983,6 +3003,7 @@ condition), `Model::post`'s close (a debit-normal balance credits, the
 equity line's sign), `signed`'s date window and `closings` flag, and the
 accounting-equation check; the spec test's pin search (a mutant that skips
 the quote check passes only if `every_citation_resolves` has no bad pin).
+*(Consolidated, with the other units' targets, in "P12: the checklists" at the end of this file.)*
 
 ## U0b: one attention engine over `PackageBooks` (2026-10-26)
 
@@ -3038,6 +3059,7 @@ negative-zero test; `filter(|a| a.tool.is_some()).take(12)` and
 intact-blob set (a damaged blob reported per attachment) and `Store::
 disk_check`'s snapshot load and `Unreadable` arm; the viewer wrapper's
 `Target` arms.
+*(Consolidated, with the other units' targets, in "P12: the checklists" at the end of this file.)*
 
 ## P9a: self-host, the move, and the static bearer over a tunnel (2026-10-26)
 
@@ -3118,6 +3140,7 @@ and `BooksServer::new`'s copy (a dropped field must fail
 `isolation_label_is_enforced_under_the_unit`); the host's `server_flags`
 extension and `parse_args`' passthrough of `--isolation` and its optional
 `--http` value.
+*(Consolidated, with the other units' targets, in "P12: the checklists" at the end of this file.)*
 
 ## P4b S4.5: the issued PDF, the viewer and the handbook (2026-10-29)
 
@@ -3182,6 +3205,7 @@ arms and `InvoiceVersion::Current { as_of }`; the viewer's `details`
 number-else-id and `issued_copy`'s PDF-and-description match; the
 handbook's `documents_v2_rule` both arms and the server's `documents_v2`
 feature test.
+*(Consolidated, with the other units' targets, in "P12: the checklists" at the end of this file.)*
 
 ## P4b S5: sent tracking (2026-10-27)
 
@@ -3246,6 +3270,7 @@ predicates in `ledger-package::attention`: `invoice.number.is_some()`
 `checked_add_days` `unsent_days` comparison (`>`), `overdue_days > 0`, the
 `sends.max()` last send, and the `reminder_days` comparison (`>`), plus
 each item's target (`Target::Invoice`) and `books.mark_sent` step args.
+*(Consolidated, with the other units' targets, in "P12: the checklists" at the end of this file.)*
 
 ## P4b S6: paying on terms (2026-10-27)
 
@@ -3323,6 +3348,7 @@ arithmetic; `bills_due`'s `through` filter, the discount-window test and
 the running-total grouping; `aging_documents`'s outstanding filter and
 bucket; `aging_csv`'s tie-out columns and `aging_statement`'s totals; the
 viewer's `discount_by` and `days_overdue` flags.
+*(Consolidated, with the other units' targets, in "P12: the checklists" at the end of this file.)*
 
 ## P4b S7: bad debts (write-offs), 2026-10-27
 
@@ -3400,6 +3426,7 @@ the blob-before-journal order, the `File`/`Existing` link steps) and the
 feature gate; the MCP handler's amount default, the exactly-one evidence
 check, and the preview's clone; attention's year comparison and its
 `stands_on` filter; the bookspec loader's `may_refuse` arm.
+*(Consolidated, with the other units' targets, in "P12: the checklists" at the end of this file.)*
 
 ## P6: the evidence pipeline (2026-10-27)
 
@@ -3532,6 +3559,7 @@ arms, the 8 KiB cut, the 64 KiB hand-over threshold and `page - 1`.
 `ledger-package::attention`: the extraction `seq` comparison and the
 `Failed` filter, the owed-account name test, the credit side and the
 `settles_entry` skip.
+*(Consolidated, with the other units' targets, in "P12: the checklists" at the end of this file.)*
 
 ## P11a step 0: keyring stores for macOS and Windows (2026-10-29)
 
@@ -3556,6 +3584,7 @@ Secret Service run needs a desktop): the CI run is the evidence.
 **For P12 (mutation targets, none run, D-33):** `tokens.rs`'s `os` modules
 are not reachable by mutation testing (they need the real OS store); the
 `Items` logic they share is, through the file store.
+*(Consolidated, with the other units' targets, in "P12: the checklists" at the end of this file.)*
 
 ## U0e: tokens in a file, the OS keyring removed (2026-10-29, D-63)
 
@@ -3594,6 +3623,7 @@ token" must die on `an_unreadable_token_file_is_an_error_never_no_token`),
 `Keeper::delete`'s `NotFound` arm, and `Account::key`'s three parts
 (`an_account_names_the_root_by_hash_and_the_book_and_token`);
 `bridge.rs::token_file_refusal`'s `holds_token` guard.
+*(Consolidated, with the other units' targets, in "P12: the checklists" at the end of this file.)*
 
 ## P4: draft states, the evidence gate, the preview digest (2026-10-29)
 
@@ -3669,6 +3699,7 @@ it); the digest's `since_seq` comparison (`>`), its `as_of` bound, the
 `zero_net_accounts` branch and the `never_reconciled` split;
 `report_status`'s three open conditions; the open-drafts refusal's
 `<= as_of` and its decision; the attention `awaiting_evidence` branch.
+*(Consolidated, with the other units' targets, in "P12: the checklists" at the end of this file.)*
 
 ## P11c: the native Windows port (2026-10-29, D-62)
 
@@ -3727,6 +3758,7 @@ arm; `Listener`'s `IDLE_INSTANCES` pool (a mutant that makes it 1 passes
 every test but `many_clients_at_once_all_connect`); `start.rs::host_env`'s
 list. None of the Windows arms is reachable by `cargo mutants` on Linux:
 they run on the Windows job only.
+*(Consolidated, with the other units' targets, in "P12: the checklists" at the end of this file.)*
 
 ## P11a steps 2 and 3: update, rollback, the Linux packages (2026-10-29)
 
@@ -3822,6 +3854,7 @@ covers the feature one; a case with a higher format number is a gap to
 add), `swap_in`'s temporary-then-rename (`update_is_atomic`), `healthy`
 (`failed_update_rolls_back`), `install_kind` (the marker test), and
 `parse_version`'s rejections.
+*(Consolidated, with the other units' targets, in "P12: the checklists" at the end of this file.)*
 
 ## P5: the agent surface (2026-10-29)
 
@@ -3909,6 +3942,7 @@ equal-source refusals and the empty-reason refusals; the three
 in `a_source_only_revision_is_journaled`); `books.start`'s fit order and
 `reconciliation` split (`reconciled_through.is_some()`).
 ## P8: audit and attestations (2026-10-29)
+*(Consolidated, with the other units' targets, in "P12: the checklists" at the end of this file.)*
 
 An audit run is a deterministic programme of checks over the books through
 a day, filed as a JSON and a PDF workpaper; attestations are claims by a
@@ -3999,6 +4033,7 @@ export gate (`cpa_audit_standing`'s four conditions and its feature test,
 the `refuse`/`warn` split, the reason's trim); `audit_items` in Needs
 attention (the declared test, the attested set, the last-ended fiscal
 year, the three year conditions).
+*(Consolidated, with the other units' targets, in "P12: the checklists" at the end of this file.)*
 
 ## P10: the re-audit runbook's mirror
 
@@ -4029,6 +4064,7 @@ sign-off) is the owner's and has no CI equivalent.
 lines above it) and the scopes-line scan in `defect_20_*`. A mutant that
 widens the window or drops the `ignore` check survives only if no ignored
 or untested name is in the table; the table is the oracle.
+*(Consolidated, with the other units' targets, in "P12: the checklists" at the end of this file.)*
 
 ## P13 step 6: the specification in its own repository (2026-10-29)
 
@@ -4125,3 +4161,509 @@ brightening; `Session::resize`'s equality early return; the panel's
 open/closed ids (a remembered size must not leak between them);
 `Welcome::steps`' choice of `now` (each arm), the passphrase length and
 equality gates, the `agent_later` flag.
+*(Consolidated, with the other units' targets, in "P12: the checklists" at the end of this file.)*
+
+## P12: the checklists
+
+The **For P12** paragraphs above (kept where they were written, with their
+units' histories) consolidated into one checklist per crate, so the run
+(step 2 of P12, D-33) walks a crate at a time. Each item names a target and
+the mutants worth thinking about; its origin unit is in brackets. "None run"
+holds for all of them: every survivor is killed by a test or recorded below
+as equivalent, with its reason, when the run is made. The recipes are
+`just mutants`, `mutants-store`, `mutants-import`, `mutants-config`,
+`mutants-mcp`, and (P12 step 1) `mutants-host`, `mutants-package`,
+`mutants-vault`, `mutants-cli`: each runs the crate's own tests and
+`ledger-cli`'s end-to-end suites without the viewer, `-j 4` by default, one
+run at a time, local only (D-59). `ledger-gui` has no mutation run (its two
+musts are `tests/read_only.rs` and `tests/view_model.rs`). The `bookspec`
+items are for that repository's own check (D-34 step 6). The whole diff to mutate: from `168494b` (main before P2 slice 3).
+
+The fuzz targets P12 step 1 added: `fuzz_http_mcp_request` (arbitrary method,
+path, headers and body into the in-process router, `ledger-mcp`'s
+`local::fuzz_door`, behind its `fuzzing` feature: no token live for the book
+is never a 2xx, a valid one never makes the door fail) and `fuzz_upload_put`
+(bytes come in only if they are the declared ones, from the token the upload
+was granted to, once). `fuzz_op_sequence::Op` gained the invoice, bill,
+payment, settlement, write-off, void and draft-state ops and a control-check
+invariant (control accounts equal their documents).
+
+### ledger-core
+
+- [P2 slices 3 to 8] `settings.rs` from scratch.
+- [P3 odd cents] `kernel::apportion_cumulative` (length and range guards;
+  `checked_sub` for `checked_add`; the subtraction skipped);
+  `periods::allocate_cumulative` (the sign; `given` not negated for a loss;
+  `places` ignored; the exactness filter, zero products included);
+  `Ledger::members_regime` and `regime_where` (skip versus break at a close to
+  anything else; the order-free compare made ordered; `<=` for `<` in the date
+  filter; `given` added to the wrong member; the count's order);
+  `Regime::allocate` (the order); `Ledger::members_split` and
+  `close_period_to_steps` (the start check; the `posts` gate; the recorded
+  rule; the sweeps before the parts); `member_close_run`; `member_close_split`;
+  `reports::members_equity` (`allocate(C)` replaced by `given`; `places`;
+  "other"'s order); `k1::share_property`; `Currency::allocation_places`.
+  Accept counts for `ledger-core` and `ledger-import` are R-6.
+- [P3 cash flow] `cashflow.rs` (`cash_flow`, `analyse`, `pairs`, `label`,
+  `class_of`, `reconcile`, `warnings`, `bill_splits`, `role_problems`, `foot`,
+  `on_behalf`); `kernel.rs`'s `take`, `apply_cash`, `entry_flows`,
+  `constructive`, `exchanged`. Likely equivalent, to adjudicate: `min` against
+  `max` in `take` where both bounds coincide; the kind order's tie-breaks.
+- [P3 rename and defaults] `calendar::{fiscal_year_start_unclamped,
+  fiscal_year_unclamped, fiscal_year_start_on, period_defaults}`,
+  `PeriodDefaults::{statement, statement_range, as_of, calendar_year}`,
+  `PeriodKind::describe`, `Company::fiscal_year_containing`,
+  `ChartOfAccounts::set_name`, `Ledger::{add_account (its new-name checks),
+  add_control_account, check_account_name, rename_account,
+  check_rename_account, replay_rename_account, check_rename_reason,
+  check_tax_category_required, check_tax_category_kept}`,
+  `tax::{needs_category, account_needs_category, uncategorized_accounts,
+  on_form_4797}` and `tax_summary`'s Form 4797 section,
+  `Settings::require_tax_category`.
+- [P3 parties] `kernel::party_target` (each branch, the `!= 0` and `< 0`
+  tests, the property and money clamps, the neither-when-nothing-counts test),
+  `kernel::reverse_target`, `Direction::{flip, of}`; `shares::target` (the
+  closing check, the reversal arm and its parity, members_only, the equity
+  filter and the retained-earnings exclusion, the property test, the own
+  sums); `shares::split` (the member-order tie-break, the cash shortcut, the
+  zero sign); `parties::{flow, root_original, money_accounts, card_accounts,
+  MoneyAccounts::for_parties}` (the negation of what_for, the walk's guard,
+  cards and financing as money, the gift-card exclusion); `activity_with`
+  (the target before the split, the skip of nothing-counts, the bucket by side
+  and basis, the overflow checks); `Activity::totals`; `Basis::parse`;
+  `Ledger::{set_party_creditor, check_set_party_creditor, creditors_of,
+  is_closing_entry}`. Expected equivalent: `Party::tin_last4`'s `or_else`
+  order swapped (TIN and W-9 facts never disagree, parties INVARIANT 2a,
+  enforced on replay).
+- [P3 1099s] `form1099.rs` (`plan_decision`, `apply_decision`,
+  `check_new_decision`'s decided-before test, `in_force`/`in_force_before`
+  (`<` against `<=`), `vendor_1099_report`'s status branches (each `>=`, `<`,
+  `max(.,0)`, `min(.,0)`), the listing filter, the not-reportable and
+  undetermined routing, the R6 test (`< 0`, credit side, `refund_accounts` per
+  account type), `Roles::new` (which methods' accounts are financing, which a
+  card's), `split_share` (the floor corrections, the sign), `vendor_part`, the
+  unresolved fallback, `decisions_during`, `untagged_payments` (`> 0`, each
+  skip, each debit kind), `decision_changes`); `kernel.rs` (`payment_bucket`,
+  `split_payment`, `net_buckets`); `instruments.rs`,
+  `Ledger::check_add_instrument` (each refusal), `set_entry_instrument` (the
+  chain), the reversal step's copy, `set_vendor_w9_flag`.
+- [P3 parties and 1099s landed together] `parties::card_accounts` (the
+  recorded-cards branch, the gift and other-instruments exclusions).
+- [P3 asset basis] `kernel::basis_figures` (min for max, the sign of the gain,
+  purchase to a contribution); `Ledger::accumulated_posted` and
+  `assets::run_chain_entries` (`<=` for `<` on the entry and reversal dates,
+  the disposed-to-0 branch, the alternating sign); `live_depreciation_run`'s
+  reversal test; `check_depreciation_run`'s arms; the register filter
+  `acquired <= as_of` and `asset_acquired_date`'s min; `AssetBasis::check`,
+  `check_journaled`, `check_legacy_journaled`; the acquisition and in-service
+  date refusals; the disposal floor; `tax_capital::RunningSplit` (the sign, the
+  zero case, the snap to ten places, `unsplit`), `tax_capital::entry_parts`
+  (the member set, the date order, the reversal's take-back), `entry_property`
+  (the mismatch branch, the unknown sum); the open-item conditions
+  (`in_service`, the disposal window); the reconciliation's signs.
+- [P3 surface review] `kernel::entry_movements` and `kernel::flows_of` (the
+  split of `entry_flows`; the same mutants as before; the earlier P3 lists
+  stand, `Ledger::depreciation_runs` was `depreciation_runs_ever`).
+- [P3 projects] `check_set_project`'s arms (ended_on with active/paused, `<`
+  vs `<=` on the dates, the duplicate name's self-exception, case folding),
+  `ProjectFacts::check` (the link limit, whitespace, duplicates);
+  `kernel::unrecovered_cost` (`max`, the sign); `project_figures`' class
+  filter, 240-month window and closing-entry exclusion; `project_entries`'
+  normal-side sign and balance-sheet zero; `check_link_to`'s feature check.
+- [P3 project snapshot] `contribution_margin_pct`'s `<=` and rounding
+  strategy; `project_figures`' opening net and running sum;
+  `profit_and_loss_counted`'s counts; `Standing::of`'s order.
+- [Documents take a project] `document_parts` (first-appearance order, the
+  `contains` test); `ensure_document_lines`' `any`;
+  `parse_document_lines`' arms (null, absent, out of `u32`);
+  `document_projects_rule`'s branch.
+- [P4b S1 A] `stands_on`'s count and in-order `take_while`; `doc_state`'s
+  movement arms and `overdue_days`; `doc_status`'s order and its Overpaid and
+  Unattached arms; `check_hand_line`/`check_control_lines` (the
+  reversal-mirror exemption); `control_role_of`'s two clauses and the
+  exemption's even-depth test; `check_assign_role`'s SCENARIO 6 and its
+  `controls` filter; `standing_payments`' `!reversal`; `holds_role`'s type
+  check; `bounds_kept`'s `>`; `payment_room`'s `from`; `tag_replayed`'s side,
+  amount match and one-line rule; `refresh_doc`'s settled sum; the aging's
+  `<= 0`; `check_document_reversal`'s date check; `control_check`'s chain
+  netting.
+- [P4b S1 B] `PaymentDetails::check` (the newline test, the 200-character
+  bound, a blank reference as none); `PaymentDetails::description` (the
+  " (ref R)" suffix, the trim, a blank reference leaving the base).
+- [P4b S5] `Ledger::mark_sent`'s refusals (unknown invoice, a send dated
+  before it, `DocumentVoid`, empty `to`, each of the three `check_text` calls;
+  the note's check is stricter than the plan, to keep a full TIN out of the
+  journal); `SentVia::parse`'s arms and `other:` prefix; `SendKind::parse`;
+  `last_sent`'s `max`.
+- [P4b S6] `kernel::settle`'s length check, each negative check, the
+  fee-above-cash test and both checked adds; `Ledger::settlement_lines`'s
+  kind/party checks, duplicate-document check, per-application `cash +
+  discount` bound, discount window (`<= max`, `<= by`, "has a reason"),
+  asset-bill loop, fee-on-bill refusal and row order (payment lines,
+  discounts, fee, cash); `check_discount`'s `within` conjunction and `because`
+  arms; `replay_*_payment_at`'s line/amount/account/side match and the discount
+  line's tag; `bills_due`'s `through` filter, discount-window test and
+  running-total grouping; `aging_documents`'s outstanding filter and bucket.
+- [P4b S7] `Ledger::write_off_steps`' cash-basis comparison
+  (`eq_ignore_ascii_case`, the early return), order of checks (amount before
+  the day, the day before the room), the `amount > room` bound and its `room <
+  owed` message arm, the `WriteOff` tag, `least_owed_from`'s `max` and its
+  `min` over later days (shared with `payment_room`),
+  `replay_invoice_write_off`'s movement, `doc_state`'s `written_off` arm.
+- [P4] `evidence::requirement`'s exemption arms (reversal, closing, schedule
+  month, depreciation run, disposal origin, payroll remittance origin, a
+  tagged document line, a payroll run) and their order, the split-group branch
+  taken only for a `Draft`, `Policy::reason_for`'s three comparisons (required
+  account, `<=` the threshold, every code exempt); `Ledger::origin_exemption`;
+  the replay arms that note `AssetDisposal` and `PayrollRemittance`;
+  `Ledger::discard_draft`'s empty-reason and posted refusals and the side
+  tables it clears; `set_draft_state`'s `check_text`; `stamp_unstamped` and
+  `expect_posted_seq` (a mutant that stamps the wrong line shows in
+  `posted_seq_is_the_posting_lines_seq`).
+- [P6] `ledger-core::evidence`: `checked`'s trims, the zero number, the
+  negative amount and the empty-annotation refusal; `next_receipt_number`'s
+  `saturating_add`.
+- [P7] `parties.rs` `tin_gap` (the space-run arm, so four spaces count once;
+  `count <= MAX_TIN_GAP`; the invisible skip; the `grouped` arm), `tin_space`,
+  `grouped_tin_separator` (each of `,`, `(` and `)`), `grouped_tin_runs` (each
+  shape, the `n > 0` join, the nine-digit check), `full_tin_runs`'s
+  `extend(grouped_tin_runs(..))`.
+- [P3 IIF] `form1099.rs`'s `through` bound; `parties.rs` `tin_separator`'s
+  arms and `tin_invisible`, and the gap that doesn't count them (with [P7]'s
+  scanner items above).
+- [P13] the bookspec loader's party, payee, decision and payment-method
+  setup; its exact-spelling filters; `check_k1`'s `cash_accounts` check;
+  `documented_tools` (its own sample checks it); `may_refuse` for write-offs.
+
+### ledger-store
+
+- [P2 slices 3 to 8] its 34 triaged survivors; slices 7 and 8 from scratch:
+  `backup.rs`, `root.rs`.
+- [P3 odd cents] `close_to_from_journal` and `close_period_to` (the tag
+  mapping; `since_seq`'s parse; a tag that isn't text; the feature
+  declaration); `format::declared_knowing`.
+- [P3 rename and defaults] `Store::{ensure_feature, ensure_features,
+  journal_settings (its feature), add_account, add_account_with_tax,
+  journal_account_added, ensure_control_account, rename_account,
+  set_account_tax, journal_account_tax}`, the `account.renamed` replay and
+  projection arms, `format::setting_feature`, `ops::report_columns`.
+- [P3 parties] `Store::{set_party_creditor, ensure_feature}`.
+- [P3 1099s] `form1099.rs` (each decode check, `newer_content`), `store.rs`
+  (`ensure_feature`, `set_vendor_1099`'s unchanged path, `set_vendor_w9_flag`,
+  `add_instrument`, `set_entry_instrument`'s no-op, the replay and projection
+  arms, `sqlite_reversal_chain`).
+- [P3 format upgrade] `format.rs` (`current`, `upgrade_to`, `adds`,
+  `require_format`, `require_feature`), `store.rs` (`create_in_format`,
+  `ensure_format`, `ensure_feature`, `upgrade_format`), `root.rs` (adoption's
+  upgrade and its verify), `backup.rs` (`prove_archive`, `held_files`).
+- [P3 asset basis] `asset_basis_from_journal` (newer vs corrupt); the
+  projection loader's two key sets.
+- [P3 projects] `project_set_of` (newer vs corrupt); `Store::add_project`'s
+  "facts beyond the default" test (one line vs two); `set_project`'s unchanged
+  short-cut; `subject_feature`.
+- [Documents take a project] `add_document_parts`' tag index.
+- [P4b S6] the `documents_v2` condition (more than one application, any
+  discount, a fee) and the `line`/`discount_line`/`fee_line` arithmetic.
+- [P4b S7] `Store::write_off_invoice`'s evidence arms (the `check_linkable`
+  call, the already-linked-to-the-invoice check, the blob-before-journal
+  order, the `File`/`Existing` link steps) and the feature gate.
+- [P6] `attach`'s live-record lookup and link arms, `extract_and_journal`'s
+  text/blob branch and status mapping, `extraction_for`'s triple (attachment,
+  extractor, version), `withdraw_attachment_as`'s `duplicate_of` arm and
+  feature check, the `verify` text-blob loop, the projection arms' conflict
+  keys.
+- [P8] `Store::figure_head` (the `NOT_FIGURES` list: a type wrongly in it
+  lets a stale audit stand, a type wrongly out of it makes an audit stale at
+  its own filing), `find_audit_run`'s four equalities, `record_audit_run`'s
+  idempotence return, `attest_receipt`'s amount rule (the debit total or any
+  one line) and date equality, `run_for_period`'s `through_seq == head` and
+  `through >= period.end`; `Integrity::check`'s intact-blob set and
+  `Store::disk_check`'s snapshot load and `Unreadable` arm [U0b].
+
+### ledger-import
+
+- [P3 IIF and as-of] `iif.rs` (each `breaks` arm, the control, quote and
+  `None` arms of `each_piece`, the deunicode post-mapping, `segment`'s colon,
+  trim, cut and "?" fallback, `tag`, `with_tag`'s room, the clash loop's depth
+  bound, rounds and tag, `journal_to_iif`'s clash and length refusals, the
+  number rules, the memo cut, each `changes` comparison and its order,
+  `warnings`' grouping, order and masks, `shown`, DOCNUM, `EOL`); `pdf.rs`'s
+  fallback font; `iif_accounts`' type filter on parents and `apart_from`,
+  `parents_first`, the `AtTopLevel` change, the TIN note's condition and
+  `receivable_payable`; `fonts.rs`.
+- [P3 cash flow] `report::cash_flow`.
+- [P6] `extract`: the caps' comparisons (`MAX_BYTES`, `MAX_PAGES`,
+  `MAX_TEXT_BYTES`, the `cap_text` boundary walk), `extract`'s order (PDF by
+  type or magic, XLSX by type or extension, then plain text), `found`'s
+  blank-text arm; `pdf_lines`' page `take`, baseline rounding and
+  left-to-right sort; `page_png`'s scale floor and page bounds; `xlsx_text`'s
+  shared-string index, the `t="s"`/`inlineStr`/`b` arms and the sheet-name
+  filter.
+
+### ledger-config
+
+- No unit recorded a target for this crate since its 2026-10-14 run (55 caught
+  of 55 viable); the run (`just mutants-config`) confirms it still holds.
+
+### ledger-mcp
+
+- [P2 slices 3 to 8] `local.rs` (45 survivors) and `server.rs` (31); slices 7
+  and 8 from scratch: `backup.rs`, `tools/backup.rs`, `local.rs`, `admin.rs`.
+- [P3 odd cents] the MCP's `close_period` and `list_periods` fields.
+- [P3 IIF and as-of] `server.rs` (the iif report, range and as_of checks,
+  `warnings`, the package note).
+- [P3 cash flow] `cash_flow_out`, `cash_flow_csv`, `export_cash_flow`,
+  `settings_problems`.
+- [P3 rename and defaults] `show` (the option refusals, the resolve, the
+  `shown` wording), `show_report_dates`, `rename_account` (its notes),
+  `add_account`, `import_chart_csv` (both loops), `profit_and_loss_by_class`'s
+  range, `export_journal`'s period, `described`, `uncategorized_warning`,
+  `created_uncategorized`, the digest's `uncategorized_accounts`,
+  `handbook::period_rule`.
+- [P3 parties] the server's `parse_basis`, `party_activity`,
+  `entry_parties_out` (direction, cash, in_kind) and `update_party`'s
+  creditor_of diff.
+- [P3 1099s] `tools/instruments.rs` (`decision_in`'s refusals,
+  `filed_year_warnings`' closed and due tests, `resolve_instrument`,
+  `add_instrument`'s warnings), `server.rs`'s `set_vendor_1099` (the W-9-only
+  path) and `set_w9` (the feature declared first, only when the flag changes).
+- [P3 parties and 1099s together] the server's `vendor_1099` (`through`'s
+  year check, the unknown-code check, the accounts passed) and `update_party`'s
+  feature declaration.
+- [P3 format upgrade] `backup.rs` (`upgrade_format`,
+  `UpgradeFailed::parts`), `local.rs` (`upgrade_format`, the List's
+  `format_upgrade`, `waiting`), `server.rs` (`with_store_mut`),
+  `tools/kept.rs` (the first next step, `format_upgrade`), `admin.rs`.
+- [P3 asset basis] the MCP `aliased` logic (both given and differing).
+- [P3 projects] the decision `projects` omit-when-empty; `late_tag_note`'s
+  `is_over`; `remember_footer`'s threshold.
+- [Documents take a project] `document_notes`' dedup and its `invoice` flag;
+  `on_spec_invoice_note`'s kind test; `document_line_json`'s `if let`.
+- [P4b S1 B] the server's `payment_details` (id or label resolution, an
+  unknown instrument refused); `payment_out` (as of the end of the books,
+  `remaining` from outstanding, `status` from `key()`); `doc_ref` (trim and
+  case, the two kinds, anything else refused); the `void_document` handler
+  (the status it answers, `map_or("void", ..)` after the day);
+  `control_check_out` (`agrees` as zero difference and no unattached line and
+  nothing needing attention, each field's mapping, the invoice/bill kind);
+  `control_problems` (one message per unattached line and per document, both
+  loops); the digest that includes it and the `verify` check that refuses a
+  nonzero difference.
+- [P4b S2] the `documents` handler's status arms (`"all"`; `"open"` as
+  `!st.outstanding.is_zero() && key != "void"`; `"overdue"` as
+  `st.overdue_days > 0`; `key == other`), the party compare, `due_by`'s `>`,
+  the `(due, id)` sort, the `outstanding_total` sum; the `document` handler's
+  `l.date <= as_of` timeline filter, `stands`/`reversal` from `stands_on`,
+  `movement_key`'s arms, `parse_doc_ref`'s split, parse and kind;
+  `DocStatus::key`'s arms.
+- [P4b S4.5] the handbook's `documents_v2_rule` both arms and the server's
+  `documents_v2` feature test.
+- [P4b S5] the handler's `kind` default (`original` when `sends` is empty,
+  `reminder` after), its `to` fallback (bill-to, then party, then refused) and
+  `by` fallback; `sent_via`'s arms and empty fallback; `send_kind`'s error
+  arm; `invoice_id`'s `invoice:` strip; the replay reader's `newer_content`
+  arms for an unknown channel or kind.
+- [P4b S6] `aging_csv`'s tie-out columns and `aging_statement`'s totals.
+- [P4b S7] the handler's amount default, exactly-one evidence check, and the
+  preview's clone.
+- [P6] `evidence`: `find_attachment`'s exactly-one selector, the hex check and
+  the text length floor; `consolidate_duplicates`' grouping (`< 2`), the
+  keep/dups split, the evidence `left == 0` gate, the keep `withdrawn` test,
+  the unlink dedup and the `withdrawn` count; the annotation amount/date parse
+  and the next number; `get_receipt`'s view arms, the 8 KiB cut, the 64 KiB
+  hand-over threshold and `page - 1`.
+- [P7] `tin_files::tin_shaped`'s comma in each rendering and
+  `holds_printed_tin`'s comma join; `access::masked`'s string arm. A deleted
+  arm leaves a TIN the old scanner passed readable or unmasked; the truth
+  table and the property catch it.
+- [P9a] `Isolation::parse`'s `same_user`/`advisory` and
+  `service_user`/`enforced` arms; `Isolation::label`'s two strings;
+  `start_out`'s `self.isolation.label()` (a mutant restoring a literal must
+  fail the two-door test); `local::tunnel_address`'s `is_loopback` test (must
+  fail `the_tunnel_door_binds_loopback_only`, in both halves); the `--http`
+  arm's `args.peek()` guard and default `127.0.0.1:7411`; `tunnel.is_some()`
+  and the bind failure path (ready after the try; a failed bind not fatal);
+  `open_with`'s `isolation` into `Served` and `BooksServer::new`'s copy (must
+  fail `isolation_label_is_enforced_under_the_unit`).
+- [P4] `Preview::operation` (the keys it drops: `confirmed`, `preview`,
+  nulls) and `Preview::check`'s three arms (missing, equal, different);
+  `post_entry`'s draft payload (each field); the digest's `since_seq`
+  comparison (`>`), its `as_of` bound, the `zero_net_accounts` branch and the
+  `never_reconciled` split; `report_status`'s three open conditions; the
+  open-drafts refusal's `<= as_of` and its decision.
+- [P5] `next_steps::apply`'s three branches (an error, a result without an
+  object, the normal path) and the `mutating` test that gives `head`;
+  `tool_steps`'s confirm branch (`!confirmed` and a `preview`), the
+  `receipt_missing` pair before it, each tool's arm; `attention_steps`'s
+  subject match (entry against invoice) and its `Problem` severity for
+  `required`; `subject_of`'s precedence; `guards::from_refusal`'s structured
+  and worded branches and `Guard::remedy_tool`'s table; `prompts::checked`'s
+  token test and each `Check` shape (month length and calendar, year length,
+  the word list); `prompt_get`'s extra-argument and missing-argument
+  refusals; `describe::subjects`'s per-prefix id choice, `describe`'s
+  `settings.set` key list and TIN mask, `history`'s `>` on `after_seq`, its
+  `limit` cut and `more`; `check_convention_source`'s three equalities,
+  `check_decision_source` and `check_open_item_source`'s equal-source and
+  empty-reason refusals; the three `apply_*_source` arms (a mutant that also
+  bumps `revision` or `seq` shows in `a_source_only_revision_is_journaled`);
+  `books.start`'s fit order and `reconciliation` split.
+- [P8] `audit::statements`' order of checks and `sort`; each `check_*`
+  predicate's comparison (`check_trial_balance`'s `balanced`,
+  `check_articulation`'s `!=`, `check_split`'s `> unit`, `check_register`'s two
+  conditions, `check_cash_flow`'s three arms, `check_control`'s `difference`,
+  unattached and `Overpaid` arms); `evidence`'s three arms (Required, the
+  reversal exemption and the policy test that lists it, the plain exemption)
+  and its receipt-set lookup; `closed_net`'s sign for revenue and expense;
+  `AttestationBar::counts` (each of the four conditions, `>=`, the `full`
+  branch, the `disagrees` early return) and `parse`; `Scope::full_bar` and
+  `serves_handoff`; `integrity_findings`'s eight arms; `backup_findings`'
+  three conditions; the export gate (`cpa_audit_standing`'s four conditions
+  and its feature test, the `refuse`/`warn` split, the reason's trim).
+- [P10] the `DEFECTS` table's file/name lookup (a `starts_with` on
+  `fn <name>(`; the `#[test]`/`#[ignore]` window of eight lines above it) and
+  the scopes-line scan in `defect_20_*`: a mutant that widens the window or
+  drops the `ignore` check survives only if no ignored or untested name is in
+  the table, so the table is the oracle.
+
+### ledger-package
+
+- [P3 IIF and as-of] `iif.rs` (`<=` in the as_of filter, the closes filter,
+  the FIXASSET date filter); `package.rs` (the cash and financing resolution,
+  the register's presence, the 1099 `through`, the README's IIF line, closes
+  sentence, warnings block and 1099 wording).
+- [P3 rename and defaults] `statement_range`, `as_of_date`, `pnl_statement`,
+  `bs_statement`, `cash_flow_statement`, `year_earnings`, `build_package`'s
+  fiscal year.
+- [P3 1099s] `vendor_1099.rs` (the CSV columns, every note's guard,
+  `may_file`, `missing_w9`'s suffix), `package.rs` (tin_gaps, the README line).
+- [P3 parties and 1099s together] `Settings::with_accounts` (each list's
+  fallback).
+- [P4b S4.5] `invoice::payment_methods` (the `qr` flag read, `link` appended
+  as a last line, the QR only when a link exists); `page_of`'s
+  snapshot-else-party choice for the bill-to, the contact, address, phone,
+  email order of the bill-to lines, the seller email's snapshot-else-company
+  fallback, the blank-footer filter; `invoice_document`'s stamp arms and
+  `InvoiceVersion::Current { as_of }`.
+- [P4b S3] `InvoiceStamp::text`'s five arms and `template_data`'s
+  `stamp_draft` test (`== Draft`); `invoice_document`'s stamp match (Void, then
+  Paid with `last_paid`, then `overdue_days > 0` before PartiallyPaid, then
+  none); the settled loop (`movement == Payment`, `!reversal`, `l.date >
+  as_of`, `!stands_on`, the negated amount, the method and " · ref " suffix
+  parsed back out of the description, `last_paid`); the re-created-copy branch
+  (`number: format!("Invoice {id}")`, `terms: None`, the `note` naming
+  `today`); `dollars`' sign handling and `format_amount`'s parenthesized
+  negatives; `template_data`'s no-lines refusal. Expect survivors in
+  `PartiallyPaid` (no sample is part paid and not yet due) and `Draft` (only
+  S4's preview reaches it) until a test asserts them.
+- [P4b S4.5] `invoice_pdf::dollars` (the negative arm) and `unit_price`
+  (`scale() <= 2`, the exact arm), `quantity_detail`'s both-or-neither match,
+  `note_text`'s three arms (re-created, both, note only).
+- [P4b S5] attention: `invoice.number.is_some()` (the legacy exemption),
+  `Open | Partial`, `sends.is_empty()`, the `checked_add_days` `unsent_days`
+  comparison (`>`), `overdue_days > 0`, the `sends.max()` last send, the
+  `reminder_days` comparison (`>`), each item's target (`Target::Invoice`) and
+  its `books.mark_sent` step args.
+- [P6] attention: the extraction `seq` comparison and the `Failed` filter, the
+  owed-account name test, the credit side and the `settles_entry` skip.
+- [U0b] `attention`: `origin`'s arm order (a reversal before its schedule, a
+  bill before its payment) and `entry_refs`' keys; `missing_receipt`'s
+  conjunction (the `Journal entry | Recurring` origin, `reversal_of` none, no
+  receipts, the policy); the `> 3` combine and its `try_fold`; `w9_missing`'s
+  three clauses (no W-9, files a 1099, the vendor not marked on file) and
+  `files_1099`'s `any`; `paid_this_year`'s `max` (today) and `min` (Dec 31) and
+  its `paid - received`; `depreciation_due`'s `in_effect` filter,
+  `period_month` (`1..=12`) and `!is_zero`; `period_month`'s split; the
+  severity arms (undetermined 1099, refuse tax category, parties require);
+  `dollars`' thousands grouping and negative-zero test.
+
+### ledger-host
+
+- [P2 slices 3 to 8] pass 2; `commands.rs`.
+- [P3 format upgrade] `host.rs` (`consent`, `consented`), `commands.rs`
+  (`consent_now`, `upgrade_format`, `offer_upgrades`, `offer_upgrade`,
+  `upgrade`, `book_line`, `upgraded_lines`, `upgrade_explained`,
+  `ASKED_UPGRADES`).
+- [P9a] the host's `server_flags` extension and `parse_args`' passthrough of
+  `--isolation` and its optional `--http` value.
+- [P11a step 0] `tokens.rs`'s `os` modules are not reachable by mutation
+  testing (they need the real OS store); the `Items` logic they share is,
+  through the file store.
+- [U0e] `tokens.rs`'s `Keeper::set` (the temporary file's mode and the
+  rename: a mutant that writes the final file directly or wider must die on
+  `a_token_file_is_owner_only`), `Keeper::get`'s `NotFound` arm (must die on
+  `an_unreadable_token_file_is_an_error_never_no_token`), `Keeper::delete`'s
+  `NotFound` arm, `Account::key`'s three parts
+  (`an_account_names_the_root_by_hash_and_the_book_and_token`);
+  `bridge.rs::token_file_refusal`'s `holds_token` guard.
+- [P11c] `winsec::is_private`'s three refusals (owner, missing DACL, an allow
+  entry for anyone else) and the ACE types it skips; `ipc::Endpoint::new`'s
+  hash input (a mutant that drops the lower-casing or the prefix strip splits
+  one root into two pipes: found only by two processes spelling the path
+  differently); the Windows `StdStream::read_some`'s deadline comparison and
+  `BROKEN_PIPE` arm; `Listener`'s `IDLE_INSTANCES` pool (a mutant making it 1
+  passes every test but `many_clients_at_once_all_connect`);
+  `start.rs::host_env`'s list. None of the Windows arms is reachable by
+  `cargo mutants` on Linux: they run on the Windows job only.
+- [P11a steps 2 and 3] `update.rs`'s `verify` (a mutant that drops the sha or
+  signature check must die on `unsigned_update_refused`'s sha and key cases),
+  `refuse_if_consented`'s two comparisons (the feature one is covered by
+  `rollback_refuses_after_a_book_consented_to_a_newer_format`; a case with a
+  higher format number is a gap to add), `swap_in`'s temporary-then-rename
+  (`update_is_atomic`), `healthy` (`failed_update_rolls_back`),
+  `install_kind` (the marker test), `parse_version`'s rejections.
+- [P11b] `commands::make_books_home_in` (the `!path.exists()` test that keeps
+  a person's `AGENTS.md`; the merge that dedupes the allow rule;
+  `BookId::parse` before any path is joined); `find_agent_in` (the order PATH
+  then the installer folders; `is_program`'s mode test); `start_agent_in` (the
+  `Missing` arm); `first_run_state`'s three fields; `set_first_passphrase`'s
+  already-set refusal.
+
+### ledger-vault
+
+- No target of its own was recorded by any unit. The recipe `mutants-vault`
+  runs the crate's `tests/vault.rs` and the `ledger-cli` suites that reach the
+  vault (`spec_vault.rs`, `tin_files.rs`); whatever survives is judged in the
+  run.
+
+### ledger-cli
+
+- [P2 slices 3 to 8] `ledger-cli` from scratch (the argument handling, the
+  server and bridge modes). The run is `just mutants-cli`.
+- [P9a] the `--isolation` and `--http` flags as the executable passes them on.
+
+### Not mutated
+
+- [P11b] `ledger-gui`: `dock::key_bytes` (the modifier parameter's arithmetic,
+  the Ctrl-letter byte, the app-cursor switch, the Alt escape), `dock::color`'s
+  cube and gray ramps and its bold brightening, `Session::resize`'s equality
+  early return, the panel's open/closed ids (a remembered size must not leak
+  between them), `Welcome::steps`' choice of `now` (each arm), the passphrase
+  length and equality gates, the `agent_later` flag. The viewer has no
+  mutation run (owner, 2026-10-18); these are for the viewer's own tests.
+- [P3 rename and defaults, P3 1099s, P3 IIF, P4b S2 to S4.5, P7] the viewer
+  items (`view_model.rs`, `show.rs`, `owed_to_member`, `party_what_for`,
+  `share_text`, `Filter::keeps` and its sorts and labels, `document_of`,
+  `details`, `invoice_name`, `issued_copy`, `viewer discount_by` and
+  `days_overdue`, `menu.rs`'s note, `theme.rs` `font_definitions`): covered by
+  `view_model.rs`, `show.rs` and `read_only.rs`, not mutated.
+
+### bookspec (its own repository since P13 step 6)
+
+- [P13] `rules::build`'s area ordinals; `RuleId::parse`'s prefix, area,
+  digit, leading-zero and zero checks; `rule_for_refusal`'s mapping arms;
+  `schema::is_exact_decimal`, `is_date`, `is_month`, `is_month_day`,
+  `check_amount`'s positivity; `Example::validate`'s closed-list arms, the
+  one-kind rule, `reverses < n`, shares summing to 1, `after` bounds, the
+  command's accepted-or-refused exclusivity, the `only` table;
+  `Query::is_complete`'s membership; `Refusal::of_reason`'s fallback; the
+  runner's `compare`, `Outcome`'s mapping and `run`'s "claimed but no example"
+  arm; the adapter's `event_of`, its `depreciation_schedule` month span and
+  every `answer_*` figure against the loader's same check (the two must agree
+  on all examples).
+- [P13 steps 4 and 5] the adapter's `refusal` arms (`UnbalancedEntry`,
+  `NegativeAmountLine`, `ZeroAmountLine`, `FinerThanMinorUnit`,
+  `ParentTypeMismatch`, `EntryAlreadyReversed`, `ClosedPeriod`), each pinned by
+  the example that expects it, and the `money` closure's positivity test;
+  `rule_for_refusal`'s new arms; `check_amount`'s `positive` flag; `derive`'s
+  `refusal_justified` arms, `Model::post`'s close, `signed`'s date window and
+  `closings` flag, the accounting-equation check; the spec test's pin search.

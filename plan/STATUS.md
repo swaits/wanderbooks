@@ -1,5 +1,40 @@
 # STATUS — 2026-10-28: nine units landed, five built on paused branches; P11a starts
 
+## Paused (2026-10-31, 03:00 UTC): the owner paused the workstream
+
+**Where things stand.** `main` is `c7cadef2` (code `a413e394`, the
+P11c merge); the Linux gate and macOS were green on `7809ff81`, the
+commit before the P11c merge, and P11c's branch was green on all three
+platforms at the same content. The three workflows gate every push
+(`check`, `portable-macos`, `portable-windows`).
+
+**Two worktrees hold unfinished work, checkpointed, not for merge as
+is** (each has a `wip: pause checkpoint` commit on top of real ones):
+- `../wb-P12`, branch `P12`: P12 step 1. Done and committed: the
+  mutation recipes (`1343bb14`), the per-crate checklists in
+  `docs/testing.md` (`573e3d4f`). In the checkpoint (`ffc34e3c`): the
+  two fuzz targets and the op-sequence extension, unfinished and
+  unchecked.
+- `../wb-P11a`, branch `P11a`: the in-app accept of a staged update,
+  the viewer's notice and "Check for updates", the Windows installer
+  job, the translocation refusal; all in the checkpoint (`d307fc90`),
+  compiling, tests not yet run.
+
+**To resume:** for each worktree, read the checkpoint diff, finish the
+step with the D-60 checks (compile, fmt, clippy on the touched crates,
+the unit's own tests), rebase on `main`, merge; the P11a branch is
+pushed for a CI run before merging (the Windows installer job can only
+be seen there). Then P12 step 2 (the run: mutation testing crate by
+crate, locally per D-59; fuzzing for the owner's hours; property
+maxima; `just prove-all`), scheduled on the owner's machine, detached.
+
+**The owner's own items:** run the `release` workflow once from
+GitHub's Actions page (the owner's token cannot dispatch it); walk the
+app on a Mac and on a Windows machine (P11a's and P11c's last
+Done-when); replace `deploy/packaging/icons/512x512.png`; the re-audit
+per `docs/runbooks/re-audit.md`; signing when a public release is near
+(D-64).
+
 ## Now (2026-10-29, night): waves 1 to 3 landed; P11c and P12 left
 
 **Landed today**, each merged with a compile and the unit's own tests

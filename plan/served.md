@@ -891,6 +891,8 @@ These files are edited by nearly every unit. Each has one owner (the EM, or a na
 | Kind | Name | Unit |
 |---|---|---|
 | crate | `ledger-reader` (a library; D-53's `ledger-extract` subprocess stays closed) | U0d |
+| lease/admin intent | `Intent::ApplyUpdate` (`crates/ledger-host/src/lease.rs`), `admin::Request::ApplyUpdate` (the owner's in-app accept of a staged update: the host applies it at the next quiet moment and restarts) | P11a step 4 |
+| viewer | `Owner::check_for_updates`, `Owner::update_waiting` (the menu item "Check for updates" and the notice a staged update shows in the viewer); `books.start`'s `update_waiting` field (the same notice to an agent) | P11a steps 4 and 6 |
 | bookspec example ids | `entry-an-unbalanced-entry-is-refused`, `entry-a-line-amount-is-positive`, `entry-cents-add-exactly`, `ledger-a-fraction-of-a-cent-is-refused`, `ledger-a-child-account-has-its-parents-type`, `ledger-a-mistake-is-reversed-never-erased`, `statement-the-books-balance-and-the-equation-holds`, `period-a-close-sweeps-the-year-into-capital` (taken by the engineer, confirmed by the EM 2026-10-29) | P13 steps 4-5 |
 | journal feature | `documents_v2` | S4, S5, S6, S7 (one feature for the four; D-52) |
 | journal feature | `drafts_v2` | P4 |

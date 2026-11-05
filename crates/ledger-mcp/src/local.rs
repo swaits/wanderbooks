@@ -1730,6 +1730,22 @@ async fn mcp(
     })
 }
 
+/// The one router both doors serve (the local socket and the tunnel).
+fn router(books: Arc<Books>) -> axum::Router {
+    axum::Router::new()
+        .route("/b/{book}/mcp", axum::routing::any(mcp))
+        .route("/b/{book}/u/{upload}", axum::routing::put(upload))
+        .route("/b/{book}/a/{attachment}", axum::routing::get(download))
+        .route("/b/{book}/x/{export}", axum::routing::get(export))
+        .fallback(not_found)
+        .with_state(books)
+}
+
+/// The door in-process, for the fuzz targets (P12): the same router, fed
+/// bytes without a socket. Not built unless asked for.
+#[cfg(feature = "fuzzing")]
+pub mod fuzz_door;
+
 /// Anything but `/b/{book}/mcp`.
 async fn not_found() -> (axum::http::StatusCode, &'static str) {
     (axum::http::StatusCode::NOT_FOUND, "not found")
@@ -2080,13 +2096,7 @@ async fn serve(
         }
     });
 
-    let app = axum::Router::new()
-        .route("/b/{book}/mcp", axum::routing::any(mcp))
-        .route("/b/{book}/u/{upload}", axum::routing::put(upload))
-        .route("/b/{book}/a/{attachment}", axum::routing::get(download))
-        .route("/b/{book}/x/{export}", axum::routing::get(export))
-        .fallback(not_found)
-        .with_state(books.clone());
+    let app = router(books.clone());
     // The HTTP side keeps answering (refusing, once closing) until the
     // close is done: a client is never cut off mid-request by it.
     let shut = CancellationToken::new();

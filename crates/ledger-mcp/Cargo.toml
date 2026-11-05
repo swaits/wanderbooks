@@ -39,11 +39,17 @@ toml = "1"
 # The vault's TINs, decoded for the filing scan (tin_files.rs), are wiped
 # from memory when dropped, as the vault's own are.
 zeroize = "1"
+tempfile = { version = "3", optional = true }
 
 # The socket's peer credentials (SO_PEERCRED, getpeereid) for local.rs's
 # same-user check: std has no call for them.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[features]
+# The door in-process, for fuzz/ (local.rs fuzz_door). Off in every build
+# but the fuzz workspace's.
+fuzzing = ["dep:tempfile"]
 
 [lints]
 workspace = true

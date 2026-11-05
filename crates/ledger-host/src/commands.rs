@@ -1031,6 +1031,90 @@ pub fn close_books(common: &Common) -> Result<String, String> {
     }
 }
 
+/// An update the host has downloaded and checked, waiting for the owner
+/// (the viewer's notice; P11a step 4).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UpdateWaiting {
+    /// Its version.
+    pub version: String,
+    /// When it was staged (UTC, RFC 3339).
+    pub staged_at: String,
+}
+
+/// The update waiting for the owner's accept, if there is one.
+pub fn update_waiting(common: &Common) -> Option<UpdateWaiting> {
+    let found = ledger_store::root::Root::find(common.root.as_deref()).ok()?;
+    let u = found.staged_update()?;
+    // One this program already is (or is older than) is not waiting: the
+    // next look drops it.
+    let newer = crate::update::parse_version(&u.version)
+        .zip(crate::update::parse_version(
+            crate::update::program_version(),
+        ))
+        .is_some_and(|(staged, mine)| staged > mine);
+    newer.then_some(UpdateWaiting {
+        version: u.version,
+        staged_at: u.staged_at,
+    })
+}
+
+/// "Check for updates": look at the feed now, whatever the daily look
+/// last did, and stage a newer release if there is one (it never swaps
+/// the program: accepting is [`apply_update`]). What came of it.
+pub fn check_for_updates(common: &Common) -> Result<String, String> {
+    let found =
+        ledger_store::root::Root::find(common.root.as_deref()).map_err(|e| e.to_string())?;
+    let mine = crate::update::program_version();
+    if let crate::update::Install::PackageManaged(manager) = crate::update::this_install()? {
+        return Err(format!(
+            "this install is updated by {manager}, not here: use the package manager"
+        ));
+    }
+    match crate::update::stage_if_due(&found, mine, Duration::ZERO) {
+        Ok(Some(version)) => Ok(format!(
+            "Version {version} is downloaded and checked. Accept it to start using it."
+        )),
+        Ok(None) => Ok(match update_waiting(common) {
+            Some(u) => format!(
+                "Version {} is downloaded and checked. Accept it to start using it.",
+                u.version
+            ),
+            None => format!("You have the newest version ({mine})."),
+        }),
+        Err(why) => Err(why.to_string()),
+    }
+}
+
+/// Accept the staged update: the books' host installs it and restarts
+/// onto it once no call is running, the books staying open meanwhile
+/// (the lease socket's apply_update). With no host running, it is
+/// installed here, since no call can be cut off. What came of it.
+pub fn apply_update(common: &Common) -> Result<String, String> {
+    let found =
+        ledger_store::root::Root::find(common.root.as_deref()).map_err(|e| e.to_string())?;
+    let run = found.run_dir().map_err(|e| e.to_string())?;
+    let said = |detail: Option<String>| detail.unwrap_or_else(|| "The update is accepted.".into());
+    match crate::opener::ask_once_within(&run, Ask::Intent(Intent::ApplyUpdate), UPDATE_WAIT)? {
+        Some(HostMsg::Done { detail }) => Ok(said(detail)),
+        Some(HostMsg::Refused(why)) => Err(why),
+        Some(HostMsg::Uncertain(why)) => Err(why),
+        Some(other) => Err(format!("the books' host answered oddly: {other:?}")),
+        None => match crate::update::apply_staged(&found, crate::update::program_version()) {
+            Ok(Some(version)) => Ok(format!(
+                "Version {version} is installed; it starts the next time the books open."
+            )),
+            Ok(None) => Err(
+                "no newer version waits, or this install is updated by its package manager".into(),
+            ),
+            Err(why) => Err(why.to_string()),
+        },
+    }
+}
+
+/// The longest the host may take to install an accepted update (a copy
+/// and a health check of the new program).
+const UPDATE_WAIT: Duration = Duration::from_secs(90);
+
 /// The longest an agent's own command may take to add the books.
 const CONNECT_WAIT: Duration = Duration::from_secs(60);
 

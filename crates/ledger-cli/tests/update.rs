@@ -1040,3 +1040,137 @@ fn a_staged_update_that_was_tampered_with_is_dropped_not_applied() {
         "the tampered copy was kept"
     );
 }
+
+/// What the owner's app does when the owner accepts: one `apply_update`
+/// on the host's lease socket (the viewer's `Owner::apply_update`, scripted).
+fn owner_accepts(home: &Home) -> Result<Option<ledger_host::lease::HostMsg>, String> {
+    ledger_host::opener::ask_once_within(
+        &home.root().join("run"),
+        ledger_host::lease::Ask::Intent(ledger_host::lease::Intent::ApplyUpdate),
+        Duration::from_secs(90),
+    )
+}
+
+#[test]
+fn books_start_says_an_update_waits() {
+    let home = Home::new("start-says");
+    home.create("acme");
+    let release = Release::new();
+    let next = newer(&home, "start-says");
+    release.publish("9.0.0", &next, |_| {});
+    let mut agent = Agent::start(&home, "acme");
+    let quiet = agent.call("books.start", json!({})).unwrap();
+    assert!(quiet.get("update_waiting").is_none(), "{quiet}");
+
+    name_feed(&home, &release);
+    // The host's look is once a day (a test knob makes it soon); a mark
+    // older than that lets the next poll look now.
+    let _ = std::fs::remove_file(home.updates().join("checked"));
+    assert!(
+        wait_for(30, || staged_version(&home).as_deref() == Some("9.0.0")),
+        "nothing was staged"
+    );
+    let start = agent.call("books.start", json!({})).unwrap();
+    assert_eq!(start["update_waiting"]["version"], "9.0.0", "{start}");
+    assert!(
+        start["update_waiting"]["staged_at"]
+            .as_str()
+            .unwrap()
+            .ends_with('Z')
+    );
+    assert!(
+        start["update_waiting"]["how"]
+            .as_str()
+            .unwrap()
+            .contains("only the owner"),
+        "{start}"
+    );
+    // An agent is told to tell the human, and is given no way to accept.
+    let steps = start["next_steps"].as_array().unwrap();
+    assert!(
+        steps
+            .iter()
+            .any(|s| s["why"].as_str().unwrap_or_default().contains("9.0.0")),
+        "{steps:?}"
+    );
+    let text = start.to_string();
+    assert!(
+        !text.contains(&home.dir.path().display().to_string()),
+        "a path in books.start"
+    );
+}
+
+#[test]
+fn the_owner_accepts_a_staged_update_in_the_app() {
+    let home = Home::new("accept");
+    home.create("acme");
+    let mut agent = Agent::start(&home, "acme");
+    agent.add_account("4000").unwrap();
+    let host_before = wait_host(&home);
+
+    // Nothing staged: refused, and nothing changes.
+    match owner_accepts(&home) {
+        Ok(Some(ledger_host::lease::HostMsg::Refused(_))) => {}
+        other => panic!("accepting nothing: {other:?}"),
+    }
+
+    let release = Release::new();
+    let next = newer(&home, "accept");
+    release.publish("9.0.0", &next, |_| {});
+    name_feed(&home, &release);
+    let _ = std::fs::remove_file(home.updates().join("checked"));
+    assert!(
+        wait_for(30, || staged_version(&home).as_deref() == Some("9.0.0")),
+        "nothing was staged"
+    );
+    let old = home.program();
+    assert_eq!(sha256(&home.program()), sha256(&old));
+
+    // The owner accepts, in the app: the answer says it is installed.
+    match owner_accepts(&home) {
+        Ok(Some(ledger_host::lease::HostMsg::Done { detail })) => {
+            assert!(detail.unwrap_or_default().contains("9.0.0"));
+        }
+        other => panic!("accepting: {other:?}"),
+    }
+    assert_eq!(sha256(&home.program()), sha256(&next));
+
+    // Writes all through the restart onto it: none lost, none made twice,
+    // the session carries on with no reconnect.
+    let mut written = vec!["4000".to_string()];
+    let deadline = Instant::now() + Duration::from_secs(90);
+    let mut k = 0u32;
+    loop {
+        assert!(Instant::now() < deadline, "the host never restarted");
+        let code = format!("{}", 5000 + k);
+        k += 1;
+        let r = agent.add_account(&code);
+        assert!(r.is_ok(), "a write across the accept: {r:?}");
+        written.push(code);
+        if home.pids("host").len() == 1 && home.pids("host")[0] != host_before {
+            break;
+        }
+    }
+    let host = wait_host(&home);
+    assert!(wait_for(20, || !home.pids("server").is_empty()));
+    let exe = |pid: u32| std::fs::read_link(format!("/proc/{pid}/exe")).unwrap();
+    assert!(!exe(host).to_string_lossy().contains("(deleted)"));
+    assert_eq!(
+        sha256(&std::fs::read(home.updates().join("previous/wanderbooks")).unwrap()),
+        sha256(&old),
+        "the old program is kept for rollback"
+    );
+    agent.add_account("4999").unwrap();
+    written.push("4999".into());
+    let chart = agent.call("books.chart", json!({})).unwrap();
+    let mut in_books: Vec<String> = chart["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|a| a["code"].as_str().map(str::to_string))
+        .filter(|c| c.starts_with('4') || c.starts_with('5'))
+        .collect();
+    in_books.sort();
+    written.sort();
+    assert_eq!(in_books, written);
+}

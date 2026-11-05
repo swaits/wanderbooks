@@ -172,6 +172,21 @@ impl ledger_gui::owner::Owner for ViewerOwner {
     fn upgrade_format(&self, book: &str, passphrase: &str) -> Result<Vec<String>, String> {
         ledger_host::commands::upgrade_format(&self.0, book, passphrase)
     }
+
+    fn update_waiting(&self) -> Option<ledger_gui::owner::UpdateWaiting> {
+        ledger_host::commands::update_waiting(&self.0).map(|u| ledger_gui::owner::UpdateWaiting {
+            version: u.version,
+            staged_at: u.staged_at,
+        })
+    }
+
+    fn check_for_updates(&self) -> Result<Vec<String>, String> {
+        ledger_host::commands::check_for_updates(&self.0).map(|l| vec![l])
+    }
+
+    fn apply_update(&self) -> Result<Vec<String>, String> {
+        ledger_host::commands::apply_update(&self.0).map(|l| vec![l])
+    }
 }
 
 /// `wanderbooks gui`: the viewer, in this process. For books of the data

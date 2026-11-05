@@ -16,7 +16,8 @@
 //!   1. A connection's first line is one Ask; a Hold keeps the
 //!      connection (the lease lasts until it closes), anything else is
 //!      answered once and the connection closed.
-//!   2. Exactly two intents exist: close and consent_format_upgrade; any
+//!   2. Exactly three intents exist: close, consent_format_upgrade and
+//!      apply_update; any
 //!      other request is refused.
 //!   3. consent_format_upgrade carries the owner passphrase; without one
 //!      it is refused before anything is done. With one, the host hands it
@@ -106,7 +107,7 @@ pub enum Ask {
     Intent(Intent),
 }
 
-/// The owner's intents: exactly these two (INVARIANT 2).
+/// The owner's intents: exactly these three (INVARIANT 2).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Intent {
@@ -120,6 +121,10 @@ pub enum Intent {
         #[serde(default)]
         passphrase: Option<ledger_mcp::admin::Passphrase>,
     },
+    /// Accept the update the host has staged (P11a step 4): the host
+    /// installs it, and restarts onto it once no call is running, the
+    /// books staying open to every holder across it.
+    ApplyUpdate,
 }
 
 impl Intent {
@@ -258,9 +263,10 @@ mod tests {
     }
 
     #[test]
-    fn exactly_two_intents_are_understood() {
+    fn exactly_three_intents_are_understood() {
         for intent in [
             json!("close"),
+            json!("apply_update"),
             json!({"consent_format_upgrade": {"book": "acme", "passphrase": "x"}}),
         ] {
             let h = parse(json!({"proto": 1, "intent": intent})).unwrap();

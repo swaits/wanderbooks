@@ -242,6 +242,17 @@ pub struct FormatUpgradeOut {
     pub how: String,
 }
 
+/// An update the host has downloaded and checked, waiting for the owner.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct UpdateWaitingOut {
+    /// The version waiting.
+    pub version: String,
+    /// When the host staged it (UTC, RFC 3339).
+    pub staged_at: String,
+    /// Who can accept it, and how.
+    pub how: String,
+}
+
 /// Something to do next.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct NextStepOut {
@@ -391,6 +402,10 @@ pub struct StartOut {
     /// the owner gives the go-ahead. No tool can: tell the human.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub format_upgrade: Option<FormatUpgradeOut>,
+    /// A newer version the host has downloaded and checked (P11a step 4):
+    /// the owner accepts it in the app. No tool can: tell the human.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update_waiting: Option<UpdateWaitingOut>,
     /// Who is asking.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub you: Option<YouOut>,
@@ -963,6 +978,25 @@ impl BooksServer {
                 "Tell the human first: these books wait for a format upgrade, which only the owner can agree to (in the app, which asks when it opens the books, or `wanderbooks books upgrade` at a terminal, with the owner passphrase; a verified backup is made first). Until then they work on their old format and refuse what needs the new one (format_upgrade_pending). No tool can upgrade them.",
             ));
         }
+        // A newer version waits for the owner (P11a step 4): said once,
+        // after a format upgrade, which comes first.
+        let update_waiting = ledger_store::root::root_of_book_dir(store.data_dir())
+            .and_then(ledger_store::root::staged_update_in)
+            .map(|u| UpdateWaitingOut {
+                version: u.version,
+                staged_at: u.staged_at,
+                how: "only the owner accepts it: in the app (Books, then Update), or `wanderbooks update` at a terminal. No tool can.".to_string(),
+            });
+        if let Some(u) = &update_waiting {
+            next_steps.push(step(
+                "books.handbook",
+                None,
+                &format!(
+                    "Tell the human: version {} of wanderbooks is downloaded and checked, and waits for them to accept it in the app (Books, then Update). Nothing changes until they do; no tool can.",
+                    u.version
+                ),
+            ));
+        }
         if onboarding || focus == "onboarding" {
             next_steps.push(NextStepOut {
                 tool: None,
@@ -1240,6 +1274,7 @@ impl BooksServer {
                     title: handbook::title(md).to_string(),
                 })
                 .collect(),
+            update_waiting,
             format_upgrade: upgrade.map(|u| FormatUpgradeOut {
                 guard: ledger_store::error::FORMAT_UPGRADE_PENDING.to_string(),
                 format: u.from.format,

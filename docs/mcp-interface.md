@@ -124,7 +124,8 @@ settings-and-conventions section says how to use them.
   codes), backup: { last_at, through_seq, stale }, prompts: [{ name, args
   }], needs_attention: { items: [{ id, severity, kind, title, tool?, args?
   }], counts: { kind: n } }, truncated?, handbook_sections,
-  format_upgrade?: { guard, format, adds, how }, next_steps: [{ tool |
+  format_upgrade?: { guard, format, adds, how }, update_waiting?: { version,
+  staged_at, how }, next_steps: [{ tool |
   prompt, args?, why, required }], isolation }`. The connect text names it
   as the first call. `book.url` is the book's path on this server
   (`/b/ID/mcp`), never a path on a disk. `you` is the token's own facts
@@ -145,6 +146,12 @@ settings-and-conventions section says how to use them.
   (below); its next step comes first, before anything else, at every
   start until it is done: `books.handbook {section: "format-upgrade"}`,
   "Tell the human first: …".
+  `update_waiting` is there only while the host has downloaded and checked
+  a newer version of wanderbooks (`<root>/updates/staged/`): its version,
+  when it was staged (UTC, RFC 3339) and how it may be accepted. Only the
+  owner can accept it, in the app (Books, then Update) or with
+  `wanderbooks update` at a terminal; no tool can. Its next step asks the
+  agent to tell the human, and nothing changes until they accept.
   `isolation` is `same_user (advisory)` locally (D-32): the books are
   hidden from agents in the owner's own account, not locked against them.
   On the owner's own machine, where the server runs as a separate account

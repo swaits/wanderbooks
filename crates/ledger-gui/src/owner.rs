@@ -132,6 +132,16 @@ pub struct RestorePlan {
     pub lines: Vec<String>,
 }
 
+/// An update the host has downloaded and checked, waiting for the owner to
+/// accept it (P11a step 4).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UpdateWaiting {
+    /// Its version.
+    pub version: String,
+    /// When it was staged (UTC, RFC 3339).
+    pub staged_at: String,
+}
+
 /// The owner's actions, done by the program the viewer runs in (ledger-cli
 /// over the books server and the agents' own commands). Each blocks: the
 /// menu calls it off the UI thread.
@@ -172,6 +182,21 @@ pub trait Owner: Send + Sync {
     }
     /// Hold the books `book` open while the viewer runs (the viewer's lease).
     fn hold(&self, _book: &str) {}
+    /// The update waiting for the owner's accept, if one is (read from the
+    /// data root; cheap, called every few seconds).
+    fn update_waiting(&self) -> Option<UpdateWaiting> {
+        None
+    }
+    /// "Check for updates": look at the release feed now and stage a newer
+    /// version if there is one. What came of it, in plain words.
+    fn check_for_updates(&self) -> Result<Vec<String>, String> {
+        Err("not here".into())
+    }
+    /// Accept the waiting update: the books' host installs it and restarts
+    /// onto it when no call is running, the books staying open.
+    fn apply_update(&self) -> Result<Vec<String>, String> {
+        Err("not here".into())
+    }
     /// How to run `agent` in the books home of `book` (made if need be): the
     /// dock starts it on a terminal of its own (D-27).
     fn agent_start(&self, _agent: Agent, _book: &str) -> Result<AgentStart, String> {
@@ -291,7 +316,13 @@ pub struct OwnerMenu {
     /// The books whose format upgrade was asked for since the viewer
     /// opened them (INVARIANT 5: once each open).
     asked_upgrade: Option<String>,
+    /// The update waiting, as last read, and when (re-read every few
+    /// seconds and after any job).
+    update: Option<(std::time::Instant, Option<UpdateWaiting>)>,
 }
+
+/// How long a reading of the waiting update is kept.
+const UPDATE_LOOK: std::time::Duration = std::time::Duration::from_secs(5);
 
 impl OwnerMenu {
     /// The id of the books shown, if they are books of a data root: found
@@ -304,15 +335,73 @@ impl OwnerMenu {
         self.book.as_ref().and_then(|(_, id)| id.clone())
     }
 
-    /// The standing notice of a format upgrade the books wait for, above
-    /// the page, and the go-ahead asked for once each open (INVARIANT 5).
-    pub fn notice(&mut self, ui: &mut Ui, books: &Arc<Books>) {
-        if owner().is_none() {
-            return;
+    /// The update waiting, if any (read now and then, not every frame).
+    fn update_waiting(
+        &mut self,
+        ctx: &egui::Context,
+        owner: &Arc<dyn Owner>,
+    ) -> Option<UpdateWaiting> {
+        if self
+            .update
+            .as_ref()
+            .is_none_or(|(at, _)| at.elapsed() > UPDATE_LOOK)
+        {
+            self.update = Some((std::time::Instant::now(), owner.update_waiting()));
         }
+        ctx.request_repaint_after(UPDATE_LOOK);
+        self.update.as_ref().and_then(|(_, u)| u.clone())
+    }
+
+    /// The standing notices above the page: an update waiting for the
+    /// owner's accept, and a format upgrade the books wait for, whose
+    /// go-ahead is asked for once each open (INVARIANT 5).
+    pub fn notice(&mut self, ui: &mut Ui, books: &Arc<Books>) {
+        let Some(owner) = owner() else {
+            return;
+        };
         let Some(book) = self.book_of(books) else {
             return;
         };
+        if let Some(update) = self.update_waiting(ui.ctx(), &owner) {
+            let p = crate::theme::pal(ui.ctx());
+            let mut start: Option<Box<dyn FnOnce() -> Outcome + Send>> = None;
+            egui::Frame::new()
+                .fill(p.warning_soft)
+                .inner_margin(egui::Margin::symmetric(20, 10))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(
+                            RichText::new(format!(
+                                "{} Version {} of wanderbooks is ready.",
+                                icon::ARROW_FAT_UP,
+                                update.version
+                            ))
+                            .font(crate::theme::semibold(13.0))
+                            .color(p.warning),
+                        );
+                        ui.label(
+                            RichText::new(
+                                "It is downloaded and checked. The books stay open while it starts, and no work in progress is cut off.",
+                            )
+                            .font(crate::theme::regular(13.0))
+                            .color(p.text),
+                        );
+                        let free = self.job.is_none();
+                        if ui
+                            .add_enabled(free, egui::Button::new("Update now"))
+                            .on_hover_text("Start using the new version")
+                            .clicked()
+                        {
+                            let o = owner.clone();
+                            start = Some(Box::new(move || o.apply_update()));
+                        }
+                    });
+                });
+            if let Some(work) = start {
+                self.start(ui.ctx(), "Update".into(), work);
+            }
+        }
         let Some(upgrade) = books.format_upgrade.clone() else {
             return;
         };
@@ -378,6 +467,7 @@ impl OwnerMenu {
         {
             self.done = Some((what.clone(), done));
             self.job = None;
+            self.update = None;
         }
         let text = if compact {
             RichText::new(icon::BOOKS).size(16.0).color(p.muted)
@@ -391,6 +481,7 @@ impl OwnerMenu {
             button = button.min_size(vec2(32.0, ui.spacing().interact_size.y + 4.0));
         }
         let busy = self.job.is_some();
+        let waiting = self.update_waiting(ui.ctx(), &owner);
         let mut start: Option<(String, Box<dyn FnOnce() -> Outcome + Send>)> = None;
         let response = ui
             .add_enabled_ui(!busy, |ui| {
@@ -447,6 +538,24 @@ impl OwnerMenu {
                         {
                             self.dialog = Dialog::Upgrade(Box::new(UpgradeForm::new(upgrade.clone())));
                         }
+                    }
+                    ui.separator();
+                    if ui
+                        .button(format!("{} Check for updates", icon::ARROWS_CLOCKWISE))
+                        .on_hover_text("Look for a newer version of wanderbooks now")
+                        .clicked()
+                    {
+                        let o = owner.clone();
+                        start = Some(("Check for updates".into(), Box::new(move || o.check_for_updates())));
+                    }
+                    if let Some(u) = &waiting
+                        && ui
+                            .button(format!("{} Update to {}", icon::ARROW_FAT_UP, u.version))
+                            .on_hover_text("Start using the version that is downloaded and checked: the books stay open")
+                            .clicked()
+                    {
+                        let o = owner.clone();
+                        start = Some(("Update".into(), Box::new(move || o.apply_update())));
                     }
                     ui.separator();
                     if ui

@@ -661,6 +661,12 @@ impl Root {
             .map_err(|e| self.hide(e))
     }
 
+    /// The update the host has downloaded, checked and staged under
+    /// `updates/staged/`, if one waits (P11a step 4).
+    pub fn staged_update(&self) -> Option<StagedUpdate> {
+        staged_update_in(&self.path)
+    }
+
     /// The folder a book lives in.
     pub fn book_dir(&self, id: &BookId) -> PathBuf {
         self.path.join(BOOKS_DIR).join(id.as_str())
@@ -2393,4 +2399,43 @@ mod unit {
         let keys = private_book_folder(book, "keys").unwrap();
         assert_eq!(keys, book.join("keys"));
     }
+}
+
+/// An update waiting in `<root>/updates/staged/`: downloaded, checked and
+/// kept by the host, applied when the owner accepts it or the books next
+/// start.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StagedUpdate {
+    /// Its version.
+    pub version: String,
+    /// When it was staged, UTC (RFC 3339).
+    pub staged_at: String,
+}
+
+/// The update staged in the data root `root`, if one waits. What it says
+/// is shown to people and agents, so a version that is not plainly one
+/// (digits, letters, dots, dashes, at most 40) is no update.
+pub fn staged_update_in(root: &Path) -> Option<StagedUpdate> {
+    let meta = root.join("updates").join("staged").join("meta.json");
+    let value: serde_json::Value = serde_json::from_slice(&std::fs::read(&meta).ok()?).ok()?;
+    let version = value["version"].as_str()?;
+    let plain = !version.is_empty()
+        && version.len() <= 40
+        && version
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+'));
+    if !plain {
+        return None;
+    }
+    let at: chrono::DateTime<chrono::Utc> = std::fs::metadata(&meta).ok()?.modified().ok()?.into();
+    Some(StagedUpdate {
+        version: version.to_string(),
+        staged_at: at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+    })
+}
+
+/// The data root a book's folder (`<root>/books/<id>`) is in, if it is one.
+pub fn root_of_book_dir(book_dir: &Path) -> Option<&Path> {
+    let root = book_dir.parent()?.parent()?;
+    root.join(MARKER_FILE).is_file().then_some(root)
 }

@@ -648,6 +648,9 @@ impl Host {
                         Event::Intent(Intent::ConsentFormatUpgrade { book, passphrase }, answer) => {
                             self.consent(book, passphrase.unwrap_or_default(), answer);
                         }
+                        Event::Intent(Intent::ApplyUpdate, answer) => {
+                            self.apply_update(answer);
+                        }
                         Event::Intent(Intent::Close, answer) => {
                             let _ = answer.send(HostMsg::Done {
                                 detail: Some("the books are closing".into()),
@@ -715,7 +718,7 @@ impl Host {
                             let (root, every, looking) = (self.root.clone(), self.knobs.update_check, looking.clone());
                             std::thread::spawn(move || {
                                 match crate::update::stage_if_due(&root, crate::update::program_version(), every) {
-                                    Ok(Some(version)) => eprintln!("wanderbooks host: version {version} is downloaded and checked; it starts the next time the books open, or at `wanderbooks update`"),
+                                    Ok(Some(version)) => eprintln!("wanderbooks host: version {version} is downloaded and checked; it starts when you accept it in the app, the next time the books open, or at `wanderbooks update`"),
                                     Ok(None) => {}
                                     Err(why) => eprintln!("wanderbooks host: the look for a newer version failed: {why}"),
                                 }
@@ -857,6 +860,54 @@ impl Host {
             self.close_server();
         } else {
             self.drain_until = Some(Instant::now() + LEASE_DRAIN);
+        }
+    }
+
+    /// The owner's accept of the staged update (P11a step 4): install it
+    /// now, as `wanderbooks update` does, and let the host's watch for a
+    /// replaced program (INVARIANT 7) restart onto it once no call is
+    /// running: the server finishes its calls before it closes, and the
+    /// leases carry on across it. The answer is sent when the file is
+    /// in place (or why not), from a thread, so the loop never waits.
+    fn apply_update(&self, answer: oneshot::Sender<HostMsg>) {
+        if !matches!(self.phase, Phase::Open) {
+            let _ = answer.send(HostMsg::Refused(
+                "the books are closing or restarting: ask again in a moment".into(),
+            ));
+            return;
+        }
+        #[cfg(unix)]
+        {
+            let root = self.root.clone();
+            std::thread::spawn(move || {
+                let said = match crate::update::apply_staged(
+                    &root,
+                    crate::update::program_version(),
+                ) {
+                    Ok(Some(version)) => {
+                        eprintln!(
+                            "wanderbooks host: version {version} accepted: restarting onto it when no call is running"
+                        );
+                        HostMsg::Done {
+                            detail: Some(format!(
+                                "version {version} is installed; the books restart onto it as soon as no call is running, and stay open meanwhile"
+                            )),
+                        }
+                    }
+                    Ok(None) => HostMsg::Refused(
+                        "no newer version waits, or this install is updated by its package manager"
+                            .into(),
+                    ),
+                    Err(why) => HostMsg::Refused(why.to_string()),
+                };
+                let _ = answer.send(said);
+            });
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = answer.send(HostMsg::Refused(
+                "updating from the app isn't built for this system yet".into(),
+            ));
         }
     }
 

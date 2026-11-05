@@ -3823,6 +3823,51 @@ add), `swap_in`'s temporary-then-rename (`update_is_atomic`), `healthy`
 (`failed_update_rolls_back`), `install_kind` (the marker test), and
 `parse_version`'s rejections.
 
+## P11a steps 4 and 6: the in-app accept, the viewer's notice, translocation (2026-11-05)
+
+The accept is the host's lease intent `apply_update` (the name
+`plan/served.md` 8.0.3 allocates); the viewer's names are
+`Owner::update_waiting`, `Owner::check_for_updates` and `Owner::apply_update`,
+and the agent's is `books.start`'s `update_waiting`.
+
+- `crates/ledger-cli/tests/update.rs` (Linux):
+  `books_start_says_an_update_waits` — a quiet `books.start` has no
+  `update_waiting`; after the host stages a signed 9.0.0, `books.start`
+  names its version and staged time and says only the owner accepts it,
+  its next step says to tell the human, and no path appears in the answer;
+  `the_owner_accepts_a_staged_update_in_the_app` — accepting with nothing
+  staged is refused and changes nothing; once 9.0.0 is staged, the same
+  intent (`opener::ask_once_within` with `Intent::ApplyUpdate`, what the
+  viewer's `apply_update` sends) installs it, the program becomes the
+  release's bytes, the old version is kept under `updates/previous/`, and
+  an agent's bridge writes all through the host's restart onto it: every
+  account is in the chart exactly once.
+- `crates/ledger-gui/tests/update_notice.rs`:
+  `the_menu_checks_for_updates_and_a_waiting_update_shows_a_notice_that_accepts`
+  (Books, Check for updates asks the owner and its words show; the standing
+  notice names the version; Update now asks the owner to apply it, and the
+  notice goes once it is installed) and
+  `books_outside_a_data_root_have_no_update_notice`.
+- `crates/ledger-cli/tests/translocation.rs`:
+  `translocated_app_refuses_to_connect` — with the program's path standing
+  in for Gatekeeper's copy (`APPIMAGE` names a file under
+  `AppTranslocation`), `connect claude` is refused before a token is made
+  or a home is made, and the stand-in agent never runs; the same program at
+  an ordinary path connects. `crates/ledger-host/src/start.rs`:
+  `only_a_translocated_path_refuses_an_agent` (the marker is a path part,
+  not letters in a name).
+
+Not checked here: the real Gatekeeper copy and the `.dmg` (needs a Mac,
+the owner's trial); the Windows installer job is P11c's, not on this branch.
+
+**For P12 (mutation targets, none run, D-33):** `update_waiting`'s
+"newer than this program" comparison (a mutant that offers the running
+version must die on `books_start_says_an_update_waits`'s quiet first
+call), `staged_update_in`'s plausibility check (a staged version with a
+path separator must not become a notice), and `translocation_refusal`'s
+component comparison (a part that merely contains the word must not
+refuse).
+
 ## P5: the agent surface (2026-10-29)
 
 Every tool result carries the envelope (`next_steps`, `guards`, `warnings`,

@@ -157,7 +157,8 @@ pub fn install_kind(exe: &Path, appimage: Option<&Path>) -> Install {
     Install::SelfUpdating(exe.to_path_buf())
 }
 
-fn this_install() -> Result<Install, String> {
+/// How the running program was installed.
+pub fn this_install() -> Result<Install, String> {
     let exe = crate::start::this_executable()?;
     let image = std::env::var_os("APPIMAGE").map(PathBuf::from);
     Ok(install_kind(&exe, image.as_deref()))
@@ -494,7 +495,10 @@ pub fn apply_staged(
     let Install::SelfUpdating(target) = this_install()? else {
         return Ok(None);
     };
-    let Ok(_lock) = take_lock(&updates) else {
+    // The host's own look at the feed can still hold the lock for a moment
+    // after it writes `meta.json`; the owner's accept should wait that out,
+    // not answer "nothing waits" (P11a step 4).
+    let Ok(_lock) = take_lock_within(&updates, Duration::from_secs(5)) else {
         return Ok(None);
     };
     let meta: serde_json::Value = std::fs::read(dir.join(META))

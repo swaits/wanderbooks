@@ -209,6 +209,38 @@ mutants-mcp shard="0/1": sweep-test-tmp
     MCP_CASES=16 PROPTEST_MAX_SHRINK_ITERS=0 TMPDIR={{mutants_tmp}} cargo mutants -p ledger-mcp --test-package ledger-mcp --test-package ledger-cli --no-default-features -j 4 --timeout-multiplier 3 --minimum-test-timeout 600 --shard {{shard}} -o mutants-mcp
     @just sweep-test-tmp
 
+# Mutation testing of the host (the books home, the lease, the update channel, the bridge): every mutant runs its own tests and the
+# suites that drive a real books server (ledger-cli's, D-44), built without
+# the viewer, as for the MCP server. A local run, never CI (D-59).
+mutants-host shard="0/1": sweep-test-tmp
+    mkdir -p {{mutants_tmp}}
+    PROPTEST_MAX_SHRINK_ITERS=0 TMPDIR={{mutants_tmp}} cargo mutants -p ledger-host --test-package ledger-host --test-package ledger-cli --no-default-features -j 4 --timeout-multiplier 3 --minimum-test-timeout 300 --shard {{shard}} -o mutants-host
+    @just sweep-test-tmp
+
+# Mutation testing of the CPA package and the 1099 worksheet: every mutant runs its own tests and the
+# suites that drive a real books server (ledger-cli's, D-44), built without
+# the viewer, as for the MCP server. A local run, never CI (D-59).
+mutants-package shard="0/1": sweep-test-tmp
+    mkdir -p {{mutants_tmp}}
+    PROPTEST_MAX_SHRINK_ITERS=0 TMPDIR={{mutants_tmp}} cargo mutants -p ledger-package --test-package ledger-package --test-package ledger-cli --no-default-features -j 4 --timeout-multiplier 3 --minimum-test-timeout 300 --shard {{shard}} -o mutants-package
+    @just sweep-test-tmp
+
+# Mutation testing of the TIN vault: every mutant runs its own tests and the
+# suites that drive a real books server (ledger-cli's, D-44), built without
+# the viewer, as for the MCP server. A local run, never CI (D-59).
+mutants-vault shard="0/1": sweep-test-tmp
+    mkdir -p {{mutants_tmp}}
+    PROPTEST_MAX_SHRINK_ITERS=0 TMPDIR={{mutants_tmp}} cargo mutants -p ledger-vault --test-package ledger-vault --test-package ledger-cli --no-default-features -j 4 --timeout-multiplier 3 --minimum-test-timeout 120 --shard {{shard}} -o mutants-vault
+    @just sweep-test-tmp
+
+# Mutation testing of the one executable (its argument handling, the server and bridge modes): every mutant runs its own tests and the
+# suites that drive a real books server (ledger-cli's, D-44), built without
+# the viewer, as for the MCP server. A local run, never CI (D-59).
+mutants-cli shard="0/1": sweep-test-tmp
+    mkdir -p {{mutants_tmp}}
+    PROPTEST_MAX_SHRINK_ITERS=0 TMPDIR={{mutants_tmp}} cargo mutants -p ledger-cli --test-package ledger-cli --no-default-features -j 4 --timeout-multiplier 3 --minimum-test-timeout 600 --shard {{shard}} -o mutants-cli
+    @just sweep-test-tmp
+
 # No mutation runs on the viewer (owner, 2026-10-18: they crushed the
 # machine, and for the GUI it's "not as critical"). Its two musts are
 # tested directly instead: it never writes the books (tests/read_only.rs)

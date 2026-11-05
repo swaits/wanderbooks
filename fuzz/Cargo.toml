@@ -24,6 +24,10 @@ path = "../crates/ledger-store"
 [dependencies.ledger-import]
 path = "../crates/ledger-import"
 
+[dependencies.ledger-mcp]
+path = "../crates/ledger-mcp"
+features = ["fuzzing"]
+
 [dependencies.ledger-config]
 path = "../crates/ledger-config"
 
@@ -102,6 +106,20 @@ bench = false
 [[bin]]
 name = "fuzz_settings_replay"
 path = "fuzz_targets/fuzz_settings_replay.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_http_mcp_request"
+path = "fuzz_targets/fuzz_http_mcp_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_upload_put"
+path = "fuzz_targets/fuzz_upload_put.rs"
 test = false
 doc = false
 bench = false

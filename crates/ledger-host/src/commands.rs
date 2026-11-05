@@ -1042,6 +1042,7 @@ pub struct UpdateWaiting {
 }
 
 /// The update waiting for the owner's accept, if there is one.
+#[cfg(unix)]
 pub fn update_waiting(common: &Common) -> Option<UpdateWaiting> {
     let found = ledger_store::root::Root::find(common.root.as_deref()).ok()?;
     let u = found.staged_update()?;
@@ -1058,9 +1059,16 @@ pub fn update_waiting(common: &Common) -> Option<UpdateWaiting> {
     })
 }
 
+/// Nothing waits on a platform the self-update isn't built for.
+#[cfg(not(unix))]
+pub fn update_waiting(_common: &Common) -> Option<UpdateWaiting> {
+    None
+}
+
 /// "Check for updates": look at the feed now, whatever the daily look
 /// last did, and stage a newer release if there is one (it never swaps
 /// the program: accepting is [`apply_update`]). What came of it.
+#[cfg(unix)]
 pub fn check_for_updates(common: &Common) -> Result<String, String> {
     let found =
         ledger_store::root::Root::find(common.root.as_deref()).map_err(|e| e.to_string())?;
@@ -1085,10 +1093,18 @@ pub fn check_for_updates(common: &Common) -> Result<String, String> {
     }
 }
 
+/// Checking for updates isn't built for this platform: say so, and
+/// change nothing.
+#[cfg(not(unix))]
+pub fn check_for_updates(_common: &Common) -> Result<String, String> {
+    Err(NO_SELF_UPDATE.into())
+}
+
 /// Accept the staged update: the books' host installs it and restarts
 /// onto it once no call is running, the books staying open meanwhile
 /// (the lease socket's apply_update). With no host running, it is
 /// installed here, since no call can be cut off. What came of it.
+#[cfg(unix)]
 pub fn apply_update(common: &Common) -> Result<String, String> {
     let found =
         ledger_store::root::Root::find(common.root.as_deref()).map_err(|e| e.to_string())?;
@@ -1111,9 +1127,22 @@ pub fn apply_update(common: &Common) -> Result<String, String> {
     }
 }
 
+/// Accepting an update isn't built for this platform: say so, and change
+/// nothing.
+#[cfg(not(unix))]
+pub fn apply_update(_common: &Common) -> Result<String, String> {
+    Err(NO_SELF_UPDATE.into())
+}
+
 /// The longest the host may take to install an accepted update (a copy
 /// and a health check of the new program).
+#[cfg(unix)]
 const UPDATE_WAIT: Duration = Duration::from_secs(90);
+
+/// What the app says when the self-update is asked for on a platform it
+/// isn't built for (Windows, today).
+#[cfg(not(unix))]
+const NO_SELF_UPDATE: &str = "self-update isn't available on this platform";
 
 /// The longest an agent's own command may take to add the books.
 const CONNECT_WAIT: Duration = Duration::from_secs(60);

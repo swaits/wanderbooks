@@ -417,7 +417,19 @@ downgrading is theirs). Anything else (an AppImage, whose file is named by
   call is cut off), after a second check against the key, or by
   `wanderbooks update`, the owner's say-so, which reuses the staged copy. A
   local release is named in `<root>/updates/feed` (a `file://` address, then
-  the key file), the same rule as `--trusted-key`.
+  the key file), the same rule as `--trusted-key`;
+- **the owner accepts one in the app**: the viewer reads the staged
+  `meta.json` (`Owner::update_waiting`) and shows a notice with "Update
+  now", and Books has "Check for updates" (`Owner::check_for_updates`) and
+  "Update to X"; accepting is the host's lease intent `apply_update`, which
+  installs the staged copy as `update` does and lets the host's own
+  replaced-program watch restart onto it once no call runs. `books.start`
+  carries the same notice to an agent as `update_waiting`, with a next step
+  to tell the human; no tool accepts it;
+- **a translocated macOS app refuses to connect agents**
+  (`start::translocation_refusal`): a quarantined download runs from a
+  read-only copy under `AppTranslocation` that vanishes with the app, so
+  the person moves it out of Downloads first.
 
 `deploy/packaging/` holds the Linux packaging: `packager.toml`
 (cargo-packager: `.deb`, AppImage, the pacman tarball with its PKGBUILD),
@@ -428,6 +440,8 @@ throwaway-keyed feed on this machine) and `test-linux-packages.sh`.
 `.github/workflows/release.yml` builds them on a version tag. The macOS
 bundle is `packager-macos.toml`, `Info.plist` and `build-macos.sh` (an
 unsigned `.dmg` from CI's `macos` job; signing and notarization are step 5).
+A translocated app (Gatekeeper's copy of a quarantined download) may run
+but refuses to connect an agent, saying how to move it out of Downloads.
 
 ## The result envelope and the guards (`ledger-mcp`, P5)
 

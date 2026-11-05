@@ -135,8 +135,17 @@ subset. **Not checked: that the `.dmg` builds, mounts or runs**: that needs
 the CI run (Actions, release, Run workflow, this branch) and then a Mac.
 Open items for the trial on a Mac: whether `wanderbooks update` replacing
 the program inside a signed `.app` breaks its signature (it will: step 5
-must decide, probably by updating a whole `.app`); the translocated-app
-check (`translocated_app_refuses_to_connect`) is not built.
+must decide, probably by updating a whole `.app`). **Translocation
+(P11a step 6):** a `.dmg` downloaded from the internet keeps its
+quarantine bit, so Gatekeeper may run the app from a read-only copy under
+`/private/var/folders/…/AppTranslocation/…` that goes away when it
+closes. `wanderbooks connect` (and the viewer's Connect, which is the same
+function) refuses there, before a token is made or an agent's list is
+touched, and says to move the app out of Downloads and open it again:
+`ledger_host::start::translocation_refusal` reads the path the program
+would give the agent. Checked on Linux by standing in for that path
+(`translocated_app_refuses_to_connect`, `only_a_translocated_path_refuses_an_agent`);
+the real Gatekeeper copy still needs the trial on a Mac.
 
 ## Updates staged by the host (step 4)
 
@@ -148,9 +157,23 @@ first; `wanderbooks update` applies it too and reuses the staged copy;
 `update --check` says "already downloaded". A local release is named by
 `<root>/updates/feed` (a `file://` address, then the key file). Without a
 compiled-in release key and without that file, the look does nothing but
-log why. Not built: the in-app "restart now to update" choice and the
-viewer's notice, which need an admin-socket intent and a place in the
-viewer (see the unit's As-built block).
+log why.
+
+The owner accepts a staged update **in the app** (P11a step 4). The
+viewer reads `<root>/updates/staged/meta.json` every few seconds
+(`Owner::update_waiting`) and shows a standing notice above the page,
+"Version X of wanderbooks is ready", with "Update now"; Books also has
+"Check for updates" (`Owner::check_for_updates`, which looks at the feed
+at once whatever the daily look did) and "Update to X" while one waits.
+Accepting sends the host's lease intent `apply_update`; the host installs
+the staged copy exactly as `wanderbooks update` does and its existing
+watch for a replaced program (host.rs INVARIANT 7) restarts onto it once
+no call is running, the books staying open and every holder's session
+carrying on. With no host running there is no call to cut off, so the
+viewer applies it itself. `books.start` tells an agent the same thing
+(`update_waiting`) and adds a next step to tell the human; no tool can
+accept it. The accepted update replaces the program file, not a whole
+`.app`, which step 5 must revisit for a signed bundle.
 
 ## What `update` and `rollback` need from a release
 

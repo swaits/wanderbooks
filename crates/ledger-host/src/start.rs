@@ -83,6 +83,21 @@ pub fn this_executable() -> Result<PathBuf, String> {
     Ok(exe)
 }
 
+/// Why this program can't point an agent at itself, if it can't (P11a
+/// step 6): macOS runs a quarantined app from a read-only copy under
+/// `/private/var/folders/…/AppTranslocation/…`, a path that goes away when
+/// the app closes. The app may run, but an agent connected from it would
+/// lose the books, so the person moves it out of Downloads first.
+/// `exe` is the path this program would give the agent
+/// ([`this_executable`]).
+pub fn translocation_refusal(exe: &Path) -> Option<&'static str> {
+    exe.components()
+        .any(|part| part.as_os_str() == "AppTranslocation")
+        .then_some(
+            "wanderbooks is running from the copy macOS makes of a quarantined download, and that copy goes away when the app closes: move wanderbooks out of Downloads (Applications, for example), open it there, and connect the agent again",
+        )
+}
+
 /// The AppImage this process runs from: `APPIMAGE` when it is an
 /// absolute path to a file.
 pub fn own_appimage(value: Option<&std::ffi::OsStr>) -> Option<std::ffi::OsString> {
@@ -632,6 +647,28 @@ mod tests {
     fn this_executable_is_a_file_on_disk() {
         let exe = this_executable().unwrap();
         assert!(exe.is_file(), "{exe:?}");
+    }
+
+    #[test]
+    fn only_a_translocated_path_refuses_an_agent() {
+        assert_eq!(
+            translocation_refusal(Path::new(
+                "/Applications/Wanderbooks.app/Contents/MacOS/wanderbooks"
+            )),
+            None
+        );
+        let copy = translocation_refusal(Path::new(
+            "/private/var/folders/xy/T/AppTranslocation/1234/d/Wanderbooks.app/Contents/MacOS/wanderbooks",
+        ))
+        .expect("a translocated path is refused");
+        assert!(copy.contains("out of Downloads"), "{copy}");
+        // A part that only shares letters is not the marker macOS makes.
+        assert_eq!(
+            translocation_refusal(Path::new(
+                "/Applications/AppTranslocation Notes/wanderbooks"
+            )),
+            None
+        );
     }
 }
 

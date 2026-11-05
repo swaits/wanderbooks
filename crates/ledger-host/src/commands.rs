@@ -1262,6 +1262,12 @@ pub fn connect_agent(common: &Common, agent: &str, book: &str) -> Result<Vec<Str
             "{label} isn't installed here (no `{cli}` on the PATH, nor where its installer puts it)"
         )
     })?;
+    // A translocated macOS app's path (P11a step 6) is not a place to point
+    // an agent: the copy goes away with the app.
+    let exe = crate::start::this_executable()?;
+    if let Some(why) = crate::start::translocation_refusal(&exe) {
+        return Err(why.to_string());
+    }
     let mut lines = Vec::new();
     // The token: kept in its file, or made now.
     let found =
@@ -1279,7 +1285,6 @@ pub fn connect_agent(common: &Common, agent: &str, book: &str) -> Result<Vec<Str
         ));
     }
     // The agent's own list: the books' entry made anew.
-    let exe = crate::start::this_executable()?;
     let name = format!("wanderbooks-{book}");
     let mut serve: Vec<std::ffi::OsString> = vec![
         exe.into_os_string(),

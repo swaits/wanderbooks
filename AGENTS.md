@@ -145,8 +145,11 @@ clone, with status. Rules:
 
 - Every feature change updates `docs/parity.md` in the same commit.
 - The **floor never decreases**: the count of `done` items is monotonic.
-  CI will enforce this once the catalog is machine-readable (roadmap phase 3);
-  until then, it is enforced by review — yours.
+  `crates/ledger-cli/tests/parity_floor.rs` runs in `cargo test` (so in
+  `just check`) and fails unless every status is one of the three and the
+  `done` count equals the floor line exactly; the CI step
+  `scripts/parity-floor.sh` fails when the floor falls below the base
+  commit's.
 - Statuses are `done` (implemented + tested + golden-covered), `partial`,
   `todo`. No other statuses. `done` requires all three.
 

@@ -834,10 +834,10 @@ One row per unit of work. A unit is what one engineer takes into one git worktre
 | P9b | claude.ai through an external identity provider (D-7 b, Q-6) | not planned until Q-6 is answered | P9a | | | |
 | P9c | Remote viewer replica, invitations | not planned (D-51) | | | | |
 | P10 | The re-audit runbook and its CI mirror; the owner runs the re-audit | not started | P5, P6, P8 | P11a, P13 | none | 1 (+ owner days) |
-| P11a | Packaging and updates: step 0 the platform groundwork, the trial, `wanderbooks update`/`rollback`, Linux packages, signing, macOS and Windows bundles | in progress: steps 0-4 and the macOS half of step 6 landed 2026-10-29 (update/rollback, Linux packages, AppImage with restart, the daily staged update, the unsigned `.dmg` job); step 5 (signing) deferred by D-64; left: the in-app accept and the viewer's update notice (names needed), the release workflow's first run (owner's click), the trials on a Mac | none (code); certificates and keys from the owner for the signing steps; Q-4 before the manifest step | everything | none | 20-25 |
+| P11a | Packaging and updates: step 0 the platform groundwork, the trial, `wanderbooks update`/`rollback`, Linux packages, signing, macOS and Windows bundles | in progress: steps 0-4 and the macOS half of step 6 landed 2026-10-29 (update/rollback, Linux packages, AppImage with restart, the daily staged update, the unsigned `.dmg` job); step 5 (signing) deferred by D-64; the in-app accept, the viewer's update notice and the translocation refusal landed 2026-11-05 (`758c175f`; the non-Unix callers gated in `a92eda21`, all four gates green); left: the release workflow's first run (owner's click), the trials on a clean Linux VM, a Mac and a Windows machine | none (code); certificates and keys from the owner for the signing steps; Q-4 before the manifest step | everything | none | 20-25 |
 | P11b | The agent dock and books homes | landed 2026-10-29 (`f625848a`): the dock (a real PTY, Claude Code or Codex in a books home), books homes under `~/Documents/<book id>`, the first-run page with no terminal; macOS unverified until the portable job runs it; Windows not offered (P11c) | P11a (an installed app to dock into) | P12 | none | 8-10 |
 | P11c | The native Windows port: named pipes with the SID check, owner-only DACLs, file locking, the `%LOCALAPPDATA%` data root, the Windows CI job made gating (D-62) | landed 2026-10-31 (`05aece9f`, branch `P11c` at 36a7ad51): the `portable-windows` job is green and gating; Done-when 2 (the app walked on a Windows machine) is the owner's | U0e; P11a step 0 (the portable job) | P11b, P12 | none | 5-8 |
-| P12 | Max testing, again | not started | everything else merged | | none | 2-3 (+ machine time) |
+| P12 | Max testing, again | step 1 landed 2026-11-05 (`3aa1206a`: the two fuzz targets, the op-sequence ops, the four mutation recipes, one checklist per crate; no mutation shards in CI, D-59); step 2 (the run) is the owner's, overnight on his machine | everything else merged | | none | 2-3 (+ machine time) |
 | P13 | bookspec: checker crate, `Engine` trait, rule ids, the spec text, the runner | steps 1-6 done: steps 1-5 landed (`579d0eed`, `d839e709`); step 6 landed 2026-10-29 (`d738c445`): the specification lives at `git.swaits.com/swaits/bookspec`, pinned by rev (D-65); ten stated rules still lack an example (the schema cannot show them yet), listed in the As-built block | none for steps 1-4; the engine stable for step 5 | everything | none | 15-20 |
 
 #### 8.0.2 Dependency graph and merge order
@@ -1693,7 +1693,7 @@ Each unit follows the 8.0.4 template. "A-n" is an owner answer numbered in 8.3.1
 
 #### P12: max testing, again (D-33)
 
-1. **Status:** not started.
+1. **Status:** step 1 landed 2026-11-05 (`3aa1206a`); step 2, the run, waits for the owner's machine overnight.
 2. **Depends on:** everything else merged. Hardware: the owner's desktop, or the scheduled GitHub Actions workflow (`.github/workflows/scheduled.yml`), or both; the gate for Accept is the scheduled workflow's run (reproducible by anyone), with the desktop as the faster place to triage.
 3. **Feature and schema:** none.
 4. **Build:**

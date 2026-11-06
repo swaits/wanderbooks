@@ -1,4 +1,36 @@
-# STATUS — 2026-10-28: nine units landed, five built on paused branches; P11a starts
+# STATUS — 2026-11-06: the plan's build units are done; the owner's runs and trials are left
+
+## Resumed (2026-11-05): the two checkpoints landed
+
+The owner resumed the workstream on 2026-11-05. This session plans and
+reviews; the implementers are OpenCode workers on DeepSeek V4.1 Flash,
+one per worktree. Long runs (`just check`, `just prove`, mutation, long
+fuzzing) are the owner's, overnight; per merge, the workspace compiles
+and the touched tests pass (D-60), and GitHub's gates are the full check.
+
+- **P11a** (`758c175f`): the in-app accept of a staged update, the
+  viewer's notice and "Check for updates", the refusal to connect an
+  agent from a translocated macOS app. The pause note's "Windows
+  installer job" was never in the checkpoint; it stays P11c's.
+- **P12 step 1** (`3aa1206a`): `fuzz_http_mcp_request` and
+  `fuzz_upload_put`, the op-sequence's document, settlement, write-off
+  and draft ops, `mutants-host`, `-package`, `-vault`, `-cli`, one
+  checklist per crate in `docs/testing.md`. Smoke runs clean. No
+  mutation shards in CI (D-59). The in-process books door for fuzzing
+  is a test seam in `ledger-mcp`, approved by the owner.
+- **The merge broke the Windows server-only build**: the `update`
+  module is Unix-only and three `commands.rs` functions called it
+  ungated (Linux could not see it). `a92eda21` gates them; on other
+  platforms the update says it isn't available. All four gates green
+  on `a92eda21` (`check`, `portable-macos`, `portable-windows`,
+  `two-user`). Lesson: a Windows-target `cargo check` belongs in the
+  cheap checks of any change to `ledger-host` or `ledger-cli`.
+- **CI lives on the `github` remote** (github.com/swaits/wanderbooks);
+  `origin` (git.swaits.com) runs none. Push both.
+
+**Left:** P12 step 2 (the owner's overnight run); the owner's trials
+(clean Linux VM, Mac, Windows), the `release` workflow's first run, the
+icon, the re-audit (P10); Q-6 before P9b; signing (D-64).
 
 ## Paused (2026-10-31, 03:00 UTC): the owner paused the workstream
 

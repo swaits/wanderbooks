@@ -333,6 +333,8 @@ run_props_max() {
 run_mutants() {
     local step=$1 out dir dest rc=0
     out=$(mutation_out "$step")
+    # Never let an empty name turn the rm below into one of the repo.
+    [ -n "$out" ] || { echo "P12: no output directory for $step" >&2; return 1; }
     dir=$repo/$out
     dest=$state/mutants/$step
     # No resume: the recipes do not pass cargo-mutants' --iterate, so a

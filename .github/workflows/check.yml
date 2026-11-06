@@ -21,7 +21,16 @@ jobs:
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
       CARGO_PROFILE_TEST_DEBUG: line-tables-only
     steps:
+      # The parity floor compares against the commit before this one, so
+      # the checkout needs one more commit than the default.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: The base branch, for the parity floor
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch --no-tags --depth=1 origin \
+            "+refs/heads/${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}"
       - name: Room for the build (the image ships toolchains we never use)
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
@@ -30,6 +39,16 @@ jobs:
       - uses: jdx/mise-action@v2
       - name: GUI build dependencies
         run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libgtk-3-dev
+      # docs/parity.md's floor never decreases (AGENTS.md, "Parity
+      # tracking"); a test checks it inside `just check`, this checks the
+      # commit's floor against its base.
+      - name: The parity floor holds
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            scripts/parity-floor.sh "origin/${{ github.base_ref }}"
+          else
+            scripts/parity-floor.sh HEAD^1
+          fi
       - run: just check
       - name: What the build used
         if: always()

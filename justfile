@@ -241,6 +241,18 @@ mutants-cli shard="0/1": sweep-test-tmp
     PROPTEST_MAX_SHRINK_ITERS=0 TMPDIR={{mutants_tmp}} cargo mutants -p ledger-cli --test-package ledger-cli --no-default-features -j 4 --timeout-multiplier 3 --minimum-test-timeout 600 --shard {{shard}} -o mutants-cli
     @just sweep-test-tmp
 
+# P12 step 2: start the resumable overnight run, detached (D-66, docs/testing.md)
+p12-night:
+    @scripts/p12-night.sh start
+
+# P12 step 2: print the summary and whether a runner is live
+p12-status:
+    @scripts/p12-night.sh status
+
+# P12 step 2: stop a live runner the way the 07:00 deadline does
+p12-stop:
+    @scripts/p12-night.sh stop
+
 # No mutation runs on the viewer (owner, 2026-10-18: they crushed the
 # machine, and for the GUI it's "not as critical"). Its two musts are
 # tested directly instead: it never writes the books (tests/read_only.rs)

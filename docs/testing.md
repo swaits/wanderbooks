@@ -4233,6 +4233,54 @@ was granted to, once). `fuzz_op_sequence::Op` gained the invoice, bill,
 payment, settlement, write-off, void and draft-state ops and a control-check
 invariant (control accounts equal their documents).
 
+### Running P12 step 2
+
+One night runs, in order: every fuzz target side by side (one build first,
+then each through `just fuzz <target> <seconds>`), `just prove-all`,
+`just oracle` (skipped as failed when Docker is unavailable), the property
+tests at the maxima below, then one mutation recipe per crate (`mutants`,
+`mutants-store`, `mutants-import`, `mutants-config`, `mutants-mcp`,
+`mutants-host`, `mutants-package`, `mutants-vault`, `mutants-cli`), one at
+a time. A crash or a failed step does not stop the night; it is recorded
+and the next step runs. At the deadline the running step's process group
+is stopped and marked partial, so the machine is free in the morning.
+
+```sh
+just p12-night    # start detached; prints the summary and log paths
+just p12-status   # the summary and whether a runner is live
+just p12-stop     # stop a live runner the way the deadline does
+```
+
+State is in `${XDG_CACHE_HOME:-$HOME/.cache}/wanderbooks/p12/`:
+`summary.md` (rewritten after every step: status, start, end, duration,
+result), `logs/<step>.log` (and `logs/fuzz-<target>.log`), `done/<step>`
+markers, and `mutants/<step>/` with each run's `mutants.out` (the core) or
+`mutants-<step>` output. A step with a done marker is skipped, so a night
+resumes where the last one stopped; a partial or failed step has no marker
+and reruns next night. Mutation runs start over after a cut-off: the
+recipes as written do not pass cargo-mutants' `--iterate`, so a half-run
+crate is redone rather than mixed with the old output.
+
+The knobs: `P12_FUZZ_SECONDS` (per target, default 3600), `P12_STOP`
+(local time, default 07:00, the next occurrence after the start),
+`P12_STEPS` (a space-separated list, e.g. `"fuzz props-max"`),
+`P12_DRY_RUN=1` (every step becomes a sleep and a fake result, no cargo),
+and `P12_DRY_SLEEP` (that sleep, default 2 seconds).
+
+The property maxima step is the documented ones, with their tests:
+`STORE_CASES=5000` on `ledger-store` `tests/store.rs`
+`refused_commands_never_reach_the_journal`; `WB_ORDERS_DEPTH=6` on
+`tests/asset_orders.rs`
+`every_order_of_runs_reversals_disposals_and_closes_keeps_the_books_right`
+(plan 8.2 P12; `plan/STATUS.md` says six is P12's); `CF_CASES=5000` on
+`ledger-core` `tests/spec_cash_flow.rs`; `PROPTEST_CASES=5000` on
+`tests/spec_party_totals.rs`; `PROPTEST_CASES=2000` on `ledger-store`
+`tests/settings.rs` `settings_replay_is_pure`. One documented maximum has
+no knob: `tests/form1099.rs`'s `party_totals_are_the_1099s_buckets` is
+described above as `PROPTEST_CASES` with 2,000 clean, but the test
+hard-codes 256; P12 must either give it the knob or record the smaller
+count.
+
 ### ledger-core
 
 - [P2 slices 3 to 8] `settings.rs` from scratch.

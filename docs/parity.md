@@ -6,9 +6,11 @@ same commit as the feature. **The floor never decreases**: the count of
 
 Statuses: `done` = implemented + invariant-tested + golden-covered.
 `partial` = implemented but missing tests or goldens. `todo` = not started.
-No other statuses.
+No other statuses. `crates/ledger-cli/tests/parity_floor.rs` enforces the
+statuses and the floor in `cargo test`; `scripts/parity-floor.sh` enforces
+in CI that the floor never falls between commits.
 
-**Floor: 21 done** (2026-10-28; it was 10 on 2026-10-10, when the fixed-asset register was added, and the sections below record each rise).
+**Floor: 25 done** (2026-10-28; it was 10 on 2026-10-10, when the fixed-asset register was added, and the sections below record each rise; 2026-11-06: P4b S5 added one `done` row and S6 three, to 25, which the line had missed — the four rows' implementations and tests are named below).
 
 | Area | GnuCash counterpart (a cross-check, not the spec) | Status | Notes |
 |---|---|---|---|

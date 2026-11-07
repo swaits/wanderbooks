@@ -4267,8 +4267,11 @@ never-reached ones. The step's result says it resumed and how many mutants
 were already tested. The runner sets `P12_MUTANTS_ITERATE=--iterate` for that
 rerun; the mutation recipes forward that variable to cargo-mutants, so
 `P12_MUTANTS_ITERATE=--iterate just mutants` resumes by hand the same way. A
-run that finished (with or without misses) still starts fresh when selected
-again.
+run that finished is done, with or without misses: cargo-mutants exits 2
+when mutants were missed and 3 when some timed out, and the runner records
+those as findings to triage, not failures, so the crate isn't redone every
+night. Only another exit (a usage error, a failing baseline) is a failure,
+and a failed step starts fresh the next night.
 
 The knobs: `P12_FUZZ_SECONDS` (per target, default 3600), `P12_STOP`
 (local time, default 07:00, the next occurrence after the start),

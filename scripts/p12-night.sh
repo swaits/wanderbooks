@@ -409,18 +409,22 @@ run_mutants() {
     if [ "$resume" -eq 1 ]; then
         note="resumed with --iterate, skipped $skipped already tested; this run: "
     fi
-    if [ "$rc" -eq 0 ]; then
-        if [ -n "$note" ]; then
-            record_result "$step" "${note}caught $caught, missed $missed, timeout $timeout, unviable $unviable"
-        else
-            record_result "$step" "caught $caught, missed $missed, timeout $timeout, unviable $unviable"
-        fi
+    # cargo-mutants exits 2 when mutants were missed and 3 when some timed
+    # out: the run finished and its survivors are findings to triage, not a
+    # failure. Marking them failed would rerun the crate from scratch every
+    # night. Any other non-zero (a usage error, a failing baseline) failed.
+    local findings=""
+    case $rc in
+        2|3) findings=" (finished; the missed and timed-out mutants are findings to triage)" ;;
+    esac
+    if [ "$rc" -eq 0 ] || [ -n "$findings" ]; then
+        record_result "$step" "${note}caught $caught, missed $missed, timeout $timeout, unviable $unviable$findings"
         return 0
     fi
     if [ -n "$note" ]; then
-        note="resumed with --iterate, skipped $skipped already tested; "
+        note="resumed with --iterate, skipped $skipped already tested; this run: "
     fi
-    record_result "$step" "${note}failed: caught $caught, missed $missed, timeout $timeout, unviable $unviable (see the log)"
+    record_result "$step" "${note}failed (cargo-mutants exit $rc): caught $caught, missed $missed, timeout $timeout, unviable $unviable (see the log)"
     return 1
 }
 

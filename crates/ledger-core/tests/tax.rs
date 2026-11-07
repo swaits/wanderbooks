@@ -145,6 +145,46 @@ fn the_summary_groups_by_category_and_applies_deductible_percents() {
     assert_eq!(ts.tax_net(), dec("5483.33"));
 }
 
+/// Every decimal string in `v`, by value (`"0.00"` and `"0"` are one
+/// number), as `snapshot` writes them. Both sides of a golden comparison go
+/// through it, so a harmless difference of written scale is no failure and
+/// every value must still agree exactly.
+fn by_value(v: &mut serde_json::Value) {
+    match v {
+        serde_json::Value::String(s) => {
+            if let Ok(x) = Decimal::from_str(s) {
+                *s = x.normalize().to_string();
+            }
+        }
+        serde_json::Value::Array(items) => items.iter_mut().for_each(by_value),
+        serde_json::Value::Object(map) => map.values_mut().for_each(by_value),
+        _ => {}
+    }
+}
+
+/// The golden: every number in `golden/tax_summary_form_1065.json` was
+/// computed by hand, from the fixture's entries, in
+/// `plan/golden-worksheets/tax_summary_form_1065.md`, before the engine's
+/// output was looked at. Rules: B-32 and `sources/irs-tax-lines.md` (the
+/// category-to-line map; a contra-income expense account reduces receipts;
+/// meals at 50% from the Schedule C line 24b instructions, so 333.33 is
+/// 166.665, the cent half away from zero, 166.67; fines and penalties at 0%
+/// from Schedule C Part V; an account with no category is listed, in no
+/// total). `book_net` and `tax_net` are methods, so the test adds them.
+#[test]
+fn golden_tax_summary_form_1065() {
+    let l = books();
+    let ts = tax_summary(&l, d(1, 1), d(3, 31), Some(TaxForm::Form1065)).unwrap();
+    let mut actual = serde_json::to_value(&ts).unwrap();
+    actual["book_net"] = serde_json::to_value(ts.book_net()).unwrap();
+    actual["tax_net"] = serde_json::to_value(ts.tax_net()).unwrap();
+    by_value(&mut actual);
+    let mut golden: serde_json::Value =
+        serde_json::from_str(include_str!("golden/tax_summary_form_1065.json")).unwrap();
+    by_value(&mut golden);
+    assert_eq!(actual, golden);
+}
+
 #[test]
 fn an_override_beats_the_category_default() {
     let mut l = books();

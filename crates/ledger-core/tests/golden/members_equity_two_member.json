@@ -1,0 +1,70 @@
+{
+  "january": {
+    "start": "2026-01-01",
+    "end": "2026-01-31",
+    "members": [
+      {
+        "name": "Alice",
+        "beginning": "0",
+        "contributions": "600",
+        "net_income": "333.34",
+        "distributions": "0",
+        "other": "0",
+        "ending": "933.34"
+      },
+      {
+        "name": "Bob",
+        "beginning": "0",
+        "contributions": "400",
+        "net_income": "333.33",
+        "distributions": "0",
+        "other": "0",
+        "ending": "733.33"
+      }
+    ],
+    "total": {
+      "name": "Total",
+      "beginning": "0",
+      "contributions": "1000",
+      "net_income": "666.67",
+      "distributions": "0",
+      "other": "0",
+      "ending": "1666.67"
+    },
+    "balance_sheet_equity": "1666.67"
+  },
+  "february": {
+    "start": "2026-02-01",
+    "end": "2026-02-28",
+    "members": [
+      {
+        "name": "Alice",
+        "beginning": "933.34",
+        "contributions": "0",
+        "net_income": "50",
+        "distributions": "0",
+        "other": "0",
+        "ending": "983.34"
+      },
+      {
+        "name": "Bob",
+        "beginning": "733.33",
+        "contributions": "0",
+        "net_income": "50.01",
+        "distributions": "100",
+        "other": "0",
+        "ending": "683.34"
+      }
+    ],
+    "total": {
+      "name": "Total",
+      "beginning": "1666.67",
+      "contributions": "0",
+      "net_income": "100.01",
+      "distributions": "100",
+      "other": "0",
+      "ending": "1666.68"
+    },
+    "balance_sheet_equity": "1666.68"
+  }
+}

@@ -1,0 +1,70 @@
+{
+  "start": "2026-01-01",
+  "end": "2026-03-31",
+  "form": "form1065",
+  "income": [
+    {
+      "category": "gross_receipts",
+      "label": "Gross receipts or sales",
+      "accounts": ["4000 Sales"],
+      "book": "10000",
+      "tax": "10000"
+    },
+    {
+      "category": "returns_allowances",
+      "label": "Returns and allowances",
+      "accounts": ["4100 Refunds"],
+      "book": "-250",
+      "tax": "-250"
+    }
+  ],
+  "cost_of_goods": [],
+  "deductions": [
+    {
+      "category": "commissions_fees",
+      "label": "Commissions and fees",
+      "accounts": ["6000 Platform fees"],
+      "book": "1500",
+      "tax": "1500"
+    },
+    {
+      "category": "guaranteed_payments",
+      "label": "Guaranteed payments to partners",
+      "accounts": ["6400 Partner pay"],
+      "book": "2000",
+      "tax": "2000"
+    },
+    {
+      "category": "meals",
+      "label": "Meals",
+      "accounts": ["6100 Meals"],
+      "book": "333.33",
+      "tax": "166.67"
+    },
+    {
+      "category": "other_deductions",
+      "label": "Other deductions",
+      "accounts": ["6300 Software"],
+      "book": "600",
+      "tax": "600"
+    },
+    {
+      "category": "nondeductible",
+      "label": "Nondeductible expenses",
+      "accounts": ["6200 Penalties"],
+      "book": "40",
+      "tax": "0"
+    }
+  ],
+  "separately_stated": [],
+  "form_4797": [],
+  "uncategorized": [
+    {
+      "account": "6500 Misc",
+      "account_type": "Expense",
+      "book": "75"
+    }
+  ],
+  "book_net": "5276.67",
+  "tax_net": "5483.33"
+}

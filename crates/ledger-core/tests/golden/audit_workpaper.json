@@ -1,0 +1,52 @@
+{
+  "scope": "month",
+  "through": "2026-03-31",
+  "summary": "1 failure(s), 4 warning(s), 0 note(s)",
+  "findings": [
+    {
+      "code": "evidence_missing",
+      "severity": "failure",
+      "subject": {
+        "kind": "entry",
+        "id": 2
+      },
+      "message": "entry 2 (2026-01-05) has no receipt: its debits 40.00 are strictly greater than the 25.00 threshold"
+    },
+    {
+      "code": "draft_open",
+      "severity": "warning",
+      "subject": {
+        "kind": "entry",
+        "id": 4
+      },
+      "message": "draft 4 (2026-02-10) \"Stamps\" is not posted"
+    },
+    {
+      "code": "schedule_behind",
+      "severity": "warning",
+      "subject": {
+        "kind": "schedule",
+        "id": 1
+      },
+      "message": "\"Prepaid insurance\" has 3 month(s) due and not posted, from 2026-01-31, 300.00 in all"
+    },
+    {
+      "code": "tax_category_missing",
+      "severity": "warning",
+      "subject": {
+        "kind": "account",
+        "id": 5
+      },
+      "message": "account 4100 Other income has no tax category"
+    },
+    {
+      "code": "vendor_1099_undecided",
+      "severity": "warning",
+      "subject": {
+        "kind": "vendor",
+        "id": "Tobin Harlow Supply"
+      },
+      "message": "Tobin Harlow Supply was paid 900.00 in a way that could need a 1099 and has no decision"
+    }
+  ]
+}

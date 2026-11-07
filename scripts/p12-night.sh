@@ -35,13 +35,52 @@ queue=(
     mutants-cli
 )
 
-# The mutation recipes and the output directory each writes (the core
-# recipe uses cargo-mutants' default; the rest pass -o <recipe name>).
+# The mutation recipes and the directory each passes to cargo-mutants --output
+# (the core recipe uses cargo-mutants' default; the rest pass -o <recipe name>).
 mutation_out() {
     case "$1" in
         mutants) echo mutants.out ;;
         *) echo "$1" ;;
     esac
+}
+
+is_mutation_step() {
+    case "$1" in
+        mutants|mutants-store|mutants-import|mutants-config|mutants-mcp|mutants-host|mutants-package|mutants-vault|mutants-cli)
+            return 0
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+# cargo-mutants writes its files into a `mutants.out` directory *inside* the
+# --output directory. The core recipe leaves the default (the repo root, so
+# $repo/mutants.out is the output dir itself); the others pass -o <recipe>,
+# so their files land in $repo/<recipe>/mutants.out.
+mutants_output_dir() { # step
+    local parent
+    parent=$repo/$(mutation_out "$1")
+    if [ -d "$parent/mutants.out" ]; then
+        printf '%s\n' "$parent/mutants.out"
+    else
+        printf '%s\n' "$parent"
+    fi
+}
+
+# Mutants cargo-mutants would skip with --iterate: everything caught or
+# unviable in earlier runs (its caught.txt, unviable.txt and
+# previously_caught.txt are written incrementally, so a killed run's already
+# tested mutants count too). Missed, timed-out and never-reached mutants are
+# not listed and are therefore retested.
+already_tested_count() { # output dir
+    local dir=$1 f
+    {
+        for f in caught.txt unviable.txt previously_caught.txt; do
+            if [ -f "$dir/$f" ]; then
+                cat "$dir/$f"
+            fi
+        done
+    } | sed '/^[[:space:]]*$/d' | sort -u | wc -l | tr -d ' '
 }
 
 iso() { date '+%Y-%m-%d %H:%M:%S'; }
@@ -200,7 +239,12 @@ dry_result() {
             record_result fuzz "dry run: every target ran for a fake moment"
             ;;
         mutants|mutants-store|mutants-import|mutants-config|mutants-mcp|mutants-host|mutants-package|mutants-vault|mutants-cli)
-            record_result "$step" "dry run: caught 0, missed 0, timeout 0, unviable 0"
+            local cmd="just $step" note="fresh"
+            if [ "${P12_STEP_PREV_STATUS:-}" = partial ]; then
+                cmd="P12_MUTANTS_ITERATE=--iterate $cmd"
+                note="resumed, $(already_tested_count "$(mutants_output_dir "$step")") already tested"
+            fi
+            record_result "$step" "dry run: would run: $cmd ($note; caught 0, missed 0, timeout 0, unviable 0)"
             ;;
         props-max)
             echo "- dry run: the property commands were not run" | record_details props-max
@@ -335,14 +379,25 @@ run_mutants() {
     [ -n "$out" ] || { echo "P12: no output directory for $step" >&2; return 1; }
     dir=$repo/$out
     dest=$state/mutants/$step
-    # No resume: the recipes do not pass cargo-mutants' --iterate, so a
-    # cut-off crate starts over rather than mixing a half-finished run.
-    rm -rf "$dir"
-    just --justfile "$repo/justfile" "$step" || rc=$?
+    # A step marked partial was cut off by the deadline or p12-stop. Keep its
+    # output directory and rerun with --iterate, which reads the list files
+    # cargo-mutants wrote as it went and skips the mutants already caught or
+    # unviable. A fresh or failed step starts over, as before.
+    local resume=0 skipped=0
+    if [ "${P12_STEP_PREV_STATUS:-}" = partial ]; then
+        resume=1
+        skipped=$(already_tested_count "$(mutants_output_dir "$step")")
+        P12_MUTANTS_ITERATE=--iterate just --justfile "$repo/justfile" "$step" || rc=$?
+    else
+        rm -rf "$dir"
+        just --justfile "$repo/justfile" "$step" || rc=$?
+    fi
     rm -rf "$dest"
     mkdir -p "$dest"
-    if [ -d "$dir" ]; then
-        cp -a "$dir/." "$dest/"
+    local outdir
+    outdir=$(mutants_output_dir "$step")
+    if [ -d "$outdir" ]; then
+        cp -a "$outdir/." "$dest/"
     fi
     local caught missed timeout unviable
     count_file() { if [ -f "$1" ]; then wc -l < "$1" | tr -d ' '; else echo 0; fi; }
@@ -350,11 +405,22 @@ run_mutants() {
     missed=$(count_file "$dest/missed.txt")
     timeout=$(count_file "$dest/timeout.txt")
     unviable=$(count_file "$dest/unviable.txt")
+    local note=""
+    if [ "$resume" -eq 1 ]; then
+        note="resumed with --iterate, skipped $skipped already tested; this run: "
+    fi
     if [ "$rc" -eq 0 ]; then
-        record_result "$step" "caught $caught, missed $missed, timeout $timeout, unviable $unviable"
+        if [ -n "$note" ]; then
+            record_result "$step" "${note}caught $caught, missed $missed, timeout $timeout, unviable $unviable"
+        else
+            record_result "$step" "caught $caught, missed $missed, timeout $timeout, unviable $unviable"
+        fi
         return 0
     fi
-    record_result "$step" "failed: caught $caught, missed $missed, timeout $timeout, unviable $unviable (see the log)"
+    if [ -n "$note" ]; then
+        note="resumed with --iterate, skipped $skipped already tested; "
+    fi
+    record_result "$step" "${note}failed: caught $caught, missed $missed, timeout $timeout, unviable $unviable (see the log)"
     return 1
 }
 
@@ -409,8 +475,12 @@ cleanup() {
         kill -TERM -- "-$step_pid" 2>/dev/null || true
         sleep 2
         kill -KILL -- "-$step_pid" 2>/dev/null || true
+        local how="stopped by p12-stop"
+        if is_mutation_step "$current_step"; then
+            how="stopped by p12-stop; resumes with --iterate"
+        fi
         write_status "$current_step" partial "$step_start_iso" "$now" \
-            "$((now_epoch - step_start_epoch))" "stopped by p12-stop"
+            "$((now_epoch - step_start_epoch))" "$how"
     fi
     echo "stopped" > "$state/run.state"
     write_summary
@@ -421,7 +491,10 @@ cleanup() {
 
 run_step() {
     local step=$1
-    local log=$logs/$step.log
+    local log=$logs/$step.log prev_status
+    # Remember how the step stood before this run overwrites it: the child
+    # needs to know a partial step must resume its mutation output directory.
+    prev_status=$(read_field "$steps_dir/$step.status" status || true)
     current_step=$step
     step_start_iso=$(iso)
     step_start_epoch=$(date +%s)
@@ -430,7 +503,7 @@ run_step() {
     write_status "$step" running "$step_start_iso" "" "" "running"
     write_summary
 
-    setsid "$self" --run-step "$step" >>"$log" 2>&1 </dev/null &
+    P12_STEP_PREV_STATUS="$prev_status" setsid "$self" --run-step "$step" >>"$log" 2>&1 </dev/null &
     step_pid=$!
     printf '%s\n' "$step_pid" > "$step_pidfile"
 
@@ -464,8 +537,12 @@ run_step() {
         : > "$done_dir/$step"
         write_status "$step" "done" "$step_start_iso" "$end" "$secs" "$result"
     elif [ -f "$state/deadline.reached" ]; then
+        local how="reruns next night"
+        if is_mutation_step "$step"; then
+            how="resumes next night with --iterate"
+        fi
         write_status "$step" partial "$step_start_iso" "$end" "$secs" \
-            "stopped at the deadline (${P12_STOP:-07:00}); reruns next night"
+            "stopped at the deadline (${P12_STOP:-07:00}); $how"
     else
         write_status "$step" failed "$step_start_iso" "$end" "$secs" "$result"
     fi
@@ -486,8 +563,11 @@ run_runner() {
         if [ ! -f "$done_dir/$old_step" ] &&
             [ "$(read_field "$steps_dir/$old_step.status" status)" = running ]; then
             old_start=$(read_field "$steps_dir/$old_step.status" start)
-            write_status "$old_step" partial "${old_start:--}" "$(iso)" 0 \
-                "a previous runner stopped without finishing; reruns now"
+            local how="a previous runner stopped without finishing; reruns now"
+            if is_mutation_step "$old_step"; then
+                how="a previous runner stopped without finishing; resumes now with --iterate"
+            fi
+            write_status "$old_step" partial "${old_start:--}" "$(iso)" 0 "$how"
         fi
     done
     printf '%s\n' "$$" > "$pidfile"

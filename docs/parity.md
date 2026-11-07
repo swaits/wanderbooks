@@ -10,7 +10,7 @@ No other statuses. `crates/ledger-cli/tests/parity_floor.rs` enforces the
 statuses and the floor in `cargo test`; `scripts/parity-floor.sh` enforces
 in CI that the floor never falls between commits.
 
-**Floor: 33 done** (2026-11-07: the members' equity statement, the tax summary, the date-range P&L, the balance sheet and trial balance as of a date, the general ledger, the 1099 worksheet and prepaid and deferred amortization got hand-verified golden files, each recomputed independently by a second model, to 33; 2026-10-28; it was 10 on 2026-10-10, when the fixed-asset register was added, and the sections below record each rise; 2026-11-06: P4b S5 added one `done` row and S6 three, to 25, which the line had missed — the four rows' implementations and tests are named below).
+**Floor: 35 done** (2026-11-07: the members' equity statement, the tax summary, the date-range P&L, the balance sheet and trial balance as of a date, the general ledger, the 1099 worksheet, prepaid and deferred amortization, draft discard and the evidence gate got hand-verified golden files, each recomputed independently by a second model, to 35; 2026-10-28; it was 10 on 2026-10-10, when the fixed-asset register was added, and the sections below record each rise; 2026-11-06: P4b S5 added one `done` row and S6 three, to 25, which the line had missed — the four rows' implementations and tests are named below).
 
 | Area | GnuCash counterpart (a cross-check, not the spec) | Status | Notes |
 |---|---|---|---|
@@ -216,8 +216,8 @@ Three new rows, none above changed status, and the floor stands.
 
 | Area | Counterpart (a cross-check, not the spec) | Status | Notes |
 |---|---|---|---|
-| Draft states and discard (`books.set_draft_state`, `books.discard_draft`, `books.list_drafts`; Lean `Step.discard`) | Draft/pending transactions (QBO "pending"), voiding an unposted entry | partial | `entry.draft_state_set` and `entry.draft_discarded` under `drafts_v2`; B-43; tests `discard_unblocks_close`, `draft_states_replay_and_project`, `a_draft_waits_for_its_receipt_and_posts`; the fixture `p4_before` was written by the version before and opens to the same figures; `partial` until a hand-verified golden covers a discard |
-| One evidence gate (`evidence::requirement`) | Attach-required rules on posting | partial | the store, the previews, the digest, the viewer and Needs attention call one function; `gui_and_server_gate_agree`, `a_reversal_needs_no_receipt_of_its_own` (D-47); same tests as above for the golden |
+| Draft states and discard (`books.set_draft_state`, `books.discard_draft`, `books.list_drafts`; Lean `Step.discard`) | Draft/pending transactions (QBO "pending"), voiding an unposted entry | done | `entry.draft_state_set` and `entry.draft_discarded` under `drafts_v2`; B-43; tests `discard_unblocks_close`, `draft_states_replay_and_project`, `a_draft_waits_for_its_receipt_and_posts`; the fixture `p4_before` was written by the version before and opens to the same figures; golden-covered (`ledger-store` `golden/draft_states_and_evidence_gate.json`, `golden_drafts.rs::golden_draft_states_and_evidence_gate`; worksheet `plan/golden-worksheets/draft-states-and-evidence-gate.md`) |
+| One evidence gate (`evidence::requirement`) | Attach-required rules on posting | done | the store, the previews, the digest, the viewer and Needs attention call one function; `gui_and_server_gate_agree`, `a_reversal_needs_no_receipt_of_its_own` (D-47); golden-covered by the same file as the row above (every entry's `evidence::requirement`, the gate's refusals, a reversal exempt by origin) |
 | Preview digest on every confirm (D-50) | Confirm dialogs | partial | `stale_preview_refused`, `every_confirm_tool_takes_a_preview`; detects drift, not a human's look |
 
 The digest also gained `since_seq` (what was posted since a journal line,

@@ -119,7 +119,8 @@ It is Exempt (origin), no receipt.
 `drafts_open` (the four drafts before the gate is tried), `gate_refusals`
 (#2 and #3 refused, journal head unchanged), `posted_entries` (every entry
 that posted with its requirement and receipt count, including the reversal
-with no receipt of its own and the closing entry), `close_refused_with_draft`,
+with no receipt of its own; the closing entry is pinned under
+`close_after_discard`), `close_refused_with_draft`,
 `discard_of_posted_refused`, `before_discard` / `after_discard` (drafts, next
 id, trial balance, equal), `draft_journal_lines`, `close_after_discard`, and
 `after_close`.

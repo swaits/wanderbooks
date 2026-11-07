@@ -2219,7 +2219,8 @@ taxpayer's machine-sensible records by account and the taxpayer's
 return"); CHOICE for warn versus refuse (Pub. 583: "the law does not
 require any specific kind of records"; the owner, 2026-10-20: warn by
 default, header accounts exempt, the first company set to refuse at the
-P3 cutover).
+P3 cutover; and, the owner, 2026-11-07, D-67: a category's deductible amount
+rounds once, on the category total).
 
 A tax category is the account's link to the return (`ledger_core::tax`,
 `sources/irs-tax-lines.md`). An account needs one when it is a revenue or
@@ -2266,7 +2267,8 @@ replay calls); `settings::TaxCategoryPolicy`, `Settings::require_tax_category`;
 their first `settings.set` naming the key, B-27); `ledger-mcp` `books.add_account`,
 `books.import_chart_csv`, `books.digest`; `ledger-gui` Needs attention
 (Info under warn, Todo under refuse). **Checked:** `ledger-core`
-`tests/tax.rs`; `ledger-store` `tests/store.rs`
+`tests/tax.rs` (the rounding: `a_category_rounds_its_deductible_amount_once_not_per_account`,
+`a_category_rounds_once_across_different_percents`); `ledger-store` `tests/store.rs`
 (`prop_tax_policy_refuses_exactly`, `a_journaled_clear_replays_under_refuse`);
 `ledger-cli` `tests/spec_tax_policy.rs`; `ledger-gui` `tests/view_model.rs`
 (`needs_attention_flags_every_uncategorized_pl_account_defect_8`);

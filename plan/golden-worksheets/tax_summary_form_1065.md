@@ -29,8 +29,8 @@ was written or the report was printed.
     cases, the percentage is 50%." AUTHORITY for 50%.
   - `nondeductible`: Schedule C Part V: "you can't deduct fines or penalties
     paid to a government for violating any law." AUTHORITY for 0% (no line).
-- **Cent rounding of a deductible amount** is NOT stated by any authority in
-  rules.md (see "Observations" below). Applied here: the cent, half away from
+- **Cent rounding of a deductible amount** was NOT stated by any authority in
+  rules.md when this was written (since 2026-11-07, D-67's CHOICE in B-32: once per category) (see "Observations" below). Applied here: the cent, half away from
   zero (the engine's documented rule, `tax_summary` doc; B-3's half-away-
   from-zero for currency). Only the meals line needs it.
 - Display order of categories is the catalog order in `tax::CATEGORIES`
@@ -120,3 +120,6 @@ existing `snapshot` golden writes them).
   (166.665 → 166.67 either way); with several accounts in one category the
   engine rounds each account and sums, which can differ from rounding the
   category's sum by a cent per account. Worth a CONVENTION entry in rules.md.
+- Resolved 2026-11-07: the owner chose rounding once per category (D-67,
+  a CHOICE line in rules.md B-32); the engine now does so. With one account
+  per category this golden is unchanged.

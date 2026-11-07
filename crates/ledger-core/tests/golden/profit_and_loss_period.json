@@ -1,0 +1,20 @@
+{
+  "start": "2026-01-01",
+  "end": "2026-01-31",
+  "revenue": [
+    {
+      "code": "4000",
+      "name": "Service Revenue",
+      "amount": "4000"
+    }
+  ],
+  "expenses": [
+    {
+      "code": "6000",
+      "name": "Rent Expense",
+      "amount": "800"
+    }
+  ],
+  "total_revenue": "4000",
+  "total_expenses": "800"
+}

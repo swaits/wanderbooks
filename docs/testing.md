@@ -4254,12 +4254,21 @@ just p12-stop     # stop a live runner the way the deadline does
 State is in `${XDG_CACHE_HOME:-$HOME/.cache}/wanderbooks/p12/`:
 `summary.md` (rewritten after every step: status, start, end, duration,
 result), `logs/<step>.log` (and `logs/fuzz-<target>.log`), `done/<step>`
-markers, and `mutants/<step>/` with each run's `mutants.out` (the core) or
-`mutants-<step>` output. A step with a done marker is skipped, so a night
-resumes where the last one stopped; a partial or failed step has no marker
-and reruns next night. Mutation runs start over after a cut-off: the
-recipes as written do not pass cargo-mutants' `--iterate`, so a half-run
-crate is redone rather than mixed with the old output.
+markers, and `mutants/<step>/` with that run's cargo-mutants output files
+(`caught.txt`, `missed.txt`, `timeout.txt`, `unviable.txt`, ...). A step with
+a done marker is skipped, so a night
+resumes where the last one stopped; a failed step has no marker and reruns
+from scratch next night. A mutation step cut off by the deadline or by
+`just p12-stop` is marked partial and keeps its output directory: the next
+night reruns it with cargo-mutants' `--iterate`, which reads the `caught.txt`,
+`unviable.txt` and `previously_caught.txt` that the cut-off run wrote as it
+went and skips those mutants, while retesting the missed, timed-out and
+never-reached ones. The step's result says it resumed and how many mutants
+were already tested. The runner sets `P12_MUTANTS_ITERATE=--iterate` for that
+rerun; the mutation recipes forward that variable to cargo-mutants, so
+`P12_MUTANTS_ITERATE=--iterate just mutants` resumes by hand the same way. A
+run that finished (with or without misses) still starts fresh when selected
+again.
 
 The knobs: `P12_FUZZ_SECONDS` (per target, default 3600), `P12_STOP`
 (local time, default 07:00, the next occurrence after the start),

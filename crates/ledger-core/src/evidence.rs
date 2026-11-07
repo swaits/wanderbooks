@@ -137,7 +137,11 @@ pub enum Origin {
 }
 
 /// Whether an entry needs evidence before it posts, and why (or why not).
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Serialized as `{"decision": "required", "reason": ..}` or
+/// `{"decision": "exempt", "source": ..}` (the golden for the evidence
+/// gate pins it).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "decision", rename_all = "snake_case")]
 pub enum Requirement {
     /// The receipt policy covers it: at least one receipt is needed.
     Required {

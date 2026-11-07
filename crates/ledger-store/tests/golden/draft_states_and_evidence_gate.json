@@ -1,0 +1,252 @@
+{
+  "drafts_open": [
+    {
+      "entry_id": 2,
+      "date": "2026-01-10",
+      "description": "Figma annual plan",
+      "debits": "40.00",
+      "state": "awaiting_evidence",
+      "note": "invoice due from Figma",
+      "receipts": 0,
+      "requirement": {
+        "decision": "required",
+        "reason": "its debits 40.00 are strictly greater than the 25.00 threshold"
+      }
+    },
+    {
+      "entry_id": 3,
+      "date": "2026-01-11",
+      "description": "Duplicate hosting invoice",
+      "debits": "60.00",
+      "state": "building",
+      "note": null,
+      "receipts": 0,
+      "requirement": {
+        "decision": "required",
+        "reason": "its debits 60.00 are strictly greater than the 25.00 threshold"
+      }
+    },
+    {
+      "entry_id": 4,
+      "date": "2026-01-15",
+      "description": "Office supplies",
+      "debits": "12.50",
+      "state": "building",
+      "note": null,
+      "receipts": 0,
+      "requirement": {
+        "decision": "exempt",
+        "source": "the receipt policy (policy.evidence.*): under the threshold, or on exempt accounts"
+      }
+    },
+    {
+      "entry_id": 5,
+      "date": "2026-01-20",
+      "description": "Hosting",
+      "debits": "100.00",
+      "state": "building",
+      "note": null,
+      "receipts": 1,
+      "requirement": {
+        "decision": "required",
+        "reason": "its debits 100.00 are strictly greater than the 25.00 threshold"
+      }
+    }
+  ],
+  "gate_refusals": [
+    {
+      "entry_id": 2,
+      "refused": "receipt_required",
+      "journal_head_unchanged": true
+    },
+    {
+      "entry_id": 3,
+      "refused": "receipt_required",
+      "journal_head_unchanged": true
+    }
+  ],
+  "posted_entries": [
+    {
+      "entry_id": 1,
+      "description": "Seed",
+      "reversal_of": null,
+      "debits": "500.00",
+      "receipts": 1,
+      "requirement": {
+        "decision": "required",
+        "reason": "its debits 500.00 are strictly greater than the 25.00 threshold"
+      }
+    },
+    {
+      "entry_id": 2,
+      "description": "Figma annual plan",
+      "reversal_of": null,
+      "debits": "40.00",
+      "receipts": 1,
+      "requirement": {
+        "decision": "required",
+        "reason": "its debits 40.00 are strictly greater than the 25.00 threshold"
+      }
+    },
+    {
+      "entry_id": 4,
+      "description": "Office supplies",
+      "reversal_of": null,
+      "debits": "12.50",
+      "receipts": 0,
+      "requirement": {
+        "decision": "exempt",
+        "source": "the receipt policy (policy.evidence.*): under the threshold, or on exempt accounts"
+      }
+    },
+    {
+      "entry_id": 5,
+      "description": "Hosting",
+      "reversal_of": null,
+      "debits": "100.00",
+      "receipts": 1,
+      "requirement": {
+        "decision": "required",
+        "reason": "its debits 100.00 are strictly greater than the 25.00 threshold"
+      }
+    },
+    {
+      "entry_id": 6,
+      "description": "Reverse hosting (billed in error)",
+      "reversal_of": 5,
+      "debits": "100.00",
+      "receipts": 0,
+      "requirement": {
+        "decision": "exempt",
+        "source": "a reversal: its evidence is its original's (B-43, D-47, D-12)"
+      }
+    }
+  ],
+  "close_refused_with_draft": {
+    "refused": "drafts_in_period",
+    "period_id": 1
+  },
+  "discard_of_posted_refused": {
+    "entry_id": 1,
+    "refused": true
+  },
+  "before_discard": {
+    "drafts": [
+      {
+        "entry_id": 3,
+        "date": "2026-01-11",
+        "description": "Duplicate hosting invoice",
+        "debits": "60.00",
+        "state": "building",
+        "note": null,
+        "receipts": 0,
+        "requirement": {
+          "decision": "required",
+          "reason": "its debits 60.00 are strictly greater than the 25.00 threshold"
+        }
+      }
+    ],
+    "next_entry_id": 7,
+    "trial_balance": {
+      "lines": [
+        {
+          "code": "1000",
+          "name": "Cash",
+          "debit": "447.50",
+          "credit": "0"
+        },
+        {
+          "code": "3000",
+          "name": "Owner's Equity",
+          "debit": "0",
+          "credit": "500.00"
+        },
+        {
+          "code": "6100",
+          "name": "Software",
+          "debit": "52.50",
+          "credit": "0"
+        }
+      ],
+      "total_debits": "500.00",
+      "total_credits": "500.00"
+    }
+  },
+  "draft_journal_lines": [
+    {
+      "type": "entry.draft_state_set",
+      "id": 2,
+      "state": "awaiting_evidence",
+      "note": "invoice due from Figma"
+    },
+    {
+      "type": "entry.draft_discarded",
+      "id": 3,
+      "reason": "entered twice"
+    }
+  ],
+  "after_discard": {
+    "drafts": [],
+    "next_entry_id": 7,
+    "trial_balance": {
+      "lines": [
+        {
+          "code": "1000",
+          "name": "Cash",
+          "debit": "447.50",
+          "credit": "0"
+        },
+        {
+          "code": "3000",
+          "name": "Owner's Equity",
+          "debit": "0",
+          "credit": "500.00"
+        },
+        {
+          "code": "6100",
+          "name": "Software",
+          "debit": "52.50",
+          "credit": "0"
+        }
+      ],
+      "total_debits": "500.00",
+      "total_credits": "500.00"
+    },
+    "trial_balance_equals_before": true
+  },
+  "close_after_discard": {
+    "closing_entry": 7,
+    "debits": "52.50",
+    "receipts": 0,
+    "requirement": {
+      "decision": "exempt",
+      "source": "a period's closing entry: derived from the books (B-43)"
+    }
+  },
+  "after_close": {
+    "trial_balance": {
+      "lines": [
+        {
+          "code": "1000",
+          "name": "Cash",
+          "debit": "447.50",
+          "credit": "0"
+        },
+        {
+          "code": "3000",
+          "name": "Owner's Equity",
+          "debit": "0",
+          "credit": "500.00"
+        },
+        {
+          "code": "3999",
+          "name": "Retained Earnings",
+          "debit": "52.50",
+          "credit": "0"
+        }
+      ],
+      "total_debits": "500.00",
+      "total_credits": "500.00"
+    }
+  }
+}

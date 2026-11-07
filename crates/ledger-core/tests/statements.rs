@@ -512,6 +512,67 @@ fn members_equity_rolls_capital_forward_and_ties_to_the_balance_sheet() {
     }
 }
 
+/// Every decimal string in `v`, by value (`"50.00"` and `"50"` are one
+/// number), as `snapshot` writes them. Both sides of a golden comparison go
+/// through it, so a harmless difference of written scale is no failure and
+/// every value must still agree exactly.
+fn by_value(v: &mut serde_json::Value) {
+    match v {
+        serde_json::Value::String(s) => {
+            if let Ok(x) = Decimal::from_str(s) {
+                *s = x.normalize().to_string();
+            }
+        }
+        serde_json::Value::Array(items) => items.iter_mut().for_each(by_value),
+        serde_json::Value::Object(map) => map.values_mut().for_each(by_value),
+        _ => {}
+    }
+}
+
+/// The statement as JSON, with the balance sheet's total equity beside it.
+fn statement_json(
+    l: &Ledger,
+    start: NaiveDate,
+    end: NaiveDate,
+    members: &[MemberCapital],
+) -> serde_json::Value {
+    let st = members_equity(l, start, end, members).unwrap();
+    let mut v = serde_json::to_value(&st).unwrap();
+    v["balance_sheet_equity"] =
+        serde_json::to_value(balance_sheet_as_of(l, end).unwrap().total_equity).unwrap();
+    by_value(&mut v);
+    v
+}
+
+/// The golden: every number in `golden/members_equity_two_member.json` was
+/// computed by hand, from the entries, in
+/// `plan/golden-worksheets/members_equity_two_member.md`, before the engine's
+/// output was looked at. Rules: B-13 (capital account = contributions +
+/// allocated income − distributions; cent rounding by largest remainder, the
+/// odd cent to the member listed first; unclosed earnings split cumulatively)
+/// and B-7 (the Total ties to balance-sheet equity). The same numbers hold
+/// whether or not January is closed (B-13: a member's capital on a date never
+/// moves when its period closes).
+#[test]
+fn golden_members_equity_two_member() {
+    let mut golden: serde_json::Value =
+        serde_json::from_str(include_str!("golden/members_equity_two_member.json")).unwrap();
+    by_value(&mut golden);
+    for close in [false, true] {
+        let (l, members) = partnership(close);
+        assert_eq!(
+            statement_json(&l, d(1, 1), d(1, 31), &members),
+            golden["january"],
+            "January, close={close}"
+        );
+        assert_eq!(
+            statement_json(&l, d(2, 1), d(2, 28), &members),
+            golden["february"],
+            "February, close={close}"
+        );
+    }
+}
+
 #[test]
 fn members_must_be_configured_correctly() {
     let (l, mut members) = partnership(false);

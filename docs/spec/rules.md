@@ -2243,6 +2243,11 @@ included, and an account's header flag never changes).
   chart tools", not "never any".
 - Turning the policy to `refuse` changes no existing account: it applies
   to new commands (B-28). Needs attention keeps listing the gaps.
+- CHOICE (owner, 2026-11-07): a category's deductible amount in the tax
+  summary is the exact sum of each of its accounts' shares (book ×
+  deductible percent ÷ 100), rounded once to the cent, half away from
+  zero, following B-21's "round off only the total"; the books stay
+  exact (R-2).
 - Every account a tool can require has a category that fits it on every
   return: the gain or loss account of a disposal (`form_4797_gain_loss`,
   Form 4797), tax-exempt income (`tax_exempt_income`, Schedule K), and

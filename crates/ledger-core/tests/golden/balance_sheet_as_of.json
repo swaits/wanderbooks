@@ -1,0 +1,43 @@
+{
+  "as_of": "2026-01-31",
+  "assets": [
+    {
+      "code": "1000",
+      "name": "Cash",
+      "amount": "7200"
+    },
+    {
+      "code": "1200",
+      "name": "Accounts Receivable",
+      "amount": "2500"
+    },
+    {
+      "code": "1500",
+      "name": "Equipment",
+      "amount": "4000"
+    }
+  ],
+  "liabilities": [
+    {
+      "code": "2000",
+      "name": "Accounts Payable",
+      "amount": "500"
+    }
+  ],
+  "equity": [
+    {
+      "code": "3000",
+      "name": "Owner's Equity",
+      "amount": "10000"
+    },
+    {
+      "code": "3999",
+      "name": "Retained Earnings",
+      "amount": "3200"
+    }
+  ],
+  "current_earnings": "0",
+  "total_assets": "13700",
+  "total_liabilities": "500",
+  "total_equity": "13200"
+}

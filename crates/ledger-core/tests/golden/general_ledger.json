@@ -1,0 +1,238 @@
+{
+  "start": "2026-01-01",
+  "end": "2026-01-31",
+  "accounts": [
+    {
+      "code": "1000",
+      "name": "Cash",
+      "account_type": "Asset",
+      "beginning_balance": "0",
+      "postings": [
+        {
+          "date": "2026-01-02",
+          "entry_id": 1,
+          "description": "Owner investment",
+          "split": "3000 Owner's Equity",
+          "debit": "10000",
+          "credit": "0",
+          "balance": "10000"
+        },
+        {
+          "date": "2026-01-05",
+          "entry_id": 2,
+          "description": "Buy equipment",
+          "split": "1500 Equipment",
+          "debit": "0",
+          "credit": "2500",
+          "balance": "7500"
+        },
+        {
+          "date": "2026-01-15",
+          "entry_id": 4,
+          "description": "January rent",
+          "split": "6000 Rent Expense",
+          "debit": "0",
+          "credit": "800",
+          "balance": "6700"
+        },
+        {
+          "date": "2026-01-20",
+          "entry_id": 5,
+          "description": "Client payment",
+          "split": "1200 Accounts Receivable",
+          "debit": "1500",
+          "credit": "0",
+          "balance": "8200"
+        },
+        {
+          "date": "2026-01-25",
+          "entry_id": 6,
+          "description": "Buy more equipment",
+          "split": "1500 Equipment",
+          "debit": "0",
+          "credit": "1000",
+          "balance": "7200"
+        }
+      ],
+      "total_debits": "11500",
+      "total_credits": "4300",
+      "ending_balance": "7200"
+    },
+    {
+      "code": "1200",
+      "name": "Accounts Receivable",
+      "account_type": "Asset",
+      "beginning_balance": "0",
+      "postings": [
+        {
+          "date": "2026-01-10",
+          "entry_id": 3,
+          "description": "Invoice client",
+          "split": "4000 Service Revenue",
+          "debit": "4000",
+          "credit": "0",
+          "balance": "4000"
+        },
+        {
+          "date": "2026-01-20",
+          "entry_id": 5,
+          "description": "Client payment",
+          "split": "1000 Cash",
+          "debit": "0",
+          "credit": "1500",
+          "balance": "2500"
+        }
+      ],
+      "total_debits": "4000",
+      "total_credits": "1500",
+      "ending_balance": "2500"
+    },
+    {
+      "code": "1500",
+      "name": "Equipment",
+      "account_type": "Asset",
+      "beginning_balance": "0",
+      "postings": [
+        {
+          "date": "2026-01-05",
+          "entry_id": 2,
+          "description": "Buy equipment",
+          "split": "1000 Cash",
+          "debit": "2500",
+          "credit": "0",
+          "balance": "2500"
+        },
+        {
+          "date": "2026-01-25",
+          "entry_id": 6,
+          "description": "Buy more equipment",
+          "split": "-Split-",
+          "debit": "1500",
+          "credit": "0",
+          "balance": "4000"
+        }
+      ],
+      "total_debits": "4000",
+      "total_credits": "0",
+      "ending_balance": "4000"
+    },
+    {
+      "code": "2000",
+      "name": "Accounts Payable",
+      "account_type": "Liability",
+      "beginning_balance": "0",
+      "postings": [
+        {
+          "date": "2026-01-25",
+          "entry_id": 6,
+          "description": "Buy more equipment",
+          "split": "1500 Equipment",
+          "debit": "0",
+          "credit": "500",
+          "balance": "500"
+        }
+      ],
+      "total_debits": "0",
+      "total_credits": "500",
+      "ending_balance": "500"
+    },
+    {
+      "code": "3000",
+      "name": "Owner's Equity",
+      "account_type": "Equity",
+      "beginning_balance": "0",
+      "postings": [
+        {
+          "date": "2026-01-02",
+          "entry_id": 1,
+          "description": "Owner investment",
+          "split": "1000 Cash",
+          "debit": "0",
+          "credit": "10000",
+          "balance": "10000"
+        }
+      ],
+      "total_debits": "0",
+      "total_credits": "10000",
+      "ending_balance": "10000"
+    },
+    {
+      "code": "3999",
+      "name": "Retained Earnings",
+      "account_type": "Equity",
+      "beginning_balance": "0",
+      "postings": [
+        {
+          "date": "2026-01-31",
+          "entry_id": 7,
+          "description": "Close period 2026-01",
+          "split": "4000 Service Revenue",
+          "debit": "0",
+          "credit": "3200",
+          "balance": "3200"
+        }
+      ],
+      "total_debits": "0",
+      "total_credits": "3200",
+      "ending_balance": "3200"
+    },
+    {
+      "code": "4000",
+      "name": "Service Revenue",
+      "account_type": "Revenue",
+      "beginning_balance": "0",
+      "postings": [
+        {
+          "date": "2026-01-10",
+          "entry_id": 3,
+          "description": "Invoice client",
+          "split": "1200 Accounts Receivable",
+          "debit": "0",
+          "credit": "4000",
+          "balance": "4000"
+        },
+        {
+          "date": "2026-01-31",
+          "entry_id": 7,
+          "description": "Close period 2026-01",
+          "split": "-Split-",
+          "debit": "4000",
+          "credit": "0",
+          "balance": "0"
+        }
+      ],
+      "total_debits": "4000",
+      "total_credits": "4000",
+      "ending_balance": "0"
+    },
+    {
+      "code": "6000",
+      "name": "Rent Expense",
+      "account_type": "Expense",
+      "beginning_balance": "0",
+      "postings": [
+        {
+          "date": "2026-01-15",
+          "entry_id": 4,
+          "description": "January rent",
+          "split": "1000 Cash",
+          "debit": "800",
+          "credit": "0",
+          "balance": "800"
+        },
+        {
+          "date": "2026-01-31",
+          "entry_id": 7,
+          "description": "Close period 2026-01",
+          "split": "4000 Service Revenue",
+          "debit": "0",
+          "credit": "800",
+          "balance": "0"
+        }
+      ],
+      "total_debits": "800",
+      "total_credits": "800",
+      "ending_balance": "0"
+    }
+  ]
+}

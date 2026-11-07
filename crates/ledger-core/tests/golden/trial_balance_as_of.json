@@ -1,0 +1,42 @@
+{
+  "lines": [
+    {
+      "code": "1000",
+      "name": "Cash",
+      "debit": "7200",
+      "credit": "0"
+    },
+    {
+      "code": "1200",
+      "name": "Accounts Receivable",
+      "debit": "2500",
+      "credit": "0"
+    },
+    {
+      "code": "1500",
+      "name": "Equipment",
+      "debit": "4000",
+      "credit": "0"
+    },
+    {
+      "code": "2000",
+      "name": "Accounts Payable",
+      "debit": "0",
+      "credit": "500"
+    },
+    {
+      "code": "3000",
+      "name": "Owner's Equity",
+      "debit": "0",
+      "credit": "10000"
+    },
+    {
+      "code": "3999",
+      "name": "Retained Earnings",
+      "debit": "0",
+      "credit": "3200"
+    }
+  ],
+  "total_debits": "13700",
+  "total_credits": "13700"
+}

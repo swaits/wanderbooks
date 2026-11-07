@@ -11,7 +11,7 @@
 //! `plan/golden-worksheets/`; see the worksheet named in each test.
 
 use chrono::NaiveDate;
-use ledger_core::reports::{balance_sheet_as_of, profit_and_loss_for_period};
+use ledger_core::reports::{balance_sheet_as_of, profit_and_loss_for_period, trial_balance_as_of};
 use ledger_core::{AccountId, AccountType, Currency, Ledger, Money, Side};
 use rust_decimal::Decimal;
 
@@ -162,5 +162,16 @@ fn golden_balance_sheet_as_of() {
     let got = serde_json::to_value(&report).unwrap();
     let want: serde_json::Value =
         serde_json::from_str(include_str!("golden/balance_sheet_as_of.json")).unwrap();
+    assert_eq!(got, want);
+}
+
+/// By-hand worksheet: `plan/golden-worksheets/trial-balance-as-of.md`.
+#[test]
+fn golden_trial_balance_as_of() {
+    let ledger = golden_company();
+    let report = trial_balance_as_of(&ledger, date(31));
+    let got = serde_json::to_value(&report).unwrap();
+    let want: serde_json::Value =
+        serde_json::from_str(include_str!("golden/trial_balance_as_of.json")).unwrap();
     assert_eq!(got, want);
 }

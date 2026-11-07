@@ -531,7 +531,10 @@ fn sum(lines: &[TaxSummaryLine], f: fn(&TaxSummaryLine) -> Decimal) -> Decimal {
 }
 
 /// Build the tax summary for `[start, end]`, closing entries excluded (like
-/// the P&L). Deductible amounts round to the cent, half away from zero.
+/// the P&L). Each category's deductible amount is the exact sum of its
+/// accounts' shares (book × deductible percent ÷ 100), rounded once to
+/// the cent, half away from zero (B-21: "round off only the total"); the
+/// book amounts stay exact.
 pub fn tax_summary(
     ledger: &Ledger,
     start: NaiveDate,
@@ -564,8 +567,15 @@ pub fn tax_summary(
         let pct = account
             .deductible_percent
             .unwrap_or_else(|| Decimal::from(c.default_deductible_percent));
-        let tax = (book * pct / Decimal::from(100))
-            .round_dp_with_strategy(2, rust_decimal::RoundingStrategy::MidpointAwayFromZero);
+        // The account's exact share, unrounded: the category rounds once,
+        // after every account is summed (below). Checked, so a figure too
+        // large for exact arithmetic is refused, never a panic.
+        let too_large =
+            |what: &str| LedgerError::TooLargeToCompute(format!("the {} category's {what}", c.key));
+        let share = book
+            .checked_mul(pct)
+            .and_then(|x| x.checked_div(Decimal::from(100)))
+            .ok_or_else(|| too_large("deductible amount"))?;
         let entry = by_cat.entry(c.key).or_insert_with(|| TaxSummaryLine {
             category: c.key.to_string(),
             label: c.label.to_string(),
@@ -574,8 +584,20 @@ pub fn tax_summary(
             tax: Decimal::ZERO,
         });
         entry.accounts.push(name);
-        entry.book += book;
-        entry.tax += tax;
+        entry.book = entry
+            .book
+            .checked_add(book)
+            .ok_or_else(|| too_large("book amount"))?;
+        entry.tax = entry
+            .tax
+            .checked_add(share)
+            .ok_or_else(|| too_large("deductible amount"))?;
+    }
+    // Round each category's deductible amount once, on its exact total.
+    for line in by_cat.values_mut() {
+        line.tax = line
+            .tax
+            .round_dp_with_strategy(2, rust_decimal::RoundingStrategy::MidpointAwayFromZero);
     }
     let mut out = TaxSummary {
         start,

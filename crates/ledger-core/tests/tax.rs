@@ -201,6 +201,63 @@ fn an_override_beats_the_category_default() {
     assert_eq!(m.tax, dec("333.33"));
 }
 
+/// Books with expense accounts in one category: `(code, amount, percent
+/// override)`; `None` takes the category default.
+fn category_books(category: &str, specs: &[(&str, &str, Option<&str>)]) -> Ledger {
+    let mut l = Ledger::new(Currency::USD);
+    let cash = l
+        .add_account("1000", "Cash", AccountType::Asset, None, false)
+        .unwrap();
+    for (i, (code, amt, pct)) in specs.iter().enumerate() {
+        let id = l
+            .add_account(
+                code,
+                &format!("Account {}", i + 1),
+                AccountType::Expense,
+                None,
+                false,
+            )
+            .unwrap();
+        l.set_account_tax(id, Some(category), pct.map(dec)).unwrap();
+        let e = l.create_entry(d(2, 1), "x");
+        let m = Money::new(dec(amt), Currency::USD);
+        l.add_line(e, id, Side::Debit, m).unwrap();
+        l.add_line(e, cash, Side::Credit, m).unwrap();
+        l.post_entry(e).unwrap();
+    }
+    l
+}
+
+/// CHOICE (owner, 2026-11-07; rules.md B-32, B-21): a category rounds
+/// once, on its total. Two Meals accounts of 1.01 at 50%: each share is
+/// exactly 0.505, so rounding per account would give 0.51 + 0.51 = 1.02;
+/// the exact sum 1.01 rounds once to 1.01. Book stays exact: 2.02.
+#[test]
+fn a_category_rounds_its_deductible_amount_once_not_per_account() {
+    let l = category_books("meals", &[("6100", "1.01", None), ("6110", "1.01", None)]);
+    let ts = tax_summary(&l, d(1, 1), d(3, 31), None).unwrap();
+    assert_eq!(ts.deductions.len(), 1);
+    assert_eq!(ts.deductions[0].category, "meals");
+    assert_eq!(ts.deductions[0].book, dec("2.02"));
+    assert_eq!(ts.deductions[0].tax, dec("1.01"));
+}
+
+/// Different percents in one category still add exactly before the one
+/// rounding. By hand: 1.05 at 50% is 0.525 (0.53 rounded alone) and 1.05
+/// at 30% is 0.315 (0.32 rounded alone), so per-account rounding would
+/// sum to 0.85; the exact sum 0.525 + 0.315 = 0.84 rounds once to 0.84.
+#[test]
+fn a_category_rounds_once_across_different_percents() {
+    let l = category_books(
+        "meals",
+        &[("6100", "1.05", Some("50")), ("6110", "1.05", Some("30"))],
+    );
+    let ts = tax_summary(&l, d(1, 1), d(3, 31), None).unwrap();
+    assert_eq!(ts.deductions.len(), 1);
+    assert_eq!(ts.deductions[0].book, dec("2.10"));
+    assert_eq!(ts.deductions[0].tax, dec("0.84"));
+}
+
 #[test]
 fn categories_must_fit_the_account_and_the_return() {
     let mut l = books();

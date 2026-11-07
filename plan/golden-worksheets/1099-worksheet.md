@@ -3,7 +3,11 @@
 Golden: `crates/ledger-core/tests/golden/form1099_worksheet.json`
 Test: `golden_1099_worksheet` in `crates/ledger-core/tests/form1099.rs`
 Fixture: `books()` in that test file (the existing hand-verified fixture:
-bill payments, a card charge, a reversal, a year boundary).
+bill payments, a card charge, a reversal, a year boundary), **plus** one
+step the golden test itself takes: it records `2100 Credit Card` as a
+business-card payment method ("Harbor Visa") before building the reports
+(section "With the card recorded"). `books()` is unchanged; other tests
+rely on its unrecorded card.
 Rules: `docs/spec/rules.md` B-19 (thresholds, payment methods, decisions,
 status), and D-40 as B-19 records it.
 
@@ -16,8 +20,9 @@ was serialized. The report's own buckets are `paid` (counts),
 ## The accounts and the payments
 
 Chart: `1000 Bank` (asset, the cash account), `2100 Credit Card`
-(liability; **no** business-card payment method records it and it is not a
-financing account), `6000 Contract Labor` and `6600 Rent` (expenses).
+(liability; in `books()` **no** business-card payment method records it and
+it is not a financing account; the golden test records it, see "With the
+card recorded"), `6000 Contract Labor` and `6600 Rent` (expenses).
 `create_bill` adds its control accounts (general expenses, payables); they
 are not cash and no payment comes out of them.
 
@@ -42,12 +47,13 @@ without one, Sam 1099-NEC with a W-9. Bigco is never decided.
 
 A line pays only out of a source B-19 names. `1000 Bank` is a cash
 account, so a bank credit counts (presumed check/ACH/transfer, D-40).
-`2100 Credit Card` is not a cash account, not a financing account, and no
-business-card method records it, so it is "anything else" in B-19's
-table: the 5,000 at #8 is in **no** bucket (`paid` 0, `excluded_card` 0).
-That is the fixture's documented "nothing counts" card case; it becomes
-the processor's 1099-K only once the card is recorded as a method (B-19,
-"Cards and party totals"). A bill is not a payment until it is paid
+`2100 Credit Card` is not a cash account and not a financing account.
+(In `books()` alone, with no method recording it, it would be "anything
+else" in B-19's table and the 5,000 at #8 would be in no bucket; that
+unrecorded-card analysis is kept as a note under "With the card recorded"
+and is why the golden records the card: the unrecorded case exercises no
+`excluded_card` figure at all.) With the card recorded (below), #8 is in
+the **card** bucket. A bill is not a payment until it is paid
 (B-19), so #1 counts nothing and #2 counts 1,500. A reversal nets on its
 original's side, so #7 cancels #6.
 
@@ -62,7 +68,8 @@ Ace Rentals:
 - 2025: no payments → 0.
 
 Sam:
-- 2026: #8 5,000 out of 2100, which is no named source → all buckets 0.
+- 2026: #8 5,000 out of 2100, a recorded company card's account →
+  `excluded_card` **5,000**, `paid` 0 (see "With the card recorded").
 - 2025: no payments → 0.
 
 Bigco:
@@ -80,7 +87,8 @@ T is the year's threshold: 600 for 2025, 2,000 for 2026 (26 U.S.C.
   → **reportable**. A W-9 is on file.
 - Ace Rentals 2026: decided for a 1099, lo(F) = hi(F) = 1,200 < 2,000
   → **under_threshold**.
-- Sam 2026: decided for a 1099, no figure at all, no undecided money
+- Sam 2026: decided for a 1099, F = 0, U = 0 (the 5,000 is in the card
+  bucket, outside both), no payment while not reportable
   → **under_threshold** (a card charge is a property of the payment, never
   the vendor's reason, B-19).
 - Bigco 2026: undecided money; hi(F) + max(hi(U), 0) = 0 + 9,000 ≥ 2,000
@@ -97,13 +105,60 @@ T is the year's threshold: 600 for 2025, 2,000 for 2026 (26 U.S.C.
 
 - 2026 `untagged_payments`: [10], the 50.00 contract-labor payment with no
   vendor tag (B-19's "quieter note").
-- 2026 `excluded_card_payments`: empty — no business-card method records
-  2100, so #8 is not in the card bucket.
+- 2026 `excluded_card_payments`: [#8] — one `Payment1099`: entry 8, date
+  2026-04-01, vendor Sam (3), amount 5,000, `instrument` null (the entry
+  is untagged; a company card's account is excluded with or without a tag,
+  B-19's table, last-but-one row; the existing test
+  `card_account_payments_are_listed_not_dropped` reports `None` the same
+  way).
 - 2026 `undetermined_payments`: empty — no payment came through a
   financing liability with its method unrecorded.
 - `other_receipts`, `unresolved`: empty.
 - 2025 has no card, undetermined, other-receipt, unresolved or untagged
   entries.
+
+## With the card recorded
+
+The golden test calls `add_instrument(BusinessCard, "Harbor Visa",
+Some("0042"), None, <2100>)` before the reports. Worked from B-19's table
+for #8 (Dr 6000 5,000 / Cr 2100 5,000, vendor Sam, no method tag), line
+by line, first match wins:
+
+- Cr 2100 (−5,000 of credit): the entry has no method, so rows 1 and 2
+  (the *entry's* method) do not match; 2100 is not a cash account (row 3)
+  and not a financing account nor a member/platform method's account
+  (row 4); it **is** a business_card method's account (row 5) → **card
+  (excluded)**, 5,000.
+- Dr 6000: an expense → "anything else", no payment line.
+- Net of the entry's buckets: card 5,000, nothing else; no signs differ,
+  so nothing goes to undetermined.
+
+Effect on the reports (and nothing else moves):
+
+| Report | Field | Unrecorded | Recorded |
+|---|---|---|---|
+| 2026 | Sam `excluded_card` | 0 | **5,000** |
+| 2026 | `excluded_card_payments` | [] | **[#8 5,000, instrument null]** |
+| 2026 | Sam `paid`, `undetermined`, `not_reportable` | 0, 0, 0 | 0, 0, 0 |
+| 2026 | Sam `status`, `reportable`, `decision_needed` | under_threshold, false, false | unchanged: F = 0, U = 0 |
+| 2025 | everything | — | unchanged (#8 is dated 2026-04-01) |
+
+Why nothing else moves: every other payment is out of `1000 Bank`, a cash
+account, whose rule (row 3) does not depend on the card's method; #10 is
+untagged and from the bank, so `untagged_payments` stays [10]; the card
+method adds no vendor line and no list entry of its own; the instrument's
+id appears in the report only through an entry tagged with it, and none
+is.
+
+The unrecorded case (the earlier version of this golden) is kept as a note:
+with no method recording 2100, #8 is "anything else": `paid` 0,
+`excluded_card` 0, the list empty, Sam under_threshold. That is correct per
+B-19 ("Cards and party totals") but it exercises no card figure, so the
+parity row's "card exclusion" claim was not covered. The unrecorded card's
+charge counting for no one is still pinned by
+`cash_paid_per_vendor_and_who_is_reportable` (Sam `paid` 0, and the
+exclusion buckets 0 on the unrecorded `books()`) and by the first half of
+`card_account_payments_are_listed_not_dropped`.
 
 ## Fields fixed by the fixture
 

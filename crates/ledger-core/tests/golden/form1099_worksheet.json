@@ -108,7 +108,15 @@
     "year": 2025
   },
   "2026": {
-    "excluded_card_payments": [],
+    "excluded_card_payments": [
+      {
+        "amount": "5000",
+        "date": "2026-04-01",
+        "entry_id": 8,
+        "instrument": null,
+        "vendor_id": 3
+      }
+    ],
     "other_receipts": [],
     "threshold": "2000",
     "through": null,
@@ -220,7 +228,7 @@
           }
         ],
         "effective": null,
-        "excluded_card": "0",
+        "excluded_card": "5000",
         "name": "Sam",
         "not_reportable": "0",
         "paid": "0",

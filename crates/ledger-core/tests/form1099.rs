@@ -208,6 +208,10 @@ fn cash_paid_per_vendor_and_who_is_reportable() {
     assert_eq!(ace.form(), Some(Form1099::Misc));
     assert_eq!(ace.decided, Some(src()));
     assert!(!ace.tin_on_file);
+    // No method records the card: Sam's 5,000 on it counts for no one.
+    let sam = line(&r, "Sam");
+    assert_eq!((sam.excluded_card, sam.undetermined), (dec("0"), dec("0")));
+    assert!(r.excluded_card_payments.is_empty());
     // The untagged 50 paid out for contract labor: the quieter note's one.
     assert_eq!(r.untagged_payments.len(), 1);
 }
@@ -2520,7 +2524,19 @@ fn card_accounts_are_the_company_cards_liabilities() {
 /// 2,000 (rules.md B-19).
 #[test]
 fn golden_1099_worksheet() {
-    let l = books();
+    let mut l = books();
+    // Record the card (worksheet, "With the card recorded"): Sam's 5,000
+    // is then a card payment, excluded and listed (B-19). books() leaves
+    // it unrecorded, and other tests rely on that.
+    let card = l.chart().find_by_code("2100").unwrap().id;
+    l.add_instrument(
+        InstrumentKind::BusinessCard,
+        "Harbor Visa",
+        Some("0042"),
+        None,
+        card,
+    )
+    .unwrap();
     let r2026 = report_for(&l, 2026, None, &[]).unwrap();
     let r2025 = report_for(&l, 2025, None, &[]).unwrap();
     let got = serde_json::json!({

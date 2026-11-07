@@ -811,3 +811,94 @@ fn a_month_that_rounds_to_nothing_is_never_a_posting() {
     assert_eq!(s.next().unwrap(), Some(d(3, 31)));
     assert_eq!(s.remaining().unwrap(), dec("0.01"));
 }
+
+/// The plan as JSON: one object per period, in plan order.
+fn plan_values(plan: Vec<(NaiveDate, Decimal)>) -> Vec<serde_json::Value> {
+    plan.into_iter()
+        .map(|(date, amount)| serde_json::json!({"date": date, "amount": amount}))
+        .collect()
+}
+
+/// Golden (oracle Layer 1): the two hand-verified amortization fixtures,
+/// every period, rounding remainder and running balance recomputed in
+/// plan/golden-worksheets/amortization-plans.md before this test was run.
+/// A year of prepaid insurance at 100.00 a month (three months posted,
+/// 900.00 left) and three months of deferred revenue at 333.33, 333.33,
+/// 333.34 (the last period takes the rounding, so the three sum to
+/// 1,000.00 exactly: rules.md B-16).
+#[test]
+fn golden_amortization_plans() {
+    let mut b = books();
+    post(&mut b.l, d(3, 1), b.prepaid, b.cash, "1200");
+    let prepaid_id =
+        b.l.register_schedule(NewSchedule {
+            description: "Liability insurance".into(),
+            kind: ScheduleKind::PrepaidExpense,
+            total: usd("1200"),
+            start: d(3, 1),
+            months: 12,
+            balance_account: b.prepaid,
+            pl_account: b.insurance,
+            convention: ledger_core::ScheduleConvention::MonthlyEven,
+        })
+        .unwrap();
+    for (month, _) in b.l.get_schedule(prepaid_id).unwrap().due(d(5, 31)).unwrap() {
+        b.l.post_schedule_month(prepaid_id, month).unwrap();
+    }
+    let prepaid_schedule = b.l.get_schedule(prepaid_id).unwrap().clone();
+    let prepaid = serde_json::json!({
+        "description": prepaid_schedule.description,
+        "kind": prepaid_schedule.kind,
+        "total": prepaid_schedule.total.amount,
+        "currency": prepaid_schedule.total.currency.code(),
+        "start": prepaid_schedule.start,
+        "months": prepaid_schedule.months,
+        "posted": prepaid_schedule.posted,
+        "plan": plan_values(prepaid_schedule.plan().unwrap()),
+        "remaining": prepaid_schedule.remaining().unwrap(),
+        "profit_and_loss": profit_and_loss_for_period(&b.l, d(3, 1), d(5, 31), None).unwrap(),
+        "balance_sheet": balance_sheet_as_of(&b.l, d(5, 31)).unwrap(),
+    });
+
+    let mut b = books();
+    post(&mut b.l, d(1, 1), b.cash, b.deferred, "1000");
+    let deferred_id =
+        b.l.register_schedule(NewSchedule {
+            description: "Quarterly plan, Acme".into(),
+            kind: ScheduleKind::DeferredRevenue,
+            total: usd("1000"),
+            start: d(1, 1),
+            months: 3,
+            balance_account: b.deferred,
+            pl_account: b.revenue,
+            convention: ledger_core::ScheduleConvention::MonthlyEven,
+        })
+        .unwrap();
+    for (month, _) in
+        b.l.get_schedule(deferred_id)
+            .unwrap()
+            .due(d(12, 31))
+            .unwrap()
+    {
+        b.l.post_schedule_month(deferred_id, month).unwrap();
+    }
+    let deferred_schedule = b.l.get_schedule(deferred_id).unwrap().clone();
+    let deferred = serde_json::json!({
+        "description": deferred_schedule.description,
+        "kind": deferred_schedule.kind,
+        "total": deferred_schedule.total.amount,
+        "currency": deferred_schedule.total.currency.code(),
+        "start": deferred_schedule.start,
+        "months": deferred_schedule.months,
+        "posted": deferred_schedule.posted,
+        "plan": plan_values(deferred_schedule.plan().unwrap()),
+        "remaining": deferred_schedule.remaining().unwrap(),
+        "profit_and_loss": profit_and_loss_for_period(&b.l, d(1, 1), d(3, 31), None).unwrap(),
+        "balance_sheet": balance_sheet_as_of(&b.l, d(3, 31)).unwrap(),
+    });
+
+    let got = serde_json::json!({"prepaid": prepaid, "deferred": deferred});
+    let want: serde_json::Value =
+        serde_json::from_str(include_str!("golden/amortization_plans.json")).unwrap();
+    assert_eq!(got, want);
+}

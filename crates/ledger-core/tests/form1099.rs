@@ -208,6 +208,10 @@ fn cash_paid_per_vendor_and_who_is_reportable() {
     assert_eq!(ace.form(), Some(Form1099::Misc));
     assert_eq!(ace.decided, Some(src()));
     assert!(!ace.tin_on_file);
+    // No method records the card: Sam's 5,000 on it counts for no one.
+    let sam = line(&r, "Sam");
+    assert_eq!((sam.excluded_card, sam.undetermined), (dec("0"), dec("0")));
+    assert!(r.excluded_card_payments.is_empty());
     // The untagged 50 paid out for contract labor: the quieter note's one.
     assert_eq!(r.untagged_payments.len(), 1);
 }
@@ -2510,4 +2514,36 @@ fn card_accounts_are_the_company_cards_liabilities() {
         m.l.card_accounts().into_iter().collect::<Vec<_>>(),
         [m.card]
     );
+}
+
+/// Golden (oracle Layer 1): the worksheet's figures for the hand-verified
+/// fixture above, every one recomputed from the entries in
+/// plan/golden-worksheets/1099-worksheet.md before this test was run.
+/// 2025 and 2026 together pin the year boundary: Dana's 300.00 on
+/// 2025-12-30 counts in 2025 only, and the threshold moves from 600 to
+/// 2,000 (rules.md B-19).
+#[test]
+fn golden_1099_worksheet() {
+    let mut l = books();
+    // Record the card (worksheet, "With the card recorded"): Sam's 5,000
+    // is then a card payment, excluded and listed (B-19). books() leaves
+    // it unrecorded, and other tests rely on that.
+    let card = l.chart().find_by_code("2100").unwrap().id;
+    l.add_instrument(
+        InstrumentKind::BusinessCard,
+        "Harbor Visa",
+        Some("0042"),
+        None,
+        card,
+    )
+    .unwrap();
+    let r2026 = report_for(&l, 2026, None, &[]).unwrap();
+    let r2025 = report_for(&l, 2025, None, &[]).unwrap();
+    let got = serde_json::json!({
+        "2025": serde_json::to_value(&r2025).unwrap(),
+        "2026": serde_json::to_value(&r2026).unwrap(),
+    });
+    let want: serde_json::Value =
+        serde_json::from_str(include_str!("golden/form1099_worksheet.json")).unwrap();
+    assert_eq!(got, want);
 }

@@ -1,0 +1,159 @@
+{
+  "deferred": {
+    "balance_sheet": {
+      "as_of": "2026-03-31",
+      "assets": [
+        {
+          "amount": "1000",
+          "code": "1000",
+          "name": "Cash"
+        }
+      ],
+      "current_earnings": "1000.00",
+      "equity": [],
+      "liabilities": [],
+      "total_assets": "1000",
+      "total_equity": "1000.00",
+      "total_liabilities": "0"
+    },
+    "currency": "USD",
+    "description": "Quarterly plan, Acme",
+    "kind": "deferred_revenue",
+    "months": 3,
+    "plan": [
+      {
+        "amount": "333.33",
+        "date": "2026-01-31"
+      },
+      {
+        "amount": "333.33",
+        "date": "2026-02-28"
+      },
+      {
+        "amount": "333.34",
+        "date": "2026-03-31"
+      }
+    ],
+    "posted": [
+      "2026-01-31",
+      "2026-02-28",
+      "2026-03-31"
+    ],
+    "profit_and_loss": {
+      "end": "2026-03-31",
+      "expenses": [],
+      "revenue": [
+        {
+          "amount": "1000.00",
+          "code": "4000",
+          "name": "Subscription Revenue"
+        }
+      ],
+      "start": "2026-01-01",
+      "total_expenses": "0",
+      "total_revenue": "1000.00"
+    },
+    "remaining": "0",
+    "start": "2026-01-01",
+    "total": "1000"
+  },
+  "prepaid": {
+    "balance_sheet": {
+      "as_of": "2026-05-31",
+      "assets": [
+        {
+          "amount": "-1200",
+          "code": "1000",
+          "name": "Cash"
+        },
+        {
+          "amount": "900",
+          "code": "1300",
+          "name": "Prepaid Expenses"
+        }
+      ],
+      "current_earnings": "-300",
+      "equity": [],
+      "liabilities": [],
+      "total_assets": "-300",
+      "total_equity": "-300",
+      "total_liabilities": "0"
+    },
+    "currency": "USD",
+    "description": "Liability insurance",
+    "kind": "prepaid_expense",
+    "months": 12,
+    "plan": [
+      {
+        "amount": "100",
+        "date": "2026-03-31"
+      },
+      {
+        "amount": "100",
+        "date": "2026-04-30"
+      },
+      {
+        "amount": "100",
+        "date": "2026-05-31"
+      },
+      {
+        "amount": "100",
+        "date": "2026-06-30"
+      },
+      {
+        "amount": "100",
+        "date": "2026-07-31"
+      },
+      {
+        "amount": "100",
+        "date": "2026-08-31"
+      },
+      {
+        "amount": "100",
+        "date": "2026-09-30"
+      },
+      {
+        "amount": "100",
+        "date": "2026-10-31"
+      },
+      {
+        "amount": "100",
+        "date": "2026-11-30"
+      },
+      {
+        "amount": "100",
+        "date": "2026-12-31"
+      },
+      {
+        "amount": "100",
+        "date": "2027-01-31"
+      },
+      {
+        "amount": "100",
+        "date": "2027-02-28"
+      }
+    ],
+    "posted": [
+      "2026-03-31",
+      "2026-04-30",
+      "2026-05-31"
+    ],
+    "profit_and_loss": {
+      "end": "2026-05-31",
+      "expenses": [
+        {
+          "amount": "300",
+          "code": "6300",
+          "name": "Insurance"
+        }
+      ],
+      "revenue": [],
+      "start": "2026-03-01",
+      "total_expenses": "300",
+      "total_revenue": "0"
+    },
+    "remaining": "900",
+    "start": "2026-03-01",
+    "total": "1200"
+  }
+}

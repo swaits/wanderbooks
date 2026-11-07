@@ -494,7 +494,7 @@ impl Status1099 {
 }
 
 /// One vendor's year.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Vendor1099Line {
     /// The vendor.
     pub vendor_id: VendorId,
@@ -542,7 +542,7 @@ impl Vendor1099Line {
 }
 
 /// One payment on a vendor's year, for the worksheet's lists.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Payment1099 {
     /// The entry.
     pub entry_id: EntryId,
@@ -557,7 +557,7 @@ pub struct Payment1099 {
 }
 
 /// The year's 1099 report.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Vendor1099Report {
     /// Calendar year.
     pub year: i32,

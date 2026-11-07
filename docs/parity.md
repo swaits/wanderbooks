@@ -10,7 +10,7 @@ No other statuses. `crates/ledger-cli/tests/parity_floor.rs` enforces the
 statuses and the floor in `cargo test`; `scripts/parity-floor.sh` enforces
 in CI that the floor never falls between commits.
 
-**Floor: 27 done** (2026-11-07: the members' equity statement and the tax summary got hand-verified golden files, each recomputed independently by a second model, to 27; 2026-10-28; it was 10 on 2026-10-10, when the fixed-asset register was added, and the sections below record each rise; 2026-11-06: P4b S5 added one `done` row and S6 three, to 25, which the line had missed — the four rows' implementations and tests are named below).
+**Floor: 31 done** (2026-11-07: the members' equity statement, the tax summary, the date-range P&L, the balance sheet and trial balance as of a date and the general ledger got hand-verified golden files, each recomputed independently by a second model, to 31; 2026-10-28; it was 10 on 2026-10-10, when the fixed-asset register was added, and the sections below record each rise; 2026-11-06: P4b S5 added one `done` row and S6 three, to 25, which the line had missed — the four rows' implementations and tests are named below).
 
 | Area | GnuCash counterpart (a cross-check, not the spec) | Status | Notes |
 |---|---|---|---|
@@ -21,10 +21,10 @@ in CI that the floor never falls between commits.
 | Trial balance | Reports → Trial Balance | done | golden-covered |
 | Balance sheet (A = L + E) | Reports → Balance Sheet | done | current earnings folded in pre-close; golden-covered |
 | Profit & loss | Reports → Income Statement | done | golden-covered |
-| P&L for a date range, line per account (closing entries excluded) | Reports → Income Statement (custom dates) | partial | hand-verified fixture + property tests; no golden file yet |
-| Balance sheet as of a date, line per account | Reports → Balance Sheet (as of) | partial | hand-verified fixture + property tests; no golden file yet |
-| General ledger by account (running balance, split) | Reports → General Ledger | partial | hand-verified fixture, ties to trial balance; no golden file yet |
-| Trial balance as of a date | Reports → Trial Balance (as of) | partial | hand-verified fixture; no golden file yet |
+| P&L for a date range, line per account (closing entries excluded) | Reports → Income Statement (custom dates) | done | hand-verified fixture + property tests; golden-covered (`tests/golden_reports.rs`, the fixture company extended with a three-leg entry, a January close and a February entry; `golden/profit_and_loss_period.json`, `golden_profit_and_loss_period`; worksheet `plan/golden-worksheets/profit-and-loss-period.md`) |
+| Balance sheet as of a date, line per account | Reports → Balance Sheet (as of) | done | hand-verified fixture + property tests; golden-covered (`tests/golden_reports.rs`, the fixture company extended with a three-leg entry, a January close and a February entry; `golden/balance_sheet_as_of.json`, `golden_balance_sheet_as_of`; worksheet `plan/golden-worksheets/balance-sheet-as-of.md`) |
+| General ledger by account (running balance, split) | Reports → General Ledger | done | hand-verified fixture, ties to trial balance; golden-covered (`tests/golden_reports.rs`, the fixture company extended with a three-leg entry, a January close and a February entry; `golden/general_ledger.json`, `golden_general_ledger`; worksheet `plan/golden-worksheets/general-ledger.md`) |
+| Trial balance as of a date | Reports → Trial Balance (as of) | done | hand-verified fixture; golden-covered (`tests/golden_reports.rs`, the fixture company extended with a three-leg entry, a January close and a February entry; `golden/trial_balance_as_of.json`, `golden_trial_balance_as_of`; worksheet `plan/golden-worksheets/trial-balance-as-of.md`) |
 | Statement of changes in members' equity | Reports → Statement of Changes in Equity | done | hand-verified two-member fixture incl. rounding and a close; golden-covered (`golden/members_equity_two_member.json`, `statements.rs::golden_members_equity_two_member`; worksheet `plan/golden-worksheets/members_equity_two_member.md`) |
 | Tax line mapping + tax summary | Accounts → Tax line mapping; Tax reports | done | hand-verified fixture (50% meals, nondeductible, contra income); golden-covered (`golden/tax_summary_form_1065.json`, `tax.rs::golden_tax_summary_form_1065`; worksheet `plan/golden-worksheets/tax_summary_form_1065.md`) |
 | Reversing entries | Reverse transaction | done | linked via `reversal_of` |

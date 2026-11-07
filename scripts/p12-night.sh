@@ -297,14 +297,13 @@ run_oracle() {
 
 run_props_max() {
     # The maxima docs/testing.md names, with the tests those maxima name.
-    # (The form1099 property's documented 2,000 has no env knob: the test
-    # hard-codes 256, so it is recorded below rather than guessed at.)
     local -a cmds=(
         "STORE_CASES=5000 cargo test -p ledger-store --test store refused_commands_never_reach_the_journal"
         "WB_ORDERS_DEPTH=6 cargo test -p ledger-store --test asset_orders every_order_of_runs_reversals_disposals_and_closes_keeps_the_books_right"
         "CF_CASES=5000 cargo test -p ledger-core --test spec_cash_flow"
         "PROPTEST_CASES=5000 cargo test -p ledger-core --test spec_party_totals"
         "PROPTEST_CASES=2000 cargo test -p ledger-store --test settings settings_replay_is_pure"
+        "PROPTEST_CASES=2000 cargo test -p ledger-core --test form1099 party_totals_are_the_1099s_buckets"
     )
     local details=$state/steps/props-max.details.tmp
     local cmd rc failed=0
@@ -320,7 +319,6 @@ run_props_max() {
             failed=1
         fi
     done
-    echo "note: docs/testing.md's form1099 party-totals property says 2,000, but the test hard-codes 256; not run at 2,000 here." >> "$details"
     mv "$details" "$state/steps/props-max.details"
     if [ "$failed" -eq 0 ]; then
         record_result props-max "property tests at their documented maxima passed"

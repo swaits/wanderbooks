@@ -1,4 +1,36 @@
-# STATUS — 2026-11-06: the plan's build units are done; the owner's runs and trials are left
+# STATUS — 2026-11-07: the plan's build units are done; golden files raised the parity floor to 36; the owner's runs and trials are left
+
+## 2026-11-07: eleven golden files, the floor 25 → 36, D-67
+
+Workers now rotate at random among DeepSeek V4.1 Flash, Muse Wonder and
+Sonnet 5.5; each piece of work is reviewed by a different model before
+it merges. Eleven `partial` rows that waited only on a hand-verified
+golden got one (worksheets in `plan/golden-worksheets/`), each
+recomputed independently by a second model: the date-range P&L, the
+as-of balance sheet and trial balance, the general ledger, the members'
+equity statement, the Form 1065 tax summary, the 1099 worksheet (with a
+recorded business card), prepaid and deferred amortization, draft
+discard and the evidence gate, the audit workpaper. Reviews caught two
+goldens that didn't cover what their row claimed (the 1099 card
+exclusion; the audit's 1099 input, hand-fed rather than derived) and
+both were fixed before merging.
+
+- **D-67** (owner): the tax summary rounds a category's deductible
+  amount once, on the category total (was per account, up to a cent per
+  account apart); checked arithmetic there now returns an error instead
+  of panicking.
+- `p12-night` runs the 1099 party-totals property at 2,000 (it always
+  honoured `PROPTEST_CASES`; the earlier note saying it didn't was wrong).
+- Open notes, no decision needed yet: the audit flags an undecided 1099
+  vendor under the threshold (the code's rule; B-19 says a decision is
+  needed at or over it; defensible mid-year); the tax summary's percent
+  share is money arithmetic outside `kernel.rs` (a P12-era move with a
+  Kani harness); plain serde writes `Money`'s currency as bytes.
+
+**Left:** as before: P12 step 2 (the owner's overnight run, not started);
+the owner's trials, the `release` run, the icon, the re-audit (P10);
+Q-6 before P9b; signing (D-64). The remaining `partial` rows wait on
+those trials, on statement parsers, or are partial by design.
 
 ## Resumed (2026-11-05): the two checkpoints landed
 

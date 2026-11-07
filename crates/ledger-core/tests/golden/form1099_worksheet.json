@@ -1,0 +1,236 @@
+{
+  "2025": {
+    "excluded_card_payments": [],
+    "other_receipts": [],
+    "threshold": "600",
+    "through": null,
+    "undetermined_payments": [],
+    "unresolved": [],
+    "untagged_payments": [],
+    "vendors": [
+      {
+        "decided": {
+          "decided_by": "Riley Chen",
+          "decided_on": "2026-01-05"
+        },
+        "decision": {
+          "files": "misc"
+        },
+        "decision_needed": false,
+        "decisions": [
+          {
+            "decision": {
+              "files": "misc"
+            },
+            "effective": null,
+            "source": {
+              "decided_by": "Riley Chen",
+              "decided_on": "2026-01-05"
+            }
+          }
+        ],
+        "effective": null,
+        "excluded_card": "0",
+        "name": "Ace Rentals",
+        "not_reportable": "0",
+        "paid": "0",
+        "reportable": false,
+        "status": "under_threshold",
+        "tin_on_file": false,
+        "undetermined": "0",
+        "vendor_id": 2
+      },
+      {
+        "decided": {
+          "decided_by": "Riley Chen",
+          "decided_on": "2026-01-05"
+        },
+        "decision": {
+          "files": "nec"
+        },
+        "decision_needed": false,
+        "decisions": [
+          {
+            "decision": {
+              "files": "nec"
+            },
+            "effective": null,
+            "source": {
+              "decided_by": "Riley Chen",
+              "decided_on": "2026-01-05"
+            }
+          }
+        ],
+        "effective": null,
+        "excluded_card": "0",
+        "name": "Dana",
+        "not_reportable": "0",
+        "paid": "300",
+        "reportable": false,
+        "status": "under_threshold",
+        "tin_on_file": true,
+        "undetermined": "0",
+        "vendor_id": 1
+      },
+      {
+        "decided": {
+          "decided_by": "Riley Chen",
+          "decided_on": "2026-01-05"
+        },
+        "decision": {
+          "files": "nec"
+        },
+        "decision_needed": false,
+        "decisions": [
+          {
+            "decision": {
+              "files": "nec"
+            },
+            "effective": null,
+            "source": {
+              "decided_by": "Riley Chen",
+              "decided_on": "2026-01-05"
+            }
+          }
+        ],
+        "effective": null,
+        "excluded_card": "0",
+        "name": "Sam",
+        "not_reportable": "0",
+        "paid": "0",
+        "reportable": false,
+        "status": "under_threshold",
+        "tin_on_file": true,
+        "undetermined": "0",
+        "vendor_id": 3
+      }
+    ],
+    "year": 2025
+  },
+  "2026": {
+    "excluded_card_payments": [],
+    "other_receipts": [],
+    "threshold": "2000",
+    "through": null,
+    "undetermined_payments": [],
+    "unresolved": [],
+    "untagged_payments": [
+      10
+    ],
+    "vendors": [
+      {
+        "decided": {
+          "decided_by": "Riley Chen",
+          "decided_on": "2026-01-05"
+        },
+        "decision": {
+          "files": "misc"
+        },
+        "decision_needed": false,
+        "decisions": [
+          {
+            "decision": {
+              "files": "misc"
+            },
+            "effective": null,
+            "source": {
+              "decided_by": "Riley Chen",
+              "decided_on": "2026-01-05"
+            }
+          }
+        ],
+        "effective": null,
+        "excluded_card": "0",
+        "name": "Ace Rentals",
+        "not_reportable": "0",
+        "paid": "1200",
+        "reportable": false,
+        "status": "under_threshold",
+        "tin_on_file": false,
+        "undetermined": "0",
+        "vendor_id": 2
+      },
+      {
+        "decided": null,
+        "decision": "undetermined",
+        "decision_needed": true,
+        "decisions": [],
+        "effective": null,
+        "excluded_card": "0",
+        "name": "Bigco",
+        "not_reportable": "0",
+        "paid": "9000",
+        "reportable": false,
+        "status": "undetermined",
+        "tin_on_file": false,
+        "undetermined": "0",
+        "vendor_id": 4
+      },
+      {
+        "decided": {
+          "decided_by": "Riley Chen",
+          "decided_on": "2026-01-05"
+        },
+        "decision": {
+          "files": "nec"
+        },
+        "decision_needed": false,
+        "decisions": [
+          {
+            "decision": {
+              "files": "nec"
+            },
+            "effective": null,
+            "source": {
+              "decided_by": "Riley Chen",
+              "decided_on": "2026-01-05"
+            }
+          }
+        ],
+        "effective": null,
+        "excluded_card": "0",
+        "name": "Dana",
+        "not_reportable": "0",
+        "paid": "2200",
+        "reportable": true,
+        "status": "reportable",
+        "tin_on_file": true,
+        "undetermined": "0",
+        "vendor_id": 1
+      },
+      {
+        "decided": {
+          "decided_by": "Riley Chen",
+          "decided_on": "2026-01-05"
+        },
+        "decision": {
+          "files": "nec"
+        },
+        "decision_needed": false,
+        "decisions": [
+          {
+            "decision": {
+              "files": "nec"
+            },
+            "effective": null,
+            "source": {
+              "decided_by": "Riley Chen",
+              "decided_on": "2026-01-05"
+            }
+          }
+        ],
+        "effective": null,
+        "excluded_card": "0",
+        "name": "Sam",
+        "not_reportable": "0",
+        "paid": "0",
+        "reportable": false,
+        "status": "under_threshold",
+        "tin_on_file": true,
+        "undetermined": "0",
+        "vendor_id": 3
+      }
+    ],
+    "year": 2026
+  }
+}

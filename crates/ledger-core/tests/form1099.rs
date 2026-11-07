@@ -2511,3 +2511,23 @@ fn card_accounts_are_the_company_cards_liabilities() {
         [m.card]
     );
 }
+
+/// Golden (oracle Layer 1): the worksheet's figures for the hand-verified
+/// fixture above, every one recomputed from the entries in
+/// plan/golden-worksheets/1099-worksheet.md before this test was run.
+/// 2025 and 2026 together pin the year boundary: Dana's 300.00 on
+/// 2025-12-30 counts in 2025 only, and the threshold moves from 600 to
+/// 2,000 (rules.md B-19).
+#[test]
+fn golden_1099_worksheet() {
+    let l = books();
+    let r2026 = report_for(&l, 2026, None, &[]).unwrap();
+    let r2025 = report_for(&l, 2025, None, &[]).unwrap();
+    let got = serde_json::json!({
+        "2025": serde_json::to_value(&r2025).unwrap(),
+        "2026": serde_json::to_value(&r2026).unwrap(),
+    });
+    let want: serde_json::Value =
+        serde_json::from_str(include_str!("golden/form1099_worksheet.json")).unwrap();
+    assert_eq!(got, want);
+}

@@ -239,6 +239,34 @@ unless another class's own name is the same ignoring case (the P4 follow-ups'
 review, finding 4, 2026-10-22: before, all the classes whose names matched
 were renamed).
 
+**Pick:** `no-customer-or-vendor-name`: CHOICE (open risk). The IIF writes no
+NAME on a line to accounts receivable or payable, though Intuit's staff say
+such a line requires one: no Intuit source says what an IIF journal import
+does with a nameless line, so the pick is to omit the name (writing the
+party's name instead would need the customer and vendor lists declared too,
+with names unique across them) and to name those entries to the CPA
+(`Iif::receivable_payable`, the package README). If QuickBooks refuses such a
+line on import, the pick is revisited. The other option is writing the party's
+name.
+
+**Pick:** `account-types`: the ACCNTTYPE of an account is its QuickBooks
+keyword (Intuit's IIF Import Kit `!ACCNT` header help, not vendored, so
+CONVENTION): `BANK` for the cash accounts the caller names, `AR` for the
+receivables role account, `AP` for the payables role account, `FIXASSET` for
+the cost and accumulated depreciation accounts of a registered asset acquired
+by the as-of day, otherwise by wanderbooks type `OCASSET` (asset), `OCLIAB`
+(liability), `EQUITY`, `INC` (revenue) and `EXP` (expense)
+(`ledger_package::export_iif`). The keywords `OASSET`, `CCARD`, `LTLIAB`,
+`COGS`, `EXINC` and `EXEXP` are in `ledger_import::QbAccountType` but nothing
+in the books maps to them yet.
+
+**Gap:** an entry with lines on more than one A/R or A/P account (the
+receivables and payables roles are two accounts, so one entry can hold both)
+must be refused by the spec (Intuit: QuickBooks will not record it), but
+`journal_to_iif` writes it and only lists it in `Iif::receivable_payable`
+(a flag for any entry with such a line). Unenforced until the engine refuses
+it.
+
 **Enforced:** `ledger_import::iif` (`field`, `iif_accounts`, `iif_classes`,
 `journal_to_iif`, `Iif::warnings`, `Iif::changes`, `Iif::receivable_payable`),
 `ledger_package::export_iif` and `build_package`, `ledger-mcp` `books.export`

@@ -25,6 +25,17 @@ pub(crate) fn rules_md_carries_every_id() {
     }
 
     for rule in bookspec_checker::rules().iter() {
+        if rule.b == 0 {
+            // Born after the B-n numbering ended (P14 unit S-C7): no index
+            // row and no B-n section; its pick is recorded in the claims
+            // file of its parent.
+            assert!(
+                all.contains(&format!("**Pick ({}):**", rule.id)),
+                "{} carries its pick in its claims file",
+                rule.id
+            );
+            continue;
+        }
         assert!(
             index.contains(&format!("| B-{} | `{}` |", rule.b, rule.id)),
             "rules.md indexes B-{} to {}",

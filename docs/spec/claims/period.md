@@ -25,6 +25,8 @@ decision, D-73, 2026-11-08). **Checked:** Kani
 
 **bookspec:** `BS-period-2`
 
+**Pick (BS-period-4):** nest-never-partially-overlap, the owner, 2026-10-13
+
 **Claims:** yes
 
 **Pick:** periods nest and never partially overlap (the owner, 2026-10-13).
@@ -50,6 +52,8 @@ untouched.
 ## B-30 A report asked for without dates covers this fiscal year so far
 
 **bookspec:** `BS-period-3`
+
+**Pick (BS-period-5):** fiscal-year-to-date-by-default, the owner, 2026-10-20
 
 **Claims:** partly (the bookspec record states the one default rule; the surfaces it binds are wanderbooks product, below)
 

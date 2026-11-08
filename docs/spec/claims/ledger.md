@@ -116,6 +116,8 @@ None.
 
 **Claims:** yes
 
+**Pick (BS-ledger-6):** `reversible-once`, the owner, 2026-10-13.
+
 **Pick:** `reversible-once`: CHOICE (the owner, 2026-10-13).
 
 **Enforced:** `Ledger::check_reversal`. **Checked:**
@@ -176,6 +178,8 @@ frees its code); the control guard and `Ledger::control_check` (B-38).
 
 **Claims:** yes
 
+**Pick (BS-ledger-9):** `facts-in-the-books`, the owner, 2026-10-16.
+
 **Pick:** `facts-in-the-books`: CHOICE (plan/served.md I-3, owner decisions of 2026-10-16: "the journal holds all books state"; light governance: decisions are recorded with who made them and when, not as paperwork). IRS Pub. 538 and the rules of B-1 to B-28 say what each setting means.
 
 **Enforced:** `ledger_core::settings` (`check`, `Settings::check_changes`,
@@ -221,6 +225,8 @@ checked to change no figure or entry;
 **bookspec:** `BS-ledger-10`
 
 **Claims:** yes
+
+**Pick (BS-ledger-10):** `label-only`, the owner, 2026-10-20.
 
 **Pick:** `label-only`: CHOICE (the owner, `plan/served.md` 4.9 and P3 "Settled in design", 2026-10-20: "a new account named like a sibling (ignoring capitals), or holding a nine-digit number, is refused"). Posted is forever (B-8) stands behind it, and Rev. Proc. 98-25 §5.01 (`sources/irs-records.md`) for keeping the old name. The nine-digit refusal is B-26's: every report prints a name. The 200-character bound is `account::MAX_ACCOUNT_NAME`, the bound of the company's own name.
 

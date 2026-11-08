@@ -33,6 +33,8 @@ Rules: B-18, B-38, B-39, B-40, B-41, B-42.
 
 **Claims:** yes
 
+**Pick (BS-arap-2):** `lines-that-stand`, the owner, 2026-10-23.
+
 **Pick:** `lines-that-stand`: CHOICE (the owner, 2026-10-23, plan D-45: "we kinda need stronger invoice support. Like make it a first class citizen"; hand entries to receivables and payables refused, the owner's answer 5). A control account agreeing with its subledger is the CONVENTION beside it (as B-23, `BS-ledger-8`). The sources are cited and not yet vendored (the Open list in `README.md`).
 
 **Enforced:** `ledger_core::arap::{DocRef, DocTag, Movement, DocState,
@@ -224,6 +226,8 @@ the viewer `a_numbered_invoice_shows_its_number_terms_bill_to_and_po`.
 **Claims:** yes
 
 **Pick:** `direct-write-off`: CHOICE (the owner, 2026-10-23, plan 8.3.1 A-5: bad debts by the direct write-off method; and 8.3.2: for a small company's receivables a CPA accepts the direct method and notes it, where GAAP prefers an allowance under ASC 326-20). A recovery is not a new movement (plan D-49): the same year, the write-off is reversed; a later year, a plain entry to a bad-debt-recoveries revenue account.
+**Pick (BS-arap-5):** `direct-write-off`, the owner, 2026-10-23.
+
 **Pick (BS-arap-11):** `reverse-then-plain-entry`, plan D-49.
 
 **Enforced:** `ledger_core::Ledger::write_off` (and its replay

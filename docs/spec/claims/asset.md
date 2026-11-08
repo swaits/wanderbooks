@@ -119,6 +119,8 @@ None.
 
 **Claims:** yes
 
+**Pick (BS-asset-3):** `tag-and-never-reuse`, the owner, 2026-10-15.
+
 **Pick:** `tag-and-never-reuse`: CHOICE (the owner, 2026-10-15): each asset may carry one tag, generated `PREFIX-0001` or the human's own, unique ignoring case and never reused, and the register reconciles to the cost and accumulated depreciation accounts.
 
 **Enforced:** `Ledger::set_asset_tag` / `check_asset_tag_for` /

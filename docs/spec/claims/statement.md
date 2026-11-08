@@ -217,6 +217,8 @@ given no accounts, uses the settings', as a package given none does.
 
 **Claims:** partly (bookspec's record states the class, the figures, on-spec and document-line rules; the project facts and the snapshot presentation are wanderbooks product, below)
 
+**Pick (BS-statement-5):** `project-is-a-class`, the owner, 2026-10-21.
+
 **Pick:** a project is a class (the owner, 2026-10-21: "a Projects page that treats a class as a project ... Projects are entities too and can have name, description, whatever other metadata you think they should have"; the convention `link-to-projects` in the books: "whenever applicable, we link things to [projects]"); an invoice's or bill's lines take a project, each line one or none (the owner, 2026-10-22, plan D-43).
 
 **Enforced:** `ledger_core::classes::{ProjectFacts, ProjectStatus,

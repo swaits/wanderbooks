@@ -1,6 +1,6 @@
 # Claims: period
 
-Wanderbooks' claims for bookspec area **period**: what each rule requires, where the engine enforces it, and which tests check it. Being reduced to the engine's pick and its evidence as P14 unit S-D lands; the accounting text moves to bookspec's `spec/period.md`.
+Wanderbooks' claims for bookspec area **period**: the engine's pick for each rule, where it enforces it, and which tests check it. The accounting text lives in bookspec's records (`rules/period/`).
 
 Rules: B-11, B-12, B-30.
 
@@ -10,94 +10,60 @@ Rules: B-11, B-12, B-30.
 
 **bookspec:** `BS-period-1`
 
-**Status:** AUTHORITY (mechanics); the account the net lands in depends on
-the entity
+**Claims:** yes
 
-- Pacioli ch. 34: "you shall close this account into the capital account";
-  ch. 27: profit and loss "must then be transferred for its closing (saldo)
-  into the capital account."
-- OpenStax §5.1 (cited): "Temporary (nominal) accounts are accounts that
-  are closed at the end of each accounting period." Corporations close into
-  retained earnings; partnerships into each partner's capital (B-13).
-
-**Enforced:** `Ledger::close_period_to`. **Checked:** Kani
+**Enforced:** `Ledger::close_period_to` (INVARIANT 5: a close with
+nothing to close posts no entry and still closes the period; the EM's
+decision, D-73, 2026-11-08). **Checked:** Kani
 `closing_line_zeroes`, `closing_entry_balances`; Lean
-`closingEntry_zeroes`, `closingEntry_accepted`, `close_zeroes`,
-`close_credits_net_income`; `a_close_sweeps_only_through_the_period_end`.
+`closingEntry_zeroes`, `closingEntry_accepted`, `closingEntry_net`,
+`close_zeroes`, `close_credits_net_income`;
+`a_close_sweeps_only_through_the_period_end`,
+`a_close_with_nothing_to_close_posts_no_entry`.
 
 ## B-12 A closed period takes no new postings; periods close in order
 
 **bookspec:** `BS-period-2`
 
-**Status:** CONVENTION
+**Claims:** yes
 
-Periods themselves: IRS Pub. 538 (`sources/irs-periods-and-methods.md`)
-defines the tax year, calendar and fiscal. Locking a closed period and
-closing in order are practice (and follow from B-8: a closed period's
-book is not rewritten). Periods nest (a month in a quarter in a year)
-and never partially overlap: CHOICE (the owner, 2026-10-13),
-`Ledger::create_period` (`PeriodsOverlap`;
-`periods_nest_but_never_partially_overlap`). **Enforced:** `closed_period_containing`,
-`CloseOutOfOrder`, `Store::rehearse`. **Checked:** Lean `Steps.frozen`;
+**Pick:** periods nest and never partially overlap (the owner, 2026-10-13).
+
+**Enforced:** `closed_period_containing`,
+`CloseOutOfOrder`, `Ledger::create_period` (`PeriodsOverlap`),
+`Store::rehearse`. **Checked:** Lean `Steps.frozen`;
 store property `refused_commands_never_reach_the_journal` (no draft in a
-closed period).
+closed period); `periods_nest_but_never_partially_overlap`
+(`crates/ledger-core/tests/invariants.rs`) and `periods_nest`
+(`crates/ledger-core/tests/spec_ledger.rs`).
+
+### Product rules
+
+**WB-period-1** A refused command never reaches the journal: the store
+rehearses a command against the books before journaling it, so a posting
+refused for a closed period (or any other refusal) leaves the journal
+untouched.
+
+**Enforced:** `Store::rehearse`. **Checked:** store property
+`refused_commands_never_reach_the_journal`.
 
 ## B-30 A report asked for without dates covers this fiscal year so far
 
 **bookspec:** `BS-period-3`
 
-**Status:** AUTHORITY for the period (IRS Pub. 538,
-`sources/irs-periods-and-methods.md`: "A tax year is an annual accounting
-period for keeping records and reporting income and expenses"; 26 U.S.C.
-§6041(a), "in any calendar year", and §6041A(a)(2), "during such calendar
-year", `sources/irs-1099-thresholds.md`, for the calendar-year counts);
-CHOICE for using it as the default (no authority says what a tool's
-omitted dates mean; the owner, 2026-10-20, `plan/served.md` P3 "Settled in
-design": "a report asked for without dates covers this fiscal year so
-far, everywhere, and an account's register opens on it with 'Show all
-dates' one click away").
+**Claims:** partly (the bookspec record states the one default rule; the surfaces it binds are wanderbooks product, below)
 
-The books' annual period is the fiscal year (`company.fiscal_year_start`,
-B-29). Every place a date may be omitted resolves it by one rule
-(`ledger_core::calendar::PeriodDefaults`), so the agent's report tools,
-`books.show`, the viewer and the tool descriptions can't say different
-things:
-
-| Kind | Used for | Both dates omitted | Only `end` given | Only `start` given |
-|---|---|---|---|---|
-| A period | profit and loss (and by class), cash flow, tax summary, members' equity, general ledger, general journal (csv, json, xlsx), an account's register, `books.show` of an account or a report | the first day of the fiscal year that holds today, through today | the first day of the fiscal year that holds `end`, through `end` | `start` through today |
-| An instant | balance sheet, trial balance, A/R and A/P aging, fixed asset register, the IIF's `as_of` (every posted entry from the first through it, B-34), the CPA package's `as_of` | today | | |
-| A calendar year | party totals (`books.parties`, `books.party`, the viewer's party pages), the viewer's 1099 worksheet | today's calendar year | | |
-
-- A resolved start after the resolved end is refused, whether the caller
-  gave both dates (`InvalidDateRange`) or only a start after today, the
-  end an omitted end means (`StartAfterToday`, whose message says the end
-  was defaulted: "pass end"). It is never swapped or clamped to fit.
-- A derived start before 0001-01-01 is the calendar's first day (only an
-  end early in year 1 under a non-January fiscal year, B-28).
-- The first year: when the company was formed after its fiscal year's
-  first day, the default start comes before formation. The amounts are
-  the same, and the start is not moved to `company.formed`: start-up and
-  organizational costs (IRC §195, §709) can be dated before formation.
-- "Today" is the company's (`company.timezone`, B-29).
-- The CPA package's period and the viewer's "Year to date" preset are
-  the fiscal year that holds their day (`calendar::fiscal_year_start_on`),
-  the fact itself, never "what an omitted date means": they don't follow
-  this default if it ever changes.
-- Not covered (no default period): search filters, the activity digest
-  (its `since` is required; the `books://digest` resource reads this
-  month so far), the `through` of `books.run_schedules` and
-  `books.run_recurring` (today: an operation, not a period), and the
-  viewer's drill-downs from a balance, which run from the books' first
-  entry because a balance is cumulative. The IIF is never a period (B-34):
-  it refuses `start` and `end`, so the general journal's default period
-  never shortens it, nor anything in the CPA package, which gives its
-  statements and ledgers its own fiscal year to date.
+**Pick:** a report asked for without dates covers this fiscal year so far, everywhere (the owner, 2026-10-20, `plan/served.md` P3 "Settled in design": "a report asked for without dates covers this fiscal year so far, everywhere, and an account's register opens on it with 'Show all dates' one click away").
 
 **Enforced:** `ledger_core::calendar` (`period_defaults`,
 `PeriodDefaults::statement`, `statement_range`, `as_of`,
 `calendar_year`, `fiscal_year_start_on`, `PeriodKind::describe`,
-`START_DOC`, `END_DOC`, `AS_OF_DOC`, `YEAR_DOC`); `ledger_package`
+`START_DOC`, `END_DOC`, `AS_OF_DOC`, `YEAR_DOC`), whose refusals are
+`LedgerError::InvalidDateRange` (both dates given, start after end) and
+`LedgerError::StartAfterToday` (only a start, after today, the end an
+omitted end would mean; the message says the end was defaulted: pass
+end); a resolved start after the resolved end is never swapped or
+clamped to fit. `ledger_package`
 `statement_range`, `as_of_date`, `pnl_statement`, `bs_statement`,
 `cash_flow_statement`, `build_package`; `ledger-mcp` `BooksServer::periods`,
 `statement_range`, `as_of`, every report tool, `books.show`, the
@@ -114,3 +80,40 @@ generated descriptions (`described`) and parameter docs; `ledger-gui`
 `show_refuses_a_derived_inverted_range_defect_15`; `ledger-gui`
 `tests/show.rs`; bookspec `examples/default-period-fiscal-year-to-date.toml`.
 
+### Product rules
+
+**WB-period-2** The one default (WB pick above, BS-period-3) binds every
+wanderbooks surface by name: the agent's report tools, `books.show`, the
+viewer and the tool descriptions must not say different things. The
+books' annual period is the fiscal year (`company.fiscal_year_start`,
+B-29) and "today" is the company's (`company.timezone`, B-29).
+
+**Enforced:** `ledger-mcp` `BooksServer::periods`, every report tool,
+`books.show`, generated descriptions; `ledger-gui` `Books::periods`,
+`default_period`. **Checked:** `ledger-mcp`
+`period_tools_describe_the_one_default`; `ledger-cli`
+`one_default_period_everywhere_defect_16`.
+
+**WB-period-3** The CPA package's period and the viewer's "Year to date"
+preset are the fiscal year that holds their day
+(`calendar::fiscal_year_start_on`), the fact itself, never "what an
+omitted date means": they do not follow the BS-period-3 default if it
+ever changes.
+
+**Enforced:** `ledger_package` `build_package`; `ledger-gui`
+`fiscal_ytd`. **Checked:** `ledger-cli`
+`the_default_period_never_shortens_the_iif_or_the_package`.
+
+**WB-period-4** Not covered by the default (no default period): search
+filters, the activity digest (its `since` is required; the
+`books://digest` resource reads this month so far), the `through` of
+`books.run_schedules` and `books.run_recurring` (today: an operation, not
+a period), and the viewer's drill-downs from a balance, which run from
+the books' first entry because a balance is cumulative. The IIF is never
+a period (B-34): it refuses `start` and `end`, so the general journal's
+default period never shortens it, nor anything in the CPA package, which
+gives its statements and ledgers its own fiscal year to date.
+
+**Enforced:** `ledger_package` `export_iif`, `build_package`;
+`ledger-mcp` digest resource. **Checked:** `ledger-cli`
+`the_default_period_never_shortens_the_iif_or_the_package`.

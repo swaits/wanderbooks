@@ -129,16 +129,27 @@ impl Money {
         Ok(())
     }
 
-    /// Add two money values. Fails on currency mismatch.
+    /// Add two money values. Fails on currency mismatch, and with
+    /// `TooLargeToCompute` when the sum is past exact arithmetic (never a
+    /// panic, never rounded).
     pub fn checked_add(self, rhs: Money) -> Result<Money, LedgerError> {
         self.check_currency(&rhs)?;
-        Ok(Money::new(self.amount + rhs.amount, self.currency))
+        let amount = self
+            .amount
+            .checked_add(rhs.amount)
+            .ok_or_else(|| LedgerError::TooLargeToCompute(format!("{} plus {}", self, rhs)))?;
+        Ok(Money::new(amount, self.currency))
     }
 
-    /// Subtract two money values. Fails on currency mismatch.
+    /// Subtract two money values. Fails on currency mismatch, and with
+    /// `TooLargeToCompute` when the difference is past exact arithmetic.
     pub fn checked_sub(self, rhs: Money) -> Result<Money, LedgerError> {
         self.check_currency(&rhs)?;
-        Ok(Money::new(self.amount - rhs.amount, self.currency))
+        let amount = self
+            .amount
+            .checked_sub(rhs.amount)
+            .ok_or_else(|| LedgerError::TooLargeToCompute(format!("{} minus {}", self, rhs)))?;
+        Ok(Money::new(amount, self.currency))
     }
 }
 
@@ -245,6 +256,37 @@ mod tests {
             usd(d(1000)).checked_sub(usd(d(200))).unwrap().amount,
             d(500)
         );
+    }
+
+    #[test]
+    fn checked_arithmetic_refuses_overflow_instead_of_panicking() {
+        let max = usd(Decimal::MAX);
+        let min = usd(Decimal::MIN);
+        assert!(matches!(
+            max.checked_add(max),
+            Err(LedgerError::TooLargeToCompute(_))
+        ));
+        assert!(matches!(
+            min.checked_add(min),
+            Err(LedgerError::TooLargeToCompute(_))
+        ));
+        assert!(matches!(
+            min.checked_sub(max),
+            Err(LedgerError::TooLargeToCompute(_))
+        ));
+        assert!(matches!(
+            max.checked_sub(min),
+            Err(LedgerError::TooLargeToCompute(_))
+        ));
+        // At the edge, exact results still work.
+        assert_eq!(max.checked_add(min).unwrap().amount, Decimal::ZERO);
+        assert_eq!(max.checked_sub(max).unwrap().amount, Decimal::ZERO);
+        // Currency mismatch still reports as a mismatch.
+        let eur = Money::new(Decimal::ONE, Currency::new("EUR").unwrap());
+        assert!(matches!(
+            max.checked_add(eur),
+            Err(LedgerError::CurrencyMismatch { .. })
+        ));
     }
 
     /// ISO 4217 list one (docs/spec/sources/iso-4217.md): one code from

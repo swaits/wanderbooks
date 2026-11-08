@@ -2337,7 +2337,7 @@ fixed asset register, mid-year and at year end; `as_of_package_iif_stops_at_as_o
 package's CSV is the tool's for the same accounts and `through`); the
 bookspec examples `bookspec/examples/as-of-package-stops-at-as-of.toml`
 and `bookspec/examples/1099-worksheet-through-as-of.toml` (`ledger-core`
-`tests/bookspec.rs`).
+`tests/bookspec/`).
 
 ## B-34 The QuickBooks Desktop file (IIF): plain ASCII, every entry through as_of, closes left out, classes carried
 

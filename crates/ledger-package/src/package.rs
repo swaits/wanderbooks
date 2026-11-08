@@ -64,7 +64,7 @@ use crate::reports::{
     Settings, bs_statement, cash_flow_for, member_capitals, pnl_statement, report_members,
     report_meta, year_earnings,
 };
-use crate::text::{csv_escape, money, share_text};
+use crate::text::{csv_escape, money, share_text, total_text};
 use crate::tins::{TinSource, tin_type_key};
 use crate::vendor_1099::{vendor_1099_csv, vendor_1099_csv_name, vendor_1099_worksheet};
 
@@ -292,13 +292,13 @@ pub fn build_package<B: PackageBooks + ?Sized>(
                     // a K-1 (each member gets their own).
                     if rows.len() > 1 {
                         let sum = |f: fn(&ledger_core::k1::K1Row) -> Decimal| {
-                            rows.iter().map(f).sum::<Decimal>()
+                            ledger_core::kernel::total_of(&rows, f)
                         };
-                        let share: Decimal = company.members.iter().map(|m| m.share).sum();
+                        let share = ledger_core::kernel::total_of(&company.members, |m| m.share);
                         let mut cells = vec![
                             csv_escape("Total, all members (not a K-1)"),
                             String::new(),
-                            share_text(share),
+                            share.map_or_else(|| total_text(None), share_text),
                             String::new(),
                             String::new(),
                             String::new(),
@@ -315,7 +315,7 @@ pub fn build_package<B: PackageBooks + ?Sized>(
                             sum(|r| r.other),
                             sum(|r| r.ending),
                         ] {
-                            cells.push(money(v));
+                            cells.push(total_text(v));
                         }
                         w.push_str(&cells.join(","));
                         w.push('\n');
@@ -530,18 +530,16 @@ pub fn build_package<B: PackageBooks + ?Sized>(
                     e.id(),
                     clean(&a.file_name)
                 ));
-                let amount: Decimal = e
-                    .lines()
-                    .iter()
-                    .filter(|l| l.side == Side::Debit)
-                    .map(|l| l.amount.amount)
-                    .sum();
+                let amount = ledger_core::kernel::total_of(
+                    e.lines().iter().filter(|l| l.side == Side::Debit),
+                    |l| l.amount.amount,
+                );
                 index.push_str(&format!(
                     "{},{},\"{}\",{},{},{}\n",
                     e.id(),
                     e.date(),
                     e.description().replace('"', "\"\""),
-                    money(amount),
+                    total_text(amount),
                     name,
                     a.blob_sha
                 ));

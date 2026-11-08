@@ -49,14 +49,26 @@ bookspec's Lean proves them for any step.
 | `round_step_ties` | an exact tie: half away goes on, half even takes the even index, toward zero truncates, toward negative infinity floors (both signs) | 22 s total (4 covers) |
 | `round_step_is_idempotent` | rounding twice is rounding once | 16 s total |
 | `round_step_never_negative_zero` | zero in gives zero; a zero result comes from under a step; the sign never flips | 12 s total (1 cover) |
+| `round_step_toward_zero_bounds` | toward zero: `\|r\| <= \|x\|` and `\|r - x\| < step`, every amount (ties are not special) | 16 s wall incl. build (3 covers) |
+| `round_step_toward_neg_inf_is_floor` | toward negative infinity: `r <= x < r + step`, both signs | 21 s wall incl. build (3 covers) |
+| `round_step_sign_preserved` | every mode: `0 <= x` gives `0 <= r`, `x <= 0` gives `r <= 0` | 13 s wall incl. build (3 covers) |
 | `round_step_refuses_nonpositive_step` | a step of zero or less is `None` | 8 s total (1 cover) |
+
+The three directed-mode harnesses were added after review: the spec block's
+invariants 3, 4 and 6 had no proof of their own (Lean had the ties, Kani
+checked these two modes only at exact ties). Demonstrated: with
+`TowardZero` mutated to round up on `twice >= divisor` (7 at step 10 becomes
+10), `round_step_toward_zero_bounds` fails on "magnitude never grows"; the
+mutation was reverted.
 
 Measured alone on this machine, 2026-11-08, with
 `cargo kani -p ledger-core --exact --harness proofs::round::<name>`.
 
-`just prove` (fast set): **59 harnesses, 0 failures** (53 before this unit,
-6 added), 440 s of Kani, 470 s wall including the Lean build (a second run,
-after the last cover was added: 406 s wall); all covers satisfied.
+`just prove` (fast set), before the review fixes: **59 harnesses, 0 failures**
+(53 before this unit, 6 added), 440 s of Kani, 470 s wall including the Lean
+build; all covers satisfied. The review fixes add 3 harnesses (62 in all);
+the nine `proofs::round::*` harnesses were each re-run alone and all verify
+with every cover satisfied.
 
 ## Bridge (`crates/ledger-core/tests/kernel_bridge/round.rs`)
 
@@ -65,6 +77,17 @@ after the last cover was added: 406 s wall); all covers satisfied.
 - `decimal_matches_the_integer_reference`: an independent `i128` reference
   (integer division and remainder, sharing no code with the kernel) over
   amounts of 0 to 10 decimal places and steps 1, 0.1, 0.01, 0.001, 0.0001.
+- `decimal_matches_the_reference_for_any_step`,
+  `..._for_any_step_on_small_amounts`, `..._at_ties`: steps that are not
+  powers of ten: a mantissa 1..1000 at scales 0..10 against amounts at
+  scales 0..28 (small amounts for exact multiples; constructed exact ties
+  with trailing zeros stripped), every mode, against a second independent
+  `i128` reference that takes any step (common scale, `i128` division,
+  trailing-zero reduction; no digit loop). When the step has more places
+  than the amount this runs the kernel's finer-step digit loop with a
+  mantissa above one, which the power-of-ten properties never reach.
+  Demonstrated: replacing `.checked_add(remainder / b)` with
+  `.checked_add(0)` in that loop fails all three; reverted.
 - `round_step_is_round_dp_for_a_power_of_ten`: with a power-of-ten step the
   primitive is exactly the old `round_dp_with_strategy` value.
 - `round_places_matches_round_dp_to_the_character`: and the wrapper matches
@@ -88,6 +111,12 @@ from 39 to 40).
 - `Round.tie_halfAway_pos` / `_neg`, `Round.tie_halfEven_pos` / `_neg`,
   `Round.tie_towardZero_pos` / `_neg`, `Round.tie_towardNegInf_pos` / `_neg`
   — each mode's tie rule, both signs.
+- `Round.towardZero_bounds` — toward zero: `|r| <= |x|` and `|r - x| < step`
+  (the spec block's invariant 3).
+- `Round.towardNegInf_bounds` — toward negative infinity is the floor:
+  `r <= x < r + step` (invariant 4).
+- `Round.sign_preserved` — every mode: `0 <= x` gives `0 <= r`, `x <= 0`
+  gives `r <= 0` (invariant 6).
 - `Round.roundStep_idempotent` — rounding twice is rounding once.
 - `Round.roundStep_odd` — the symmetric modes are odd
   (`round(-x) = -round(x)`); toward negative infinity is excluded by a
@@ -120,9 +149,11 @@ Counts by file (14 replaced):
 | `cashflow.rs` | 1 |
 | `reports.rs` | 1 |
 
-No result changes: the wrapper reproduces `round_dp_with_strategy` exactly
-(value, scale and early return), the bridge checks that to the character,
-and every existing test and golden passed unchanged.
+No result changes to the character, except a negative-zero input
+(`round_dp` keeps `-0.00`; `round_places` gives `0.00`; no call site can
+produce one): the wrapper reproduces `round_dp_with_strategy` exactly
+(value, scale and early return), the bridge checks that, and every existing
+test and golden passed unchanged.
 
 ### Currency-blind sites (kept at two places, on purpose)
 

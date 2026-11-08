@@ -63,6 +63,75 @@ fn reference(value: i128, scale: u32, places: u32, mode: Rounding) -> Option<Dec
     Decimal::try_from_i128_with_scale(if negative { -count } else { count }, places).ok()
 }
 
+/// An independent integer reference for any step `mantissa x 10^-step_scale`
+/// (not only a power of ten): both operands go to their common scale as
+/// `i128`, the quotient and remainder come from `i128` division, and the
+/// result `count x step` is reduced by trailing zeros to the smallest scale
+/// that holds it. Shares no code with the kernel, and no digit loop.
+fn reference_step(
+    value: i128,
+    scale: u32,
+    mantissa: i128,
+    step_scale: u32,
+    mode: Rounding,
+) -> Option<Decimal> {
+    let common = scale.max(step_scale);
+    let amount = value.checked_mul(10i128.checked_pow(common - scale)?)?;
+    let step = mantissa.checked_mul(10i128.checked_pow(common - step_scale)?)?;
+    let negative = amount < 0;
+    let magnitude = amount.unsigned_abs();
+    let step = u128::try_from(step).ok()?;
+    let floor = magnitude / step;
+    let remainder = magnitude % step;
+    let twice = remainder.checked_mul(2)?;
+    let round_up = match mode {
+        Rounding::TowardZero => false,
+        Rounding::TowardNegativeInfinity => negative && remainder != 0,
+        Rounding::HalfAwayFromZero => twice >= step,
+        Rounding::HalfToEven => twice > step || (twice == step && !floor.is_multiple_of(2)),
+    };
+    let count = if round_up {
+        floor.checked_add(1)?
+    } else {
+        floor
+    };
+    let mut result = i128::try_from(count.checked_mul(step)?).ok()?;
+    let mut places = common;
+    while places > 0 && result % 10 == 0 && result != 0 {
+        result /= 10;
+        places -= 1;
+    }
+    if result == 0 {
+        places = 0;
+    }
+    let result = if negative { -result } else { result };
+    Decimal::try_from_i128_with_scale(result, places).ok()
+}
+
+/// Rounds `value x 10^-scale` to the step `mantissa x 10^-step_scale` with
+/// the kernel and with the reference, and asserts they are the same value.
+fn assert_matches_reference(
+    value: i128,
+    scale: u32,
+    mantissa: i128,
+    step_scale: u32,
+    mode: Rounding,
+) -> Result<(), TestCaseError> {
+    let amount = Decimal::try_from_i128_with_scale(value, scale).expect("in Decimal's range");
+    let step = Decimal::try_from_i128_with_scale(mantissa, step_scale).expect("in range");
+    let want = reference_step(value, scale, mantissa, step_scale, mode);
+    prop_assert!(want.is_some(), "the reference fits for these ranges");
+    prop_assert_eq!(round_step(amount, step, mode), want);
+    Ok(())
+}
+
+/// The mantissas and scales of the finer-step tests: a step is any
+/// `mantissa x 10^-scale`; a tie needs an even mantissa, so a tie row
+/// builds its own.
+fn step_parts() -> impl Strategy<Value = (i128, u32)> {
+    (1i128..=1000, 0u32..=10)
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(2000))]
 
@@ -97,6 +166,59 @@ proptest! {
             round_step(amount, step, mode),
             reference(value, scale, places, mode)
         );
+    }
+
+    /// Steps that are not powers of ten: a mantissa 1..1000 at scales
+    /// 0..10 against amounts at scales 0..28, every mode, checked against
+    /// the independent reference. When the step carries more places than
+    /// the amount, the kernel's digit loop runs with a mantissa above one
+    /// (the finer-step branch); otherwise the coarser-step branch does.
+    #[test]
+    fn decimal_matches_the_reference_for_any_step(
+        value in -(1i128 << 60)..=(1i128 << 60),
+        scale in 0u32..=28,
+        (mantissa, step_scale) in step_parts(),
+        mode in any_mode(),
+    ) {
+        assert_matches_reference(value, scale, mantissa, step_scale, mode)?;
+    }
+
+    /// Small amounts, so exact multiples are common: the same comparison.
+    #[test]
+    fn decimal_matches_the_reference_for_any_step_on_small_amounts(
+        value in -5000i128..=5000,
+        scale in 0u32..=12,
+        (mantissa, step_scale) in step_parts(),
+        mode in any_mode(),
+    ) {
+        assert_matches_reference(value, scale, mantissa, step_scale, mode)?;
+    }
+
+    /// Exact ties: the amount is an odd number of half-steps, written with
+    /// up to three trailing zeros removed (so the step often has more
+    /// places than the amount). Every mode's tie rule against the reference.
+    #[test]
+    fn decimal_matches_the_reference_at_ties(
+        q in 0i128..=10_000,
+        half in 1i128..=100,
+        tens in 0u32..=3,
+        step_scale in 0u32..=10,
+        strip in 0u32..=3,
+        negative in any::<bool>(),
+        mode in any_mode(),
+    ) {
+        let half = half * 10i128.pow(tens);
+        let mantissa = 2 * half;
+        let mut value = (2 * q + 1) * half;
+        let mut scale = step_scale;
+        for _ in 0..strip {
+            if scale > 0 && value % 10 == 0 {
+                value /= 10;
+                scale -= 1;
+            }
+        }
+        let value = if negative { -value } else { value };
+        assert_matches_reference(value, scale, mantissa, step_scale, mode)?;
     }
 
     /// Behaviour preservation: with a power-of-ten step, `round_step` is

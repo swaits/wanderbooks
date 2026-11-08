@@ -188,6 +188,72 @@ fn round_step_never_negative_zero() {
     );
 }
 
+/// Toward zero never grows the magnitude and lands less than a step from
+/// the amount: `|r| <= |x|` and `|r - x| < step`, for every amount (ties
+/// are not special: both modes pick the same multiple whether or not the
+/// amount is exactly between two).
+#[kani::proof]
+#[kani::unwind(8)]
+fn round_step_toward_zero_bounds() {
+    let value = any_value();
+    for step in STEPS {
+        let rounded =
+            round_step(value, step, Rounding::TowardZero).expect("no overflow under these bounds");
+        assert!(rounded.abs() <= value.abs(), "magnitude never grows");
+        assert!((rounded - value).abs() < step, "less than a step away");
+    }
+    cover!(value % 10 != 0 && value > 0, "a positive non-multiple");
+    cover!(value % 10 != 0 && value < 0, "a negative non-multiple");
+    cover!(
+        value.abs() % 10 != 0 && value.abs() % 10 != 5,
+        "a non-tie, a non-multiple of ten"
+    );
+}
+
+/// Toward negative infinity is the floor: `r <= x < r + step`, for every
+/// amount of either sign.
+#[kani::proof]
+#[kani::unwind(8)]
+fn round_step_toward_neg_inf_is_floor() {
+    let value = any_value();
+    for step in STEPS {
+        let rounded = round_step(value, step, Rounding::TowardNegativeInfinity)
+            .expect("no overflow under these bounds");
+        assert!(rounded <= value, "never above the amount");
+        assert!(value < rounded + step, "less than a step below it");
+    }
+    cover!(value % 10 != 0 && value > 0, "a positive non-multiple");
+    cover!(
+        value % 10 != 0 && value < 0,
+        "a negative non-multiple (the floor moves away from zero)"
+    );
+    cover!(
+        value.abs() % 10 != 0 && value.abs() % 10 != 5,
+        "a non-tie, a non-multiple of ten"
+    );
+}
+
+/// No mode flips the sign: a non-negative amount rounds to a non-negative
+/// one, and a non-positive amount to a non-positive one.
+#[kani::proof]
+#[kani::unwind(8)]
+fn round_step_sign_preserved() {
+    let value = any_value();
+    let mode = any_mode();
+    for step in STEPS {
+        let rounded = round_step(value, step, mode).expect("no overflow under these bounds");
+        if value >= 0 {
+            assert!(rounded >= 0, "a non-negative amount stays non-negative");
+        }
+        if value <= 0 {
+            assert!(rounded <= 0, "a non-positive amount stays non-positive");
+        }
+    }
+    cover!(value > 0, "a positive amount");
+    cover!(value < 0, "a negative amount");
+    cover!(value == 0, "zero");
+}
+
 /// A step of zero or less is refused, never guessed at.
 #[kani::proof]
 fn round_step_refuses_nonpositive_step() {

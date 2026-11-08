@@ -119,7 +119,7 @@ None.
 
 **Claims:** partly (the engine does not enforce it; the receipt policy of the tool layer does)
 
-**Pick:** none (AUTHORITY; a procedural rule).
+**Pick:** a reversal's evidence is its original's (a reversal needs no evidence of its own): CHOICE D-47 (the owner, 2026-10-26; options: a reversal's evidence is its original's / a reversal needs its own). The rest is AUTHORITY; a procedural rule.
 
 **Enforced:** the MCP receipt policy (not the engine; R-13).
 

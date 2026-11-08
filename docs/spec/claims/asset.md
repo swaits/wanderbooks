@@ -76,13 +76,13 @@ dates, `accumulated_posted` and its edges,
 
 ### Product rules
 
-**WB-asset-1** A run's and a disposal's bounds are the commands', never
-replay's (B-28): a new link to an entry dated after the in-service date or
-after the disposal is refused, a new in-service date before the linked
-entry's date is refused, and a disposal cannot be dated before the acquired
-date; a journal an earlier version wrote replays as written. (The
-accounting part, that depreciation starts on the in-service date and that
-the register holds the asset from the acquired date, is `BS-asset-1`
+**WB-asset-1** The bounds `BS-asset-1` states (rules 25-26: a new link to
+an entry dated after the in-service date or the disposal is refused, as is
+a new in-service date before the linked entry's date, and a disposal dated
+before the acquired date is refused) are the commands', never replay's
+(B-28): a journal an earlier version wrote replays as written, whatever
+those dates say. (That depreciation starts on the in-service date and that
+the register holds the asset from the acquired date are `BS-asset-1`
 rules 23-24.)
 *Enforced:* `set_asset_acquisition` / `replay_set_asset_acquisition`,
 `Ledger::asset_acquired_date`, `dispose_asset`, `Asset::set_entry`.
@@ -145,7 +145,7 @@ printer makes an Avery 5160 label sheet from the register's tags.
 
 **Claims:** yes
 
-**Pick:** `register-carries-tax-figures` and the D-41 options: the register carries the tax figures beside book value (CHOICE, the owner, 2026-10-15); for property a member contributed from personal use, the depreciable basis is the lesser of its fair market value and the member's adjusted basis, the CPA to confirm at year end; the §704(c) method is `traditional`, recorded as a choice the CPA confirms; the contributed property's values on the contribution date are the books' recorded amounts (CHOICE D-41, the owner, 2026-10-20).
+**Pick:** `register-carries-tax-figures` and the D-41 options: the register carries the tax figures beside book value (CHOICE, the owner, 2026-10-15); for property a member contributed from personal use, the depreciable basis is the lesser of its fair market value and the member's adjusted basis (the MAY of `BS-asset-4`, taken by analogy to Treas. Reg. §1.168(i)-4(b)(1), which governs a taxpayer converting its own property; the choice is wanderbooks', the CPA to confirm at year end); the §704(c) method is `traditional`, recorded as a choice the CPA confirms; the contributed property's values on the contribution date are the books' recorded amounts (CHOICE D-41, the owner, 2026-10-20).
 
 **Enforced:** `kernel::basis_figures` (Kani `basis_figures_laws`),
 `AssetBasis::check` (a purchase takes no contribution facts; a

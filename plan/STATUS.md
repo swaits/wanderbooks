@@ -24,8 +24,14 @@ both were fixed before merging.
 - Open notes, no decision needed yet: the audit flags an undecided 1099
   vendor under the threshold (the code's rule; B-19 says a decision is
   needed at or over it; defensible mid-year); the tax summary's percent
-  share is money arithmetic outside `kernel.rs` (a P12-era move with a
-  Kani harness); plain serde writes `Money`'s currency as bytes.
+  share was money arithmetic outside `kernel.rs` (moved 2026-11-08, below);
+  plain serde writes `Money`'s currency as bytes.
+- **2026-11-08:** the deductible share is `kernel::deductible_amount`
+  with Kani harnesses (`deductible_amount_rounds_once`, in `kani_slow`,
+  ~17 min; `deductible_amount_refuses_overflow`), bridge and exact-reference
+  properties, and docs/verification.md law 39 (no Lean theorem: report
+  arithmetic, reasoning there). `just prove` green; the slow harness
+  verified. Review caught a false overflow on huge Decimal results, fixed.
 
 **Left:** as before: P12 step 2 (the owner's overnight run, not started);
 the owner's trials, the `release` run, the icon, the re-audit (P10);

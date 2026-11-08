@@ -1,5 +1,16 @@
 name = "wanderbooks"
 defaultTargets = ["Wanderbooks"]
+packagesDir = ".lake/packages"
+
+# The accounting laws are proved once, in bookspec's Lean (D-69): this
+# project builds that package and audits its theorems, and holds no copy
+# of its files. The rev is the same one the Rust checker is pinned to
+# (crates/ledger-core/Cargo.toml); tests/bookspec/pin.rs keeps them equal.
+[[require]]
+name = "bookspec"
+git = "https://git.swaits.com/swaits/bookspec"
+rev = "62c0bf26387d71daedc37704d9d1022082d34f70"
+subDir = "lean"
 
 [[lean_lib]]
 name = "Wanderbooks"

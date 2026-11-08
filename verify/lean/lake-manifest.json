@@ -1,6 +1,16 @@
-{"version": "1.3.0",
+{"version": "1.2.0",
  "packagesDir": ".lake/packages",
- "packages": [],
+ "packages":
+ [{"url": "https://git.swaits.com/swaits/bookspec",
+   "type": "git",
+   "subDir": "lean",
+   "scope": "",
+   "rev": "62c0bf26387d71daedc37704d9d1022082d34f70",
+   "name": "bookspec",
+   "manifestFile": "lake-manifest.json",
+   "inputRev": "62c0bf26387d71daedc37704d9d1022082d34f70",
+   "inherited": false,
+   "configFile": "lakefile.toml"}],
  "name": "wanderbooks",
  "lakeDir": ".lake",
  "fixedToolchain": false}

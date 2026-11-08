@@ -2548,7 +2548,7 @@ B-14) are the first.
 | End-to-end | SKIP for the core (a library) | the MCP tests through a real books server (ledger-cli) cover the journeys |
 | Security properties | SKIP for the core (no roles, no secrets) | the first permission concept, or a secret-bearing field |
 | Concurrency stress | SKIP for the core (no shared state); DONE for the store's writer + viewer (found the false "differs") | the first `Arc`, atomic, or lock in the core; the MCP server's HTTP transport shares one store across sessions (next) |
-| Lean: apportion's sum law for any n | DONE (2026-10-14) | verify/lean/Wanderbooks/Apportion.lean: ranks are a permutation of 0..n-1 (strict total order + pigeonhole, core Lean only), so exactly u parts get a unit and one the fraction; `apportion_sum` and `apportion_sum_of_shortfall`, standard axioms only |
+| Lean: apportion's sum law for any n | DONE (2026-10-14) | bookspec/lean/Bookspec/Apportion.lean (once `verify/lean/Wanderbooks/Apportion.lean`; D-69): ranks are a permutation of 0..n-1 (strict total order + pigeonhole, core Lean only), so exactly u parts get a unit and one the fraction; `apportion_sum` and `apportion_sum_of_shortfall`, standard axioms only |
 | ASC paragraphs not yet read | DONE (2026-10-14) | read in the ASC basic view (`docs/spec/sources/fasb-asc.md`): all confirm the rules; one citation fixed (230-10-45-14(b), not (2)) |
 | GnuCash's own close | OPEN | the oracle books closes as ordinary entries; comparing GnuCash's Close Book needs its Scheme API |
 | Import: spec-blind suite, footing properties, mutation | DONE | sources vendored (Intuit bank CSV and IIF, ECMA-376/Excel numbers, IRS form lines); specs on every module; tests/spec_import.rs (spec-blind, footing and round-trip properties, XLSX read back from its XML, layout and styles); fuzz_import_csv; templates checked against the engine's control accounts; mutation one equivalent left |
@@ -2638,7 +2638,7 @@ the wiring into verify, the digest and Needs attention) is part B.
   is the definition), `bounds_kept_is_the_definition_on_books_in_bounds`
   (the command's check is the definition on books in bounds, and never
   lets a day get worse on books out of bounds).
-- **Lean:** `Wanderbooks/Documents.lean`: `control_agrees` (GL = Σ docs
+- **Lean:** `bookspec/lean/Bookspec/Documents.lean`: `control_agrees` (GL = Σ docs
   + unattached, for any lines, and through any day), `Step.document_unattached`,
   `Step.reverse_moves`, `reverse_twice`, `Reachable.unattached_zero`,
   `Reachable.control_is_documents`. The steps include assigning a
@@ -3397,7 +3397,7 @@ in the same call.
   `crates/ledger-gui/tests/view_model.rs`: `a_write_off_is_flagged_for_the_cpa`
   (one item, "Write-off awaiting the CPA's note", the same through the
   server's read of the store and the viewer's snapshot).
-- **Lean, `Wanderbooks/Documents.lean`:** `Step.writeOff` (a tagged
+- **Lean, `bookspec/lean/Bookspec/Documents.lean`:** `Step.writeOff` (a tagged
   control line and an untagged expense line: a `Step.document` in shape),
   `Step.writeOff_unattached` (it moves nothing unattached, so
   `control_agrees` and `Reachable.control_is_documents` still hold),

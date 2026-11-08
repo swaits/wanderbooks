@@ -33,10 +33,12 @@ smallest unit; the four proration charge harnesses at `i32`) and
 explores every input in the bounds. (Grouping by
 account is proved through `movements_into`, the allocation-free core
 that `movements` wraps: symbolic heap growth is beyond what the model
-checker explores in reasonable time.) The Lean model in
-`verify/lean` restates each function over `Int` (proration over `Nat`,
+checker explores in reasonable time.) The Lean model (bookspec's, which
+`verify/lean` requires) restates each function over `Int` (proration over `Nat`,
 both of `prorated_through`'s branches) and proves the laws with no bounds
-at all.
+at all. That model lives once, in bookspec's Lean (`bookspec/lean/`,
+namespace `Bookspec`); `verify/lean` requires it at the same pinned rev as
+the Rust checker (D-69) and holds no copy of its files.
 
 ### Kernel sweep
 
@@ -55,7 +57,7 @@ file (see `docs/proofs/README.md`).
 
 Each law, and what proves it. Kani harnesses are in
 `crates/ledger-core/src/proofs/`; Lean theorems are in
-`verify/lean/Wanderbooks/`.
+`bookspec/lean/Bookspec/` (the laws live once, in bookspec: D-69).
 
 ### Entries
 
@@ -519,7 +521,7 @@ it. Rule: `docs/spec/rules.md` B-38.
   `crates/ledger-store/tests/arap_props.rs` (`subledger_equals_control`
   after every operation, at every date; `status_is_a_function_of_journal
   _and_date`; `reversal_twice_restores_state`).
-- Lean, `verify/lean/Wanderbooks/Documents.lean`: `control_agrees` and
+- Lean, `bookspec/lean/Bookspec/Documents.lean`: `control_agrees` and
   `control_agrees_through` (the identity, for every account and through
   every day), `Step.document_unattached` (an untagged legacy line only
   grows `unattached`, never a document), `Step.reverse_moves` and
@@ -849,8 +851,8 @@ panic, the import roots' lockdown (a property over generated paths, and a
 component walk that refuses a folder swapped for a link; removed with the
 import roots in P2 slice 5), files with full
 TINs kept out of the books (B-26), and the agent text lint. Out of scope
-for proof today: the format gate and the walk are I/O, and the model in
-`verify/lean` stops at the ledger.
+for proof today: the format gate and the walk are I/O, and bookspec's Lean
+model stops at the ledger.
 
 ### P3: the odd cent (2026-10-20)
 
@@ -888,10 +890,13 @@ just prove-all   # both
 ```
 
 `just prove` runs every Kani harness but the justfile's `kani_slow`, in
-parallel (`-j $(nproc)`), the whole run under a 30-minute timeout; builds
-the Lean proofs (seconds); and fails if any headline theorem depends on
-anything beyond Lean's standard axioms (`propext`, `Quot.sound`,
-`Classical.choice`). In particular, `sorryAx` fails it. `just prove-slow`
+parallel (`-j $(nproc)`), the whole run under a 30-minute timeout; fetches
+and builds bookspec's Lean proofs (seconds; the git dependency is pinned in
+`verify/lean/lakefile.toml` and its manifest); and fails if any theorem
+depends on anything beyond Lean's standard axioms (`propext`,
+`Quot.sound`, `Classical.choice`). It audits all 151 theorems: the 118
+headline laws and the 33 named laws in `Laws.lean` that cite them. In
+particular, `sorryAx` fails it. `just prove-slow`
 runs the slow harnesses, `$(nproc)` at a time, each under its own
 30-minute timeout. Both fail if a harness they ask for isn't verified (the
 count is checked), if any cover is unsatisfiable (a vacuous proof), or if

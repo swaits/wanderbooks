@@ -79,7 +79,7 @@ prove: (_kani "fast")
         echo "Lean audit: a theorem rests on something beyond the standard axioms" >&2
         exit 1
     fi
-    echo "Lean: $(wc -l <<<"$audit") headline theorems, standard axioms only"
+    echo "Lean: $(wc -l <<<"$audit") theorems, standard axioms only"
 
 # The slow Kani harnesses (kani_slow), each under its own 30-minute cap, $(nproc) at a time (CI runs it beside prove)
 prove-slow: (_kani "slow")

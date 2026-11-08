@@ -10,6 +10,8 @@ Rules: B-3, B-4, B-5, B-8, B-9, B-10, B-20, B-23, B-29, B-31, B-32, B-44, B-45.
 
 **bookspec:** `BS-ledger-1`
 
+**Pick (BS-ledger-14):** `book-in-the-smallest-unit`, the owner, 2026-10-13
+
 **Claims:** yes
 
 **Pick:** a foreign line is booked in the base currency's smallest unit (ISO 4217 minor units, `sources/iso-4217.md`), half away from zero: CHOICE (the owner, 2026-10-13), after the GnuCash cross-check found wanderbooks kept $108.34567 where GnuCash booked $108.35. Lines booked before then replay as booked (WB-entry-1).
@@ -37,6 +39,8 @@ None.
 ## B-4 Five elements, closed list
 
 **bookspec:** `BS-ledger-2`
+
+**Pick (BS-ledger-15):** `child-has-its-parents-type`, the owner, 2026-10-13
 
 **Claims:** yes
 
@@ -92,6 +96,8 @@ and never called corrupt (statement 4). **Checked:** Lean `Step.extends`,
 
 **bookspec:** `BS-ledger-5`
 
+**Pick (BS-ledger-16):** `on-or-after-the-original`, the owner, 2026-11-08, wanderbooks D-73
+
 **Claims:** yes
 
 **Pick:** none (AUTHORITY).
@@ -110,6 +116,8 @@ None.
 
 **Claims:** yes
 
+**Pick (BS-ledger-6):** `reversible-once`, the owner, 2026-10-13.
+
 **Pick:** `reversible-once`: CHOICE (the owner, 2026-10-13).
 
 **Enforced:** `Ledger::check_reversal`. **Checked:**
@@ -122,6 +130,8 @@ None.
 ## B-20 Every transaction has supporting documents; records are kept
 
 **bookspec:** `BS-ledger-7`
+
+**Pick (BS-ledger-17):** `reversal-evidence-is-originals`, D-47, the owner, 2026-10-26
 
 **Claims:** partly (the engine does not enforce it; the receipt policy of the tool layer does)
 
@@ -136,6 +146,10 @@ None.
 ## B-23 Control roles: one account each, of the right kind, moved only when empty
 
 **bookspec:** `BS-ledger-8`
+
+**Pick (BS-ledger-18):** `assignment-is-a-fact-in-the-books`, the owner, 2026-10-15
+
+**Pick (BS-ledger-19):** `refuse-rather-than-renumber`, the owner, 2026-10-13
 
 **Claims:** yes
 
@@ -163,6 +177,8 @@ frees its code); the control guard and `Ledger::control_check` (B-38).
 **bookspec:** `BS-ledger-9`
 
 **Claims:** yes
+
+**Pick (BS-ledger-9):** `facts-in-the-books`, the owner, 2026-10-16.
 
 **Pick:** `facts-in-the-books`: CHOICE (plan/served.md I-3, owner decisions of 2026-10-16: "the journal holds all books state"; light governance: decisions are recorded with who made them and when, not as paperwork). IRS Pub. 538 and the rules of B-1 to B-28 say what each setting means.
 
@@ -210,6 +226,8 @@ checked to change no figure or entry;
 
 **Claims:** yes
 
+**Pick (BS-ledger-10):** `label-only`, the owner, 2026-10-20.
+
 **Pick:** `label-only`: CHOICE (the owner, `plan/served.md` 4.9 and P3 "Settled in design", 2026-10-20: "a new account named like a sibling (ignoring capitals), or holding a nine-digit number, is refused"). Posted is forever (B-8) stands behind it, and Rev. Proc. 98-25 §5.01 (`sources/irs-records.md`) for keeping the old name. The nine-digit refusal is B-26's: every report prints a name. The 200-character bound is `account::MAX_ACCOUNT_NAME`, the bound of the company's own name.
 
 **Enforced:** `Ledger::rename_account` / `check_rename_account`,
@@ -244,6 +262,10 @@ bookspec `examples/rename-changes-no-amount.toml`.
 ## B-32 Every revenue and expense account maps to a line of the return
 
 **bookspec:** `BS-ledger-11`
+
+**Pick (BS-ledger-20):** `warn-by-default`, the owner, 2026-10-20
+
+**Pick (BS-ledger-21):** `round-once-on-the-total`, the owner, 2026-11-07, D-67
 
 **Claims:** yes
 

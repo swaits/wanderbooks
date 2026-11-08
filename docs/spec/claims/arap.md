@@ -13,6 +13,11 @@ Rules: B-18, B-38, B-39, B-40, B-41, B-42.
 **Claims:** yes
 
 **Pick:** a document due today is Current, not 1 day past due: CHOICE (the owner, 2026-10-13); an aging as of a day shows only the documents issued by then, less only the payments made by then: CHOICE (the owner, 2026-10-13); a payment never predates its invoice or bill, a real prepayment being a deposit: CHOICE (the owner, 2026-10-13). The bucket edges are the record's.
+**Pick (BS-arap-7):** `due-today-is-current`, the owner, 2026-10-13.
+
+**Pick (BS-arap-8):** `as-of-the-day`, the owner, 2026-10-13.
+
+**Pick (BS-arap-9):** `refuse-a-payment-before-its-document`, the owner, 2026-10-13.
 
 **Enforced:** `arap::aging_bucket`, `Ledger::ar_aging`/`ap_aging`
 (through `Ledger::doc_state`), `receive_payment`/`pay_bill`
@@ -27,6 +32,8 @@ Rules: B-18, B-38, B-39, B-40, B-41, B-42.
 **bookspec:** `BS-arap-2`
 
 **Claims:** yes
+
+**Pick (BS-arap-2):** `lines-that-stand`, the owner, 2026-10-23.
 
 **Pick:** `lines-that-stand`: CHOICE (the owner, 2026-10-23, plan D-45: "we kinda need stronger invoice support. Like make it a first class citizen"; hand entries to receivables and payables refused, the owner's answer 5). A control account agreeing with its subledger is the CONVENTION beside it (as B-23, `BS-ledger-8`). The sources are cited and not yet vendored (the Open list in `README.md`).
 
@@ -159,6 +166,7 @@ behind the feature `documents_v2`. **Checked:**
 **Claims:** yes
 
 **Pick:** a vendor's invoice reference is compared after the normalization that drops case and spaces (`Ledger::check_vendor_ref`); the old text names no separate decision for it.
+**Pick (BS-arap-10):** `ignore-case-and-spaces`; a vendor's invoice reference is compared after the normalization that drops case and spaces.
 
 **Enforced:** `Ledger::next_invoice_number`, `Ledger::check_vendor_ref`,
 `PartySnapshot::from_party` (the snapshots at issue, D-55);
@@ -218,6 +226,9 @@ the viewer `a_numbered_invoice_shows_its_number_terms_bill_to_and_po`.
 **Claims:** yes
 
 **Pick:** `direct-write-off`: CHOICE (the owner, 2026-10-23, plan 8.3.1 A-5: bad debts by the direct write-off method; and 8.3.2: for a small company's receivables a CPA accepts the direct method and notes it, where GAAP prefers an allowance under ASC 326-20). A recovery is not a new movement (plan D-49): the same year, the write-off is reversed; a later year, a plain entry to a bad-debt-recoveries revenue account.
+**Pick (BS-arap-5):** `direct-write-off`, the owner, 2026-10-23.
+
+**Pick (BS-arap-11):** `reverse-then-plain-entry`, plan D-49.
 
 **Enforced:** `ledger_core::Ledger::write_off` (and its replay
 `replay_invoice_write_off`), `LedgerError::{WriteOffOnCashBasis,
@@ -280,6 +291,11 @@ leaves the books and the journal unchanged and never panics.
 **Claims:** yes
 
 **Pick:** the gross method for an early-payment discount (the owner, A-8); the processor's fee posted gross (the owner, A-4); D-49's refusal to apportion a discount across a bill's asset lines. ASC 606-10-32-5 to 32-9 are the strict treatment of an expected discount; this company's size makes the gross method immaterial (A-8). The sources are cited and not yet vendored (the Open list in `README.md`).
+**Pick (BS-arap-12):** `gross-when-taken`, the owner, A-8.
+
+**Pick (BS-arap-13):** `gross`, the owner, A-4.
+
+**Pick (BS-arap-14):** `refuse-with-the-remedy`, plan D-49.
 
 **Enforced:** `kernel::settle`, `Ledger::{settle, settlement_lines,
 check_discount}`, `arap::{Application, Fee, SettleParams, SettlementRow}`,

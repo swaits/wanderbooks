@@ -14,6 +14,8 @@ Rules: B-15, B-22, B-24, B-25.
 
 **Pick:** `straight-line-by-days`: CHOICE (the owner, 2026-10-13; the engineer settled the arithmetic from ASC 360-10-35-4, 2026-10-20): straight line, partial months prorated by days, including a schedule through a mid-month date, with each cumulative figure rounded half away from zero to the currency's minor unit. The tax conventions (half-year, mid-month, mid-quarter) are not applied: they are the CPA's, per IRS Publication 946.
 
+**Pick (BS-asset-5):** `straight-line-by-days`, the owner, 2026-10-13; the engineer settled the arithmetic from ASC 360-10-35-4, 2026-10-20.
+
 **Enforced:** `assets::depreciation_schedule`, `assets::run_amount`,
 `assets::catch_up_room`, `assets::depreciation_effects`,
 `kernel::prorated_through`, `kernel::catch_up`, `kernel::true_up`,
@@ -117,6 +119,8 @@ None.
 
 **Claims:** yes
 
+**Pick (BS-asset-3):** `tag-and-never-reuse`, the owner, 2026-10-15.
+
 **Pick:** `tag-and-never-reuse`: CHOICE (the owner, 2026-10-15): each asset may carry one tag, generated `PREFIX-0001` or the human's own, unique ignoring case and never reused, and the register reconciles to the cost and accumulated depreciation accounts.
 
 **Enforced:** `Ledger::set_asset_tag` / `check_asset_tag_for` /
@@ -146,6 +150,13 @@ printer makes an Avery 5160 label sheet from the register's tags.
 **Claims:** yes
 
 **Pick:** `register-carries-tax-figures` and the D-41 options: the register carries the tax figures beside book value (CHOICE, the owner, 2026-10-15); for property a member contributed from personal use, the depreciable basis is the lesser of its fair market value and the member's adjusted basis (the MAY of `BS-asset-4`, taken by analogy to Treas. Reg. §1.168(i)-4(b)(1), which governs a taxpayer converting its own property; the choice is wanderbooks', the CPA to confirm at year end); the §704(c) method is `traditional`, recorded as a choice the CPA confirms; the contributed property's values on the contribution date are the books' recorded amounts (CHOICE D-41, the owner, 2026-10-20).
+
+**Pick (BS-asset-6):** `lesser-of-value-and-basis`, the owner, D-41, 2026-10-20.
+
+**Pick (BS-asset-7):** `books-recorded-amounts`, the owner, D-41, 2026-10-20.
+
+**Pick (BS-asset-8):** `register-carries-tax-figures`, the owner, 2026-10-15; D-41, 2026-10-20.
+**Pick (BS-asset-9):** `traditional`, the owner, D-41, 2026-10-20; recorded as a choice the CPA confirms.
 
 **Enforced:** `kernel::basis_figures` (Kani `basis_figures_laws`),
 `AssetBasis::check` (a purchase takes no contribution facts; a

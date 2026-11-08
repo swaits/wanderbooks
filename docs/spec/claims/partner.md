@@ -19,9 +19,9 @@ Rules: B-13, B-26, B-35, B-36.
 **Pick (BS-partner-6):** `cumulative-from-first-close`, the owner, D-10, 2026-10-16.
 
 **Pick (BS-partner-7):** `running-split`, the owner, D-38, 2026-10-20.
-**Pick (BS-partner-16):** `contract-is-property-vendor-paid-is-cash`, the owner, 2026-10-15.
+**Pick (BS-partner-15):** `contract-is-property-vendor-paid-is-cash`, the owner, 2026-10-15.
 
-**Pick (BS-partner-17):** `close-at-the-change`, the owner, 2026-10-16.
+**Pick (BS-partner-16):** `close-at-the-change`, the owner, 2026-10-16.
 
 **Enforced:** `CloseTo::Members`, `CloseTo::MembersCumulative`,
 `Ledger::members_regime`, `Regime::allocate`,
@@ -304,13 +304,13 @@ owner, 2026-10-20); property distributed counts at the books'
 carrying amount; party totals take basis cash by default, or all,
 always labelled.
 
-**Pick (BS-partner-10):** `cash-cards-and-financing`, the owner, 2026-10-20.
+**Pick (BS-partner-9):** `cash-cards-and-financing`, the owner, 2026-10-20.
 
-**Pick (BS-partner-11):** `capital-movement-counted-once`, the owner, 2026-10-15 and 2026-10-20.
+**Pick (BS-partner-10):** `capital-movement-counted-once`, the owner, 2026-10-15 and 2026-10-20.
 
-**Pick (BS-partner-12):** `books-carrying-amount`, the owner, 2026-10-20.
+**Pick (BS-partner-11):** `books-carrying-amount`, the owner, 2026-10-20.
 
-**Pick (BS-partner-13):** `labelled-cash-default-or-all`, the owner, 2026-10-20.
+**Pick (BS-partner-12):** `labelled-cash-default-or-all`, the owner, 2026-10-20.
 
 **Enforced:** `kernel::party_target`, `kernel::reverse_target`,
 `shares::{target, split, resolve}`, `parties::{flow, money_accounts,
@@ -396,10 +396,10 @@ contributed to a prepaid account with no fixed asset for it enters at
 its book amount, with a note (P3 review, 2026-10-21; the CPA to
 confirm).
 
-**Pick (BS-partner-14):** `tax-basis-beside-book`, the owner, D-41, 2026-10-20.
+**Pick (BS-partner-13):** `tax-basis-beside-book`, the owner, D-41, 2026-10-20.
 
-**Pick (BS-partner-15):** `running-cumulative`, the owner, D-38's rule applied 2026-10-22.
-**Pick (BS-partner-18):** `book-amount-with-note`, the owner, P3 review, 2026-10-21.
+**Pick (BS-partner-14):** `running-cumulative`, the owner, D-38's rule applied 2026-10-22.
+**Pick (BS-partner-17):** `book-amount-with-note`, the owner, P3 review, 2026-10-21.
 
 **Enforced:** `ledger_core::tax_capital::tax_basis_capital`;
 `ledger-package` `k1_tax` (`k1-tax-basis-capital.csv` in the CPA

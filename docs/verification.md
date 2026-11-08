@@ -22,8 +22,9 @@ lives in one place, `crates/ledger-core/src/kernel.rs`. Its functions
 are small, pure, and generic over an `Amount` trait with *checked*
 operations. The engine calls them on `Decimal`: `JournalEntry::validate`,
 `movements`, `reverse_entry`, `account_balance`, `account_movement`,
-period closing, `periods::allocate`, and the trial balance. There is no
-second copy of the arithmetic for proofs to drift from.
+period closing, `periods::allocate`, the trial balance, and the tax
+summary's deductible amount. There is no second copy of the arithmetic for
+proofs to drift from.
 
 Kani compiles the same functions at `i64` (exact integer money in the
 smallest unit; the four proration charge harnesses at `i32`) and
@@ -630,6 +631,63 @@ new command, so a new Lean step, and no kernel function.
       a period with an open draft can't close, discarded it can, and
       every balance and id is as it was).
 
+### A tax category's deductible amount (B-32, D-67)
+
+39. **A category's deductible amount is its accounts' exact shares added
+    and rounded once**, to the cent, half away from zero: round(Σ bookᵢ ×
+    percentᵢ ÷ 100), never Σ round(bookᵢ × percentᵢ ÷ 100); within half a
+    cent of the exact sum, never the opposite sign, and None (never a
+    panic) when a product or the sum overflows. `tax::tax_summary` calls
+    it; the book amounts stay exact.
+    - Kani `deductible_amount_rounds_once` (up to three accounts, books to
+      2^20 cents, any percent 0 to 100; covers reach a half-cent tie, a
+      negative half-cent tie, a negative sum and a category where
+      per-account rounding differs) and
+      `deductible_amount_refuses_overflow` (a product past `i64`, and a
+      sum of two shares past it) · bridge `deductible_amount_agrees` (the
+      i64 cents result and the Decimal dollars result agree, and the
+      Decimal result is within half a cent of the exact sum) · tests
+      `a_category_rounds_its_deductible_amount_once_not_per_account`,
+      `a_category_rounds_once_across_different_percents`, and the golden
+      `golden_tax_summary_form_1065`.
+    - The Decimal half of the bridge is what carries the law to the
+      engine's money, and it now has its own exact reference:
+      `deductible_amount_matches_exact_reference_on_decimal_shares`
+      checks `deductible_amount` on `Decimal` against a reference that
+      shares no code with the kernel (each share's product as an exact
+      i128 mantissa over a power of ten, summed over a common power of
+      ten, rounded half away from zero by integer division), over books
+      at 0 to 6 decimal places and percents in hundredths 0.00 to 100.00
+      (half the shares at 4 decimal places), up to four shares per
+      category. That is the part `deductible_amount_agrees` cannot
+      reach: decimal percents such as 33.33, and books finer than a
+      cent. The unit table `deductible_amount_decimal_table` pins the
+      reviewed values (ties, sub-cent books, a 10-decimal book at a
+      6-decimal percent, and the 10^25 - 1 book at 100% below), and
+      `deductible_amount_decimal_unrepresentable_is_none` pins a
+      quotient no Decimal can hold.
+    - The Decimal `checked_div_round_cent` itself never forms the
+      `* 100` intermediate the first version did: that product
+      overflowed, and returned None, for a representable result (the
+      10^25 - 1 book at 100% above, which the code before the kernel
+      move returned). It now rounds from the two mantissas and scales
+      by exact i128 arithmetic, so scale 28 is settled by the integer
+      remainder rather than by a Decimal division that would have to
+      round its result to fit, and None is left for a product or sum
+      overflowing in `deductible_amount`, or a quotient Decimal cannot
+      hold at any scale from 2 down. Kani still proves the i64 shape of
+      the same function; the bridge properties above carry it to
+      Decimal, the exact-reference one over the decimal shapes Kani's
+      integer model does not have.
+    - No Lean model: this is arithmetic on a report figure, like
+      `discount_max` (law 33) and `unrecovered_cost` (law 32), not a
+      `Ledger` command or a law about posted entries. The model's `Books`
+      has no tax categories; adding them would model presentation (a
+      category is a label on an account, and the summary is read from the
+      P&L), not a change to the books, and the law it would restate is the
+      kernel function's own definition. Kani proves that function, and the
+      bridge carries it to `Decimal`.
+
 ## What the proofs found
 
 The engine already had 190+ tests, property tests, mutation testing,
@@ -786,8 +844,8 @@ Lean carrying any weights.
 
 ```sh
 mise install   # once: Kani, Lean, and the rest, pinned in mise.toml
-just prove       # 51 Kani harnesses and Lean
-just prove-slow  # the other 9: the justfile's kani_slow
+just prove       # 53 Kani harnesses and Lean
+just prove-slow  # the other 10: the justfile's kani_slow
 just prove-all   # both
 ```
 
@@ -897,6 +955,8 @@ each harness's whole run, its compile of about 50 s included):
 | `bounds_check_matches_definition` | 34 | prove | (not in the 2026-10-22 run; P4b S1, 2026-10-24) |
 | `bounds_kept_is_the_definition_on_books_in_bounds` | 34 | prove | (as above) |
 | `settle_is_exact` | 36 | prove | 1 |
+| `deductible_amount_rounds_once` | 39 | prove-slow | 992 alone; 1,207 in the 2026-11-08 prove-slow |
+| `deductible_amount_refuses_overflow` | 39 | prove | 0 |
 | `kani_symbolic_copy_canary` | (the checker: "Trusting the checker") | prove | 3 |
 
 

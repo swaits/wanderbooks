@@ -80,7 +80,7 @@ canonical form's fixed point, and the reader now refuses floats
 promoted to a named regression test.
 
 **Layer 4½ — Formal proofs (live now).** The accounting arithmetic lives
-in one generic kernel (`kernel.rs`). Kani model-checks it exhaustively
+in one generic kernel (`kernel/`). Kani model-checks it exhaustively
 within bounds, Lean 4 proves the laws for books of any size (trial
 balance, accounting equation, reversals, posted-is-forever, frozen closed
 periods, closing to net income), and a property test bridges the two.

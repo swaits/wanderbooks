@@ -18,7 +18,9 @@ Every invariant rests on a little arithmetic: signing a line, summing
 sides, grouping by account, flipping for a reversal, reading a balance on
 its normal side, splitting a movement into trial-balance columns, closing
 an account, plugging the last share of an allocation. That arithmetic
-lives in one place, `crates/ledger-core/src/kernel.rs`. Its functions
+lives in one place, `crates/ledger-core/src/kernel/` (the module root
+re-exports the entry arithmetic in `entries.rs` and one file per
+kernel-sweep unit). Its functions
 are small, pure, and generic over an `Amount` trait with *checked*
 operations. The engine calls them on `Decimal`: `JournalEntry::validate`,
 `movements`, `reverse_entry`, `account_balance`, `account_movement`,
@@ -36,10 +38,23 @@ checker explores in reasonable time.) The Lean model in
 both of `prorated_through`'s branches) and proves the laws with no bounds
 at all.
 
+### Kernel sweep
+
+The kernel and its proofs are directories so the kernel-sweep units
+(U1 FX, U2 rounding, U3 shares, U4 totals, U5 schedules, U6 ratios, U7
+payroll, U8 control, U9 display) each get files of their own:
+`kernel/mod.rs` re-exports `entries` and `fx`, `round`, `allocate`,
+`total`, `schedule`, `ratio`, `payroll`, `control`; `proofs/mod.rs` holds
+the original harnesses and each unit adds `proofs/<unit>.rs`. A unit
+writes its proof note in `docs/proofs/<unit>.md`; the integrator folds the
+notes into this file and the `#print axioms` lines into
+`verify/lean/Audit.lean` in one edit per batch. Workers do not edit this
+file (see `docs/proofs/README.md`).
+
 ## The laws
 
 Each law, and what proves it. Kani harnesses are in
-`crates/ledger-core/src/proofs.rs`; Lean theorems are in
+`crates/ledger-core/src/proofs/`; Lean theorems are in
 `verify/lean/Wanderbooks/`.
 
 ### Entries
@@ -880,8 +895,10 @@ anything beyond Lean's standard axioms (`propext`, `Quot.sound`,
 runs the slow harnesses, `$(nproc)` at a time, each under its own
 30-minute timeout. Both fail if a harness they ask for isn't verified (the
 count is checked), if any cover is unsatisfiable (a vacuous proof), or if
-`kani_slow` names a harness `src/proofs.rs` doesn't have; a new harness
-runs in `prove` until it is listed as slow. CI's weekly run does both, on
+`kani_slow` names a harness `src/proofs/` doesn't have; a new harness
+runs in `prove` until it is listed as slow. `just prove-list` prints every
+harness with its module path and the set it runs in, resolving the slow
+list without spending a verification. CI's weekly run does both, on
 two runners (`.github/workflows/scheduled.yml`). Kani downloads its
 pinned nightly and CBMC into `~/.kani` on first use.
 

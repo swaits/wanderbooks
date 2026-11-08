@@ -15,15 +15,15 @@ promise.
 | Spec-derived examples | written specs with sources (1) | `tests/spec_*.rs`, `invariants.rs`, `statements.rs`, `assets.rs`, ...; the store's `tests/spec_store.rs` (written blind, from its specs only) | `just check` | seconds | every change |
 | Regressions | the bug, named (1) | beside the code they cover, `*_regression`/named for the defect | `just check` | seconds | every change |
 | Compatibility contracts | journals written under older rules must open, and replay to the figures their version computed (1) | `ledger-store/tests/store.rs` (`books_written_under_older_rules_still_open`; `books_an_earlier_version_wrote_open_to_its_figures` over `tests/fixtures/old-books`: books main 188c90ea wrote, with main's own figures in `expected.json`, in the writer and the viewer; `every_figure_over_old_books_is_computed_or_refused`); `ledger-cli/tests/hostile_args.rs` `old_books_answer_every_tool`; `ledger-gui/tests/old_books.rs` | `just check` | ~30s | every change |
-| Properties | laws over all inputs (2) | `properties.rs`, `spec_*.rs`, `kernel_bridge.rs` | `just check` | seconds | every change |
+| Properties | laws over all inputs (2) | `properties.rs`, `spec_*.rs`, `kernel_bridge/` | `just check` | seconds | every change |
 | Metamorphic | scaling, reversal, ordering invariance (2) | `spec_reports.rs` | `just check` | seconds | every change |
 | Refusal law (store) | a refused command never reaches the journal, an accepted one always does; the live ledger equals its journal's replay in every part, and the books reopen to it (2, 3) | `store.rs` `refused_commands_never_reach_the_journal` | `just check` (`STORE_CASES=5000` deeper) | ~20s | every change |
 | Fault injection (store) | a full disk or a cut-off append leaves whole, openable books (1) | `ledger-store/tests/faults.rs`, `store.rs` (`power_loss_at_any_byte_of_the_last_append_is_recovered`) | `just check` | ~5s | every change |
 | Concurrency (store) | a viewer reading while the books are written sees only whole books, never a false "differs" (2) | `ledger-store/tests/concurrency.rs` | `just check` | <1s | every change |
 | Model-based stateful | the Lean state machine, transcribed (3) | `tests/model.rs` | `just check` | ~3s | every change |
-| Differential: Decimal vs i64 | the kernel at two types (3) | `kernel_bridge.rs` | `just check` | <1s | every change |
+| Differential: Decimal vs i64 | the kernel at two types (3) | `kernel_bridge/` | `just check` | <1s | every change |
 | Differential: GnuCash | another implementation, adjudicated (3) | `tests/oracle_gnucash.rs`, `oracle/gnucash/` | `just oracle` | ~2 min | weekly |
-| Formal proofs | Kani (bounded) and Lean (unbounded) | `src/proofs.rs`, `verify/lean/` | `just prove` (51 harnesses and Lean), `just prove-slow` (the 9 in the justfile's `kani_slow`, each under its own 30-minute cap); 60 harnesses in all with the checker canary (2026-10-28) | prove ~5 min and prove-slow ~8 min at four jobs on a quiet laptop (each ~25 min under heavy load; docs/verification.md, "Running it") | weekly (CI runs both) |
+| Formal proofs | Kani (bounded) and Lean (unbounded) | `src/proofs/`, `verify/lean/` | `just prove` (51 harnesses and Lean), `just prove-slow` (the 9 in the justfile's `kani_slow`, each under its own 30-minute cap); 60 harnesses in all with the checker canary (2026-10-28) | prove ~5 min and prove-slow ~8 min at four jobs on a quiet laptop (each ~25 min under heavy load; docs/verification.md, "Running it") | weekly (CI runs both) |
 | Fuzzing | crash, hang, broken books (4); for `fuzz_store_replay` (validly chained journals with fuzz-chosen events): books that open must verify, and the viewer must accept exactly what the writer does | `fuzz/fuzz_targets/`, corpora in `fuzz/corpus/` | `just fuzz <target> <secs>` | 10 min each | weekly |
 | Miri | undefined behavior in our use of dependencies (4) | the core's unit, bridge, invariant tests (the exhaustive calendar walk aside) | `just miri` | ~4 min | on demand |
 | Golden | `tests/golden/fixture_company.json` (5) | `invariants.rs` | `just check` | <1s | every change |
@@ -676,10 +676,10 @@ posts nothing changes no capital, R-3),
 `a_run_of_closes_never_piles_up_rounding`, and February in
 `a_partnership_closes_into_members_capital` (Bob 683.33 → 683.34: his share
 of February's unclosed income is what its close will give, D-38). Unit
-tests in `kernel.rs` (`apportion_cumulative_refuses_mismatched_or_out_of_range_inputs`,
+tests in `kernel/` (`apportion_cumulative_refuses_mismatched_or_out_of_range_inputs`,
 `apportion_cumulative_trues_up_a_legacy_split`) and `periods.rs`
 (`allocate_cumulative_*`: whole yen, a dinar, a loss, a 28-place share
-refused, R-5). Bridges (`tests/kernel_bridge.rs`):
+refused, R-5). Bridges (`tests/kernel_bridge/`):
 `apportion_cumulative_agrees`,
 `allocate_cumulative_agrees_with_the_integer_model`.
 
@@ -1028,7 +1028,7 @@ the end.
   `Reachable.cashflow_foots`, `Reachable.cashflow_is_change_in_cash`
   (docs/verification.md, law 10).
 - **Sensitivity (P3 review, by hand, no mutation run):** 18 deliberate
-  breaks to `cashflow.rs` and `kernel.rs` (a dropped reversal
+  breaks to `cashflow.rs` and `kernel/` (a dropped reversal
   flip, no netting, financing read as operating, no rule 4, no exchange
   disclosure, no interest class, no warnings, the bill's payments
   ignored, the label's depth parity, repeated codes allowed, depreciation
@@ -1077,7 +1077,7 @@ the end.
 **For P12** (D-33): `cargo mutants` on `ledger-core`'s `cashflow.rs`
 (`cash_flow`, `analyse`, `pairs`, `label`, `class_of`, `reconcile`,
 `warnings`, `bill_splits`, `role_problems`, `foot`, `on_behalf`) and
-`kernel.rs`'s `take`, `apply_cash`, `entry_flows`, `constructive`,
+`kernel/`'s `take`, `apply_cash`, `entry_flows`, `constructive`,
 `exchanged`; `ledger-import`'s
 `report::cash_flow`; `ledger-mcp`'s `cash_flow_out`, `cash_flow_csv`,
 `export_cash_flow` and `settings_problems`; zero unexplained survivors
@@ -1294,8 +1294,8 @@ no mutation run here; what P12 must cover is at the end.
 | Read from journaled facts: an archived member, a one-member company | `a_members_entry_keeps_its_reading_after_they_leave` | review R2 |
 | A close is neither; a basis is cash or all; creditor_of's checks; tin_last4's five scenarios; the kernel's cases | `a_close_tagged_with_its_members_is_neither`, `a_basis_is_cash_or_all`, `a_creditor_is_named_only_on_a_liability_with_one_owner`, `defect11_a_partys_tin_last4_is_its_tin_facts_else_its_w9s`, `party_target_cases_by_hand` | specs |
 | Properties: a reversal's target, parts and flow are the original's negated; parts sum to the target, each with its sign; a sole party's money part is the flow as before P3; tin_last4 is every source present | `a_reversal_is_the_exact_opposite`, `a_sole_partys_money_part_is_the_flow_as_before`, `tin_last4_is_every_source_present` (`PROPTEST_CASES`, default 256; 5,000 run clean) | B-35, B-9 |
-| Decimal and i64 agree on party_target and reverse_target | `kernel_bridge.rs` `party_target_agrees` | the bridge |
-| Kani: the direction is the sign, the target is odd, reverse_target an involution | `proofs.rs` `party_target_direction_is_its_sign`, `party_target_is_odd`, `reverse_target_is_an_involution` | the kernel spec |
+| Decimal and i64 agree on party_target and reverse_target | `kernel_bridge/` `party_target_agrees` | the bridge |
+| Kani: the direction is the sign, the target is odd, reverse_target an involution | `proofs/` `party_target_direction_is_its_sign`, `party_target_is_odd`, `reverse_target_is_an_involution` | the kernel spec |
 | The journal: party.creditor_set one line each, under the feature the books declared when created; in books an older version wrote, refused (FormatUpgradePending, nothing journaled) until the format upgrade; refusals journal nothing; books without creditors never change, in either format; corrupt lines refused | `ledger-store/tests/party_creditors.rs` | the format gate |
 | Over the MCP: get_entry's direction, cash, in_kind; party totals by basis, echoed, others refused; basis all equals members' equity; creditor_of round trips and a card fee isn't a payment; the post_entry preview's parts are what it posts | `ledger-cli/tests/spec_party_totals.rs` | the tool docs |
 | Defect 11 over the MCP: a member's TIN last four in the directory, a W-9's, none, after a purge | `ledger-cli/tests/spec_vault.rs` `defect11_the_directory_shows_a_members_tin_last4` | B-26 |
@@ -1367,7 +1367,7 @@ filter, the not-reportable and undetermined routing, the R6 test
 (which methods' accounts are financing, which a card's), `split_share` (the floor corrections,
 the sign), `vendor_part`, the unresolved fallback, `decisions_during`,
 `untagged_payments` (`> 0`, each skip, each debit kind), `decision_changes`);
-`kernel.rs` (`payment_bucket`, `split_payment`, `net_buckets`);
+`kernel/` (`payment_bucket`, `split_payment`, `net_buckets`);
 `instruments.rs` and `Ledger::check_add_instrument` (each refusal),
 `set_entry_instrument` (the chain), the reversal step's copy,
 `set_vendor_w9_flag`; `ledger-store` `form1099.rs` (each decode check,
@@ -1451,11 +1451,11 @@ a bookspec example (`bookspec/examples/`, P13, D-34).
 | Depreciation still due when the disposal's month has a run is charged in the disposal entry, never as a second run of the month (P3 review round 2; no store test held it) | store `a_disposal_whose_month_has_run_charges_what_is_still_due_in_its_entry` |
 | A command that needs a journal feature asks for it before its first journaled line: in books waiting for the format upgrade it is refused and journals nothing, and after the upgrade it is taken | store `format.rs` `a_write_waiting_for_the_upgrade_journals_nothing` |
 | What a viewer's one pass says a run of each month posts is run_amount's for that month | property `prop_run_amounts_are_each_months_run_amount` (500 cases); Kani `catch_ups_is_every_suffixs_catch_up` |
-| The kernel on i64 and i32 (Kani's) is the kernel on i128 and Decimal (the engine's) | `kernel_bridge.rs` `prorate_agrees_at_i64_and_i128`, `prorated_through_agrees_at_i32_and_i128`, `catch_up_and_true_up_agree` |
-| The charge never falls and is continuous at month ends, over every 1-to-3-month span from every day of a common and a leap year | `kernel.rs` unit `the_charge_never_falls_and_is_continuous_over_real_calendars` (exhaustive) |
+| The kernel on i64 and i32 (Kani's) is the kernel on i128 and Decimal (the engine's) | `kernel_bridge/` `prorate_agrees_at_i64_and_i128`, `prorated_through_agrees_at_i32_and_i128`, `catch_up_and_true_up_agree` |
+| The charge never falls and is continuous at month ends, over every 1-to-3-month span from every day of a common and a leap year | `kernel/` unit `the_charge_never_falls_and_is_continuous_over_real_calendars` (exhaustive) |
 | Proofs | Kani `prorate_parts_sum_to_total`, `prorate_last_part_absorbs_the_remainder`, `a_months_charge_is_within_half_a_cent`, `a_months_charge_in_tenths_is_within_half_a_cent`, `the_last_months_charge_is_within_half_a_cent`, `the_last_months_charge_in_tenths_is_within_half_a_cent`, `prorated_through_refuses_malformed_input`, `catch_up_never_overtakes_the_schedule`, `catch_ups_is_every_suffixs_catch_up`, `true_up_reaches_the_target`; Lean `Prorate.lean` (`cum_mono`, `cum_le`, `cum_full`, `parts_telescope`, `prorate_total`, `prorate_nonneg`, `part_within_a_unit`, `roundUnit_near`, `roundUnit_scale`, `cum_near`, `part_near`, `chargeMid_eq_cum`, `chargeLast_eq_cum`, `chargeLast_start`, `chargeLast_mono`, `kernel_parts_total`, `kernel_parts_nonneg`; `docs/verification.md`) |
 
-**Mutation targets for P12** (none run in P3, D-33): `kernel.rs`
+**Mutation targets for P12** (none run in P3, D-33): `kernel/`
 `prorated_through` (the last/not-last branch, the rounding comparison
 `r >= step - r` against `>`, the `k == days && last` shortcut, the cap at
 the total, every refusal), `round_to_unit`, `prorate_by_days`,
@@ -1660,8 +1660,8 @@ basis. Mutation runs wait for P12 (D-33); none was run.
   up, a loss mirroring a gain at a running whole of zero, a split taken
   back out);
   `spec_asset_basis.rs` `a_duplicated_run_line_is_carried_once`; `properties.rs`
-  `prop_basis_figures_laws` (5,000 cases); `kernel_bridge.rs`
-  `basis_figures_agree`; Kani `basis_figures_laws` (`src/proofs.rs`, 83
+  `prop_basis_figures_laws` (5,000 cases); `kernel_bridge/`
+  `basis_figures_agree`; Kani `basis_figures_laws` (`src/proofs/`, 83
   checks, its cover satisfied); `spec_asset_tags.rs` (the register's
   posted and scheduled figures, runs recorded as a store records them).
 - **ledger-store:** `asset_tags.rs` (`asset.basis_set` journaled under the
@@ -1786,7 +1786,7 @@ books; the privacy sweep below.
 | Every tool the server has is documented in `docs/mcp-interface.md`, and every tool the doc documents exists (115; `books.access_log` had no entry) | `ledger-mcp` `server.rs` `every_tool_is_documented_and_every_documented_tool_exists` (with a check of its own reader) | the doc, read tool by tool against the code |
 | The reversal's cash flow mirror at three lines, in two halves: a reversal's movements are its original's negated, and `kernel::flows_of` is odd; end to end at two lines | Kani `entry_movements_of_a_reversal_mirror`, `flows_of_mirrors`, `entry_flows_of_a_reversal_mirror` (`kernel::entry_flows` split into `entry_movements` and `flows_of`, behavior unchanged: every cash flow test, bridge and property passes) | docs/verification.md law 10; Lean `flows_reversal` |
 | A closed-list value in a bookspec example (a 1099 form, a payment method's kind, a reason kind, a party totals basis) is spelled exactly as the README spells it; a K-1 query needs `cash_accounts` | `ledger-core` `tests/bookspec.rs` `a_form_in_another_case_is_refused`, `a_payment_method_kind_in_another_case_is_refused`, `a_reason_kind_in_another_case_is_refused`; `check_k1` | bookspec/README.md |
-| Every Kani harness in `src/proofs.rs` runs in exactly one of `just prove` and `just prove-slow`, each run's count is checked, and a slow-list name that isn't a harness fails | `justfile` `_kani` | docs/verification.md, "Running it" |
+| Every Kani harness in `src/proofs/` runs in exactly one of `just prove` and `just prove-slow`, each run's count is checked, and a slow-list name that isn't a harness fails | `justfile` `_kani` | docs/verification.md, "Running it" |
 
 **Docs corrected** (each against the code): `docs/mcp-interface.md`, about
 60 fixes (parameter names: `search_entries`' `account_id`, `link_receipt`'s
@@ -1864,7 +1864,7 @@ P12 (D-33); none was run.
   `prop_project_entries_sum_to_the_net_to_date` (project_entries' own
   signs: the posted entries' project amounts are the net to date, with
   refunds, reimbursements, tagged cash lines and drafts beside them);
-  Kani `unrecovered_cost_laws` (`src/proofs.rs`, docs/verification.md law
+  Kani `unrecovered_cost_laws` (`src/proofs/`, docs/verification.md law
   32, run by `just prove`: never above
   max(expenses, 0) when revenue isn't negative; the earlier "never above
   expenses" fails it, checked).
@@ -3291,7 +3291,7 @@ tie-out, and the aging exports.
   lines in application order; one document twice refused).
   `spec_cash_flow.rs::equipment_bill_payment_is_investing_cash` keeps
   D-35 through a settlement.
-- **Kernel:** `kernel_bridge.rs::settle_agrees`; Kani
+- **Kernel:** `kernel_bridge/main.rs::settle_agrees`; Kani
   `settle_is_exact` (a nonzero discount and a nonzero fee covered).
 - **Store (`crates/ledger-store/tests/arap_standing.rs`):**
   `a_settlement_names_its_lines_and_replays` (one entry, two invoices, a
@@ -4311,7 +4311,7 @@ count.
   Accept counts for `ledger-core` and `ledger-import` are R-6.
 - [P3 cash flow] `cashflow.rs` (`cash_flow`, `analyse`, `pairs`, `label`,
   `class_of`, `reconcile`, `warnings`, `bill_splits`, `role_problems`, `foot`,
-  `on_behalf`); `kernel.rs`'s `take`, `apply_cash`, `entry_flows`,
+  `on_behalf`); `kernel/`'s `take`, `apply_cash`, `entry_flows`,
   `constructive`, `exchanged`. Likely equivalent, to adjudicate: `min` against
   `max` in `take` where both bounds coincide; the kind order's tie-breaks.
 - [P3 rename and defaults] `calendar::{fiscal_year_start_unclamped,
@@ -4348,7 +4348,7 @@ count.
   account type), `Roles::new` (which methods' accounts are financing, which a
   card's), `split_share` (the floor corrections, the sign), `vendor_part`, the
   unresolved fallback, `decisions_during`, `untagged_payments` (`> 0`, each
-  skip, each debit kind), `decision_changes`); `kernel.rs` (`payment_bucket`,
+  skip, each debit kind), `decision_changes`); `kernel/` (`payment_bucket`,
   `split_payment`, `net_buckets`); `instruments.rs`,
   `Ledger::check_add_instrument` (each refusal), `set_entry_instrument` (the
   chain), the reversal step's copy, `set_vendor_w9_flag`.

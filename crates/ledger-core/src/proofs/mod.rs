@@ -19,6 +19,18 @@
 //! for any number of parts and any sizes (docs/verification.md says
 //! which, and how it ties to the kernel's formula).
 
+// One file per kernel-sweep unit; the harnesses above stay here. `just
+// prove` scans every file in this directory, so a new harness only needs
+// its own file and no edit to this one.
+mod allocate;
+mod control;
+mod fx;
+mod payroll;
+mod ratio;
+mod round;
+mod schedule;
+mod total;
+
 use crate::kernel::{self, Amount, LineError, MONTH_L, MonthPart};
 use crate::{AccountType, Side};
 

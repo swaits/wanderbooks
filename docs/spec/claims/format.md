@@ -239,6 +239,16 @@ unless another class's own name is the same ignoring case (the P4 follow-ups'
 review, finding 4, 2026-10-22: before, all the classes whose names matched
 were renamed).
 
+**Pick (BS-format-3):** `plain-ascii-transliterated-and-listed`, the owner, 2026-10-20, D-36.
+
+**Pick (BS-format-4):** `cr-lf`, the owner, 2026-10-20, D-36.
+
+**Pick (BS-format-5):** `docnum-is-the-entry-id`, the owner, 2026-10-20, D-36.
+
+**Pick (BS-format-6):** `everything-through-as-of`, the owner, 2026-10-20, D-36.
+
+**Pick (BS-format-7):** `journal-sample-columns`, the owner, 2026-10-20, D-36 (CHOICE).
+
 **Pick:** `no-customer-or-vendor-name`: CHOICE (open risk). The IIF writes no
 NAME on a line to accounts receivable or payable, though Intuit's staff say
 such a line requires one: no Intuit source says what an IIF journal import

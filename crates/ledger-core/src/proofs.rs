@@ -1984,6 +1984,86 @@ fn line_amount_is_exact() {
 }
 
 // ---------------------------------------------------------------------------
+// Tax categories (B-32)
+// ---------------------------------------------------------------------------
+
+/// `n / 100` rounded half away from zero: the reference for the one
+/// rounding `kernel::deductible_amount` makes.
+fn round_cent(n: i64) -> Option<i64> {
+    let q = n.checked_div(100)?;
+    let r = n.checked_rem(100)?;
+    if r >= 50 {
+        q.checked_add(1)
+    } else if r <= -50 {
+        q.checked_sub(1)
+    } else {
+        Some(q)
+    }
+}
+
+/// `kernel::deductible_amount` (rules.md B-32, B-21; CHOICE, owner
+/// 2026-11-07, D-67) over up to three accounts in exact range: the exact
+/// sum of the shares (`book × percent ÷ 100`) rounded once to the nearest
+/// cent, ties away from zero; never the sum of per-account roundings; and
+/// never the opposite sign to its sum.
+#[kani::proof]
+#[kani::unwind(5)]
+fn deductible_amount_rounds_once() {
+    const T: usize = 3;
+    let n: usize = kani::any();
+    kani::assume(n <= T);
+    let shares: [(i64, i64); T] = core::array::from_fn(|_| {
+        let book: i64 = kani::any();
+        kani::assume(book.unsigned_abs() <= (1 << 20));
+        let percent: i64 = kani::any();
+        kani::assume(percent >= 0 && percent <= 100);
+        (book, percent)
+    });
+    // The exact numerator, and what rounding each account alone would
+    // have given. Under these bounds three shares cannot leave `i64`.
+    let mut exact = 0i64;
+    let mut per_account = 0i64;
+    for &(book, percent) in &shares[..n] {
+        let term = book * percent;
+        exact += term;
+        per_account += round_cent(term).expect("an i64 quotient by 100 fits");
+    }
+    let want = round_cent(exact).expect("an i64 quotient by 100 fits");
+    let got = kernel::deductible_amount(&shares[..n]);
+    assert_eq!(got, Some(want));
+    let err = i128::from(exact) - i128::from(want) * 100;
+    assert!(err.abs() <= 50, "within half a cent");
+    if exact >= 0 {
+        assert!(want >= 0, "the sum's sign, not its opposite");
+    } else {
+        assert!(want <= 0, "the sum's sign, not its opposite");
+    }
+    kani::cover!(n == T && exact % 100 == 50, "a tie at half a cent");
+    kani::cover!(exact < 0, "a negative numerator (a refund)");
+    kani::cover!(
+        per_account != want,
+        "rounding the category once differs from rounding each share"
+    );
+}
+
+/// `kernel::deductible_amount` refuses an overflow instead of wrapping: a
+/// share too large for `i64`, and a sum of shares too large, both `None`.
+#[kani::proof]
+fn deductible_amount_refuses_overflow() {
+    // A product past `i64`: 100 percent of a book above i64::MAX / 100.
+    let book: i64 = kani::any();
+    kani::assume(book > i64::MAX / 100);
+    assert!(kernel::deductible_amount(&[(book, 100i64)]).is_none());
+    kani::cover!(book == i64::MAX, "the largest share");
+
+    // Two shares whose sum overflows, each product in range.
+    let book: i64 = kani::any();
+    kani::assume(book > i64::MAX / 2);
+    assert!(kernel::deductible_amount(&[(book, 1i64), (book, 1i64)]).is_none());
+    kani::cover!(book == i64::MAX, "a sum of shares too large");
+}
+
+// ---------------------------------------------------------------------------
 // The checker itself
 // ---------------------------------------------------------------------------
 

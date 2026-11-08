@@ -554,4 +554,40 @@ proptest! {
         let wide = kernel::line_amount(dec(quantity), dec(unit_price));
         prop_assert_eq!(narrow.map(|n| Decimal::new(n, 4)), wide);
     }
+
+    /// The tax summary's one rounding (rules.md B-32, B-21):
+    /// `kernel::deductible_amount` at i64 cents (what Kani
+    /// `deductible_amount_rounds_once` proved) and at Decimal dollars
+    /// agree on the same accounts, and the Decimal result keeps the laws:
+    /// within half a cent of the exact sum, never the opposite sign, never
+    /// a negative zero.
+    #[test]
+    fn deductible_amount_agrees(
+        shares in prop::collection::vec((arb_cents(), 0u32..=100), 0..5),
+    ) {
+        let i: Vec<(i64, i64)> = shares
+            .iter()
+            .map(|&(book, percent)| (book, i64::from(percent)))
+            .collect();
+        let d: Vec<(Decimal, Decimal)> = shares
+            .iter()
+            .map(|&(book, percent)| (dec(book), Decimal::from(percent)))
+            .collect();
+        let narrow = kernel::deductible_amount(&i);
+        let wide = kernel::deductible_amount(&d);
+        prop_assert_eq!(narrow.map(dec), wide);
+        let exact_cents: i64 = shares
+            .iter()
+            .map(|&(book, percent)| book * i64::from(percent))
+            .sum();
+        // The exact share in dollars: book cents x percent, over 10,000.
+        let exact = Decimal::new(exact_cents, 4);
+        if let Some(a) = wide {
+            let half_cent = Decimal::new(5, 3);
+            prop_assert!((a - exact).abs() <= half_cent);
+            prop_assert!(!(a > Decimal::ZERO && exact < Decimal::ZERO));
+            prop_assert!(!(a < Decimal::ZERO && exact > Decimal::ZERO));
+            prop_assert!(!(a.is_zero() && a.is_sign_negative()));
+        }
+    }
 }

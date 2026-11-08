@@ -1871,11 +1871,12 @@ impl Ledger {
         // away from zero: a ledger in one money holds no fractions of its
         // smallest unit (rules.md B-3; DECISION, owner 2026-10-13, after
         // the GnuCash cross-check found the difference).
-        let base_amount = match self.base_currency.minor_units() {
-            Some(dp) => exact
-                .round_dp_with_strategy(dp, rust_decimal::RoundingStrategy::MidpointAwayFromZero),
-            None => exact,
-        };
+        let base_amount = crate::kernel::round_minor(
+            exact,
+            self.base_currency,
+            crate::kernel::Rounding::HalfAwayFromZero,
+        )
+        .ok_or(LedgerError::AmountOutOfRange)?;
         if base_amount <= Decimal::ZERO {
             return Err(LedgerError::InvalidFxRate(fx_rate));
         }

@@ -124,12 +124,15 @@ pub fn allocate(
     amount: rust_decimal::Decimal,
     shares: &[rust_decimal::Decimal],
 ) -> Vec<rust_decimal::Decimal> {
-    use rust_decimal::{Decimal, RoundingStrategy::ToZero};
+    use rust_decimal::Decimal;
     let magnitude = amount.abs();
     let exact: Vec<Decimal> = shares.iter().map(|s| magnitude * s).collect();
     let mut parts: Vec<Decimal> = exact
         .iter()
-        .map(|e| e.round_dp_with_strategy(2, ToZero))
+        .map(|e| {
+            crate::kernel::round_places(*e, 2, crate::kernel::Rounding::TowardZero)
+                .expect("a cent place of a representable amount is representable")
+        })
         .collect();
     let remainders: Vec<Decimal> = exact.iter().zip(&parts).map(|(e, p)| e - p).collect();
     crate::kernel::apportion(magnitude, &mut parts, &remainders, Decimal::new(1, 2))
@@ -149,10 +152,13 @@ pub fn allocate_last_absorbs(
     amount: rust_decimal::Decimal,
     shares: &[rust_decimal::Decimal],
 ) -> Vec<rust_decimal::Decimal> {
-    use rust_decimal::RoundingStrategy::MidpointAwayFromZero;
+    use crate::kernel::{Rounding, round_places};
     let mut parts: Vec<_> = shares
         .iter()
-        .map(|s| (amount * s).round_dp_with_strategy(2, MidpointAwayFromZero))
+        .map(|s| {
+            round_places(amount * s, 2, Rounding::HalfAwayFromZero)
+                .expect("a cent place of a representable amount is representable")
+        })
         .collect();
     crate::kernel::plug_last(amount, &mut parts).expect("allocated amounts are in range");
     parts
@@ -205,7 +211,8 @@ pub fn allocate_cumulative(
     given: &[rust_decimal::Decimal],
     places: u32,
 ) -> Result<Vec<rust_decimal::Decimal>, LedgerError> {
-    use rust_decimal::{Decimal, RoundingStrategy::ToZero};
+    use crate::kernel::{Rounding, round_places};
+    use rust_decimal::Decimal;
     if shares.len() != given.len() {
         return Err(LedgerError::InvalidMembers(format!(
             "{} shares but {} earlier parts",
@@ -236,7 +243,9 @@ pub fn allocate_cumulative(
                     "a member's share {share} of {magnitude}, to its last digit,"
                 ))
             })?;
-        let floor = exact.round_dp_with_strategy(places, ToZero);
+        let floor = round_places(exact, places, Rounding::TowardZero).ok_or_else(|| {
+            LedgerError::TooLargeToCompute(format!("a member's share {share} of {magnitude}"))
+        })?;
         parts.push(floor);
         remainders.push(exact - floor);
     }

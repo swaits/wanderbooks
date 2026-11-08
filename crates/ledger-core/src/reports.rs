@@ -626,10 +626,14 @@ pub fn contribution_margin_pct(contribution: Decimal, revenue: Decimal) -> Optio
     if revenue <= Decimal::ZERO {
         return None;
     }
-    let mut x = contribution
-        .checked_div(revenue)?
-        .checked_mul(Decimal::ONE_HUNDRED)?
-        .round_dp_with_strategy(1, rust_decimal::RoundingStrategy::MidpointNearestEven);
+    let mut x = crate::kernel::round_places(
+        contribution
+            .checked_div(revenue)?
+            .checked_mul(Decimal::ONE_HUNDRED)?,
+        1,
+        crate::kernel::Rounding::HalfToEven,
+    )?;
+    // Display padding only: the margin always prints its one place.
     x.rescale(1);
     Some(x)
 }

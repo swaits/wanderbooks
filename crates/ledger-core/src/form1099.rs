@@ -728,7 +728,11 @@ fn vendor_part(payment: Decimal, share: Decimal, target: Decimal) -> Result<Deci
                     "a vendor's share ({share}) of a payment of {payment}"
                 ))
             })?;
-        Ok(scaled.round_dp_with_strategy(2, rust_decimal::RoundingStrategy::MidpointAwayFromZero))
+        kernel::round_places(scaled, 2, kernel::Rounding::HalfAwayFromZero).ok_or_else(|| {
+            LedgerError::TooLargeToCompute(format!(
+                "a vendor's share ({share}) of a payment of {payment}"
+            ))
+        })
     }
 }
 
@@ -761,7 +765,8 @@ fn split_share(b: [Decimal; 3], v: Decimal) -> Result<[Decimal; 3], LedgerError>
         // exactly (the division alone rounds past 28 digits).
         let num = b[i].abs().checked_mul(av).ok_or_else(too_large)?;
         let q = num.checked_div(ap).ok_or_else(too_large)?;
-        let mut part = q.round_dp_with_strategy(2, rust_decimal::RoundingStrategy::ToZero);
+        let mut part =
+            kernel::round_places(q, 2, kernel::Rounding::TowardZero).ok_or_else(too_large)?;
         while times(part)? > num {
             part -= cent;
         }

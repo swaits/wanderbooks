@@ -454,7 +454,7 @@ pub fn check_id(id: &str) -> Result<(), String> {
 /// ([`crate::kernel::apportion`]): the parts sum to `amount` exactly
 /// (INVARIANT 2).
 pub fn split(amount: Decimal, shares: &[Decimal], places: Option<u32>) -> Option<Vec<Decimal>> {
-    use rust_decimal::RoundingStrategy::ToZero;
+    use crate::kernel::{Rounding, round_places};
     let exact: Vec<Decimal> = shares
         .iter()
         .map(|s| amount.checked_mul(*s))
@@ -466,8 +466,8 @@ pub fn split(amount: Decimal, shares: &[Decimal], places: Option<u32>) -> Option
     };
     let mut parts: Vec<Decimal> = exact
         .iter()
-        .map(|e| e.round_dp_with_strategy(places, ToZero))
-        .collect();
+        .map(|e| round_places(*e, places, Rounding::TowardZero))
+        .collect::<Option<_>>()?;
     let remainders: Vec<Decimal> = exact
         .iter()
         .zip(&parts)

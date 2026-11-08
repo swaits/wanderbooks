@@ -86,6 +86,7 @@ mod engine;
 mod events;
 mod examples;
 mod loader_tests;
+mod pin;
 mod queries;
 mod rules_md;
 mod run;

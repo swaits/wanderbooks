@@ -1,11 +1,11 @@
-import Wanderbooks
+import Bookspec
 
-/-! `just prove` runs this file: each headline theorem's axioms are printed,
-and must be only Lean's standard three (`propext`, `Quot.sound`,
-`Classical.choice`) or fewer. No `sorryAx`, nothing assumed. -/
+/-! `just prove` runs this file: each theorem's axioms are printed, and must
+be only Lean's standard three (`propext`, `Quot.sound`, `Classical.choice`)
+or fewer. No `sorryAx`, nothing assumed. The theorems are bookspec's: the
+118 headline laws and the 33 named laws that cite them (D-69). -/
 
-open Wanderbooks
-
+open Bookspec
 #print axioms Accepted.net_zero
 #print axioms sum_movements
 #print axioms movement_with_reversal
@@ -124,3 +124,36 @@ open Wanderbooks
 #print axioms Deductible.tie_example
 #print axioms Deductible.scale_books
 #print axioms Deductible.scale_percents
+#print axioms law_debits_equal_credits
+#print axioms law_accounting_equation
+#print axioms law_trial_balance
+#print axioms law_net_income_articulates
+#print axioms law_cash_flow_is_change_in_cash
+#print axioms law_acceptance_is_arithmetic
+#print axioms law_accepted_entry_nets_to_zero
+#print axioms law_movements_partition_the_net
+#print axioms law_reversal_accepted_iff
+#print axioms law_reversal_cancels
+#print axioms law_normal_side
+#print axioms law_trial_balance_is_complete
+#print axioms law_period_statements_add_up
+#print axioms law_invariant_holds
+#print axioms law_posted_is_forever
+#print axioms law_closed_periods_frozen
+#print axioms law_record_changes_no_figure
+#print axioms law_closing_entry_zeroes
+#print axioms law_allocation_sums_to_the_whole
+#print axioms law_member_run_telescopes
+#print axioms law_cumulative_close_hands_out_its_net
+#print axioms law_bounded_drift
+#print axioms law_capital_unmoved_by_close
+#print axioms law_reversal_is_the_exact_opposite
+#print axioms law_proration_parts_sum_to_the_total
+#print axioms law_proration_part_is_near
+#print axioms law_proration_charge_never_falls
+#print axioms law_control_account_is_its_documents
+#print axioms law_send_changes_no_figure
+#print axioms law_settlement_is_a_document_step
+#print axioms law_write_off_within_bounds
+#print axioms law_discard_moves_no_figure
+#print axioms law_deductible_rounds_once

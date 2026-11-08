@@ -314,7 +314,7 @@ pub(crate) fn share_property(
     credits: &[Decimal],
     places: u32,
 ) -> Result<Vec<Decimal>, LedgerError> {
-    use rust_decimal::RoundingStrategy::ToZero;
+    use crate::kernel::{Rounding, round_places};
     let too_large =
         || LedgerError::TooLargeToCompute("a member's share of contributed property".into());
     let total = credits
@@ -334,8 +334,9 @@ pub(crate) fn share_property(
         .ok_or_else(too_large)?;
     let mut parts: Vec<Decimal> = exact
         .iter()
-        .map(|x| x.round_dp_with_strategy(places, ToZero))
-        .collect();
+        .map(|x| round_places(*x, places, Rounding::TowardZero))
+        .collect::<Option<_>>()
+        .ok_or_else(too_large)?;
     let remainders: Vec<Decimal> = exact.iter().zip(&parts).map(|(x, p)| x - p).collect();
     crate::kernel::apportion(whole, &mut parts, &remainders, Decimal::new(1, places))
         .expect("each part is short by under a unit, so the shortfall is under a unit per member");

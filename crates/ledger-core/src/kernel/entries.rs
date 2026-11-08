@@ -2,6 +2,7 @@
 //! grouping the lines of an entry or a book, unchanged in U0. The laws it
 //! serves are listed at the module root, [`super`].
 
+use super::round::Rounding;
 use crate::assets::BasisRule;
 use crate::{AccountType, Side};
 use rust_decimal::Decimal;
@@ -41,6 +42,12 @@ pub trait Amount: Copy + Ord {
     /// B-21), whose shares are added exactly and rounded once, never
     /// share by share.
     fn checked_div_round_cent(self, rhs: Self) -> Option<Self>;
+    /// `self` rounded to a whole multiple of `step`, in `mode`; `None`
+    /// when `step` is not positive or the result cannot be represented.
+    ///
+    /// The instantiation of [`crate::kernel::round_step`], which the call
+    /// sites use; a machine integer is already a whole smallest unit.
+    fn checked_round_to_step(self, step: Self, mode: Rounding) -> Option<Self>;
 
     /// `self - rhs`, or `None` when it cannot be represented exactly.
     fn checked_sub(self, rhs: Self) -> Option<Self> {
@@ -148,6 +155,9 @@ impl Amount for Decimal {
         let signed = if negative { -signed_mag } else { signed_mag };
         Decimal::try_from_i128_with_scale(signed, scale).ok()
     }
+    fn checked_round_to_step(self, step: Self, mode: Rounding) -> Option<Self> {
+        super::round::round_decimal_to_step(self, step, mode)
+    }
 }
 
 impl Amount for i32 {
@@ -195,6 +205,9 @@ impl Amount for i32 {
         } else {
             q.checked_sub(1)
         }
+    }
+    fn checked_round_to_step(self, step: Self, mode: Rounding) -> Option<Self> {
+        super::round::round_i32_to_step(self, step, mode)
     }
 }
 
@@ -244,6 +257,9 @@ impl Amount for i64 {
         } else {
             q.checked_sub(1)
         }
+    }
+    fn checked_round_to_step(self, step: Self, mode: Rounding) -> Option<Self> {
+        super::round::round_i64_to_step(self, step, mode)
     }
 }
 

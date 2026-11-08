@@ -193,10 +193,17 @@ pub fn amortization_plan(
     if total.abs() >= EXACT_LIMIT {
         return Err(too_large());
     }
-    let each = total
-        .checked_div(Decimal::from(months))
-        .ok_or_else(too_large)?
-        .round_dp(2);
+    // Two places whatever the currency: the monthly-even plan's cent rule is
+    // replay-frozen, and moving it to the currency's minor unit is K-U5
+    // (owner decision D-72), not this behaviour-preserving rounding unit.
+    let each = kernel::round_places(
+        total
+            .checked_div(Decimal::from(months))
+            .ok_or_else(too_large)?,
+        2,
+        kernel::Rounding::HalfToEven,
+    )
+    .ok_or_else(too_large)?;
     let first = start
         .with_day(1)
         .ok_or(LedgerError::DateOutOfRange(start))?;

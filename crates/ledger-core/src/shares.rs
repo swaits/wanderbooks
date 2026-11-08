@@ -284,7 +284,7 @@ fn checked_sum(values: impl IntoIterator<Item = Decimal>) -> Option<Decimal> {
 /// part rounded toward zero to the cent, the cents left over to the first.
 /// None when a product or sum is past exact arithmetic.
 fn split_first(magnitude: Decimal, weights: &[Decimal]) -> Option<Vec<Decimal>> {
-    use rust_decimal::RoundingStrategy::ToZero;
+    use crate::kernel::{Rounding, round_places};
     let total = checked_sum(weights.iter().copied())?;
     if weights.is_empty() || total.is_zero() {
         return Some(vec![Decimal::ZERO; weights.len()]);
@@ -295,7 +295,7 @@ fn split_first(magnitude: Decimal, weights: &[Decimal]) -> Option<Vec<Decimal>> 
             magnitude
                 .checked_mul(*w)
                 .and_then(|x| x.checked_div(total))
-                .map(|x| x.round_dp_with_strategy(2, ToZero))
+                .and_then(|x| round_places(x, 2, Rounding::TowardZero))
         })
         .collect::<Option<_>>()?;
     let left = magnitude.checked_sub(checked_sum(parts.iter().copied())?)?;

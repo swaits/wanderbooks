@@ -1720,8 +1720,9 @@ fn split_part(
     let part = amount
         .checked_mul(ours)
         .and_then(|x| x.checked_div(whole))
-        .ok_or_else(|| too_large("a payment's government part"))?
-        .round_dp_with_strategy(places, rust_decimal::RoundingStrategy::MidpointNearestEven);
+        .ok_or_else(|| too_large("a payment's government part"))?;
+    let part = crate::kernel::round_places(part, places, crate::kernel::Rounding::HalfToEven)
+        .ok_or_else(|| too_large("a payment's government part"))?;
     let rest = amount
         .checked_sub(part)
         .ok_or_else(|| too_large("a payment's government part"))?;

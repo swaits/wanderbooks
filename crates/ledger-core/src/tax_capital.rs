@@ -456,7 +456,7 @@ impl RunningSplit {
         whole: Decimal,
         weights: &[Decimal],
     ) -> Result<Vec<Decimal>, LedgerError> {
-        use rust_decimal::RoundingStrategy::ToNegativeInfinity;
+        use crate::kernel::{Rounding, round_places};
         let n = self.given.len();
         let Some(sum) = self.weight_sum(weights)? else {
             return Ok(vec![Decimal::ZERO; n]);
@@ -482,12 +482,14 @@ impl RunningSplit {
         // rounded down to the cent, what rounding took its remainder.
         let snapped: Vec<Decimal> = exact
             .iter()
-            .map(|x| (x * sign).round_dp(EXACT_PLACES))
-            .collect();
+            .map(|x| round_places(x * sign, EXACT_PLACES, Rounding::HalfToEven))
+            .collect::<Option<_>>()
+            .ok_or_else(too_large)?;
         let mut parts: Vec<Decimal> = snapped
             .iter()
-            .map(|x| x.round_dp_with_strategy(2, ToNegativeInfinity))
-            .collect();
+            .map(|x| round_places(*x, 2, Rounding::TowardNegativeInfinity))
+            .collect::<Option<_>>()
+            .ok_or_else(too_large)?;
         let remainders: Vec<Decimal> = snapped.iter().zip(&parts).map(|(x, p)| x - p).collect();
         let given: Vec<Decimal> = self.given.iter().map(|g| g * sign).collect();
         crate::kernel::apportion_cumulative(

@@ -108,7 +108,7 @@ fn decimal_edge_table() {
     // total_of and total_try see the same edges.
     assert_eq!(kernel::total_of([max, one], |x| x), None);
     assert_eq!(
-        kernel::total_of([1, 2, 3], |n| Decimal::from(n)),
+        kernel::total_of([1, 2, 3], Decimal::from),
         Some(Decimal::from(6))
     );
     assert_eq!(

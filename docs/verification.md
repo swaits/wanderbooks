@@ -787,12 +787,31 @@ Be precise about the claims:
   written out and proved equal to the model's charge), and the bridge
   property tests tie the `Decimal` (and `i128`) instantiation to the
   `i64` (and `i32`) one Kani checked.
-- **`Decimal` itself is trusted.** `rust_decimal` is exact for these
-  sizes: 96-bit integers scaled by a power of ten. With lines capped at
-  one quadrillion and ten decimal places, every sum is exact while the
-  total of all amounts stays below 7.9 × 10^18. Kani can't explore
-  `Decimal` arithmetic directly: a single symbolic add runs for more than
-  ten minutes.
+- **`Decimal` itself is trusted, and now probed against exact
+  rationals.** `rust_decimal` is exact for these sizes: 96-bit integers
+  scaled by a power of ten. With lines capped at one quadrillion and ten
+  decimal places, every sum is exact while the total of all amounts stays
+  below 7.9 × 10^18. `crates/ledger-core/tests/decimal_exact.rs` checks
+  the operations the money paths use against `num_rational`/`num_bigint`
+  (an independent exact reference): `checked_add` and `checked_sub` over
+  signed line amounts to 1e15 at 0–10 places; 1,000-line sums; `checked_mul`
+  for ordinary quantities/rates and at the top of the line range while the
+  true product's mantissa fits 28 digits; `round_dp_with_strategy` for
+  every strategy the engine uses (`MidpointAwayFromZero`,
+  `MidpointNearestEven`, `ToZero`, `ToNegativeInfinity`) at every scale
+  0–28; `rescale`'s half-away rounding; `normalize`; comparison and equality
+  across scales (1.0 = 1.00); and `from_str`/`to_string` round trips at
+  every scale, including 28-digit mantissas and negative ties. It also pins
+  the one inexact edge: when a product's *scale* does not fit,
+  `checked_mul` rounds to 28 decimal places, ties to even, rather than
+  failing (`None` comes only when the integer part cannot fit). That case
+  is reachable through `Ledger::add_line_fx`, whose foreign amount and rate
+  are unbounded positive `Decimal`s; the base amount is then rounded to the
+  currency's minor unit. What is still trusted: the 96-bit representation
+  and `rust_decimal`'s implementation beyond the sampled properties (they
+  are tests, not a proof, and the edge cases are hand-written); Kani still
+  cannot explore `Decimal` arithmetic directly (a single symbolic add runs
+  for more than ten minutes).
 - **The state machine is a model of `Ledger`'s checks**, not a proof
   about `ledger.rs` line by line. Its correspondence to the code is
   checked by review and by the end-to-end property tests in

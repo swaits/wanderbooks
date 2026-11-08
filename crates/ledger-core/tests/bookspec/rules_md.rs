@@ -25,6 +25,32 @@ pub(crate) fn rules_md_carries_every_id() {
     }
 
     for rule in bookspec_checker::rules().iter() {
+        if rule.b == 0 {
+            // A rule born after the B numbering has no row in the index.
+            // A CHOICE record split out of another rule (P14 unit S-C7)
+            // has its pick recorded in its claims file, and the engine's
+            // adapter declares the same option, which the record names.
+            if rule.status == Some(bookspec_checker::Status::Choice) {
+                let marker = format!("**Pick ({}):** `", rule.id);
+                let at = all
+                    .find(&marker)
+                    .unwrap_or_else(|| panic!("{} carries its pick in its claims file", rule.id));
+                let option = all[at + marker.len()..].split('`').next().unwrap();
+                assert!(
+                    rule.record().options.iter().any(|o| o.name == option),
+                    "{}'s pick {option:?} is one of its options",
+                    rule.id
+                );
+                assert!(
+                    engine::PICKS_S_C7B
+                        .iter()
+                        .any(|&(area, n, o)| RuleId::new(area, n) == rule.id && o == option),
+                    "{}'s pick {option:?} is declared in the adapter's claims()",
+                    rule.id
+                );
+            }
+            continue;
+        }
         assert!(
             index.contains(&format!("| B-{} | `{}` |", rule.b, rule.id)),
             "rules.md indexes B-{} to {}",

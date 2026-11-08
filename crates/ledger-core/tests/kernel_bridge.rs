@@ -590,4 +590,115 @@ proptest! {
             prop_assert!(!(a.is_zero() && a.is_sign_negative()));
         }
     }
+
+    /// The Decimal path with decimal percents and sub-cent books, which
+    /// `deductible_amount_agrees` (2-decimal books, integer percents)
+    /// never reaches: books at 0 to 6 decimal places (FX precision
+    /// included), percents in hundredths 0.00 to 100.00 and, half the
+    /// shares, at 4 decimal places, several shares per category. The
+    /// reference shares no code with the kernel: each share's product
+    /// is an exact i128 mantissa over a power of ten, the products are
+    /// summed over a common power of ten, and the one rounding to
+    /// cents is integer division, half away from zero.
+    #[test]
+    fn deductible_amount_matches_exact_reference_on_decimal_shares(
+        shares in prop::collection::vec(
+            (
+                -2_000_000i64..=2_000_000,
+                0u32..=6,
+                0i64..=10_000,
+                0i64..=1_000_000,
+                any::<bool>(),
+            ),
+            0..5,
+        ),
+    ) {
+        let mut decimals: Vec<(Decimal, Decimal)> = Vec::new();
+        let mut products: Vec<(i128, u32)> = Vec::new();
+        for &(book_mant, book_scale, pct_hundredths, pct_four, use_four) in &shares {
+            let (pct_mant, pct_scale) = if use_four {
+                (pct_four, 4)
+            } else {
+                (pct_hundredths, 2)
+            };
+            let book =
+                Decimal::try_from_i128_with_scale(i128::from(book_mant), book_scale).unwrap();
+            let percent =
+                Decimal::try_from_i128_with_scale(i128::from(pct_mant), pct_scale).unwrap();
+            decimals.push((book, percent));
+            products.push((
+                i128::from(book_mant) * i128::from(pct_mant),
+                book_scale + pct_scale,
+            ));
+        }
+        // The exact sum S = total / 10^max_scale / 100, so the cents
+        // are total / 10^max_scale rounded half away from zero.
+        let max_scale = products.iter().map(|&(_, s)| s).max().unwrap_or(0);
+        let mut total: i128 = 0;
+        for &(mant, scale) in &products {
+            total += mant * 10i128.pow(max_scale - scale);
+        }
+        let denom = 10u128.pow(max_scale);
+        let mag = total.unsigned_abs();
+        let mut cents_mag = mag / denom;
+        if (mag % denom) * 2 >= denom {
+            cents_mag += 1;
+        }
+        let cents = if total < 0 {
+            -i128::try_from(cents_mag).unwrap()
+        } else {
+            i128::try_from(cents_mag).unwrap()
+        };
+        let want = if cents_mag == 0 {
+            Decimal::ZERO
+        } else {
+            Decimal::try_from_i128_with_scale(cents, 2).unwrap()
+        };
+        let got = kernel::deductible_amount(&decimals);
+        prop_assert_eq!(got, Some(want));
+        if let Some(g) = got {
+            prop_assert!(!(g.is_zero() && g.is_sign_negative()));
+        }
+    }
+}
+
+fn parse(s: &str) -> Decimal {
+    s.parse().unwrap()
+}
+
+/// The review's table for the Decimal path, one share per category,
+/// each expected value figured from the exact share by hand.
+#[test]
+fn deductible_amount_decimal_table() {
+    let cases: &[(&str, &str, &str)] = &[
+        ("0.01", "50", "0.01"),
+        ("1.05", "33.33", "0.35"),
+        ("333.33", "50", "166.67"),
+        ("-1.005", "100", "-1.01"),
+        ("1.2345", "33.33", "0.41"),
+        ("0.005", "100", "0.01"),
+        ("-0.004", "100", "0"),
+        ("999.9999", "99.99", "999.90"),
+        ("123456789.1234567890", "33.333333", "41152262.63"),
+        (
+            "9999999999999999999999999",
+            "100",
+            "9999999999999999999999999.00",
+        ),
+    ];
+    for &(book, percent, want) in cases {
+        let got = kernel::deductible_amount(&[(parse(book), parse(percent))]);
+        assert_eq!(got, Some(parse(want)), "{book} at {percent}%");
+    }
+    // A rounded-to-zero result is zero, never a negative zero.
+    let zero = kernel::deductible_amount(&[(parse("-0.004"), parse("100"))]).unwrap();
+    assert!(zero.is_zero() && !zero.is_sign_negative(), "{zero}");
+}
+
+/// A quotient past what Decimal can hold at any scale from 2 down is
+/// refused, never wrapped: twice Decimal::MAX, in cents, fits no
+/// mantissa even stripped of its trailing zeros at scale 0.
+#[test]
+fn deductible_amount_decimal_unrepresentable_is_none() {
+    assert_eq!(Decimal::MAX.checked_div_round_cent(parse("0.5")), None);
 }

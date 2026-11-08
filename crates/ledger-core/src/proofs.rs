@@ -2039,6 +2039,7 @@ fn deductible_amount_rounds_once() {
         assert!(want <= 0, "the sum's sign, not its opposite");
     }
     kani::cover!(n == T && exact % 100 == 50, "a tie at half a cent");
+    kani::cover!(exact % 100 == -50, "a negative tie at half a cent");
     kani::cover!(exact < 0, "a negative numerator (a refund)");
     kani::cover!(
         per_account != want,

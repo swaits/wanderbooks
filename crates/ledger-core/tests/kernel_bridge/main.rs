@@ -1,10 +1,20 @@
 //! The bridge between the proofs and the engine.
 //!
-//! The Kani harnesses (`src/proofs.rs`) prove the accounting kernel on
+//! The Kani harnesses (`src/proofs/`) prove the accounting kernel on
 //! `i64` money in the smallest unit; the engine runs the same kernel on
 //! `Decimal`. These properties check the two instantiations agree, value
 //! for value, on cents: whatever Kani proved of the `i64` kernel holds of
 //! the `Decimal` one for the same amounts.
+
+// One file per kernel-sweep unit; the properties above stay here.
+mod allocate;
+mod control;
+mod fx;
+mod payroll;
+mod ratio;
+mod round;
+mod schedule;
+mod total;
 
 use ledger_core::kernel::{self, Amount, LineError};
 use ledger_core::{AccountType, Side};

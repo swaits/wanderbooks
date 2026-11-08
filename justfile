@@ -63,8 +63,9 @@ sweep-test-tmp:
 # The Kani harnesses `prove` leaves to `prove-slow`: each takes four to
 # twenty minutes alone on a busy machine, and with them the suite (about
 # 100 minutes of CPU, 2026-10-21) can't finish inside the 30-minute cap at
-# four jobs, a CI runner's. Every other harness in src/proofs.rs runs in `prove`, a new one
-# included; a name here that isn't a harness fails both (docs/verification.md).
+# four jobs, a CI runner's. Every other harness in src/proofs/ runs in `prove`, a new one
+# included; a name here that isn't a harness, or is shared by two, fails
+# both (docs/verification.md).
 kani_slow := "accounting_equation cumulative_close_never_drifts_a_unit_at_near_thirds cumulative_closing_entry_balances deductible_amount_rounds_once discount_max_is_bounded entry_flows_pure_are_movements entry_flows_sum_to_cash prorate_parts_sum_to_total sums_are_exact the_last_months_charge_is_within_half_a_cent"
 
 # Formal proofs: Kani on the accounting kernel (all but kani_slow), Lean for books of any size (docs/verification.md)
@@ -86,19 +87,55 @@ prove-slow: (_kani "slow")
 # Every proof: prove, then prove-slow
 prove-all: prove prove-slow
 
+# Every Kani harness, its module path, and the set (fast/slow) it runs in:
+# no verification, so the slow list is shown resolved without `prove-slow`.
+prove-list: (_kani "list")
+
 # Kani on one set of the harnesses: "fast" (all but kani_slow, the whole
-# run under the cap) or "slow" (each harness under the cap)
+# run under the cap) or "slow" (each harness under the cap); "list" prints
+# the harnesses and the set each runs in, without running Kani (prove-list).
 _kani set:
     #!/usr/bin/env bash
     set -euo pipefail
-    # Every harness: the fn after each #[kani::proof] in src/proofs.rs.
-    all=$(awk '/#\[kani::proof\]/ { p = 1; next } p && match($0, /^fn [a-z_0-9]+/) { print substr($0, 4, RLENGTH - 3); p = 0 }' crates/ledger-core/src/proofs.rs | sort)
+    dir=crates/ledger-core/src/proofs
+    # Every harness, fully qualified: proofs/mod.rs is module `proofs`,
+    # proofs/<unit>.rs is `proofs::<unit>`. Kani's --exact matches only a
+    # fully qualified name, so a harness resolves wherever its file lives.
+    files=("$dir/mod.rs")
+    for f in "$dir"/*.rs; do [ "$f" = "$dir/mod.rs" ] || files+=("$f"); done
+    all=$(
+        for f in "${files[@]}"; do
+            mod=proofs
+            [ "$f" = "$dir/mod.rs" ] || mod="proofs::$(basename "$f" .rs)"
+            awk -v mod="$mod" '/#\[kani::proof\]/ { p = 1; next } p && match($0, /^fn [a-z_0-9]+/) { print mod "::" substr($0, 4, RLENGTH - 3); p = 0 }' "$f"
+        done | sort
+    )
+    bare=$(sed 's/.*:://' <<<"$all")
     slow=$(tr ' ' '\n' <<<"{{kani_slow}}" | sort)
-    if missing=$(comm -13 <(echo "$all") <(echo "$slow")) && [ -n "$missing" ]; then
+    # Two harnesses with one name would make kani_slow (a list of bare
+    # names) ambiguous.
+    if dup=$(uniq -d <<<"$bare") && [ -n "$dup" ]; then
+        echo "two harnesses share a name: $dup" >&2
+        exit 1
+    fi
+    # A slow name that no harness has is a typo or a moved proof: fail
+    # rather than silently verify one harness less than the list says.
+    if missing=$(comm -13 <(echo "$bare") <(echo "$slow")) && [ -n "$missing" ]; then
         echo "kani_slow names no harness: $missing" >&2
         exit 1
     fi
-    if [ "{{set}}" = slow ]; then names=$slow; else names=$(comm -23 <(echo "$all") <(echo "$slow")); fi
+    # The qualified name whose bare name is in `want` (a slow/fast file).
+    picked() { # want-file
+        awk 'NR==FNR { want[$1] = 1; next } { n = $0; sub(/.*::/, "", n); if (n in want) print }' "$1" <(printf '%s\n' "$all")
+    }
+    if [ "{{set}}" = list ]; then
+        for h in $all; do
+            n=${h##*::}
+            if grep -qxF "$n" <<<"$slow"; then echo "slow  $h"; else echo "fast  $h"; fi
+        done
+        exit 0
+    fi
+    if [ "{{set}}" = slow ]; then names=$(picked <(echo "$slow")); else names=$(picked <(comm -23 <(echo "$bare") <(echo "$slow"))); fi
     logs=$(mktemp -d)
     # What each run must show: every harness asked for verified, and no
     # cover unsatisfiable (a vacuous proof).
@@ -119,19 +156,20 @@ _kani set:
     ulimit -v 12000000
     if [ "{{set}}" = fast ]; then
         args=()
-        for h in $names; do args+=(--harness "proofs::$h"); done
+        for h in $names; do args+=(--harness "$h"); done
         timeout 1800 cargo kani -j "$(nproc)" --output-format terse --exact "${args[@]}" | tee "$logs/fast.log"
         checked "$logs/fast.log" "$(wc -l <<<"$names")"
     else
         cargo kani --only-codegen --output-format terse
         failed=0
         for h in $names; do
+            log=${h##*::}
             while [ "$(jobs -rp | wc -l)" -ge "$(nproc)" ]; do wait -n || failed=1; done
             ( start=$(date +%s)
-              timeout 1800 cargo kani --output-format terse --exact --harness "proofs::$h" > "$logs/$h.log" 2>&1 &&
-                  checked "$logs/$h.log" 1 &&
-                  echo "Kani: $h verified in $(( $(date +%s) - start )) s" ||
-                  { echo "Kani: $h failed or ran past 1800 s ($logs/$h.log)" >&2; exit 1; } ) &
+              timeout 1800 cargo kani --output-format terse --exact --harness "$h" > "$logs/$log.log" 2>&1 &&
+                  checked "$logs/$log.log" 1 &&
+                  echo "Kani: $log verified in $(( $(date +%s) - start )) s" ||
+                  { echo "Kani: $log failed or ran past 1800 s ($logs/$log.log)" >&2; exit 1; } ) &
         done
         while [ "$(jobs -rp | wc -l)" -gt 0 ]; do wait -n || failed=1; done
         wait || failed=1
@@ -184,7 +222,7 @@ mutants shard="0/1": sweep-test-tmp
     # Core and store tests (the store's replay tests reach Ledger::replay_*);
     # the whole workspace would rebuild the viewer for every mutant.
     mkdir -p {{mutants_tmp}}
-    PROPTEST_MAX_SHRINK_ITERS=0 TMPDIR={{mutants_tmp}} cargo mutants -p ledger-core --exclude crates/ledger-core/src/proofs.rs --test-package ledger-core --test-package ledger-store -j 4 --timeout-multiplier 3 --minimum-test-timeout 120 --shard {{shard}} {{mutants_iterate}}
+    PROPTEST_MAX_SHRINK_ITERS=0 TMPDIR={{mutants_tmp}} cargo mutants -p ledger-core --exclude 'crates/ledger-core/src/proofs/**' --test-package ledger-core --test-package ledger-store -j 4 --timeout-multiplier 3 --minimum-test-timeout 120 --shard {{shard}} {{mutants_iterate}}
     @just sweep-test-tmp
 
 # Mutation testing of the store. Fewer random cases per mutant (each needs

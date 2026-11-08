@@ -42,7 +42,7 @@ later). The reference points:
    read its docs, never copy its code. This repo is MIT OR Apache-2.0.
    Never disassemble or copy from proprietary software.
 6. **Accounting laws are proved, not just tested.** Arithmetic that money
-   flows through lives in `kernel.rs` and carries Kani proofs; the laws
+   flows through lives in `kernel/` and carries Kani proofs; the laws
    it serves carry Lean proofs. `just prove` stays green. See
    "Formal methods" below.
 
@@ -104,11 +104,11 @@ So the bar, for every agent, every change:
    carry a `SOURCE:` line. Never write a spec from what the code happens
    to do, or from what you remember; find the document, or ask.
 
-1. **Money arithmetic goes in `kernel.rs`, generic over `Amount`.** If
+1. **Money arithmetic goes in `kernel/`, generic over `Amount`.** If
    you write a sum, a sign flip, a split, or a rounding plug anywhere
    else, move it into the kernel. The engine calls the kernel. It never
    gets a second copy.
-2. **Every kernel function gets a Kani harness** in `src/proofs.rs`, on
+2. **Every kernel function gets a Kani harness** in `src/proofs/`, on
    fixed arrays (no symbolic-length `Vec` growth, no `copy_from_slice`),
    with a `kani::cover!` showing the interesting case is reached.
 3. **Every new law gets a Lean theorem** in `verify/lean`. Laws about
@@ -116,7 +116,7 @@ So the bar, for every agent, every change:
    `Ledger` command is a new `Step` constructor, with its preservation
    proof. No `sorry`, ever; `Audit.lean` lists every headline theorem.
 4. **Every kernel instantiation gets a bridge property** in
-   `tests/kernel_bridge.rs`, so what Kani proved on `i64` holds on
+   `tests/kernel_bridge/`, so what Kani proved on `i64` holds on
    `Decimal`.
 5. **A failing proof is a finding, not an obstacle.** Get the
    counterexample, replay it natively, and decide on evidence: bug in

@@ -79,7 +79,7 @@ harnesses), `reports`, `cashflow`, `analysis`, `periods`, `assets`,
 `schedules`, `recurring`, `payouts`, `payroll`, `form1099`, `tax`,
 `classes`, `parties`, `arap`, `settings`, `conventions`, `calendar`,
 `shares`, `tax_capital`, `rules`, `audit` (the audit programme's pure checks, P8), `error`; its tests in `tests/`
-(`invariants.rs`, `properties.rs`, `spec_*.rs`, `kernel_bridge.rs`,
+(`invariants.rs`, `properties.rs`, `spec_*.rs`, `kernel_bridge/`,
 `model.rs`, `bookspec/`, `golden/`).
 
 ## Dependency rules

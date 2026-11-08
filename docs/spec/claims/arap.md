@@ -481,7 +481,7 @@ check_discount}`, `arap::{Application, Fee, SettleParams, SettlementRow}`,
 `discount_on_an_asset_bill_is_refused_with_the_remedy`,
 `a_fee_posts_gross_to_receivables_and_net_to_the_bank`,
 `a_settlement_names_its_lines_and_refuses_a_document_twice`),
-`tests/kernel_bridge.rs::settle_agrees`; Kani `settle_is_exact`;
+`tests/kernel_bridge/main.rs::settle_agrees`; Kani `settle_is_exact`;
 `ledger-store` `tests/arap_standing.rs`
 (`a_settlement_names_its_lines_and_replays`, `settlement_waits_for_documents_v2`,
 `legacy_payment_events_keep_the_positional_rule`), `tests/arap_props.rs`;

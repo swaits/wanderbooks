@@ -309,7 +309,7 @@ non-negative, in cents, at most one quadrillion) and its replay pairs
 `asset_basis`); `ledger-mcp` `books.set_asset_tax_basis` and
 `books.register_asset` (a contribution's fair market value is required,
 never assumed). **Checked:** `ledger-core` `tests/spec_asset_basis.rs`,
-`tests/kernel_bridge.rs` (`basis_figures_agree`), `tests/properties.rs`
+`tests/kernel_bridge/` (`basis_figures_agree`), `tests/properties.rs`
 (`prop_basis_figures_laws`); `ledger-store` `tests/asset_tags.rs`;
 `ledger-cli` `tests/spec_assets.rs`.
 

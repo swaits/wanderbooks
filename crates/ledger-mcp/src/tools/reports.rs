@@ -31,21 +31,24 @@ fn movement_over(
     ledger: &Ledger,
     account: AccountId,
     entries: &[&ledger_core::JournalEntry],
-) -> Decimal {
-    let movement: Decimal = entries
-        .iter()
-        .flat_map(|e| e.lines())
-        .filter(|l| l.account == account)
-        .map(|l| match l.side {
+) -> Result<Decimal, String> {
+    let movement = ledger_core::money::sum_exact_of(
+        entries
+            .iter()
+            .flat_map(|e| e.lines())
+            .filter(|l| l.account == account),
+        |l| match l.side {
             Side::Debit => l.amount.amount,
             Side::Credit => -l.amount.amount,
-        })
-        .sum();
+        },
+        "an account's movement",
+    )
+    .map_err(|e| e.to_string())?;
     let account = ledger.chart().get(account).expect("account exists");
-    match account.account_type.normal_side() {
+    Ok(match account.account_type.normal_side() {
         Side::Debit => movement,
         Side::Credit => -movement,
-    }
+    })
 }
 
 fn lines_out(lines: &[ledger_core::StatementLine]) -> Vec<StatementLineOut> {
@@ -835,7 +838,7 @@ impl BooksServer {
             if a.placeholder {
                 continue;
             }
-            let m = movement_over(ledger, a.id, &in_range);
+            let m = movement_over(ledger, a.id, &in_range)?;
             if !m.is_zero() {
                 totals.push(DigestTotal {
                     code: a.code.clone(),

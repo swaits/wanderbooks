@@ -19,6 +19,9 @@ Rules: B-13, B-26, B-35, B-36.
 **Pick (BS-partner-6):** `cumulative-from-first-close`, the owner, D-10, 2026-10-16.
 
 **Pick (BS-partner-7):** `running-split`, the owner, D-38, 2026-10-20.
+**Pick (BS-partner-16):** `contract-is-property-vendor-paid-is-cash`, the owner, 2026-10-15.
+
+**Pick (BS-partner-17):** `close-at-the-change`, the owner, 2026-10-16.
 
 **Enforced:** `CloseTo::Members`, `CloseTo::MembersCumulative`,
 `Ledger::members_regime`, `Regime::allocate`,
@@ -107,7 +110,6 @@ is its TIN facts', else its W-9 facts'.
 
 **Pick (BS-partner-8):** `outside-the-books`, the owner, 2026-10-15.
 
-**Pick (BS-partner-9):** `tin-facts-then-w9`, the owner, 2026-10-15.
 
 **Enforced:** `crate::parties` (has_full_tin, check_text, W9Facts::check,
 W4Facts::check), `Ledger::add_party`, `update_party`, `set_party_role`,
@@ -397,6 +399,7 @@ confirm).
 **Pick (BS-partner-14):** `tax-basis-beside-book`, the owner, D-41, 2026-10-20.
 
 **Pick (BS-partner-15):** `running-cumulative`, the owner, D-38's rule applied 2026-10-22.
+**Pick (BS-partner-18):** `book-amount-with-note`, the owner, P3 review, 2026-10-21.
 
 **Enforced:** `ledger_core::tax_capital::tax_basis_capital`;
 `ledger-package` `k1_tax` (`k1-tax-basis-capital.csv` in the CPA

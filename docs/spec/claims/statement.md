@@ -30,9 +30,9 @@ Lean `trial_balance_iff`, `Reachable.trial_balance`,
 
 **bookspec:** `BS-statement-3`
 
-**Pick (BS-statement-6):** direct, the owner, 2026-10-20
+**Pick (BS-statement-6):** `direct`, the owner, 2026-10-20
 
-**Pick (BS-statement-7):** constructive, the owner, 2026-10-20, D-42
+**Pick (BS-statement-7):** `constructive`, the owner, 2026-10-20, D-42
 
 **Claims:** partly (bookspec's record states rules 1-12; the picks and the product surface are below)
 
@@ -156,7 +156,7 @@ with `books.close_period`, whose entries are never in the statement.
 
 **bookspec:** `BS-statement-4`
 
-**Pick (BS-statement-8):** year-through-as-of, the owner, 2026-10-20, D-36
+**Pick (BS-statement-8):** `year-through-as-of`, the owner, 2026-10-20, D-36
 
 **Claims:** partly (bookspec's record states the as-of principle and the calendar-year counting; the CPA package itself is wanderbooks product, below)
 
@@ -213,7 +213,7 @@ given no accounts, uses the settings', as a package given none does.
 
 **bookspec:** `BS-statement-5`
 
-**Pick (BS-statement-9):** one-project-per-line, the owner, 2026-10-22, D-43
+**Pick (BS-statement-9):** `one-project-per-line`, the owner, 2026-10-22, D-43
 
 **Claims:** partly (bookspec's record states the class, the figures, on-spec and document-line rules; the project facts and the snapshot presentation are wanderbooks product, below)
 

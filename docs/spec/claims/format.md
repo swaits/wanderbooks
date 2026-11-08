@@ -248,6 +248,11 @@ were renamed).
 **Pick (BS-format-6):** `everything-through-as-of`, the owner, 2026-10-20, D-36.
 
 **Pick (BS-format-7):** `journal-sample-columns`, the owner, 2026-10-20, D-36 (CHOICE).
+**Pick (BS-format-8):** `closes-left-out`, the owner, 2026-10-20, D-36.
+
+**Pick (BS-format-9):** `no-customer-or-vendor-name`, the owner, 2026-10-20, D-36.
+
+**Pick (BS-format-10):** `refuse-the-entry`, the owner, 2026-10-20, D-36.
 
 **Pick:** `no-customer-or-vendor-name`: CHOICE (open risk). The IIF writes no
 NAME on a line to accounts receivable or payable, though Intuit's staff say

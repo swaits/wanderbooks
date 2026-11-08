@@ -154,6 +154,7 @@ printer makes an Avery 5160 label sheet from the register's tags.
 **Pick (BS-asset-7):** `books-recorded-amounts`, the owner, D-41, 2026-10-20.
 
 **Pick (BS-asset-8):** `register-carries-tax-figures`, the owner, 2026-10-15; D-41, 2026-10-20.
+**Pick (BS-asset-9):** `traditional`, the owner, D-41, 2026-10-20; recorded as a choice the CPA confirms.
 
 **Enforced:** `kernel::basis_figures` (Kani `basis_figures_laws`),
 `AssetBasis::check` (a purchase takes no contribution facts; a

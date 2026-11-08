@@ -10,7 +10,7 @@ Rules: B-1, B-2, B-21, B-28, B-43.
 
 **bookspec:** `BS-entry-1`
 
-**Pick (BS-entry-6):** check-when-line-added, the owner, 2026-10-13
+**Pick (BS-entry-6):** `check-when-line-added`, the owner, 2026-10-13
 
 **Claims:** yes
 
@@ -62,9 +62,9 @@ None.
 
 **bookspec:** `BS-entry-4`
 
-**Pick (BS-entry-7):** refuse-rather-than-crash, the owner, 2026-10-16
+**Pick (BS-entry-7):** `refuse-rather-than-crash`, the owner, 2026-10-16
 
-**Pick (BS-entry-8):** bounds-bind-commands-never-replay, the owner, 2026-10-17
+**Pick (BS-entry-8):** `bounds-bind-commands-never-replay`, the owner, 2026-10-17
 
 **Claims:** yes
 
@@ -184,7 +184,6 @@ pinned; every tool over every old book).
 
 **bookspec:** `BS-entry-5`
 
-**Pick (BS-ledger-17):** reversal-evidence-is-originals, D-47, the owner, 2026-10-26
 
 **Claims:** partly (bookspec's record states the evidence gate's principle, the draft state as a note and the discard; the gate's function, the policy settings, the states' names and the surfaces are wanderbooks product, below)
 

@@ -10,7 +10,7 @@ Rules: B-3, B-4, B-5, B-8, B-9, B-10, B-20, B-23, B-29, B-31, B-32, B-44, B-45.
 
 **bookspec:** `BS-ledger-1`
 
-**Pick (BS-ledger-14):** book-in-the-smallest-unit, the owner, 2026-10-13
+**Pick (BS-ledger-14):** `book-in-the-smallest-unit`, the owner, 2026-10-13
 
 **Claims:** yes
 
@@ -40,7 +40,7 @@ None.
 
 **bookspec:** `BS-ledger-2`
 
-**Pick (BS-ledger-15):** child-has-its-parents-type, the owner, 2026-10-13
+**Pick (BS-ledger-15):** `child-has-its-parents-type`, the owner, 2026-10-13
 
 **Claims:** yes
 
@@ -96,7 +96,7 @@ and never called corrupt (statement 4). **Checked:** Lean `Step.extends`,
 
 **bookspec:** `BS-ledger-5`
 
-**Pick (BS-ledger-16):** on-or-after-the-original, the owner, 2026-11-08, wanderbooks D-73
+**Pick (BS-ledger-16):** `on-or-after-the-original`, the owner, 2026-11-08, wanderbooks D-73
 
 **Claims:** yes
 
@@ -129,7 +129,7 @@ None.
 
 **bookspec:** `BS-ledger-7`
 
-**Pick (BS-ledger-17):** reversal-evidence-is-originals, D-47, the owner, 2026-10-26
+**Pick (BS-ledger-17):** `reversal-evidence-is-originals`, D-47, the owner, 2026-10-26
 
 **Claims:** partly (the engine does not enforce it; the receipt policy of the tool layer does)
 
@@ -145,9 +145,9 @@ None.
 
 **bookspec:** `BS-ledger-8`
 
-**Pick (BS-ledger-18):** assignment-is-a-fact-in-the-books, the owner, 2026-10-15
+**Pick (BS-ledger-18):** `assignment-is-a-fact-in-the-books`, the owner, 2026-10-15
 
-**Pick (BS-ledger-19):** refuse-rather-than-renumber, the owner, 2026-10-13
+**Pick (BS-ledger-19):** `refuse-rather-than-renumber`, the owner, 2026-10-13
 
 **Claims:** yes
 
@@ -257,9 +257,9 @@ bookspec `examples/rename-changes-no-amount.toml`.
 
 **bookspec:** `BS-ledger-11`
 
-**Pick (BS-ledger-20):** warn-by-default, the owner, 2026-10-20
+**Pick (BS-ledger-20):** `warn-by-default`, the owner, 2026-10-20
 
-**Pick (BS-ledger-21):** round-once-on-the-total, the owner, 2026-11-07, D-67
+**Pick (BS-ledger-21):** `round-once-on-the-total`, the owner, 2026-11-07, D-67
 
 **Claims:** yes
 

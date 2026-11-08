@@ -200,6 +200,15 @@ oracle:
     docker build -q -t bookspec-gnucash-oracle "$root/gnucash/oracle"
     cargo test -p ledger-core --test oracle_gnucash -- --ignored --nocapture
 
+# The Rust ledger against the Lean model of it, on random command sequences
+# Each sequence is run through the engine, written as a bookspec example whose
+# expected values are the engine's answers, and checked by the Lean model
+# (`lake exe bookspec-check`, built from the pinned bookspec): a mismatch is the
+# engine and the model disagreeing. `cases` sequences, one `lake` call for all of
+# them (crates/ledger-core/tests/bookspec/lean_model.rs); fails without lake.
+lean-model cases="64":
+    WANDERBOOKS_REQUIRE_LEAN=1 PROPTEST_CASES={{cases}} cargo test -p ledger-core --test bookspec lean_model -- --nocapture
+
 # Fuzz one target for some seconds (nightly; corpus in fuzz/corpus/<target>)
 fuzz target="fuzz_op_sequence" seconds="300":
     #!/usr/bin/env bash

@@ -812,9 +812,31 @@ Be precise about the claims:
   ten minutes.
 - **The state machine is a model of `Ledger`'s checks**, not a proof
   about `ledger.rs` line by line. Its correspondence to the code is
-  checked by review and by the end-to-end property tests in
+  checked by a differential test and, for what the test cannot say, by
+  review. `tests/bookspec/lean_model.rs` (`just lean-model`, P14 L-G5)
+  generates random command sequences (entries, balanced or not, with
+  zero, negative, finer-than-a-cent and unknown-account lines; invoices;
+  reversals of anything posted, twice, of a closing entry, backdated;
+  closes to retained earnings over nested, disjoint, partly overlapping,
+  inverted, empty and out-of-order periods), runs each through the Rust
+  `Ledger`, writes it as a bookspec example whose expected values are the
+  engine's answers, and has the Lean model (`bookspec-check`, built from
+  the pinned bookspec, running `Bookspec.Exec.step`) check the same
+  sequence: every refusal, the trial balance after each event, and at the
+  end the trial balance, balances, profit and loss and each posted entry's
+  lines. Any mismatch fails the test with the shrunk sequence and both
+  answers. What it compares is bounded by what an example can say: a
+  standalone `openPeriod`, an unposted draft (`drafts_in_period`,
+  `discard`), `addAccount` after the first event, and a reversal of an
+  event that posted nothing are not reachable, and stay by review; so do
+  the model's records, and the checks it does not carry (the control
+  guard's refusal is skipped, by an allow-list). Where the engine and the
+  model refuse in different words (a command failing two checks: the
+  order of checks is unspecified), the difference is allow-listed and
+  pinned (`KNOWN_WORD_DIFFERENCES`, the `#[ignore]`d `d_*` tests) until the
+  order is decided. The older end-to-end property tests in
   `tests/properties.rs` (trial balance, balance sheet, reversals,
-  immutability) and the golden files.
+  immutability) and the golden files remain.
 - **Out of scope:** currency (the ledger is single-currency, enforced
   structurally), payroll, the calendar walk around
   the proration kernel (`calendar::month_parts`, `assets::depreciation_schedule`,

@@ -36,7 +36,9 @@
 //! `events` (applying an event), `queries/` (each query family's answers
 //! and checks), `engine` (the `Engine` impl), `check` and `run` (the
 //! per-expectation and per-example drivers), and the tests by area
-//! (`examples`, `loader_tests`, `sources`, `rules_md`).
+//! (`examples`, `loader_tests`, `sources`, `rules_md`). `lean_model` is
+//! apart: random command sequences, checked against the Lean model of the
+//! ledger (`just lean-model`).
 
 pub(crate) use std::borrow::Borrow;
 pub(crate) use std::collections::{BTreeMap, BTreeSet};
@@ -85,6 +87,7 @@ mod common;
 mod engine;
 mod events;
 mod examples;
+mod lean_model;
 mod loader_tests;
 mod pin;
 mod queries;

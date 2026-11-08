@@ -2272,7 +2272,7 @@ their first `settings.set` naming the key, B-27); `ledger-mcp` `books.add_accoun
 `tests/tax.rs` (the rounding: `a_category_rounds_its_deductible_amount_once_not_per_account`,
 `a_category_rounds_once_across_different_percents`); Kani
 `deductible_amount_rounds_once`, `deductible_amount_refuses_overflow`;
-bridge `deductible_amount_agrees`; Lean `verify/lean/Wanderbooks/Deductible.lean`
+bridge `deductible_amount_agrees`; Lean `bookspec/lean/Bookspec/Deductible.lean`
 (`Deductible.near`, `tie_away_pos`, `tie_away_neg`, `sign`, `neg`, `of_sum`,
 `per_account_differs`, `scale_books`, `scale_percents`: the one rounding, at any
 number of accounts and any sizes); `ledger-store` `tests/store.rs`

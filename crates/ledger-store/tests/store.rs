@@ -1598,7 +1598,7 @@ mod refusals {
         }
     }
 
-    /// The Lean model's `Inv` (verify/lean/Wanderbooks/Ledger.lean), checked
+    /// The Lean model's `Inv` (bookspec/lean/Bookspec/Ledger.lean), checked
     /// on the real store: every posted entry is acceptable, the books net
     /// to zero, and no draft is dated in a closed period.
     fn check_invariants(store: &Store) -> Result<(), TestCaseError> {

@@ -111,10 +111,17 @@ So the bar, for every agent, every change:
 2. **Every kernel function gets a Kani harness** in `src/proofs.rs`, on
    fixed arrays (no symbolic-length `Vec` growth, no `copy_from_slice`),
    with a `kani::cover!` showing the interesting case is reached.
-3. **Every new law gets a Lean theorem** in `verify/lean`. Laws about
-   the books over time are theorems about `Reachable` states. A new
-   `Ledger` command is a new `Step` constructor, with its preservation
-   proof. No `sorry`, ever; `Audit.lean` lists every headline theorem.
+3. **Every new law gets a Lean theorem**, and the laws live once: in
+   bookspec's Lean (`bookspec/lean/Bookspec/`, namespace `Bookspec`, D-69).
+   The theorem is written there, in bookspec's own repository, not in
+   `verify/lean` — wanderbooks requires that package and holds no copy of
+   it. Laws about the books over time are theorems about `Reachable`
+   states. A new `Ledger` command is a new `Step` constructor, with its
+   preservation proof. No `sorry`, ever; `Audit.lean` lists every theorem.
+   After landing a law in bookspec, move wanderbooks' pin to that rev in
+   `verify/lean/lakefile.toml` and `lake-manifest.json` **and** in the
+   crates' `Cargo.toml` (the checker and the Lean must be the same spec
+   version; `tests/bookspec/pin.rs` fails when they drift).
 4. **Every kernel instantiation gets a bridge property** in
    `tests/kernel_bridge.rs`, so what Kani proved on `i64` holds on
    `Decimal`.

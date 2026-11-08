@@ -1,6 +1,6 @@
 //! Model-based stateful test (rank 3: a peer).
 //!
-//! The peer is the Lean state machine (verify/lean/Wanderbooks/Ledger.lean)
+//! The peer is the Lean state machine (bookspec/lean/Bookspec/Ledger.lean)
 //! transcribed into the simplest Rust that has the same observable
 //! behavior: a list of accounts, a list of drafts, an append-only list of
 //! posted entries, a list of periods, and loops. It is written from the

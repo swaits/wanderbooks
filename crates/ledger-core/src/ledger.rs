@@ -3821,17 +3821,26 @@ impl Ledger {
         let shares: Vec<Decimal> = members.iter().map(|m| m.share).collect();
         Ok(match to {
             CloseTo::MembersLastAbsorbs(_) => (
-                periods::allocate_last_absorbs(net, &shares),
+                periods::try_allocate_last_absorbs(net, &shares)?,
                 MemberRule::LastAbsorbs,
             ),
-            CloseTo::MembersPerClose(_) => (periods::allocate(net, &shares), MemberRule::PerClose),
+            CloseTo::MembersPerClose(_) => {
+                (periods::try_allocate(net, &shares)?, MemberRule::PerClose)
+            }
             CloseTo::MembersRun(_) => {
                 // The run rule: what the run gives each member with this
                 // close, less what it gave them before.
                 let before = self.member_close_run(&member_key(members));
-                let after = periods::allocate(before + net, &shares);
-                let prior = periods::allocate(before, &shares);
-                let parts = after.iter().zip(&prior).map(|(a, p)| a - p).collect();
+                let after = periods::try_allocate(
+                    crate::money::add_exact(before, net, "the members' close run")?,
+                    &shares,
+                )?;
+                let prior = periods::try_allocate(before, &shares)?;
+                let parts = after
+                    .iter()
+                    .zip(&prior)
+                    .map(|(a, p)| crate::money::sub_exact(*a, *p, "the members' close run"))
+                    .collect::<Result<_, _>>()?;
                 (parts, MemberRule::Run)
             }
             _ => {
@@ -3841,7 +3850,7 @@ impl Ledger {
                 let parts = if posts {
                     regime.allocate(
                         &key,
-                        regime.closed + net,
+                        crate::money::add_exact(regime.closed, net, "the members' closed earnings")?,
                         &regime.given,
                         self.base_currency.allocation_places(),
                     )?
@@ -4044,7 +4053,8 @@ impl Ledger {
                         "a count of members closes starts at close 1 or later, not 0".into(),
                     ));
                 }
-                let total: Decimal = members.iter().map(|m| m.share).sum();
+                let total =
+                    crate::money::sum_exact_of(members, |m| m.share, "the members' shares")?;
                 if members.is_empty()
                     || total != Decimal::ONE
                     || members.iter().any(|m| m.share <= Decimal::ZERO)
@@ -6396,7 +6406,7 @@ impl Ledger {
                 return Err(LedgerError::TooLargeToCompute(format!("{doc}'s figures")));
             }
         };
-        let owed: Decimal = after[..=i].iter().sum();
+        let owed = crate::money::sum_exact(after[..=i].iter().copied(), &format!("{doc}'s figures"))?;
         let on = grid[i];
         let payments: Vec<String> = self
             .standing_payments(doc)
@@ -8415,7 +8425,11 @@ impl Ledger {
             .ok_or(LedgerError::UnknownAccount(cash_account))?;
         self.check_controls(&PAYROLL)?;
         let payables = self.payroll_tax_payables();
-        let total: Decimal = payables.iter().map(|(_, b)| *b).sum();
+        let total = crate::money::sum_exact_of(
+            &payables,
+            |(_, b)| *b,
+            "the payroll taxes payable",
+        )?;
         if total.is_zero() {
             return Err(LedgerError::NothingToRemit);
         }

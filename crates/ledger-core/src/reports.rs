@@ -4,6 +4,7 @@
 //! (`docs/oracle.md`) diffs: the same fixture books through two engines must
 //! produce byte-identical [`snapshot`] output.
 
+use crate::money::{add_exact, sub_exact, sum_exact, sum_exact_of, sum_exact_try};
 use crate::{AccountType, Class, ClassId, JournalEntry, JournalLine, Ledger, LedgerError};
 use chrono::NaiveDate;
 use rust_decimal::Decimal;
@@ -267,8 +268,8 @@ fn profit_and_loss_where(
                 -line.amount.amount
             };
             match account.account_type {
-                AccountType::Revenue => revenue += signed,
-                AccountType::Expense => expenses += signed,
+                AccountType::Revenue => revenue = add_exact(revenue, signed, "total revenue")?,
+                AccountType::Expense => expenses = add_exact(expenses, signed, "total expenses")?,
                 _ => {}
             }
         }
@@ -311,14 +312,16 @@ pub fn balance_sheet(ledger: &Ledger) -> Result<BalanceSheet, LedgerError> {
         }
         let balance = ledger.account_balance(account.id)?;
         match account.account_type {
-            AccountType::Asset => assets += balance,
-            AccountType::Liability => liabilities += balance,
-            AccountType::Equity => equity += balance,
+            AccountType::Asset => assets = add_exact(assets, balance, "total assets")?,
+            AccountType::Liability => {
+                liabilities = add_exact(liabilities, balance, "total liabilities")?
+            }
+            AccountType::Equity => equity = add_exact(equity, balance, "total equity")?,
             AccountType::Revenue | AccountType::Expense => {}
         }
     }
     let current_earnings = unclosed_earnings(ledger)?.net_income();
-    equity += current_earnings;
+    equity = add_exact(equity, current_earnings, "total equity")?;
     Ok(BalanceSheet {
         assets,
         liabilities,
@@ -409,7 +412,8 @@ fn statement_lines(
                 crate::Side::Debit => line.amount.amount,
                 crate::Side::Credit => -line.amount.amount,
             };
-            *movement.entry(line.account).or_default() += signed;
+            let slot = movement.entry(line.account).or_default();
+            *slot = add_exact(*slot, signed, "an account's movement")?;
         }
     }
     let mut out = BTreeMap::new();
@@ -514,8 +518,8 @@ fn profit_and_loss_counted(
             _ => {}
         }
     }
-    let total_revenue = revenue.iter().map(|l| l.amount).sum();
-    let total_expenses = expenses.iter().map(|l| l.amount).sum();
+    let total_revenue = sum_exact_of(&revenue, |l| l.amount, "total revenue")?;
+    let total_expenses = sum_exact_of(&expenses, |l| l.amount, "total expenses")?;
     Ok((
         ProfitAndLossStatement {
             start,
@@ -816,13 +820,21 @@ pub fn balance_sheet_as_of(
             AccountType::Asset => assets.push(line),
             AccountType::Liability => liabilities.push(line),
             AccountType::Equity => equity.push(line),
-            AccountType::Revenue => current_earnings += line.amount,
-            AccountType::Expense => current_earnings -= line.amount,
+            AccountType::Revenue => {
+                current_earnings = add_exact(current_earnings, line.amount, "current earnings")?
+            }
+            AccountType::Expense => {
+                current_earnings = sub_exact(current_earnings, line.amount, "current earnings")?
+            }
         }
     }
-    let total_assets = assets.iter().map(|l| l.amount).sum();
-    let total_liabilities = liabilities.iter().map(|l| l.amount).sum();
-    let total_equity = equity.iter().map(|l| l.amount).sum::<Decimal>() + current_earnings;
+    let total_assets = sum_exact_of(&assets, |l| l.amount, "total assets")?;
+    let total_liabilities = sum_exact_of(&liabilities, |l| l.amount, "total liabilities")?;
+    let total_equity = add_exact(
+        sum_exact_of(&equity, |l| l.amount, "total equity")?,
+        current_earnings,
+        "total equity",
+    )?;
     Ok(BalanceSheetStatement {
         as_of,
         assets,
@@ -945,7 +957,8 @@ pub fn general_ledger(
                 crate::Side::Credit => -line.amount.amount,
             };
             if entry.date() < start {
-                *begin.entry(line.account).or_default() += signed;
+                let slot = begin.entry(line.account).or_default();
+                *slot = add_exact(*slot, signed, "an account's beginning balance")?;
                 continue;
             }
             if entry.date() > end {
@@ -998,9 +1011,13 @@ pub fn general_ledger(
         let (mut total_debits, mut total_credits) = (Decimal::ZERO, Decimal::ZERO);
         let mut posted = Vec::with_capacity(lines.len());
         for (side, amount, mut p) in lines {
-            balance += if side == normal { amount } else { -amount };
-            total_debits += p.debit;
-            total_credits += p.credit;
+            balance = add_exact(
+                balance,
+                if side == normal { amount } else { -amount },
+                "an account's running balance",
+            )?;
+            total_debits = add_exact(total_debits, p.debit, "an account's total debits")?;
+            total_credits = add_exact(total_credits, p.credit, "an account's total credits")?;
             p.balance = balance;
             posted.push(p);
         }
@@ -1180,7 +1197,7 @@ pub fn members_equity(
         return Err(LedgerError::InvalidMembers("no members given".to_string()));
     }
     let shares: Vec<Decimal> = members.iter().map(|m| m.share).collect();
-    let total_share: Decimal = shares.iter().sum();
+    let total_share = sum_exact(shares.iter().copied(), "the members' shares")?;
     if total_share != Decimal::ONE || shares.iter().any(|s| *s <= Decimal::ZERO) {
         return Err(LedgerError::InvalidMembers(format!(
             "member shares must be positive and sum to 1, got {total_share}"
@@ -1210,23 +1227,23 @@ pub fn members_equity(
     let end_bs = balance_sheet_as_of(ledger, end)?;
 
     // Capital account balances before the period, and their movement in it.
-    let capital_before = |id: crate::AccountId| -> Decimal {
+    let capital_before = |id: crate::AccountId| -> Result<Decimal, LedgerError> {
         let mut m = Decimal::ZERO;
         for e in ledger.posted_entries().filter(|e| e.date() < start) {
             for l in e.lines().iter().filter(|l| l.account == id) {
-                match l.side {
-                    crate::Side::Credit => m += l.amount.amount,
-                    crate::Side::Debit => m -= l.amount.amount,
-                }
+                m = match l.side {
+                    crate::Side::Credit => add_exact(m, l.amount.amount, "a member's capital")?,
+                    crate::Side::Debit => sub_exact(m, l.amount.amount, "a member's capital")?,
+                };
             }
         }
-        m
+        Ok(m)
     };
     // Contributions and distributions move a capital account; a closing
     // entry allocating earnings into it is income, already counted below.
     let closings = ledger.closing_entry_ids();
     let cancelled = cancelled_in_span(ledger, start, end);
-    let flows = |id: crate::AccountId| -> (Decimal, Decimal) {
+    let flows = |id: crate::AccountId| -> Result<(Decimal, Decimal), LedgerError> {
         let (mut credits, mut debits) = (Decimal::ZERO, Decimal::ZERO);
         for e in ledger.posted_entries().filter(|e| {
             e.date() >= start
@@ -1236,35 +1253,48 @@ pub fn members_equity(
         }) {
             for l in e.lines().iter().filter(|l| l.account == id) {
                 match l.side {
-                    crate::Side::Credit => credits += l.amount.amount,
-                    crate::Side::Debit => debits += l.amount.amount,
+                    crate::Side::Credit => {
+                        credits = add_exact(credits, l.amount.amount, "a member's contributions")?
+                    }
+                    crate::Side::Debit => {
+                        debits = add_exact(debits, l.amount.amount, "a member's distributions")?
+                    }
                 }
             }
         }
-        (credits, debits)
+        Ok((credits, debits))
     };
     // A member's capital is their capital account plus their distributions
     // account (a debit balance, so it reduces capital).
     let capital: Vec<Decimal> = members
         .iter()
         .map(|m| {
-            capital_before(m.capital_account)
-                + m.distribution_account.map_or(Decimal::ZERO, capital_before)
+            add_exact(
+                capital_before(m.capital_account)?,
+                m.distribution_account
+                    .map_or(Ok(Decimal::ZERO), capital_before)?,
+                "a member's capital",
+            )
         })
-        .collect();
+        .collect::<Result<_, _>>()?;
     // (contributions, distributions): credits to capital are
     // contributions; debits to capital and net debits to the distributions
     // account are distributions.
     let flow: Vec<(Decimal, Decimal)> = members
         .iter()
         .map(|m| {
-            let (credits, debits) = flows(m.capital_account);
+            let (credits, debits) = flows(m.capital_account)?;
             let (dc, dd) = m
                 .distribution_account
-                .map_or((Decimal::ZERO, Decimal::ZERO), flows);
-            (credits, debits + dd - dc)
+                .map_or(Ok((Decimal::ZERO, Decimal::ZERO)), flows)?;
+            let distributions = sub_exact(
+                add_exact(debits, dd, "a member's distributions")?,
+                dc,
+                "a member's distributions",
+            )?;
+            Ok((credits, distributions))
         })
-        .collect();
+        .collect::<Result<_, LedgerError>>()?;
 
     // Everything in equity that isn't a capital account is partnership
     // earnings not yet distributed. Each member's share of it is allocated
@@ -1272,26 +1302,32 @@ pub fn members_equity(
     // depends on which statement shows it: one statement's ending is the
     // next one's beginning, to the minor unit (a capital account is one
     // running balance: Treas. Reg. §1.704-1(b)(2)(iv)(b)).
-    let capital_through = |id: crate::AccountId, through: NaiveDate| -> Decimal {
-        let mut m = Decimal::ZERO;
-        for e in ledger.posted_entries().filter(|e| e.date() <= through) {
-            for l in e.lines().iter().filter(|l| l.account == id) {
-                match l.side {
-                    crate::Side::Credit => m += l.amount.amount,
-                    crate::Side::Debit => m -= l.amount.amount,
+    let capital_through =
+        |id: crate::AccountId, through: NaiveDate| -> Result<Decimal, LedgerError> {
+            let mut m = Decimal::ZERO;
+            for e in ledger.posted_entries().filter(|e| e.date() <= through) {
+                for l in e.lines().iter().filter(|l| l.account == id) {
+                    m = match l.side {
+                        crate::Side::Credit => {
+                            add_exact(m, l.amount.amount, "a member's capital")?
+                        }
+                        crate::Side::Debit => sub_exact(m, l.amount.amount, "a member's capital")?,
+                    };
                 }
             }
-        }
-        m
-    };
+            Ok(m)
+        };
     let capital_end: Vec<Decimal> = members
         .iter()
         .map(|m| {
-            capital_through(m.capital_account, end)
-                + m.distribution_account
-                    .map_or(Decimal::ZERO, |d| capital_through(d, end))
+            add_exact(
+                capital_through(m.capital_account, end)?,
+                m.distribution_account
+                    .map_or(Ok(Decimal::ZERO), |d| capital_through(d, end))?,
+                "a member's capital",
+            )
         })
-        .collect();
+        .collect::<Result<_, _>>()?;
     // As of a date, a member's share of the earnings not yet in capital is
     // what the next members close would give them of it: their split of
     // everything closed to these members and shares (the regime's closes
@@ -1309,38 +1345,68 @@ pub fn members_equity(
     let nothing = vec![Decimal::ZERO; members.len()];
     let unclosed_share = |undistributed: Decimal, regime: &crate::ledger::Regime| {
         let closed = regime.allocate(&key, regime.closed, &nothing, places)?;
-        regime.allocate(&key, regime.closed + undistributed, &closed, places)
+        let whole = add_exact(regime.closed, undistributed, "the members' closed earnings")?;
+        regime.allocate(&key, whole, &closed, places)
     };
     let end_regime = ledger.members_regime(&key, Some(end));
     let begin_alloc = unclosed_share(
-        begin_bs.total_equity - capital.iter().sum::<Decimal>(),
+        sub_exact(
+            begin_bs.total_equity,
+            sum_exact(capital.iter().copied(), "the members' capital")?,
+            "the members' undistributed earnings",
+        )?,
         &ledger.members_regime(&key, Some(day_before)),
     )?;
     let end_alloc = unclosed_share(
-        end_bs.total_equity - capital_end.iter().sum::<Decimal>(),
+        sub_exact(
+            end_bs.total_equity,
+            sum_exact(capital_end.iter().copied(), "the members' capital")?,
+            "the members' undistributed earnings",
+        )?,
         &end_regime,
     )?;
-    let explained = flow.iter().map(|(c, d)| c - d).sum::<Decimal>() + pnl.net_income();
+    let explained = add_exact(
+        sum_exact_try(
+            flow.iter(),
+            |&(c, d)| crate::kernel::Amount::checked_sub(c, d),
+            "the members' net contributions",
+        )?,
+        pnl.net_income(),
+        "the period's explained equity",
+    )?;
     // "Other" is split anew on each statement, its tied unit to the member
     // the count as of `end` lists first, as the ending's are: a reorder of
     // the members in the settings moves no cent between their other (and
     // so their income) either.
     let other_alloc = end_regime.allocate(
         &key,
-        end_bs.total_equity - begin_bs.total_equity - explained,
+        sub_exact(
+            sub_exact(end_bs.total_equity, begin_bs.total_equity, "the change in equity")?,
+            explained,
+            "the change in equity",
+        )?,
         &nothing,
         places,
     )?;
 
     let mut cols = Vec::with_capacity(members.len());
     for (i, m) in members.iter().enumerate() {
-        let beginning = capital[i] + begin_alloc[i];
-        let ending = capital_end[i] + end_alloc[i];
+        let beginning = add_exact(capital[i], begin_alloc[i], "a member's beginning capital")?;
+        let ending = add_exact(capital_end[i], end_alloc[i], "a member's ending capital")?;
         let (contributions, distributions) = flow[i];
         // The member's income is what the roll-forward leaves: their share
         // of the period's income, give or take the rounding cent that keeps
         // the running balance exact. The members' incomes sum to net income.
-        let income = ending - beginning - contributions + distributions - other_alloc[i];
+        let too_large = "a member's income";
+        let income = sub_exact(
+            add_exact(
+                sub_exact(sub_exact(ending, beginning, too_large)?, contributions, too_large)?,
+                distributions,
+                too_large,
+            )?,
+            other_alloc[i],
+            too_large,
+        )?;
         cols.push(MemberEquityColumn {
             name: m.name.clone(),
             beginning: zero_clean(beginning),
@@ -1351,15 +1417,17 @@ pub fn members_equity(
             ending: zero_clean(ending),
         });
     }
-    let sum = |f: fn(&MemberEquityColumn) -> Decimal| cols.iter().map(f).sum::<Decimal>();
+    let sum = |f: fn(&MemberEquityColumn) -> Decimal| {
+        sum_exact_of(&cols, f, "the members' equity totals")
+    };
     let total = MemberEquityColumn {
         name: "Total".to_string(),
-        beginning: sum(|c| c.beginning),
-        contributions: sum(|c| c.contributions),
-        net_income: sum(|c| c.net_income),
-        distributions: sum(|c| c.distributions),
-        other: sum(|c| c.other),
-        ending: sum(|c| c.ending),
+        beginning: sum(|c| c.beginning)?,
+        contributions: sum(|c| c.contributions)?,
+        net_income: sum(|c| c.net_income)?,
+        distributions: sum(|c| c.distributions)?,
+        other: sum(|c| c.other)?,
+        ending: sum(|c| c.ending)?,
     };
     debug_assert_eq!(total.ending, end_bs.total_equity);
     Ok(MembersEquityStatement {
@@ -1720,7 +1788,11 @@ pub fn fixed_asset_register(
         total_depreciable_basis: depreciable_total,
         total_tax_basis_723: total_723,
         missing_basis: missing,
-        ledger_cost: cost_accounts.iter().map(|&id| net(id)).sum(),
-        ledger_accumulated: -accum_accounts.iter().map(|&id| net(id)).sum::<Decimal>(),
+        ledger_cost: sum_exact_of(&cost_accounts, |&id| net(id), "the ledger's asset cost")?,
+        ledger_accumulated: -sum_exact_of(
+            &accum_accounts,
+            |&id| net(id),
+            "the ledger's accumulated depreciation",
+        )?,
     })
 }

@@ -124,22 +124,42 @@ pub fn allocate(
     amount: rust_decimal::Decimal,
     shares: &[rust_decimal::Decimal],
 ) -> Vec<rust_decimal::Decimal> {
+    try_allocate(amount, shares)
+        .expect("shares sum to 1, so the shortfall is under one cent per member")
+}
+
+/// [`allocate`], refusing with `TooLargeToCompute` instead of panicking
+/// when a share of `amount` is beyond exact arithmetic (a replayed close
+/// carries a journaled amount of any size, rules.md B-28). The same split,
+/// to the cent, for every amount [`allocate`] accepts.
+pub fn try_allocate(
+    amount: rust_decimal::Decimal,
+    shares: &[rust_decimal::Decimal],
+) -> Result<Vec<rust_decimal::Decimal>, LedgerError> {
     use rust_decimal::{Decimal, RoundingStrategy::ToZero};
+    let too_large = || LedgerError::TooLargeToCompute(format!("the members' shares of {amount}"));
     let magnitude = amount.abs();
-    let exact: Vec<Decimal> = shares.iter().map(|s| magnitude * s).collect();
+    let exact: Vec<Decimal> = shares
+        .iter()
+        .map(|s| magnitude.checked_mul(*s).ok_or_else(too_large))
+        .collect::<Result<_, _>>()?;
     let mut parts: Vec<Decimal> = exact
         .iter()
         .map(|e| e.round_dp_with_strategy(2, ToZero))
         .collect();
-    let remainders: Vec<Decimal> = exact.iter().zip(&parts).map(|(e, p)| e - p).collect();
+    let remainders: Vec<Decimal> = exact
+        .iter()
+        .zip(&parts)
+        .map(|(e, p)| e.checked_sub(*p).ok_or_else(too_large))
+        .collect::<Result<_, _>>()?;
     crate::kernel::apportion(magnitude, &mut parts, &remainders, Decimal::new(1, 2))
-        .expect("shares sum to 1, so the shortfall is under one cent per member");
+        .ok_or_else(too_large)?;
     if amount.is_sign_negative() {
         for p in &mut parts {
             *p = -*p;
         }
     }
-    parts
+    Ok(parts)
 }
 
 /// The rule closes used before 2026-10-13: each share rounded half away
@@ -149,13 +169,31 @@ pub fn allocate_last_absorbs(
     amount: rust_decimal::Decimal,
     shares: &[rust_decimal::Decimal],
 ) -> Vec<rust_decimal::Decimal> {
+    try_allocate_last_absorbs(amount, shares).expect("allocated amounts are in range")
+}
+
+/// [`allocate_last_absorbs`], refusing with `TooLargeToCompute` instead of
+/// panicking when `amount × share` or the plug is beyond exact arithmetic
+/// (replay of a legacy close with a huge journaled amount, rules.md B-28).
+/// The same split, to the cent, for every amount [`allocate_last_absorbs`]
+/// accepts: this is the frozen rule, only its overflow now an error.
+pub fn try_allocate_last_absorbs(
+    amount: rust_decimal::Decimal,
+    shares: &[rust_decimal::Decimal],
+) -> Result<Vec<rust_decimal::Decimal>, LedgerError> {
     use rust_decimal::RoundingStrategy::MidpointAwayFromZero;
+    let too_large = || LedgerError::TooLargeToCompute(format!("the members' shares of {amount}"));
     let mut parts: Vec<_> = shares
         .iter()
-        .map(|s| (amount * s).round_dp_with_strategy(2, MidpointAwayFromZero))
-        .collect();
-    crate::kernel::plug_last(amount, &mut parts).expect("allocated amounts are in range");
-    parts
+        .map(|s| {
+            amount
+                .checked_mul(*s)
+                .map(|p| p.round_dp_with_strategy(2, MidpointAwayFromZero))
+                .ok_or_else(too_large)
+        })
+        .collect::<Result<_, _>>()?;
+    crate::kernel::plug_last(amount, &mut parts).ok_or_else(too_large)?;
+    Ok(parts)
 }
 
 /// What one members close gives each member: [`allocate`]'s split of the

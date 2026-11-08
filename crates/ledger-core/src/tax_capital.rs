@@ -79,6 +79,7 @@
 //! ```
 
 use crate::k1::{K1Kind, K1Row, k1_detail};
+use crate::money::sum_exact_of;
 use crate::reports::MemberCapital;
 use crate::{AccountId, AssetId, AssetStatus, EntryId, Ledger, LedgerError, Side};
 use chrono::NaiveDate;
@@ -584,19 +585,19 @@ fn entry_wholes(
     n: usize,
     cash: &[AccountId],
 ) -> Result<Vec<Whole>, LedgerError> {
-    let by_member = |kind| -> Vec<Decimal> {
+    let by_member = |kind| -> Result<Vec<Decimal>, LedgerError> {
         (0..n)
             .map(|i| {
-                lines
-                    .iter()
-                    .filter(|l| l.member == i && l.kind == kind)
-                    .map(|l| l.amount)
-                    .sum()
+                sum_exact_of(
+                    lines.iter().filter(|l| l.member == i && l.kind == kind),
+                    |l| l.amount,
+                    "a member's K-1 lines",
+                )
             })
             .collect()
     };
     let mut out = Vec::new();
-    let takes = by_member(K1Kind::PropertyContribution);
+    let takes = by_member(K1Kind::PropertyContribution)?;
     if takes.iter().any(|t| !t.is_zero()) {
         let p = entry_property(ledger, e, cash)?;
         out.push((BUILT_IN_GAIN, p.built_in_gain, takes.clone()));
@@ -604,7 +605,7 @@ fn entry_wholes(
         out.push((PREPAID, p.prepaid, takes));
     }
     // Distributions are negative lines; weights are what each took.
-    let taken: Vec<Decimal> = by_member(K1Kind::Distribution)
+    let taken: Vec<Decimal> = by_member(K1Kind::Distribution)?
         .into_iter()
         .map(|d| -d)
         .collect();
@@ -755,7 +756,7 @@ fn entry_property(
         })
         .try_fold(Decimal::ZERO, |t, l| t.checked_add(l.amount.amount))
         .ok_or_else(too_large)?;
-    let pool = pool - prepaid;
+    let pool = pool.checked_sub(prepaid).ok_or_else(too_large)?;
     let (mut linked, mut big, mut unknown) = (Decimal::ZERO, Decimal::ZERO, Decimal::ZERO);
     for a in ledger
         .registered_assets()
@@ -781,7 +782,7 @@ fn entry_property(
             mismatch: Some((linked, pool)),
         });
     }
-    let rest = pool - linked;
+    let rest = pool.checked_sub(linked).ok_or_else(too_large)?;
     Ok(EntryProperty {
         built_in_gain: big,
         prepaid,
@@ -816,21 +817,23 @@ fn span(
     }
     for id in entries {
         let e = ledger.get_entry(id).ok_or(LedgerError::UnknownEntry(id))?;
-        let lines = |kind| -> Vec<Decimal> {
+        let lines = |kind| -> Result<Vec<Decimal>, LedgerError> {
             (0..n)
                 .map(|i| {
-                    detail
-                        .lines
-                        .iter()
-                        .filter(|l| l.entry == id && l.member == i && l.kind == kind)
-                        .map(|l| l.amount)
-                        .sum()
+                    sum_exact_of(
+                        detail
+                            .lines
+                            .iter()
+                            .filter(|l| l.entry == id && l.member == i && l.kind == kind),
+                        |l| l.amount,
+                        "a member's K-1 lines",
+                    )
                 })
                 .collect()
         };
         let none = EntryParts::default();
         let part = parts.get(&id).unwrap_or(&none);
-        let takes = lines(K1Kind::PropertyContribution);
+        let takes = lines(K1Kind::PropertyContribution)?;
         if takes.iter().any(|t| !t.is_zero()) {
             let p = entry_property(ledger, e, cash)?;
             // Only the members with property in the entry have a part of

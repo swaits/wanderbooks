@@ -704,9 +704,7 @@ fn entry_buckets(
 }
 
 fn sum3(b: [Decimal; 3]) -> Result<Decimal, LedgerError> {
-    b[0].checked_add(b[1])
-        .and_then(|s| s.checked_add(b[2]))
-        .ok_or_else(|| LedgerError::TooLargeToCompute("a payment's buckets".into()))
+    kernel::total(b).ok_or_else(|| LedgerError::TooLargeToCompute("a payment's buckets".into()))
 }
 
 /// The vendor's part of `payment` when the entry names several parties:
@@ -763,13 +761,13 @@ fn split_share(b: [Decimal; 3], v: Decimal) -> Result<[Decimal; 3], LedgerError>
         let q = num.checked_div(ap).ok_or_else(too_large)?;
         let mut part = q.round_dp_with_strategy(2, rust_decimal::RoundingStrategy::ToZero);
         while times(part)? > num {
-            part -= cent;
+            part = part.checked_sub(cent).ok_or_else(too_large)?;
         }
-        while times(part + cent)? <= num {
-            part += cent;
+        while times(part.checked_add(cent).ok_or_else(too_large)?)? <= num {
+            part = part.checked_add(cent).ok_or_else(too_large)?;
         }
         // The remainder, over the common denominator ap.
-        rems[i] = num - times(part)?;
+        rems[i] = num.checked_sub(times(part)?).ok_or_else(too_large)?;
         parts[i] = part;
     }
     kernel::apportion(av, &mut parts, &rems, cent).ok_or_else(too_large)?;

@@ -1064,9 +1064,7 @@ pub struct Invoice {
 /// line as written (rules.md B-28), so its lines are bounded only by what
 /// the version that wrote it checked.
 pub fn document_total(lines: &[DocumentLine], what: &str) -> Result<Decimal, LedgerError> {
-    lines
-        .iter()
-        .try_fold(Decimal::ZERO, |sum, l| sum.checked_add(l.amount))
+    crate::kernel::total_of(lines, |l| l.amount)
         .ok_or_else(|| LedgerError::TooLargeToCompute(format!("{what}'s total")))
 }
 

@@ -2235,12 +2235,15 @@ impl Ledger {
     ///      - NEVER recognize one month of a schedule twice
     ///      BECAUSE a reversed month is due again and may have been run
     ///      again (P3 depreciation review R3).
-    ///   6. IF the entry carries a document's lines (an invoice's or a
-    ///      bill's own entry, a payment, or a reversal of one) and `date`
-    ///      is before the entry's own date:
-    ///      - SHOULD refuse (DocumentReversalBeforeOriginal)
-    ///      BECAUSE a correction comes after what it corrects (B-9; plan
-    ///      P4b.3, "Dating rules").
+    ///   6. IF `date` is before the entry's own date (any kind of entry:
+    ///      plain, document, payment, schedule run):
+    ///      - SHOULD refuse (ReversalBeforeOriginal)
+    ///      - NEVER refuse the same day
+    ///      - NEVER refuse on replay
+    ///      BECAUSE a correction comes after what it corrects (B-9; owner
+    ///      decision D-73, 2026-11-08; plan P4b.3, "Dating rules"). Books
+    ///      written before D-73 may hold an earlier-dated reversal and
+    ///      reopen as they were (B-28).
     ///   7. IF reversing it would leave a document it carries owing less
     ///      than nothing or more than its total at some date (a void
     ///      under a payment that stands; re-instating a payment beside
@@ -2284,13 +2287,21 @@ impl Ledger {
             )));
         }
         if !crate::parties::is_replaying() {
+            if date < original.date() {
+                return Err(LedgerError::ReversalBeforeOriginal {
+                    entry,
+                    original: original.date(),
+                    date,
+                });
+            }
             self.check_document_reversal(original, date)?;
         }
         Ok(())
     }
 
-    /// [`Self::check_reversal`] SCENARIOS 6 and 7: a reversal of an entry
-    /// carrying documents' lines.
+    /// [`Self::check_reversal`] SCENARIO 7: a reversal of an entry
+    /// carrying documents' lines (the date floor, SCENARIO 6, is checked
+    /// before this runs).
     fn check_document_reversal(
         &self,
         original: &JournalEntry,
@@ -2307,16 +2318,8 @@ impl Ledger {
                 }
             }
         }
-        let Some(&(first, _)) = moves.first() else {
+        if moves.is_empty() {
             return Ok(());
-        };
-        if date < original.date() {
-            return Err(LedgerError::DocumentReversalBeforeOriginal {
-                entry: original.id(),
-                document: first.to_string(),
-                original: original.date(),
-                date,
-            });
         }
         for (doc, by) in moves {
             self.check_item_bounds(doc, &[(date, by)])?;

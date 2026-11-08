@@ -884,6 +884,7 @@ fn a_run_reinstated_after_its_rerun_was_reversed_still_counts() {
 /// 1,535.71). So is a re-instatement dated before the reversal it reverses,
 /// and a schedule month's reversal dated before its posting. A reversal on
 /// the entry's own day is taken. Each refusal journals nothing.
+/// Since D-73 the refusal is the ledger's for every entry, `ReversalBeforeOriginal`.
 #[test]
 fn a_reversal_dated_before_the_entry_it_reverses_is_refused() {
     let (_dir, mut store) = open_store();
@@ -901,10 +902,12 @@ fn a_reversal_dated_before_the_entry_it_reverses_is_refused() {
     for on in [date(2026, 2, 10), date(2026, 3, 30)] {
         match store.reverse_entry(mar, on, "backdated") {
             Err(ledger_store::StoreError::Ledger(
-                ledger_core::LedgerError::AssetEntryIrreversible(e, why),
+                ledger_core::LedgerError::ReversalBeforeOriginal {
+                    entry, original, ..
+                },
             )) => {
-                assert_eq!(e, mar);
-                assert!(why.contains("can't be dated before it"), "{why}");
+                assert_eq!(entry, mar);
+                assert_eq!(original, date(2026, 3, 31));
             }
             other => panic!("{on}: {other:?}"),
         }
@@ -917,7 +920,7 @@ fn a_reversal_dated_before_the_entry_it_reverses_is_refused() {
     assert!(matches!(
         store.reverse_entry(rev, date(2026, 3, 30), "it was right"),
         Err(ledger_store::StoreError::Ledger(
-            ledger_core::LedgerError::AssetEntryIrreversible(..)
+            ledger_core::LedgerError::ReversalBeforeOriginal { .. }
         ))
     ));
     assert_eq!(store.head(), head);
@@ -951,7 +954,7 @@ fn a_reversal_dated_before_the_entry_it_reverses_is_refused() {
     assert!(matches!(
         store.reverse_entry(feb, date(2026, 1, 31), "backdated"),
         Err(ledger_store::StoreError::Ledger(
-            ledger_core::LedgerError::InvalidSchedule(_)
+            ledger_core::LedgerError::ReversalBeforeOriginal { .. }
         ))
     ));
     assert_eq!(store.head(), head);

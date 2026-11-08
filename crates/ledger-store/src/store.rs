@@ -1770,17 +1770,11 @@ impl Store {
     ///      - SHOULD refuse, naming the room left
     ///      - NEVER let accumulated depreciation pass the schedule, or cost
     ///        less salvage.
-    ///   5. IF it is a depreciation run or a schedule month's posting, or a
-    ///      reversal in the chain of one, and `date` is before the entry's
-    ///      own date:
-    ///      - SHOULD refuse
-    ///      - NEVER carry a correction at month ends the entry it corrects
-    ///        never reached (a run of March reversed on Jan 31 would leave
-    ///        January and February with negative depreciation, and a
-    ///        disposal in February clearing what they don't carry)
-    ///      BECAUSE a correction comes after what it corrects (B-9, Pacioli
-    ///      ch. 31: "after you have made this correction"). Commands only:
-    ///      a journal an earlier version wrote replays as it was (B-28).
+    ///   5. (the date floor: a reversal dated before the entry it
+    ///      reverses is refused for every entry, by `Ledger::check_reversal`
+    ///      with `ReversalBeforeOriginal`, D-73; it was this store's check
+    ///      for runs and schedule months alone. A journal an earlier
+    ///      version wrote replays as it was, B-28.)
     ///   6. Otherwise: a run of an active asset is un-posted (its month is
     ///      due again, caught up by the next run).
     /// ```
@@ -1797,18 +1791,6 @@ impl Store {
             .copied()
             .unwrap_or(entry);
         let refuse = |why: String| Err(LedgerError::AssetEntryIrreversible(entry, why).into());
-        // SCENARIO 5: the date of the entry reversed (it ends its chain).
-        let dated = self
-            .ledger
-            .get_entry(entry)
-            .map(ledger_core::JournalEntry::date);
-        let before_it = dated.filter(|&d| date < d);
-        if let (Some(on), Some((sid, month))) = (before_it, self.ledger.schedule_posting(top)) {
-            return Err(LedgerError::InvalidSchedule(format!(
-                "entry {entry} (schedule {sid}'s {month}) is dated {on}: a reversal of it can't be dated before it, on {date}"
-            ))
-            .into());
-        }
         let payloads = |t: &str| -> Result<Vec<Value>, StoreError> {
             let mut stmt = self
                 .conn
@@ -1835,11 +1817,6 @@ impl Store {
             }
             let asset_id = get_u64(&p, "asset_id")?;
             let period = get_str(&p, "period")?;
-            if let Some(on) = before_it {
-                return refuse(format!(
-                    "it is dated {on}, and a reversal of asset {asset_id}'s depreciation for {period} can't be dated before it, on {date}"
-                ));
-            }
             if self
                 .ledger
                 .get_asset(asset_id)

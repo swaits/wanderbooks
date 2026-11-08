@@ -833,17 +833,13 @@ pub enum LedgerError {
     #[error("{0}")]
     DocumentBounds(String),
 
-    /// A reversal of an entry an invoice or bill owns is dated before that
-    /// entry (rules.md B-9, B-38): a correction comes after what it
-    /// corrects.
-    #[error(
-        "entry {entry} belongs to {document} and is dated {original}: its reversal can't be dated before it, on {date}"
-    )]
-    DocumentReversalBeforeOriginal {
+    /// A reversal is dated before the entry it reverses (rules.md B-9,
+    /// D-73): a correction comes after what it corrects, for every kind of
+    /// entry. New commands only; replay never refuses (B-28).
+    #[error("entry {entry} is dated {original}: its reversal can't be dated before it, on {date}")]
+    ReversalBeforeOriginal {
         /// The entry reversed.
         entry: u64,
-        /// The document, e.g. "invoice 7".
-        document: String,
         /// The entry's date.
         original: chrono::NaiveDate,
         /// The reversal's date.

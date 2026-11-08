@@ -815,26 +815,32 @@ Be precise about the claims:
   checked by a differential test and, for what the test cannot say, by
   review. `tests/bookspec/lean_model.rs` (`just lean-model`, P14 L-G5)
   generates random command sequences (entries, balanced or not, with
-  zero, negative, finer-than-a-cent and unknown-account lines; invoices;
-  reversals of anything posted, twice, of a closing entry, backdated;
-  closes to retained earnings over nested, disjoint, partly overlapping,
-  inverted, empty and out-of-order periods), runs each through the Rust
-  `Ledger`, writes it as a bookspec example whose expected values are the
-  engine's answers, and has the Lean model (`bookspec-check`, built from
-  the pinned bookspec, running `Bookspec.Exec.step`) check the same
-  sequence: every refusal, the trial balance after each event, and at the
-  end the trial balance, balances, profit and loss and each posted entry's
-  lines. Any mismatch fails the test with the shrunk sequence and both
-  answers. What it compares is bounded by what an example can say: a
-  standalone `openPeriod`, an unposted draft (`drafts_in_period`,
-  `discard`), `addAccount` after the first event, and a reversal of an
-  event that posted nothing are not reachable, and stay by review; so do
+  zero, negative, finer-than-a-cent and unknown-account lines; invoices
+  and bills; reversals of anything posted, twice, of a closing entry,
+  backdated; closes to retained earnings over nested, disjoint, partly
+  overlapping, inverted, empty and out-of-order periods), runs each
+  through the Rust `Ledger`, writes it as a bookspec example whose
+  expected values are the engine's answers, and has the Lean model
+  (`bookspec-check`, built from the pinned bookspec, running
+  `Bookspec.Exec.step`) check the same sequence: every refusal, the
+  trial balance after each event, and at the end the trial balance,
+  balances, profit and loss and each posted entry's lines. Any mismatch
+  fails the test with the shrunk sequence and both answers. What it
+  compares is bounded by what an example can say, and so these stay by
+  review: a standalone `openPeriod`; a generic close with explicit
+  targets (only `closeToRetained` is reachable); lingering drafts
+  (`drafts_in_period`, `discard`: both sides draft and post in one
+  event, so no draft lingers); `addAccount` after setup (the chart is
+  the setup's); and a reversal of an event that posted nothing. So do
   the model's records, and the checks it does not carry (the control
-  guard's refusal is skipped, by an allow-list). Where the engine and the
-  model refuse in different words (a command failing two checks: the
-  order of checks is unspecified), the difference is allow-listed and
-  pinned (`KNOWN_WORD_DIFFERENCES`, the `#[ignore]`d `d_*` tests) until the
-  order is decided. The older end-to-end property tests in
+  guard's refusal is skipped, by an allow-list). Where the engine and
+  the model refuse in different words, D-74 (owner, 2026-11-08) settles
+  it: a command that breaks several rules may be refused with any rule
+  it actually breaks, so the test checks both words with an independent
+  function (`word_applies`, written from the bookspec rules, reading
+  only the books before the command), and fails — printing the command,
+  that state, and both words — when a word does not apply. The older
+  end-to-end property tests in
   `tests/properties.rs` (trial balance, balance sheet, reversals,
   immutability) and the golden files remain.
 - **Out of scope:** currency (the ledger is single-currency, enforced

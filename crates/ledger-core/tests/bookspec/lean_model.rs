@@ -21,13 +21,17 @@
 //!   closing entry, one already reversed, dated before, on or after it);
 //! * a close to retained earnings, which is a period opened and closed in
 //!   one event (nested, disjoint, partly overlapping, inverted, around
-//!   nothing at all, around something, inside or after a closed one).
+//!   nothing at all, around something, inside or after a closed one);
+//! * an invoice or a bill, for a fixed amount, on the model's fixed
+//!   document accounts (1200/4000, 6999/2000).
 //!
 //! What it cannot say, and the model's other commands are therefore not
-//! reached: a standalone `openPeriod`, a draft left unposted (so
-//! `drafts_in_period` and `discard`), `addAccount` after the first event
-//! (the chart is the setup's), a reversal of an event that posted nothing.
-//! Those stay by review (docs/verification.md).
+//! reached: a standalone `openPeriod`, a generic close with explicit
+//! targets (only `closeToRetained` is reachable), a draft left unposted
+//! (so `drafts_in_period` and `discard`: both sides draft and post in one
+//! event), `addAccount` after the first event (the chart is the setup's),
+//! a reversal of an event that posted nothing. Those stay by review
+//! (docs/verification.md).
 //!
 //! The figures compared: after every event the trial balance; at the end
 //! the trial balance and the balances on several days, the profit and
@@ -53,6 +57,15 @@
 //! Each refused command is tried on a clone and kept only if accepted, as
 //! an example's events are applied: a close that is refused leaves no open
 //! period behind, which is how the model's event reads it.
+//!
+//! Different words for one refusal (D-74, owner 2026-11-08): when a
+//! command breaks several rules, an engine may refuse it with any rule
+//! it actually breaks. So when the engine and the model refuse in
+//! different words, this test does not pin the pair: it checks, with
+//! [`word_applies`] written from the bookspec rules and reading only the
+//! books as they stood before the command, that *both* words are rules
+//! the command breaks. A word that does not apply is a disagreement,
+//! reported with the command, the state before it, and both words.
 //!
 //! Run it: `just lean-model` (`PROPTEST_CASES` sequences, one `lake` call
 //! for all of them, one more for each round of shrinking). It skips
@@ -92,6 +105,9 @@ enum Cmd {
     /// model's fixed document accounts), and a hand line on 1200 is
     /// refused from then on (the control guard).
     Invoice { date: NaiveDate, cents: i64 },
+    /// A bill for `cents`: the books post 6999 debit, 2000 credit, and a
+    /// hand line on 2000 is refused from then on (the control guard).
+    Bill { date: NaiveDate, cents: i64 },
 }
 
 /// A sequence: the chart (the setup's), its commands, and the days the
@@ -189,6 +205,9 @@ struct Runner {
     l: Ledger,
     ids: BTreeMap<u32, AccountId>,
     customer: ledger_core::CustomerId,
+    vendor: ledger_core::VendorId,
+    /// The books as they stood before each command (for [`word_applies`]).
+    pre: Vec<Ledger>,
     steps: Vec<Step>,
     /// Entry events the engine accepted a reversal of.
     reversed: BTreeSet<usize>,
@@ -202,7 +221,6 @@ struct Runner {
 /// ([`refusal`]) covers the examples' words; the model has more
 /// (`Refusal` in `Exec/Step.lean`), mapped here.
 fn lean_word(e: &LedgerError) -> String {
-    let debug = format!("{e:?}");
     match e {
         // The adapter's `end_before_start` (`InvalidDateRange`) is BS-period-3's,
         // a query asked for an end before its start; a period opened that
@@ -214,9 +232,15 @@ fn lean_word(e: &LedgerError) -> String {
         LedgerError::CloseOutOfOrder(..) => "close_out_of_order".to_string(),
         LedgerError::DraftsInPeriod(_) => "drafts_in_period".to_string(),
         LedgerError::PeriodAlreadyClosed(_) => "period_already_closed".to_string(),
-        // D-73: a reversal comes after what it reverses (the engine's
-        // variant for it, whatever it is called, when it lands).
-        _ if debug.contains("ReversalBeforeOriginal") => "reversal_before_original".to_string(),
+        // F2: errors `refusal` leaves as `another refusal: …` that do have
+        // a bookspec word (Refusal in Exec/Step.lean, README's list).
+        LedgerError::UnknownEntry(_) => "unknown_entry".to_string(),
+        LedgerError::UnknownPeriod(_) => "unknown_period".to_string(),
+        LedgerError::EntryNotPosted(_) => "not_drafted".to_string(),
+        LedgerError::DocumentReversalBeforeOriginal { .. } => {
+            "reversal_before_original".to_string()
+        }
+        LedgerError::DuplicateAccountCode(_) => "code_taken".to_string(),
         other => refusal(other),
     }
 }
@@ -239,10 +263,13 @@ impl Runner {
             ids.insert(code, id);
         }
         let customer = l.add_customer("Ridgeway Co").expect("a customer");
+        let vendor = l.add_vendor("Supply Co").expect("a vendor");
         Runner {
             l,
             ids,
             customer,
+            vendor,
+            pre: Vec::new(),
             steps: Vec::new(),
             reversed: BTreeSet::new(),
             closes: BTreeSet::new(),
@@ -276,6 +303,7 @@ impl Runner {
     /// (a sequence the example format cannot say).
     fn apply(&mut self, cmd: &Cmd) -> Result<(), String> {
         let n = self.steps.len();
+        self.pre.push(self.l.clone());
         let mut probe = self.l.clone();
         let usd = Currency::new("USD").unwrap();
         let result: Result<Option<EntryId>, LedgerError> = match cmd {
@@ -320,6 +348,22 @@ impl Runner {
                 let id = probe.create_invoice(self.customer, *date, *date, vec![line])?;
                 Ok(probe
                     .invoices()
+                    .into_iter()
+                    .find(|i| i.id == id)
+                    .map(|i| i.entry_id))
+            })(),
+            Cmd::Bill { date, cents } => (|| {
+                let line = DocumentLine {
+                    description: format!("event {}", n + 1),
+                    amount: Decimal::new(*cents, 2),
+                    class_id: None,
+                    account: None,
+                    quantity: None,
+                    unit_price: None,
+                };
+                let id = probe.create_bill(self.vendor, *date, *date, vec![line])?;
+                Ok(probe
+                    .bills()
                     .into_iter()
                     .find(|i| i.id == id)
                     .map(|i| i.entry_id))
@@ -594,7 +638,11 @@ fn gen_cmd(rng: &mut Rng, chart: &[(u32, AccountType)], run: &Runner) -> Cmd {
         .collect();
     match rng.below(100) {
         0..=63 => gen_entry(rng, chart),
-        64..=69 => Cmd::Invoice {
+        64..=66 => Cmd::Invoice {
+            date: any_day(rng),
+            cents: any_cents(rng),
+        },
+        67..=69 => Cmd::Bill {
             date: any_day(rng),
             cents: any_cents(rng),
         },
@@ -701,49 +749,198 @@ const UNCHECKED_BY_THE_MODEL: [&str; 1] = [
     "untagged_control_line",
 ];
 
-/// Disagreements of *word* only: the engine and the model both refuse the
-/// command (so the books are the same after it), and name different
-/// checks, because a command that fails two checks is refused for the
-/// first the implementation reaches and the spec orders none. Each is a
-/// finding for the owner to rule on (the order of checks); pinned as an
-/// `#[ignore]`d test below, which asserts the words are equal and fails
-/// until one side is changed. (engine word, model word)
-const KNOWN_WORD_DIFFERENCES: [(&str, &str); 10] = [
-    // D-A. Reversing a closing entry on a day inside the closed period:
-    // the engine checks that a closing entry is never reversed (BS-ledger-6)
-    // first, the model checks the closed period (BS-period-2) first.
-    ("closing_entry_irreversible", "period_closed"),
-    // D-D. Reversing an entry that is already reversed, on a day inside a
-    // closed period: the same order, the entry's checks before the date's
-    // in the engine, the closed period first in the model.
-    ("already_reversed", "period_closed"),
-    // D-E. An entry with an unknown account and a second fault: the engine
-    // checks each line's account as the line is added, before the entry
-    // is posted, so it names the account; the model checks an entry's
-    // line count, amounts and balance first (`postEntry`), then its
-    // accounts. (The last pair is D-B's reader again: the amount is read
-    // before any command.)
-    ("unknown_account", "too_few_lines"),
-    ("unknown_account", "negative_amount"),
-    ("unknown_account", "unbalanced"),
-    ("unknown_account", "finer_than_minor_unit"),
-    ("unknown_account", "zero_amount"),
-    // D-F. An entry with a zero line and a negative one: the engine names
-    // the first offending line, in the order the lines were added; the
-    // model names a negative amount whenever there is one (`postEntry`).
-    ("zero_amount", "negative_amount"),
-    // D-B. An entry with an amount finer than the minor unit, dated in a
-    // closed period: the engine looks at the date when the entry is begun,
-    // the example reader reads every amount before any command runs, so
-    // the model's refusal is the amount's.
-    ("period_closed", "finer_than_minor_unit"),
-    // D-C. A close whose last day is inside another closed period: the
-    // engine's closing entry is refused as dated in a closed period
-    // (BS-period-2's word); the model names its own check, with no entry
-    // involved (`closed_period_contains_end`, a word the spec does not
-    // have).
-    ("period_closed", "closed_period_contains_end"),
-];
+/// D-74 (owner, 2026-11-08): when a command breaks several rules, an
+/// engine may refuse it with any rule it actually breaks. This decides,
+/// for one refusal `word`, whether `cmd` breaks that rule on the books
+/// as they stood before it (`pre`). It is written from the bookspec
+/// rules (README's refusal list, `Refusal` in `Exec/Step.lean`), not by
+/// calling the engine's own checks (`post_entry`, `check_reversal`,
+/// `create_period`, `close_period`, ...): it only reads the state
+/// (chart, periods, drafts, posted entries) and the command.
+///
+/// Words covered: `unknown_account`, `zero_amount`, `negative_amount`,
+/// `finer_than_minor_unit` (a line's amount), `too_few_lines`,
+/// `unbalanced`, `period_closed`, `already_reversed`,
+/// `closing_entry_irreversible`, `reversal_before_original` (D-73),
+/// `period_overlaps`, `period_end_before_start`, `close_out_of_order`,
+/// and the rest the generator reaches: `closed_period_contains_end`,
+/// `period_already_closed`, `drafts_in_period`, `unknown_entry`,
+/// `not_drafted`, `unknown_period`, `period_not_open`,
+/// `bad_close_target`, `close_does_not_sum`, `code_taken`,
+/// `untagged_control_line`. Any other word does not apply.
+fn word_applies(
+    pre: &Ledger,
+    chart: &[(u32, AccountType)],
+    run: &Runner,
+    cmd: &Cmd,
+    word: &str,
+) -> bool {
+    let in_chart = |code: u32| chart.iter().any(|a| a.0 == code);
+    let closed_contains = |d: NaiveDate| {
+        pre.list_periods()
+            .iter()
+            .any(|q| q.status == ledger_core::PeriodStatus::Closed && q.start <= d && d <= q.end)
+    };
+    let amount = |l: &L| Decimal::from_str(&l.amount).unwrap();
+    let finer = |a: Decimal| {
+        let scaled = a * Decimal::from(100);
+        scaled != scaled.trunc()
+    };
+    match word {
+        "unknown_account" => match cmd {
+            Cmd::Entry { lines, .. } => lines.iter().any(|l| !in_chart(l.code)),
+            Cmd::Invoice { .. } => !(in_chart(1200) && in_chart(4000)),
+            Cmd::Bill { .. } => !(in_chart(6999) && in_chart(2000)),
+            _ => false,
+        },
+        "zero_amount" => match cmd {
+            Cmd::Entry { lines, .. } => lines.iter().any(|l| amount(l).is_zero()),
+            Cmd::Invoice { cents, .. } | Cmd::Bill { cents, .. } => *cents == 0,
+            _ => false,
+        },
+        "negative_amount" => match cmd {
+            Cmd::Entry { lines, .. } => lines.iter().any(|l| amount(l) < Decimal::ZERO),
+            Cmd::Invoice { cents, .. } | Cmd::Bill { cents, .. } => *cents < 0,
+            _ => false,
+        },
+        "finer_than_minor_unit" => match cmd {
+            Cmd::Entry { lines, .. } => lines.iter().any(|l| finer(amount(l))),
+            _ => false,
+        },
+        "too_few_lines" => matches!(cmd, Cmd::Entry { lines, .. } if lines.len() < 2),
+        "unbalanced" => match cmd {
+            Cmd::Entry { lines, .. } => {
+                let (mut dr, mut cr) = (Decimal::ZERO, Decimal::ZERO);
+                for l in lines {
+                    if l.debit {
+                        dr += amount(l)
+                    } else {
+                        cr += amount(l)
+                    }
+                }
+                dr != cr
+            }
+            _ => false,
+        },
+        "period_closed" => match cmd {
+            Cmd::Entry { date, .. } | Cmd::Invoice { date, .. } | Cmd::Bill { date, .. } => {
+                closed_contains(*date)
+            }
+            Cmd::Reverse { date, .. } => closed_contains(*date),
+            Cmd::Close { end, .. } => closed_contains(*end),
+        },
+        "already_reversed" => match cmd {
+            Cmd::Reverse { of, .. } => run
+                .steps
+                .get(*of)
+                .and_then(|s| s.entry)
+                .is_some_and(|id| pre.posted_entries().any(|e| e.reversal_of() == Some(id))),
+            _ => false,
+        },
+        "closing_entry_irreversible" => match cmd {
+            Cmd::Reverse { of, .. } => run
+                .steps
+                .get(*of)
+                .and_then(|s| s.entry)
+                .is_some_and(|id| pre.is_closing_entry(id)),
+            _ => false,
+        },
+        "reversal_before_original" => match cmd {
+            Cmd::Reverse { of, date } => run
+                .steps
+                .get(*of)
+                .and_then(|s| s.entry)
+                .and_then(|id| pre.get_entry(id))
+                .is_some_and(|e| *date < e.date()),
+            _ => false,
+        },
+        "period_overlaps" => match cmd {
+            Cmd::Close { start, end } => pre.list_periods().iter().any(|q| {
+                let touches = *start <= q.end && q.start <= *end;
+                let nested =
+                    (*start >= q.start && *end <= q.end) || (q.start >= *start && q.end <= *end);
+                touches && !nested
+            }),
+            _ => false,
+        },
+        "period_end_before_start" => matches!(cmd, Cmd::Close { start, end } if end < start),
+        "close_out_of_order" => match cmd {
+            Cmd::Close { end, .. } => pre
+                .list_periods()
+                .iter()
+                .any(|q| q.status == ledger_core::PeriodStatus::Closed && q.end > *end),
+            _ => false,
+        },
+        "closed_period_contains_end" => {
+            matches!(cmd, Cmd::Close { end, .. } if closed_contains(*end))
+        }
+        "period_already_closed" => match cmd {
+            Cmd::Close { start, end } => pre.list_periods().iter().any(|q| {
+                q.status == ledger_core::PeriodStatus::Closed && q.start == *start && q.end == *end
+            }),
+            _ => false,
+        },
+        "drafts_in_period" => match cmd {
+            Cmd::Close { start, end } => pre
+                .drafts()
+                .iter()
+                .any(|e| *start <= e.date() && e.date() <= *end),
+            _ => false,
+        },
+        "unknown_entry" => match cmd {
+            Cmd::Reverse { of, .. } => match run.steps.get(*of).and_then(|s| s.entry) {
+                None => true,
+                Some(id) => pre
+                    .get_entry(id)
+                    .is_none_or(|e| e.status() != EntryStatus::Posted),
+            },
+            _ => false,
+        },
+        "untagged_control_line" => match cmd {
+            Cmd::Entry { lines, .. } => lines.iter().any(|l| l.code == 1200 || l.code == 2000),
+            _ => false,
+        },
+        "bad_close_target" => match cmd {
+            Cmd::Close { .. } => chart
+                .iter()
+                .find(|a| a.0 == 3999)
+                .is_none_or(|a| matches!(a.1, AccountType::Revenue | AccountType::Expense)),
+            _ => false,
+        },
+        // Commands here are never drafted by hand, never name a period
+        // or an account to add, and a close to retained sums by
+        // construction, so these model words cannot apply to them.
+        "not_drafted" | "unknown_period" | "period_not_open" | "close_does_not_sum"
+        | "code_taken" => false,
+        _ => false,
+    }
+}
+
+/// The books before a command, readably, for a D-74 failure report.
+fn describe_state(pre: &Ledger) -> String {
+    let mut s = String::new();
+    let periods: Vec<String> = pre
+        .list_periods()
+        .iter()
+        .map(|q| format!("{}..={} {:?}", q.start, q.end, q.status))
+        .collect();
+    let posted: Vec<String> = pre
+        .posted_entries()
+        .map(|e| {
+            format!(
+                "entry {} dated {} reversal_of={:?} closing={}",
+                e.id(),
+                e.date(),
+                e.reversal_of(),
+                pre.is_closing_entry(e.id())
+            )
+        })
+        .collect();
+    writeln!(s, "periods: {periods:?}").unwrap();
+    writeln!(s, "posted: {posted:?}").unwrap();
+    writeln!(s, "drafts: {}", pre.drafts().len()).unwrap();
+    s
+}
 
 /// The word an event is written as refused with, and whether it is a probe.
 fn written_word(word: &str) -> (String, bool) {
@@ -836,6 +1033,21 @@ fn toml_of(case: usize, seq: &Seq, run: &Runner) -> String {
                 writeln!(
                     s,
                     "invoice = {{ customer = \"Ridgeway Co\", amount = \"{}\" }}",
+                    cents(*amount)
+                )
+                .unwrap();
+            }
+            Cmd::Bill {
+                date,
+                cents: amount,
+            } => {
+                writeln!(s, "date = \"{date}\"\ndescription = \"event {}\"", i + 1).unwrap();
+                if let Some((w, _)) = &refused {
+                    writeln!(s, "refused = \"{w}\"").unwrap();
+                }
+                writeln!(
+                    s,
+                    "bill = {{ vendor = \"Supply Co\", amount = \"{}\" }}",
                     cents(*amount)
                 )
                 .unwrap();
@@ -1140,17 +1352,25 @@ impl Lean {
 struct Verdict {
     /// Disagreements: what was asked, the engine's answer, the model's.
     disagreements: Vec<String>,
+    /// Items the model reported for this example (F1: never zero in the
+    /// main test, and ok + probes + different + allowed skips + disagreements
+    /// account for all of them).
+    items: usize,
     ok: usize,
     /// Refusals the model gave in the words the engine did (probes).
     probes_agreed: usize,
-    /// Refusals that differ in word only, in [`KNOWN_WORD_DIFFERENCES`].
-    known_words: Vec<(String, String)>,
+    /// Refusals that differ in word, each checked under D-74 by
+    /// [`word_applies`] (both words break a rule the command breaks).
+    different_words: Vec<(String, String)>,
     skipped: Vec<String>,
 }
 
 /// Judge the model's items for one example against what the engine did.
 fn judge(seq: &Seq, run: &Runner, id: &str, items: &[&Item]) -> Verdict {
-    let mut v = Verdict::default();
+    let mut v = Verdict {
+        items: items.len(),
+        ..Verdict::default()
+    };
     for it in items {
         let event: Option<usize> = (it.kind == "event")
             .then(|| {
@@ -1200,10 +1420,25 @@ fn judge(seq: &Seq, run: &Runner, id: &str, items: &[&Item]) -> Verdict {
                     {
                         v.probes_agreed += 1
                     }
-                    (Some(e), Some(g))
-                        if KNOWN_WORD_DIFFERENCES.contains(&(e.as_str(), g.as_str())) =>
-                    {
-                        v.known_words.push((e.clone(), g.clone()))
+                    (Some(e), Some(g)) if e != g => {
+                        // D-74: both words must be rules this command
+                        // breaks, on the books as they stood before it.
+                        let cmd = &seq.cmds[n - 1];
+                        let pre = &run.pre[n - 1];
+                        let engine_applies = word_applies(pre, &seq.chart, run, cmd, e);
+                        let model_applies = word_applies(pre, &seq.chart, run, cmd, g);
+                        if engine_applies && model_applies {
+                            v.different_words.push((e.clone(), g.clone()));
+                        } else {
+                            v.disagreements.push(format!(
+                                "{id} {}: D-74 check failed for command {cmd:?}: \
+                                 engine word {e:?} breaks a broken rule: {engine_applies}; \
+                                 model word {g:?} breaks a broken rule: {model_applies}; \
+                                 a word that is false above does not apply\nstate before:\n{}",
+                                it.what,
+                                describe_state(pre)
+                            ));
+                        }
                     }
                     _ => v.disagreements.push(format!(
                         "{id} {}: the engine {:?}; the model: {}",
@@ -1397,17 +1632,19 @@ fn the_rust_ledger_and_the_lean_model_agree_on_random_command_sequences() {
     let results = check_batch(lean, &seqs);
 
     // Counts, and the coverage the generator owes.
-    let (mut commands, mut entries, mut reversals, mut closes) = (0, 0, 0, 0);
+    let (mut commands, mut entries, mut reversals, mut closes, mut bills) = (0, 0, 0, 0, 0);
     let mut accepted: BTreeMap<&str, usize> = BTreeMap::new();
     let mut refused: BTreeMap<String, usize> = BTreeMap::new();
-    let (mut ok, mut probes, mut gaps) = (0, 0, 0);
+    let (mut ok, mut probes, mut gaps, mut different_total, mut items_total) = (0, 0, 0, 0, 0);
     let mut skips: BTreeMap<String, usize> = BTreeMap::new();
-    let mut known: BTreeMap<String, usize> = BTreeMap::new();
+    let mut different: BTreeMap<String, usize> = BTreeMap::new();
     for (seq, (run, v)) in seqs.iter().zip(&results) {
         ok += v.ok;
         probes += v.probes_agreed;
-        for k in &v.known_words {
-            *known
+        items_total += v.items;
+        different_total += v.different_words.len();
+        for k in &v.different_words {
+            *different
                 .entry(format!("engine {} / model {}", k.0, k.1))
                 .or_default() += 1;
         }
@@ -1430,6 +1667,10 @@ fn the_rust_ledger_and_the_lean_model_agree_on_random_command_sequences() {
                     "reversal"
                 }
                 Cmd::Invoice { .. } => "invoice",
+                Cmd::Bill { .. } => {
+                    bills += 1;
+                    "bill"
+                }
                 Cmd::Close { .. } => {
                     closes += 1;
                     if step.outcome == Outcome::Posted {
@@ -1462,12 +1703,55 @@ fn the_rust_ledger_and_the_lean_model_agree_on_random_command_sequences() {
         .filter(|(_, v)| !v.disagreements.is_empty())
         .count();
     eprintln!(
-        "lean_model: seed {seed}: {n} sequences, {commands} commands ({entries} entries, {reversals} reversals, {closes} closes)\n  \
-         the model, per item: {ok} ok, {probes} refusals matched by probe, {} skipped (allow-listed), {} mismatched sequences\n  \
-         known gaps rolled back: {gaps}\n  refused in different words (known, see KNOWN_WORD_DIFFERENCES): {known:?}\n  accepted: {accepted:?}\n  refused: {refused:?}\n  skips: {skips:?}",
+        "lean_model: seed {seed}: {n} sequences, {commands} commands ({entries} entries, {reversals} reversals, {closes} closes, {bills} bills)\n  \
+         the model, per item: {ok} ok, {probes} refusals matched by probe, {} skipped (allow-listed), {} mismatched sequences, {items_total} items in all\n  \
+         known gaps (D-73) rolled back: {gaps}\n  refused in different words, each checked under D-74 (both words break a rule the command breaks): {different_total} in all: {different:?}\n  accepted: {accepted:?}\n  refused: {refused:?}\n  skips: {skips:?}",
         skips.values().sum::<usize>(),
         bad
     );
+
+    // F1, no vacuous pass: every example produced items, the counted
+    // outcomes account for every item, and `ok` clears a floor. A model
+    // (or a fake `lake`) that reports examples but no items fails here.
+    for (i, (_, v)) in results.iter().enumerate() {
+        assert!(v.items > 0, "example {i} produced no items from the model");
+        assert_eq!(
+            v.ok + v.probes_agreed
+                + v.different_words.len()
+                + v.skipped.len()
+                + v.disagreements.len(),
+            v.items,
+            "example {i}: counted outcomes do not account for every item"
+        );
+    }
+    assert!(
+        ok >= n * 8,
+        "only {ok} ok items in {n} sequences: the model is not answering"
+    );
+    assert_eq!(
+        ok + probes
+            + different_total
+            + skips.values().sum::<usize>()
+            + results
+                .iter()
+                .map(|(_, v)| v.disagreements.len())
+                .sum::<usize>(),
+        items_total,
+        "counted outcomes do not account for every item in all"
+    );
+
+    // D-73: design chosen here is the env gate. The engine accepting a
+    // backdated plain reversal is counted above as a known gap and
+    // rolled back; once the fixing unit lands, set
+    // WANDERBOOKS_D73_LANDED=1 and any remaining gap fails this test.
+    // (When the engine refuses it instead, it arrives as an ordinary
+    // `reversal_before_original` refusal and the gap count is zero.)
+    if std::env::var_os("WANDERBOOKS_D73_LANDED").is_some_and(|v| !v.is_empty() && v != "0") {
+        assert_eq!(
+            gaps, 0,
+            "D-73 is marked landed but {gaps} backdated reversals were still accepted and rolled back"
+        );
+    }
 
     if bad > 0 {
         // Up to six failing sequences, each shrunk; the first in full.
@@ -1545,6 +1829,7 @@ fn the_rust_ledger_and_the_lean_model_agree_on_random_command_sequences() {
         for kind in [
             "entry",
             "invoice",
+            "bill",
             "reversal",
             "close with an entry",
             "close with nothing to close",
@@ -1669,8 +1954,8 @@ fn pinned_seq(cmds: Vec<Cmd>) -> Seq {
     }
 }
 
-/// Each disagreement of word, as the smallest sequence that shows it,
-/// with the pair (engine word, model word) it is allow-listed under.
+/// Each difference of word, as the smallest sequence that shows it,
+/// with the pair (engine word, model word) D-74 is checked against.
 fn pinned() -> Vec<(&'static str, Seq, (&'static str, &'static str))> {
     let spend = |d| entry(d, &[(6999, true, "10.00"), (1000, false, "10.00")]);
     vec![
@@ -1785,12 +2070,11 @@ fn pinned_verdict(seq: &Seq) -> Verdict {
     check_batch(lean, std::slice::from_ref(seq)).remove(0).1
 }
 
-/// Every pinned disagreement is still exactly what the allow-list says:
-/// both refuse, in the two words, and nothing else differs. When one side
-/// is changed to agree, this fails, and the pair comes out of
-/// [`KNOWN_WORD_DIFFERENCES`] and the pin out of [`pinned`].
+/// Every pinned difference is still the pair it was, and D-74 holds
+/// for it: both words are rules the command breaks (judged by
+/// [`word_applies`], which is what put it in `different_words`).
 #[test]
-fn the_known_differences_are_each_still_what_they_were() {
+fn the_pinned_differences_each_break_both_rules_d74() {
     if lean().is_none() {
         return;
     }
@@ -1798,62 +2082,9 @@ fn the_known_differences_are_each_still_what_they_were() {
         let v = pinned_verdict(&seq);
         assert!(v.disagreements.is_empty(), "{name}: {:?}", v.disagreements);
         assert_eq!(
-            v.known_words,
+            v.different_words,
             vec![(engine.to_string(), model.to_string())],
-            "{name}: the engine and the model refuse in the same words now?"
+            "{name}: the pair changed, or a word no longer breaks a rule the command breaks"
         );
     }
-}
-
-/// The strict form of a pinned difference: the engine and the model name
-/// the same check. Fails until the order of checks is settled.
-fn strict(name: &str) {
-    if lean().is_none() {
-        return;
-    }
-    for (n, seq, (engine, model)) in pinned().into_iter().filter(|p| p.0 == name) {
-        let v = pinned_verdict(&seq);
-        assert!(
-            v.known_words.is_empty() && v.disagreements.is_empty(),
-            "{n}: the engine says {engine}, the model says {model}: {:?} {:?}",
-            v.known_words,
-            v.disagreements
-        );
-    }
-}
-
-#[test]
-#[ignore = "D-A: reversing a closing entry inside its closed period: engine closing_entry_irreversible (BS-ledger-6), model period_closed (BS-period-2); the spec orders neither"]
-fn d_a_a_closing_entry_is_irreversible_before_the_period_is_closed() {
-    strict("D-A");
-}
-
-#[test]
-#[ignore = "D-B: a finer-than-a-cent amount in a closed period: engine period_closed, the example reader finer_than_minor_unit; an artifact of reading amounts before any command"]
-fn d_b_the_date_is_checked_before_the_amount() {
-    strict("D-B");
-}
-
-#[test]
-#[ignore = "D-C: closing a period whose last day is in a closed one: engine period_closed (BS-period-2's word), model closed_period_contains_end (a word the spec does not have)"]
-fn d_c_a_close_inside_a_closed_period_is_period_closed() {
-    strict("D-C");
-}
-
-#[test]
-#[ignore = "D-D: reversing an already reversed entry on a closed day: engine already_reversed, model period_closed; the spec orders neither"]
-fn d_d_already_reversed_before_the_period_is_closed() {
-    strict("D-D");
-}
-
-#[test]
-#[ignore = "D-E: an unknown account with a second fault: engine unknown_account first (at add_line), model its line count, amounts and balance first; the spec orders none"]
-fn d_e_the_account_is_checked_before_the_entry() {
-    strict("D-E");
-}
-
-#[test]
-#[ignore = "D-F: a zero line and a negative line in one entry: engine zero_amount (the first offending line), model negative_amount (a negative one anywhere); the spec orders neither"]
-fn d_f_the_first_offending_line_is_named() {
-    strict("D-F");
 }

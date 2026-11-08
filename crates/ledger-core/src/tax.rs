@@ -530,11 +530,19 @@ fn sum(lines: &[TaxSummaryLine], f: fn(&TaxSummaryLine) -> Decimal) -> Decimal {
     lines.iter().map(f).sum()
 }
 
+/// A category's line while it is being built, with the exact `(book,
+/// percent)` shares the kernel adds before its one rounding.
+struct CategoryBuild {
+    line: TaxSummaryLine,
+    shares: Vec<(Decimal, Decimal)>,
+}
+
 /// Build the tax summary for `[start, end]`, closing entries excluded (like
 /// the P&L). Each category's deductible amount is the exact sum of its
 /// accounts' shares (book × deductible percent ÷ 100), rounded once to
 /// the cent, half away from zero (B-21: "round off only the total"); the
-/// book amounts stay exact.
+/// book amounts stay exact. The share arithmetic is
+/// [`crate::kernel::deductible_amount`], so Kani proves the one rounding.
 pub fn tax_summary(
     ledger: &Ledger,
     start: NaiveDate,
@@ -542,7 +550,9 @@ pub fn tax_summary(
     form: Option<TaxForm>,
 ) -> Result<TaxSummary, LedgerError> {
     let pl = crate::reports::profit_and_loss_for_period(ledger, start, end, None)?;
-    let mut by_cat: BTreeMap<&'static str, TaxSummaryLine> = BTreeMap::new();
+    // Each category's line and the exact shares the kernel adds before its
+    // one rounding.
+    let mut by_cat: BTreeMap<&'static str, CategoryBuild> = BTreeMap::new();
     let mut uncategorized = Vec::new();
     for line in pl.revenue.iter().chain(pl.expenses.iter()) {
         let account = ledger.chart().find_by_code(&line.code).ok_or_else(|| {
@@ -567,37 +577,36 @@ pub fn tax_summary(
         let pct = account
             .deductible_percent
             .unwrap_or_else(|| Decimal::from(c.default_deductible_percent));
-        // The account's exact share, unrounded: the category rounds once,
-        // after every account is summed (below). Checked, so a figure too
-        // large for exact arithmetic is refused, never a panic.
         let too_large =
             |what: &str| LedgerError::TooLargeToCompute(format!("the {} category's {what}", c.key));
-        let share = book
-            .checked_mul(pct)
-            .and_then(|x| x.checked_div(Decimal::from(100)))
-            .ok_or_else(|| too_large("deductible amount"))?;
-        let entry = by_cat.entry(c.key).or_insert_with(|| TaxSummaryLine {
-            category: c.key.to_string(),
-            label: c.label.to_string(),
-            accounts: vec![],
-            book: Decimal::ZERO,
-            tax: Decimal::ZERO,
-        });
+        let (entry, shares) = {
+            let build = by_cat.entry(c.key).or_insert_with(|| CategoryBuild {
+                line: TaxSummaryLine {
+                    category: c.key.to_string(),
+                    label: c.label.to_string(),
+                    accounts: vec![],
+                    book: Decimal::ZERO,
+                    tax: Decimal::ZERO,
+                },
+                shares: Vec::new(),
+            });
+            (&mut build.line, &mut build.shares)
+        };
         entry.accounts.push(name);
         entry.book = entry
             .book
             .checked_add(book)
             .ok_or_else(|| too_large("book amount"))?;
-        entry.tax = entry
-            .tax
-            .checked_add(share)
-            .ok_or_else(|| too_large("deductible amount"))?;
+        shares.push((book, pct));
     }
     // Round each category's deductible amount once, on its exact total.
-    for line in by_cat.values_mut() {
-        line.tax = line
-            .tax
-            .round_dp_with_strategy(2, rust_decimal::RoundingStrategy::MidpointAwayFromZero);
+    for build in by_cat.values_mut() {
+        build.line.tax = crate::kernel::deductible_amount(&build.shares).ok_or_else(|| {
+            LedgerError::TooLargeToCompute(format!(
+                "the {} category's deductible amount",
+                build.line.category
+            ))
+        })?;
     }
     let mut out = TaxSummary {
         start,
@@ -612,7 +621,8 @@ pub fn tax_summary(
     };
     // Catalog order, so the summary reads like the return.
     for c in CATEGORIES {
-        if let Some(line) = by_cat.remove(c.key) {
+        if let Some(build) = by_cat.remove(c.key) {
+            let line = build.line;
             if on_form_4797(c.key) {
                 out.form_4797.push(BookOnlyLine {
                     category: line.category,

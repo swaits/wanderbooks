@@ -56,7 +56,10 @@
 //!   §723 basis is the contributor's adjusted basis, the depreciable basis
 //!   the cost, that basis, or the lesser of it and fair market value, and
 //!   the §704(c) built-in gain is fair market value less the §723 basis
-//!   (B-25).
+//!   (B-25);
+//! * a tax category's deductible amount adds its accounts' exact shares and
+//!   rounds once to the cent, half away from zero, never share by share
+//!   (B-32, B-21).
 
 use crate::assets::BasisRule;
 use crate::{AccountType, Side};
@@ -88,6 +91,15 @@ pub trait Amount: Copy + Ord {
     /// `self / rhs` exactly, or `None` when `rhs` is zero or the quotient
     /// is not a whole amount of `Self` (never a rounded share).
     fn checked_div_exact(self, rhs: Self) -> Option<Self>;
+    /// `self / rhs`, rounded once to the cent (the nearest whole minor
+    /// unit: a unit for a machine integer, two decimal places for
+    /// [`Decimal`] dollars), ties away from zero; never a negative zero.
+    /// `None` when `rhs` is zero or the quotient cannot be represented.
+    ///
+    /// The one use is a tax category's deductible amount (rules.md B-32,
+    /// B-21), whose shares are added exactly and rounded once, never
+    /// share by share.
+    fn checked_div_round_cent(self, rhs: Self) -> Option<Self>;
 
     /// `self - rhs`, or `None` when it cannot be represented exactly.
     fn checked_sub(self, rhs: Self) -> Option<Self> {
@@ -126,6 +138,36 @@ impl Amount for Decimal {
         let q = self.checked_div(rhs)?;
         (q.checked_mul(rhs) == Some(self)).then_some(q)
     }
+    fn checked_div_round_cent(self, rhs: Self) -> Option<Self> {
+        if rhs == Self::ZERO {
+            return None;
+        }
+        // Work in cents so the one rounding is to a whole cent: an amount
+        // in dollars is already exact to its own scale, and multiplying by
+        // 100 only shifts it.
+        let hundred = Decimal::from(100u32);
+        let scaled = self.checked_mul(hundred)?;
+        // The truncated quotient and its exact remainder, so the cent's
+        // half decides the rounding rather than Decimal's own 28-place
+        // division rounding.
+        let q = scaled.checked_div(rhs)?.trunc();
+        let r = scaled.checked_sub(q.checked_mul(rhs)?)?;
+        let r_mag = r.abs();
+        let d_mag = rhs.abs();
+        let rest = d_mag.checked_sub(r_mag)?;
+        let q = if r_mag >= rest {
+            if r > Self::ZERO {
+                q.checked_add(Decimal::ONE)?
+            } else {
+                q.checked_sub(Decimal::ONE)?
+            }
+        } else {
+            q
+        };
+        let out = q.checked_div(hundred)?;
+        // Never a negative zero: money never prints "-0.00".
+        Some(if out == Self::ZERO { Self::ZERO } else { out })
+    }
 }
 
 impl Amount for i32 {
@@ -152,6 +194,27 @@ impl Amount for i32 {
             return None;
         }
         self.checked_div(rhs)
+    }
+    fn checked_div_round_cent(self, rhs: Self) -> Option<Self> {
+        if rhs == 0 {
+            return None;
+        }
+        // A machine integer is already in its smallest money unit, so its
+        // cent is a whole unit: truncate and round the remainder half
+        // away from zero.
+        let q = self.checked_div(rhs)?;
+        let r = self.checked_rem(rhs)?;
+        let r_mag = r.unsigned_abs();
+        let d_mag = rhs.unsigned_abs();
+        let rest = d_mag.checked_sub(r_mag)?;
+        if r_mag < rest {
+            return Some(q);
+        }
+        if r > 0 {
+            q.checked_add(1)
+        } else {
+            q.checked_sub(1)
+        }
     }
 }
 
@@ -180,6 +243,27 @@ impl Amount for i64 {
             return None;
         }
         self.checked_div(rhs)
+    }
+    fn checked_div_round_cent(self, rhs: Self) -> Option<Self> {
+        if rhs == 0 {
+            return None;
+        }
+        // A machine integer is already in its smallest money unit, so its
+        // cent is a whole unit: truncate and round the remainder half
+        // away from zero.
+        let q = self.checked_div(rhs)?;
+        let r = self.checked_rem(rhs)?;
+        let r_mag = r.unsigned_abs();
+        let d_mag = rhs.unsigned_abs();
+        let rest = d_mag.checked_sub(r_mag)?;
+        if r_mag < rest {
+            return Some(q);
+        }
+        if r > 0 {
+            q.checked_add(1)
+        } else {
+            q.checked_sub(1)
+        }
     }
 }
 
@@ -340,6 +424,46 @@ pub fn settle<T: Amount>(cash: &[T], discounts: &[T], fee: T) -> Option<Settleme
 /// ```
 pub fn line_amount<T: Amount>(quantity: T, unit_price: T) -> Option<T> {
     quantity.checked_mul(unit_price)
+}
+
+/// A tax category's deductible amount from its accounts' `(book,
+/// percent)` pairs: every account's exact share `book × percent ÷ 100`
+/// added first, then the one rounding to the cent, half away from zero.
+///
+/// ```text
+/// GOAL: a category's deductible amount is its exact shares added and
+///       rounded once, never a sum of rounded shares.
+/// SOURCE: docs/spec/rules.md B-32 (CHOICE: owner, 2026-11-07, D-67) and
+///         B-21 (Form 1065 instructions: "include cents when adding the
+///         amounts and round off only the total"); plan/served.md 10.1.
+/// INVARIANTS:
+///   1. On Some(a), a is the exact sum S = Σ(book_i × percent_i ÷ 100)
+///      rounded once to the nearest cent, a tie away from zero.
+///   2. |a − S| <= half a cent. a never has S's opposite sign, and is
+///      never a negative zero.
+///   3. a is round(S), never Σ round(book_i × percent_i ÷ 100): one
+///      rounding for the category, after every share is added.
+///   4. None when a product or the running sum overflows; never a panic.
+/// SCENARIOS:
+///   1. IF two accounts of 1.01 at 50% each:
+///      - SHOULD be 1.01 (the exact 0.505 + 0.505)
+///      - NEVER 1.02 (0.51 + 0.51, rounding each share)
+///      BECAUSE the category rounds only its total.
+///   2. IF 1.05 at 50% and 1.05 at 30%:
+///      - SHOULD be 0.84 (0.525 + 0.315)
+///      - NEVER 0.85 (0.53 + 0.32)
+///   3. IF 333.33 at 50%:
+///      - SHOULD be 166.67 (166.665, a tie away from zero)
+/// ```
+pub fn deductible_amount<T: Amount>(shares: &[(T, T)]) -> Option<T> {
+    let hundred = T::from_u32(100)?;
+    let mut numerator = T::ZERO;
+    for &(book, percent) in shares {
+        numerator = numerator.checked_add(book.checked_mul(percent)?)?;
+    }
+    let rounded = numerator.checked_div_round_cent(hundred)?;
+    // Never a negative zero: money never prints "-0".
+    Some(if rounded == T::ZERO { T::ZERO } else { rounded })
 }
 
 /// Check an entry's lines: two or more, every amount positive and within

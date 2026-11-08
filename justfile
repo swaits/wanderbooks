@@ -179,8 +179,25 @@ _kani set:
     echo "Kani ({{set}}): $(wc -l <<<"$names") harnesses verified"
 
 # Random books through wanderbooks and GnuCash 5.10, compared exactly (Docker)
+# The oracle's Dockerfile and runner live in bookspec (`gnucash/oracle`,
+# image `bookspec-gnucash-oracle`): one source of truth. This builds that
+# image from the pinned bookspec checkout (the rev in ledger-core's
+# Cargo.toml), so no copy is kept here.
 oracle:
-    docker build -q -t wanderbooks-gnucash-oracle oracle/gnucash
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # The oracle's container lives in bookspec (one source of truth): find
+    # the pinned checkout through cargo itself, whatever its directory name.
+    cargo fetch --locked
+    manifest=$(cargo metadata --format-version 1 --locked \
+        | jq -r '.packages[] | select(.name == "bookspec-checker") | .manifest_path' | head -1)
+    [ -n "$manifest" ] || { echo "oracle: bookspec-checker is not a dependency of this workspace" >&2; exit 1; }
+    root=${manifest%/checker/Cargo.toml}
+    [ -f "$root/gnucash/oracle/Dockerfile" ] || {
+        echo "oracle: the pinned bookspec ($root) has no gnucash/oracle; move the pin to a bookspec rev that includes it (P14 unit S-K1)" >&2
+        exit 1
+    }
+    docker build -q -t bookspec-gnucash-oracle "$root/gnucash/oracle"
     cargo test -p ledger-core --test oracle_gnucash -- --ignored --nocapture
 
 # Fuzz one target for some seconds (nightly; corpus in fuzz/corpus/<target>)

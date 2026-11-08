@@ -9,6 +9,8 @@ rust = [
   { version = "nightly-2026-10-01", components = "miri,rust-src" },
 ]
 just = "1"
+# `just oracle` reads the pinned bookspec's path from `cargo metadata`.
+jq = "1.7.1"
 # `just deploy` runs the Netlify CLI through npx.
 node = "26"
 # `just prove`: Kani model-checks the accounting kernel. Kani fetches its

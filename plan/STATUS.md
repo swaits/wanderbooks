@@ -29,8 +29,8 @@ both were fixed before merging.
 - **2026-11-08:** the deductible share is `kernel::deductible_amount`
   with Kani harnesses (`deductible_amount_rounds_once`, in `kani_slow`,
   ~17 min; `deductible_amount_refuses_overflow`), bridge and exact-reference
-  properties, and docs/verification.md law 39 (no Lean theorem: report
-  arithmetic, reasoning there). `just prove` green; the slow harness
+  properties, and docs/verification.md law 39 (Lean `Deductible.lean`: the
+  law at any size, no Books model needed). `just prove` green; the slow harness
   verified. Review caught a false overflow on huge Decimal results, fixed.
 
 **Left:** as before: P12 step 2 (the owner's overnight run, not started);

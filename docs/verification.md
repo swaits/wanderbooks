@@ -679,14 +679,37 @@ new command, so a new Lean step, and no kernel function.
       the same function; the bridge properties above carry it to
       Decimal, the exact-reference one over the decimal shapes Kani's
       integer model does not have.
-    - No Lean model: this is arithmetic on a report figure, like
-      `discount_max` (law 33) and `unrecovered_cost` (law 32), not a
-      `Ledger` command or a law about posted entries. The model's `Books`
-      has no tax categories; adding them would model presentation (a
-      category is a label on an account, and the summary is read from the
-      P&L), not a change to the books, and the law it would restate is the
-      kernel function's own definition. Kani proves that function, and the
-      bridge carries it to `Decimal`.
+    - Lean `Deductible.near`, `Deductible.tie_away_pos`,
+      `Deductible.tie_away_neg`, `Deductible.sign`, `Deductible.neg`,
+      `Deductible.of_sum`, `Deductible.of_perm`, `Deductible.append`,
+      `Deductible.split_percent`, `Deductible.per_account_differs` (with
+      `_mixed` and `Deductible.tie_example`, the spec's three scenarios by
+      `decide`), `Deductible.scale_books`, `Deductible.scale_percents`
+      (and their rounding lemmas `Deductible.roundHA_*`, all in
+      `Audit.lean`), for any number of accounts and any sizes: the result
+      is within half a cent of the exact sum (`|2(D·c − N)| ≤ D`); at
+      exactly k + ½ cents it is k + 1 (and −(k + 1)), the cent farther
+      from zero; it never has the sum's opposite sign and is 0 for a zero
+      sum; negating every book negates it; it depends on the shares only
+      through their exact sum (reordering, regrouping, or splitting an
+      account's percent changes nothing), while the sum of per-account
+      roundings does differ (1.01 + 1.01 at 50%: 1.01 once, 1.02 by
+      account); and writing books or percents at a finer common
+      denominator (more decimal places) changes nothing.
+    - What the model is, and what it is not: no `Books` model is needed,
+      the way `Prorate.lean` needs none for the proration kernel. A share
+      is a pair of integers over one positive common denominator `D`
+      (`10^(p+s)` for books at p and percents at s decimal places, the
+      mantissas the `Decimal` path of `checked_div_round_cent` works on);
+      the category in cents is `N / D`, `N = Σ bookᵢ × percentᵢ` (the
+      `÷ 100` and the dollars-to-cents `× 100` cancel); one rounding,
+      `roundHA`, is `Prorate.roundUnit` (reused, unit one) on the magnitude,
+      signed after, as the kernel's `a_mag`/`b_mag`/`negative` do. Lean
+      proves the **law** of that arithmetic at any size; it does not prove
+      the Rust. Kani proves the code on `i64` (bounded, above); the bridge
+      and exact-reference properties carry it to `Decimal`; overflow
+      (`None`) is outside the model, Kani's `deductible_amount_refuses_overflow`
+      and the tests cover it.
 
 ## What the proofs found
 

@@ -3850,7 +3850,11 @@ impl Ledger {
                 let parts = if posts {
                     regime.allocate(
                         &key,
-                        crate::money::add_exact(regime.closed, net, "the members' closed earnings")?,
+                        crate::money::add_exact(
+                            regime.closed,
+                            net,
+                            "the members' closed earnings",
+                        )?,
                         &regime.given,
                         self.base_currency.allocation_places(),
                     )?
@@ -6406,7 +6410,8 @@ impl Ledger {
                 return Err(LedgerError::TooLargeToCompute(format!("{doc}'s figures")));
             }
         };
-        let owed = crate::money::sum_exact(after[..=i].iter().copied(), &format!("{doc}'s figures"))?;
+        let owed =
+            crate::money::sum_exact(after[..=i].iter().copied(), &format!("{doc}'s figures"))?;
         let on = grid[i];
         let payments: Vec<String> = self
             .standing_payments(doc)
@@ -8425,11 +8430,8 @@ impl Ledger {
             .ok_or(LedgerError::UnknownAccount(cash_account))?;
         self.check_controls(&PAYROLL)?;
         let payables = self.payroll_tax_payables();
-        let total = crate::money::sum_exact_of(
-            &payables,
-            |(_, b)| *b,
-            "the payroll taxes payable",
-        )?;
+        let total =
+            crate::money::sum_exact_of(&payables, |(_, b)| *b, "the payroll taxes payable")?;
         if total.is_zero() {
             return Err(LedgerError::NothingToRemit);
         }

@@ -525,8 +525,10 @@ fn schedules(ledger: &Ledger, through: NaiveDate) -> Vec<Finding> {
             }
         };
         if let Some((first, _)) = months.first() {
-            let total = crate::kernel::total_of(&months, |&(_, a)| a)
-                .map_or_else(|| "a sum too large to compute".to_string(), |t| t.to_string());
+            let total = crate::kernel::total_of(&months, |&(_, a)| a).map_or_else(
+                || "a sum too large to compute".to_string(),
+                |t| t.to_string(),
+            );
             out.push(Finding::new(
                 "schedule_behind",
                 Subject::Schedule(s.id),

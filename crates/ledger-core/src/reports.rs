@@ -1308,9 +1308,7 @@ pub fn members_equity(
             for e in ledger.posted_entries().filter(|e| e.date() <= through) {
                 for l in e.lines().iter().filter(|l| l.account == id) {
                     m = match l.side {
-                        crate::Side::Credit => {
-                            add_exact(m, l.amount.amount, "a member's capital")?
-                        }
+                        crate::Side::Credit => add_exact(m, l.amount.amount, "a member's capital")?,
                         crate::Side::Debit => sub_exact(m, l.amount.amount, "a member's capital")?,
                     };
                 }
@@ -1381,7 +1379,11 @@ pub fn members_equity(
     let other_alloc = end_regime.allocate(
         &key,
         sub_exact(
-            sub_exact(end_bs.total_equity, begin_bs.total_equity, "the change in equity")?,
+            sub_exact(
+                end_bs.total_equity,
+                begin_bs.total_equity,
+                "the change in equity",
+            )?,
             explained,
             "the change in equity",
         )?,
@@ -1400,7 +1402,11 @@ pub fn members_equity(
         let too_large = "a member's income";
         let income = sub_exact(
             add_exact(
-                sub_exact(sub_exact(ending, beginning, too_large)?, contributions, too_large)?,
+                sub_exact(
+                    sub_exact(ending, beginning, too_large)?,
+                    contributions,
+                    too_large,
+                )?,
                 distributions,
                 too_large,
             )?,

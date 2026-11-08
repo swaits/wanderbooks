@@ -4,7 +4,8 @@
 //! spec (docs/oracle.md, "Who is right"). This test builds random books
 //! through wanderbooks' engine (entries, foreign-currency lines, reversals,
 //! period closes), hands their posted entries to GnuCash 5.10 running in a
-//! pinned container (oracle/gnucash/), and compares every account's
+//! pinned container (bookspec's `gnucash/oracle/`, image
+//! `bookspec-gnucash-oracle`), and compares every account's
 //! balance at month ends and random dates, exactly. A difference is a
 //! finding to adjudicate from principles (rules.md), never a reason to
 //! change wanderbooks to match.
@@ -188,7 +189,7 @@ fn ours(l: &Ledger, as_of: NaiveDate) -> BTreeMap<AccountId, Decimal> {
 
 fn gnucash(books: &[Value]) -> Vec<Value> {
     let mut child = Command::new("docker")
-        .args(["run", "--rm", "-i", "wanderbooks-gnucash-oracle"])
+        .args(["run", "--rm", "-i", "bookspec-gnucash-oracle"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

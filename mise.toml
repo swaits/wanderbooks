@@ -5,8 +5,9 @@
 # Workspace toolchain (clippy and rustfmt for `just check`).
 rust = [
   { version = "1.99", components = "clippy,rustfmt", targets = "x86_64-pc-windows-msvc" },
-  # Fuzzing (cargo-fuzz) and Miri need nightly; pinned so runs repeat.
-  { version = "nightly-2026-10-01", components = "miri,rust-src" },
+  # Fuzzing (cargo-fuzz), Miri and branch coverage need nightly; pinned so
+  # runs repeat. `llvm-tools` is what cargo-llvm-cov reads profiles with.
+  { version = "nightly-2026-10-01", components = "miri,rust-src,llvm-tools" },
 ]
 just = "1"
 # `just deploy` runs the Netlify CLI through npx.
@@ -20,6 +21,9 @@ node = "26"
 # Mutation testing and fuzzing (docs/oracle.md).
 "cargo:cargo-mutants" = "27.1.0"
 "cargo:cargo-fuzz" = "0.13.2"
+# `just coverage`: line and branch coverage of the core and the store
+# (docs/coverage-floor.md).
+"cargo:cargo-llvm-cov" = "0.9.1"
 # A compile cache shared by every jj workspace's target dir: point
 # cargo's build.rustc-wrapper at it (~/.cargo/config.toml).
 sccache = "0.18.0"

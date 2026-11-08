@@ -28,6 +28,16 @@ jobs:
       - uses: actions/checkout@v4
       - uses: jdx/mise-action@v2
       - run: just oracle
+  # Line, region and branch coverage of the core and the store, against the
+  # floor in docs/coverage-floor.md (docs/testing.md). Not a push gate: the
+  # instrumented suites are slow, so they run weekly, beside the proofs.
+  coverage:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - run: just coverage
+      - run: just coverage-check
   fuzz:
     runs-on: ubuntu-24.04
     strategy:

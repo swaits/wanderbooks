@@ -160,6 +160,79 @@ fuzz target="fuzz_op_sequence" seconds="300":
 miri:
     PROPTEST_CASES=4 MIRIFLAGS="-Zmiri-disable-isolation" cargo +nightly-2026-10-01 miri test -p ledger-core --lib --test kernel_bridge --test invariants
 
+# Line, region and branch coverage of the core and the store, from their
+# own test suites (nightly's -Zcoverage-options=branch, so every `if` has a
+# taken/not-taken record too). HTML and a plain per-file table land in
+# target/coverage/<crate>/; docs/coverage-floor.md records the totals and
+# `coverage-check` guards them. Not a push gate (it is slow), but the
+# weekly scheduled workflow runs it. `src/proofs.rs` is Kani-only (cfg(kani))
+# and is excluded, as are test and bench files: this measures the library.
+coverage crate="all":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # The shared sccache wrapper (~/.cargo/config.toml) would hand rustc to
+    # whatever toolchain it finds, and a `RUSTUP_TOOLCHAIN` in the caller's
+    # environment (1.99.1 in a session here) would beat `+nightly` for the
+    # rustc cargo-llvm-cov invokes. Both are overridden explicitly: branch
+    # coverage needs the pinned nightly. The build is its own target dir
+    # (`target/llvm-cov-target`), so sccache would not be shared anyway.
+    export RUSTC_WRAPPER=
+    export RUSTUP_TOOLCHAIN=nightly-2026-10-01
+    # Name the compiler itself: the mise shim around cargo-llvm-cov can put
+    # its pinned stable toolchain back, and a bare `rustc` then loses the
+    # nightly flag. Call the binary directly, as `fuzz` does with cargo-fuzz.
+    export RUSTC="$(rustup which --toolchain "$RUSTUP_TOOLCHAIN" rustc)"
+    llvm_cov=$(mise which cargo-llvm-cov)
+    mkdir -p target/coverage
+    # Every workspace member but the crate under measurement: a dev-dependency
+    # (the core's tests use the store, the store's use the core) is compiled
+    # instrumented too, and its files must not enter this crate's totals.
+    others() {
+        local keep=$1 member
+        local list=()
+        for member in ledger-core ledger-store ledger-config ledger-mcp \
+            ledger-import ledger-reader ledger-cli ledger-gui ledger-vault \
+            ledger-host ledger-package; do
+            [ "$member" = "$keep" ] || list+=("${member#ledger-}")
+        done
+        local IFS='|'
+        echo "crates/ledger-(${list[*]})/"
+    }
+    run() { # crate
+        local crate=$1 dir="target/coverage/$1"
+        local ignore="$(others "$crate")|/(tests|benches|examples)/|/src/proofs\\.rs$"
+        mkdir -p "$dir"
+        # One instrumented test run: the HTML comes from it; the JSON and the
+        # table are regenerated from the same profiles, cheaply.
+        # `--failure-mode all`: the store's tests start and kill server
+        # processes, which inherit LLVM_PROFILE_FILE; a SIGKILLed child leaves
+        # a truncated profraw that llvm-profdata refuses. That file has no
+        # test coverage in it, so it is tolerated; the test binaries' own
+        # profiles merge normally.
+        "$llvm_cov" llvm-cov -p "$crate" --branch --failure-mode all \
+            --ignore-filename-regex "$ignore" \
+            --html --output-dir "$dir"
+        "$llvm_cov" llvm-cov report --failure-mode all \
+            --ignore-filename-regex "$ignore" \
+            --json --output-path "$dir/coverage.json"
+        "$llvm_cov" llvm-cov report --failure-mode all \
+            --ignore-filename-regex "$ignore" > "$dir/summary.txt"
+        echo "coverage: $crate written to $dir/html and $dir/summary.txt"
+        awk -v crate="$crate" '$1 == "TOTAL" { printf "coverage: %s lines %s, regions %s, branches %s\n", crate, $10, $4, $13 }' "$dir/summary.txt"
+    }
+    case "{{crate}}" in
+        all) run ledger-core; run ledger-store ;;
+        ledger-core | ledger-store) run "{{crate}}" ;;
+        *) echo "coverage: unknown crate '{{crate}}' (all, ledger-core, ledger-store)" >&2; exit 2 ;;
+    esac
+    echo "coverage: floors in docs/coverage-floor.md; check them with \`just coverage-check\`"
+
+# The coverage floor: fails when either crate's total line coverage is more
+# than 0.5 percentage points below docs/coverage-floor.md's recorded number
+# (reads the last `just coverage` report; it does not rerun the tests).
+coverage-check:
+    @scripts/coverage-floor.sh
+
 # Where cargo-mutants copies and builds the tree for each mutant (several
 # GB per job): the user's cache on disk, never /tmp, which is often RAM.
 # The tests it runs honor the same TMPDIR (every test's books go in

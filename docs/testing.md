@@ -637,7 +637,7 @@ The run rule left A −287.54 / B −287.52; the rule since P3 gives −287.53
 each (March: Dr 3000 143.76, Dr 3001 143.77). Its bookspec example is
 `bookspec/examples/members-close.odd-cent-across-closes.toml`; it and the
 other `members-close.*` examples are checked with every example by
-`ledger-core` `tests/bookspec.rs` (`every_bookspec_example_holds`).
+`ledger-core` `tests/bookspec/` (`every_bookspec_example_holds`).
 
 **Core** (`ledger-core` `tests/odd_cent.rs`): a true-up from inception
 (`members_closes_true_up_from_inception`); a close that posts nothing
@@ -795,7 +795,7 @@ fixtures:
   ones (`bookspec/examples/as-of-package-stops-at-as-of.toml`,
   `1099-worksheet-through-as-of.toml`) and the IIF's
   (`iif-quickbooks-journal-file.toml`, formats appendix), each expected
-  value derived by hand. `ledger-core` `tests/bookspec.rs` loads every
+  value derived by hand. `ledger-core` `tests/bookspec/` loads every
   example, the formats appendix's too, and checks the as-of ones' trial
   balances, profits and losses and 1099 payments against the engine
   (`every_bookspec_example_holds`, the one loader of every example; the
@@ -948,7 +948,7 @@ the end.
 
 - **Named regressions** (`crates/ledger-core/tests/spec_cash_flow.rs`;
   also bookspec examples, `bookspec/examples/cash-flow.*.toml`, checked by
-  `tests/bookspec.rs` on every run):
+  `tests/bookspec/` on every run):
   `defect1_reversed_contributions_foot_regression` (the minimal
   reproduction: a property contribution reversed, which broke footing by
   the contribution's amount), `defect1_two_member_llc_first_year_regression`
@@ -1216,7 +1216,7 @@ cash flow statement:
   `general_journal`, `journal` and any capitals, refuses `start` and
   `end`, and the CPA package's IIF holds the entry before the package's
   fiscal year.
-- `ledger-core` `tests/bookspec.rs`: the three examples are in the
+- `ledger-core` `tests/bookspec/`: the three examples are in the
   loader's one shape, and the loader gained what they need (bookspec
   `README.md`): `setup.today` and omitted dates resolved by B-30,
   `header` and `tax_category` on an account, a `bill` event, `[[changes]]`
@@ -1396,7 +1396,7 @@ must cover is at the end.
 | The same, one year by hand: a member's check, a member's card, a member's payment of unknown method, a company card charge and a company check to one contractor, then the member reimbursed | `bookspec/examples/1099-and-party-totals-for-a-members-payment.toml` | B-35 item 9; Treas. Reg. §1.6041-1(e)(1), (a)(1)(iv) |
 | The CPA package's 1099 worksheet is `books.vendor_1099`'s CSV for the package's accounts (the request's, else the settings', R18) through its as_of, byte for byte; without `through` the files differ; a `through` outside the year and an unknown account are refused | `ledger-cli` `oracle_mcp.rs` `cpa_package_holds_the_year_and_its_evidence`; `ledger-package` `tests/package.rs` `payments_to_a_vendor_come_from_the_packages_accounts`, `one_list_of_cash_accounts_per_package`, `the_1099_worksheet_stops_at_as_of` | B-33; mcp-interface.md |
 | A feature is asked for before a command's first line: `books.update_party` with a field and the first creditor, in P2's books waiting for their format upgrade, is refused whole (nothing journaled, never the field without the creditor); once upgraded, as in books this version made, it journals the field, then the creditor, declaring nothing | `ledger-cli` `tests/spec_party_totals.rs` `update_party_asks_for_the_creditor_feature_before_its_first_line` | B-27 |
-| One bookspec loader for every example, the parties' and the 1099s' with them: `setup.parties`, `setup.members` (`distributions_account`), `setup.payees` (a party's vendor record), `setup.status_changes`, `setup.instruments`, events' `parties` and `instrument`, and the queries `vendor_1099`, `k1`, `party_part`, `party_totals`, `party_tin_last4`; refused: a party or payment method not in the setup, a reversal naming parties, party totals without a basis, a 1099 line leaving a figure out, a wrong direction or status | `ledger-core` `tests/bookspec.rs` (`every_bookspec_example_holds`, `a_party_not_in_the_setup_is_refused`, `a_party_parts_direction_is_checked`, `a_reversal_naming_parties_is_refused`, `party_totals_without_a_basis_are_refused`, `a_vendor_1099_line_leaving_a_figure_out_is_refused`, `a_vendor_1099_status_is_checked`, `a_payment_method_not_in_the_setup_is_refused`) | bookspec/README.md |
+| One bookspec loader for every example, the parties' and the 1099s' with them: `setup.parties`, `setup.members` (`distributions_account`), `setup.payees` (a party's vendor record), `setup.status_changes`, `setup.instruments`, events' `parties` and `instrument`, and the queries `vendor_1099`, `k1`, `party_part`, `party_totals`, `party_tin_last4`; refused: a party or payment method not in the setup, a reversal naming parties, party totals without a basis, a 1099 line leaving a figure out, a wrong direction or status | `ledger-core` `tests/bookspec/` (`every_bookspec_example_holds`, `a_party_not_in_the_setup_is_refused`, `a_party_parts_direction_is_checked`, `a_reversal_naming_parties_is_refused`, `party_totals_without_a_basis_are_refused`, `a_vendor_1099_line_leaving_a_figure_out_is_refused`, `a_vendor_1099_status_is_checked`, `a_payment_method_not_in_the_setup_is_refused`) | bookspec/README.md |
 
 **For P12 (mutation targets, none run, D-33):** `parties::card_accounts`
 (the recorded-cards branch, the gift and the other-instruments
@@ -1686,7 +1686,7 @@ basis. Mutation runs wait for P12 (D-33); none was run.
   acquired; the register export's columns and totals).
 - **ledger-package:** `package.rs`
   `the_k1_worksheet_reports_tax_basis_capital` (the CSV line by line).
-- **bookspec:** the one loader (`ledger-core/tests/bookspec.rs`) runs the
+- **bookspec:** the one loader (`ledger-core/tests/bookspec/`) runs the
   assets' examples in the shared shape: `setup.assets` with `acquired_by`
   and `basis`, a `[[changes]]` `correct_asset`, and the queries
   `register_row`, `register_totals`, `asset_basis`, `k1_tax_basis` and
@@ -1785,7 +1785,7 @@ books; the privacy sweep below.
 |---|---|---|
 | Every tool the server has is documented in `docs/mcp-interface.md`, and every tool the doc documents exists (115; `books.access_log` had no entry) | `ledger-mcp` `server.rs` `every_tool_is_documented_and_every_documented_tool_exists` (with a check of its own reader) | the doc, read tool by tool against the code |
 | The reversal's cash flow mirror at three lines, in two halves: a reversal's movements are its original's negated, and `kernel::flows_of` is odd; end to end at two lines | Kani `entry_movements_of_a_reversal_mirror`, `flows_of_mirrors`, `entry_flows_of_a_reversal_mirror` (`kernel::entry_flows` split into `entry_movements` and `flows_of`, behavior unchanged: every cash flow test, bridge and property passes) | docs/verification.md law 10; Lean `flows_reversal` |
-| A closed-list value in a bookspec example (a 1099 form, a payment method's kind, a reason kind, a party totals basis) is spelled exactly as the README spells it; a K-1 query needs `cash_accounts` | `ledger-core` `tests/bookspec.rs` `a_form_in_another_case_is_refused`, `a_payment_method_kind_in_another_case_is_refused`, `a_reason_kind_in_another_case_is_refused`; `check_k1` | bookspec/README.md |
+| A closed-list value in a bookspec example (a 1099 form, a payment method's kind, a reason kind, a party totals basis) is spelled exactly as the README spells it; a K-1 query needs `cash_accounts` | `ledger-core` `tests/bookspec/` `a_form_in_another_case_is_refused`, `a_payment_method_kind_in_another_case_is_refused`, `a_reason_kind_in_another_case_is_refused`; `check_k1` | bookspec/README.md |
 | Every Kani harness in `src/proofs.rs` runs in exactly one of `just prove` and `just prove-slow`, each run's count is checked, and a slow-list name that isn't a harness fails | `justfile` `_kani` | docs/verification.md, "Running it" |
 
 **Docs corrected** (each against the code): `docs/mcp-interface.md`, about
@@ -2873,7 +2873,7 @@ catch.
 
 bookspec's example schema moved out of the loader into
 `bookspec/checker`, its own Cargo workspace inside the repository (P13
-step 1, D-34). `crates/ledger-core/tests/bookspec.rs` is now the
+step 1, D-34). `crates/ledger-core/tests/bookspec/` is now the
 wanderbooks adapter: it imports `Example`, `Setup`, `Event`, `Expect`,
 `Query`, `Refusal` and the rest from the checker by a path dev-dependency,
 and it is unchanged in what it proves. The loader parses every example
@@ -2916,7 +2916,7 @@ an area and no status.
   `a_claim_without_an_example_fails`, `a_refused_query_fails`,
   `an_example_listed_under_no_rule_fails`, `a_refused_change_fails`. The
   fake engine proves the runner judges answers, not the engine's belief.
-- **`ledger-core` `tests/bookspec.rs`:** `the_runner_reports_every_claimed_rule_green`
+- **`ledger-core` `tests/bookspec/`:** `the_runner_reports_every_claimed_rule_green`
   (all 56 examples through the trait, every claimed rule pass) and
   `every_bookspec_example_holds` (unchanged: the loader's own checks).
 - **`ledger-package` `tests/package.rs`:** `the_bookspec_iif_example_matches_the_engine`
@@ -2985,7 +2985,7 @@ BS-arap-1, -6, BS-format-1); each says so in its section.
   `what_gnucash_did_with_the_entries_the_specification_refuses` (the
   evidence: ten dollars and 200.00 parked in an Imbalance account, 10.005
   rounded to 10.01).
-- **`ledger-core` `tests/bookspec.rs`:** `every_bookspec_example_holds` and
+- **`ledger-core` `tests/bookspec/`:** `every_bookspec_example_holds` and
   `the_runner_reports_every_claimed_rule_green`, unchanged in what they
   prove, now over 66 examples; `BS-entry-1` to `BS-entry-3`, `BS-ledger-1` to
   `-6`, `BS-ledger-8`, `BS-statement-1`, `-2`, `BS-period-1` and `-2` are now
@@ -4117,11 +4117,11 @@ The specification (text, examples, checker, runner, Lean, GnuCash adapter)
 lives at https://git.swaits.com/swaits/bookspec (CC BY 4.0 for `spec/` and `examples/`, MIT OR Apache-2.0 for the
 code) and is pinned by commit in `crates/ledger-core/Cargo.toml` and
 `crates/ledger-package/Cargo.toml`. `just check` runs the examples exactly as
-before: `cargo test --workspace` includes `ledger-core` `tests/bookspec.rs`
+before: `cargo test --workspace` includes `ledger-core` `tests/bookspec/`
 (`every_bookspec_example_holds`, `the_runner_reports_every_claimed_rule_green`),
 which reads them through `bookspec_checker::examples()`, and `ledger-package`
 `tests/package.rs` reads the IIF example the same way. Two checks that need
-this repository's files live in `tests/bookspec.rs`: `every_vendored_pin_is_verbatim`
+this repository's files live in `tests/bookspec/`: `every_vendored_pin_is_verbatim`
 (each vendored pin in the spec is verbatim in `docs/spec/sources`) and
 `rules_md_carries_every_id`. The examples named `bookspec/examples/...` in the
 older sections above are files of that repository. The checker's, the

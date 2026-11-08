@@ -80,7 +80,7 @@ harnesses), `reports`, `cashflow`, `analysis`, `periods`, `assets`,
 `classes`, `parties`, `arap`, `settings`, `conventions`, `calendar`,
 `shares`, `tax_capital`, `rules`, `audit` (the audit programme's pure checks, P8), `error`; its tests in `tests/`
 (`invariants.rs`, `properties.rs`, `spec_*.rs`, `kernel_bridge.rs`,
-`model.rs`, `bookspec.rs`, `golden/`).
+`model.rs`, `bookspec/`, `golden/`).
 
 ## Dependency rules
 
@@ -330,7 +330,7 @@ to move to its own repository (P13 step 6, D-34, Z-17):
   whether its own answer is right.
 - `bookspec/spec/rules-index.md` maps B-1 to B-45 to the bookspec ids;
   `docs/spec/rules.md` carries each stated rule's id under its heading.
-- `crates/ledger-core/tests/bookspec.rs` is the wanderbooks adapter: it
+- `crates/ledger-core/tests/bookspec/` is the wanderbooks adapter: it
   implements `Engine` over `Store` (a dev-dependency only, so no engine
   crate depends on the specification) and remains the loader that checks
   every figure. `ledger-package` answers the formats appendix's IIF

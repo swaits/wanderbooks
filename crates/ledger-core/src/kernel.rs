@@ -429,6 +429,8 @@ pub fn line_amount<T: Amount>(quantity: T, unit_price: T) -> Option<T> {
 /// A tax category's deductible amount from its accounts' `(book,
 /// percent)` pairs: every account's exact share `book × percent ÷ 100`
 /// added first, then the one rounding to the cent, half away from zero.
+/// A percent is the account's deductible percentage, 0 to 100; an
+/// override may carry decimals (33.33 is 33.33%, exactly).
 ///
 /// ```text
 /// GOAL: a category's deductible amount is its exact shares added and

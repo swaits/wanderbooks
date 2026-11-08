@@ -925,7 +925,7 @@ each harness's whole run, its compile of about 50 s included):
 | `bounds_check_matches_definition` | 34 | prove | (not in the 2026-10-22 run; P4b S1, 2026-10-24) |
 | `bounds_kept_is_the_definition_on_books_in_bounds` | 34 | prove | (as above) |
 | `settle_is_exact` | 36 | prove | 1 |
-| `deductible_amount_rounds_once` | 39 | prove-slow | 992 (2026-11-08) |
+| `deductible_amount_rounds_once` | 39 | prove-slow | 992 alone; 1,207 in the 2026-11-08 prove-slow |
 | `deductible_amount_refuses_overflow` | 39 | prove | 0 |
 | `kani_symbolic_copy_canary` | (the checker: "Trusting the checker") | prove | 3 |
 

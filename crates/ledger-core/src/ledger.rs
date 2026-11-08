@@ -1864,15 +1864,16 @@ impl Ledger {
                 found: foreign_currency.code().to_string(),
             });
         }
-        let exact = foreign_amount
-            .checked_mul(fx_rate)
-            .ok_or(LedgerError::AmountOutOfRange)?;
         // Booked in the base currency's smallest unit (cents for USD), half
         // away from zero: a ledger in one money holds no fractions of its
         // smallest unit (rules.md B-3; DECISION, owner 2026-10-13, after
-        // the GnuCash cross-check found the difference).
-        let base_amount = crate::kernel::round_minor(
-            exact,
+        // the GnuCash cross-check found the difference). The kernel's
+        // fx_booked_minor is that computation (foreign x rate exactly,
+        // rounded once); the rate and zero-result refusals above and
+        // below keep their error variants.
+        let base_amount = crate::kernel::fx_booked_minor(
+            foreign_amount,
+            fx_rate,
             self.base_currency,
             crate::kernel::Rounding::HalfAwayFromZero,
         )

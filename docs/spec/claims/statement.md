@@ -32,11 +32,12 @@ Lean `trial_balance_iff`, `Reachable.trial_balance`,
 
 **Claims:** partly (bookspec's record states rules 1-12; the picks and the product surface are below)
 
-**Pick:** the direct method; an entry's cash allocated to its sections in the order operating, investing, financing (CONVENTION, the ASC silent, disclosed); what a member or a lender pays or receives for the company presented as constructive cash, borrowed (or contributed) and spent (the owner, D-42, 2026-10-20, revising D-35's first point); a payment shared between a government and others split by their resolved shares, the government's part rounded half to even to the base currency's places and the rest exact (CONVENTION); payroll entries keep their (d) class whoever they name (CONVENTION).
+**Pick:** the direct method; an entry's cash allocated to its sections in the order operating, investing, financing (CONVENTION, the ASC silent, disclosed); within a section, the cash split among its kinds in the order the rest of the section's kinds, interest received, interest paid (CONVENTION, as the engine splits it); what a member or a lender pays or receives for the company presented as constructive cash, borrowed (or contributed) and spent (the owner, D-42, 2026-10-20, revising D-35's first point); a payment shared between a government and others split by their resolved shares, the government's part rounded half to even to the base currency's places and the rest exact (CONVENTION); payroll entries keep their (d) class whoever they name (CONVENTION).
 
 **Enforced:** `profit_and_loss_for_period`; `cashflow::cash_flow` (with
 `kernel::entry_flows`, `apply_cash`, `constructive`, `exchanged`),
-`role_problems`, `foot`; `ledger_package::cash_flow_for` (the server, the
+`role_problems`, `foot`; `Ledger::reversal_chain` (rule 6's chains);
+`ledger_package::cash_flow_for` (the server, the
 package and the viewer). **Checked:** Lean `statements_add_up`,
 `cashflow_sections_sum_to_cash_change`, `entry_flows_sum`,
 `flows_reversal`, `constructive_nets`, `constructive_neg`,
@@ -269,8 +270,8 @@ replay_set_project}`, `Store::{add_project, set_project}`.
 
 **WB-statement-6** Links and notices: a line is tagged with a project
 (its class); a receipt or document is linked to a project (attachment
-subject `project`); a choice recorded in the books names the projects it
-is about. Whether to link is the company's convention
+subject `project`); a decision names the projects it is about. Whether
+to link is the company's convention
 (`link-to-projects`). Finished and abandoned projects still take lines,
 and `books.add_line`, `books.record_payout`, `books.create_invoice` and
 `books.create_bill` say so when one is tagged. An invoice line naming an
@@ -308,3 +309,44 @@ contribution_margin_pct}`, `ProjectToDate::margin_pct`. **Checked:**
 `prop_project_contribution_is_the_net_to_date`,
 `prop_snapshot_contribution_is_the_net_to_date`, Kani
 `unrecovered_cost_laws`.
+
+**WB-statement-8** The statement's words and groupings are
+wanderbooks' product strings, not accounting (the accounting is
+BS-statement-3's rules 4, 6 and 8): a reversal shown alone reads
+"Reversal of #N — <N's description>" and a reinstatement "Reinstatement
+of #A (reverses #B)", both listed under the original's kind; a
+financing inflow under a borrowing reads "Proceeds from borrowing —
+<account>" and a contribution "Contributions from members — <member>";
+the rule-4 gain or loss line reads "(Gain) loss and other noncash changes
+in investing assets"; and the reconciliation's noncash items read
+"Depreciation" (the entry's investing and financing balance-sheet lines
+all accumulated depreciation), "Noncash: through <account>" (all on that
+account, accumulated depreciation aside) or "Other noncash items", with
+each operating balance-sheet account's line reading "Increase in
+<account>" or "Decrease in <account>". The engine builds these strings in
+one place so every surface agrees.
+
+**Enforced:** `cashflow::cash_flow` (`label`, `reconcile`). **Checked:**
+`a_reversal_of_a_reversal_is_shown_and_foots`,
+`a_reversal_three_levels_down_is_labelled_a_reversal`,
+`a_payment_made_for_the_company_and_its_reversal_net`,
+`an_expense_a_member_paid_is_borrowed_and_spent`,
+`defect1_two_member_llc_first_year_regression`,
+`a_disposals_depreciation_credit_back_is_depreciation`.
+
+**WB-statement-9** A document's entry posts one revenue or expense line
+per project its lines name, in the order each is first named, each the
+sum of that project's lines, and the untagged lines' sum as one line
+(`arap::document_parts`); a document naming none posts exactly the one
+line every document posted before. The receivable or payable line and
+the payments against it take no project. Journaled as the line's
+`class_id` in `invoice.created` or `bill.created` and an
+`entry.line_class_set` right after its revenue or expense line's
+`entry.line_added`, behind the journal feature `document_line_projects`
+(B-27).
+
+**Enforced:** `arap::document_parts`, `Ledger::{create_invoice,
+create_bill}`, `Store::{create_invoice, create_bill}` (feature
+`document_line_projects`). **Checked:** `tests/spec_document_projects.rs`,
+`tests/document_projects.rs`, proptest
+`prop_document_parts_partition_the_total`.

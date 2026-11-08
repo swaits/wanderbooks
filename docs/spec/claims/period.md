@@ -12,10 +12,14 @@ Rules: B-11, B-12, B-30.
 
 **Claims:** yes
 
-**Enforced:** `Ledger::close_period_to`. **Checked:** Kani
+**Enforced:** `Ledger::close_period_to` (INVARIANT 5: a close with
+nothing to close posts no entry and still closes the period; the EM's
+decision, D-73, 2026-11-08). **Checked:** Kani
 `closing_line_zeroes`, `closing_entry_balances`; Lean
-`closingEntry_zeroes`, `closingEntry_accepted`, `close_zeroes`,
-`close_credits_net_income`; `a_close_sweeps_only_through_the_period_end`.
+`closingEntry_zeroes`, `closingEntry_accepted`, `closingEntry_net`,
+`close_zeroes`, `close_credits_net_income`;
+`a_close_sweeps_only_through_the_period_end`,
+`a_close_with_nothing_to_close_posts_no_entry`.
 
 ## B-12 A closed period takes no new postings; periods close in order
 
@@ -26,9 +30,12 @@ Rules: B-11, B-12, B-30.
 **Pick:** periods nest and never partially overlap (the owner, 2026-10-13).
 
 **Enforced:** `closed_period_containing`,
-`CloseOutOfOrder`, `Store::rehearse`. **Checked:** Lean `Steps.frozen`;
+`CloseOutOfOrder`, `Ledger::create_period` (`PeriodsOverlap`),
+`Store::rehearse`. **Checked:** Lean `Steps.frozen`;
 store property `refused_commands_never_reach_the_journal` (no draft in a
-closed period).
+closed period); `periods_nest_but_never_partially_overlap`
+(`crates/ledger-core/tests/invariants.rs`) and `periods_nest`
+(`crates/ledger-core/tests/spec_ledger.rs`).
 
 ### Product rules
 
@@ -51,7 +58,12 @@ untouched.
 **Enforced:** `ledger_core::calendar` (`period_defaults`,
 `PeriodDefaults::statement`, `statement_range`, `as_of`,
 `calendar_year`, `fiscal_year_start_on`, `PeriodKind::describe`,
-`START_DOC`, `END_DOC`, `AS_OF_DOC`, `YEAR_DOC`); `ledger_package`
+`START_DOC`, `END_DOC`, `AS_OF_DOC`, `YEAR_DOC`), whose refusals are
+`LedgerError::InvalidDateRange` (both dates given, start after end) and
+`LedgerError::StartAfterToday` (only a start, after today, the end an
+omitted end would mean; the message says the end was defaulted: pass
+end); a resolved start after the resolved end is never swapped or
+clamped to fit. `ledger_package`
 `statement_range`, `as_of_date`, `pnl_statement`, `bs_statement`,
 `cash_flow_statement`, `build_package`; `ledger-mcp` `BooksServer::periods`,
 `statement_range`, `as_of`, every report tool, `books.show`, the

@@ -32,7 +32,10 @@ kernel, panics, the sweep units in section 3, hledger in section 4).
 - **Product rules** (D-71): bookspec states only the general principle;
   wholly product ids are retired; wanderbooks keeps `WB-n` rules and its
   claims (`docs/spec/claims/<area>.md`: per BS id, the option picked,
-  Enforced, Checked).
+  Enforced, Checked). Product rules are numbered `WB-<area>-<n>` (the EM,
+  2026-11-08: areas are moved in parallel, so one global WB-n numbering
+  would collide; the shape mirrors bookspec's ids), kept in the claims file
+  of the area their rule came from.
 
 ## Working rules
 
@@ -57,7 +60,7 @@ workers have been faster).
 |---|---|---|---|---|
 | **S-A** | Rule records and one catalogue: the record schema above, the checker's rule loader and link checks, `rules-index.md` and `rules.rs`'s table generated from the records; B-39/40/43 statuses fixed; the page budget dropped or raised | D-68, D-71 | bookspec `checker/src/rules.rs` (+ new `rule.rs`), `checker/tests/{spec,rules}.rs`, `spec/00-model.md`, `spec/rules-index.md`, new `rules/` | M |
 | **S-B** | Sources move: the 19 qualifying sources to `bookspec/sources/` with licence lines; the verbatim pin check moves into bookspec; wanderbooks keeps its 8 product sources | S-A's pin field, X-H0 | bookspec `sources/**`, `README.md`, `checker/tests/spec.rs`; wanderbooks `docs/spec/sources/**`, `docs/spec/README.md`, one adapter test | M |
-| **S-C1..C6** | Spec content per area, as rule records: C1 entry + ledger, C2 statement + period + prepaid + revenue, C3 partner, C4 asset + 1099 + tax categories, C5 arap (+ B-43), C6 formats and the retired ids | S-A, S-B | one area's records each | M-L each |
+| **S-C1..C6** | Spec content per area, as rule records, each unit also reducing its area's wanderbooks claims file (unit S-D for that area): C1 entry + ledger, C2 statement + period + prepaid + revenue, C3 partner, C4 asset + 1099 + tax categories, C5 arap (+ B-43), C6 formats and the retired ids | S-A, S-B | one area's records each | M-L each |
 | **S-D0** | Split `docs/spec/rules.md` mechanically into `docs/spec/claims/<area>.md` and `docs/spec/product.md` (WB-n), no content change | X-H0 | `docs/spec/**`, the adapter's path | S |
 | **S-D** | Reduce each claims file as its C unit lands: keep the pick, Enforced, Checked, the WB rules | S-D0, S-C* | `docs/spec/claims/*.md` | S per area |
 | **S-E** | Rewrite every `rules.md B-n` mention (784 in 160 files) to `BS-...` / `WB-n`; AGENTS.md points at bookspec; a test that every `SOURCE:` resolves. Single-owner moment: no other branch open | S-A, S-D0 | 160 files | M |

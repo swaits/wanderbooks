@@ -1,6 +1,6 @@
 # Claims: entry
 
-Wanderbooks' claims for bookspec area **entry**: what each rule requires, where the engine enforces it, and which tests check it. The accounting text lives in bookspec's records (`rules/entry/`); here stay the option wanderbooks picks, its enforcement and tests, and the product rules that are only wanderbooks' (`WB-entry-<n>`). B-1, B-2, B-21 and B-28 are reduced; B-43 is reduced by unit S-C5.
+Wanderbooks' claims for bookspec area **entry**: what each rule requires, where the engine enforces it, and which tests check it. The accounting text lives in bookspec's records (`rules/entry/`); here stay the option wanderbooks picks, its enforcement and tests, and the product rules that are only wanderbooks' (`WB-entry-<n>`). B-1, B-2, B-21, B-28 and B-43 are reduced.
 
 Rules: B-1, B-2, B-21, B-28, B-43.
 
@@ -178,60 +178,9 @@ pinned; every tool over every old book).
 
 **bookspec:** `BS-entry-5`
 
-**Status:** AUTHORITY (the evidence a draft waits for, Pub. 583 and Rev.
-Proc. 98-25); CHOICE D-47 (owner-adopted recommendation, 2026-10-26:
-reversals stay posted and need no evidence of their own); CONVENTION (the
-two states, and discarding a draft rather than posting and reversing it).
+**Claims:** partly (bookspec's record states the evidence gate's principle, the draft state as a note and the discard; the gate's function, the policy settings, the states' names and the surfaces are wanderbooks product, below)
 
-```text
-GOAL: no entry the receipt policy covers posts without the document that
-      supports it, decided in one place; a draft that is finished and
-      waits for that document says so; a draft that will never post can
-      be thrown away, so it stops holding its period open.
-SOURCE: IRS Pub. 583 (docs/spec/sources/irs-records.md: "you must keep
-        supporting documents ... they support the entries in your
-        books"); Rev. Proc. 98-25 §5.01 (the records must let the books be
-        demonstrated); CHOICE D-47 (a reversal's evidence is its
-        original's, D-12); CONVENTION (a draft's state is a note: it moves
-        no figure).
-INVARIANTS:
-  1. One function, `evidence::requirement`, decides whether an entry needs
-     evidence: `Required` (with why) or `Exempt` (with the source of the
-     exemption). The store's gate, the server's previews and digest, the
-     viewer and Needs attention all call it; none decides on its own.
-  2. Exempt by origin, each with its source: a period's closing entry
-     (derived from the books), a schedule month's or a depreciation run's
-     posting (the schedule is the evidence), an asset's disposal, an entry
-     a document or a payroll command posts (it carries its own evidence
-     or is posted at once by design: an invoice, a bill, a payment, a
-     write-off, a payroll run or its tax remittance), and a reversal (its
-     evidence is its original's, D-47, D-12). Every other entry, hand
-     entries and recurring drafts included, is covered by the policy
-     settings (`policy.evidence.*`): required above the threshold, on a
-     required account, or as part of a split group; exempt only when every
-     line is on an exempt account.
-  3. A draft has a state: `building` (the default) or `awaiting_evidence`
-     with a note. A state is a note on the draft; it moves no line, no
-     balance and no report, and a posted entry has none.
-  4. A draft may be discarded, with a reason, and only a draft: a posted
-     entry is never removed (B-8). Discarding moves no balance and spends
-     no id, and what was recorded about the draft (its vendor, instrument
-     and parties) goes with it; the journal still holds its lines and why
-     it went. A discarded draft no longer holds a period open.
-  5. Evidence is checked when the entry posts, not when it is drafted: a
-     draft awaiting evidence posts the moment the evidence is attached
-     and the post is confirmed.
-  6. Every refusal leaves the journal unchanged.
-SCENARIOS:
-  1. A hand entry of 40.00 under a 25.00 threshold, no receipt: the post
-     is refused with `receipt_required`; the draft may be set
-     `awaiting_evidence` with the note "Figma invoice due".
-  2. The receipt is attached; the post succeeds; the entry has no state.
-  3. A reversal of that entry: it posts with no receipt of its own.
-  4. A draft dated in January, January closing: the close is refused
-     while the draft stands; discarded, the close succeeds.
-  5. A posted entry: set-state and discard are both refused.
-```
+**Pick:** reversals stay posted and need no evidence of their own, their evidence being their original's: CHOICE D-47 (owner-adopted recommendation, 2026-10-26; stated in `BS-ledger-7`'s status note, and in B-20's claims). A draft's state as a note that moves no figure, and discarding a draft rather than posting and reversing it, are the CONVENTIONs of the record.
 
 **Enforced:** `ledger_core::evidence::{requirement, Requirement}`,
 `Ledger::{set_draft_state, discard_draft, posted_seq}`,
@@ -245,3 +194,52 @@ SCENARIOS:
 `a_reversal_needs_no_receipt_of_its_own`, `gui_and_server_gate_agree`,
 `stale_preview_refused`).
 
+### Product rules
+
+**WB-entry-5** One function, `evidence::requirement`, decides whether an
+entry needs evidence: `Required` (with why) or `Exempt` (with the source
+of the exemption). The store's gate, the server's previews and digest, the
+viewer and Needs attention all call it; none decides on its own.
+**Enforced:** `ledger_core::evidence::{requirement, Requirement}`,
+`Store::post_entry_checked`. **Checked:** `ledger-cli` `tests/drafts.rs`
+(`gui_and_server_gate_agree`).
+
+**WB-entry-6** Exempt by origin, each with its source: a period's closing
+entry (derived from the books), a schedule month's or a depreciation
+run's posting (the schedule is the evidence), an asset's disposal, an
+entry a document or a payroll command posts (it carries its own evidence
+or is posted at once by design: an invoice, a bill, a payment, a
+write-off, a payroll run or its tax remittance), and a reversal (its
+evidence is its original's, D-47, D-12). Every other entry, hand entries
+and recurring drafts included, is covered by the policy settings
+(`policy.evidence.*`): required above the threshold, on a required
+account, or as part of a split group; exempt only when every line is on an
+exempt account.
+**Enforced:** `ledger_core::evidence::requirement`. **Checked:**
+`ledger-cli` `tests/drafts.rs` (`a_reversal_needs_no_receipt_of_its_own`,
+`a_draft_waits_for_its_receipt_and_posts`).
+
+**WB-entry-7** A draft has a state: `building` (the default) or
+`awaiting_evidence` with a note. A state is a note on the draft; it moves
+no line, no balance and no report, and a posted entry has none. Setting
+one is journaled as `entry.draft_state_set` (feature `drafts_v2`).
+**Enforced:** `Ledger::set_draft_state`, `Store::set_draft_state`.
+**Checked:** `ledger-store` `tests/store.rs` (`draft_states_replay_and_project`,
+`drafts_v2_waits_for_the_upgrade`).
+
+**WB-entry-8** A discard spends no id, and what was recorded about the
+draft (its vendor, instrument and parties) goes with it; the journal
+still holds its lines and why it went (`entry.draft_discarded`, feature
+`drafts_v2`).
+**Enforced:** `Ledger::discard_draft`, `Store::discard_draft`. **Checked:**
+`ledger-core` `tests/invariants.rs` (`discard_unblocks_close`);
+`ledger-store` `tests/store.rs` (`draft_states_replay_and_project`).
+
+**WB-entry-9** A refused post is `receipt_required`; the draft may then be
+set `awaiting_evidence` with a note ("Figma invoice due"). A draft
+awaiting evidence posts the moment the evidence is attached and the post
+is confirmed against a fresh preview (a stale preview is refused). Every
+refusal leaves the journal unchanged.
+**Enforced:** `Store::post_entry_checked`. **Checked:** `ledger-cli`
+`tests/drafts.rs` (`a_draft_waits_for_its_receipt_and_posts`,
+`stale_preview_refused`).

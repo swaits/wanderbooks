@@ -2248,7 +2248,8 @@ included, and an account's header flag never changes).
   summary is the exact sum of each of its accounts' shares (book ×
   deductible percent ÷ 100), rounded once to the cent, half away from
   zero, following B-21's "round off only the total"; the books stay
-  exact (R-2).
+  exact (R-2). The arithmetic is `kernel::deductible_amount`, so Kani
+  proves the one rounding and the bridge carries it to `Decimal`.
 - Every account a tool can require has a category that fits it on every
   return: the gain or loss account of a disposal (`form_4797_gain_loss`,
   Form 4797), tax-exempt income (`tax_exempt_income`, Schedule K), and
@@ -2259,7 +2260,8 @@ included, and an account's header flag never changes).
   and in no total, on every return.
 
 **Enforced:** `tax::needs_category`, `account_needs_category`,
-`uncategorized_accounts`, `CATEGORIES`; `Ledger::check_tax_category_required`,
+`uncategorized_accounts`, `CATEGORIES`; `kernel::deductible_amount`
+(`tax::tax_summary`'s one rounding); `Ledger::check_tax_category_required`,
 `check_tax_category_kept` (commands only, never `set_account_tax`, which
 replay calls); `settings::TaxCategoryPolicy`, `Settings::require_tax_category`;
 `Store::add_account_with_tax`, `add_account`, `set_account_tax`
@@ -2268,7 +2270,9 @@ their first `settings.set` naming the key, B-27); `ledger-mcp` `books.add_accoun
 `books.import_chart_csv`, `books.digest`; `ledger-gui` Needs attention
 (Info under warn, Todo under refuse). **Checked:** `ledger-core`
 `tests/tax.rs` (the rounding: `a_category_rounds_its_deductible_amount_once_not_per_account`,
-`a_category_rounds_once_across_different_percents`); `ledger-store` `tests/store.rs`
+`a_category_rounds_once_across_different_percents`); Kani
+`deductible_amount_rounds_once`, `deductible_amount_refuses_overflow`;
+bridge `deductible_amount_agrees`; `ledger-store` `tests/store.rs`
 (`prop_tax_policy_refuses_exactly`, `a_journaled_clear_replays_under_refuse`);
 `ledger-cli` `tests/spec_tax_policy.rs`; `ledger-gui` `tests/view_model.rs`
 (`needs_attention_flags_every_uncategorized_pl_account_defect_8`);

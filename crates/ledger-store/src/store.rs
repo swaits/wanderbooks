@@ -2566,12 +2566,13 @@ impl Store {
                     Some((e, d, if i % 2 == 0 { amount } else { -amount }))
                 })
                 .collect();
-            let at_disposal: Decimal = dated
-                .iter()
-                .filter(|(_, d, _)| *d <= month_end)
-                .map(|(_, _, a)| *a)
-                .sum();
-            let in_the_end: Decimal = dated.iter().map(|(_, _, a)| *a).sum();
+            let what = format!("{period}'s depreciation run");
+            let at_disposal = ledger_core::money::sum_exact_of(
+                dated.iter().filter(|(_, d, _)| *d <= month_end),
+                |(_, _, a)| *a,
+                &what,
+            )?;
+            let in_the_end = ledger_core::money::sum_exact_of(&dated, |(_, _, a)| *a, &what)?;
             if at_disposal != in_the_end {
                 // The entries the difference is in: those dated after the
                 // month (or the run itself, dated after a reversal of it).
@@ -3446,7 +3447,7 @@ impl Store {
         let ar = self.ensure_control_account(&ledger_core::RECEIVABLES)?;
         let revenue = self.ensure_control_account(&ledger_core::REVENUE)?;
         let invoice_id = self.ledger.next_invoice_id();
-        let total: Decimal = lines.iter().map(|l| l.amount).sum();
+        let total = arap::document_total(lines, "the invoice")?;
         let description = format!("Invoice {invoice_id}");
         let mut posting = vec![(ar, Side::Debit, total, None)];
         posting.extend(arap::document_parts(lines, "the invoice")?.into_iter().map(
@@ -3741,7 +3742,7 @@ impl Store {
         let expense = self.ensure_control_account(&ledger_core::GENERAL_EXPENSES)?;
         let ap = self.ensure_control_account(&ledger_core::PAYABLES)?;
         let bill_id = self.ledger.next_bill_id();
-        let total: Decimal = lines.iter().map(|l| l.amount).sum();
+        let total = arap::document_total(lines, "the bill")?;
         let description = format!("Bill {bill_id}");
         let mut posting: Vec<_> = arap::document_parts(lines, "the bill")?
             .into_iter()
@@ -4449,7 +4450,8 @@ impl Store {
             return Err(LedgerError::UnknownAccount(cash_account).into());
         }
         let payables = self.ledger.payroll_tax_payables();
-        let total: Decimal = payables.iter().map(|(_, b)| *b).sum();
+        let total =
+            ledger_core::money::sum_exact_of(&payables, |(_, b)| *b, "the payroll taxes payable")?;
         if total.is_zero() {
             return Err(LedgerError::NothingToRemit.into());
         }
@@ -4496,11 +4498,11 @@ impl Store {
         )?);
         // Name the entry as a remittance, as payroll.run names a run's
         // (readers like the viewer tell it from a hand-made entry by this).
-        let total: Decimal = plan
-            .iter()
-            .filter(|(_, s, _)| *s == Side::Debit)
-            .map(|(_, _, m)| m.amount)
-            .sum();
+        let total = ledger_core::money::sum_exact_of(
+            plan.iter().filter(|(_, s, _)| *s == Side::Debit),
+            |(_, _, m)| m.amount,
+            "the payroll tax remittance",
+        )?;
         journaled.push(self.append_journal(
             "payroll.taxes_remitted",
             json!({"entry_id": entry_id, "date": date.to_string(), "total": total.to_string()}),

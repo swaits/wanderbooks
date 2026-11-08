@@ -46,7 +46,7 @@ the core depends on another crate of ours. UI concerns (formatting,
 locale, widgets) never leak into the core; the core speaks `Decimal` and
 ISO codes. A crate that was planned and never created is not missing:
 `ledger-export` became part of `ledger-import`; `ledger-oracle` is the
-test `crates/ledger-core/tests/oracle_gnucash.rs` with `oracle/gnucash/`
+test `crates/ledger-core/tests/oracle_gnucash.rs` with bookspec's `gnucash/oracle/`
 (`just oracle`); `ledger-view` and `ledger-extract` were closed by D-53
 (`PackageBooks` is the shared view; extraction is in-process in
 `ledger-import`, P6).

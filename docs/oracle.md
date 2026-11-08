@@ -89,7 +89,7 @@ engine bugs that Layers 1–4 had all missed.
 
 **Layer 5 — Cross-implementation diff harness (live: GnuCash).**
 `just oracle` builds GnuCash 5.10 in a pinned container
-(`oracle/gnucash/`) and runs `tests/oracle_gnucash.rs`: 200 random books
+(bookspec's `gnucash/oracle/`, built from the pinned rev) and runs `tests/oracle_gnucash.rs`: 200 random books
 built through wanderbooks (entries, foreign lines, reversals, closes),
 every account's balance at month ends and random dates, and each month's
 P&L, compared exactly (15,800 comparisons). Its first run found one real

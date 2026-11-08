@@ -186,15 +186,18 @@ _kani set:
 oracle:
     #!/usr/bin/env bash
     set -euo pipefail
-    rev=$(sed -nE 's/.*bookspec-checker.*rev = "([0-9a-f]+)".*/\1/p' crates/ledger-core/Cargo.toml | head -1)
-    [ -n "$rev" ] || { echo "oracle: no bookspec rev pinned in crates/ledger-core/Cargo.toml" >&2; exit 1; }
-    cargo fetch --locked >/dev/null 2>&1 || cargo fetch >/dev/null
-    checkout=$(ls -d "${CARGO_HOME:-$HOME/.cargo}"/git/checkouts/bookspec-*/"$rev" 2>/dev/null | head -1 || true)
-    if [ -z "$checkout" ] || [ ! -f "$checkout/gnucash/oracle/Dockerfile" ]; then
-        echo "oracle: bookspec checkout for rev $rev not found under ${CARGO_HOME:-$HOME/.cargo}/git/checkouts (ran cargo fetch; is the pin fetched?)" >&2
+    # The oracle's container lives in bookspec (one source of truth): find
+    # the pinned checkout through cargo itself, whatever its directory name.
+    cargo fetch --locked
+    manifest=$(cargo metadata --format-version 1 --locked \
+        | jq -r '.packages[] | select(.name == "bookspec-checker") | .manifest_path' | head -1)
+    [ -n "$manifest" ] || { echo "oracle: bookspec-checker is not a dependency of this workspace" >&2; exit 1; }
+    root=${manifest%/checker/Cargo.toml}
+    [ -f "$root/gnucash/oracle/Dockerfile" ] || {
+        echo "oracle: the pinned bookspec ($root) has no gnucash/oracle; move the pin to a bookspec rev that includes it (P14 unit S-K1)" >&2
         exit 1
-    fi
-    docker build -q -t bookspec-gnucash-oracle "$checkout/gnucash/oracle"
+    }
+    docker build -q -t bookspec-gnucash-oracle "$root/gnucash/oracle"
     cargo test -p ledger-core --test oracle_gnucash -- --ignored --nocapture
 
 # Fuzz one target for some seconds (nightly; corpus in fuzz/corpus/<target>)

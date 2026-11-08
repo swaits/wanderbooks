@@ -1,6 +1,6 @@
 # Claims: ledger
 
-Wanderbooks' claims for bookspec area **ledger**: what each rule requires, where the engine enforces it, and which tests check it. Being reduced to the engine's pick and its evidence as P14 unit S-D lands; the accounting text moves to bookspec's `spec/ledger.md`.
+Wanderbooks' claims for bookspec area **ledger**: what each rule requires, where the engine enforces it, and which tests check it. The accounting text lives in bookspec's records (`rules/ledger/`); here stay the option wanderbooks picks, its enforcement and tests, and the product rules that are only wanderbooks' (`WB-ledger-<n>`).
 
 Rules: B-3, B-4, B-5, B-8, B-9, B-10, B-20, B-23, B-29, B-31, B-32, B-44, B-45.
 
@@ -10,21 +10,9 @@ Rules: B-3, B-4, B-5, B-8, B-9, B-10, B-20, B-23, B-29, B-31, B-32, B-44, B-45.
 
 **bookspec:** `BS-ledger-1`
 
-**Status:** AUTHORITY
+**Claims:** yes
 
-- Pacioli ch. 36: "the money that you reckon by at the beginning should be
-  the same all through the Ledger."
-- ASC 830-20-30-1 (cited): "each asset, liability, revenue, expense, gain,
-  or loss arising from the transaction shall be measured initially in the
-  functional currency of the recording entity by use of the exchange rate
-  in effect at that date."
-
-A foreign line is booked in the base currency's smallest unit (ISO 4217
-minor units, `sources/iso-4217.md`), half away from zero; a ledger in one
-money holds no fractions of its smallest unit, and its cash can then
-match a bank statement: CHOICE (the owner, 2026-10-13), after the GnuCash
-cross-check found wanderbooks kept $108.34567 where GnuCash booked
-$108.35. Lines booked before then replay as booked.
+**Pick:** a foreign line is booked in the base currency's smallest unit (ISO 4217 minor units, `sources/iso-4217.md`), half away from zero: CHOICE (the owner, 2026-10-13), after the GnuCash cross-check found wanderbooks kept $108.34567 where GnuCash booked $108.35. Lines booked before then replay as booked (WB-entry-1).
 
 **Enforced:** `Ledger::add_line` (base currency only, no fraction of the
 minor unit), `Ledger::add_line_fx` (base amount = foreign amount × rate,
@@ -42,135 +30,110 @@ replay as journaled. **Checked:**
 `foreign_currency_line_is_rejected`, `fx_overflow_is_an_error`; the
 GnuCash oracle.
 
+### Product rules
+
+None.
+
 ## B-4 Five elements, closed list
 
 **bookspec:** `BS-ledger-2`
 
-**Status:** AUTHORITY (definitions); the five-type chart is CONVENTION
+**Claims:** yes
 
-FASB Concepts Statement No. 8, Ch. 4 (2021), which replaced Concepts
-Statement 6 (cited): E16 "An asset is a present right of an entity to an
-economic benefit." E37 "A liability is a present obligation of an entity to
-transfer an economic benefit." E61 equity is "the residual interest in the
-assets of an entity that remains after deducting its liabilities." E80
-revenues "are inflows or other enhancements of assets … or settlements of
-its liabilities … from delivering or producing goods, rendering services,
-or carrying out other activities." E81 expenses "are outflows or other
-using up of assets … or incurrences of its liabilities …".
+**Pick:** a child account has its parent's type: CHOICE (the owner, 2026-10-13).
 
-**Enforced:** `AccountType` (five variants). A child account has its
-parent's type: CHOICE (the owner, 2026-10-13), `Ledger::add_account`
+**Enforced:** `AccountType` (five variants); `Ledger::add_account`
 (`ParentTypeMismatch`). **Checked:** `a_child_account_has_its_parents_type`.
+
+### Product rules
+
+None.
 
 ## B-5 Normal balances
 
 **bookspec:** `BS-ledger-3`
 
-**Status:** CONVENTION
+**Claims:** yes
 
-No standard defines normal balances. OpenStax, *Principles of Accounting,
-Vol. 1* §3.1 (cited; "Access for free at openstax.org"): "As assets and
-expenses increase on the debit side, their normal balance is a debit…
-Since liabilities, equity (such as common stock), and revenues increase
-with a credit, their 'normal' balance is a credit." Pacioli ch. 12: capital
-"must always be placed as creditor … and the cash always debtor."
+**Pick:** none (a CONVENTION; wanderbooks follows it as stated).
 
 **Enforced:** `AccountType::normal_side`, `kernel::normal_balance`.
 **Checked:** Kani `normal_balance_is_signed`, `normal_side_increases`; Lean
 `balance_after_line`.
 
+### Product rules
+
+None.
+
 ## B-8 Posted is forever: the book is written only forward
 
 **bookspec:** `BS-ledger-4`
 
-**Status:** AUTHORITY
+**Claims:** yes
 
-- Pacioli ch. 36: "You should not write backward, but always forward —
-  that is, go forward as the days go, which never come back. If you do
-  otherwise, the book would be untrue."
-- German Commercial Code (HGB) §239(3) (cited; official English
-  translation): "An entry or a documented record may not be modified such
-  that it is no longer possible to establish its original content."
-- Rev. Proc. 98-25 (`sources/irs-records.md`): machine-sensible records
-  must keep the audit trail.
+**Pick:** none (AUTHORITY).
 
-**Enforced:** posted entries immutable; the journal is append-only and
-hash-chained. **Checked:** Lean `Step.extends`, `Steps.extends`; property
-`prop_posted_entries_immutable`; store `journal_tamper_is_detected`.
+**Enforced:** posted entries immutable. **Checked:** Lean `Step.extends`,
+`Steps.extends`; property `prop_posted_entries_immutable`.
+
+### Product rules
+
+**WB-ledger-1** The journal is append-only and hash-chained, so that a change to any journaled record is detected.
+*Enforced:* the journal is append-only and hash-chained.
+*Checked:* store `journal_tamper_is_detected`.
 
 ## B-9 A mistake is corrected by an opposite entry, never erased
 
 **bookspec:** `BS-ledger-5`
 
-**Status:** AUTHORITY
+**Claims:** yes
 
-Pacioli ch. 31 (the *storno*): "you shall make another entry opposite this
-one in the credit for the same amount … After you have made this
-correction it is just as if you had written nothing in the debit column."
-Ch. 36: "Mark with a cross or with an "H" that special entry, and then make
-an entry on the opposite side under the same account."
+**Pick:** none (AUTHORITY).
 
 **Enforced:** `Ledger::reverse_entry` (same lines, sides flipped, linked by
 `reversal_of`). **Checked:** Kani `reversal_mirrors`, `reversal_cancels`;
 Lean `accepted_reversal_iff`, `movement_with_reversal`.
 
+### Product rules
+
+None.
+
 ## B-10 An entry is reversed at most once; a closing entry never
 
 **bookspec:** `BS-ledger-6`
 
-**Status:** CHOICE (the owner, 2026-10-13)
+**Claims:** yes
 
-Follows from B-9 (a correction corrects once) and B-11 (a closed period
-stays closed). **Enforced:** `Ledger::check_reversal`. **Checked:**
+**Pick:** `reversible-once`: CHOICE (the owner, 2026-10-13).
+
+**Enforced:** `Ledger::check_reversal`. **Checked:**
 `an_entry_is_reversed_at_most_once`, `a_closing_entry_is_never_reversed`.
+
+### Product rules
+
+None.
 
 ## B-20 Every transaction has supporting documents; records are kept
 
 **bookspec:** `BS-ledger-7`
 
-**Status:** AUTHORITY (`sources/irs-records.md`)
+**Claims:** partly (the engine does not enforce it; the receipt policy of the tool layer does)
 
-IRS Pub. 583: "In addition, you must keep supporting documents"; they
-"support the entries in your books and on your tax return"; keep records
-"until the period of limitations for that return runs out" (3 years
-generally; 7 for bad debts).
+**Pick:** a reversal's evidence is its original's (a reversal needs no evidence of its own): CHOICE D-47 (the owner, 2026-10-26; options: a reversal's evidence is its original's / a reversal needs its own). The rest is AUTHORITY; a procedural rule.
 
 **Enforced:** the MCP receipt policy (not the engine; R-13).
+
+### Product rules
+
+None.
 
 ## B-23 Control roles: one account each, of the right kind, moved only when empty
 
 **bookspec:** `BS-ledger-8`
 
-**Status:** CONVENTION (a control account agrees with the records it
-controls); CHOICES (the owner, 2026-10-13 and 2026-10-15)
+**Claims:** yes
 
-Invoices, bills, payroll, and closes post to accounts the engine picks by
-role: receivables, revenue, payables, general expense, retained earnings,
-salary and payroll tax expense, and five payroll withholdings. A role uses
-its default code (1200, 4000, 2000, 6999, 3999, 6100, 6110, 2110–2150)
-until the human assigns it one of the chart's own accounts; the assignment
-is journaled, so replay never depends on a setting outside the journal
-(CHOICE, 2026-10-15). A role's account is postable and of the role's
-type (B-4), and the engine refuses one that isn't rather than renumber
-the chart (CHOICE, 2026-10-13). No account fills two roles. A
-receivables, payables, withholding, or retained earnings account must keep
-agreeing with what it controls (open invoices, open bills, taxes withheld,
-closed earnings): such a role moves only when its account holds no
-balance. For a withholding or retained earnings role the bookkeeper
-first moves the balance with an entry, which the journal shows. Revenue
-and expense roles move at any time; earlier postings stay where they
-are. Receivables and payables are different (B-38, 2026-10-23): their
-documents read their figures from their lines, so their control accounts
-take no line by hand and equal their documents by construction. Their
-balance moves with its documents only (plan P4b S7); until then a
-receivables or payables role whose control account holds a balance stays
-where it is, and the refusal says so (it names no hand entry, which the
-control guard would refuse). Such a role also never moves onto an
-account holding a line that is no document's, and the account it leaves
-stays guarded while it holds its documents' lines. The account at a
-role's default code is the role's control account only once a document
-posts there (or the role is assigned to it): before that, a chart's own
-1200 Equipment or a card at 2000 is the chart's.
+**Pick:** the assignment of a role to an account is journaled, so replay never depends on a setting outside the journal: CHOICE (the owner, 2026-10-15); the engine refuses a role account that is not postable or of the role's type rather than renumber the chart: CHOICE (the owner, 2026-10-13). Receivables and payables are different (B-38, 2026-10-23): their documents read their figures from their lines.
 
 **Enforced:** `Ledger::check_controls`, `Ledger::assign_role` /
 `check_assign_role`, `Ledger::check_renumber_account` (an assigned role
@@ -178,135 +141,78 @@ frees its code); the control guard and `Ledger::control_check` (B-38).
 **Checked:** `ledger-core` `tests/spec_roles.rs`, `tests/spec_documents.rs`;
 `ledger-store` replay of `role.assigned`.
 
+### Product rules
+
+**WB-ledger-2** Invoices, bills, payroll, and closes post to accounts the engine picks by role: receivables, revenue, payables, general expense, retained earnings, salary and payroll tax expense, and five payroll withholdings. A role uses its default code (1200, 4000, 2000, 6999, 3999, 6100, 6110, 2110–2150) until the human assigns it one of the chart's own accounts; the assignment is journaled (`role.assigned`).
+*Enforced:* `Ledger::assign_role` / `check_assign_role`. *Checked:* `ledger-store` replay of `role.assigned`.
+
+**WB-ledger-3** The account at a role's default code is the role's control account only once a document posts there (or the role is assigned to it): before that, a chart's own 1200 Equipment or a card at 2000 is the chart's.
+*Enforced and checked:* with B-23 above (`Ledger::check_controls`, the control guard, `Ledger::control_check`; `tests/spec_roles.rs`, `tests/spec_documents.rs`).
+
+**WB-ledger-4** Until the balance of a receivables or payables control account moves with its documents (plan P4b S7), a receivables or payables role whose control account holds a balance stays where it is, and the refusal says so: it names no hand entry, which the control guard would refuse.
+*Enforced and checked:* with B-23 above (`Ledger::check_assign_role`, `Ledger::check_renumber_account`, the control guard; `tests/spec_roles.rs`, `tests/spec_documents.rs`).
+
 ## B-29 The books keep how they are kept
 
 **bookspec:** `BS-ledger-9`
 
-**SOURCE:** CHOICE (plan/served.md I-3, owner decisions of 2026-10-16:
-"the journal holds all books state"; light governance: decisions are
-recorded with who made them and when, not as paperwork); IRS Pub. 538 and
-the rules of B-1 to B-28 for what each setting means.
+**Claims:** yes
 
-A company's settings, its conventions (how it posts each kind of
-transaction, its policies and close steps), the decisions its owners made,
-what is open, and approvals of draft entries are facts about the books,
-kept in the journal like every other fact, each with who decided it and
-when (journal format 2: `settings.set`, `convention.set`,
-`convention.retired`, `decision.recorded`, `open_item.raised`,
-`open_item.resolved`, `entry.approved`). A settings file is only text to
-import from or export to; no server reads one (D-44).
-
-- A setting is one of the known keys, checked by its key and kept in one
-  spelling; a change is all or nothing, and the settings after it hold
-  together. Replay takes any value of the right shape (B-28).
-- No setting, convention id, convention, decision, open item or approval
-  holds a number that reads as a full TIN (nine digits standing alone,
-  bare or printed 3-2-4 or 2-7 with a dash or a space), except the
-  company's own EIN, shown masked everywhere but reports, packages and the
-  viewer, and a D-U-N-S number in its own key.
-- A record of how the books are kept changes no entry, draft, period or
-  account (proved for the model: `Step.record_changes_no_figure`; checked
-  on the engine after every record in `settings_replay_is_pure`). Settings
-  that say how the same entries are presented or later allocated (the
-  fiscal year, the cash flow roles, the members) present them by the
-  settings in force; the fiscal year can't move once a period is closed
-  under it (a changed tax year needs the IRS's consent, Form 1128).
-- Books keep their own settings, and only `books.set_setting` changes
-  them; old books bring their settings file in once, whole, as they are
-  adopted (`wanderbooks books adopt`), and nothing reads one after.
-- A setting key or convention kind this version doesn't know is a newer
-  version's: the books are "newer", never "damaged" (B-27).
-- A posting template's lines split the amount exactly on each side, odd
-  cents by largest remainder (B-13's rule); a slot (`{expense}`) takes the
-  account each draft names.
-- Approval rules block anything only when the company enforces them
-  (`policy.approval_rules = enforce`; off by default). Then a draft a rule
-  covers posts only once its approver approved it as it stands (its
-  fingerprint: date, description, every line and class), and an operation
-  that would post such an entry at once (an invoice, a bill, a payment,
-  payroll, a remittance, a disposal) is refused: it is drafted instead.
-  Reversals, closes, depreciation and amortization follow from entries
-  already posted and are exempt. A rule names accounts that take postings,
-  and an account a rule names can't be renumbered until the rule is
-  revised.
+**Pick:** `facts-in-the-books`: CHOICE (plan/served.md I-3, owner decisions of 2026-10-16: "the journal holds all books state"; light governance: decisions are recorded with who made them and when, not as paperwork). IRS Pub. 538 and the rules of B-1 to B-28 say what each setting means.
 
 **Enforced:** `ledger_core::settings` (`check`, `Settings::check_changes`,
 `check_whole`, `shape`, `apply`), `ledger_core::conventions` (`check_new`,
 `check_decision`, `check_open_item`, `split`), `Ledger::check_settings`,
-`check_convention`, `approvals_missing`, `template_lines`; `ledger-store`
-`Store::change_settings`, `adopt_settings`, `set_convention`,
-`draft_from_template` (rehearsed whole), `record_decision`; the format gate
-(format 2 declared before the first such line); `ledger_config::codec`
-(`import`, `export`); `Store::post_entry` and `approval_gate`
-(`ApprovalRequired`, `ApprovalNeedsDraft`), `check_renumber_account`;
-`ledger-mcp` adoption (`local.rs` `settings_to_move`: a settings file,
-whole, through `codec::import`), `books.post_entry`
-(`approval_required`).
+`check_convention`; `ledger-store` `Store::change_settings`,
+`set_convention`, `record_decision`.
 **Checked:** `ledger-core` settings and conventions unit tests;
 `ledger-store` `tests/settings.rs` (`settings_replay_is_pure`, 256 cases
 per check, 2,000 by hand, with posts between records and every record
-checked to change no figure or entry; `approval_rules_off_by_default`,
-`approvals_cover_every_post`, `the_fiscal_year_stays_under_closed_periods`,
-`a_newer_key_or_kind_is_newer`;
-`books_written_under_p1_open_to_their_record`, fixture
-`old-books/p1_record`); `ledger-config` `tests/codec_props.rs`
-(`exports_round_trip`) and codec unit tests; `ledger-cli`
+checked to change no figure or entry;
+`the_fiscal_year_stays_under_closed_periods`); `ledger-cli`
 `tests/spec_kept.rs`; Lean `Step.record_changes_no_figure`,
 `Reachable.records`; fuzz `fuzz_settings_replay`.
+
+### Product rules
+
+**WB-ledger-5** A company's settings, its conventions (how it posts each kind of transaction, its policies and close steps), the decisions its owners made, what is open, and approvals of draft entries are kept in the journal like every other fact (journal format 2: `settings.set`, `convention.set`, `convention.retired`, `decision.recorded`, `open_item.raised`, `open_item.resolved`, `entry.approved`). A settings file is only text to import from or export to; no server reads one (D-44).
+*Enforced:* the format gate (format 2 declared before the first such line); `ledger_config::codec` (`import`, `export`).
+*Checked:* `ledger-config` `tests/codec_props.rs` (`exports_round_trip`) and codec unit tests; `ledger-store` `tests/settings.rs` (`books_written_under_p1_open_to_their_record`, fixture `old-books/p1_record`).
+
+**WB-ledger-6** No setting, convention id, convention, decision, open item or approval holds a number that reads as a full TIN (nine digits standing alone, bare or printed 3-2-4 or 2-7 with a dash or a space), except the company's own EIN, shown masked everywhere but reports, packages and the viewer, and a D-U-N-S number in its own key.
+*Enforced and checked:* with B-29 above (the settings and conventions checks and their tests).
+
+**WB-ledger-7** Books keep their own settings, and only `books.set_setting` changes them; old books bring their settings file in once, whole, as they are adopted (`wanderbooks books adopt`), and nothing reads one after.
+*Enforced:* `Store::adopt_settings`; `ledger-mcp` adoption (`local.rs` `settings_to_move`: a settings file, whole, through `codec::import`).
+*Checked:* with B-29 above.
+
+**WB-ledger-8** A setting key or convention kind this version doesn't know is a newer version's: the books are "newer", never "damaged" (B-27). Replay takes any value of the right shape (B-28).
+*Enforced:* with B-29 above (`shape`, the settings and conventions checks).
+*Checked:* `ledger-store` `tests/settings.rs` (`a_newer_key_or_kind_is_newer`).
+
+**WB-ledger-9** A posting template's lines split the amount exactly on each side, odd cents by largest remainder (B-13's rule); a slot (`{expense}`) takes the account each draft names.
+*Enforced:* `template_lines`; `Store::draft_from_template` (rehearsed whole).
+*Checked:* with B-29 above (the settings and conventions unit tests).
+
+**WB-ledger-10** Approval rules block anything only when the company enforces them (`policy.approval_rules = enforce`; off by default). Then a draft a rule covers posts only once its approver approved it as it stands (its fingerprint: date, description, every line and class), and an operation that would post such an entry at once (an invoice, a bill, a payment, payroll, a remittance, a disposal) is refused: it is drafted instead. Reversals, closes, depreciation and amortization follow from entries already posted and are exempt. A rule names accounts that take postings, and an account a rule names can't be renumbered until the rule is revised.
+*Enforced:* `Ledger::approvals_missing`; `Store::post_entry` and `approval_gate` (`ApprovalRequired`, `ApprovalNeedsDraft`), `check_renumber_account`; `ledger-mcp` `books.post_entry` (`approval_required`).
+*Checked:* `ledger-store` `tests/settings.rs` (`approval_rules_off_by_default`, `approvals_cover_every_post`).
 
 ## B-31 Renaming an account changes its label, nothing else
 
 **bookspec:** `BS-ledger-10`
 
-**Status:** CHOICE (the owner, `plan/served.md` 4.9 and P3 "Settled in
-design", 2026-10-20: "a new account named like a sibling (ignoring
-capitals), or holding a nine-digit number, is refused"); B-8 (posted is
-forever); AUTHORITY for keeping the old name (Rev. Proc. 98-25 §5.01,
-`sources/irs-records.md`: "the relationship (i.e., audit trail): (a)
-between the total of the amounts in the taxpayer's machine-sensible
-records by account and the account totals in the taxpayer's books");
-Intuit IIF (`sources/intuit-iif.md`: "Accounts are identified by NAME")
-for refusing a sibling's name.
+**Claims:** yes
 
-Entries name accounts by id, so a rename changes no entry, line, hash,
-balance or statement amount: every report, past periods included, prints
-the new name. The journal keeps the old one (`account.renamed {account_id,
-code, name, previous, reason}`), so a report printed under the old name
-can be tied to the new. A rename is refused when the account is unknown,
-the name is blank, the name (trimmed) is the one it has, another account
-under the same parent (top-level accounts are siblings too) has it
-ignoring capitals and surrounding space (QuickBooks would merge the two),
-it holds a run of nine digits (a full SSN, EIN or account number, B-26:
-every report prints a name), or it is not one line of at most 200
-characters (`account::MAX_ACCOUNT_NAME`, the bound of the company's own
-name: no line break, tab or other control character, which no report, CSV
-or IIF line can hold). The name is kept trimmed. The same name rules hold
-for a new account (`books.add_account`, `books.import_chart_csv`), which
-is journaled with its name trimmed too; accounts the engine
-creates for a control role keep their fixed names and are never refused
-for one. Approval rules, roles, settings and closed periods name accounts
-by code or id, and a name is no posting, so none of them blocks a rename.
-Existing charts are untouched: the rules are the commands', never replay's
-(B-28).
-
-A rename can still change what the books pick by name (no amount): with
-`books.cash_accounts` unset, the cash accounts are the asset accounts
-whose names say they hold cash, and, while the books record no
-business-card payment method, the card accounts are the liabilities
-named "card" but not "gift" (`ledger_core::parties::card_accounts`, B-35
-item 5); the result says
-when the new name moves the account into or out of either. It also lists
-conventions whose text names the old name. QuickBooks matches accounts
-by name, so a CPA who imported an earlier IIF is told.
+**Pick:** `label-only`: CHOICE (the owner, `plan/served.md` 4.9 and P3 "Settled in design", 2026-10-20: "a new account named like a sibling (ignoring capitals), or holding a nine-digit number, is refused"). Posted is forever (B-8) stands behind it, and Rev. Proc. 98-25 §5.01 (`sources/irs-records.md`) for keeping the old name. The nine-digit refusal is B-26's: every report prints a name. The 200-character bound is `account::MAX_ACCOUNT_NAME`, the bound of the company's own name.
 
 **Enforced:** `Ledger::rename_account` / `check_rename_account`,
 `check_account_name` (also in `add_account`), `account::MAX_ACCOUNT_NAME`,
 `check_rename_reason`,
 `replay_rename_account` (only that the account exists),
-`ChartOfAccounts::set_name`, `Ledger::add_control_account`;
-`Store::rename_account` (journal feature `account_renamed`, which the
-books declare before their first rename, B-27); `books.rename_account` (scope
-`books:post`, like renumbering). **Checked:** `ledger-core`
+`ChartOfAccounts::set_name`, `Ledger::add_control_account`. The same name
+rules hold for a new account (`books.add_account`, `books.import_chart_csv`),
+which is journaled with its name trimmed too. **Checked:** `ledger-core`
 `tests/spec_ledger.rs` (`rename_account_*`), `tests/model.rs`
 (`Cmd::Rename`); `ledger-store` `tests/store.rs`
 (`rename_account_changes_only_the_name_defect_15`,
@@ -319,87 +225,55 @@ books declare before their first rename, B-27); `books.rename_account` (scope
 `Step.record` (a name is outside the model: `docs/verification.md` law 15);
 bookspec `examples/rename-changes-no-amount.toml`.
 
+### Product rules
+
+**WB-ledger-11** The journal keeps the old name beside the new one (`account.renamed {account_id, code, name, previous, reason}`), so a report printed under the old name can be tied to the new. Entries name accounts by id, so a rename changes no hash. Approval rules name accounts by code or id, so they do not block a rename. Existing charts are untouched: the rules are the commands', never replay's (B-28).
+*Enforced:* `Store::rename_account` (journal feature `account_renamed`, which the books declare before their first rename, B-27); `books.rename_account` (scope `books:post`, like renumbering).
+*Checked:* with B-31 above.
+
+**WB-ledger-12** A rename can still change what the books pick by name (no amount): with `books.cash_accounts` unset, the cash accounts are the asset accounts whose names say they hold cash, and, while the books record no business-card payment method, the card accounts are the liabilities named "card" but not "gift" (`ledger_core::parties::card_accounts`, B-35 item 5); the result says when the new name moves the account into or out of either. It also lists conventions whose text names the old name. QuickBooks matches accounts by name, so a CPA who imported an earlier IIF is told.
+*Enforced:* `ledger_core::parties::card_accounts`; `books.rename_account`.
+*Checked:* with B-31 above.
+
 ## B-32 Every revenue and expense account maps to a line of the return
 
 **bookspec:** `BS-ledger-11`
 
-**Status:** AUTHORITY for why it matters (IRS Pub. 583,
-`sources/irs-records.md`: "Your books must show your gross income, as
-well as your deductions and credits"; IRS Pub. 538: "you must maintain
-records that will enable you to file a correct return"; Rev. Proc. 98-25
-§5.01: the relationship "between the total of the amounts in the
-taxpayer's machine-sensible records by account and the taxpayer's
-return"); CHOICE for warn versus refuse (Pub. 583: "the law does not
-require any specific kind of records"; the owner, 2026-10-20: warn by
-default, header accounts exempt, the first company set to refuse at the
-P3 cutover; and, the owner, 2026-11-07, D-67: a category's deductible amount
-rounds once, on the category total).
+**Claims:** yes
 
-A tax category is the account's link to the return (`ledger_core::tax`,
-`sources/irs-tax-lines.md`). An account needs one when it is a revenue or
-expense account and not a header (a header takes no postings, so nothing
-of its own reaches the return: no entry posts to one, a replayed one
-included, and an account's header flag never changes).
+**Pick:** warn versus refuse: CHOICE (Pub. 583: "the law does not require any specific kind of records"; the owner, 2026-10-20: warn by default, header accounts exempt, the first company set to refuse at the P3 cutover). A category's deductible amount rounds once, on the category total: CHOICE (the owner, 2026-11-07, D-67). The arithmetic is `kernel::deductible_amount`, so Kani proves the one rounding and the bridge carries it to `Decimal`.
 
-- Needs attention and the digest (`uncategorized_accounts`) list every
-  account that needs a category and has none, with activity or not.
-- `policy.require_tax_category`: `warn` (unset) or `refuse`. Under `warn`,
-  `books.add_account` and `books.import_chart_csv` create the account and
-  their results say so. Under `refuse`, they refuse it (the file whole),
-  naming the account and where the categories are listed; both take the
-  category at creation, so the refusal is always met in one call; and
-  `books.set_tax_category` won't clear a category an account needs.
-- The accounts invoices, bills and payroll create for a control role
-  (Revenue 4000, General Expenses 6999, Salary & Wage Expense 6100,
-  Payroll Tax Expense 6110) are never refused, so an invoice is never
-  refused over a chart label: their results warn, and Needs attention
-  lists them. The policy is "no uncategorized account made through the
-  chart tools", not "never any".
-- Turning the policy to `refuse` changes no existing account: it applies
-  to new commands (B-28). Needs attention keeps listing the gaps.
-- CHOICE (owner, 2026-11-07): a category's deductible amount in the tax
-  summary is the exact sum of each of its accounts' shares (book ×
-  deductible percent ÷ 100), rounded once to the cent, half away from
-  zero, following B-21's "round off only the total"; the books stay
-  exact (R-2). The arithmetic is `kernel::deductible_amount`, so Kani
-  proves the one rounding and the bridge carries it to `Decimal`.
-- Every account a tool can require has a category that fits it on every
-  return: the gain or loss account of a disposal (`form_4797_gain_loss`,
-  Form 4797), tax-exempt income (`tax_exempt_income`, Schedule K), and
-  each control role's. A gain or loss on business property is figured on
-  Form 4797 from the tax basis, and its split (ordinary gain, net section
-  1231 gain) decides the line, never Schedule C: the tax summary lists it
-  apart (`TaxSummary::form_4797`), at its book amount, with no tax amount
-  and in no total, on every return.
-
-**Enforced:** `tax::needs_category`, `account_needs_category`,
-`uncategorized_accounts`, `CATEGORIES`; `kernel::deductible_amount`
-(`tax::tax_summary`'s one rounding); `Ledger::check_tax_category_required`,
-`check_tax_category_kept` (commands only, never `set_account_tax`, which
-replay calls); `settings::TaxCategoryPolicy`, `Settings::require_tax_category`;
-`Store::add_account_with_tax`, `add_account`, `set_account_tax`
-(journal feature `require_tax_category`, which the books declare before
-their first `settings.set` naming the key, B-27); `ledger-mcp` `books.add_account`,
-`books.import_chart_csv`, `books.digest`; `ledger-gui` Needs attention
-(Info under warn, Todo under refuse). **Checked:** `ledger-core`
+**Enforced:** `kernel::deductible_amount` (`tax::tax_summary`'s one
+rounding). **Checked:** `ledger-core`
 `tests/tax.rs` (the rounding: `a_category_rounds_its_deductible_amount_once_not_per_account`,
 `a_category_rounds_once_across_different_percents`); Kani
 `deductible_amount_rounds_once`, `deductible_amount_refuses_overflow`;
 bridge `deductible_amount_agrees`; Lean `bookspec/lean/Bookspec/Deductible.lean`
 (`Deductible.near`, `tie_away_pos`, `tie_away_neg`, `sign`, `neg`, `of_sum`,
 `per_account_differs`, `scale_books`, `scale_percents`: the one rounding, at any
-number of accounts and any sizes); `ledger-store` `tests/store.rs`
-(`prop_tax_policy_refuses_exactly`, `a_journaled_clear_replays_under_refuse`);
-`ledger-cli` `tests/spec_tax_policy.rs`; `ledger-gui` `tests/view_model.rs`
-(`needs_attention_flags_every_uncategorized_pl_account_defect_8`);
-bookspec `examples/tax-category-required.toml`.
+number of accounts and any sizes); bookspec `examples/tax-category-required.toml`.
+
+### Product rules
+
+**WB-ledger-13** A tax category is the account's link to the return (`ledger_core::tax`, `sources/irs-tax-lines.md`). Needs attention and the digest (`uncategorized_accounts`) list every account that needs a category and has none, with activity or not. `policy.require_tax_category` is `warn` (unset) or `refuse`. Under `warn`, `books.add_account` and `books.import_chart_csv` create the account and their results say so. Under `refuse`, they refuse it (the file whole), naming the account and where the categories are listed; both take the category at creation, so the refusal is always met in one call; and `books.set_tax_category` won't clear a category an account needs. Turning the policy to `refuse` changes no existing account: it applies to new commands (B-28). Needs attention keeps listing the gaps.
+*Enforced:* `tax::needs_category`, `account_needs_category`, `uncategorized_accounts`, `CATEGORIES`; `Ledger::check_tax_category_required`, `check_tax_category_kept` (commands only, never `set_account_tax`, which replay calls); `settings::TaxCategoryPolicy`, `Settings::require_tax_category`; `Store::add_account_with_tax`, `add_account`, `set_account_tax` (journal feature `require_tax_category`, which the books declare before their first `settings.set` naming the key, B-27); `ledger-mcp` `books.add_account`, `books.import_chart_csv`, `books.digest`; `ledger-gui` Needs attention (Info under warn, Todo under refuse).
+*Checked:* `ledger-store` `tests/store.rs` (`prop_tax_policy_refuses_exactly`, `a_journaled_clear_replays_under_refuse`); `ledger-cli` `tests/spec_tax_policy.rs`; `ledger-gui` `tests/view_model.rs` (`needs_attention_flags_every_uncategorized_pl_account_defect_8`).
+
+**WB-ledger-14** The accounts invoices, bills and payroll create for a control role (Revenue 4000, General Expenses 6999, Salary & Wage Expense 6100, Payroll Tax Expense 6110) are never refused, so an invoice is never refused over a chart label: their results warn, and Needs attention lists them. The policy is "no uncategorized account made through the chart tools", not "never any". Every account a tool can require has a category that fits it on every return: the gain or loss account of a disposal (`form_4797_gain_loss`, Form 4797), tax-exempt income (`tax_exempt_income`, Schedule K), and each control role's. A gain or loss on business property is figured on Form 4797 from the tax basis, and its split (ordinary gain, net section 1231 gain) decides the line, never Schedule C: the tax summary lists it apart (`TaxSummary::form_4797`), at its book amount, with no tax amount and in no total, on every return.
+*Enforced:* `TaxSummary::form_4797`; `tax::CATEGORIES`, with WB-ledger-13's list.
+*Checked:* with WB-ledger-13's tests.
 
 ## B-44 Evidence is read from the bytes, never trusted over them; identical files are kept once
 
 **bookspec:** `BS-ledger-12`
 
-**Status:** CONVENTION (the SOURCE block below; Rev. Proc. 98-25 and Pub. 583 for
-the audit trail)
+**Claims:** yes (wholly a product rule: BS-ledger-12 is retired, D-71)
+
+**Pick:** none (CONVENTION; Rev. Proc. 98-25 and Pub. 583 for the audit trail).
+
+### Product rules
+
+**WB-ledger-15** Evidence is read from the bytes, never trusted over them; identical files are kept once.
 
 ```text
 GOAL: a receipt's text and the facts read off it are derived records the
@@ -454,7 +328,7 @@ SCENARIOS:
   7. The same with no settlement: Needs attention asks, once.
 ```
 
-**Enforced:** `ledger_import::extract` (`pdf_text`, `pdf_lines`,
+*Enforced:* `ledger_import::extract` (`pdf_text`, `pdf_lines`,
 `page_png`, `xlsx_text`, `text_of`, `extract`; caps 25 MiB, 30 pages,
 2 MiB of text; a reader panic is caught), `ledger_core::evidence::{Annotation,
 AnnotationFields}`, `Ledger::{annotate_attachment, next_receipt_number,
@@ -462,7 +336,7 @@ entry_settles, settles_entry, set_entry_settles}`,
 `Store::{extract_attachment, annotate_attachment, set_entry_settles,
 withdraw_attachment_duplicate}` and `Store::attach`'s dedup; feature
 `attachment_text`.
-**Checked:** `ledger-import` `tests/extract.rs`
+*Checked:* `ledger-import` `tests/extract.rs`
 (`extraction_deterministic`, `xlsx_cells_are_decimal_strings`,
 `a_pdf_that_crashes_the_reader_is_failed_not_fatal`); `ledger-store`
 `tests/attachments.rs` (`extraction_is_journaled_once_per_version`,
@@ -479,10 +353,13 @@ withdraw_attachment_duplicate}` and `Store::attach`'s dedup; feature
 
 **bookspec:** `BS-ledger-13`
 
-**Status:** CONVENTION (the SOURCE block below; Pub. 583 and Rev. Proc. 98-25
-for the audit trail); CHOICE D-9 (owner-adopted recommendation,
-2026-10-16: the attestation bar, and the CPA package waits for a counted
-audit unless given a reason).
+**Claims:** yes (wholly a product rule: BS-ledger-13 is retired, D-71)
+
+**Pick:** CHOICE D-9 (owner-adopted recommendation, 2026-10-16): the attestation bar, and the CPA package waits for a counted audit unless given a reason. Otherwise CONVENTION (the SOURCE block below; Pub. 583 and Rev. Proc. 98-25 for the audit trail).
+
+### Product rules
+
+**WB-ledger-16** An audit is deterministic over the books; an attestation is a claim by a named client.
 
 ```text
 GOAL: the books can be audited by a programme that gives the same
@@ -548,14 +425,14 @@ SCENARIOS:
      `format_upgrade_pending`.
 ```
 
-**Enforced:** `ledger_core::audit` (`statements`, `Finding`, `CODES`,
+*Enforced:* `ledger_core::audit` (`statements`, `Finding`, `CODES`,
 `AttestationBar::counts`, `Scope`, `Method`), `ledger_store::audit`
 (`Store::figure_head`, `integrity_findings`, `record_audit_run`,
 `attest_receipt`, `review_entry`, `attest_period`, `run_for_period`,
 `attestations`, `PROGRAM_VERSION`), `ledger_import::workpaper_pdf`,
 ledger-mcp `tools/audit.rs` and the gate in `books.export_cpa_package`,
 journal feature `audits`.
-**Checked:** `ledger-core` `tests/audit.rs`
+*Checked:* `ledger-core` `tests/audit.rs`
 (`audit_detects_each_seeded_defect`, `below_bar_not_counted`,
 `amount_mismatch_never_counts`); `ledger-store` `tests/audit.rs`
 (`audit_writes_wait_for_audits`, `a_run_is_idempotent_on_the_figure_head`,

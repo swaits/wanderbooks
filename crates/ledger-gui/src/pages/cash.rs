@@ -181,8 +181,15 @@ fn runway(ui: &mut Ui, b: &Books) {
                 ui.label(RichText::new("Needs at least one full month of books.").color(p.muted));
                 return;
             }
-            let net: Decimal = months.iter().map(|(_, _, i, o)| i - o).sum::<Decimal>()
-                / Decimal::from(months.len() as u64);
+            // Exact or refused: books near the arithmetic's limit show a
+            // note, never a crash (rules.md B-28).
+            let Some(net) = ledger_core::kernel::total_try(&months, |&(_, _, i, o)| {
+                ledger_core::kernel::Amount::checked_sub(i, o)
+            })
+            .and_then(|sum| sum.checked_div(Decimal::from(months.len() as u64))) else {
+                ui.label(RichText::new("The figures are too large to compute.").color(p.muted));
+                return;
+            };
             let net = net.round_dp(2);
             let big = |ui: &mut Ui, label: &str, value: String, color| {
                 ui.vertical(|ui| {

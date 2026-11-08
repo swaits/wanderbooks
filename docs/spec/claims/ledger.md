@@ -73,8 +73,14 @@ None.
 
 **Pick:** none (AUTHORITY).
 
-**Enforced:** posted entries immutable. **Checked:** Lean `Step.extends`,
-`Steps.extends`; property `prop_posted_entries_immutable`.
+**Enforced:** posted entries immutable; `ledger_store::format`
+(`JournalFormat::admit`, `gate`): a record in a format version this
+version does not know is refused as newer, neither misread nor skipped,
+and never called corrupt (statement 4). **Checked:** Lean `Step.extends`,
+`Steps.extends`; property `prop_posted_entries_immutable`; `ledger-store`
+`tests/format.rs` (`old_reader_gets_newer_journal`,
+`a_newer_line_the_next_line_chains_onto_is_newer_and_intact`,
+`damaged_journals_are_still_corrupt`).
 
 ### Product rules
 

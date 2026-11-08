@@ -58,7 +58,15 @@ journaled `"cumulative"` (the run rule of 2026-10-13 to P3: a
 back-to-back run with the same members in the same order, restarted by
 any other close, so a tied cent could go to the same member at every
 restart), `"largest_remainder"` (each close on its own) and none (the
-last member absorbs) replay under their own rules, never changed (B-8).
+last member absorbs) replay under their own rules, never changed (B-8). The true-up the first cumulative close posts
+for them is BS-partner-1 statement 5's: under one unit per member for
+each break in a `"cumulative"` run and each `"largest_remainder"`
+close, and a last-absorbs close's up to half a unit each (a unit with
+three members, more with four or more). Replaying books written before
+whole minor units were required (B-3, BS-ledger-1), a sub-unit fraction
+can make the bound two units: that is engine history, outside the
+law's precondition that every amount is a whole number of units, so it
+is stated here and not in the record.
 
 **Enforced:** `Store::close_period_to`, the store's
 `close_to_from_journal`, `Ledger::members_regime`. **Checked:**

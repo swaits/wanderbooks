@@ -28,8 +28,8 @@ proptest = "1"
 toml = "1"
 # The specification lives in its own repository (P13 step 6, D-34, D-65),
 # pinned to a commit.
-bookspec-checker = { git = "https://git.swaits.com/swaits/bookspec", rev = "77e046334eea29e082b53bbe907017d9ffef5a0a" }
-bookspec-runner = { git = "https://git.swaits.com/swaits/bookspec", rev = "77e046334eea29e082b53bbe907017d9ffef5a0a" }
+bookspec-checker = { git = "https://git.swaits.com/swaits/bookspec", rev = "62c0bf26387d71daedc37704d9d1022082d34f70" }
+bookspec-runner = { git = "https://git.swaits.com/swaits/bookspec", rev = "62c0bf26387d71daedc37704d9d1022082d34f70" }
 ledger-package = { path = "../ledger-package" }
 ledger-import = { path = "../ledger-import" }
 ledger-store = { path = "../ledger-store" }

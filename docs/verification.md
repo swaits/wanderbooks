@@ -641,7 +641,8 @@ new command, so a new Lean step, and no kernel function.
     it; the book amounts stay exact.
     - Kani `deductible_amount_rounds_once` (up to three accounts, books to
       2^20 cents, any percent 0 to 100; covers reach a half-cent tie, a
-      negative sum and a category where per-account rounding differs) and
+      negative half-cent tie, a negative sum and a category where
+      per-account rounding differs) and
       `deductible_amount_refuses_overflow` (a product past `i64`, and a
       sum of two shares past it) · bridge `deductible_amount_agrees` (the
       i64 cents result and the Decimal dollars result agree, and the
@@ -649,6 +650,35 @@ new command, so a new Lean step, and no kernel function.
       `a_category_rounds_its_deductible_amount_once_not_per_account`,
       `a_category_rounds_once_across_different_percents`, and the golden
       `golden_tax_summary_form_1065`.
+    - The Decimal half of the bridge is what carries the law to the
+      engine's money, and it now has its own exact reference:
+      `deductible_amount_matches_exact_reference_on_decimal_shares`
+      checks `deductible_amount` on `Decimal` against a reference that
+      shares no code with the kernel (each share's product as an exact
+      i128 mantissa over a power of ten, summed over a common power of
+      ten, rounded half away from zero by integer division), over books
+      at 0 to 6 decimal places and percents in hundredths 0.00 to 100.00
+      (half the shares at 4 decimal places), up to four shares per
+      category. That is the part `deductible_amount_agrees` cannot
+      reach: decimal percents such as 33.33, and books finer than a
+      cent. The unit table `deductible_amount_decimal_table` pins the
+      reviewed values (ties, sub-cent books, a 10-decimal book at a
+      6-decimal percent, and the 10^25 - 1 book at 100% below), and
+      `deductible_amount_decimal_unrepresentable_is_none` pins a
+      quotient no Decimal can hold.
+    - The Decimal `checked_div_round_cent` itself never forms the
+      `* 100` intermediate the first version did: that product
+      overflowed, and returned None, for a representable result (the
+      10^25 - 1 book at 100% above, which the code before the kernel
+      move returned). It now rounds from the two mantissas and scales
+      by exact i128 arithmetic, so scale 28 is settled by the integer
+      remainder rather than by a Decimal division that would have to
+      round its result to fit, and None is left for a product or sum
+      overflowing in `deductible_amount`, or a quotient Decimal cannot
+      hold at any scale from 2 down. Kani still proves the i64 shape of
+      the same function; the bridge properties above carry it to
+      Decimal, the exact-reference one over the decimal shapes Kani's
+      integer model does not have.
     - No Lean model: this is arithmetic on a report figure, like
       `discount_max` (law 33) and `unrecovered_cost` (law 32), not a
       `Ledger` command or a law about posted entries. The model's `Books`

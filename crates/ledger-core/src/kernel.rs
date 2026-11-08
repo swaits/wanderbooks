@@ -142,31 +142,70 @@ impl Amount for Decimal {
         if rhs == Self::ZERO {
             return None;
         }
-        // Work in cents so the one rounding is to a whole cent: an amount
-        // in dollars is already exact to its own scale, and multiplying by
-        // 100 only shifts it.
-        let hundred = Decimal::from(100u32);
-        let scaled = self.checked_mul(hundred)?;
-        // The truncated quotient and its exact remainder, so the cent's
-        // half decides the rounding rather than Decimal's own 28-place
-        // division rounding.
-        let q = scaled.checked_div(rhs)?.trunc();
-        let r = scaled.checked_sub(q.checked_mul(rhs)?)?;
-        let r_mag = r.abs();
-        let d_mag = rhs.abs();
-        let rest = d_mag.checked_sub(r_mag)?;
-        let q = if r_mag >= rest {
-            if r > Self::ZERO {
-                q.checked_add(Decimal::ONE)?
-            } else {
-                q.checked_sub(Decimal::ONE)?
+        // Exact integer arithmetic on the mantissas, never `self * 100`:
+        // that product overflows for a large representable quotient (a
+        // book of 10^25 - 1 at 100% is the case that found it). With
+        // self = a * 10^-sa and rhs = b * 10^-sb, the cents to find are
+        // round(a / b * 10^(sb - sa + 2)), half away from zero. Working
+        // on the mantissa (an i128) and scale also settles scale 28
+        // exactly: the digits a Decimal division by 100 would have to
+        // round away at that scale stay in the integer remainder below,
+        // so they still decide the half-cent tie.
+        let a = self.mantissa();
+        let b = rhs.mantissa();
+        if a == 0 {
+            return Some(Self::ZERO);
+        }
+        let negative = (a < 0) != (b < 0);
+        let a_mag = a.unsigned_abs();
+        let b_mag = b.unsigned_abs();
+        let exponent = i32::try_from(rhs.scale()).ok()? - i32::try_from(self.scale()).ok()? + 2;
+        let cents_mag: u128 = if exponent >= 0 {
+            let pow10 = 10u128.checked_pow(u32::try_from(exponent).ok()?)?;
+            let main = (a_mag / b_mag).checked_mul(pow10)?;
+            let mut remainder = a_mag % b_mag;
+            let mut fraction = 0u128;
+            for _ in 0..exponent {
+                remainder = remainder.checked_mul(10)?;
+                fraction = fraction.checked_mul(10)?.checked_add(remainder / b_mag)?;
+                remainder %= b_mag;
             }
+            let round_up = remainder.checked_mul(2)? >= b_mag;
+            main.checked_add(fraction)?
+                .checked_add(u128::from(round_up))?
         } else {
-            q
+            let pow10 = 10u128.checked_pow(u32::try_from(-exponent).ok()?)?;
+            let quotient = a_mag / b_mag;
+            let twice = (quotient % pow10).checked_mul(2)?;
+            // The fraction past the cents is
+            // (quotient % pow10)/pow10 + remainder/(b_mag * pow10),
+            // where remainder is a_mag % b_mag, in [0, 1). The second
+            // term is under 1/pow10, so the fraction reaches a half
+            // exactly when the first does: twice >= pow10 (a tie at
+            // equality, the remainder only pushing it further).
+            let round_up = twice >= pow10;
+            (quotient / pow10).checked_add(u128::from(round_up))?
         };
-        let out = q.checked_div(hundred)?;
-        // Never a negative zero: money never prints "-0.00".
-        Some(if out == Self::ZERO { Self::ZERO } else { out })
+        if cents_mag == 0 {
+            // Never a negative zero: money never prints "-0.00".
+            return Some(Self::ZERO);
+        }
+        // The result in cents at scale 2; a trailing zero may let a
+        // quotient past that mantissa fit at scale 1 or 0. Anything else
+        // past Decimal's mantissa is genuinely unrepresentable.
+        let max_mag = Decimal::MAX.mantissa().unsigned_abs();
+        let mut mantissa_mag = cents_mag;
+        let mut scale = 2u32;
+        while mantissa_mag > max_mag {
+            if scale == 0 || !mantissa_mag.is_multiple_of(10) {
+                return None;
+            }
+            mantissa_mag /= 10;
+            scale -= 1;
+        }
+        let signed_mag = i128::try_from(mantissa_mag).ok()?;
+        let signed = if negative { -signed_mag } else { signed_mag };
+        Decimal::try_from_i128_with_scale(signed, scale).ok()
     }
 }
 

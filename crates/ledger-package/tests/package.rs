@@ -1926,8 +1926,7 @@ fn the_readme_lists_what_the_iif_writes_differently() {
 /// for one on a journal entry to accounts receivable or payable, and takes
 /// one such account a transaction: sources/intuit-iif.md), so the README
 /// names the entries with a line on either, in file order, and says what
-/// QuickBooks may ask. An entry on both is among them. Books with neither
-/// get no such sentence.
+/// QuickBooks may ask. Books with neither get no such sentence.
 #[test]
 fn the_readme_names_the_entries_on_receivables_and_payables() {
     let dir = tempfile::tempdir().unwrap();
@@ -1942,7 +1941,7 @@ fn the_readme_names_the_entries_on_receivables_and_payables() {
     // Hand lines on receivables and payables, as books an earlier version
     // wrote hold them (the control guard, rules.md B-38, refuses them as
     // new work): posted as replay posts them.
-    let (invoiced, billed, netted) = ledger_core::parties::replaying(|| {
+    let (invoiced, billed) = ledger_core::parties::replaying(|| {
         let invoiced = post(
             &mut s,
             "2026-04-01",
@@ -1961,16 +1960,7 @@ fn the_readme_names_the_entries_on_receivables_and_payables() {
                 ("2000", Side::Credit, "80.00"),
             ],
         );
-        let netted = post(
-            &mut s,
-            "2026-04-03",
-            "Netted",
-            &[
-                ("2000", Side::Debit, "80.00"),
-                ("1200", Side::Credit, "80.00"),
-            ],
-        );
-        (invoiced, billed, netted)
+        (invoiced, billed)
     });
     let company = company(false);
     let cash = cash();
@@ -1990,12 +1980,12 @@ fn the_readme_names_the_entries_on_receivables_and_payables() {
     );
     assert_eq!(
         iif_txns(iif).iter().map(|t| t.0).collect::<Vec<_>>(),
-        [rent, invoiced, billed, netted]
+        [rent, invoiced, billed]
     );
     let readme = text(&p, "README.txt");
     assert!(
         readme.contains(&format!(
-            "\nIt names no customer or vendor on its lines to accounts receivable or payable, in entries {invoiced}, {billed}, {netted}: QuickBooks Desktop asks for one on a journal entry to A/R or A/P (and takes only one A/R or A/P account a transaction); add it there if QuickBooks asks.\n"
+            "\nIt names no customer or vendor on its lines to accounts receivable or payable, in entries {invoiced}, {billed}: QuickBooks Desktop asks for one on a journal entry to A/R or A/P (and takes only one A/R or A/P account a transaction); add it there if QuickBooks asks.\n"
         )),
         "{readme}"
     );
@@ -2030,6 +2020,42 @@ fn the_readme_names_the_entries_on_receivables_and_payables() {
     let (s, _) = plain_books(dir.path());
     let p = build_package(&s, &settings(&company, &cash), &request(false, None)).unwrap();
     assert!(!text(&p, "README.txt").contains("customer or vendor"));
+}
+
+/// BS-format-2 item 7: an entry with lines on both the receivables and
+/// payables control accounts is refused, naming its id, and the package is
+/// not built: QuickBooks Desktop records at most one A/R or A/P account a
+/// transaction, and splitting the entry would change what it says.
+#[test]
+fn the_package_refuses_an_entry_on_two_receivable_or_payable_accounts() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut s, _) = plain_books(dir.path());
+    for (code, name, ty) in [
+        ("1200", "Accounts Receivable", AccountType::Asset),
+        ("2000", "Accounts Payable", AccountType::Liability),
+        ("4000", "Sales", AccountType::Revenue),
+    ] {
+        s.add_account(code, name, ty, None, false).unwrap();
+    }
+    let netted = ledger_core::parties::replaying(|| {
+        post(
+            &mut s,
+            "2026-04-03",
+            "Netted",
+            &[
+                ("2000", Side::Debit, "80.00"),
+                ("1200", Side::Credit, "80.00"),
+            ],
+        )
+    });
+    let company = company(false);
+    let cash = cash();
+    let err = build_package(&s, &settings(&company, &cash), &request(false, None)).unwrap_err();
+    assert!(err.starts_with(&format!("entry {netted}: ")), "{err}");
+    assert!(
+        err.contains("more than one accounts receivable or accounts payable account"),
+        "{err}"
+    );
 }
 
 /// Every text the package's XLSX `name` holds: its XML parts (the shared

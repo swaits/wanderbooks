@@ -62,7 +62,12 @@
 //!      asks for one on a journal entry to accounts receivable or payable
 //!      and takes one such account a transaction (Intuit staff and help;
 //!      sources/intuit-iif.md). [`Iif::receivable_payable`] lists the
-//!      entries with such a line, for the human to be told.
+//!      entries with such a line, for the human to be told. An entry with
+//!      lines on more than one A/R or A/P account (two receivable, two
+//!      payable, or one of each) MUST be refused: QuickBooks Desktop will
+//!      not record such a transaction, and splitting the entry would
+//!      change what it says, so the export names the entry and leaves the
+//!      correction to the books.
 //!   9. Each line's class (a project) MUST be in its CLASS field, and the
 //!      classes declared first (`!CLASS`: NAME), after the accounts and
 //!      before the transactions, BECAUSE the kit puts every list before
@@ -431,6 +436,17 @@ impl Iif {
     }
 }
 
+/// "entry 3" or "entries 3, 5", the ids in order, each once.
+fn entries_of(mut entries: Vec<EntryId>) -> String {
+    entries.sort_unstable();
+    entries.dedup();
+    let ids: Vec<String> = entries.iter().map(ToString::to_string).collect();
+    match ids.as_slice() {
+        [one] => format!("entry {one}"),
+        _ => format!("entries {}", ids.join(", ")),
+    }
+}
+
 /// "the memo of entry 3" or "the memos of entries 3, 5, 9", the ids in
 /// order, each once.
 fn memos_of(mut entries: Vec<EntryId>) -> String {
@@ -453,6 +469,16 @@ pub enum IifError {
         entry: u64,
         /// The account.
         account: AccountId,
+    },
+    /// An entry has lines on more than one accounts receivable or accounts
+    /// payable account (INVARIANT 8): QuickBooks Desktop records at most
+    /// one such account in a transaction.
+    #[error(
+        "{entries}: lines on more than one accounts receivable or accounts payable account; QuickBooks Desktop records at most one A/R or A/P account in a transaction, so reverse and post as two entries through a clearing account (splitting one would change what it says)"
+    )]
+    SeveralReceivablePayableAccounts {
+        /// The entries, as "entry 3" or "entries 3, 5".
+        entries: String,
     },
     /// Two or more accounts would have one name in QuickBooks
     /// (INVARIANT 6).
@@ -727,8 +753,10 @@ fn parents_first(
 /// class in CLASS; every text the file writes differently from the books,
 /// and the entries with a line on accounts receivable or payable
 /// (INVARIANTS 1-9). Refused when an entry uses an account `accounts`
-/// lacks or a class `classes` lacks, two accounts or two classes would
-/// have one name, or a name has a level too long for QuickBooks.
+/// lacks or a class `classes` lacks, an entry has lines on more than one
+/// accounts receivable or payable account (QuickBooks Desktop records at
+/// most one a transaction), two accounts or two classes would have one
+/// name, or a name has a level too long for QuickBooks.
 pub fn journal_to_iif(
     accounts: &[IifAccount],
     classes: &[IifClass],
@@ -892,6 +920,7 @@ pub fn journal_to_iif(
     ));
     out.push_str(&format!("!ENDTRNS{EOL}"));
     let mut receivable_payable = Vec::new();
+    let mut several_receivable_payable = Vec::new();
     for entry in entries {
         let docnum = entry.id();
         let d = entry.date();
@@ -913,6 +942,7 @@ pub fn journal_to_iif(
             Side::Credit => 1,
         });
         let mut named = false;
+        let mut receivable_payable_accounts = BTreeSet::new();
         for (n, line) in lines.iter().enumerate() {
             let (account, qb_type) =
                 by_id
@@ -921,10 +951,13 @@ pub fn journal_to_iif(
                         entry: entry.id(),
                         account: line.account,
                     })?;
-            named |= matches!(
+            if matches!(
                 qb_type,
                 QbAccountType::AccountsReceivable | QbAccountType::AccountsPayable
-            );
+            ) {
+                named = true;
+                receivable_payable_accounts.insert(line.account);
+            }
             let class = match line.class_id {
                 None => "",
                 Some(c) => class_of.get(&c).ok_or(IifError::UndeclaredClass {
@@ -942,6 +975,14 @@ pub fn journal_to_iif(
         if named {
             receivable_payable.push(docnum);
         }
+        if receivable_payable_accounts.len() > 1 {
+            several_receivable_payable.push(docnum);
+        }
+    }
+    if !several_receivable_payable.is_empty() {
+        return Err(IifError::SeveralReceivablePayableAccounts {
+            entries: entries_of(several_receivable_payable),
+        });
     }
     Ok(Iif {
         text: out,

@@ -1813,6 +1813,147 @@ fn iif_refuses_an_undeclared_account() {
     );
 }
 
+/// iif INVARIANT 8 (BS-format-2 item 7): an entry with a line on one
+/// accounts receivable account still writes one transaction, and the entry
+/// is named to the human so they can add QuickBooks' customer or vendor.
+#[test]
+fn iif_writes_an_entry_on_one_receivable_or_payable_account() {
+    let mut l = Ledger::new(Currency::USD);
+    let ar = l
+        .add_account(
+            "1200",
+            "Accounts Receivable",
+            AccountType::Asset,
+            None,
+            false,
+        )
+        .unwrap();
+    let sales = l
+        .add_account("4000", "Sales", AccountType::Revenue, None, false)
+        .unwrap();
+    let e = ledger_core::parties::replaying(|| {
+        let e = l.create_entry(d(2026, 4, 1), "Invoice 7");
+        l.add_line(e, ar, Side::Debit, usd(50_000)).unwrap();
+        l.add_line(e, sales, Side::Credit, usd(50_000)).unwrap();
+        l.post_entry(e).unwrap();
+        e
+    });
+    let accounts = iif_accounts(&l, |a| match a.code.as_str() {
+        "1200" => QbAccountType::AccountsReceivable,
+        _ => QbAccountType::Income,
+    });
+    let entries: Vec<&JournalEntry> = l.posted_entries().collect();
+    let iif = journal_to_iif(&accounts, &[], &entries).unwrap();
+    check_iif(&iif.text, &accounts, &entries);
+    assert!(
+        iif.text.contains(&format!(
+            "TRNS\t\tGENERAL JOURNAL\t4/1/2026\tAccounts Receivable\t\t500.00\t{e}\tInvoice 7\r\n"
+        )),
+        "{}",
+        iif.text
+    );
+    assert_eq!(iif.receivable_payable, [e]);
+}
+
+/// iif INVARIANT 8 (BS-format-2 item 7): an entry with lines on both the
+/// receivables and payables control accounts is refused, naming its id:
+/// QuickBooks Desktop records at most one A/R or A/P account a
+/// transaction, and splitting the entry would change what it says.
+#[test]
+fn iif_refuses_an_entry_on_two_receivable_or_payable_accounts() {
+    let mut l = Ledger::new(Currency::USD);
+    let ar = l
+        .add_account(
+            "1200",
+            "Accounts Receivable",
+            AccountType::Asset,
+            None,
+            false,
+        )
+        .unwrap();
+    let ap = l
+        .add_account(
+            "2000",
+            "Accounts Payable",
+            AccountType::Liability,
+            None,
+            false,
+        )
+        .unwrap();
+    let e = ledger_core::parties::replaying(|| {
+        let e = l.create_entry(d(2026, 4, 3), "Netted");
+        l.add_line(e, ap, Side::Debit, usd(8_000)).unwrap();
+        l.add_line(e, ar, Side::Credit, usd(8_000)).unwrap();
+        l.post_entry(e).unwrap();
+        e
+    });
+    let accounts = iif_accounts(&l, |a| match a.code.as_str() {
+        "1200" => QbAccountType::AccountsReceivable,
+        "2000" => QbAccountType::AccountsPayable,
+        _ => QbAccountType::OtherCurrentAsset,
+    });
+    let entries: Vec<&JournalEntry> = l.posted_entries().collect();
+    let err = journal_to_iif(&accounts, &[], &entries).unwrap_err();
+    assert_eq!(
+        err,
+        IifError::SeveralReceivablePayableAccounts {
+            entries: format!("entry {e}")
+        }
+    );
+    let why = err.to_string();
+    assert!(why.starts_with(&format!("entry {e}: ")), "{why}");
+    assert!(
+        why.contains("QuickBooks Desktop records at most one A/R or A/P account in a transaction"),
+        "{why}"
+    );
+    assert!(
+        why.contains("reverse and post as two entries through a clearing account"),
+        "{why}"
+    );
+}
+
+/// iif INVARIANT 8 (BS-format-2 item 7): two distinct receivable accounts
+/// in one entry are refused too (its `qb_type` decides, whatever the
+/// callers call them), and every offending entry is named.
+#[test]
+fn iif_refuses_an_entry_on_two_receivable_accounts() {
+    let mut l = Ledger::new(Currency::USD);
+    let first = l
+        .add_account(
+            "1200",
+            "Accounts Receivable",
+            AccountType::Asset,
+            None,
+            false,
+        )
+        .unwrap();
+    let second = l
+        .add_account("1210", "Customer Deposits", AccountType::Asset, None, false)
+        .unwrap();
+    let (one, two) = ledger_core::parties::replaying(|| {
+        let mut post = |memo: &str| {
+            let e = l.create_entry(d(2026, 5, 1), memo);
+            l.add_line(e, first, Side::Debit, usd(100)).unwrap();
+            l.add_line(e, second, Side::Credit, usd(100)).unwrap();
+            l.post_entry(e).unwrap();
+            e
+        };
+        (post("First"), post("Second"))
+    });
+    let accounts = iif_accounts(&l, |a| match a.code.as_str() {
+        "1200" | "1210" => QbAccountType::AccountsReceivable,
+        _ => QbAccountType::OtherCurrentAsset,
+    });
+    let entries: Vec<&JournalEntry> = l.posted_entries().collect();
+    let err = journal_to_iif(&accounts, &[], &entries).unwrap_err();
+    assert_eq!(
+        err,
+        IifError::SeveralReceivablePayableAccounts {
+            entries: format!("entries {one}, {two}")
+        }
+    );
+}
+
 /// A ledger with Cash 1000, Revenue 4000 and Fees 6000.
 fn small_ledger() -> (Ledger, AccountId, AccountId, AccountId) {
     let mut l = Ledger::new(Currency::USD);

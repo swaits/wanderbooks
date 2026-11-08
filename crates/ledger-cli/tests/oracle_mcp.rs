@@ -1546,6 +1546,43 @@ fn iif_declares_accounts_by_role_and_balances_every_transaction() {
     );
 }
 
+/// BS-format-2 item 7 through the server: an entry with lines on both the
+/// receivables and payables control accounts makes `books.export` iif and
+/// `books.export_cpa_package` refuse, naming the entry, rather than hand
+/// over a file QuickBooks Desktop will not import.
+#[test]
+fn iif_and_the_package_refuse_an_entry_on_two_receivable_or_payable_accounts() {
+    let dir = test_dir("iif-two-receivable-payable");
+    let mut s = new_store(&dir);
+    let netted = ledger_core::parties::replaying(|| {
+        post(
+            &mut s,
+            "2025-04-05",
+            "Netted",
+            &[("2000", Dr, "80.00"), ("1200", Cr, "80.00")],
+        )
+    });
+    drop(s);
+    let mut m = Mcp::start(&dir, "1000000.00");
+    for (tool, args) in [
+        (
+            "books.export",
+            json!({"format": "iif", "report": "journal", "as_of": END}),
+        ),
+        (
+            "books.export_cpa_package",
+            json!({"as_of": END, "cash_accounts": ["1000"], "include_receipts": false, "include_tins": false}),
+        ),
+    ] {
+        let why = m.refuse(tool, args);
+        assert!(why.contains(&format!("entry {netted}: ")), "{tool}: {why}");
+        assert!(
+            why.contains("more than one accounts receivable or accounts payable account"),
+            "{tool}: {why}"
+        );
+    }
+}
+
 /// P3 review R5: books.export iif without as_of is as of today, like the
 /// trial balance: an entry dated later is left out, and the two exports
 /// made with no dates tie, account by account.

@@ -260,12 +260,21 @@ by the as-of day, otherwise by wanderbooks type `OCASSET` (asset), `OCLIAB`
 `COGS`, `EXINC` and `EXEXP` are in `ledger_import::QbAccountType` but nothing
 in the books maps to them yet.
 
-**Gap:** an entry with lines on more than one A/R or A/P account (the
-receivables and payables roles are two accounts, so one entry can hold both)
-must be refused by the spec (Intuit: QuickBooks will not record it), but
-`journal_to_iif` writes it and only lists it in `Iif::receivable_payable`
-(a flag for any entry with such a line). Unenforced until the engine refuses
-it.
+**Enforced:** `ledger_import::iif::journal_to_iif` refuses an entry with
+lines on more than one A/R or A/P account
+(`IifError::SeveralReceivablePayableAccounts`), naming every such entry and
+saying QuickBooks Desktop records at most one A/R or A/P account a
+transaction and that splitting the entry would change what it says;
+`ledger_package::export_iif` and `build_package` and `ledger-mcp`
+`books.export` and `books.export_cpa_package` return that refusal instead of
+a file. **Checked:** `ledger-import` `tests/spec_import.rs`
+(`iif_writes_an_entry_on_one_receivable_or_payable_account`,
+`iif_refuses_an_entry_on_two_receivable_or_payable_accounts`,
+`iif_refuses_an_entry_on_two_receivable_accounts`); `ledger-package`
+`tests/package.rs`
+(`the_package_refuses_an_entry_on_two_receivable_or_payable_accounts`);
+`ledger-cli` `oracle_mcp.rs`
+(`iif_and_the_package_refuse_an_entry_on_two_receivable_or_payable_accounts`).
 
 **Enforced:** `ledger_import::iif` (`field`, `iif_accounts`, `iif_classes`,
 `journal_to_iif`, `Iif::warnings`, `Iif::changes`, `Iif::receivable_payable`),

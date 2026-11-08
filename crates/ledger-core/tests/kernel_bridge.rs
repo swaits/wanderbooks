@@ -702,3 +702,39 @@ fn deductible_amount_decimal_table() {
 fn deductible_amount_decimal_unrepresentable_is_none() {
     assert_eq!(Decimal::MAX.checked_div_round_cent(parse("0.5")), None);
 }
+
+/// The rounding step at Decimal's edges (a re-check's adversarial rows,
+/// against exact fractions): the largest mantissa, scale 28, the widest
+/// exponent, a tie written at scale 28. Each is representable, or not,
+/// exactly as Python's `Fraction` says.
+#[test]
+fn deductible_rounding_at_decimal_edges() {
+    let max = Decimal::MAX;
+    // Decimal::MAX / 1: needs both trailing-zero reductions to scale 0.
+    assert_eq!(max.checked_div_round_cent(parse("1")), Some(max));
+    // Decimal::MAX / 10 ends in .5: scale 1 holds it.
+    assert_eq!(
+        max.checked_div_round_cent(parse("10")),
+        Some(parse("7922816251426433759354395033.5"))
+    );
+    // Decimal::MAX / 2 and / 4 end in .50 and .75: no scale holds them.
+    assert_eq!(max.checked_div_round_cent(parse("2")), None);
+    assert_eq!(max.checked_div_round_cent(parse("4")), None);
+    // 1 / 1e-28: the widest exponent, exactly 1e28.
+    assert_eq!(
+        parse("1").checked_div_round_cent(parse("0.0000000000000000000000000001")),
+        Some(parse("10000000000000000000000000000"))
+    );
+    // A half-cent tie written at scale 28 rounds away from zero both ways,
+    // and just under it rounds to zero.
+    let tie = parse("0.0050000000000000000000000000");
+    assert_eq!(tie.checked_div_round_cent(parse("1")), Some(parse("0.01")));
+    assert_eq!(
+        (-tie).checked_div_round_cent(parse("1")),
+        Some(parse("-0.01"))
+    );
+    assert_eq!(
+        parse("0.0049999999999999999999999999").checked_div_round_cent(parse("1")),
+        Some(parse("0.00"))
+    );
+}

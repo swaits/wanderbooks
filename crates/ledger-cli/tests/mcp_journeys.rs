@@ -2313,7 +2313,7 @@ fn mcp_receipts_always_required_when_threshold_is_zero() {
 /// `books.cash_flow` with no accounts passed reads the roles from
 /// `[books]` in wanderbooks.toml (BS-statement-3): the expense the owners
 /// paid through 2100 is borrowed from them and spent on its date, each
-/// line with `on_behalf` (D-42, rule 11); repaying the advance is
+/// line with `on_behalf` (D-42, BS-statement-3 statement 16); repaying the advance is
 /// financing; a loan to a member is investing; the statement is the direct
 /// method's, and it foots.
 #[test]

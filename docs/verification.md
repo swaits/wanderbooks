@@ -122,7 +122,7 @@ Each law, and what proves it. Kani harnesses are in
     1): each entry's cash is applied to the sections moving against it,
     operating, investing, financing, each up to its own movement; what a
     member or a lender paid or received for the entry, with no cash
-    account moving (rule 11, D-42), is added as a constructive receipt
+    account moving (BS-statement-3 statement 16, D-42), is added as a constructive receipt
     and disbursement that nets to zero within the entry; so each entry's
     flows sum to its cash and what neither settled sums to zero, and
     operating + investing + financing is exactly the change in the cash
@@ -1173,7 +1173,7 @@ Be precise about the claims:
 - **The cash flow model tags lines per entry with any function** meeting
   the engine's guarantees (the cash tag follows the account; revenue and
   expense lines are operating or investing; a reversal takes its
-  original's tags); which tag the engine picks for a line (rule 4's
+  original's tags); which tag the engine picks for a line (BS-statement-3 statement 5's
   disposals, the bill split, the chain root) is checked by the property
   and example tests, not proved. A line the engine splits between two
   sections is two lines in the model, the entry's net unchanged.

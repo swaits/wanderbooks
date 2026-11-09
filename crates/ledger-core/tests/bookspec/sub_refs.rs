@@ -18,6 +18,14 @@
 //! product rule with no such list takes no sub-number, and has no
 //! statements (those are bookspec's).
 //!
+//! A bare `Rule n` or `rule n` is refused in a file that is the cash-flow
+//! statement's or a party's throughout, and elsewhere on a line that
+//! cites `BS-statement-3` or `BS-partner-3`: bookspec unit S-C8 dropped
+//! those two records' old labels, which had drifted from the statements'
+//! positions, and a reference is now `BS-statement-3 statement k` (or
+//! `BS-partner-3 statement k`). An ordinary use of the word, with no
+//! number or away from a citation, is not a label.
+//!
 //! A reference may be a list ("statements 5, 11 and 13"), a range
 //! ("statements 27-30"), parenthesised, wrapped across lines behind a
 //! comment prefix, backticked after the id (`` `BS-asset-1` statements
@@ -35,11 +43,67 @@ fn repo_root() -> PathBuf {
 /// How many references the scan must find, at least: exactly the number
 /// found when it was last set, so none can vanish silently. Raise it, in
 /// the same commit, when references are added; it never falls.
-const CHECKED_FLOOR: usize = 361;
+const CHECKED_FLOOR: usize = 515;
 
 /// The tracked file this check does not scan: its own self-tests quote
 /// the forms it refuses.
 const SELF: &str = "crates/ledger-core/tests/bookspec/sub_refs.rs";
+
+/// The files that are the cash-flow statement's or a party's throughout.
+/// BS-statement-3 and BS-partner-3 used to open their statements with
+/// "Rule n" labels that drifted from their positions; bookspec unit S-C8
+/// dropped them, and every reference is now a position. A numbered
+/// "rule n" in one of these files is that old label, so it is refused
+/// even when the line does not name the record. Elsewhere a bare label is
+/// refused only beside a citation of one of those two records, so an
+/// ordinary use of the word ("this rule holds", "the run rule 0.02") is
+/// left alone.
+const OLD_LABEL_FILES: &[&str] = &[
+    "crates/ledger-core/src/cashflow.rs",
+    "crates/ledger-core/tests/spec_cash_flow.rs",
+    "crates/ledger-core/tests/spec_reports.rs",
+    "crates/ledger-core/src/parties.rs",
+    "crates/ledger-core/tests/spec_parties.rs",
+    "crates/ledger-core/tests/spec_party_totals.rs",
+    "crates/ledger-core/src/shares.rs",
+    "crates/ledger-core/src/k1.rs",
+    "crates/ledger-cli/tests/spec_parties.rs",
+    "crates/ledger-cli/tests/spec_party_totals.rs",
+];
+
+/// The byte offsets of bare old labels: `Rule n`, `rule n`, `rules n`,
+/// with a number after. A label straight after a bookspec id
+/// ("BS-arap-2 rule 3") is the id scan's finding, not this one's.
+fn bare_old_labels(flat: &str) -> Vec<usize> {
+    let chars: Vec<char> = flat.chars().collect();
+    let offsets: Vec<usize> = flat.char_indices().map(|(b, _)| b).collect();
+    let mut out = Vec::new();
+    for i in 0..chars.len() {
+        if i > 0 && is_id_char(chars[i - 1]) {
+            continue;
+        }
+        if chars[i] != 'r' && chars[i] != 'R' {
+            continue;
+        }
+        let head: String = chars[i..(i + 4).min(chars.len())].iter().collect();
+        if head != "rule" && head != "Rule" {
+            continue;
+        }
+        let mut j = i + 4;
+        if matches!(chars.get(j), Some('s' | 'S')) {
+            j += 1;
+        }
+        // At least one space, then a number.
+        let start = j;
+        while chars.get(j) == Some(&' ') {
+            j += 1;
+        }
+        if j > start && chars.get(j).is_some_and(|c| c.is_ascii_digit()) {
+            out.push(offsets[i]);
+        }
+    }
+    out
+}
 
 /// The parts a record has: its statements, invariants and scenarios.
 #[derive(Clone, Copy, Default)]
@@ -271,6 +335,8 @@ fn scan(text: &str, at: &str, parts: &BTreeMap<String, Parts>) -> (usize, Vec<St
     let (flat, starts) = flatten(text);
     let mut checked = 0usize;
     let mut problems = Vec::new();
+    // The offsets of old labels the id scan already reports.
+    let mut consumed: BTreeSet<usize> = BTreeSet::new();
     let mut hits: Vec<(usize, &str)> = ["BS-", "WB-"]
         .iter()
         .flat_map(|prefix| flat.match_indices(prefix).map(|(pos, _)| (pos, *prefix)))
@@ -359,6 +425,9 @@ fn scan(text: &str, at: &str, parts: &BTreeMap<String, Parts>) -> (usize, Vec<St
             let (nums, end) = number_list(&rest, i + 1);
             let shown: String = rest[word_from..end].iter().collect();
             if !new {
+                if let Some(b) = offsets.get(word_from) {
+                    consumed.insert(pos + 3 + b);
+                }
                 problems.push(format!(
                     "{at}:{line}: {id} {shown}: the old vocabulary; say `statement`, `invariant` or `scenario` k, as bookspec numbers its parts"
                 ));
@@ -397,6 +466,36 @@ fn scan(text: &str, at: &str, parts: &BTreeMap<String, Parts>) -> (usize, Vec<St
             }
             i = k;
             first = false;
+        }
+    }
+    // A bare old label: `Rule 11` or `rule 11` for a record that numbers
+    // its parts by position. Refused in a file that is the cash-flow
+    // statement's or a party's throughout, and elsewhere only beside a
+    // BS-statement-3 or BS-partner-3 citation on the same line, so
+    // ordinary uses of the word ("this rule holds", "the run rule 0.02")
+    // are not caught.
+    let scoped = OLD_LABEL_FILES.contains(&at);
+    let lines: Vec<&str> = text.lines().collect();
+    for pos in bare_old_labels(&flat) {
+        if consumed.contains(&pos) {
+            continue;
+        }
+        let line = line_at(&starts, pos);
+        let beside = lines
+            .get(line - 1)
+            .is_some_and(|l| l.contains("BS-statement-3") || l.contains("BS-partner-3"));
+        if scoped || beside {
+            let shown: String = flat[pos..]
+                .chars()
+                .take_while(|c| {
+                    c.is_ascii_alphanumeric() || c.is_ascii_whitespace() || matches!(c, '\'' | ',')
+                })
+                .take(24)
+                .collect();
+            problems.push(format!(
+                "{at}:{line}: {}: a bare old rule label; a record numbers its parts by position, so say `BS-statement-3 statement k` or `BS-partner-3 statement k`",
+                shown.trim()
+            ));
         }
     }
     (checked, problems)
@@ -632,4 +731,67 @@ pub(crate) fn product_rule_parts_are_the_numbered_lists_of_their_claims() {
     // A bare product-rule id is no sub-reference.
     assert_eq!(problems_in("WB-ledger-15").len(), 0);
     assert_eq!(problems_in("the INVARIANT 2 of kernel::settle").len(), 0);
+}
+
+#[test]
+pub(crate) fn a_bare_old_rule_label_is_refused_in_a_cash_flow_or_party_file() {
+    let parts = all_parts();
+    let cashflow = "crates/ledger-core/src/cashflow.rs";
+    let parties = "crates/ledger-core/src/parties.rs";
+    // In a file that is the record's throughout, a bare label fails even
+    // when its line does not name the record.
+    for text in [
+        "/// Rule 11: what a member or lender paid",
+        "    // rule 5's classes",
+        "/// BS-statement-3 statement 16, the old Rule 11",
+        "/// Rules 1, 3 and 4",
+    ] {
+        assert_eq!(scan(text, cashflow, &parts).1.len(), 1, "{text:?}");
+    }
+    assert_eq!(scan("/// rule 2: the target", parties, &parts).1.len(), 1);
+    assert_eq!(
+        scan(
+            "/// rule 2: the target",
+            "crates/ledger-core/tests/spec_party_totals.rs",
+            &parts
+        )
+        .1
+        .len(),
+        1
+    );
+    // Elsewhere, a label beside a citation fails.
+    assert_eq!(
+        problems_in("BS-statement-3 statement 16; rule 11 was its old label").len(),
+        1
+    );
+    assert_eq!(
+        problems_in("BS-partner-3 statement 7; rule 2 was its old label").len(),
+        1
+    );
+    // Ordinary uses of the word are not labels: no number, a number that
+    // is not a label, or a bare label far from any citation.
+    assert_eq!(scan("/// this rule holds", cashflow, &parts).1.len(), 0);
+    assert_eq!(
+        scan("/// the rules of the books", parties, &parts).1.len(),
+        0
+    );
+    assert_eq!(
+        scan("/// the run rule 0.02 / 0.00", "docs/testing.md", &parts)
+            .1
+            .len(),
+        0
+    );
+    assert_eq!(
+        scan("/// rule 11 is not cited here", "docs/testing.md", &parts)
+            .1
+            .len(),
+        0
+    );
+    // The new form passes; a bare label straight after an id is the id
+    // scan's finding, reported once.
+    assert_eq!(
+        scan("/// BS-statement-3 statement 16", cashflow, &parts),
+        (1, vec![])
+    );
+    assert_eq!(problems_in("BS-statement-3 rule 16").len(), 1);
 }

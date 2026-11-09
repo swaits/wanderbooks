@@ -1328,7 +1328,7 @@ pub fn constructive<T: Amount>(
 /// and financing balance-sheet accounts (each account netted first; both
 /// non-negative); `inflow` and `outflow` are the cash those two sections
 /// took in and paid out (both non-negative; constructive cash included,
-/// rule 11). Cash in settles credits and cash out settles debits; what's
+/// BS-statement-3 statement 16). Cash in settles credits and cash out settles debits; what's
 /// left of the smaller side was exchanged:
 /// `max(0, min(debits - outflow, credits - inflow))`.
 ///
@@ -2242,7 +2242,7 @@ mod tests {
         assert_eq!(exchanged(0i64, 1000, 500, 0), Some(0));
         // A cash purchase: cash out covers every debit.
         assert_eq!(exchanged(1000i64, 0, 0, 1000), Some(0));
-        // Equipment a lender paid for (rule 11): 1,000 borrowed in, 1,000
+        // Equipment a lender paid for (BS-statement-3 statement 16): 1,000 borrowed in, 1,000
         // spent out, nothing exchanged.
         assert_eq!(exchanged(1000i64, 1000, 1000, 1000), Some(0));
     }

@@ -2536,7 +2536,7 @@ proptest! {
         let credits = |qs: &[i64]| qs.iter().map(|q| (-q).max(0)).sum::<i64>();
         let debits = |qs: &[i64]| qs.iter().map(|q| (*q).max(0)).sum::<i64>();
         let mut fin = 0i64;
-        // Rule 2: a liability left operating that only entries debiting
+        // BS-statement-3 statement 3: a liability left operating that only entries debiting
         // nothing but equity credit, through the end, holds distributions
         // declared: financing, after the loan.
         let declared = |code: &str| {
@@ -2577,7 +2577,7 @@ proptest! {
                 }
             }
             let fi_all = fi.iter().sum::<i64>() + declared_fi.iter().sum::<i64>();
-            // Rule 3: operating, then financing (no investing here).
+            // BS-statement-3 statement 4: operating, then financing (no investing here).
             let take = |left: i64, m: i64| {
                 if left > 0 && m < 0 {
                     left.min(-m)
@@ -2594,7 +2594,7 @@ proptest! {
             let mut kinds: Vec<i64> = fi.iter().chain(&declared_fi).copied().collect();
             if to_fin > 0 { settle(&mut kinds, to_fin, false) } else { settle(&mut kinds, -to_fin, true) }
             fi.copy_from_slice(&kinds[..3]);
-            // Rule 11: the loan pays, then receives; then capital.
+            // BS-statement-3 statement 16: the loan pays, then receives; then capital.
             if designate {
                 let paid = credits(&fi[2..]).min(debits(&op));
                 fi[2] += paid;

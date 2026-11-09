@@ -1,7 +1,7 @@
 //! U7 bridge properties: payroll arithmetic (kernel sweep).
 //!
 //! `proofs/payroll.rs` proves `kernel::net_pay` on `i64` (five
-//! deductions, a two-employee plan through `check_lines`); the engine
+//! deductions, a one-employee plan through `check_lines`); the engine
 //! runs the same code on `Decimal`. These properties check that the two
 //! instantiations agree, that `Decimal` agrees with an independent exact
 //! `i128` reference (mantissas over a common power of ten, sharing no

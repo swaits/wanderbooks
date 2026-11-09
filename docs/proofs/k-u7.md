@@ -49,7 +49,7 @@ payroll use (nothing in a run rounds or splits) and were not called.
 
 On `i64`, fixed arrays, each with `kani::cover!`. A payroll line
 carries five employee deductions, so the deduction arrays are fixed at
-five; the plan harness carries two employees and the plan's eight
+five; the plan harness carries one employee and the plan's eight
 totals in a fixed array of eight `(Side, amount)` lines. Amounts run to
 a few thousand units (gross 1 to 10,000, withholdings to 1,000 or
 2,000): the laws are about the shape of the subtraction and the
@@ -64,7 +64,7 @@ positive).
 |---|---|---|
 | `net_pay_is_gross_less_deductions` | 45 | net equals gross less the deductions' `total`, for deductions of either sign; withholdings exceeding gross and a negative net are reached, and `i64::MAX`/`MIN` past the range are `None` (2 covers). 19.5 s verification |
 | `net_pay_nonnegative_when` | 45 | non-negative deductions summing to at most gross give exactly gross less their sum, never negative; a zero net and a partial withholding are reached (2 covers). 21.9 s wall, 7.0 s verification |
-| `payroll_plan_balances` | 45 | two employees: the eight totals `payroll_entry_plan` posts pass `check_lines` (two or more lines, every amount positive and in range, debits equal credits); differing employees and a net over one gross are reached (2 covers). 297.6 s verification |
+| `payroll_plan_balances` | 45 | one employee: the eight totals `payroll_entry_plan` posts pass `check_lines` (two or more lines, every amount positive and in range, debits equal credits); a smaller net and a posted employer share are reached (2 covers). 65.6 s wall, 62.0 s verification. Two employees timed out in CBMC (over 80 minutes, killed): sixteen symbolic figures into eight totals; one employee reaches every line and both FICA shares on both sides, and Lean carries the plan at its totals for any number of employees |
 
 Times: `cargo kani -p ledger-core --exact --harness
 proofs::payroll::<name>`, the shared dev machine under `nice -n 15`,

@@ -52,15 +52,16 @@ impl PayrollLine {
     /// (TooLargeToCompute), never a panic, past exact arithmetic: a run is
     /// restored as journaled (BS-entry-4).
     pub fn net_pay(&self) -> Result<Decimal, LedgerError> {
-        [
-            self.federal_withholding,
-            self.state_withholding,
-            self.ss_employee,
-            self.medicare_employee,
-            self.other_deductions,
-        ]
-        .into_iter()
-        .try_fold(self.gross_pay, Decimal::checked_sub)
+        crate::kernel::net_pay(
+            self.gross_pay,
+            &[
+                self.federal_withholding,
+                self.state_withholding,
+                self.ss_employee,
+                self.medicare_employee,
+                self.other_deductions,
+            ],
+        )
         .ok_or_else(|| LedgerError::TooLargeToCompute(format!("{}'s net pay", self.employee_name)))
     }
 }
@@ -172,20 +173,26 @@ pub fn payroll_entry_plan(
     base: Currency,
 ) -> Result<Vec<(AccountId, Side, Money)>, LedgerError> {
     let too_large = || LedgerError::TooLargeToCompute("the payroll run's totals".into());
-    let sum = |f: &dyn Fn(&PayrollLine) -> Option<Decimal>| {
-        lines
-            .iter()
-            .try_fold(Decimal::ZERO, |t, l| t.checked_add(f(l)?))
-            .ok_or_else(too_large)
-    };
-    let gross = sum(&|l| Some(l.gross_pay))?;
-    let employer = sum(&|l| l.ss_employer.checked_add(l.medicare_employer))?;
-    let federal = sum(&|l| Some(l.federal_withholding))?;
-    let state = sum(&|l| Some(l.state_withholding))?;
-    let ss = sum(&|l| l.ss_employee.checked_add(l.ss_employer))?;
-    let medicare = sum(&|l| l.medicare_employee.checked_add(l.medicare_employer))?;
-    let other = sum(&|l| Some(l.other_deductions))?;
-    let net = sum(&|l| l.net_pay().ok())?;
+    // Every total is a kernel total (net pay itself is kernel::net_pay):
+    // exact, or refused here as TooLargeToCompute, never a panic.
+    let gross = crate::kernel::total_of(lines.iter(), |l| l.gross_pay).ok_or_else(too_large)?;
+    let employer = crate::kernel::total_try(lines.iter(), |l| {
+        l.ss_employer.checked_add(l.medicare_employer)
+    })
+    .ok_or_else(too_large)?;
+    let federal =
+        crate::kernel::total_of(lines.iter(), |l| l.federal_withholding).ok_or_else(too_large)?;
+    let state =
+        crate::kernel::total_of(lines.iter(), |l| l.state_withholding).ok_or_else(too_large)?;
+    let ss = crate::kernel::total_try(lines.iter(), |l| l.ss_employee.checked_add(l.ss_employer))
+        .ok_or_else(too_large)?;
+    let medicare = crate::kernel::total_try(lines.iter(), |l| {
+        l.medicare_employee.checked_add(l.medicare_employer)
+    })
+    .ok_or_else(too_large)?;
+    let other =
+        crate::kernel::total_of(lines.iter(), |l| l.other_deductions).ok_or_else(too_large)?;
+    let net = crate::kernel::total_try(lines.iter(), |l| l.net_pay().ok()).ok_or_else(too_large)?;
     let mut plan = Vec::new();
     let mut push = |account: AccountId, side: Side, amount: Decimal| {
         if !amount.is_zero() {

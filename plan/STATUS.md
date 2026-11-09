@@ -1,4 +1,51 @@
-# STATUS — 2026-11-08: P14 under way: bookspec is the definitive spec, the kernel sweep half done, the Lean model checks the code
+# STATUS — 2026-11-09: P14 most of the way: every rule cited by its bookspec id, a traceability gate, three quarters of the rules with examples, the kernel sweep through U5
+
+## 2026-11-09: P14 continued (plan/p14-bookspec.md)
+
+Every unit reviewed by a second model, its fixes re-checked, before it
+merged. bookspec main is at 2b3b6c9 (wanderbooks pinned there).
+
+- **Rules cited by bookspec id** (S-E, S-E2, S-E3): every B-n citation in
+  code, docs, tests and program output is a BS id, and every
+  sub-reference names a statement, invariant or scenario its record has
+  (361, checked); the mapping caught a dozen citations that pointed at
+  the wrong part. A test refuses a retired number anywhere.
+- **The traceability gate** (X-J): every claim backed by real code, tests,
+  Kani harnesses and audited Lean theorems, resolved strictly; every
+  kernel function has a harness, a bridge property and a law whose rules
+  its SOURCE cites (60 functions, 15 listed exceptions). It found a false
+  claim (B-22), one ahead of the code (WB-prepaid-2, now done by K-U5),
+  and nineteen stale names.
+- **Examples** (X-I, X-H1a..d): the spec floors run against the base
+  commit (an id never lost, an allow-list never grows, no rule or option
+  loses its example); payments, the aging, settlements, recoveries,
+  invoice numbers, vendor references, drafts and evidence (X-H1d, refused
+  input, in review). Rules without an example: 39 to 24 (17 with X-H1d);
+  an example names the option it rests on, the derivation proves it
+  depends on it, and a claimed CHOICE declares its pick. Wanderbooks runs
+  88 of 101 examples and passes them all.
+- **Kernel sweep**: proportional shares, one copy for six sites (K-U3, law
+  42); even monthly parts and D-72's currency rounding behind a format
+  feature, nothing journaled moves (K-U5, law 43); the notes folded into
+  docs/verification.md. Lean 188 theorems, Kani 97 harnesses.
+- **Coverage** (V-D2): 96 tests where it was thinnest; ledger-core 89.8%
+  to 95.5% of lines, the floor with it.
+- **Found and fixed**: custom terms ("Due 2026-11-15") came back due on
+  the document's own date through the MCP tools (no live document was
+  affected); a fee above the cash was read from half of an error's
+  "or" (now a typed refusal); the digest listed cash accounts in hash
+  order; a zero schedule printed -0; just prove's fast set ran seven
+  slow harnesses (its sort broke when the proofs became modules), so it
+  timed out (fast set 87, ten minutes); just prove audited a stale copy
+  of bookspec's theorem list (151 of 177). Kept and pinned: an exact tie
+  between shares goes where Decimal's 28th digit sends it, as it always
+  has (K-U10 puts exact ranking to the owner, with the cents it moves).
+
+**Next**: X-H1d's fixes, X-H1e; S-C8, S-E4, V-D3 (small, from the
+reviews); K-U6..U9, K-U10 (with the owner's tie-break decision); X-K2,
+X-O (hledger), L-G4. The owner's overnight P12 run, trials, release, icon
+and re-audit remain his; so does the schedule_minor_unit format upgrade
+on the live books.
 
 ## 2026-11-08: P14, bookspec the definitive spec (plan/p14-bookspec.md)
 

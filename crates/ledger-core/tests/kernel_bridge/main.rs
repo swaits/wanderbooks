@@ -15,6 +15,7 @@ mod payroll;
 mod ratio;
 mod round;
 mod schedule;
+mod ties;
 mod total;
 
 use ledger_core::kernel::{self, Amount, LineError};

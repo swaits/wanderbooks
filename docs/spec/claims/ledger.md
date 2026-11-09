@@ -164,7 +164,12 @@ None.
 (`a_draft_waits_for_its_receipt_and_posts`,
 `a_reversal_needs_no_receipt_of_its_own`); `ledger-store`
 `tests/store.rs` (`draft_states_replay_and_project`,
-`drafts_v2_waits_for_the_upgrade`).
+`drafts_v2_waits_for_the_upgrade`); bookspec example
+`ledger-a-reversal-needs-no-evidence-of-its-own` (BS-ledger-17, the option
+picked: a reversal of a 40.00 entry under a policy of over 25.00 posts at once
+and `ledger_core::evidence::requirement` exempts it as a reversal); the example
+`ledger-a-reversal-carries-its-own-evidence` names the option not picked and is
+skipped.
 
 ### Product rules
 

@@ -163,6 +163,17 @@ pub(crate) fn refusal(e: &LedgerError) -> String {
         LedgerError::ParentTypeMismatch { .. } => "parent_type_mismatch",
         LedgerError::EntryAlreadyReversed(..) => "already_reversed",
         LedgerError::ClosedPeriod(..) => "period_closed",
+        // A line on a header account (a placeholder takes no postings),
+        // BS-entry-1 and BS-entry-6.
+        LedgerError::PlaceholderAccount(_) => "header_account",
+        // A close with a draft dated in its period (BS-period-2).
+        LedgerError::DraftsInPeriod(_) => "drafts_in_period",
+        // A draft's command on an entry that is no draft: it is posted
+        // already (a post, a state, a discard), or was discarded and is
+        // gone (BS-entry-5).
+        LedgerError::EntryAlreadyPosted(_)
+        | LedgerError::PostedEntryImmutable
+        | LedgerError::UnknownEntry(_) => "not_drafted",
         other => return format!("another refusal: {other}"),
     }
     .to_string()
@@ -173,6 +184,8 @@ pub(crate) fn refusal(e: &LedgerError) -> String {
 pub(crate) fn store_refusal(e: &StoreError) -> String {
     match e {
         StoreError::Ledger(e) => refusal(e),
+        // The evidence gate (BS-entry-5): the entry needs a document.
+        StoreError::ReceiptRequired(_) => "evidence_required".to_string(),
         other => format!("another refusal: {other}"),
     }
 }
@@ -210,6 +223,7 @@ pub(crate) fn exact(s: &str, what: &str) -> Decimal {
 pub(crate) fn store_refusal_obj(e: &StoreError) -> Refusal {
     match e {
         StoreError::Ledger(e) => Refusal::of_reason(refusal(e)),
+        StoreError::ReceiptRequired(_) => Refusal::of_reason("evidence_required"),
         other => Refusal::of_reason(format!("another refusal: {other}")),
     }
 }

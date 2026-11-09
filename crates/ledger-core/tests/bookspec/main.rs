@@ -76,6 +76,7 @@ pub(crate) use queries::assets::*;
 pub(crate) use queries::commands::*;
 pub(crate) use queries::dates::*;
 pub(crate) use queries::documents::*;
+pub(crate) use queries::drafts::*;
 pub(crate) use queries::formats::*;
 pub(crate) use queries::parties::*;
 pub(crate) use queries::statements::*;

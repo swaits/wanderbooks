@@ -13,10 +13,14 @@ file wins. The evidence is `docs/delegation-log.md`, one line per task.
 | debug, hard implement (several modules, subtle, or tier 2 failed once) | `claudeAgent` | `claude-sonnet-5-5` | effort high |
 | review (a risky design, or a large change before merge) | `muse` | `muse-wonder-full-1.0` | reasoningEffort high |
 
-Note on run/verify: the plan names Muse Ember through Muse Code. On
-2026-11-09 the Muse Code provider did not offer it; the only listing was
-`opencode` / `opencode/muse-ember-1.0`. Until the owner says which to use,
-run-only tasks go to the scout row.
+Note on run/verify: the plan names Muse Ember through Muse Code. Ember was
+released on 2026-11-09 and the Muse Code provider did not list it yet (the
+only listing was `opencode` / `opencode/muse-ember-1.0`). The owner's rule
+(2026-11-09): keep checking Muse Code for it, and use it from the day it is
+listed there, not through OpenCode. Check with `orchestrator_capabilities`
+(`search: "ember"`) before each batch of delegations; until it is listed,
+run-only tasks go to the scout row. Last checked 2026-11-09 16:40 MST: not
+listed.
 
 Rules that do not change with the data: set provider, model and effort on
 every call; two tiers fit, take the cheaper; two failures, move up a tier

@@ -1,5 +1,8 @@
 # Entries: the party direction and a part's weight
 
+_Folded into `docs/verification.md`, sections "Parties" (law 23) and
+"Proration by days, catching up, truing up" (law 27)._
+
 Status: landed 2026-11-08 with the traceability gate's review fixes. Two
 kernel functions that had no proof of their own now have one; both were on
 the exception list before.

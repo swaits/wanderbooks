@@ -95,6 +95,10 @@ pub fn percent_of<T: Amount>(part: T, whole: T, step: T, mode: Rounding) -> Opti
 ///      product and quotient round at 96 bits and 28 digits (K-U10), and
 ///      for a machine integer the division truncates; the rest is an
 ///      exact checked subtraction either way.
+///   6. The part's scale is the share's when it is already a whole
+///      multiple of the step, and the step's otherwise; a caller that
+///      needs a fixed scale rescales, as `contribution_margin_pct` does
+///      for its one-place display.
 /// SCENARIOS:
 ///   1. IF −10.00 split 1 : 2 to the cent, half to even: SHOULD be
 ///      (−3.33, −6.67), and the two sum to −10.00.

@@ -718,14 +718,11 @@ fn vendor_part(payment: Decimal, share: Decimal, target: Decimal) -> Result<Deci
     } else if target.is_zero() {
         Ok(Decimal::ZERO)
     } else {
-        let scaled = payment
-            .checked_mul(share)
-            .and_then(|x| x.checked_div(target))
-            .ok_or_else(|| {
-                LedgerError::TooLargeToCompute(format!(
-                    "a vendor's share ({share}) of a payment of {payment}"
-                ))
-            })?;
+        let scaled = crate::kernel::share_of(payment, share, target).ok_or_else(|| {
+            LedgerError::TooLargeToCompute(format!(
+                "a vendor's share ({share}) of a payment of {payment}"
+            ))
+        })?;
         kernel::round_places(scaled, 2, kernel::Rounding::HalfAwayFromZero).ok_or_else(|| {
             LedgerError::TooLargeToCompute(format!(
                 "a vendor's share ({share}) of a payment of {payment}"
@@ -752,28 +749,22 @@ fn split_share(b: [Decimal; 3], v: Decimal) -> Result<[Decimal; 3], LedgerError>
     }
     let (av, ap) = (v.abs(), p.abs());
     let cent = Decimal::new(1, 2);
-    let times = |x: Decimal| x.checked_mul(ap).ok_or_else(too_large);
     let mut parts = [Decimal::ZERO; 3];
     let mut rems = [Decimal::ZERO; 3];
     for i in 0..3 {
         if b[i].is_zero() {
             continue;
         }
-        // The exact share is num / ap: rounded down to the cent, checked
-        // exactly (the division alone rounds past 28 digits).
-        let num = b[i].abs().checked_mul(av).ok_or_else(too_large)?;
-        let q = num.checked_div(ap).ok_or_else(too_large)?;
-        let mut part =
-            kernel::round_places(q, 2, kernel::Rounding::TowardZero).ok_or_else(too_large)?;
-        while times(part)? > num {
-            part = part.checked_sub(cent).ok_or_else(too_large)?;
-        }
-        while times(part.checked_add(cent).ok_or_else(too_large)?)? <= num {
-            part = part.checked_add(cent).ok_or_else(too_large)?;
-        }
-        // The remainder, over the common denominator ap.
-        rems[i] = num.checked_sub(times(part)?).ok_or_else(too_large)?;
+        // The exact share is |b[i]| × av ÷ ap, floored to the cent by
+        // multiplication (the division alone rounds past 28 digits); the
+        // kernel returns the exact floor and the exact remainder over the
+        // common denominator ap.
+        let (part, rem) = kernel::share_floor_with(b[i].abs(), av, ap, cent, |x| {
+            kernel::round_places(x, 2, kernel::Rounding::TowardZero)
+        })
+        .ok_or_else(too_large)?;
         parts[i] = part;
+        rems[i] = rem;
     }
     kernel::apportion(av, &mut parts, &rems, cent).ok_or_else(too_large)?;
     if v.is_sign_negative() {

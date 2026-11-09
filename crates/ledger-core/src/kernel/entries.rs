@@ -33,6 +33,18 @@ pub trait Amount: Copy + Ord {
     /// `self / rhs` exactly, or `None` when `rhs` is zero or the quotient
     /// is not a whole amount of `Self` (never a rounded share).
     fn checked_div_exact(self, rhs: Self) -> Option<Self>;
+    /// `self / rhs` as the amount type divides: exact where the division
+    /// terminates, otherwise rounded at the type's precision (for
+    /// [`Decimal`], 28 significant digits), and truncating toward zero for
+    /// a machine integer. `None` when `rhs` is zero or the quotient cannot
+    /// be represented.
+    ///
+    /// This is the engine's division, not a claim that the quotient is an
+    /// exact rational: [`Amount::checked_div_exact`] is that one. A
+    /// proportional share ([`crate::kernel::share_of`]) is this division,
+    /// so its result is the same figure every call site computed before
+    /// the kernel sweep's U3.
+    fn checked_div(self, rhs: Self) -> Option<Self>;
     /// `self / rhs`, rounded once to the cent (the nearest whole minor
     /// unit: a unit for a machine integer, two decimal places for
     /// [`Decimal`] dollars), ties away from zero; never a negative zero.
@@ -85,6 +97,9 @@ impl Amount for Decimal {
     fn checked_div_exact(self, rhs: Self) -> Option<Self> {
         let q = self.checked_div(rhs)?;
         (q.checked_mul(rhs) == Some(self)).then_some(q)
+    }
+    fn checked_div(self, rhs: Self) -> Option<Self> {
+        Decimal::checked_div(self, rhs)
     }
     fn checked_div_round_cent(self, rhs: Self) -> Option<Self> {
         if rhs == Self::ZERO {
@@ -185,6 +200,9 @@ impl Amount for i32 {
         }
         self.checked_div(rhs)
     }
+    fn checked_div(self, rhs: Self) -> Option<Self> {
+        i32::checked_div(self, rhs)
+    }
     fn checked_div_round_cent(self, rhs: Self) -> Option<Self> {
         if rhs == 0 {
             return None;
@@ -236,6 +254,9 @@ impl Amount for i64 {
             return None;
         }
         self.checked_div(rhs)
+    }
+    fn checked_div(self, rhs: Self) -> Option<Self> {
+        i64::checked_div(self, rhs)
     }
     fn checked_div_round_cent(self, rhs: Self) -> Option<Self> {
         if rhs == 0 {

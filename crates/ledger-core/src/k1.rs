@@ -34,7 +34,9 @@
 //!      it) is shared among the members credited in proportion to their
 //!      credits, to the base currency's minor unit (cents, whole yen),
 //!      leftover units by largest remainder
-//!      (kernel::apportion, ties to the earlier member): each takes at
+//!      (kernel::apportion, a tie in the rounded remainders to the
+//!      earlier member; an exact tie follows the quotient's 28th digit,
+//!      K-U10): each takes at
 //!      most its own credit, and the split depends on the order the
 //!      members are given only for a tied leftover cent (never on line
 //!      order). Joint property is joint (BS-partner-1's
@@ -343,7 +345,7 @@ pub(crate) fn share_property(
     credits: &[Decimal],
     places: u32,
 ) -> Result<Vec<Decimal>, LedgerError> {
-    use crate::kernel::{Rounding, round_places};
+    use crate::kernel::{Leftover, Rounding, round_places, split_by_weights_with};
     let too_large =
         || LedgerError::TooLargeToCompute("a member's share of contributed property".into());
     let total = credits
@@ -354,22 +356,18 @@ pub(crate) fn share_property(
     if whole <= Decimal::ZERO || total <= Decimal::ZERO {
         return Ok(vec![Decimal::ZERO; credits.len()]);
     }
-    // whole × credit is exact; ÷ total is exact whenever the share is a
-    // whole number of units, so truncating never loses a unit it is owed.
-    let exact: Vec<Decimal> = credits
-        .iter()
-        .map(|c| whole.checked_mul(*c).and_then(|x| x.checked_div(total)))
-        .collect::<Option<_>>()
-        .ok_or_else(too_large)?;
-    let mut parts: Vec<Decimal> = exact
-        .iter()
-        .map(|x| round_places(*x, places, Rounding::TowardZero))
-        .collect::<Option<_>>()
-        .ok_or_else(too_large)?;
-    let remainders: Vec<Decimal> = exact.iter().zip(&parts).map(|(x, p)| x - p).collect();
-    crate::kernel::apportion(whole, &mut parts, &remainders, Decimal::new(1, places))
-        .expect("each part is short by under a unit, so the shortfall is under a unit per member");
-    Ok(parts)
+    // whole × credit ÷ total, each part truncated toward zero to the
+    // currency's places, the leftover units by largest remainder. The
+    // kernel is the one copy of the shape (BS-partner-4's entry split).
+    split_by_weights_with(
+        whole,
+        credits,
+        total,
+        Decimal::new(1, places),
+        |x| round_places(x, places, Rounding::TowardZero),
+        Leftover::LargestRemainder,
+    )
+    .ok_or_else(too_large)
 }
 
 /// The party a member (by name, as in wanderbooks.toml) is in the

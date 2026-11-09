@@ -284,23 +284,22 @@ fn checked_sum(values: impl IntoIterator<Item = Decimal>) -> Option<Decimal> {
 /// part rounded toward zero to the cent, the cents left over to the first.
 /// None when a product or sum is past exact arithmetic.
 fn split_first(magnitude: Decimal, weights: &[Decimal]) -> Option<Vec<Decimal>> {
-    use crate::kernel::{Rounding, round_places};
+    use crate::kernel::{Leftover, Rounding, round_places, split_by_weights_with};
     let total = checked_sum(weights.iter().copied())?;
     if weights.is_empty() || total.is_zero() {
         return Some(vec![Decimal::ZERO; weights.len()]);
     }
-    let mut parts: Vec<Decimal> = weights
-        .iter()
-        .map(|w| {
-            magnitude
-                .checked_mul(*w)
-                .and_then(|x| x.checked_div(total))
-                .and_then(|x| round_places(x, 2, Rounding::TowardZero))
-        })
-        .collect::<Option<_>>()?;
-    let left = magnitude.checked_sub(checked_sum(parts.iter().copied())?)?;
-    parts[0] = parts[0].checked_add(left)?;
-    Some(parts)
+    // magnitude × weight ÷ total, each part truncated toward zero to the
+    // cent, the cents left over to the first (the legacy policy this
+    // split keeps). The kernel is the one copy of the shape.
+    split_by_weights_with(
+        magnitude,
+        weights,
+        total,
+        Decimal::new(1, 2),
+        |x| round_places(x, 2, Rounding::TowardZero),
+        Leftover::FirstAbsorbs,
+    )
 }
 
 /// What an entry's shares split, and what of it counts (the module's
@@ -452,8 +451,9 @@ fn original_target(
 
 /// Split `whole` (at most the sum of `sizes`) over `sizes` in proportion,
 /// to the cent, leftover cents by largest remainder (k1's
-/// share_property), ties to the earlier in `order` (each part's rank).
-/// None past exact arithmetic.
+/// `share_property`), a tie in the rounded remainders to the earlier in
+/// `order` (each part's rank); an exact tie follows the quotient's 28th
+/// digit, and K-U10 decides the exact ranking. None past exact arithmetic.
 fn share_by(whole: Decimal, sizes: &[Decimal], order: &[usize]) -> Option<Vec<Decimal>> {
     let ranked: Vec<Decimal> = order.iter().map(|&i| sizes[i]).collect();
     let shared = crate::k1::share_property(whole, &ranked, 2).ok()?;

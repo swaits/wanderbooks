@@ -1717,9 +1717,7 @@ fn split_part(
     places: u32,
 ) -> Result<(Decimal, Decimal), LedgerError> {
     let whole = add(ours, theirs, "an entry's party shares")?;
-    let part = amount
-        .checked_mul(ours)
-        .and_then(|x| x.checked_div(whole))
+    let part = crate::kernel::share_of(amount, ours, whole)
         .ok_or_else(|| too_large("a payment's government part"))?;
     let part = crate::kernel::round_places(part, places, crate::kernel::Rounding::HalfToEven)
         .ok_or_else(|| too_large("a payment's government part"))?;

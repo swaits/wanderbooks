@@ -15,12 +15,13 @@
 //! The second check flags any retired rule number (the old wanderbooks
 //! numbering, a word-boundary capital letter, hyphen and a number from
 //! 1 to 45) in every tracked text file, outside the excluded index and
-//! claims files. A deliberately kept occurrence is allow-listed below
-//! with its exact count per file; the count failing in either
-//! direction means the list changes only on purpose. Scanning the
-//! whole file text, not line by line, also catches a reference wrapped
-//! across lines, filename at the end of one line and the number at the
-//! start of the next behind a comment prefix.
+//! claims files. No occurrence is kept (unit S-E2, 2026-11-08: program
+//! output names bookspec ids too); a future deliberate keep is
+//! allow-listed below with its exact count per file, and the count
+//! failing in either direction means the list changes only on purpose.
+//! Scanning the whole file text, not line by line, also catches a
+//! reference wrapped across lines, filename at the end of one line and
+//! the number at the start of the next behind a comment prefix.
 
 use crate::*;
 
@@ -407,23 +408,11 @@ fn retired_count(text: &str) -> usize {
 #[test]
 pub(crate) fn no_retired_rule_reference_remains() {
     let root = repo_root();
-    // Deliberately kept occurrences: path and exact count. Any change
-    // in either direction edits this list, on purpose, in that commit.
-    let allow: &[(&str, usize)] = &[
-        // Kept: user-visible evidence-source strings in program output.
-        ("crates/ledger-core/src/ledger.rs", 8),
-        // Kept: goldens are hand-verified expected output.
-        (
-            "crates/ledger-store/tests/golden/draft_states_and_evidence_gate.json",
-            2,
-        ),
-        // Kept: user-visible CPA package text in program output.
-        ("crates/ledger-package/src/package.rs", 1),
-        // Kept: user-visible tool description text in program output.
-        ("crates/ledger-mcp/src/tools/settlements.rs", 1),
-        // Kept: user-visible on-screen contribution note.
-        ("crates/ledger-gui/src/pages/projects.rs", 1),
-    ];
+    // Deliberately kept occurrences: path and exact count. The list is
+    // empty (unit S-E2): every citation, program output included, names
+    // a bookspec id. A future keep adds its path and count here, on
+    // purpose, in that commit.
+    let allow: &[(&str, usize)] = &[];
     let output = std::process::Command::new("git")
         .args(["ls-files", "-z"])
         .current_dir(&root)

@@ -251,7 +251,7 @@ checked to change no figure or entry;
 
 **WB-ledger-10** Approval rules block anything only when the company enforces them (`policy.approval_rules = enforce`; off by default). Then a draft a rule covers posts only once its approver approved it as it stands (its fingerprint: date, description, every line and class), and an operation that would post such an entry at once (an invoice, a bill, a payment, payroll, a remittance, a disposal) is refused: it is drafted instead. Reversals, closes, depreciation and amortization follow from entries already posted and are exempt. A rule names accounts that take postings, and an account a rule names can't be renumbered until the rule is revised.
 *Enforced:* `Ledger::approvals_missing`; `Store::post_entry` and `approval_gate` (`ApprovalRequired`, `ApprovalNeedsDraft`), `check_renumber_account`; `ledger-mcp` `books.post_entry` (`approval_required`).
-*Checked:* `ledger-store` `tests/settings.rs` (`approval_rules_off_by_default`, `approvals_cover_every_post`).
+*Checked:* `ledger-store` `tests/settings.rs` (`approval_rules_off_by_default`, `approvals_cover_every_post`); `ledger-core` `tests/conventions_refusals.rs` (`approvals_are_missing_only_under_enforcement_and_fail_closed`, `the_fingerprint_notices_parties_shares_and_reasons`, `an_approval_is_refused_for_a_posted_or_unknown_entry_and_bad_text`, `an_approval_rule_needs_an_approver_and_a_limit`), `tests/ledger_edits.rs` (`an_account_is_renumbered_only_where_the_books_can_stand_it`).
 
 ## B-31 Renaming an account changes its label, nothing else
 
@@ -412,7 +412,13 @@ withdraw_attachment_duplicate}` and `Store::attach`'s dedup; feature
 `reimbursed_is_derived_from_settles_only`); `ledger-cli`
 `tests/evidence.rs` (`get_receipt_default_has_text_and_no_bytes`,
 `page_image_is_a_png_of_the_page`,
-`consolidation_never_removes_an_entrys_only_evidence`); fuzz targets
+`consolidation_never_removes_an_entrys_only_evidence`); `ledger-core`
+`tests/evidence_gate.rs` (`annotation_fields_are_trimmed_and_blank_ones_dropped`,
+`an_annotation_field_alone_is_a_record`,
+`an_annotation_refuses_a_zero_number_a_negative_amount_and_a_date_off_the_calendar`,
+`an_annotation_needs_a_field_or_a_note`), `tests/ledger_edits.rs`
+(`annotations_replace_by_file_and_receipt_numbers_run_from_the_max`,
+`a_settlement_of_entries_names_existing_distinct_entries_only`); fuzz targets
 `fuzz_extract_pdf` and `fuzz_extract_xlsx`.
 
 ## B-45 An audit is deterministic over the books; an attestation is a claim by a named client
@@ -505,7 +511,13 @@ ledger-mcp `tools/audit.rs` and the gate in `books.export_cpa_package`,
 journal feature `audits`.
 *Checked:* `ledger-core` `tests/audit.rs`
 (`audit_detects_each_seeded_defect`, `below_bar_not_counted`,
-`amount_mismatch_never_counts`); `ledger-store` `tests/audit.rs`
+`amount_mismatch_never_counts`), `tests/audit_branches.rs`
+(`the_cash_flow_check_says_what_it_found`,
+`control_accounts_report_differences_unattached_lines_and_overpaid_documents`,
+`a_close_split_drifts_only_beyond_a_minor_unit`,
+`a_reversal_without_its_own_receipt_is_info_and_only_when_the_policy_would_cover_it`,
+`the_bar_setting_parses_what_it_names_and_refuses_the_rest`,
+`the_bar_counts_at_its_edges_and_only_asks_for_what_it_sets`); `ledger-store` `tests/audit.rs`
 (`audit_writes_wait_for_audits`, `a_run_is_idempotent_on_the_figure_head`,
 `stale_head_period_attestation_refused`, `integrity_detects_each_seeded_defect`,
 `books_the_version_before_p8_wrote_wait_for_the_upgrade`); `ledger-import`

@@ -133,7 +133,9 @@ So the bar, for every agent, every change:
    `verify/lean` — wanderbooks requires that package and holds no copy of
    it. Laws about the books over time are theorems about `Reachable`
    states. A new `Ledger` command is a new `Step` constructor, with its
-   preservation proof. No `sorry`, ever; `Audit.lean` lists every theorem.
+   preservation proof. No `sorry`, ever; bookspec's `lean/Audit.lean`
+   lists every theorem, and `just prove` audits that file from the pinned
+   package (wanderbooks keeps no copy of it).
    After landing a law in bookspec, move wanderbooks' pin to that rev in
    `verify/lean/lakefile.toml` and `lake-manifest.json` **and** in the
    crates' `Cargo.toml` (the checker and the Lean must be the same spec

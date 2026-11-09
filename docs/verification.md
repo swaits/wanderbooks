@@ -49,9 +49,10 @@ payroll, U8 control, U9 display) each get files of their own:
 `total`, `schedule`, `ratio`, `payroll`, `control`; `proofs/mod.rs` holds
 the original harnesses and each unit adds `proofs/<unit>.rs`. A unit
 writes its proof note in `docs/proofs/<unit>.md`; the integrator folds the
-notes into this file and the `#print axioms` lines into
-`verify/lean/Audit.lean` in one edit per batch. Workers do not edit this
-file (see `docs/proofs/README.md`).
+notes into this file in one edit per batch; a unit's Lean theorems and
+their `#print axioms` lines go into bookspec (its `lean/Audit.lean`,
+which `just prove` audits from the pinned package). Workers do not edit
+this file (see `docs/proofs/README.md`).
 
 ## The laws
 

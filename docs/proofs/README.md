@@ -19,10 +19,13 @@ instead:
     Lean theorem it added;
   - anything the solver could not do, and what carries it instead (Lean
     at any size, a bridge property, an exhaustive unit test).
-- **Workers do not edit `docs/verification.md` or `verify/lean/Audit.lean`.**
-  The integrator folds the unit notes into `verification.md`'s tables and
-  prose, and adds the `#print axioms` lines to `Audit.lean` in one place,
-  in one edit per batch, after the batch's merges.
+- **Workers do not edit `docs/verification.md`.** The integrator folds
+  the unit notes into its tables and prose in one edit per batch, after
+  the batch's merges.
+- **A unit's Lean theorems go into bookspec**, on the unit's bookspec
+  branch: the theorem in `lean/Bookspec/`, its `#print axioms` line in
+  bookspec's `lean/Audit.lean`. Wanderbooks keeps no audit list of its
+  own; `just prove` audits bookspec's, from the pinned package (D-69).
 - A unit's note lands in the same commit as its harnesses, so the proof
   and its description are never apart in history.
 

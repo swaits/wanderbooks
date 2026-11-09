@@ -24,11 +24,12 @@ impl Books<'_> {
             ("set_draft_state", e.set_draft_state.is_some()),
             ("attach_receipt", e.attach_receipt.is_some()),
             ("discard_draft", e.discard_draft.is_some()),
+            ("assign_role", e.assign_role.is_some()),
         ];
         match kinds.iter().filter(|(_, given)| *given).collect::<Vec<_>>()[..] {
             [(kind, _)] => kind,
             _ => panic!(
-                "{} event {n}: an event is one of lines, reverses, close, bill, invoice, write_off, payment, settlement, recovery, run_depreciation, dispose_asset, run_schedules, register_schedule, post_draft, set_draft_state, attach_receipt or discard_draft",
+                "{} event {n}: an event is one of lines, reverses, close, bill, invoice, write_off, payment, settlement, recovery, run_depreciation, dispose_asset, run_schedules, register_schedule, post_draft, set_draft_state, attach_receipt, discard_draft or assign_role",
                 self.ex.id
             ),
         }
@@ -467,6 +468,8 @@ impl Books<'_> {
                 // then thrown away. The refusal is the engine's, never
                 // rebuilt here.
                 let mut rehearsal = self.rehearsal(what);
+                // The books' own new-work entry point, so a date past the
+                // calendar (BS-entry-7) is refused there, not rebuilt here.
                 let entry = rehearsal.create_entry(day(), description)?;
                 for (i, line) in e.lines.iter().enumerate() {
                     let side = match line.side.as_str() {
@@ -817,6 +820,13 @@ impl Books<'_> {
                 );
                 Ok(())
             }
+            "assign_role" => {
+                let a = e.assign_role.as_ref().expect("checked: a role assignment");
+                let account = self.id(&a.account);
+                // The books' own journaled command: it checks the role's
+                // account before it writes anything (BS-ledger-19).
+                self.store.assign_role(&a.role, Some(account))
+            }
             other => unreachable!("{other} is no event"),
         }
     }
@@ -916,5 +926,20 @@ impl Books<'_> {
         let what = format!("{} change after {after}", self.ex.id);
         self.try_change(c)
             .unwrap_or_else(|r| panic!("{what}: {}", r.reason));
+    }
+}
+
+/// Every role the schema's list names is a role this engine's command
+/// takes, spelled the same: the adapter passes `assign_role`'s key
+/// straight to `Store::assign_role`, so a key this engine spelled
+/// differently would make every example that named it a refused
+/// assignment the example did not ask for.
+#[test]
+fn every_listed_role_is_the_engine_role() {
+    for &(role, _) in bookspec_checker::ACCOUNT_ROLES {
+        assert!(
+            ledger_core::control_account(role).is_some(),
+            "{role}: the schema names a role this engine does not have"
+        );
     }
 }

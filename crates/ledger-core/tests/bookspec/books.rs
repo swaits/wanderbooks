@@ -39,6 +39,11 @@ pub(crate) struct Books<'a> {
     /// What each disposal took, by asset id, as the engine computed it
     /// just before posting it.
     pub(crate) disposals: BTreeMap<String, DisposalPreview>,
+    /// The TIN vault outside the books, when the setup puts a full TIN
+    /// there (BS-partner-8's outside-the-books option): the real
+    /// `ledger_vault::Vault`, in the books' own directory, holding only
+    /// what the example spells.
+    pub(crate) vault: Option<Vault>,
 }
 
 /// A store command's result, unwrapped: the example's books take it.
@@ -289,6 +294,7 @@ impl<'a> Books<'a> {
             posted: Vec::new(),
             runs: BTreeMap::new(),
             disposals: BTreeMap::new(),
+            vault: None,
         }
     }
 
@@ -443,6 +449,34 @@ impl<'a> Books<'a> {
             assert_eq!(total, Decimal::ONE, "{}: the shares sum to 1", ex.id);
         }
         let parties = add_parties(ex, &mut self.store);
+        // The vault outside the books (BS-partner-8's outside-the-books
+        // option): the real encrypted store, in the books' own directory,
+        // holding the full TINs the example puts there and nothing else.
+        if !s.vault_tins.is_empty() {
+            let vault = Vault::open(
+                &self._dir.path().join("vault"),
+                &self._dir.path().join("vault.key"),
+                true,
+            )
+            .unwrap_or_else(|e| panic!("{}: the TIN vault: {e}", ex.id));
+            for v in &s.vault_tins {
+                let id = *parties.get(&v.party).unwrap_or_else(|| {
+                    panic!("{}: vault TIN: party {:?} not in setup", ex.id, v.party)
+                });
+                let digits: String = v.tin.chars().filter(|c| *c != '-').collect();
+                let kind = if digits.starts_with('9') {
+                    ledger_vault::TinType::Itin
+                } else {
+                    ledger_vault::TinType::Ssn
+                };
+                let tin = Tin::new(&v.tin, kind)
+                    .unwrap_or_else(|e| panic!("{}: vault TIN {:?}: {e}", ex.id, v.tin));
+                vault
+                    .put_tin(id, &tin)
+                    .unwrap_or_else(|e| panic!("{}: vault TIN: {e}", ex.id));
+            }
+            self.vault = Some(vault);
+        }
         // A member who is a party (by name, with the member role), as the
         // settings' members are (settings::Company::party_members).
         let party_members: Vec<PartyMember> = members

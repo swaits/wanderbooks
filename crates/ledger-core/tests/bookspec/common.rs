@@ -163,6 +163,9 @@ pub(crate) fn refusal(e: &LedgerError) -> String {
         LedgerError::ParentTypeMismatch { .. } => "parent_type_mismatch",
         LedgerError::EntryAlreadyReversed(..) => "already_reversed",
         LedgerError::ClosedPeriod(..) => "period_closed",
+        // A period that shares days with another while neither contains the
+        // other (BS-period-4, and BS-period-2 for an engine that nests).
+        LedgerError::PeriodsOverlap { .. } => "period_overlaps",
         // A line on a header account (a placeholder takes no postings),
         // BS-entry-1 and BS-entry-6.
         LedgerError::PlaceholderAccount(_) => "header_account",
@@ -174,6 +177,16 @@ pub(crate) fn refusal(e: &LedgerError) -> String {
         LedgerError::EntryAlreadyPosted(_)
         | LedgerError::PostedEntryImmutable
         | LedgerError::UnknownEntry(_) => "not_drafted",
+        // A date outside 0001-01-01 through 9999-12-31, or an amount past
+        // a line's cap: refused rather than wrapped (BS-entry-4,
+        // BS-entry-7).
+        LedgerError::DateOutOfRange(_) => "date_out_of_range",
+        LedgerError::AmountOutOfRange => "amount_out_of_range",
+        // A role assigned to an account that is not postable or not of the
+        // role's type (BS-ledger-19).
+        LedgerError::ControlAccountMismatch { .. } => "role_account_mismatch",
+        // A 1099 threshold for a year the books do not know (BS-1099-2).
+        LedgerError::RuleNotKnown { .. } => "unknown_1099_year",
         other => return format!("another refusal: {other}"),
     }
     .to_string()

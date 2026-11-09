@@ -59,6 +59,7 @@ pub(crate) use ledger_core::{
     trial_balance_as_of, vendor_1099_report,
 };
 pub(crate) use ledger_store::{DepreciationRun, DisposalPreview, Store, StoreError};
+pub(crate) use ledger_vault::{Tin, Vault};
 pub(crate) use rust_decimal::Decimal;
 
 pub(crate) use bookspec_checker::{

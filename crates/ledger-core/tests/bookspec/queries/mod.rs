@@ -85,6 +85,7 @@ impl Books<'_> {
             "party_part" => self.answer_party_part(q),
             "party_totals" => self.answer_party_totals(q),
             "party_tin_last4" => self.answer_party_tin_last4(q),
+            "return_tin" => self.answer_return_tin(q),
             "project" => self.answer_project(q),
             "aging" => self.answer_aging(q),
             "document_dates" => self.answer_document_dates(q),

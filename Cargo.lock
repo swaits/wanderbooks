@@ -3977,6 +3977,7 @@ dependencies = [
  "ledger-import",
  "ledger-package",
  "ledger-store",
+ "ledger-vault",
  "num-bigint",
  "num-rational",
  "proptest",

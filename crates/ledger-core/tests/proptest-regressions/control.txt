@@ -4,4 +4,4 @@
 #
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
-cc 57a6af235ad283b1483b62c6218bfbfbdb45bb1caaa3946b49f356ad67d11683 # shrinks to start = 1, parts = [6, 2, 0]
+cc b1079b286c6681eec98a5c98aff17569e47cb183b7799aa7bb8b04eae4a138b1 # shrinks to f = [0, -1, -79228162514264337593543950335, 0, 5]

@@ -42,9 +42,25 @@ CI: `.github/workflows/check.yml` runs `just check` on every push;
 `scheduled.yml` runs the proofs, the oracle, the coverage report and floor,
 and the fuzz targets weekly. Mutation ran there in shards until 2026-10-29 (`just mutants-mcp 3/16` runs the fourth of sixteen; GitHub stops a job at six hours), and is now local only (D-59). Test timeouts are three times each run's own baseline, never under the recipe's floor, so a slower runner doesn't report false timeouts. The viewer has no mutation job. Development mutation runs are paused until the P12 max-testing pass (D-33, 2026-10-20): each unit records its targets in a **For P12** paragraph instead. Mutation testing is a local run, not a CI job (the owner, 2026-10-29, D-59): the weekly shards were removed from `scheduled.yml`, and the "weekly" in the mutation rows above is history (the 2026-10-26 run: real survivors and timeouts in every crate, the debt P12 clears).
 
-Seeds and failure databases: proptest's `*.proptest-regressions` files
-are checked in and replay on every run. The GnuCash oracle's books come
-from fixed seeds (`SEED` in `oracle_gnucash.rs`). Fuzz corpora live in
+Seeds and failure databases: proptest's seed files are checked in and
+replay on every run. Proptest finds a seed file from the test's source
+path, and says nothing when the file it looks for is not there, so a
+seed file left behind by a moved test is silently never read again.
+There are two places it reads. A test that is one file, `tests/x.rs`,
+reads `tests/x.proptest-regressions`. A test that is a folder,
+`tests/x/main.rs` with modules beside it, reads
+`tests/proptest-regressions/main.txt` for `main.rs` and
+`tests/proptest-regressions/<module>.txt` for `<module>.rs`; every
+folder test in a crate shares those files. A source file under `src/`
+reads `proptest-regressions/<path under src>.txt` at the crate root.
+When a test file becomes a folder, or a module moves, its seed file
+moves with it. `crates/ledger-core/tests/seed_files.rs` walks every
+crate and fails when a seed file has no property test that reads it
+(2026-11-09: the kernel bridge's three recorded failures had not been
+replayed since the bridge became a folder, and one found during K-U8
+was never checked in). When proptest writes a new seed file during a
+run, check it in with the fix. The GnuCash oracle's books come from
+fixed seeds (`SEED` in `oracle_gnucash.rs`). Fuzz corpora live in
 `fuzz/corpus/<target>`.
 
 Golden review: `fixture_company.json` is hand-verified (docs/oracle.md,

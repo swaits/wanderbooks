@@ -104,6 +104,7 @@ impl Books<'_> {
             "register_row" => self.answer_register_row(q),
             "register_totals" => self.answer_register_totals(q),
             "asset_basis" => self.answer_asset_basis(q),
+            "asset_tag" => self.answer_asset_tag(q),
             "period" => {
                 let (from, to) = self.q_period(q)?;
                 Ok(json_figures([

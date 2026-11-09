@@ -115,12 +115,12 @@ pub(crate) fn every_bookspec_example_holds() {
         ("cash_flow", 7),
         ("trial_balance", 2),
         ("profit_and_loss", 2),
-        ("vendor_1099_paid", 4),
+        ("vendor_1099_paid", 5),
         ("vendor_1099", 10),
         ("entry", 8),
         ("balances", 4),
         ("members_equity", 10),
-        ("k1", 3),
+        ("k1", 5),
         ("party_part", 28),
         ("party_totals", 23),
         ("party_tin_last4", 5),
@@ -145,7 +145,8 @@ pub(crate) fn every_bookspec_example_holds() {
         ("register_row", 5),
         ("register_totals", 1),
         ("asset_basis", 6),
-        ("k1_tax_basis", 4),
+        ("asset_tag", 4),
+        ("k1_tax_basis", 5),
         ("k1_reconciliation", 2),
         ("project", 6),
         ("aging", 4),
@@ -175,10 +176,16 @@ pub(crate) fn every_bookspec_example_holds() {
     // BS-ledger-21's round-per-account, BS-period-4's allow-partial-overlap,
     // BS-1099-2's carry-the-last-amount and BS-partner-8's nowhere
     // (wanderbooks nests periods, refuses a year whose threshold it does not
-    // know, and keeps the full TIN outside the books).
+    // know, and keeps the full TIN outside the books), and X-H1e2's:
+    // BS-asset-3's no-tags, BS-partner-15's every-prepaid-is-cash and
+    // every-prepaid-is-property, BS-partner-17's left-open and BS-1099-5's
+    // whole-payment-to-each (wanderbooks keeps asset tags, counts a contract
+    // handed over as property and a vendor-paid service as cash, takes a
+    // prepaid contract into the tax capital at its book amount with a note,
+    // and counts only the payee's share of a shared entry).
     assert_eq!(
         skipped.len(),
-        22,
-        "the twenty-two unpicked-option examples: {skipped:?}"
+        27,
+        "the twenty-seven unpicked-option examples: {skipped:?}"
     );
 }

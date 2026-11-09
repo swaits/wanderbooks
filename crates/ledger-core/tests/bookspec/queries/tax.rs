@@ -43,6 +43,10 @@ impl Books<'_> {
                 format!("{name}.contributions_cash"),
                 Value::String(figure(row.contributions_cash)),
             );
+            m.insert(
+                format!("{name}.contributions_property_note"),
+                Value::String(property_note(&row.contributions_property).to_string()),
+            );
             for (line, tax) in [
                 ("beginning", &row.beginning),
                 ("contributions_property", &row.contributions_property),
@@ -173,6 +177,10 @@ pub(crate) fn check_k1_tax_basis(b: &Books<'_>, x: &Expect) {
             format!("{m}.contributions_cash"),
             figure(row.contributions_cash),
         );
+        figures.insert(
+            format!("{m}.contributions_property_note"),
+            property_note(&row.contributions_property).to_string(),
+        );
         for (line, tax) in [
             ("beginning", &row.beginning),
             ("contributions_property", &row.contributions_property),
@@ -189,6 +197,23 @@ pub(crate) fn check_k1_tax_basis(b: &Books<'_>, x: &Expect) {
         }
     }
     named(ex, x, &what, &figures);
+}
+
+/// The note a property line carries (BS-partner-17): `prepaid_at_book` when
+/// property contributed to a prepaid account with no fixed asset behind it
+/// was taken at its book amount for the preparer to confirm, `none` when the
+/// line carries no note.
+fn property_note(line: &ledger_core::tax_capital::TaxLine) -> &'static str {
+    use ledger_core::tax_capital::Note;
+    if line
+        .notes
+        .iter()
+        .any(|n| matches!(n, Note::PrepaidAtBook { .. }))
+    {
+        "prepaid_at_book"
+    } else {
+        "none"
+    }
 }
 
 /// The causes `k1_reconciliation` reports, each member's every one.

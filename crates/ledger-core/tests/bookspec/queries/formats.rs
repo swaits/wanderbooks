@@ -27,15 +27,22 @@ impl Books<'_> {
                 ))
             }
             "iif_line_ending" => {
-                // The file's own bytes: CR LF (wanderbooks' pick, cr-lf)
-                // or the host's line ending. The engine writes CR LF on
-                // every platform, so the first line ending is the file's.
-                let ending = if iif.text.contains("\r\n") {
+                // The file's own bytes: every line break is CR LF
+                // (wanderbooks' pick, cr-lf), every one a bare LF, or a mix
+                // of the two, which is neither. The engine has no notion of
+                // a host, so the example's `setup.host_line_ending` is not
+                // read here.
+                let text = iif.text.as_str();
+                let lf = text.matches('\n').count();
+                let crlf = text.matches("\r\n").count();
+                let ending = if lf == 0 {
+                    "none"
+                } else if lf == crlf {
                     "cr-lf"
-                } else if iif.text.contains('\n') {
+                } else if crlf == 0 {
                     "lf"
                 } else {
-                    "cr-lf"
+                    "mixed"
                 };
                 Ok(json_figures([(
                     "line_ending".to_string(),

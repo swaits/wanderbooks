@@ -342,7 +342,7 @@ examples `format-cr-lf-on-an-lf-platform` and
 `format-no-customer-or-vendor-name` (BS-format-9), run by
 `every_bookspec_example_holds` and
 `the_runner_reports_every_claimed_rule_green`; the line ending is asked by
-the iif_line_ending query (the adapter's answer_iif), the file's own CR LF.
+the iif_line_ending query (the adapter's answer_iif), which reads the file's own bytes: cr-lf when every line break is CR LF, lf when every one is a bare LF, mixed when it is neither. The engine has no notion of a host, so the adapter does not use an example's host_line_ending setup.
 
 ### Product rules
 

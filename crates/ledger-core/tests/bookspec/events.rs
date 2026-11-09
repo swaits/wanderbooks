@@ -14,6 +14,8 @@ impl Books<'_> {
             ("invoice", e.invoice.is_some()),
             ("write_off", e.write_off.is_some()),
             ("payment", e.payment.is_some()),
+            ("settlement", e.settlement.is_some()),
+            ("recovery", e.recovery.is_some()),
             ("run_depreciation", e.run_depreciation.is_some()),
             ("dispose_asset", e.dispose_asset.is_some()),
             ("run_schedules", e.run_schedules.is_some()),
@@ -22,7 +24,7 @@ impl Books<'_> {
         match kinds.iter().filter(|(_, given)| *given).collect::<Vec<_>>()[..] {
             [(kind, _)] => kind,
             _ => panic!(
-                "{} event {n}: an event is one of lines, reverses, close, bill, invoice, write_off, payment, run_depreciation, dispose_asset, run_schedules or register_schedule",
+                "{} event {n}: an event is one of lines, reverses, close, bill, invoice, write_off, payment, settlement, recovery, run_depreciation, dispose_asset, run_schedules or register_schedule",
                 self.ex.id
             ),
         }
@@ -36,7 +38,11 @@ impl Books<'_> {
         // disposal is dated; the other commands date their own entries,
         // and every command describes its own.
         let own = matches!(kind, "lines" | "reverses" | "close" | "bill" | "invoice");
-        let dated = own || matches!(kind, "dispose_asset" | "write_off" | "payment");
+        let dated = own
+            || matches!(
+                kind,
+                "dispose_asset" | "write_off" | "payment" | "settlement" | "recovery"
+            );
         assert_eq!(
             e.date.is_some(),
             dated,
@@ -74,8 +80,8 @@ impl Books<'_> {
             "{ex} event {n}: {kind} is tagged with no parties or payment method"
         );
         assert!(
-            e.refused.is_none() || !matches!(kind, "close" | "bill" | "invoice"),
-            "{ex} event {n}: refused is for a reversal, an entry or a command, which the books take whole or not at all"
+            e.refused.is_none() || !matches!(kind, "close" | "invoice"),
+            "{ex} event {n}: refused is for a reversal, an entry, a bill or a command, which the books take whole or not at all"
         );
         assert!(
             !(e.older && e.refused.is_some()),
@@ -88,6 +94,14 @@ impl Books<'_> {
         assert!(
             e.payment.is_none() || kind == "payment",
             "{ex} event {n}: a payment is its own event"
+        );
+        assert!(
+            e.settlement.is_none() || kind == "settlement",
+            "{ex} event {n}: a settlement is its own event"
+        );
+        assert!(
+            e.recovery.is_none() || kind == "recovery",
+            "{ex} event {n}: a recovery is its own event"
         );
     }
 
@@ -197,8 +211,17 @@ impl Books<'_> {
                 "{what}: entry {id}, which it made, is posted"
             );
         }
-        if (own || matches!(kind, "write_off" | "payment")) && e.refused.is_none() {
+        if (own || matches!(kind, "write_off" | "payment" | "settlement")) && e.refused.is_none() {
             assert_eq!(posted.len(), 1, "{what}: {kind} posts one entry");
+        }
+        // A recovery posts one entry or two, as the engine's pick under
+        // BS-arap-11 says: a plain entry, or the write-off's reversal and
+        // the payment.
+        if kind == "recovery" && e.refused.is_none() {
+            assert!(
+                matches!(posted.len(), 1 | 2),
+                "{what}: a recovery posts one entry or two"
+            );
         }
     }
 
@@ -228,6 +251,20 @@ impl Books<'_> {
             .due_date(date)
             .unwrap_or_else(|e| panic!("{what}: terms {text:?} on {date}: {e}"));
         (due, Some(parsed))
+    }
+
+    /// The invoice or bill event `event` posted, and its customer or vendor.
+    pub(crate) fn document_of(&self, event: usize, what: &str) -> (ledger_core::DocRef, u64) {
+        let entry = self.entry_of(event, what);
+        let l = self.l();
+        match (
+            l.invoices().into_iter().find(|i| i.entry_id == entry),
+            l.bills().into_iter().find(|b| b.entry_id == entry),
+        ) {
+            (Some(i), _) => (ledger_core::DocRef::Invoice(i.id), i.customer_id),
+            (None, Some(b)) => (ledger_core::DocRef::Bill(b.id), b.vendor_id),
+            (None, None) => panic!("{what}: event {event} posted no invoice or bill"),
+        }
     }
 
     /// An invoice's or bill's lines: `amount` (one line, described as the
@@ -264,7 +301,7 @@ impl Books<'_> {
                             panic!("{what}: project {p:?} not in setup.projects")
                         })
                     }),
-                    account: None,
+                    account: l.account.as_deref().map(|code| self.id(code)),
                     quantity: None,
                     unit_price: None,
                 })
@@ -410,6 +447,8 @@ impl Books<'_> {
                         lines,
                         BillFields {
                             terms,
+                            vendor_ref: b.vendor_ref.clone(),
+                            duplicate_reason: b.duplicate_reason.clone(),
                             ..BillFields::default()
                         },
                     )
@@ -427,6 +466,9 @@ impl Books<'_> {
                     }
                 };
                 let (due, terms) = self.terms_due(i.terms.as_deref(), day(), what);
+                // The books number every invoice in order of issue (BS-arap-4),
+                // as their invoicing settings default to.
+                let number = self.l().next_invoice_number("INV-", 1);
                 self.store
                     .create_invoice_with(
                         customer,
@@ -434,6 +476,7 @@ impl Books<'_> {
                         due,
                         lines,
                         InvoiceFields {
+                            number: Some(number),
                             terms,
                             ..InvoiceFields::default()
                         },
@@ -513,6 +556,82 @@ impl Books<'_> {
                     (None, None) => {
                         panic!("{what}: event {} posted no invoice or bill", p.document)
                     }
+                }
+            }
+            "settlement" => {
+                let st = e.settlement.as_ref().expect("checked: a settlement");
+                let first = &st.applications[0];
+                let (first_doc, party) = self.document_of(first.document, what);
+                let applications: Vec<ledger_core::Application> = st
+                    .applications
+                    .iter()
+                    .map(|a| ledger_core::Application {
+                        doc: self.document_of(a.document, what).0,
+                        cash: exact(&a.cash, what),
+                        discount: a
+                            .discount
+                            .as_deref()
+                            .map_or(Decimal::ZERO, |d| exact(d, what)),
+                        discount_reason: a.discount_reason.clone(),
+                    })
+                    .collect();
+                debug_assert_eq!(applications[0].doc, first_doc);
+                let params = ledger_core::SettleParams {
+                    date: day(),
+                    description: String::new(),
+                    cash_account: self.id(&st.account),
+                    party,
+                    applications,
+                    fee: st.fee.as_deref().map(|f| ledger_core::Fee {
+                        amount: exact(f, what),
+                        account: None,
+                        vendor: None,
+                    }),
+                    instrument: None,
+                    reference: None,
+                };
+                self.store.settle(params).map(drop)
+            }
+            "recovery" => {
+                // BS-arap-11, the pick reverse-then-plain-entry: in the tax
+                // year of the write-off the write-off is reversed and the
+                // money is recorded as any payment; in a later year a plain
+                // entry debits the deposit account and credits the recoveries
+                // account, naming the invoice.
+                let r = e.recovery.as_ref().expect("checked: a recovery");
+                let amount = exact(&r.amount, what);
+                let (cash, income) = (self.id(&r.account), self.id(&r.income_account));
+                let write_off = self.entry_of(r.write_off, what);
+                let written = &self.ex.events[r.write_off - 1];
+                let invoice_event = written
+                    .write_off
+                    .as_ref()
+                    .map(|w| w.invoice)
+                    .unwrap_or_else(|| panic!("{what}: event {} is no write-off", r.write_off));
+                let (doc, _) = self.document_of(invoice_event, what);
+                let ledger_core::DocRef::Invoice(invoice) = doc else {
+                    panic!("{what}: a write-off is of an invoice")
+                };
+                let written_on = date(written.date.as_deref().expect("a write-off is dated"), what);
+                let year =
+                    |d| ledger_core::calendar::fiscal_year_start_on(fiscal_year_start(self.ex), d);
+                if year(written_on) == year(day()) {
+                    self.store.reverse_entry(
+                        write_off,
+                        day(),
+                        "Recovered: the write-off is reversed",
+                    )?;
+                    self.store
+                        .receive_payment(invoice, day(), amount, cash)
+                        .map(drop)
+                } else {
+                    let entry = self
+                        .store
+                        .create_entry(day(), &format!("Recovery of invoice {invoice}"))?;
+                    let money = Money::new(amount, self.currency);
+                    self.store.add_line(entry, cash, Side::Debit, money)?;
+                    self.store.add_line(entry, income, Side::Credit, money)?;
+                    self.store.post_entry(entry)
                 }
             }
             "run_depreciation" => {

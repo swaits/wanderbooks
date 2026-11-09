@@ -885,7 +885,7 @@ replay rules.
       `largest_remainder_ranks_like_the_exact_reference`,
       `the_absorbing_parts_keep_the_old_scale`,
       `split_into_matches_the_allocating_split`,
-      `finding_ties_follow_the_rounded_quotient`,
+      `ties_go_to_the_earlier_part`,
       `share_floor_refuses_past_the_correction_cap`,
       `finding_the_quotients_rounding_can_cross_a_step`
     - `split_by_weights_with` is an `EXCEPTIONS` wrapper (it allocates two
@@ -1024,13 +1024,17 @@ kernel. What the proofs and their reviews found, beyond the tidying:
   337.50`, the kernel `4050.00, …`), and that scale reaches `Part.amount`.
   The kernel computes the old expression, pinned by
   `the_absorbing_parts_keep_the_old_scale`.
-- **Ties follow the rounded quotient.** The split ranks the rounded
-  quotients' remainders, not exact rationals, so an exact tie goes where
-  the 28th digit sends it: 20.00 split 4/1/1 over 6 is `13.33, 3.34,
-  3.33` (exact ranking `13.34, 3.33, 3.33`), and 20 whole is `13, 4, 3`
-  (exact `14, 3, 3`). The pre-sweep sites did the same;
-  `finding_ties_follow_the_rounded_quotient` pins it, and the owner decides
-  the exact ranking in K-U10, unchanged here.
+- **Ties go to the earlier part, exactly (K-U10).** The split ranked the
+  rounded quotients' remainders, so an exact tie went where the 28th digit
+  sent it: 20.00 split 4/1/1 over 6 was `13.33, 3.34, 3.33` and 20 whole
+  was `13, 4, 3`. The pre-sweep sites did the same, and K-U3 kept it and
+  pinned it. It now ranks the exact remainder `whole x weight - part x
+  total` (as `share_floor_with` does), so a tie goes to the earlier part:
+  `13.34, 3.33, 3.33` and `14, 3, 3`, which is what bookspec's
+  `Apportion.lean` models (`remW`, ties to the earlier member).
+  `ties_go_to_the_earlier_part` pins it, and `tests/kernel_bridge/ties.rs`
+  measures what it moves against the old ranking (held for the owner's
+  decision).
 - **The sweep changed no posted figure.** Every golden and existing test
   passed unchanged. `round_places` reproduces `round_dp_with_strategy` to
   the character except a negative-zero input (which no call site can

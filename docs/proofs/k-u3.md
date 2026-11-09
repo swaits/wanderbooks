@@ -73,7 +73,9 @@ split when the whole divides), the step is 1 (or 10 for the floor
 harness), and the bounds are `whole` 0 to 1,000 (100 for the floor
 harness). The laws are about the shape of the split, not the magnitude;
 Lean proves them of the exact-share model at any size, and the bridge
-checks the `Decimal` engine, whose ranking uses the rounded quotient.
+checks the `Decimal` engine, whose ranking is the exact remainder (K-U10:
+`whole × weight − part × total`, ties to the earlier part, the same
+quantity `share_floor_with` returns).
 
 | Harness | Law | Verification |
 |---|---|---|
@@ -143,10 +145,9 @@ harness 500.8 s, the run inside its 3600-second cap). Lean:
   no-rounding split, at the scales the call sites produce.
 - `decimal_edges_are_none_or_exact`: `Decimal::MAX`, a product past it, a
   zero total, and scale 28: each `None` or exact, never a panic.
-- `largest_remainder_ranks_like_the_exact_reference`: random distinct
-  weights over a non-terminating total (a factor of 3 or 7), against the
-  exact `i128` reference's ranking; exact ties are pinned below, not left
-  to fail this property.
+- `largest_remainder_ranks_like_the_exact_reference`: random weights (ties
+  included, since K-U10) at whole units and at the cent, against the exact
+  `i128` reference's ranking.
 - `the_absorbing_parts_keep_the_old_scale`: the strings, scale included,
   for 4860 by 6/0.7/0.5 (first `4050`, as the old `split_first` gave) and
   902 by 1/0.000001/0.000001 (first `902.00`); last absorbs against the
@@ -154,9 +155,10 @@ harness 500.8 s, the run inside its 3600-second cap). Lean:
 - `split_into_matches_the_allocating_split`: the fixed-array
   `split_by_weights_into` and `split_by_weights_with` agree, scale
   included (the gate requires a bridge that calls the fixed-array form).
-- `finding_ties_follow_the_rounded_quotient`: 20.00 split 4/1/1 over 6 is
-  13.33/3.34/3.33, and 20 whole is 13/4/3, not the exact tie's earlier
-  part (K-U10 decides).
+- `ties_go_to_the_earlier_part`: 20.00 split 4/1/1 over 6 is
+  13.34/3.33/3.33, and 20 whole is 14/3/3 (K-U10: the ranking is exact;
+  the rounded quotient gave 13.33/3.34/3.33 and 13/4/3). A negative total
+  keeps the share's own order.
 - `share_floor_refuses_past_the_correction_cap`: the review's
   0.1113 × 5909471247797156928749568911.8 ÷ 0.11134381908633486049673
   returns `None` promptly instead of hanging.
@@ -249,11 +251,17 @@ the `allocW_*` theorems were reused, not restated.
    checked arithmetic), and `the_absorbing_parts_keep_the_old_scale`
    compares strings. `LastAbsorbs` was already the old `plug_last` and the
    no-places conventions split, and the same property checks it.
-7. **Ties follow the rounded quotient.** `split_by_weights_into` ranks the
-   rounded quotients' remainders, not exact rationals, so an exact tie goes
-   where the 28th digit sends it, not to the earlier part:
-   20.00 split 4/1/1 over 6 is `13.33, 3.34, 3.33` (exact ranking would be
-   `13.34, 3.33, 3.33`), and 20 whole is `13, 4, 3` (exact would be
-   `14, 3, 3`). The pre-U3 sites did the same. Pinned by
-   `finding_ties_follow_the_rounded_quotient`; the owner decides the exact
-   ranking in K-U10, and the ranking is unchanged here.
+7. **Ties go to the earlier part, exactly (K-U10).** The first version of
+   `split_by_weights_into` (and the pre-U3 call sites) ranked the leftover
+   units by the rounded quotients' remainders, so an exact tie went where
+   the quotient's 28th digit sent it: 20.00 split 4/1/1 over 6 was
+   `13.33, 3.34, 3.33` and 20 whole was `13, 4, 3`. It now ranks the exact
+   integer remainder `whole × weight − part × total` (the quantity
+   `share_floor_with` returns; the sign flipped for a negative total), so
+   a tie goes to the earlier part, as `apportion`'s docs and bookspec's
+   `Apportion.lean` (`remW`, `allocNat`: ties to the earlier member) say:
+   `13.34, 3.33, 3.33` and `14, 3, 3`. Pinned by
+   `ties_go_to_the_earlier_part`; `tests/kernel_bridge/ties.rs` keeps the
+   old ranking as a reference and measures what the change moves. A
+   recomputed past report can differ from what it showed before by a cent
+   between parties (a posted entry never moves).

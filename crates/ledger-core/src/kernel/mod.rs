@@ -8,8 +8,8 @@
 //! laws it implements hold for books of any size. See
 //! `docs/verification.md` for which proof covers which law.
 //!
-//! The laws, in the order they appear (each traced to its authority in
-//! `docs/spec/rules.md`):
+//! The laws, in the order they appear (each traced to its bookspec rule
+//! and to wanderbooks' claim in `docs/spec/claims/`):
 //!
 //! * a line's signed amount is `+amount` for a debit, `-amount` for a credit
 //!   (BS-entry-2);

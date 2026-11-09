@@ -510,8 +510,8 @@ pub fn find_with(
         });
     }
 
-    // Rules set by law that wanderbooks may no longer know (rules.md;
-    // owner, 2026-10-13): the agent finds the figure from the authority
+    // Rules set by law that wanderbooks may no longer know (bookspec's
+    // rules and `docs/spec/claims/`; owner, 2026-10-13): the agent finds the figure from the authority
     // or asks, confirms it, and passes it explicitly (the handbook's
     // "Rules that change with the law"); the human reports it upstream.
     for rule in ledger_core::rules::stale_rules(today) {

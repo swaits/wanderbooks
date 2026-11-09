@@ -1,5 +1,5 @@
 //! P3's seams: the same economic fact, computed by two pieces of the
-//! engine, agrees (or rules.md says exactly why not).
+//! engine, agrees (or bookspec's rules / `docs/spec/claims/` say exactly why not).
 //!
 //! One year of fictional books for a two-member LLC (Ana Example and Ben
 //! Example, 50/50), built through the real [`Store`]: cash and property

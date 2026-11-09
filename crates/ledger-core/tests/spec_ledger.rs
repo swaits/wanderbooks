@@ -1,7 +1,8 @@
 //! Spec-derived tests for the `Ledger` command surface.
 //!
 //! Written from the spec blocks (GOAL / SOURCE / INVARIANTS / SCENARIOS) in
-//! the public interface and from `docs/spec/rules.md`, never from the
+//! the public interface and from bookspec's rules (wanderbooks' claims
+//! in `docs/spec/claims/`), never from the
 //! implementation. Every expected value is a literal computed by hand from
 //! the spec, or a law (a model kept by the test itself). A test whose name
 //! does not already say its oracle says it in its doc comment.

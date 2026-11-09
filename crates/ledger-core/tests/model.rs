@@ -4,7 +4,8 @@
 //! transcribed into the simplest Rust that has the same observable
 //! behavior: a list of accounts, a list of drafts, an append-only list of
 //! posted entries, a list of periods, and loops. It is written from the
-//! spec (rules.md, the Ledger doc comments), not from ledger.rs.
+//! spec (bookspec's rules and `docs/spec/claims/`, the Ledger doc
+//! comments), not from ledger.rs.
 //!
 //! Random command sequences, weighted toward commands that interact (post
 //! a draft, reverse a posted entry, close a period with drafts in it,

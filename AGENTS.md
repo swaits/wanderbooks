@@ -218,6 +218,7 @@ clone, with status. Rules:
 | `docs/architecture.md` | Crate layout, command pattern, dependency rules |
 | `docs/oracle.md` | How we check correctness: golden files, property tests, fuzzing, cross-checks against other implementations (and who is right) |
 | `docs/spec/` | Wanderbooks' layer over bookspec: `claims/` (its picks, enforcement, product rules `WB-…`), `rules.md` (the B-n → bookspec-id index only), `sources/` (public-domain authorities vendored verbatim) |
+| `docs/spec/claims/` | Wanderbooks' claims on each bookspec rule: the CHOICE picked, where the engine enforces it, which tests check it, and product rules `WB-<area>-<n>` |
 | https://git.swaits.com/swaits/bookspec | Where the rules live (D-68): `rules/` records, `spec/rules/` reading pages, `spec/rules-index.md`; every rule is `BS-<area>-<n>` |
 | `docs/verification.md` | The formal proofs: every accounting law, its Kani harness and Lean theorem, what they found |
 | `docs/parity.md` | Feature catalog and the non-regression floor |

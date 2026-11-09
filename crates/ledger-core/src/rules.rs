@@ -30,7 +30,8 @@ use chrono::NaiveDate;
 pub struct DatedRule {
     /// Plain name, e.g. "1099 reporting threshold".
     pub name: &'static str,
-    /// Its entry in docs/spec/rules.md, e.g. "BS-1099-1".
+    /// Its bookspec rule id, e.g. "BS-1099-1" (indexed in docs/spec/rules.md;
+    /// wanderbooks' claim is in docs/spec/claims/1099.md).
     pub catalog: &'static str,
     /// The vendored official text it comes from (a path in this repo,
     /// for the people who update the rule).

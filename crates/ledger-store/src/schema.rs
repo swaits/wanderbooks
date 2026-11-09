@@ -387,7 +387,7 @@ DROP TABLE asset_depreciation;
 ALTER TABLE asset_depreciation_v13 RENAME TO asset_depreciation;
 "#,
     r#"
--- v15: a document keeps no figure of its own (plan P4b S1, D-45; rules.md
+-- v15: a document keeps no figure of its own (plan P4b S1, D-45;
 -- BS-arap-2): what an invoice or bill has been paid, and its status, are read
 -- from the ledger lines tagged with it, as of any date, and a reversed
 -- payment no longer counts. The columns that summed its payment events

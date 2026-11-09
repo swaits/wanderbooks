@@ -1,7 +1,8 @@
 //! Spec-derived tests for the reports (`reports.rs`).
 //!
 //! Written from the spec blocks (GOAL / SOURCE / INVARIANTS / SCENARIOS) and
-//! `docs/spec/rules.md` / `docs/requirements.md` only, never from the
+//! bookspec's rules and wanderbooks' claims in `docs/spec/claims/` /
+//! `docs/requirements.md` only, never from the
 //! implementation. Every expected value is either a literal computed by hand
 //! from the spec or a law (property) that pins the answer without calling the
 //! function under test to compute it. Where the random-book tests need a

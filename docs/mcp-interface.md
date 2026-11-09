@@ -12,7 +12,7 @@ locked to one assistant.
 
 | Crate | Role | Spec |
 |---|---|---|
-| `ledger-core` | the engine: money, entries, the laws; every rule the tools enforce | `docs/spec/rules.md`, `docs/verification.md` |
+| `ledger-core` | the engine: money, entries, the laws; every rule the tools enforce | bookspec's rules (`BS-<area>-<n>`), `docs/spec/claims/`, `docs/verification.md` |
 | `ledger-package` | the read-only views shared with the viewer: reports, aging, the CPA package, Needs attention (the one list `books.start` and the viewer both draw) | `docs/architecture.md` |
 | `ledger-store` | the hash-chained journal (the source of truth), the SQLite projection, the blob store | `docs/receipt-store.md` |
 | `ledger-mcp` | the books server: the tools, resources and handbook over store + core | this document |

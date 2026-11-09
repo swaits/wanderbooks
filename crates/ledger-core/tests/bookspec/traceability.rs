@@ -1334,7 +1334,7 @@ fn resolve(
             if !exists {
                 return Err(format!("path {head} does not exist"));
             }
-            return resolve(item, &defs, &bases, &all_paths);
+            return resolve(item, defs, bases, all_paths);
         }
     }
     if is_path_like(token) {
@@ -1366,7 +1366,7 @@ fn resolve(
                 if item.is_empty() {
                     continue;
                 }
-                classes.push(resolve(&format!("{prefix}{item}"), &defs, &bases, &all_paths)?);
+                classes.push(resolve(&format!("{prefix}{item}"), defs, bases, all_paths)?);
             }
             if classes.is_empty() {
                 return Err(format!("empty brace group {token}"));
@@ -1393,7 +1393,7 @@ fn resolve(
         return Ok(Class::LeanTheorem);
     }
     if token.contains("::") {
-        return resolve_qualified(token, &defs, &bases, &all_paths);
+        return resolve_qualified(token, defs, bases, all_paths);
     }
     // A harness before an item: a proof function is never an ordinary item,
     // so deleting its `#[kani::proof]` attribute leaves the claim unbacked.
@@ -1504,7 +1504,7 @@ fn resolve_qualified(
         return Err(format!("{token} names no item"));
     };
     if segments.len() == 1 {
-        return resolve(item, &defs, &bases, &all_paths);
+        return resolve(item, defs, bases, all_paths);
     }
     let container = segments[segments.len() - 2];
     let candidates: Vec<&str> = match krate {
@@ -2012,23 +2012,31 @@ fn collect_paths(root: &Path, dir: &Path, out: &mut Vec<String>) {
     }
 }
 
-fn main_index(root: &Path) -> (Definitions, Vec<PathBuf>, Vec<String>) {
-    let mut defs = build_definitions(root);
-    // Product rule ids and their counts, so duplicates are caught.
-    for path in claims_files(root) {
-        let text = read(&path);
-        for (id, _) in wb_sections(&text) {
-            *defs.product_rules.entry(id).or_insert(0) += 1;
+/// The whole index, built once for every test in this file: the four
+/// tests read the same tree, and a fresh scan apiece spent seconds
+/// re-reading it.
+fn main_index() -> &'static (Definitions, Vec<PathBuf>, Vec<String>) {
+    static INDEX: std::sync::OnceLock<(Definitions, Vec<PathBuf>, Vec<String>)> =
+        std::sync::OnceLock::new();
+    INDEX.get_or_init(|| {
+        let root = repo_root();
+        let mut defs = build_definitions(&root);
+        // Product rule ids and their counts, so duplicates are caught.
+        for path in claims_files(&root) {
+            let text = read(&path);
+            for (id, _) in wb_sections(&text) {
+                *defs.product_rules.entry(id).or_insert(0) += 1;
+            }
         }
-    }
-    let (bases, paths) = index_paths(root);
-    (defs, bases, paths)
+        let (bases, paths) = index_paths(&root);
+        (defs, bases, paths)
+    })
 }
 
 #[test]
 fn every_claim_is_backed() {
     let root = repo_root();
-    let (defs, bases, all_paths) = main_index(&root);
+    let (defs, bases, all_paths) = main_index();
 
     assert!(
         !defs.rules.is_empty(),
@@ -2091,7 +2099,7 @@ fn every_claim_is_backed() {
                 }
                 for token in backticks(value) {
                     tokens_seen += 1;
-                    match resolve(&token, &defs, &bases, &all_paths) {
+                    match resolve(&token, defs, bases, all_paths) {
                         Ok(class) => *counts.entry(class).or_insert(0) += 1,
                         Err(error) => failures.push(format!(
                             "{file}: {heading}: {name}: backtick `{token}`: {error}"
@@ -2116,7 +2124,7 @@ fn every_claim_is_backed() {
                 }
                 for token in backticks(value) {
                     tokens_seen += 1;
-                    match resolve(&token, &defs, &bases, &all_paths) {
+                    match resolve(&token, defs, bases, all_paths) {
                         Ok(class) => *counts.entry(class).or_insert(0) += 1,
                         Err(error) => failures
                             .push(format!("{file}: {id}: {name}: backtick `{token}`: {error}")),
@@ -2533,8 +2541,7 @@ const SKIPPED: &[&str] = &[
 
 #[test]
 fn made_up_names_do_not_resolve() {
-    let root = repo_root();
-    let (defs, bases, all_paths) = main_index(&root);
+    let (defs, bases, all_paths) = main_index();
     for token in [
         "no_such_fn_xyz",
         "NoSuch.theorem",
@@ -2550,15 +2557,26 @@ fn made_up_names_do_not_resolve() {
         "books.add",
         // A Lean name that is not audited, with or without the prefix.
         "Bookspec.NoSuch.theorem",
+        // An imported type's item outside the explicit external list.
+        "NaiveDate::NoSuchThing",
+        // A real type and item behind a middle segment that is no module.
+        "bogus::Ledger::post_entry",
+        "bogus::form1099::untagged_payments",
     ] {
         assert!(
-            resolve(token, &defs, &bases, &all_paths).is_err(),
+            resolve(token, defs, bases, all_paths).is_err(),
             "made-up name `{token}` must not resolve"
         );
     }
-    // A directory is not a crate (`tests` resolves only as `mod tests`).
+    // A directory is not a crate: bare `tests` resolves as a Rust item
+    // (`mod tests` in several src files), never as a crate.
+    assert_eq!(
+        resolve("tests", defs, bases, all_paths),
+        Ok(Class::RustItem),
+        "bare `tests` is a module, not a crate"
+    );
     assert!(
-        !is_crate_name("tests", &defs),
+        !is_crate_name("tests", defs),
         "a directory name must not pass as a crate"
     );
 }
@@ -2589,8 +2607,7 @@ fn calls_finds_a_call_not_a_mention() {
 /// of `Iif` never backs `TaxSummary::…`, nor the reverse.
 #[test]
 fn a_field_belongs_to_its_own_type() {
-    let root = repo_root();
-    let (defs, bases, all_paths) = main_index(&root);
+    let (defs, bases, all_paths) = main_index();
     for token in [
         "Iif::changes",
         "Iif::receivable_payable",
@@ -2598,14 +2615,14 @@ fn a_field_belongs_to_its_own_type() {
         "TaxSummary::form_4797",
     ] {
         assert_eq!(
-            resolve(token, &defs, &bases, &all_paths),
+            resolve(token, defs, bases, all_paths),
             Ok(Class::RustItem),
             "`{token}` is a real item of its type"
         );
     }
     for token in ["Iif::form_4797", "TaxSummary::changes"] {
         assert!(
-            resolve(token, &defs, &bases, &all_paths).is_err(),
+            resolve(token, defs, bases, all_paths).is_err(),
             "`{token}` is a field of the other type and must not resolve"
         );
     }
@@ -2624,15 +2641,14 @@ fn a_harness_listed_twice_must_agree() {
 
 #[test]
 fn harnesses_resolve_only_as_proofs() {
-    let root = repo_root();
-    let (defs, bases, all_paths) = main_index(&root);
+    let (defs, bases, all_paths) = main_index();
     let harness = defs
         .harnesses
         .iter()
         .next()
         .expect("the proofs carry harnesses");
     assert_eq!(
-        resolve(harness, &defs, &bases, &all_paths),
+        resolve(harness, defs, bases, all_paths),
         Ok(Class::KaniHarness),
         "a harness classifies as a Kani harness"
     );
@@ -2642,7 +2658,7 @@ fn harnesses_resolve_only_as_proofs() {
         "the helper is not a harness"
     );
     assert_ne!(
-        resolve("any_proration", &defs, &bases, &all_paths).ok(),
+        resolve("any_proration", defs, bases, all_paths).ok(),
         Some(Class::KaniHarness),
         "a proof helper without `#[kani::proof]` is not a harness"
     );

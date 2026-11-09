@@ -31,12 +31,14 @@ report drift down unnoticed.
   measurement movement; more means a test stopped reaching what it used
   to.
 
-**Floor: `ledger-core` 95.45% lines, `ledger-store` 92.58% lines** (2026-11-09: V-D2's tests, from the full `just coverage` run after them; `ledger-core` 18,391 of 19,267 lines, `ledger-store` 14,379 of 15,531; 256-case properties everywhere, no special shard settings. Properties choose random cases, so a few tenths move between runs, which the 0.5 pp tolerance absorbs. The floor records the run as measured; it only rises: the first floors, 90.01% and 91.71% (2026-11-08), are in the history below.)
+**Floor: `ledger-core` 95.49% lines, `ledger-store` 92.45% lines** (2026-11-09: V-D2's tests after their review fixes and the merge of main, from the full `just coverage` run on the merged tree; `ledger-core` 18,422 of 19,292 lines, `ledger-store` 14,359 of 15,531; 256-case properties everywhere, no special shard settings. Properties choose random cases, so a few tenths move between runs, which the 0.5 pp tolerance absorbs. The floor records the run as measured; it only rises (the store's moved from 92.58% to 92.45% across the merge of main and the review fixes with the same 15,531 lines: main's store changes are comments only and the fixes add no store code, so the 20 fewer covered lines are run-to-run movement in the store's property and process tests, inside the tolerance): the first floors, 90.01% and 91.71% (2026-11-08), are in the history below.)
 
 | Crate | Lines | Regions | Branches | Lines (covered / total) | Measured |
 |---|---|---|---|---|---|
-| `ledger-core` | 95.45% | 93.06% | 88.90% | 18,391 / 19,267 | 2026-11-09 (V-D2) |
-| `ledger-store` | 92.58% | 85.98% | 81.72% | 14,379 / 15,531 | 2026-11-09 (V-D2) |
+| `ledger-core` | 95.49% | 93.09% | 88.98% | 18,422 / 19,292 | 2026-11-09 (V-D2, reviewed) |
+| `ledger-store` | 92.45% | 85.86% | 81.72% | 14,359 / 15,531 | 2026-11-09 (V-D2, reviewed) |
+| `ledger-core` | 95.45% | 93.06% | 88.90% | 18,391 / 19,267 | 2026-11-09 (V-D2, before review) |
+| `ledger-store` | 92.58% | 85.98% | 81.72% | 14,379 / 15,531 | 2026-11-09 (V-D2, before review) |
 | `ledger-core` | 90.01% | 88.86% | 82.65% | 16,839 / 18,708 | 2026-11-08 (first) |
 | `ledger-store` | 91.71% | 85.27% | 80.73% | 14,255 / 15,543 | 2026-11-08 (first) |
 

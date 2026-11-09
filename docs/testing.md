@@ -4226,9 +4226,9 @@ rule says.
 | `ledger.rs` command steps (86% -> 97%) | `ledger-core/tests/document_commands.rs` (10), `ledger_edits.rs` (8), `replay_documents.rs` (6) | BS-arap-2, -5, -6 (send, settle, write-off, aging), BS-entry-4 (replay never refuses a line it cannot match), BS-ledger-19 / WB-ledger-10 (renumbering), BS-partner-8 / WB-partner-4 (party text), BS-asset-1 (disposal), the fiscal-year rule (Form 1128), WB-ledger-15 (annotations, `entry.settles`) |
 
 Coverage, from `just coverage` before and after (`docs/coverage-floor.md`
-has the per-file table): `ledger-core` 89.79% -> 95.45% lines, 82.26% ->
-88.90% branches; `ledger-store` 92.09% -> 92.58% lines. The floors rose to
-those numbers.
+has the per-file table): `ledger-core` 89.79% -> 95.49% lines, 82.26% ->
+88.98% branches; `ledger-store` 92.09% -> 92.45% lines. The floors are
+those numbers (the store's is 0.13 pp under the first run's: see the coverage-floor note).
 
 **Finding (fixed in its own commit).** `reconcilable::cash_accounts` returned
 the name-matched cash accounts in `HashMap` order (`ChartOfAccounts::all` is

@@ -34,8 +34,9 @@
 //!      whole).
 //!   2. A zero or negative whole is None for every part and mode; a
 //!      non-positive step is None too.
-//!   3. split_ratio(amount, 1, 2): the rounded part plus the exact rest
-//!      is the amount, and the part is a whole multiple of the step.
+//!   3. split_ratio(amount, 1, 2, 3): the rounded part plus the exact rest
+//!      is the amount, and the part is a whole multiple of the step (three,
+//!      so the claim is not vacuous).
 //!   4. Never a panic; an unrepresentable result is None.
 //! SCENARIOS:
 //!   1. IF the exact percent is not a whole multiple of the step: the
@@ -45,7 +46,7 @@
 //! ```
 //!
 //! Bounds: parts -512 to 512 by whole multiples of eight, amounts -1,000
-//! to 1,000, steps 3 and 1. The laws are about the shape of the
+//! to 1,000, every step 3 (the percent's and the split's). The laws are about the shape of the
 //! arithmetic, not its magnitude; Lean proves the same laws of the exact
 //! ratio at any size, and the bridge checks the `Decimal` engine against
 //! an independent exact reference.
@@ -58,6 +59,9 @@ const WHOLE: i64 = 8;
 const STEP: i64 = 3;
 /// The percent harness's quotient bound: `part = WHOLE × k`.
 const QUOTIENT: i64 = 64;
+/// The split harness's step: three units, so the part is a multiple of a
+/// step that is not one and the divisibility claim has content.
+const SPLIT_STEP: i64 = 3;
 
 fn any_half_mode() -> Rounding {
     if kani::any() {
@@ -125,8 +129,12 @@ fn split_ratio_sums() {
     let amount: i64 = kani::any();
     kani::assume((-1_000..=1_000).contains(&amount));
     let mode = any_mode();
-    let (part, rest) = split_ratio(amount, 1, 2, 1, mode).expect("in range");
+    let (part, rest) = split_ratio(amount, 1, 2, SPLIT_STEP, mode).expect("in range");
     assert_eq!(part + rest, amount, "the two parts sum to the whole");
+    assert!(
+        part % SPLIT_STEP == 0,
+        "the rounded side is a whole multiple of the step"
+    );
     kani::cover!(
         part * 3 != amount,
         "the rounded side is not the exact share"

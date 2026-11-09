@@ -74,13 +74,14 @@ On `i64`, each with `kani::cover!`. The whole is fixed at 8 (both
 functions divide by a whole or a ratio, and a symbolic divisor did not
 finish in K-U2); the percent harness takes the part as `8 × k` so the
 model's division is exact, and steps at 3 so a rounded percent moves. The
-split is fixed at 1 : 2 and the amount runs −1,000 to 1,000.
+split is fixed at 1 : 2 with step 3 (so divisibility is not vacuous) and
+the amount runs −1,000 to 1,000.
 
 | Harness | Law | Verification |
 |---|---|---|
 | `percent_of_within_half_step` | 44 | with the model's division exact (`part = 8 k`), the half modes put the percent within half a step of `100 k`; a percent not already a multiple of the step and a negative part are reached (2 covers). 7.4 s wall, 0.79 s verification |
 | `percent_of_zero_whole_is_none` | 44 | a zero whole, a negative whole and a zero step are `None` for every part and mode; a nonzero part is reached (1 cover). 16.8 s wall, 0.13 s verification |
-| `split_ratio_sums` | 44 | a 1 : 2 split's rounded part plus its exact rest is the amount, for positive and negative amounts; a part off the exact share and a negative amount are reached (2 covers). 16.5 s wall, 0.41 s verification |
+| `split_ratio_sums` | 44 | a 1 : 2 split at step 3: the rounded part plus its exact rest is the amount and the part is a whole multiple of the step, for positive and negative amounts; a part off the exact share and a negative amount are reached (2 covers). 3.1 s wall, 0.66 s verification |
 
 Times: `cargo kani -p ledger-core --exact --harness proofs::ratio::<name>`,
 the verifier's own verification time and the wall time including Kani's
@@ -135,6 +136,9 @@ the exact-quotient lemmas. The model rounds `100 × part` to a multiple of
 `whole × step` and divides by `whole` (exact, so the quotient is never
 rounded twice), reusing `Round.near_halfEven`; it does not model
 `Decimal`'s 28-digit division, which the bridge's exact reference carries.
+The model is total where the kernel is partial: `splitRatio_sum` holds at
+`a + b = 0` (there is no division), while the kernel returns `None` for
+that ratio.
 No `sorry`; `#print axioms` shows only `propext`, `Quot.sound` and
 `Classical.choice`.
 
@@ -184,10 +188,9 @@ Left, with why:
   moves the pin.
 - `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`.
 - Kani: the three harnesses above.
-- The traceability gate against the `k-u6` bookspec branch (patched
+- The traceability gate against the merged `k-u6` bookspec branch (patched
   checker/runner), with `Cargo.lock` restored afterwards: 62 kernel
-  functions (47 fully backed), 44 law rows, 133 claims sections, 1929
-  backticked tokens, 404 source clauses; 15 exceptions, the pinned
-  skipped set unchanged.
+  functions (47 fully backed), 44 law rows, 133 claims sections, 1962
+  backticked tokens; 15 exceptions, the pinned skipped set unchanged.
 - bookspec: `lake build`, `lake env lean Audit.lean` (standard axioms),
   `cargo test --workspace`, `render -- --check`, `scripts/spec-floors.sh main`.

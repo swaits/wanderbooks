@@ -79,7 +79,11 @@ pub(crate) const PICKS: &[(Area, u32, &str)] = &[
     (Area::Partner, 12, "labelled-cash-default-or-all"),
     (Area::Partner, 13, "tax-basis-beside-book"),
     (Area::Partner, 14, "running-cumulative"),
-    (Area::Partner, 15, "contract-is-property-vendor-paid-is-cash"),
+    (
+        Area::Partner,
+        15,
+        "contract-is-property-vendor-paid-is-cash",
+    ),
     (Area::Partner, 16, "close-at-the-change"),
     (Area::Partner, 17, "book-amount-with-note"),
     (Area::Asset, 3, "tag-and-never-reuse"),

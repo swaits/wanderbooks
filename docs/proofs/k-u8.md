@@ -66,7 +66,7 @@ forbids; `i32` and `i64` now override `checked_sub` with the native one.
 |---|---|---|
 | `aging_total_is_sum` | 46 | five arbitrary `i64` buckets: `Some(t)` is the true sum; five in-range buckets always total; mixed signs reached (4 covers). 20.4 s verification, 31.2 s wall |
 | `control_difference_identity` | 46 | three arbitrary `i64`s: `Some(d)` is `balance − documents − unattached`; `d = 0` exactly when `balance = documents + unattached`; agreeing in-range books differ by `Some(0)` (4 covers). 0.8 s verification, 10.3 s wall |
-| `reconciliation_total_identity` | 46 | four arbitrary `i64`s: `Some(t)` is `beginning + gain + without − distributed`; in-range figures always total (2 covers; one `unreachable check, which is the proof's `expect`, reported unreachable as it should be). 1.7 s verification, 11.7 s wall |
+| `reconciliation_total_identity` | 46 | four arbitrary `i64`s: `Some(t)` is `beginning + gain + without − distributed`; in-range figures always total (2 covers; one `unreachable` check, which is the proof's `expect`, reported unreachable as it should be). 1.7 s verification, 11.7 s wall |
 
 Times: `cargo kani -p ledger-core --exact --harness proofs::control::<name>`,
 the verifier's own time and the wall time including Kani's build, the

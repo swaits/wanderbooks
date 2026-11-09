@@ -839,7 +839,15 @@ impl BooksServer {
                 description,
                 period: r.period,
                 amount: money(r.amount),
-                caught_up: money((r.amount - r.scheduled).max(Decimal::ZERO)),
+                caught_up: money(
+                    ledger_core::money::sub_exact(
+                        r.amount,
+                        r.scheduled,
+                        "the catch-up depreciation",
+                    )
+                    .map_err(|e| e.to_string())?
+                    .max(Decimal::ZERO),
+                ),
                 entry_id,
                 already_posted: r.already_posted,
             });
@@ -916,14 +924,20 @@ impl BooksServer {
         .map(code_of)
         .collect::<Result<_, _>>()?;
         let code_refs: Vec<&str> = codes.iter().map(|s| s.as_str()).collect();
-        let debits = preview.accumulated
-            + proceeds.amount
-            + preview.catch_up_depreciation
-            + if preview.gain_loss < Decimal::ZERO {
-                -preview.gain_loss
-            } else {
-                Decimal::ZERO
-            };
+        let debits = ledger_core::money::sum_exact(
+            [
+                preview.accumulated,
+                proceeds.amount,
+                preview.catch_up_depreciation,
+                if preview.gain_loss < Decimal::ZERO {
+                    -preview.gain_loss
+                } else {
+                    Decimal::ZERO
+                },
+            ],
+            "the disposal's debits",
+        )
+        .map_err(|e| e.to_string())?;
         let receipt_required = self
             .settings()
             .policy

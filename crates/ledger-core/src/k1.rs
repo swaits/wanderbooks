@@ -66,6 +66,8 @@
 //!      3001 1,500): 1,500.00 property each, no cash.
 //! ```
 
+use crate::kernel::Amount;
+use crate::money::{add_exact, sub_exact, sum_exact_of, sum_exact_try};
 use crate::reports::{MemberCapital, members_equity};
 use crate::{AccountId, AccountType, EntryId, Ledger, LedgerError, PartyId, Side};
 use chrono::NaiveDate;
@@ -178,10 +180,16 @@ pub fn k1_detail(
     {
         if closings.contains(&e.id()) {
             for (i, m) in members.iter().enumerate() {
-                let effect: Decimal = std::iter::once(m.capital_account)
-                    .chain(m.distribution_account)
-                    .map(|a| side_sum(e, Side::Credit, a) - side_sum(e, Side::Debit, a))
-                    .sum();
+                let effect = sum_exact_try(
+                    std::iter::once(m.capital_account).chain(m.distribution_account),
+                    |a| {
+                        Amount::checked_sub(
+                            side_sum(e, Side::Credit, a).ok()?,
+                            side_sum(e, Side::Debit, a).ok()?,
+                        )
+                    },
+                    "a member's closing effect",
+                )?;
                 if !effect.is_zero() {
                     lines.push(K1Line {
                         member: i,
@@ -195,12 +203,12 @@ pub fn k1_detail(
         }
         lines.extend(entry_lines(ledger, e, members, cash, places)?);
     }
-    let total = |i: usize, k: K1Kind| -> Decimal {
-        lines
-            .iter()
-            .filter(|l| l.member == i && l.kind == k)
-            .map(|l| l.amount)
-            .sum()
+    let total = |i: usize, k: K1Kind| -> Result<Decimal, LedgerError> {
+        sum_exact_of(
+            lines.iter().filter(|l| l.member == i && l.kind == k),
+            |l| l.amount,
+            "a member's K-1 contributions",
+        )
     };
     let rows = me
         .members
@@ -211,30 +219,40 @@ pub fn k1_detail(
             // Each entry's property is at most that member's credit in it,
             // and contributions are those credits' sum: property never
             // exceeds contributions, and is never negative.
-            let prop = total(i, K1Kind::PropertyContribution);
-            K1Row {
+            let prop = total(i, K1Kind::PropertyContribution)?;
+            Ok(K1Row {
                 name: col.name,
                 share: m.share,
                 beginning: col.beginning,
-                contributions_cash: col.contributions - prop,
+                contributions_cash: sub_exact(
+                    col.contributions,
+                    prop,
+                    "a member's cash contributions",
+                )?,
                 contributions_property: prop,
                 net_income: col.net_income,
                 distributions: col.distributions,
                 other: col.other,
                 ending: col.ending,
-            }
+            })
         })
-        .collect();
+        .collect::<Result<_, LedgerError>>()?;
     Ok(K1Detail { rows, lines })
 }
 
 /// Σ of an entry's lines on `account`, on `side`.
-fn side_sum(e: &crate::JournalEntry, side: Side, account: AccountId) -> Decimal {
-    e.lines()
-        .iter()
-        .filter(|l| l.side == side && l.account == account)
-        .map(|l| l.amount.amount)
-        .sum()
+fn side_sum(
+    e: &crate::JournalEntry,
+    side: Side,
+    account: AccountId,
+) -> Result<Decimal, LedgerError> {
+    sum_exact_of(
+        e.lines()
+            .iter()
+            .filter(|l| l.side == side && l.account == account),
+        |l| l.amount.amount,
+        "an entry's lines on an account",
+    )
 }
 
 /// One entry's contribution and distribution lines, as [`k1_detail`]
@@ -256,33 +274,44 @@ pub(crate) fn entry_lines(
         kind,
         amount,
     };
-    let pool: Decimal = e
-        .lines()
-        .iter()
-        .filter(|l| l.side == Side::Debit && is_property_account(ledger, cash, l.account))
-        .map(|l| l.amount.amount)
-        .sum();
+    let pool = sum_exact_of(
+        e.lines()
+            .iter()
+            .filter(|l| l.side == Side::Debit && is_property_account(ledger, cash, l.account)),
+        |l| l.amount.amount,
+        "an entry's property debits",
+    )?;
     // Contributions are credits to capital (members_equity's).
     let credits: Vec<Decimal> = members
         .iter()
         .map(|m| side_sum(e, Side::Credit, m.capital_account))
-        .collect();
+        .collect::<Result<_, _>>()?;
     let takes = share_property(pool, &credits, places)?;
     let mut lines = Vec::new();
     for (i, m) in members.iter().enumerate() {
         let (credit, take) = (credits[i], takes[i]);
-        if !(credit - take).is_zero() {
-            lines.push(line(i, K1Kind::CashContribution, credit - take));
+        let cash_part = sub_exact(credit, take, "a member's cash contribution")?;
+        if !cash_part.is_zero() {
+            lines.push(line(i, K1Kind::CashContribution, cash_part));
         }
         if !take.is_zero() {
             lines.push(line(i, K1Kind::PropertyContribution, take));
         }
         // Distributions: debits to capital, net debits to the
         // distributions account (members_equity's).
-        let taken = side_sum(e, Side::Debit, m.capital_account)
-            + m.distribution_account.map_or(Decimal::ZERO, |d| {
-                side_sum(e, Side::Debit, d) - side_sum(e, Side::Credit, d)
-            });
+        let from_distributions = match m.distribution_account {
+            None => Decimal::ZERO,
+            Some(d) => sub_exact(
+                side_sum(e, Side::Debit, d)?,
+                side_sum(e, Side::Credit, d)?,
+                "a member's distributions",
+            )?,
+        };
+        let taken = add_exact(
+            side_sum(e, Side::Debit, m.capital_account)?,
+            from_distributions,
+            "a member's distributions",
+        )?;
         if !taken.is_zero() {
             lines.push(line(i, K1Kind::Distribution, -taken));
         }

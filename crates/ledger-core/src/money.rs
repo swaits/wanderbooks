@@ -153,6 +153,51 @@ impl Money {
     }
 }
 
+/// The exact sum of some figures ([`crate::kernel::total`]), or
+/// `TooLargeToCompute` naming `what` when a running sum cannot be held:
+/// the engine's way to total a column without a raw `.sum()` that would
+/// panic at `Decimal::MAX` (rules.md B-21, B-28).
+pub fn sum_exact(
+    values: impl IntoIterator<Item = Decimal>,
+    what: &str,
+) -> Result<Decimal, LedgerError> {
+    crate::kernel::total(values).ok_or_else(|| LedgerError::TooLargeToCompute(what.to_string()))
+}
+
+/// [`sum_exact`] over a figure drawn from each item
+/// ([`crate::kernel::total_of`]).
+pub fn sum_exact_of<I>(
+    values: impl IntoIterator<Item = I>,
+    f: impl FnMut(I) -> Decimal,
+    what: &str,
+) -> Result<Decimal, LedgerError> {
+    crate::kernel::total_of(values, f)
+        .ok_or_else(|| LedgerError::TooLargeToCompute(what.to_string()))
+}
+
+/// [`sum_exact`] over a derived figure that can itself be unrepresentable
+/// ([`crate::kernel::total_try`]).
+pub fn sum_exact_try<I>(
+    values: impl IntoIterator<Item = I>,
+    f: impl FnMut(I) -> Option<Decimal>,
+    what: &str,
+) -> Result<Decimal, LedgerError> {
+    crate::kernel::total_try(values, f)
+        .ok_or_else(|| LedgerError::TooLargeToCompute(what.to_string()))
+}
+
+/// `a + b` exactly, or `TooLargeToCompute` naming `what` (a checked `+`).
+pub fn add_exact(a: Decimal, b: Decimal, what: &str) -> Result<Decimal, LedgerError> {
+    crate::kernel::Amount::checked_add(a, b)
+        .ok_or_else(|| LedgerError::TooLargeToCompute(what.to_string()))
+}
+
+/// `a - b` exactly, or `TooLargeToCompute` naming `what` (a checked `-`).
+pub fn sub_exact(a: Decimal, b: Decimal, what: &str) -> Result<Decimal, LedgerError> {
+    crate::kernel::Amount::checked_sub(a, b)
+        .ok_or_else(|| LedgerError::TooLargeToCompute(what.to_string()))
+}
+
 impl fmt::Debug for Money {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} {}", self.amount, self.currency)

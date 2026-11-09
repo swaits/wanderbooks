@@ -114,12 +114,12 @@ impl BooksServer {
             return Err(party_required("pass agency: the tax agency paid"));
         }
         // Total before remitting, for the response.
-        let total: Decimal = store
-            .ledger()
-            .payroll_tax_payables()
-            .iter()
-            .map(|(_, b)| *b)
-            .sum();
+        let total = ledger_core::money::sum_exact_of(
+            store.ledger().payroll_tax_payables(),
+            |(_, b)| b,
+            "the payroll taxes payable",
+        )
+        .map_err(|e| e.to_string())?;
         let entry_id = store
             .remit_payroll_taxes(parse_date(&p.date)?, cash)
             .map_err(|e| e.to_string())?;

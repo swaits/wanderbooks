@@ -333,7 +333,9 @@ pub fn check_equation(bs: &crate::reports::BalanceSheetStatement) -> Option<Find
 /// Net income moved to equity by the closes dated through `through`:
 /// revenue closed less expenses closed, read off the closing entries'
 /// lines.
-fn closed_net(ledger: &Ledger, through: NaiveDate) -> Decimal {
+/// `None` when the sum is past exact arithmetic (the check is skipped, as
+/// `articulation` skips a statement it cannot make).
+fn closed_net(ledger: &Ledger, through: NaiveDate) -> Option<Decimal> {
     let mut net = Decimal::ZERO;
     for id in ledger.closing_entry_ids() {
         let Some(e) = ledger.get_entry(id) else {
@@ -351,11 +353,11 @@ fn closed_net(ledger: &Ledger, through: NaiveDate) -> Decimal {
                 Side::Credit => -l.amount.amount,
             };
             if matches!(a.account_type, AccountType::Revenue | AccountType::Expense) {
-                net += signed;
+                net = crate::kernel::Amount::checked_add(net, signed)?;
             }
         }
     }
-    net
+    Some(net)
 }
 
 fn articulation(ledger: &Ledger, through: NaiveDate) -> Option<Finding> {
@@ -369,7 +371,7 @@ fn articulation(ledger: &Ledger, through: NaiveDate) -> Option<Finding> {
     check_articulation(
         pnl.net_income(),
         bs.current_earnings,
-        closed_net(ledger, through),
+        closed_net(ledger, through)?,
     )
 }
 
@@ -380,7 +382,8 @@ pub fn check_articulation(
     current_earnings: Decimal,
     closed: Decimal,
 ) -> Option<Finding> {
-    (net_income != current_earnings + closed).then(|| {
+    let explained = crate::kernel::Amount::checked_add(current_earnings, closed)?;
+    (net_income != explained).then(|| {
         Finding::new(
             "pnl_not_articulated",
             Subject::Books,
@@ -522,7 +525,10 @@ fn schedules(ledger: &Ledger, through: NaiveDate) -> Vec<Finding> {
             }
         };
         if let Some((first, _)) = months.first() {
-            let total: Decimal = months.iter().map(|(_, a)| *a).sum();
+            let total = crate::kernel::total_of(&months, |&(_, a)| a).map_or_else(
+                || "a sum too large to compute".to_string(),
+                |t| t.to_string(),
+            );
             out.push(Finding::new(
                 "schedule_behind",
                 Subject::Schedule(s.id),

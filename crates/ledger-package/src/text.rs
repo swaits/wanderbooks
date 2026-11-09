@@ -29,6 +29,13 @@ pub fn money(n: Decimal) -> String {
     n.to_string()
 }
 
+/// A total as [`money`] prints it, or "too large to compute" when the sum
+/// of its figures was past exact arithmetic (`kernel::total` gave `None`):
+/// a printed total is exact or says so, and never crashes the export.
+pub fn total_text(total: Option<Decimal>) -> String {
+    total.map_or_else(|| "too large to compute".to_string(), money)
+}
+
 /// A member's share as the K-1 worksheet prints it: at least two places,
 /// however it was written ("50%", "0.5" and "0.500" all print "0.50"; a
 /// share of a third keeps its places). The printed text depends on the

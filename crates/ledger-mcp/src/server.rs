@@ -1348,7 +1348,9 @@ fn preview_lines_for(
         } else {
             -amount.amount
         };
-        let after = before + delta;
+        let after =
+            ledger_core::money::add_exact(before, delta, "the account's balance after the line")
+                .map_err(|e| e.to_string())?;
         out.push(PreviewLine {
             account_id: *account_id,
             code: account.code.clone(),

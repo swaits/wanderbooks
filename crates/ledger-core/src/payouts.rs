@@ -17,6 +17,7 @@
 //! no platform: callers (or a format-specific parser) supply the numbers
 //! from the payout statement, which is the entry's receipt.
 
+use crate::money::{add_exact, sub_exact, sum_exact_of};
 use crate::{AccountId, AccountType, ChartOfAccounts, ClassId, LedgerError, Side};
 use rust_decimal::Decimal;
 
@@ -165,23 +166,27 @@ pub fn payout_plan(
     for a in &payout.adjustments {
         check(a.account, a.amount, "adjustment", &[])?;
     }
-    let gross: Decimal = payout.revenue.iter().map(|l| l.amount).sum();
-    let fees: Decimal = payout.fees.iter().map(|l| l.amount).sum();
-    let adjustments: Decimal = payout
-        .adjustments
-        .iter()
-        .map(|a| match a.side {
+    let gross = sum_exact_of(&payout.revenue, |l| l.amount, "the payout's revenue")?;
+    let fees = sum_exact_of(&payout.fees, |l| l.amount, "the payout's fees")?;
+    let adjustments = sum_exact_of(
+        &payout.adjustments,
+        |a| match a.side {
             Side::Credit => a.amount,
             Side::Debit => -a.amount,
-        })
-        .sum();
-    let expected = gross - fees + adjustments;
+        },
+        "the payout's adjustments",
+    )?;
+    let expected = add_exact(
+        sub_exact(gross, fees, "the payout's total")?,
+        adjustments,
+        "the payout's total",
+    )?;
     if expected != payout.deposit {
         return bad(format!(
             "payout doesn't reconcile: gross {gross} − fees {fees} + adjustments \
              {adjustments} = {expected}, but the deposit is {} (off by {})",
             payout.deposit,
-            payout.deposit - expected
+            sub_exact(payout.deposit, expected, "the payout's difference")?
         ));
     }
     let mut plan = Vec::new();

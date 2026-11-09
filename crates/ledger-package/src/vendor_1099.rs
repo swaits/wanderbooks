@@ -34,7 +34,7 @@ use ledger_core::{Decision1099, EntryId, Ledger, PartyId, Payment1099, Status109
 use rust_decimal::Decimal;
 
 use crate::reports::Settings;
-use crate::text::{csv_escape, money};
+use crate::text::{csv_escape, money, total_text};
 use crate::tins::{TinSource, tin_type_key};
 
 /// Where payments to vendors come from, for the 1099 worksheet: the
@@ -193,12 +193,12 @@ fn entries_text(ids: &[EntryId]) -> String {
 
 /// "1 payment" or "3 payments", with their total.
 fn payments_text(list: &[Payment1099]) -> String {
-    let total: Decimal = list.iter().map(|p| p.amount).sum();
+    let total = ledger_core::kernel::total_of(list, |p| p.amount);
     let n = list.len();
     format!(
         "{n} payment{} totaling {}",
         if n == 1 { "" } else { "s" },
-        money(total)
+        total_text(total)
     )
 }
 

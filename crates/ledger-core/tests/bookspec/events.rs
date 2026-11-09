@@ -203,12 +203,12 @@ impl Books<'_> {
     }
 
     /// The terms a document's example gives, and the due date the books take
-    /// them to (BS-arap-3): the engine's own `Terms::due_date`, except for a
-    /// date the parties agreed ("Due 2026-11-15"), which that call leaves to
-    /// its caller (the engine's contract: the caller passes the agreed date,
-    /// which the terms' canonical text carries). The example's spelling is
-    /// the canonical one, so the engine must print it back as written.
-    /// Without terms a document is due on its own date.
+    /// them to (BS-arap-3): the engine's own `Terms::due_date` for every
+    /// kind, a date the parties agreed ("Due 2026-11-15") included. The
+    /// example's spelling is the canonical one, so the engine must print it
+    /// back as written. Nothing of the date is read out of the text here:
+    /// the example can only pass if the engine computes it. Without terms a
+    /// document is due on its own date.
     pub(crate) fn terms_due(
         &self,
         terms: Option<&str>,
@@ -224,17 +224,9 @@ impl Books<'_> {
             text,
             "{what}: the engine prints terms {text:?} back as written"
         );
-        let due = match parsed.kind() {
-            TermsKind::Custom => {
-                let agreed = text.strip_prefix("Due ").unwrap_or_else(|| {
-                    panic!("{what}: custom terms {text:?} carry their date after \"Due \"")
-                });
-                crate::date(agreed, what)
-            }
-            _ => parsed
-                .due_date(date)
-                .unwrap_or_else(|e| panic!("{what}: terms {text:?} on {date}: {e}")),
-        };
+        let due = parsed
+            .due_date(date)
+            .unwrap_or_else(|e| panic!("{what}: terms {text:?} on {date}: {e}"));
         (due, Some(parsed))
     }
 

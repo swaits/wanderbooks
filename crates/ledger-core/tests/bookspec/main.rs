@@ -55,8 +55,8 @@ pub(crate) use ledger_core::{
     InstrumentId, InstrumentKind, InvoiceFields, Ledger, LedgerError, MemberCapital, MemberClose,
     Money, NewAsset, NewSchedule, PartyId, PartyMember, PartyShare, PaymentAccounts,
     ReconcilingKind, Role, ScheduleConvention, ScheduleId, ScheduleKind, Share, Side, Terms,
-    TermsKind, TinFacts, TinType, VendorId, W9Facts, cash_flow, members_equity,
-    profit_and_loss_for_period, trial_balance_as_of, vendor_1099_report,
+    TinFacts, TinType, VendorId, W9Facts, cash_flow, members_equity, profit_and_loss_for_period,
+    trial_balance_as_of, vendor_1099_report,
 };
 pub(crate) use ledger_store::{DepreciationRun, DisposalPreview, Store, StoreError};
 pub(crate) use rust_decimal::Decimal;

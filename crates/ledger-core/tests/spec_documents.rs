@@ -1261,7 +1261,7 @@ fn half_paid_rest_written_off_is_written_off() {
     assert!(check.iter().all(|c| c.difference.is_zero()));
 }
 
-/// BS-arap-5 invariant 5: a cash-basis company never counted the invoice as
+/// BS-arap-5 statement 6: a cash-basis company never counted the invoice as
 /// income, so it has no basis to deduct (IRC §166; Treas. Reg.
 /// §1.166-1(e)).
 #[test]
@@ -1502,7 +1502,7 @@ fn days(b: &Books) -> Vec<NaiveDate> {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
 
-    /// BS-arap-2 invariants 1, 6 and 9 over random histories of creates,
+    /// BS-arap-2 invariants 1, 2, 3, 6 and 9 over random histories of creates,
     /// payments, voids, reversals of any entry and refused hand lines: at
     /// every date the control accounts equal their documents (no
     /// difference, nothing unattached: no command adds a hand line), each
@@ -1691,8 +1691,9 @@ fn custom_terms_are_due_on_the_date_they_give() {
     assert!(serde_json::from_value::<Terms>(stray).is_err());
 }
 
-/// BS-arap-3 SCENARIOS: Net 30, Net 15 EOM, a leap day, due on receipt, a
-/// custom date, and the 9999-12 bound refused instead of panicking.
+/// BS-arap-3 scenarios 1-5 (Net 30, Net 15 EOM, a leap day, due on receipt,
+/// and the 9999-12 bound refused instead of panicking) and statement 1 (a
+/// custom date).
 #[test]
 fn terms_derive_due_dates() {
     let net30 = Terms::new(TermsKind::Net(30), None).unwrap();

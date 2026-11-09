@@ -1717,7 +1717,7 @@ fn one_list_of_cash_accounts_per_package() {
     assert_eq!(text(&plain, "1099-worksheet-2026.csv"), tool(&cash));
 }
 
-/// BS-format-2 statements 27-30 (P3 cutover review, open point 1): the
+/// BS-format-2 statements 27-30 and 32 (P3 cutover review, open point 1): the
 /// package's QuickBooks file declares every project as a class and
 /// carries each line's project in CLASS; a project name written
 /// differently is listed in the warnings and the README, whose IIF line

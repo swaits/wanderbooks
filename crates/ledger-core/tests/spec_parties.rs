@@ -1461,10 +1461,10 @@ fn entry_flow_takes_across_in_order_until_used_up() {
     );
 }
 
-/// Oracle: shares::target DEFINITIONS, case 3 (BS-partner-3): members
+/// Oracle: shares::target DEFINITIONS (BS-partner-3 statement 3 (c)): members
 /// named on an entry moving no money split what moved equity, E (here
 /// −4.00 of a draft not yet balanced), received, in kind (the equipment's
-/// 10.00, at most |E|); case 5: with a party named who isn't a member,
+/// 10.00, at most |E|); (e): with a party named who isn't a member,
 /// the total debits, direction neither, counting nothing.
 #[test]
 fn a_share_target_without_money_is_the_capital_or_the_debits() {

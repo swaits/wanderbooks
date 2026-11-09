@@ -989,7 +989,7 @@ mod paying_on_terms {
 
     /// One deposit settles two invoices of one customer: one entry, one
     /// receivable line per invoice, each tagged with its own invoice, and the
-    /// output names both documents (BS-arap-6 invariant 3 and WB-arap-15).
+    /// output names both documents (BS-arap-6 statements 1-2 and invariant 4; WB-arap-15, the rows in application order).
     #[test]
     fn one_payment_settles_two_invoices() {
         let mut s = setup("settle-two");

@@ -294,7 +294,7 @@ to recover its costs from, so its costs are expensed as incurred.
 
 ## 340-40-25-7 (Costs that relate directly to a contract)
 
-Added 2026-10-22 for BS-statement-5 statement 6 as the DART revenue roadmap sets it
+Added 2026-10-22 for BS-statement-5 statement 4 as the DART revenue roadmap sets it
 out; not re-read in the ASC basic view: check it there at the next
 reading. The costs that "relate directly to a contract" (25-5(a)) are
 (a) direct labor, (b) direct materials, (c) allocations of costs that
@@ -314,7 +314,7 @@ the contract), costs of wasted materials, labor or other resources not
 reflected in the contract's price, costs that relate to satisfied (or
 partly satisfied) performance obligations, and costs the entity cannot
 tell apart between satisfied and unsatisfied obligations.
-→ BS-statement-5 statement 6 (with 25-7): a cost traceable to one job (25-7(a), (b),
+→ BS-statement-5 statement 4 (with 25-7): a cost traceable to one job (25-7(a), (b),
 (d), (e)) is that job's, whole, on the document's line; a cost that
 relates to several jobs reaches them only by an allocation on a stated
 basis (25-7(c)), which the books record as the allocation convention's

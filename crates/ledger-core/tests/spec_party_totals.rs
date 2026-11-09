@@ -958,7 +958,7 @@ fn a_card_is_a_recorded_business_card_else_a_liability_named_card() {
     assert_eq!(b.resolved(on_2050).0.direction, Direction::Neither);
 }
 
-/// BS-partner-3 statement 3, case 3: E is the movement of equity other than retained
+/// BS-partner-3 statement 3 (c): E is the movement of equity other than retained
 /// earnings, so a members' entry reads as the statement of members' equity
 /// reads it. Retained earnings given up for equipment moves no member's
 /// capital: neither, as the statement shows no distribution. Retained
@@ -1168,7 +1168,7 @@ fn a_members_entry_keeps_its_reading_after_they_leave() {
     );
 }
 
-/// BS-partner-3 statement 3, case 1: a period's closing entry moves nothing with
+/// BS-partner-3 statement 3 (a): a period's closing entry moves nothing with
 /// anyone: direction neither, its members' part their income allocated
 /// (credited to their capital: negative), counted in no total.
 #[test]

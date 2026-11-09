@@ -1,4 +1,4 @@
-//! Documents through the store, at random (BS-arap-2 invariants 1, 6, 7 and 9; plan P4b.15): histories of invoices, bills, payments (with a
+//! Documents through the store, at random (BS-arap-2 invariants 1, 2, 3, 6, 7 and 9; plan P4b.15): histories of invoices, bills, payments (with a
 //! payment method and a reference, or none), voids, reversals of any
 //! entry, closed months and refused hand lines, run through `Store`, then
 //! replayed (the books reopened) and read by a `Snapshot`.
@@ -8,7 +8,7 @@
 //!       the live books, their replay and a viewer's snapshot agree on
 //!       every figure, at every date, and the control accounts equal
 //!       their documents.
-//! SOURCE: BS-entry-4 (replay), BS-arap-2 invariants 1, 6, 7 and 9.
+//! SOURCE: BS-entry-4 (replay), BS-arap-2 invariants 1, 2, 3, 6, 7 and 9.
 //! ```
 
 use chrono::NaiveDate;

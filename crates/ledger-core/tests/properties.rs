@@ -937,7 +937,7 @@ proptest! {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
 
-    /// BS-statement-5 statement 2: for any tags and any period, the projects'
+    /// BS-statement-5 statement 3: for any tags and any period, the projects'
     /// figures plus the untagged lines' are the period's profit and loss
     /// (no line counted twice or lost), each through
     /// ledger_core::project_figures.

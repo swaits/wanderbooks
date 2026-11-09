@@ -445,7 +445,7 @@ fn iif_dates(iif: &str) -> Vec<NaiveDate> {
         .collect()
 }
 
-/// Depreciation is one figure everywhere (BS-asset-1 statement 28, BS-statement-3 statement 13,
+/// Depreciation is one figure everywhere (BS-asset-1 statement 31, BS-statement-3 statement 13,
 /// BS-partner-4): the P&L's expense, the cash flow reconciliation's add-back, the
 /// tax-basis K-1's open item, the IIF's, and the runs plus what the
 /// disposal posted; the balance sheet's accumulated depreciation is the

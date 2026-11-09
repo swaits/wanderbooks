@@ -6,7 +6,7 @@
 //! ```text
 //! GOAL: a client project's invoiced revenue and a contractor's billed
 //!       cost count toward the project, every other figure as before.
-//! SOURCE: BS-statement-5 statements 2 and 6 (job costing), BS-statement-3 (the
+//! SOURCE: BS-statement-5 statements 2, 3 and 6 (job costing, and the
 //!         projects with the untagged lines partition the P&L), BS-1099-1 and
 //!         BS-partner-3 (1099 and party figures follow the money, not the tags).
 //! ```

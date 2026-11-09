@@ -1501,7 +1501,7 @@ fn dispose_args(x: u64, date: &str, proceeds: &str) -> Value {
 /// days, 500.00 (the final depreciation); accumulated 5,500.00, book value
 /// 6,500.00, gain 500.00. Afterwards books.asset_schedule ends there, and
 /// books.list_assets lists it as gone: not held, every figure 0.00 (it
-/// left the books with its disposal; BS-asset-1 statement 28). Before P3 the
+/// left the books with its disposal; BS-asset-1 statements 7 and 30). Before P3 the
 /// schedule showed June 7,000.00, accumulated 12,000.00, book value 0.00.
 #[test]
 fn a_disposed_asset_lists_what_it_depreciated_through_its_disposal() {

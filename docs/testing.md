@@ -1766,7 +1766,7 @@ bookspec's rules / `docs/spec/claims/` say why not. Mutation runs wait for P12 (
   loss, not its depreciation (BS-statement-3 statement 13;
   `a_disposals_depreciation_credit_back_is_depreciation`), and the
   tax-basis K-1's book depreciation left it out (BS-partner-4); `books.list_assets`
-  as of a day said "disposed" for a later disposal (BS-asset-1 statement 28).
+  as of a day said "disposed" for a later disposal (BS-asset-1 statement 30).
 
 ## P3: the surface review (2026-10-21)
 
@@ -3359,7 +3359,7 @@ in the same call.
   `half_paid_rest_written_off_is_written_off` (BS-arap-2 scenario 7: 50 paid,
   50 written off, one balanced entry Dr 6990 / Cr 1200, the receivable
   line tagged `WriteOff`, receivables down by exactly the write-off);
-  `write_off_refused_on_cash_basis` (BS-arap-5 invariant 5: refused, the
+  `write_off_refused_on_cash_basis` (BS-arap-5 statement 6: refused, the
   snapshot unchanged, no draft left); `write_off_above_outstanding_refused`
   (the bound at the day, a zero and a negative amount, then the exact
   amount owed taken); `write_off_then_recovery_same_year` (D-49: the

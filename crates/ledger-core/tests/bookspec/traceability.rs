@@ -21,17 +21,23 @@
 //! Tokens that are plainly values (a quoted option word, a setting value,
 //! a journal event, a tool name, an illustrative amount) are classified by
 //! narrow, explicit rules below and counted, so the gate says how much it
-//! actually resolved. Every `**bookspec:**` id must be a live record (a
-//! retired one is written `**retired bookspec:**`); every `WB-` id is
-//! unique.
+//! actually resolved. A product surface is a registered tool name, or an
+//! exact string literal the source declares. Every `**bookspec:**` id must
+//! be a live record (a retired one is written `**retired bookspec:**`);
+//! every `WB-` id is unique.
 //!
 //! It also checks every `pub fn` in `crates/ledger-core/src/kernel/*.rs`:
 //! a Kani harness calls it, a bridge property in `tests/kernel_bridge/`
-//! calls it, and one of its harnesses carries a numbered law that is a
-//! row of bookspec's `spec/laws.md`. The functions that are wrappers or
-//! enum maps with no independent harness, bridge or law are named in
+//! calls it, one of its harnesses carries a numbered law that is a row of
+//! bookspec's `spec/laws.md`, and the source clause of its own spec block
+//! cites a rule that law serves. The functions that are wrappers or enum
+//! maps with no independent harness, bridge or law are named in
 //! [`EXCEPTIONS`], with what each lacks and why; its length is pinned so
-//! the list changes only on purpose.
+//! the list changes only on purpose. A function the gate cannot apply the
+//! right-law check to (because it has no harness law, or cites no rule) is
+//! recorded, and the set of those is pinned too: it must be exactly the
+//! excepted wrappers [`SKIPPED`] names, never a hole ordinary functions
+//! fall through.
 //!
 //! Finally, every law row of `spec/laws.md` that cites a rule wanderbooks
 //! claims names Lean theorems that are all audited, or says `none —` with
@@ -107,6 +113,48 @@ fn walk(dir: &Path, ext: &str, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// Where a raw string starting at `i` ends (`r"…"`, `r#"…"#`, `br"…"`),
+/// or `None` when `i` is not a raw string. Without this, a backslash in a
+/// Windows path inside `r"…"` reads as an escape and blanks the rest of
+/// the file.
+fn raw_string_end(chars: &[char], i: usize) -> Option<usize> {
+    if i > 0 && is_word_char(chars[i - 1]) {
+        return None;
+    }
+    let mut j = i;
+    if chars.get(j) == Some(&'b') {
+        j += 1;
+    }
+    if chars.get(j) != Some(&'r') {
+        return None;
+    }
+    j += 1;
+    let mut hashes = 0usize;
+    while chars.get(j) == Some(&'#') {
+        hashes += 1;
+        j += 1;
+    }
+    if chars.get(j) != Some(&'"') {
+        return None;
+    }
+    j += 1;
+    while j < chars.len() {
+        if chars[j] == '"' {
+            let mut k = j + 1;
+            let mut seen = 0usize;
+            while seen < hashes && chars.get(k) == Some(&'#') {
+                seen += 1;
+                k += 1;
+            }
+            if seen == hashes {
+                return Some(k);
+            }
+        }
+        j += 1;
+    }
+    Some(chars.len())
+}
+
 /// The source with comments and string/char literals blanked, so a word in
 /// a comment or a string is never mistaken for a definition.
 fn strip_code(text: &str) -> String {
@@ -114,7 +162,9 @@ fn strip_code(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut i = 0;
     while i < chars.len() {
-        if chars[i] == '/' && chars.get(i + 1) == Some(&'/') {
+        if let Some(end) = raw_string_end(&chars, i) {
+            i = end;
+        } else if chars[i] == '/' && chars.get(i + 1) == Some(&'/') {
             while i < chars.len() && chars[i] != '\n' {
                 i += 1;
             }
@@ -427,7 +477,12 @@ fn struct_fields(code: &str, name: &str) -> Vec<String> {
 
 /// Enum variants and struct fields in `code`, for definitions outside the
 /// crate's `src` (an integration test's own model types).
-fn collect_types(code: &str, items: &mut BTreeSet<String>, qualified: &mut BTreeSet<String>) {
+fn collect_types(
+    code: &str,
+    items: &mut BTreeSet<String>,
+    qualified: &mut BTreeSet<String>,
+    types: &mut BTreeSet<String>,
+) {
     let chars: Vec<char> = code.chars().collect();
     let mut i = 0;
     while i < chars.len() {
@@ -442,6 +497,7 @@ fn collect_types(code: &str, items: &mut BTreeSet<String>, qualified: &mut BTree
         if word == "enum" || word == "struct" {
             let j = skip_space(&chars, end);
             if let Some((name, _)) = word_at(&chars, j) {
+                types.insert(name.clone());
                 if word == "enum" {
                     for variant in enum_variants(code, &name) {
                         qualified.insert(format!("{name}::{variant}"));
@@ -495,8 +551,13 @@ struct Definitions {
     /// The exact `Type::item` names: an impl's functions, an enum's
     /// variants, an impl's associated `const`s and types.
     qualified: BTreeSet<String>,
-    /// The items defined in each module's own file (a directory module
-    /// keeps its submodules' items too, which is what it re-exports).
+    /// Every real module's full path (`crate::a::b`): a file module
+    /// (`src/a/b.rs`, `src/a/b/mod.rs`, the crate root) and every inline
+    /// `mod b { … }`.
+    modules: BTreeSet<String>,
+    /// The items defined directly in each module, keyed by that full path.
+    /// A glob re-export (`pub use entries::*;`) brings a module's items
+    /// into the re-exporting one, as Rust does.
     module_items: BTreeMap<String, BTreeSet<String>>,
     /// Type names defined under `crates/*/src`.
     types: BTreeSet<String>,
@@ -601,38 +662,145 @@ fn package_name(text: &str) -> Option<String> {
     None
 }
 
-/// The module(s) a source file defines items for: its own file stem (or
-/// `mod.rs`'s directory), and every enclosing directory that is a module
-/// root, because a directory module re-exports its submodules' items.
-fn module_keys(path: &Path) -> Vec<String> {
-    let mut keys = Vec::new();
-    let file = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-    if file == "mod.rs" {
-        if let Some(dir) = path
-            .parent()
-            .and_then(|p| p.file_name())
-            .and_then(|n| n.to_str())
-        {
-            keys.push(dir.to_string());
-        }
-    } else if file != "lib.rs" {
-        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-            keys.push(stem.to_string());
-        }
+/// The module a source file is, as segments below its crate root: `lib.rs`
+/// and `main.rs` are the root, `a.rs` and `a/mod.rs` are `a`, `a/b.rs` is
+/// `a::b`.
+fn module_path_of(path: &Path, src: &Path) -> Vec<String> {
+    let Ok(rel) = path.strip_prefix(src) else {
+        return Vec::new();
+    };
+    let mut parts: Vec<String> = rel
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    let Some(last) = parts.pop() else {
+        return Vec::new();
+    };
+    if last == "lib.rs" || last == "main.rs" {
+        return Vec::new();
     }
-    let mut dir = path.parent();
-    while let Some(d) = dir {
-        if d.file_name().is_some_and(|n| n == "src") {
-            break;
+    let Some(stem) = last.strip_suffix(".rs") else {
+        return Vec::new();
+    };
+    if stem != "mod" {
+        parts.push(stem.to_string());
+    }
+    parts
+}
+
+/// Record every item of `code`, the body of module `path` in `file`:
+/// functions, types, variants' containers, `const`s, macros and submodule
+/// names, each in its module. An inline `mod b { … }` is a module of its
+/// own, recursed into with `path::b`; a `use …::*` is remembered so a glob
+/// re-export can be applied once every module is known.
+fn scan_module(
+    code: &str,
+    path: &str,
+    file: &Path,
+    defs: &mut Definitions,
+    enums: &mut Vec<(PathBuf, String)>,
+    structs: &mut Vec<(PathBuf, String)>,
+    globs: &mut Vec<(String, String)>,
+) {
+    let chars: Vec<char> = code.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if !(chars[i].is_ascii_alphabetic() || chars[i] == '_') {
+            i += 1;
+            continue;
         }
-        if d.join("mod.rs").is_file() {
-            if let Some(name) = d.file_name().and_then(|n| n.to_str()) {
-                keys.push(name.to_string());
+        let Some((word, end)) = word_at(&chars, i) else {
+            i += 1;
+            continue;
+        };
+        let mut after = end;
+        match word.as_str() {
+            "mod" => {
+                let j = skip_space(&chars, end);
+                if let Some((name, name_end)) = word_at(&chars, j) {
+                    defs.items.insert(name.clone());
+                    defs.module_items
+                        .entry(path.to_string())
+                        .or_default()
+                        .insert(name.clone());
+                    let mut k = skip_space(&chars, name_end);
+                    while k < chars.len() && chars[k] != '{' && chars[k] != ';' {
+                        k += 1;
+                    }
+                    if chars.get(k) == Some(&'{') {
+                        if let Some(close) = matching_brace(&chars, k, ('{', '}')) {
+                            let full = format!("{path}::{name}");
+                            defs.modules.insert(full.clone());
+                            let body: String = chars[k + 1..close].iter().collect();
+                            scan_module(&body, &full, file, defs, enums, structs, globs);
+                            after = close + 1;
+                        }
+                    }
+                }
             }
+            "use" => {
+                let mut k = i;
+                while k < chars.len() && chars[k] != ';' {
+                    k += 1;
+                }
+                let decl: String = chars[i..k].iter().collect();
+                if let Some(target) = glob_use_target(&decl) {
+                    globs.push((path.to_string(), target));
+                }
+                after = k.min(chars.len());
+            }
+            "fn" | "struct" | "enum" | "union" | "trait" | "type" | "const" | "static" => {
+                let j = skip_space(&chars, end);
+                if let Some((name, _)) = word_at(&chars, j) {
+                    if word == "enum" {
+                        enums.push((file.to_path_buf(), name.clone()));
+                    }
+                    if word == "struct" {
+                        structs.push((file.to_path_buf(), name.clone()));
+                    }
+                    if matches!(
+                        word.as_str(),
+                        "struct" | "enum" | "union" | "trait" | "type"
+                    ) {
+                        defs.types.insert(name.clone());
+                    }
+                    defs.items.insert(name.clone());
+                    defs.module_items
+                        .entry(path.to_string())
+                        .or_default()
+                        .insert(name);
+                }
+            }
+            "macro_rules" => {
+                let mut j = skip_space(&chars, end);
+                if chars.get(j) == Some(&'!') {
+                    j = skip_space(&chars, j + 1);
+                    if let Some((name, _)) = word_at(&chars, j) {
+                        defs.items.insert(name.clone());
+                        defs.module_items
+                            .entry(path.to_string())
+                            .or_default()
+                            .insert(name);
+                    }
+                }
+            }
+            _ => {}
         }
-        dir = d.parent();
+        i = after.max(end);
     }
-    keys
+}
+
+/// The target of a glob `use` (`use a::b::*;` names `a::b`), or `None` for
+/// any other import.
+fn glob_use_target(decl: &str) -> Option<String> {
+    let decl = decl.trim_start().strip_prefix("use ")?.trim();
+    let target = decl.strip_suffix("::*")?.trim();
+    // `super` and `self` are relative to the inline test modules, whose
+    // items no claim names; resolving them would need the parent chain.
+    if target.is_empty() || target == "super" || target == "self" {
+        return None;
+    }
+    Some(target.to_string())
 }
 
 /// Test names: a `#[test]` fn or a function inside a `proptest!` block.
@@ -717,12 +885,19 @@ fn collect_tool_names(root: &Path, out: &mut BTreeSet<String>) {
 fn build_definitions(root: &Path) -> Definitions {
     let mut defs = Definitions::default();
 
-    // Crate names: the workspace root, `fuzz`, and each crate's package.
-    let mut manifests = vec![root.join("Cargo.toml"), root.join("fuzz/Cargo.toml")];
+    // Crate names and directories: each crate under `crates/`, the
+    // workspace root, and `fuzz`.
+    let mut crate_dirs: Vec<(PathBuf, String)> = Vec::new();
     for entry in std::fs::read_dir(root.join("crates")).expect("crates") {
-        manifests.push(entry.expect("a crate").path().join("Cargo.toml"));
+        let dir = entry.expect("a crate").path();
+        if let Ok(text) = std::fs::read_to_string(dir.join("Cargo.toml")) {
+            if let Some(name) = package_name(&text) {
+                defs.crates.insert(name.clone());
+                crate_dirs.push((dir, name));
+            }
+        }
     }
-    for manifest in manifests {
+    for manifest in [root.join("Cargo.toml"), root.join("fuzz/Cargo.toml")] {
         if let Ok(text) = std::fs::read_to_string(&manifest) {
             if let Some(name) = package_name(&text) {
                 defs.crates.insert(name);
@@ -731,108 +906,99 @@ fn build_definitions(root: &Path) -> Definitions {
     }
     collect_tool_names(root, &mut defs.product_surfaces);
 
-    let mut src_files = Vec::new();
-    for entry in std::fs::read_dir(root.join("crates")).expect("crates") {
-        let crate_dir = entry.expect("a crate").path();
-        let src = crate_dir.join("src");
-        if src.is_dir() {
-            walk(&src, "rs", &mut src_files);
-        }
-    }
-    src_files.sort();
     let proofs = root.join("crates/ledger-core/src/proofs");
+    let mut src_files = Vec::new();
+    let mut src_texts: BTreeMap<PathBuf, String> = BTreeMap::new();
     let mut enums = Vec::new();
     let mut structs = Vec::new();
-    for path in &src_files {
-        let text = read(path);
-        let code = strip_code(&text);
-        defs.surface.push_str(&text);
-        defs.surface.push('\n');
-        for literal in literals(&text) {
-            defs.literals.insert(literal);
-        }
-        // A proof harness is never a plain Rust item: it resolves only as a
-        // `#[kani::proof]` fn, or deleting the attribute would go unseen.
-        if path.starts_with(&proofs) {
+    let mut globs = Vec::new();
+    for (crate_dir, crate_name) in &crate_dirs {
+        let src = crate_dir.join("src");
+        if !src.is_dir() {
             continue;
         }
-        collect_imports(&code, &mut defs.imports);
-        let keys = module_keys(path);
-        // Keywords and names.
-        let chars: Vec<char> = code.chars().collect();
-        let mut i = 0;
-        while i < chars.len() {
-            if !(chars[i].is_ascii_alphabetic() || chars[i] == '_') {
-                i += 1;
-                continue;
+        // The crate root is a module even when nothing but `mod` lines
+        // live there.
+        defs.modules.insert(crate_name.clone());
+        let mut files = Vec::new();
+        walk(&src, "rs", &mut files);
+        files.sort();
+        for path in files {
+            // Read each file once; later passes reuse this text.
+            let text = read(&path);
+            let code = strip_code(&text);
+            defs.surface.push_str(&text);
+            defs.surface.push('\n');
+            for literal in literals(&text) {
+                defs.literals.insert(literal);
             }
-            let Some((word, end)) = word_at(&chars, i) else {
-                i += 1;
-                continue;
+            // A proof harness is never a plain Rust item: it resolves only
+            // as a `#[kani::proof]` fn, or deleting the attribute would go
+            // unseen.
+            if !path.starts_with(&proofs) {
+                collect_imports(&code, &mut defs.imports);
+                let segments = module_path_of(&path, &src);
+                let module = if segments.is_empty() {
+                    crate_name.clone()
+                } else {
+                    format!("{crate_name}::{}", segments.join("::"))
+                };
+                defs.modules.insert(module.clone());
+                scan_module(
+                    &code,
+                    &module,
+                    &path,
+                    &mut defs,
+                    &mut enums,
+                    &mut structs,
+                    &mut globs,
+                );
+                // Methods, associated items and variants, qualified by
+                // their type.
+                for (start, end, ty) in impl_ranges(&code) {
+                    collect_impl_qualified(&code[start..end], &ty, &mut defs.qualified);
+                }
+            }
+            src_texts.insert(path.clone(), text);
+            src_files.push(path);
+        }
+    }
+    // A glob re-export brings a module's items into the re-exporting one,
+    // as Rust does: `pub use entries::*;` names a sibling, and
+    // `crate::a::b` is absolute. Three passes reach a re-export chain.
+    for _ in 0..3 {
+        for (module, target) in &globs {
+            let krate = module.split("::").next().unwrap_or("");
+            let resolved = match target.strip_prefix("crate::") {
+                Some(rest) => format!("{krate}::{rest}"),
+                None if target.contains("::") => target.clone(),
+                None => format!("{module}::{target}"),
             };
-            match word.as_str() {
-                "fn" | "struct" | "enum" | "union" | "trait" | "type" | "mod" | "const"
-                | "static" => {
-                    let j = skip_space(&chars, end);
-                    if let Some((name, _)) = word_at(&chars, j) {
-                        if word == "enum" {
-                            enums.push((path.clone(), name.clone()));
-                        }
-                        if word == "struct" {
-                            structs.push((path.clone(), name.clone()));
-                        }
-                        if matches!(
-                            word.as_str(),
-                            "struct" | "enum" | "union" | "trait" | "type"
-                        ) {
-                            defs.types.insert(name.clone());
-                        }
-                        defs.items.insert(name.clone());
-                        for key in &keys {
-                            defs.module_items
-                                .entry(key.clone())
-                                .or_default()
-                                .insert(name.clone());
-                        }
-                    }
-                }
-                "macro_rules" => {
-                    let mut j = skip_space(&chars, end);
-                    if chars.get(j) == Some(&'!') {
-                        j = skip_space(&chars, j + 1);
-                        if let Some((name, _)) = word_at(&chars, j) {
-                            defs.items.insert(name.clone());
-                            for key in &keys {
-                                defs.module_items
-                                    .entry(key.clone())
-                                    .or_default()
-                                    .insert(name.clone());
-                            }
-                        }
-                    }
-                }
-                _ => {}
+            if let Some(items) = defs.module_items.get(&resolved).cloned() {
+                defs.module_items
+                    .entry(module.clone())
+                    .or_default()
+                    .extend(items);
             }
-            i = end;
-        }
-        // Methods, associated items and variants, qualified by their type.
-        for (start, end, ty) in impl_ranges(&code) {
-            collect_impl_qualified(&code[start..end], &ty, &mut defs.qualified);
         }
     }
-    for (path, name) in enums {
-        let code = strip_code(&read(&path));
-        for variant in enum_variants(&code, &name) {
-            defs.items.insert(variant.clone());
-            defs.qualified.insert(format!("{name}::{variant}"));
+    for (path, name) in &enums {
+        if let Some(text) = src_texts.get(path) {
+            let code = strip_code(text);
+            for variant in enum_variants(&code, name) {
+                defs.items.insert(variant.clone());
+                defs.qualified.insert(format!("{name}::{variant}"));
+            }
         }
     }
-    for (path, name) in structs {
-        let code = strip_code(&read(&path));
-        for field in struct_fields(&code, &name) {
-            defs.items.insert(field.clone());
-            // A public field is the type's item too (`Iif::changes`).
-            defs.qualified.insert(format!("{name}::{field}"));
+    for (path, name) in &structs {
+        if let Some(text) = src_texts.get(path) {
+            let code = strip_code(text);
+            for field in struct_fields(&code, name) {
+                defs.items.insert(field.clone());
+                // A public field is the type's item too (`Iif::changes`).
+                defs.qualified.insert(format!("{name}::{field}"));
+            }
         }
     }
 
@@ -847,13 +1013,14 @@ fn build_definitions(root: &Path) -> Definitions {
     }
     test_files.sort();
     for path in &test_files {
-        let code = strip_code(&read(path));
-        collect_types(&code, &mut defs.items, &mut defs.qualified);
+        let text = read(path);
+        let code = strip_code(&text);
+        collect_types(&code, &mut defs.items, &mut defs.qualified, &mut defs.types);
         collect_imports(&code, &mut defs.imports);
         collect_test_names(&code, &mut defs.tests);
     }
     for path in &src_files {
-        let code = strip_code(&read(path));
+        let code = strip_code(src_texts.get(path).expect("read above"));
         collect_test_names(&code, &mut defs.tests);
     }
 
@@ -980,7 +1147,7 @@ fn collect_bodies_with_attribute(code: &str, attr: &str) -> Vec<(String, String)
 
 /// Every `pub fn` in `crates/ledger-core/src/kernel/*.rs`, qualified by
 /// its impl (`Type::method`).
-fn kernel_functions(root: &Path) -> Vec<(String, String)> {
+fn kernel_functions(root: &Path) -> Vec<(String, String, String)> {
     let mut files = Vec::new();
     walk(
         &root.join("crates/ledger-core/src/kernel"),
@@ -1020,7 +1187,7 @@ fn kernel_functions(root: &Path) -> Vec<(String, String)> {
             if let Some((kw, kw_end)) = word_at(&chars, j) {
                 if kw == "fn" {
                     let k = skip_space(&chars, kw_end);
-                    if let Some((name, _)) = word_at(&chars, k) {
+                    if let Some((name, name_end)) = word_at(&chars, k) {
                         let offset = code[..i].chars().count();
                         let ty = impls
                             .iter()
@@ -1030,7 +1197,28 @@ fn kernel_functions(root: &Path) -> Vec<(String, String)> {
                             Some(ty) => format!("{ty}::{name}"),
                             None => name,
                         };
-                        out.push((qualified, file.clone()));
+                        // The exact signature, `pub` through the body's `{`:
+                        // two items may share a name (`flip`), and the
+                        // signature is what tells their doc blocks apart.
+                        let mut body = name_end;
+                        let mut after = skip_space(&chars, body);
+                        if chars.get(after) == Some(&'<') {
+                            if let Some(gt) = matching_brace(&chars, after, ('<', '>')) {
+                                after = gt + 1;
+                            }
+                        }
+                        after = skip_space(&chars, after);
+                        if chars.get(after) == Some(&'(') {
+                            if let Some(close) = matching_brace(&chars, after, ('(', ')')) {
+                                body = close + 1;
+                            }
+                        }
+                        let mut brace = body;
+                        while brace < chars.len() && chars[brace] != '{' && chars[brace] != ';' {
+                            brace += 1;
+                        }
+                        let signature: String = chars[i..brace].iter().collect();
+                        out.push((qualified, file.clone(), signature));
                     }
                 }
             }
@@ -1065,14 +1253,29 @@ fn contains_qualified_call(body: &str, name: &str) -> bool {
 }
 
 /// A bare `name(` that is neither a method call (`.name(`) nor the tail of
-/// a longer identifier; a qualified call (`::name(`) counts.
+/// a longer identifier. A qualified call counts only as `kernel::name(`:
+/// another module's `take(` is not the kernel's.
 fn contains_bare_call(body: &str, name: &str) -> bool {
     let needle = format!("{name}(");
     let mut at = 0;
     while let Some(rel) = body[at..].find(&needle) {
         let pos = at + rel;
-        let before = body[..pos].chars().next_back();
-        if !before.is_some_and(is_word_char) && before != Some('.') {
+        let before = &body[..pos];
+        let counts = match before.chars().next_back() {
+            None => true,
+            Some('.') => false,
+            Some(c) if is_word_char(c) => false,
+            Some(':') => {
+                let qualifier = before
+                    .trim_end_matches(':')
+                    .rsplit(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                    .next()
+                    .unwrap_or("");
+                qualifier == "kernel"
+            }
+            Some(_) => true,
+        };
+        if counts {
             return true;
         }
         at = pos + 1;
@@ -1131,7 +1334,7 @@ fn resolve(
             if !exists {
                 return Err(format!("path {head} does not exist"));
             }
-            return resolve(item, defs, bases, all_paths);
+            return resolve(item, &defs, &bases, &all_paths);
         }
     }
     if is_path_like(token) {
@@ -1163,7 +1366,7 @@ fn resolve(
                 if item.is_empty() {
                     continue;
                 }
-                classes.push(resolve(&format!("{prefix}{item}"), defs, bases, all_paths)?);
+                classes.push(resolve(&format!("{prefix}{item}"), &defs, &bases, &all_paths)?);
             }
             if classes.is_empty() {
                 return Err(format!("empty brace group {token}"));
@@ -1190,7 +1393,7 @@ fn resolve(
         return Ok(Class::LeanTheorem);
     }
     if token.contains("::") {
-        return resolve_qualified(token, defs, bases, all_paths);
+        return resolve_qualified(token, &defs, &bases, &all_paths);
     }
     // A harness before an item: a proof function is never an ordinary item,
     // so deleting its `#[kani::proof]` attribute leaves the claim unbacked.
@@ -1244,12 +1447,42 @@ fn resolve(
     Err(format!("{token} names no known item"))
 }
 
-/// A `::` path: the last two segments name an item its container defines.
-///
-/// A capitalized head is a type, so `Type::item` must be an impl function,
-/// an enum variant, or an associated `const`/type. A lowercase head is a
-/// module, so `module::item` must be defined in that module's own file. A
-/// leading `crate` or crate name is dropped first.
+/// The associated items of types the tree does not define, which the
+/// claims cite today. Everything else is checked against a type's own
+/// items; a new name here is a deliberate addition, not a way past the
+/// check.
+const EXTERNAL_ITEMS: &[&str] = &["NaiveDate::MAX"];
+
+/// The package name a token names (a citation writes `ledger_core` for the
+/// `ledger-core` package).
+fn canonical_crate<'a>(token: &str, defs: &'a Definitions) -> Option<&'a str> {
+    let dashed = token.replace('_', "-");
+    defs.crates
+        .iter()
+        .find(|name| **name == token || **name == dashed)
+        .map(String::as_str)
+}
+
+/// True when `token` names a type the source defines, or an uppercase
+/// imported type (whose items are then the explicit [`EXTERNAL_ITEMS`]).
+fn is_typeish(token: &str, defs: &Definitions) -> bool {
+    defs.types.contains(token)
+        || (defs.imports.contains(token)
+            && token.chars().next().is_some_and(|c| c.is_ascii_uppercase()))
+}
+
+/// True when `parts` names a real module path of `krate`.
+fn module_exists(krate: &str, parts: &[&str], defs: &Definitions) -> bool {
+    let full = std::iter::once(krate)
+        .chain(parts.iter().copied())
+        .collect::<Vec<_>>()
+        .join("::");
+    defs.modules.contains(&full)
+}
+
+/// A `::` path, walked whole: an optional crate name, then a module path
+/// whose every segment is a real module, then the type or item defined
+/// there.
 fn resolve_qualified(
     token: &str,
     defs: &Definitions,
@@ -1260,40 +1493,65 @@ fn resolve_qualified(
     if matches!(segments.first(), Some(&"crate") | Some(&"self")) {
         segments.remove(0);
     }
-    while segments.first().is_some_and(|s| is_crate_name(s, defs)) {
-        segments.remove(0);
+    let mut krate: Option<&str> = None;
+    if let Some(first) = segments.first().copied() {
+        if let Some(found) = canonical_crate(first, defs) {
+            krate = Some(found);
+            segments.remove(0);
+        }
     }
     let Some(item) = segments.last().copied() else {
         return Err(format!("{token} names no item"));
     };
     if segments.len() == 1 {
-        return resolve(item, defs, bases, all_paths);
+        return resolve(item, &defs, &bases, &all_paths);
     }
     let container = segments[segments.len() - 2];
-    let head_uppercase = container
-        .chars()
-        .next()
-        .is_some_and(|c| c.is_ascii_uppercase());
-    if head_uppercase {
+    let candidates: Vec<&str> = match krate {
+        Some(name) => vec![name],
+        None => defs.crates.iter().map(String::as_str).collect(),
+    };
+    if is_typeish(container, defs) {
+        // The segments before the type must still be a real module path:
+        // `bogus::Ledger::post_entry` is no path to `Ledger`.
+        let modules = &segments[..segments.len() - 2];
+        if !modules.is_empty() && !candidates.iter().any(|k| module_exists(k, modules, defs)) {
+            return Err(format!(
+                "{token}: `{}` is no module path",
+                modules.join("::")
+            ));
+        }
         let qualified = format!("{container}::{item}");
         if defs.qualified.contains(&qualified) {
             return Ok(Class::RustItem);
         }
-        // An external type's associated item (`NaiveDate::MAX`): the type
-        // is imported, not defined in the tree, so its items are not here.
-        if !defs.types.contains(container) && defs.imports.contains(container) {
+        if !defs.types.contains(container) && EXTERNAL_ITEMS.contains(&qualified.as_str()) {
             return Ok(Class::RustItem);
         }
         return Err(format!("{token} names no `{qualified}`"));
     }
-    if defs
-        .module_items
-        .get(container)
-        .is_some_and(|items| items.contains(item))
-    {
-        return Ok(Class::RustItem);
+    // Every segment but the item is a module of the crate, in order.
+    let modules = &segments[..segments.len() - 1];
+    for krate in &candidates {
+        if !module_exists(krate, modules, defs) {
+            continue;
+        }
+        let full = std::iter::once(*krate)
+            .chain(modules.iter().copied())
+            .collect::<Vec<_>>()
+            .join("::");
+        if defs
+            .module_items
+            .get(&full)
+            .is_some_and(|items| items.contains(item))
+        {
+            return Ok(Class::RustItem);
+        }
     }
-    Err(format!("{token} names no item in module `{container}`"))
+    Err(format!(
+        "{token}: `{}` is no module path or the item is not there",
+        modules.join("::")
+    ))
 }
 
 fn resolve_wildcard(token: &str, defs: &Definitions) -> Result<Class, String> {
@@ -1515,33 +1773,31 @@ fn record_law(
     }
 }
 
-/// The `BS-` ids a kernel function's own doc comment cites: the spec block
-/// directly above the definition (attributes may sit between).
-fn source_ids(text: &str, qualified: &str) -> BTreeSet<String> {
-    let method = qualified.rsplit("::").next().unwrap_or(qualified);
-    let needle = format!("fn {method}");
+/// The `BS-` ids on the source-citation line of the spec block directly
+/// above a kernel function's signature (attributes may sit between). Only
+/// that line is read, never every `BS-` mention in the block: prose may
+/// cite a rule the function does not serve (`fx_booked` mentions
+/// `BS-ledger-14` as the CHOICE it follows). The signature identifies the
+/// item, so the free `flip` and `Direction::flip` read their own blocks.
+fn source_ids(text: &str, signature: &str) -> BTreeSet<String> {
     let mut ids = BTreeSet::new();
-    let mut at = 0;
-    while let Some(rel) = text[at..].find(&needle) {
-        let pos = at + rel;
-        let before = text[..pos].chars().next_back();
-        let after = text[pos + needle.len()..].chars().next();
-        if !before.is_some_and(is_word_char) && !after.is_some_and(is_word_char) {
-            let line_start = text[..pos].rfind('\n').map(|p| p + 1).unwrap_or(0);
-            for line in text[..line_start].lines().rev() {
-                let trimmed = line.trim();
-                if let Some(rest) = trimmed.strip_prefix("///") {
-                    for word in rest.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-')) {
-                        if word.starts_with("BS-") {
-                            ids.insert(word.to_string());
-                        }
+    let Some(pos) = text.find(signature) else {
+        return ids;
+    };
+    let line_start = text[..pos].rfind('\n').map(|p| p + 1).unwrap_or(0);
+    for line in text[..line_start].lines().rev() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("///") {
+            if let Some(at) = rest.find("SOURCE:") {
+                for word in rest[at..].split(|c: char| !(c.is_ascii_alphanumeric() || c == '-')) {
+                    if word.starts_with("BS-") {
+                        ids.insert(word.to_string());
                     }
-                } else if !trimmed.starts_with("#[") {
-                    break;
                 }
             }
+        } else if !trimmed.starts_with("#[") {
+            break;
         }
-        at = pos + 1;
     }
     ids
 }
@@ -1982,7 +2238,8 @@ fn every_claim_is_backed() {
     let mut seen_exceptions = BTreeSet::new();
     let mut right_law_applied = 0usize;
     let mut right_law_skipped = 0usize;
-    for (name, file) in &kernel {
+    let mut right_law_skipped_names = BTreeSet::new();
+    for (name, file, signature) in &kernel {
         let harnesses: Vec<&str> = harness_bodies
             .iter()
             .filter(|(_, body)| calls(body, name))
@@ -2001,7 +2258,7 @@ fn every_claim_is_backed() {
         // block cites: a `fx_booked` harness mapped to law 4 would fail.
         let ids = kernel_texts
             .get(file)
-            .map(|text| source_ids(text, name))
+            .map(|text| source_ids(text, signature))
             .unwrap_or_default();
         let fn_laws: BTreeSet<u32> = harnesses
             .iter()
@@ -2028,6 +2285,7 @@ fn every_claim_is_backed() {
             }
         } else {
             right_law_skipped += 1;
+            right_law_skipped_names.insert(name.clone());
         }
         let mut lacks = Vec::new();
         if harnesses.is_empty() {
@@ -2064,7 +2322,7 @@ fn every_claim_is_backed() {
     }
     for (name, _, _) in EXCEPTIONS {
         assert!(
-            kernel.iter().any(|(fn_name, _)| fn_name == name),
+            kernel.iter().any(|(fn_name, _, _)| fn_name == name),
             "excepted kernel function {name} does not exist; the list is stale"
         );
         assert!(
@@ -2077,6 +2335,20 @@ fn every_claim_is_backed() {
         14,
         "the kernel exception list changes only on purpose"
     );
+    // No ordinary function may fall through the right-law check: the
+    // skipped set is exactly these wrappers, each excepted because its
+    // law is its inner function's (or it has no law at all).
+    let expected_skips: BTreeSet<String> = SKIPPED.iter().map(|s| (*s).to_string()).collect();
+    assert_eq!(
+        right_law_skipped_names, expected_skips,
+        "the set of kernel functions the right-law check cannot apply to changed"
+    );
+    for name in SKIPPED {
+        assert!(
+            EXCEPTIONS.iter().any(|(excepted, _, _)| excepted == name),
+            "skipped kernel function {name} is not excepted; it must cite its rule"
+        );
+    }
 
     // Every law row that cites a claimed rule names audited theorems.
     let (live_ids, _) = claimed_ids(&root);
@@ -2134,6 +2406,14 @@ fn every_claim_is_backed() {
     println!("kernel functions checked: {kernel_seen} ({kernel_checked} fully backed)");
     println!(
         "harness law matches the function's rule: {right_law_applied} applied, {right_law_skipped} skipped"
+    );
+    println!(
+        "  skipped (excepted, no law or no rule): {}",
+        right_law_skipped_names
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ")
     );
     println!("kernel exceptions: {}", EXCEPTIONS.len());
     println!("law rows checked: {law_rows_checked}");
@@ -2231,6 +2511,24 @@ const EXCEPTIONS: &[(&str, &str, &str)] = &[
         "a Kani harness and a law",
         "it is the Decimal/currency wrapper around `round_step`; the harnesses and law 40 are round_step's, and the bridge carries them to Decimal",
     ),
+];
+
+/// The kernel functions the right-law check cannot apply to, pinned
+/// exactly: each is excepted above, and lacks either a harness law or a
+/// cited rule for one. `movements` and `reversal` allocate, so every
+/// harness proves their fixed-array helper; `round_places`, `round_minor`
+/// and `fx_booked_minor` are Decimal wrappers whose law is the inner
+/// function's; `Direction::key` is a wire name and `MonthPart::is_valid` a
+/// range predicate, with no law at all. A new name here is a deliberate
+/// widening, never a silent hole.
+const SKIPPED: &[&str] = &[
+    "movements",
+    "reversal",
+    "Direction::key",
+    "MonthPart::is_valid",
+    "round_places",
+    "round_minor",
+    "fx_booked_minor",
 ];
 
 #[test]

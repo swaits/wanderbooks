@@ -4,7 +4,7 @@
 //! package build the same CSV from this, and its XLSX/PDF from
 //! [`aging_statement`], so a CPA's two copies can't differ.
 
-use ledger_core::{DocRef, Ledger};
+use ledger_core::{DocRef, Ledger, LedgerError, kernel};
 use rust_decimal::Decimal;
 
 use crate::text::{csv_escape, money};
@@ -26,9 +26,7 @@ pub fn aging_csv(
         .map_err(|e| e.to_string())?;
     let mut out = String::from(AGING_CSV_HEADER);
     out.push('\n');
-    let mut total = Decimal::ZERO;
     for d in &docs {
-        total += d.outstanding;
         out.push_str(&format!(
             "{},{},{},{},{},{},{},{},{},{},{}\n",
             csv_escape(&number(ledger, d.doc)),
@@ -44,6 +42,7 @@ pub fn aging_csv(
             d.days_overdue,
         ));
     }
+    let total = outstanding_total(&docs)?;
     let (code, balance, difference) = tie_out(ledger, invoices, as_of)?;
     let account = if code.is_empty() {
         "GL —".to_string()
@@ -57,6 +56,28 @@ pub fn aging_csv(
         difference = money(difference),
     ));
     Ok(out)
+}
+
+fn too_large() -> String {
+    LedgerError::TooLargeToCompute("the aging total".into()).to_string()
+}
+
+/// The sum of the open documents' outstanding balances, or a refusal when
+/// it is past exact arithmetic (BS-entry-4): never a panic.
+fn outstanding_total(docs: &[ledger_core::AgingDocument]) -> Result<Decimal, String> {
+    kernel::total_of(docs, |d| d.outstanding).ok_or_else(too_large)
+}
+
+/// The five bucket sums over the party rows and their grand total, or a
+/// refusal when any is past exact arithmetic (BS-entry-4).
+fn column_totals(rows: &[ledger_core::AgingRow]) -> Result<[Decimal; 6], String> {
+    let current = kernel::total_of(rows, |r| r.current).ok_or_else(too_large)?;
+    let d30 = kernel::total_of(rows, |r| r.days_30).ok_or_else(too_large)?;
+    let d60 = kernel::total_of(rows, |r| r.days_60).ok_or_else(too_large)?;
+    let d90 = kernel::total_of(rows, |r| r.days_90).ok_or_else(too_large)?;
+    let d90p = kernel::total_of(rows, |r| r.days_90_plus).ok_or_else(too_large)?;
+    let total = kernel::aging_total(current, d30, d60, d90, d90p).ok_or_else(too_large)?;
+    Ok([current, d30, d60, d90, d90p, total])
 }
 
 /// The same aging as a laid-out statement for XLSX and PDF: one line per
@@ -89,20 +110,8 @@ pub fn aging_statement(
         currency: false,
         rule_above: false,
     }];
-    let (mut current, mut d30, mut d60, mut d90, mut d90p) = (
-        Decimal::ZERO,
-        Decimal::ZERO,
-        Decimal::ZERO,
-        Decimal::ZERO,
-        Decimal::ZERO,
-    );
     for r in &party_rows {
         let total = r.total().map_err(|e| e.to_string())?;
-        current += r.current;
-        d30 += r.days_30;
-        d60 += r.days_60;
-        d90 += r.days_90;
-        d90p += r.days_90_plus;
         out_rows.push(Row {
             kind: RowKind::Line,
             label: r.name.clone(),
@@ -118,7 +127,7 @@ pub fn aging_statement(
             rule_above: false,
         });
     }
-    let total = current + d30 + d60 + d90 + d90p;
+    let [current, d30, d60, d90, d90p, total] = column_totals(&party_rows)?;
     out_rows.push(Row {
         kind: RowKind::Total,
         label: "Total".into(),
@@ -213,4 +222,38 @@ fn tie_out(
         .map(|a| a.code.clone())
         .unwrap_or_default();
     Ok((code, check.balance, check.difference))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(current: Decimal, days_90_plus: Decimal) -> ledger_core::AgingRow {
+        ledger_core::AgingRow {
+            name: "Big".into(),
+            current,
+            days_30: Decimal::ZERO,
+            days_60: Decimal::ZERO,
+            days_90: Decimal::ZERO,
+            days_90_plus,
+        }
+    }
+
+    /// An aging past exact arithmetic is refused with an error, never a
+    /// panic (BS-entry-4): a column, or the grand total, that `Decimal`
+    /// cannot hold.
+    #[test]
+    fn an_aging_past_exact_arithmetic_is_refused() {
+        let one = Decimal::ONE;
+        // One column overflows across two parties.
+        let err = column_totals(&[row(Decimal::MAX, one), row(one, one)]).unwrap_err();
+        assert!(err.contains("the aging total"), "{err}");
+        // Every column fits but the grand total does not.
+        let err = column_totals(&[row(Decimal::MAX, one)]).unwrap_err();
+        assert!(err.contains("the aging total"), "{err}");
+        // Within range, the totals are exact.
+        let ok = column_totals(&[row(Decimal::from(3), one), row(one, one)]).unwrap();
+        assert_eq!(ok[0], Decimal::from(4));
+        assert_eq!(ok[5], Decimal::from(6));
+    }
 }

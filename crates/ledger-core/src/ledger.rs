@@ -7494,10 +7494,9 @@ impl Ledger {
                 }
             }
             let documents_total = doc_totals.get(&account).copied().unwrap_or_default();
-            let difference = balance
-                .checked_sub(documents_total)
-                .and_then(|d| d.checked_sub(unattached_sum))
-                .ok_or_else(too_large)?;
+            let difference =
+                crate::kernel::control_difference(balance, documents_total, unattached_sum)
+                    .ok_or_else(too_large)?;
             out.push(arap::ControlCheck {
                 role: role.key.to_string(),
                 account,

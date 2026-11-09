@@ -274,10 +274,12 @@ pub struct Reconciliation {
 impl Reconciliation {
     /// Book ending less tax ending (as far as known).
     pub fn total(&self) -> Option<Decimal> {
-        self.beginning
-            .checked_add(self.built_in_gain_704c)?
-            .checked_add(self.property_without_basis)?
-            .checked_sub(self.property_distributed)
+        crate::kernel::reconciliation_total(
+            self.beginning,
+            self.built_in_gain_704c,
+            self.property_without_basis,
+            self.property_distributed,
+        )
     }
 }
 

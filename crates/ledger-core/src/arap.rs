@@ -1355,10 +1355,14 @@ pub struct AgingRow {
 impl AgingRow {
     /// Total outstanding; refused past exact arithmetic.
     pub fn total(&self) -> Result<Decimal, LedgerError> {
-        [self.days_30, self.days_60, self.days_90, self.days_90_plus]
-            .into_iter()
-            .try_fold(self.current, Decimal::checked_add)
-            .ok_or_else(|| LedgerError::TooLargeToCompute(format!("{}'s aging total", self.name)))
+        crate::kernel::aging_total(
+            self.current,
+            self.days_30,
+            self.days_60,
+            self.days_90,
+            self.days_90_plus,
+        )
+        .ok_or_else(|| LedgerError::TooLargeToCompute(format!("{}'s aging total", self.name)))
     }
 
     /// Add `other`'s buckets to this row's; refused past exact arithmetic.

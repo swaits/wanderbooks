@@ -24,11 +24,12 @@ impl Books<'_> {
             ("set_draft_state", e.set_draft_state.is_some()),
             ("attach_receipt", e.attach_receipt.is_some()),
             ("discard_draft", e.discard_draft.is_some()),
+            ("assign_role", e.assign_role.is_some()),
         ];
         match kinds.iter().filter(|(_, given)| *given).collect::<Vec<_>>()[..] {
             [(kind, _)] => kind,
             _ => panic!(
-                "{} event {n}: an event is one of lines, reverses, close, bill, invoice, write_off, payment, settlement, recovery, run_depreciation, dispose_asset, run_schedules, register_schedule, post_draft, set_draft_state, attach_receipt or discard_draft",
+                "{} event {n}: an event is one of lines, reverses, close, bill, invoice, write_off, payment, settlement, recovery, run_depreciation, dispose_asset, run_schedules, register_schedule, post_draft, set_draft_state, attach_receipt, discard_draft or assign_role",
                 self.ex.id
             ),
         }
@@ -467,6 +468,8 @@ impl Books<'_> {
                 // then thrown away. The refusal is the engine's, never
                 // rebuilt here.
                 let mut rehearsal = self.rehearsal(what);
+                // The books' own new-work entry point, so a date past the
+                // calendar (BS-entry-7) is refused there, not rebuilt here.
                 let entry = rehearsal.create_entry(day(), description)?;
                 for (i, line) in e.lines.iter().enumerate() {
                     let side = match line.side.as_str() {
@@ -816,6 +819,13 @@ impl Books<'_> {
                     sc.id
                 );
                 Ok(())
+            }
+            "assign_role" => {
+                let a = e.assign_role.as_ref().expect("checked: a role assignment");
+                let account = self.id(&a.account);
+                // The books' own journaled command: it checks the role's
+                // account before it writes anything (BS-ledger-19).
+                self.store.assign_role(&a.role, Some(account))
             }
             other => unreachable!("{other} is no event"),
         }

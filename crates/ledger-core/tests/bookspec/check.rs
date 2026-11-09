@@ -38,7 +38,12 @@ pub(crate) fn check(b: &Books<'_>, x: &Expect) -> Option<&'static str> {
     only(
         x.party.is_some(),
         "party",
-        &["party_part", "party_totals", "party_tin_last4"],
+        &[
+            "party_part",
+            "party_totals",
+            "party_tin_last4",
+            "return_tin",
+        ],
     );
     only(x.basis.is_some(), "basis", &["party_totals"]);
     only(x.payee.is_some(), "payee", &["vendor_1099"]);
@@ -65,6 +70,10 @@ pub(crate) fn check(b: &Books<'_>, x: &Expect) -> Option<&'static str> {
             "add_account",
             "set_tax_category",
             "period",
+            "vendor_1099",
+            "iif_lines",
+            "iif_changes",
+            "return_tin",
         ],
     );
     if COMMANDS.contains(&q) {
@@ -77,12 +86,26 @@ pub(crate) fn check(b: &Books<'_>, x: &Expect) -> Option<&'static str> {
         check_command(ex, l, x);
         return None;
     }
-    // Anything else shows its values; a period may be refused instead.
+    // Anything else shows its values; a period may be refused instead, and
+    // so may a 1099 worksheet, an export and a return (BS-1099-2,
+    // BS-format-10, BS-partner-8). The refusal is the engine's own.
     assert!(
         x.refused.is_some() != x.values.as_ref().is_some_and(|v| !v.is_empty()),
         "{}: {q} expects values (a period: values or refused)",
         ex.id
     );
+    if let Some(want) = &x.refused
+        && matches!(q, "vendor_1099" | "iif_lines" | "iif_changes" | "return_tin")
+    {
+        match b.answer(&x.query()) {
+            Err(r) => assert_eq!(&r.reason, want, "{}: {q} refused ({})", ex.id, r.reason),
+            Ok(v) => panic!("{}: {q} answered {v}, expected refused: {want}", ex.id),
+        }
+        if matches!(q, "iif_lines" | "iif_changes") {
+            check_format_refused(ex, x);
+        }
+        return None;
+    }
     match q {
         "period" => check_period(ex, x),
         "day" => check_day(ex, x),
@@ -110,6 +133,7 @@ pub(crate) fn check(b: &Books<'_>, x: &Expect) -> Option<&'static str> {
         "party_part" => check_party_part(b, x),
         "party_totals" => check_party_totals(b, x),
         "party_tin_last4" => check_party_tin_last4(b, x),
+        "return_tin" => check_return_tin(b, x),
         "project" => check_project(b, x),
         "aging" => check_aging(b, x),
         "document_dates" => check_document_dates(b, x),

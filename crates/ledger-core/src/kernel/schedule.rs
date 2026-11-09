@@ -18,7 +18,8 @@ use super::{Amount, Rounding, plug_last, round_step};
 /// ```text
 /// GOAL: an equal-months schedule books exactly its total across its
 ///       months, each month a whole number of the currency's smallest
-///       unit, and no month is ever more than a rounding from the rest.
+///       unit: every month but the last the same rounded share, the
+///       last what the others leave (INVARIANT 4 bounds how far it is).
 /// SOURCE: BS-prepaid-1 (a schedule recognizes exactly its total over its
 ///         months, each month rounded to the currency's minor unit), BS-prepaid-2
 ///         (equal months is one of the two methods an engine picks),

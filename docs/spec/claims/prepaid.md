@@ -85,4 +85,5 @@ refuses as newer books.
 `an_unknown_rounding_is_newer_not_corrupt`,
 `schedule_minor_unit_is_its_own_feature`, `even_parts_sum`,
 `even_parts_all_but_last_equal`, `even_parts_last_absorbs`,
-`even_parts_within_half_step`.
+`even_parts_within_half_step`,
+`even_parts_refuses_no_months_and_a_bad_step`.

@@ -348,10 +348,15 @@ fn plan_in_places(
 /// Values never change: every rescale below is
 /// to or from trailing zeros, which the debug assertions check.
 ///
-/// A zero total is never registered (validate_schedule_shape), and a
-/// one-month plan is its total; both are left as the kernel gives them.
+/// A one-month plan is its total, left as the kernel gives it. A zero
+/// total is never registered (validate_schedule_shape), but the plan of
+/// one prints as it always did: every month a bare 0 (the kernel's last
+/// month is `0 - 0`, which `Decimal` prints as `-0`).
 fn present_as_rounded(parts: &mut [Decimal], total: Decimal, places: u32) {
     if total.is_zero() {
+        for part in parts.iter_mut() {
+            *part = Decimal::ZERO;
+        }
         return;
     }
     let Some((last, rest)) = parts.split_last_mut() else {
@@ -832,6 +837,24 @@ mod tests {
 
     fn d(y: i32, m: u32, day: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(y, m, day).unwrap()
+    }
+
+    /// A zero total's plan prints every month as a bare 0, as the cent
+    /// rule always has: never `-0` (the K-U5 review's probe found the last
+    /// month of a zero plan printed `-0`; a replayed month is compared as
+    /// text).
+    #[test]
+    fn a_zero_plan_prints_zero_every_month() {
+        for months in [1, 2, 3, 12] {
+            for scale in [0, 2, 5] {
+                let plan = amortization_plan(Decimal::new(0, scale), d(2026, 1, 1), months)
+                    .expect("a zero total plans");
+                assert!(
+                    plan.iter().all(|(_, a)| a.to_string() == "0"),
+                    "{months} months at scale {scale}: {plan:?}"
+                );
+            }
+        }
     }
 
     #[test]

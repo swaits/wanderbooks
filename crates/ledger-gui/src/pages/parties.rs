@@ -561,7 +561,7 @@ pub fn show_list(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
 }
 
 /// The party's totals with property in kind (basis all, BS-partner-3
-/// item 4), when it gave or took any in the period: "With property
+/// statement 5), when it gave or took any in the period: "With property
 /// contributed or distributed: paid $X, received $Y". None when nothing
 /// moved in kind (the cash totals are then the whole story).
 pub fn in_kind_text(flow: &crate::books::PartyFlow) -> Option<String> {
@@ -775,7 +775,7 @@ pub fn show_party(ui: &mut Ui, b: &Books, id: PartyId, shell: &mut Shell<'_>) {
                 r.context_menu(|ui| widgets::copy_item(ui, "Copy amount", &v.to_string()));
             }
         });
-        // Basis all (BS-partner-3 item 4): property in kind, when any.
+        // Basis all (BS-partner-3 statement 5): property in kind, when any.
         if let Some(text) = in_kind_text(&flow) {
             ui.add_space(6.0);
             ui.add(

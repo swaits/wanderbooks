@@ -533,7 +533,7 @@ fn profit_and_loss_counted(
     ))
 }
 
-/// A project's figures (BS-statement-5 item 3): the period's statement and
+/// A project's figures (BS-statement-5 statement 2): the period's statement and
 /// months, and its figures to date.
 #[derive(Clone, Debug)]
 pub struct ProjectFigures {
@@ -592,7 +592,7 @@ pub struct ProjectToDate {
 
 impl ProjectToDate {
     /// Revenue less expenses: the project's contribution before overhead
-    /// (BS-statement-5 item 7), since only its own tagged lines count.
+    /// (WB-statement-7), since only its own tagged lines count.
     pub fn net(&self) -> Decimal {
         self.revenue - self.expenses
     }
@@ -611,11 +611,11 @@ impl ProjectToDate {
 }
 
 /// Contribution as a percent of revenue, to one place (half to even), or
-/// `None` without revenue to divide by (BS-statement-5 item 7).
+/// `None` without revenue to divide by (WB-statement-7).
 ///
 /// ```text
 /// GOAL: one margin the tools and the viewer print alike.
-/// SOURCE: BS-statement-5 item 7 (revenue less the costs traced
+/// SOURCE: WB-statement-7 (revenue less the costs traced
 ///         to the project, fixed and variable alike: Garrison's segment
 ///         margin, as a ratio; not Horngren's variable-cost contribution
 ///         margin; a presentation choice, not GAAP).
@@ -650,7 +650,7 @@ pub const PROJECT_MONTHS: u32 = 240;
 /// ```text
 /// GOAL: what a project earned and cost, from one function the tools, the
 ///       viewer and bookspec share, so their figures never drift.
-/// SOURCE: BS-statement-5 item 3 (job costing), BS-period-1, BS-statement-3.
+/// SOURCE: BS-statement-5 statement 2 (job costing), BS-period-1, BS-statement-3.
 /// INVARIANTS:
 ///   1. MUST be profit_and_loss_for_period with the project's class: only
 ///      revenue and expense lines tagged to it, closing entries left out.
@@ -748,7 +748,7 @@ pub fn project_to_date(
 /// Every entry with a line tagged to the project (drafts included),
 /// newest first (by date, then id), with its project amount: its tagged
 /// revenue lines less its tagged expense lines, each on its normal side.
-/// A tagged balance-sheet line counts zero (BS-statement-5 item 3).
+/// A tagged balance-sheet line counts zero (BS-statement-5 statement 2).
 pub fn project_entries(ledger: &Ledger, id: ClassId) -> Vec<(crate::EntryId, Decimal)> {
     let mut out: Vec<(NaiveDate, crate::EntryId, Decimal)> = Vec::new();
     for eid in 1..ledger.next_entry_id() {

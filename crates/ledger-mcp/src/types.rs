@@ -3764,7 +3764,7 @@ pub struct AgingDocumentOut {
 }
 
 /// The aging's account against its documents (the control check, BS-ledger-8,
-/// BS-arap-2 INVARIANT 1).
+/// BS-arap-2 invariant 1).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct AgingControlOut {
     /// "1200 Accounts Receivable" or "2000 Accounts Payable".

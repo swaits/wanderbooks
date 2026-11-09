@@ -1,5 +1,4 @@
-//! Documents through the store, at random (BS-arap-2 INVARIANTS 1, 2,
-//! 4 and 6; plan P4b.15): histories of invoices, bills, payments (with a
+//! Documents through the store, at random (BS-arap-2 invariants 1, 2, 3, 6, 7 and 9; plan P4b.15): histories of invoices, bills, payments (with a
 //! payment method and a reference, or none), voids, reversals of any
 //! entry, closed months and refused hand lines, run through `Store`, then
 //! replayed (the books reopened) and read by a `Snapshot`.
@@ -9,7 +8,7 @@
 //!       the live books, their replay and a viewer's snapshot agree on
 //!       every figure, at every date, and the control accounts equal
 //!       their documents.
-//! SOURCE: BS-entry-4 (replay), BS-arap-2 INVARIANTS 1, 2, 4, 6.
+//! SOURCE: BS-entry-4 (replay), BS-arap-2 invariants 1, 2, 3, 6, 7 and 9.
 //! ```
 
 use chrono::NaiveDate;
@@ -417,7 +416,7 @@ fn agree(live: &Ledger, dir: &Path, docs: &[DocRef]) -> Result<(), TestCaseError
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
 
-    /// BS-arap-2 INVARIANT 4 (and 1, 2, 6 through the store): a document's
+    /// BS-arap-2 invariant 7 (and 1, 6, 9 through the store): a document's
     /// state is a function of the journal and the day. Half the history,
     /// then the books reopened and compared; the rest on the reopened
     /// books, compared again.

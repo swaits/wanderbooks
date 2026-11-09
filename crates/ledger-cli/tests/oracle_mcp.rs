@@ -1546,7 +1546,7 @@ fn iif_declares_accounts_by_role_and_balances_every_transaction() {
     );
 }
 
-/// BS-format-2 item 7 through the server: an entry with lines on both the
+/// BS-format-2 statement 7 through the server: an entry with lines on both the
 /// receivables and payables control accounts makes `books.export` iif and
 /// `books.export_cpa_package` refuse, naming the entry, rather than hand
 /// over a file QuickBooks Desktop will not import.

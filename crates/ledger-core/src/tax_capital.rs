@@ -89,9 +89,9 @@ use rust_decimal::Decimal;
 /// `[start, end]`: its lines on the asset's depreciation expense account,
 /// debit-positive (the depreciation still due through the disposal day,
 /// or, negative, what the month's run posted past it, credited back:
-/// BS-asset-1 rule 5). With the runs
+/// BS-asset-1 statements 8 and 9). With the runs
 /// (`Ledger::depreciation_posted_between`) it is the asset's depreciation
-/// expense in the span, the P&L's and the cash flow's (BS-statement-3 rule 8).
+/// expense in the span, the P&L's and the cash flow's (BS-statement-3 statement 13).
 /// The disposal entry is the posted entry dated the disposal day that
 /// credits the asset's cost account by its cost (`Store::dispose_asset`
 /// posts it so).

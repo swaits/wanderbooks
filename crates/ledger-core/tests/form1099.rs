@@ -2317,7 +2317,7 @@ proptest! {
         }
     }
 
-    /// BS-partner-3 item 9: party totals and the 1099 worksheet never
+    /// BS-partner-3 statement 11: party totals and the 1099 worksheet never
     /// contradict. For books whose cash accounts are named, whose company
     /// card is recorded as a business-card payment method (or that have
     /// no card at all: without the method, 2050's name says nothing, so

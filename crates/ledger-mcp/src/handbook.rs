@@ -31,7 +31,7 @@
 //!   6. A section says an invoice's or bill's lines take a project only
 //!      for books that declared the journal feature
 //!      `document_line_projects`; for the rest, that they wait for their
-//!      format upgrade (BS-format-1, BS-statement-5 item 8).
+//!      format upgrade (BS-format-1, BS-statement-5 statement 6).
 //! ```
 
 use crate::settings::Settings;
@@ -186,8 +186,8 @@ pub fn period_rule() -> String {
     )
 }
 
-/// How an invoice's or bill's lines reach a project (BS-statement-5 item
-/// 8), for books that declared the journal feature
+/// How an invoice's or bill's lines reach a project (BS-statement-5 statement
+/// 6), for books that declared the journal feature
 /// `document_line_projects` or not yet (INVARIANT 6).
 pub fn document_projects_rule(declared: bool) -> &'static str {
     if declared {
@@ -591,7 +591,7 @@ mod tests {
             with.contains("books.create_invoice and books.create_bill take class on each line")
         );
         assert!(!with.contains("takes no project"));
-        // The owner's decision (BS-statement-5 item 8, D-43): one project or none a
+        // The owner's decision (BS-statement-5 statement 4, D-43): one project or none a
         // line, no percentage split, a shared cost by the allocation
         // convention.
         assert!(with.contains("Each line names one project or none"));

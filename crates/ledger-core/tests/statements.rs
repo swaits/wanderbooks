@@ -1444,7 +1444,7 @@ fn lines(ls: &[ledger_core::reports::CashFlowLine]) -> Vec<(String, Decimal)> {
 /// amounts borrowed"): borrowing and repayment are separate lines, one
 /// per entry, borrowing first (each lender's, by code), then repayments.
 /// The software the owner paid personally is borrowed from the owner and
-/// spent on its date (BS-statement-3 rule 11, D-42: constructive receipt
+/// spent on its date (BS-statement-3 statement 16, D-42: constructive receipt
 /// and disbursement). Financing: +100 + 1,000 − 100 − 400 = 600; nothing
 /// is disclosed.
 #[test]
@@ -1487,7 +1487,7 @@ fn a_loan_the_entity_makes_is_investing_gross() {
     assert_eq!(cf.cash_from_investing, dec(-300));
 }
 
-/// Oracle: D-42 (BS-statement-3 rule 11; ASC 230 is silent on a payment
+/// Oracle: D-42 (BS-statement-3 statement 16; ASC 230 is silent on a payment
 /// made on the entity's behalf, PwC FSP 6.9.3.1 and DART Roadmap 7.2
 /// present it as constructive receipt and disbursement). The owner paying
 /// software personally is cash the company borrowed (financing +100) and

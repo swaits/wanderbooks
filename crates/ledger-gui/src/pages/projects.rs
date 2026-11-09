@@ -1,7 +1,7 @@
 //! Projects: every class, with its facts (what it is, where it stands, who
 //! it is for), and one project completely: its snapshot (revenue, direct
 //! costs, contribution before overhead and its margin, to date or this
-//! fiscal year, BS-statement-5 item 7), revenue and costs by month with the
+//! fiscal year, WB-statement-7), revenue and costs by month with the
 //! running net, costs by category and by account, its entries, documents,
 //! decisions and history (BS-statement-5). Every figure is ledger-core's (`project_figures`,
 //! `project_to_date`, `project_entries`), the same the server's
@@ -419,7 +419,7 @@ impl Snap {
 }
 
 /// The note on contribution: what it counts and what it leaves out.
-pub const CONTRIBUTION_NOTE: &str = "Revenue less this project's direct costs: every expense line tagged to it, fixed and variable alike (what management accounting calls a segment margin, not a variable-cost contribution margin). Company overhead that isn't tagged to a project (rent, software, insurance, the owner's time) isn't counted, so a project in the black can still leave the company in the red. A management-accounting view (BS-statement-5 items 2 and 4), not a GAAP figure.";
+pub const CONTRIBUTION_NOTE: &str = "Revenue less this project's direct costs: every expense line tagged to it, fixed and variable alike (what management accounting calls a segment margin, not a variable-cost contribution margin). Company overhead that isn't tagged to a project (rent, software, insurance, the owner's time) isn't counted, so a project in the black can still leave the company in the red. A management-accounting view (WB-statement-7), not a GAAP figure.";
 
 /// The snapshot: a header with where it stands to date and the to date /
 /// fiscal year switch, then its tiles (`shown`: to date, or for `year`,

@@ -65,7 +65,7 @@ impl BooksServer {
             Some(a) => parse_amount(a)?,
             None => owed,
         };
-        // The evidence is the point of a write-off (BS-arap-5 INVARIANT 1): one
+        // The evidence is the point of a write-off (BS-arap-5 statement 9): one
         // of the two, and the preview says so too rather than posting
         // without it later.
         match (p.upload_id.is_some(), p.existing_attachment_id.is_some()) {

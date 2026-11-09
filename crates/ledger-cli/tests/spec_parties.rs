@@ -963,7 +963,7 @@ fn party_totals_for_a_customer_a_member_and_a_prepaid() {
 
     // A prepaid bought with a member's card: an asset, paid through what
     // the members advanced. That is money when it is a financing account
-    // (BS-partner-3 item 5, P3 defect 24); unlisted, Due to Members is a
+    // (BS-partner-3 statement 7, P3 defect 24); unlisted, Due to Members is a
     // promise like any other liability, counted when the member is paid
     // back.
     let prepaid = |m: &mut Mcp| {

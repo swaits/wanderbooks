@@ -507,7 +507,7 @@ struct AttachRequest<'a> {
 }
 
 /// The evidence a bad-debt write-off files (plan P4b S7; BS-arap-5
-/// INVARIANT 1): the file that shows the debt is worthless — collection
+/// statement 9): the file that shows the debt is worthless — collection
 /// correspondence, a bankruptcy notice (Treas. Reg. §1.166-2). Given as
 /// bytes to file in the same call, or as an attachment already in the
 /// books that is linked to the write-off's entry and its invoice.
@@ -3446,7 +3446,7 @@ impl Store {
     }
 
     /// The issued copy of an invoice, filed in the call that issues it
-    /// (plan P4b S4.3 item 11, A-7; BS-arap-4 item 3): the entry, then
+    /// (plan P4b S4.3 item 11, A-7; BS-arap-4 invariant 3 and WB-arap-8): the entry, then
     /// `invoice.created`, then `receipt.attached` on the entry
     /// (`INV-0007.pdf`, `application/pdf`, "Issued invoice"), then
     /// `attachment.linked` to the invoice. The server renders the PDF
@@ -3462,7 +3462,7 @@ impl Store {
     /// GOAL: the copy sent is kept with the invoice, or nothing is.
     /// SOURCE: IRS Pub. 583 (keep invoices); Rev. Proc. 98-25 (the audit
     ///         trail keeps the record as issued); plan P4b S4.3, 8.3.11;
-    ///         BS-arap-4 item 3.
+    ///         BS-arap-4 invariant 3 and WB-arap-8.
     /// INVARIANTS:
     ///   1. Every refusal (an unknown customer, an invalid line or due
     ///      date, a duplicate number, a closed period, a feature the books
@@ -4534,7 +4534,7 @@ impl Store {
     /// ```text
     /// GOAL: a project in one command, journaled as two events only when
     ///       it has facts, so a name-only project is a plain class.
-    /// SOURCE: BS-statement-5 item 1; BS-format-1 (journal feature
+    /// SOURCE: WB-statement-5; BS-format-1 (journal feature
     ///         `projects`).
     /// INVARIANTS:
     ///   1. A refusal journals nothing: the whole record is rehearsed, and
@@ -6848,7 +6848,7 @@ fn document_line_json(l: &DocumentLine) -> Value {
         "amount": l.amount.to_string(),
     });
     // Its project, behind the feature document_line_projects (
-    // BS-format-1, BS-statement-5 item 8); a line naming none is written as before it.
+    // BS-format-1, BS-statement-5 statement 6); a line naming none is written as before it.
     if let Some(c) = l.class_id {
         v["class_id"] = json!(c);
     }
@@ -6927,7 +6927,7 @@ fn invoice_fields_json(payload: &mut Value, fields: &arap::InvoiceFields) {
 }
 
 /// Add a bill's new fields to its `bill.created` payload, each key only when
-/// set. A duplicate's reason is journaled for the record (BS-arap-4 item
+/// set. A duplicate's reason is journaled for the record (BS-arap-4 invariant
 /// 4); the bill itself keeps none.
 fn bill_fields_json(payload: &mut Value, fields: &arap::BillFields) {
     if let Some(r) = &fields.vendor_ref {

@@ -299,7 +299,7 @@ pub(crate) fn check_vendor_1099(b: &Books<'_>, x: &Expect) {
 
 /// The money party shares resolve against: the cash accounts (every
 /// asset account but receivables when none are named), the cards and the
-/// financing accounts (BS-partner-3 item 5).
+/// financing accounts (BS-partner-3 statement 7).
 pub(crate) fn party_money(ex: &Example, l: &Ledger) -> MoneyAccounts {
     ledger_core::parties::money_accounts(
         l,
@@ -368,7 +368,7 @@ pub(crate) fn check_party_part(b: &Books<'_>, x: &Expect) {
 /// Check one `party_totals` expectation: what was `paid` to and
 /// `received` from the party from `from` through `to` on `basis` (`cash`:
 /// money; `all`: money and property in kind), each entry's part on its
-/// root original's side (BS-partner-3 item 4); both given.
+/// root original's side (BS-partner-3 statement 5); both given.
 pub(crate) fn check_party_totals(b: &Books<'_>, x: &Expect) {
     let (ex, l) = (b.ex, b.l());
     assert!(

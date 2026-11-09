@@ -989,7 +989,7 @@ mod paying_on_terms {
 
     /// One deposit settles two invoices of one customer: one entry, one
     /// receivable line per invoice, each tagged with its own invoice, and the
-    /// output names both documents (BS-arap-6 INVARIANTS 1 and 3).
+    /// output names both documents (BS-arap-6 statements 1-2 and invariant 4; WB-arap-15, the rows in application order).
     #[test]
     fn one_payment_settles_two_invoices() {
         let mut s = setup("settle-two");
@@ -1046,7 +1046,7 @@ mod paying_on_terms {
     }
 
     /// A discount outside the document's terms needs a reason; with one the
-    /// payment is taken and recorded (BS-arap-6 INVARIANT 2; the terms are S4.3's
+    /// payment is taken and recorded (BS-arap-6 invariant 6; the terms are S4.3's
     /// to journal, so this bill states none).
     #[test]
     fn late_discount_needs_a_reason() {
@@ -1075,7 +1075,7 @@ mod paying_on_terms {
     }
 
     /// A fee posts gross (A-4): the deposit gets the net, the fee its expense,
-    /// and A/R is credited the gross (BS-arap-6 INVARIANT 1).
+    /// and A/R is credited the gross (BS-arap-6 invariant 3).
     #[test]
     fn a_fee_posts_gross_to_receivables_and_net_to_the_bank() {
         let mut s = setup("fee-gross");
@@ -1445,7 +1445,7 @@ mod bad_debts {
         assert_eq!(check["agrees"], json!(true), "{check}");
     }
 
-    /// P4b S7: no evidence, no write-off (BS-arap-5 INVARIANT 1): the tool refuses
+    /// P4b S7: no evidence, no write-off (BS-arap-5 statement 10): the tool refuses
     /// with neither or both, and an attachment already filed is linked
     /// instead of a new file.
     #[test]

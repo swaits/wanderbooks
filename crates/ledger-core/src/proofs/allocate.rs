@@ -17,7 +17,7 @@
 //!       is the callers' answer rather than a division by zero.
 //! SOURCE: BS-partner-1 (partners share by the agreement; largest
 //!         remainder), BS-1099-1 (a payment's buckets), BS-statement-3
-//!         rule 5 (the government's part), BS-arap-3 (a document line's
+//!         statement 8 (the government's part), BS-arap-3 (a document line's
 //!         exact amount), BS-ledger-1 (whole smallest units).
 //! INVARIANTS:
 //!   1. The parts sum to the whole, for every policy.

@@ -16,7 +16,7 @@
 //!   2. The cash flow statement needs at least one cash account, and
 //!      every code it is given must be in the chart; account lists a call
 //!      leaves empty default to the settings' roles. It foots, or it is
-//!      refused (an engine error, never a figure: BS-statement-3 rule 9);
+//!      refused (an engine error, never a figure: BS-statement-3 statement 14);
 //!      roles that contradict each other or the chart are refused by the
 //!      engine, naming the setting, so the viewer and the server refuse
 //!      alike. Members are named on their contributions and

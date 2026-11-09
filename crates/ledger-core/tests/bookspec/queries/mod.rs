@@ -4,6 +4,7 @@ pub(crate) mod assets;
 pub(crate) mod commands;
 pub(crate) mod dates;
 pub(crate) mod documents;
+pub(crate) mod drafts;
 pub(crate) mod formats;
 pub(crate) mod parties;
 pub(crate) mod statements;
@@ -87,6 +88,10 @@ impl Books<'_> {
             "project" => self.answer_project(q),
             "aging" => self.answer_aging(q),
             "document_dates" => self.answer_document_dates(q),
+            "document" => self.answer_document(q),
+            "invoice_numbers" => self.answer_invoice_numbers(q),
+            "draft_state" => self.answer_draft_state(q),
+            "evidence" => self.answer_evidence(q),
             "run" => self.answer_run(q),
             "disposal" => self.answer_disposal(q),
             "depreciation_schedule" => self.answer_depreciation_schedule(q),

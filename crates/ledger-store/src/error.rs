@@ -152,7 +152,7 @@ pub enum StoreError {
     #[error("store not found at {0}")]
     NotFound(String),
 
-    /// A write-off with no evidence (BS-arap-5 INVARIANT 1): a bad
+    /// A write-off with no evidence (BS-arap-5 statement 10): a bad
     /// debt is deducted on evidence that it is worthless (Treas. Reg.
     /// §1.166-2), so the books take the write-off only with its file.
     #[error(

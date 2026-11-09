@@ -2419,7 +2419,7 @@ fn cash_flow_reads_its_account_roles_from_the_books_settings() {
     }
 }
 
-/// BS-statement-3 rule 2: roles that contradict the chart are refused,
+/// BS-statement-3 statement 3: roles that contradict the chart are refused,
 /// naming the setting and the fix, never a statement on a wrong partition.
 #[test]
 fn cash_flow_refuses_contradictory_roles() {

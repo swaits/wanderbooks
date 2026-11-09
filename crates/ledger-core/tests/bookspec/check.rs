@@ -18,7 +18,11 @@ pub(crate) fn check(b: &Books<'_>, x: &Expect) -> Option<&'static str> {
             queries.join(" and ")
         );
     };
-    only(x.entry.is_some(), "entry", &["entry", "party_part"]);
+    only(
+        x.entry.is_some(),
+        "entry",
+        &["entry", "party_part", "draft_state", "evidence"],
+    );
     only(x.event.is_some(), "event", &["run"]);
     only(
         x.asset.is_some(),
@@ -38,7 +42,11 @@ pub(crate) fn check(b: &Books<'_>, x: &Expect) -> Option<&'static str> {
     );
     only(x.basis.is_some(), "basis", &["party_totals"]);
     only(x.payee.is_some(), "payee", &["vendor_1099"]);
-    only(x.document.is_some(), "document", &["document_dates"]);
+    only(
+        x.document.is_some(),
+        "document",
+        &["document_dates", "document"],
+    );
     only(x.of.is_some(), "of", &["aging"]);
     only(
         x.code.is_some(),
@@ -105,6 +113,10 @@ pub(crate) fn check(b: &Books<'_>, x: &Expect) -> Option<&'static str> {
         "project" => check_project(b, x),
         "aging" => check_aging(b, x),
         "document_dates" => check_document_dates(b, x),
+        "document" => check_document(b, x),
+        "invoice_numbers" => check_invoice_numbers(b, x),
+        "draft_state" => check_draft_state(b, x),
+        "evidence" => check_evidence(b, x),
         q => {
             let &(_, by) = FORMAT_QUERIES
                 .iter()

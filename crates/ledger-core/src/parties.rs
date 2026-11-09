@@ -850,7 +850,7 @@ impl PartyField {
     }
 }
 
-/// Which of a party's totals to report (BS-partner-3 item 4). Not the
+/// Which of a party's totals to report (BS-partner-3 statement 5). Not the
 /// books' accounting method (`books.accounting_basis`): party totals count
 /// what moved, whichever method the books keep.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -981,7 +981,7 @@ impl MoneyAccounts {
 /// ```text
 /// GOAL: a card is known from what the books record, and a promise (a
 ///       gift card sold) or a member's own card is never the company's.
-/// SOURCE: BS-partner-3 item 5 (DECISION, owner, 2026-10-20: money is
+/// SOURCE: BS-partner-3 statement 7 (DECISION, owner, 2026-10-20: money is
 ///         cash, cards, the members' financing and loans), BS-1099-1 (payment
 ///         methods, plan P3 defect 12).
 /// INVARIANTS:
@@ -1376,7 +1376,7 @@ pub fn activity_with(
         }
         let shares = ledger.entry_parties(id);
         // The target first: an entry that counts nothing is never
-        // unresolved for shares that don't fit it (BS-partner-3 item 4).
+        // unresolved for shares that don't fit it (BS-partner-3 statement 5).
         let Ok(t) = crate::shares::target(ledger, id, shares, money) else {
             a.unresolved.insert(id);
             continue;

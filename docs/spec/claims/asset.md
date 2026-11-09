@@ -78,14 +78,14 @@ dates, `accumulated_posted` and its edges,
 
 ### Product rules
 
-**WB-asset-1** The bounds `BS-asset-1` states (rules 25-26: a new link to
+**WB-asset-1** The bounds `BS-asset-1` states (statements 25-26: a new link to
 an entry dated after the in-service date or the disposal is refused, as is
 a new in-service date before the linked entry's date, and a disposal dated
 before the acquired date is refused) are the commands', never replay's
 (B-28): a journal an earlier version wrote replays as written, whatever
 those dates say. (That depreciation starts on the in-service date and that
 the register holds the asset from the acquired date are `BS-asset-1`
-rules 23-24.)
+statements 23-24.)
 *Enforced:* `set_asset_acquisition` / `replay_set_asset_acquisition`,
 `Ledger::asset_acquired_date`, `dispose_asset`, `Ledger::set_asset_acquisition`.
 *Checked:* `ledger-core` `tests/spec_asset_basis.rs` (each bound and its

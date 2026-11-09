@@ -14,15 +14,21 @@ impl Books<'_> {
             ("invoice", e.invoice.is_some()),
             ("write_off", e.write_off.is_some()),
             ("payment", e.payment.is_some()),
+            ("settlement", e.settlement.is_some()),
+            ("recovery", e.recovery.is_some()),
             ("run_depreciation", e.run_depreciation.is_some()),
             ("dispose_asset", e.dispose_asset.is_some()),
             ("run_schedules", e.run_schedules.is_some()),
             ("register_schedule", e.register_schedule.is_some()),
+            ("post_draft", e.post_draft.is_some()),
+            ("set_draft_state", e.set_draft_state.is_some()),
+            ("attach_receipt", e.attach_receipt.is_some()),
+            ("discard_draft", e.discard_draft.is_some()),
         ];
         match kinds.iter().filter(|(_, given)| *given).collect::<Vec<_>>()[..] {
             [(kind, _)] => kind,
             _ => panic!(
-                "{} event {n}: an event is one of lines, reverses, close, bill, invoice, write_off, payment, run_depreciation, dispose_asset, run_schedules or register_schedule",
+                "{} event {n}: an event is one of lines, reverses, close, bill, invoice, write_off, payment, settlement, recovery, run_depreciation, dispose_asset, run_schedules, register_schedule, post_draft, set_draft_state, attach_receipt or discard_draft",
                 self.ex.id
             ),
         }
@@ -36,7 +42,11 @@ impl Books<'_> {
         // disposal is dated; the other commands date their own entries,
         // and every command describes its own.
         let own = matches!(kind, "lines" | "reverses" | "close" | "bill" | "invoice");
-        let dated = own || matches!(kind, "dispose_asset" | "write_off" | "payment");
+        let dated = own
+            || matches!(
+                kind,
+                "dispose_asset" | "write_off" | "payment" | "settlement" | "recovery"
+            );
         assert_eq!(
             e.date.is_some(),
             dated,
@@ -74,8 +84,20 @@ impl Books<'_> {
             "{ex} event {n}: {kind} is tagged with no parties or payment method"
         );
         assert!(
-            e.refused.is_none() || !matches!(kind, "close" | "bill" | "invoice"),
-            "{ex} event {n}: refused is for a reversal, an entry or a command, which the books take whole or not at all"
+            e.refused.is_none() || kind != "invoice",
+            "{ex} event {n}: refused is for a reversal, an entry, a bill, a command or a close, which the books take whole or not at all"
+        );
+        assert!(
+            !e.draft || matches!(kind, "lines" | "reverses"),
+            "{ex} event {n}: draft is an entry's lines or a reversal, prepared and not yet posted"
+        );
+        assert!(
+            !e.draft
+                || (e.parties.is_empty()
+                    && e.instrument.is_none()
+                    && e.payee.is_none()
+                    && !e.older),
+            "{ex} event {n}: a draft carries no payee, parties or payment method"
         );
         assert!(
             !(e.older && e.refused.is_some()),
@@ -88,6 +110,14 @@ impl Books<'_> {
         assert!(
             e.payment.is_none() || kind == "payment",
             "{ex} event {n}: a payment is its own event"
+        );
+        assert!(
+            e.settlement.is_none() || kind == "settlement",
+            "{ex} event {n}: a settlement is its own event"
+        );
+        assert!(
+            e.recovery.is_none() || kind == "recovery",
+            "{ex} event {n}: a recovery is its own event"
         );
     }
 
@@ -190,15 +220,32 @@ impl Books<'_> {
             &self.posted[n - 1],
             "{what}: what the event posted is kept"
         );
+        // What a draft event made stands as a draft (until a `post_draft`
+        // posts it); what any other event made is posted.
+        let made = if e.draft {
+            EntryStatus::Draft
+        } else {
+            EntryStatus::Posted
+        };
         for &id in &posted {
             assert_eq!(
                 self.l().get_entry(id).map(|x| x.status()),
-                Some(EntryStatus::Posted),
-                "{what}: entry {id}, which it made, is posted"
+                Some(made),
+                "{what}: entry {id}, which it made, is {}",
+                if e.draft { "a draft" } else { "posted" }
             );
         }
-        if (own || matches!(kind, "write_off" | "payment")) && e.refused.is_none() {
+        if (own || matches!(kind, "write_off" | "payment" | "settlement")) && e.refused.is_none() {
             assert_eq!(posted.len(), 1, "{what}: {kind} posts one entry");
+        }
+        // A recovery posts one entry or two, as the engine's pick under
+        // BS-arap-11 says: a plain entry, or the write-off's reversal and
+        // the payment.
+        if kind == "recovery" && e.refused.is_none() {
+            assert!(
+                matches!(posted.len(), 1 | 2),
+                "{what}: a recovery posts one entry or two"
+            );
         }
     }
 
@@ -228,6 +275,20 @@ impl Books<'_> {
             .due_date(date)
             .unwrap_or_else(|e| panic!("{what}: terms {text:?} on {date}: {e}"));
         (due, Some(parsed))
+    }
+
+    /// The invoice or bill event `event` posted, and its customer or vendor.
+    pub(crate) fn document_of(&self, event: usize, what: &str) -> (ledger_core::DocRef, u64) {
+        let entry = self.entry_of(event, what);
+        let l = self.l();
+        match (
+            l.invoices().into_iter().find(|i| i.entry_id == entry),
+            l.bills().into_iter().find(|b| b.entry_id == entry),
+        ) {
+            (Some(i), _) => (ledger_core::DocRef::Invoice(i.id), i.customer_id),
+            (None, Some(b)) => (ledger_core::DocRef::Bill(b.id), b.vendor_id),
+            (None, None) => panic!("{what}: event {event} posted no invoice or bill"),
+        }
     }
 
     /// An invoice's or bill's lines: `amount` (one line, described as the
@@ -264,7 +325,7 @@ impl Books<'_> {
                             panic!("{what}: project {p:?} not in setup.projects")
                         })
                     }),
-                    account: None,
+                    account: l.account.as_deref().map(|code| self.id(code)),
                     quantity: None,
                     unit_price: None,
                 })
@@ -296,12 +357,117 @@ impl Books<'_> {
         };
         let day = || when.expect("checked: dated");
         match kind {
+            // A draft (BS-entry-5, BS-entry-6): the entry prepared, and posted
+            // by nothing here. The engine refuses a line on a header account
+            // as it is added (it picks check-when-line-added), and the books
+            // take an entry whole or not at all, so the draft is tried on a
+            // clone first: a refusal leaves no half-made draft in the journal.
+            "lines" if e.draft => {
+                let lines: Vec<_> = e
+                    .lines
+                    .iter()
+                    .map(|line| {
+                        let side = match line.side.as_str() {
+                            "debit" => Side::Debit,
+                            "credit" => Side::Credit,
+                            other => panic!("{what}: side {other:?}"),
+                        };
+                        let class = line.project.as_ref().map(|p| {
+                            *self.projects.get(p).unwrap_or_else(|| {
+                                panic!("{what}: project {p:?} not in setup.projects")
+                            })
+                        });
+                        (
+                            self.id(&line.account),
+                            side,
+                            Money::new(money(&line.amount), self.currency),
+                            class,
+                        )
+                    })
+                    .collect();
+                let mut probe = self.store.ledger().clone();
+                let entry = probe.try_create_entry(day(), description)?;
+                for (i, &(account, side, amount, class)) in lines.iter().enumerate() {
+                    probe.add_line(entry, account, side, amount)?;
+                    if class.is_some() {
+                        probe.set_line_class(entry, i, class)?;
+                    }
+                }
+                let entry = self.store.create_entry(day(), description)?;
+                for (i, &(account, side, amount, class)) in lines.iter().enumerate() {
+                    self.store.add_line(entry, account, side, amount)?;
+                    if class.is_some() {
+                        self.store.set_line_class(entry, i, class)?;
+                    }
+                }
+                Ok(())
+            }
+            // Not a panic: the example fails as an engine refusal (`another
+            // refusal: ...`), and the harness goes on to report it.
+            "reverses" if e.draft => Err(StoreError::Io(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                format!(
+                    "{what}: wanderbooks has no draft reversal: it picks reversal-evidence-is-originals (BS-ledger-17), under which a reversal posts at once"
+                ),
+            ))),
+            "post_draft" => {
+                let p = e.post_draft.as_ref().expect("checked: a post");
+                let entry = self.entry_of(p.entry, what);
+                // With an evidence policy the post is the gate's: the
+                // server's path for a hand-made draft; without one, the
+                // primitive.
+                if self.has_policy() {
+                    self.store.post_entry_checked(entry)
+                } else {
+                    self.store.post_entry(entry)
+                }
+            }
+            "set_draft_state" => {
+                let s = e.set_draft_state.as_ref().expect("checked: a state");
+                let entry = self.entry_of(s.entry, what);
+                let state = match (s.state.as_str(), &s.note) {
+                    ("building", None) => ledger_core::DraftState::Building,
+                    ("awaiting_evidence", Some(note)) => {
+                        ledger_core::DraftState::AwaitingEvidence { note: note.clone() }
+                    }
+                    other => panic!("{what}: draft state {other:?}"),
+                };
+                self.store.set_draft_state(entry, state)
+            }
+            "attach_receipt" => {
+                let r = e.attach_receipt.as_ref().expect("checked: a receipt");
+                let entry = self.entry_of(r.entry, what);
+                // The document, by its reference: its own bytes, so that two
+                // references are two documents (identical bytes are one file,
+                // plan P6 step 4).
+                let bytes = format!("%PDF-1.4\n{}\n%%EOF\n", r.receipt);
+                self.store
+                    .attach_receipt(
+                        Some(entry),
+                        &format!("{}.pdf", r.receipt.replace([' ', ',', '/'], "-")),
+                        "application/pdf",
+                        bytes.as_bytes(),
+                        Some(&r.receipt),
+                    )
+                    .map(drop)
+            }
+            "discard_draft" => {
+                let d = e.discard_draft.as_ref().expect("checked: a discard");
+                let entry = self.entry_of(d.entry, what);
+                self.store.discard_draft(entry, &d.reason)
+            }
             "lines" if e.refused.is_some() => {
                 // The books take an entry whole or not at all, so a
-                // refused one leaves no draft behind: it is tried on a
-                // clone, which is how the engine refuses it.
-                let mut probe = self.store.ledger().clone();
-                let entry = probe.create_entry(day(), description);
+                // refused one leaves no draft behind. The store journals a
+                // draft the moment it is made, so the entry is made, lined
+                // and posted on a rehearsal: the same books, replayed from
+                // their journal into a store of their own, which the engine
+                // refuses through its own gate (`post_entry_checked` under a
+                // policy, the server's path for a hand entry) and which is
+                // then thrown away. The refusal is the engine's, never
+                // rebuilt here.
+                let mut rehearsal = self.rehearsal(what);
+                let entry = rehearsal.create_entry(day(), description)?;
                 for (i, line) in e.lines.iter().enumerate() {
                     let side = match line.side.as_str() {
                         "debit" => Side::Debit,
@@ -310,15 +476,19 @@ impl Books<'_> {
                     };
                     let amount = Money::new(money(&line.amount), self.currency);
                     let account = self.id(&line.account);
-                    probe.add_line(entry, account, side, amount)?;
+                    rehearsal.add_line(entry, account, side, amount)?;
                     if let Some(p) = &line.project {
                         let class = *self.projects.get(p).unwrap_or_else(|| {
                             panic!("{what}: project {p:?} not in setup.projects")
                         });
-                        probe.set_line_class(entry, i, Some(class))?;
+                        rehearsal.set_line_class(entry, i, Some(class))?;
                     }
                 }
-                Ok(probe.post_entry(entry)?)
+                if self.has_policy() {
+                    rehearsal.post_entry_checked(entry)
+                } else {
+                    rehearsal.post_entry(entry)
+                }
             }
             "lines" => {
                 let post = |this: &mut Self| -> Result<(), StoreError> {
@@ -340,7 +510,11 @@ impl Books<'_> {
                             this.store.set_line_class(entry, i, Some(class))?;
                         }
                     }
-                    this.store.post_entry(entry)
+                    if this.has_policy() {
+                        this.store.post_entry_checked(entry)
+                    } else {
+                        this.store.post_entry(entry)
+                    }
                 };
                 if e.older {
                     ledger_core::parties::replaying(|| post(self))
@@ -362,30 +536,20 @@ impl Books<'_> {
             "close" => {
                 let c = e.close.as_ref().expect("checked: a close");
                 let start = date(&c.start, what);
+                if e.refused.is_some() {
+                    // A close the books refuse (a draft stands in the period,
+                    // BS-period-2) opens no period and posts nothing: it is
+                    // tried on a clone, with the same close below.
+                    let mut probe = self.store.ledger().clone();
+                    let p = probe.create_period(&format!("event {n}"), start, day())?;
+                    return Ok(probe
+                        .close_period_to(p, &self.close_to(c, what))
+                        .map(drop)?);
+                }
                 let p = self
                     .store
                     .create_period(&format!("event {n}"), start, day())?;
-                let members: Vec<MemberClose> = self
-                    .members
-                    .iter()
-                    .map(|m| MemberClose {
-                        capital: m.capital_account,
-                        share: m.share,
-                        distributions: None,
-                    })
-                    .collect();
-                if c.to == "members" {
-                    assert!(
-                        !members.is_empty() && members.iter().all(|m| m.share > Decimal::ZERO),
-                        "{what}: a close to the members needs their shares"
-                    );
-                }
-                let to = match (c.to.as_str(), c.rounding.as_deref()) {
-                    ("members", None) => CloseTo::Members(members),
-                    ("members", Some("per-close")) => CloseTo::MembersPerClose(members),
-                    ("retained_earnings", None) => CloseTo::RetainedEarnings { sweep: vec![] },
-                    other => panic!("{what}: close {other:?}"),
-                };
+                let to = self.close_to(c, what);
                 let closed = self.store.close_period_to(p, &to)?;
                 assert!(closed.is_some(), "{what}: the close has nothing to close");
                 Ok(())
@@ -410,6 +574,8 @@ impl Books<'_> {
                         lines,
                         BillFields {
                             terms,
+                            vendor_ref: b.vendor_ref.clone(),
+                            duplicate_reason: b.duplicate_reason.clone(),
                             ..BillFields::default()
                         },
                     )
@@ -427,6 +593,9 @@ impl Books<'_> {
                     }
                 };
                 let (due, terms) = self.terms_due(i.terms.as_deref(), day(), what);
+                // The books number every invoice in order of issue (BS-arap-4),
+                // as their invoicing settings default to.
+                let number = self.l().next_invoice_number("INV-", 1);
                 self.store
                     .create_invoice_with(
                         customer,
@@ -434,6 +603,7 @@ impl Books<'_> {
                         due,
                         lines,
                         InvoiceFields {
+                            number: Some(number),
                             terms,
                             ..InvoiceFields::default()
                         },
@@ -515,6 +685,82 @@ impl Books<'_> {
                     }
                 }
             }
+            "settlement" => {
+                let st = e.settlement.as_ref().expect("checked: a settlement");
+                let first = &st.applications[0];
+                let (first_doc, party) = self.document_of(first.document, what);
+                let applications: Vec<ledger_core::Application> = st
+                    .applications
+                    .iter()
+                    .map(|a| ledger_core::Application {
+                        doc: self.document_of(a.document, what).0,
+                        cash: exact(&a.cash, what),
+                        discount: a
+                            .discount
+                            .as_deref()
+                            .map_or(Decimal::ZERO, |d| exact(d, what)),
+                        discount_reason: a.discount_reason.clone(),
+                    })
+                    .collect();
+                debug_assert_eq!(applications[0].doc, first_doc);
+                let params = ledger_core::SettleParams {
+                    date: day(),
+                    description: String::new(),
+                    cash_account: self.id(&st.account),
+                    party,
+                    applications,
+                    fee: st.fee.as_deref().map(|f| ledger_core::Fee {
+                        amount: exact(f, what),
+                        account: None,
+                        vendor: None,
+                    }),
+                    instrument: None,
+                    reference: None,
+                };
+                self.store.settle(params).map(drop)
+            }
+            "recovery" => {
+                // BS-arap-11, the pick reverse-then-plain-entry: in the tax
+                // year of the write-off the write-off is reversed and the
+                // money is recorded as any payment; in a later year a plain
+                // entry debits the deposit account and credits the recoveries
+                // account, naming the invoice.
+                let r = e.recovery.as_ref().expect("checked: a recovery");
+                let amount = exact(&r.amount, what);
+                let (cash, income) = (self.id(&r.account), self.id(&r.income_account));
+                let write_off = self.entry_of(r.write_off, what);
+                let written = &self.ex.events[r.write_off - 1];
+                let invoice_event = written
+                    .write_off
+                    .as_ref()
+                    .map(|w| w.invoice)
+                    .unwrap_or_else(|| panic!("{what}: event {} is no write-off", r.write_off));
+                let (doc, _) = self.document_of(invoice_event, what);
+                let ledger_core::DocRef::Invoice(invoice) = doc else {
+                    panic!("{what}: a write-off is of an invoice")
+                };
+                let written_on = date(written.date.as_deref().expect("a write-off is dated"), what);
+                let year =
+                    |d| ledger_core::calendar::fiscal_year_start_on(fiscal_year_start(self.ex), d);
+                if year(written_on) == year(day()) {
+                    self.store.reverse_entry(
+                        write_off,
+                        day(),
+                        "Recovered: the write-off is reversed",
+                    )?;
+                    self.store
+                        .receive_payment(invoice, day(), amount, cash)
+                        .map(drop)
+                } else {
+                    let entry = self
+                        .store
+                        .create_entry(day(), &format!("Recovery of invoice {invoice}"))?;
+                    let money = Money::new(amount, self.currency);
+                    self.store.add_line(entry, cash, Side::Debit, money)?;
+                    self.store.add_line(entry, income, Side::Credit, money)?;
+                    self.store.post_entry(entry)
+                }
+            }
             "run_depreciation" => {
                 let r = e.run_depreciation.as_ref().expect("checked: a run");
                 let asset = self.asset(&r.asset, what);
@@ -575,6 +821,40 @@ impl Books<'_> {
         }
     }
 }
+impl Books<'_> {
+    /// Whether the example states an evidence policy (`setup.evidence_over`):
+    /// the books' own setting, which the server's post gate reads.
+    pub(crate) fn has_policy(&self) -> bool {
+        self.ex.setup.evidence_over.is_some()
+    }
+
+    /// Where a close sends the period's income: to retained earnings, or to
+    /// the members by their shares.
+    pub(crate) fn close_to(&self, c: &bookspec_checker::CloseSpec, what: &str) -> CloseTo {
+        let members: Vec<MemberClose> = self
+            .members
+            .iter()
+            .map(|m| MemberClose {
+                capital: m.capital_account,
+                share: m.share,
+                distributions: None,
+            })
+            .collect();
+        if c.to == "members" {
+            assert!(
+                !members.is_empty() && members.iter().all(|m| m.share > Decimal::ZERO),
+                "{what}: a close to the members needs their shares"
+            );
+        }
+        match (c.to.as_str(), c.rounding.as_deref()) {
+            ("members", None) => CloseTo::Members(members),
+            ("members", Some("per-close")) => CloseTo::MembersPerClose(members),
+            ("retained_earnings", None) => CloseTo::RetainedEarnings { sweep: vec![] },
+            other => panic!("{what}: close {other:?}"),
+        }
+    }
+}
+
 impl Books<'_> {
     /// Make a change that posts no entry (after event `after`).
     /// Make a change that posts no entry (after event `after`), or say why

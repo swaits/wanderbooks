@@ -42,7 +42,7 @@
 //!   to zero, and a reversal's parts are the original's negated (BS-statement-3);
 //! * what a member or lender paid or received for the company, with no
 //!   cash account moving, is split among the kinds it settled, netting to
-//!   zero, and mirrored by a reversal (BS-statement-3 rule 11);
+//!   zero, and mirrored by a reversal (BS-statement-3 statement 16);
 //! * a party's part of an entry is signed as a line on the party's own
 //!   account would be, a reversal's is its original's negated, and what of
 //!   it counts as money or as property never exceeds it (BS-partner-3);

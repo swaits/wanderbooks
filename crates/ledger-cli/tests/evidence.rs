@@ -318,7 +318,7 @@ fn annotations_and_searches() {
     assert_eq!(answer_of(&r).unwrap()["status"], "ok");
 }
 
-/// Plan P6 step 4 and BS-ledger-12 item 5: consolidation never leaves an
+/// Plan P6 step 4 and WB-ledger-15 invariant 3: consolidation never leaves an
 /// entry the receipt policy covers with no evidence.
 #[test]
 fn consolidation_never_removes_an_entrys_only_evidence() {

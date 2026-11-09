@@ -505,7 +505,7 @@ pub enum LedgerError {
         end: String,
     },
 
-    /// The statement of cash flows would not foot (BS-statement-3 rule 9):
+    /// The statement of cash flows would not foot (BS-statement-3 statement 14):
     /// an engine error, never output. It cannot happen on balanced books
     /// (Lean `cashflow_sections_sum_to_cash_change`); if it does, the
     /// engine is wrong, and nothing is shown rather than a wrong figure.
@@ -523,7 +523,7 @@ pub enum LedgerError {
     },
 
     /// The cash flow statement's account roles (cash, financing, investing)
-    /// contradict each other or the chart (BS-statement-3 rule 2). The text
+    /// contradict each other or the chart (BS-statement-3 statement 3). The text
     /// names the setting and says what to change.
     #[error("cash flow account roles: {0}")]
     CashFlowRoles(String),
@@ -695,13 +695,13 @@ pub enum LedgerError {
     SettlementMixedKinds(String),
 
     /// A settlement's documents don't all belong to the one party it
-    /// names (BS-arap-6 INVARIANT 1).
+    /// names (BS-arap-6 invariant 4).
     #[error("{0} is not {1}'s: a settlement covers one party only")]
     SettlementPartiesDiffer(String, u64),
 
     /// A discount needs a reason: none is stated in the document's terms,
     /// or it is larger than its terms allow, or it is taken after the
-    /// discount date (BS-arap-6 INVARIANT 2).
+    /// discount date (BS-arap-6 invariant 6).
     #[error(
         "{doc}: the discount of {discount} needs a reason ({because}); pass discount_reason with the payment"
     )]
@@ -749,9 +749,24 @@ pub enum LedgerError {
     #[error("{0}")]
     InvalidFee(String),
 
-    /// A settlement's figures can't be exact: the cash and discounts
-    /// don't cover the applications, or the fee leaves a negative deposit
-    /// (BS-arap-6 INVARIANT 1).
+    /// A processor's fee is above the cash it was withheld from: a
+    /// processor cannot keep more than it was paid (BS-arap-6). A fee equal
+    /// to the cash is [`LedgerError::InvalidSettlement`]: the deposit would
+    /// be nothing.
+    #[error(
+        "the processor's fee of {fee} is above the cash of {cash}: a processor can't keep more than it was paid"
+    )]
+    FeeAboveCash {
+        /// The fee asked for.
+        fee: Decimal,
+        /// The settlement's cash, summed over its applications.
+        cash: Decimal,
+    },
+
+    /// A settlement's figures can't be exact (BS-arap-6 invariant 3): an
+    /// amount too large to add, a negative fee, or a fee that leaves
+    /// nothing to deposit; a fee above the cash is
+    /// [`LedgerError::FeeAboveCash`].
     #[error("{0}")]
     InvalidSettlement(String),
 
@@ -781,7 +796,7 @@ pub enum LedgerError {
     },
 
     /// Receivables or payables can't move to an account holding lines
-    /// that are no document's (BS-arap-2 INVARIANT 1): they would
+    /// that are no document's (BS-arap-2 statement 12): they would
     /// become hand lines on a control account.
     #[error(
         "account {code} \"{name}\" holds lines no invoice or bill carries (entry {entry} first), \
@@ -828,7 +843,7 @@ pub enum LedgerError {
     },
 
     /// A reversal or payment would leave a document owing less than nothing
-    /// or more than its total at some date (BS-arap-2 INVARIANT 2): the
+    /// or more than its total at some date (BS-arap-2 invariant 6): the
     /// message says which document, when, and what to reverse first.
     #[error("{0}")]
     DocumentBounds(String),
@@ -867,7 +882,7 @@ pub enum LedgerError {
     #[error("{0}")]
     InvalidSend(String),
     /// A bad debt can't be written off on cash-basis books (
-    /// BS-arap-5 INVARIANT 3; IRC §166(a); Treas. Reg. §1.166-1(e)): the
+    /// BS-arap-5 statement 6; IRC §166(a); Treas. Reg. §1.166-1(e)): the
     /// invoice was never counted as income, so there is no basis to
     /// deduct.
     #[error(

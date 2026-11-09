@@ -729,7 +729,7 @@ impl BooksServer {
             checked.push(format!("{n} stored files match their SHA-256"));
         }
         // Receivables and payables equal their documents (BS-arap-2
-        // INVARIANT 1): an identity, so a difference is an engine error.
+        // invariant 1): an identity, so a difference is an engine error.
         let checks = store
             .ledger()
             .control_check(chrono::NaiveDate::MAX)

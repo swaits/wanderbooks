@@ -1,4 +1,4 @@
-//! An invoice's or bill's lines in the journal (BS-statement-5 item 8,
+//! An invoice's or bill's lines in the journal (BS-statement-5 statement 6,
 //! BS-format-1): a line naming its project carries `class_id` (journal feature
 //! `document_line_projects`), and the entry's revenue or expense line for
 //! that project is tagged by `entry.line_class_set` right after its
@@ -9,7 +9,7 @@
 //! ```text
 //! GOAL: a document's projects are journaled once, replay exactly, and
 //!       never reach books whose owner hasn't consented to the format.
-//! SOURCE: BS-statement-5 item 8, BS-format-1, BS-entry-4; plan/served.md
+//! SOURCE: BS-statement-5 statement 6, BS-format-1, BS-entry-4; plan/served.md
 //!         D-39 (the owner's upgrade).
 //! ```
 

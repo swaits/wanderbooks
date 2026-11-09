@@ -603,7 +603,7 @@ fn a_long_party_name_keeps_to_its_card() {
     }
 }
 
-// ------------------------------------------------- the snapshot (BS-statement-5 item 7)
+// ------------------------------------------------- the snapshot (WB-statement-7)
 
 /// Books holding one project of `kind`, started `started_on`, with
 /// `posts`: (date, debit code, credit code, cents), the line that isn't
@@ -1253,7 +1253,7 @@ proptest::proptest! {
     }
 }
 
-/// BS-statement-5 item 8: an invoice's or bill's page (its entry's) lists
+/// BS-statement-5 statement 6: an invoice's or bill's page (its entry's) lists
 /// the document's lines, each project a link that opens it; an untagged
 /// line has none. The entry's own lines show the tagged revenue or cost
 /// line too.
@@ -1373,7 +1373,7 @@ fn an_invoice_and_a_bill_show_each_lines_project() {
 }
 
 /// The demo's "Client work" project carries every client invoice (
-/// BS-statement-5 item 8): its revenue to date is the invoices' total, its direct
+/// BS-statement-5 statement 6): its revenue to date is the invoices' total, its direct
 /// costs the contractors tagged to it.
 #[test]
 fn the_demos_client_work_counts_every_client_invoice() {

@@ -636,14 +636,14 @@ every tool over every book in ledger-store's `tests/fixtures/old-books`.
     kind. An entry's interest is its own operating class, (b) or (e), apart
     from the rest of its operating cash. A payment to a party with the
     `government_agency` or `tax_agency` role is `other_payments`, (g),
-    on any account (BS-statement-3 rule 5; payroll remittances excepted);
+    on any account (BS-statement-3 statements 8 and 9; payroll remittances excepted);
     one shared between such a party and a supplier gives two operating
     lines for the one entry, `other_payments` and
     `to_suppliers_and_employees`, split by the parties' shares and
     summing to the payment. What a member or a lender paid or
     received for the company with no cash account moving is cash borrowed
     (or contributed) and spent, on the entry's date (D-42, BS-statement-3
-    rule 11): an expense a member paid personally through Due to Members
+    statement 16): an expense a member paid personally through Due to Members
     is a "Proceeds from borrowing — <account>" line and an operating
     line, each with `on_behalf`, the part of its amount so handled (absent
     when none; an entry's `on_behalf` parts net to zero).
@@ -1295,7 +1295,7 @@ Vendor and customer follow the records and are never set by hand. A
 `tax_agency` or `government_agency` payee also classes the company's
 payments to it on the cash flow statement: other operating cash
 payments, never cash paid to suppliers (`books.cash_flow`, BS-statement-3
-rule 5).
+statement 8).
 
 **Rules the engine enforces** (each refusal changes nothing, the journal
 byte for byte): no party field holds a full TIN (a run of nine digits,
@@ -1443,7 +1443,7 @@ BS-partner-3):
   Both `"0.00"` for `neither`; `resolved − cash − in_kind` is a promise,
   counted on neither basis. All four are null exactly when the shares
   don't resolve (`parties_error` says why).
-- What the shares split (BS-partner-3 item 3): a close, its parties' own-account
+- What the shares split (BS-partner-3 statement 3): a close, its parties' own-account
   movement, neither; a reversal, its original's negated; an entry naming
   only members that moves equity, what moved their capital (a
   contribution received: the property in it, asset accounts that are
@@ -1462,7 +1462,7 @@ BS-partner-3):
   record (bills and their payments); its customer record's invoices and
   the payments received on them; and reversals of any of these. Only
   posted entries dated in the year count.
-- *Money accounts* (BS-partner-3 item 5, P3 defect 24): the `[books]
+- *Money accounts* (BS-partner-3 statement 7, P3 defect 24): the `[books]
   cash_accounts` (every asset account but receivables when none are set),
   the cards (the business-card payment methods' liability accounts,
   `books.instruments`; while the books record none, the liability
@@ -1490,7 +1490,7 @@ BS-partner-3):
   (and the payments of distributions declared to them) is the statement
   of members' equity's contributions and distributions, and basis `cash`
   their contributions is the K-1 worksheet's cash contributions (BS-partner-3
-  item 4 gives the conditions: a distribution declared and not yet paid
+  statement 6 gives the conditions: a distribution declared and not yet paid
   is in the statement only). The year is the whole
   calendar year; the viewer's party page and directory show these same
   numbers, labelled "cash basis", with the in-kind figures beside them.
@@ -1914,7 +1914,7 @@ posting.
     get " (id)", a name already written differently from the books (made
     safe or tagged) yielding first, so a class's own name stands wherever
     it can: "Café" beside "Cafe" is written "Cafe (1)" and "Cafe" is
-    kept, BS-format-2 rule 8). No line names a customer or vendor (no
+    kept, BS-format-2 statement 30). No line names a customer or vendor (no
     NAME column; see the package's README). `warnings` (absent when
     there are none) says what the file writes differently from the books,
     for the human: each account's name, number and place and each
@@ -2403,7 +2403,7 @@ snapshots; see plan 8.2 S4.
   code, name, balance, documents_total, unattached: [{ entry_id, line,
   date, amount }], difference, attention: [{ kind, id, status, total,
   outstanding }] }] }`. Receivables and payables tied to their documents
-  (BS-ledger-8, BS-arap-2 INVARIANT 1): `difference` is always `0.00`; `agrees` when
+  (BS-ledger-8, BS-arap-2 invariant 1): `difference` is always `0.00`; `agrees` when
   there is no unattached line and nothing needing attention.
   `books.verify` checks the same identity and `books.digest` lists its
   problems (`control_problems`).
@@ -2413,7 +2413,7 @@ snapshots; see plan 8.2 S4.
   discounted, outstanding, bucket, days_overdue }], control: { account,
   balance, documents_total, unattached, difference } }` (`as_of` omitted:
   today). `detail: true` adds one row per open invoice; `control` is the
-  receivables account's tie-out (BS-ledger-8, BS-arap-2 INVARIANT 1), `difference`
+  receivables account's tie-out (BS-ledger-8, BS-arap-2 invariant 1), `difference`
   always `0.00`.
 - `books.ap_aging { as_of?, detail? }` → same, per vendor and bill.
 - `books.bills_due { through?, as_of? }` → `{ as_of, through, bills:
@@ -2507,7 +2507,7 @@ until the owner upgrades them.
   project (every class), by name ignoring capitals; `to_date` counts every
   posted revenue and expense line tagged to it through today in the
   company's time zone, closing entries left out; `net` is its
-  contribution before overhead (BS-statement-5 item 7: revenue less every cost
+  contribution before overhead (WB-statement-7: revenue less every cost
   tagged to it, fixed and variable alike, no company overhead allocated:
   a segment margin in Garrison's sense, not a variable-cost contribution
   margin); `margin_pct` is net as a percent of revenue to one place, half
@@ -2549,7 +2549,7 @@ until the owner upgrades them.
   project); its result gains `notes`, one per finished or abandoned
   project tagged, as `books.add_line`'s `note`.
 - An invoice's or bill's lines take a project too (`books.create_invoice`
-  and `books.create_bill`, `class` on a line, BS-statement-5 item 8), in
+  and `books.create_bill`, `class` on a line, BS-statement-5 statement 6), in
   books that declared the journal feature `document_line_projects`; the
   handbook's projects section says which these books are. Their payments
   take none.

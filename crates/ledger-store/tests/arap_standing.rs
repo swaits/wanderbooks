@@ -377,7 +377,7 @@ fn legacy_reversal_now_counts() {
     assert_eq!(trial_balance_json(&again), g["trial_balance"]);
 }
 
-/// BS-arap-2 scenario 5 and item 7 in books an earlier version keeps: the
+/// BS-arap-2 scenario 5 and WB-arap-4 in books an earlier version keeps: the
 /// right payment after the wrong one was reversed waits for the journal
 /// feature document_standing (an older version would count both),
 /// refused and journaling nothing until the owner's upgrade; a payment
@@ -831,7 +831,7 @@ fn no_new_fields_journals_byte_for_byte() {
 }
 
 /// The issued copy is filed with the invoice or nothing is (plan P4b S4.3
-/// item 11, A-7; BS-arap-4 item 3): a refusal leaves the journal, the
+/// item 11, A-7; BS-arap-4 invariant 3 and WB-arap-8): a refusal leaves the journal, the
 /// ledger and the allocators exactly as they were; an issue journals the
 /// entry, `invoice.created`, `receipt.attached` on that entry
 /// (`INV-0007.pdf`, `application/pdf`, "Issued invoice") and
@@ -1247,8 +1247,7 @@ fn mark_sent_on_void_refused() {
 
 /// A settlement of two invoices, a discount and a processor's fee: one
 /// entry whose events name the lines they tag, every figure derived, and
-/// the books replaying to the same lines (plan P4b S6; BS-arap-6
-/// INVARIANTS 1 and 3).
+/// the books replaying to the same lines (plan P4b S6; BS-arap-6 invariant 3 and WB-arap-15).
 #[test]
 fn a_settlement_names_its_lines_and_replays() {
     use ledger_core::{Application, DocRef, Fee, SettleParams};
@@ -1422,7 +1421,7 @@ fn settlement_waits_for_documents_v2() {
 
 /// Legacy payment events carry no `line`, so replay keeps the positional
 /// rule: the first untagged control line for the payment's amount, in the
-/// order the events come (plan P4b S6; BS-arap-6 INVARIANT 3).
+/// order the events come (plan P4b S6; WB-arap-15).
 #[test]
 fn legacy_payment_events_keep_the_positional_rule() {
     use ledger_core::{DocRef, Movement};
@@ -1582,7 +1581,7 @@ fn write_off_waits_for_documents_v2() {
 /// A write-off is journaled as its entry and one `invoice.written_off`,
 /// and replay derives the same figures and the projection agrees: the
 /// invoice reads Written off, the bad-debt expense is on 6990, and the
-/// control account still equals its documents (BS-arap-5, BS-arap-2 INVARIANT 1).
+/// control account still equals its documents (BS-arap-5, BS-arap-2 invariant 1).
 #[test]
 fn write_off_replays_and_projects() {
     let dir = test_dir("write-off-replay");
@@ -1600,7 +1599,7 @@ fn write_off_replays_and_projects() {
         )
         .unwrap();
     // Half paid, the rest written off: the invoice reads Written off with
-    // 50 paid and 50 written off (BS-arap-2 SCENARIO 7).
+    // 50 paid and 50 written off (BS-arap-2 scenario 7).
     s.receive_payment(inv, d(2026, 4, 20), cents(5_000), bank)
         .unwrap();
     let from = journal_len(&dir.0);
@@ -1683,7 +1682,7 @@ fn write_off_replays_and_projects() {
     s.verify().unwrap();
 }
 
-/// No evidence, no write-off (BS-arap-5 INVARIANT 1; Treas. Reg.
+/// No evidence, no write-off (BS-arap-5 statement 10; Treas. Reg.
 /// §1.166-2(a)): refused, journaling nothing; an attachment already filed
 /// is linked instead, to the entry and the invoice.
 #[test]

@@ -302,7 +302,7 @@ pub fn detail(ui: &mut Ui, b: &Books, e: &EntryInfo, shell: &mut Shell<'_>) {
             ui.add_space(18.0);
 
             // The invoice or bill it records: its lines as the document
-            // gives them, each project a link (BS-statement-5 item 8).
+            // gives them, each project a link (BS-statement-5 statement 6).
             if let Some(doc) = document_of(b, e.id) {
                 section(ui, &doc.title);
                 document_lines(ui, &doc, &class_names, total_w, amt_w, shell);
@@ -756,7 +756,7 @@ mod tests {
     /// A tagged line keeps its project tag inside its cell, in a narrow
     /// pane too: the name is cut to leave the tag room, so the amounts
     /// stay in their columns (an invoice's revenue line and its document
-    /// line, each tagged; BS-statement-5 item 8).
+    /// line, each tagged; BS-statement-5 statement 6).
     #[test]
     fn a_tagged_line_keeps_its_amounts_in_their_column() {
         use ledger_core::arap::DocumentLine;

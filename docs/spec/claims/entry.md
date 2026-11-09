@@ -21,7 +21,13 @@ more lines, debits = credits exactly); `Ledger::add_line` for the account
 check at line-adding time
 (`a_line_on_an_unknown_or_placeholder_account_is_refused_when_added`).
 **Checked:** Kani `check_lines_is_exact`, `accepted_entry_nets_to_zero`; Lean
-`Accepted.net_zero`; property `prop_posted_entries_balance`.
+`Accepted.net_zero`; property `prop_posted_entries_balance`; bookspec example
+`entry-a-line-on-a-header-is-refused-when-it-is-added` (BS-entry-6, the option
+picked: a draft with a line on a header account is refused as the draft is
+made, through `Ledger::try_create_entry` and `Ledger::add_line`, and the
+refusal read off the engine's `LedgerError::PlaceholderAccount`); the example
+`entry-a-line-on-a-header-is-refused-when-the-entry-posts` names the option
+not picked and is skipped.
 
 ### Product rules
 
@@ -209,7 +215,21 @@ pinned; every tool over every old book).
 (`draft_states_replay_and_project`, `drafts_v2_waits_for_the_upgrade`,
 `posted_seq_is_the_posting_lines_seq`); `ledger-cli` `tests/drafts.rs` (`a_draft_waits_for_its_receipt_and_posts`,
 `a_reversal_needs_no_receipt_of_its_own`, `gui_and_server_gate_agree`,
-`stale_preview_refused`).
+`stale_preview_refused`); bookspec examples, through `Store::post_entry_checked`,
+`Store::set_draft_state`, `Store::attach_receipt`, `Store::discard_draft` and
+`ledger_core::evidence::requirement`, each answer read off the engine:
+`entry-a-draft-waits-on-its-evidence-and-posts-once-it-has-it`,
+`entry-a-discarded-draft-leaves-the-books-unchanged`,
+`entry-a-drafts-state-is-a-note-and-a-posted-entry-has-none`,
+`period-a-draft-holds-its-period-open-until-it-is-discarded` (BS-period-2's
+`LedgerError::DraftsInPeriod`), `entry-evidence-is-decided-in-one-place` and
+`entry-only-a-draft-can-be-posted-or-discarded` (`LedgerError::EntryAlreadyPosted`
+and `LedgerError::UnknownEntry`, through `Store::post_entry` and `Store::discard_draft`). An entry the example
+says is refused when posted at once is made, lined and posted on a rehearsal:
+the books replayed from their journal into a `Store` of their own (the
+journal and the blobs copied, `Store::open`), so the refusal, an evidence
+refusal included, is `Store::post_entry_checked`'s own and the example's books
+keep no draft the engine would have journaled.
 
 ### Product rules
 

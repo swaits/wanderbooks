@@ -968,7 +968,7 @@ fn apply_cash_mirrors() {
 /// An accepted entry always has cash flows, and they explain its cash
 /// exactly: the sections' cash sums to the entry's cash, and what no cash
 /// settled (each section's movement plus its cash) sums to zero
-/// (BS-statement-3 rules 3 and 9: the statement foots, entry by entry).
+/// (BS-statement-3 statements 4 and 14: the statement foots, entry by entry).
 #[kani::proof]
 #[kani::unwind(5)]
 fn entry_flows_sum_to_cash() {
@@ -1043,7 +1043,7 @@ fn entry_flows_are_bounded() {
 
 /// A reversal's cash flows are its original's, negated, part by part:
 /// what lets an entry and its reversal in one period drop out of the
-/// statement together (BS-statement-3 rule 6). End to end, on entries of
+/// statement together (BS-statement-3 statement 11). End to end, on entries of
 /// up to two lines: at three (`NF`) one run went past half an hour at
 /// four jobs on a busy machine (2026-10-21), so three lines are proved in
 /// two halves, `entry_movements_of_a_reversal_mirror` and
@@ -1228,7 +1228,7 @@ fn any_way() -> kernel::OnBehalf {
 }
 
 /// What a member or a lender paid or received for the company (
-/// BS-statement-3 rule 11, D-42) invents and loses nothing: the parts net to zero,
+/// BS-statement-3 statement 16, D-42) invents and loses nothing: the parts net to zero,
 /// so an entry's flows still sum to its cash; each part settles its own
 /// movement toward zero, never past it; and as much is settled as can be.
 #[kani::proof]
@@ -1276,7 +1276,7 @@ fn constructive_nets_to_zero() {
 
 /// The other way, minus the sources and minus the uses give minus the
 /// parts: a reversal of a payment made on the company's behalf mirrors it
-/// (BS-statement-3 rule 6), so the two drop out together.
+/// (BS-statement-3 statement 11), so the two drop out together.
 #[kani::proof]
 #[kani::unwind(4)]
 fn constructive_mirrors() {
@@ -1320,7 +1320,7 @@ fn any_party_inputs() -> (Option<(i64, i64)>, i64, i64, i64) {
     (capital, any_amount(), any_amount(), debits)
 }
 
-/// BS-partner-3 items 1-4: the direction is the sign of what counts (paid above
+/// BS-partner-3 statements 1-5: the direction is the sign of what counts (paid above
 /// zero, received below), neither exactly when nothing counts; cash and
 /// in kind each carry the whole's sign and together never exceed it; a
 /// money target is all cash; a contribution counts all of itself; a
@@ -1393,7 +1393,7 @@ fn direction_of_is_the_sign() {
     kani::cover!(amount == 0, "nothing moved");
 }
 
-/// BS-partner-3 item 3 and BS-ledger-5: the target is odd. Negating the lines negates the
+/// BS-partner-3 statement 3 and BS-ledger-5: the target is odd. Negating the lines negates the
 /// capital movement, the money net and the own-account movement, and the
 /// property comes from the other side, so it keeps its size: the result
 /// is the original's reverse_target, whenever it isn't the debits fallback
@@ -1837,7 +1837,7 @@ fn basis_figures_laws() {
     );
 }
 
-/// `kernel::unrecovered_cost` (BS-statement-5 item 4), for every revenue
+/// `kernel::unrecovered_cost` (BS-statement-5 statement 5), for every revenue
 /// and expense a line could carry: never below zero; the shortfall when
 /// expenses exceed revenue, else zero; never above max(expenses, 0) when
 /// revenue isn't negative (expenses may be negative: a reimbursement
@@ -1859,7 +1859,7 @@ fn unrecovered_cost_laws() {
     kani::cover!(u == 0 && revenue > expenses, "repaid, and more");
 }
 
-/// `kernel::running_bounds` (BS-arap-2 INVARIANT 2; the bounds every
+/// `kernel::running_bounds` (BS-arap-2 invariant 6; the bounds every
 /// document command and reversal checks), for every total and every
 /// sequence of up to `N` dated movements a line could carry: it says
 /// Within exactly when every running balance is in `0 ..= total`, and
@@ -1899,7 +1899,7 @@ fn bounds_check_matches_definition() {
 }
 
 /// `kernel::bounds_kept` (the check every document command and reversal
-/// runs, BS-arap-2 INVARIANT 2): on books in bounds at every date it
+/// runs, BS-arap-2 invariant 6): on books in bounds at every date it
 /// is the definition (`running_bounds` of the books after the step); and
 /// whenever it says Within, no running balance after the step is further
 /// outside `0 ..= total` than before it, so a step that mends books an

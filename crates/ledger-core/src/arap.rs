@@ -203,7 +203,7 @@ pub enum DocStatus {
     /// Less than nothing owed: more paid against it than it is for, a
     /// credit balance owed back (to the customer on an invoice, by the
     /// vendor on a bill). Only in books an earlier version left out of
-    /// bounds (BS-arap-2 INVARIANT 2); never a receivable or a payable, so
+    /// bounds (BS-arap-2 invariant 6); never a receivable or a payable, so
     /// never aged.
     Overpaid,
     /// Its own entry stands but carries no line tagged with it (an older
@@ -263,7 +263,7 @@ pub struct DocState {
 
 impl DocState {
     /// It owes less than nothing or more than its total: books an earlier
-    /// version left out of bounds (BS-arap-2 INVARIANT 2; plan P4b.14 item 3),
+    /// version left out of bounds (BS-arap-2 invariant 6; plan P4b.14 item 3),
     /// which the control check lists for attention.
     pub fn out_of_bounds(&self) -> bool {
         self.outstanding < Decimal::ZERO || self.outstanding > self.total
@@ -1144,8 +1144,8 @@ pub type DocumentPartKey = (Option<crate::AccountId>, Option<crate::ClassId>);
 /// GOAL: a document's lines post to their accounts and count toward their
 ///       projects, and a document whose lines name neither posts exactly
 ///       as before.
-/// SOURCE: BS-statement-5 item 3 (job costing: the revenue and
-///         direct costs identified with one job) and item 8 (an
+/// SOURCE: BS-statement-5 statement 2 (job costing: the revenue and
+///         direct costs identified with one job) and statement 4 (an
 ///         invoice's or bill's line names its project); BS-arap-3 and plan
 ///         P4b S4.1 A-10 (every bill line names its account).
 /// INVARIANTS:

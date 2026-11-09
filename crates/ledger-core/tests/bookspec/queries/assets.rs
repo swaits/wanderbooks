@@ -364,7 +364,7 @@ pub(crate) fn check_schedule_plan(b: &Books<'_>, x: &Expect) {
 }
 
 /// Check one `register_row` expectation: the asset's row of the fixed
-/// asset register as of `as_of` (BS-asset-1 rules 7 and 8, BS-asset-3):
+/// asset register as of `as_of` (BS-asset-1 statements 23, 24 and 28, BS-asset-3):
 /// `acquired` and `in_service` (`YYYY-MM-DD`), `cost`,
 /// `accumulated_scheduled` (the schedule's), `accumulated_posted` (what
 /// the books carry), `unposted` (the one less the other), `book_value`

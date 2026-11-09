@@ -161,7 +161,7 @@ the W-9 when the vendor's W-9 flag follows it. A value in a line of a known
 type that only a newer version writes (a 1099 decision or reason kind, a
 payment method's kind) is newer, never corrupt.
 
-*Enforced:* `ledger_store::format` (`JournalFormat::declared`, `require_format`, `require_feature`), `Store::ensure_feature`, `Store::declare_journal_format`, `StoreError::FormatUpgradePending`, `format::setting_feature`, `format::tax_category_feature`.
+*Enforced:* `ledger_store::format` (`format::declared`, `require_format`, `require_feature`), `Store::ensure_feature`, `Store::declare_journal_format`, `StoreError::FormatUpgradePending`, `format::setting_feature`, `format::tax_category_feature`.
 *Checked:* `ledger-store` `tests/settings.rs` (`a_change_needs_journal_format_2`), `tests/format_upgrade.rs` (`a_write_waiting_for_the_upgrade_journals_nothing`, a newer feature still refused); `tests/p2_compat.rs` (every P3 setting key and tax category needs a feature); the unit tests in `format.rs`.
 
 **WB-format-3 The other way round: the format upgrade, with the owner's

@@ -310,8 +310,8 @@ rounding). **Checked:** `ledger-core`
 `a_category_rounds_once_across_different_percents`); Kani
 `deductible_amount_rounds_once`, `deductible_amount_refuses_overflow`;
 bridge `deductible_amount_agrees`; Lean `bookspec/lean/Bookspec/Deductible.lean`
-(`Deductible.near`, `tie_away_pos`, `tie_away_neg`, `sign`, `neg`, `of_sum`,
-`per_account_differs`, `scale_books`, `scale_percents`: the one rounding, at any
+(`Deductible.near`, `Deductible.tie_away_pos`, `Deductible.tie_away_neg`, `Deductible.sign`, `Deductible.neg`, `Deductible.of_sum`,
+`Deductible.per_account_differs`, `Deductible.scale_books`, `Deductible.scale_percents`: the one rounding, at any
 number of accounts and any sizes); bookspec `examples/tax-category-required.toml`.
 
 ### Product rules

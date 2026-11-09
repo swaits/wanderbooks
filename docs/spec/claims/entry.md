@@ -203,7 +203,7 @@ pinned; every tool over every old book).
 `Ledger::{set_draft_state, discard_draft, posted_seq}`,
 `Store::{set_draft_state, discard_draft, post_entry_checked}` (the gate the server posts a hand draft by; `Store::post_entry` stays the primitive commands and fixtures post through); events
 `entry.draft_state_set`, `entry.draft_discarded` (feature `drafts_v2`).
-**Checked:** Lean `Step.discard`, `Step.discard_keeps_books`,
+**Checked:** Lean `Step.discard_keeps_books`,
 `Step.discard_unblocks_close`; `ledger-core` `tests/invariants.rs`
 (`discard_unblocks_close`); `ledger-store` `tests/store.rs`
 (`draft_states_replay_and_project`, `drafts_v2_waits_for_the_upgrade`,

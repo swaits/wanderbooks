@@ -36,8 +36,8 @@ Rules: B-13, B-26, B-35, B-36.
 `closePart_total`, `trueUp_total`, `trueUp_running`,
 `closePart_eq_trueUp`, `cumulative_drift`, `statement_after_close`,
 `statement_unmoved_by_close`, `Apportion.rem_pos_of_rank_lt`,
-`apportion_drift`, `allocW_sum`, `allocW_drift`,
-`allocW_cumulative_drift`, `allocW_cumulative_total`; properties
+`Apportion.apportion_drift`, `Apportion.allocW_sum`, `Apportion.allocW_drift`,
+`Apportion.allocW_cumulative_drift`, `Apportion.allocW_cumulative_total`; properties
 `prop_split_*`, `each_members_capital_chains_across_statements`,
 `each_member_stays_within_a_cent_of_their_share`,
 `members_capital_never_drifts_a_cent_from_their_share`,

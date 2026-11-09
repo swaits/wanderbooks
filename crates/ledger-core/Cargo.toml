@@ -33,8 +33,8 @@ num-rational = "0.4"
 toml = "1"
 # The specification lives in its own repository (P13 step 6, D-34, D-65),
 # pinned to a commit.
-bookspec-checker = { git = "https://git.swaits.com/swaits/bookspec", rev = "218b5c89799f6b9df80607e711c29bb559a485ac" }
-bookspec-runner = { git = "https://git.swaits.com/swaits/bookspec", rev = "218b5c89799f6b9df80607e711c29bb559a485ac" }
+bookspec-checker = { git = "https://git.swaits.com/swaits/bookspec", rev = "aaa02cac4388daa30c01d3a0978e2ee06386cce9" }
+bookspec-runner = { git = "https://git.swaits.com/swaits/bookspec", rev = "aaa02cac4388daa30c01d3a0978e2ee06386cce9" }
 ledger-package = { path = "../ledger-package" }
 ledger-import = { path = "../ledger-import" }
 ledger-store = { path = "../ledger-store" }

@@ -74,7 +74,12 @@ Kani `bounds_check_matches_definition`, `bounds_kept_is_the_definition_on_books_
 Lean `Documents.control_agrees`, `Documents.Step.document_unattached`,
 `Documents.Step.reverse_moves`, `Documents.Reachable.unattached_zero`
 (through role assignments and releases),
-`Documents.Reachable.control_is_documents`. The model's limits: it
+`Documents.Reachable.control_is_documents`; bookspec examples
+`arap-hand-control-posting-refused` (BS-arap-2 `lines-that-stand`: the
+hand line is refused, the line an earlier version wrote still reads right),
+run by the adapter, and `arap-a-hand-line-on-receivables-is-taken`
+(`documents-kept-apart`), which names the option wanderbooks did not pick
+and is skipped for it. The model's limits: it
 starts from empty books (legacy lines are covered by the identity
 `Documents.control_agrees` alone), it names documents by one id space (an injective
 coding of `DocRef`), and an account becoming a control account by its
@@ -182,6 +187,11 @@ behind the feature `documents_v2`. **Checked:**
 **Pick:** a vendor's invoice reference is compared after the normalization that drops case and spaces (`Ledger::check_vendor_ref`); the old text names no separate decision for it.
 **Pick (BS-arap-10):** `ignore-case-and-spaces`; a vendor's invoice reference is compared after the normalization that drops case and spaces.
 
+wanderbooks goes one step past the option: it also drops hyphens, so
+"ACME-123", "acme 123" and "Acme123" are one reference (`Ledger::check_vendor_ref`,
+pinned by `duplicate_vendor_ref_refused_unless_a_reason_is_given`); the record's option
+names case and spaces only, and none of its examples distinguishes the two.
+
 **Enforced:** `Ledger::next_invoice_number`, `Ledger::check_vendor_ref`,
 `PartySnapshot::from_party` (the snapshots at issue, D-55);
 `Store::create_invoice_issued` (feature `documents_v2`);
@@ -195,7 +205,14 @@ every amount through `amount_parts`).
 `tests/arap_standing.rs` (`documents_v2_waits_for_the_upgrade`,
 `issued_pdf_is_filed_with_the_invoice_or_nothing_is`); over the wire
 `crates/ledger-cli/tests/documents.rs` (`an_invoice_from_issue_to_paid`,
-`duplicate_vendor_invoice_refused`); the page `ledger-import`
+`duplicate_vendor_invoice_refused`); bookspec examples
+`arap-invoice-numbers-run-in-order-and-are-kept` (the adapter numbers each
+invoice with `Ledger::next_invoice_number` and reads the place back from the
+number the engine stored), `arap-a-vendor-invoice-is-entered-once`
+(the refusal of a second bill, from `Ledger::check_vendor_ref`) and, for
+BS-arap-10, `arap-a-vendor-reference-differing-in-case-and-spaces-is-a-duplicate`;
+`arap-a-vendor-reference-differing-in-case-and-spaces-is-not-a-duplicate`
+names `compare-exactly` and is skipped; the page `ledger-import`
 `tests/spec_import.rs::invoice_pdf_prints_what_it_should` and the unit tests
 `labels_are_data`, `an_invoice_renders_deterministically`,
 `two_hundred_lines_paginate`; the viewer
@@ -260,7 +277,14 @@ item.
 `tests/arap_props.rs` (`status_is_a_function_of_journal_and_date` with
 write-offs); over the wire `crates/ledger-cli/tests/documents.rs`
 (`write_off_then_recovery`, `write_off_needs_evidence`); bookspec
-`bad-debt-direct-write-off`; Lean `Documents.Step.writeOff_unattached`,
+`bad-debt-direct-write-off` (BS-arap-5 `direct-write-off`; the allowance
+method has no example yet, it needs a provision event) and, for BS-arap-11,
+`arap-a-recovery-reverses-the-write-off-in-its-year` (the adapter reverses
+the write-off with `Store::reverse_entry` and takes the money with
+`Store::receive_payment` in the write-off's tax year, and posts a plain
+entry in a later one);
+`arap-a-recovery-is-a-movement-on-the-document` names `recovery-movement`
+and is skipped; Lean `Documents.Step.writeOff_unattached`,
 `Documents.writeOff_within_bounds`; the viewer
 `a_write_off_shows_on_the_timeline`; the item
 `a_write_off_is_flagged_for_the_cpa`.
@@ -324,7 +348,17 @@ check_discount}`, `arap::{Application, Fee, SettleParams, SettlementRow}`,
 `ledger-store` `tests/arap_standing.rs`
 (`a_settlement_names_its_lines_and_replays`, `settlement_waits_for_documents_v2`,
 `legacy_payment_events_keep_the_positional_rule`), `tests/arap_props.rs`;
-`ledger-cli` `tests/documents.rs`; `ledger-package`'s aging tie-out test.
+`ledger-cli` `tests/documents.rs`; `ledger-package`'s aging tie-out test;
+bookspec examples `arap-a-settlement-pays-several-documents-and-names-each-line`
+and `arap-a-settlement-that-is-not-exact-is-refused` (BS-arap-6, through
+`Store::settle`, each refusal read off the engine's own error), and one per
+option picked: `arap-a-discount-taken-is-booked-when-it-is-taken` (BS-arap-12),
+`arap-a-processors-fee-is-posted-gross` (BS-arap-13) and
+`arap-a-discount-on-an-asset-bill-is-refused` (BS-arap-14); the examples
+`arap-a-discount-expected-is-booked-with-the-document`,
+`arap-a-processors-fee-is-not-shown-against-the-deposit` and
+`arap-a-discount-on-an-asset-bill-is-apportioned` name the options not picked
+and are skipped.
 The Lean step is the document constructor of the Lean documents model, with
 every control line tagged (`Documents.settle_unattached`); no new step
 constructor.

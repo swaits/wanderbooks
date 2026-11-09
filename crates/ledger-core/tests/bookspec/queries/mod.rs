@@ -1,6 +1,7 @@
 use crate::*;
 
 pub(crate) mod assets;
+pub(crate) mod book;
 pub(crate) mod commands;
 pub(crate) mod dates;
 pub(crate) mod documents;
@@ -93,6 +94,9 @@ impl Books<'_> {
             "invoice_numbers" => self.answer_invoice_numbers(q),
             "draft_state" => self.answer_draft_state(q),
             "evidence" => self.answer_evidence(q),
+            "setting" => self.answer_setting(q),
+            "role_account" => self.answer_role_account(q),
+            "tax_summary" => self.answer_tax_summary(q),
             "run" => self.answer_run(q),
             "disposal" => self.answer_disposal(q),
             "depreciation_schedule" => self.answer_depreciation_schedule(q),
@@ -127,7 +131,7 @@ impl Books<'_> {
                     .map(|a| Value::String(format!("{} {}", a.code, a.name)))
                     .collect(),
             )),
-            "iif_lines" | "iif_changes" => self.answer_iif(q),
+            "iif_lines" | "iif_changes" | "iif_line_ending" => self.answer_iif(q),
             "rename_account" | "add_account" | "set_tax_category" => self.answer_command(q),
             other => Err(Refusal::new(
                 RuleId::new(Area::Ledger, 1),

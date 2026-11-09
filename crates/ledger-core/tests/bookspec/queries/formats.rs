@@ -26,6 +26,22 @@ impl Books<'_> {
                         .collect(),
                 ))
             }
+            "iif_line_ending" => {
+                // The file's own bytes: CR LF (wanderbooks' pick, cr-lf)
+                // or the host's line ending. The engine writes CR LF on
+                // every platform, so the first line ending is the file's.
+                let ending = if iif.text.contains("\r\n") {
+                    "cr-lf"
+                } else if iif.text.contains('\n') {
+                    "lf"
+                } else {
+                    "cr-lf"
+                };
+                Ok(json_figures([(
+                    "line_ending".to_string(),
+                    ending.to_string(),
+                )]))
+            }
             _ => Ok(Value::Array(
                 iif.changes
                     .iter()
@@ -53,7 +69,7 @@ impl Books<'_> {
 
 /// The formats appendix's queries, and the test (another crate's) that
 /// checks them against the engine.
-pub(crate) const FORMAT_QUERIES: [(&str, &str); 2] = [
+pub(crate) const FORMAT_QUERIES: [(&str, &str); 3] = [
     (
         "iif_lines",
         "ledger-package the_bookspec_iif_example_matches_the_engine",
@@ -61,6 +77,10 @@ pub(crate) const FORMAT_QUERIES: [(&str, &str); 2] = [
     (
         "iif_changes",
         "ledger-package the_bookspec_iif_example_matches_the_engine",
+    ),
+    (
+        "iif_line_ending",
+        "ledger-core the_runner_reports_every_claimed_rule_green",
     ),
 ];
 
@@ -97,6 +117,16 @@ pub(crate) fn check_format_shape(ex: &Example, x: &Expect) {
             for r in rows {
                 assert_eq!(r.len(), 3, "{}: iif_changes row {r:?}", ex.id);
             }
+        }
+        ("iif_line_ending", Values::Figures(f)) => {
+            assert!(
+                matches!(
+                    f.get("line_ending").map(String::as_str),
+                    Some("cr-lf" | "lf")
+                ),
+                "{}: iif_line_ending is cr-lf or lf: {f:?}",
+                ex.id
+            );
         }
         (q, _) => panic!("{}: {q}: values of the wrong shape", ex.id),
     }

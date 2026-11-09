@@ -3991,6 +3991,7 @@ impl Ledger {
             closed: Decimal::ZERO,
             given: vec![Decimal::ZERO; members.len()],
             order: Vec::new(),
+            trued_up: false,
         };
         for p in closed {
             let Some(m) = &p.members_closed else {
@@ -4000,6 +4001,8 @@ impl Ledger {
                 break;
             }
             regime.since_seq = p.close_seq;
+            regime.trued_up |= matches!(m.rule, periods::MemberRule::Cumulative { .. })
+                && p.closing_entry.is_some();
             regime.order.clone_from(&m.members);
             regime.closed += m.net;
             for ((capital, _), part) in m.members.iter().zip(&m.parts) {
@@ -4042,6 +4045,24 @@ impl Ledger {
             )
             .collect();
         Some((since_seq, split))
+    }
+
+    /// Whether a closed members period's count has been trued up by the
+    /// close or an earlier one of its count: a close under the cumulative
+    /// rule that posted an entry has run the first true-up of the rounding
+    /// of closes under earlier rules (WB-partner-1), so each member's
+    /// running total is then strictly under one minor unit from exact
+    /// (BS-partner-1 statement 5). Before that, a count that holds closes
+    /// from the older rules may still be a unit or more away. `None` for a
+    /// period not closed to members.
+    pub fn member_close_trued_up(&self, id: PeriodId) -> Option<bool> {
+        let p = self.periods.get(&id)?;
+        let m = p.members_closed.as_ref()?;
+        let seq = p.close_seq?;
+        Some(
+            self.regime_where(&m.members, |q| q.close_seq <= Some(seq))
+                .trued_up,
+        )
     }
 
     /// The net closed by the run of cumulative members closes, with exactly
@@ -9665,6 +9686,11 @@ pub(crate) struct Regime {
     /// count the next members close begins, when it is these members'
     /// ([`Ledger::members_regime`]). Empty when there is none.
     pub order: Vec<(AccountId, Decimal)>,
+    /// Whether a close under the cumulative rule that posted an entry is
+    /// among the count's closes: its true-up has run, so each member's
+    /// running total is then under one minor unit from exact
+    /// (BS-partner-1 statement 5).
+    pub trued_up: bool,
 }
 
 impl Regime {

@@ -1,4 +1,4 @@
-//! The audit's statements checks (plan P8; BS-ledger-13): the books,
+//! The audit's statements checks (plan P8; WB-ledger-16): the books,
 //! read as an auditor would, through a date, as a list of findings.
 //!
 //! ```text
@@ -481,24 +481,36 @@ fn closes(ledger: &Ledger, through: NaiveDate) -> Vec<Finding> {
             continue;
         }
         if let Some((_, split)) = ledger.member_close_split(p.id) {
-            out.extend(check_split(p.id, &p.name, &split, unit));
+            let trued_up = ledger.member_close_trued_up(p.id).unwrap_or(false);
+            out.extend(check_split(p.id, &p.name, &split, unit, trued_up));
         }
     }
     out
 }
 
 /// One close's members: each one's running total of the closes must be
-/// within a minor unit of its exact share (the cumulative rule,
-/// `kernel::apportion_cumulative`).
+/// under a minor unit from its exact share (the cumulative rule,
+/// `kernel::apportion_cumulative`; BS-partner-1 statement 5).
+///
+/// `trued_up` says the count has had a close under the cumulative rule
+/// that posted an entry ([`crate::Ledger::member_close_trued_up`]). Until
+/// then the count may still carry the rounding of closes made under the
+/// older rules, which the first such close trues up (BS-partner-1
+/// statement 6; WB-partner-1), so only a drift beyond a unit is raised.
+/// Once trued up, a drift of a unit or more is raised: the bound is strict.
 pub fn check_split(
     period: u64,
     name: &str,
     split: &[crate::periods::MemberSplit],
     unit: Decimal,
+    trued_up: bool,
 ) -> Vec<Finding> {
     split
         .iter()
-        .filter(|m| (m.running - m.exact).abs() > unit)
+        .filter(|m| {
+            let drift = (m.running - m.exact).abs();
+            if trued_up { drift >= unit } else { drift > unit }
+        })
         .map(|m| {
             Finding::new(
                 "close_split_drifts",
@@ -670,7 +682,7 @@ fn settings_problems(problems: &[String]) -> Vec<Finding> {
 }
 
 // ---------------------------------------------------------------------------
-// Scope, method and the attestation bar (BS-ledger-13; D-9)
+// Scope, method and the attestation bar (WB-ledger-16; D-9)
 // ---------------------------------------------------------------------------
 
 /// What an audit covers.
@@ -763,7 +775,7 @@ impl Effort {
 }
 
 /// How an attestation was made, as the client says (self-reported: the
-/// books record the claim, never prove it; BS-ledger-13).
+/// books record the claim, never prove it; WB-ledger-16).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct Method {
     /// The model that checked, as it names itself.

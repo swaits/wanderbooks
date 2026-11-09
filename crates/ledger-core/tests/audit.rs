@@ -196,6 +196,7 @@ fn seeds() -> Vec<(&'static str, Vec<Finding>)> {
                 exact: dec("1.05"),
             }],
             dec("0.01"),
+            true,
         ),
     ));
 

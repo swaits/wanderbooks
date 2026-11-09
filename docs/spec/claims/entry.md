@@ -239,7 +239,14 @@ of the exemption). The store's gate, the server's previews and digest, the
 viewer and Needs attention all call it; none decides on its own.
 **Enforced:** `ledger_core::evidence::{requirement, Requirement}`,
 `Store::post_entry_checked`. **Checked:** `ledger-cli` `tests/drafts.rs`
-(`gui_and_server_gate_agree`).
+(`gui_and_server_gate_agree`); `ledger-core` `tests/evidence_gate.rs`
+(`a_hand_entry_is_required_above_the_threshold_with_its_reason`,
+`a_required_account_always_needs_a_receipt`,
+`exempt_accounts_exempt_only_whole_entries`,
+`the_threshold_is_strict_and_the_exemption_needs_every_line`,
+`a_split_purchase_is_one_purchase`,
+`only_the_same_day_description_and_accounts_make_a_split_group`,
+`debits_past_exact_arithmetic_are_refused_by_the_sum_and_past_the_threshold_for_the_gate`).
 
 **WB-entry-6** Exempt by origin, each with its source: a period's closing
 entry (derived from the books), a schedule month's or a depreciation
@@ -254,7 +261,14 @@ account, or as part of a split group; exempt only when every line is on an
 exempt account.
 **Enforced:** `ledger_core::evidence::requirement`. **Checked:**
 `ledger-cli` `tests/drafts.rs` (`a_reversal_needs_no_receipt_of_its_own`,
-`a_draft_waits_for_its_receipt_and_posts`).
+`a_draft_waits_for_its_receipt_and_posts`); `ledger-core`
+`tests/evidence_gate.rs` (`a_reversal_of_a_large_entry_needs_no_receipt_of_its_own`,
+`a_closing_entry_is_derived_so_it_needs_no_receipt`,
+`a_schedule_months_posting_has_the_schedule_for_evidence`,
+`a_depreciation_run_has_the_assets_schedule_for_evidence`,
+`disposals_and_remittances_are_exempt_by_their_recorded_origin`,
+`a_document_entry_and_a_payroll_run_carry_their_own_evidence`,
+`a_recurring_draft_is_the_policys`).
 
 **WB-entry-7** A draft has a state: `building` (the default) or
 `awaiting_evidence` with a note. A state is a note on the draft; it moves

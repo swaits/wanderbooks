@@ -256,7 +256,7 @@ checked to change no figure or entry;
 
 **WB-ledger-10** Approval rules block anything only when the company enforces them (`policy.approval_rules = enforce`; off by default). Then a draft a rule covers posts only once its approver approved it as it stands (its fingerprint: date, description, every line and class), and an operation that would post such an entry at once (an invoice, a bill, a payment, payroll, a remittance, a disposal) is refused: it is drafted instead. Reversals, closes, depreciation and amortization follow from entries already posted and are exempt. A rule names accounts that take postings, and an account a rule names can't be renumbered until the rule is revised.
 *Enforced:* `Ledger::approvals_missing`; `Store::post_entry` and `approval_gate` (`ApprovalRequired`, `ApprovalNeedsDraft`), `check_renumber_account`; `ledger-mcp` `books.post_entry` (`approval_required`).
-*Checked:* `ledger-store` `tests/settings.rs` (`approval_rules_off_by_default`, `approvals_cover_every_post`).
+*Checked:* `ledger-store` `tests/settings.rs` (`approval_rules_off_by_default`, `approvals_cover_every_post`); `ledger-core` `tests/conventions_refusals.rs` (`approvals_are_missing_only_under_enforcement_and_fail_closed`, `the_fingerprint_notices_parties_shares_and_reasons`, `an_approval_is_refused_for_a_posted_or_unknown_entry_and_bad_text`, `an_approval_rule_needs_an_approver_and_a_limit`), `tests/ledger_edits.rs` (`an_account_is_renumbered_only_where_the_books_can_stand_it`).
 
 ## B-31 Renaming an account changes its label, nothing else
 
@@ -417,7 +417,13 @@ withdraw_attachment_duplicate}` and `Store::attach`'s dedup; feature
 `reimbursed_is_derived_from_settles_only`); `ledger-cli`
 `tests/evidence.rs` (`get_receipt_default_has_text_and_no_bytes`,
 `page_image_is_a_png_of_the_page`,
-`consolidation_never_removes_an_entrys_only_evidence`); fuzz targets
+`consolidation_never_removes_an_entrys_only_evidence`); `ledger-core`
+`tests/evidence_gate.rs` (`annotation_fields_are_trimmed_and_blank_ones_dropped`,
+`an_annotation_field_alone_is_a_record`,
+`an_annotation_refuses_a_zero_number_a_negative_amount_and_a_date_off_the_calendar`,
+`an_annotation_needs_a_field_or_a_note`), `tests/ledger_edits.rs`
+(`annotations_replace_by_file_and_receipt_numbers_run_from_the_max`,
+`a_settlement_of_entries_names_existing_distinct_entries_only`); fuzz targets
 `fuzz_extract_pdf` and `fuzz_extract_xlsx`.
 
 ## B-45 An audit is deterministic over the books; an attestation is a claim by a named client
@@ -485,6 +491,14 @@ INVARIANTS:
      which is journaled as a decision.
   7. Nothing here moves a figure. Every refusal leaves the journal
      unchanged; every write waits for the feature `audits`.
+  8. `close_split_drifts` holds a members close to BS-partner-1
+     statement 5: once the count has had a close under the cumulative
+     rule that posted an entry (its true-up, statement 6; the close
+     journals its rule and whether it posted), a member's running total
+     MUST be under one minor unit from its exact share, so a drift of a
+     unit or more is a finding. Before that true-up the count may still
+     carry the rounding of closes made under the older rules, so only a
+     drift beyond one unit is. Closes under the older rules are not read.
 SCENARIOS:
   1. The same books audited twice through one day: one run, one
      workpaper; the second call files and journals nothing.
@@ -502,7 +516,8 @@ SCENARIOS:
 ```
 
 *Enforced:* `ledger_core::audit` (`statements`, `Finding`, `CODES`,
-`AttestationBar::counts`, `Scope`, `Method`), `ledger_store::audit`
+`AttestationBar::counts`, `Scope`, `Method`, `check_split`;
+`Ledger::member_close_trued_up`), `ledger_store::audit`
 (`Store::figure_head`, `integrity_findings`, `record_audit_run`,
 `attest_receipt`, `review_entry`, `attest_period`, `run_for_period`,
 `attestations`, `PROGRAM_VERSION`), `ledger_import::workpaper_pdf`,
@@ -510,10 +525,67 @@ ledger-mcp `tools/audit.rs` and the gate in `books.export_cpa_package`,
 journal feature `audits`.
 *Checked:* `ledger-core` `tests/audit.rs`
 (`audit_detects_each_seeded_defect`, `below_bar_not_counted`,
-`amount_mismatch_never_counts`); `ledger-store` `tests/audit.rs`
+`amount_mismatch_never_counts`), `tests/audit_branches.rs`
+(`the_cash_flow_check_says_what_it_found`,
+`control_accounts_report_differences_unattached_lines_and_overpaid_documents`,
+`a_close_split_drifts_by_the_regime_it_was_made_under`,
+`a_count_is_trued_up_by_the_first_cumulative_close_that_posts`,
+`a_reversal_without_its_own_receipt_is_info_and_only_when_the_policy_would_cover_it`,
+`the_bar_setting_parses_what_it_names_and_refuses_the_rest`,
+`the_bar_counts_at_its_edges_and_only_asks_for_what_it_sets`); `ledger-store` `tests/audit.rs`
 (`audit_writes_wait_for_audits`, `a_run_is_idempotent_on_the_figure_head`,
 `stale_head_period_attestation_refused`, `integrity_detects_each_seeded_defect`,
 `books_the_version_before_p8_wrote_wait_for_the_upgrade`); `ledger-import`
 `workpaper_pdf_is_deterministic`; `ledger-cli` `tests/audit.rs`
 (`audit_is_deterministic`, `cpa_package_refuses_without_a_counted_audit_unless_a_reason_is_given`,
 `audits_wait_for_the_upgrade`).
+
+## Reconciliations: which accounts the monthly close reconciles, and when each is due
+
+**bookspec:** none
+
+**Claims:** yes (wholly a product rule: no bookspec rule states it)
+
+**Pick:** CONVENTION, `docs/parties-and-attachments.md` "Reconciliations" (Needs attention: an account with activity not reconciled through last month's end; bank and card statements close monthly). No authority states it, so it is the product's own.
+
+### Product rules
+
+**WB-ledger-17** The accounts the monthly close reconciles, and when each is due, are one rule (`ledger_store::reconcilable`), read by the digest's `unreconciled_accounts` and the viewer's Needs attention alike.
+
+```text
+GOAL: the monthly close's reconciliation step can't be forgotten, and
+      the digest and the viewer never disagree on what is due.
+SOURCE: CONVENTION (bank and card statements close monthly);
+        docs/parties-and-attachments.md "Reconciliations".
+INVARIANTS:
+  1. The accounts reconciled are the cash accounts, then the card
+     accounts, then every other liability with a recorded statement, each
+     once. The cash accounts are `books.cash_accounts` resolved by code, in
+     the order given (a code the chart lacks is dropped, and the names are
+     not then consulted); when none is set, the asset accounts that are
+     not placeholders and whose names say cash ("cash", "bank",
+     "checking", "savings", "money market"), in ascending account id. The
+     card accounts are `ledger_core::parties::card_accounts`, in ascending
+     account id. The liabilities with a statement follow in the order the
+     statements are given (the store's: period end, then file). A card is
+     expected before its first statement; a liability not named a card
+     joins once its first statement is recorded; an asset with a statement
+     and no cash name never does.
+  2. An account is due through the last day of the month before today's
+     when it has a posted line dated on or before that day and no
+     reconciliation not voided reaches it (is dated on or after that
+     day); otherwise it is not due. A draft line, activity only this
+     month, and an account with no lines are not due; a voided
+     reconciliation reaches nothing.
+SCENARIOS:
+  1. Cash named "Checking" and a card named "Visa Card", an "Amex" with
+     no statement: the checking and the card are reconciled, the Amex is
+     not; once the Amex has a statement it joins, after the card.
+  2. Today is March 10th, the checking has January activity and a
+     reconciliation through January 31st: it is due through February
+     28th; one through February 28th clears it; voiding that one makes it
+     due again.
+```
+
+**Enforced:** `reconcilable_accounts`, `cash_accounts`, `card_accounts`, `last_month_end`, `reconciled_through`, `reconciliation_due` (`ledger_store::reconcilable`).
+**Checked:** `ledger-store` `tests/reconcilable.rs` (`cash_accounts_are_the_assets_whose_names_say_cash`, `cash_accounts_by_name_come_in_ascending_account_id`, `configured_cash_accounts_win_by_code`, `card_accounts_follow_the_recorded_method_else_the_name`, `reconcilable_accounts_are_cash_then_cards_then_liabilities_with_statements`, `last_month_end_is_the_last_day_of_the_month_before`, `reconciled_through_is_the_newest_standing_reconciliation`, `an_account_is_due_until_a_reconciliation_reaches_last_months_end`, `only_posted_activity_through_last_months_end_makes_an_account_due`).

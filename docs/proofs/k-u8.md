@@ -4,8 +4,8 @@ _Folded into `docs/verification.md` by the integrator; this note is the
 unit's own record._
 
 Kernel sweep unit U8 (`plan/kernel-sweep-audit.md` section 3). The audit
-cites B-18, B-25 and B-38; the bookspec ids (`docs/spec/rules.md`) are
-BS-arap-1 (aging), BS-arap-2 (a control account is its documents) and
+cites its three rules by the retired numbering; the bookspec ids
+(`docs/spec/rules.md` maps them) are BS-arap-1 (aging), BS-arap-2 (a control account is its documents) and
 BS-asset-4 (the section 704(c) built-in gain). The reconciliation itself
 is BS-partner-4's (the book-to-tax capital identity), which the K-1
 module already cites, so the functions cite it too.

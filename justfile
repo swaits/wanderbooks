@@ -112,7 +112,12 @@ _kani set:
             awk -v mod="$mod" '/#\[kani::proof\]/ { p = 1; next } p && match($0, /^fn [a-z_0-9]+/) { print mod "::" substr($0, 4, RLENGTH - 3); p = 0 }' "$f"
         done | sort
     )
-    bare=$(sed 's/.*:://' <<<"$all")
+    # Sorted by bare name: comm and uniq -d below need sorted input, and
+    # `all` is sorted by qualified name, which differs once proofs live in
+    # modules (proofs::allocate::x sorts apart from proofs::x). Unsorted,
+    # comm put the slow harnesses in the fast set and the two checks
+    # below saw nothing (found 2026-11-09: the fast set ran 94, not 87).
+    bare=$(sed 's/.*:://' <<<"$all" | sort)
     slow=$(tr ' ' '\n' <<<"{{kani_slow}}" | sort)
     # Two harnesses with one name would make kani_slow (a list of bare
     # names) ambiguous.

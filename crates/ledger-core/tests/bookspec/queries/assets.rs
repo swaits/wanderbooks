@@ -110,10 +110,14 @@ impl Books<'_> {
         let mut m = JsonMap::new();
         let mut total = Decimal::ZERO;
         for (d, amount) in &plan {
-            m.insert(d.to_string(), Value::String(figure(*amount)));
+            // The plan's own amounts are already whole units of the
+            // currency (BS-prepaid-1, -4): a yen schedule's month is 333,
+            // not 333.00, and a dollar schedule's 33.33. Printed as they
+            // stand, never padded to the cent.
+            m.insert(d.to_string(), Value::String(amount.to_string()));
             total += *amount;
         }
-        m.insert("total".to_string(), Value::String(figure(total)));
+        m.insert("total".to_string(), Value::String(total.to_string()));
         Ok(Value::Object(m))
     }
 

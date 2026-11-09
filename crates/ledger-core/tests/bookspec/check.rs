@@ -58,6 +58,8 @@ pub(crate) fn check(b: &Books<'_>, x: &Expect) -> Option<&'static str> {
         "code",
         &["rename_account", "set_tax_category"],
     );
+    only(x.key.is_some(), "key", &["setting"]);
+    only(x.role.is_some(), "role", &["role_account"]);
     only(x.name.is_some(), "name", &["rename_account"]);
     only(x.category.is_some(), "category", &["set_tax_category"]);
     only(x.account.is_some(), "account", &["add_account"]);
@@ -144,6 +146,9 @@ pub(crate) fn check(b: &Books<'_>, x: &Expect) -> Option<&'static str> {
         "invoice_numbers" => check_invoice_numbers(b, x),
         "draft_state" => check_draft_state(b, x),
         "evidence" => check_evidence(b, x),
+        "setting" => check_setting(b, x),
+        "role_account" => check_role_account(b, x),
+        "tax_summary" => check_tax_summary(b, x),
         q => {
             let &(_, by) = FORMAT_QUERIES
                 .iter()

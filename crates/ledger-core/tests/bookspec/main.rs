@@ -47,7 +47,7 @@ pub(crate) use std::path::{Path, PathBuf};
 pub(crate) use chrono::{Datelike, NaiveDate};
 pub(crate) use ledger_core::calendar::{PeriodDefaults, period_defaults};
 pub(crate) use ledger_core::parties::{Basis, MoneyAccounts};
-pub(crate) use ledger_core::settings::{Company, Source};
+pub(crate) use ledger_core::settings::{Change, Company, Source};
 pub(crate) use ledger_core::tax_capital::TaxCapitalRow;
 pub(crate) use ledger_core::{
     AccountType, AssetId, BillFields, CashFlowParams, CashFlowSection, CashFlowStatement, CloseTo,
@@ -55,8 +55,8 @@ pub(crate) use ledger_core::{
     InstrumentId, InstrumentKind, InvoiceFields, Ledger, LedgerError, MemberCapital, MemberClose,
     Money, NewAsset, NewSchedule, PartyId, PartyMember, PartyShare, PaymentAccounts,
     ReconcilingKind, Role, ScheduleConvention, ScheduleId, ScheduleKind, Share, Side, Terms,
-    TinFacts, TinType, VendorId, W9Facts, cash_flow, members_equity, profit_and_loss_for_period,
-    trial_balance_as_of, vendor_1099_report,
+    TinFacts, TinType, VendorId, W9Facts, cash_flow, control_account, members_equity,
+    profit_and_loss_for_period, tax_summary, trial_balance_as_of, vendor_1099_report,
 };
 pub(crate) use ledger_store::{DepreciationRun, DisposalPreview, Store, StoreError};
 pub(crate) use ledger_vault::{Tin, Vault};
@@ -74,6 +74,7 @@ pub(crate) use books::*;
 pub(crate) use check::check;
 pub(crate) use common::*;
 pub(crate) use queries::assets::*;
+pub(crate) use queries::book::*;
 pub(crate) use queries::commands::*;
 pub(crate) use queries::dates::*;
 pub(crate) use queries::documents::*;

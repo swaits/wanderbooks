@@ -454,27 +454,30 @@ pub fn check_id(id: &str) -> Result<(), String> {
 /// ([`crate::kernel::apportion`]): the parts sum to `amount` exactly
 /// (INVARIANT 2).
 pub fn split(amount: Decimal, shares: &[Decimal], places: Option<u32>) -> Option<Vec<Decimal>> {
-    use crate::kernel::{Rounding, round_places};
-    let exact: Vec<Decimal> = shares
-        .iter()
-        .map(|s| amount.checked_mul(*s))
-        .collect::<Option<_>>()?;
+    use crate::kernel::{Leftover, Rounding, round_places, split_by_weights_with};
     let Some(places) = places else {
-        let mut parts = exact;
-        crate::kernel::plug_last(amount, &mut parts)?;
-        return Some(parts);
+        // No rounding: each part is amount × share, the last absorbing
+        // any difference (the exact split's own plug).
+        return split_by_weights_with(
+            amount,
+            shares,
+            Decimal::ONE,
+            Decimal::ONE,
+            Some,
+            Leftover::LastAbsorbs,
+        );
     };
-    let mut parts: Vec<Decimal> = exact
-        .iter()
-        .map(|e| round_places(*e, places, Rounding::TowardZero))
-        .collect::<Option<_>>()?;
-    let remainders: Vec<Decimal> = exact
-        .iter()
-        .zip(&parts)
-        .map(|(e, p)| e.checked_sub(*p))
-        .collect::<Option<_>>()?;
-    crate::kernel::apportion(amount, &mut parts, &remainders, Decimal::new(1, places))?;
-    Some(parts)
+    // amount × share, each part truncated toward zero to `places`, the
+    // leftover by largest remainder. The shares sum to one by the
+    // conventions' own validation, so the total is one, never their sum.
+    split_by_weights_with(
+        amount,
+        shares,
+        Decimal::ONE,
+        Decimal::new(1, places),
+        |x| round_places(x, places, Rounding::TowardZero),
+        Leftover::LargestRemainder,
+    )
 }
 
 impl Conventions {

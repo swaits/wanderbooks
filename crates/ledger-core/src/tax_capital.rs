@@ -441,12 +441,11 @@ impl RunningSplit {
         Ok((sum > Decimal::ZERO).then_some(sum))
     }
 
-    /// `whole × weight / sum`, the exact share of one member.
+    /// `whole × weight / sum`, the exact share of one member, through
+    /// [`crate::kernel::share_of`] (the one definition of the shape; its
+    /// division is the engine's, rounded at 28 significant digits).
     fn share(whole: Decimal, weight: Decimal, sum: Decimal) -> Result<Decimal, LedgerError> {
-        whole
-            .checked_mul(weight)
-            .and_then(|p| p.checked_div(sum))
-            .ok_or_else(too_large)
+        crate::kernel::share_of(whole, weight, sum).ok_or_else(too_large)
     }
 
     /// Split `whole` (to the cent) by `weights` (non-negative, one per

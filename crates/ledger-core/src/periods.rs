@@ -120,6 +120,10 @@ pub struct MemberClose {
 /// (owner, 2026-10-13). A loss splits as the negation of the same gain.
 /// Closes journaled under the rules of 2026-10-13 replay with it, in cents
 /// whatever the currency; new closes split with [`allocate_cumulative`].
+/// The arithmetic equals [`crate::kernel::split_by_weights_with`] with
+/// total one, the cent as its step, toward zero and
+/// [`crate::kernel::Leftover::LargestRemainder`], the sign applied after;
+/// it stays here, frozen, because posted closes replay with it.
 pub fn allocate(
     amount: rust_decimal::Decimal,
     shares: &[rust_decimal::Decimal],
@@ -180,6 +184,10 @@ pub fn allocate_last_absorbs(
 /// (replay of a legacy close with a huge journaled amount, BS-entry-4).
 /// The same split, to the cent, for every amount [`allocate_last_absorbs`]
 /// accepts: this is the frozen rule, only its overflow now an error.
+/// The arithmetic equals [`crate::kernel::split_by_weights_with`] with
+/// total one, the cent as its step, half away from zero and
+/// [`crate::kernel::Leftover::LastAbsorbs`]; it stays here, frozen,
+/// because posted closes replay with it.
 pub fn try_allocate_last_absorbs(
     amount: rust_decimal::Decimal,
     shares: &[rust_decimal::Decimal],

@@ -460,7 +460,7 @@ fn closing_entry_balances() {
 }
 
 // ---------------------------------------------------------------------------
-// 1099 payments (rules.md B-19)
+// 1099 payments (BS-1099-1)
 // ---------------------------------------------------------------------------
 
 fn any_role() -> kernel::PayRole {
@@ -485,7 +485,7 @@ fn any_tag() -> kernel::Tag {
     }
 }
 
-/// `kernel::payment_bucket` is the B-19 table, all 16 cases: a tag naming
+/// `kernel::payment_bucket` is the BS-1099-1 table, all 16 cases: a tag naming
 /// the line's account decides (card or network: Card; otherwise Counts);
 /// else the role does, and with no tag naming its account a financing line
 /// never counts and a card account's line is always Card.
@@ -726,7 +726,7 @@ fn apportion_cumulative_is_exact() {
 /// `cumulative_drift` carry any weights and any amounts).
 const DRIFT: i64 = 1 << 12;
 
-/// **Bounded drift** (rules.md B-13) for members with these integer
+/// **Bounded drift** (BS-partner-1) for members with these integer
 /// weights (shares w_i / W, W their sum): a cumulative members close,
 /// modelled as `periods::allocate_cumulative` runs it at whole minor units
 /// (unit 1), hands out exactly its net, and leaves every member's running
@@ -968,7 +968,7 @@ fn apply_cash_mirrors() {
 /// An accepted entry always has cash flows, and they explain its cash
 /// exactly: the sections' cash sums to the entry's cash, and what no cash
 /// settled (each section's movement plus its cash) sums to zero
-/// (rules.md B-14 rules 3 and 9: the statement foots, entry by entry).
+/// (BS-statement-3 rules 3 and 9: the statement foots, entry by entry).
 #[kani::proof]
 #[kani::unwind(5)]
 fn entry_flows_sum_to_cash() {
@@ -1043,7 +1043,7 @@ fn entry_flows_are_bounded() {
 
 /// A reversal's cash flows are its original's, negated, part by part:
 /// what lets an entry and its reversal in one period drop out of the
-/// statement together (rules.md B-14 rule 6). End to end, on entries of
+/// statement together (BS-statement-3 rule 6). End to end, on entries of
 /// up to two lines: at three (`NF`) one run went past half an hour at
 /// four jobs on a busy machine (2026-10-21), so three lines are proved in
 /// two halves, `entry_movements_of_a_reversal_mirror` and
@@ -1227,8 +1227,8 @@ fn any_way() -> kernel::OnBehalf {
     }
 }
 
-/// What a member or a lender paid or received for the company (rules.md
-/// B-14 rule 11, D-42) invents and loses nothing: the parts net to zero,
+/// What a member or a lender paid or received for the company (
+/// BS-statement-3 rule 11, D-42) invents and loses nothing: the parts net to zero,
 /// so an entry's flows still sum to its cash; each part settles its own
 /// movement toward zero, never past it; and as much is settled as can be.
 #[kani::proof]
@@ -1276,7 +1276,7 @@ fn constructive_nets_to_zero() {
 
 /// The other way, minus the sources and minus the uses give minus the
 /// parts: a reversal of a payment made on the company's behalf mirrors it
-/// (rules.md B-14 rule 6), so the two drop out together.
+/// (BS-statement-3 rule 6), so the two drop out together.
 #[kani::proof]
 #[kani::unwind(4)]
 fn constructive_mirrors() {
@@ -1300,7 +1300,7 @@ fn constructive_mirrors() {
 }
 
 // ---------------------------------------------------------------------------
-// A party's part of an entry (rules.md B-35)
+// A party's part of an entry (BS-partner-3)
 // ---------------------------------------------------------------------------
 
 /// The inputs `kernel::party_target` reads, any in range: a capital
@@ -1320,7 +1320,7 @@ fn any_party_inputs() -> (Option<(i64, i64)>, i64, i64, i64) {
     (capital, any_amount(), any_amount(), debits)
 }
 
-/// B-35 items 1-4: the direction is the sign of what counts (paid above
+/// BS-partner-3 items 1-4: the direction is the sign of what counts (paid above
 /// zero, received below), neither exactly when nothing counts; cash and
 /// in kind each carry the whole's sign and together never exceed it; a
 /// money target is all cash; a contribution counts all of itself; a
@@ -1374,7 +1374,7 @@ fn party_target_direction_is_its_sign() {
     );
 }
 
-/// B-35 item 3 and B-9: the target is odd. Negating the lines negates the
+/// BS-partner-3 item 3 and BS-ledger-5: the target is odd. Negating the lines negates the
 /// capital movement, the money net and the own-account movement, and the
 /// property comes from the other side, so it keeps its size: the result
 /// is the original's reverse_target, whenever it isn't the debits fallback
@@ -1409,7 +1409,7 @@ fn party_target_is_odd() {
     );
 }
 
-/// B-9: reversing a reversal gives the original back, and reverse_target
+/// BS-ledger-5: reversing a reversal gives the original back, and reverse_target
 /// never panics: past the range it refuses.
 #[kani::proof]
 fn reverse_target_is_an_involution() {
@@ -1438,7 +1438,7 @@ fn reverse_target_is_an_involution() {
 }
 
 // ---------------------------------------------------------------------------
-// Proration by days (depreciation, B-15; daily schedules, B-16)
+// Proration by days (depreciation, BS-asset-1; daily schedules, BS-prepaid-1)
 // ---------------------------------------------------------------------------
 
 /// Most month parts the proration harnesses explore.
@@ -1687,7 +1687,7 @@ fn prorated_through_refuses_malformed_input() {
 }
 
 // ---------------------------------------------------------------------------
-// Catching up and truing up (B-15)
+// Catching up and truing up (BS-asset-1)
 // ---------------------------------------------------------------------------
 
 /// A catch-up run posts max(0, min gap), never negative, and never carries
@@ -1753,7 +1753,7 @@ fn true_up_reaches_the_target() {
     kani::cover!(down > 0, "depreciation past the day, credited back");
 }
 
-/// `kernel::basis_figures` (rules.md B-25), for every rule and every
+/// `kernel::basis_figures` (BS-asset-4), for every rule and every
 /// cost, adjusted basis and value within the bounds: a purchase
 /// depreciates from cost with no §723 basis or built-in gain; a
 /// contribution's §723 basis is the adjusted basis and its built-in gain
@@ -1797,7 +1797,7 @@ fn basis_figures_laws() {
     );
 }
 
-/// `kernel::unrecovered_cost` (rules.md B-37 item 4), for every revenue
+/// `kernel::unrecovered_cost` (BS-statement-5 item 4), for every revenue
 /// and expense a line could carry: never below zero; the shortfall when
 /// expenses exceed revenue, else zero; never above max(expenses, 0) when
 /// revenue isn't negative (expenses may be negative: a reimbursement
@@ -1819,7 +1819,7 @@ fn unrecovered_cost_laws() {
     kani::cover!(u == 0 && revenue > expenses, "repaid, and more");
 }
 
-/// `kernel::running_bounds` (rules.md B-38 INVARIANT 2; the bounds every
+/// `kernel::running_bounds` (BS-arap-2 INVARIANT 2; the bounds every
 /// document command and reversal checks), for every total and every
 /// sequence of up to `N` dated movements a line could carry: it says
 /// Within exactly when every running balance is in `0 ..= total`, and
@@ -1859,7 +1859,7 @@ fn bounds_check_matches_definition() {
 }
 
 /// `kernel::bounds_kept` (the check every document command and reversal
-/// runs, rules.md B-38 INVARIANT 2): on books in bounds at every date it
+/// runs, BS-arap-2 INVARIANT 2): on books in bounds at every date it
 /// is the definition (`running_bounds` of the books after the step); and
 /// whenever it says Within, no running balance after the step is further
 /// outside `0 ..= total` than before it, so a step that mends books an
@@ -1996,7 +1996,7 @@ fn line_amount_is_exact() {
 }
 
 // ---------------------------------------------------------------------------
-// Tax categories (B-32)
+// Tax categories (BS-ledger-11)
 // ---------------------------------------------------------------------------
 
 /// `n / 100` rounded half away from zero: the reference for the one
@@ -2013,7 +2013,7 @@ fn round_cent(n: i64) -> Option<i64> {
     }
 }
 
-/// `kernel::deductible_amount` (rules.md B-32, B-21; CHOICE, owner
+/// `kernel::deductible_amount` (BS-ledger-11, BS-entry-3; CHOICE, owner
 /// 2026-11-07, D-67) over up to three accounts in exact range: the exact
 /// sum of the shares (`book × percent ÷ 100`) rounded once to the nearest
 /// cent, ties away from zero; never the sum of per-account roundings; and

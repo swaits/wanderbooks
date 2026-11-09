@@ -57,7 +57,7 @@ pub(crate) fn receipt_required_text(e: StoreError, policy: &ReceiptPolicy) -> St
             split_group
         )
     };
-    // A draft's debits may be past exact arithmetic (rules.md B-28): then
+    // A draft's debits may be past exact arithmetic (BS-entry-4): then
     // the refusal says so in place of the sum.
     let (total, debits) = match debits {
         Some(t) => (money(t), t.to_string()),
@@ -140,7 +140,7 @@ pub(crate) fn settings_problems(ledger: &Ledger, cfg: &Settings) -> Vec<String> 
     // Named as the books keep them.
     let how = " with books.set_setting";
     // The cash flow roles: codes the chart lacks here; the rest is the
-    // engine's own check, the one the statement refuses on (rules.md B-14
+    // engine's own check, the one the statement refuses on (BS-statement-3
     // rule 2), so the two never disagree.
     let lists = [
         (
@@ -455,7 +455,7 @@ pub(crate) fn optional_text(s: &str) -> Option<String> {
 
 /// The sum of `values`, each computed or refused: refused (as text) when
 /// one is, or when the sum is past exact arithmetic. Figures an earlier
-/// version journaled are as journaled (rules.md B-28).
+/// version journaled are as journaled (BS-entry-4).
 pub(crate) fn checked_sum(
     values: impl IntoIterator<Item = Result<Decimal, ledger_core::LedgerError>>,
     what: &str,
@@ -541,7 +541,7 @@ pub(crate) fn lines_settled(entry: &JournalEntry) -> bool {
     if entry.status() == ledger_core::EntryStatus::Posted {
         return true;
     }
-    // A draft's lines are as journaled, of any size (rules.md B-28): sides
+    // A draft's lines are as journaled, of any size (BS-entry-4): sides
     // past exact arithmetic are not settled lines.
     let side = |s: Side| -> Option<Decimal> {
         entry
@@ -644,13 +644,13 @@ pub(crate) fn resolve_class(store: &Store, class: &str) -> Result<u32, String> {
 }
 
 /// A tool description that ends with the one sentence for its kind of
-/// dates (rules.md B-30), so no tool says other than the resolver does.
+/// dates (BS-period-3), so no tool says other than the resolver does.
 pub(crate) fn described(what: &str, kind: ledger_core::calendar::PeriodKind) -> String {
     format!("{what} {}", kind.describe())
 }
 
 /// The warning for a revenue or expense account created without a tax
-/// category (rules.md B-32).
+/// category (BS-ledger-11).
 pub(crate) fn uncategorized_warning(code: &str, name: &str) -> String {
     format!(
         "{} {} has no tax category: the tax summary will list it as uncategorized. Propose one from books.tax_categories and set it with books.set_tax_category once the human agrees.",

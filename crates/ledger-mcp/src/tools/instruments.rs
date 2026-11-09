@@ -7,8 +7,8 @@
 //! ```text
 //! GOAL: the agent records how each payment was made and why each vendor
 //!       does or doesn't get a 1099, and the worksheet never guesses.
-//! SOURCE: docs/spec/rules.md B-19 (Treas. Reg. §1.6041-1(a)(1)(iv),
-//!         §1.6041-3; sources/irs-1099-payment-method.md); plan/served.md
+//! SOURCE: BS-1099-1 (Treas. Reg. §1.6041-1(a)(1)(iv),
+//!         §1.6041-3; docs/spec/sources/irs-1099-payment-method.md); plan/served.md
 //!         4.9; DECISION D-40 (owner, 2026-10-20).
 //! INVARIANTS:
 //!   1. A 1099 decision names who made it (decided_by; decided_on

@@ -1,8 +1,8 @@
 # K-U4: collection totals (`kernel/total.rs`)
 
 Kernel sweep unit U4 (`plan/kernel-sweep-audit.md` sections 2 and 3). The
-authority is rules.md B-21 (amounts are exact; rounding only on returns) and
-B-28 (no input may reach a panic), bookspec `BS-entry-3` and `BS-entry-4`.
+authority is BS-entry-3 (amounts are exact; rounding only on returns) and
+BS-entry-4 (no input may reach a panic), bookspec `BS-entry-3` and `BS-entry-4`.
 
 ## The functions
 
@@ -105,7 +105,7 @@ mirrors):
    arguments: `audit::check_articulation` (`current_earnings + closed`),
    `periods::allocate_last_absorbs` / `allocate` (`amount * share`), and the
    kernel-less helpers with `Decimal` arguments. All now refuse. Documents,
-   drafts and recurring entries are the figures B-28 lets restore oversized.
+   drafts and recurring entries are the figures BS-entry-4 lets restore oversized.
 
 ## Sites replaced
 

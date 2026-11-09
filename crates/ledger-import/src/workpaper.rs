@@ -1,4 +1,4 @@
-//! The audit workpaper as a PDF (plan P8; rules.md B-45).
+//! The audit workpaper as a PDF (plan P8; BS-ledger-13).
 //!
 //! ```text
 //! GOAL: one document a CPA or the owner can read that says what was

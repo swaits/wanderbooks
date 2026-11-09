@@ -1,14 +1,14 @@
-//! Spec-derived store tests for asset tags and serial numbers (rules.md
-//! B-24): journaling (`asset.tagged` {asset_id, tag, previous_tag},
+//! Spec-derived store tests for asset tags and serial numbers (
+//! BS-asset-3): journaling (`asset.tagged` {asset_id, tag, previous_tag},
 //! `asset.serial_set` {asset_id, serial | null}), replay on reopen, the v9
 //! SQLite projection agreeing with the journal (`Store::verify`), books
 //! written before tags existed, refusals journaling nothing, and corrupt
-//! `asset.serial_set` lines refused on open; and tax basis (B-25:
+//! `asset.serial_set` lines refused on open; and tax basis (BS-asset-4:
 //! `asset.basis_set`, pre-P3 `asset.tax_basis_set` {asset_id, rule,
 //! contributor_basis | null} replayed, the v10 schema and v13's, corrupt
 //! and newer payloads). A database at an older schema under this
 //! version's file name is rebuilt, never migrated, and P2's own file is
-//! left as it is (each schema keeps a file of its own: rules.md B-27,
+//! left as it is (each schema keeps a file of its own: BS-format-1,
 //! tests/schema_files.rs).
 //!
 //! Expectations come from the doc comments on `Store::set_asset_tag`,
@@ -405,7 +405,7 @@ fn downgrade_db_to_v8(dir: &Path) {
 
 /// A database at schema v8 under this version's own file name (what an
 /// older wanderbooks once migrated in place) is never migrated now: each
-/// schema keeps a file of its own (rules.md B-27), so this one is damaged,
+/// schema keeps a file of its own (BS-format-1), so this one is damaged,
 /// kept aside and rebuilt from the journal as the books open, and verifies.
 #[test]
 fn a_v8_database_migrates_and_verifies() {
@@ -571,7 +571,7 @@ fn a_description_change_replays_and_verifies() {
     s.verify().unwrap();
 }
 
-// ------------------------------------------------- tax basis (rules.md B-25)
+// ------------------------------------------------- tax basis (BS-asset-4)
 //
 // Expectations from `Store::set_asset_basis` (journaled as
 // `asset.basis_set`, the feature `asset_basis` declared first),
@@ -822,7 +822,7 @@ fn a_basis_set_whose_figures_disagree_still_replays() {
 }
 
 /// A basis rule or §704(c) method this version doesn't know was written
-/// by a newer one: NewerJournal, never corrupt (rules.md B-27); a figure
+/// by a newer one: NewerJournal, never corrupt (BS-format-1); a figure
 /// or fact that isn't a decimal string (or null) is corrupt.
 #[test]
 fn an_unknown_basis_rule_or_method_is_newer() {
@@ -955,7 +955,7 @@ fn downgrade_db_to_v10(dir: &Path) {
 /// for byte: this version builds its own file from the journal, its
 /// runs table keyed by entry with every run kept and the new columns
 /// empty, and it verifies; a basis set after then reloads from it (each
-/// schema in a file of its own: rules.md B-27).
+/// schema in a file of its own: BS-format-1).
 #[test]
 fn a_p2_database_is_left_and_this_versions_built_from_the_journal() {
     use ledger_core::BasisRule::*;
@@ -1175,7 +1175,7 @@ fn reversing_a_linked_acquisition_still_opens_and_verifies() {
     Store::open(&dir).unwrap().verify().unwrap();
 }
 
-// ------------------------------------------------- depreciation runs (rules.md B-15 rules 6 and 8)
+// ------------------------------------------------- depreciation runs (BS-asset-1 rules 6 and 8)
 
 /// A run is the books' record of what they carry for an asset
 /// (Ledger::accumulated_posted): recorded live, replayed from the journal,
@@ -1219,7 +1219,7 @@ fn runs_replay_reload_and_verify_catches_a_tampered_run() {
 
 /// The writer and the viewer read an `asset.depreciation_posted` line the
 /// same way: well formed and naming an asset and an entry that exist, it
-/// replays (any period an earlier version journaled, rules.md B-28);
+/// replays (any period an earlier version journaled, BS-entry-4);
 /// otherwise both refuse it as corrupt.
 #[test]
 fn the_viewer_and_writer_agree_on_a_bad_depreciation_posted_payload() {
@@ -1257,7 +1257,7 @@ fn the_viewer_and_writer_agree_on_a_bad_depreciation_posted_payload() {
     }
 }
 
-/// B-27: books an older version wrote (format 1, declaring nothing) refuse
+/// BS-format-1: books an older version wrote (format 1, declaring nothing) refuse
 /// a basis while they wait for the owner's format upgrade, a purchase's
 /// too, journaling nothing; the feature is never declared on the way (P3
 /// review, 2026-10-21).

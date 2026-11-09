@@ -1,5 +1,5 @@
 //! P3's seams: the same economic fact, computed by two pieces of the
-//! engine, agrees (or rules.md says exactly why not).
+//! engine, agrees (or bookspec's rules / `docs/spec/claims/` say exactly why not).
 //!
 //! One year of fictional books for a two-member LLC (Ana Example and Ben
 //! Example, 50/50), built through the real [`Store`]: cash and property
@@ -127,8 +127,8 @@ fn pnl_depreciation(l: &Ledger, end: NaiveDate) -> Decimal {
     pnl_expense(l, "6500", end)
 }
 
-/// The members' figures agree on every date as B-13, B-35 items 4 and 8
-/// and B-14 rule 11 say: the statement of members' equity and the K-1
+/// The members' figures agree on every date as BS-partner-1, BS-partner-3 items 4 and 8
+/// and BS-statement-3 rule 11 say: the statement of members' equity and the K-1
 /// worksheet are one roll-forward; party totals on basis all are the
 /// statement's contributions, on basis cash the K-1's cash
 /// contributions; the cash flow statement's contributions are the K-1's
@@ -178,7 +178,7 @@ fn the_members_figures_agree_on_every_date() {
                 m.contributions,
                 k.contributions_cash + k.contributions_property
             );
-            // Party totals (B-35 item 4).
+            // Party totals (BS-partner-3 item 4).
             let a = activity(&b, party, end);
             assert!(a.unresolved.is_empty(), "{name} {end}: {:?}", a.unresolved);
             assert_eq!(a.totals(Basis::All).1, m.contributions, "{name} {end}");
@@ -188,7 +188,7 @@ fn the_members_figures_agree_on_every_date() {
                 "{name} {end}"
             );
             assert_eq!(a.received_in_kind, k.contributions_property, "{name} {end}");
-            // The cash flow (B-14 rule 11, B-35 item 8).
+            // The cash flow (BS-statement-3 rule 11, BS-partner-3 item 8).
             assert_eq!(
                 kind(
                     &cf,
@@ -208,7 +208,7 @@ fn the_members_figures_agree_on_every_date() {
         // A distribution declared to Distributions Payable is a
         // distribution on the statement of members' equity when declared
         // and on the cash flow statement and in party totals when paid
-        // (B-14 rule 2, B-35 item 4).
+        // (BS-statement-3 rule 2, BS-partner-3 item 4).
         distributions_paid -= kind(
             &cf,
             CashFlowSection::Financing,
@@ -281,7 +281,7 @@ fn the_members_figures_agree_on_every_date() {
         dec("2400.00")
     );
     // Mid-year, the declaration is unpaid: the statement counts it, party
-    // totals and the cash flow don't yet (B-35 item 4's second condition).
+    // totals and the cash flow don't yet (BS-partner-3 item 4's second condition).
     let mid = d("2026-06-30");
     assert_eq!(
         activity(&b, b.ana, mid).totals(Basis::Cash).0,
@@ -296,7 +296,7 @@ fn the_members_figures_agree_on_every_date() {
     );
 }
 
-/// B-14 rule 2, from the seam review: a distribution declared to a
+/// BS-statement-3 rule 2, from the seam review: a distribution declared to a
 /// liability and paid later is a financing outflow when paid (ASC
 /// 230-10-45-15(a)), its declaration a noncash financing activity; before
 /// the fix it was "Cash paid to suppliers and employees".
@@ -349,7 +349,7 @@ fn a_distribution_declared_then_paid_is_financing_when_paid() {
     );
 }
 
-/// B-35 item 9 and B-19: for a payee every entry of which names it alone,
+/// BS-partner-3 item 9 and BS-1099-1: for a payee every entry of which names it alone,
 /// party totals' paid less received (basis cash) is the 1099 worksheet's
 /// paid + excluded card + undetermined + not reportable, less what the
 /// worksheet lists as received for something else; and the worksheet
@@ -421,7 +421,7 @@ fn the_1099_worksheet_ties_to_party_totals_and_the_ledger() {
     }
 }
 
-/// The IIF's amounts on one account, through as_of (B-34: every posted
+/// The IIF's amounts on one account, through as_of (BS-format-2: every posted
 /// entry, closes left out), debit-positive.
 fn iif_total(iif: &str, account: &str) -> Decimal {
     let mut total = Decimal::ZERO;
@@ -445,8 +445,8 @@ fn iif_dates(iif: &str) -> Vec<NaiveDate> {
         .collect()
 }
 
-/// Depreciation is one figure everywhere (B-15 rule 8, B-14 rule 8,
-/// B-36): the P&L's expense, the cash flow reconciliation's add-back, the
+/// Depreciation is one figure everywhere (BS-asset-1 rule 8, BS-statement-3 rule 8,
+/// BS-partner-4): the P&L's expense, the cash flow reconciliation's add-back, the
 /// tax-basis K-1's open item, the IIF's, and the runs plus what the
 /// disposal posted; the balance sheet's accumulated depreciation is the
 /// register's posted figure, and posted differs from scheduled by exactly
@@ -602,7 +602,7 @@ fn file<'p>(p: &'p ledger_package::Package, name: &str) -> &'p str {
 }
 
 /// The CPA package as of each date: every file stops at as_of, and its
-/// figures are the tools' for the same accounts and dates (B-33).
+/// figures are the tools' for the same accounts and dates (BS-statement-4).
 #[test]
 fn the_cpa_package_as_of_each_date_is_the_tools_figures() {
     let dir = tempfile::tempdir().unwrap();

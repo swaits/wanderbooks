@@ -7,7 +7,7 @@
 //!       beginning capital, contributions (cash and property separately),
 //!       their share of income, distributions, ending capital.
 //! SOURCE: Form 1065 Schedule K-1 instructions, Item L ("Partner's capital
-//!         account analysis", on the partnership's books); B-13;
+//!         account analysis", on the partnership's books); BS-partner-1;
 //!         DECISION (owner, 2026-10-15): the CPA package carries a K-1
 //!         worksheet per member.
 //! INVARIANTS:
@@ -37,7 +37,7 @@
 //!      (kernel::apportion, ties to the earlier member): each takes at
 //!      most its own credit, and the split depends on the order the
 //!      members are given only for a tied leftover cent (never on line
-//!      order). Joint property is joint (B-13's
+//!      order). Joint property is joint (BS-partner-1's
 //!      shares, the house convention that joint funds are 50/50).
 //!   5. k1_detail's lines explain each row: per member, its cash lines
 //!      sum to contributions_cash, its property lines to
@@ -434,7 +434,7 @@ mod tests {
             (a, Side::Credit, "1000"),
         ]);
         // A hand line on receivables: only books an earlier version wrote
-        // hold one now (the control guard, rules.md B-38), so replayed.
+        // hold one now (the control guard, BS-arap-2), so replayed.
         crate::parties::replaying(|| post(&[(ar, Side::Debit, "200"), (b, Side::Credit, "200")]));
         post(&[(exp, Side::Debit, "50"), (b, Side::Credit, "50")]);
         let members = [

@@ -2,7 +2,7 @@
 //! program holds, and books a newer wanderbooks wrote. Oracle: ledger-mcp
 //! local.rs INVARIANT 3 (every book is tried before the server says it is
 //! ready; one that won't open is reported with why, on its route and in
-//! the list, and the others are served) and rules.md B-27 (newer books
+//! the list, and the others are served) and BS-format-1 (newer books
 //! are refused as newer, never as corrupt, and left as they are).
 
 use common::{Home, Server, Wire};
@@ -80,7 +80,7 @@ fn a_held_lock_is_refused_not_waited_on_forever() {
 }
 
 /// Books written by a newer wanderbooks: the server won't open them, and
-/// says to update it, not that the books are corrupt (rules.md B-27); it
+/// says to update it, not that the books are corrupt (BS-format-1); it
 /// leaves them as they are.
 #[test]
 fn newer_books_are_refused_as_newer_not_corrupt() {
@@ -90,7 +90,7 @@ fn newer_books_are_refused_as_newer_not_corrupt() {
     let mut w = ledger_store::JournalWriter::open(&dir.join(ledger_store::JOURNAL_FILE)).unwrap();
     w.append("journal.format_set", json!({"format": 3, "features": []}))
         .unwrap();
-    // The next line chains onto it, so its bytes are checked (B-27).
+    // The next line chains onto it, so its bytes are checked (BS-format-1).
     w.append(
         "fx.rate_set",
         json!({"currency": "EUR", "date": "2026-10-01", "rate": "1.10"}),

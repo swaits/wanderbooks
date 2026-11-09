@@ -318,7 +318,7 @@ fn update_party_journals_party_updated() {
     assert_eq!(got.notes.as_deref(), Some("net 30"));
 }
 
-/// Oracle: P4b S4.2 (A-13, rules.md B-39, R-A step 3): a party's email and
+/// Oracle: P4b S4.2 (A-13, BS-arap-3, R-A step 3): a party's email and
 /// default terms are `party.updated` facts the `documents_v2` feature
 /// guards. In books that haven't declared it they are refused, journaling
 /// nothing; after the upgrade they journal, replay gives them back, and an

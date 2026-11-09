@@ -78,7 +78,7 @@ fn document_lines(
 /// A document's notes, each project once, in the order first named: its
 /// late-tag note ([`projects::late_tag_note`]) for a finished or abandoned
 /// project, and on an invoice ([`projects::on_spec_invoice_note`]) one for
-/// an on-spec project (rules.md B-37 items 4, 5 and 8).
+/// an on-spec project (BS-statement-5 items 4, 5 and 8).
 fn document_notes(
     ledger: &ledger_core::Ledger,
     lines: &[DocumentLine],
@@ -157,7 +157,7 @@ fn resolve_vendor_arg(store: &Store, vendor: &str) -> Result<u64, String> {
 
 /// Whether these books declared the journal feature `documents_v2`: the
 /// bills and invoices carrying a number, terms, snapshots, references, a
-/// line's account or a quantity need it (rules.md B-27, D-52), and the
+/// line's account or a quantity need it (BS-format-1, D-52), and the
 /// bill rules A-10, A-13 and the file apply only where it is declared.
 fn documents_v2(store: &Store) -> bool {
     store

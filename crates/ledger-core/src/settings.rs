@@ -12,7 +12,7 @@
 //!       sees the same way.
 //! SOURCE: plan/served.md I-3 (the journal holds all books state) and 5.3
 //!         (setting keys); the validators carried over from
-//!         ledger-config's wanderbooks.toml parser, whose SOURCE lines
+//!         the `crates/ledger-config/src/lib.rs` parser (`parse`), whose SOURCE lines
 //!         they keep (IRS Pub. 538, Treas. Reg. §301.7701-3, IRC §704(a)).
 //! INVARIANTS:
 //!   1. Only keys in KEYS exist; a value is checked by its key's kind
@@ -22,7 +22,7 @@
 //!      must hold together ([`Settings::check_whole`]), or none is made.
 //!   3. Replay takes any value of the right shape ([`shape`]): a check a
 //!      later version tightens never makes older books unreadable
-//!      (rules.md B-28).
+//!      (BS-entry-4).
 //!   4. A setting never holds a full TIN, except the company's own EIN
 //!      (`company.ein`, decided 2026-10-16, D-5): nine digits standing
 //!      alone, bare or printed the way an SSN or EIN is (3-2-4 or 2-7,
@@ -142,7 +142,7 @@ pub enum Kind {
     /// A positive whole number (a day count, the first invoice number).
     Count,
     /// Payment terms, in their one canonical spelling ([`crate::Terms`],
-    /// rules.md B-39).
+    /// BS-arap-3).
     Terms,
     /// Payment methods (A-3): a list of `{kind, label, lines, link?, qr?}`.
     PaymentMethods,
@@ -633,7 +633,7 @@ impl Company {
 }
 
 /// `policy.require_tax_category`: whether a revenue or expense account
-/// must map to a line of the return (rules.md B-32; DECISION, owner,
+/// must map to a line of the return (BS-ledger-11; DECISION, owner,
 /// 2026-10-20: warn by default; a company may refuse).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TaxCategoryPolicy {
@@ -723,7 +723,7 @@ pub fn holds_printed_tin(text: &str) -> bool {
 /// EIN (2-7) forms count as there, but a bare run of nine digits joined
 /// to a letter or to the URL punctuation `/ = ? & #` does not: it is an
 /// id in a path or query (an app store listing's `id284882215`), not a
-/// TIN someone wrote down (rules.md B-26).
+/// TIN someone wrote down (BS-partner-2).
 pub fn holds_printed_tin_in_link(text: &str) -> bool {
     printed_tin(text, true)
 }
@@ -1936,7 +1936,7 @@ mod tests {
         assert_eq!(s.get("company.name").unwrap().seq, 7);
     }
 
-    /// policy.require_tax_category (rules.md B-32): warn or refuse, one
+    /// policy.require_tax_category (BS-ledger-11): warn or refuse, one
     /// spelling each ("required" and "require" are refuse), nothing else
     /// ("off" is no value: the warning is the floor); unset is warn.
     #[test]

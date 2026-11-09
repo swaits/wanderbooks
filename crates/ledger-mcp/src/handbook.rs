@@ -31,7 +31,7 @@
 //!   6. A section says an invoice's or bill's lines take a project only
 //!      for books that declared the journal feature
 //!      `document_line_projects`; for the rest, that they wait for their
-//!      format upgrade (rules.md B-27, B-37 item 8).
+//!      format upgrade (BS-format-1, BS-statement-5 item 8).
 //! ```
 
 use crate::settings::Settings;
@@ -175,7 +175,7 @@ pub fn section_with(
         .map(|(_, md)| render(md))
 }
 
-/// What omitted report dates mean (rules.md B-30), in the words every
+/// What omitted report dates mean (BS-period-3), in the words every
 /// report tool's description uses (`ledger_core::calendar::PeriodKind`).
 pub fn period_rule() -> String {
     use ledger_core::calendar::PeriodKind;
@@ -186,7 +186,7 @@ pub fn period_rule() -> String {
     )
 }
 
-/// How an invoice's or bill's lines reach a project (rules.md B-37 item
+/// How an invoice's or bill's lines reach a project (BS-statement-5 item
 /// 8), for books that declared the journal feature
 /// `document_line_projects` or not yet (INVARIANT 6).
 pub fn document_projects_rule(declared: bool) -> &'static str {
@@ -519,7 +519,7 @@ mod tests {
             assert!(!text.contains("{document_projects}"), "{id}");
             assert!(!text.contains("{documents_v2}"), "{id}");
         }
-        // The default period, in the descriptions' own words (B-30).
+        // The default period, in the descriptions' own words (BS-period-3).
         assert!(
             section("tracing-figures", &s, "USD", true)
                 .unwrap()
@@ -591,7 +591,7 @@ mod tests {
             with.contains("books.create_invoice and books.create_bill take class on each line")
         );
         assert!(!with.contains("takes no project"));
-        // The owner's decision (B-37 item 8, D-43): one project or none a
+        // The owner's decision (BS-statement-5 item 8, D-43): one project or none a
         // line, no percentage split, a shared cost by the allocation
         // convention.
         assert!(with.contains("Each line names one project or none"));

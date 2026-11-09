@@ -1,5 +1,5 @@
 //! Spec tests for the K-1 worksheet's tax-basis capital
-//! (`ledger_core::tax_capital`, rules.md B-36): Item L on the tax basis
+//! (`ledger_core::tax_capital`, BS-partner-4): Item L on the tax basis
 //! beside the book figures, every figure the books can't know left open
 //! and named, and the reconciliation from book to tax capital.
 //!
@@ -223,7 +223,7 @@ fn the_year() -> (Books, EntryId, AssetId, AssetId) {
     (b, devices, laptop, camera)
 }
 
-/// Item L on the tax basis, per member, for the year (B-36): a cash
+/// Item L on the tax basis, per member, for the year (BS-partner-4): a cash
 /// contribution, a contribution of property, a distribution, a year of
 /// depreciation.
 #[test]
@@ -748,7 +748,7 @@ fn unequal_contributors_and_a_member_with_none() {
     assert_eq!(none.reconciliation, Reconciliation::default());
 }
 
-/// The odd cent on the tax basis runs (B-36 with D-38; owner, 2026-10-22):
+/// The odd cent on the tax basis runs (BS-partner-4 with D-38; owner, 2026-10-22):
 /// three devices contributed 50/50, each worth less than its basis by an
 /// odd number of cents, the built-in gain shared cumulatively, so the
 /// members' tax property ends one cent apart, never three. By hand:
@@ -843,7 +843,7 @@ fn three_members(b: &mut Books) -> (AccountId, [MemberCapital; 3]) {
     )
 }
 
-/// A member never takes a cent of an entry they had no part in (B-36,
+/// A member never takes a cent of an entry they had no part in (BS-partner-4,
 /// Form 1065 Item L: capital contributed is the basis of the property
 /// that member contributed; P4 review, 2026-10-22). Three members; by
 /// hand, each set of contributing members its own running split:
@@ -948,7 +948,7 @@ fn a_member_outside_an_entry_never_takes_its_cents() {
 }
 
 /// An entry's odd cent is the same whatever span the worksheet is asked
-/// for (B-36; P4 review, 2026-10-22). Tobin and Morgan, 50/50: a monitor
+/// for (BS-partner-4; P4 review, 2026-10-22). Tobin and Morgan, 50/50: a monitor
 /// contributed 2026-01-01 (400.00, basis 412.37, gain −12.37), reversed
 /// 2026-07-01; a desk contributed 2026-11-01 (600.00, basis 655.91, gain
 /// −55.91). The reversal takes the monitor's split back out of the count,
@@ -999,7 +999,7 @@ fn an_entrys_odd_cent_is_the_same_in_every_span() {
 
 /// The running split takes the entries in date order, whatever order
 /// they were posted in, so next year's beginning is this year's ending
-/// to the cent (B-36). Tobin and Morgan, 50/50: a chair dated 2027-03-01
+/// to the cent (BS-partner-4). Tobin and Morgan, 50/50: a chair dated 2027-03-01
 /// (250.00, basis 263.41) posted first, then a monitor dated 2026-01-01
 /// (400.00, basis 412.37). The monitor comes first: −6.19 / −6.18, then
 /// the chair −6.70 / −6.71. Taken in posting order the 2027 worksheet
@@ -1070,7 +1070,7 @@ fn largest_remainder(exact: &[i128], total: i128, negative: bool) -> Vec<i128> {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(5000))]
 
-    /// Law: RunningSplit INVARIANTS 1 and 2 (B-36 with D-38): for any run
+    /// Law: RunningSplit INVARIANTS 1 and 2 (BS-partner-4 with D-38): for any run
     /// of splits, wholes of either sign to the cent (a third of them a few
     /// cents, so the running whole often comes back to zero) and each its own
     /// weights among up to four members (small ratios, scaled by a cent

@@ -141,7 +141,7 @@ fn a_members_page_shows_the_same_capital_before_and_after_a_close() {
     assert_eq!(closing, [Decimal::new(3, 2), Decimal::new(3, 2)]);
 }
 
-/// A member's page in a yen book splits in whole yen (B-3, B-13), as the
+/// A member's page in a yen book splits in whole yen (BS-ledger-1, BS-partner-1), as the
 /// closes and the statement do. Ann and Bo at 50% each. "Owed to them"
 /// (CapitalStatement INVARIANT 5): 101 yen due to the members, 50.5 each
 /// exactly, the tied yen to Ann, listed first: Ann 51, Bo 50. Property

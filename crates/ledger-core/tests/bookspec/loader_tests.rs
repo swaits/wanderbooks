@@ -218,7 +218,7 @@ pub(crate) fn a_members_close_declared_with_another_rounding_is_refused() {
     });
 }
 
-/// A period's dates are the rule's (rules.md B-30): an example saying the
+/// A period's dates are the rule's (BS-period-3): an example saying the
 /// fiscal year to date starts on January 1 under a July fiscal year fails.
 #[test]
 #[should_panic(expected = "period from")]
@@ -560,7 +560,7 @@ pub(crate) fn a_members_reconciliation_shows_every_cause() {
 }
 
 /// A project named twice in `setup.projects` is refused (names are
-/// unique, rules.md B-37).
+/// unique, BS-statement-5).
 #[test]
 #[should_panic(expected = "a project named")]
 pub(crate) fn a_project_named_twice_is_refused() {

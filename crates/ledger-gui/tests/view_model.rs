@@ -84,7 +84,7 @@ fn build(plan: &Plan, tag: &str) -> (TestDir, Source, ledger_core::Ledger) {
         .collect();
     // As replay posts them: random lines land on receivables and payables
     // by hand, as books an earlier version wrote can hold them (the
-    // control guard, rules.md B-38, refuses them as new work), and the
+    // control guard, BS-arap-2, refuses them as new work), and the
     // overview must still read them.
     ledger_core::parties::replaying(|| {
         for &(back, dr, cr, cents) in &plan.entries {
@@ -169,7 +169,7 @@ proptest! {
             fy = fy - Months::new(12);
         }
         prop_assert_eq!(b.fiscal_ytd(), (fy, t));
-        // One default period everywhere (rules.md B-30): what a report or
+        // One default period everywhere (BS-period-3): what a report or
         // register opens on is the fiscal year to date, the server's
         // resolver's own answer for no dates, and party totals count this
         // calendar year.
@@ -700,7 +700,7 @@ fn more_origins_and_parties() {
     assert!(!r.missing_receipt, "a remittance isn't a hand-made entry");
 }
 
-/// Defect 8, repros 1.4.2 and 1.4.3 (rules.md B-32): Needs attention lists
+/// Defect 8, repros 1.4.2 and 1.4.3 (BS-ledger-11): Needs attention lists
 /// every revenue and expense account without a tax category, with
 /// activity or not: one never used, one used only last fiscal year; never
 /// a header, an account with a category, or an asset. Info under warn,
@@ -791,7 +791,7 @@ fn needs_attention_flags_every_uncategorized_pl_account_defect_8() {
     assert!(item(&b).is_none());
 }
 
-/// "Show all dates" is every date (P3 settled in design, rules.md B-30):
+/// "Show all dates" is every date (P3 settled in design, BS-period-3):
 /// the register's and the reports' all-dates range runs from the first
 /// posted entry through the later of today and the last, so an entry
 /// dated after today is never left out of it (as party totals' "All time"

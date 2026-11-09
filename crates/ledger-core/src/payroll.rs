@@ -50,7 +50,7 @@ impl PayrollLine {
     /// Gross minus all employee withholdings and deductions. Must be >= 0:
     /// you cannot withhold more than the employee earned. Refused
     /// (TooLargeToCompute), never a panic, past exact arithmetic: a run is
-    /// restored as journaled (rules.md B-28).
+    /// restored as journaled (BS-entry-4).
     pub fn net_pay(&self) -> Result<Decimal, LedgerError> {
         [
             self.federal_withholding,
@@ -133,7 +133,7 @@ pub fn validate_payroll_lines(lines: &[PayrollLine]) -> Result<(), LedgerError> 
 /// Every amount of every line no larger than a journal line may be
 /// (kernel::MAX_LINE_AMOUNT, ten decimal places), so net pay and the run's
 /// totals are exact (P0 review round 3, S1). For new runs only: replay
-/// restores a run as journaled (rules.md B-28).
+/// restores a run as journaled (BS-entry-4).
 pub fn check_payroll_ranges(lines: &[PayrollLine]) -> Result<(), LedgerError> {
     for line in lines {
         for amount in [

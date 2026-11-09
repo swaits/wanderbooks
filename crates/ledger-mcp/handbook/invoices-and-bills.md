@@ -5,7 +5,7 @@ revenue its lines name. A bill is a vendor's invoice to us: it posts Dr
 the expense or asset its lines name, and Cr Accounts Payable. A document's
 own figures are read from the ledger lines tagged with it, never kept on
 the document: a reversed payment, a void or a write-off comes out right
-without another copy to correct (B-38).
+without another copy to correct (BS-arap-2).
 
 {documents_v2}
 
@@ -17,7 +17,7 @@ without another copy to correct (B-38).
   An abandoned preview uses up no number.
 - Confirm with `confirmed: true` only after the human has seen it. The
   invoice posts Dr Accounts Receivable / Cr each line's account, takes the
-  next number (B-40), and the issued PDF, the page the customer gets, is
+  next number (BS-arap-4), and the issued PDF, the page the customer gets, is
   filed with it. That filed copy never changes: a later look at the
   invoice (`books.document` with `pdf: true`, or the viewer's Save invoice
   PDF) is a re-created copy as of that day, says so, and shows what has
@@ -167,7 +167,7 @@ if it was reversed, that it no longer stands).
   tie the aging to the trial balance before the CPA asks).
 - Invoice numbers are unique and sequential, voids stay visible with
   their number, nothing is deleted.
-- Every bill is coded to its real account (the Form 1065 lines, B-32),
+- Every bill is coded to its real account (the Form 1065 lines, BS-ledger-11),
   never a catch-all, with the vendor's invoice attached and its number
   recorded, and no bill is paid twice (the same vendor and number twice is
   refused).

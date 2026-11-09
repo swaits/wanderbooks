@@ -1,4 +1,4 @@
-//! The audit's statements checks (plan P8; rules.md B-45): one test per
+//! The audit's statements checks (plan P8; BS-ledger-13): one test per
 //! finding code, each seeding exactly the defect the code names.
 
 use std::collections::BTreeSet;

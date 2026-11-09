@@ -1,5 +1,5 @@
 //! Documents read their figures from the ledger lines tagged with them
-//! (plan P4b S1, D-45; rules.md B-38): the books an earlier version wrote,
+//! (plan P4b S1, D-45; BS-arap-2): the books an earlier version wrote,
 //! replayed, and the golden figures that version showed for them.
 //!
 //! The fixture `tests/fixtures/p4-arap-before` is a books dir written by
@@ -377,7 +377,7 @@ fn legacy_reversal_now_counts() {
     assert_eq!(trial_balance_json(&again), g["trial_balance"]);
 }
 
-/// B-38 scenario 5 and item 7 in books an earlier version keeps: the
+/// BS-arap-2 scenario 5 and item 7 in books an earlier version keeps: the
 /// right payment after the wrong one was reversed waits for the journal
 /// feature document_standing (an older version would count both),
 /// refused and journaling nothing until the owner's upgrade; a payment
@@ -430,7 +430,7 @@ fn repaying_after_a_reversal_waits_for_document_standing() {
 }
 
 /// The control guard through the store, and a void under a payment:
-/// refused, journaling nothing (B-38 scenarios 3 and 6).
+/// refused, journaling nothing (BS-arap-2 scenarios 3 and 6).
 #[test]
 fn the_store_refuses_hand_lines_and_a_void_under_a_payment() {
     let dir = fixture("guard");
@@ -619,7 +619,7 @@ fn legacy_documents_replay_with_tags() {
 
 /// A document's new fields (its number, terms, snapshots, references, a
 /// line's account, quantity or price) wait for the journal feature
-/// `documents_v2` (plan P4b S4.3; rules.md B-27): refused,
+/// `documents_v2` (plan P4b S4.3; BS-format-1): refused,
 /// FormatUpgradePending, journaling nothing, in books that haven't declared
 /// it; after the owner's upgrade the same writes are taken, and the books
 /// replay to what was live.
@@ -831,7 +831,7 @@ fn no_new_fields_journals_byte_for_byte() {
 }
 
 /// The issued copy is filed with the invoice or nothing is (plan P4b S4.3
-/// item 11, A-7; rules.md B-40 item 3): a refusal leaves the journal, the
+/// item 11, A-7; BS-arap-4 item 3): a refusal leaves the journal, the
 /// ledger and the allocators exactly as they were; an issue journals the
 /// entry, `invoice.created`, `receipt.attached` on that entry
 /// (`INV-0007.pdf`, `application/pdf`, "Issued invoice") and
@@ -1166,7 +1166,7 @@ fn sends_replay_and_project() {
     );
 }
 
-/// A send changes no figure (plan P4b S5, B-38): on the fixture book an
+/// A send changes no figure (plan P4b S5, BS-arap-2): on the fixture book an
 /// earlier version wrote, every report, every derived document figure and
 /// the invoice's whole DocState are the same before and after it.
 #[test]
@@ -1247,7 +1247,7 @@ fn mark_sent_on_void_refused() {
 
 /// A settlement of two invoices, a discount and a processor's fee: one
 /// entry whose events name the lines they tag, every figure derived, and
-/// the books replaying to the same lines (plan P4b S6; rules.md B-42
+/// the books replaying to the same lines (plan P4b S6; BS-arap-6
 /// INVARIANTS 1 and 3).
 #[test]
 fn a_settlement_names_its_lines_and_replays() {
@@ -1360,7 +1360,7 @@ fn a_settlement_names_its_lines_and_replays() {
 /// A settlement of more than one document, a discount or a fee needs
 /// `documents_v2`: refused, journaling nothing, in books without it, and
 /// accepted after the owner's upgrade, replaying to the same books (plan
-/// P4b S6; rules.md B-27, B-42).
+/// P4b S6; BS-format-1, BS-arap-6).
 #[test]
 fn settlement_waits_for_documents_v2() {
     use ledger_core::{Application, DocRef, SettleParams};
@@ -1422,7 +1422,7 @@ fn settlement_waits_for_documents_v2() {
 
 /// Legacy payment events carry no `line`, so replay keeps the positional
 /// rule: the first untagged control line for the payment's amount, in the
-/// order the events come (plan P4b S6; rules.md B-42 INVARIANT 3).
+/// order the events come (plan P4b S6; BS-arap-6 INVARIANT 3).
 #[test]
 fn legacy_payment_events_keep_the_positional_rule() {
     use ledger_core::{DocRef, Movement};
@@ -1460,7 +1460,7 @@ fn legacy_payment_events_keep_the_positional_rule() {
 }
 
 // ---------------------------------------------------------------------------
-// Bad-debt write-offs (plan P4b S7; rules.md B-41)
+// Bad-debt write-offs (plan P4b S7; BS-arap-5)
 // ---------------------------------------------------------------------------
 
 /// The evidence a write-off test files: a collection letter.
@@ -1527,7 +1527,7 @@ fn a_write_off_whose_notice_is_anothers_receipt_is_refused_before_posting() {
 /// A write-off needs journal feature documents_v2 (its event type is new;
 /// an older version refuses the unknown type): refused, journaling
 /// nothing, until the owner's upgrade; then it is taken and replays to the
-/// same books (R-A, B-27).
+/// same books (R-A, BS-format-1).
 #[test]
 fn write_off_waits_for_documents_v2() {
     let dir = fixture("write-off-v2");
@@ -1582,7 +1582,7 @@ fn write_off_waits_for_documents_v2() {
 /// A write-off is journaled as its entry and one `invoice.written_off`,
 /// and replay derives the same figures and the projection agrees: the
 /// invoice reads Written off, the bad-debt expense is on 6990, and the
-/// control account still equals its documents (B-41, B-38 INVARIANT 1).
+/// control account still equals its documents (BS-arap-5, BS-arap-2 INVARIANT 1).
 #[test]
 fn write_off_replays_and_projects() {
     let dir = test_dir("write-off-replay");
@@ -1600,7 +1600,7 @@ fn write_off_replays_and_projects() {
         )
         .unwrap();
     // Half paid, the rest written off: the invoice reads Written off with
-    // 50 paid and 50 written off (B-38 SCENARIO 7).
+    // 50 paid and 50 written off (BS-arap-2 SCENARIO 7).
     s.receive_payment(inv, d(2026, 4, 20), cents(5_000), bank)
         .unwrap();
     let from = journal_len(&dir.0);
@@ -1683,7 +1683,7 @@ fn write_off_replays_and_projects() {
     s.verify().unwrap();
 }
 
-/// No evidence, no write-off (B-41 INVARIANT 1; Treas. Reg.
+/// No evidence, no write-off (BS-arap-5 INVARIANT 1; Treas. Reg.
 /// §1.166-2(a)): refused, journaling nothing; an attachment already filed
 /// is linked instead, to the entry and the invoice.
 #[test]

@@ -5,8 +5,8 @@
 //! GOAL: the CPA imports the books through a day into QuickBooks Desktop,
 //!       each account declared with the type QuickBooks needs, and gets
 //!       the balances and the profit of the package's statements.
-//! SOURCE: ledger_import::iif (the IIF format and account types); rules.md
-//!         B-33 (as of a day), B-34; DECISION (owner, 2026-10-20, plan
+//! SOURCE: ledger_import::iif (the IIF format and account types);
+//!         BS-statement-4 (as of a day), BS-format-2; DECISION (owner, 2026-10-20, plan
 //!         D-36: closing entries are left out).
 //! INVARIANTS:
 //!   1. The cash accounts are BANK; the receivable and payable control
@@ -19,7 +19,7 @@
 //!      imported close would zero its period's profit. The file's
 //!      balances are the trial balance as of as_of without the closes.
 //!   3. Every class (project) in the books is declared, and each line
-//!      carries its class (rules.md B-34 rule 8).
+//!      carries its class (BS-format-2 rule 8).
 //! ```
 
 use chrono::NaiveDate;

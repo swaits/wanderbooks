@@ -1,15 +1,15 @@
 //! Projects through the server: `books.add_project`,
-//! `books.update_project`, `books.projects` and `books.project` (rules.md
-//! B-37). A project is a class with its facts: `books.add_line`'s class
+//! `books.update_project`, `books.projects` and `books.project` (
+//! BS-statement-5). A project is a class with its facts: `books.add_line`'s class
 //! tags a line with it, and every class tool keeps working.
 //!
 //! ```text
 //! GOAL: the agent records what each project is and links what belongs to
 //!       it; anyone reads what it earned and cost from the same figures
 //!       the viewer and bookspec use.
-//! SOURCE: docs/spec/rules.md B-37 (DECISION, owner, 2026-10-21; job
-//!         costing; ASC 450-30-25-1 for on-spec work), B-30 (omitted
-//!         dates), B-27 (journal feature `projects`).
+//! SOURCE: BS-statement-5 (DECISION, owner, 2026-10-21; job
+//!         costing; ASC 450-30-25-1 for on-spec work), BS-period-3 (omitted
+//!         dates), BS-format-1 (journal feature `projects`).
 //! INVARIANTS:
 //!   1. Every field is checked before anything is written; a refusal
 //!      journals nothing.
@@ -144,7 +144,7 @@ fn by_name(ledger: &Ledger) -> Vec<ClassId> {
 }
 
 /// The note `books.add_line` and `books.record_payout` give for a line tagged to a finished or
-/// abandoned project (rules.md B-37 item 5).
+/// abandoned project (BS-statement-5 item 5).
 pub(super) fn late_tag_note(ledger: &Ledger, id: ClassId) -> Option<String> {
     let f = ledger.project_facts(id)?;
     if !f.status.is_over() {
@@ -162,7 +162,7 @@ pub(super) fn late_tag_note(ledger: &Ledger, id: ClassId) -> Option<String> {
 }
 
 /// The note `books.create_invoice` gives for a line naming an on-spec
-/// project (rules.md B-37 items 4 and 8): on spec, a hoped-for payment is
+/// project (BS-statement-5 items 4 and 8): on spec, a hoped-for payment is
 /// no receivable and no income until received, so an invoice for one
 /// means there is now an agreement, or it shouldn't be an invoice.
 pub(super) fn on_spec_invoice_note(ledger: &Ledger, id: ClassId) -> Option<String> {

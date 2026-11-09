@@ -1,5 +1,5 @@
 //! Documents whose lines' sum is past exact arithmetic are refused, never a
-//! panic (kernel sweep unit K-U4; rules.md B-21, B-28).
+//! panic (kernel sweep unit K-U4; BS-entry-3, BS-entry-4).
 //!
 //! A posted entry's lines are bounded by the line cap at the moment it
 //! posts, restored or new (`entry.posted` validates), so a report's sums
@@ -9,8 +9,8 @@
 //! ```text
 //! GOAL: a document whose lines sum past exact arithmetic is refused with
 //!       a ledger error and journals nothing.
-//! SOURCE: docs/spec/rules.md B-28 (a replayed line is accepted of any
-//!         size), B-21 (amounts are exact); bookspec BS-entry-3,
+//! SOURCE: BS-entry-4 (a replayed line is accepted of any
+//!         size), BS-entry-3 (amounts are exact); bookspec BS-entry-3,
 //!         BS-entry-4.
 //! ```
 

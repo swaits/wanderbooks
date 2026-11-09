@@ -14,7 +14,7 @@ allocated "as equitably as possible" to the periods that get its
 services. Depreciation distributes cost, "less salvage (if any)", over
 the estimated useful life "in a systematic and rational manner"; it is
 "a process of allocation, not of valuation." No method is prescribed.
-→ B-15: straight line, salvage never depreciated, partial months by
+→ BS-asset-1: straight line, salvage never depreciated, partial months by
 days (each day of service bears the same cost) is one systematic and
 rational allocation.
 
@@ -25,7 +25,7 @@ normal operating cycle," paid "in advance of their use or consumption"
 (05-4); examples include insurance, interest, rents, taxes, and
 advertising not yet received (05-5). The Subtopic covers only their
 nature (05-2): it prescribes no expensing method.
-→ B-16: a prepaid is an asset, expensed over the months it covers
+→ BS-prepaid-1: a prepaid is an asset, expensed over the months it covers
 (a convention; the ASC is silent on the method).
 
 ## 210-10-45-1, -45-2, -45-5 (Balance sheet: current assets and liabilities)
@@ -47,10 +47,10 @@ operating activities" (45-10). Collections on, and disbursements for,
 loans the entity makes are investing (45-12(a), 45-13(a)). Proceeds of
 "other short- or long-term borrowing" are financing inflows (45-14(b));
 "repayments of amounts borrowed" are financing outflows (45-15(b)).
-→ B-14: money owners advance (Due to Shareholders) is borrowing, so
+→ BS-statement-3: money owners advance (Due to Shareholders) is borrowing, so
 financing, gross; a loan the company makes is investing, gross.
 
-## ASC 230 for the direct method (rules.md B-14, P3 defect 1)
+## ASC 230 for the direct method (BS-statement-3, P3 defect 1)
 
 Read 2026-10-20, not in the ASC basic view: DART's Codification pages
 need a login, and its public Roadmap on the statement of cash flows
@@ -69,7 +69,7 @@ Quotes are short; the rest is paraphrase.
 
 - **230-10-10-1** (EY p. 1): the statement's primary objective is "to
   provide relevant information about the cash receipts and cash payments
-  of an entity during a period." → B-14 rule 1.
+  of an entity during a period." → BS-statement-3 rule 1.
 - **230-10-45-1** (EY p. 1): the statement "shall report the cash effects
   during a period of an entity's operations, its investing transactions,
   and its financing transactions." (It says nothing of reconciling
@@ -92,7 +92,7 @@ Quotes are short; the rest is paraphrase.
   purchase" for PP&E; generally only those are investing, and incurring
   debt directly to the seller is a financing transaction whose later
   principal payments are financing. → rule 12 (the bill split), and the
-  limit B-14 records.
+  limit BS-statement-3 records.
 - **230-10-45-14(a)** (EY p. 42): financing inflows include "Proceeds from
   issuing equity instruments". **45-15(a)**: financing outflows include
   "Payments of dividends or other distributions to owners"; **45-15(c)**:
@@ -175,7 +175,7 @@ Quotes are short; the rest is paraphrase.
   referenced to it. → the printed statement's noncash schedule.
 - **830-230-45-1** (EY p. 81; DART 7.1): the effect of exchange-rate
   changes on cash held in foreign currencies is reported as a separate
-  part of the reconciliation of the change in cash. → B-14's scope note
+  part of the reconciliation of the change in cash. → BS-statement-3's scope note
   (single-currency books, R-5).
 - **105-10-05-1, 05-2, 05-3** (read only in their 2009 text, ASU 2009-01
   Appendix B, pp. 17-18, https://storage.fasb.org/ASU2009-01.pdf; the
@@ -264,24 +264,24 @@ An entity controlling the specified good or service before transfer is
 the principal (55-37) and recognizes revenue "in the gross amount of
 consideration" it expects (55-37B); an agent recognizes only its fee or
 commission (55-38).
-→ B-17: an app seller is the principal for its app, so its revenue is
+→ BS-revenue-1: an app seller is the principal for its app, so its revenue is
 the gross price; the platform's commission is an expense.
 
 ## 450-30-25-1 (Gain contingencies)
 
-Added 2026-10-21 for B-37 from the paragraph's text as Deloitte's DART
+Added 2026-10-21 for BS-statement-5 from the paragraph's text as Deloitte's DART
 roadmaps quote it (originally FAS 5 ¶17(a)); not re-read in the ASC
 basic view: check it there at the next reading. A contingency that might
 result in a gain "usually should not be reflected in the financial
 statements because to do so might be to recognize revenue before its
 realization."
-→ B-37 item 4: a payment hoped for from work done on spec is recorded
+→ BS-statement-5 item 4: a payment hoped for from work done on spec is recorded
 neither as a receivable nor as income until it is received; the
 unrecovered cost is a figure, never an asset.
 
 ## 340-40-25-5 (Costs to fulfill a contract)
 
-Added 2026-10-21 for B-37 as the DART revenue roadmap sets it out; not
+Added 2026-10-21 for BS-statement-5 as the DART revenue roadmap sets it out; not
 re-read in the ASC basic view: check it there at the next reading. Costs
 incurred to fulfill a contract (one not in another Topic's scope) are an
 asset only if all three criteria are met: they relate directly to a
@@ -289,12 +289,12 @@ contract or an anticipated contract the entity can specifically
 identify; they generate or enhance resources used in satisfying
 performance obligations in the future; and they "are expected to be
 recovered."
-→ B-37 item 4 (with B-22): on-spec work has no contract it is expected
+→ BS-statement-5 item 4 (with BS-asset-2): on-spec work has no contract it is expected
 to recover its costs from, so its costs are expensed as incurred.
 
 ## 340-40-25-7 (Costs that relate directly to a contract)
 
-Added 2026-10-22 for B-37 item 8 as the DART revenue roadmap sets it
+Added 2026-10-22 for BS-statement-5 item 8 as the DART revenue roadmap sets it
 out; not re-read in the ASC basic view: check it there at the next
 reading. The costs that "relate directly to a contract" (25-5(a)) are
 (a) direct labor, (b) direct materials, (c) allocations of costs that
@@ -314,7 +314,7 @@ the contract), costs of wasted materials, labor or other resources not
 reflected in the contract's price, costs that relate to satisfied (or
 partly satisfied) performance obligations, and costs the entity cannot
 tell apart between satisfied and unsatisfied obligations.
-→ B-37 item 8 (with 25-7): a cost traceable to one job (25-7(a), (b),
+→ BS-statement-5 item 8 (with 25-7): a cost traceable to one job (25-7(a), (b),
 (d), (e)) is that job's, whole, on the document's line; a cost that
 relates to several jobs reaches them only by an allocation on a stated
 basis (25-7(c)), which the books record as the allocation convention's

@@ -30,7 +30,8 @@ use chrono::NaiveDate;
 pub struct DatedRule {
     /// Plain name, e.g. "1099 reporting threshold".
     pub name: &'static str,
-    /// Its entry in docs/spec/rules.md, e.g. "B-19".
+    /// Its bookspec rule id, e.g. "BS-1099-1" (indexed in docs/spec/rules.md;
+    /// wanderbooks' claim is in docs/spec/claims/1099.md).
     pub catalog: &'static str,
     /// The vendored official text it comes from (a path in this repo,
     /// for the people who update the rule).
@@ -61,11 +62,11 @@ impl DatedRule {
     }
 }
 
-/// The 1099-NEC / 1099-MISC reporting threshold (rules.md B-19): $600 for
+/// The 1099-NEC / 1099-MISC reporting threshold (BS-1099-1): $600 for
 /// payments through 2025, $2,000 in 2026, then indexed for inflation.
 pub const THRESHOLD_1099: DatedRule = DatedRule {
     name: "1099 reporting threshold",
-    catalog: "B-19",
+    catalog: "BS-1099-1",
     source: "docs/spec/sources/irs-1099-thresholds.md",
     authority: "26 U.S.C. §6041(a) and (h) and the IRS's yearly figure in the Instructions for Forms 1099-MISC and 1099-NEC (https://www.irs.gov/instructions/i1099mec)",
     known_through: 2026,

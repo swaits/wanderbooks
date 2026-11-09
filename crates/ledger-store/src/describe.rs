@@ -8,7 +8,7 @@
 //!       what, and which entry it belongs to.
 //! SOURCE: plan/served.md P5 step 4 (the only way to "read the journal");
 //!         docs/receipt-store.md (the lines and their payloads);
-//!         docs/spec/rules.md B-26 (no output holds a full TIN).
+//!         BS-partner-2 (no output holds a full TIN).
 //! INVARIANTS:
 //!   1. Every line type the store writes has a sentence (test: every
 //!      `format::EVENT_TYPES` entry).

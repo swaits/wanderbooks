@@ -94,7 +94,7 @@ built through wanderbooks (entries, foreign lines, reversals, closes),
 every account's balance at month ends and random dates, and each month's
 P&L, compared exactly (15,800 comparisons). Its first run found one real
 difference, adjudicated from principles: wanderbooks kept sub-cent
-amounts on foreign lines; it now books in cents (rules.md B-3). What the
+amounts on foreign lines; it now books in cents (BS-ledger-1). What the
 original plan still owes (roadmap phase 3): fixture books, not only random
 ones, diffed as `snapshot()` output automatically, inside the harness as
 it is (no `ledger-oracle` crate is planned: D-53). This is the direct analog

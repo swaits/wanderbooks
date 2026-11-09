@@ -389,7 +389,7 @@ proptest! {
 
 /// A fiscal year start as the books may hold one: any month and day 2001
 /// has (a new setting is the first of a month; replay takes any day every
-/// year has, rules.md B-28).
+/// year has, BS-entry-4).
 fn arb_fiscal_start() -> impl Strategy<Value = (u32, u32)> {
     (1u32..=12, 1u32..=31).prop_filter("a day 2001 has", |&(m, d)| {
         NaiveDate::from_ymd_opt(2001, m, d).is_some()
@@ -411,7 +411,7 @@ fn arb_calendar_day() -> impl Strategy<Value = NaiveDate> {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(5000))]
 
-    /// rules.md B-30, PeriodDefaults INVARIANTS 1-5, for every fiscal
+    /// BS-period-3, PeriodDefaults INVARIANTS 1-5, for every fiscal
     /// year start the books hold, every today in the calendar, and every
     /// mix of given and omitted dates: the resolved dates are the given
     /// ones or the defaults, never swapped; Err exactly when the resolved
@@ -596,7 +596,7 @@ mod p3 {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(500))]
 
-    /// depreciation_schedule INVARIANT 5 (rules.md B-15; defect 22): accumulated depreciation never falls,
+    /// depreciation_schedule INVARIANT 5 (BS-asset-1; defect 22): accumulated depreciation never falls,
     /// never exceeds cost − salvage, is 0 before the in-service date and
     /// cost − salvage from the life's last day on; each schedule's lines
     /// sum to its accumulated and none is negative. Sampled through: every
@@ -680,7 +680,7 @@ proptest! {
         prop_assert_eq!(scheduled_book_value(a, on).unwrap(), want.book_value);
     }
 
-    /// B-15 rule 3 (defect 22), against arithmetic written here: through
+    /// BS-asset-1 rule 3 (defect 22), against arithmetic written here: through
     /// any day k of the life's final month (its d days), accumulated is C +
     /// (D − C) × k / d rounded half up to the cent, C the exact charge of
     /// the months before (D × each month's days held over its days, over
@@ -719,7 +719,7 @@ proptest! {
         }
     }
 
-    /// B-15 rule 4 (depreciation_schedule INVARIANT 6; P3 depreciation brief 2.3, R1, R8): through every
+    /// BS-asset-1 rule 4 (depreciation_schedule INVARIANT 6; P3 depreciation brief 2.3, R1, R8): through every
     /// month end of the life, the schedule is the pre-P3 running total
     /// (USD, a two-place currency), except where the exact cumulative is a
     /// half-cent tie, which the old 28-digit Decimal quotients could round
@@ -895,8 +895,8 @@ fn arb_basis_rule() -> impl Strategy<Value = ledger_core::BasisRule> {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(5000))]
 
-    /// kernel::basis_figures INVARIANTS 1-4 on Decimal money (rules.md
-    /// B-25): a purchase depreciates from cost and has no §723 basis or
+    /// kernel::basis_figures INVARIANTS 1-4 on Decimal money (
+    /// BS-asset-4): a purchase depreciates from cost and has no §723 basis or
     /// built-in gain; a contribution's §723 basis is the adjusted basis,
     /// its built-in gain fair market value less that basis, negative
     /// exactly when the basis exceeds the value; carryover depreciates
@@ -937,7 +937,7 @@ proptest! {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
 
-    /// rules.md B-37 item 3: for any tags and any period, the projects'
+    /// BS-statement-5 item 3: for any tags and any period, the projects'
     /// figures plus the untagged lines' are the period's profit and loss
     /// (no line counted twice or lost), each through
     /// ledger_core::project_figures.
@@ -1002,7 +1002,7 @@ proptest! {
         prop_assert_eq!(exp_sum + untagged_exp, all.total_expenses);
     }
 
-    /// rules.md B-37 item 7: the snapshot's contribution is
+    /// BS-statement-5 item 7: the snapshot's contribution is
     /// project_to_date's net, revenue less direct costs, whatever the
     /// tags and sides (a refund debits revenue, a reimbursement credits an
     /// expense below zero): the accounts sum to the totals, each month's
@@ -1091,7 +1091,7 @@ proptest! {
         }
     }
 
-    /// rules.md B-37 item 3: project_entries codes its own signs, so the
+    /// BS-statement-5 item 3: project_entries codes its own signs, so the
     /// posted entries' project amounts must sum to project_to_date's net
     /// (with no entry dated after the day), whatever the tags, the sides,
     /// a tagged balance-sheet line, or drafts beside them.
@@ -1145,7 +1145,7 @@ proptest! {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(2000))]
 
-    /// rules.md B-26 (P7): a TIN is found and masked however its groups
+    /// BS-partner-2 (P7): a TIN is found and masked however its groups
     /// are separated — a hyphen, a dot, a comma, a parenthesis, a slash,
     /// an underscore, or any run of spaces — and what merely looks like
     /// one is not: an amount's thousands separators (1,234,567.89 is
@@ -1154,7 +1154,7 @@ proptest! {
     /// setting's kind (company.duns), never a party field. The ACH payment
     /// methods' lines get the same exemption in P4b S4's Kind; until then
     /// the filing scan's narrow shapes keep a bank export's routing
-    /// numbers out of the rule (rules.md B-26).
+    /// numbers out of the rule (BS-partner-2).
     #[test]
     fn tin_shapes_with_any_separator_are_found(
         sep in prop::sample::select(vec![

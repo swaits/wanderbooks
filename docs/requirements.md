@@ -66,7 +66,7 @@ requirement conflict, the requirement wins.
   to the currency's minor unit by largest remainder (the odd cent goes to
   the largest remainder, ties to the earlier member; the owner, 2026-10-13),
   earnings not yet closed the way their close will split them (D-38,
-  rules.md B-13), so every row's total is exact and a member's capital on a
+  BS-partner-1), so every row's total is exact and a member's capital on a
   day never changes when its month is closed. Any equity change the roll-forward doesn't explain is shown as
   "other", never hidden.
 - **R-9d — Tax categories.** Revenue and expense accounts map to stable
@@ -100,7 +100,7 @@ requirement conflict, the requirement wins.
 - **R-13 — Receipt enforcement.** The server (not the engine — the engine
   stays policy-free) enforces the books' evidence policy: postings at or
   above a threshold (the journaled setting `policy.evidence.threshold`,
-  with required and exempt accounts; P1, rules.md B-29) must have at least
+  with required and exempt accounts; P1, BS-ledger-9) must have at least
   one attached receipt. Evaluated by `ledger-config`'s `ReceiptPolicy`
   today; P4 moves the evaluation into `ledger_core::evidence` so the
   store, the server and the viewer call one function (plan I-5, D-47:
@@ -118,7 +118,7 @@ requirement conflict, the requirement wins.
 
 - **R-? — Cash flow statement** (direct method, with the reconciliation
   of net income to operating cash and the noncash investing and financing
-  activities; rules.md B-14, P3 defect 1). Was R-FUTURE-3.
+  activities; BS-statement-3, P3 defect 1). Was R-FUTURE-3.
   `ledger-core::reports::cash_flow` + `books.cash_flow`.
 - **R-? — QuickBooks-compatible import/export.** Was R-FUTURE-4.
   `ledger-import` crate: CSV bank/chart import, IIF and XLSX export.
@@ -137,7 +137,7 @@ requirement conflict, the requirement wins.
   account by share, to the currency's minor unit, odd units by largest
   remainder, cumulatively from the first members close with these members
   and shares, so no member is ever a unit from their exact share: the
-  partnership convention, rules.md B-13; closes journaled under earlier
+  partnership convention, BS-partner-1; closes journaled under earlier
   rules replay with the rule they were made under: `CloseTo::MembersRun`,
   the run rule of 2026-10-13 to P3, `CloseTo::MembersPerClose`, and
   before 2026-10-13 the last member absorbing rounding), or `CloseTo::Account` (any equity account, e.g.
@@ -166,7 +166,7 @@ requirement conflict, the requirement wins.
 - **R-? — A/R and A/P workflows.** Was R-FUTURE-5.
   `ledger-core::arap`: customers, vendors, invoices, bills, payments,
   AR/AP aging. MCP tools for the full workflow. Since P4b S1 (D-45,
-  rules.md B-38): a document's figures are the signed sum of its tagged
+  BS-arap-2): a document's figures are the signed sum of its tagged
   ledger lines dated on or before the day asked about, so reversals,
   voids and write-offs are right by construction; a hand line on a
   control account is refused; `books.control_check` ties the subledger to
@@ -185,11 +185,11 @@ requirement conflict, the requirement wins.
   split explicitly across lines at entry time.
 - **R-? — CPA handoff package.** `books.export_cpa_package` (and the
   viewer's Export menu, D-29): a zip, built by `ledger-package` for both,
-  as of a day (B-33), with the trial balance and general ledger as XLSX,
-  the statements as Typst PDFs, the journal as IIF (B-34), every receipt
+  as of a day (BS-statement-4), with the trial balance and general ledger as XLSX,
+  the statements as Typst PDFs, the journal as IIF (BS-format-2), every receipt
   behind the period's entries with an index, the company's documents, the
   1099 worksheet, the members' equity and K-1 worksheets (book and tax
-  basis, B-36), and a README; handed over as a download (D-46).
+  basis, BS-partner-4), and a README; handed over as a download (D-46).
 
 ## Non-goals (all phases of the engine)
 

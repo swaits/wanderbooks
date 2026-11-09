@@ -1,4 +1,4 @@
-//! An invoice's or bill's lines name their projects (rules.md B-37 item
+//! An invoice's or bill's lines name their projects (BS-statement-5 item
 //! 8): the posted entry's revenue or expense side is one line per project,
 //! the untagged lines' as one; the receivable or payable line, and the
 //! payments, never take one.
@@ -6,9 +6,9 @@
 //! ```text
 //! GOAL: a client project's invoiced revenue and a contractor's billed
 //!       cost count toward the project, every other figure as before.
-//! SOURCE: docs/spec/rules.md B-37 items 3 and 8 (job costing), B-14 (the
-//!         projects with the untagged lines partition the P&L), B-19 and
-//!         B-35 (1099 and party figures follow the money, not the tags).
+//! SOURCE: BS-statement-5 items 3 and 8 (job costing), BS-statement-3 (the
+//!         projects with the untagged lines partition the P&L), BS-1099-1 and
+//!         BS-partner-3 (1099 and party figures follow the money, not the tags).
 //! ```
 
 use chrono::NaiveDate;
@@ -170,7 +170,7 @@ fn a_bills_cost_is_one_line_per_project_and_the_payable_none() {
 }
 
 /// Reversing a tagged invoice's or bill's entry carries each line's
-/// project to the reversal (B-37 item 3: each line on its normal side), so
+/// project to the reversal (BS-statement-5 item 3: each line on its normal side), so
 /// every project nets back to zero; a partial payment, cash against the
 /// receivable, moves no project figure.
 #[test]
@@ -209,7 +209,7 @@ fn reversing_a_tagged_document_takes_its_projects_to_zero() {
             .unwrap();
     assert_eq!(to_date(&b.l, z), (cents(300_000), cents(120_000)));
     assert_eq!(to_date(&b.l, h), (cents(20_000), Decimal::ZERO));
-    // The payment first: a void waits on the payments that stand (B-38
+    // The payment first: a void waits on the payments that stand (BS-arap-2
     // scenario 3); its reversal moves no project figure either.
     b.l.reverse_entry(pay, d(2026, 3, 30), "Bounced").unwrap();
     assert_eq!(to_date(&b.l, z), (cents(300_000), cents(120_000)));
@@ -294,7 +294,7 @@ fn a_line_naming_an_unknown_project_is_refused_whole() {
     assert!(b.l.differs_from(&before).is_empty(), "nothing changed");
 }
 
-/// Finished and abandoned projects still take a document's lines (B-37
+/// Finished and abandoned projects still take a document's lines (BS-statement-5
 /// item 5: a late cost, a final invoice).
 #[test]
 fn a_finished_project_still_takes_an_invoice() {

@@ -92,8 +92,8 @@ impl Books<'_> {
     }
 }
 
-/// Check one `k1` expectation: the K-1 worksheet over the period (rules.md
-/// B-13; Schedule K-1 Item L), `"<member>.<column>"` for the columns
+/// Check one `k1` expectation: the K-1 worksheet over the period (
+/// BS-partner-1; Schedule K-1 Item L), `"<member>.<column>"` for the columns
 /// `beginning`, `contributions_cash`, `contributions_property`,
 /// `net_income`, `distributions`, `other` and `ending`; the figures named
 /// are the example's choice. It needs `cash_accounts` (what is money
@@ -136,7 +136,7 @@ pub(crate) fn check_k1(ex: &Example, l: &Ledger, members: &[MemberCapital], x: &
     }
 }
 
-/// The tax-basis capital worksheet for `[from, to]` (rules.md B-36), a
+/// The tax-basis capital worksheet for `[from, to]` (BS-partner-4), a
 /// row a member, as `k1` reads the book one: it needs the members and
 /// their shares, and `cash_accounts`.
 pub(crate) fn tax_capital_rows(b: &Books<'_>, x: &Expect, what: &str) -> Vec<TaxCapitalRow> {
@@ -158,7 +158,7 @@ pub(crate) fn tax_capital_rows(b: &Books<'_>, x: &Expect, what: &str) -> Vec<Tax
 
 /// Check one `k1_tax_basis` expectation: each member's capital account
 /// for `[from, to]` on the tax basis, as Schedule K-1 Item L reports it
-/// (rules.md B-36), `"<member>.<line>"` for the lines `beginning`,
+/// (BS-partner-4), `"<member>.<line>"` for the lines `beginning`,
 /// `contributions_cash`, `contributions_property`, `net_income`, `other`,
 /// `distributions` and `ending`, beside `k1`'s book figures; a line the
 /// books can't know is `"open"`, with what they know so far as
@@ -201,8 +201,8 @@ pub(crate) const RECONCILING_CAUSES: [&str; 5] = [
 ];
 
 /// Check one `k1_reconciliation` expectation: each member's book capital
-/// less tax-basis capital at the end of `[from, to]`, by cause (rules.md
-/// B-36), `"<member>.<cause>"` for `beginning`, `built_in_gain_704c`
+/// less tax-basis capital at the end of `[from, to]`, by cause (
+/// BS-partner-4), `"<member>.<cause>"` for `beginning`, `built_in_gain_704c`
 /// (their share of the §704(c) gain or loss at contribution),
 /// `property_without_basis`, `property_distributed` and `total`: the
 /// example names the members it shows, each with every cause.

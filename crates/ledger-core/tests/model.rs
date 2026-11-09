@@ -4,7 +4,8 @@
 //! transcribed into the simplest Rust that has the same observable
 //! behavior: a list of accounts, a list of drafts, an append-only list of
 //! posted entries, a list of periods, and loops. It is written from the
-//! spec (rules.md, the Ledger doc comments), not from ledger.rs.
+//! spec (bookspec's rules and `docs/spec/claims/`, the Ledger doc
+//! comments), not from ledger.rs.
 //!
 //! Random command sequences, weighted toward commands that interact (post
 //! a draft, reverse a posted entry, close a period with drafts in it,
@@ -55,7 +56,7 @@ struct MPeriod {
 struct Model {
     /// (id, code, type, placeholder, name). The name is outside the Lean
     /// model (its chart is code and type): kept here so the two agree on
-    /// renames' refusals, and a rename moves nothing else (rules.md B-31).
+    /// renames' refusals, and a rename moves nothing else (BS-ledger-10).
     accounts: Vec<(u64, String, AccountType, bool, String)>,
     drafts: Vec<MEntry>,
     posted: Vec<MEntry>,
@@ -122,7 +123,7 @@ impl Model {
         self.next_account += 1;
     }
 
-    /// rules.md B-31: a name is free for `account` (None: a new one) when
+    /// BS-ledger-10: a name is free for `account` (None: a new one) when
     /// it isn't blank, holds no nine digits in a row, and no other account
     /// (all are top-level here, so all are siblings) has it, ignoring
     /// capitals and surrounding space.
@@ -140,7 +141,7 @@ impl Model {
                 .any(|a| Some(a.0) != account && a.4.trim().to_lowercase() == key)
     }
 
-    /// rules.md B-31: rename an account that exists to a free name other
+    /// BS-ledger-10: rename an account that exists to a free name other
     /// than its own; only the name changes.
     fn rename(&mut self, id: u64, name: &str) -> bool {
         let Some(i) = self.accounts.iter().position(|a| a.0 == id) else {
@@ -363,7 +364,7 @@ impl Model {
 // ---------------------------------------------------------------------------
 
 // No 1200 or 2000: a line by hand on a receivables or payables account is
-// refused (the control guard, rules.md B-38), which this model leaves to
+// refused (the control guard, BS-arap-2), which this model leaves to
 // spec_arap.rs.
 const CODES: [&str; 7] = ["1000", "2100", "3000", "3999", "4000", "6000", "1900"];
 /// New names: a free one, its own in other capitals and spacing, a
@@ -400,7 +401,7 @@ enum Cmd {
     Reverse(usize, u32),
     CreatePeriod(u32, u32),
     Close(usize),
-    /// Rename an account (rules.md B-31): `Step.record` in the Lean model,
+    /// Rename an account (BS-ledger-10): `Step.record` in the Lean model,
     /// whose chart has no names.
     Rename(usize, usize),
 }

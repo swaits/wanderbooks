@@ -11,7 +11,7 @@
 //! SOURCE: ledger_core::form1099 (the one report: payments out of the cash
 //!         and financing accounts, classified by payment method; an entry's
 //!         shares resolved with the members; dated decisions); IRS
-//!         thresholds (rules.md B-19: never guessed); RFC 4180 (CSV).
+//!         thresholds (BS-1099-1: never guessed); RFC 4180 (CSV).
 //! INVARIANTS:
 //!   1. Payments come from the cash and financing accounts of the
 //!      `Settings` given (codes the chart lacks are skipped): the books'
@@ -57,7 +57,7 @@ pub fn payment_accounts(ledger: &Ledger, settings: &Settings<'_>) -> ledger_core
 /// CPA package and the viewer use: payments out of [`payment_accounts`],
 /// an entry's shares resolved with the settings' members. Given
 /// `through`, only the payments from January 1 through it (the CPA
-/// package as of a day, rules.md B-33).
+/// package as of a day, BS-statement-4).
 pub fn vendor_1099_report(
     ledger: &Ledger,
     settings: &Settings<'_>,

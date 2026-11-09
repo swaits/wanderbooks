@@ -737,7 +737,7 @@ fn pnl_and_balance_sheet_exports_equal_the_core_statements() {
 }
 
 /// Cash flow CSV and JSON equal `ledger_core::cash_flow` for the same
-/// account roles and members, field for field (rules.md B-14; the JSON is
+/// account roles and members, field for field (BS-statement-3; the JSON is
 /// the tool's own answer). Kills: export_cash_flow stubs and its json/csv
 /// switch, and any field the mapping drops.
 #[test]
@@ -1070,7 +1070,7 @@ fn journal_exports_hold_every_posted_line() {
     let mut m = Mcp::start(&dir, "1000000.00");
 
     for report in ["journal", "general_journal"] {
-        // Every date: the journal covers a period (rules.md B-30).
+        // Every date: the journal covers a period (BS-period-3).
         let csv = m.export_text(
             json!({"format": "csv", "report": report, "start": "0001-01-01", "end": "9999-12-31"}),
         );
@@ -1419,7 +1419,7 @@ fn xlsx_and_pdf_exports_are_real_files_with_the_books_in_them() {
 /// (cash accounts BANK, 1200 AR, 2000 AP, a registered asset's accounts
 /// FIXASSET, the rest by type), then one balanced TRNS/SPL/ENDTRNS block
 /// per posted entry dated on or before as_of, numbered (DOCNUM) with its
-/// entry id (rules.md B-33, B-34); plain ASCII text with CR LF, what it
+/// entry id (BS-statement-4, BS-format-2); plain ASCII text with CR LF, what it
 /// writes differently (a line break and double quotes, the engine's own em
 /// dashes) in warnings, grouped. Kills: export_iif's AR and AP comparisons.
 #[test]
@@ -2505,7 +2505,7 @@ fn show_refuses_a_derived_inverted_range_defect_15() {
 }
 
 /// Defect 16, repro 1.1.4: books.show sends the dates it names, resolved
-/// by the one default (rules.md B-30): only an end covers that end's
+/// by the one default (BS-period-3): only an end covers that end's
 /// fiscal year to it (2025-01-01 to 2025-06-30, never today's year's
 /// start); no dates cover today's fiscal year to date (checked against
 /// the clock read before and after, R14); a report as of a day says "as
@@ -3631,7 +3631,7 @@ fn cpa_package_holds_the_year_and_its_evidence() {
             "tin_last4",
         ],
     );
-    // Through as_of (rules.md B-33), out of the package's cash account
+    // Through as_of (BS-statement-4), out of the package's cash account
     // and the settings' financing account (one list each per package).
     let want = core_1099_through(&ledger, 2025, None, Some(d(END)));
     assert_eq!(w.len(), want.vendors.len());

@@ -618,14 +618,14 @@ impl BooksServer {
         self.store.currency.code()
     }
 
-    /// What omitted dates mean today, for these books (rules.md B-30): the
+    /// What omitted dates mean today, for these books (BS-period-3): the
     /// one resolver every report tool, `books.show` and the viewer use.
     fn periods(&self) -> ledger_core::calendar::PeriodDefaults {
         ledger_core::calendar::period_defaults(&self.settings().company, today())
     }
 
     /// A period report's range: the dates as given, each omitted one the
-    /// default (rules.md B-30); a start after the end, given or derived,
+    /// default (BS-period-3); a start after the end, given or derived,
     /// is refused.
     fn statement_range(
         &self,
@@ -635,7 +635,7 @@ impl BooksServer {
         ledger_package::statement_range(&self.settings().company, start, end, today())
     }
 
-    /// A point-in-time report's day: as given, else today (rules.md B-30).
+    /// A point-in-time report's day: as given, else today (BS-period-3).
     fn as_of(&self, as_of: Option<&str>) -> Result<NaiveDate, String> {
         ledger_package::as_of_date(&self.settings().company, as_of, today())
     }
@@ -1021,7 +1021,7 @@ impl BooksServer {
         {
             return Ok(());
         }
-        // A draft's debits may be past exact arithmetic (rules.md B-28):
+        // A draft's debits may be past exact arithmetic (BS-entry-4):
         // then the refusal says so in place of the sum.
         let (total, debits) = match ReceiptPolicy::entry_debits(entry) {
             Ok(t) => (money(t), t.to_string()),
@@ -1136,7 +1136,7 @@ fn resolve_vendor(store: &Store, vendor: &str) -> Result<u64, String> {
 /// a refusal that quotes its input (an unknown party, a bad amount, a
 /// parameter of the wrong type) never echoes a TIN the agent put in the
 /// wrong field. No tool output, error, or log holds a full TIN
-/// (docs/spec/rules.md B-26); a successful result is left alone, since
+/// (BS-partner-2); a successful result is left alone, since
 /// the one that may (`books.vendor_1099` with `include_tins`) is one.
 fn redact_refusal(
     out: Result<rmcp::model::CallToolResponse, rmcp::ErrorData>,
@@ -1161,7 +1161,7 @@ fn redact_refusal(
     }
 }
 
-/// An error with any full TIN in its message or data masked (B-26): a
+/// An error with any full TIN in its message or data masked (BS-partner-2): a
 /// tool's, or a resource read's, which quotes the URI it was given.
 fn redact_error(mut e: rmcp::ErrorData) -> rmcp::ErrorData {
     use ledger_core::parties::{has_full_tin, redact_full_tins};

@@ -29,7 +29,7 @@ pub struct EntryInfo {
     pub status: EntryStatus,
     /// Total debits; None when they can't be summed exactly (a draft's
     /// lines are as an earlier version journaled them, of any size:
-    /// rules.md B-28).
+    /// BS-entry-4).
     pub amount: Option<Decimal>,
     /// Accounts touched, debits first: "6300 Software".
     pub accounts: Vec<AccountId>,
@@ -182,10 +182,10 @@ pub fn period_month(period: &str) -> Option<(i32, u32)> {
 ///   4. open_invoices = Σ what each of its customer record's invoices
 ///      owes today (Books::owed_today: read from the ledger lines tagged
 ///      with it, so a reversed payment or a void counts as it should,
-///      rules.md B-38); open_bills the same for its vendor record's bills.
+///      BS-arap-2); open_bills the same for its vendor record's bills.
 ///   4a. Each of 3 and 4 is None when it can't be summed exactly (a
 ///      document is restored as an earlier version journaled it, of any
-///      size: rules.md B-28), never a wrong number.
+///      size: BS-entry-4), never a wrong number.
 ///   5. form_1099: its vendor record's line in Books::vendor_1099(year)
 ///      (the server's books.vendor_1099), when it has a vendor record in
 ///      that report and the report can be made (the year's threshold is
@@ -222,7 +222,7 @@ pub struct PartyInfo {
 /// ```text
 /// GOAL: say when monthly depreciation hasn't been run, without crying
 ///       wolf over the month still under way.
-/// SOURCE: docs/spec/rules.md B-15 (monthly straight-line depreciation);
+/// SOURCE: BS-asset-1 (monthly straight-line depreciation);
 ///         CONVENTION (a month's depreciation is posted when the month
 ///         ends: ledger-store dates it the month's last day).
 /// INVARIANTS:
@@ -355,7 +355,7 @@ pub enum PartyPeriod {
 ///       get back?" (owner, 2026-10-15) with the books' own numbers.
 /// SOURCE: ledger_core::parties::activity_with (paid, received, in kind)
 ///         and ledger_core::parties::flow (what for), with Books::money
-///         and Books::members, as PartyInfo uses them; rules.md B-35.
+///         and Books::members, as PartyInfo uses them; BS-partner-3.
 /// INVARIANTS:
 ///   1. paid, received: Books::activity(party, span)'s, exactly: basis
 ///      cash (money), books.party's default. paid_in_kind and
@@ -919,8 +919,8 @@ impl Books {
     }
 
     /// What omitted dates mean today, for these books: the one rule the
-    /// server's report tools, `books.show` and the viewer share (rules.md
-    /// B-30).
+    /// server's report tools, `books.show` and the viewer share (
+    /// BS-period-3).
     pub fn periods(&self) -> ledger_core::calendar::PeriodDefaults {
         ledger_core::calendar::period_defaults(&self.settings.company, self.today)
     }
@@ -938,7 +938,7 @@ impl Books {
     }
 
     /// The period a report or register opens on when nobody chose one:
-    /// the fiscal year to date (rules.md B-30), as the agent's report
+    /// the fiscal year to date (BS-period-3), as the agent's report
     /// tools give it for no dates.
     pub fn default_period(&self) -> (NaiveDate, NaiveDate) {
         self.periods().statement_range()
@@ -1320,7 +1320,7 @@ impl Books {
     }
 
     /// A document as of today: what it is, read from the ledger lines
-    /// tagged with it (ledger_core::Ledger::doc_state, rules.md B-38), the
+    /// tagged with it (ledger_core::Ledger::doc_state, BS-arap-2), the
     /// figures books.ar_aging and books.party read. One dated after today
     /// (a post-dated bill) is read as of its own date: what it will owe
     /// when it is issued, so the forward-looking views keep it; it is
@@ -1505,8 +1505,8 @@ impl Books {
     ///
     /// ```text
     /// GOAL: the monthly close leaves every bank and card account
-    ///       reconciled through last month's end (docs/parties-and-
-    ///       attachments.md, Reconciliations: "an account with activity
+    ///       reconciled through last month's end
+    ///       (docs/parties-and-attachments.md, Reconciliations: "an account with activity
     ///       not reconciled through last month's end").
     /// SOURCE: that rule; CONVENTION (a bank or card statement closes
     ///         monthly; AGENTS.md's monthly close reconciles the bank);
@@ -1763,7 +1763,7 @@ impl Books {
     ///   their capital (a reimbursement with a distribution) leaves out the
     ///   money that wasn't theirs.
     /// What moved in kind isn't what money paid for: when the party's part
-    ///   has property in it (rules.md B-35), the property lines (asset
+    ///   has property in it (BS-partner-3), the property lines (asset
     ///   accounts neither cash nor receivables, the K-1 worksheet's test)
     ///   stay out, so a property contribution, and its reversal, show
     ///   nothing, and a distribution of money and equipment shows the
@@ -2011,8 +2011,8 @@ impl Books {
     ///
     /// Every month the span touches is one activity scan, so callers clip
     /// the span to the months they show ([`Books::last_months`]): books
-    /// an earlier version wrote may run from chrono's first day (rules.md
-    /// B-28). Chrono's last month ends the walk, never a panic.
+    /// an earlier version wrote may run from chrono's first day (
+    /// BS-entry-4). Chrono's last month ends the walk, never a panic.
     pub fn party_months(&self, party: PartyId, span: (NaiveDate, NaiveDate)) -> Vec<PartyMonth> {
         let mut out = Vec::new();
         let mut m = span.0.with_day(1);

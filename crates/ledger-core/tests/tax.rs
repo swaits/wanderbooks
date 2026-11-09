@@ -165,7 +165,7 @@ fn by_value(v: &mut serde_json::Value) {
 /// The golden: every number in `golden/tax_summary_form_1065.json` was
 /// computed by hand, from the fixture's entries, in
 /// `plan/golden-worksheets/tax_summary_form_1065.md`, before the engine's
-/// output was looked at. Rules: B-32 and `sources/irs-tax-lines.md` (the
+/// output was looked at. Rules: BS-ledger-11 and `sources/irs-tax-lines.md` (the
 /// category-to-line map; a contra-income expense account reduces receipts;
 /// meals at 50% from the Schedule C line 24b instructions, so 333.33 is
 /// 166.665, the cent half away from zero, 166.67; fines and penalties at 0%
@@ -228,7 +228,7 @@ fn category_books(category: &str, specs: &[(&str, &str, Option<&str>)]) -> Ledge
     l
 }
 
-/// CHOICE (owner, 2026-11-07; rules.md B-32, B-21): a category rounds
+/// CHOICE (owner, 2026-11-07; BS-ledger-11, BS-entry-3): a category rounds
 /// once, on its total. Two Meals accounts of 1.01 at 50%: each share is
 /// exactly 0.505, so rounding per account would give 0.51 + 0.51 = 1.02;
 /// the exact sum 1.01 rounds once to 1.01. Book stays exact: 2.02.
@@ -441,8 +441,8 @@ fn a_sole_proprietor_cannot_deduct_a_gift_on_schedule_c() {
 }
 
 // ---------------------------------------------------------------------------
-// Which accounts need a category, and the policy (P3, defect 8; rules.md
-// B-32).
+// Which accounts need a category, and the policy (P3, defect 8;
+// BS-ledger-11).
 // ---------------------------------------------------------------------------
 
 fn set_policy(l: &mut Ledger, value: &str) {
@@ -634,11 +634,11 @@ fn under_refuse_a_needed_category_is_never_cleared() {
         Err(LedgerError::UnknownAccount(999))
     );
     // The engine's own set_account_tax (which replay calls) never checks
-    // the policy (rules.md B-28): a journaled clear replays.
+    // the policy (BS-entry-4): a journaled clear replays.
     l.set_account_tax(software, None, None).unwrap();
 }
 
-/// rules.md B-32 (review R3): every account a tool can require has a
+/// BS-ledger-11 (review R3): every account a tool can require has a
 /// category that fits it on every return: a disposal's gain or loss
 /// account (revenue or expense: Form 4797), tax-exempt income on the
 /// entity returns, and each control role's account.

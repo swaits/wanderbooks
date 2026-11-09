@@ -6,7 +6,7 @@ use super::*;
 
 fn schedule_out(ledger: &Ledger, s: &ledger_core::AmortizationSchedule) -> ScheduleOut {
     // A schedule an earlier version journaled may run past the last date
-    // chrono holds (rules.md B-28): shown, with why its plan can't be.
+    // chrono holds (BS-entry-4): shown, with why its plan can't be.
     let plan = s.plan();
     let code = |id| {
         ledger

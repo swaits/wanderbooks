@@ -9,7 +9,7 @@
 //! INVARIANTS:
 //!   1. A payload missing a field, or with a field of the wrong type, is
 //!      JournalCorrupt; optional fields may be absent or null.
-//!   2. Decoding checks shape only (rules.md B-28): what a command checks
+//!   2. Decoding checks shape only (BS-entry-4): what a command checks
 //!      (limits, the chart) stays with the command.
 //! ```
 
@@ -301,7 +301,7 @@ pub fn decision_recorded_of(p: &Value) -> Result<(u64, NewDecision), StoreError>
 
 /// `project.set {id, name, status, kind?, description?, party_id?,
 /// started_on?, ended_on?, links?, notes?}`: a class's whole project
-/// record (rules.md B-37; journal feature `projects`). Every optional key
+/// record (BS-statement-5; journal feature `projects`). Every optional key
 /// is left out when empty, so the payload is canonical.
 pub fn project_set(id: ClassId, name: &str, f: &ProjectFacts) -> Value {
     let mut o = Map::new();
@@ -322,7 +322,7 @@ pub fn project_set(id: ClassId, name: &str, f: &ProjectFacts) -> Value {
 
 /// Read a `project.set`: `(id, name, facts)`. A missing or mistyped key is
 /// corrupt; a status or kind this version doesn't know is newer (a newer
-/// version wrote it, rules.md B-27).
+/// version wrote it, BS-format-1).
 pub fn project_set_of(
     line: &crate::journal::JournalLine,
 ) -> Result<(ClassId, String, ProjectFacts), StoreError> {
@@ -463,7 +463,7 @@ pub fn invoice_sent(invoice: u64, s: &Sent) -> Value {
 }
 
 /// Read an `invoice.sent`: `(invoice, send)`. A channel or kind this
-/// version doesn't know is newer, never corrupt (rules.md B-27).
+/// version doesn't know is newer, never corrupt (BS-format-1).
 pub fn invoice_sent_of(line: &JournalLine) -> Result<(u64, Sent), StoreError> {
     const E: &str = "invoice.sent";
     let p = &line.payload;
@@ -487,7 +487,7 @@ pub fn invoice_sent_of(line: &JournalLine) -> Result<(u64, Sent), StoreError> {
     ))
 }
 
-/// A bad-debt write-off as journaled (plan P4b S7; rules.md B-41):
+/// A bad-debt write-off as journaled (plan P4b S7; BS-arap-5):
 /// `invoice.written_off {invoice_id, entry_id, date, amount, reason}`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WrittenOff {
@@ -557,7 +557,7 @@ pub fn text_extracted(
 
 /// Read an `attachment.text_extracted`: `(attachment_id, text_sha256,
 /// extractor, version, pages, status)`. A status this version doesn't know
-/// is newer (B-27: never "corrupt" for newer).
+/// is newer (BS-format-1: never "corrupt" for newer).
 pub fn text_extracted_of(line: &crate::journal::JournalLine) -> Result<TextExtracted, StoreError> {
     const E: &str = "attachment.text_extracted";
     let p = &line.payload;
@@ -624,7 +624,7 @@ pub fn annotated(a: &Annotation) -> Value {
 
 /// Read an `attachment.annotated`. A field this version doesn't know, or a
 /// mistyped one, is judged by its kind: unknown is newer (a later version
-/// wrote it, B-27), mistyped is corrupt.
+/// wrote it, BS-format-1), mistyped is corrupt.
 pub fn annotated_of(line: &crate::journal::JournalLine) -> Result<Annotation, StoreError> {
     const E: &str = "attachment.annotated";
     let p = &line.payload;
@@ -704,7 +704,7 @@ pub fn draft_state_set(id: u64, state: &DraftState) -> Value {
 }
 
 /// Read an `entry.draft_state_set`: `(draft, state)`. A state this
-/// version doesn't know is newer, never corrupt (rules.md B-27).
+/// version doesn't know is newer, never corrupt (BS-format-1).
 pub fn draft_state_set_of(line: &JournalLine) -> Result<(u64, DraftState), StoreError> {
     const E: &str = "entry.draft_state_set";
     let p = &line.payload;
@@ -748,7 +748,7 @@ pub fn method_json(m: &ledger_core::audit::Method) -> Value {
 }
 
 /// Read a method. A key or an effort this version doesn't know is newer
-/// when a line is at hand (B-27), else corrupt.
+/// when a line is at hand (BS-format-1), else corrupt.
 fn method_of(
     line: Option<&crate::journal::JournalLine>,
     m: &Value,

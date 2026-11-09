@@ -7,7 +7,7 @@
 //!       saying so.
 //! SOURCE: docs/spec/sources/intuit-iif.md (Intuit's IIF Overview, the IIF
 //!         Import Kit's header help and its 2007+ General Journal example);
-//!         rules.md B-34; Intuit's "Character limitations for fields in
+//!         BS-format-2; Intuit's "Character limitations for fields in
 //!         QuickBooks" (account name 31, account number 7, memo 4,095);
 //!         DECISION (owner, 2026-10-20, plan D-36: plain ASCII,
 //!         transliterated and listed; CR LF line endings); the kit's
@@ -348,7 +348,7 @@ impl fmt::Display for IifChange {
     }
 }
 
-/// `text` as a warning may show it (rules.md B-26: no full TIN): each run
+/// `text` as a warning may show it (BS-partner-2: no full TIN): each run
 /// of nine digits `ledger_core::parties::has_full_tin` finds masked (in
 /// any script's digits and separators: "１２３－４５－６７８９"), and if the
 /// text still holds one once written as a field, every numeral in it

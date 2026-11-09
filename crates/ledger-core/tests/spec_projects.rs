@@ -1,11 +1,11 @@
-//! Projects (rules.md B-37): a class with its facts; its figures are the
+//! Projects (BS-statement-5): a class with its facts; its figures are the
 //! revenue and expense lines tagged to it.
 //!
 //! ```text
 //! GOAL: a project's record holds only what its rules allow, and its
 //!       figures are exactly its tagged lines, from one function.
-//! SOURCE: docs/spec/rules.md B-37 (job costing; ASC 450-30-25-1 and
-//!         340-40-25-5 for on-spec work), B-11 (closes left out).
+//! SOURCE: BS-statement-5 (job costing; ASC 450-30-25-1 and
+//!         340-40-25-5 for on-spec work), BS-period-1 (closes left out).
 //! ```
 
 use chrono::NaiveDate;
@@ -534,7 +534,7 @@ fn a_reversal_nets_a_project_to_zero() {
     let entries = project_entries(&b.l, c);
     assert_eq!(entries, vec![(r, cents(180_000)), (e, cents(-180_000))]);
     // Nothing left on an account, but two lines tagged: it breaks even,
-    // it isn't untagged (rules.md B-37 item 7).
+    // it isn't untagged (BS-statement-5 item 7).
     assert!(t.expenses_by_account.is_empty());
     assert_eq!((t.revenue_lines, t.expenses_lines), (0, 2));
     assert!(t.any_tagged());
@@ -652,7 +652,7 @@ fn differs_from_names_projects() {
     assert_eq!(a.l.differs_from(&before), vec!["projects"]);
 }
 
-/// rules.md B-37 item 7: the margin is the contribution's share of
+/// BS-statement-5 item 7: the margin is the contribution's share of
 /// revenue, one place, half to even, and none without revenue.
 #[test]
 fn contribution_margin_is_one_place_and_none_without_revenue() {
@@ -671,7 +671,7 @@ fn contribution_margin_is_one_place_and_none_without_revenue() {
     assert_eq!(pct(Decimal::MAX, cents(1)), None, "never panics");
 }
 
-/// rules.md B-37 item 7: each month's net to date opens on the lines
+/// BS-statement-5 item 7: each month's net to date opens on the lines
 /// before the months (a deposit last year) and ends on the net to date;
 /// a reimbursement credited above its cost leaves the expense below zero.
 #[test]

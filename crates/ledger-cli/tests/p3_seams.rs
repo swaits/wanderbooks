@@ -60,7 +60,7 @@ struct Expected {
 }
 
 /// Every figure the tools report on the seam review's books is the
-/// engine's for the same accounts and dates, on every date (B-33's "the
+/// engine's for the same accounts and dates, on every date (BS-statement-4's "the
 /// tool's for the same accounts and through"), and party totals for the
 /// year are the engine's on both bases.
 #[test]

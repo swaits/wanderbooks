@@ -47,7 +47,7 @@ impl TrialBalance {
 ///
 /// ```text
 /// GOAL: the trial balance over every posted entry (see trial_balance_as_of).
-/// SOURCE: docs/spec/rules.md B-6; R-7.
+/// SOURCE: BS-statement-1; R-7.
 /// INVARIANTS:
 ///   1. MUST equal trial_balance_as_of on or after the last entry's date.
 ///   2. MUST balance (total debits == total credits).
@@ -63,7 +63,7 @@ pub fn trial_balance(ledger: &Ledger) -> TrialBalance {
 /// ```text
 /// GOAL: every account's balance, in a debit or a credit column, from the
 ///       posted entries dated on or before `as_of`.
-/// SOURCE: docs/spec/rules.md B-6 (Pacioli ch. 36; IRS Pub. 583); R-7, R-9b.
+/// SOURCE: BS-statement-1 (Pacioli ch. 36; IRS Pub. 583); R-7, R-9b.
 /// INVARIANTS:
 ///   1. MUST have total debits equal total credits, for any books built
 ///      through the Ledger commands.
@@ -191,7 +191,7 @@ pub struct ClassProfitAndLoss {
 /// ```text
 /// GOAL: a profit and loss per class (department, location, job), plus the
 ///       unclassified lines.
-/// SOURCE: docs/spec/rules.md B-14; R-? Tracking classes.
+/// SOURCE: BS-statement-3; R-? Tracking classes.
 /// INVARIANTS:
 ///   1. The per-class P&Ls (with unclassified) MUST sum to the whole P&L,
 ///      account by account (conservation).
@@ -452,7 +452,7 @@ fn statement_lines(
 /// ```text
 /// GOAL: revenue, expenses, and net income for the entries dated from
 ///       `start` through `end` (both inclusive), optionally one class's lines.
-/// SOURCE: docs/spec/rules.md B-14, B-11; R-9.
+/// SOURCE: BS-statement-3, BS-period-1; R-9.
 /// INVARIANTS:
 ///   1. MUST count only revenue and expense accounts, a line per account
 ///      with its normal-side amount, and net income = revenue - expenses.
@@ -533,7 +533,7 @@ fn profit_and_loss_counted(
     ))
 }
 
-/// A project's figures (rules.md B-37 item 3): the period's statement and
+/// A project's figures (BS-statement-5 item 3): the period's statement and
 /// months, and its figures to date.
 #[derive(Clone, Debug)]
 pub struct ProjectFigures {
@@ -563,7 +563,7 @@ impl ProjectFigures {
 }
 
 /// A project's figures to date: every posted revenue and expense line
-/// tagged to it through `through`, whatever its dates (rules.md B-37).
+/// tagged to it through `through`, whatever its dates (BS-statement-5).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProjectToDate {
     /// The last day counted.
@@ -592,7 +592,7 @@ pub struct ProjectToDate {
 
 impl ProjectToDate {
     /// Revenue less expenses: the project's contribution before overhead
-    /// (rules.md B-37 item 7), since only its own tagged lines count.
+    /// (BS-statement-5 item 7), since only its own tagged lines count.
     pub fn net(&self) -> Decimal {
         self.revenue - self.expenses
     }
@@ -611,11 +611,11 @@ impl ProjectToDate {
 }
 
 /// Contribution as a percent of revenue, to one place (half to even), or
-/// `None` without revenue to divide by (rules.md B-37 item 7).
+/// `None` without revenue to divide by (BS-statement-5 item 7).
 ///
 /// ```text
 /// GOAL: one margin the tools and the viewer print alike.
-/// SOURCE: docs/spec/rules.md B-37 item 7 (revenue less the costs traced
+/// SOURCE: BS-statement-5 item 7 (revenue less the costs traced
 ///         to the project, fixed and variable alike: Garrison's segment
 ///         margin, as a ratio; not Horngren's variable-cost contribution
 ///         margin; a presentation choice, not GAAP).
@@ -650,7 +650,7 @@ pub const PROJECT_MONTHS: u32 = 240;
 /// ```text
 /// GOAL: what a project earned and cost, from one function the tools, the
 ///       viewer and bookspec share, so their figures never drift.
-/// SOURCE: docs/spec/rules.md B-37 item 3 (job costing), B-11, B-14.
+/// SOURCE: BS-statement-5 item 3 (job costing), BS-period-1, BS-statement-3.
 /// INVARIANTS:
 ///   1. MUST be profit_and_loss_for_period with the project's class: only
 ///      revenue and expense lines tagged to it, closing entries left out.
@@ -748,7 +748,7 @@ pub fn project_to_date(
 /// Every entry with a line tagged to the project (drafts included),
 /// newest first (by date, then id), with its project amount: its tagged
 /// revenue lines less its tagged expense lines, each on its normal side.
-/// A tagged balance-sheet line counts zero (rules.md B-37 item 3).
+/// A tagged balance-sheet line counts zero (BS-statement-5 item 3).
 pub fn project_entries(ledger: &Ledger, id: ClassId) -> Vec<(crate::EntryId, Decimal)> {
     let mut out: Vec<(NaiveDate, crate::EntryId, Decimal)> = Vec::new();
     for eid in 1..ledger.next_entry_id() {
@@ -796,7 +796,7 @@ pub fn project_entries(ledger: &Ledger, id: ClassId) -> Vec<(crate::EntryId, Dec
 ///
 /// ```text
 /// GOAL: assets, liabilities, and equity as of a date, a line per account.
-/// SOURCE: docs/spec/rules.md B-7 (CON 8 ¶E62), B-11; R-8.
+/// SOURCE: BS-statement-2 (CON 8 ¶E62), BS-period-1; R-8.
 /// INVARIANTS:
 ///   1. MUST balance: assets = liabilities + equity + current earnings,
 ///      exactly.
@@ -917,7 +917,7 @@ pub struct GeneralLedger {
 /// ```text
 /// GOAL: every posting from `start` through `end`, by account in code
 ///       order, with running balances.
-/// SOURCE: docs/spec/rules.md B-6; R-9a (the QuickBooks general ledger).
+/// SOURCE: BS-statement-1; R-9a (the QuickBooks general ledger).
 /// INVARIANTS:
 ///   1. Each account MUST show its beginning balance (entries before
 ///      `start`), every posting in the range in date order, and an ending
@@ -1147,8 +1147,8 @@ pub fn cancelled_in_span(
 /// GOAL: each member's capital roll-forward for a partnership over a
 ///       period: beginning, contributions, allocated net income, distributions,
 ///       ending; with a total.
-/// SOURCE: docs/spec/rules.md B-13 (26 U.S.C. §704(a); Treas. Reg.
-///         §1.704-1(b)(2)(iv)(b); Form 1065 Schedule M-2; D-38), B-11;
+/// SOURCE: BS-partner-1 (26 U.S.C. §704(a); Treas. Reg.
+///         §1.704-1(b)(2)(iv)(b); Form 1065 Schedule M-2; D-38), BS-period-1;
 ///         R-9c.
 /// INVARIANTS:
 ///   1. Each row MUST roll forward exactly: beginning + contributions +
@@ -1182,7 +1182,7 @@ pub fn cancelled_in_span(
 ///   5. An entry dated `start` is period activity, not beginning capital.
 ///   6. An entry and its reversal both dated in the span cancel
 ///      ([`cancelled_in_span`]): neither is a contribution or a
-///      distribution, since the correction undoes the original (B-9: "it
+///      distribution, since the correction undoes the original (BS-ledger-5: "it
 ///      is just as if you had written nothing"). A reversal whose original
 ///      is outside the span counts by side, like any entry.
 /// SCENARIOS:
@@ -1501,7 +1501,7 @@ pub fn snapshot(ledger: &Ledger) -> Result<serde_json::Value, LedgerError> {
 }
 
 // ---------------------------------------------------------------------------
-// Cash flow statement (direct method, rules.md B-14): see `crate::cashflow`.
+// Cash flow statement (direct method, BS-statement-3): see `crate::cashflow`.
 // ---------------------------------------------------------------------------
 
 pub use crate::cashflow::{
@@ -1700,8 +1700,8 @@ pub fn register_row(
 /// GOAL: one list of everything the company owns as a fixed asset: what,
 ///       which label, cost, depreciation due and posted, book value, tax
 ///       figures, and whether the books agree.
-/// SOURCE: docs/spec/rules.md B-15 (depreciation), B-24 (the register
-///         reconciles to the books), B-25 (tax figures beside book);
+/// SOURCE: BS-asset-1 (depreciation), BS-asset-3 (the register
+///         reconciles to the books), BS-asset-4 (tax figures beside book);
 ///         DECISION (owner, 2026-10-15): a fully featured asset register.
 /// INVARIANTS:
 ///   1. Rows: the assets acquired on or before as_of
@@ -1726,7 +1726,7 @@ pub fn register_row(
 ///   5. Each row's tax fields are the asset's (Asset::basis_figures),
 ///      never re-derived here.
 ///   6. NEVER panics: a contributor basis is as journaled, of any size
-///      (rules.md B-28), and a total past exact arithmetic, or a schedule
+///      (BS-entry-4), and a total past exact arithmetic, or a schedule
 ///      that can't be computed, is refused (TooLargeToCompute,
 ///      DateOutOfRange).
 /// ```

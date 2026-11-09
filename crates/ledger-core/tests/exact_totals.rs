@@ -1,5 +1,5 @@
 //! Totals past exact arithmetic are refused, never a panic (kernel sweep
-//! unit K-U4; rules.md B-21, B-28).
+//! unit K-U4; BS-entry-3, BS-entry-4).
 //!
 //! A replayed journal line is accepted "of any size", so a restored
 //! figure can sit at `Decimal::MAX`; every sum the engine makes of such

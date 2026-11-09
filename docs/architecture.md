@@ -59,7 +59,7 @@ closure. The reader now lives in the small library crate `ledger-reader`;
 re-exports it as `extract`), the store no longer builds the typesetter,
 and `ledger-import` still never depends on the store.
 
-Audits (P8, rules.md B-45) are split by what each layer can see. The pure
+Audits (P8, BS-ledger-13) are split by what each layer can see. The pure
 checks over a ledger are `ledger_core::audit` (`statements`, with the facts
 a ledger cannot know handed in by the caller: the receipts filed, the
 statement of cash flows the role settings give, the settings problems, the
@@ -204,7 +204,7 @@ when there is no next line or no `prev` it can read. The writer
 for the same journal (fuzzed by `fuzz_store_replay`). The writer checks
 every complete line before it changes anything: a torn tail is set aside
 only when the gate passes, so an older version never alters newer books.
-Rule: `docs/spec/rules.md` B-27.
+Rule: BS-format-1.
 
 ## How the books are kept, in the books (P1)
 
@@ -222,7 +222,7 @@ books adopt`) moves an older books dir's file in through it, once, and
 are their settings' only source (D-44): the server (`settings::Live`)
 takes them whenever their last `settings.set` changes (on every lock of
 the store), the viewer reads them from the journal it shows, and neither
-reads a file; "today" is the company's time zone's, set per request. Rule: `docs/spec/rules.md` B-29.
+reads a file; "today" is the company's time zone's, set per request. Rule: BS-ledger-9.
 
 ## The MCP server's layout (`ledger-mcp`, P0; U0a)
 
@@ -252,8 +252,7 @@ groups are:
 - `parties` — parties, vendors, customers, roles, W-9s, the TIN vault,
   1099s, entry parties;
 - `attachments` — receipts, filed documents, and their links;
-- `write_offs` — `books.write_off_invoice`, the bad debt (P4b S7; rules.md
-  B-41), kept apart from `documents` so S4.4's document tools and this one
+- `write_offs` — `books.write_off_invoice`, the bad debt (P4b S7; BS-arap-5), kept apart from `documents` so S4.4's document tools and this one
   land in different files;
 - `evidence` — finding a file by its hash, number or text, annotating it,
   recording what a payment settles, and consolidating duplicates (P6);
@@ -328,8 +327,9 @@ to move to its own repository (P13 step 6, D-34, Z-17):
   per rule: pass, fail or not claimed. It compares the engine's answers
   with the examples' exact expected values; it never asks the engine
   whether its own answer is right.
-- `bookspec/spec/rules-index.md` maps B-1 to B-45 to the bookspec ids;
-  `docs/spec/rules.md` carries each stated rule's id under its heading.
+- `bookspec/spec/rules-index.md` maps all 45 rules in `docs/spec/rules.md`'s index to the bookspec ids;
+  the rules themselves are bookspec's `rules/` records, and wanderbooks'
+  claims on them are in `docs/spec/claims/` (`docs/spec/rules.md` is only the index).
 - `crates/ledger-core/tests/bookspec/` is the wanderbooks adapter: it
   implements `Engine` over `Store` (a dev-dependency only, so no engine
   crate depends on the specification) and remains the loader that checks

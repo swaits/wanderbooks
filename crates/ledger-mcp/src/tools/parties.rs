@@ -144,7 +144,7 @@ fn party_document(
 }
 
 /// A party-totals `basis` from a tool: "cash" (the default) or "all"
-/// (rules.md B-35 item 4); any other word is refused.
+/// (BS-partner-3 item 4); any other word is refused.
 fn parse_basis(basis: Option<&str>) -> Result<ledger_core::parties::Basis, String> {
     match basis {
         None => Ok(ledger_core::parties::Basis::default()),
@@ -589,7 +589,7 @@ impl BooksServer {
             fields.push(F::Email(optional_text(&v)));
         }
         // "" clears the terms; any other text is trade terms this party
-        // grants or is granted (B-39).
+        // grants or is granted (BS-arap-3).
         let terms = |v: String| -> Result<Option<ledger_core::Terms>, String> {
             if v.trim().is_empty() {
                 return Ok(None);
@@ -653,7 +653,7 @@ impl BooksServer {
                 .map_err(|e| e.to_string())?;
         }
         // The journal features these lines need, asked for before this
-        // command's first line, never between its lines (rules.md B-27:
+        // command's first line, never between its lines (BS-format-1:
         // books waiting for their format upgrade must not be left with the
         // name changed and the rest not).
         if fields.iter().any(|f| f.needs_documents_v2()) {
@@ -749,7 +749,7 @@ impl BooksServer {
     /// GOAL: the books know a W-9 arrived and what it said, and the full
     ///       TIN (and the form, which shows it) is kept where it can be
     ///       handed to the CPA and purged, never in the journal.
-    /// SOURCE: docs/parties-and-attachments.md "The TIN vault"; B-26;
+    /// SOURCE: docs/parties-and-attachments.md "The TIN vault"; BS-partner-2;
     ///         Treas. Reg. §301.6109-4 (truncated TINs); DECISION (owner,
     ///         2026-10-15): full TINs only in the encrypted vault.
     /// INVARIANTS:
@@ -852,7 +852,7 @@ impl BooksServer {
         let existing = store.ledger().get_party(id).and_then(|p| p.w9.clone());
         let party_tin = store.ledger().get_party(id).and_then(|p| p.tin.clone());
         // A new TIN with another last four replaces the party's TIN facts:
-        // cleared first, so the two never disagree on the record (B-26).
+        // cleared first, so the two never disagree on the record (BS-partner-2).
         let replace_tin = tin
             .as_ref()
             .is_some_and(|t| party_tin.as_ref().is_some_and(|pt| pt.last4 != t.last4()));
@@ -956,7 +956,7 @@ impl BooksServer {
         let on_file = facts.is_some();
         // The vendor record's W-9 flag follows (below): its feature is
         // asked for before this command's first line, never after it
-        // (B-27: books waiting for their format upgrade must not be left
+        // (BS-format-1: books waiting for their format upgrade must not be left
         // with the W-9 recorded and the flag not).
         let vendor = store.ledger().get_party(id).and_then(|p| p.vendor);
         if vendor
@@ -991,7 +991,7 @@ impl BooksServer {
     /// GOAL: any party's full TIN (a member's SSN for their K-1, a payee's
     ///       from their W-9) kept where the CPA package can carry it, and
     ///       nowhere else.
-    /// SOURCE: docs/parties-and-attachments.md "The TIN vault"; B-26;
+    /// SOURCE: docs/parties-and-attachments.md "The TIN vault"; BS-partner-2;
     ///         DECISION (owner, 2026-10-15): "In the vault, that's the
     ///         WHOLE reason we built it. And it needs to be in the damn CPA
     ///         package."
@@ -1407,7 +1407,7 @@ impl BooksServer {
             .vendor
             .and_then(|v| ledger.get_vendor(v))
             .map(|v| v.decision_on(today()).cloned().unwrap_or_default());
-        // Documents and runs are restored as journaled (rules.md B-28): a
+        // Documents and runs are restored as journaled (BS-entry-4): a
         // total past exact arithmetic refuses the answer, never a panic.
         let mut payroll = Vec::new();
         let (mut gross, mut net) = (Decimal::ZERO, Decimal::ZERO);

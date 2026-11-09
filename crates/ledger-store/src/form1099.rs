@@ -7,7 +7,7 @@
 //! GOAL: every event round-trips: decode(encode(x)) == x, and every line
 //!       written before decisions were kept reads as it always meant.
 //! SOURCE: plan/served.md 5.2, 5.5 (a legacy null is undetermined);
-//!         rules.md B-27 (an older reader says "newer", never "corrupt").
+//!         BS-format-1 (an older reader says "newer", never "corrupt").
 //! INVARIANTS:
 //!   1. vendor.1099_set {vendor_id, form_1099: "nec"|"misc"|
 //!      "not_reportable"|null, reason_kind?, reason?, effective?,
@@ -22,7 +22,7 @@
 //!   4. instrument.added {instrument_id, kind, label, last4?,
 //!      owner_party_id?, account_id}; entry.instrument_set {entry_id,
 //!      instrument_id|null}. Optional keys are left out when absent.
-//!   5. Decoding checks shape only (rules.md B-28): what a command checks
+//!   5. Decoding checks shape only (BS-entry-4): what a command checks
 //!      (limits, the chart) stays with the command.
 //! ```
 

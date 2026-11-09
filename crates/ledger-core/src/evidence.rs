@@ -121,7 +121,7 @@ impl Annotation {
 }
 
 // ---------------------------------------------------------------------------
-// The evidence gate (plan P4, I-5, D-47; rules.md B-43)
+// The evidence gate (plan P4, I-5, D-47; BS-entry-5)
 // ---------------------------------------------------------------------------
 
 /// What posted an entry that the ledger's own state doesn't otherwise say:
@@ -196,7 +196,7 @@ impl Policy {
     }
 
     /// Total debits of the entry (one side of the balanced entry). A
-    /// draft's lines are as journaled, of any size (rules.md B-28): a
+    /// draft's lines are as journaled, of any size (BS-entry-4): a
     /// total past exact arithmetic is refused (TooLargeToCompute), never
     /// a panic.
     pub fn entry_debits(entry: &JournalEntry) -> Result<Decimal, LedgerError> {
@@ -355,14 +355,14 @@ impl Policy {
 }
 
 /// Whether `entry` needs evidence before it posts: the one function that
-/// decides (plan P4 step 2, I-5, D-47; rules.md B-43). The store's gate,
+/// decides (plan P4 step 2, I-5, D-47; BS-entry-5). The store's gate,
 /// the server's previews and digest, the viewer and Needs attention all
 /// call it.
 ///
 /// ```text
 /// GOAL: one answer, from what the ledger knows, to "does this entry need
 ///       a receipt".
-/// SOURCE: docs/spec/rules.md B-43; IRS Pub. 583 (supporting documents);
+/// SOURCE: BS-entry-5; IRS Pub. 583 (supporting documents);
 ///         DECISION D-47 (a reversal's evidence is its original's, D-12);
 ///         DECISION (owner: the threshold, strictly greater than, 2026-10-12).
 /// INVARIANTS:

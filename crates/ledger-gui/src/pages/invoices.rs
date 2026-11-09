@@ -1,7 +1,7 @@
 //! Invoices and bills: what customers owe the company (money in) and what
 //! it owes vendors (money out), each figure derived from the document's
-//! ledger lines that stand (rules.md B-38), the list tied to the
-//! receivables or payables account (B-23); and one document's page, with
+//! ledger lines that stand (BS-arap-2), the list tied to the
+//! receivables or payables account (BS-ledger-8); and one document's page, with
 //! its lines and its timeline. Read only (D-28): the agent issues, pays
 //! and voids them.
 

@@ -875,7 +875,7 @@ fn a_run_reinstated_after_its_rerun_was_reversed_still_counts() {
     Store::open(dir.path()).unwrap().verify().unwrap();
 }
 
-/// P3 review round 2: a correction comes after what it corrects (B-9). A
+/// P3 review round 2: a correction comes after what it corrects (BS-ledger-5). A
 /// reversal of a depreciation run dated before the run (March's run, dated
 /// Mar 31, reversed on Feb 10) would leave January and February with
 /// negative depreciation, and a disposal on Feb 15 clearing what February

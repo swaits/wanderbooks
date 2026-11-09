@@ -1,4 +1,4 @@
-//! Projects in the viewer (rules.md B-37): the list and a project's page
+//! Projects in the viewer (BS-statement-5): the list and a project's page
 //! show ledger-core's figures; rows, links and bars open what they name;
 //! the journal, books.show and the party page know projects.
 
@@ -603,7 +603,7 @@ fn a_long_party_name_keeps_to_its_card() {
     }
 }
 
-// ------------------------------------------------- the snapshot (B-37 item 7)
+// ------------------------------------------------- the snapshot (BS-statement-5 item 7)
 
 /// Books holding one project of `kind`, started `started_on`, with
 /// `posts`: (date, debit code, credit code, cents), the line that isn't
@@ -991,7 +991,7 @@ fn the_chart_runs_from_the_start_or_first_entry_and_caps() {
     );
 }
 
-/// The fiscal year switch shows books.project's default period (B-30's
+/// The fiscal year switch shows books.project's default period (BS-period-3's
 /// omitted dates: the fiscal year to date), and switching writes nothing.
 #[test]
 fn the_fiscal_year_switch_shows_the_default_period() {
@@ -1253,7 +1253,7 @@ proptest::proptest! {
     }
 }
 
-/// rules.md B-37 item 8: an invoice's or bill's page (its entry's) lists
+/// BS-statement-5 item 8: an invoice's or bill's page (its entry's) lists
 /// the document's lines, each project a link that opens it; an untagged
 /// line has none. The entry's own lines show the tagged revenue or cost
 /// line too.
@@ -1372,8 +1372,8 @@ fn an_invoice_and_a_bill_show_each_lines_project() {
     }
 }
 
-/// The demo's "Client work" project carries every client invoice (rules.md
-/// B-37 item 8): its revenue to date is the invoices' total, its direct
+/// The demo's "Client work" project carries every client invoice (
+/// BS-statement-5 item 8): its revenue to date is the invoices' total, its direct
 /// costs the contractors tagged to it.
 #[test]
 fn the_demos_client_work_counts_every_client_invoice() {

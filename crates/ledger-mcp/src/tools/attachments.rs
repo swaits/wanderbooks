@@ -62,7 +62,7 @@ fn check_link_to(
         let sub = resolve_subject(store, s)?;
         // A link to a subject kind an older version doesn't know needs its
         // journal feature, asked here, before the file is filed: a refusal
-        // leaves nothing half-filed (rules.md B-27).
+        // leaves nothing half-filed (BS-format-1).
         if let Some(f) = Store::subject_feature(sub) {
             store.ensure_feature(f).map_err(|e| e.to_string())?;
         }

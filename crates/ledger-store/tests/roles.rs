@@ -1,6 +1,6 @@
 //! Spec-derived tests for control-role assignment in the store.
 //!
-//! Oracles: `docs/spec/rules.md` B-23 ("the assignment is journaled, so
+//! Oracles: BS-ledger-8 ("the assignment is journaled, so
 //! replay never depends on a setting outside the journal"), the doc comment
 //! on `Store::assign_role` (journaled as `role.assigned`, with the account
 //! that filled the role before), and the `Ledger::assign_role` spec (a
@@ -246,7 +246,7 @@ fn a_refused_assignment_journals_nothing() {
     assert_eq!(state(s.ledger()), mid);
 }
 
-/// Oracle: B-23 (replay never depends on a setting outside the journal):
+/// Oracle: BS-ledger-8 (replay never depends on a setting outside the journal):
 /// reopening gives the same assignments, and later commands still post to
 /// the assigned accounts.
 #[test]
@@ -304,7 +304,7 @@ fn assignments_replay_on_reopen_and_steer_later_invoices() {
     assert_eq!(state(s.ledger()), after);
 }
 
-/// Oracle: B-23 + close_period: a close to retained earnings after the
+/// Oracle: BS-ledger-8 + close_period: a close to retained earnings after the
 /// role is assigned goes to the assigned account, and replays identically.
 #[test]
 fn a_close_to_assigned_retained_earnings_replays_identically() {

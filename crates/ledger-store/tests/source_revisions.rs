@@ -4,7 +4,7 @@
 //! event, replays identically, and waits for the owner's format upgrade.
 //!
 //! Expected behavior comes from `docs/receipt-store.md` (the three events)
-//! and rules.md B-27 (a feature is declared before its first line).
+//! and BS-format-1 (a feature is declared before its first line).
 
 use chrono::NaiveDate;
 use ledger_core::Currency;

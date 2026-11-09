@@ -15,10 +15,10 @@
 //! ```text
 //! GOAL: every payment's method is recorded once, plainly, so the 1099
 //!       worksheet never guesses whether a payment was by card.
-//! SOURCE: docs/spec/rules.md B-19 (Treas. Reg. §1.6041-1(a)(1)(iv),
+//! SOURCE: BS-1099-1 (Treas. Reg. §1.6041-1(a)(1)(iv),
 //!         §1.6050W-1(b)(1), (b)(3), (c)(3); Instructions for Form 1099-K:
 //!         automated clearing houses are not payment networks;
-//!         sources/irs-1099-payment-method.md); plan/served.md 4.9, 5.2.
+//!         docs/spec/sources/irs-1099-payment-method.md); plan/served.md 4.9, 5.2.
 //! INVARIANTS:
 //!   1. A label is one line, at most settings::MAX_TEXT characters, holds
 //!      no full TIN, and is unique among instruments (ignoring case and

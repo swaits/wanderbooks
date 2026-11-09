@@ -34,7 +34,7 @@ fn usd(amount: u64) -> Money {
 fn post(ledger: &mut Ledger, date: NaiveDate, description: &str, lines: &[(AccountId, Side, u64)]) {
     // As replay posts it: these books hold hand lines on receivables or
     // payables (1200, 2000), which books an earlier version wrote still
-    // hold and every report must read; the control guard (rules.md B-38)
+    // hold and every report must read; the control guard (BS-arap-2)
     // refuses them as new work.
     ledger_core::parties::replaying(|| {
         let id = ledger.create_entry(date, description);
@@ -213,7 +213,7 @@ fn out_of_range_amount_is_rejected() {
     // Big enough to overflow a sum: an error, never a panic, as soon as
     // the line is added (a draft is summed before it posts: its debits,
     // its parties' shares; P0 review round 3, S1). Replayed as an earlier
-    // version wrote it (rules.md B-28): accepted into its draft, whose
+    // version wrote it (BS-entry-4): accepted into its draft, whose
     // post refuses it, never a panic.
     let id = ledger.create_entry(date(21), "Too big");
     let old = ledger.create_entry(date(21), "Too big, journaled before the bound");
@@ -268,7 +268,7 @@ fn out_of_range_amount_is_rejected() {
     );
 }
 
-/// B-3 (DECISION, owner 2026-10-13: a ledger in one money holds no
+/// BS-ledger-1 (DECISION, owner 2026-10-13: a ledger in one money holds no
 /// fractions of its smallest unit). Regression: a payroll run posted
 /// $65.27794 (found by the store's refusal property in CI, 2026-10-13).
 #[test]
@@ -392,7 +392,7 @@ fn foreign_currency_line_is_rejected() {
     );
 }
 
-/// R-1 / B-3: one currency throughout an entry. Even when every line
+/// R-1 / BS-ledger-1: one currency throughout an entry. Even when every line
 /// matches its own account's currency (a chart the ledger never builds
 /// today, R-5), an entry mixing currencies is refused.
 #[test]
@@ -657,7 +657,7 @@ fn random_balanced_journals_preserve_invariants() {
 
     // As replay posts them: random lines land on receivables and
     // payables by hand, as books an earlier version wrote can hold them
-    // (the control guard, rules.md B-38, refuses them as new work).
+    // (the control guard, BS-arap-2, refuses them as new work).
     ledger_core::parties::replaying(|| {
         for i in 0..300u32 {
             let total = rng.next(100_000) + 100;
@@ -755,7 +755,7 @@ fn entry_movements_sum_to_zero() {
 }
 
 // ---------------------------------------------------------------------------
-// Cash flow statement (direct method, rules.md B-14).
+// Cash flow statement (direct method, BS-statement-3).
 // ---------------------------------------------------------------------------
 
 use ledger_core::NewAsset;
@@ -797,8 +797,8 @@ fn cash_flow_reconciles_to_change_in_cash() {
     assert!(r.lines.iter().all(|l| l.label != "Depreciation"));
 
     // Operating, by the direct method: collected 1,500 (class (a)); paid
-    // 2,500 for equipment (not a registered asset: operating, rules.md
-    // B-14 rule 12's limits) and 800 rent (class (d)) = -1,800. Reconciled:
+    // 2,500 for equipment (not a registered asset: operating,
+    // BS-statement-3 rule 12's limits) and 800 rent (class (d)) = -1,800. Reconciled:
     // 3,200 net income - 2,500 increase in AR (4,000 billed - 1,500
     // collected) - 2,500 increase in equipment = -1,800.
     // Financing: +10,000 owner contribution. Sum = 8,200. Reconciles.
@@ -974,7 +974,7 @@ fn cash_flow_with_registered_asset_and_disposal() {
 // payroll, and closes to accounts it finds by code. When an account with
 // that code exists but is the wrong kind, it refuses, says why, and changes
 // nothing, rather than posting to it or forcing the chart into its
-// numbering. SOURCE: rules.md B-4 (the elements), DECISION.
+// numbering. SOURCE: BS-ledger-2 (the elements), DECISION.
 // ---------------------------------------------------------------------------
 
 fn books_with(code: &str, name: &str, t: AccountType, placeholder: bool) -> Ledger {
@@ -1110,7 +1110,7 @@ fn a_close_refuses_a_3999_that_is_not_equity() {
 // ---------------------------------------------------------------------------
 
 /// A child account subdivides its parent, so it is the same kind of
-/// account. SOURCE: rules.md B-4; DECISION (owner, 2026-10-13).
+/// account. SOURCE: BS-ledger-2; DECISION (owner, 2026-10-13).
 #[test]
 fn a_child_account_has_its_parents_type() {
     let mut l = Ledger::new(Currency::USD);
@@ -1168,7 +1168,7 @@ fn periods_nest_but_never_partially_overlap() {
 }
 
 /// A line names a real, postable account when it is added, not only when
-/// the entry posts. DECISION (owner, 2026-10-13); rules.md B-1.
+/// the entry posts. DECISION (owner, 2026-10-13); BS-entry-1.
 #[test]
 fn a_line_on_an_unknown_or_placeholder_account_is_refused_when_added() {
     let c = fixture_company();
@@ -1202,7 +1202,7 @@ fn a_line_on_an_unknown_or_placeholder_account_is_refused_when_added() {
     );
 }
 
-/// Spec (rules.md B-3; DECISION, owner 2026-10-13, after the GnuCash
+/// Spec (BS-ledger-1; DECISION, owner 2026-10-13, after the GnuCash
 /// cross-check): a foreign line is booked in the base currency's smallest
 /// unit, half away from zero; the foreign original is kept.
 #[test]
@@ -1392,7 +1392,7 @@ fn reconciling_a_card_reads_its_normal_side_and_includes_the_statement_date() {
     assert_eq!(outstanding, vec![date(21), date(25)]);
 }
 
-/// B-11: closing to retained earnings with nothing to close but a swept
+/// BS-period-1: closing to retained earnings with nothing to close but a swept
 /// account's balance still sweeps it.
 #[test]
 fn a_close_sweeps_dividends_even_without_income() {
@@ -1473,7 +1473,7 @@ fn a_last_absorbs_close_gives_the_rounding_to_the_last_member() {
     assert_eq!(got, vec![cents(32), cents(32), cents(41)]);
 }
 
-/// B-12: a period whose closing date already lies in a closed period
+/// BS-period-2: a period whose closing date already lies in a closed period
 /// can't close; the refusal names that period.
 #[test]
 fn a_period_ending_inside_a_closed_period_cannot_close() {
@@ -1499,7 +1499,7 @@ fn a_period_ending_inside_a_closed_period_cannot_close() {
 
 /// Replay (for journaling stores) rebuilds invoice and bill records
 /// exactly: ids follow the allocator, each record tags its entry's control
-/// line and each payment its entry's (rules.md B-38), vendors tag the
+/// line and each payment its entry's (BS-arap-2), vendors tag the
 /// entries. A record replayed out of order is refused.
 #[test]
 fn replayed_documents_and_payments_rebuild_the_records() {
@@ -1611,10 +1611,10 @@ fn replayed_documents_and_payments_rebuild_the_records() {
 }
 
 // ---------------------------------------------------------------------------
-// Drafts: a state, and a way out (plan P4, rules.md B-43).
+// Drafts: a state, and a way out (plan P4, BS-entry-5).
 // ---------------------------------------------------------------------------
 
-/// Spec (rules.md B-43; Lean `Step.discard` and `hdrafts`): a period with
+/// Spec (BS-entry-5; Lean `Step.discard` and `hdrafts`): a period with
 /// an open draft can't close; once the draft is discarded it can, and
 /// nothing posted moved: balances, order and ids are as they were.
 #[test]

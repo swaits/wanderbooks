@@ -1,8 +1,10 @@
 # Specification sources
 
 wanderbooks' rules come from documents, not from anyone's memory. This
-directory holds the authorities the engine's specs cite (`docs/spec/rules.md`
-is the rule catalog), and every spec block in the code carries a `SOURCE:`
+directory holds the authorities the engine's specs cite (the rules are
+bookspec's `BS-<area>-<n>` records; `docs/spec/rules.md` is only the
+B-n to bookspec-id index and `docs/spec/claims/` holds wanderbooks'
+claims), and every spec block in the code carries a `SOURCE:`
 line pointing into it.
 
 ## The authority stack
@@ -15,7 +17,7 @@ layers differ in what they cover and in whether we may copy them:
 | **Pacioli (1494), Geijsbeek translation (1914)** | The mechanics of double entry: debits equal credits, the trial balance, one money, writing only forward, correcting by opposite entry, closing into capital. No modern standard restates these; they predate every regulator. | Public domain | Vendored verbatim: `sources/pacioli-1494.md` |
 | **IRS: Internal Revenue Code, Treasury Regulations, publications, form instructions** | Records and supporting documents, retention, accounting periods and methods, information returns (1099), capitalization (de minimis, 12-month rule), partners' capital, tax basis of purchased and contributed property (`sources/irs-partnership-basis.md`), payroll taxes, rounding on returns, return line items for tax categories (`sources/irs-tax-lines.md`) | Public domain (17 U.S.C. §105; IRS.gov's content policy) | Vendored verbatim: `sources/irs-*.md`, `sources/us-public-domain-status.md` |
 | **File formats: Intuit (QuickBooks Online bank CSV, QuickBooks Desktop IIF), ECMA-376 Office Open XML, Microsoft Excel limits, Avery label sheets** | What `ledger-import` reads and writes: bank/card CSV layouts and signs, IIF journal entries, how XLSX stores numbers and Excel's 15-digit precision, asset-label sheet geometry (Avery 5160) | © Intuit Inc.; © Ecma International; © Microsoft; © Avery Products Corporation | Cited with short quotes, URLs, and hashes: `sources/intuit-bank-csv.md`, `sources/intuit-iif.md`, `sources/xlsx-numbers.md`, `sources/avery-5160.md` |
-| **FASB Accounting Standards Codification (ASC)** | Authoritative US GAAP: cash flows (ASC 230), revenue and principal vs agent (ASC 606), foreign currency (ASC 830), credit losses and aging (ASC 326), property and depreciation (ASC 360) | © Financial Accounting Foundation | Cited by paragraph with short quotes only (in `rules.md`; the paragraphs read, with where and when, in `sources/fasb-asc.md` and below) |
+| **FASB Accounting Standards Codification (ASC)** | Authoritative US GAAP: cash flows (ASC 230), revenue and principal vs agent (ASC 606), foreign currency (ASC 830), credit losses and aging (ASC 326), property and depreciation (ASC 360) | © Financial Accounting Foundation | Cited by paragraph with short quotes only (in bookspec's rules and `docs/spec/claims/`; the paragraphs read, with where and when, in `sources/fasb-asc.md` and below) |
 | **FASB Concepts Statement No. 8, Chapter 4 (2021)** | Definitions of the five elements (it replaced Concepts Statement 6) | © Financial Accounting Foundation; non-authoritative | Cited with short quotes only |
 | **Textbooks (OpenStax *Principles of Accounting, Vol. 1*)** | Conventions no standard states: normal balances, closing-entry mechanics, straight-line depreciation arithmetic | CC BY-NC-SA 4.0 (incompatible with this repo's license) | Cited with short quotes and attribution only |
 | **Convention or decision** | Where no authority speaks: aging bucket edges, cent rounding among members, closed-period locks | — | Stated as CONVENTION or CHOICE, with who decided and when |
@@ -24,7 +26,7 @@ layers differ in what they cover and in whether we may copy them:
 
 ```text
 SOURCE: Pacioli ch. 36 (sources/pacioli-1494.md); IRS Pub. 583 (sources/irs-records.md)
-SOURCE: ASC 830-20-30-1 (cited, rules.md B-3)
+SOURCE: ASC 830-20-30-1 (cited, BS-ledger-1)
 SOURCE: CHOICE (the owner, 2026-10-13)
 SOURCE: CONVENTION (QuickBooks aging); nearest authority ASC 326-20-55-38 (illustrative)
 ```
@@ -73,12 +75,12 @@ each checked again against the same sources in the P3 review (numbers,
 pages and wording hold). Open: 105-10-05-1 to 05-3, read only in their
 2009 text (ASU 2009-01, and as Wiley GAAP 2020 quotes them); their
 current wording is unconfirmed. Also open (P3 surface review, 2026-10-21): ASC 230-10-45-15(f) (debt
-issue costs, cited by B-14 rule 11) is in neither list above; ASC
-606-10-25-31, 25-32 and 55-20 (B-16's over-time method) are not yet read;
-B-15 rule 6 cites ASC 250 with no paragraph; B-17's 606-10-55-39 is in
+issue costs, cited by BS-statement-3 rule 11) is in neither list above; ASC
+606-10-25-31, 25-32 and 55-20 (BS-prepaid-1's over-time method) are not yet read;
+BS-asset-1 rule 6 cites ASC 250 with no paragraph; BS-revenue-1's 606-10-55-39 is in
 neither list. Each is to be read in the ASC basic view and listed in
 `sources/fasb-asc.md` before it is relied on further. Also open (plan
-P4b, 2026-10-23): B-38 cites ASC 310-10, 405-20-40-1 and 606-10-45-4,
-none yet read in the ASC basic view; B-38 keeps the CONVENTION label
+P4b, 2026-10-23): BS-arap-2 cites ASC 310-10, 405-20-40-1 and 606-10-45-4,
+none yet read in the ASC basic view; BS-arap-2 keeps the CONVENTION label
 until they are vendored with a SHA-256, as P4b.16 lists with the sources
-B-39 to B-41 will need.
+BS-arap-3 to BS-arap-5 will need.

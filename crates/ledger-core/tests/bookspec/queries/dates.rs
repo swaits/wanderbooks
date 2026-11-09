@@ -1,7 +1,7 @@
 use crate::*;
 
 /// Check one `period` expectation: the period a period report asked with
-/// these dates covers, by the one rule (rules.md B-30), as `from` and
+/// these dates covers, by the one rule (BS-period-3), as `from` and
 /// `to`; or the rule's refusal.
 pub(crate) fn check_period(ex: &Example, x: &Expect) {
     match (resolved_period(ex, x), &x.refused) {
@@ -20,7 +20,7 @@ pub(crate) fn check_period(ex: &Example, x: &Expect) {
 }
 
 /// Check one `day` expectation: the day a report as of a day is made as
-/// of (rules.md B-30), as `as_of`.
+/// of (BS-period-3), as `as_of`.
 pub(crate) fn check_day(ex: &Example, x: &Expect) {
     exactly(ex, x, &["as_of".to_string()].into());
     let want = date(&x.figures(&ex.id)["as_of"], &ex.id);
@@ -28,7 +28,7 @@ pub(crate) fn check_day(ex: &Example, x: &Expect) {
 }
 
 /// Check one `calendar_year` expectation: the year a calendar-year count
-/// (1099s, party totals) asked without one counts (rules.md B-30).
+/// (1099s, party totals) asked without one counts (BS-period-3).
 pub(crate) fn check_calendar_year(ex: &Example, x: &Expect) {
     assert!(
         x.from.is_none() && x.to.is_none() && x.as_of.is_none(),
@@ -49,8 +49,8 @@ pub(crate) fn check_calendar_year(ex: &Example, x: &Expect) {
 
 /// Check one `account_names` expectation: each account's name, by code,
 /// as the chart holds it and every report prints it (the trial balance
-/// and the profit and loss, over every date: past periods too, rules.md
-/// B-31); every account listed.
+/// and the profit and loss, over every date: past periods too,
+/// BS-ledger-10); every account listed.
 pub(crate) fn check_account_names(ex: &Example, l: &Ledger, x: &Expect) {
     assert!(
         x.from.is_none() && x.to.is_none() && x.as_of.is_none(),
@@ -83,7 +83,7 @@ pub(crate) fn check_account_names(ex: &Example, l: &Ledger, x: &Expect) {
 
 /// Check one `uncategorized_accounts` expectation: every account that
 /// maps to a line of the return and has no tax category, with activity or
-/// not, as `"<code> <name>"`, by code (rules.md B-32).
+/// not, as `"<code> <name>"`, by code (BS-ledger-11).
 pub(crate) fn check_uncategorized_accounts(ex: &Example, l: &Ledger, x: &Expect) {
     assert!(
         x.from.is_none() && x.to.is_none() && x.as_of.is_none(),

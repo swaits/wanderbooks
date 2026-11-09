@@ -5,11 +5,11 @@
 //! `depreciation_schedule`, `Asset::basis_figures`), what is posted too
 //! (`Ledger::accumulated_posted`, its runs). Book value is what the books
 //! carry (cost less the depreciation posted), never the schedule's figure,
-//! which sits beside it as "scheduled" (B-24). Book value and the federal
+//! which sits beside it as "scheduled" (BS-asset-3). Book value and the federal
 //! tax figures sit side by side and are never confused: book cost is what
 //! was paid or, for a member's contribution, its fair market value; the
 //! §723 basis, the depreciable basis and the §704(c) built-in gain follow
-//! the basis rule (docs/spec/rules.md B-25).
+//! the basis rule (BS-asset-4).
 
 use super::page;
 use crate::app::Shell;

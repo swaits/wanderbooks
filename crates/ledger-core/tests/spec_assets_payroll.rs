@@ -1,8 +1,8 @@
 //! Spec-derived tests for fixed assets (depreciation, disposal) and payroll.
 //!
 //! Every expected value here is a literal worked by hand from the written
-//! specification (the interface doc comments, `docs/spec/rules.md` B-15 and
-//! B-22, and IRS Pub. 15 in `docs/spec/sources/irs-payroll.md`), or a law the
+//! specification (the interface doc comments, BS-asset-1 and
+//! BS-asset-2, and IRS Pub. 15 in `docs/spec/sources/irs-payroll.md`), or a law the
 //! specification states. Nothing is read back from the code under test and
 //! then asserted.
 
@@ -274,7 +274,7 @@ const PLAN_CASH: AccountId = 100;
 
 // ------------------------------------------------- depreciation schedule
 
-/// Oracle: B-15 straight line, (cost − salvage) / life = 12000 / 12 = 1000.00
+/// Oracle: BS-asset-1 straight line, (cost − salvage) / life = 12000 / 12 = 1000.00
 /// per full month; a purchase on the 1st makes every month full.
 #[test]
 fn full_months_each_take_one_twelfth_b15() {
@@ -316,7 +316,7 @@ fn schedule_clamps_to_end_of_life() {
     assert_eq!(s.last().unwrap().book_value, d("0.00"));
 }
 
-/// Oracle: B-15 partial months prorated by days; monthly 620/2 = 310.00.
+/// Oracle: BS-asset-1 partial months prorated by days; monthly 620/2 = 310.00.
 /// Bought 2026-01-15: Jan holds 15..31 = 17/31 → 170.00; Feb full 310.00;
 /// life ends 2026-03-15 so Mar holds 1..14 = 14/31 → 140.00. 17/31 + 14/31
 /// = one full month, and the total is exactly 620.00.
@@ -368,7 +368,7 @@ fn last_month_trues_up_unequal_month_lengths_b15() {
     );
 }
 
-/// Oracle: B-15 "salvage never depreciated": cost 5000, salvage 1000, life 4
+/// Oracle: BS-asset-1 "salvage never depreciated": cost 5000, salvage 1000, life 4
 /// → 1000.00/month, book value stops at 1000.00 forever.
 #[test]
 fn salvage_value_is_never_depreciated_b15() {
@@ -387,7 +387,7 @@ fn salvage_value_is_never_depreciated_b15() {
     );
 }
 
-/// Oracle: B-21/interface "exact cents … never a penny off": 1000.00 over 3
+/// Oracle: BS-entry-3/interface "exact cents … never a penny off": 1000.00 over 3
 /// months cannot split evenly; months are 333.33 or 333.34 and sum to
 /// exactly 1000.00.
 #[test]
@@ -567,7 +567,7 @@ fn defect22_a_disposed_assets_schedule_stops_at_its_disposal_day() {
 /// cumulative 100,000 × m / 12, rounded half up to the yen (8,333.33 →
 /// 8,333; 16,666.67 → 16,667; 25,000; ...), so months alternate 8,333 and
 /// 8,334 and sum to 100,000. Every one is whole yen, so it can post (an
-/// entry refuses a fraction of the minor unit, B-3).
+/// entry refuses a fraction of the minor unit, BS-ledger-1).
 #[test]
 fn jpy_depreciation_posts_whole_yen() {
     let mut a = asset("100000", "0", 12, date(2026, 1, 1));
@@ -667,7 +667,7 @@ fn disposal_loss_is_negative() {
     assert_eq!(scrap.gain_loss, d("-6000.00"));
 }
 
-/// Oracle: B-15 + gain law: after full life, book value = salvage 1000.00,
+/// Oracle: BS-asset-1 + gain law: after full life, book value = salvage 1000.00,
 /// selling for 1000.00 is neither gain nor loss.
 #[test]
 fn disposal_after_full_life_at_salvage_is_break_even() {
@@ -742,7 +742,7 @@ fn assert_asset_refused(new: NewAsset, l: &mut Ledger, check: impl Fn(&LedgerErr
 }
 
 /// Oracle: register_asset SCENARIO 1 "description is blank: SHOULD refuse";
-/// refusal leaves the books unchanged (B-8 / post_entry INVARIANT 3 spirit).
+/// refusal leaves the books unchanged (BS-ledger-4 / post_entry INVARIANT 3 spirit).
 #[test]
 fn register_asset_refuses_empty_description() {
     let (mut l, a) = fixture();
@@ -1226,7 +1226,7 @@ fn run_payroll_refuses_zero_gross() {
 }
 
 /// Oracle: validate_payroll/run_payroll take a cash account; an unknown one
-/// cannot be credited (B-1 / R-1 "no unknown accounts").
+/// cannot be credited (BS-entry-1 / R-1 "no unknown accounts").
 ///
 /// ASSUMED: the refusal comes before posting; variant unspecified.
 #[test]
@@ -1251,7 +1251,7 @@ fn run_payroll_refuses_wrong_type_control_account() {
     );
 }
 
-/// Oracle: B-12 "a closed period takes no new postings"; remit doc "rejects
+/// Oracle: BS-period-2 "a closed period takes no new postings"; remit doc "rejects
 /// dates in closed periods".
 #[test]
 fn payroll_and_remit_refuse_closed_period() {
@@ -1312,7 +1312,7 @@ fn period_end(p: &str) -> NaiveDate {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
 
-    /// Oracle: B-15 laws — a full schedule sums to exactly cost − salvage;
+    /// Oracle: BS-asset-1 laws — a full schedule sums to exactly cost − salvage;
     /// amounts are non-negative whole cents; accumulated is the running sum
     /// and non-decreasing; book value = cost − accumulated, never rises, never
     /// below salvage, ends at salvage; months are consecutive from the
@@ -1367,7 +1367,7 @@ proptest! {
         prop_assert_eq!(scheduled_book_value(&a, before).unwrap(), a.cost.amount);
     }
 
-    /// Oracle: B-15 partial months by days + interface "the last month absorbs
+    /// Oracle: BS-asset-1 partial months by days + interface "the last month absorbs
     /// the drift". When (cost − salvage) / life is a whole number of cents M
     /// and the purchase is after the 1st, the middle months are each exactly
     /// M and the partial first and last months together are exactly M.

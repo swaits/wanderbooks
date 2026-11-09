@@ -389,7 +389,7 @@ pub(crate) fn check_cash_flow(b: &Books<'_>, x: &Expect) {
 
 /// Check one `trial_balance` expectation: each account's balance as of
 /// the day, debits less credits (a credit balance negative), every
-/// account listed (rules.md B-6, B-33).
+/// account listed (BS-statement-1, BS-statement-4).
 pub(crate) fn check_trial_balance(ex: &Example, l: &Ledger, x: &Expect) {
     let as_of = day(ex, x);
     let tb = trial_balance_as_of(l, as_of);
@@ -411,7 +411,7 @@ pub(crate) fn check_trial_balance(ex: &Example, l: &Ledger, x: &Expect) {
 /// Check one `profit_and_loss` expectation: each revenue and expense
 /// account's activity over the period on its normal side, closing entries
 /// left out, and `net_income`, revenue less expenses; every revenue and
-/// expense account listed (rules.md B-14, B-33).
+/// expense account listed (BS-statement-3, BS-statement-4).
 pub(crate) fn check_profit_and_loss(ex: &Example, l: &Ledger, x: &Expect) {
     let (start, end) = period(ex, x);
     let pl = profit_and_loss_for_period(l, start, end, None)
@@ -506,8 +506,8 @@ pub(crate) fn check_balances(ex: &Example, l: &Ledger, x: &Expect) {
 /// Check one `members_equity` expectation: the statement of changes in
 /// members' equity over the period, `"<member>.<column>"` for the columns
 /// `beginning`, `contributions`, `net_income`, `distributions`, `other`
-/// and `ending`; the figures named are the example's choice (rules.md
-/// B-13).
+/// and `ending`; the figures named are the example's choice (
+/// BS-partner-1).
 pub(crate) fn check_members_equity(
     ex: &Example,
     l: &Ledger,

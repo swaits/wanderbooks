@@ -1,12 +1,12 @@
 //! Documents read their figures from the ledger lines tagged with them
-//! (rules.md B-38; plan P4b S1, D-45): one test per scenario of the
-//! B-38 spec block, then the properties.
+//! (BS-arap-2; plan P4b S1, D-45): one test per scenario of the
+//! BS-arap-2 spec block, then the properties.
 //!
 //! ```text
 //! GOAL: invoices and bills are the subledgers of the receivables and
 //!       payables control accounts; every figure about a document is read
 //!       from the ledger lines tagged with it.
-//! SOURCE: docs/spec/rules.md B-8, B-9, B-10, B-18, B-23, B-28, B-38;
+//! SOURCE: BS-ledger-4, BS-ledger-5, BS-ledger-6, BS-arap-1, BS-ledger-8, BS-entry-4, BS-arap-2;
 //!         ASC 310-10, ASC 405-20-40-1, ASC 606-10-45-4.
 //! ```
 
@@ -109,7 +109,7 @@ impl Books {
         self.l.chart().find_by_code(code).unwrap().id
     }
 
-    /// Every control account's tie-out holds: no difference (B-38
+    /// Every control account's tie-out holds: no difference (BS-arap-2
     /// INVARIANT 1).
     fn ties(&self, on: NaiveDate) {
         for c in self.l.control_check(on).unwrap() {
@@ -186,7 +186,7 @@ fn a_voided_invoice_never_ages() {
         Err(LedgerError::InvalidVoid(why)) => assert!(why.contains(&r.to_string()), "{why}"),
         other => panic!("expected InvalidVoid, got {other:?}"),
     }
-    // Reversing the void re-instates it (B-10); voiding again reverses
+    // Reversing the void re-instates it (BS-ledger-6); voiding again reverses
     // that reversal, the end of the chain.
     let back = b.l.reverse_entry(r, d(2026, 2, 7), "Re-instate").unwrap();
     assert_eq!(
@@ -500,7 +500,7 @@ fn deposit_account_must_be_cash_like() {
 }
 
 /// A reversal of an entry a document owns is never dated before it
-/// (B-9; P4b.3, "Dating rules").
+/// (BS-ledger-5; P4b.3, "Dating rules").
 #[test]
 fn reversal_before_original_refused_for_documents() {
     let mut b = books();
@@ -1067,7 +1067,7 @@ fn out_of_bounds_documents_are_listed_not_aged() {
 
 /// Reversing a legacy hand line takes it off; reversing that reversal
 /// would put it back, and is refused: no command adds an untagged control
-/// line (B-38 INVARIANT 1 and item 3; first review of S1).
+/// line (BS-arap-2 INVARIANT 1 and item 3; first review of S1).
 #[test]
 fn putting_back_a_removed_hand_line_is_refused() {
     let mut b = books();
@@ -1201,10 +1201,10 @@ fn a_chain_counts_in_order() {
 }
 
 // ---------------------------------------------------------------------------
-// Write-offs (plan P4b S7; rules.md B-41)
+// Write-offs (plan P4b S7; BS-arap-5)
 // ---------------------------------------------------------------------------
 
-/// B-38 SCENARIO 7 and B-41 INVARIANT 1: half of an invoice paid, the rest
+/// BS-arap-2 SCENARIO 7 and BS-arap-5 INVARIANT 1: half of an invoice paid, the rest
 /// written off, reads Written off with 50 paid and 50 written off, and
 /// receivables falls by the write-off alone.
 #[test]
@@ -1261,7 +1261,7 @@ fn half_paid_rest_written_off_is_written_off() {
     assert!(check.iter().all(|c| c.difference.is_zero()));
 }
 
-/// B-41 INVARIANT 3: a cash-basis company never counted the invoice as
+/// BS-arap-5 INVARIANT 3: a cash-basis company never counted the invoice as
 /// income, so it has no basis to deduct (IRC §166; Treas. Reg.
 /// §1.166-1(e)).
 #[test]
@@ -1308,7 +1308,7 @@ fn write_off_refused_on_cash_basis() {
     );
 }
 
-/// B-41 INVARIANT 1: at most what is owed, a partial write-off allowed
+/// BS-arap-5 INVARIANT 1: at most what is owed, a partial write-off allowed
 /// (Treas. Reg. §1.166-3(a)); more is refused, naming what is owed, and
 /// nothing changes.
 #[test]
@@ -1351,7 +1351,7 @@ fn write_off_above_outstanding_refused() {
     assert_eq!((st.paid, st.written_off), (cents(4_000), cents(6_000)));
 }
 
-/// D-49's same-year recovery, and B-41 INVARIANT 2: reversing the
+/// D-49's same-year recovery, and BS-arap-5 INVARIANT 2: reversing the
 /// write-off re-instates the debt (it is not a new movement), and the
 /// payment then recorded settles it; a recovery is income, never a
 /// payment event.
@@ -1502,7 +1502,7 @@ fn days(b: &Books) -> Vec<NaiveDate> {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
 
-    /// B-38 INVARIANTS 1, 2 and 6 over random histories of creates,
+    /// BS-arap-2 INVARIANTS 1, 2 and 6 over random histories of creates,
     /// payments, voids, reversals of any entry and refused hand lines: at
     /// every date the control accounts equal their documents (no
     /// difference, nothing unattached: no command adds a hand line), each
@@ -1538,7 +1538,7 @@ proptest! {
         }
     }
 
-    /// B-38 INVARIANT 5: the aging as of a day partitions what the
+    /// BS-arap-2 INVARIANT 5: the aging as of a day partitions what the
     /// documents owe then (in books these commands write, none owes less
     /// than nothing). INVARIANT 4 (Store, replay and Snapshot agree) is
     /// ledger-store's `status_is_a_function_of_journal_and_date`.
@@ -1562,7 +1562,7 @@ proptest! {
         }
     }
 
-    /// B-38 INVARIANT 3: reversing a tagged entry moves its documents by
+    /// BS-arap-2 INVARIANT 3: reversing a tagged entry moves its documents by
     /// exactly the opposite of the entry's own tagged lines from the
     /// reversal's day (read from the entry reversed, not from the mirror,
     /// so a mirror that lost its tag is caught); reversing that reversal
@@ -1637,7 +1637,7 @@ fn doc_line(
     }
 }
 
-/// B-39 SCENARIOS: Net 30, Net 15 EOM, a leap day, due on receipt, a
+/// BS-arap-3 SCENARIOS: Net 30, Net 15 EOM, a leap day, due on receipt, a
 /// custom date, and the 9999-12 bound refused instead of panicking.
 #[test]
 fn terms_derive_due_dates() {
@@ -1671,7 +1671,7 @@ fn terms_derive_due_dates() {
     assert!(Terms::new(TermsKind::NetEom(3_651), None).is_err());
 }
 
-/// B-39 INVARIANT 2: the discount's bound, its date, and the terms that
+/// BS-arap-3 INVARIANT 2: the discount's bound, its date, and the terms that
 /// cannot carry one.
 #[test]
 fn discount_bounds_and_late_reason() {
@@ -1741,7 +1741,7 @@ fn discount_bounds_and_late_reason() {
     assert_eq!(kernel::discount_max(cents(-1), 200), None);
 }
 
-/// B-39 INVARIANT 3: the canonical spellings read back as they print.
+/// BS-arap-3 INVARIANT 3: the canonical spellings read back as they print.
 #[test]
 fn terms_describe_and_parse_round_trip() {
     for text in [
@@ -1899,7 +1899,7 @@ fn qty_times_price_must_equal_amount() {
     ));
 }
 
-/// B-39 line accounts: an invoice takes revenue or deferred revenue; a
+/// BS-arap-3 line accounts: an invoice takes revenue or deferred revenue; a
 /// bill takes an expense or a non-cash asset; roles, cash and headers are
 /// refused (plan P4b S4.1, A-10).
 #[test]
@@ -1959,7 +1959,7 @@ fn document_line_account_refuses_roles_cash_and_placeholders() {
     assert_eq!(b.l.next_bill_id(), before);
 }
 
-/// A-2, B-40: numbers run, a void keeps its number, legacy invoices are
+/// A-2, BS-arap-4: numbers run, a void keeps its number, legacy invoices are
 /// not counted, and a number is never reused.
 #[test]
 fn numbers_run_and_voids_keep_theirs() {
@@ -2033,7 +2033,7 @@ fn numbers_run_and_voids_keep_theirs() {
     );
 }
 
-/// B-40: four digits, wider past 9,999, never truncated.
+/// BS-arap-4: four digits, wider past 9,999, never truncated.
 #[test]
 fn number_widens_past_9999() {
     let mut b = books();
@@ -2053,7 +2053,7 @@ fn number_widens_past_9999() {
     assert_eq!(b.l.next_invoice_number("INV-", 9_999), "INV-10000");
 }
 
-/// B-40: a vendor's invoice number names one standing bill; case, spaces
+/// BS-arap-4: a vendor's invoice number names one standing bill; case, spaces
 /// and hyphens are ignored; a duplicate needs a reason (plan P4b S4.1).
 #[test]
 fn duplicate_vendor_ref_refused_unless_a_reason_is_given() {
@@ -2124,13 +2124,13 @@ fn duplicate_vendor_ref_refused_unless_a_reason_is_given() {
 }
 
 // ---------------------------------------------------------------------------
-// P4b S6: paying on terms (rules.md B-42)
+// P4b S6: paying on terms (BS-arap-6)
 // ---------------------------------------------------------------------------
 
 /// A bill on "2/10 net 30", paid within the discount window: the gross
 /// method's entry is Dr A/P the full amount, Cr purchase discounts what
 /// was taken, Cr the bank the rest; the bill reads paid and discounted.
-/// A discount larger than the terms allow needs a reason (B-42).
+/// A discount larger than the terms allow needs a reason (BS-arap-6).
 #[test]
 fn bill_on_terms_with_discount() {
     use ledger_core::{Application, DocRef, SettleParams};
@@ -2231,7 +2231,7 @@ fn bill_on_terms_with_discount() {
         .unwrap();
 }
 
-/// A discount taken after the discount date needs a reason (B-42
+/// A discount taken after the discount date needs a reason (BS-arap-6
 /// INVARIANT 2); a bill with an asset or prepaid line refuses one with the
 /// D-49 remedy, and none of the refusals changes the books.
 #[test]
@@ -2379,7 +2379,7 @@ fn a_fee_posts_gross_to_receivables_and_net_to_the_bank() {
 
 /// A payment that settles more than one document names its lines in
 /// application order, and two applications on one document are refused:
-/// each document's bound is one bound (B-42 INVARIANTS 1 and 2).
+/// each document's bound is one bound (BS-arap-6 INVARIANTS 1 and 2).
 #[test]
 fn a_settlement_names_its_lines_and_refuses_a_document_twice() {
     use ledger_core::{Application, DocRef, SettleParams};

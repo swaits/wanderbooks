@@ -42,7 +42,7 @@
 
 pub(crate) use std::borrow::Borrow;
 pub(crate) use std::collections::{BTreeMap, BTreeSet};
-pub(crate) use std::path::Path;
+pub(crate) use std::path::{Path, PathBuf};
 
 pub(crate) use chrono::{Datelike, NaiveDate};
 pub(crate) use ledger_core::calendar::{PeriodDefaults, period_defaults};
@@ -93,4 +93,5 @@ mod pin;
 mod queries;
 mod rules_md;
 mod run;
+mod source_refs;
 mod sources;

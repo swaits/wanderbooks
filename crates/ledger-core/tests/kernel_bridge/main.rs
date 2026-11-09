@@ -133,7 +133,7 @@ proptest! {
         prop_assert_eq!(ri, kernel::reversal(&to_dec(&lines)));
     }
 
-    /// The 1099 kernel (rules.md B-19): a payment split into its buckets,
+    /// The 1099 kernel (BS-1099-1): a payment split into its buckets,
     /// and netted, the same at both types.
     #[test]
     fn payment_buckets_agree(lines in arb_lines()) {
@@ -277,7 +277,7 @@ proptest! {
         }
     }
 
-    /// rules.md B-14 rule 3: the statement of cash flows' per-entry split
+    /// BS-statement-3 rule 3: the statement of cash flows' per-entry split
     /// (`kernel::entry_flows`, Kani `entry_flows_*`) is the same at both
     /// instantiations, on balanced and unbalanced lines alike.
     #[test]
@@ -324,7 +324,7 @@ proptest! {
         );
     }
 
-    /// rules.md B-14 rule 11: `kernel::constructive` (what a member or
+    /// BS-statement-3 rule 11: `kernel::constructive` (what a member or
     /// lender paid or received for the company; Kani
     /// `constructive_nets_to_zero`, `constructive_mirrors`) agrees at both
     /// instantiations.
@@ -347,7 +347,7 @@ proptest! {
         prop_assert_eq!(ti.into_iter().map(dec).collect::<Vec<_>>(), td);
     }
 
-    /// rules.md B-35: a party's target, and a reversal's, are the same on
+    /// BS-partner-3: a party's target, and a reversal's, are the same on
     /// i64 cents and on Decimal.
     #[test]
     fn party_target_agrees(
@@ -565,7 +565,7 @@ proptest! {
         prop_assert_eq!(narrow.map(|n| Decimal::new(n, 4)), wide);
     }
 
-    /// The tax summary's one rounding (rules.md B-32, B-21):
+    /// The tax summary's one rounding (BS-ledger-11, BS-entry-3):
     /// `kernel::deductible_amount` at i64 cents (what Kani
     /// `deductible_amount_rounds_once` proved) and at Decimal dollars
     /// agree on the same accounts, and the Decimal result keeps the laws:

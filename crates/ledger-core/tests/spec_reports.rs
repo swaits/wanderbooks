@@ -1,7 +1,8 @@
 //! Spec-derived tests for the reports (`reports.rs`).
 //!
 //! Written from the spec blocks (GOAL / SOURCE / INVARIANTS / SCENARIOS) and
-//! `docs/spec/rules.md` / `docs/requirements.md` only, never from the
+//! bookspec's rules and wanderbooks' claims in `docs/spec/claims/` /
+//! `docs/requirements.md` only, never from the
 //! implementation. Every expected value is either a literal computed by hand
 //! from the spec or a law (property) that pins the answer without calling the
 //! function under test to compute it. Where the random-book tests need a
@@ -42,7 +43,7 @@ fn usd(cents: i64) -> Money {
 fn post(l: &mut Ledger, date: NaiveDate, desc: &str, lines: &[(AccountId, Side, i64)]) -> EntryId {
     // As replay posts it: these books hold hand lines on receivables or
     // payables (1200, 2000), which books an earlier version wrote still
-    // hold and every report must read; the control guard (rules.md B-38)
+    // hold and every report must read; the control guard (BS-arap-2)
     // refuses them as new work.
     ledger_core::parties::replaying(|| {
         let e = l.create_entry(date, desc);
@@ -1115,7 +1116,7 @@ fn me_unexplained_equity_change_goes_in_other() {
 /// 50.00).
 ///
 /// ASSUMED: a closing entry's credit to a member's capital account is not
-/// reported as a contribution (B-11: a close moves earnings), so January's
+/// reported as a contribution (BS-period-1: a close moves earnings), so January's
 /// statement shows contributions 1000 / 0, income 50.01 / 50.00.
 #[test]
 fn me_after_members_close_does_not_count_close_as_contribution() {
@@ -1473,7 +1474,7 @@ fn cf_undesignated_liability_is_operating() {
     assert_eq!(cf.net_change_in_cash, c(58000));
 }
 
-/// Oracle: CF INVARIANT 5 / B-14 — closing entries never counted: after
+/// Oracle: CF INVARIANT 5 / BS-statement-3 — closing entries never counted: after
 /// closing February into retained earnings the February statement is
 /// unchanged (NI still 400, 3999 not in financing).
 #[test]
@@ -1792,7 +1793,7 @@ fn build_ordered(gens: &[Gen], scale: i64, order: &[usize], tag: bool) -> Books 
     let mut entries = Vec::new();
     // As replay posts it: these books hold hand lines on receivables or
     // payables (1200, 2000), which books an earlier version wrote still
-    // hold and every report must read; the control guard (rules.md B-38)
+    // hold and every report must read; the control guard (BS-arap-2)
     // refuses them as new work.
     ledger_core::parties::replaying(|| {
         for g in gens {
@@ -1931,7 +1932,7 @@ fn opt_month() -> impl Strategy<Value = Option<u32>> {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
 
-    /// Oracle: TB INVARIANT 1 / B-6 — total debits equal total credits, and
+    /// Oracle: TB INVARIANT 1 / BS-statement-1 — total debits equal total credits, and
     /// each total is its column's sum, for any as-of date, with or without a
     /// close.
     #[test]
@@ -2005,7 +2006,7 @@ proptest! {
         prop_assert_eq!(many.total_debits, one.total_debits * kk);
     }
 
-    /// Oracle: B-9 metamorphic — adding an entry and its reversal (same
+    /// Oracle: BS-ledger-5 metamorphic — adding an entry and its reversal (same
     /// date) leaves TB and P&L unchanged at every date.
     #[test]
     fn prop_entry_plus_reversal_leaves_tb_and_pnl_unchanged(gens in arb_books(), extra in arb_gen(), as_of in 0u32..365) {
@@ -2222,7 +2223,7 @@ proptest! {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
 
-    /// Oracle: BS INVARIANT 1 / B-7 — assets = liabilities + equity (with
+    /// Oracle: BS INVARIANT 1 / BS-statement-2 — assets = liabilities + equity (with
     /// current earnings), exactly; totals are line sums; never a revenue or
     /// expense line; with or without a close (RE or members).
     #[test]
@@ -2503,7 +2504,7 @@ proptest! {
     /// Oracle: CF INVARIANT 2 against an independent model — financing is
     /// the cash part of the equity and designated-debt movements: each
     /// entry's cash applied to the sections moving against it, operating,
-    /// investing, financing, each up to its own movement (rules.md B-14
+    /// investing, financing, each up to its own movement (BS-statement-3
     /// rule 3), then to the kinds within each section in their order;
     /// plus what the loan or a member's capital paid or received for the
     /// company (rule 11, D-42): the loan pays for operating lines (the

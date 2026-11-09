@@ -5,8 +5,7 @@
 //! GOAL: a worksheet for the CPA carries a TIN only when the vault and the
 //!       books agree on it, and says why when it can't.
 //! SOURCE: DECISION (owner, 2026-10-15): the vault holds every member's
-//!         and payee's full TIN for the CPA package; docs/parties-and-
-//!         attachments.md "The TIN vault".
+//!         and payee's full TIN for the CPA package; docs/parties-and-attachments.md "The TIN vault".
 //! INVARIANTS:
 //!   1. The party's TIN facts, when on file, have the vault TIN's type and
 //!      last four, and the record's hash when they name one.

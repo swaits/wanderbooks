@@ -1,4 +1,4 @@
-//! The format upgrade (plan/served.md 3.9, D-39; rules.md B-27): books an
+//! The format upgrade (plan/served.md 3.9, D-39; BS-format-1): books an
 //! older wanderbooks wrote open on their old journal format, refuse only
 //! what needs the new one, and move to this version's format in one
 //! journaled step; books this version makes are in its format from their
@@ -9,7 +9,7 @@
 //!       without the owner's go-ahead, and an upgrade changes nothing of the
 //!       books but what may be written from then on.
 //! SOURCE: plan/served.md 3.9 ("Format changes are the server's gate, not
-//!         the updater's"); D-39; rules.md B-27.
+//!         the updater's"); D-39; BS-format-1.
 //! INVARIANTS:
 //!   1. New books declare this version's format, every feature it knows,
 //!      as they are created: they wait for no upgrade.

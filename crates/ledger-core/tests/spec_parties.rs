@@ -232,7 +232,7 @@ fn redact_full_tins_masks_every_full_tin() {
 }
 
 /// Oracle: `check_text` refuses what `has_full_tin` finds, so a purge
-/// reason or note quoting the old number with dots is refused (B-26: no
+/// reason or note quoting the old number with dots is refused (BS-partner-2: no
 /// party field may hold a nine-digit number).
 #[test]
 fn check_text_refuses_a_dotted_tin() {
@@ -1461,7 +1461,7 @@ fn entry_flow_takes_across_in_order_until_used_up() {
     );
 }
 
-/// Oracle: shares::target DEFINITIONS, case 3 (rules.md B-35): members
+/// Oracle: shares::target DEFINITIONS, case 3 (BS-partner-3): members
 /// named on an entry moving no money split what moved equity, E (here
 /// −4.00 of a draft not yet balanced), received, in kind (the equipment's
 /// 10.00, at most |E|); case 5: with a party named who isn't a member,
@@ -1860,7 +1860,7 @@ mod shares {
         assert_eq!(paid_received(&b, b.mo), (Decimal::ZERO, d("100.00")));
     }
 
-    /// SCENARIO 3 (defect 14, rules.md B-35): property contributed moves
+    /// SCENARIO 3 (defect 14, BS-partner-3): property contributed moves
     /// no money; each member's part is what moved their capital, signed
     /// as their own account shows it: received, in kind. Basis cash
     /// counts nothing; basis all counts it. (Before P3 this read +500.00
@@ -1919,7 +1919,7 @@ mod shares {
         assert_eq!((a.paid, a.received), (Decimal::ZERO, Decimal::ZERO));
     }
 
-    /// rules.md B-35 item 3 (capital first): a members' entry counts what
+    /// BS-partner-3 item 3 (capital first): a members' entry counts what
     /// moved their capital, not other money on it: 300.00 in, 200.00 of it
     /// Tobin's capital and 100.00 an expense refunded, is Tobin's 200.00
     /// received (cash) and nothing of Morgan's. (Before P3 the 300.00 net

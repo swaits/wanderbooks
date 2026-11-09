@@ -1,5 +1,5 @@
 //! Tax categories at account creation, and `policy.require_tax_category`
-//! (P3, defect 8; rules.md B-32), through a real books server as an
+//! (P3, defect 8; BS-ledger-11), through a real books server as an
 //! agent reaches it (common.rs).
 //!
 //! ```text
@@ -7,7 +7,7 @@
 //!       or the human hears that it doesn't; a company that refuses
 //!       uncategorized accounts gets exactly that, never a refused
 //!       invoice.
-//! SOURCE: rules.md B-32; plan/served.md P3 defect 8 and "Settled in
+//! SOURCE: BS-ledger-11; plan/served.md P3 defect 8 and "Settled in
 //!         design" (warn by default, headers exempt).
 //! ```
 //!
@@ -322,7 +322,7 @@ fn require_tax_category_refuses_defect_8() {
     assert_eq!(out["warnings"].as_array().unwrap().len(), 2, "{out}");
 }
 
-/// rules.md B-31 for new accounts: a name another account under the same
+/// BS-ledger-10 for new accounts: a name another account under the same
 /// parent has, ignoring capitals (top-level accounts are siblings too),
 /// or one holding nine digits in a row, is refused, for books.add_account
 /// and books.import_chart_csv alike; under another parent the name is
@@ -369,7 +369,7 @@ fn a_new_account_named_like_a_sibling_is_refused() {
     );
 }
 
-/// rules.md B-32: a gain on business property (`form_4797_gain_loss`, the
+/// BS-ledger-11: a gain on business property (`form_4797_gain_loss`, the
 /// disposal account a refusing company must categorize) is exported apart
 /// in the tax summary, JSON and CSV alike: at its book amount, with no tax
 /// amount, and outside income and both nets (Form 4797 figures it from

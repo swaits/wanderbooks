@@ -1,4 +1,4 @@
-//! The drafts group (plan P4; rules.md B-43): which drafts are open and
+//! The drafts group (plan P4; BS-entry-5): which drafts are open and
 //! what they wait for, a draft's state, throwing one away, and the full
 //! preview of the post. Also what every report says is still open as of
 //! its end (`as_of_status`) and the open-draft refusal of the CPA package.
@@ -7,7 +7,7 @@
 //! GOAL: a draft is never lost and never mistaken for a posted entry; a
 //!       report or a package says when drafts dated in it are missing
 //!       from its figures.
-//! SOURCE: docs/spec/rules.md B-43; plan/served.md 4.8, D-47.
+//! SOURCE: BS-entry-5; plan/served.md 4.8, D-47.
 //! INVARIANTS:
 //!   1. A state is a note on the draft: no figure moves.
 //!   2. A discard is previewed, then confirmed with the preview's digest;

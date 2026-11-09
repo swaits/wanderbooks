@@ -7,7 +7,8 @@
 //! pinned container (bookspec's `gnucash/oracle/`, image
 //! `bookspec-gnucash-oracle`), and compares every account's
 //! balance at month ends and random dates, exactly. A difference is a
-//! finding to adjudicate from principles (rules.md), never a reason to
+//! finding to adjudicate from principles (bookspec's rules and
+//! `docs/spec/claims/`), never a reason to
 //! change wanderbooks to match.
 //!
 //! Needs Docker: `just oracle` builds the image and runs this.
@@ -283,7 +284,7 @@ fn balances_match_gnucash_on_generated_books() {
     );
     assert!(
         diffs.is_empty(),
-        "{} difference(s) with GnuCash; adjudicate each from rules.md:\n{}",
+        "{} difference(s) with GnuCash; adjudicate each from bookspec's rules (docs/spec/claims/):\n{}",
         diffs.len(),
         diffs.join("\n")
     );

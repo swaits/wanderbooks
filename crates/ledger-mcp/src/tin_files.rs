@@ -1,11 +1,11 @@
-//! Files that carry full TINs never enter the books (rules.md B-26).
+//! Files that carry full TINs never enter the books (BS-partner-2).
 //!
 //! ```text
 //! GOAL: a file holding a full TIN (a W-9, a 1099 worksheet, a CPA
 //!       package or a file from one) is never filed as a receipt or
 //!       document, where books.get_receipt would hand its bytes to any
 //!       agent.
-//! SOURCE: rules.md B-26 (no tool output holds a full TIN); DECISION (P0
+//! SOURCE: BS-partner-2 (no tool output holds a full TIN); DECISION (P0
 //!         review round 2, 2026-10-16): one registry, on disk, of every
 //!         TIN-bearing file the server reads or writes, and a scan of
 //!         every text file on its way in.
@@ -39,7 +39,7 @@
 //!         printed 2-7 (DECISION, owner, 2026-10-17: every company
 //!         document goes into the books, and its formation papers,
 //!         plans and letters print its EIN; the settings already hold it
-//!         in full, rules.md B-29). It is the company's, no person's: (a)
+//!         in full, BS-ledger-9). It is the company's, no person's: (a)
 //!         still refuses it if the vault holds it for a party.
 //!      Full-width digits and Unicode hyphens and spaces read as their
 //!      ASCII kin. Refused bytes are never stored.
@@ -68,7 +68,7 @@
 //!      answers for up to 2 candidates a filing (4): an agent that files
 //!      50,000 refused files can find a TIN, so the access log records
 //!      every one of those calls and the probe bound keeps each answer
-//!      from telling more than two guesses apart (rules.md B-26).
+//!      from telling more than two guesses apart (BS-partner-2).
 //! ```
 
 use std::path::Path;

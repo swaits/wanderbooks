@@ -109,12 +109,12 @@ impl Mcp {
     /// Start (or restart) the server on books an earlier version wrote,
     /// with the fixture company's settings set as an agent sets them, one
     /// at a time. Books in a journal format before 2 keep no settings
-    /// until the owner's format upgrade (rules.md B-27, D-39): each change
+    /// until the owner's format upgrade (BS-format-1, D-39): each change
     /// is refused as `format_upgrade_pending`, and those books are served
     /// on the defaults (no members, no 1065, no cash accounts), as they
     /// would be in a data root. Books with periods closed under the
     /// calendar year keep it (a changed tax year needs the IRS's consent,
-    /// rules.md B-29), whatever their format. Any other answer fails the
+    /// BS-ledger-9), whatever their format. Any other answer fails the
     /// test when the books are first served (`first`); on a restart,
     /// after hostile calls that may have changed a setting and closed
     /// periods under it, the books may refuse a change for what they now
@@ -898,7 +898,7 @@ fn hostile_tool_arguments_never_stop_the_server() {
 
 /// INVARIANT 4: whatever the calls journaled, the books open again. A
 /// hostile call a command accepts but replay refuses would leave books
-/// that never reopen (rules.md B-28): the server is restarted on them and
+/// that never reopen (BS-entry-4): the server is restarted on them and
 /// must answer books.chart and books.verify.
 fn reopens(m: Mcp, p: &Places, after: &str) {
     drop(m);
@@ -1449,7 +1449,7 @@ fn reads_of_old_books() -> Vec<(&'static str, Value)> {
 }
 
 /// Books an earlier version wrote open, and every tool answers over them
-/// (rules.md B-28: posted is forever; a figure the books can't compute is
+/// (BS-entry-4: posted is forever; a figure the books can't compute is
 /// refused, never a panic). Against each fixture: the reads above, then
 /// OLD_BOOKS_CASES (default 3) generated calls of every tool; after them
 /// the server restarts and must open the books again (a call a command

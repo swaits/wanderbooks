@@ -224,7 +224,7 @@ pub fn detail(ui: &mut Ui, b: &Books, e: &EntryInfo, shell: &mut Shell<'_>) {
                         widgets::amount_cell(ui, "Credit", amt_w, p.muted, false, false);
                     });
                     // None: past exact arithmetic (a draft line an earlier
-                    // version journaled, of any size: rules.md B-28).
+                    // version journaled, of any size: BS-entry-4).
                     let (mut dr, mut cr) = (Some(Decimal::ZERO), Some(Decimal::ZERO));
                     for line in entry.lines() {
                         ui.horizontal(|ui| {
@@ -302,7 +302,7 @@ pub fn detail(ui: &mut Ui, b: &Books, e: &EntryInfo, shell: &mut Shell<'_>) {
             ui.add_space(18.0);
 
             // The invoice or bill it records: its lines as the document
-            // gives them, each project a link (rules.md B-37 item 8).
+            // gives them, each project a link (BS-statement-5 item 8).
             if let Some(doc) = document_of(b, e.id) {
                 section(ui, &doc.title);
                 document_lines(ui, &doc, &class_names, total_w, amt_w, shell);
@@ -681,7 +681,7 @@ pub fn render(ui: &mut Ui, b: &Books, a: &Attachment, shell: &mut Shell<'_>, wid
     }
 }
 
-/// A party's part of an entry in words (rules.md B-35): which way it
+/// A party's part of an entry in words (BS-partner-3): which way it
 /// went and how much ("paid $64.00", "received $740.00, in kind"), what of
 /// it is still owed, the share it came from when the entry names several
 /// ("(50%)", "(derived)"), and a reversal said as one ("paid $1,480.00
@@ -756,7 +756,7 @@ mod tests {
     /// A tagged line keeps its project tag inside its cell, in a narrow
     /// pane too: the name is cut to leave the tag room, so the amounts
     /// stay in their columns (an invoice's revenue line and its document
-    /// line, each tagged; rules.md B-37 item 8).
+    /// line, each tagged; BS-statement-5 item 8).
     #[test]
     fn a_tagged_line_keeps_its_amounts_in_their_column() {
         use ledger_core::arap::DocumentLine;

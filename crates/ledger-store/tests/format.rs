@@ -5,7 +5,7 @@
 //! GOAL: an older wanderbooks tells the human to update, not that the
 //!       books are damaged, and never shows books that differ from the
 //!       record without saying so.
-//! SOURCE: rules.md B-27; plan/served.md 5.1 (format gate).
+//! SOURCE: BS-format-1; plan/served.md 5.1 (format gate).
 //! INVARIANTS:
 //!   1. A whole, chained line of a type this version doesn't know, or a
 //!      journal.format_set newer than it reads, is NewerJournal: from
@@ -436,7 +436,7 @@ fn edit_journal(dir: &Path, edit: impl FnOnce(&mut Vec<String>)) {
 }
 
 /// A line's own hash is checked only by the next line's prev, so the
-/// gate's refusal waits for it (rules.md B-27): a flipped bit in a middle
+/// gate's refusal waits for it (BS-format-1): a flipped bit in a middle
 /// line's type, or a declared format edited from 1 to 2, reads like books
 /// from a newer wanderbooks until the next line shows the line changed.
 /// That is corruption, from the writer and the viewer alike.
@@ -525,8 +525,8 @@ fn a_newer_line_the_next_line_chains_onto_is_newer_and_intact() {
 /// A line the gate refuses, followed by a complete line this version
 /// can't even parse as JSON (or a blank one), is unverified: nothing
 /// checks the refused line, so it is newer or damaged, never corrupt for
-/// certain (a newer format may frame its lines its own way; rules.md
-/// B-27), and never intact.
+/// certain (a newer format may frame its lines its own way;
+/// BS-format-1), and never intact.
 #[test]
 fn a_refused_line_followed_by_a_garbled_line_is_unverified() {
     for (i, garbled) in ["{not json", "", "[1,2]", "{\"prev\":7}"]
@@ -567,7 +567,7 @@ fn append_raw(dir: &Path, bytes: &[u8]) {
 }
 
 /// A newer format frames the lines after its declaration its own way
-/// (rules.md B-27): a float, a string seq, a key of its own. This version
+/// (BS-format-1): a float, a string seq, a key of its own. This version
 /// reads only the next line's prev, so it never calls such books corrupt:
 /// the declaration is intact when that prev checks it, unverified when the
 /// next line has no prev it can read, and corrupt only when a prev it can
@@ -632,7 +632,7 @@ fn a_newer_format_frames_its_lines_its_own_way() {
     }
 }
 
-/// A key beside the envelope's is never dropped (rules.md B-27): the line
+/// A key beside the envelope's is never dropped (BS-format-1): the line
 /// is refused as newer, and its hash covers the key, so the next line
 /// still checks it (intact), a next line hashed without the key shows it
 /// was added (corrupt), and as the last line it is unverified. The writer
@@ -759,7 +759,7 @@ fn an_old_reader_never_repairs_newer_books() {
     assert_eq!(store.tail_repairs().unwrap().len(), 1);
 }
 
-/// B-27 ("a cut-off last line is set aside only when the lines before it
+/// BS-format-1 ("a cut-off last line is set aside only when the lines before it
 /// pass"; Store::open SCENARIO 3): a complete line that chains and passes
 /// the gate but can't be applied (a post of an entry that doesn't exist),
 /// or a first line that isn't store.created, refuses the open with the
@@ -803,7 +803,7 @@ fn a_bad_complete_line_before_a_torn_tail_leaves_the_journal_as_it_was() {
     ));
 }
 
-/// The viewer applies the writer's rule for the first line (B-27: the
+/// The viewer applies the writer's rule for the first line (BS-format-1: the
 /// two read the same journal the same way): it must be a store.created
 /// naming a currency. Any other first line, or a store.created without a
 /// sound base_currency, is corrupt for both; neither guesses a currency.
@@ -920,7 +920,7 @@ fn read_journal_and_format_gives_every_line_and_the_format() {
     );
 }
 
-/// P3's journal extensions (rules.md B-27; plan D-39): each is announced
+/// P3's journal extensions (BS-format-1; plan D-39): each is announced
 /// by a feature this version knows, `account_renamed` for an
 /// `account.renamed`, `require_tax_category` for a `settings.set` naming
 /// `policy.require_tax_category`. Books an older version made (books():
@@ -1090,7 +1090,7 @@ fn lines(dir: &Path) -> Vec<serde_json::Value> {
         .collect()
 }
 
-/// P3 (defect 9; rules.md B-27, D-39): a daily schedule's
+/// P3 (defect 9; BS-format-1, D-39): a daily schedule's
 /// schedule.registered, which carries convention "daily", needs journal
 /// feature schedule_convention. Books an older version made (books():
 /// format 1) refuse one, journaling nothing, until the owner's format
@@ -1193,7 +1193,7 @@ fn a_monthly_even_schedule_declares_no_feature() {
 }
 
 /// P3: a schedule convention this version doesn't know (one a newer
-/// version adds) is newer, never corrupt (rules.md B-27); one that isn't a
+/// version adds) is newer, never corrupt (BS-format-1); one that isn't a
 /// string is damage.
 #[test]
 fn an_unknown_schedule_convention_is_newer_not_corrupt() {
@@ -1234,7 +1234,7 @@ fn an_unknown_schedule_convention_is_newer_not_corrupt() {
     assert_corrupt(Store::open(&dir));
 }
 
-/// P4b S4.2 (rules.md B-27): a `party.updated` naming a field this version
+/// P4b S4.2 (BS-format-1): a `party.updated` naming a field this version
 /// doesn't know is newer, never corrupt; a known field with a malformed
 /// value is still damage.
 #[test]
@@ -1283,7 +1283,7 @@ fn an_unknown_party_field_is_newer_not_corrupt() {
     assert_corrupt(Store::open(&dir));
 }
 
-/// P3 (R3; rules.md B-27): a schedule month reversed within its month is
+/// P3 (R3; BS-format-1): a schedule month reversed within its month is
 /// posted again only in books that declare journal feature month_reposting
 /// (an older version would refuse the second schedule.posted as posted
 /// twice): books an older version made wait for the format upgrade, and
@@ -1506,7 +1506,7 @@ fn the_replay_fuzzer_writes_every_event_type() {
 /// Done-when (plan P4b S5): the send event is this version's, it needs
 /// `documents_v2`, and the books declare that feature before the first
 /// `invoice.sent` line, so a version without it stops at the declaration
-/// and reports the books as newer, never corrupt (rules.md B-27).
+/// and reports the books as newer, never corrupt (BS-format-1).
 #[test]
 fn an_older_version_stops_at_invoice_sent() {
     assert!(EVENT_TYPES.contains(&"invoice.sent"));
@@ -1585,9 +1585,9 @@ fn an_older_version_stops_at_invoice_sent() {
 
 /// The weekly fuzz run of 2026-10-26 (`fuzz_store_replay`, crash
 /// 0dfab1cc): a journal whose `convention.set` names a kind this version
-/// doesn't know. The writer says NewerJournal (B-27: newer content is
+/// doesn't know. The writer says NewerJournal (BS-format-1: newer content is
 /// newer, never corrupt); the viewer must say the same, since the two
-/// share one reading of the journal (rules.md B-27, docs/architecture.md
+/// share one reading of the journal (BS-format-1, docs/architecture.md
 /// "The journal format gate").
 #[test]
 fn an_unknown_convention_kind_is_newer_for_the_writer_and_the_viewer_alike() {
@@ -1624,7 +1624,7 @@ fn an_unknown_convention_kind_is_newer_for_the_writer_and_the_viewer_alike() {
 /// `drafts_v2`, and the books declare that feature before the first such
 /// line, so a version without it stops at the declaration and reports the
 /// books as newer, never corrupt, never keeping a discarded draft that
-/// would block a close (rules.md B-27, B-43).
+/// would block a close (BS-format-1, BS-entry-5).
 #[test]
 fn an_older_version_stops_at_the_draft_events() {
     assert!(EVENT_TYPES.contains(&"entry.draft_state_set"));

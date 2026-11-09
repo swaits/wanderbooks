@@ -66,7 +66,7 @@ impl BooksServer {
                 })
                 .collect()
         };
-        // The members' split, from the closed ledger (rules.md B-13).
+        // The members' split, from the closed ledger (BS-partner-1).
         let split = |ledger: &Ledger| -> Option<MembersCloseOut> {
             let (since_close, parts) = ledger.member_close_split(p.period_id)?;
             let names = self.member_capitals(ledger).unwrap_or_default();

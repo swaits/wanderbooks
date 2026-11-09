@@ -1,4 +1,4 @@
-//! The odd cent (P3 defect 17; rules.md B-13; D-10, D-38): members closes
+//! The odd cent (P3 defect 17; BS-partner-1; D-10, D-38): members closes
 //! split earnings cumulatively, each member's share of everything closed
 //! to these members and shares so far less what earlier closes gave them,
 //! and the statement of members' equity, the K-1 worksheet and the viewer
@@ -358,7 +358,7 @@ fn a_true_up_rides_on_a_distribution_sweep() {
 }
 
 // ---------------------------------------------------------------------------
-// Where a count starts: a set of members and shares (B-13; §706(d))
+// Where a count starts: a set of members and shares (BS-partner-1; §706(d))
 // ---------------------------------------------------------------------------
 
 /// A reorder of the members is not a change: [A, B] closes January's cent
@@ -509,7 +509,7 @@ fn a_journaled_start_other_than_the_derived_one_is_refused() {
 }
 
 // ---------------------------------------------------------------------------
-// The minor unit (B-3): whole yen, thousandths of a dinar
+// The minor unit (BS-ledger-1): whole yen, thousandths of a dinar
 // ---------------------------------------------------------------------------
 
 /// P3 brief item 6: a yen book closes to its members in whole yen. 101
@@ -577,7 +577,7 @@ fn a_dinar_book_closes_to_members_in_thousandths() {
 /// A currency ISO 4217 gives no minor unit (gold, XAU) splits to the finest
 /// amount a line may carry (kernel::MAX_LINE_SCALE places), so every amount
 /// is a whole number of the unit it splits to and no member is ever one
-/// from exact (B-13's precondition). 0.019 at 33.33% / 33.33% / 33.34% is
+/// from exact (BS-partner-1's precondition). 0.019 at 33.33% / 33.33% / 33.34% is
 /// exactly 0.0063327 / 0.0063327 / 0.0063346: each member takes theirs.
 /// Split to cents instead, the floors (0.00 each) left 0.019, a cent and
 /// 0.009 of one, all of it to the largest remainder: C 0.019, A and B
@@ -835,7 +835,7 @@ fn nth_month(i: usize) -> (i32, u32) {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(512))]
 
-    /// Oracle: rules.md B-13 and close INVARIANT 6, hand-stated: after
+    /// Oracle: BS-partner-1 and close INVARIANT 6, hand-stated: after
     /// any history (closes under the legacy rules, then months closed to
     /// the members in either order, to retained earnings, or left open),
     /// every members close hands out exactly its net; once a cumulative

@@ -18,11 +18,11 @@
 //!         transaction is with both members, each with their share, and
 //!         shares can be apportioned explicitly ("do you allow for
 //!         controlled apportioning?" Yes). docs/parties-and-attachments.md
-//!         "Shares". rules.md B-35 (the sign, direction and money of a
+//!         "Shares". BS-partner-3 (the sign, direction and money of a
 //!         part; DECISION, owner, 2026-10-20: a member's entry counts what
 //!         moved their capital).
 //! DEFINITIONS:
-//!   target (target(), rules.md B-35 item 3): what the shares split,
+//!   target (target(), BS-partner-3 item 3): what the shares split,
 //!     signed debit-positive as a line on the parties' own account would
 //!     be (positive: the company paid or gave; negative: it received),
 //!     with its direction (paid, received, neither) and what of it moved
@@ -188,7 +188,7 @@ pub struct PartyMember {
 ///
 /// For new shares: [`check_shares_journaled`], and no amount larger than a
 /// line may be (kernel::MAX_LINE_AMOUNT; P0 review round 3, S1). Replay
-/// checks only [`check_shares_journaled`] (rules.md B-28).
+/// checks only [`check_shares_journaled`] (BS-entry-4).
 pub fn check_shares(shares: &[PartyShare], known: impl Fn(PartyId) -> bool) -> Result<(), String> {
     check_shares_journaled(shares, known)?;
     for s in shares {
@@ -207,7 +207,7 @@ pub fn check_shares(shares: &[PartyShare], known: impl Fn(PartyId) -> bool) -> R
 /// The checks every journaled `entry.parties_set` passed when it was
 /// written (the rule through 2026-10-16): [`check_shares`] without the
 /// amount's upper bound. Replay applies exactly these, so books an earlier
-/// version wrote always open (rules.md B-28).
+/// version wrote always open (BS-entry-4).
 pub fn check_shares_journaled(
     shares: &[PartyShare],
     known: impl Fn(PartyId) -> bool,
@@ -304,7 +304,7 @@ fn split_first(magnitude: Decimal, weights: &[Decimal]) -> Option<Vec<Decimal>> 
 }
 
 /// What an entry's shares split, and what of it counts (the module's
-/// DEFINITIONS: target; rules.md B-35).
+/// DEFINITIONS: target; BS-partner-3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Target {
     /// The whole, signed debit-positive as a line on the parties' own
@@ -318,7 +318,7 @@ pub struct Target {
     pub in_kind: Decimal,
     /// Which side the parts count on in a party's totals: the direction
     /// of the entry's root original (itself, unless it is a reversal), so
-    /// a reversal nets what it reverses (B-35 item 4).
+    /// a reversal nets what it reverses (BS-partner-3 item 4).
     pub counts_as: Direction,
 }
 
@@ -356,7 +356,7 @@ impl Resolved {
 /// checked; they cover the whole reversal chain (Ledger::set_entry_parties
 /// INVARIANT 5). Refused (TooLargeToCompute), never a panic, when a sum is
 /// past exact arithmetic: a draft's lines are as journaled, of any size
-/// (rules.md B-28).
+/// (BS-entry-4).
 pub fn target(
     ledger: &Ledger,
     id: EntryId,

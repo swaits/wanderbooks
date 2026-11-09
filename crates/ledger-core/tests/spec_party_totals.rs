@@ -1,13 +1,13 @@
 //! P3 defects 14, 24 and 11: a party's part of an entry, a party's
 //! totals, and the directory's TIN last four.
 //!
-//! Oracles: rules.md B-35 (a party's part, signed as a line on its own
+//! Oracles: BS-partner-3 (a party's part, signed as a line on its own
 //! account, with its direction and its money and property; party totals
 //! on basis cash or all; a member's entry counts what moved their capital;
 //! money is cash, cards, the members' financing and loans; a liability
-//! credit never counts as paying that liability's own creditor), B-9 (a
-//! correction is the opposite entry), B-13 and the K-1 worksheet (k1
-//! INVARIANT 3: what is property), B-26 (a TIN's last four), and the spec
+//! credit never counts as paying that liability's own creditor), BS-ledger-5 (a
+//! correction is the opposite entry), BS-partner-1 and the K-1 worksheet (k1
+//! INVARIANT 3: what is property), BS-partner-2 (a TIN's last four), and the spec
 //! blocks of `ledger_core::shares`, `ledger_core::parties` (`flow`,
 //! `activity_with`, `Party::tin_last4`) and `ledger_core::kernel`
 //! (`party_target`, `reverse_target`). Every expected value is worked by
@@ -257,7 +257,7 @@ fn part(party: PartyId, amount: &str, cash: &str, in_kind: &str) -> Part {
 use Side::{Credit as Cr, Debit as Dr};
 
 /// The audit's reproduction (F36, F37), anonymized, with what each row
-/// should say (rules.md B-35): `resolved` signed as a line on the party's
+/// should say (BS-partner-3): `resolved` signed as a line on the party's
 /// own account, a direction, and what of it was money or property; a
 /// reversal the exact opposite of what it reverses; totals on both bases,
 /// labelled.
@@ -550,7 +550,7 @@ fn defect14_shares_take_the_partys_side_and_reversals_flip() {
     );
 }
 
-/// B-35 item 4: on the member-only entries, basis all is the statement of
+/// BS-partner-3 item 4: on the member-only entries, basis all is the statement of
 /// members' equity (contributions and distributions, the same dates), and
 /// basis cash is the K-1 worksheet's cash contributions.
 #[test]
@@ -655,7 +655,7 @@ fn defect24_an_accrual_through_another_liability_counts_once() {
     assert_eq!(b.totals(c, Basis::All), (Decimal::ZERO, d("1200.00")));
 }
 
-/// Defect 24 and B-35 item 6: a credit to what the company owes a party
+/// Defect 24 and BS-partner-3 item 6: a credit to what the company owes a party
 /// itself never counts as paying it. A fee on the issuer's own card is a
 /// bill from the issuer (counted when the card is paid); a distribution
 /// still owed to a member counts when it is paid; equipment bought on the
@@ -749,7 +749,7 @@ fn defect24_a_credit_to_a_partys_own_liability_never_pays_it() {
     assert_eq!(b.totals(m, Basis::All), (Decimal::ZERO, d("800.00")));
 }
 
-/// The known limit B-35 states (and the tool text says): when the
+/// The known limit BS-partner-3 states (and the tool text says): when the
 /// members aren't named the creditors of their financing account, a
 /// distribution declared through it counts when declared and again when
 /// paid. Pinned so a change to it is seen.
@@ -778,7 +778,7 @@ fn a_distribution_owed_counts_twice_until_the_members_are_named_its_creditors() 
 /// again when paid (400.00); now it counts nothing until it is paid, then
 /// 200.00, once, on both bases (Helvering v. Price; party_target
 /// INVARIANT 2). The statement of members' equity counts it when declared:
-/// party totals catch up when it is paid (B-35 item 4's conditions).
+/// party totals catch up when it is paid (BS-partner-3 item 4's conditions).
 #[test]
 fn defect24_a_distribution_declared_to_a_payable_counts_once_when_paid() {
     let mut b = books();
@@ -829,7 +829,7 @@ fn defect24_a_distribution_declared_to_a_payable_counts_once_when_paid() {
     assert_eq!(b.totals(t, Basis::Cash), (d("300.00"), Decimal::ZERO));
 }
 
-/// B-35 item 3: a distribution's cash is the money it paid and its in
+/// BS-partner-3 item 3: a distribution's cash is the money it paid and its in
 /// kind the property it gave. Equipment carried at 1,000.00 less 300.00
 /// depreciated, and 100.00 in cash, distributed: 100.00 cash and 700.00
 /// in kind (it read 800.00 in kind and no cash, the equipment's cost
@@ -868,7 +868,7 @@ fn a_distribution_of_money_and_depreciated_property_splits_by_what_moved() {
     assert_eq!(b.resolved(gain).1, vec![part(t, "900.00", "0", "900.00")]);
 }
 
-/// Defect 24 and the card rule (B-35 item 5): a gift card the company
+/// Defect 24 and the card rule (BS-partner-3 item 5): a gift card the company
 /// sold is deferred revenue, a promise, though its account's name says
 /// "card". It counted as received when sold and again when redeemed
 /// (200.00); now once, when the money came in. A card the company pays
@@ -892,7 +892,7 @@ fn defect24_a_gift_card_sold_is_received_once() {
     assert_eq!(b.totals(c, Basis::All), (Decimal::ZERO, d("100.00")));
 }
 
-/// B-35 item 5 and `parties::card_accounts` INVARIANTS 1-4: one rule for
+/// BS-partner-3 item 5 and `parties::card_accounts` INVARIANTS 1-4: one rule for
 /// what a card is. Before any business card is recorded, the liabilities
 /// whose names say "card" but not "gift" (2050 Business Card; never 2410
 /// Gift Card Liability), less a member's card's account; once one is
@@ -958,7 +958,7 @@ fn a_card_is_a_recorded_business_card_else_a_liability_named_card() {
     assert_eq!(b.resolved(on_2050).0.direction, Direction::Neither);
 }
 
-/// B-35 item 3, case 3: E is the movement of equity other than retained
+/// BS-partner-3 item 3, case 3: E is the movement of equity other than retained
 /// earnings, so a members' entry reads as the statement of members' equity
 /// reads it. Retained earnings given up for equipment moves no member's
 /// capital: neither, as the statement shows no distribution. Retained
@@ -1035,7 +1035,7 @@ fn a_refund_is_received_from_the_vendor() {
     assert_eq!(b.totals(v, Basis::Cash), (d("100.00"), d("20.00")));
 }
 
-/// B-35 item 3 (capital first): a mixed contribution is split into money
+/// BS-partner-3 item 3 (capital first): a mixed contribution is split into money
 /// and property exactly as the K-1 worksheet splits it (its SCENARIO 3),
 /// whichever member the shares list first; an expense a member pays
 /// straight to capital is cash, as on the K-1 (k1 INVARIANT 3); a debt
@@ -1168,7 +1168,7 @@ fn a_members_entry_keeps_its_reading_after_they_leave() {
     );
 }
 
-/// B-35 item 3, case 1: a period's closing entry moves nothing with
+/// BS-partner-3 item 3, case 1: a period's closing entry moves nothing with
 /// anyone: direction neither, its members' part their income allocated
 /// (credited to their capital: negative), counted in no total.
 #[test]
@@ -1343,7 +1343,7 @@ fn defect11_a_partys_tin_last4_is_its_tin_facts_else_its_w9s() {
     assert_eq!(by_hand.tin_last4(), None);
 }
 
-/// The kernel's B-35 cases, by hand (party_target INVARIANTS 1-6) and
+/// The kernel's BS-partner-3 cases, by hand (party_target INVARIANTS 1-6) and
 /// reverse_target an involution.
 #[test]
 fn party_target_cases_by_hand() {
@@ -1661,7 +1661,7 @@ proptest! {
     /// account converted to capital, some through their distributions
     /// accounts, some declared to distributions payable and paid later,
     /// and reverse some of it later in the year. For each member, over
-    /// every span from the year's start to any date (B-35 item 4's
+    /// every span from the year's start to any date (BS-partner-3 item 4's
     /// conditions hold: a reversal in such a span always has its original
     /// in it): basis all is the statement of members' equity's
     /// contributions and distributions, but for a distribution declared

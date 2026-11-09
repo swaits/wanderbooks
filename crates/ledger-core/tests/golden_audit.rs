@@ -1,5 +1,5 @@
 //! The audit workpaper's findings for one small book, hand-verified
-//! (rules.md B-45; plan/golden-worksheets/audit-workpaper.md).
+//! (BS-ledger-13; plan/golden-worksheets/audit-workpaper.md).
 //!
 //! The fixture is a bank, prepaid insurance, capital, two revenue and two
 //! expense accounts, a 12-month prepaid plan, and a vendor paid from the

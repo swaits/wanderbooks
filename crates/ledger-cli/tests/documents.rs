@@ -2,7 +2,7 @@
 //! (common.rs): the preview that writes nothing, the confirm that posts,
 //! numbers, terms, line accounts, party snapshots and the issued copy filed
 //! with the invoice (plan/served.md 8.2 P4b S4 item 17; docs/mcp-interface.md
-//! "Tools — A/R and A/P"; rules.md B-39, B-40; D-55).
+//! "Tools — A/R and A/P"; BS-arap-3, BS-arap-4; D-55).
 //!
 //! Every refusal is checked to leave the journal byte for byte as it was.
 
@@ -218,7 +218,7 @@ fn an_invoice_from_issue_to_paid() {
 }
 
 /// A bill keeps the vendor's invoice, names its own accounts, and carries
-/// its terms' discount dates (A-10, A-13; B-39).
+/// its terms' discount dates (A-10, A-13; BS-arap-3).
 #[test]
 fn a_bill_with_its_vendor_invoice_and_terms() {
     let books = Books::new("documents-bill");
@@ -304,7 +304,7 @@ fn a_bill_with_its_vendor_invoice_and_terms() {
 }
 
 /// One vendor's invoice number, entered twice: refused unless a reason is
-/// given, which is journaled with the second bill (B-40).
+/// given, which is journaled with the second bill (BS-arap-4).
 #[test]
 fn duplicate_vendor_invoice_refused() {
     let books = Books::new("documents-duplicate");
@@ -347,7 +347,7 @@ fn duplicate_vendor_invoice_refused() {
 /// A line's account obeys the document's kind: revenue or a role-free
 /// liability on an invoice, an expense or a non-cash role-free asset on a
 /// bill; a role account, cash, a placeholder or none at all is refused
-/// (A-10, A-11; rules.md B-39).
+/// (A-10, A-11; BS-arap-3).
 #[test]
 fn a_line_account_must_be_allowed() {
     let books = Books::new("documents-accounts");
@@ -927,7 +927,7 @@ mod paying_on_terms {
 
     /// One deposit settles two invoices of one customer: one entry, one
     /// receivable line per invoice, each tagged with its own invoice, and the
-    /// output names both documents (B-42 INVARIANTS 1 and 3).
+    /// output names both documents (BS-arap-6 INVARIANTS 1 and 3).
     #[test]
     fn one_payment_settles_two_invoices() {
         let mut s = setup("settle-two");
@@ -984,7 +984,7 @@ mod paying_on_terms {
     }
 
     /// A discount outside the document's terms needs a reason; with one the
-    /// payment is taken and recorded (B-42 INVARIANT 2; the terms are S4.3's
+    /// payment is taken and recorded (BS-arap-6 INVARIANT 2; the terms are S4.3's
     /// to journal, so this bill states none).
     #[test]
     fn late_discount_needs_a_reason() {
@@ -1013,7 +1013,7 @@ mod paying_on_terms {
     }
 
     /// A fee posts gross (A-4): the deposit gets the net, the fee its expense,
-    /// and A/R is credited the gross (B-42 INVARIANT 1).
+    /// and A/R is credited the gross (BS-arap-6 INVARIANT 1).
     #[test]
     fn a_fee_posts_gross_to_receivables_and_net_to_the_bank() {
         let mut s = setup("fee-gross");
@@ -1075,7 +1075,7 @@ mod paying_on_terms {
     }
 
     /// Two bills paid in one entry count once toward 1099s and the party's
-    /// totals (B-42; 8.3.16's multi-document risk).
+    /// totals (BS-arap-6; 8.3.16's multi-document risk).
     #[test]
     fn multi_document_payment_counts_once_for_1099_and_party_totals() {
         let mut s = setup("multi-1099");
@@ -1131,7 +1131,7 @@ mod paying_on_terms {
 
     /// The bills-due list orders by due date and gives the running total
     /// through each date; the agings' detail rows and their tie-out agree with
-    /// the control check (8.3.10; B-42).
+    /// the control check (8.3.10; BS-arap-6).
     #[test]
     fn bills_due_orders_by_due_and_discount() {
         let mut s = setup("bills-due");
@@ -1383,7 +1383,7 @@ mod bad_debts {
         assert_eq!(check["agrees"], json!(true), "{check}");
     }
 
-    /// P4b S7: no evidence, no write-off (B-41 INVARIANT 1): the tool refuses
+    /// P4b S7: no evidence, no write-off (BS-arap-5 INVARIANT 1): the tool refuses
     /// with neither or both, and an attachment already filed is linked
     /// instead of a new file.
     #[test]

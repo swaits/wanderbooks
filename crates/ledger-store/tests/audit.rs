@@ -1,4 +1,4 @@
-//! Audits and attestations in the store (plan P8; rules.md B-45): the
+//! Audits and attestations in the store (plan P8; BS-ledger-13): the
 //! `audits` feature, the figure head, idempotent runs, attestations that
 //! rest on a head, and the integrity findings only the store can see.
 

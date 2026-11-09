@@ -1,6 +1,6 @@
 //! Figures derived from what replay accepts: computed exactly where exact
 //! arithmetic and chrono's calendar reach, refused (TooLargeToCompute,
-//! DateOutOfRange) where they don't, never a panic (rules.md B-28; P0
+//! DateOutOfRange) where they don't, never a panic (BS-entry-4; P0
 //! review round 4, 2026-10-17).
 //!
 //! ```text
@@ -243,8 +243,8 @@ fn a_draft_of_decimals_largest_is_refused_where_summed() {
         assert!(why.contains("too large to compute"), "{why}");
         assert_eq!(l.post_entry(e).unwrap_err(), LedgerError::AmountOutOfRange);
     }
-    // A member's capital moved past exact arithmetic (rules.md B-35, case
-    // 3, B-28): the target is refused, never a panic.
+    // A member's capital moved past exact arithmetic (BS-partner-3, case
+    // 3, BS-entry-4): the target is refused, never a panic.
     let e = l.create_entry(d(2026, 3, 1), "huge capital");
     for _ in 0..2 {
         l.replay_add_line(e, cash, Side::Debit, usd(Decimal::MAX))
@@ -285,7 +285,7 @@ fn a_draft_of_decimals_largest_is_refused_where_summed() {
 
 /// A document is restored as journaled: its total is exact, or refused
 /// past exact arithmetic; what it owes is what the ledger lines tagged
-/// with it carry (rules.md B-38), exact, whatever the journal held (paid
+/// with it carry (BS-arap-2), exact, whatever the journal held (paid
 /// above its total included); aging refuses a document whose total it
 /// can't compute.
 #[test]
@@ -363,7 +363,7 @@ fn documents_and_aging_are_exact_or_refused() {
         (Decimal::from(11), -Decimal::ONE)
     );
     // A payment event naming an amount no line of its entry carries tags
-    // nothing, and is refused nothing (B-28).
+    // nothing, and is refused nothing (BS-entry-4).
     l.replay_invoice_payment(1, -Decimal::ONE, p).unwrap();
     assert_eq!(l.get_invoice(1).unwrap().balance(), Ok(-Decimal::ONE));
     // A total of lines that overflow, and its balance; aging refuses it.

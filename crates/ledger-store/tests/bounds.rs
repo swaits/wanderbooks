@@ -1,7 +1,7 @@
 //! The store refuses what the books can't hold, before it journals
 //! anything, never a panic (P0 review round 3, S1: a panic stops the books
 //! server). The bounds are for new commands only: books an earlier version
-//! wrote past them open exactly as written (rules.md B-28; P0 review round
+//! wrote past them open exactly as written (BS-entry-4; P0 review round
 //! 4), each bound's pair here or in tests/fixtures/old-books.
 //!
 //! ```text
@@ -9,8 +9,8 @@
 //!       run without end; no journal line an earlier version wrote is
 //!       refused for a bound added after it.
 //! SOURCE: DECISION (P0 review round 3, 2026-10-16, S1; round 4,
-//!         2026-10-17); ledger_core calendar.rs and kernel.rs
-//!         MAX_LINE_AMOUNT.
+//!         2026-10-17); ledger_core `crates/ledger-core/src/calendar.rs`
+//!         and `crates/ledger-core/src/kernel/entries.rs` MAX_LINE_AMOUNT.
 //! ```
 
 use chrono::NaiveDate;
@@ -233,7 +233,7 @@ fn disposal_proceeds_larger_than_a_line_are_refused() {
     assert_eq!(old.ledger().get_entry(2).unwrap().date(), d(10000, 1, 31));
 }
 
-/// The bounds are for new commands only (rules.md B-28: posted is
+/// The bounds are for new commands only (BS-entry-4: posted is
 /// forever). A journal line an earlier version wrote past them (a date
 /// after 9999, up to chrono's last day, as chrono writes it: "+10000-01-01";
 /// a draft or recurring line past the line limit) opens, in the writer and the viewer alike, exactly as written. A

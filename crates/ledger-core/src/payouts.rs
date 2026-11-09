@@ -86,7 +86,7 @@ pub type PayoutPlanLine = (AccountId, Side, Decimal, Option<ClassId>);
 /// collected; fees debit expense accounts), and the payout reconciles to
 /// the cent.
 /// A zero deposit (fees and adjustments ate the sales exactly) has no
-/// deposit line: every planned line is positive (B-2, docs/spec/rules.md).
+/// deposit line: every planned line is positive (BS-entry-2).
 pub fn payout_plan(
     payout: &Payout,
     chart: &ChartOfAccounts,

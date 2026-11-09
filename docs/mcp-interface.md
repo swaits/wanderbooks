@@ -12,7 +12,7 @@ locked to one assistant.
 
 | Crate | Role | Spec |
 |---|---|---|
-| `ledger-core` | the engine: money, entries, the laws; every rule the tools enforce | `docs/spec/rules.md`, `docs/verification.md` |
+| `ledger-core` | the engine: money, entries, the laws; every rule the tools enforce | bookspec's rules (`BS-<area>-<n>`), `docs/spec/claims/`, `docs/verification.md` |
 | `ledger-package` | the read-only views shared with the viewer: reports, aging, the CPA package, Needs attention (the one list `books.start` and the viewer both draw) | `docs/architecture.md` |
 | `ledger-store` | the hash-chained journal (the source of truth), the SQLite projection, the blob store | `docs/receipt-store.md` |
 | `ledger-mcp` | the books server: the tools, resources and handbook over store + core | this document |
@@ -34,7 +34,7 @@ layer.
 The books keep their own settings (journal format 2, plan/served.md P1):
 each change is a `settings.set` line with who decided it and when, replayed
 into `ledger_core::settings::Settings` by the server and the viewer alike
-(rules.md B-29). Every key is in `ledger_core::settings::KEYS`, with what it
+(BS-ledger-9). Every key is in `ledger_core::settings::KEYS`, with what it
 takes and means: the company's facts (`company.name`, `.entity_type`,
 `.tax_classification`, `.tax_form`, `.fiscal_year_start` ("MM-01"; the
 year's end is derived, never stored), `.timezone` (what "today" means for
@@ -92,7 +92,7 @@ in its folder).
   changes the books' settings after that.
 
 The accounts invoices, bills, payroll, and closes post to are not settings:
-they are control roles in the journal (rules.md B-23).
+they are control roles in the journal (BS-ledger-8).
 
 - `books.roles {}` → `{ roles: [{ role, purpose, account_type,
   default_code, assigned, account_code?, account_name? }] }`: every control
@@ -106,7 +106,7 @@ they are control roles in the journal (rules.md B-23).
 ## Tools — how the books are kept
 
 Conventions, decisions, open items and approvals live in the books too
-(`ledger_core::conventions`, rules.md B-29), each with who decided it and
+(`ledger_core::conventions`, BS-ledger-9), each with who decided it and
 when; `books.start` lists them, and the handbook's
 settings-and-conventions section says how to use them.
 
@@ -177,7 +177,7 @@ settings-and-conventions section says how to use them.
   item is a problem.
   `focus` is `daily` (the default), `onboarding`, `close` or `audit`;
   anything else is refused. Also `books://start`.
-**The format upgrade** (plan 3.9, D-39, rules.md B-27). Books an older
+**The format upgrade** (plan 3.9, D-39, BS-format-1). Books an older
 wanderbooks wrote are in an older journal format: they are served on it,
 and every tool that needs nothing new works as before. A tool whose
 change needs the newer format (on main: settings, conventions, decisions,
@@ -230,7 +230,7 @@ as it is made.
   `{ id }`; `books.decisions { include_superseded?, project? }`. A decision
   supersedes at most one live decision; its evidence is a document still
   in the books. `projects` (ids or names, each once, resolved before
-  anything is written) names the projects it is about (rules.md B-37); a
+  anything is written) names the projects it is about (BS-statement-5); a
   decision without them journals the bytes it always did, and one with
   them needs the journal feature `projects`. `books.decisions` gives each
   decision's `projects: [{ id, name }]` (left out when none); `project`
@@ -459,7 +459,7 @@ those bounds still open (replay accepts what that version accepted), so
 every figure the server derives from them (a draft's total, a schedule's
 plan, aging, a party's totals, the asset register) is computed or
 refused ("too large to compute exactly", or a date outside the calendar
-the books keep), never a panic (rules.md B-28). `tests/hostile_args.rs`
+the books keep), never a panic (BS-entry-4). `tests/hostile_args.rs`
 drives every tool with generated hostile arguments and every resource
 with generated URIs, checks after each call that the server still
 serves, restarts it after them to check the books reopen, and drives
@@ -545,13 +545,13 @@ every tool over every book in ledger-store's `tests/fixtures/old-books`.
   Codes are unique; a name another account under the same parent has
   (top-level accounts are siblings too; ignoring capitals and surrounding
   space), one holding a run of nine digits, or one that isn't one line of
-  at most 200 characters, is refused (rules.md B-31); the name is kept
+  at most 200 characters, is refused (BS-ledger-10); the name is kept
   trimmed. A revenue or expense account (not a header) without `tax_category` is
   created with a warning ("6150 Software has no tax category: the tax
   summary will list it as uncategorized. Propose one from
   books.tax_categories and set it with books.set_tax_category once the
   human agrees."), or, under `policy.require_tax_category = refuse`,
-  refused (rules.md B-32). The category is checked against the account's
+  refused (BS-ledger-11). The category is checked against the account's
   type and the return, as `books.set_tax_category` checks it; journaled as
   `account.added` then `account.tax_set`.
 - `books.draft_entry { date: "2026-10-10", description: "...", vendor?,
@@ -585,7 +585,7 @@ every tool over every book in ledger-store's `tests/fixtures/old-books`.
   schedule month a second time (naming the entry that posts it now), or
   re-instate a run a later run caught up (carrying the books past the
   schedule); and a reversal of any entry dated before that entry's own
-  date (a correction comes after what it corrects, B-9, D-73; the preview
+  date (a correction comes after what it corrects, BS-ledger-5, D-73; the preview
   refuses the same way, and books written before D-73 open as they were).
 - `books.get_entry { entry_id }` → full entry with lines (each `{
   account_id, code, name, side, amount, class_id?, project? }`: a tagged
@@ -602,7 +602,7 @@ every tool over every book in ledger-store's `tests/fixtures/old-books`.
   reversal_of, receipt_count }] }`, posted entries, newest first (no
   lines: `books.get_entry` has them). `limit` defaults to 50 and caps at
   500.
-- **Omitted dates (rules.md B-30).** One rule everywhere
+- **Omitted dates (BS-period-3).** One rule everywhere
   (`ledger_core::calendar::PeriodDefaults`), stated in every report
   tool's description and date parameters in the same words: a period
   report with no dates covers the fiscal year to date
@@ -623,7 +623,7 @@ every tool over every book in ledger-store's `tests/fixtures/old-books`.
   the fiscal year to date). Closing entries are excluded, so a closed
   period still shows what it earned.
 - `books.cash_flow { start?, end?, cash_accounts?, financing_accounts?, investing_accounts? }` (each defaults to the books' settings, `books.cash_accounts` and so on; cash is required one way or the other)
-  → the statement of cash flows, direct method (rules.md B-14, P3 defect
+  → the statement of cash flows, direct method (BS-statement-3, P3 defect
   1; omitted dates: the fiscal year to date): `{ method: "direct", start,
   end, operating_by_class, operating, cash_from_operations,
   investing_by_kind, investing, cash_from_investing,
@@ -636,13 +636,13 @@ every tool over every book in ledger-store's `tests/fixtures/old-books`.
     kind. An entry's interest is its own operating class, (b) or (e), apart
     from the rest of its operating cash. A payment to a party with the
     `government_agency` or `tax_agency` role is `other_payments`, (g),
-    on any account (rules.md B-14 rule 5; payroll remittances excepted);
+    on any account (BS-statement-3 rule 5; payroll remittances excepted);
     one shared between such a party and a supplier gives two operating
     lines for the one entry, `other_payments` and
     `to_suppliers_and_employees`, split by the parties' shares and
     summing to the payment. What a member or a lender paid or
     received for the company with no cash account moving is cash borrowed
-    (or contributed) and spent, on the entry's date (D-42, rules.md B-14
+    (or contributed) and spent, on the entry's date (D-42, BS-statement-3
     rule 11): an expense a member paid personally through Due to Members
     is a "Proceeds from borrowing — <account>" line and an operating
     line, each with `on_behalf`, the part of its amount so handled (absent
@@ -716,12 +716,12 @@ every tool over every book in ledger-store's `tests/fixtures/old-books`.
   Needs attention uses the same rule (`ledger_store::reconcilable`).
   `uncategorized_accounts` lists every revenue and expense account (not a
   header) with no tax category, active or not, `"CODE Name"`: the list
-  Needs attention shows (rules.md B-32).
+  Needs attention shows (BS-ledger-11).
 
 ## Tools — fixed assets
 
 Straight-line **book** depreciation only; tax depreciation stays with the
-CPA. Depreciation accrues by the day (rules.md B-15): a partial first
+CPA. Depreciation accrues by the day (BS-asset-1): a partial first
 month, the life's final month (which takes what the others leave, evenly
 over its days), and any month a schedule stops in (through a date, or a
 disposed asset's disposal day, held) are prorated by days, never plugged;
@@ -738,7 +738,7 @@ life's last day is 9999-12-31 at the latest.
   next free `PREFIX-0001` (`[books] asset_tag_prefix`, else the company
   name's initials without LLC/Inc; "FA" when none). `in_service_date` (the
   day it is ready and available for its use) starts depreciation (P3,
-  defect 13; B-15); `purchase_date` is its alias for one release (both
+  defect 13; BS-asset-1); `purchase_date` is its alias for one release (both
   given and meaning different days: refused; the alias noted in `notes`). The
   `acquisition_entry` (posted, debiting the cost account, neither a
   reversal nor reversed, dated on or before the in-service date) gives
@@ -891,7 +891,7 @@ life's last day is 9999-12-31 at the latest.
 
 Amortization spreads a prepaid expense (asset → expense) or deferred
 revenue (liability → revenue) over the time it covers, posting on each
-month end, to the minor unit (rules.md B-16). A new schedule's convention
+month end, to the minor unit (BS-prepaid-1). A new schedule's convention
 is `books.schedule_convention` (unset: `daily`, D-11/D-37): `daily`
 spreads by the day from `start`, the first day covered, as depreciation
 does, so a mid-month start posts a small first and last month (a 12-month
@@ -969,7 +969,7 @@ through the policy.
   `viewer_open` says whether one does. The note says "The viewer shows
   …", or "No viewer has these books open: ask the human to open it
   (opened within a couple of minutes, it shows …)".
-  - **Dates (rules.md B-30).** For an account or a report, the dates are
+  - **Dates (BS-period-3).** For an account or a report, the dates are
     resolved by the one default (omitted: the fiscal year to date; only
     `end`: its fiscal year to it) and sent to the viewer resolved, so
     `shown` and the screen can't differ: "the register of 1000 Business
@@ -1115,7 +1115,7 @@ on from it.
 What counts toward a vendor's 1099 is what left the books' cash accounts
 (`books.cash_accounts`) and financing accounts (`books.financing_accounts`)
 on entries tagged with the vendor, classified by how each payment was made
-(rules.md B-19; plan P3, defects 12, 18 and 23; D-40):
+(BS-1099-1; plan P3, defects 12, 18 and 23; D-40):
 
 - out of a cash account with no payment method recorded: counts
   (presumed check, ACH or transfer; tag a debit-card payment with the
@@ -1181,7 +1181,7 @@ first entry's).
   year): tell the human, a filed 1099 may need correcting. Journaled as
   `vendor.1099_set` (a W-9 flag alone as `vendor.w9_flag_set`), under the
   journal feature `vendor_1099_decisions` (books an older version wrote
-  refuse it, `format_upgrade_pending`, until their format upgrade: B-27).
+  refuse it, `format_upgrade_pending`, until their format upgrade: BS-format-1).
 - `books.add_instrument { kind, label, last4?, owner_party?, account }` →
   `{ id, kind, card_or_network, label, last4?, owner_party?, account_id,
   account, warnings }`. `kind`: `bank` (the company's checks, ACH, wires,
@@ -1243,9 +1243,9 @@ first entry's).
   setting, the CPA package's rule: `ledger_package::Settings::with_accounts`;
   a code the chart lacks is refused), from January 1 of `year` through
   `through` when given (`YYYY-MM-DD`, a day of `year`: the worksheet as of
-  a day, rules.md B-33), else the whole year. On an entry naming several
+  a day, BS-statement-4), else the whole year. On an entry naming several
   parties, the buckets count only the vendor's resolved share of the
-  payment, split across them to the cent (rules.md B-19); an entry whose
+  payment, split across them to the cent (BS-1099-1); an entry whose
   shares don't resolve counts in full and `notes` names it. `tin_last4`
   is the party's TIN facts' last four, else its W-9 facts'
   (`Party::tin_last4`). With `include_tins: true` (default false) each
@@ -1294,7 +1294,7 @@ registries that don't tax: a division of corporations, a licensing board),
 Vendor and customer follow the records and are never set by hand. A
 `tax_agency` or `government_agency` payee also classes the company's
 payments to it on the cash flow statement: other operating cash
-payments, never cash paid to suppliers (`books.cash_flow`, rules.md B-14
+payments, never cash paid to suppliers (`books.cash_flow`, BS-statement-3
 rule 5).
 
 **Rules the engine enforces** (each refusal changes nothing, the journal
@@ -1327,7 +1327,7 @@ texts are at most 500 characters, no control characters.
   phone, contact, billing_address, shipping_address, billing_email,
   archived, then one `party.creditor_set` per account added or dropped.
   The email, terms and contact block need the journal feature
-  `documents_v2` (rules.md B-27): books that haven't declared it refuse
+  `documents_v2` (BS-format-1): books that haven't declared it refuse
   them with `format_upgrade_pending`, journaling nothing. Un-archiving is
   refused while another party has the name.
 - `books.set_party_roles { party, add?, remove? }` → the party. Adds apply
@@ -1405,7 +1405,7 @@ texts are at most 500 characters, no control characters.
   newest first); its invoices and bills (`{ id, date, due_date, total,
   paid, balance, status, entry_id }`); and the payroll lines naming it
   (`{ run_id, date, entry_id, gross_pay, net_pay }`); and the projects for
-  or with it, by name (`{ id, name }`, rules.md B-37).
+  or with it, by name (`{ id, name }`, BS-statement-5).
 - `basis` (both): `"cash"` (the default) or `"all"`; any other word is
   refused (`basis is "cash" or "all"`). Echoed in the output. Not the
   books' accounting method (`books.accounting_basis`).
@@ -1423,14 +1423,14 @@ replaces the list (`[]` clears it), journaled as `party.creditor_set {id,
 account_id, on}`, one line per account added or dropped, under the
 journal feature `party_creditors` (books an older version wrote refuse
 the whole change, `format_upgrade_pending`, until their format upgrade:
-B-27); refused, journaling nothing, for an account that isn't a
+BS-format-1); refused, journaling nothing, for an account that isn't a
 liability, is a placeholder, or is payables or a payroll withholding
 (owed to many).
 
 **Each party's part of an entry** (`books.get_entry`, the
 `books.post_entry` preview, `books.set_entry_party`: `parties: [{ party_id,
 party, share, amount?, percent?, resolved, direction, cash, in_kind }]`,
-rules.md B-35):
+BS-partner-3):
 
 - `resolved`: signed as a line on the party's own account would be
   (debit-positive): positive, the company paid it or gave it value;
@@ -1443,7 +1443,7 @@ rules.md B-35):
   Both `"0.00"` for `neither`; `resolved − cash − in_kind` is a promise,
   counted on neither basis. All four are null exactly when the shares
   don't resolve (`parties_error` says why).
-- What the shares split (B-35 item 3): a close, its parties' own-account
+- What the shares split (BS-partner-3 item 3): a close, its parties' own-account
   movement, neither; a reversal, its original's negated; an entry naming
   only members that moves equity, what moved their capital (a
   contribution received: the property in it, asset accounts that are
@@ -1462,7 +1462,7 @@ rules.md B-35):
   record (bills and their payments); its customer record's invoices and
   the payments received on them; and reversals of any of these. Only
   posted entries dated in the year count.
-- *Money accounts* (B-35 item 5, P3 defect 24): the `[books]
+- *Money accounts* (BS-partner-3 item 5, P3 defect 24): the `[books]
   cash_accounts` (every asset account but receivables when none are set),
   the cards (the business-card payment methods' liability accounts,
   `books.instruments`; while the books record none, the liability
@@ -1489,7 +1489,7 @@ rules.md B-35):
   `all` over the entries that name only members and move their capital
   (and the payments of distributions declared to them) is the statement
   of members' equity's contributions and distributions, and basis `cash`
-  their contributions is the K-1 worksheet's cash contributions (B-35
+  their contributions is the K-1 worksheet's cash contributions (BS-partner-3
   item 4 gives the conditions: a distribution declared and not yet paid
   is in the statement only). The year is the whole
   calendar year; the viewer's party page and directory show these same
@@ -1509,7 +1509,7 @@ rules.md B-35):
 Full TINs (SSN, EIN, ITIN) and signed W-9 forms, kept so what the CPA
 gets is complete (every member's TIN for their K-1, every payee's for
 their 1099), never in the books (`ledger-vault`; design in
-`docs/parties-and-attachments.md` "The TIN vault"; B-26). DECISION
+`docs/parties-and-attachments.md` "The TIN vault"; BS-partner-2). DECISION
 (the owner, 2026-10-15): the vault holds everyone's TIN, members included,
 and the CPA package carries them.
 
@@ -1590,11 +1590,11 @@ and the CPA package carries them.
   test alone), or a stand-alone number printed as an SSN or EIN is
   (123-45-6789, 12-3456789; no digit, and no hyphen or dot followed by a
   digit, beside it). Bank exports pass: routing and account numbers, long
-  references and dates next to amounts are not TINs (rules.md B-26). No
+  references and dates next to amounts are not TINs (BS-partner-2). No
   probing: a text with more than two TIN-shaped numbers ending in the last
   four of a TIN the books know is refused before the vault is opened, in
   the same words whether or not one is that TIN, so the vault is compared
-  against at most two candidates a filing (rules.md B-26). An altered copy
+  against at most two candidates a filing (BS-partner-2). An altered copy
   of a binary file (a W-9 PDF re-saved or re-scanned), and a TIN the vault
   doesn't hold written another way, are not detected: P7 takes full
   TINs out of the agent's reach.
@@ -1867,7 +1867,7 @@ posting.
     changes in members' equity; members from the settings (`company.members`); earnings
     not yet closed are split the way the next members close will split
     them, so a member's capital on a day never changes when its month is
-    closed: rules.md B-13, D-38),
+    closed: BS-partner-1, D-38),
     `general_ledger` (by account: beginning balance, postings with running
     balance and split, ending balance), `general_journal` (alias
     `journal`: each entry posted in the period, line by line; `iif`:
@@ -1877,19 +1877,19 @@ posting.
     (as of a day: columns `number,party,date,due_date,terms,total,paid,
     discounted,outstanding,bucket,days_overdue`, one row per open
     document, then a tie-out line `TOTAL,,,,,,,,<Σ outstanding>,GL
-    <account> <balance>,difference 0.00`; B-23, 8.3.10).
+    <account> <balance>,difference 0.00`; BS-ledger-8, 8.3.10).
   - Formats: `pdf` and `xlsx` for `profit_and_loss`,
     `balance_sheet`, `cash_flow`, `trial_balance`, `members_equity`,
     `tax_summary` and `fixed_asset_register`; `xlsx`, `csv`, `json` for
     every report (`general_ledger` and `general_journal` have no pdf);
     `iif` for `general_journal` (alias `journal`), for QuickBooks Desktop.
-  - Dates (rules.md B-30): the period reports (`profit_and_loss`,
+  - Dates (BS-period-3): the period reports (`profit_and_loss`,
     `cash_flow`, `members_equity`, `tax_summary`, `general_ledger`, and
     `general_journal` as csv, json and xlsx) take `start` and `end`
     (omitted: the fiscal year to date; a start after the end is
     refused); `balance_sheet`, `trial_balance`, `fixed_asset_register`
     and `iif` take `as_of` (omitted: today, the company's time zone).
-  - IIF (`docs/spec/rules.md` B-34; plan D-36): plain ASCII text, every
+  - IIF (BS-format-2; plan D-36): plain ASCII text, every
     line ending CR LF (`text/plain`, handed over like every export): every posted entry
     from the first through `as_of`, period-closing entries left out
     (QuickBooks keeps none; imported, a close would zero its period's
@@ -1914,7 +1914,7 @@ posting.
     get " (id)", a name already written differently from the books (made
     safe or tagged) yielding first, so a class's own name stands wherever
     it can: "Café" beside "Cafe" is written "Cafe (1)" and "Cafe" is
-    kept, rules.md B-34 rule 8). No line names a customer or vendor (no
+    kept, BS-format-2 rule 8). No line names a customer or vendor (no
     NAME column; see the package's README). `warnings` (absent when
     there are none) says what the file writes differently from the books,
     for the human: each account's name, number and place and each
@@ -1972,7 +1972,7 @@ posting.
 - `books.rename_account { account, name, reason? }` → `{ id, code,
   previous_name, name, notes }` (scope `books:post`, destructive: a
   rename changes the label every past report prints): give an account a
-  new name (rules.md B-31). Only the name changes (entries name accounts
+  new name (BS-ledger-10). Only the name changes (entries name accounts
   by id): no entry, balance or statement amount moves, and every report,
   past periods included, prints the new name. Refuses an unknown account,
   a blank name, the name it has, a name another account under the same
@@ -1981,7 +1981,7 @@ posting.
   `reason` is one to 2,000 characters with no full TIN. Journaled as
   `account.renamed { account_id, code, name, previous, reason }`, keyed
   by id (a code can change; an id can't), under the journal feature
-  `account_renamed` (rules.md B-27; books an older version wrote refuse
+  `account_renamed` (BS-format-1; books an older version wrote refuse
   it, `format_upgrade_pending`, until their format upgrade), so an
   earlier version stops at the declaration. `notes` always says that QuickBooks
   matches accounts by name (tell a CPA who imported an earlier IIF), says
@@ -2010,12 +2010,12 @@ posting.
   refuse`, refuses the whole file (a row is never a header account: the
   file can't say so).
 - `policy.require_tax_category` (`books.set_setting`): `warn` (unset) or
-  `refuse` (rules.md B-32). The accounts invoices, bills and payroll
+  `refuse` (BS-ledger-11). The accounts invoices, bills and payroll
   create (Revenue 4000, General Expenses 6999, 6100, 6110) are never
   refused; their results' `warnings` name them. A change naming the key
   needs the journal feature `require_tax_category`: books an older
   version wrote refuse it (`format_upgrade_pending`) until the owner's
-  format upgrade (rules.md B-27).
+  format upgrade (BS-format-1).
 
 ## Tools — import
 
@@ -2115,7 +2115,7 @@ accounting only: the caller supplies every figure), tax filing.
   missing), or to `books.close_into` (a single owner's capital), zeroing
   the `books.close_sweep` accounts (draws, dividends) into it too; or,
   with `company.members` in the settings, to each member's capital
-  account by share (each member's distribution account zeroed into it), cumulatively (rules.md B-13; D-10): each close gives a member
+  account by share (each member's distribution account zeroed into it), cumulatively (BS-partner-1; D-10): each close gives a member
   their share of everything closed to these members and shares so far, to
   the currency's minor unit (odd units by largest remainder, ties to the
   member listed first when the count began), less what earlier closes gave
@@ -2217,14 +2217,14 @@ snapshots; see plan 8.2 S4.
     spelling is gone, P5).
   - The due date: `due_date` as given (and it overrides `terms`); else
     `terms` ("Net 30", "Net 15 EOM", "2/10 net 30", "Due on receipt",
-    "Due 2026-11-15", rules.md B-39); else the customer's
+    "Due 2026-11-15", BS-arap-3); else the customer's
     `default_terms_as_customer`; else the books' `invoicing.default_terms`
     ("Net 30" unset); else refused, naming those ways. Terms are kept on
     the invoice only when given or taken from a default: with only a due
     date the invoice prints none.
   - Its number (`INV-0001`) is `invoicing.number_prefix` and
     `invoicing.first_number` plus the count of numbered invoices before it
-    (A-2, B-40); it is stored at issue and never recomputed, and a preview
+    (A-2, BS-arap-4); it is stored at issue and never recomputed, and a preview
     shows the number the confirm will take (an abandoned preview uses up
     none). Books that haven't declared `documents_v2` number nothing and
     show a document as "Invoice {N}".
@@ -2244,7 +2244,7 @@ snapshots; see plan 8.2 S4.
   - Without `confirmed` the DRAFT copy of the PDF is handed over (`pdf`,
     run its `download`, D-46); confirming renders the issued copy before
     anything is journaled and files it with the invoice in the same call
-    (A-7, B-40), returning its `attachment_id` and `sha256` (the same
+    (A-7, BS-arap-4), returning its `attachment_id` and `sha256` (the same
     `sha256` `books.get_receipt` reports).
   - `mailto` is a convenience link for a human to send it from their own
     mail program: the subject "Invoice INV-0007 from {company}", the body
@@ -2252,7 +2252,7 @@ snapshots; see plan 8.2 S4.
     never send anything (A-4): a mailto link carries no attachment, so say
     which file to attach.
   - `warnings` names a revenue account it created with no tax category
-    (rules.md B-32); `notes` one per finished or abandoned project a line
+    (BS-ledger-11); `notes` one per finished or abandoned project a line
     names, and on confirm one per on-spec project (is there now an
     agreement?).
 - `books.create_bill { vendor | party_id, date, received_on?, vendor_ref?,
@@ -2268,7 +2268,7 @@ snapshots; see plan 8.2 S4.
   project) part; `vendor` is a vendor id, its party's id or its name
   (required; the old `party_id` spelling is gone, P5).
   - `vendor_ref` is the vendor's own invoice number: required in books
-    that have declared `documents_v2` (B-40). The same vendor and number
+    that have declared `documents_v2` (BS-arap-4). The same vendor and number
     twice is refused unless `duplicate_reason` says why, which is
     journaled with the bill; case, spaces and hyphens are ignored.
     `received_on` is the day it was received, when it differs from its
@@ -2285,7 +2285,7 @@ snapshots; see plan 8.2 S4.
   - The due date and terms fall back as an invoice's, to the vendor's
     `default_terms_as_vendor` and no further. `discount_by` is the last
     day an early-payment discount is open and `max_discount` the largest
-    it allows (B-39): the caller gives the exact cents when it takes one.
+    it allows (BS-arap-3): the caller gives the exact cents when it takes one.
   - `warnings` names an expense account it created with no tax category;
     `notes` one per finished or abandoned project a line names (none for
     on-spec: a cost of on-spec work is an expense like any other).
@@ -2298,7 +2298,7 @@ snapshots; see plan 8.2 S4.
   (entry 0, the figures the documents would show, `preview` to pass
   back) and nothing is written (P4: the S6 tools preview and confirm like
   the create tools). Settles one or several invoices of one customer in one
-  entry (B-42): Dr the deposit account the cash less the fee, Dr the
+  entry (BS-arap-6): Dr the deposit account the cash less the fee, Dr the
   payment-processing-fees account the fee, Dr sales allowances the
   discounts, Cr A/R each invoice's cash and discount, every receivable
   line tagged with its invoice (payment lines in application order, then
@@ -2318,7 +2318,7 @@ snapshots; see plan 8.2 S4.
 - `books.pay_bill { date, paid_from, instrument?,
   reference?, bill, amount? | applications: [{ bill, amount,
   discount?, discount_reason? }], confirmed?, preview? }` → as `receive_payment`, per bill and
-  one vendor (B-42): Dr A/P each bill's cash and discount, Cr the payer
+  one vendor (BS-arap-6): Dr A/P each bill's cash and discount, Cr the payer
   account the cash, Cr purchase discounts the discounts. A discount on a
   bill with an asset or prepaid line is refused with its remedy (record
   the bill net, or reclassify Dr 6995 / Cr the asset, D-49); a processor's
@@ -2328,7 +2328,7 @@ snapshots; see plan 8.2 S4.
   have existed by reversing its own entry with the reason; it keeps its
   number and reads `void`. Refused while a payment stands on it (the
   refusal names the payment entry to reverse first), when void already,
-  before its date or in a closed period (P4b S1, B-38).
+  before its date or in a closed period (P4b S1, BS-arap-2).
 - `books.mark_sent { invoice, on?, by?, via?, recipients?: [string],
   kind?, reference?, note? }` → `{ invoice, sends: [{ on, by, via, to, kind,
   reference?, note? }] }`. Records that an invoice went out (P4b S5,
@@ -2347,10 +2347,10 @@ snapshots; see plan 8.2 S4.
 - `books.write_off_invoice { invoice, date, amount?, reason, upload_id |
   existing_attachment_id, confirmed?, preview? }` → `{ entry_id, document: { ref,
   status, paid, written_off, outstanding } }`. Writes off an invoice that
-  will not be collected (a bad debt, P4b S7; rules.md B-41): posts Dr
+  will not be collected (a bad debt, P4b S7; BS-arap-5): posts Dr
   `6990` Bad Debt Expense / Cr `1200` Accounts Receivable, the receivable
   line tagged with the invoice (`WriteOff`), so the invoice reads
-  `written_off` and its figures stay derived (B-38). `amount` (a decimal
+  `written_off` and its figures stay derived (BS-arap-2). `amount` (a decimal
   string, default all it owes) is at most what is owed and may be partial
   (§1.166-3(a)). Its evidence of worthlessness (collection
   correspondence, a bankruptcy notice: §1.166-2(a)) is filed in the same
@@ -2370,7 +2370,7 @@ snapshots; see plan 8.2 S4.
   kind, documents: [{ ref, party, date, due_date, total, outstanding,
   status, overdue_days, last_sent? }], outstanding_total }`. Invoices (`kind`
   `invoices`) or bills (`bills`), due date first, every figure derived
-  from the document's lines that stand (B-38). `status` filters: `open`
+  from the document's lines that stand (BS-arap-2). `status` filters: `open`
   (default: anything still owed, partly paid and overdue included),
   `overdue`, `paid`, `void`, `written_off`, `overpaid` or `all`; a row's
   own `status` is one of `open`, `partial`, `paid`, `written_off`,
@@ -2403,7 +2403,7 @@ snapshots; see plan 8.2 S4.
   code, name, balance, documents_total, unattached: [{ entry_id, line,
   date, amount }], difference, attention: [{ kind, id, status, total,
   outstanding }] }] }`. Receivables and payables tied to their documents
-  (B-23, B-38 INVARIANT 1): `difference` is always `0.00`; `agrees` when
+  (BS-ledger-8, BS-arap-2 INVARIANT 1): `difference` is always `0.00`; `agrees` when
   there is no unattached line and nothing needing attention.
   `books.verify` checks the same identity and `books.digest` lists its
   problems (`control_problems`).
@@ -2413,7 +2413,7 @@ snapshots; see plan 8.2 S4.
   discounted, outstanding, bucket, days_overdue }], control: { account,
   balance, documents_total, unattached, difference } }` (`as_of` omitted:
   today). `detail: true` adds one row per open invoice; `control` is the
-  receivables account's tie-out (B-23, B-38 INVARIANT 1), `difference`
+  receivables account's tie-out (BS-ledger-8, BS-arap-2 INVARIANT 1), `difference`
   always `0.00`.
 - `books.ap_aging { as_of?, detail? }` → same, per vendor and bill.
 - `books.bills_due { through?, as_of? }` → `{ as_of, through, bills:
@@ -2464,7 +2464,7 @@ entries.
 
 ## Tools — projects (classes)
 
-A project is a class with its facts (`docs/spec/rules.md` B-37): the
+A project is a class with its facts (BS-statement-5): the
 same id, the same name, so `books.add_line`'s `class`, the P&L `class`
 filter and `books.profit_and_loss_by_class` take projects. A `project`
 reference is an id or a name (ignoring capitals in any script and
@@ -2475,7 +2475,7 @@ ignoring capitals and surrounding space, and never digits only (they
 would read as an id). A change that keeps a project's own name never
 checks it again, so old books holding a duplicate name can change either
 project's facts; a rename onto another project's name is refused. Every project write but a name alone needs the journal feature
-`projects` (B-27): books waiting for their format upgrade (D-39) can add
+`projects` (BS-format-1): books waiting for their format upgrade (D-39) can add
 a project by name only, and every other project write (facts, a link to
 a project, a decision naming one) is refused with `format_upgrade_pending`
 until the owner upgrades them.
@@ -2507,7 +2507,7 @@ until the owner upgrades them.
   project (every class), by name ignoring capitals; `to_date` counts every
   posted revenue and expense line tagged to it through today in the
   company's time zone, closing entries left out; `net` is its
-  contribution before overhead (B-37 item 7: revenue less every cost
+  contribution before overhead (BS-statement-5 item 7: revenue less every cost
   tagged to it, fixed and variable alike, no company overhead allocated:
   a segment margin in Garrison's sense, not a variable-cost contribution
   margin); `margin_pct` is net as a percent of revenue to one place, half
@@ -2515,7 +2515,7 @@ until the owner upgrades them.
   for an on-spec project (else null): expenses less revenue, never below
   zero.
 - `books.project { project, start?, end? }` (books:read; omitted dates: the fiscal
-  year to date, B-30, as every period report) → `{ project, period: {
+  year to date, BS-period-3, as every period report) → `{ project, period: {
   start, end, revenue, expenses, net, margin_pct, by_account: [{ code, name, type
   ("revenue" | "expense"), amount }], by_month: [{ month ("YYYY-MM"),
   start, end, revenue, expenses, net, net_to_date }] }, to_date (as above, through
@@ -2549,7 +2549,7 @@ until the owner upgrades them.
   project); its result gains `notes`, one per finished or abandoned
   project tagged, as `books.add_line`'s `note`.
 - An invoice's or bill's lines take a project too (`books.create_invoice`
-  and `books.create_bill`, `class` on a line, rules.md B-37 item 8), in
+  and `books.create_bill`, `class` on a line, BS-statement-5 item 8), in
   books that declared the journal feature `document_line_projects`; the
   handbook's projects section says which these books are. Their payments
   take none.
@@ -2571,12 +2571,12 @@ until the owner upgrades them.
   dated on or before `as_of` is open (post it or discard it); with
   `allow_open_drafts: { reason }` the package goes and the reason is
   journaled as a decision.
-  **As of one day** (`docs/spec/rules.md` B-33): nothing in it reflects
+  **As of one day** (BS-statement-4): nothing in it reflects
   anything dated after `as_of` (default today): no figure, entry,
   receipt or worksheet row; the chart and `documents/` are as they stand.
   One list of cash accounts and one of financing accounts serve the
   whole package: the request's, else the settings'.
-  **QuickBooks file** (`general-journal.iif`, B-34): as `books.export`
+  **QuickBooks file** (`general-journal.iif`, BS-format-2): as `books.export`
   iif makes it, through `as_of`; `warnings` says what it writes
   differently from the books, in the same lines as `books.export` iif's
   (account and class names and account numbers one each, the memos
@@ -2629,7 +2629,7 @@ until the owner upgrades them.
   party is the party with the member's name (not a display name) and the
   member role, as the viewer's capital statement finds it; with none, the
   member's TIN is a gap. **Tax-basis capital** (`k1-tax-basis-capital.csv`,
-  P3, D-41, rules.md B-36; Form 1065 instructions, Item L, the tax-basis
+  P3, D-41, BS-partner-4; Form 1065 instructions, Item L, the tax-basis
   method): per member, `member, item, book, tax_basis, book_less_tax,
   status, note` for each Item L line (beginning; capital contributed,
   cash and property; current year net income (loss); other increase
@@ -2667,7 +2667,7 @@ until the owner upgrades them.
 
 A draft is an entry being built (`books.draft_entry`, `books.add_line`) that
 is not in any report until it posts. P4 gives it a state, a way out, and a
-read-only preview (rules.md B-43; the journal feature `drafts_v2`: the
+read-only preview (BS-entry-5; the journal feature `drafts_v2`: the
 state and discard tools wait for the books' format upgrade).
 
 - `books.list_drafts { state?, as_of? }` → `{ drafts: [{ entry_id, date,
@@ -2746,7 +2746,7 @@ An audit is the books read as an auditor reads them, through a day, in one
 run: the same books give the same findings and the same workpaper. An
 attestation is a claim by a checker that it looked at something. The audit
 finds; the attestations stand behind it; the CPA package waits for both
-(rules.md B-45; decision D-9; the journal feature `audits`: the audit run
+(BS-ledger-13; decision D-9; the journal feature `audits`: the audit run
 and the attestations wait for the books' format upgrade, refused with
 `format_upgrade_pending` until then).
 

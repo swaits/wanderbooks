@@ -36,7 +36,7 @@ pub enum StoreError {
     AssetDepreciationPosted(u64),
 
     /// The receipt policy covers the entry and it has no receipt (plan P4,
-    /// I-5; rules.md B-43): refused before anything is journaled.
+    /// I-5; BS-entry-5): refused before anything is journaled.
     #[error(
         "entry {} needs a receipt before it posts: {} ({}); attach one with books.attach_receipt",
         .0.entry_id, .0.reason, .0.policy
@@ -69,7 +69,7 @@ pub enum StoreError {
     /// though the lines after it are the newer version's to check. When
     /// nothing checks it (it is the last line, or the next has no `prev`
     /// this version can read), it is either newer or damaged, and the
-    /// message says so (rules.md B-27).
+    /// message says so (BS-format-1).
     #[error("{}", newer_journal_text(*seq, event_type, need, *verified))]
     NewerJournal {
         /// The first line this version can't read.
@@ -152,7 +152,7 @@ pub enum StoreError {
     #[error("store not found at {0}")]
     NotFound(String),
 
-    /// A write-off with no evidence (rules.md B-41 INVARIANT 1): a bad
+    /// A write-off with no evidence (BS-arap-5 INVARIANT 1): a bad
     /// debt is deducted on evidence that it is worthless (Treas. Reg.
     /// §1.166-2), so the books take the write-off only with its file.
     #[error(
@@ -162,8 +162,8 @@ pub enum StoreError {
     )]
     WriteOffNeedsEvidence,
 
-    /// An audit or an attestation the books refuse (plan P8; rules.md
-    /// B-45): a stale head, an entry not posted, a receipt not on the
+    /// An audit or an attestation the books refuse (plan P8;
+    /// BS-ledger-13): a stale head, an entry not posted, a receipt not on the
     /// entry. The words say what to do.
     #[error("{0}")]
     AuditRefused(String),

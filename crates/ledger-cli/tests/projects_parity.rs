@@ -1,4 +1,4 @@
-//! A project's snapshot (rules.md B-37 item 7) in the viewer and from the
+//! A project's snapshot (BS-statement-5 item 7) in the viewer and from the
 //! books server, on the same books: `books.project`'s strings are the
 //! figures the viewer's page draws (its `PageFigures` and `Snap`), to the
 //! cent, to date, by account, by month with the running net, and for the
@@ -208,7 +208,7 @@ fn a_projects_snapshot_is_the_same_in_the_viewer_and_from_the_server() {
     assert_eq!(period["net"], "-722.22", "a refund and costs, no sale");
 }
 
-/// rules.md B-37 item 8: a project's invoiced revenue and billed costs,
+/// BS-statement-5 item 8: a project's invoiced revenue and billed costs,
 /// made through the books server's own tools, read the same in the viewer
 /// (its snapshot, and the invoice's and bill's pages: each line's
 /// project) and from the server (books.project, books.get_entry).

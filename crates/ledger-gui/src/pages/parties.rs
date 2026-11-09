@@ -560,7 +560,7 @@ pub fn show_list(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
     });
 }
 
-/// The party's totals with property in kind (basis all, rules.md B-35
+/// The party's totals with property in kind (basis all, BS-partner-3
 /// item 4), when it gave or took any in the period: "With property
 /// contributed or distributed: paid $X, received $Y". None when nothing
 /// moved in kind (the cash totals are then the whole story).
@@ -775,7 +775,7 @@ pub fn show_party(ui: &mut Ui, b: &Books, id: PartyId, shell: &mut Shell<'_>) {
                 r.context_menu(|ui| widgets::copy_item(ui, "Copy amount", &v.to_string()));
             }
         });
-        // Basis all (rules.md B-35 item 4): property in kind, when any.
+        // Basis all (BS-partner-3 item 4): property in kind, when any.
         if let Some(text) = in_kind_text(&flow) {
             ui.add_space(6.0);
             ui.add(
@@ -1194,7 +1194,7 @@ fn records_card(ui: &mut Ui, b: &Books, party: &Party, info: &PartyInfo, go: &mu
     );
 }
 
-/// The projects for or with the party (rules.md B-37), by name: status
+/// The projects for or with the party (BS-statement-5), by name: status
 /// and net to date; a row opens its project.
 fn projects_card(ui: &mut Ui, b: &Books, ids: &[ledger_core::ClassId], go: &mut Option<Route>) {
     let p = pal(ui.ctx());
@@ -1416,7 +1416,7 @@ fn documents_card(ui: &mut Ui, b: &Books, info: &PartyInfo, go: &mut Option<Rout
                 docs.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
                 for (name, date, due, state, total, balance, entry) in docs {
                     // Late and its status as of today, from the ledger
-                    // lines tagged with it (rules.md B-38; P4b.2 gap 10):
+                    // lines tagged with it (BS-arap-2; P4b.2 gap 10):
                     // a reversed payment makes it owed again, a void
                     // never late.
                     let late = matches!(state, Ok(Some(st)) if st.overdue_days > 0);

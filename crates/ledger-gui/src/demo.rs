@@ -242,12 +242,12 @@ pub fn build(dir: &Path, today: NaiveDate) -> Result<(), StoreError> {
         Some("depreciation"),
     )?;
     let bank_fees = acct(&mut s, "6900", "Bank Fees", Expense, None)?;
-    // The projects (classes with their facts, rules.md B-37).
+    // The projects (classes with their facts, BS-statement-5).
     let client_class = s.add_project(
         "Client work",
         &ledger_core::ProjectFacts {
             // Its invoices' lines and the contractors it pays are tagged
-            // to it (rules.md B-37 item 8), so its snapshot is its
+            // to it (BS-statement-5 item 8), so its snapshot is its
             // revenue less its direct costs.
             description: Some(
                 "Design work for the studio's clients: every client invoice, and the contractors who work on it."
@@ -306,7 +306,7 @@ pub fn build(dir: &Path, today: NaiveDate) -> Result<(), StoreError> {
     .map(|n| s.add_customer(n))
     .collect::<Result<_, _>>()?;
     // Work on spec for a customer, hoping they adopt it: its costs are
-    // expenses, and nothing is receivable (rules.md B-37 item 4).
+    // expenses, and nothing is receivable (BS-statement-5 item 4).
     let tidepool_started = start + Months::new(13);
     let tidepool = s.add_project(
         "Tidepool app",

@@ -3,7 +3,7 @@
 //! backfill command.
 //!
 //! Expected behavior comes from `docs/mcp-interface.md` ("Tools —
-//! evidence", "Tools — receipts & documents") and rules.md B-44. Every
+//! evidence", "Tools — receipts & documents") and BS-ledger-12. Every
 //! call goes through a real books server as an agent reaches it
 //! (`common.rs`).
 
@@ -318,7 +318,7 @@ fn annotations_and_searches() {
     assert_eq!(answer_of(&r).unwrap()["status"], "ok");
 }
 
-/// Plan P6 step 4 and rules.md B-44 item 5: consolidation never leaves an
+/// Plan P6 step 4 and BS-ledger-12 item 5: consolidation never leaves an
 /// entry the receipt policy covers with no evidence.
 #[test]
 fn consolidation_never_removes_an_entrys_only_evidence() {

@@ -411,7 +411,7 @@ impl Books<'_> {
                 };
                 // Each write-off's own notice: identical bytes would be one
                 // record (plan P6 step 4), and a receipt evidences one entry
-                // (B-38), so a second write-off with the first's letter is
+                // (BS-arap-2), so a second write-off with the first's letter is
                 // refused before anything is journaled.
                 let letter = format!(
                     "%PDF-1.4\nFinal demand for invoice {invoice}: {}\n%%EOF\n",

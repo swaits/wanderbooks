@@ -93,16 +93,32 @@ property tests, mutation testing, and 11.5M fuzz executions:
 
 So the bar, for every agent, every change:
 
-0. **Specs come from authorities, not memory.** Every rule the engine
-   enforces is in `docs/spec/rules.md` with its source: Pacioli for the
-   mechanics of double entry, the IRS (vendored verbatim, public domain)
-   for records, periods, 1099s, capitalization, partnerships, and payroll,
-   FASB's Codification (cited, never copied) for GAAP. A rule no authority
-   states is marked CONVENTION or CHOICE (bookspec's word for a
-   decision), with who decided and when.
+0. **Specs come from authorities, not memory.** The rules live in
+   bookspec, the definitive accounting specification (D-68):
+   https://git.swaits.com/swaits/bookspec — its `rules/` records are
+   the rule text, rendered for reading in its `spec/rules/` pages and
+   indexed in its `spec/rules-index.md`. Every rule has a bookspec id
+   `BS-<area>-<n>`, and that is the id code and docs cite. Wanderbooks'
+   own layer is `docs/spec/claims/`: for each bookspec rule, the option
+   wanderbooks picks (a CHOICE is picked, never silently decided), where
+   the engine enforces it, which tests check it, and wanderbooks' own
+   product rules `WB-<area>-<n>` (MCP tools, the store, the viewer, the
+   vault), which no authority but this product states.
+   `docs/spec/rules.md` is only the index from the retired B-n
+   numbering to bookspec ids and claims files; do not cite it.
+   Sources rest on authorities: Pacioli for the mechanics of double
+   entry, the IRS (vendored verbatim, public domain, in
+   `docs/spec/sources/`) for records, periods, 1099s, capitalization,
+   partnerships, and payroll, FASB's Codification (cited, never copied)
+   for GAAP. A rule no authority states is marked CONVENTION or CHOICE
+   (bookspec's word for a decision), with who decided and when.
    Spec blocks in the code (```text GOAL/SOURCE/INVARIANTS/SCENARIOS)
-   carry a `SOURCE:` line. Never write a spec from what the code happens
-   to do, or from what you remember; find the document, or ask.
+   carry a `SOURCE:` line citing a `BS-…` id (a `WB-…` id for a product
+   rule), a vendored source, or the external authority itself.
+   `crates/ledger-core/tests/bookspec/` checks that every `SOURCE:`
+   line names a rule or source that exists. Never write a spec from
+   what the code happens to do, or from what you remember; find the
+   document, or ask.
 
 1. **Money arithmetic goes in `kernel/`, generic over `Amount`.** If
    you write a sum, a sign flip, a split, or a rounding plug anywhere
@@ -201,7 +217,9 @@ clone, with status. Rules:
 | `docs/requirements.md` | What the engine must do (R-1…), what is future work |
 | `docs/architecture.md` | Crate layout, command pattern, dependency rules |
 | `docs/oracle.md` | How we check correctness: golden files, property tests, fuzzing, cross-checks against other implementations (and who is right) |
-| `docs/spec/` | The authorities every rule comes from (`rules.md`), with public-domain sources vendored verbatim |
+| `docs/spec/` | Wanderbooks' layer over bookspec: `claims/` (its picks, enforcement, product rules `WB-…`), `rules.md` (the B-n → bookspec-id index only), `sources/` (public-domain authorities vendored verbatim) |
+| `docs/spec/claims/` | Wanderbooks' claims on each bookspec rule: the CHOICE picked, where the engine enforces it, which tests check it, and product rules `WB-<area>-<n>` |
+| https://git.swaits.com/swaits/bookspec | Where the rules live (D-68): `rules/` records, `spec/rules/` reading pages, `spec/rules-index.md`; every rule is `BS-<area>-<n>` |
 | `docs/verification.md` | The formal proofs: every accounting law, its Kani harness and Lean theorem, what they found |
 | `docs/parity.md` | Feature catalog and the non-regression floor |
 | `docs/capability-parity.md` | Parity vs the GSheet+GDrive system + the cutover rule |
@@ -209,7 +227,7 @@ clone, with status. Rules:
 | `docs/receipt-store.md` | Blob store + `ledger-store` SQLite persistence spec |
 | `docs/testing.md` | Every test layer, each unit's test record, and what P12 must mutate |
 | `docs/parties-and-attachments.md` | The party directory, roles, the TIN vault, attachments to any subject |
-| https://git.swaits.com/swaits/bookspec | The formal accounting specification's own repository: README, examples, checker, runner (P13); pinned in `crates/ledger-core/Cargo.toml` |
+| https://git.swaits.com/swaits/bookspec | Also its README, examples, checker, runner (P13); pinned in `crates/ledger-core/Cargo.toml` |
 | `deploy/README.md` | Running the books on a machine of your own (P9a) |
 | `docs/glossary.md` | Debit/credit and friends, for agents new to accounting |
 | `plan/STATUS.md` | Where the project stands right now |

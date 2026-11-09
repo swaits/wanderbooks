@@ -47,7 +47,7 @@ pub enum ScheduleKind {
 /// How a schedule spreads its total over the time it covers.
 ///
 /// ```text
-/// SOURCE: docs/spec/rules.md B-16; plan/served.md D-11 (new schedules
+/// SOURCE: BS-prepaid-1; plan/served.md D-11 (new schedules
 ///         daily, "matching depreciation"; existing ones stay
 ///         monthly_even), D-37 (owner, 2026-10-20: confirmed; an
 ///         equal-months schedule starts on the 1st of a month, for
@@ -173,7 +173,7 @@ pub const EXACT_LIMIT: Decimal =
 ///   2. NEVER panics: a schedule an earlier version journaled whose months
 ///      run past chrono's last day is refused with DateOutOfRange, and one
 ///      whose amounts exact arithmetic can't hold with TooLargeToCompute
-///      (rules.md B-28). `months` is at least 1 (validate_schedule_shape).
+///      (BS-entry-4). `months` is at least 1 (validate_schedule_shape).
 ///   3. NEVER rounds silently: a total of EXACT_LIMIT or more is refused
 ///      with TooLargeToCompute. Below it every amount in cents, and every
 ///      sum of them (none exceeds the total), fits Decimal's 28 significant
@@ -232,7 +232,7 @@ pub fn amortization_plan(
 /// ```text
 /// GOAL: recognize a prepaid expense, or earn deferred revenue, as each
 ///       day it covers passes.
-/// SOURCE: docs/spec/rules.md B-16 (ASC 606-10-25-23: revenue as the
+/// SOURCE: BS-prepaid-1 (ASC 606-10-25-23: revenue as the
 ///         obligation is satisfied; ASC 340-10-05-4: a prepaid is used up
 ///         over the time it covers); plan/served.md D-11, D-37.
 /// INVARIANTS:
@@ -381,7 +381,7 @@ fn month_first(d: NaiveDate) -> NaiveDate {
 /// [`validate_schedule`] without the total's range and minor-unit checks
 /// added on 2026-10-13 or the calendar bound added in P0: the checks every
 /// journaled `schedule.registered` passed when it was written, for
-/// replaying journals written before them (rules.md B-28).
+/// replaying journals written before them (BS-entry-4).
 pub fn validate_schedule_shape(
     new: &NewSchedule,
     chart: &ChartOfAccounts,
@@ -585,7 +585,7 @@ pub fn validate_recurring(new: &NewRecurring, chart: &ChartOfAccounts) -> Result
 /// The checks every journaled `recurring.registered` passed when it was
 /// written (the rule through 2026-10-16): at least two lines, positive
 /// amounts, postable accounts, balanced, and an end not before the start.
-/// Replay applies exactly these (rules.md B-28). Sums too large for exact
+/// Replay applies exactly these (BS-entry-4). Sums too large for exact
 /// arithmetic are refused (TooLargeToCompute), never a panic.
 pub fn validate_recurring_journaled(
     new: &NewRecurring,
@@ -668,7 +668,7 @@ mod tests {
 
     /// A schedule an earlier version journaled, at chrono's last month or
     /// with Decimal's largest total: its plan is computed where it can be,
-    /// refused where it can't, never a panic (rules.md B-28).
+    /// refused where it can't, never a panic (BS-entry-4).
     #[test]
     fn plans_at_the_edges_are_computed_or_refused() {
         assert_eq!(month_end(NaiveDate::MAX), NaiveDate::MAX);

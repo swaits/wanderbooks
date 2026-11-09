@@ -72,7 +72,7 @@
 //!   2. IF a fixed asset is in service during the span:
 //!      - SHOULD leave the tax net income open, with the book depreciation
 //!        posted in the span
-//!      BECAUSE tax depreciation is the CPA's (rules.md B-15, B-25).
+//!      BECAUSE tax depreciation is the CPA's (BS-asset-1, BS-asset-4).
 //!   3. IF nothing but cash comes in and goes out:
 //!      - SHOULD still leave the tax net income open, the book share known
 //!      BECAUSE income "as figured for tax purposes" is the return's.
@@ -89,9 +89,9 @@ use rust_decimal::Decimal;
 /// `[start, end]`: its lines on the asset's depreciation expense account,
 /// debit-positive (the depreciation still due through the disposal day,
 /// or, negative, what the month's run posted past it, credited back:
-/// rules.md B-15 rule 5). With the runs
+/// BS-asset-1 rule 5). With the runs
 /// (`Ledger::depreciation_posted_between`) it is the asset's depreciation
-/// expense in the span, the P&L's and the cash flow's (B-14 rule 8).
+/// expense in the span, the P&L's and the cash flow's (BS-statement-3 rule 8).
 /// The disposal entry is the posted entry dated the disposal day that
 /// credits the asset's cost account by its cost (`Store::dispose_asset`
 /// posts it so).
@@ -215,7 +215,7 @@ pub enum Open {
 pub enum Note {
     /// Property contributed in `entry` to a prepaid account (the balance
     /// account of a prepaid-expense schedule: a service contract the
-    /// member handed over, B-13) with no fixed asset for it: its §723
+    /// member handed over, BS-partner-1) with no fixed asset for it: its §723
     /// basis is taken as its book amount, this member's share `book`
     /// (DECISION, P3 review 2026-10-21: the contract's carryover basis is
     /// what the books recorded for it; the CPA to confirm).
@@ -342,7 +342,7 @@ fn too_large() -> LedgerError {
 }
 
 /// A running split of amounts among members, one split at a time, each
-/// by its own weights (B-36, the odd cent as D-38 settles it): each
+/// by its own weights (BS-partner-4, the odd cent as D-38 settles it): each
 /// member's running total is rounded afresh from their exact running
 /// total, so it never drifts a cent from it, and tied cents don't pile up
 /// on one member. The worksheet keeps one per set of members with weight
@@ -354,8 +354,8 @@ fn too_large() -> LedgerError {
 ///       distributed is a cent or more from their exact share, however
 ///       many entries it is summed over; three equal odd-cent properties
 ///       contributed 50/50 leave the members one cent apart, never three.
-/// SOURCE: rules.md B-36 (shared within each entry as its book value is),
-///         B-13 (cent rounding by largest remainder: DECISION, owner
+/// SOURCE: BS-partner-4 (shared within each entry as its book value is),
+///         BS-partner-1 (cent rounding by largest remainder: DECISION, owner
 ///         2026-10-13); DECISION D-38 (owner, 2026-10-20: odd cents
 ///         everywhere alike, cumulative largest remainder), here for the
 ///         tax basis by the owner's ask, 2026-10-22 (kernel::
@@ -552,7 +552,7 @@ impl RunningSplit {
 /// it is rounded to the cent ([`RunningSplit`] INVARIANT 4).
 const EXACT_PLACES: u32 = 10;
 
-/// The four amounts an entry's members share (B-36): the property's
+/// The four amounts an entry's members share (BS-partner-4): the property's
 /// built-in gain, its property without a basis, its prepaid at book (each
 /// by the members' property in it) and the property it distributes (by
 /// what each took).
@@ -632,14 +632,14 @@ fn entry_wholes(
     Ok(out)
 }
 
-/// Every entry's parts of the amounts it splits (B-36 with D-38), from
+/// Every entry's parts of the amounts it splits (BS-partner-4 with D-38), from
 /// the books' first entry through `end`, whatever span the worksheet is
 /// asked for, so an entry's cents are the same in every span it is in.
 ///
 /// ```text
 /// GOAL: odd cents that run (RunningSplit) and never touch a member who
 ///       has no part in the entry, nor change with the span asked for.
-/// SOURCE: rules.md B-36; DECISION D-38; Form 1065 Item L (a partner's
+/// SOURCE: BS-partner-4; DECISION D-38; Form 1065 Item L (a partner's
 ///         capital contributed is the basis of the property that partner
 ///         contributed).
 /// INVARIANTS:

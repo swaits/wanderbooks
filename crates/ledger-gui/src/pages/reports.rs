@@ -24,7 +24,7 @@ use std::collections::BTreeMap;
 
 /// The range a report covers. The default (a report nobody chose dates
 /// for) is the fiscal year to date: what an omitted date means
-/// everywhere (rules.md B-30, `Books::default_period`; a test pins that
+/// everywhere (BS-period-3, `Books::default_period`; a test pins that
 /// they agree).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Range {
@@ -408,7 +408,7 @@ fn column_ranges(st: &State, b: &Books) -> Vec<(NaiveDate, NaiveDate, String)> {
 
 /// The period compared against, if any: None too when it falls before
 /// chrono's first day (a range from the books' first entry, which an
-/// earlier version may have dated there: rules.md B-28).
+/// earlier version may have dated there: BS-entry-4).
 fn prior(st: &State, s: NaiveDate, e: NaiveDate) -> Option<(NaiveDate, NaiveDate)> {
     match st.compare {
         Compare::None => None,
@@ -1079,7 +1079,7 @@ fn tax(b: &Books, s: NaiveDate, e: NaiveDate) -> Table {
     t
 }
 
-/// A report the books can't compute (rules.md B-28: books an earlier
+/// A report the books can't compute (BS-entry-4: books an earlier
 /// version wrote may hold amounts past exact arithmetic): no figures, and a
 /// note saying why, never a guess.
 fn cant_compute(mut t: Table, why: &ledger_core::LedgerError) -> Table {
@@ -1518,8 +1518,8 @@ fn report(ui: &mut Ui, b: &Books, kind: ReportKind, shell: &mut Shell<'_>, picke
             let e = widgets::date_picker(ui, "to", e);
             // The human's own pickers: a "from" set past the "to" reads
             // as the two in order. Never a books.show target's dates:
-            // App::show takes only a resolved range in order (rules.md
-            // B-30) and ignores any other, so this never changes what the
+            // App::show takes only a resolved range in order (
+            // BS-period-3) and ignores any other, so this never changes what the
             // agent was told the viewer shows.
             st.range = Range::Custom(s.min(e), e.max(s));
         }
@@ -1555,7 +1555,7 @@ fn report(ui: &mut Ui, b: &Books, kind: ReportKind, shell: &mut Shell<'_>, picke
 
     let (s, e) = st.range.dates(b);
     // A split over a range from the books' first entry, which an earlier
-    // version may have dated thousands of years back (rules.md B-28),
+    // version may have dated thousands of years back (BS-entry-4),
     // would be more columns than anyone can read or the frame can build:
     // shown as one total, with a note saying so.
     let split_note = splittable
@@ -2282,8 +2282,8 @@ fn vendor_1099(ui: &mut Ui, b: &Books, year: i32, shell: &mut Shell<'_>) {
     let w = match b.vendor_1099_worksheet(year) {
         Ok(w) => w,
         Err(e) => {
-            // Never guess a threshold or the cash accounts (rules.md
-            // B-19): say why there's no worksheet, in the engine's words.
+            // Never guess a threshold or the cash accounts (
+            // BS-1099-1): say why there's no worksheet, in the engine's words.
             ui.label(RichText::new(e).color(p.muted));
             return;
         }
@@ -2719,7 +2719,7 @@ mod tests {
         // The figures, by hand: the loan (not a financing setting) is an
         // operating receipt, 2,500.00; what the members paid personally
         // (85.00 and 216.40, 301.40) is borrowed from them through 2100
-        // and spent (D-42, rules.md B-14 rule 11); the members'
+        // and spent (D-42, BS-statement-3 rule 11); the members'
         // contributions are financing, each named (1,200.00 and 800.00);
         // the reimbursement repays 2100 (301.40); the tablet is disclosed
         // (630.00), the reversed laptop gone.

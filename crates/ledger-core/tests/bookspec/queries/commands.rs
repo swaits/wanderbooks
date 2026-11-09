@@ -76,7 +76,7 @@ pub(crate) fn every_balance(l: &Ledger) -> Vec<(String, Decimal, Decimal)> {
 }
 
 /// Try one command on a copy of the books, as the books' own command does
-/// it (the engine's checks, then the policy's: rules.md B-31, B-32), and
+/// it (the engine's checks, then the policy's: BS-ledger-10, BS-ledger-11), and
 /// check it is accepted or refused for the reason given.
 pub(crate) fn check_command(ex: &Example, l: &Ledger, x: &Expect) {
     let mut copy = l.clone();
@@ -88,7 +88,7 @@ pub(crate) fn check_command(ex: &Example, l: &Ledger, x: &Expect) {
                 .as_deref()
                 .unwrap_or_else(|| panic!("{}: rename_account gives the name", ex.id));
             copy.rename_account(account, name).inspect(|()| {
-                // A rename changes the label, nothing else (rules.md B-31).
+                // A rename changes the label, nothing else (BS-ledger-10).
                 assert_eq!(
                     copy.chart().get(account).unwrap().name,
                     name.trim(),

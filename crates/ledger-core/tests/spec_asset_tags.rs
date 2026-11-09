@@ -1,4 +1,4 @@
-//! Spec-derived tests for asset tags and serial numbers (rules.md B-24) and
+//! Spec-derived tests for asset tags and serial numbers (BS-asset-3) and
 //! the fixed asset register (`reports::fixed_asset_register`).
 //!
 //! Every expected value comes from the written specification: the doc
@@ -6,7 +6,7 @@
 //! `assets::check_asset_tag`, `assets::check_serial`, `assets::tag_key`,
 //! `Ledger::set_asset_tag`, `check_asset_tag_for`, `set_asset_serial`,
 //! `asset_by_tag`, `next_asset_tag`, `fixed_asset_register` and
-//! `AssetRegister`, and `docs/spec/rules.md` B-15 and B-24. Depreciation
+//! `AssetRegister`, and BS-asset-1 and BS-asset-3. Depreciation
 //! amounts are worked by hand (straight line, whole months) or, for
 //! mid-month dates, taken from the already-tested building block
 //! `accumulated_scheduled_through`. Nothing is read back from the code under
@@ -160,7 +160,7 @@ fn check_asset_tag_accepts_the_documented_forms() {
     assert!(check_asset_tag(&longest).is_ok());
 }
 
-/// B-24 says 1–32 characters: the constant agrees with the rule.
+/// BS-asset-3 says 1–32 characters: the constant agrees with the rule.
 #[test]
 fn max_asset_tag_len_is_32_per_b24() {
     assert_eq!(MAX_ASSET_TAG_LEN, 32);
@@ -608,7 +608,7 @@ fn serial_ok(s: &str) -> bool {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
 
-    /// B-24 / set_asset_tag INVARIANTS 1-3 and set_asset_serial SCENARIO 1
+    /// BS-asset-3 / set_asset_tag INVARIANTS 1-3 and set_asset_serial SCENARIO 1
     /// over random command sequences, against a model built from the spec.
     #[test]
     fn prop_tag_commands_keep_the_invariants(cmds in proptest::collection::vec(arb_cmd(), 1..40)) {
@@ -1088,7 +1088,7 @@ fn register_of_no_assets_is_empty() {
 /// 1,000.00 and June's 10/30: 5,333.33 scheduled. Before P3 the disposed
 /// schedule ended in a plug, so the register showed 12,000.00 and 0.00.
 /// The same in the life's final month: on 2026-12-15, 11,483.87. Book
-/// value is cost less what the books carry (defect 13, rules.md B-15 rule
+/// value is cost less what the books carry (defect 13, BS-asset-1 rule
 /// 8): the fixture's runs, January to March, 3,000.00, so 9,000.00.
 #[test]
 fn register_as_of_a_day_before_a_same_month_disposal_is_prorated() {

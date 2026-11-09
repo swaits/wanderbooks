@@ -106,6 +106,16 @@ pub fn fx_booked<T: Amount>(foreign: T, rate: T, step: T, mode: Rounding) -> Opt
 /// computation's: `round_places` keeps an amount already at or under
 /// the minor places unchanged, and otherwise carries exactly the minor
 /// places (a booked 1.50 prints "1.50", never "1.5000").
+///
+/// SOURCE: BS-ledger-1 (law 41: a foreign amount booked at the
+/// transaction-date rate is the exact product rounded once to the base
+/// currency's smallest unit).
+///
+/// INVARIANTS:
+///   1. It is `fx_booked` at the currency's minor unit, and keeps that
+///      function's scale.
+///   2. A currency with no minor unit books the exact product.
+///   3. None exactly when `fx_booked` refuses, or on overflow.
 pub fn fx_booked_minor(
     foreign: Decimal,
     rate: Decimal,

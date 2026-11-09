@@ -284,6 +284,15 @@ pub enum LineError<T> {
 }
 
 /// The other side.
+///
+/// ```text
+/// GOAL: flipping a side names the opposite side, and nothing else.
+/// SOURCE: BS-ledger-5 (a reversal flips every side; the two together net
+///         every account to zero).
+/// INVARIANTS:
+///   1. There are two sides, so flipping twice is the identity.
+///   2. Flipping changes the side: no side is its own opposite.
+/// ```
 pub fn flip(side: Side) -> Side {
     match side {
         Side::Debit => Side::Credit,
@@ -292,6 +301,17 @@ pub fn flip(side: Side) -> Side {
 }
 
 /// A line's signed amount: positive for a debit, negative for a credit.
+///
+/// ```text
+/// GOAL: a line's amount is signed by its side, so a balance can be read
+///       on its account's normal side.
+/// SOURCE: BS-ledger-3 (a line on the normal side raises its account's
+///         balance by the amount; the other side lowers it).
+/// INVARIANTS:
+///   1. A debit signs its amount positive, a credit negative.
+///   2. Flipping the side negates the signed amount.
+///   3. None when the credit cannot be negated.
+/// ```
 pub fn signed<T: Amount>(side: Side, amount: T) -> Option<T> {
     match side {
         Side::Debit => Some(amount),
@@ -300,6 +320,16 @@ pub fn signed<T: Amount>(side: Side, amount: T) -> Option<T> {
 }
 
 /// Total debits and total credits of some lines.
+///
+/// ```text
+/// GOAL: the two columns of an entry are exact sums of their lines.
+/// SOURCE: BS-entry-3 (sums of in-range amounts are exact and never
+///         overflow).
+/// INVARIANTS:
+///   1. Some((debits, credits)): each is the exact sum of its side's
+///      amounts, and debits − credits is the net.
+///   2. None the moment a running sum is not representable.
+/// ```
 pub fn totals<T: Amount>(lines: impl IntoIterator<Item = (Side, T)>) -> Option<(T, T)> {
     let mut debits = T::ZERO;
     let mut credits = T::ZERO;
@@ -313,6 +343,16 @@ pub fn totals<T: Amount>(lines: impl IntoIterator<Item = (Side, T)>) -> Option<(
 }
 
 /// The net of some lines: debits minus credits.
+///
+/// ```text
+/// GOAL: an entry has one net movement, the exact debits less the credits.
+/// SOURCE: BS-entry-3 (exact sums), BS-entry-1 (an accepted entry nets to
+///         zero).
+/// INVARIANTS:
+///   1. Some(n) gives n = debits − credits exactly.
+///   2. An accepted entry's net is zero.
+///   3. None the moment a running sum is not representable.
+/// ```
 pub fn net<T: Amount>(lines: impl IntoIterator<Item = (Side, T)>) -> Option<T> {
     let mut total = T::ZERO;
     for (side, amount) in lines {
@@ -467,6 +507,18 @@ pub fn deductible_amount<T: Amount>(shares: &[(T, T)]) -> Option<T> {
 /// Check an entry's lines: two or more, every amount positive and within
 /// line range, debits equal to credits. Accounts and currencies are the
 /// caller's to check; this is the arithmetic.
+///
+/// ```text
+/// GOAL: accept exactly the entries double entry accepts, and refuse the
+///       rest with the reason.
+/// SOURCE: BS-entry-1 (two or more lines, debits equal credits),
+///         BS-entry-2 (every amount positive).
+/// INVARIANTS:
+///   1. Ok exactly when there are two or more lines, every amount is
+///      positive and within line range, and debits equal credits.
+///   2. Unbalanced carries the exact debits and credits.
+///   3. An out-of-range amount is refused, never summed.
+/// ```
 pub fn check_lines<T: Amount>(lines: &[(Side, T)]) -> Result<(), LineError<T>> {
     if lines.len() < 2 {
         return Err(LineError::TooFewLines);
@@ -491,6 +543,13 @@ pub fn check_lines<T: Amount>(lines: &[(Side, T)]) -> Result<(), LineError<T>> {
 
 /// Net movement per account (debits minus credits), in order of first
 /// appearance.
+///
+/// SOURCE: BS-entry-1 (law 3: grouping lines by account loses and invents
+/// nothing; the movements sum to the net).
+///
+/// INVARIANTS:
+///   1. Each account appears once, with the net of its own lines.
+///   2. The movements sum to the entry's net (zero when accepted).
 pub fn movements<K: Copy + Eq, T: Amount>(
     lines: impl IntoIterator<Item = (K, Side, T)>,
 ) -> Option<Vec<(K, T)>> {
@@ -507,6 +566,16 @@ pub fn movements<K: Copy + Eq, T: Amount>(
 
 /// [`movements`] into a caller's buffer, without allocating: returns how
 /// many accounts it wrote, or `None` on overflow or if `out` is too small.
+///
+/// ```text
+/// GOAL: group an entry's lines by account without allocating, so a model
+///       checker can prove the grouping.
+/// SOURCE: BS-entry-1 (law 3: the movements sum to the net).
+/// INVARIANTS:
+///   1. Returns the number of accounts written.
+///   2. Each account appears once, with the net of its own lines.
+///   3. None on overflow, or when `out` cannot hold every account.
+/// ```
 pub fn movements_into<K: Copy + Eq, T: Amount>(
     lines: &[(K, Side, T)],
     out: &mut [(K, T)],
@@ -527,18 +596,43 @@ pub fn movements_into<K: Copy + Eq, T: Amount>(
 
 /// The lines of a reversing entry: every side flipped, accounts and
 /// amounts unchanged.
+///
+/// SOURCE: BS-ledger-5 (a reversal flips every side, so it is accepted
+/// exactly when the original is and the two net every account to zero).
+///
+/// INVARIANTS:
+///   1. Every side flipped; account and amount unchanged.
+///   2. Reversing twice gives the original back.
 pub fn reversal<K: Copy, T: Amount>(lines: &[(K, Side, T)]) -> Vec<(K, Side, T)> {
     lines.iter().map(|&line| reverse_line(line)).collect()
 }
 
 /// One line of a reversing entry: the side flipped, account and amount
 /// unchanged.
+///
+/// SOURCE: BS-ledger-5 (a line's reversal; the two together net the
+/// account to zero).
+///
+/// INVARIANTS:
+///   1. The side is flipped; account and amount are unchanged.
+///   2. Reversing twice gives the original line back.
 pub fn reverse_line<K, T: Amount>((account, side, amount): (K, Side, T)) -> (K, Side, T) {
     (account, flip(side), amount)
 }
 
 /// An account's balance read on its normal side: positive is a normal
 /// balance, negative a contra balance.
+///
+/// ```text
+/// GOAL: an account's movement becomes its balance on the side it normally
+///       carries, which is what makes the accounting equation hold.
+/// SOURCE: BS-statement-2 (assets equal liabilities plus equity plus
+///         revenue less expenses, always).
+/// INVARIANTS:
+///   1. Assets and expenses move by their movement; liabilities, equity
+///      and revenue by its negation.
+///   2. None when the negation is not representable.
+/// ```
 pub fn normal_balance<T: Amount>(account_type: AccountType, movement: T) -> Option<T> {
     match account_type.normal_side() {
         Side::Debit => Some(movement),
@@ -548,6 +642,17 @@ pub fn normal_balance<T: Amount>(account_type: AccountType, movement: T) -> Opti
 
 /// A movement in trial-balance columns: `(debit, credit)`, one of them
 /// zero, both non-negative.
+///
+/// ```text
+/// GOAL: place each account's movement in exactly one trial-balance
+///       column, so the columns balance exactly when the books do.
+/// SOURCE: BS-statement-1 (the trial balance balances, and only if the
+///         books net to zero).
+/// INVARIANTS:
+///   1. One column is zero and both are non-negative.
+///   2. debit − credit is the movement, never a negative zero.
+///   3. The columns differ by the net of all movements.
+/// ```
 pub fn columns<T: Amount>(movement: T) -> Option<(T, T)> {
     if movement > T::ZERO {
         Some((movement, T::ZERO))
@@ -561,6 +666,17 @@ pub fn columns<T: Amount>(movement: T) -> Option<(T, T)> {
 
 /// The line that zeroes an account with this movement: the opposite side,
 /// for the same amount. `None` for a zero movement (nothing to close).
+///
+/// ```text
+/// GOAL: closing an account takes the opposite side for its balance, so the
+///       account ends at zero.
+/// SOURCE: BS-period-1 (a closing entry zeroes every revenue and expense
+///         account it closes).
+/// INVARIANTS:
+///   1. The line is the opposite side for the same amount, always positive.
+///   2. Movement plus the line's signed amount is zero.
+///   3. None exactly for a zero movement.
+/// ```
 pub fn closing_line<T: Amount>(movement: T) -> Option<(Side, T)> {
     if movement > T::ZERO {
         Some((Side::Credit, movement))
@@ -574,6 +690,15 @@ pub fn closing_line<T: Amount>(movement: T) -> Option<(Side, T)> {
 /// The line that credits `credit` to an account (a negative credit is a
 /// debit). `None` for zero. This is [`closing_line`]: crediting `c` and
 /// zeroing a movement of `c` are the same line.
+///
+/// ```text
+/// GOAL: credit exactly what the close says, never more or less.
+/// SOURCE: BS-period-1 (a close credits equity with exactly the period's
+///         net income).
+/// INVARIANTS:
+///   1. The line's signed amount is −credit (a negative credit debits).
+///   2. None exactly for zero.
+/// ```
 pub fn credit_line<T: Amount>(credit: T) -> Option<(Side, T)> {
     closing_line(credit)
 }
@@ -673,6 +798,17 @@ pub fn payment_bucket(role: PayRole, tag: Tag) -> Option<Bucket> {
 
 /// What an entry paid, per bucket: credits minus debits of the lines in
 /// each (a line in no bucket is not a payment line). `None` on overflow.
+///
+/// ```text
+/// GOAL: split a payment into its buckets, never losing or counting a line
+///       twice.
+/// SOURCE: BS-1099-1 (a payment to a vendor is reported: its buckets are
+///         the 1099, the card/network payment, and the unknown).
+/// INVARIANTS:
+///   1. Each bucket is the exact credits minus debits of its own lines.
+///   2. The buckets together are the whole payment.
+///   3. None on overflow.
+/// ```
 pub fn split_payment<T: Amount>(lines: &[(Option<Bucket>, Side, T)]) -> Option<[T; 3]> {
     let mut out = [T::ZERO; 3];
     for &(bucket, side, amount) in lines {
@@ -737,6 +873,16 @@ pub fn net_buckets<T: Amount>(b: [T; 3]) -> Option<[T; 3]> {
 /// Make rounded parts sum to the whole: the last part becomes `whole`
 /// minus the others, absorbing every unit of rounding. Returns `None` on
 /// overflow, leaving `parts` unchanged.
+///
+/// ```text
+/// GOAL: an allocation's parts sum to the whole exactly, to the last unit.
+/// SOURCE: BS-partner-1 (an allocation's parts sum to the whole exactly;
+///         the largest remainder decides which part takes what).
+/// INVARIANTS:
+///   1. On success the parts sum to `whole`.
+///   2. Only the last part changes.
+///   3. None on overflow, leaving the parts unchanged.
+/// ```
 pub fn plug_last<T: Amount>(whole: T, parts: &mut [T]) -> Option<()> {
     let Some((last, rest)) = parts.split_last_mut() else {
         return Some(());
@@ -919,6 +1065,17 @@ pub struct EntryFlows<T> {
 /// a section moving against the cash takes any, and never more than its
 /// own movement. Cash in (`remaining > 0`) settles credits (`movement <
 /// 0`); cash out settles debits.
+///
+/// ```text
+/// GOAL: a section takes only the cash that moved against it, never more
+///       than it moved and never in the other direction.
+/// SOURCE: BS-statement-3 (the cash-flow sections sum to the change in
+///         cash; only the cash portion of a section counts).
+/// INVARIANTS:
+///   1. Odd: take(−r, −m) = −take(r, m).
+///   2. Its sign is the cash's and the movement's opposite, or zero.
+///   3. Never more than the cash left or the movement.
+/// ```
 pub fn take<T: Amount>(remaining: T, movement: T) -> Option<T> {
     let against = movement.checked_neg()?;
     Some(if remaining > T::ZERO && movement < T::ZERO {
@@ -972,6 +1129,18 @@ pub fn apply_cash<T: Amount>(cash: T, movements: &[T], applied: &mut [T]) -> Opt
 /// the lines don't net to zero (never for a posted entry) or on overflow.
 /// It is [`entry_movements`] then [`flows_of`], so each is proved on its
 /// own (docs/verification.md, law 10).
+///
+/// ```text
+/// GOAL: an entry's cash flows foot: the sections' cash sums to the entry's
+///       cash, and what no cash settled sums to zero.
+/// SOURCE: BS-statement-3 (the cash-flow sections sum to the change in
+///         cash, and net income reconciles to operating cash).
+/// INVARIANTS:
+///   1. flows[0] + flows[1] + flows[2] = cash.
+///   2. noncash[0] + noncash[1] + noncash[2] = 0.
+///   3. flows[k] + noncash[k] is section k's movement.
+///   4. None when the lines do not net to zero, or on overflow.
+/// ```
 pub fn entry_flows<T: Amount>(lines: &[(Flow, Side, T)]) -> Option<EntryFlows<T>> {
     let (cash, moved) = entry_movements(lines)?;
     flows_of(cash, moved)
@@ -980,6 +1149,14 @@ pub fn entry_flows<T: Amount>(lines: &[(Flow, Side, T)]) -> Option<EntryFlows<T>
 /// An entry's net movement on its cash lines and on each section's,
 /// `(cash, [operating, investing, financing])`, debit-positive. `None`
 /// on overflow.
+///
+/// SOURCE: BS-statement-3 (law 10: a reversal's flows are its original's,
+/// negated, part by part).
+///
+/// INVARIANTS:
+///   1. `cash` is the net of the cash lines, each section's the net of its
+///      own, debit-positive.
+///   2. A reversal negates each figure.
 pub fn entry_movements<T: Amount>(lines: &[(Flow, Side, T)]) -> Option<(T, [T; 3])> {
     let mut cash = T::ZERO;
     let mut moved = [T::ZERO; 3];
@@ -999,6 +1176,16 @@ pub fn entry_movements<T: Amount>(lines: &[(Flow, Side, T)]) -> Option<(T, [T; 3
 /// The cash flows of an entry whose cash lines moved `cash` and whose
 /// sections moved `moved` ([`entry_flows`]). `None` when they don't net
 /// to zero, or on overflow.
+///
+/// ```text
+/// GOAL: split a balanced entry's cash among its sections, and say what no
+///       cash settled, so a reversal mirrors it.
+/// SOURCE: BS-statement-3 (the sections' cash sums to the change in cash;
+///         a reversal's flows are the original's negated).
+/// INVARIANTS:
+///   1. Odd: negated cash and movements give the negated flows and noncash.
+///   2. None unless the movements net to zero, or on overflow.
+/// ```
 pub fn flows_of<T: Amount>(cash: T, moved: [T; 3]) -> Option<EntryFlows<T>> {
     // Balanced lines only: every part below rests on it.
     let mut total = cash;
@@ -1049,6 +1236,12 @@ pub enum OnBehalf {
 
 impl OnBehalf {
     /// The other way: what an entry's reversal does.
+    ///
+    /// SOURCE: BS-statement-3 rule 11 (what a member or lender paid or
+    /// received for the company is mirrored by its reversal).
+    ///
+    /// INVARIANTS:
+    ///   1. Paid and Received swap; mirroring twice is the identity.
     pub fn mirror(self) -> Self {
         match self {
             OnBehalf::Paid => OnBehalf::Received,
@@ -1117,6 +1310,17 @@ pub fn constructive<T: Amount>(
 /// rule 11). Cash in settles credits and cash out settles debits; what's
 /// left of the smaller side was exchanged:
 /// `max(0, min(debits - outflow, credits - inflow))`.
+///
+/// ```text
+/// GOAL: the part of an entry exchanged with no cash is the smaller side
+///       left once the cash is applied, never negative.
+/// SOURCE: BS-statement-3 (the sections sum to the change in cash; a
+///         non-cash exchange is investing and financing, not a flow).
+/// INVARIANTS:
+///   1. The result is max(0, min(debits − outflow, credits − inflow)).
+///   2. It is never more than either side.
+///   3. None on overflow.
+/// ```
 pub fn exchanged<T: Amount>(debits: T, credits: T, inflow: T, outflow: T) -> Option<T> {
     let d = debits.checked_sub(outflow)?;
     let c = credits.checked_sub(inflow)?;
@@ -1141,6 +1345,13 @@ pub enum Direction {
 
 impl Direction {
     /// The other way: paid and received swap; neither stays neither.
+    ///
+    /// SOURCE: BS-partner-3 (a party's part carries the whole's sign; a
+    /// reversal swaps paid and received).
+    ///
+    /// INVARIANTS:
+    ///   1. Paid and Received swap; Neither stays Neither.
+    ///   2. Flipping twice is the identity.
     pub fn flip(self) -> Self {
         match self {
             Direction::Paid => Direction::Received,
@@ -1325,6 +1536,16 @@ pub fn party_target<T: Amount>(
 /// correction is the opposite entry): every amount negated (never to a
 /// negative zero), paid and received swapped. An involution. `None` past
 /// the type's range.
+///
+/// SOURCE: BS-partner-3 (a party's part carries the whole's sign),
+/// BS-ledger-5 (a reversal is the exact opposite, and reversing twice
+/// gives the original back).
+///
+/// INVARIANTS:
+///   1. Every amount is negated (never a negative zero), the direction
+///      flipped.
+///   2. Reversing twice gives the original back.
+///   3. None past the type's range.
 pub fn reverse_target<T: Amount>(t: PartyTarget<T>) -> Option<PartyTarget<T>> {
     let neg = |a: T| {
         if a == T::ZERO {
@@ -1461,8 +1682,17 @@ impl MonthPart {
 }
 
 /// A part's weight in `MONTH_L`ths of a month: `days × (MONTH_L /
-/// month_days)`, exactly. `None` for a part no month has. SOURCE:
-/// BS-asset-1, BS-prepaid-1 (proration by days; laws 26-28).
+/// month_days)`, exactly. `None` for a part no month has.
+///
+/// ```text
+/// GOAL: weigh a month part exactly, so proration by days needs no
+///       fractions.
+/// SOURCE: BS-asset-1, BS-prepaid-1 (proration by days; the weight is the
+///         lemma laws 26-28 are computed from).
+/// INVARIANTS:
+///   1. A valid part weighs days x MONTH_L / month_days, exactly.
+///   2. None for a part no calendar month has.
+/// ```
 pub fn part_weight<T: Units>(p: MonthPart) -> Option<T> {
     if !p.is_valid() {
         return None;
@@ -1649,10 +1879,10 @@ pub fn prorate_by_days<T: Units>(
 /// ```text
 /// GOAL: a skipped month is caught up in the month the run is made, and a
 ///       run never overtakes the schedule at a month end already posted.
-/// SOURCE: plan/served.md P3 "Settled in design" (2026-10-20): a month of
+/// SOURCE: BS-asset-1 (a catch-up run never overtakes the schedule);
+///         plan/served.md P3 "Settled in design" (2026-10-20): a month of
 ///         depreciation skipped is caught up in the month the run is made
-///         (an immaterial miss; a material one is restated, ASC 250);
-///         BS-asset-1.
+///         (an immaterial miss; a material one is restated, ASC 250).
 /// INVARIANTS:
 ///   1. The result is >= 0.
 ///   2. Whenever every posted[i] <= scheduled[i], posted[i] + result <=
@@ -1683,6 +1913,15 @@ pub fn catch_up<T: Amount>(scheduled: &[T], posted: &[T]) -> Option<T> {
 /// end, O(n), so a viewer can say of every month of a long life whether
 /// anything is due for it. `None` when the slices differ in length, or on
 /// overflow.
+///
+/// ```text
+/// GOAL: say what every month end's run would catch up, in one pass.
+/// SOURCE: BS-asset-1 (law 29: a catch-up run posts everything due through
+///         its month, never past the schedule).
+/// INVARIANTS:
+///   1. out[i] is the catch-up of the suffix from i, at least zero.
+///   2. None when the slices differ in length, or on overflow.
+/// ```
 pub fn catch_ups<T: Amount>(scheduled: &[T], posted: &[T], out: &mut [T]) -> Option<()> {
     if scheduled.len() != posted.len() || out.len() != scheduled.len() {
         return None;

@@ -22,6 +22,18 @@ fn aging_total_is_sum() {
         assert_eq!(i128::from(t), spec);
         kani::cover!(t != 0, "a nonzero total exists");
     }
+    // `None` only on overflow: whenever every running prefix fits in
+    // `i64` (not only inside the line-range box), the total exists.
+    let mut run: i128 = 0;
+    let mut fits = true;
+    for &v in &b {
+        run += i128::from(v);
+        fits &= i64::try_from(run).is_ok();
+    }
+    if fits {
+        assert!(got.is_some(), "every prefix fits, so the total exists");
+        kani::cover!(run != 0, "a nonzero total from fitting prefixes");
+    }
     if b.iter().all(|v| v.in_line_range()) {
         assert!(got.is_some(), "in-range buckets always total");
         kani::cover!(
@@ -51,7 +63,14 @@ fn aging_total_is_sum() {
 fn control_difference_identity() {
     let (balance, docs, unattached): (i64, i64, i64) = (kani::any(), kani::any(), kani::any());
     let spec = i128::from(balance) - i128::from(docs) - i128::from(unattached);
-    if let Some(d) = kernel::control_difference(balance, docs, unattached) {
+    let got = kernel::control_difference(balance, docs, unattached);
+    // `None` only on overflow: whenever both steps fit in `i64`, it exists.
+    let first = i128::from(balance) - i128::from(docs);
+    if i64::try_from(first).is_ok() && i64::try_from(spec).is_ok() {
+        assert!(got.is_some(), "both steps fit, so the difference exists");
+        kani::cover!(spec != 0, "a nonzero difference from fitting steps");
+    }
+    if let Some(d) = got {
         assert_eq!(i128::from(d), spec);
         if d == 0 {
             assert_eq!(
@@ -89,6 +108,14 @@ fn reconciliation_total_identity() {
     if let Some(t) = got {
         assert_eq!(i128::from(t), spec);
         kani::cover!(t != 0, "a nonzero total");
+    }
+    // `None` only on overflow: whenever every running prefix fits in
+    // `i64`, the total exists.
+    let p1 = i128::from(f[0]) + i128::from(f[1]);
+    let p2 = p1 + i128::from(f[2]);
+    if [p1, p2, spec].iter().all(|&p| i64::try_from(p).is_ok()) {
+        assert!(got.is_some(), "every prefix fits, so the total exists");
+        kani::cover!(spec != 0, "a nonzero total from fitting prefixes");
     }
     if f.iter().all(|v| v.in_line_range()) {
         assert!(got.is_some());

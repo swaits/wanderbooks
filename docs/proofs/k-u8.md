@@ -49,15 +49,24 @@ round.
 On `i64`, fixed arrays or plain bindings (no `Vec`, no `copy_from_slice`),
 each with `kani::cover!`. No bound is fixed beyond the arity: each
 harness quantifies over **arbitrary `i64`s** (the edge included) and
-checks `Some(x)` against an exact `i128` specification, and (for
-`aging_total_is_sum` and `reconciliation_total_identity`) that figures
-within a journal line's range (2^40) always give `Some`.
+checks `Some(x)` against an exact `i128` specification, and that `None`
+means overflow and only overflow: every harness computes the `i128`
+running prefixes and asserts `Some` whenever each prefix fits in `i64`
+(the whole `i64` range, not only the journal-line box of 2^40, which is
+also kept as a cover).
+
+Finding, from tightening them (2026-11-09): the first run of the
+tightened `control_difference_identity` failed. `Amount::checked_sub`'s
+default negates `rhs` and adds, so `i64` (and `i32`) refused `x - MIN`
+even where the difference fits. A model-type gap, not a `Decimal` one
+(`Decimal` negation is total), but exactly what `None only on overflow`
+forbids; `i32` and `i64` now override `checked_sub` with the native one.
 
 | Harness | Law | Verification |
 |---|---|---|
-| `aging_total_is_sum` | 45 | five arbitrary `i64` buckets: `Some(t)` is the true sum; five in-range buckets always total; mixed signs reached (3 covers). 10.4 s verification, 25.6 s wall |
-| `control_difference_identity` | 45 | three arbitrary `i64`s: `Some(d)` is `balance − documents − unattached`; `d = 0` exactly when `balance = documents + unattached`; agreeing in-range books differ by `Some(0)` (3 covers). 3.2 s verification, 30.9 s wall |
-| `reconciliation_total_identity` | 45 | four arbitrary `i64`s: `Some(t)` is `beginning + gain + without − distributed`; in-range figures always total (1 cover; one `unreachable` check, which is the proof's `expect`, reported unreachable as it should be). 3.6 s verification, 39.6 s wall |
+| `aging_total_is_sum` | 46 | five arbitrary `i64` buckets: `Some(t)` is the true sum; five in-range buckets always total; mixed signs reached (4 covers). 20.4 s verification, 31.2 s wall |
+| `control_difference_identity` | 46 | three arbitrary `i64`s: `Some(d)` is `balance − documents − unattached`; `d = 0` exactly when `balance = documents + unattached`; agreeing in-range books differ by `Some(0)` (4 covers). 0.8 s verification, 10.3 s wall |
+| `reconciliation_total_identity` | 46 | four arbitrary `i64`s: `Some(t)` is `beginning + gain + without − distributed`; in-range figures always total (2 covers; one `unreachable check, which is the proof's `expect`, reported unreachable as it should be). 1.7 s verification, 11.7 s wall |
 
 Times: `cargo kani -p ledger-core --exact --harness proofs::control::<name>`,
 the verifier's own time and the wall time including Kani's build, the
@@ -69,7 +78,12 @@ differ at the ending by `reconciliation_total`. As a harness over nine
 terms it did not finish in 500 s, and over seven (the common cash, income
 and other terms cancelled) not in 110 s; the proof is the equality of two
 differently associated 64-bit sums, which bit-blasting is poor at. It was
-dropped, not weakened. Lean's `Control.reconciliation_identity` proves it
+dropped, not weakened. After review, both smaller forms were tried:
+(a) the nine terms on `i32` (line range 2^20): no verdict in 400 s;
+(b) the seven terms (cash, income and other fixed at `0`) on `i32`: no
+verdict in 300 s; (b) alone on `i64` was the 110 s attempt above. The
+solver does not close two differently associated sums at either width,
+so no harness. Lean's `Control.reconciliation_identity` proves it
 at any size, and `reconciliation_worksheet_identity` in the bridge checks
 it on both `i64` and `Decimal`.
 
@@ -78,9 +92,9 @@ traceability gate, `crates/ledger-core/tests/bookspec/traceability.rs`):
 
 | Harness | Law |
 |---|---|
-| `aging_total_is_sum` | 45 |
-| `control_difference_identity` | 45 |
-| `reconciliation_total_identity` | 45 |
+| `aging_total_is_sum` | 46 |
+| `control_difference_identity` | 46 |
+| `reconciliation_total_identity` | 46 |
 
 ## Bridge (`tests/kernel_bridge/control.rs`)
 
@@ -119,7 +133,7 @@ flip when `impl Amount for Decimal` is fixed. It is reachable only near
 no ordinary path sees it, but it means "exact or `None`" is not yet true
 of `Decimal` at its edge (K-U10's, with K-U4's finding).
 
-## Lean (bookspec `lean/Bookspec/Control.lean`, law 45)
+## Lean (bookspec `lean/Bookspec/Control.lean`, law 46)
 
 - `aging_partitions`: any documents placed in one of five buckets have
   five bucket sums that add (`agingTotal`) to the sum of their balances,
@@ -155,12 +169,15 @@ and every golden passes untouched.
 
 Left, with why:
 
-- `ledger-package::aging::aging_report`: the column totals use raw
-  `+=` and `current + d30 + d60 + d90 + d90p`, which **panic** at the
-  `Decimal` edge (an aging of documents restored "of any size"). The grand
-  total is `aging_total` of the column sums; routing it would change a
-  panic into a refusal, which is a behaviour change, and the `+=`
-  accumulations need `kernel::total` first. A K-U10 case.
+- `ledger-package::aging` (the CSV's total and the statement's column
+  totals): done after review. The raw `+=` and `current + d30 + ...` that
+  panicked at the `Decimal` edge are now `kernel::total_of` and
+  `kernel::aging_total`, a past-exact aging returns
+  `TooLargeToCompute("the aging total")` as an `Err`, and the unit test
+  `an_aging_past_exact_arithmetic_is_refused` checks it. Only the error
+  path changed: no golden moves. The store cannot be driven there (a
+  journal line is capped at one quadrillion), so the test reaches the
+  seam through the pure helpers `column_totals` and `outstanding_total`.
 - `ledger-package::attention`'s overdue sum (`days_30 + 60 + 90 + 90+`)
   is already checked (`try_fold(checked_add)`) and is the overdue
   subtotal, not the aging total; left.

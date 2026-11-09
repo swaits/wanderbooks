@@ -180,6 +180,12 @@ impl Amount for i32 {
     fn checked_add(self, rhs: Self) -> Option<Self> {
         i32::checked_add(self, rhs)
     }
+    // The native subtraction: the default negates `rhs` first and so
+    // refused `x - MIN` even where the difference fits (found by the
+    // K-U8 harnesses: `None` must mean overflow, and only overflow).
+    fn checked_sub(self, rhs: Self) -> Option<Self> {
+        i32::checked_sub(self, rhs)
+    }
     fn checked_neg(self) -> Option<Self> {
         i32::checked_neg(self)
     }
@@ -233,6 +239,12 @@ impl Amount for i64 {
     const ZERO: Self = 0;
     fn checked_add(self, rhs: Self) -> Option<Self> {
         i64::checked_add(self, rhs)
+    }
+    // The native subtraction: the default negates `rhs` first and so
+    // refused `x - MIN` even where the difference fits (found by the
+    // K-U8 harnesses: `None` must mean overflow, and only overflow).
+    fn checked_sub(self, rhs: Self) -> Option<Self> {
+        i64::checked_sub(self, rhs)
     }
     fn checked_neg(self) -> Option<Self> {
         i64::checked_neg(self)

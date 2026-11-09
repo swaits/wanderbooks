@@ -86,13 +86,27 @@ fn dec_wide(cents: i128) -> Decimal {
 /// `None` there and `Decimal` is `Some` at a scale below 2; the
 /// assertion pins that shape, and the canary test below flips when the
 /// fix lands in `impl Amount for Decimal`.
-fn same_or_rounded(got: Option<Decimal>, want: Option<i128>) -> Result<(), TestCaseError> {
+fn same_or_rounded(
+    got: Option<Decimal>,
+    want: Option<i128>,
+    exact: i128,
+) -> Result<(), TestCaseError> {
     match (got, want) {
         (Some(g), Some(w)) => prop_assert_eq!((g.mantissa(), g.scale()), (w, 2)),
         (None, None) => {}
         // Rounded at a coarser scale at some step (a later step may bring
         // it back to scale 2): not exact, and no panic; the finding.
-        (Some(_), None) => {}
+        // The figure is still within one unit, at its own scale, of the
+        // exact value (`exact`, in cents).
+        (Some(g), None) => {
+            prop_assert!(g.scale() < 2, "{g} is not a coarser scale");
+            let unit = 10i128.pow(2 - g.scale());
+            let shown = g.mantissa() * unit;
+            prop_assert!(
+                (shown - exact).abs() <= unit,
+                "{g} is not within one unit of {exact} cents"
+            );
+        }
         (None, Some(w)) => prop_assert!(false, "refused an exact {w}"),
     }
     Ok(())
@@ -145,15 +159,15 @@ proptest! {
         let (a, b, c, d, e) = (f[0], f[1], f[2], f[3], f[4]);
         let got = kernel::aging_total(dec_wide(a), dec_wide(b), dec_wide(c), dec_wide(d), dec_wide(e));
         let want = ref_chain(&[(a, true), (b, true), (c, true), (d, true), (e, true)]);
-        same_or_rounded(got, want)?;
+        same_or_rounded(got, want, a + b + c + d + e)?;
 
         let got = kernel::control_difference(dec_wide(a), dec_wide(b), dec_wide(c));
         let want = ref_chain(&[(a, true), (b, false), (c, false)]);
-        same_or_rounded(got, want)?;
+        same_or_rounded(got, want, a - b - c)?;
 
         let got = kernel::reconciliation_total(dec_wide(a), dec_wide(b), dec_wide(c), dec_wide(d));
         let want = ref_chain(&[(a, true), (b, true), (c, true), (d, false)]);
-        same_or_rounded(got, want)?;
+        same_or_rounded(got, want, a + b + c - d)?;
     }
 }
 
@@ -166,10 +180,7 @@ fn control_identity_edges() {
     assert_eq!(kernel::aging_total(max, zero, zero, zero, zero), Some(max));
     assert_eq!(kernel::aging_total(min, zero, zero, zero, zero), Some(min));
     assert_eq!(kernel::aging_total(max, one, zero, zero, zero), None);
-    assert_eq!(
-        kernel::aging_total(zero, zero, zero, zero, max).map(|_| ()),
-        Some(())
-    );
+    assert_eq!(kernel::aging_total(zero, zero, zero, zero, max), Some(max));
     assert_eq!(kernel::aging_total(max, max, zero, zero, zero), None);
     assert_eq!(kernel::aging_total(min, min, zero, zero, zero), None);
     assert_eq!(kernel::aging_total(max, zero, zero, zero, min), Some(zero));
@@ -253,7 +264,7 @@ fn arb_decimal() -> impl Strategy<Value = Decimal> {
             Just((1i128 << 96) - 1),
             Just(-((1i128 << 96) - 1)),
         ],
-        0u32..=12,
+        0u32..=28,
     )
         .prop_map(|(m, s)| Decimal::from_i128_with_scale(m, s))
 }

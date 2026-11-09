@@ -4235,7 +4235,7 @@ the name-matched cash accounts in `HashMap` order (`ChartOfAccounts::all` is
 "order unspecified"), so `books.digest`'s `unreconciled_accounts` could list
 the same books' accounts in a different order from run to run; `card_accounts`
 beside it sorts by account id. The test that found it
-(`cash_accounts_come_in_chart_order`) was committed `#[ignore]`d with the
+(`cash_accounts_by_name_come_in_ascending_account_id`) was committed `#[ignore]`d with the
 finding in its reason; the fix sorts the list and is the commit after the
 tests, so it can be dropped without touching them.
 

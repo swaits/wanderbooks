@@ -5,21 +5,25 @@
 //! ```text
 //! GOAL: the monthly close's reconciliation step can't be forgotten, and
 //!       the digest and the viewer never disagree on what is due.
-//! SOURCE: docs/parties-and-attachments.md "Reconciliations" (Needs
-//!         attention: an account with activity not reconciled through last
-//!         month's end); CONVENTION (bank and card statements close
-//!         monthly); AGENTS.md's monthly close.
+//! SOURCE: WB-ledger-17; docs/parties-and-attachments.md "Reconciliations"
+//!         (Needs attention: an account with activity not reconciled
+//!         through last month's end); CONVENTION (bank and card statements
+//!         close monthly); AGENTS.md's monthly close.
 //! DEFINITIONS:
 //!   cash accounts: `[books] cash_accounts`, resolved; when none are set,
 //!     the asset accounts (not placeholders) whose names say they hold
-//!     cash ("cash", "bank", "checking", "savings", "money market").
+//!     cash ("cash", "bank", "checking", "savings", "money market"), in
+//!     ascending account id; the configured ones keep the order given.
 //!   card accounts: `ledger_core::parties::card_accounts`: the
 //!     liabilities of the business-card payment methods the books record,
 //!     else (none recorded) the liabilities whose names say "card" but
-//!     not "gift"; never a member's card or a platform's account.
+//!     not "gift"; never a member's card or a platform's account; in
+//!     ascending account id.
 //! INVARIANTS:
 //!   1. reconcilable_accounts: the cash accounts, then the card accounts,
-//!      then every other liability with a recorded statement, each once.
+//!      then every other liability with a recorded statement (in the
+//!      order the statements are given: the store's are by period end,
+//!      then file), each once.
 //!      A card is expected before its first statement, so its first
 //!      reconciliation is asked for; a liability named otherwise (an Amex)
 //!      joins once its first statement is recorded.
@@ -45,7 +49,8 @@ pub fn cash_accounts(ledger: &Ledger, configured: &[String]) -> Vec<AccountId> {
             .filter_map(|c| ledger.chart().find_by_code(c).map(|a| a.id))
             .collect();
     }
-    // In chart order, as `card_accounts` is: the chart iterates in no order.
+    // In ascending account id, as `card_accounts` sorts: the chart's own
+    // iteration order is unspecified (`ChartOfAccounts::all`).
     let mut found: Vec<AccountId> = ledger
         .chart()
         .all()

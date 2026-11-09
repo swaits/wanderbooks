@@ -539,3 +539,53 @@ journal feature `audits`.
 `workpaper_pdf_is_deterministic`; `ledger-cli` `tests/audit.rs`
 (`audit_is_deterministic`, `cpa_package_refuses_without_a_counted_audit_unless_a_reason_is_given`,
 `audits_wait_for_the_upgrade`).
+
+## Reconciliations: which accounts the monthly close reconciles, and when each is due
+
+**bookspec:** none
+
+**Claims:** yes (wholly a product rule: no bookspec rule states it)
+
+**Pick:** CONVENTION, `docs/parties-and-attachments.md` "Reconciliations" (Needs attention: an account with activity not reconciled through last month's end; bank and card statements close monthly). No authority states it, so it is the product's own.
+
+### Product rules
+
+**WB-ledger-17** The accounts the monthly close reconciles, and when each is due, are one rule (`ledger_store::reconcilable`), read by the digest's `unreconciled_accounts` and the viewer's Needs attention alike.
+
+```text
+GOAL: the monthly close's reconciliation step can't be forgotten, and
+      the digest and the viewer never disagree on what is due.
+SOURCE: CONVENTION (bank and card statements close monthly);
+        docs/parties-and-attachments.md "Reconciliations".
+INVARIANTS:
+  1. The accounts reconciled are the cash accounts, then the card
+     accounts, then every other liability with a recorded statement, each
+     once. The cash accounts are `books.cash_accounts` resolved by code, in
+     the order given (a code the chart lacks is dropped, and the names are
+     not then consulted); when none is set, the asset accounts that are
+     not placeholders and whose names say cash ("cash", "bank",
+     "checking", "savings", "money market"), in ascending account id. The
+     card accounts are `ledger_core::parties::card_accounts`, in ascending
+     account id. The liabilities with a statement follow in the order the
+     statements are given (the store's: period end, then file). A card is
+     expected before its first statement; a liability not named a card
+     joins once its first statement is recorded; an asset with a statement
+     and no cash name never does.
+  2. An account is due through the last day of the month before today's
+     when it has a posted line dated on or before that day and no
+     reconciliation not voided reaches it (is dated on or after that
+     day); otherwise it is not due. A draft line, activity only this
+     month, and an account with no lines are not due; a voided
+     reconciliation reaches nothing.
+SCENARIOS:
+  1. Cash named "Checking" and a card named "Visa Card", an "Amex" with
+     no statement: the checking and the card are reconciled, the Amex is
+     not; once the Amex has a statement it joins, after the card.
+  2. Today is March 10th, the checking has January activity and a
+     reconciliation through January 31st: it is due through February
+     28th; one through February 28th clears it; voiding that one makes it
+     due again.
+```
+
+**Enforced:** `reconcilable_accounts`, `cash_accounts`, `card_accounts`, `last_month_end`, `reconciled_through`, `reconciliation_due` (`ledger_store::reconcilable`).
+**Checked:** `ledger-store` `tests/reconcilable.rs` (`cash_accounts_are_the_assets_whose_names_say_cash`, `cash_accounts_by_name_come_in_ascending_account_id`, `configured_cash_accounts_win_by_code`, `card_accounts_follow_the_recorded_method_else_the_name`, `reconcilable_accounts_are_cash_then_cards_then_liabilities_with_statements`, `last_month_end_is_the_last_day_of_the_month_before`, `reconciled_through_is_the_newest_standing_reconciliation`, `an_account_is_due_until_a_reconciliation_reaches_last_months_end`, `only_posted_activity_through_last_months_end_makes_an_account_due`).

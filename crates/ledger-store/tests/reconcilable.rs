@@ -6,12 +6,10 @@
 //! ```text
 //! GOAL: the monthly close's reconciliation step can't be forgotten, and
 //!       the digest and the viewer never disagree on what is due.
-//! SOURCE: docs/parties-and-attachments.md "Reconciliations" (Needs
-//!         attention: an account with activity not reconciled through last
-//!         month's end); CONVENTION (bank and card statements close
-//!         monthly), both as the module's own spec block states them.
-//!         No BS- or WB- id covers the module yet; the report of this
-//!         unit says so.
+//! SOURCE: WB-ledger-17; docs/parties-and-attachments.md "Reconciliations"
+//!         (Needs attention: an account with activity not reconciled
+//!         through last month's end); CONVENTION (bank and card statements
+//!         close monthly).
 //! ```
 //!
 //! Every test builds real books in a `Store`, records real statements and
@@ -137,8 +135,8 @@ fn names(s: &Store, ids: &[AccountId]) -> Vec<String> {
 
 // ---------------------------------------------------------------- the cash accounts
 
-/// DEFINITIONS, cash accounts: with none configured, the asset accounts
-/// (not placeholders) whose names say they hold cash, in chart order. A
+/// WB-ledger-17 invariant 1, cash accounts: with none configured, the
+/// asset accounts (not placeholders) whose names say they hold cash. A
 /// name is matched in any case; an expense called "Bank Fees", a
 /// placeholder group and an asset that holds no cash are not cash.
 #[test]
@@ -174,7 +172,7 @@ fn cash_accounts_are_the_assets_whose_names_say_cash() {
 
     assert_eq!(CASH_WORDS.len(), 5);
     let mut found = cash_accounts(s.ledger(), &[]);
-    // Which accounts, not in which order: the order is the finding below.
+    // Which accounts, not in which order: the order is the next test's.
     found.sort_unstable();
     assert_eq!(found, vec![checking, savings, petty, mm]);
     assert_eq!(
@@ -188,40 +186,38 @@ fn cash_accounts_are_the_assets_whose_names_say_cash() {
     );
 }
 
-/// FINDING (V-D2; fixed by the commit that removed this test's ignore): the cash accounts found by name came out in the order
-/// the chart's `HashMap` yields them (`ChartOfAccounts::all` says "order
-/// unspecified"), not in chart order as `card_accounts` does (ascending
-/// account id). `books.digest`'s `unreconciled_accounts` lists accounts in
-/// this order, so with two or more cash accounts the digest's list can
-/// differ between runs of the same books. The module's INVARIANT 1 names
-/// the order of the three groups, not within one, so this is a gap in the
-/// rule rather than a broken one; the expectation here is the order
-/// `card_accounts` already keeps.
+/// WB-ledger-17 invariant 1, the order within a group. FINDING (V-D2,
+/// fixed in `cash_accounts`): the cash accounts found by name came out in
+/// the order the chart's `HashMap` yields them (`ChartOfAccounts::all`
+/// says "order unspecified"), so `books.digest`'s `unreconciled_accounts`
+/// could list them differently on two runs of the same books. They now
+/// come in ascending account id, as `card_accounts` sorts. The order is the
+/// id's, not the chart code's: the codes below are deliberately out of
+/// creation order, so a sort by code would fail this test.
 #[test]
-fn cash_accounts_come_in_chart_order() {
+fn cash_accounts_by_name_come_in_ascending_account_id() {
     let dir = test_dir("cash-order");
     let mut s = Store::create(&dir, Currency::USD).unwrap();
     let mut expected = Vec::new();
-    for (i, name) in [
-        "Checking",
-        "Savings",
-        "Petty cash",
-        "Money market",
-        "Bank two",
-        "Cash three",
-    ]
-    .iter()
-    .enumerate()
-    {
-        expected.push(account(
-            &mut s,
-            &format!("10{i}0"),
-            name,
-            AccountType::Asset,
-            false,
-        ));
+    // (code, name) in creation order; the codes do not ascend with it.
+    for (code, name) in [
+        ("1400", "Checking"),
+        ("1100", "Savings"),
+        ("1300", "Petty cash"),
+        ("1000", "Money market"),
+        ("1200", "Bank two"),
+        ("1500", "Cash three"),
+    ] {
+        expected.push(account(&mut s, code, name, AccountType::Asset, false));
     }
-    // Six accounts in a HashMap come out in any of 720 orders; ascending is one.
+    let mut by_code = expected.clone();
+    by_code.sort_by_key(|&i| s.ledger().chart().get(i).unwrap().code.clone());
+    assert_ne!(
+        by_code, expected,
+        "the codes must tell id order from code order"
+    );
+    // Six accounts in a HashMap come out in any of 720 orders; ascending id
+    // is one of them, and the codes' order another.
     assert_eq!(cash_accounts(s.ledger(), &[]), expected);
 }
 

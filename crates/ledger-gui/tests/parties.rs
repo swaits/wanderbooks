@@ -282,7 +282,7 @@ fn fixture(tag: &str) -> Fixture {
     let e = pay(&mut s, d(2026, 1, 20), "Old Co", cash, 12_300);
     s.set_entry_party(e, Some(old)).unwrap();
     s.update_party(old, PartyField::Archived(true)).unwrap();
-    // What the members advanced is money (BS-partner-3 item 5): Due to
+    // What the members advanced is money (BS-partner-3 statement 7): Due to
     // Shareholders is a financing account; the cash account stays the
     // books' (the settings file names both).
     journal_settings(
@@ -356,7 +356,7 @@ fn each_partys_totals_are_the_books_numbers() {
     // (BS-1099-1); the card's charge is no payment out of cash.
     assert_eq!(line.paid, cents(150_000));
     assert_eq!(line.undetermined, cents(30_000));
-    // Party totals count all of it as paid to Sam (BS-partner-3 item 9): the
+    // Party totals count all of it as paid to Sam (BS-partner-3 statement 11): the
     // 1099's buckets, and the card's 200 (no business card is recorded,
     // so the worksheet lists it nowhere).
     assert_eq!(
@@ -1490,7 +1490,7 @@ fn the_party_page_shows_the_basis_and_in_kind() {
 }
 
 /// The viewer's what-for reads a reversal as parties::flow does, the
-/// opposite of its original (BS-partner-3 item 3; design §1.4): a member
+/// opposite of its original (BS-partner-3 statement 3; design §1.4): a member
 /// paying the card from their own funds (Dr card / Cr 2100), tagged with
 /// the issuer, then reversed, is nothing on the issuer's page, paid or
 /// what for. Its lines alone read as a second payment.

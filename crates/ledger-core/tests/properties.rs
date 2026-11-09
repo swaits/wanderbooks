@@ -680,7 +680,7 @@ proptest! {
         prop_assert_eq!(scheduled_book_value(a, on).unwrap(), want.book_value);
     }
 
-    /// BS-asset-1 rule 3 (defect 22), against arithmetic written here: through
+    /// BS-asset-1 statement 4 (defect 22), against arithmetic written here: through
     /// any day k of the life's final month (its d days), accumulated is C +
     /// (D − C) × k / d rounded half up to the cent, C the exact charge of
     /// the months before (D × each month's days held over its days, over
@@ -719,7 +719,7 @@ proptest! {
         }
     }
 
-    /// BS-asset-1 rule 4 (depreciation_schedule INVARIANT 6; P3 depreciation brief 2.3, R1, R8): through every
+    /// BS-asset-1 statement 6 (depreciation_schedule INVARIANT 6; P3 depreciation brief 2.3, R1, R8): through every
     /// month end of the life, the schedule is the pre-P3 running total
     /// (USD, a two-place currency), except where the exact cumulative is a
     /// half-cent tie, which the old 28-digit Decimal quotients could round
@@ -937,7 +937,7 @@ proptest! {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
 
-    /// BS-statement-5 item 3: for any tags and any period, the projects'
+    /// BS-statement-5 statement 2: for any tags and any period, the projects'
     /// figures plus the untagged lines' are the period's profit and loss
     /// (no line counted twice or lost), each through
     /// ledger_core::project_figures.
@@ -1002,7 +1002,7 @@ proptest! {
         prop_assert_eq!(exp_sum + untagged_exp, all.total_expenses);
     }
 
-    /// BS-statement-5 item 7: the snapshot's contribution is
+    /// WB-statement-7: the snapshot's contribution is
     /// project_to_date's net, revenue less direct costs, whatever the
     /// tags and sides (a refund debits revenue, a reimbursement credits an
     /// expense below zero): the accounts sum to the totals, each month's
@@ -1091,7 +1091,7 @@ proptest! {
         }
     }
 
-    /// BS-statement-5 item 3: project_entries codes its own signs, so the
+    /// BS-statement-5 statement 2: project_entries codes its own signs, so the
     /// posted entries' project amounts must sum to project_to_date's net
     /// (with no entry dated after the day), whatever the tags, the sides,
     /// a tagged balance-sheet line, or drafts beside them.

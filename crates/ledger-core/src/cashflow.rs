@@ -77,7 +77,7 @@ pub enum OperatingClass {
     /// (e) Interest paid.
     InterestPaid,
     /// (f) Income taxes paid. No tax category marks an entity-level income
-    /// tax yet, so nothing is filed here (BS-statement-3 rule 5).
+    /// tax yet, so nothing is filed here (BS-statement-3 statement 7).
     IncomeTaxesPaid,
     /// (g) Other operating cash payments.
     OtherPayments,
@@ -178,7 +178,7 @@ pub struct CashFlowLine {
     /// The cash, + in.
     pub amount: Decimal,
     /// Of `amount`, what a member or a lender paid or received for the
-    /// company with no cash account moving (BS-statement-3 rule 11, D-42):
+    /// company with no cash account moving (BS-statement-3 statement 16, D-42):
     /// a constructive receipt or payment. Zero for most lines.
     pub on_behalf: Decimal,
     /// Codes of this kind's accounts the entry moved, sorted.
@@ -295,7 +295,7 @@ pub struct OperatingReconciliation {
     pub net_cash_from_operating: Decimal,
 }
 
-/// The footing check (BS-statement-3 rule 9).
+/// The footing check (BS-statement-3 statement 14).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CashFlowFooting {
     /// Operating + investing + financing.
@@ -440,8 +440,8 @@ pub enum RoleList {
     Investing,
 }
 
-/// A contradiction among the cash flow account roles (BS-statement-3 rule
-/// 2): the statement refuses rather than guess.
+/// A contradiction among the cash flow account roles (BS-statement-3 statement
+/// 3): the statement refuses rather than guess.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RoleProblem {
     /// An account of the wrong type in a list.
@@ -547,14 +547,14 @@ impl RoleProblem {
 }
 
 /// Every contradiction among the cash flow account roles (BS-statement-3
-/// rule 2), in a fixed order. Codes the chart lacks are the caller's to
+/// statement 3), in a fixed order. Codes the chart lacks are the caller's to
 /// report. The one check behind both the statement's refusal and the
 /// settings' problems, so the two never drift apart.
 ///
 /// ```text
 /// GOAL: the statement's account roles partition the chart, so every
 ///       account is in exactly one section.
-/// SOURCE: BS-statement-3 rule 2 (ASC 230-10-45-10: every cash receipt and
+/// SOURCE: BS-statement-3 statement 3 (ASC 230-10-45-10: every cash receipt and
 ///         payment is investing, financing or operating).
 /// INVARIANTS:
 ///   1. Cash and investing accounts MUST be assets; financing accounts
@@ -639,7 +639,7 @@ pub fn role_problems(
     out
 }
 
-/// BS-statement-3 rule 9, on its own so the check is tested directly (it
+/// BS-statement-3 statement 14, on its own so the check is tested directly (it
 /// cannot fail on posted entries): the sections sum to the change in
 /// cash, or nothing is produced.
 pub fn foot(sections_sum: Decimal, net_change: Decimal) -> Result<CashFlowFooting, LedgerError> {
@@ -978,7 +978,7 @@ impl<'a> Roles<'a> {
 }
 
 /// The liabilities that hold distributions declared by `end` (
-/// BS-statement-3 rule 2), among the accounts `open` leaves to be placed: each
+/// BS-statement-3 statement 3), among the accounts `open` leaves to be placed: each
 /// credited, in the posted entries dated on or before `end` (closes and
 /// reversals aside), only by entries whose debits are all to equity (Dr
 /// Distributions / Cr Distributions Payable; a corporation's Dr Retained

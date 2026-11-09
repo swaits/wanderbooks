@@ -78,7 +78,7 @@ fn document_lines(
 /// A document's notes, each project once, in the order first named: its
 /// late-tag note ([`projects::late_tag_note`]) for a finished or abandoned
 /// project, and on an invoice ([`projects::on_spec_invoice_note`]) one for
-/// an on-spec project (BS-statement-5 items 4, 5 and 8).
+/// an on-spec project (BS-statement-5 statements 5, 6 and 7).
 fn document_notes(
     ledger: &ledger_core::Ledger,
     lines: &[DocumentLine],

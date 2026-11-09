@@ -2636,7 +2636,7 @@ fn every_figure_of(l: &ledger_core::Ledger) -> (usize, usize) {
         tally(reports::general_ledger(l, start, end).map(|_| ()));
         tally(reports::members_equity(l, start, end, &members).map(|_| ()));
         // The statement of cash flows foots on every book, or is refused
-        // for a reason: never an engine error (BS-statement-3 rule 9).
+        // for a reason: never an engine error (BS-statement-3 statement 14).
         let cf = reports::cash_flow(
             l,
             &reports::CashFlowParams {

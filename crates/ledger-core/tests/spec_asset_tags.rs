@@ -1088,8 +1088,8 @@ fn register_of_no_assets_is_empty() {
 /// 1,000.00 and June's 10/30: 5,333.33 scheduled. Before P3 the disposed
 /// schedule ended in a plug, so the register showed 12,000.00 and 0.00.
 /// The same in the life's final month: on 2026-12-15, 11,483.87. Book
-/// value is cost less what the books carry (defect 13, BS-asset-1 rule
-/// 8): the fixture's runs, January to March, 3,000.00, so 9,000.00.
+/// value is cost less what the books carry (defect 13, BS-asset-1 statement
+/// 28): the fixture's runs, January to March, 3,000.00, so 9,000.00.
 #[test]
 fn register_as_of_a_day_before_a_same_month_disposal_is_prorated() {
     let (mut l, _, laptop, _) = register_fixture();

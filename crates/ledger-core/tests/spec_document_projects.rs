@@ -1,12 +1,12 @@
-//! An invoice's or bill's lines name their projects (BS-statement-5 item
-//! 8): the posted entry's revenue or expense side is one line per project,
+//! An invoice's or bill's lines name their projects (BS-statement-5 statement
+//! 6): the posted entry's revenue or expense side is one line per project,
 //! the untagged lines' as one; the receivable or payable line, and the
 //! payments, never take one.
 //!
 //! ```text
 //! GOAL: a client project's invoiced revenue and a contractor's billed
 //!       cost count toward the project, every other figure as before.
-//! SOURCE: BS-statement-5 items 3 and 8 (job costing), BS-statement-3 (the
+//! SOURCE: BS-statement-5 statements 2 and 6 (job costing), BS-statement-3 (the
 //!         projects with the untagged lines partition the P&L), BS-1099-1 and
 //!         BS-partner-3 (1099 and party figures follow the money, not the tags).
 //! ```
@@ -170,7 +170,7 @@ fn a_bills_cost_is_one_line_per_project_and_the_payable_none() {
 }
 
 /// Reversing a tagged invoice's or bill's entry carries each line's
-/// project to the reversal (BS-statement-5 item 3: each line on its normal side), so
+/// project to the reversal (BS-statement-5 statement 2: each line on its normal side), so
 /// every project nets back to zero; a partial payment, cash against the
 /// receivable, moves no project figure.
 #[test]
@@ -295,7 +295,7 @@ fn a_line_naming_an_unknown_project_is_refused_whole() {
 }
 
 /// Finished and abandoned projects still take a document's lines (BS-statement-5
-/// item 5: a late cost, a final invoice).
+/// statement 7: a late cost, a final invoice).
 #[test]
 fn a_finished_project_still_takes_an_invoice() {
     let mut b = books();

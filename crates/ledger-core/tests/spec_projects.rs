@@ -534,7 +534,7 @@ fn a_reversal_nets_a_project_to_zero() {
     let entries = project_entries(&b.l, c);
     assert_eq!(entries, vec![(r, cents(180_000)), (e, cents(-180_000))]);
     // Nothing left on an account, but two lines tagged: it breaks even,
-    // it isn't untagged (BS-statement-5 item 7).
+    // it isn't untagged (WB-statement-7).
     assert!(t.expenses_by_account.is_empty());
     assert_eq!((t.revenue_lines, t.expenses_lines), (0, 2));
     assert!(t.any_tagged());
@@ -652,7 +652,7 @@ fn differs_from_names_projects() {
     assert_eq!(a.l.differs_from(&before), vec!["projects"]);
 }
 
-/// BS-statement-5 item 7: the margin is the contribution's share of
+/// WB-statement-7: the margin is the contribution's share of
 /// revenue, one place, half to even, and none without revenue.
 #[test]
 fn contribution_margin_is_one_place_and_none_without_revenue() {
@@ -671,7 +671,7 @@ fn contribution_margin_is_one_place_and_none_without_revenue() {
     assert_eq!(pct(Decimal::MAX, cents(1)), None, "never panics");
 }
 
-/// BS-statement-5 item 7: each month's net to date opens on the lines
+/// WB-statement-7: each month's net to date opens on the lines
 /// before the months (a deposit last year) and ends on the net to date;
 /// a reimbursement credited above its cost leaves the expense below zero.
 #[test]

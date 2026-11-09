@@ -585,7 +585,7 @@ fn project_to_date_counts_lines_before_the_period() {
     assert_eq!(zeta["to_date"]["net"], "3200.00");
 }
 
-/// The snapshot's figures (BS-statement-5 item 7), as the viewer shows
+/// The snapshot's figures (WB-statement-7), as the viewer shows
 /// them: net is the contribution before overhead, margin_pct its share
 /// of revenue, to_date.by_account the direct costs by category, and each
 /// month's net_to_date the running net, the last being to_date's.
@@ -1202,7 +1202,7 @@ fn l4(
     )
 }
 
-/// BS-statement-5 item 8: each invoice and bill line takes a project (by
+/// BS-statement-5 statement 6: each invoice and bill line takes a project (by
 /// name or id); the entry's revenue or expense side is one line per
 /// project, the untagged lines' as one, the receivable or payable line
 /// and the payments untagged; books.project, profit_and_loss_by_class,
@@ -1408,7 +1408,7 @@ fn a_document_for_a_finished_project_says_so() {
     );
 }
 
-/// BS-statement-5 items 4 and 8: an invoice line naming an on-spec project is taken
+/// BS-statement-5 statements 5 and 6: an invoice line naming an on-spec project is taken
 /// and its result asks whether there is now an agreement (a hoped-for
 /// payment is no receivable); a bill's cost for one is an expense like any
 /// other, so a bill gets no such note.

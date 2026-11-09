@@ -89,7 +89,7 @@ Cited (not quoted, but for the lines below): the Class list's keyword is CLASS; 
 
 > If the class is a subclass of another class, the name includes the name of the parent classes, beginning with the highest level class. If you are creating an import file, use a colon (:) to separate subclass names.
 
-So a class's NAME, like an account's, is one level per colon: the books, whose classes have no parents, write a colon in a class's name as '-', as in an account's (BS-format-2 rule 8). The page states no length limit and nothing about case.
+So a class's NAME, like an account's, is one level per colon: the books, whose classes have no parents, write a colon in a class's name as '-', as in an account's (BS-format-2 statement 29). The page states no length limit and nothing about case.
 
 ### IIF Example Files: list declarations
 SHA-256 of `IIF Import Kit/IIF Example Files/QB 2007 & Enterprise 7.0 and later/Import First - List Declarations (Not Version Specific).iif` (the same bytes in each version's folder): `13c730b23bcb8c142621b04206e3628241d83051442c9b14ea2416d21163439c`
@@ -180,7 +180,7 @@ Searched 2026-10-20. What Intuit says:
 
 Not Intuit, for the record: a third-party IIF vendor answering on Intuit's community (BigRedConsulting, 14 April 2020, <https://quickbooks.intuit.com/learn-support/en-us/other-questions/iif-import-error-3040/00/535675>) wrote that "a NAME is required for any AR row", about a bill, not a journal; QuickBooks Desktop sync tools quote the refusal "Transaction split lines to accounts receivable must include a customer on that split line" (Acctivate, <https://hub.acctivate.com/articles/troubleshoot/synchronization/transaction-split-lines-to-accounts-receivable-must-include-a-customer-on-that-split-line>).
 
-No Intuit source says what an IIF journal import does with an A/R or A/P line that has no NAME (refuses it, imports it, or asks). So the books write no NAME (writing names would need the customer and vendor lists declared too, with a name unique across them) and the package README names the entries with an A/R or A/P line, so the CPA can add the name in QuickBooks if it asks (BS-format-2 rule 7).
+No Intuit source says what an IIF journal import does with an A/R or A/P line that has no NAME (refuses it, imports it, or asks). So the books write no NAME (writing names would need the customer and vendor lists declared too, with a name unique across them) and the package README names the entries with an A/R or A/P line, so the CPA can add the name in QuickBooks if it asks (BS-format-2 statement 26).
 
 ## How long a class's name may be
 
@@ -203,7 +203,7 @@ Not Intuit, for the record: Conductor's QuickBooks Desktop API reference (a serv
 
 > Maximum length: 31 characters.
 
-So the books hold a class's NAME to 31 characters, as an account's own level (Intuit's own limit for a class, above), and keep no two alike ignoring case (Conductor: case-insensitive; BS-format-2 rule 8).
+So the books hold a class's NAME to 31 characters, as an account's own level (Intuit's own limit for a class, above), and keep no two alike ignoring case (Conductor: case-insensitive; BS-format-2 statements 29 and 30).
 
 ## What QuickBooks does with an over-long name (not Intuit)
 Source: Thomson Reuters, Accounting CS help, "Export payroll journal entries", <https://thomsonreuters.com/en-us/help/accounting-cs/integrate-data-with-other-applications/export-payroll-journal-entries>  

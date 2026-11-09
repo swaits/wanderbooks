@@ -75,9 +75,9 @@ each checked again against the same sources in the P3 review (numbers,
 pages and wording hold). Open: 105-10-05-1 to 05-3, read only in their
 2009 text (ASU 2009-01, and as Wiley GAAP 2020 quotes them); their
 current wording is unconfirmed. Also open (P3 surface review, 2026-10-21): ASC 230-10-45-15(f) (debt
-issue costs, cited by BS-statement-3 rule 11) is in neither list above; ASC
+issue costs, cited by BS-statement-3 statement 16) is in neither list above; ASC
 606-10-25-31, 25-32 and 55-20 (BS-prepaid-1's over-time method) are not yet read;
-BS-asset-1 rule 6 cites ASC 250 with no paragraph; BS-revenue-1's 606-10-55-39 is in
+BS-asset-1 statement 16 cites ASC 250 with no paragraph; BS-revenue-1's 606-10-55-39 is in
 neither list. Each is to be read in the ASC basic view and listed in
 `sources/fasb-asc.md` before it is relied on further. Also open (plan
 P4b, 2026-10-23): BS-arap-2 cites ASC 310-10, 405-20-40-1 and 606-10-45-4,

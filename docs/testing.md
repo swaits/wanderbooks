@@ -1288,9 +1288,9 @@ no mutation run here; what P12 must cover is at the end.
 | The audit's table (F36, F37), row by row: resolved, direction, cash, in kind; reversals the exact opposite; bills and invoices signed; totals on both bases | `ledger-core/tests/spec_party_totals.rs` `defect14_shares_take_the_partys_side_and_reversals_flip` | BS-partner-3, by hand |
 | Basis all is the members' equity statement, cash the K-1's cash contributions | `basis_all_is_the_members_equity_statement_and_cash_the_k1s`; property `member_totals_are_the_members_equity_statement` (members contributing and taking out money and property, alone and jointly, subject to a loan, through 2100 then converted, through their distributions accounts, depreciated property with money, declared to distributions payable and paid later, reversed later in the year; checked over every span from the year's start and, received less paid, over every span) | `reports::members_equity`, `k1::k1_detail` |
 | A reversed member card payment nets to zero (brief §1.4) | `defect14_a_reversed_member_card_payment_nets_to_zero` | BS-ledger-5 |
-| Accruals through another liability count once (defect 24) | `defect24_an_accrual_through_another_liability_counts_once` | BS-partner-3 item 5 |
-| A credit to a party's own liability never pays it: a card fee, a distribution owed, a seller's note, property subject to a loan | `defect24_a_credit_to_a_partys_own_liability_never_pays_it`; the documented limit, pinned: `a_distribution_owed_counts_twice_until_the_members_are_named_its_creditors` | BS-partner-3 item 6; Treas. Reg. §1.704-1(b)(2)(iv)(b)(2); Helvering v. Price |
-| Review, 2026-10-21: a distribution declared to distributions payable counts once, when paid (it counted twice); a distribution of money and depreciated property splits by what moved (the money read as property); a gift card sold is received once (it was a "card": twice); a refund is received; tin_last4 never shows more than four digits | `defect24_a_distribution_declared_to_a_payable_counts_once_when_paid`, `a_distribution_of_money_and_depreciated_property_splits_by_what_moved`, `defect24_a_gift_card_sold_is_received_once`, `a_refund_is_received_from_the_vendor`, `defect11_a_partys_tin_last4_is_its_tin_facts_else_its_w9s` (SCENARIO 6) | BS-partner-3 items 3, 5; BS-partner-2 |
+| Accruals through another liability count once (defect 24) | `defect24_an_accrual_through_another_liability_counts_once` | BS-partner-3 statement 7 |
+| A credit to a party's own liability never pays it: a card fee, a distribution owed, a seller's note, property subject to a loan | `defect24_a_credit_to_a_partys_own_liability_never_pays_it`; the documented limit, pinned: `a_distribution_owed_counts_twice_until_the_members_are_named_its_creditors` | BS-partner-3 statement 8; Treas. Reg. §1.704-1(b)(2)(iv)(b)(2); Helvering v. Price |
+| Review, 2026-10-21: a distribution declared to distributions payable counts once, when paid (it counted twice); a distribution of money and depreciated property splits by what moved (the money read as property); a gift card sold is received once (it was a "card": twice); a refund is received; tin_last4 never shows more than four digits | `defect24_a_distribution_declared_to_a_payable_counts_once_when_paid`, `a_distribution_of_money_and_depreciated_property_splits_by_what_moved`, `defect24_a_gift_card_sold_is_received_once`, `a_refund_is_received_from_the_vendor`, `defect11_a_partys_tin_last4_is_its_tin_facts_else_its_w9s` (SCENARIO 6) | BS-partner-3 statements 3 and 7; BS-partner-2 |
 | A mixed contribution splits as the K-1 does, ties to the first member | `a_members_mixed_entry_splits_as_the_k1_does` | k1 INVARIANTS 3, 4 |
 | Read from journaled facts: an archived member, a one-member company | `a_members_entry_keeps_its_reading_after_they_leave` | review R2 |
 | A close is neither; a basis is cash or all; creditor_of's checks; tin_last4's five scenarios; the kernel's cases | `a_close_tagged_with_its_members_is_neither`, `a_basis_is_cash_or_all`, `a_creditor_is_named_only_on_a_liability_with_one_owner`, `defect11_a_partys_tin_last4_is_its_tin_facts_else_its_w9s`, `party_target_cases_by_hand` | specs |
@@ -1392,9 +1392,9 @@ must cover is at the end.
 
 | What | Where | Oracle |
 |---|---|---|
-| One rule for what a card is: the recorded business cards' liabilities, else (none recorded) liabilities named "card", not "gift"; never a member's card, a member's check or a platform; a debit card on the bank is none; money follows it | `ledger-core` `tests/spec_party_totals.rs` `a_card_is_a_recorded_business_card_else_a_liability_named_card` | BS-partner-3 item 5, `parties::card_accounts` INVARIANTS 1-4 |
-| Party totals and the 1099 worksheet never contradict: paid less received is the worksheet's paid + excluded_card + undetermined + not_reportable plus its other receipts, for a vendor named alone, whatever the methods, refunds and reversals | property `party_totals_are_the_1099s_buckets` (`ledger-core` `tests/form1099.rs`; `PROPTEST_CASES`, default 256; 2,000 run clean; dropping a bucket from the sum fails at once) | BS-partner-3 item 9, by hand |
-| The same, one year by hand: a member's check, a member's card, a member's payment of unknown method, a company card charge and a company check to one contractor, then the member reimbursed | `bookspec/examples/1099-and-party-totals-for-a-members-payment.toml` | BS-partner-3 item 9; Treas. Reg. §1.6041-1(e)(1), (a)(1)(iv) |
+| One rule for what a card is: the recorded business cards' liabilities, else (none recorded) liabilities named "card", not "gift"; never a member's card, a member's check or a platform; a debit card on the bank is none; money follows it | `ledger-core` `tests/spec_party_totals.rs` `a_card_is_a_recorded_business_card_else_a_liability_named_card` | BS-partner-3 statement 7, `parties::card_accounts` INVARIANTS 1-4 |
+| Party totals and the 1099 worksheet never contradict: paid less received is the worksheet's paid + excluded_card + undetermined + not_reportable plus its other receipts, for a vendor named alone, whatever the methods, refunds and reversals | property `party_totals_are_the_1099s_buckets` (`ledger-core` `tests/form1099.rs`; `PROPTEST_CASES`, default 256; 2,000 run clean; dropping a bucket from the sum fails at once) | BS-partner-3 statement 11, by hand |
+| The same, one year by hand: a member's check, a member's card, a member's payment of unknown method, a company card charge and a company check to one contractor, then the member reimbursed | `bookspec/examples/1099-and-party-totals-for-a-members-payment.toml` | BS-partner-3 statement 11; Treas. Reg. §1.6041-1(e)(1), (a)(1)(iv) |
 | The CPA package's 1099 worksheet is `books.vendor_1099`'s CSV for the package's accounts (the request's, else the settings', R18) through its as_of, byte for byte; without `through` the files differ; a `through` outside the year and an unknown account are refused | `ledger-cli` `oracle_mcp.rs` `cpa_package_holds_the_year_and_its_evidence`; `ledger-package` `tests/package.rs` `payments_to_a_vendor_come_from_the_packages_accounts`, `one_list_of_cash_accounts_per_package`, `the_1099_worksheet_stops_at_as_of` | BS-statement-4; mcp-interface.md |
 | A feature is asked for before a command's first line: `books.update_party` with a field and the first creditor, in P2's books waiting for their format upgrade, is refused whole (nothing journaled, never the field without the creditor); once upgraded, as in books this version made, it journals the field, then the creditor, declaring nothing | `ledger-cli` `tests/spec_party_totals.rs` `update_party_asks_for_the_creditor_feature_before_its_first_line` | BS-format-1 |
 | One bookspec loader for every example, the parties' and the 1099s' with them: `setup.parties`, `setup.members` (`distributions_account`), `setup.payees` (a party's vendor record), `setup.status_changes`, `setup.instruments`, events' `parties` and `instrument`, and the queries `vendor_1099`, `k1`, `party_part`, `party_totals`, `party_tin_last4`; refused: a party or payment method not in the setup, a reversal naming parties, party totals without a basis, a 1099 line leaving a figure out, a wrong direction or status | `ledger-core` `tests/bookspec/` (`every_bookspec_example_holds`, `a_party_not_in_the_setup_is_refused`, `a_party_parts_direction_is_checked`, `a_reversal_naming_parties_is_refused`, `party_totals_without_a_basis_are_refused`, `a_vendor_1099_line_leaving_a_figure_out_is_refused`, `a_vendor_1099_status_is_checked`, `a_payment_method_not_in_the_setup_is_refused`) | bookspec/README.md |
@@ -1743,9 +1743,9 @@ bookspec's rules / `docs/spec/claims/` say why not. Mutation runs wait for P12 (
 - **Engine** (`ledger-package/tests/p3_seams.rs`):
   `the_members_figures_agree_on_every_date` (members' equity, the K-1
   worksheet, party totals on both bases, the cash flow's contributions,
-  advances and distributions, BS-partner-3 items 4 and 8),
+  advances and distributions, BS-partner-3 statements 6 and 10),
   `a_distribution_declared_then_paid_is_financing_when_paid`,
-  `the_1099_worksheet_ties_to_party_totals_and_the_ledger` (BS-partner-3 item 9,
+  `the_1099_worksheet_ties_to_party_totals_and_the_ledger` (BS-partner-3 statement 11,
   BS-1099-1), `depreciation_is_one_figure_everywhere` (the P&L, the cash flow
   add-back, the tax-basis K-1's open item, the IIF, the register posted
   and scheduled, the balance sheet), `every_statement_foots_on_every_date`,
@@ -1759,14 +1759,14 @@ bookspec's rules / `docs/spec/claims/` say why not. Mutation runs wait for P12 (
   `books.vendor_1099` through each date, `books.party` on both bases.
 - **Found and fixed** (each test fails before its fix): a distribution
   declared to a payable and paid later read as cash paid to suppliers
-  (BS-statement-3 rule 2; `a_distribution_declared_then_paid_is_a_distribution_paid`
+  (BS-statement-3 statement 3; `a_distribution_declared_then_paid_is_a_distribution_paid`
   in `ledger-core/tests/spec_cash_flow.rs`, with the property
   `prop_cf_financing_is_equity_plus_designated_debt`'s model extended);
   a disposal's depreciation credit-back was in the cash flow's gain or
-  loss, not its depreciation (BS-statement-3 rule 8;
+  loss, not its depreciation (BS-statement-3 statement 13;
   `a_disposals_depreciation_credit_back_is_depreciation`), and the
   tax-basis K-1's book depreciation left it out (BS-partner-4); `books.list_assets`
-  as of a day said "disposed" for a later disposal (BS-asset-1 rule 8).
+  as of a day said "disposed" for a later disposal (BS-asset-1 statement 28).
 
 ## P3: the surface review (2026-10-21)
 
@@ -1975,7 +1975,7 @@ feature check; the decision `projects` omit-when-empty;
 
 The owner's ask: a "mini financial snapshot" of one project on its page,
 overhead left out, so it shows at a glance whether the project is in the
-black or the red, with charts (BS-statement-5 item 7: contribution before
+black or the red, with charts (WB-statement-7: contribution before
 overhead, revenue less every traced cost, a segment margin in Garrison's
 sense; a presentation choice, not GAAP). Every figure is ledger-core's:
 `ProjectToDate::{net, margin_pct, any_tagged, revenue_by_account,
@@ -2085,7 +2085,7 @@ rounding strategy; `project_figures`' opening net and running sum;
 
 ## Invoices and bills take a project (2026-10-22)
 
-BS-statement-5 item 8: each invoice and bill line takes an optional project
+BS-statement-5 statement 6: each invoice and bill line takes an optional project
 (`books.create_invoice` / `books.create_bill` `class`); the entry's revenue
 or expense side is one line per project (`arap::document_parts`), the
 receivable or payable and the payments untagged; journaled as the line's
@@ -2201,7 +2201,7 @@ The P3 cutover review's open points 1 (the IIF left CLASS empty) and 2
 the tax-basis member split) waits for the owner: nothing is posted
 before the year-end close. No mutation run (D-33).
 
-**Point 1, the IIF's classes** (BS-format-2 rule 8): `ledger-import`
+**Point 1, the IIF's classes** (BS-format-2 statements 27-33): `ledger-import`
 `tests/spec_import.rs`
 `iif_writes_each_lines_class_and_declares_the_classes_first` (the file
 exact: the `!CLASS` list after the accounts, before `!TRNS`, every class
@@ -2234,7 +2234,7 @@ and the property. The property found (seed in
 name yield to a changed one ("Café" twice beside "Cafe (1)" and "Cafe (1)
 (1)"); the cap is gone, a tag that changes nothing is skipped instead.
 
-**Point 2, payments to governments** (BS-statement-3 rule 5): `ledger-core`
+**Point 2, payments to governments** (BS-statement-3 statement 8): `ledger-core`
 `tests/spec_cash_flow.rs` `a_payment_to_a_government_is_other_operating`
 (a filing fee on an organization-costs account paid to a government
 agency, and a penalty on supplies paid to a tax agency, are (g); the
@@ -2528,7 +2528,7 @@ accounting question), CHANGE (a source says otherwise; work pending).
 | 6 | Reconciliation balances | CONFIRMED | Signed by the account's normal side (a card reads as owed), as statements show it; `reconciling_a_card_reads_its_normal_side_...` |
 | 7 | A member's ending on one equity statement may differ by a cent from the next statement's beginning | CHANGED 2026-10-13; CHANGED P3 | A capital account is one running balance (Treas. Reg. §1.704-1(b)(2)(iv)(b); the Item L quote this row once gave was misread, P3 review R-4). Undistributed earnings now split cumulatively as of each date, so each member's capital chains exactly (`each_members_capital_chains_across_statements`; it fails on the old code); since P3 the split is what the count's next close would give, so a date's capital never moves when its month is closed (D-38; `each_members_capital_chains_and_holds_through_closes`); BS-partner-1 |
 | 8 | Cash flow nets one line per account; investing comes only from registered assets | CHANGED 2026-10-13 | ASC 230-10-45-7: gross receipts and payments "more relevant" than net; 45-8 limits netting to quick-turnover items. Financing and investing are now gross; loans made and investments bought are investing (230-10-20, 45-13) via `[books] investing_accounts`. Owner-advanced expenses: PwC 6.9.3.1 constructive treatment via `[books] financing_accounts` (BS-statement-3) |
-| 8a | Cash flow by the indirect method; member-paid expenses as constructive receipts | CHANGED 2026-10-20 | The direct method with the reconciliation as a separate schedule (ASC 230-10-45-25, 45-30); noncash investing and financing activities disclosed, only the cash portion reported (50-3, 50-5). Member-paid expenses stay constructive receipts and disbursements, now gross and on each payment's date, and the same for a lender's payments and an expense paid into capital: a choice (D-42, after a day as noncash under D-35), since ASC 230 doesn't address payments made on the entity's behalf and the firm guides present them so (PwC 6.9.3.1, DART 7.2, BDO 3.4, EY 4.6.2; KPMG Q8.3.10 also accepts noncash for property a lender pays for). BS-statement-3 rule 11, P3 defect 1 |
+| 8a | Cash flow by the indirect method; member-paid expenses as constructive receipts | CHANGED 2026-10-20 | The direct method with the reconciliation as a separate schedule (ASC 230-10-45-25, 45-30); noncash investing and financing activities disclosed, only the cash portion reported (50-3, 50-5). Member-paid expenses stay constructive receipts and disbursements, now gross and on each payment's date, and the same for a lender's payments and an expense paid into capital: a choice (D-42, after a day as noncash under D-35), since ASC 230 doesn't address payments made on the entity's behalf and the firm guides present them so (PwC 6.9.3.1, DART 7.2, BDO 3.4, EY 4.6.2; KPMG Q8.3.10 also accepts noncash for property a lender pays for). BS-statement-3 statement 16, P3 defect 1 |
 | 9 | An asset's life ends at purchase + life months, that day not held; day-count proration | CONVENTION | Exactly N months of service; day proration and the mid-month convention are both accepted book policies (ASC 360-10-35-4, read 2026-10-14: any systematic and rational allocation) |
 | 10 | A payroll entry has one line per account total | CONFIRMED | The per-employee detail the IRS requires ("Amounts and dates of all wage ... payments", Employment Tax Recordkeeping) is kept in the run; a summary entry is standard |
 | 11 | A period with exactly the dates of an existing one is allowed | DESIGN | Nothing governs duplicate periods; harmless (the second close locks only). Refusing exact duplicates is an option |
@@ -2624,7 +2624,7 @@ the wiring into verify, the digest and Needs attention) is part B.
   `a_payment_journals_its_method_and_reference` (a plain payment's
   payload field for field as before), `legacy_documents_replay_with_tags`);
   `tests/arap_props.rs` `status_is_a_function_of_journal_and_date` (BS-arap-2
-  INVARIANT 4: random invoices, bills, payments with and without a
+  invariant 7: random invoices, bills, payments with and without a
   method and reference, voids, reversals of any entry, closed months and
   refused hand lines through `Store`; at half time and at the end the
   books are reopened and read by a `Snapshot`, and `differs_from`, every
@@ -3356,10 +3356,10 @@ collected leaves the receivables as a deduction, with its evidence filed
 in the same call.
 
 - **ledger-core, `tests/spec_documents.rs`:**
-  `half_paid_rest_written_off_is_written_off` (BS-arap-2 SCENARIO 7: 50 paid,
+  `half_paid_rest_written_off_is_written_off` (BS-arap-2 scenario 7: 50 paid,
   50 written off, one balanced entry Dr 6990 / Cr 1200, the receivable
   line tagged `WriteOff`, receivables down by exactly the write-off);
-  `write_off_refused_on_cash_basis` (BS-arap-5 INVARIANT 3: refused, the
+  `write_off_refused_on_cash_basis` (BS-arap-5 invariant 5: refused, the
   snapshot unchanged, no draft left); `write_off_above_outstanding_refused`
   (the bound at the day, a zero and a negative amount, then the exact
   amount owed taken); `write_off_then_recovery_same_year` (D-49: the

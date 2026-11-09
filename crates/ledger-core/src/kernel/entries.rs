@@ -391,7 +391,7 @@ pub fn net<T: Amount>(lines: impl IntoIterator<Item = (Side, T)>) -> Option<T> {
 /// ```text
 /// GOAL: an early-payment discount never takes more than its percentage
 ///       says, in exact money.
-/// SOURCE: BS-arap-3 INVARIANT 2, BS-arap-6; plan/served.md
+/// SOURCE: BS-arap-3 invariant 2, BS-arap-6; plan/served.md
 ///         8.3.13; CHOICE: the gross method, A-8 (the discount is
 ///         booked when taken, never estimated).
 /// INVARIANTS:
@@ -1047,8 +1047,8 @@ pub fn apportion_cumulative<T: Amount>(
     Some(())
 }
 
-/// Where a line falls on the statement of cash flows (BS-statement-3 rule
-/// 2): a cash account, or one of the three sections.
+/// Where a line falls on the statement of cash flows (BS-statement-3 statement
+/// 3): a cash account, or one of the three sections.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Flow {
     /// A cash account: what the statement explains the change in.
@@ -1063,7 +1063,7 @@ pub enum Flow {
 
 impl Flow {
     /// The three sections, in the order cash is applied to them (
-    /// BS-statement-3 rule 3): operating, investing, financing.
+    /// BS-statement-3 statement 4): operating, investing, financing.
     pub const SECTIONS: [Flow; 3] = [Flow::Operating, Flow::Investing, Flow::Financing];
 }
 
@@ -1116,7 +1116,7 @@ pub fn take<T: Amount>(remaining: T, movement: T) -> Option<T> {
 /// ```text
 /// GOAL: split an entry's cash among the parts it settled, without
 ///       inventing or losing any.
-/// SOURCE: BS-statement-3 rule 3 (ASC 230-10-50-5: only the cash portion
+/// SOURCE: BS-statement-3 statement 4 (ASC 230-10-50-5: only the cash portion
 ///         of a part-cash transaction is a cash flow; the order is a
 ///         CONVENTION, the ASC is silent).
 /// INVARIANTS:
@@ -1143,7 +1143,7 @@ pub fn apply_cash<T: Amount>(cash: T, movements: &[T], applied: &mut [T]) -> Opt
     (remaining == T::ZERO).then_some(())
 }
 
-/// An entry's cash flows (BS-statement-3 rule 3): the net movement of its
+/// An entry's cash flows (BS-statement-3 statement 4): the net movement of its
 /// cash lines, applied to the sections moving against it in the order
 /// operating, investing, financing, each up to its own movement; what is
 /// left of a section's movement is the part no cash settled. `None` when
@@ -1244,7 +1244,7 @@ fn credits_and_debits<T: Amount>(movements: &[T]) -> Option<(T, T)> {
 }
 
 /// Which way money a member or a lender handled for the company went
-/// (BS-statement-3 rule 11, D-42).
+/// (BS-statement-3 statement 16, D-42).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum OnBehalf {
     /// Paid for the company: sources credited (borrowed, contributed)
@@ -1258,7 +1258,7 @@ pub enum OnBehalf {
 impl OnBehalf {
     /// The other way: what an entry's reversal does.
     ///
-    /// SOURCE: BS-statement-3 rule 11 (what a member or lender paid or
+    /// SOURCE: BS-statement-3 statement 16 (what a member or lender paid or
     /// received for the company is mirrored by its reversal).
     ///
     /// INVARIANTS:
@@ -1273,7 +1273,7 @@ impl OnBehalf {
 
 /// What a member or a lender paid, or received, for the company with no
 /// cash account moving: a constructive receipt and disbursement (
-/// BS-statement-3 rule 11, D-42). `sources` are what is left unsettled of the
+/// BS-statement-3 statement 16, D-42). `sources` are what is left unsettled of the
 /// entry's kinds that can pay or receive for the company (a financing
 /// liability, a member's equity), `uses` of the kinds they can pay or
 /// receive for, each debit-positive. [`OnBehalf::Paid`]: `amount =
@@ -1289,7 +1289,7 @@ impl OnBehalf {
 /// GOAL: show money a member or lender handled for the company as the
 ///       company's own, borrowed (or contributed) and spent, without
 ///       inventing or losing a cent.
-/// SOURCE: BS-statement-3 rule 11 (D-42; ASC 230 is silent, PwC Viewpoint
+/// SOURCE: BS-statement-3 statement 16 (D-42; ASC 230 is silent, PwC Viewpoint
 ///         FSP 6.9.3.1, Deloitte DART Roadmap 7.2, BDO Blueprint 3.4).
 /// INVARIANTS:
 ///   1. The parts net to zero: Σ from + Σ to = 0, so the entry's cash
@@ -1322,7 +1322,7 @@ pub fn constructive<T: Amount>(
 }
 
 /// How much of an entry is an exchange inside investing and financing
-/// that no cash settled (BS-statement-3 rule 7, ASC 230-10-50-4: debt
+/// that no cash settled (BS-statement-3 statement 12, ASC 230-10-50-4: debt
 /// converted to equity, one asset traded for another). `debits` and
 /// `credits` are the net debits and net credits of the entry's investing
 /// and financing balance-sheet accounts (each account netted first; both
@@ -1449,7 +1449,7 @@ fn least<T: Amount>(a: T, b: T) -> T {
 }
 
 /// What an entry's parties split and what of it counts (BS-partner-3
-/// item 3, every case but a close and a reversal, which the caller
+/// statement 3, every case but a close and a reversal, which the caller
 /// handles: a close is its parties' own-account movement with direction
 /// neither, a reversal is [`reverse_target`] of its original's).
 ///
@@ -1553,7 +1553,7 @@ pub fn party_target<T: Amount>(
     })
 }
 
-/// A reversal's target from its original's (BS-partner-3 item 3; BS-ledger-5: a
+/// A reversal's target from its original's (BS-partner-3 statement 3; BS-ledger-5: a
 /// correction is the opposite entry): every amount negated (never to a
 /// negative zero), paid and received swapped. An involution. `None` past
 /// the type's range.
@@ -2043,12 +2043,12 @@ pub fn basis_figures<T: Amount>(
 }
 
 /// A project's unrecovered cost from its tagged revenue and expenses to
-/// date: what it would take to be repaid in full (BS-statement-5 item 4).
+/// date: what it would take to be repaid in full (BS-statement-5 statement 5).
 ///
 /// ```text
 /// GOAL: the "if repaid" figure of work done on spec, from one function
 ///       the tools, the viewer and bookspec share.
-/// SOURCE: BS-statement-5 item 4 (ASC 450-30-25-1: a hoped-for
+/// SOURCE: BS-statement-5 statement 5 (ASC 450-30-25-1: a hoped-for
 ///         payment is a gain contingency, never recorded before it is
 ///         received; so this is a figure, never a receivable).
 /// INVARIANTS:
@@ -2087,7 +2087,7 @@ pub enum Bounds {
 /// ```text
 /// GOAL: one definition of "a document is never overpaid and never owes
 ///       more than it is for", at every date, not only at the end.
-/// SOURCE: BS-arap-2 INVARIANT 2 (0 <= outstanding(d, D)
+/// SOURCE: BS-arap-2 invariant 6 (0 <= outstanding(d, D)
 ///         <= total(d) at every D); plan/served.md P4b.3 (Bounds).
 /// INVARIANTS:
 ///   1. Within exactly when every prefix sum of `deltas` is within
@@ -2134,7 +2134,7 @@ fn out_of_bounds<T: Amount>(total: T, running: T) -> Option<(T, bool)> {
 /// GOAL: a command never puts a document out of bounds, yet books an
 ///       earlier version left out of bounds (a void under a payment that
 ///       stands) take the step that mends them.
-/// SOURCE: BS-arap-2 INVARIANT 2, BS-entry-4 (replay accepts what
+/// SOURCE: BS-arap-2 invariant 6, BS-entry-4 (replay accepts what
 ///         was written; the bound is the commands'); plan/served.md
 ///         P4b.14 item 3 (the remedy: reverse the payment).
 /// INVARIANTS:
@@ -2179,7 +2179,7 @@ pub fn bounds_kept<T: Amount>(total: T, before: &[T], after: &[T]) -> Bounds {
 mod tests {
     use super::*;
 
-    /// BS-statement-3 rule 3, by hand. Equipment 1,000 for 300 cash and a
+    /// BS-statement-3 statement 4, by hand. Equipment 1,000 for 300 cash and a
     /// 700 note: investing takes the 300, the note's 700 and the rest of
     /// the equipment's are the noncash part.
     #[test]
@@ -2225,7 +2225,7 @@ mod tests {
         assert_eq!(apply_cash(10, &[-3], &mut out), None);
     }
 
-    /// The exchange measure (BS-statement-3 rule 7) on the review's
+    /// The exchange measure (BS-statement-3 statement 12) on the review's
     /// hand-checked cases.
     #[test]
     fn exchanged_matches_the_hand_checked_cases() {
@@ -2247,7 +2247,7 @@ mod tests {
         assert_eq!(exchanged(1000i64, 1000, 1000, 1000), Some(0));
     }
 
-    /// BS-statement-3 rule 11 (D-42), by hand.
+    /// BS-statement-3 statement 16 (D-42), by hand.
     #[test]
     fn constructive_pays_and_receives_for_the_company() {
         use OnBehalf::{Paid, Received};

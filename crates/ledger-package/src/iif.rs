@@ -19,7 +19,7 @@
 //!      imported close would zero its period's profit. The file's
 //!      balances are the trial balance as of as_of without the closes.
 //!   3. Every class (project) in the books is declared, and each line
-//!      carries its class (BS-format-2 rule 8).
+//!      carries its class (BS-format-2 statements 27 and 28).
 //! ```
 
 use chrono::NaiveDate;

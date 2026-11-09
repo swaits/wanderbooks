@@ -327,7 +327,7 @@ contribution_margin_pct}`, `ProjectToDate::margin_pct`. **Checked:**
 
 **WB-statement-8** The statement's words and groupings are
 wanderbooks' product strings, not accounting (the accounting is
-BS-statement-3's rules 4, 6 and 8): a reversal shown alone reads
+BS-statement-3's statements 5, 11 and 13): a reversal shown alone reads
 "Reversal of #N — <N's description>" and a reinstatement "Reinstatement
 of #A (reverses #B)", both listed under the original's kind; a
 financing inflow under a borrowing reads "Proceeds from borrowing —

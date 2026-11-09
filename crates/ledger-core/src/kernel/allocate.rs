@@ -43,7 +43,7 @@ pub enum Leftover {
 /// SOURCE: BS-partner-1 (partners share by the agreement; capital accounts
 ///         carry the allocations), BS-partner-3 (a party's part of an
 ///         entry), BS-partner-4 (the K-1 worksheet), BS-1099-1 (a payment
-///         split by the parties' shares), BS-statement-3 rule 5 (the
+///         split by the parties' shares), BS-statement-3 statement 8 (the
 ///         government's part of a payment), BS-arap-3 (a document line's
 ///         exact amount).
 /// INVARIANTS:
@@ -173,7 +173,7 @@ const MAX_CORRECTION_STEPS: usize = 4096;
 /// SOURCE: BS-partner-1 (partners share by the agreement; the largest
 ///         remainder is the owner's choice, 2026-10-13), BS-partner-3 (a
 ///         party's part of an entry), BS-partner-4 (the K-1 worksheet's
-///         shares), BS-1099-1 (a payment's buckets), BS-statement-3 rule 5
+///         shares), BS-1099-1 (a payment's buckets), BS-statement-3 statement 8
 ///         (the government's part), BS-arap-3 (a document line's exact
 ///         amount), BS-ledger-1 (a whole number of smallest units).
 /// INVARIANTS:

@@ -1919,7 +1919,7 @@ mod shares {
         assert_eq!((a.paid, a.received), (Decimal::ZERO, Decimal::ZERO));
     }
 
-    /// BS-partner-3 item 3 (capital first): a members' entry counts what
+    /// BS-partner-3 statement 3 (capital first): a members' entry counts what
     /// moved their capital, not other money on it: 300.00 in, 200.00 of it
     /// Tobin's capital and 100.00 an expense refunded, is Tobin's 200.00
     /// received (cash) and nothing of Morgan's. (Before P3 the 300.00 net

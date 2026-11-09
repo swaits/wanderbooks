@@ -485,7 +485,7 @@ one kernel function, `kernel::basis_figures`, for every rule:
 
 ### A project's unrecovered cost (P3, projects)
 
-The "if repaid" figure of work done on spec (BS-statement-5 item 4) is
+The "if repaid" figure of work done on spec (BS-statement-5 statement 5) is
 one kernel function, `kernel::unrecovered_cost`:
 
 32. **Never below zero, the shortfall exactly, and no overflow**: the
@@ -879,7 +879,7 @@ Be precise about the claims:
   entries out of the sections but not out of the cash accounts'
   balances; the two agree because a close moves only revenue, expense
   and equity (`Ledger::validate_close_to`) and cash accounts must be
-  assets (BS-statement-3 rule 2). The Lean model's close step lets a
+  assets (BS-statement-3 statement 3). The Lean model's close step lets a
   target be any balance-sheet account, so `Reachable.cashflow_foots`
   takes any selection of entries with the cash over the same selection,
   and `Reachable.cashflow_is_change_in_cash` counts every entry, closes

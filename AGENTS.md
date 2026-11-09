@@ -188,7 +188,8 @@ clone, with status. Rules:
   `company.timezone`: "today" is computed by the caller and passed in;
   the core still reads no clock). New dependencies need justification in
   the commit message. No I/O, no networking, no time-source in the core.
-- Future crates (`ledger-store`, `ledger-import`, `ledger-reader`, `ledger-oracle`, `books-app`)
+- The other crates (`ledger-vault`, `ledger-config`, `ledger-store`, `ledger-reader`,
+  `ledger-import`, `ledger-package`, `ledger-mcp`, `ledger-host`, `ledger-gui`, `ledger-cli`)
   depend inward toward the core, never the reverse. See `docs/architecture.md`.
 
 ## Working here

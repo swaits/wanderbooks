@@ -191,12 +191,15 @@ None.
 `check_assign_role`, `Ledger::check_renumber_account` (an assigned role
 frees its code); the control guard and `Ledger::control_check` (B-38).
 **Checked:** `ledger-core` `tests/spec_roles.rs`, `tests/spec_documents.rs`;
-`ledger-store` replay of `role.assigned`; bookspec example
+`ledger-store` replay of `role.assigned`; bookspec examples
 `ledger-a-role-on-a-header-or-wrong-typed-account-is-refused` (BS-ledger-19,
 the option picked: the receivables role on a header account and the payables
 role on a postable revenue account are refused through `Store::assign_role`
 and `Ledger::check_assign_role`'s `ControlAccountMismatch`, and the chart is
-as it was), run by
+as it was) and `ledger-a-role-assignment-is-a-fact-in-the-books`
+(BS-ledger-18, the option picked: the receivables role assigned to 1300 is
+journaled by `Store::assign_role`, read back by the `role_account` query
+from the books alone, and found again by the store's replay), run by
 `every_bookspec_example_holds` and
 `the_runner_reports_every_claimed_rule_green`.
 
@@ -235,7 +238,12 @@ per check, 2,000 by hand, with posts between records and every record
 checked to change no figure or entry;
 `the_fiscal_year_stays_under_closed_periods`); `ledger-cli`
 `tests/spec_kept.rs`; Lean `Step.record_changes_no_figure`,
-`Reachable.records`; fuzz `fuzz_settings_replay`.
+`Reachable.records`; fuzz `fuzz_settings_replay`; bookspec example
+`ledger-a-setting-is-a-fact-in-the-books` (the option picked: the owner's
+fiscal-year change is journaled by `Store::change_settings` with who decided
+it and when, read back by the setting query, and the trial balance before
+and after is the same), run by `every_bookspec_example_holds` and
+`the_runner_reports_every_claimed_rule_green`.
 
 ### Product rules
 
@@ -317,14 +325,22 @@ bookspec `examples/rename-changes-no-amount.toml`.
 **Pick:** warn versus refuse: CHOICE (Pub. 583: "the law does not require any specific kind of records"; the owner, 2026-10-20: warn by default, header accounts exempt, the first company set to refuse at the P3 cutover). A category's deductible amount rounds once, on the category total: CHOICE (the owner, 2026-11-07, D-67). The arithmetic is `kernel::deductible_amount`, so Kani proves the one rounding and the bridge carries it to `Decimal`.
 
 **Enforced:** `kernel::deductible_amount` (`tax::tax_summary`'s one
-rounding). **Checked:** `ledger-core`
+rounding; the bookspec `tax_summary` query answers its lines by category).
+**Checked:** `ledger-core`
 `tests/tax.rs` (the rounding: `a_category_rounds_its_deductible_amount_once_not_per_account`,
 `a_category_rounds_once_across_different_percents`); Kani
 `deductible_amount_rounds_once`, `deductible_amount_refuses_overflow`;
 bridge `deductible_amount_agrees`; Lean `bookspec/lean/Bookspec/Deductible.lean`
 (`Deductible.near`, `Deductible.tie_away_pos`, `Deductible.tie_away_neg`, `Deductible.sign`, `Deductible.neg`, `Deductible.of_sum`,
 `Deductible.per_account_differs`, `Deductible.scale_books`, `Deductible.scale_percents`: the one rounding, at any
-number of accounts and any sizes); bookspec `examples/tax-category-required.toml`.
+number of accounts and any sizes); bookspec `examples/tax-category-required.toml`
+and the two BS-ledger-21 examples
+`ledger-a-categorys-deductible-amount-rounds-once` (the option picked:
+two accounts of 1.01 at 50% give 1.01, the exact sum rounded once) and
+`ledger-a-categorys-deductible-amount-rounds-per-account` (the other option:
+0.51 + 0.51 = 1.02), whose `tax_summary` query is `tax::tax_summary`, run by
+`every_bookspec_example_holds` and
+`the_runner_reports_every_claimed_rule_green`.
 
 ### Product rules
 

@@ -332,7 +332,17 @@ appendix: the file line by line and its changes, derived by hand);
 (`iif_declares_accounts_by_role_and_balances_every_transaction`,
 `iif_without_as_of_is_as_of_today_and_ties_to_the_trial_balance`),
 `mcp_journeys.rs` (`mcp_import_export`,
-`the_default_period_never_shortens_the_iif_or_the_package`).
+`the_default_period_never_shortens_the_iif_or_the_package`); bookspec
+examples `format-cr-lf-on-an-lf-platform` and
+`format-platform-line-ending-on-an-lf-platform` (BS-format-4),
+`format-docnum-is-the-entry-id` and `format-docnum-is-the-files-place`
+(BS-format-5), `format-everything-through-as-of-spans-years` and
+`format-one-fiscal-year-holds-its-year` (BS-format-6),
+`format-closes-left-out` and `format-closes-written` (BS-format-8) and
+`format-no-customer-or-vendor-name` (BS-format-9), run by
+`every_bookspec_example_holds` and
+`the_runner_reports_every_claimed_rule_green`; the line ending is asked by
+the iif_line_ending query (the adapter's answer_iif), the file's own CR LF.
 
 ### Product rules
 

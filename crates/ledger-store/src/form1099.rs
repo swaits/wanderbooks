@@ -7,7 +7,7 @@
 //! GOAL: every event round-trips: decode(encode(x)) == x, and every line
 //!       written before decisions were kept reads as it always meant.
 //! SOURCE: plan/served.md 5.2, 5.5 (a legacy null is undetermined);
-//!         BS-format-1 (an older reader says "newer", never "corrupt").
+//!         WB-format-1 (an older reader says "newer", never "corrupt").
 //! INVARIANTS:
 //!   1. vendor.1099_set {vendor_id, form_1099: "nec"|"misc"|
 //!      "not_reportable"|null, reason_kind?, reason?, effective?,

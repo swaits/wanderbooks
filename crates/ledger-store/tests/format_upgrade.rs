@@ -9,7 +9,7 @@
 //!       without the owner's go-ahead, and an upgrade changes nothing of the
 //!       books but what may be written from then on.
 //! SOURCE: plan/served.md 3.9 ("Format changes are the server's gate, not
-//!         the updater's"); D-39; BS-format-1.
+//!         the updater's"); D-39; WB-format-3.
 //! INVARIANTS:
 //!   1. New books declare this version's format, every feature it knows,
 //!      as they are created: they wait for no upgrade.

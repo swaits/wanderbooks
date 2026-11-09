@@ -6122,7 +6122,7 @@ impl Ledger {
     /// GOAL: record a send as a fact of the document's life, without
     ///       touching a figure: a send moves no money.
     /// SOURCE: BS-arap-2 (a document keeps no figure of its
-    ///         own), BS-format-1 (the invoice.sent line, feature documents_v2);
+    ///         own), WB-format-2 (the invoice.sent line, feature documents_v2);
     ///         plan P4b S5, A-4 (the books record sends; they never send).
     /// INVARIANTS:
     ///   1. The invoice MUST exist, and a send MUST NOT be dated before it.

@@ -72,7 +72,7 @@ pub const LEGACY_DB_FILE: &str = "wanderbooks.db";
 ///       open (plan/served.md 3.9: before consent, the way back is always
 ///       there), however far this version's projection has moved.
 /// SOURCE: plan/served.md 3.9, the lead's decision (2026-10-21: each
-///         schema in a file of its own); BS-format-1.
+///         schema in a file of its own); WB-format-4.
 /// INVARIANTS:
 ///   1. A version opens or creates only its own schema's file (or the
 ///      legacy file when that already holds its schema); a missing one is
@@ -909,7 +909,7 @@ impl Store {
     ///
     /// ```text
     /// GOAL: books that tell every reader which format they are in.
-    /// SOURCE: BS-format-1; plan/served.md 5.1 (format gate).
+    /// SOURCE: WB-format-1; plan/served.md 5.1 (format gate).
     /// SCENARIOS:
     ///   1. IF the format is newer than SUPPORTED_JOURNAL_FORMAT, or 0:
     ///      SHOULD refuse (FormatRefused), journaling nothing
@@ -969,7 +969,7 @@ impl Store {
     ///       instead of misreading a line it thinks it knows, and books
     ///       move past what their owner's older version reads only when
     ///       the owner says so.
-    /// SOURCE: BS-format-1; plan/served.md 5.1 (format gate), 3.9 and
+    /// SOURCE: WB-format-1, WB-format-3; plan/served.md 5.1 (format gate), 3.9 and
     ///         D-39 (the format upgrade).
     /// SCENARIOS:
     ///   1. IF the books declared it: SHOULD pass.
@@ -1001,7 +1001,7 @@ impl Store {
     /// GOAL: older books move to this version's format at once, on the
     ///       record, exactly once.
     /// SOURCE: plan/served.md 3.9 ("Format changes are the server's
-    ///         gate"); D-39; BS-format-1.
+    ///         gate"); D-39; WB-format-3.
     /// INVARIANTS:
     ///   1. One journal line declares the whole format: the format moves
     ///      exactly once, never feature by feature.
@@ -1512,7 +1512,7 @@ impl Store {
     /// ```text
     /// GOAL: a draft that is finished and waiting on its receipt says so,
     ///       durably, and replays the same.
-    /// SOURCE: BS-format-1, BS-entry-5; plan P4.
+    /// SOURCE: WB-format-2, BS-entry-5; plan P4.
     /// SCENARIOS:
     ///   1. IF the engine refuses it (unknown or posted entry, a note the
     ///      books won't keep): SHOULD refuse, journaling nothing.
@@ -3319,7 +3319,7 @@ impl Store {
     /// GOAL: a document's new fields are journaled with it, so replay can
     ///       never lose them, and a document naming none is written byte
     ///       for byte as an earlier version wrote it.
-    /// SOURCE: BS-format-1, BS-arap-4 (plan P4b S4.3); A-2, A-13.
+    /// SOURCE: WB-format-2, BS-arap-4 (plan P4b S4.3); A-2, A-13.
     /// INVARIANTS:
     ///   1. A write naming a number, terms, a snapshot, a reference, a memo,
     ///      a line account, quantity or unit price MUST need journal feature
@@ -3811,7 +3811,7 @@ impl Store {
     /// ```text
     /// GOAL: a payment is journaled once and replays to the same figures,
     ///       in any version that can open the books.
-    /// SOURCE: BS-format-1, BS-arap-2; plan/served.md P4b.7
+    /// SOURCE: WB-format-2, BS-arap-2; plan/served.md P4b.7
     ///         (document_standing).
     /// SCENARIOS:
     ///   1. IF the engine refuses it (overpaid, before the invoice, a
@@ -4207,7 +4207,7 @@ impl Store {
     /// ```text
     /// GOAL: a send is journaled once and replays to the same record, in
     ///       every version that can read the books.
-    /// SOURCE: BS-format-1, BS-arap-2; plan P4b S5, A-4.
+    /// SOURCE: WB-format-2, BS-arap-2; plan P4b S5, A-4.
     /// SCENARIOS:
     ///   1. IF the engine refuses it (unknown or void invoice, a date
     ///      before the invoice, no recipients, a text the books won't
@@ -4534,7 +4534,7 @@ impl Store {
     /// ```text
     /// GOAL: a project in one command, journaled as two events only when
     ///       it has facts, so a name-only project is a plain class.
-    /// SOURCE: WB-statement-5; BS-format-1 (journal feature
+    /// SOURCE: WB-statement-5; WB-format-2 (journal feature
     ///         `projects`).
     /// INVARIANTS:
     ///   1. A refusal journals nothing: the whole record is rehearsed, and
@@ -4971,7 +4971,7 @@ impl Store {
     /// ```text
     /// GOAL: a new monthly-even schedule's months are whole units of its
     ///       currency, and what an earlier version journaled never moves.
-    /// SOURCE: BS-prepaid-4, BS-format-1, BS-entry-8; D-72 (owner,
+    /// SOURCE: BS-prepaid-4, WB-format-2, BS-entry-8; D-72 (owner,
     ///         2026-11-08).
     /// INVARIANTS:
     ///   1. The rule is a fact of the books when the schedule is written:

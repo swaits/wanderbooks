@@ -8,7 +8,7 @@
 //! ```text
 //! GOAL: the decision ("no 1099" included) and how each payment was made
 //!       are kept as records, and no version ever misreads them.
-//! SOURCE: BS-1099-1, BS-format-1; ledger_store::form1099 INVARIANTS 1-5.
+//! SOURCE: BS-1099-1, WB-format-2; ledger_store::form1099 INVARIANTS 1-5.
 //! ```
 
 use chrono::NaiveDate;

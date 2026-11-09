@@ -12,7 +12,7 @@
 //! SOURCE: BS-arap-2 (a document keeps no figure of its own); BS-arap-5
 //!         (the direct write-off); BS-arap-6 (settlement); BS-ledger-5,
 //!         BS-ledger-6 (reversal and void); BS-period-2 (a closed period
-//!         takes no postings); BS-format-1 (the invoice.sent line).
+//!         takes no postings); WB-format-2 (the invoice.sent line).
 //! ```
 //!
 //! Every test compares the whole ledger to a clone taken before a refused

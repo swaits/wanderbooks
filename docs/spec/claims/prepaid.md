@@ -10,6 +10,12 @@ Rules: B-16.
 
 **bookspec:** `BS-prepaid-1`
 
+**Pick (BS-prepaid-2):** `daily`, the owner, 2026-10-20, D-11 and D-37
+
+**Pick (BS-prepaid-3):** `start-on-the-first`, the owner, 2026-10-20, D-37
+
+**Pick (BS-prepaid-4):** `minor-unit-for-new-schedules`, the owner, 2026-11-08, D-72
+
 **Claims:** yes
 
 **Pick:** new schedules spread by the day (`daily`), the owner, D-11 confirmed in D-37, 2026-10-20; an equal-months schedule starts on the 1st of a month for prepaid expenses and deferred revenue alike (the owner, D-37, 2026-10-20); new monthly-even schedules round to the currency's minor unit (the owner, D-72, 2026-11-08).

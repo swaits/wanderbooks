@@ -30,6 +30,10 @@ Lean `trial_balance_iff`, `Reachable.trial_balance`,
 
 **bookspec:** `BS-statement-3`
 
+**Pick (BS-statement-6):** `direct`, the owner, 2026-10-20
+
+**Pick (BS-statement-7):** `constructive`, the owner, 2026-10-20, D-42
+
 **Claims:** partly (bookspec's record states rules 1-12; the picks and the product surface are below)
 
 **Pick:** the direct method; an entry's cash allocated to its sections in the order operating, investing, financing (CONVENTION, the ASC silent, disclosed); within a section, the cash split among its kinds in the order the rest of the section's kinds, interest received, interest paid (CONVENTION, as the engine splits it); what a member or a lender pays or receives for the company presented as constructive cash, borrowed (or contributed) and spent (the owner, D-42, 2026-10-20, revising D-35's first point); a payment shared between a government and others split by their resolved shares, the government's part rounded half to even to the base currency's places and the rest exact (CONVENTION); payroll entries keep their (d) class whoever they name (CONVENTION).
@@ -152,6 +156,8 @@ with `books.close_period`, whose entries are never in the statement.
 
 **bookspec:** `BS-statement-4`
 
+**Pick (BS-statement-8):** `year-through-as-of`, the owner, 2026-10-20, D-36
+
 **Claims:** partly (bookspec's record states the as-of principle and the calendar-year counting; the CPA package itself is wanderbooks product, below)
 
 **Pick:** the 1099 worksheet stops at as_of too (the owner, 2026-10-20, plan D-36).
@@ -207,7 +213,11 @@ given no accounts, uses the settings', as a package given none does.
 
 **bookspec:** `BS-statement-5`
 
+**Pick (BS-statement-9):** `one-project-per-line`, the owner, 2026-10-22, D-43
+
 **Claims:** partly (bookspec's record states the class, the figures, on-spec and document-line rules; the project facts and the snapshot presentation are wanderbooks product, below)
+
+**Pick (BS-statement-5):** `project-is-a-class`, the owner, 2026-10-21.
 
 **Pick:** a project is a class (the owner, 2026-10-21: "a Projects page that treats a class as a project ... Projects are entities too and can have name, description, whatever other metadata you think they should have"; the convention `link-to-projects` in the books: "whenever applicable, we link things to [projects]"); an invoice's or bill's lines take a project, each line one or none (the owner, 2026-10-22, plan D-43).
 

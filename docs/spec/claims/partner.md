@@ -14,6 +14,15 @@ Rules: B-13, B-26, B-35, B-36.
 
 **Pick:** a share is rounded to the base currency's minor unit by largest remainder, a tied odd unit to the member the count's first close listed first (the owner, 2026-10-13; closes made before then replay with the last member absorbing it); members closes are counted cumulatively from the company's first close (D-10, 2026-10-16); the statement of members' equity splits unclosed earnings the same running way (D-38, 2026-10-20); a prepaid service contract credited straight to capital is contributed property, while a prepaid service a member paid a vendor for on the company's behalf, booked through Due to Shareholders, is cash (the owner, 2026-10-15); a period closes at the shares in force at the close.
 
+**Pick (BS-partner-5):** `largest-remainder-first-listed`, the owner, 2026-10-13.
+
+**Pick (BS-partner-6):** `cumulative-from-first-close`, the owner, D-10, 2026-10-16.
+
+**Pick (BS-partner-7):** `running-split`, the owner, D-38, 2026-10-20.
+**Pick (BS-partner-15):** `contract-is-property-vendor-paid-is-cash`, the owner, 2026-10-15.
+
+**Pick (BS-partner-16):** `close-at-the-change`, the owner, 2026-10-16.
+
 **Enforced:** `CloseTo::Members`, `CloseTo::MembersCumulative`,
 `Ledger::members_regime`, `Regime::allocate`,
 `periods::allocate_cumulative`, `kernel::apportion_cumulative`,
@@ -98,6 +107,9 @@ the same capital before and after a close (in whole yen on a yen book).
 journal (the owner, 2026-10-15); any party may have its TIN in the
 vault, whatever its roles (the owner, 2026-10-15); a party's last four
 is its TIN facts', else its W-9 facts'.
+
+**Pick (BS-partner-8):** `outside-the-books`, the owner, 2026-10-15.
+
 
 **Enforced:** `crate::parties` (has_full_tin, check_text, W9Facts::check,
 W4Facts::check), `Ledger::add_party`, `update_party`, `set_party_role`,
@@ -292,6 +304,14 @@ owner, 2026-10-20); property distributed counts at the books'
 carrying amount; party totals take basis cash by default, or all,
 always labelled.
 
+**Pick (BS-partner-9):** `cash-cards-and-financing`, the owner, 2026-10-20.
+
+**Pick (BS-partner-10):** `capital-movement-counted-once`, the owner, 2026-10-15 and 2026-10-20.
+
+**Pick (BS-partner-11):** `books-carrying-amount`, the owner, 2026-10-20.
+
+**Pick (BS-partner-12):** `labelled-cash-default-or-all`, the owner, 2026-10-20.
+
 **Enforced:** `kernel::party_target`, `kernel::reverse_target`,
 `shares::{target, split, resolve}`, `parties::{flow, money_accounts,
 card_accounts, MoneyAccounts::for_parties, activity_with, Activity::totals,
@@ -375,6 +395,11 @@ cumulatively, D-38's rule (the owner, 2026-10-22); property
 contributed to a prepaid account with no fixed asset for it enters at
 its book amount, with a note (P3 review, 2026-10-21; the CPA to
 confirm).
+
+**Pick (BS-partner-13):** `tax-basis-beside-book`, the owner, D-41, 2026-10-20.
+
+**Pick (BS-partner-14):** `running-cumulative`, the owner, D-38's rule applied 2026-10-22.
+**Pick (BS-partner-17):** `book-amount-with-note`, the owner, P3 review, 2026-10-21.
 
 **Enforced:** `ledger_core::tax_capital::tax_basis_capital`;
 `ledger-package` `k1_tax` (`k1-tax-basis-capital.csv` in the CPA

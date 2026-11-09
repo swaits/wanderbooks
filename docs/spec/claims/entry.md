@@ -10,6 +10,8 @@ Rules: B-1, B-2, B-21, B-28, B-43.
 
 **bookspec:** `BS-entry-1`
 
+**Pick (BS-entry-6):** `check-when-line-added`, the owner, 2026-10-13
+
 **Claims:** yes
 
 **Pick:** a line's account must exist and take postings when the line is added to a draft, not only when the entry posts: CHOICE (the owner, 2026-10-13).
@@ -59,6 +61,10 @@ None.
 ## B-28 What new commands take: four-digit years, amounts a line can carry
 
 **bookspec:** `BS-entry-4`
+
+**Pick (BS-entry-7):** `refuse-rather-than-crash`, the owner, 2026-10-16
+
+**Pick (BS-entry-8):** `bounds-bind-commands-never-replay`, the owner, 2026-10-17
 
 **Claims:** yes
 
@@ -177,6 +183,7 @@ pinned; every tool over every old book).
 ## B-43 A draft waits on its evidence, and one that will never post can be discarded
 
 **bookspec:** `BS-entry-5`
+
 
 **Claims:** partly (bookspec's record states the evidence gate's principle, the draft state as a note and the discard; the gate's function, the policy settings, the states' names and the surfaces are wanderbooks product, below)
 

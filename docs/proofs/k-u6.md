@@ -113,11 +113,15 @@ traceability gate, `crates/ledger-core/tests/bookspec/traceability.rs`):
   rounded side is a whole multiple of the step, and a zero `a` share
   leaves the whole to the rest.
 - `percent_of_refuses_no_whole`: a zero or negative whole, a zero ratio
-  and a non-positive step are `None`, never a division by zero.
+  and a non-positive step are `None`, never a division by zero. A
+  negative step refuses both functions.
 - `decimal_ratio_at_the_edges`: `Decimal::MAX` (a part past the range
   refuses; a split either refuses or sums), scale 28 (a tiny part is
   zero, no negative zero; a ratio of one is 100), a whole past the range
-  (a percent under a unit is zero), and a zero amount split.
+  (a percent under a unit is zero), and a zero amount split whose two
+  parts are asserted to be `+0` (a checked subtraction once handed the
+  rest back as `-0`, which equality hides and a sign test does not). A
+  zero part over a positive whole is likewise a `+0` percent.
 
 All pass with the rest of `kernel_bridge`.
 

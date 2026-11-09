@@ -191,6 +191,9 @@ proptest! {
             kernel::split_ratio(amount, Decimal::from(a), Decimal::from(b), step, mode).unwrap();
         prop_assert_eq!(part + rest, amount);
         prop_assert!((part % step).is_zero(), "the rounded side is a whole multiple");
+        if rest.is_zero() {
+            prop_assert!(!rest.is_sign_negative(), "a zero rest is +0");
+        }
         if a == 0 {
             prop_assert!(part.is_zero());
             prop_assert_eq!(rest, amount);
@@ -268,7 +271,15 @@ fn percent_of_refuses_no_whole() {
             None
         );
         assert_eq!(
+            kernel::percent_of(Decimal::ONE, Decimal::ONE, -step(1), mode),
+            None
+        );
+        assert_eq!(
             kernel::split_ratio(Decimal::ONE, Decimal::ZERO, Decimal::ZERO, step(2), mode),
+            None
+        );
+        assert_eq!(
+            kernel::split_ratio(Decimal::ONE, Decimal::ONE, Decimal::from(2), -step(2), mode),
             None
         );
         assert_eq!(
@@ -324,15 +335,57 @@ fn decimal_ratio_at_the_edges() {
             assert_eq!(part + rest, Decimal::MAX);
         }
     }
-    // A zero amount splits into two zero parts.
-    assert_eq!(
-        kernel::split_ratio(
-            Decimal::ZERO,
-            Decimal::ONE,
-            Decimal::from(2),
-            step(2),
-            Rounding::HalfToEven
-        ),
-        Some((Decimal::ZERO, Decimal::ZERO))
+    // A zero amount splits into two zero parts, and both are +0: a
+    // checked subtraction used to hand the rest back as -0, which equality
+    // hides but a sign test does not.
+    let (part, rest) = kernel::split_ratio(
+        Decimal::ZERO,
+        Decimal::ONE,
+        Decimal::from(2),
+        step(2),
+        Rounding::HalfToEven,
+    )
+    .expect("a zero amount splits");
+    assert_eq!((part, rest), (Decimal::ZERO, Decimal::ZERO));
+    assert!(part.is_zero() && !part.is_sign_negative());
+    assert!(
+        rest.is_zero() && !rest.is_sign_negative(),
+        "a zero rest is +0"
     );
+
+    // The same for a negative-zero amount, whose sign bit a subtraction can
+    // carry: both parts come back +0.
+    let negative_zero = -Decimal::ZERO;
+    assert!(negative_zero.is_sign_negative());
+    let (part, rest) = kernel::split_ratio(
+        negative_zero,
+        Decimal::ONE,
+        Decimal::from(2),
+        step(2),
+        Rounding::HalfToEven,
+    )
+    .expect("a negative-zero amount splits");
+    assert!(part.is_zero() && !part.is_sign_negative());
+    assert!(
+        rest.is_zero() && !rest.is_sign_negative(),
+        "a zero rest is +0"
+    );
+
+    // A zero part over a positive whole is a zero percent, never -0.
+    let zero = kernel::percent_of(
+        Decimal::ZERO,
+        Decimal::from(2),
+        step(1),
+        Rounding::HalfToEven,
+    )
+    .expect("a zero part has a percent");
+    assert!(zero.is_zero() && !zero.is_sign_negative());
+    let zero = kernel::percent_of(
+        negative_zero,
+        Decimal::from(2),
+        step(1),
+        Rounding::HalfToEven,
+    )
+    .expect("a negative-zero part has a percent");
+    assert!(zero.is_zero() && !zero.is_sign_negative());
 }

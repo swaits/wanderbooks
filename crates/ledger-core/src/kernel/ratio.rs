@@ -115,5 +115,8 @@ pub fn split_ratio<T: Amount>(amount: T, a: T, b: T, step: T, mode: Rounding) ->
     }
     let part = round_step(share_of(amount, a, whole)?, step, mode)?;
     let rest = amount.checked_sub(part)?;
+    // A checked subtraction can hand back a negative zero (the negated
+    // subtrahend keeps the sign bit); money's zero is always +0.
+    let rest = if rest == T::ZERO { T::ZERO } else { rest };
     Some((part, rest))
 }

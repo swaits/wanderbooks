@@ -188,7 +188,7 @@ fn cash_accounts_are_the_assets_whose_names_say_cash() {
     );
 }
 
-/// FINDING (V-D2): the cash accounts found by name come out in the order
+/// FINDING (V-D2; fixed by the commit that removed this test's ignore): the cash accounts found by name came out in the order
 /// the chart's `HashMap` yields them (`ChartOfAccounts::all` says "order
 /// unspecified"), not in chart order as `card_accounts` does (ascending
 /// account id). `books.digest`'s `unreconciled_accounts` lists accounts in
@@ -198,7 +198,6 @@ fn cash_accounts_are_the_assets_whose_names_say_cash() {
 /// rule rather than a broken one; the expectation here is the order
 /// `card_accounts` already keeps.
 #[test]
-#[ignore = "finding: cash_accounts yields name-matched accounts in HashMap order, so books.digest's unreconciled_accounts order is not stable; expected ascending account id as card_accounts keeps"]
 fn cash_accounts_come_in_chart_order() {
     let dir = test_dir("cash-order");
     let mut s = Store::create(&dir, Currency::USD).unwrap();

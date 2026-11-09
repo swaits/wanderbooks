@@ -45,7 +45,8 @@ pub fn cash_accounts(ledger: &Ledger, configured: &[String]) -> Vec<AccountId> {
             .filter_map(|c| ledger.chart().find_by_code(c).map(|a| a.id))
             .collect();
     }
-    ledger
+    // In chart order, as `card_accounts` is: the chart iterates in no order.
+    let mut found: Vec<AccountId> = ledger
         .chart()
         .all()
         .filter(|a| {
@@ -55,7 +56,9 @@ pub fn cash_accounts(ledger: &Ledger, configured: &[String]) -> Vec<AccountId> {
                 && CASH_WORDS.iter().any(|w| n.contains(w))
         })
         .map(|a| a.id)
-        .collect()
+        .collect();
+    found.sort_unstable();
+    found
 }
 
 /// The card accounts (`ledger_core::parties::card_accounts`: the

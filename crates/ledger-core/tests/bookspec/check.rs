@@ -95,7 +95,10 @@ pub(crate) fn check(b: &Books<'_>, x: &Expect) -> Option<&'static str> {
         ex.id
     );
     if let Some(want) = &x.refused
-        && matches!(q, "vendor_1099" | "iif_lines" | "iif_changes" | "return_tin")
+        && matches!(
+            q,
+            "vendor_1099" | "iif_lines" | "iif_changes" | "return_tin"
+        )
     {
         match b.answer(&x.query()) {
             Err(r) => assert_eq!(&r.reason, want, "{}: {q} refused ({})", ex.id, r.reason),

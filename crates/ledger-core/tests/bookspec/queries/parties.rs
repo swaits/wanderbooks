@@ -528,9 +528,11 @@ pub(crate) fn check_return_tin(b: &Books<'_>, x: &Expect) {
         .return_tin(party)
         .unwrap_or_else(|r| panic!("{}: return_tin refused ({})", ex.id, r.reason));
     assert_eq!(
-        got, x.figures(&ex.id)["tin"],
+        got,
+        x.figures(&ex.id)["tin"],
         "{}: {:?}'s return TIN",
-        ex.id, x.party
+        ex.id,
+        x.party
     );
 }
 

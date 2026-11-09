@@ -361,8 +361,13 @@ fn a_jpy_close_is_checked_at_the_allocations_unit() {
     let e = l.create_entry(d(1, 5), "sale");
     l.add_line(e, cash, Side::Debit, Money::new(dec("101"), Currency::JPY))
         .unwrap();
-    l.add_line(e, revenue, Side::Credit, Money::new(dec("101"), Currency::JPY))
-        .unwrap();
+    l.add_line(
+        e,
+        revenue,
+        Side::Credit,
+        Money::new(dec("101"), Currency::JPY),
+    )
+    .unwrap();
     l.post_entry(e).unwrap();
     let jan = l.create_period("2026-01", d(1, 1), d(1, 31)).unwrap();
     let members = caps
@@ -375,7 +380,10 @@ fn a_jpy_close_is_checked_at_the_allocations_unit() {
         .collect();
     l.close_period_to(jan, &CloseTo::Members(members)).unwrap();
     // 101 yen at 50/50 splits 51 / 50 whole yen (exact 50.5 each).
-    let balances: Vec<Decimal> = caps.iter().map(|&a| l.account_balance(a).unwrap()).collect();
+    let balances: Vec<Decimal> = caps
+        .iter()
+        .map(|&a| l.account_balance(a).unwrap())
+        .collect();
     assert_eq!(balances, [dec("51"), dec("50")]);
     let f = run(&l, &Settings::default(), &all_receipts(&l), d(12, 31));
     assert!(
@@ -383,6 +391,60 @@ fn a_jpy_close_is_checked_at_the_allocations_unit() {
         "{:?}",
         codes(&f)
     );
+}
+
+/// BS-partner-1 statement 6 and WB-ledger-16 invariant 8: before the
+/// true-up, a legacy last-absorbs close's largest legitimate drift is
+/// derived (the rule states the per-member facts, not the bound): with
+/// n members and unit u, each member but the last was rounded to within
+/// u/2, and the last absorbed the sum of those roundings, up to
+/// (n-1)*u/2 -- so 3u/2 with four members and 2u with five (floored at
+/// u, which statement 6's per-close and run allowances give). At that
+/// drift a close is not flagged; one unit past it, it is. After the
+/// true-up, BS-partner-1 statement 5's strict bound holds instead: a
+/// drift of a unit or more is flagged.
+#[test]
+fn a_legacy_last_absorbs_close_drifts_by_member_count_before_its_true_up() {
+    let unit = dec("0.01");
+    // A split of `n` members whose last-listed member carries `drift`
+    // (running against an exact 1.00) and whose others are exact.
+    let split = |n: usize, drift: &str| -> Vec<MemberSplit> {
+        (0..n)
+            .map(|i| {
+                let running = if i + 1 == n {
+                    dec("1.00") + dec(drift)
+                } else {
+                    dec("1.00")
+                };
+                MemberSplit {
+                    capital: 3001 + i as u64,
+                    share: dec("0.25"),
+                    part: running,
+                    running,
+                    exact: dec("1.00"),
+                }
+            })
+            .collect()
+    };
+    // Four members: largest legitimate drift 3 * 0.005 = 0.015, either way.
+    assert!(audit::check_split(1, "Jan", &split(4, "0.015"), unit, false).is_empty());
+    assert!(audit::check_split(1, "Jan", &split(4, "-0.015"), unit, false).is_empty());
+    // One unit past it (0.025) is flagged, exactly one member.
+    let f = audit::check_split(1, "Jan", &split(4, "0.025"), unit, false);
+    assert_eq!(codes(&f), ["close_split_drifts"]);
+    // Five members: largest legitimate drift 4 * 0.005 = 0.02.
+    assert!(audit::check_split(1, "Jan", &split(5, "0.02"), unit, false).is_empty());
+    assert!(audit::check_split(1, "Jan", &split(5, "-0.02"), unit, false).is_empty());
+    let f = audit::check_split(1, "Jan", &split(5, "0.03"), unit, false);
+    assert_eq!(codes(&f), ["close_split_drifts"]);
+    // After the true-up the same splits answer to statement 5: the
+    // four-member split at its legacy bound is past one unit, so it is
+    // flagged, and one just under a unit is not.
+    let f = audit::check_split(1, "Jan", &split(4, "0.015"), unit, true);
+    assert_eq!(codes(&f), ["close_split_drifts"]);
+    assert!(audit::check_split(1, "Jan", &split(4, "0.009"), unit, true).is_empty());
+    let f = audit::check_split(1, "Jan", &split(4, "0.01"), unit, true);
+    assert_eq!(codes(&f), ["close_split_drifts"]);
 }
 
 /// BS-partner-1 statement 6 and 8 (WB-partner-1): a count is trued up by

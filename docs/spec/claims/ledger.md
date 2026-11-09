@@ -522,9 +522,17 @@ INVARIANTS:
      unit or more is a finding. The unit is the allocation's own
      (`Currency::allocation_unit`, on `allocation_places`: a whole yen
      for JPY, the finest a line carries for a code with no minor unit),
-     never a cent taken separately. Before that true-up the count may still
-     carry the rounding of closes made under the older rules, so only a
-     drift beyond one unit is. Closes under the older rules are not read.
+     never a cent taken separately. Before that true-up the count may
+     still carry the rounding of closes made under the older rules, so
+     only a drift beyond B(n) is a finding, where B(n) = max(one unit,
+     (n-1) half-units) for n members: a unit with three or fewer
+     members, 1.5 units with four, 2 units with five. B(n) is DERIVED:
+     BS-partner-1 statement 6 states the per-member facts it comes from
+     (a last-absorbs close rounded each member but the last to within
+     half a unit, and the last absorbed up to half a unit for each of
+     the others; under a unit for each run break and each per-close
+     close), not the bound itself. Closes under the older rules are not
+     read.
 SCENARIOS:
   1. The same books audited twice through one day: one run, one
      workpaper; the second call files and journals nothing.
@@ -556,6 +564,7 @@ journal feature `audits`.
 `control_accounts_report_differences_unattached_lines_and_overpaid_documents`,
 `a_close_split_drifts_by_the_regime_it_was_made_under`,
 `a_jpy_close_is_checked_at_the_allocations_unit`,
+`a_legacy_last_absorbs_close_drifts_by_member_count_before_its_true_up`,
 `a_count_is_trued_up_by_the_first_cumulative_close_that_posts`,
 `a_reversal_without_its_own_receipt_is_info_and_only_when_the_policy_would_cover_it`,
 `the_bar_setting_parses_what_it_names_and_refuses_the_rest`,

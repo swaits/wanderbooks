@@ -375,7 +375,7 @@ impl BooksServer {
         name = "books.bills_due",
         title = "Bills due",
         description = described(
-            "What to pay and when: every open bill due on or before a day (through; omitted: today), due date first, with its vendor, the vendor's invoice number and what it still owes, and the early-payment discount each vendor's terms give (the last day it is open, the most off, and what to pay to take it). by_date is the running total of what falls due through each date, for planning. The figures are read from the bills' ledger lines that stand (B-38).",
+            "What to pay and when: every open bill due on or before a day (through; omitted: today), due date first, with its vendor, the vendor's invoice number and what it still owes, and the early-payment discount each vendor's terms give (the last day it is open, the most off, and what to pay to take it). by_date is the running total of what falls due through each date, for planning. The figures are read from the bills' ledger lines that stand (BS-arap-2).",
             ledger_core::calendar::PeriodKind::AsOf
         ),
         annotations(read_only_hint = true, open_world_hint = false)

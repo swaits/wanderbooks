@@ -419,7 +419,7 @@ impl Snap {
 }
 
 /// The note on contribution: what it counts and what it leaves out.
-pub const CONTRIBUTION_NOTE: &str = "Revenue less this project's direct costs: every expense line tagged to it, fixed and variable alike (what management accounting calls a segment margin, not a variable-cost contribution margin). Company overhead that isn't tagged to a project (rent, software, insurance, the owner's time) isn't counted, so a project in the black can still leave the company in the red. A management-accounting view (rules.md B-37 item 7), not a GAAP figure.";
+pub const CONTRIBUTION_NOTE: &str = "Revenue less this project's direct costs: every expense line tagged to it, fixed and variable alike (what management accounting calls a segment margin, not a variable-cost contribution margin). Company overhead that isn't tagged to a project (rent, software, insurance, the owner's time) isn't counted, so a project in the black can still leave the company in the red. A management-accounting view (BS-statement-5 items 2 and 4), not a GAAP figure.";
 
 /// The snapshot: a header with where it stands to date and the to date /
 /// fiscal year switch, then its tiles (`shown`: to date, or for `year`,

@@ -2153,37 +2153,39 @@ impl Ledger {
     pub(crate) fn origin_exemption(&self, entry: &JournalEntry) -> Option<&'static str> {
         let id = entry.id();
         if entry.reversal_of().is_some() {
-            return Some("a reversal: its evidence is its original's (B-43, D-47, D-12)");
+            return Some("a reversal: its evidence is its original's (BS-entry-5, D-47, D-12)");
         }
         if self.is_closing_entry(id) {
-            return Some("a period's closing entry: derived from the books (B-43)");
+            return Some("a period's closing entry: derived from the books (BS-entry-5)");
         }
         if self.schedule_month_of(id).is_some() {
-            return Some("a schedule month's posting: the schedule is the evidence (B-43)");
+            return Some("a schedule month's posting: the schedule is the evidence (BS-entry-5)");
         }
         if self
             .asset_runs
             .values()
             .any(|runs| runs.iter().any(|r| r.entry == id))
         {
-            return Some("a depreciation run: the asset's schedule is the evidence (B-43)");
+            return Some("a depreciation run: the asset's schedule is the evidence (BS-entry-5)");
         }
         match self.entry_origins.get(&id) {
             Some(crate::evidence::Origin::AssetDisposal) => {
-                return Some("an asset's disposal: the register is the evidence (B-43)");
+                return Some("an asset's disposal: the register is the evidence (BS-entry-5)");
             }
             Some(crate::evidence::Origin::PayrollRemittance) => {
-                return Some("a payroll tax remittance: the payroll runs are the evidence (B-43)");
+                return Some(
+                    "a payroll tax remittance: the payroll runs are the evidence (BS-entry-5)",
+                );
             }
             None => {}
         }
         if (0..entry.lines().len()).any(|i| self.line_docs.contains_key(&(id, i))) {
             return Some(
-                "a document's entry (invoice, bill, payment, write-off): the document is the evidence (B-43)",
+                "a document's entry (invoice, bill, payment, write-off): the document is the evidence (BS-entry-5)",
             );
         }
         if self.payroll_runs.values().any(|r| r.entry_id == id) {
-            return Some("a payroll run: the run is the evidence (B-43)");
+            return Some("a payroll run: the run is the evidence (BS-entry-5)");
         }
         None
     }

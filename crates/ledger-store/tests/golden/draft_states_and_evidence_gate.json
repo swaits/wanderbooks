@@ -118,7 +118,7 @@
       "receipts": 0,
       "requirement": {
         "decision": "exempt",
-        "source": "a reversal: its evidence is its original's (B-43, D-47, D-12)"
+        "source": "a reversal: its evidence is its original's (BS-entry-5, D-47, D-12)"
       }
     }
   ],
@@ -220,7 +220,7 @@
     "receipts": 0,
     "requirement": {
       "decision": "exempt",
-      "source": "a period's closing entry: derived from the books (B-43)"
+      "source": "a period's closing entry: derived from the books (BS-entry-5)"
     }
   },
   "after_close": {

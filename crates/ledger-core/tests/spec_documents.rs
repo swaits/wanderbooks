@@ -1637,6 +1637,60 @@ fn doc_line(
     }
 }
 
+/// BS-arap-3 statement 1: custom terms are due on the date they give, not
+/// on the document's own date. A document dated 2026-11-01 on "Due
+/// 2026-11-15" is due on the 15th (through Terms::due_date and through the
+/// stored document); an agreed date before the document's is refused like
+/// any due date before its document; terms read back from storage (even
+/// written before they carried the date) keep the date.
+#[test]
+fn custom_terms_are_due_on_the_date_they_give() {
+    let on = d(2026, 11, 1);
+    let agreed = d(2026, 11, 15);
+    let terms = Terms::parse("Due 2026-11-15").unwrap();
+    assert_eq!(terms.agreed_date(), Some(agreed));
+    assert_eq!(terms.due_date(on).unwrap(), agreed);
+    // The same, whichever day the document is dated (up to the 15th).
+    assert_eq!(terms.due_date(d(2026, 11, 15)).unwrap(), agreed);
+    assert_eq!(terms.due_date(d(2026, 1, 3)).unwrap(), agreed);
+    // Dated after the agreed day, the terms contradict the document.
+    assert!(terms.due_date(d(2026, 11, 16)).is_err());
+    // Other kinds give no agreed date.
+    assert_eq!(Terms::parse("Net 30").unwrap().agreed_date(), None);
+
+    // Through the engine: an invoice and a bill on those terms.
+    let mut b = books();
+    let invoice =
+        b.l.create_invoice_with(
+            b.customer,
+            on,
+            terms.due_date(on).unwrap(),
+            line("Work", 10_000),
+            InvoiceFields {
+                terms: Some(terms.clone()),
+                ..InvoiceFields::default()
+            },
+        )
+        .unwrap();
+    let stored = b.l.get_invoice(invoice).unwrap();
+    assert_eq!(stored.due_date, agreed);
+    assert_eq!(stored.terms.as_ref().unwrap().describe(), "Due 2026-11-15");
+
+    // Storage round-trips the date; an older stored form, which had the
+    // text only, reads back with the date from its text.
+    let json = serde_json::to_value(&terms).unwrap();
+    assert_eq!(json["agreed"], "2026-11-15");
+    assert_eq!(serde_json::from_value::<Terms>(json).unwrap(), terms);
+    let old = serde_json::json!({"kind": "custom", "text": "Due 2026-11-15"});
+    assert_eq!(serde_json::from_value::<Terms>(old).unwrap(), terms);
+    // Custom terms with no readable date are refused, not invented.
+    let none = serde_json::json!({"kind": "custom", "text": "Due"});
+    assert!(serde_json::from_value::<Terms>(none).is_err());
+    // A date on any other kind is refused.
+    let stray = serde_json::json!({"kind": {"net": 30}, "text": "Net 30", "agreed": "2026-11-15"});
+    assert!(serde_json::from_value::<Terms>(stray).is_err());
+}
+
 /// BS-arap-3 SCENARIOS: Net 30, Net 15 EOM, a leap day, due on receipt, a
 /// custom date, and the 9999-12 bound refused instead of panicking.
 #[test]

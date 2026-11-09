@@ -496,6 +496,68 @@ fn terms_fall_back_in_order() {
     assert_eq!(bill["terms"], "Net 10", "{bill}");
 }
 
+/// BS-arap-3 statement 1 through the tool: terms "Due 2026-11-15", from
+/// the caller or from a party's defaults, make an invoice or a bill due on
+/// the 15th, not on the document's own date; a document dated after the
+/// agreed day is refused and writes nothing.
+#[test]
+fn custom_terms_are_due_on_the_date_they_give() {
+    let books = Books::new("documents-custom-terms");
+    let mut m = Mcp::spawn(&books);
+    let harbor = m.customer("Harbor Coffee");
+    let line = json!([{"description": "Work", "amount": "100.00"}]);
+    let invoice = |date: &str, extra: Value| {
+        let mut args = json!({"customer": harbor.to_string(), "date": date,
+                              "lines": line, "confirmed": true});
+        for (k, v) in extra.as_object().unwrap() {
+            args[k] = v.clone();
+        }
+        args
+    };
+
+    // Terms given.
+    let given = m.call(
+        "books.create_invoice",
+        invoice("2026-11-01", json!({"terms": "Due 2026-11-15"})),
+    );
+    assert_eq!(given["due_date"], "2026-11-15", "{given}");
+    assert_eq!(given["terms"], "Due 2026-11-15", "{given}");
+
+    // The customer's default terms.
+    let party = m.party_of("Harbor Coffee");
+    m.call(
+        "books.update_party",
+        json!({"party": party.to_string(), "default_terms_as_customer": "Due 2026-12-01"}),
+    );
+    let by_party = m.call("books.create_invoice", invoice("2026-11-02", json!({})));
+    assert_eq!(by_party["due_date"], "2026-12-01", "{by_party}");
+    assert_eq!(by_party["terms"], "Due 2026-12-01", "{by_party}");
+
+    // A bill, terms given.
+    let coast = m.vendor("Coastline Hosting");
+    m.expense("6500", "Hosting");
+    let file = m.upload(b"coastline", "coastline.pdf", "receipt");
+    let bill = m.call(
+        "books.create_bill",
+        json!({"vendor": coast.to_string(), "date": "2026-11-01", "vendor_ref": "CH-1",
+               "terms": "Due 2026-11-20",
+               "lines": [{"description": "Hosting", "amount": "100.00", "account": "6500"}],
+               "upload_id": file, "confirmed": true}),
+    );
+    assert_eq!(bill["due_date"], "2026-11-20", "{bill}");
+
+    // Dated after the agreed day: refused.
+    let before = books.journal();
+    let late = m
+        .try_call(
+            "books.create_invoice",
+            invoice("2026-11-16", json!({"terms": "Due 2026-11-15"})),
+        )
+        .unwrap_err();
+    assert!(late.contains("due"), "{late}");
+    assert_eq!(books.journal(), before, "a refusal writes nothing");
+}
+
 /// A customer given by id and by name is the same record (the old
 /// `party_id` spelling is gone, P5); a number that is one record's id and
 /// another's name is refused, never guessed.

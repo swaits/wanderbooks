@@ -9,13 +9,21 @@
 //! pinned record has (k from 1 to the length of that list), and the old
 //! vocabulary (`item`, `rule`, `INVARIANT`, `SCENARIO`, `r`, or any
 //! other word that is not exactly `statement`, `invariant` or
-//! `scenario`) after a bookspec id, followed by a number, fails.
+//! `scenario`) after a bookspec id fails, whether a number follows it or
+//! the word stands bare (`BS-arap-3 SCENARIOS: ...`, on the id's line).
+//!
+//! A product rule's id (`WB-<area>-<n>`) takes the same check against the
+//! parts its own claim states: the numbered `INVARIANTS:` and
+//! `SCENARIOS:` lists of its spec block in `docs/spec/claims/*.md`. A
+//! product rule with no such list takes no sub-number, and has no
+//! statements (those are bookspec's).
 //!
 //! A reference may be a list ("statements 5, 11 and 13"), a range
 //! ("statements 27-30"), parenthesised, wrapped across lines behind a
-//! comment prefix, or continued on the same id ("invariant 2 and
-//! statement 11"); each number is one reference checked. The number
-//! checked is floored and printed. This file is not scanned: its
+//! comment prefix, backticked after the id (`` `BS-asset-1` statements
+//! 23-24 ``), or continued on the same id ("invariant 2 and statement
+//! 11"); each number, each member of a range, is one reference checked.
+//! The count is floored and printed. This file is not scanned: its
 //! self-tests quote the forms they must refuse.
 
 use crate::*;
@@ -24,16 +32,17 @@ fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-/// How many references the scan must find, at least. Raise it, in the
-/// same commit, when references are added; it never falls.
-const CHECKED_FLOOR: usize = 320;
+/// How many references the scan must find, at least: exactly the number
+/// found when it was last set, so none can vanish silently. Raise it, in
+/// the same commit, when references are added; it never falls.
+const CHECKED_FLOOR: usize = 361;
 
 /// The tracked file this check does not scan: its own self-tests quote
 /// the forms it refuses.
 const SELF: &str = "crates/ledger-core/tests/bookspec/sub_refs.rs";
 
 /// The parts a record has: its statements, invariants and scenarios.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 struct Parts {
     statements: usize,
     invariants: usize,
@@ -54,6 +63,84 @@ fn record_parts() -> BTreeMap<String, Parts> {
             )
         })
         .collect()
+}
+
+/// The parts each product rule `WB-<area>-<n>` states in
+/// `docs/spec/claims/*.md`: under its `**WB-…**` paragraph, the numbered
+/// items (`  1. …`) below `INVARIANTS:` and below `SCENARIOS:`. A list
+/// must count 1, 2, 3, … : an irregular one is a failure, not a guess.
+fn product_rule_parts(root: &Path) -> BTreeMap<String, Parts> {
+    let dir = root.join("docs/spec/claims");
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .expect("docs/spec/claims exists")
+        .map(|e| e.expect("a directory entry").path())
+        .filter(|p| p.extension().is_some_and(|x| x == "md"))
+        .collect();
+    files.sort();
+    let mut out: BTreeMap<String, Parts> = BTreeMap::new();
+    for file in files {
+        let text = std::fs::read_to_string(&file).expect("a claims file reads");
+        let mut current: Option<String> = None;
+        // 'i' under INVARIANTS:, 'c' under SCENARIOS:, none elsewhere.
+        let mut mode: Option<char> = None;
+        for line in text.lines() {
+            if let Some(rest) = line.strip_prefix("**WB-") {
+                let id: String = rest.chars().take_while(|c| *c != '*').collect();
+                current = Some(format!("WB-{id}"));
+                out.entry(format!("WB-{id}")).or_default();
+                mode = None;
+                continue;
+            }
+            if line.starts_with('#') {
+                current = None;
+                mode = None;
+                continue;
+            }
+            let Some(id) = &current else { continue };
+            if line == "INVARIANTS:" {
+                mode = Some('i');
+            } else if line == "SCENARIOS:" {
+                mode = Some('c');
+            } else if line.starts_with("```")
+                || line.split_once(':').is_some_and(|(head, _)| {
+                    !head.is_empty() && head.chars().all(|c| c.is_ascii_uppercase())
+                })
+            {
+                mode = None;
+            } else if let Some(kind) = mode {
+                let digits: String = line
+                    .strip_prefix("  ")
+                    .unwrap_or("")
+                    .chars()
+                    .take_while(|c| c.is_ascii_digit())
+                    .collect();
+                if !digits.is_empty() && line[2 + digits.len()..].starts_with(". ") {
+                    let p = out.get_mut(id).expect("the rule was entered");
+                    let count = if kind == 'i' {
+                        &mut p.invariants
+                    } else {
+                        &mut p.scenarios
+                    };
+                    assert_eq!(
+                        digits.parse::<usize>().ok(),
+                        Some(*count + 1),
+                        "{}: {id}'s numbered list counts 1, 2, 3, ...: {line:?}",
+                        file.display()
+                    );
+                    *count += 1;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Every id a part can be cited on: bookspec's records and the product
+/// rules of the claims.
+fn all_parts() -> BTreeMap<String, Parts> {
+    let mut parts = record_parts();
+    parts.extend(product_rule_parts(&repo_root()));
+    parts
 }
 
 /// The text with each line's comment prefix and indentation dropped and
@@ -171,17 +258,32 @@ fn number_list(tail: &[char], start: usize) -> (Vec<(usize, usize)>, usize) {
     (out, at)
 }
 
+/// How many references a list of (low, high) numbers is: each number, each
+/// member of a range, once. A range that runs backwards is one.
+fn count_of(nums: &[(usize, usize)]) -> usize {
+    nums.iter()
+        .map(|&(low, high)| if high >= low { high - low + 1 } else { 1 })
+        .sum()
+}
+
 /// Scan `text`; returns the references checked and the problems found.
 fn scan(text: &str, at: &str, parts: &BTreeMap<String, Parts>) -> (usize, Vec<String>) {
     let (flat, starts) = flatten(text);
     let mut checked = 0usize;
     let mut problems = Vec::new();
-    for (pos, _) in flat.match_indices("BS-") {
+    let mut hits: Vec<(usize, &str)> = ["BS-", "WB-"]
+        .iter()
+        .flat_map(|prefix| flat.match_indices(prefix).map(|(pos, _)| (pos, *prefix)))
+        .collect();
+    hits.sort();
+    for (pos, prefix) in hits {
         if flat[..pos].chars().next_back().is_some_and(is_id_char) {
             continue;
         }
-        let rest: Vec<char> = flat[pos + 3..].chars().take(240).collect();
-        // BS-<area>-<n>
+        let after = &flat[pos + 3..];
+        let rest: Vec<char> = after.chars().take(240).collect();
+        let offsets: Vec<usize> = after.char_indices().map(|(b, _)| b).take(240).collect();
+        // <BS|WB>-<area>-<n>
         let mut i = 0;
         while i < rest.len() && (rest[i].is_ascii_lowercase() || rest[i].is_ascii_digit()) {
             i += 1;
@@ -199,9 +301,13 @@ fn scan(text: &str, at: &str, parts: &BTreeMap<String, Parts>) -> (usize, Vec<St
             continue;
         }
         let number: String = rest[digits_from..i].iter().collect();
-        let id = format!("BS-{area}-{number}");
+        let id = format!("{prefix}{area}-{number}");
         let line = line_at(&starts, pos);
-        // Optional 's, optional comma, spaces, optional parenthesis.
+        // Optional closing backtick, optional 's, optional comma, spaces,
+        // optional filler `states`, optional parenthesis.
+        while rest.get(i) == Some(&'`') {
+            i += 1;
+        }
         if rest.get(i) == Some(&'\'') && rest.get(i + 1) == Some(&'s') {
             i += 2;
         }
@@ -214,6 +320,13 @@ fn scan(text: &str, at: &str, parts: &BTreeMap<String, Parts>) -> (usize, Vec<St
         }
         if i == spaces_from {
             continue;
+        }
+        for filler in ["states ", "state "] {
+            let w: Vec<char> = filler.chars().collect();
+            if rest.len() >= i + w.len() && rest[i..i + w.len()] == w[..] {
+                i += w.len();
+                break;
+            }
         }
         if rest.get(i) == Some(&'(') {
             i += 1;
@@ -230,6 +343,17 @@ fn scan(text: &str, at: &str, parts: &BTreeMap<String, Parts>) -> (usize, Vec<St
                 break;
             };
             if rest.get(i) != Some(&' ') || !rest.get(i + 1).is_some_and(|c| c.is_ascii_digit()) {
+                // A bare spec-block word (`BS-arap-3 SCENARIOS: ...`) on
+                // the id's own line is the old vocabulary with no number.
+                let shown_line = offsets
+                    .get(word_from)
+                    .map(|b| line_at(&starts, pos + 3 + b));
+                let upper = word.len() > 1 && word == word.to_ascii_uppercase();
+                if first && kind.is_some() && !new && upper && shown_line == Some(line) {
+                    problems.push(format!(
+                        "{at}:{line}: {id} {word}: the old vocabulary; say `statements`, `invariants` or `scenarios` k-m, as bookspec numbers its parts"
+                    ));
+                }
                 break;
             }
             let (nums, end) = number_list(&rest, i + 1);
@@ -244,19 +368,16 @@ fn scan(text: &str, at: &str, parts: &BTreeMap<String, Parts>) -> (usize, Vec<St
                     Some('i') => (p.invariants, "invariants"),
                     _ => (p.scenarios, "scenarios"),
                 };
+                checked += count_of(&nums);
                 for (low, high) in &nums {
-                    checked += 1;
-                    if *high != *low {
-                        checked += 1;
-                    }
-                    if *low < 1 || *high < 1 || *low > have || *high > have {
+                    if *low < 1 || *high < *low || *high > have {
                         problems.push(format!(
                             "{at}:{line}: {id} {shown}: the record has {have} {name}"
                         ));
                     }
                 }
             } else {
-                checked += nums.len();
+                checked += count_of(&nums);
                 problems.push(format!("{at}:{line}: {id} {shown}: no such rule"));
             }
             i = end;
@@ -277,7 +398,6 @@ fn scan(text: &str, at: &str, parts: &BTreeMap<String, Parts>) -> (usize, Vec<St
             i = k;
             first = false;
         }
-        let _ = first;
     }
     (checked, problems)
 }
@@ -308,7 +428,7 @@ fn tracked_text_files(root: &Path) -> Vec<(String, String)> {
 
 #[test]
 pub(crate) fn every_sub_reference_names_a_part_its_record_has() {
-    let parts = record_parts();
+    let parts = all_parts();
     assert!(!parts.is_empty(), "the pinned bookspec has records");
     let root = repo_root();
     let mut checked = 0usize;
@@ -331,7 +451,7 @@ pub(crate) fn every_sub_reference_names_a_part_its_record_has() {
 }
 
 fn problems_in(text: &str) -> Vec<String> {
-    scan(text, "t", &record_parts()).1
+    scan(text, "t", &all_parts()).1
 }
 
 #[test]
@@ -344,22 +464,22 @@ pub(crate) fn a_statement_the_record_lacks_fails() {
     assert_eq!(problems_in("BS-entry-1 scenario 2").len(), 1);
     assert_eq!(problems_in("BS-nosuch-9 statement 1").len(), 1);
     assert_eq!(
-        scan("BS-entry-1 statement 4", "t", &record_parts()),
+        scan("BS-entry-1 statement 4", "t", &all_parts()),
         (1, vec![])
     );
     assert_eq!(
-        scan("BS-entry-1 invariant 4", "t", &record_parts()),
+        scan("BS-entry-1 invariant 4", "t", &all_parts()),
         (1, vec![])
     );
     assert_eq!(
-        scan("BS-entry-1 scenario 1", "t", &record_parts()),
+        scan("BS-entry-1 scenario 1", "t", &all_parts()),
         (1, vec![])
     );
 }
 
 #[test]
 pub(crate) fn lists_ranges_wraps_and_continuations_are_each_checked() {
-    let parts = record_parts();
+    let parts = all_parts();
     // Every number of a list or range, in the parentheses a comment gives.
     assert_eq!(
         scan("(BS-entry-1 statements 1, 2 and 4)", "t", &parts),
@@ -367,7 +487,15 @@ pub(crate) fn lists_ranges_wraps_and_continuations_are_each_checked() {
     );
     assert_eq!(problems_in("(BS-entry-1 statements 1, 2 and 9)").len(), 1);
     assert_eq!(problems_in("BS-entry-1 statements 2-9").len(), 1);
-    assert_eq!(scan("BS-entry-1 statements 1-4", "t", &parts).0, 2);
+    // A range counts each of its members; a list each of its numbers.
+    assert_eq!(scan("BS-entry-1 statements 1-4", "t", &parts), (4, vec![]));
+    assert_eq!(
+        scan("BS-entry-1 statements 1-2 and 4", "t", &parts),
+        (3, vec![])
+    );
+    assert_eq!(problems_in("BS-entry-1 statements 3-2").len(), 1);
+    assert_eq!(problems_in("BS-nosuch-9 statements 1-3").len(), 1);
+    assert_eq!(scan("BS-nosuch-9 statements 1-3", "t", &parts).0, 3);
     // A reference wrapped across a comment prefix reads as one.
     assert_eq!(problems_in("/// (BS-entry-1\n/// statement 99)").len(), 1);
     assert_eq!(problems_in("//! BS-entry-1 statement\n//!   99").len(), 1);
@@ -416,7 +544,86 @@ pub(crate) fn the_old_vocabulary_fails() {
     ] {
         assert_eq!(problems_in(old).len(), 1, "{old:?} fails");
     }
-    // A product-rule id is no bookspec id, and a bare word is no reference.
-    assert_eq!(problems_in("WB-entry-1 item 2").len(), 0);
+    // A bare word with no number is no better.
+    assert_eq!(problems_in("BS-arap-3 SCENARIOS: Net 30, Net 15").len(), 1);
+    assert_eq!(
+        problems_in("/// BS-arap-3 INVARIANTS: the due date").len(),
+        1
+    );
+    assert_eq!(problems_in("BS-arap-3 SCENARIO").len(), 1);
+    // But only on the id's own line, as the text of a spec block runs on
+    // from its SOURCE line to the next heading.
+    assert_eq!(
+        problems_in("SOURCE: BS-arap-3\nSCENARIOS:\n  1. a").len(),
+        0
+    );
+    assert_eq!(problems_in("SOURCE: BS-arap-3.\nINVARIANTS:").len(), 0);
+}
+
+#[test]
+pub(crate) fn the_old_vocabulary_fails_after_a_closing_backtick() {
+    for old in [
+        "`BS-asset-1` rules 23-24",
+        "(… are `BS-asset-1` rules 23-24.)",
+        "`BS-asset-1` states (rules 25-26: the dates)",
+        "`BS-asset-1`'s item 3",
+        "`BS-asset-1`, INVARIANT 2",
+    ] {
+        assert_eq!(problems_in(old).len(), 1, "{old:?} fails");
+    }
+    // The new vocabulary behind a backtick is checked like any other.
+    let parts = all_parts();
+    assert_eq!(
+        scan("`BS-asset-1` statements 23-24", "t", &parts),
+        (2, vec![])
+    );
+    assert_eq!(
+        scan(
+            "`BS-asset-1` states (statements 25-26: the dates)",
+            "t",
+            &parts
+        ),
+        (2, vec![])
+    );
+    assert_eq!(problems_in("`BS-asset-1` statements 23-99").len(), 1);
+    // Prose after a backticked id is no reference.
+    assert_eq!(
+        scan("`BS-asset-1` states that a rule holds", "t", &parts),
+        (0, vec![])
+    );
+}
+
+#[test]
+pub(crate) fn product_rule_parts_are_the_numbered_lists_of_their_claims() {
+    let parts = all_parts();
+    // WB-ledger-15 states six invariants and seven scenarios.
+    let p = parts
+        .get("WB-ledger-15")
+        .expect("WB-ledger-15 is a product rule");
+    assert_eq!((p.invariants, p.scenarios, p.statements), (6, 7, 0));
+    assert_eq!(scan("WB-ledger-15 invariant 3", "t", &parts), (1, vec![]));
+    assert_eq!(
+        scan("WB-ledger-15 invariants 1-6 and scenario 7", "t", &parts),
+        (7, vec![])
+    );
+    assert_eq!(problems_in("WB-ledger-15 invariant 7").len(), 1);
+    assert_eq!(problems_in("WB-ledger-15 scenario 8").len(), 1);
+    // A product rule has no statements of bookspec's kind.
+    assert_eq!(problems_in("WB-ledger-15 statement 1").len(), 1);
+    // The old vocabulary fails here too.
+    assert_eq!(problems_in("WB-ledger-15 INVARIANT 3").len(), 1);
+    assert_eq!(problems_in("WB-ledger-15 item 2").len(), 1);
+    assert_eq!(problems_in("`WB-ledger-15` rule 2").len(), 1);
+    // A product rule that states no list takes no sub-number.
+    let (id, p) = parts
+        .iter()
+        .find(|(id, p)| id.starts_with("WB-") && p.invariants == 0 && p.scenarios == 0)
+        .expect("some product rule states no list");
+    assert_eq!(problems_in(&format!("{id} invariant 1")).len(), 1, "{id}");
+    assert_eq!((p.statements, p.invariants), (0, 0));
+    // And one that does not exist takes none either.
+    assert_eq!(problems_in("WB-nosuch-9 invariant 1").len(), 1);
+    // A bare product-rule id is no sub-reference.
+    assert_eq!(problems_in("WB-ledger-15").len(), 0);
     assert_eq!(problems_in("the INVARIANT 2 of kernel::settle").len(), 0);
 }

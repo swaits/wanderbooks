@@ -154,12 +154,7 @@ pub(crate) fn refusal(e: &LedgerError) -> String {
         LedgerError::Overpayment(..) => "application_above_owed",
         LedgerError::DiscountNeedsReason { .. } => "discount_needs_reason",
         LedgerError::DiscountOnAssetBill { .. } => "discount_on_asset_bill",
-        // The cash and the discounts the adapter hands over always cover the
-        // applications exactly, so the one way the engine's exactness check
-        // fails is a fee above the cash (BS-arap-6).
-        LedgerError::InvalidSettlement(why) if why.contains("the fee is above the cash") => {
-            "fee_above_cash"
-        }
+        LedgerError::FeeAboveCash { .. } => "fee_above_cash",
         LedgerError::UnbalancedEntry { .. } => "unbalanced",
         LedgerError::TooFewLines => "too_few_lines",
         LedgerError::NegativeAmountLine => "negative_amount",

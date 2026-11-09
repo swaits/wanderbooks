@@ -2553,3 +2553,72 @@ fn discount_on_an_asset_bill_is_refused_with_the_remedy() {
     );
     b.ties(d(2026, 4, 5));
 }
+
+/// A processor cannot keep more than it was paid: a fee above the cash is
+/// refused as its own refusal (`FeeAboveCash`, BS-arap-6) and changes
+/// nothing. A fee equal to the cash is a different refusal (the deposit
+/// would be nothing), and a fee within the cash still posts.
+#[test]
+fn a_fee_above_the_cash_is_refused_and_changes_nothing() {
+    use ledger_core::{Application, DocRef, Fee, SettleParams};
+    let mut b = books();
+    let first = b.invoice(d(2026, 4, 1), 10_000);
+    let second = b.invoice(d(2026, 4, 2), 5_000);
+    let params = |fee: i64| SettleParams {
+        date: d(2026, 4, 5),
+        description: "Card payment".into(),
+        cash_account: b.bank,
+        party: b.customer,
+        applications: vec![
+            Application {
+                doc: DocRef::Invoice(first),
+                cash: cents(10_000),
+                discount: Decimal::ZERO,
+                discount_reason: None,
+            },
+            Application {
+                doc: DocRef::Invoice(second),
+                cash: cents(5_000),
+                discount: Decimal::ZERO,
+                discount_reason: None,
+            },
+        ],
+        fee: Some(Fee {
+            amount: cents(fee),
+            account: None,
+            vendor: None,
+        }),
+        instrument: None,
+        reference: None,
+    };
+    let posted_before = b.l.posted_entries().count();
+    let first_before = b.state(DocRef::Invoice(first), d(2026, 4, 5));
+    let second_before = b.state(DocRef::Invoice(second), d(2026, 4, 5));
+    // The cash is 150.00 across two applications; a fee of 150.01 is above it.
+    let refused = b.l.settle(params(15_001));
+    assert!(
+        matches!(
+            refused,
+            Err(LedgerError::FeeAboveCash { fee, cash })
+                if fee == cents(15_001) && cash == cents(15_000)
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(b.l.posted_entries().count(), posted_before);
+    assert_eq!(b.state(DocRef::Invoice(first), d(2026, 4, 5)), first_before);
+    assert_eq!(
+        b.state(DocRef::Invoice(second), d(2026, 4, 5)),
+        second_before
+    );
+    assert_eq!(b.l.account_balance(b.bank).unwrap(), Decimal::ZERO);
+    // The fee equal to the cash is the other refusal, not this one.
+    assert!(matches!(
+        b.l.settle(params(15_000)),
+        Err(LedgerError::InvalidSettlement(_))
+    ));
+    assert_eq!(b.l.posted_entries().count(), posted_before);
+    // A fee within the cash posts: 150.00 gross, 3.00 fee, 147.00 deposit.
+    b.l.settle(params(300)).unwrap();
+    assert_eq!(b.l.account_balance(b.bank).unwrap(), cents(14_700));
+    b.ties(d(2026, 4, 5));
+}

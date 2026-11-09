@@ -338,7 +338,9 @@ check_discount}`, `arap::{Application, Fee, SettleParams, SettlementRow}`,
 (`bill_on_terms_with_discount`, `late_discount_needs_a_reason`,
 `discount_on_an_asset_bill_is_refused_with_the_remedy`,
 `a_fee_posts_gross_to_receivables_and_net_to_the_bank`,
-`a_settlement_names_its_lines_and_refuses_a_document_twice`),
+`a_settlement_names_its_lines_and_refuses_a_document_twice`,
+`a_fee_above_the_cash_is_refused_and_changes_nothing`: the refusal is
+`LedgerError::FeeAboveCash`, its own variant),
 `tests/kernel_bridge/main.rs::settle_agrees`; Kani `settle_is_exact`;
 `ledger-store` `tests/arap_standing.rs`
 (`a_settlement_names_its_lines_and_replays`, `settlement_waits_for_documents_v2`,

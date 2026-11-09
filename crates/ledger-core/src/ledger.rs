@@ -6701,9 +6701,22 @@ impl Ledger {
             discounts.push(app.discount);
         }
         let fee_amount = params.fee.as_ref().map_or(Decimal::ZERO, |f| f.amount);
+        // A fee above the cash is its own refusal; the kernel would also
+        // answer `None` for it, with no way to say which of its refusals it
+        // was. A sum that overflows is left to the kernel (too large).
+        if let Some(total_cash) = cash
+            .iter()
+            .try_fold(Decimal::ZERO, |sum, c| sum.checked_add(*c))
+            && fee_amount > total_cash
+        {
+            return Err(LedgerError::FeeAboveCash {
+                fee: fee_amount,
+                cash: total_cash,
+            });
+        }
         let settlement = kernel::settle(&cash, &discounts, fee_amount).ok_or_else(|| {
             LedgerError::InvalidSettlement(
-                "the cash and discounts don't cover the applications exactly, or the fee is above the cash"
+                "the settlement's figures aren't exact: an amount is too large, or the fee is negative"
                     .into(),
             )
         })?;

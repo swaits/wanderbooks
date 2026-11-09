@@ -4437,7 +4437,7 @@ impl Store {
         }
         let entry_id = self.ledger.next_entry_id();
         let base = self.base_currency;
-        let plan = payroll_remit_plan(&payables, cash_account, base);
+        let plan = payroll_remit_plan(&payables, cash_account, base)?;
         let description = format!("Payroll tax remittance {date}");
         let mut journaled = Vec::with_capacity(plan.len() + 2);
         journaled.push(self.append_journal(

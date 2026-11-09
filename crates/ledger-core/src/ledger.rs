@@ -8533,7 +8533,7 @@ impl Ledger {
         }
         let entry = self.try_create_entry(date, &format!("Payroll tax remittance {date}"))?;
         for (account, side, amount) in
-            payroll_remit_plan(&payables, cash_account, self.base_currency)
+            payroll_remit_plan(&payables, cash_account, self.base_currency)?
         {
             self.add_line(entry, account, side, amount)?;
         }

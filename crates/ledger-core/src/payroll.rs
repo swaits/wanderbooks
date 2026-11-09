@@ -213,24 +213,28 @@ pub fn payroll_entry_plan(
 /// The remittance entry's lines: Dr each payable with a non-zero balance,
 /// Cr cash for the total. Balances are normal-side (positive = owed), so
 /// the plan balances by construction.
+///
+/// Refused (TooLargeToCompute) when the payables' total is past exact
+/// arithmetic, never a panic: the total is the kernel's checked fold, so
+/// this function does not depend on its callers having refused first.
 pub fn payroll_remit_plan(
     payables: &[(AccountId, Decimal)],
     cash_account: AccountId,
     base: Currency,
-) -> Vec<(AccountId, Side, Money)> {
+) -> Result<Vec<(AccountId, Side, Money)>, LedgerError> {
+    let total = crate::kernel::total_of(payables.iter(), |(_, b)| *b)
+        .ok_or_else(|| LedgerError::TooLargeToCompute("the payroll taxes payable".into()))?;
     let mut plan = Vec::new();
-    let mut total = Decimal::ZERO;
     for (account, balance) in payables {
         if balance.is_zero() {
             continue;
         }
         plan.push((*account, Side::Debit, Money::new(*balance, base)));
-        total += *balance;
     }
     if !total.is_zero() {
         plan.push((cash_account, Side::Credit, Money::new(total, base)));
     }
-    plan
+    Ok(plan)
 }
 
 #[cfg(test)]

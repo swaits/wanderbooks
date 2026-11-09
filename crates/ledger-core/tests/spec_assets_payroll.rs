@@ -1029,7 +1029,8 @@ fn remit_plan_hand_worked() {
         &[(3, d("600.00")), (4, d("0")), (6, d("145.00"))],
         PLAN_CASH,
         Currency::USD,
-    );
+    )
+    .unwrap();
     let got: Vec<(AccountId, Side, Decimal)> =
         plan.iter().map(|(a, s, m)| (*a, *s, m.amount)).collect();
     assert_eq!(
@@ -1040,6 +1041,29 @@ fn remit_plan_hand_worked() {
             (PLAN_CASH, Side::Credit, d("745.00")),
         ]
     );
+}
+
+/// Oracle: BS-entry-4 (every derived figure computed with checked
+/// arithmetic): payables whose total is past exact arithmetic are refused
+/// as TooLargeToCompute, never a panic, even when a caller did not
+/// pre-check.
+#[test]
+fn remit_plan_past_exact_arithmetic_is_refused() {
+    let err = payroll_remit_plan(
+        &[(3, Decimal::MAX), (6, Decimal::ONE)],
+        PLAN_CASH,
+        Currency::USD,
+    )
+    .unwrap_err();
+    assert!(matches!(err, LedgerError::TooLargeToCompute(_)), "{err:?}");
+    // Past the range downward, too.
+    let err = payroll_remit_plan(
+        &[(3, Decimal::MIN), (6, -Decimal::ONE)],
+        PLAN_CASH,
+        Currency::USD,
+    )
+    .unwrap_err();
+    assert!(matches!(err, LedgerError::TooLargeToCompute(_)), "{err:?}");
 }
 
 /// Oracle: run_payroll INVARIANTS 1–2 and doc (auto-create 6100/6110/
@@ -1478,7 +1502,7 @@ proptest! {
             .enumerate()
             .map(|(i, c)| (i as AccountId + 1, Decimal::new(*c, 2)))
             .collect();
-        let plan = payroll_remit_plan(&payables, PLAN_CASH, Currency::USD);
+        let plan = payroll_remit_plan(&payables, PLAN_CASH, Currency::USD).unwrap();
         let total: Decimal = payables.iter().map(|(_, b)| *b).sum();
         let (dr, cr) = plan_totals(&plan);
         prop_assert_eq!(dr, cr);

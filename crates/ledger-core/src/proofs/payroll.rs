@@ -12,7 +12,27 @@
 //! lines. Amounts run to a few thousand units: the law is about the
 //! shape of the subtraction and the balance, not the magnitude, and
 //! every total stays far inside the `i64` line range (2^40) that
-//! `check_lines` requires. Lean proves the same laws at any size.
+//! `check_lines` requires.
+//!
+//! What carries "any number of employees": Kani covers one employee
+//! (and `net_pay` for any five deductions). Lean carries the rest, in
+//! bookspec's `Payroll.lean`: `foldl_sub_eq` and `payroll_net_eq` (the
+//! left-to-right fold is gross less the sum), `payroll_run_net_eq` (the
+//! sum of each employee's net is the total gross less every deduction,
+//! for a list of any length) and `payroll_run_plan_balances` (the plan
+//! built from per-employee sums balances). The edge where a running
+//! difference leaves the range is proved here by
+//! `net_pay_none_iff_a_prefix_overflows`; the bridge's edge table
+//! checks the same on `Decimal`.
+//!
+//! The plan harness rebuilds the eight totals on `i64` rather than
+//! calling `payroll_entry_plan`: that function works in `Decimal` and
+//! `Money` and maps the totals to accounts, neither of which is generic
+//! over `Amount`. So the harness proves the arithmetic the plan is made
+//! of (the kernel totals and `net_pay`, the shape of the eight lines,
+//! `check_lines` accepting them); that `payroll_entry_plan` assembles
+//! those same totals in that shape is checked by its tests, the goldens
+//! and `check_lines`, which every posted entry passes.
 //!
 //! ```text
 //! GOAL: net pay is gross less the withholdings exactly; it is not
@@ -24,7 +44,9 @@
 //!         through check_lines).
 //! INVARIANTS:
 //!   1. net_pay(gross, ds) = gross - sum(ds) whenever it is Some, and
-//!      None exactly when a running difference leaves the range.
+//!      (net_pay_none_iff_a_prefix_overflows) it is None exactly when
+//!      some running difference (gross less the first k deductions)
+//!      leaves the range.
 //!   2. sum(ds) <= gross (ds non-negative) gives a net that is Some and
 //!      not negative.
 //!   3. The eight plan lines pass check_lines: two or more lines, every
@@ -71,6 +93,57 @@ fn any_employee() -> Employee {
         ss_employer,
         medicare_employer,
     }
+}
+
+/// `net_pay` is `None` exactly when some running difference leaves the
+/// `i64` range, and otherwise the exact result: gross and five
+/// deductions over the whole `i64` range, checked against an `i128`
+/// running difference (which cannot overflow here) at every prefix.
+///
+/// The one exception is the `i64` instantiation's own: `Amount`'s
+/// `checked_sub` negates the subtrahend first, and `i64::MIN` has no
+/// negation, so a deduction of exactly `i64::MIN` is refused even where
+/// the difference would fit (`-1 - i64::MIN`). That is conservative (a
+/// refusal, never a wrong figure), and `Decimal`'s range is symmetric,
+/// so it does not arise in the engine; the harness assumes no deduction
+/// is `i64::MIN` and asserts the refusal at the fixed case.
+#[kani::proof]
+fn net_pay_none_iff_a_prefix_overflows() {
+    let gross: i64 = kani::any();
+    let mut deductions = [0i64; DEDUCTIONS];
+    for deduction in &mut deductions {
+        let d: i64 = kani::any();
+        kani::assume(d != i64::MIN);
+        *deduction = d;
+    }
+    assert!(
+        net_pay(-1i64, &[i64::MIN]).is_none(),
+        "i64::MIN has no negation: refused, conservatively"
+    );
+    let mut running = i128::from(gross);
+    let mut overflowed = false;
+    for deduction in deductions {
+        running -= i128::from(deduction);
+        if i64::try_from(running).is_err() {
+            overflowed = true;
+            break;
+        }
+    }
+    let net = net_pay(gross, &deductions);
+    if overflowed {
+        assert!(net.is_none(), "a prefix left the range: refused");
+    } else {
+        assert_eq!(
+            i128::from(net.expect("every prefix in range")),
+            running,
+            "no prefix left the range: the exact result"
+        );
+    }
+    kani::cover!(overflowed, "some running difference overflows");
+    kani::cover!(
+        !overflowed && running != i128::from(gross),
+        "an exact, changed net"
+    );
 }
 
 /// Net pay is gross less the deductions: the exact difference of the
@@ -123,9 +196,10 @@ fn net_pay_nonnegative_when() {
 /// Two employees timed out in CBMC (over 80 minutes, 2026-11-09:
 /// sixteen symbolic figures into eight totals and `check_lines`); one
 /// employee reaches every line, both FICA shares on both sides, and
-/// the balance, and Lean's `payroll_plan_balances` carries the plan at
-/// its totals for any number of employees (a run's totals are sums of
-/// the same eight figures).
+/// the balance, and Lean's `payroll_run_plan_balances` carries the plan
+/// built from per-employee sums for any number of employees. The plan is
+/// rebuilt here on `i64` (see the module doc), not taken from
+/// `payroll_entry_plan`.
 #[kani::proof]
 fn payroll_plan_balances() {
     let employees = [any_employee()];
@@ -170,6 +244,14 @@ fn payroll_plan_balances() {
         check_lines(&plan).is_ok(),
         "the payroll plan is an acceptable entry"
     );
-    kani::cover!(net < gross, "withholdings leave a smaller net");
-    kani::cover!(employer > 0, "the employer share is posted");
+    // Covers the assumptions do not already force.
+    kani::cover!(net == 1, "net pay of exactly one unit is posted");
+    kani::cover!(
+        employees[0].deductions[2] == 0 && employees[0].deductions[3] == 0,
+        "the payables hold the employer shares alone"
+    );
+    kani::cover!(
+        employees[0].deductions[0] + employees[0].deductions[1] > 0,
+        "federal and state withholdings are posted"
+    );
 }

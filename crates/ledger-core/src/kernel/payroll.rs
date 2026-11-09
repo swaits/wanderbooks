@@ -36,9 +36,13 @@ use super::Amount;
 ///      payroll line whose net is negative, so a posted run's net pay
 ///      is never below zero. A net below zero is still a value here:
 ///      the refusal is the caller's rule, not arithmetic's.
-///   4. None on overflow; NEVER a rounded or wrapped result, never a
-///      panic. The fold is left to right, so [MAX, MAX, -MAX] from a
-///      zero gross is None while the same figures summed first would
+///   4. None on overflow (proved: `net_pay_none_iff_a_prefix_overflows`
+///      says None exactly when some running difference leaves the
+///      range; on `i64` a deduction of `i64::MIN`, which has no
+///      negation, is refused too); NEVER a rounded or wrapped
+///      result, never a panic.
+///      The fold is left to right, so [MAX, MAX, -MAX] from a zero
+///      gross is None while the same figures summed first would
 ///      cancel: each step must be exact, as `total`'s fold is.
 /// SCENARIOS:
 ///   1. IF gross 5,000.00 and withholdings 750.00, 250.00, 310.00,

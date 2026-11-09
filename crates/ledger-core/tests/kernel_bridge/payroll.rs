@@ -1,7 +1,8 @@
 //! U7 bridge properties: payroll arithmetic (kernel sweep).
 //!
 //! `proofs/payroll.rs` proves `kernel::net_pay` on `i64` (five
-//! deductions, a one-employee plan through `check_lines`); the engine
+//! deductions, a one-employee plan through `check_lines`, and `None`
+//! exactly when a prefix overflows); the engine
 //! runs the same code on `Decimal`. These properties check that the two
 //! instantiations agree, that `Decimal` agrees with an independent exact
 //! `i128` reference (mantissas over a common power of ten, sharing no
@@ -17,7 +18,11 @@ fn dec(cents: i64) -> Decimal {
 }
 
 /// The exact net reference: gross less the deductions, from the
-/// mantissas over their common power of ten, in `i128` throughout.
+/// mantissas over their common power of ten, in `i128` throughout. Like
+/// the kernel's fold it requires every running difference to be
+/// representable, each at the scale it has so far (the largest scale of
+/// the gross and the deductions folded in): a prefix past `Decimal`'s
+/// range is `None` even if later deductions would bring it back.
 fn net_reference(gross: (i128, u32), deductions: &[(i128, u32)]) -> Option<Decimal> {
     let scale = deductions
         .iter()
@@ -25,9 +30,22 @@ fn net_reference(gross: (i128, u32), deductions: &[(i128, u32)]) -> Option<Decim
         .max()
         .unwrap_or(0)
         .max(gross.1);
-    let mut net: i128 = gross.0.checked_mul(10i128.checked_pow(scale - gross.1)?)?;
+    let at_common = |(m, s): (i128, u32)| m.checked_mul(10i128.checked_pow(scale - s)?);
+    let mut net: i128 = at_common(gross)?;
+    let mut so_far = gross.1;
+    let representable = |net: i128, so_far: u32| {
+        let own = net / 10i128.pow(scale - so_far);
+        Decimal::try_from_i128_with_scale(own, so_far).is_ok()
+    };
+    if !representable(net, so_far) {
+        return None;
+    }
     for &(mantissa, s) in deductions {
-        net = net.checked_sub(mantissa.checked_mul(10i128.checked_pow(scale - s)?)?)?;
+        net = net.checked_sub(at_common((mantissa, s))?)?;
+        so_far = so_far.max(s);
+        if !representable(net, so_far) {
+            return None;
+        }
     }
     Decimal::try_from_i128_with_scale(net, scale).ok()
 }
@@ -48,6 +66,7 @@ proptest! {
             &deductions.iter().copied().map(dec).collect::<Vec<_>>(),
         );
         prop_assert_eq!(i.map(dec), d);
+        prop_assert_eq!(i.map(|n| dec(n).to_string()), d.map(|n| n.to_string()));
     }
 
     /// `Decimal`'s net is the exact difference, for a gross and
@@ -67,7 +86,41 @@ proptest! {
             .map(|&(m, s)| Decimal::try_from_i128_with_scale(m, s).unwrap())
             .collect();
         let want = net_reference((gross_mantissa, gross_scale), &deductions);
-        prop_assert_eq!(kernel::net_pay(gross, &ds), want);
+        // `Decimal` equality ignores scale: compare the rendering too, so
+        // the reference's scale (the common one) is the kernel's.
+        let got = kernel::net_pay(gross, &ds);
+        prop_assert_eq!(got.map(|n| n.to_string()), want.map(|n| n.to_string()));
+        prop_assert_eq!(got, want);
+    }
+
+    /// Near `Decimal`'s range the reference also overflows, so the
+    /// property meets `None` (and the in-range answers beside it), not
+    /// only the edge table: the kernel and the reference agree on which
+    /// is which.
+    #[test]
+    fn decimal_net_pay_near_the_range_agrees_with_the_reference(
+        gross_offset in 0i128..=3,
+        gross_negative in any::<bool>(),
+        deductions in prop::collection::vec((0i128..=3, any::<bool>()), 0..=5),
+    ) {
+        let max = Decimal::MAX.mantissa();
+        let with_sign = |offset: i128, negative: bool| {
+            if negative { -(max - offset) } else { max - offset }
+        };
+        let g = with_sign(gross_offset, gross_negative);
+        let ds_m: Vec<(i128, u32)> = deductions
+            .iter()
+            .map(|&(o, n)| (with_sign(o, n), 0u32))
+            .collect();
+        let gross = Decimal::try_from_i128_with_scale(g, 0).unwrap();
+        let ds: Vec<Decimal> = ds_m
+            .iter()
+            .map(|&(m, s)| Decimal::try_from_i128_with_scale(m, s).unwrap())
+            .collect();
+        let want = net_reference((g, 0), &ds_m);
+        let got = kernel::net_pay(gross, &ds);
+        prop_assert_eq!(got.map(|n| n.to_string()), want.map(|n| n.to_string()));
+        prop_assert_eq!(got, want);
     }
 
     /// When the deductions do not exceed gross, the net is the gross
@@ -85,6 +138,7 @@ proptest! {
         )
         .expect("in range");
         prop_assert_eq!(net, dec(gross - deducted));
+        prop_assert_eq!(net.to_string(), dec(gross - deducted).to_string());
         prop_assert!(net >= Decimal::ZERO);
     }
 }

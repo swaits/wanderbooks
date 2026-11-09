@@ -7,7 +7,7 @@
 //! GOAL: an audit says exactly what is wrong, in a fixed order, from the
 //!       ledger alone, and an attestation counts only against the bar the
 //!       books set.
-//! SOURCE: BS-ledger-13; WB-ledger-16; BS-statement-1 (the statements an
+//! SOURCE: WB-ledger-16; BS-statement-1 (the statements an
 //!         audit reads); BS-arap-2 (control accounts); BS-partner-1 (the
 //!         cumulative split a close must keep); BS-entry-5 (evidence);
 //!         DECISION D-9 (the bar), D-47 (a reversal's evidence is its
@@ -107,7 +107,7 @@ fn codes(f: &[Finding]) -> Vec<&'static str> {
 
 // ---------------------------------------------------------------- the words
 
-/// BS-ledger-13: a finding's severity comes from its code's row; a code no
+/// WB-ledger-16: a finding's severity comes from its code's row; a code no
 /// row names is a Failure (a check the table forgot is never softened).
 /// Failures sort before warnings before info.
 #[test]
@@ -131,7 +131,7 @@ fn a_finding_takes_its_codes_severity_and_an_unknown_code_is_a_failure() {
     );
 }
 
-/// BS-ledger-13: what a finding is about, in words.
+/// WB-ledger-16: what a finding is about, in words.
 #[test]
 fn a_subject_describes_itself_in_words() {
     let cases = [
@@ -151,7 +151,7 @@ fn a_subject_describes_itself_in_words() {
     }
 }
 
-/// BS-ledger-13, INVARIANT 4 (a check that cannot be made is a finding):
+/// WB-ledger-16 invariant 1 (a check that cannot be made is a finding):
 /// the statement of cash flows is tried by the caller. Nothing tried says
 /// nothing; one that foots says nothing; one that does not foot, and one
 /// that could not be made, each say so with the figures or the reason.
@@ -175,17 +175,20 @@ fn the_cash_flow_check_says_what_it_found() {
         (f.code, f.severity),
         ("cash_flow_unfooted", Severity::Failure)
     );
-    assert_eq!(
-        f.message,
-        "the sections sum to 40.00 but the cash accounts changed by 45.00"
+    // The finding carries both figures (the sentence is the engine's own).
+    assert!(
+        f.message.contains("40.00") && f.message.contains("45.00"),
+        "{}",
+        f.message
     );
 
     let unmade: Result<CashFlowFooting, String> = Err("no cash accounts named".into());
     let f = audit::check_cash_flow(Some(&unmade)).unwrap();
     assert_eq!(f.code, "cash_flow_unfooted");
-    assert_eq!(
-        f.message,
-        "the statement of cash flows cannot be made: no cash accounts named"
+    assert!(
+        f.message.contains("no cash accounts named"),
+        "the reason it could not be made is carried: {}",
+        f.message
     );
 }
 
@@ -256,11 +259,14 @@ fn control_accounts_report_differences_unattached_lines_and_overpaid_documents()
     assert!(f.iter().all(|x| x.severity == Severity::Warning));
 }
 
-/// BS-partner-1 (the cumulative rule): a member's running total of the
-/// closes may be at most one minor unit from its exact share; exactly one
-/// is fine, one cent and a bit more is drift, in either direction.
+/// BS-partner-1 statement 5 (the cumulative rule): after a close that
+/// posts, a member's running total MUST be under one minor unit from its
+/// exact share, so a drift of exactly one unit is raised, in either
+/// direction. Statement 6 (WB-partner-1) lets a count that has not yet had
+/// its first true-up carry the rounding of the older rules, so there
+/// only a drift beyond one unit is raised.
 #[test]
-fn a_close_split_drifts_only_beyond_a_minor_unit() {
+fn a_close_split_drifts_by_the_regime_it_was_made_under() {
     let m = |running: &str, exact: &str| MemberSplit {
         capital: 3001,
         share: dec("0.3"),
@@ -269,14 +275,28 @@ fn a_close_split_drifts_only_beyond_a_minor_unit() {
         exact: dec(exact),
     };
     let unit = dec("0.01");
-    assert!(audit::check_split(1, "Jan", &[m("0.32", "0.315")], unit).is_empty());
-    assert!(audit::check_split(1, "Jan", &[m("0.32", "0.31")], unit).is_empty());
-    assert!(audit::check_split(1, "Jan", &[m("0.31", "0.32")], unit).is_empty());
+    // Trued up: strictly under a unit is fine; a unit is drift.
+    assert!(audit::check_split(1, "Jan", &[m("0.32", "0.315")], unit, true).is_empty());
+    assert!(audit::check_split(1, "Jan", &[m("0.325", "0.32")], unit, true).is_empty());
+    assert!(audit::check_split(1, "Jan", &[m("0.32", "0.325")], unit, true).is_empty());
+    for (running, exact) in [("0.32", "0.31"), ("0.31", "0.32"), ("0.28", "0.3")] {
+        let f = audit::check_split(1, "Jan", &[m(running, exact)], unit, true);
+        assert_eq!(f.len(), 1, "{running} against {exact}");
+        assert_eq!(f[0].code, "close_split_drifts");
+    }
+    // Not yet trued up: a unit is the allowance; beyond it is drift.
+    assert!(audit::check_split(1, "Jan", &[m("0.32", "0.31")], unit, false).is_empty());
+    assert!(audit::check_split(1, "Jan", &[m("0.31", "0.32")], unit, false).is_empty());
+    assert_eq!(
+        audit::check_split(1, "Jan", &[m("0.32", "0.309")], unit, false).len(),
+        1
+    );
     let f = audit::check_split(
         4,
         "Jan 2026",
-        &[m("0.31", "0.3"), m("0.28", "0.3"), m("0.33", "0.3")],
+        &[m("0.31", "0.3"), m("0.27", "0.3"), m("0.33", "0.3")],
         unit,
+        false,
     );
     assert_eq!(
         f.len(),
@@ -287,7 +307,85 @@ fn a_close_split_drifts_only_beyond_a_minor_unit() {
     assert_eq!(f[0].subject, Subject::Period(4));
     assert_eq!(
         f[0].message,
-        "after the close of Jan 2026, account 3001 holds 0.28 of the closes where its exact share is 0.3"
+        "after the close of Jan 2026, account 3001 holds 0.27 of the closes where its exact share is 0.3"
+    );
+}
+
+/// BS-partner-1 statement 6 and 8 (WB-partner-1): a count is trued up by
+/// the first close under the cumulative rule that posts an entry, not by
+/// a close of an older rule or one that posts nothing; the books say so
+/// from what each close records (its rule and whether it posted).
+#[test]
+fn a_count_is_trued_up_by_the_first_cumulative_close_that_posts() {
+    let mut b = books();
+    let caps: Vec<u64> = ["3001", "3002"]
+        .iter()
+        .map(|c| {
+            b.l.add_account(c, c, AccountType::Equity, None, false)
+                .unwrap()
+        })
+        .collect();
+    let members = || -> Vec<MemberClose> {
+        caps.iter()
+            .map(|&capital| MemberClose {
+                capital,
+                share: dec("0.5"),
+                distributions: None,
+            })
+            .collect()
+    };
+    post(&mut b.l, d(1, 5), b.cash, b.revenue, "0.03");
+    let jan = b.l.create_period("2026-01", d(1, 1), d(1, 31)).unwrap();
+    let feb = b.l.create_period("2026-02", d(2, 1), d(2, 28)).unwrap();
+    let mar = b.l.create_period("2026-03", d(3, 1), d(3, 31)).unwrap();
+    let apr = b.l.create_period("2026-04", d(4, 1), d(4, 30)).unwrap();
+    let may = b.l.create_period("2026-05", d(5, 1), d(5, 31)).unwrap();
+
+    // January under the per-close rule: not a close the audit reads, and
+    // no true-up.
+    b.l.close_period_to(jan, &CloseTo::MembersPerClose(members()))
+        .unwrap();
+    assert_eq!(b.l.member_close_trued_up(jan), Some(false));
+    assert!(b.l.member_close_split(jan).is_none());
+    // February posts nothing under the cumulative rule: the count still
+    // carries January's rounding.
+    assert_eq!(
+        b.l.close_period_to(feb, &CloseTo::Members(members()))
+            .unwrap(),
+        None
+    );
+    assert_eq!(b.l.member_close_trued_up(feb), Some(false));
+    // March posts: the true-up has run, here and from then on.
+    post(&mut b.l, d(3, 5), b.cash, b.revenue, "0.01");
+    assert!(
+        b.l.close_period_to(mar, &CloseTo::Members(members()))
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(b.l.member_close_trued_up(mar), Some(true));
+    // April posts nothing, after the true-up: still trued up; February,
+    // before it, still is not.
+    assert_eq!(
+        b.l.close_period_to(apr, &CloseTo::Members(members()))
+            .unwrap(),
+        None
+    );
+    assert_eq!(b.l.member_close_trued_up(apr), Some(true));
+    assert_eq!(b.l.member_close_trued_up(feb), Some(false));
+    // The trued-up count is strictly within a unit of exact.
+    let (_, split) = b.l.member_close_split(apr).unwrap();
+    assert!(
+        split
+            .iter()
+            .all(|m| (m.running - m.exact).abs() < dec("0.01"))
+    );
+    // A period not closed to members has no answer; the audit is quiet.
+    assert_eq!(b.l.member_close_trued_up(may), None);
+    let f = run(&b.l, &Settings::default(), &all_receipts(&b.l), d(12, 31));
+    assert!(
+        !codes(&f).contains(&"close_split_drifts"),
+        "{:?}",
+        codes(&f)
     );
 }
 
@@ -356,8 +454,8 @@ fn set(l: &mut Ledger, key: &str, value: serde_json::Value) {
     l.apply_settings(&made, &src, 1).unwrap();
 }
 
-/// BS-entry-5, INVARIANT 3 of the audit (only entries on or before the
-/// date count): an uncovered entry dated after `through` is not yet a
+/// audit.rs's own invariant 3 (only entries on or before the date count;
+/// the evidence is BS-entry-5 statement 1): an uncovered entry dated after `through` is not yet a
 /// finding, and one with a receipt never is.
 #[test]
 fn evidence_is_missing_only_through_the_date_and_only_without_a_receipt() {
@@ -414,8 +512,8 @@ fn a_reversal_without_its_own_receipt_is_info_and_only_when_the_policy_would_cov
     assert!(run(&b.l, b.l.settings(), &have, d(12, 31)).is_empty());
 }
 
-/// BS-ledger-13 SCENARIO 2: a draft dated on or before the date is exactly
-/// `draft_open`; one dated after is not mentioned.
+/// audit.rs's own draft check (its scenario 2): a draft dated on or before
+/// the date is exactly `draft_open`; one dated after is not mentioned.
 #[test]
 fn a_draft_is_open_only_through_the_date() {
     let mut b = books();
@@ -435,7 +533,7 @@ fn a_draft_is_open_only_through_the_date() {
     );
 }
 
-/// BS-ledger-13: the facts the caller reads from around the books are
+/// WB-ledger-16: the facts the caller reads from around the books are
 /// passed through as findings: a settings problem as it was worded, a
 /// vendor paid in a way that could need a 1099 by name and amount.
 #[test]

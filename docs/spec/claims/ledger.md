@@ -491,6 +491,14 @@ INVARIANTS:
      which is journaled as a decision.
   7. Nothing here moves a figure. Every refusal leaves the journal
      unchanged; every write waits for the feature `audits`.
+  8. `close_split_drifts` holds a members close to BS-partner-1
+     statement 5: once the count has had a close under the cumulative
+     rule that posted an entry (its true-up, statement 6; the close
+     journals its rule and whether it posted), a member's running total
+     MUST be under one minor unit from its exact share, so a drift of a
+     unit or more is a finding. Before that true-up the count may still
+     carry the rounding of closes made under the older rules, so only a
+     drift beyond one unit is. Closes under the older rules are not read.
 SCENARIOS:
   1. The same books audited twice through one day: one run, one
      workpaper; the second call files and journals nothing.
@@ -508,7 +516,8 @@ SCENARIOS:
 ```
 
 *Enforced:* `ledger_core::audit` (`statements`, `Finding`, `CODES`,
-`AttestationBar::counts`, `Scope`, `Method`), `ledger_store::audit`
+`AttestationBar::counts`, `Scope`, `Method`, `check_split`;
+`Ledger::member_close_trued_up`), `ledger_store::audit`
 (`Store::figure_head`, `integrity_findings`, `record_audit_run`,
 `attest_receipt`, `review_entry`, `attest_period`, `run_for_period`,
 `attestations`, `PROGRAM_VERSION`), `ledger_import::workpaper_pdf`,
@@ -519,7 +528,8 @@ journal feature `audits`.
 `amount_mismatch_never_counts`), `tests/audit_branches.rs`
 (`the_cash_flow_check_says_what_it_found`,
 `control_accounts_report_differences_unattached_lines_and_overpaid_documents`,
-`a_close_split_drifts_only_beyond_a_minor_unit`,
+`a_close_split_drifts_by_the_regime_it_was_made_under`,
+`a_count_is_trued_up_by_the_first_cumulative_close_that_posts`,
 `a_reversal_without_its_own_receipt_is_info_and_only_when_the_policy_would_cover_it`,
 `the_bar_setting_parses_what_it_names_and_refuses_the_rest`,
 `the_bar_counts_at_its_edges_and_only_asks_for_what_it_sets`); `ledger-store` `tests/audit.rs`

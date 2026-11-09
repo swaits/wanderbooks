@@ -110,7 +110,7 @@ impl Books {
     }
 
     /// Every control account's tie-out holds: no difference (BS-arap-2
-    /// INVARIANT 1).
+    /// invariant 1).
     fn ties(&self, on: NaiveDate) {
         for c in self.l.control_check(on).unwrap() {
             assert_eq!(c.difference, Decimal::ZERO, "{c:?}");
@@ -1067,7 +1067,7 @@ fn out_of_bounds_documents_are_listed_not_aged() {
 
 /// Reversing a legacy hand line takes it off; reversing that reversal
 /// would put it back, and is refused: no command adds an untagged control
-/// line (BS-arap-2 INVARIANT 1 and item 3; first review of S1).
+/// line (BS-arap-2 invariant 2 and statement 11; first review of S1).
 #[test]
 fn putting_back_a_removed_hand_line_is_refused() {
     let mut b = books();
@@ -1204,7 +1204,7 @@ fn a_chain_counts_in_order() {
 // Write-offs (plan P4b S7; BS-arap-5)
 // ---------------------------------------------------------------------------
 
-/// BS-arap-2 SCENARIO 7 and BS-arap-5 INVARIANT 1: half of an invoice paid, the rest
+/// BS-arap-2 scenario 7 and BS-arap-5 invariant 1: half of an invoice paid, the rest
 /// written off, reads Written off with 50 paid and 50 written off, and
 /// receivables falls by the write-off alone.
 #[test]
@@ -1261,7 +1261,7 @@ fn half_paid_rest_written_off_is_written_off() {
     assert!(check.iter().all(|c| c.difference.is_zero()));
 }
 
-/// BS-arap-5 INVARIANT 3: a cash-basis company never counted the invoice as
+/// BS-arap-5 statement 6: a cash-basis company never counted the invoice as
 /// income, so it has no basis to deduct (IRC §166; Treas. Reg.
 /// §1.166-1(e)).
 #[test]
@@ -1308,7 +1308,7 @@ fn write_off_refused_on_cash_basis() {
     );
 }
 
-/// BS-arap-5 INVARIANT 1: at most what is owed, a partial write-off allowed
+/// BS-arap-5 invariant 2 and statement 3: at most what is owed, a partial write-off allowed
 /// (Treas. Reg. §1.166-3(a)); more is refused, naming what is owed, and
 /// nothing changes.
 #[test]
@@ -1351,7 +1351,7 @@ fn write_off_above_outstanding_refused() {
     assert_eq!((st.paid, st.written_off), (cents(4_000), cents(6_000)));
 }
 
-/// D-49's same-year recovery, and BS-arap-5 INVARIANT 2: reversing the
+/// D-49's same-year recovery, and BS-arap-5 invariant 4: reversing the
 /// write-off re-instates the debt (it is not a new movement), and the
 /// payment then recorded settles it; a recovery is income, never a
 /// payment event.
@@ -1502,7 +1502,7 @@ fn days(b: &Books) -> Vec<NaiveDate> {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
 
-    /// BS-arap-2 INVARIANTS 1, 2 and 6 over random histories of creates,
+    /// BS-arap-2 invariants 1, 2, 3, 6 and 9 over random histories of creates,
     /// payments, voids, reversals of any entry and refused hand lines: at
     /// every date the control accounts equal their documents (no
     /// difference, nothing unattached: no command adds a hand line), each
@@ -1538,9 +1538,9 @@ proptest! {
         }
     }
 
-    /// BS-arap-2 INVARIANT 5: the aging as of a day partitions what the
+    /// BS-arap-2 invariant 8: the aging as of a day partitions what the
     /// documents owe then (in books these commands write, none owes less
-    /// than nothing). INVARIANT 4 (Store, replay and Snapshot agree) is
+    /// than nothing). Invariant 7 (Store, replay and Snapshot agree) is
     /// ledger-store's `status_is_a_function_of_journal_and_date`.
     #[test]
     fn aging_partitions_what_documents_owe(ops in prop::collection::vec(arb_op(), 0..30)) {
@@ -1562,7 +1562,7 @@ proptest! {
         }
     }
 
-    /// BS-arap-2 INVARIANT 3: reversing a tagged entry moves its documents by
+    /// BS-arap-2 invariant 4: reversing a tagged entry moves its documents by
     /// exactly the opposite of the entry's own tagged lines from the
     /// reversal's day (read from the entry reversed, not from the mirror,
     /// so a mirror that lost its tag is caught); reversing that reversal
@@ -1691,8 +1691,9 @@ fn custom_terms_are_due_on_the_date_they_give() {
     assert!(serde_json::from_value::<Terms>(stray).is_err());
 }
 
-/// BS-arap-3 SCENARIOS: Net 30, Net 15 EOM, a leap day, due on receipt, a
-/// custom date, and the 9999-12 bound refused instead of panicking.
+/// BS-arap-3 scenarios 1-5 (Net 30, Net 15 EOM, a leap day, due on receipt,
+/// and the 9999-12 bound refused instead of panicking) and statement 1 (a
+/// custom date).
 #[test]
 fn terms_derive_due_dates() {
     let net30 = Terms::new(TermsKind::Net(30), None).unwrap();
@@ -1725,7 +1726,7 @@ fn terms_derive_due_dates() {
     assert!(Terms::new(TermsKind::NetEom(3_651), None).is_err());
 }
 
-/// BS-arap-3 INVARIANT 2: the discount's bound, its date, and the terms that
+/// BS-arap-3 invariant 2: the discount's bound, its date, and the terms that
 /// cannot carry one.
 #[test]
 fn discount_bounds_and_late_reason() {
@@ -1795,7 +1796,7 @@ fn discount_bounds_and_late_reason() {
     assert_eq!(kernel::discount_max(cents(-1), 200), None);
 }
 
-/// BS-arap-3 INVARIANT 3: the canonical spellings read back as they print.
+/// BS-arap-3 invariant 3: the canonical spellings read back as they print.
 #[test]
 fn terms_describe_and_parse_round_trip() {
     for text in [
@@ -2286,7 +2287,7 @@ fn bill_on_terms_with_discount() {
 }
 
 /// A discount taken after the discount date needs a reason (BS-arap-6
-/// INVARIANT 2); a bill with an asset or prepaid line refuses one with the
+/// invariant 6); a bill with an asset or prepaid line refuses one with the
 /// D-49 remedy, and none of the refusals changes the books.
 #[test]
 fn late_discount_needs_a_reason() {
@@ -2433,7 +2434,7 @@ fn a_fee_posts_gross_to_receivables_and_net_to_the_bank() {
 
 /// A payment that settles more than one document names its lines in
 /// application order, and two applications on one document are refused:
-/// each document's bound is one bound (BS-arap-6 INVARIANTS 1 and 2).
+/// each document's bound is one bound (BS-arap-6 invariants 4 and 5).
 #[test]
 fn a_settlement_names_its_lines_and_refuses_a_document_twice() {
     use ledger_core::{Application, DocRef, SettleParams};
@@ -2551,5 +2552,74 @@ fn discount_on_an_asset_bill_is_refused_with_the_remedy() {
         b.state(DocRef::Bill(bill), d(2026, 4, 5)).outstanding,
         cents(10_000)
     );
+    b.ties(d(2026, 4, 5));
+}
+
+/// A processor cannot keep more than it was paid: a fee above the cash is
+/// refused as its own refusal (`FeeAboveCash`, BS-arap-6) and changes
+/// nothing. A fee equal to the cash is a different refusal (the deposit
+/// would be nothing), and a fee within the cash still posts.
+#[test]
+fn a_fee_above_the_cash_is_refused_and_changes_nothing() {
+    use ledger_core::{Application, DocRef, Fee, SettleParams};
+    let mut b = books();
+    let first = b.invoice(d(2026, 4, 1), 10_000);
+    let second = b.invoice(d(2026, 4, 2), 5_000);
+    let params = |fee: i64| SettleParams {
+        date: d(2026, 4, 5),
+        description: "Card payment".into(),
+        cash_account: b.bank,
+        party: b.customer,
+        applications: vec![
+            Application {
+                doc: DocRef::Invoice(first),
+                cash: cents(10_000),
+                discount: Decimal::ZERO,
+                discount_reason: None,
+            },
+            Application {
+                doc: DocRef::Invoice(second),
+                cash: cents(5_000),
+                discount: Decimal::ZERO,
+                discount_reason: None,
+            },
+        ],
+        fee: Some(Fee {
+            amount: cents(fee),
+            account: None,
+            vendor: None,
+        }),
+        instrument: None,
+        reference: None,
+    };
+    let posted_before = b.l.posted_entries().count();
+    let first_before = b.state(DocRef::Invoice(first), d(2026, 4, 5));
+    let second_before = b.state(DocRef::Invoice(second), d(2026, 4, 5));
+    // The cash is 150.00 across two applications; a fee of 150.01 is above it.
+    let refused = b.l.settle(params(15_001));
+    assert!(
+        matches!(
+            refused,
+            Err(LedgerError::FeeAboveCash { fee, cash })
+                if fee == cents(15_001) && cash == cents(15_000)
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(b.l.posted_entries().count(), posted_before);
+    assert_eq!(b.state(DocRef::Invoice(first), d(2026, 4, 5)), first_before);
+    assert_eq!(
+        b.state(DocRef::Invoice(second), d(2026, 4, 5)),
+        second_before
+    );
+    assert_eq!(b.l.account_balance(b.bank).unwrap(), Decimal::ZERO);
+    // The fee equal to the cash is the other refusal, not this one.
+    assert!(matches!(
+        b.l.settle(params(15_000)),
+        Err(LedgerError::InvalidSettlement(_))
+    ));
+    assert_eq!(b.l.posted_entries().count(), posted_before);
+    // A fee within the cash posts: 150.00 gross, 3.00 fee, 147.00 deposit.
+    b.l.settle(params(300)).unwrap();
+    assert_eq!(b.l.account_balance(b.bank).unwrap(), cents(14_700));
     b.ties(d(2026, 4, 5));
 }

@@ -141,7 +141,7 @@ pub(crate) fn settings_problems(ledger: &Ledger, cfg: &Settings) -> Vec<String> 
     let how = " with books.set_setting";
     // The cash flow roles: codes the chart lacks here; the rest is the
     // engine's own check, the one the statement refuses on (BS-statement-3
-    // rule 2), so the two never disagree.
+    // statement 3), so the two never disagree.
     let lists = [
         (
             ledger_core::RoleList::Cash,

@@ -192,7 +192,7 @@ pub const ASSET_BASIS: &str = "asset_basis";
 pub const PROJECTS: &str = "projects";
 
 /// Feature: an `invoice.created` or `bill.created` line naming its project
-/// (`class_id`, BS-statement-5 item 8). An older version would restore the
+/// (`class_id`, BS-statement-5 statement 6). An older version would restore the
 /// document without its lines' projects, silently. Its own feature, not
 /// `projects`': books that consented to projects before it existed must
 /// consent again before a document names one.

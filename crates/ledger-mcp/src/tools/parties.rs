@@ -144,7 +144,7 @@ fn party_document(
 }
 
 /// A party-totals `basis` from a tool: "cash" (the default) or "all"
-/// (BS-partner-3 item 4); any other word is refused.
+/// (BS-partner-3 statement 5); any other word is refused.
 fn parse_basis(basis: Option<&str>) -> Result<ledger_core::parties::Basis, String> {
     match basis {
         None => Ok(ledger_core::parties::Basis::default()),

@@ -154,7 +154,7 @@ derived. Spec: `ledger_core::shares`.
   entry has balanced lines, and `post_entry` refuses (`party_shares`)
   until they do. Replay never consults settings.
 - **Money:** `parties::activity_with` counts each party's part on two
-  bases (BS-partner-3 item 4): cash (its money: cash, a card, the members'
+  bases (BS-partner-3 statement 5): cash (its money: cash, a card, the members'
   financing, a loan) and all (adding property contributed or distributed
   in kind), the viewer labelling the first "cash basis". Money accounts
   are the cash accounts, the cards and `[books] financing_accounts`; any

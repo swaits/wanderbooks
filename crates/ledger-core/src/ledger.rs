@@ -1394,7 +1394,7 @@ impl Ledger {
     ///      - SHOULD refuse (RoleAccountHasHandLines), naming the entry
     ///      - NEVER make a hand line a control account's
     ///      BECAUSE no command adds an untagged control line (BS-arap-2
-    ///      INVARIANT 1). Replay never refuses (BS-entry-4).
+    ///      invariant 2). Replay never refuses (BS-entry-4).
     ///   An account the role moves off keeps its documents' lines, and
     ///   stays guarded while it holds them (Self::control_role_of).
     /// ```
@@ -1658,7 +1658,7 @@ impl Ledger {
     ///       no other: a chart's own account at a role's default code
     ///       (1200 Equipment, a card at 2000) is anyone's until a document
     ///       posts there.
-    /// SOURCE: BS-ledger-8, BS-arap-2 INVARIANT 1.
+    /// SOURCE: BS-ledger-8, BS-arap-2 statement 9.
     /// INVARIANTS:
     ///   1. Some(role) when the role is assigned to the account, or the
     ///      account holds a line tagged with one of the role's documents
@@ -1761,7 +1761,7 @@ impl Ledger {
     /// ```text
     /// GOAL: no command adds a line on a control account that is no
     ///       document's; one only takes a legacy one away.
-    /// SOURCE: BS-arap-2 INVARIANT 1 and item 3 (the
+    /// SOURCE: BS-arap-2 invariant 2 and statement 11 (the
     ///         exemption).
     /// INVARIANTS:
     ///   1. A tagged line passes.
@@ -2310,7 +2310,7 @@ impl Ledger {
     ///      - NEVER refuse reversing a payment, which only reopens its
     ///        document
     ///      BECAUSE 0 <= outstanding <= total at every date (BS-arap-2
-    ///      INVARIANT 2). Replay never refuses (BS-entry-4).
+    ///      invariant 6). Replay never refuses (BS-entry-4).
     /// ```
     pub fn check_reversal(&self, entry: EntryId, date: NaiveDate) -> Result<(), LedgerError> {
         let original = self
@@ -2515,7 +2515,7 @@ impl Ledger {
             self.replay_add_line(id, line.account, kernel::flip(line.side), line.amount)?;
             // The reversal offsets the original line for line: carry the
             // class so divisional P&L nets correctly, and the document so
-            // it moves by exactly the opposite (BS-arap-2 INVARIANT 3).
+            // it moves by exactly the opposite (BS-arap-2 invariant 4).
             if line.class_id.is_some() {
                 self.set_line_class(id, idx, line.class_id)?;
             }
@@ -3240,7 +3240,7 @@ impl Ledger {
     /// ```text
     /// GOAL: a run the books record is the entry that posted it, no more
     ///       and no less, so accumulated_posted is what the books carry.
-    /// SOURCE: BS-asset-1 rules 6 and 8, BS-asset-3; BS-entry-4 (new commands are bounded; replay checks
+    /// SOURCE: BS-asset-1 statements 14 and 28, BS-asset-3; BS-entry-4 (new commands are bounded; replay checks
     ///         only what every journaled run passed:
     ///         record_depreciation_run).
     /// ```
@@ -5797,7 +5797,7 @@ impl Ledger {
     ///      line per (account, project) part the lines name, the parts
     ///      naming neither as one (arap::document_parts), each revenue line
     ///      tagged with its project; the receivable line never (
-    ///      BS-statement-5 item 8).
+    ///      BS-statement-5 statement 6).
     ///   2. The receivable line MUST carry the invoice (Origin), in the
     ///      step that posts it: the invoice starts Open, owing its total.
     ///   3. A refusal MUST leave the books unchanged.
@@ -5932,7 +5932,7 @@ impl Ledger {
     ///      with the vendor (1099s): one line per (account, project) part
     ///      the lines name, the parts naming neither as one
     ///      (arap::document_parts), each tagged with its project; the
-    ///      payable line never (BS-statement-5 item 8).
+    ///      payable line never (BS-statement-5 statement 6).
     ///   2. The payable line MUST carry the bill (Origin), in the step that
     ///      posts it.
     ///   3. A refusal MUST leave the books unchanged.
@@ -6293,7 +6293,7 @@ impl Ledger {
     /// GOAL: every figure about a document (paid, outstanding, status,
     ///       overdue) is read from its tagged lines, so a reversal, a void
     ///       or a bounced payment is right by construction.
-    /// SOURCE: BS-arap-2 (INVARIANTS 1-4), BS-ledger-5, BS-ledger-6, BS-arap-1;
+    /// SOURCE: BS-arap-2 (invariants 1, 4, 6 and 7), BS-ledger-5, BS-ledger-6, BS-arap-1;
     ///         ASC 310-10 (receivables), ASC 405-20-40-1 (payables).
     /// INVARIANTS:
     ///   1. outstanding = the signed sum of every posted line tagged with
@@ -6443,7 +6443,7 @@ impl Ledger {
     /// Refuse a step that would move `doc` by `extra` (dated movements)
     /// if, at some date, it would then owe less than nothing or more than
     /// its total where it didn't before ([`kernel::bounds_kept`];
-    /// BS-arap-2 INVARIANT 2). Books an earlier version left out of bounds
+    /// BS-arap-2 invariant 6). Books an earlier version left out of bounds
     /// (a void under a payment that stands) take any step that makes no
     /// date worse, so the remedy (reversing the payment) is accepted.
     fn check_item_bounds(
@@ -6504,7 +6504,7 @@ impl Ledger {
     /// The least `doc` owes on any day from `date` on (from its own date,
     /// for a date before it): what a payment may be, and what a write-off
     /// may be, so no later day ends out of bounds (BS-arap-2
-    /// INVARIANT 2, BS-arap-5 INVARIANT 1).
+    /// invariant 6, BS-arap-5 invariant 3).
     fn least_owed_from(&self, doc: arap::DocRef, date: NaiveDate) -> Result<Decimal, LedgerError> {
         let (doc_date, ..) = self.doc_header(doc)?;
         let from = date.max(doc_date);
@@ -6729,9 +6729,22 @@ impl Ledger {
             discounts.push(app.discount);
         }
         let fee_amount = params.fee.as_ref().map_or(Decimal::ZERO, |f| f.amount);
+        // A fee above the cash is its own refusal; the kernel would also
+        // answer `None` for it, with no way to say which of its refusals it
+        // was. A sum that overflows is left to the kernel (too large).
+        if let Some(total_cash) = cash
+            .iter()
+            .try_fold(Decimal::ZERO, |sum, c| sum.checked_add(*c))
+            && fee_amount > total_cash
+        {
+            return Err(LedgerError::FeeAboveCash {
+                fee: fee_amount,
+                cash: total_cash,
+            });
+        }
         let settlement = kernel::settle(&cash, &discounts, fee_amount).ok_or_else(|| {
             LedgerError::InvalidSettlement(
-                "the cash and discounts don't cover the applications exactly, or the fee is above the cash"
+                "the settlement's figures aren't exact: an amount is too large, or the fee is negative"
                     .into(),
             )
         })?;
@@ -7151,7 +7164,7 @@ impl Ledger {
     ///   3. 0 < amount <= the least the invoice owes on any day from
     ///      `date` on (on the day, when nothing later lowers it): a
     ///      partial write-off is allowed (§1.166-3(a)), and no day may
-    ///      owe less than nothing (BS-arap-2 INVARIANT 2).
+    ///      owe less than nothing (BS-arap-2 invariant 6).
     ///   4. The day MUST be in the calendar, in an open period, and not
     ///      before the invoice.
     ///   5. A refusal MUST leave the books unchanged.
@@ -7165,7 +7178,7 @@ impl Ledger {
     ///   4. IF it is dated before the invoice or in a closed period:
     ///      SHOULD refuse.
     ///   5. Half paid, the rest written off: Written off, with 50 paid and
-    ///      50 written off (BS-arap-2 SCENARIO 7).
+    ///      50 written off (BS-arap-2 scenario 7).
     /// ```
     pub fn write_off(
         &mut self,
@@ -7270,7 +7283,7 @@ impl Ledger {
     /// ```text
     /// GOAL: a document that should never have existed (a duplicate, the
     ///       wrong customer) is undone by an opposite entry, never erased.
-    /// SOURCE: BS-ledger-5, BS-ledger-6, BS-period-2, BS-arap-2 (scenarios 2, 3);
+    /// SOURCE: BS-ledger-5, BS-ledger-6, BS-period-2, BS-arap-2 (scenarios 2 and 3);
     ///         plan/served.md P4b.5, P4b.6; ASC 250 (an immaterial error is
     ///         corrected in the period found).
     /// INVARIANTS:
@@ -7338,7 +7351,7 @@ impl Ledger {
     /// ```text
     /// GOAL: show that receivables and payables equal their documents, and
     ///       list every line that is no document's.
-    /// SOURCE: BS-ledger-8, BS-arap-2 INVARIANT 1:
+    /// SOURCE: BS-ledger-8, BS-arap-2 invariant 1:
     ///         GL(A, D) = Σ_docs outstanding(d, D) + unattached(A, D).
     /// INVARIANTS:
     ///   1. balance sums every posted line on the account dated on or
@@ -7574,8 +7587,7 @@ impl Ledger {
         }
     }
 
-    /// Tag the line a new payment event names (plan P4b S6; BS-arap-6
-    /// INVARIANT 3): line `index` of `entry`, when it is on the role's
+    /// Tag the line a new payment event names (plan P4b S6; WB-arap-15): line `index` of `entry`, when it is on the role's
     /// account, on the side the movement posts, untagged, and for `amount`.
     /// Otherwise it stays untagged and the control check lists it; replay
     /// never refuses (BS-entry-4).
@@ -7784,7 +7796,7 @@ impl Ledger {
     }
 
     /// [`Self::replay_invoice_payment`] with the line a new event names and
-    /// the discount it took (plan P4b S6; BS-arap-6 INVARIANT 3). A
+    /// the discount it took (plan P4b S6; WB-arap-15). A
     /// line the event names but that can't be matched (no such line, the
     /// wrong account or side, or already tagged) stays untagged, and the
     /// control check lists it: replay never refuses (BS-entry-4).
@@ -7935,7 +7947,7 @@ impl Ledger {
     ///
     /// ```text
     /// GOAL: what each customer owes as of a day, by how overdue.
-    /// SOURCE: BS-arap-1, BS-arap-2 INVARIANT 5.
+    /// SOURCE: BS-arap-1, BS-arap-2 invariant 8.
     /// INVARIANTS:
     ///   1. Each invoice issued by `as_of` that owes something then
     ///      (Self::doc_state's outstanding) is in exactly one bucket, at
@@ -9324,7 +9336,7 @@ impl Ledger {
     ///
     /// ```text
     /// GOAL: a new class under a name no other class has.
-    /// SOURCE: BS-statement-5 item 1.
+    /// SOURCE: WB-statement-5.
     /// SCENARIOS:
     ///   1. IF the name is blank: SHOULD refuse (EmptyClassName).
     ///   2. IF it is longer than a line, holds a control character or a
@@ -9346,7 +9358,7 @@ impl Ledger {
     ///
     /// ```text
     /// GOAL: one rule for every name a command gives a class.
-    /// SOURCE: BS-statement-5 item 1; BS-partner-2 (no full TIN).
+    /// SOURCE: WB-statement-5; BS-partner-2 (no full TIN).
     /// SCENARIOS:
     ///   1. IF `except` is a class and the name is its own, exactly: SHOULD
     ///      keep it as stored, unchecked, so a fact-only change never
@@ -9495,7 +9507,7 @@ impl Ledger {
     /// ```text
     /// GOAL: refuse any project record the books can't take, before a
     ///       line is written.
-    /// SOURCE: BS-statement-5 item 1 (and BS-partner-2: no full TIN).
+    /// SOURCE: WB-statement-5 (and BS-partner-2: no full TIN).
     /// SCENARIOS:
     ///   1. IF the class doesn't exist: SHOULD refuse (UnknownClass).
     ///   2. IF the name is blank, too long, or another class has it
@@ -9574,7 +9586,7 @@ impl Ledger {
     }
 }
 
-/// A class name as names compare (BS-statement-5 item 1): trimmed, in
+/// A class name as names compare (WB-statement-5): trimmed, in
 /// lower case (Unicode's, so `Éclair` and `éCLAIR` are one name).
 fn fold_class_name(name: &str) -> String {
     name.trim().to_lowercase()

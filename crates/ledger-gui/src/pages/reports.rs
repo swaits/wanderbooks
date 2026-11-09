@@ -2719,7 +2719,7 @@ mod tests {
         // The figures, by hand: the loan (not a financing setting) is an
         // operating receipt, 2,500.00; what the members paid personally
         // (85.00 and 216.40, 301.40) is borrowed from them through 2100
-        // and spent (D-42, BS-statement-3 rule 11); the members'
+        // and spent (D-42, BS-statement-3 statement 16); the members'
         // contributions are financing, each named (1,200.00 and 800.00);
         // the reimbursement repays 2100 (301.40); the tablet is disclosed
         // (630.00), the reversed laptop gone.

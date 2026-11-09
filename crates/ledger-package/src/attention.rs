@@ -71,7 +71,7 @@
 //!      amortization: no counterparty by nature) (one item: Info under
 //!      suggest, Todo under require; its prompt names
 //!      books.set_entry_party); each warning of the fiscal year's
-//!      statement of cash flows (BS-statement-3 rule 12: equipment sold for
+//!      statement of cash flows (BS-statement-3 statement 17: equipment sold for
 //!      an IOU, Todo; bought on an operating payable, Info; one per
 //!      entry, its detail the warning's fix); a filed PDF whose text
 //!      extraction failed (Todo, one per file: a human must read its
@@ -1342,7 +1342,7 @@ pub fn find_with(
     }
 
     // The statement of cash flows' warnings this fiscal year (
-    // BS-statement-3 rule 12, D-35): equipment sold for an IOU, flagged with its fix
+    // BS-statement-3 statement 17, D-35): equipment sold for an IOU, flagged with its fix
     // (Todo); equipment bought on an operating payable, following how the
     // payable is classified (Info). A statement the settings can't give
     // (no cash accounts yet) has none.

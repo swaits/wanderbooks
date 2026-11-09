@@ -629,3 +629,61 @@ pub(crate) fn an_invoice_lines_project_is_what_the_project_counts() {
         },
     );
 }
+
+/// A draft's state the engine does not hold is a failure, not a pass: the
+/// example says the entry is still `building` after it posted.
+#[test]
+#[should_panic(expected = "state")]
+pub(crate) fn a_wrong_draft_state_fails() {
+    run_edited(
+        "entry-a-draft-waits-on-its-evidence-and-posts-once-it-has-it.toml",
+        |t| t.replacen("state = \"posted\"", "state = \"building\"", 1),
+    );
+}
+
+/// An evidence decision the engine does not give is a failure.
+#[test]
+#[should_panic(expected = "decision")]
+pub(crate) fn a_wrong_evidence_decision_fails() {
+    run_edited("entry-evidence-is-decided-in-one-place.toml", |t| {
+        t.replacen("decision = \"required\"", "decision = \"exempt\"", 1)
+    });
+}
+
+/// A post the gate refuses is a refusal the example must say: leaving it out
+/// is a failure (the engine refused an event the example takes).
+#[test]
+#[should_panic(expected = "post_draft")]
+pub(crate) fn a_post_without_its_evidence_must_be_marked_refused() {
+    run_edited(
+        "entry-a-draft-waits-on-its-evidence-and-posts-once-it-has-it.toml",
+        |t| t.replacen("refused = \"evidence_required\"\n", "", 1),
+    );
+}
+
+/// A discard of a posted entry is refused: saying it is accepted fails.
+#[test]
+#[should_panic(expected = "discard_draft")]
+pub(crate) fn a_discard_of_a_posted_entry_must_be_marked_refused() {
+    run_edited(
+        "entry-a-drafts-state-is-a-note-and-a-posted-entry-has-none.toml",
+        |t| {
+            t.replacen(
+                "discard_draft = { entry = 1, reason = \"Posted by mistake\" }\nrefused = \"not_drafted\"",
+                "discard_draft = { entry = 1, reason = \"Posted by mistake\" }",
+                1,
+            )
+        },
+    );
+}
+
+/// A close the books hold back for a draft in its period is refused and
+/// changes nothing: saying it is accepted fails.
+#[test]
+#[should_panic(expected = "draft entries exist")]
+pub(crate) fn a_close_with_a_draft_in_its_period_must_be_marked_refused() {
+    run_edited(
+        "period-a-draft-holds-its-period-open-until-it-is-discarded.toml",
+        |t| t.replacen("refused = \"drafts_in_period\"\n", "", 1),
+    );
+}

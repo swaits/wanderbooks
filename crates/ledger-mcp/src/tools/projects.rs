@@ -144,7 +144,7 @@ fn by_name(ledger: &Ledger) -> Vec<ClassId> {
 }
 
 /// The note `books.add_line` and `books.record_payout` give for a line tagged to a finished or
-/// abandoned project (BS-statement-5 item 5).
+/// abandoned project (BS-statement-5 statement 7).
 pub(super) fn late_tag_note(ledger: &Ledger, id: ClassId) -> Option<String> {
     let f = ledger.project_facts(id)?;
     if !f.status.is_over() {
@@ -162,7 +162,7 @@ pub(super) fn late_tag_note(ledger: &Ledger, id: ClassId) -> Option<String> {
 }
 
 /// The note `books.create_invoice` gives for a line naming an on-spec
-/// project (BS-statement-5 items 4 and 8): on spec, a hoped-for payment is
+/// project (BS-statement-5 statements 5 and 6): on spec, a hoped-for payment is
 /// no receivable and no income until received, so an invoice for one
 /// means there is now an agreement, or it shouldn't be an invoice.
 pub(super) fn on_spec_invoice_note(ledger: &Ledger, id: ClassId) -> Option<String> {

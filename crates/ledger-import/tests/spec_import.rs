@@ -1813,7 +1813,7 @@ fn iif_refuses_an_undeclared_account() {
     );
 }
 
-/// iif INVARIANT 8 (BS-format-2 item 7): an entry with a line on one
+/// iif INVARIANT 8 (BS-format-2 statement 26): an entry with a line on one
 /// accounts receivable account still writes one transaction, and the entry
 /// is named to the human so they can add QuickBooks' customer or vendor.
 #[test]
@@ -1855,7 +1855,7 @@ fn iif_writes_an_entry_on_one_receivable_or_payable_account() {
     assert_eq!(iif.receivable_payable, [e]);
 }
 
-/// iif INVARIANT 8 (BS-format-2 item 7): an entry with lines on both the
+/// iif INVARIANT 8 (BS-format-2 statement 7): an entry with lines on both the
 /// receivables and payables control accounts is refused, naming its id:
 /// QuickBooks Desktop records at most one A/R or A/P account a
 /// transaction, and splitting the entry would change what it says.
@@ -1912,7 +1912,7 @@ fn iif_refuses_an_entry_on_two_receivable_or_payable_accounts() {
     );
 }
 
-/// iif INVARIANT 8 (BS-format-2 item 7): two distinct receivable accounts
+/// iif INVARIANT 8 (BS-format-2 statement 7): two distinct receivable accounts
 /// in one entry are refused too (its `qb_type` decides, whatever the
 /// callers call them), and every offending entry is named.
 #[test]
@@ -5077,7 +5077,7 @@ fn iif_writes_each_lines_class_and_declares_the_classes_first() {
 }
 
 /// iif INVARIANT 9: a class's NAME is written as an account's own level
-/// is (BS-format-2 rules 3, 4): plain ASCII, a colon a '-' (a colon starts a
+/// is (BS-format-2 statements 10 and 18): plain ASCII, a colon a '-' (a colon starts a
 /// subclass, the `!CLASS` header help), trimmed, at most NAME_MAX; names
 /// alike ignoring case once written get " (id)", round after round, as
 /// accounts get their codes; and each name written differently is a

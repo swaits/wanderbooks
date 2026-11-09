@@ -1717,7 +1717,7 @@ fn one_list_of_cash_accounts_per_package() {
     assert_eq!(text(&plain, "1099-worksheet-2026.csv"), tool(&cash));
 }
 
-/// BS-format-2 rule 8 (P3 cutover review, open point 1): the
+/// BS-format-2 statements 27-30 and 32 (P3 cutover review, open point 1): the
 /// package's QuickBooks file declares every project as a class and
 /// carries each line's project in CLASS; a project name written
 /// differently is listed in the warnings and the README, whose IIF line
@@ -1776,7 +1776,7 @@ fn the_package_iif_carries_each_lines_project() {
     );
 }
 
-/// BS-format-2 rule 8 with BS-statement-5 item 8: an invoice's or a bill's
+/// BS-format-2 statement 27 with BS-statement-5 statement 6: an invoice's or a bill's
 /// lines carry their projects into CLASS through the entry they post,
 /// the revenue or expense line of each project tagged, an untagged
 /// part and the receivable or payable line left without a class.
@@ -1921,7 +1921,7 @@ fn the_readme_lists_what_the_iif_writes_differently() {
     assert!(!text(&p, "README.txt").contains("Written differently"));
 }
 
-/// BS-format-2 rule 7 (P3 review round 2): the file names no customer or vendor
+/// BS-format-2 statement 26 (P3 review round 2): the file names no customer or vendor
 /// (Intuit states no such need for an IIF journal; QuickBooks Desktop asks
 /// for one on a journal entry to accounts receivable or payable, and takes
 /// one such account a transaction: sources/intuit-iif.md), so the README
@@ -2022,7 +2022,7 @@ fn the_readme_names_the_entries_on_receivables_and_payables() {
     assert!(!text(&p, "README.txt").contains("customer or vendor"));
 }
 
-/// BS-format-2 item 7: an entry with lines on both the receivables and
+/// BS-format-2 statement 7: an entry with lines on both the receivables and
 /// payables control accounts is refused, naming its id, and the package is
 /// not built: QuickBooks Desktop records at most one A/R or A/P account a
 /// transaction, and splitting the entry would change what it says.
@@ -2481,7 +2481,7 @@ fn the_k1_worksheet_reports_tax_basis_capital() {
 
 /// The CPA package's aging CSVs are the agings, one row per open document
 /// and a tie-out line that equals the control account (plan P4b S6,
-/// 8.3.10; BS-ledger-8, BS-arap-2 INVARIANT 1).
+/// 8.3.10; BS-ledger-8, BS-arap-2 invariant 1).
 #[test]
 fn the_aging_csvs_tie_to_the_control_check() {
     let dir = tempfile::Builder::new()

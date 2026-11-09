@@ -278,7 +278,7 @@ proptest! {
         }
     }
 
-    /// BS-statement-3 rule 3: the statement of cash flows' per-entry split
+    /// BS-statement-3 statement 4: the statement of cash flows' per-entry split
     /// (`kernel::entry_flows`, Kani `entry_flows_*`) is the same at both
     /// instantiations, on balanced and unbalanced lines alike.
     #[test]
@@ -325,7 +325,7 @@ proptest! {
         );
     }
 
-    /// BS-statement-3 rule 11: `kernel::constructive` (what a member or
+    /// BS-statement-3 statement 16: `kernel::constructive` (what a member or
     /// lender paid or received for the company; Kani
     /// `constructive_nets_to_zero`, `constructive_mirrors`) agrees at both
     /// instantiations.

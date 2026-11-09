@@ -2505,9 +2505,9 @@ proptest! {
     /// the cash part of the equity and designated-debt movements: each
     /// entry's cash applied to the sections moving against it, operating,
     /// investing, financing, each up to its own movement (BS-statement-3
-    /// rule 3), then to the kinds within each section in their order;
+    /// statement 4), then to the kinds within each section in their order;
     /// plus what the loan or a member's capital paid or received for the
-    /// company (rule 11, D-42): the loan pays for operating lines (the
+    /// company (statement 16, D-42): the loan pays for operating lines (the
     /// balance-sheet ones first) and receives for revenue and expense;
     /// capital pays and receives for revenue and expense only. Written
     /// here apart from the kernel.

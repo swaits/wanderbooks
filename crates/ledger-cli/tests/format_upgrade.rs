@@ -845,7 +845,7 @@ fn books_p2_served_cut_over_whole() {
         ),
         // An invoice carrying documents_v2's fields (terms: P4b S4.4) and
         // its line naming its project (document_line_projects,
-        // BS-statement-5 item 8).
+        // BS-statement-5 statement 6).
         (
             "books.create_invoice",
             json!({"customer": "1", "date": "2026-02-10", "terms": "Net 30",

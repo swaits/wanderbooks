@@ -1175,7 +1175,7 @@ fn reversing_a_linked_acquisition_still_opens_and_verifies() {
     Store::open(&dir).unwrap().verify().unwrap();
 }
 
-// ------------------------------------------------- depreciation runs (BS-asset-1 rules 6 and 8)
+// ------------------------------------------------- depreciation runs (BS-asset-1 statements 14 and 28)
 
 /// A run is the books' record of what they carry for an asset
 /// (Ledger::accumulated_posted): recorded live, replayed from the journal,

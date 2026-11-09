@@ -247,7 +247,7 @@ pub fn build(dir: &Path, today: NaiveDate) -> Result<(), StoreError> {
         "Client work",
         &ledger_core::ProjectFacts {
             // Its invoices' lines and the contractors it pays are tagged
-            // to it (BS-statement-5 item 8), so its snapshot is its
+            // to it (BS-statement-5 statement 6), so its snapshot is its
             // revenue less its direct costs.
             description: Some(
                 "Design work for the studio's clients: every client invoice, and the contractors who work on it."
@@ -306,7 +306,7 @@ pub fn build(dir: &Path, today: NaiveDate) -> Result<(), StoreError> {
     .map(|n| s.add_customer(n))
     .collect::<Result<_, _>>()?;
     // Work on spec for a customer, hoping they adopt it: its costs are
-    // expenses, and nothing is receivable (BS-statement-5 item 4).
+    // expenses, and nothing is receivable (BS-statement-5 statement 5).
     let tidepool_started = start + Months::new(13);
     let tidepool = s.add_project(
         "Tidepool app",

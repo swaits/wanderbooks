@@ -22,7 +22,7 @@
 //!         part; DECISION, owner, 2026-10-20: a member's entry counts what
 //!         moved their capital).
 //! DEFINITIONS:
-//!   target (target(), BS-partner-3 item 3): what the shares split,
+//!   target (target(), BS-partner-3 statement 3): what the shares split,
 //!     signed debit-positive as a line on the parties' own account would
 //!     be (positive: the company paid or gave; negative: it received),
 //!     with its direction (paid, received, neither) and what of it moved
@@ -317,7 +317,7 @@ pub struct Target {
     pub in_kind: Decimal,
     /// Which side the parts count on in a party's totals: the direction
     /// of the entry's root original (itself, unless it is a reversal), so
-    /// a reversal nets what it reverses (BS-partner-3 item 4).
+    /// a reversal nets what it reverses (BS-partner-3 statement 5).
     pub counts_as: Direction,
 }
 

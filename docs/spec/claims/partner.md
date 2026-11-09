@@ -374,7 +374,7 @@ the 1099 worksheet together, labelled, and neither is read for the
 other: `books.get_entry` gives each part's `resolved`, `direction`,
 `cash` and `in_kind`; `books.party` gives both a party's totals
 (`basis` cash or all) and its worksheet figures, labelled; the known
-limits of BS-partner-3 rule 7 are stated in the tools' text; the
+limits of BS-partner-3 statement 9 are stated in the tools' text; the
 viewer's party pages and entry page show the same parts.
 
 **Enforced:** `ledger-mcp` `books.get_entry`, `books.party`,

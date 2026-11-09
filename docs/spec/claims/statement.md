@@ -39,13 +39,13 @@ assets and liabilities-plus-equity at every date.
 
 **Pick (BS-statement-7):** `constructive`, the owner, 2026-10-20, D-42
 
-**Claims:** partly (bookspec's record states rules 1-12; the picks and the product surface are below)
+**Claims:** partly (bookspec's record has 18 statements; the picks and the product surface are below)
 
 **Pick:** the direct method; an entry's cash allocated to its sections in the order operating, investing, financing (CONVENTION, the ASC silent, disclosed); within a section, the cash split among its kinds in the order the rest of the section's kinds, interest received, interest paid (CONVENTION, as the engine splits it); what a member or a lender pays or receives for the company presented as constructive cash, borrowed (or contributed) and spent (the owner, D-42, 2026-10-20, revising D-35's first point); a payment shared between a government and others split by their resolved shares, the government's part rounded half to even to the base currency's places and the rest exact (CONVENTION); payroll entries keep their (d) class whoever they name (CONVENTION).
 
 **Enforced:** `profit_and_loss_for_period`; `cashflow::cash_flow` (with
 `kernel::entry_flows`, `apply_cash`, `constructive`, `exchanged`),
-`role_problems`, `foot`; `Ledger::reversal_chain` (rule 6's chains);
+`role_problems`, `foot`; `Ledger::reversal_chain` (BS-statement-3 statement 11's chains);
 `ledger_package::cash_flow_for` (the server, the
 package and the viewer). **Checked:** Lean `statements_add_up`,
 `cashflow_sections_sum_to_cash_change`, `entry_flows_sum`,
@@ -57,13 +57,13 @@ package and the viewer). **Checked:** Lean `statements_add_up`,
 `apply_cash_mirrors`, `apply_cash_spends_exactly`,
 `exchanged_is_bounded`, `constructive_nets_to_zero`,
 `constructive_mirrors`; `prop_period_pnl_partitions`,
-`prop_cash_flow_laws` (5,000 cases, reversals of reversals, rule 11's
+`prop_cash_flow_laws` (5,000 cases, reversals of reversals, BS-statement-3 statement 16's
 shapes), `prop_pure_entries_sections_are_movements`; regressions
 `defect1_reversed_contributions_foot_regression`,
 `defect1_two_member_llc_first_year_regression`,
 `defect1_two_member_llc_as_of_march_18_regression` (and bookspec
-`cash-flow.*`, `cash-flow.paid-on-the-companys-behalf` for rule 11,
-`cash-flow.government-fees` for rule 5's governments);
+`cash-flow.*`, `cash-flow.paid-on-the-companys-behalf` for BS-statement-3 statement 16,
+`cash-flow.government-fees` for BS-statement-3 statement 8's governments);
 `disposal_proceeds_all_investing`,
 `an_expense_a_member_paid_is_borrowed_and_spent`,
 `reimbursing_a_member_is_a_repayment_of_borrowing`,
@@ -137,7 +137,7 @@ as payroll.
 `a_bill_payment_carries_its_bills_split`,
 `a_government_selling_services_is_a_supplier`.
 
-**WB-statement-3** Rule 11's wanderbooks limits, from what the books
+**WB-statement-3** BS-statement-3 statement 16's wanderbooks limits, from what the books
 cannot tell: a lender's or member's own charge credited to what the
 company owes them, other than interest and guaranteed payments (a card's
 annual fee, rent a member charges), reads as paid for the company, so

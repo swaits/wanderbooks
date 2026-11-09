@@ -102,7 +102,7 @@ pub use reports::{
 };
 pub use schedules::{
     AmortizationSchedule, Frequency, NewRecurring, NewSchedule, RecurringEntry, RecurringId,
-    ScheduleConvention, ScheduleId, ScheduleKind, TemplateLine,
+    ScheduleConvention, ScheduleId, ScheduleKind, ScheduleRounding, TemplateLine,
 };
 pub use shares::{PartyMember, PartyShare, Share};
 pub use tax::{

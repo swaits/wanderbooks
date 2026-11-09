@@ -441,8 +441,22 @@ impl Ledger {
 
     /// Register an amortization schedule. Returns its id.
     pub fn register_schedule(&mut self, new: NewSchedule) -> Result<ScheduleId, LedgerError> {
-        schedules::validate_schedule(&new, &self.chart)?;
-        self.replay_register_schedule(new)
+        self.register_schedule_under(new, schedules::ScheduleRounding::Cent)
+    }
+
+    /// [`Self::register_schedule`] for a monthly_even schedule written
+    /// under `rounding` (D-72, BS-prepaid-4): the store registers new
+    /// schedules under the currency's minor unit once its books declare
+    /// the journal feature `schedule_minor_unit`. The plain
+    /// `register_schedule` is the cent rule, the rule of every schedule
+    /// before it.
+    pub fn register_schedule_under(
+        &mut self,
+        new: NewSchedule,
+        rounding: schedules::ScheduleRounding,
+    ) -> Result<ScheduleId, LedgerError> {
+        schedules::validate_schedule_under(&new, rounding, &self.chart)?;
+        self.replay_register_schedule_under(new, rounding)
     }
 
     /// [`Self::register_schedule`] without the total's range and minor-unit
@@ -452,6 +466,17 @@ impl Ledger {
     pub fn replay_register_schedule(
         &mut self,
         new: NewSchedule,
+    ) -> Result<ScheduleId, LedgerError> {
+        self.replay_register_schedule_under(new, schedules::ScheduleRounding::Cent)
+    }
+
+    /// [`Self::replay_register_schedule`] for a schedule the journal says
+    /// was written under `rounding` (`schedule.registered`'s `rounding`,
+    /// absent for every schedule before D-72).
+    pub fn replay_register_schedule_under(
+        &mut self,
+        new: NewSchedule,
+        rounding: schedules::ScheduleRounding,
     ) -> Result<ScheduleId, LedgerError> {
         schedules::validate_schedule_shape(&new, &self.chart)?;
         let id = self.next_schedule_id;
@@ -469,6 +494,7 @@ impl Ledger {
                 pl_account: new.pl_account,
                 posted: Default::default(),
                 convention: new.convention,
+                rounding,
                 postings: Default::default(),
             },
         );

@@ -928,3 +928,18 @@ impl Books<'_> {
             .unwrap_or_else(|r| panic!("{what}: {}", r.reason));
     }
 }
+
+/// Every role the schema's list names is a role this engine's command
+/// takes, spelled the same: the adapter passes `assign_role`'s key
+/// straight to `Store::assign_role`, so a key this engine spelled
+/// differently would make every example that named it a refused
+/// assignment the example did not ask for.
+#[test]
+fn every_listed_role_is_the_engine_role() {
+    for &(role, _) in bookspec_checker::ACCOUNT_ROLES {
+        assert!(
+            ledger_core::control_account(role).is_some(),
+            "{role}: the schema names a role this engine does not have"
+        );
+    }
+}

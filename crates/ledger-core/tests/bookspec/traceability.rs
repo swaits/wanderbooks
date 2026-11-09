@@ -2563,6 +2563,54 @@ fn made_up_names_do_not_resolve() {
     );
 }
 
+/// `calls` finds a call, never a mention: a method call, a bare mention, or
+/// another module's function of the same name is not the kernel's call.
+#[test]
+fn calls_finds_a_call_not_a_mention() {
+    assert!(
+        !calls("x.take(5)", "take"),
+        "a method call is not the kernel's"
+    );
+    assert!(!calls("take", "take"), "a bare mention is not a call");
+    assert!(
+        !calls("other::take(5)", "take"),
+        "another module's take is not the kernel's"
+    );
+    assert!(calls("kernel::take(5)", "take"), "a kernel call counts");
+    assert!(calls("take(5)", "take"), "an imported bare call counts");
+    assert!(calls("kernel::Direction::flip(d)", "Direction::flip"));
+    assert!(
+        !calls("kernel::Direction::flip(d)", "flip"),
+        "a type's flip is not the free flip"
+    );
+}
+
+/// A field belongs to its own type, and a method to its own type: a field
+/// of `Iif` never backs `TaxSummary::…`, nor the reverse.
+#[test]
+fn a_field_belongs_to_its_own_type() {
+    let root = repo_root();
+    let (defs, bases, all_paths) = main_index(&root);
+    for token in [
+        "Iif::changes",
+        "Iif::receivable_payable",
+        "Iif::warnings",
+        "TaxSummary::form_4797",
+    ] {
+        assert_eq!(
+            resolve(token, &defs, &bases, &all_paths),
+            Ok(Class::RustItem),
+            "`{token}` is a real item of its type"
+        );
+    }
+    for token in ["Iif::form_4797", "TaxSummary::changes"] {
+        assert!(
+            resolve(token, &defs, &bases, &all_paths).is_err(),
+            "`{token}` is a field of the other type and must not resolve"
+        );
+    }
+}
+
 #[test]
 fn a_harness_listed_twice_must_agree() {
     let mut laws = BTreeMap::new();

@@ -6,9 +6,9 @@ ways, each covering what the others can't:
 
 | Layer | Tool | What it proves | Scope |
 |---|---|---|---|
-| **Code** | [Kani](https://model-checking.github.io/kani/) (bounded model checking) | The engine's own Rust kernel is correct and never panics or overflows | Every input within the bounds: up to 4 lines, 3 accounts, amounts to 2^40; proration by days up to 3 month parts (bounds below) |
+| **Code** | [Kani](https://model-checking.github.io/kani/) (bounded model checking) | The engine's own Rust kernel is correct and never panics or overflows | Every input within the bounds: up to 4 lines, 3 accounts, amounts to 2^40; proration by days up to 3 month parts; rounding, FX, weight shares, collection totals and even monthly parts at their fixed steps, months and small magnitudes (bounds below) |
 | **Laws** | [Lean 4](https://lean-lang.org) (machine-checked proof) | The laws hold for books of any size, after any sequence of commands | Unbounded: any number of entries, accounts, periods, steps |
-| **Bridge** | proptest | The kernel on `Decimal` (what the engine runs) agrees with the kernel on `i64` (what Kani proves); proration's `i128` (the engine's) with its `i64` and `i32` | 2,000 random cases per property |
+| **Bridge** | proptest | The kernel on `Decimal` (what the engine runs) agrees with the kernel on `i64` (what Kani proves), and for the kernel sweep with an independent exact `i128` reference at every step, rate and month count; proration's `i128` (the engine's) with its `i64` and `i32` | 2,000 random cases per property |
 
 Run all of it with `just prove` (after `mise install`; see the end).
 
@@ -24,9 +24,13 @@ kernel-sweep unit). Its functions
 are small, pure, and generic over an `Amount` trait with *checked*
 operations. The engine calls them on `Decimal`: `JournalEntry::validate`,
 `movements`, `reverse_entry`, `account_balance`, `account_movement`,
-period closing, `periods::allocate`, the trial balance, and the tax
-summary's deductible amount. There is no second copy of the arithmetic for
-proofs to drift from.
+period closing, `periods::allocate`, the trial balance, the tax
+summary's deductible amount, `add_line_fx` (through `fx_booked` and
+`fx_booked_minor`), every money rounding (through `round_step`), the
+weight shares and splits (`share_of`, `share_floor_with`,
+`split_by_weights_into`), every collection total (`total`, `total_of`,
+`total_try`) and the monthly-even plan (`even_parts`). There is no second
+copy of the arithmetic for proofs to drift from.
 
 Kani compiles the same functions at `i64` (exact integer money in the
 smallest unit; the four proration charge harnesses at `i32`) and
@@ -74,9 +78,19 @@ Each law, and what proves it. Kani harnesses are in
    entry's net.
    - Kani `movements_are_per_account`, `movements_sum_to_the_net` ·
      Lean `sum_movements`
-4. **Sums are exact and never overflow** for in-range lines.
+4. **Sums are exact and never overflow** for in-range lines: a total is
+   `Some` only when it is the true sum, and `None` the moment a running
+   sum is not representable.
    - Kani `sums_are_exact` (every harness also fails on any panic or
-     arithmetic overflow)
+     arithmetic overflow), `total_is_sound`, `total_overflow_is_none`,
+     `total_append`, `total_of_is_map_sum`, `total_try_is_map_sum`,
+     `total_empty_is_zero` · bridge `total_agrees`, `total_of_agrees`,
+     `total_try_agrees`, `total_append_agrees` and the
+     `decimal_edge_table` · tests `exact_totals.rs` in `ledger-core` and
+     `ledger-store`
+   - No Lean theorem: `Int` does not overflow (bookspec's laws row 4 says
+     so), so the `None` half is Kani's and the bridge's; the sum's
+     algebra is `Basic.net_append` and `Basic.sumOver_add`.
 
 ### Reversals
 
@@ -321,8 +335,11 @@ The P3 odd cent (defect 17; BS-partner-1; D-10, D-38) adds three laws:
     exceed it; a money target is all cash; a contribution counts all of
     itself; a distribution counts no more money than it paid and no more
     property than it gave, the rest still owed (BS-partner-3).
-    - Kani `party_target_direction_is_its_sign` · bridge
-      `party_target_agrees`
+    - Kani `party_target_direction_is_its_sign`, and
+      `direction_of_is_the_sign` (the sign classification the law is
+      stated over: paid above zero, received below zero, neither at zero,
+      for any `i64` amount, all three signs covered) · bridge
+      `party_target_agrees`, `direction_of_agrees`
 24. **A reversal is the exact opposite of what it reverses**: the target
     is odd (negating the lines' capital movement, money and own-account
     movement gives the original's reverse, but for the debits fallback and
@@ -392,6 +409,13 @@ of any month is a whole number of them.
       `the_last_months_charge_in_tenths_is_within_half_a_cent` · Lean
       `Prorate.roundUnit_near`, `Prorate.cum_near`, `Prorate.part_near`,
       `Prorate.part_within_a_unit` · bridge `prorated_through_agrees_at_i32_and_i128`
+    - The weight the charge is computed from is its own harness:
+      `part_weight_is_days_of_the_month` proves a month part's weight in
+      `MONTH_L`ths is exactly `days × MONTH_L / month_days`, and `None`
+      exactly for a part no calendar month has (days and month days 0 to
+      40; valid, partial, whole and invalid parts covered); bridge
+      `part_weight_agrees` checks the same weight at `i32`, `i64` and
+      `i128`.
 28. **The charge through a day never falls, never exceeds the total, is
     continuous where one month ends and the next begins, and is the total
     on the last day**; malformed input (a negative total, no months, a
@@ -442,6 +466,26 @@ the malformed-input harness: totals to 2^20 either sign, months 0 to 3,
 days, month lengths and k 0 to 40, a weight before of up to 4 ×
 MONTH_L either sign, units -10 to 10; catch-up (and every suffix's) over
 up to 3 month ends, and the true-up, at amounts to 2^40.
+
+Bounds (Kani) for the kernel sweep. Rounding (`round_step`): at `i64`,
+amounts to ±2^12, the step fixed to 1, 2, 3, 7, 10 or 101 (the even steps
+2, 4, 10 and 100 reach a tie). FX (`fx_booked`): at `i64`, foreign amounts
+to ±256 and rates 1 to 16, the step fixed to 1, 2, 5, 10 or 100. Shares
+(`split_by_weights_into`): at `i64`, fixed arrays, weights 2/3/5 of 10,
+step 1 (10 for the floor harness), whole 0 to 1,000 (100 for the floor
+harness), with `share_floor_is_the_exact_floor` under `#[kani::unwind(4)]`
+and both correction loops capped by `MAX_CORRECTION_STEPS`. Totals
+(`total`, `total_of`, `total_try`): at `i64`, fixed arrays, two runs of up
+to 3 amounts of at most 2^40 for appending, up to 4 arbitrary `i64`
+figures for soundness and the overflow edge, up to 4 lines or pairs for
+the map sums. Even parts (`even_parts`): at `i64`, totals -1,000 to 1,000,
+months fixed to 1, 2, 3 or 7, steps 1, 2, 5, 10 or 100. The entry
+harnesses `direction_of_is_the_sign` (any `i64` amount) and
+`part_weight_is_days_of_the_month` (days and month days 0 to 40). A
+symbolic divisor — a step, a rate, a month count or a weights total — was
+not used: CBMC's bit-blasted division by a symbolic `i64` did not finish in
+30 minutes (K-U2 found it), and the bridge and Lean carry each law to every
+step, count and `Decimal` amount.
 
 What the solver could not do, and what carries it instead: a harness
 relating two symbolic divisions (a part against days × rate directly; a
@@ -729,6 +773,161 @@ new command, so a new Lean step, and no kernel function.
       (`None`) is outside the model, Kani's `deductible_amount_refuses_overflow`
       and the tests cover it.
 
+### Rounding to a step (BS-ledger-1, BS-entry-3)
+
+Every money rounding in `ledger-core` goes through one kernel primitive,
+`kernel::round_step`, with `round_places` and `round_minor` as its
+behaviour-preserving `Decimal` wrappers, in one of four modes: half away
+from zero, half to even, toward zero, toward negative infinity.
+
+40. **Rounding to a step gives a whole multiple of the step**; each half
+    mode is within half a step, a tie going by its own rule (half away on,
+    half even to the even index); toward zero never grows the magnitude
+    and stays less than a step away; toward negative infinity is the floor
+    (`r ≤ x < r + step`); no mode flips the sign; rounding twice is
+    rounding once; the symmetric modes are odd (`round(-x) = -round(x)`);
+    and scaling the amount and step by one positive factor scales the
+    result. A step that is not positive, or a result the type cannot
+    hold, is `None`, never a panic and never a negative zero.
+    - Kani `round_step_is_multiple`, `round_step_is_nearest`,
+      `round_step_ties`, `round_step_is_idempotent`,
+      `round_step_never_negative_zero`, `round_step_toward_zero_bounds`,
+      `round_step_toward_neg_inf_is_floor`, `round_step_sign_preserved`,
+      `round_step_refuses_nonpositive_step`
+    - Lean `Round.roundStep_multiple`, `Round.near_halfAway`,
+      `Round.near_halfEven`, `Round.tie_halfAway_pos` and `_neg`,
+      `Round.tie_halfEven_pos` and `_neg`, `Round.tie_towardZero_pos` and
+      `_neg`, `Round.tie_towardNegInf_pos` and `_neg`,
+      `Round.towardZero_bounds`, `Round.towardNegInf_bounds`,
+      `Round.sign_preserved`, `Round.roundStep_idempotent`,
+      `Round.roundStep_odd`, `Round.roundStep_scale` (the half-away mode
+      is `Deductible.roundHA`, its near, tie, odd and scale theorems
+      reused, not restated)
+    - bridge `i64_and_decimal_agree`,
+      `decimal_matches_the_integer_reference`,
+      `decimal_matches_the_reference_for_any_step`,
+      `decimal_matches_the_reference_for_any_step_on_small_amounts`,
+      `decimal_matches_the_reference_at_ties`,
+      `round_step_is_round_dp_for_a_power_of_ten`,
+      `round_places_matches_round_dp_to_the_character`,
+      `round_step_at_the_edges`, `round_places_keeps_the_old_scale`,
+      `round_minor_follows_the_currency`
+    - The wrappers `round_places` and `round_minor` are in the traceability
+      gate's `EXCEPTIONS`: the harnesses and law 40 are `round_step`'s, and
+      the bridge carries them to `Decimal`, including that `round_places`
+      reproduces `round_dp_with_strategy` to the character (value and
+      scale).
+
+### A foreign amount booked at the transaction-date rate (BS-ledger-1, D-75)
+
+The one foreign-currency conversion that books money, `Ledger::add_line_fx`,
+goes through `kernel::fx_booked`; its `Decimal`/currency spelling
+`fx_booked_minor` picks `10^-currency.minor_units()` as the step.
+
+41. **A foreign amount booked at the transaction-date rate is the exact
+    product foreign × rate rounded once, half away from zero, to the base
+    currency's smallest unit**: the result is a whole multiple of the
+    unit, within half a unit of the exact product at any size, and
+    non-negative (positive once the product reaches half a unit, a tie
+    included) for positive foreign and rate. A non-positive rate or step,
+    or a product or result the type cannot hold, is `None`, never a panic.
+    - Kani `fx_booked_is_whole_unit`, `fx_booked_within_half_unit`,
+      `fx_booked_positive_for_positive`, `fx_booked_refuses_overflow`
+    - Lean `Fx.booked_whole`, `Fx.booked_near`, `Fx.booked_pos`, each a
+      restatement of `Round.roundStep_multiple`, `Round.near_halfAway` and
+      `Round.sign_preserved` for the product (`Fx.booked` is
+      `Round.roundStep .halfAway` of it)
+    - bridge `i64_and_decimal_agree`, `decimal_matches_the_exact_reference`,
+      `ten_places_each_is_exact_through_the_engine`,
+      `past_ten_places_the_reference_and_decimal_part_and_the_engine_refuses`,
+      `the_mantissa_edge_is_outside_the_precondition_and_pinned`,
+      `fx_booked_at_the_edges`
+    - `fx_booked_minor` is an `EXCEPTIONS` wrapper: the harnesses and law 41
+      are `fx_booked`'s, and the bridge carries them to `Decimal`.
+
+### Shares by weights (BS-partner-1, BS-ledger-1)
+
+The six weight splits (`tax_capital::RunningSplit::share`,
+`k1::share_property`, `conventions::split`, `shares::split_first`,
+`form1099::vendor_part` and `split_share`, `cashflow::split_part`) call one
+implementation: `kernel::share_of` for one share and
+`kernel::split_by_weights_into` for the whole split, with the leftover
+policy explicit (largest remainder, first absorbs or last absorbs) and
+`share_floor_with` for the floor plus its exact remainder.
+`periods::allocate` and `periods::allocate_last_absorbs` stay frozen
+replay rules.
+
+42. **The exact shares of a whole by weights sum to the whole, and every
+    part of a largest-remainder split is within one step of its exact
+    share**, gain or loss, so no weight is lost or invented. The parts sum
+    to the whole exactly, a shortfall is handed out, and no part is
+    negative or above the whole; a zero total is zeros. `share_floor_with`
+    returns the exact floor, and a correction that runs past
+    `MAX_CORRECTION_STEPS` in either direction is `None`, never a walk
+    without end. A zero total, an overflowing product, or an input the
+    type cannot divide is `None`, never a panic.
+    - Kani `split_by_weights_sums`, `split_by_weights_no_part_exceeds`,
+      `split_by_weights_first_absorbs`, `split_by_weights_last_absorbs`,
+      `split_by_weights_zero_total_is_zero` (law 18's sum and bounds, kept
+      with the split's own framing), `split_by_weights_within_one_step`,
+      `share_of_refuses_overflow`, `share_floor_is_the_exact_floor`
+    - Lean `Apportion.exact_shares_sum` (with the weights summing to `W`,
+      the exact shares' numerators `x · wᵢ` sum to `x · W`) and
+      `Apportion.shares_of_near` (a part is within one step of its exact
+      share; it is `allocW_drift` under the split's name);
+      `Apportion.apportion_sum` and `apportion_drift` are reused
+    - bridge `i64_and_decimal_agree`, `decimal_split_satisfies_the_kani_laws`,
+      `decimal_matches_the_exact_reference`,
+      `decimal_matches_the_exact_reference_weights_sum_to_one`,
+      `leftovers_at_each_policy`, `zero_weights_one_member_and_many`,
+      `share_floor_matches_the_exact_reference`,
+      `split_at_the_call_sites_scales`, `decimal_edges_are_none_or_exact`,
+      `largest_remainder_ranks_like_the_exact_reference`,
+      `the_absorbing_parts_keep_the_old_scale`,
+      `split_into_matches_the_allocating_split`,
+      `finding_ties_follow_the_rounded_quotient`,
+      `share_floor_refuses_past_the_correction_cap`,
+      `finding_the_quotients_rounding_can_cross_a_step`
+    - `split_by_weights_with` is an `EXCEPTIONS` wrapper (it allocates two
+      `Vec` buffers); every harness calls the fixed-array
+      `split_by_weights_into`.
+
+### Equal monthly parts (BS-prepaid-1, BS-prepaid-2, BS-prepaid-4, BS-ledger-1)
+
+`kernel::even_parts` fills one slot per month with amounts that sum to the
+total; `schedules::plan_in_places` calls it. Under D-72 a new monthly-even
+schedule rounds to the currency's minor unit (the rule is journaled on the
+schedule), while a schedule written before the feature replays the cent
+rule.
+
+43. **An equal-months schedule's parts are `months` amounts that sum to
+    the total exactly**: all but the last are the quotient total ÷ months
+    rounded half to even to a whole multiple of the step (the currency's
+    minor unit), so each is within half a step of the exact quotient, and
+    the last is what the others leave (the first part plus the others'
+    remainder), so it is within `months × step / 2` of them. A single
+    month is the whole total even when finer than the step. No months, a
+    step that is not positive, or an amount the type cannot hold is
+    `None`, never a panic.
+    - Kani `even_parts_sum`, `even_parts_all_but_last_equal`,
+      `even_parts_last_absorbs`, `even_parts_within_half_step`,
+      `even_parts_refuses_no_months_and_a_bad_step`
+    - Lean `Schedule.evenParts_sum` (reusing `plugLast_total`),
+      `Schedule.evenParts_length`, `Schedule.evenParts_all_but_last_equal`,
+      `Schedule.evenParts_last_absorbs`, `Schedule.each_multiple`,
+      `Schedule.each_near` (reusing `Round.near_halfEven`),
+      `Schedule.last_near`, with `Schedule.n_mul_each` and
+      `Schedule.plugLast_replicate` as lemmas
+    - bridge `i64_and_decimal_agree_where_the_quotient_is_exact`,
+      `one_month_is_the_whole_total`, `the_i64_laws_hold_for_any_month_count`,
+      `decimal_matches_the_exact_reference`,
+      `the_decimal_laws_hold_for_any_month_count`, `the_edges`
+    - tests `schedule_minor_unit.rs` in `ledger-core` and `ledger-store`:
+      the hand-computed JPY and KWD plans, the cent-rule oracle over
+      300,000+ plans and a proptest to 10^25, the USD equivalence under
+      both rules, a pre-feature schedule's replay after the upgrade, an
+      unknown rounding is newer, and a daily schedule carrying no flag.
+
 ## What the proofs found
 
 The engine already had 190+ tests, property tests, mutation testing,
@@ -763,6 +962,81 @@ And three things besides bugs:
 Each of these shipped past every test we had. That is the case for
 formal methods here: tests sample, proofs exhaust. `AGENTS.md` makes
 growing this coverage part of every change.
+
+### The kernel sweep (U1-U5, X-J)
+
+The sweep's units (FX, rounding, shares, totals, even parts, and the two
+entry functions) each moved arithmetic out of a call site and into the
+kernel. What the proofs and their reviews found, beyond the tidying:
+
+- **FX conversion could round twice.** `fx_booked` rounds once, but
+  `Decimal::checked_mul` is exact only while the product keeps its full
+  scale: the two scales add within 28 and the two mantissas multiply
+  within `Decimal`'s 96 bits (7.9e28). Outside that it rounds the product,
+  and `fx_booked` then rounds the rounded value: foreign
+  `0.99999999999999999999999999` (26 places) × rate `0.005` into USD has
+  the exact product 0.00499999999999999999999999995, under half a cent,
+  but `Decimal` holds 0.005 and the booking is 0.01. `add_line_fx` now
+  refuses a foreign amount or rate of more than `MAX_LINE_SCALE` (10)
+  decimal places, before computing and never on replay (D-75,
+  `ValueOutOfRange`); `past_ten_places_the_reference_and_decimal_part_and_the_engine_refuses`
+  pins it.
+- **The 96-bit half of that precondition is not enforced.** Ten places
+  each still allow a product of twenty places past about 7.9e8, which
+  needs more than 96 bits: `1050000010.0000000001 × 9.9999999999` is
+  `10500000099.89499999999999999999` exactly (10500000099.89 to the cent)
+  but `Decimal` holds 10500000099.895 and the engine books
+  10500000099.90. `the_mantissa_edge_is_outside_the_precondition_and_pinned`
+  pins it; refusing it is the owner's decision (K-U10).
+- **`Decimal`'s addition is not exact in the top unit of `MAX`.**
+  `Decimal::MAX.checked_add(0.4)` is `Some(MAX)`: `rust_decimal` rounds
+  sub-unit dust when the sum needs a 97th bit (`MAX + 0.5` is `None`), so
+  the kernel's "exact or `None`" contract fails there for every function
+  that adds, not only `total`. No posted line reaches it (the line cap is
+  10^15); `finding_decimal_add_rounds_dust_at_the_edge` and
+  `decimal_edge_table` pin it, and it is K-U10's to settle.
+- **A share's quotient can cross a step, and its product's rounding can
+  hide it.** At `Decimal`'s 96-bit mantissa edge, `checked_div`'s rounding
+  can move a share across a step and `checked_mul`'s rounding hides that
+  from `share_floor_with`'s correction; the exact share just above the
+  whole is the pinned case
+  (`finding_the_quotients_rounding_can_cross_a_step`), which no posted
+  line reaches. The product's rounding is reachable: a scale-10 line below
+  the cap multiplied by itself, `123456789.0123456789²`, gives
+  `15241578753238836.750190519988`, not the exact square. A schedule's
+  division carries the same edge: `MAX / 2` rounds before the step, so the
+  part is not within half a step of the exact quotient (`the_edges` pins
+  it); the engine's callers refuse totals of `EXACT_LIMIT` (10^26) or
+  more, so no schedule reaches it. Both are K-U10 items.
+- **One panic became a refusal.** `k1::share_property`'s old
+  `apportion(...).expect(...)` would panic at that edge; the kernel
+  returns `None` and the site reports `TooLargeToCompute`.
+- **A correction loop did not terminate.** The exact-floor correction ran
+  without end for `0.1113 × 5909471247797156928749568911.8 ÷
+  0.11134381908633486049673`; the kernel now takes at most
+  `MAX_CORRECTION_STEPS` each way and returns `None` past the cap, pinned
+  by `share_floor_refuses_past_the_correction_cap` (no figure inside the
+  cap changes).
+- **A scale moved a printed share.** The old `shares::split_first`
+  computed `parts[0] + (whole − Σ parts)`; the kernel's first version
+  computed `whole − Σ rest`. The values are equal but the scale differs in
+  665 of 400,000 fuzzed cases (4860 by 6/0.7/0.5 gave `4050, 472.50,
+  337.50`, the kernel `4050.00, …`), and that scale reaches `Part.amount`.
+  The kernel computes the old expression, pinned by
+  `the_absorbing_parts_keep_the_old_scale`.
+- **Ties follow the rounded quotient.** The split ranks the rounded
+  quotients' remainders, not exact rationals, so an exact tie goes where
+  the 28th digit sends it: 20.00 split 4/1/1 over 6 is `13.33, 3.34,
+  3.33` (exact ranking `13.34, 3.33, 3.33`), and 20 whole is `13, 4, 3`
+  (exact `14, 3, 3`). The pre-sweep sites did the same;
+  `finding_ties_follow_the_rounded_quotient` pins it, and the owner decides
+  the exact ranking in K-U10, unchanged here.
+- **The sweep changed no posted figure.** Every golden and existing test
+  passed unchanged. `round_places` reproduces `round_dp_with_strategy` to
+  the character except a negative-zero input (which no call site can
+  produce), and rounding's nine harnesses were added after review because
+  the spec block's directed-mode invariants 3, 4 and 6 had no proof of
+  their own.
 
 ## Trusting the checker
 
@@ -799,12 +1073,40 @@ Be precise about the claims:
 - **Kani is bounded.** It proves the kernel for every input up to 4 lines
   over 3 accounts and amounts to 2^40 units (the accounting equation end
   to end: up to 3 accounts; the cash flow entry harnesses: up to 3 lines,
-  each tagged any of 4 ways), and the proration by days within the bounds
-  above. Lean proves the laws for any size, but of a *model*. The model
-  is a direct restatement of the kernel (for proration, its two formulas
-  written out and proved equal to the model's charge), and the bridge
-  property tests tie the `Decimal` (and `i128`) instantiation to the
-  `i64` (and `i32`) one Kani checked.
+  each tagged any of 4 ways), the proration by days within the bounds
+  above, and the kernel sweep's rounding, FX, weight shares, collection
+  totals and even monthly parts within its own bounds (the sweep's
+  divisors — step, rate, weights total and month count — are fixed: a
+  symbolic `i64` divisor did not finish in 30 minutes). Lean proves the
+  laws for any size, but of a *model*. The model is a direct restatement
+  of the kernel (for proration, its two formulas written out and proved
+  equal to the model's charge), and the bridge property tests tie the
+  `Decimal` (and `i128`) instantiation to the `i64` (and `i32`) one Kani
+  checked; the sweep's bridge properties compare the engine to an
+  independent exact `i128` reference for every step, count and amount the
+  `Decimal` type can hold.
+- **The sweep's `Decimal` edges are pinned, not refused.** `checked_mul`
+  rounds at 96 bits (`fx`'s `the_mantissa_edge_is_outside_the_precondition_and_pinned`
+  and `123456789.0123456789²`), `checked_div` rounds at 28 significant
+  digits (K-U3's `finding_the_quotients_rounding_can_cross_a_step`, K-U5's
+  `the_edges` at `Decimal::MAX / 2`), and `checked_add` rounds sub-unit
+  dust in the top unit of `MAX` (K-U4's
+  `finding_decimal_add_rounds_dust_at_the_edge`). None is reachable by a
+  posted line (the line cap is 10^15, and schedules refuse totals of
+  `EXACT_LIMIT` or more), so the laws hold at the engine's inputs; whether
+  the kernel should refuse these shapes outright is K-U10's decision.
+- **The FX overflow harness proves two concrete cases, not every
+  overflow.** `fx_booked_refuses_overflow` proves `i64::MAX × 2` and
+  `100 × i64::MAX` (step 1) are `None`, and that a non-positive rate is
+  `None` for every symbolic rate at or below zero; that every overflowing
+  product is `None` rests on `i64`/`Decimal::checked_mul`, exercised by
+  the bridge (`decimal_matches_the_exact_reference`,
+  `fx_booked_at_the_edges`), not on Kani.
+- **The wrappers are carried by the bridge.** `round_places`,
+  `round_minor`, `fx_booked_minor` and `split_by_weights_with` have no
+  harness of their own (they are `EXCEPTIONS` in the traceability gate);
+  the harnesses prove the functions they wrap, and the bridge checks the
+  wrappers, scale included.
 - **`Decimal` itself is trusted, and now probed against exact
   rationals.** `rust_decimal` is exact for these sizes: 96-bit integers
   scaled by a power of ten. With lines capped at one quadrillion and ten
@@ -932,7 +1234,7 @@ Lean carrying any weights.
 
 ```sh
 mise install   # once: Kani, Lean, and the rest, pinned in mise.toml
-just prove       # 53 Kani harnesses and Lean
+just prove       # 87 Kani harnesses and Lean
 just prove-slow  # the other 10: the justfile's kani_slow
 just prove-all   # both
 ```
@@ -942,8 +1244,8 @@ parallel (`-j $(nproc)`), the whole run under a 30-minute timeout; fetches
 and builds bookspec's Lean proofs (seconds; the git dependency is pinned in
 `verify/lean/lakefile.toml` and its manifest); and fails if any theorem
 depends on anything beyond Lean's standard axioms (`propext`,
-`Quot.sound`, `Classical.choice`). It audits all 151 theorems: the 118
-headline laws and the 33 named laws in `Laws.lean` that cite them. In
+`Quot.sound`, `Classical.choice`). It audits all 188 theorems: the 155
+headline theorems and the 33 named laws in `Laws.lean` that cite them. In
 particular, `sorryAx` fails it. `just prove-slow`
 runs the slow harnesses, `$(nproc)` at a time, each under its own
 30-minute timeout. Both fail if a harness they ask for isn't verified (the
@@ -966,8 +1268,8 @@ minutes too. A run is only as safe as its slowest harness under the
 machine it gets, so: that harness's claim at three lines is now proved in
 two halves (`entry_movements_of_a_reversal_mirror`, `flows_of_mirrors`;
 law 10) that take a minute or two each, and the end-to-end harness runs
-at two lines; the eight harnesses that take the longest run in `just
-prove-slow`, each capped on its own. Nothing was dropped.
+at two lines; the longest harnesses run in `just prove-slow`, each capped
+on its own. Nothing was dropped.
 
 Measured, four jobs: under that load, `just prove` 1,450 s (48 harnesses
 then) and `just prove-slow` 1,365 s (seven then; `entry_flows_sum_to_cash`
@@ -982,9 +1284,17 @@ Kani's verification time (it runs in `prove-slow`). P4b S6 adds
 `settle_is_exact` to `prove` and two Lean theorems to the audit
 (`Documents.settle_posts_a_document_step`, `Documents.settle_unattached`).
 
+The kernel sweep's thirty-four harnesses were measured by their units on
+2026-11-08 and 2026-11-09 (Kani 0.68, each alone; K-U1, K-U2, K-U3 and
+K-U4 record verification time, K-U5 the verifier's own time, and the two
+entry harnesses record verification plus wall time); none is in
+`kani_slow`, so all run in `prove`. Their times are their notes'.
+
 Every harness, the law it proves, the recipe that runs it, and its time
-in that quiet run (`prove`: each harness's verification time; `prove-slow`:
-each harness's whole run, its compile of about 50 s included):
+(the 2026-10-22 quiet run for the harnesses before the sweep; the sweep's
+own measurements above; `prove`: each harness's verification time;
+`prove-slow`: each harness's whole run, its compile of about 50 s
+included):
 
 | Harness | Law | Recipe | Seconds |
 |---|---|---|---:|
@@ -1050,6 +1360,40 @@ each harness's whole run, its compile of about 50 s included):
 | `settle_is_exact` | 36 | prove | 1 |
 | `deductible_amount_rounds_once` | 39 | prove-slow | 992 alone; 1,207 in the 2026-11-08 prove-slow |
 | `deductible_amount_refuses_overflow` | 39 | prove | 0 |
+| `total_empty_is_zero` | 4 | prove | 0.1 |
+| `total_append` | 4 | prove | 60 |
+| `total_is_sound` | 4 | prove | 1.9 |
+| `total_of_is_map_sum` | 4 | prove | 7.4 |
+| `total_try_is_map_sum` | 4 | prove | 5.3 |
+| `total_overflow_is_none` | 4 | prove | 0.5 |
+| `round_step_is_multiple` | 40 | prove | 5.1 |
+| `round_step_is_nearest` | 40 | prove | 22 |
+| `round_step_ties` | 40 | prove | 22 |
+| `round_step_is_idempotent` | 40 | prove | 16 |
+| `round_step_never_negative_zero` | 40 | prove | 12 |
+| `round_step_toward_zero_bounds` | 40 | prove | 16 |
+| `round_step_toward_neg_inf_is_floor` | 40 | prove | 21 |
+| `round_step_sign_preserved` | 40 | prove | 13 |
+| `round_step_refuses_nonpositive_step` | 40 | prove | 8 |
+| `fx_booked_is_whole_unit` | 41 | prove | 9.1 |
+| `fx_booked_within_half_unit` | 41 | prove | 16.4 |
+| `fx_booked_positive_for_positive` | 41 | prove | 3.2 |
+| `fx_booked_refuses_overflow` | 41 | prove | 2.6 |
+| `split_by_weights_sums` | 18 | prove | 23.9 |
+| `split_by_weights_within_one_step` | 42 | prove | 14.4 |
+| `split_by_weights_no_part_exceeds` | 18 | prove | 12.4 |
+| `split_by_weights_first_absorbs` | 18 | prove | 2.3 |
+| `split_by_weights_last_absorbs` | 18 | prove | 4.3 |
+| `split_by_weights_zero_total_is_zero` | 18 | prove | 4.2 |
+| `share_of_refuses_overflow` | 42 | prove | 0.47 |
+| `share_floor_is_the_exact_floor` | 42 | prove | 5.1 |
+| `direction_of_is_the_sign` | 23 | prove | 0.06 |
+| `part_weight_is_days_of_the_month` | 27 | prove | 0.49 |
+| `even_parts_sum` | 43 | prove | 47.1 |
+| `even_parts_all_but_last_equal` | 43 | prove | 23.9 |
+| `even_parts_last_absorbs` | 43 | prove | 31.4 |
+| `even_parts_within_half_step` | 43 | prove | 42.7 |
+| `even_parts_refuses_no_months_and_a_bad_step` | 43 | prove | 0.27 |
 | `kani_symbolic_copy_canary` | (the checker: "Trusting the checker") | prove | 3 |
 
 

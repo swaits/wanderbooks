@@ -1,5 +1,8 @@
 # K-U2: one rounding primitive, `round_step`
 
+_Folded into `docs/verification.md`, section "Rounding to a step
+(BS-ledger-1, BS-entry-3)"._
+
 Status: landed 2026-11-08. The kernel sweep's U2
 (`plan/kernel-sweep-audit.md` section 3): every money `round_dp*`/`rescale`
 in `ledger-core` goes through one kernel primitive, the law is proved once

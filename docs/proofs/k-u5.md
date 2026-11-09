@@ -1,5 +1,8 @@
 # K-U5: equal monthly parts (`kernel/schedule.rs`) and the versioned rounding rule
 
+_Folded into `docs/verification.md`, section "Equal monthly parts
+(BS-prepaid-1, BS-prepaid-2, BS-prepaid-4, BS-ledger-1)"._
+
 Kernel sweep unit U5 (`plan/kernel-sweep-audit.md` section 3), with the
 owner's decision D-72 (2026-11-08, "Version the rule"): **new monthly-even
 schedules round to the currency's minor unit (it was two places for every

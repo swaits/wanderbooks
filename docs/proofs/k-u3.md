@@ -1,5 +1,8 @@
 # K-U3: proportional shares and weighted splits
 
+_Folded into `docs/verification.md`, section "Shares by weights
+(BS-partner-1, BS-ledger-1)"._
+
 Status: landed 2026-11-09. The kernel sweep's U3
 (`plan/kernel-sweep-audit.md` section 3): the six local copies of
 "share = whole × weight ÷ total, round, hand out the leftover" call one

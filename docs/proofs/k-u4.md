@@ -1,5 +1,8 @@
 # K-U4: collection totals (`kernel/total.rs`)
 
+_Folded into `docs/verification.md`, section "Entries" (law 4), the
+sweep's bounds, and "What the proofs found"._
+
 Kernel sweep unit U4 (`plan/kernel-sweep-audit.md` sections 2 and 3). The
 authority is BS-entry-3 (amounts are exact; rounding only on returns) and
 BS-entry-4 (no input may reach a panic), bookspec `BS-entry-3` and `BS-entry-4`.

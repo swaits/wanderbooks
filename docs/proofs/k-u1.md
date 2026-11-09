@@ -1,5 +1,8 @@
 # K-U1: FX conversion, `fx_booked`
 
+_Folded into `docs/verification.md`, section "A foreign amount booked at
+the transaction-date rate (BS-ledger-1, D-75)"._
+
 Status: landed 2026-11-08; review fixes and D-75 the same day. The kernel sweep's U1
 (`plan/kernel-sweep-audit.md` section 3): the one foreign-currency
 conversion that books money (`Ledger::add_line_fx`) moves into the

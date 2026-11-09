@@ -1150,7 +1150,7 @@ impl Direction {
     }
 
     /// The direction of a signed amount: paid above zero, received below,
-    /// neither at zero.
+    /// neither at zero. SOURCE: BS-partner-3 (the party direction law).
     pub fn of<T: Amount>(amount: T) -> Self {
         if amount > T::ZERO {
             Direction::Paid
@@ -1461,7 +1461,8 @@ impl MonthPart {
 }
 
 /// A part's weight in `MONTH_L`ths of a month: `days × (MONTH_L /
-/// month_days)`, exactly. `None` for a part no month has.
+/// month_days)`, exactly. `None` for a part no month has. SOURCE:
+/// BS-asset-1, BS-prepaid-1 (proration by days; laws 26-28).
 pub fn part_weight<T: Units>(p: MonthPart) -> Option<T> {
     if !p.is_valid() {
         return None;

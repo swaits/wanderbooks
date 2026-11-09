@@ -1288,7 +1288,7 @@ fn constructive_mirrors() {
     let (mut fa, mut ta) = ([0i64; M], [0i64; M]);
     let (mut fb, mut tb) = ([0i64; M], [0i64; M]);
     let a = kernel::constructive(way, &s, &u, &mut fa, &mut ta);
-    let b = kernel::constructive(way.mirror(), &ns, &nu, &mut fb, &mut tb);
+    let b = kernel::constructive(kernel::OnBehalf::mirror(way), &ns, &nu, &mut fb, &mut tb);
     assert_eq!(a.is_some(), b.is_some());
     if a.is_some() {
         for k in 0..M {
@@ -1374,6 +1374,25 @@ fn party_target_direction_is_its_sign() {
     );
 }
 
+/// BS-partner-3: the direction of a signed amount is its sign: paid above
+/// zero, received below zero, and neither exactly at zero. This is the
+/// classification `party_target` builds its four items on (law 23).
+#[kani::proof]
+fn direction_of_is_the_sign() {
+    let amount: i64 = kani::any();
+    let direction = kernel::Direction::of(amount);
+    if amount > 0 {
+        assert_eq!(direction, kernel::Direction::Paid);
+    } else if amount < 0 {
+        assert_eq!(direction, kernel::Direction::Received);
+    } else {
+        assert_eq!(direction, kernel::Direction::Neither);
+    }
+    kani::cover!(amount > 0, "a paid amount");
+    kani::cover!(amount < 0, "a received amount");
+    kani::cover!(amount == 0, "nothing moved");
+}
+
 /// BS-partner-3 item 3 and BS-ledger-5: the target is odd. Negating the lines negates the
 /// capital movement, the money net and the own-account movement, and the
 /// property comes from the other side, so it keeps its size: the result
@@ -1426,7 +1445,7 @@ fn reverse_target_is_an_involution() {
     };
     match kernel::reverse_target(t) {
         Some(r) => {
-            assert_eq!(r.direction, t.direction.flip());
+            assert_eq!(r.direction, kernel::Direction::flip(t.direction));
             assert_eq!(r.amount, -t.amount);
             assert_eq!(kernel::reverse_target(r), Some(t));
         }
@@ -1473,6 +1492,27 @@ fn any_proration() -> (i64, u32, [MonthPart; PR], usize, i64) {
     kani::assume(n >= 1 && n <= PR);
     let unit = if kani::any() { 1 } else { 10 };
     (total, months, parts, n, unit)
+}
+
+/// BS-asset-1 and BS-prepaid-1: a part's weight is its days times the
+/// month's share of `MONTH_L` (`days × MONTH_L / month_days`), exactly, and
+/// a part no calendar month has is refused. The weight is what the
+/// proration charges of laws 26-28 are computed from.
+#[kani::proof]
+fn part_weight_is_days_of_the_month() {
+    let days: u32 = kani::any();
+    let month_days: u32 = kani::any();
+    kani::assume(days <= 40 && month_days <= 40);
+    let part = MonthPart { days, month_days };
+    let got: Option<i64> = kernel::part_weight(part);
+    if part.is_valid() {
+        assert_eq!(got, Some(i64::from(days) * i64::from(MONTH_L / month_days)));
+    } else {
+        assert_eq!(got, None);
+    }
+    kani::cover!(part.is_valid() && days < month_days, "a partial month");
+    kani::cover!(part.is_valid() && days == month_days, "a whole month");
+    kani::cover!(!part.is_valid(), "a part no month has");
 }
 
 /// The weight of parts, in MONTH_L-ths of a month.

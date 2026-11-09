@@ -1747,7 +1747,7 @@ fn every_claim_is_backed() {
     }
     assert_eq!(
         EXCEPTIONS.len(),
-        16,
+        14,
         "the kernel exception list changes only on purpose"
     );
 
@@ -1877,11 +1877,6 @@ const EXCEPTIONS: &[(&str, &str, &str)] = &[
         "it maps a three-variant enum with no amount to bridge; engine tests check it",
     ),
     (
-        "Direction::of",
-        "a Kani harness, a bridge property and a law",
-        "it is a three-way sign classification, exercised through `party_target`; no harness or law states it directly",
-    ),
-    (
         "Direction::key",
         "a Kani harness, a bridge property and a law",
         "it is a wire-name lookup with no arithmetic; engine and store tests check the names",
@@ -1890,11 +1885,6 @@ const EXCEPTIONS: &[(&str, &str, &str)] = &[
         "MonthPart::is_valid",
         "a Kani harness, a bridge property and a law",
         "it is a range predicate with no arithmetic; `part_weight` and the proration harnesses exercise it",
-    ),
-    (
-        "part_weight",
-        "a Kani harness, a bridge property and a law",
-        "it is generic over `Units`, not `Amount`; laws 26-28 are stated through `prorate_by_days`, which calls it",
     ),
     (
         "fx_booked_minor",

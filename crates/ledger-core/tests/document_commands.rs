@@ -137,7 +137,9 @@ fn a_send_is_a_fact_of_the_invoices_life_and_moves_no_figure() {
             .map(|&x| l.doc_state(doc, x).unwrap())
             .collect()
     };
-    let (before_states, before_ar) = (states(&b.l), b.balance("1200"));
+    let (before_states, before_ar, before_bank) =
+        (states(&b.l), b.balance("1200"), b.balance("1000"));
+    assert_eq!(before_ar, dec("500.00"));
 
     let mut first = sent(d(3, 2), &["ap@fernhill.example"]);
     first.reference = Some("<msg-1@mail>".into());
@@ -149,10 +151,10 @@ fn a_send_is_a_fact_of_the_invoices_life_and_moves_no_figure() {
 
     assert_eq!(b.l.get_invoice(inv).unwrap().sends, vec![first, reminder]);
     assert_eq!(states(&b.l), before_states, "no figure moved on any date");
-    assert_eq!(
-        (b.balance("1200"), b.balance("1200")),
-        (before_ar, dec("500.00"))
-    );
+    // Receivables still owe the invoice, and the bank is where it was.
+    assert_eq!(b.balance("1200"), dec("500.00"));
+    assert_eq!(b.balance("1200"), before_ar);
+    assert_eq!(b.balance("1000"), before_bank);
 }
 
 /// mark_sent INVARIANT 1 and SCENARIO 1: the invoice must exist and the
@@ -289,7 +291,8 @@ fn settle_one(b: &Books, inv: u64, cash: &str) -> SettleParams {
     }
 }
 
-/// BS-arap-6 INVARIANT 5: each thing a settlement can be refused for,
+/// BS-arap-6 statements 1, 4, 5 and 6 (invariants 4 and 5): each thing a
+/// settlement can be refused for,
 /// refused with its own error, the books untouched. The invoice is for
 /// 500.00 dated March 1; the payment is dated March 20.
 #[test]
@@ -401,10 +404,13 @@ fn a_fee_is_an_expense_taken_from_the_payment_and_a_closed_period_refuses() {
     // The fee is above the cash.
     let mut p = settle_one(&b, inv, "100.00");
     p.fee = fee("100.01", Some(b.fees));
-    assert!(matches!(
+    assert_eq!(
         refused(&mut b.l, |l| l.settle(p)),
-        LedgerError::InvalidSettlement(m) if m.contains("fee is above the cash")
-    ));
+        LedgerError::FeeAboveCash {
+            fee: dec("100.01"),
+            cash: dec("100.00")
+        }
+    );
     // The fee's account must be an expense that takes postings.
     let mut p = settle_one(&b, inv, "100.00");
     p.fee = fee("3.20", Some(b.revenue));
@@ -479,7 +485,9 @@ fn a_bill_settlement_mirrors_an_invoices_and_describes_itself() {
 
 // ---------------------------------------------------------------- write_off
 
-/// BS-arap-5 INVARIANTS 2 to 4: a write-off is refused on the cash basis,
+/// BS-arap-5 statements 2, 4 and 6 (invariants 2, 3 and 5; the one-line
+/// reason is the engine's own guard, beside statement 9's evidence of the
+/// debt): a write-off is refused on the cash basis,
 /// without a one-line reason, for an amount that is not above zero, off the
 /// calendar, before the invoice, in a closed period, or more than the
 /// invoice owes on every day from then on; the refusals change nothing.
@@ -542,7 +550,7 @@ fn a_write_off_is_refused_for_each_rule_it_breaks() {
     assert_eq!(b.balance("1200"), Decimal::ZERO);
 }
 
-/// BS-arap-5 INVARIANT 2: on cash-basis books nothing is receivable to
+/// BS-arap-5 statement 6 (invariant 5): on cash-basis books nothing is receivable to
 /// write off, so the command is refused whatever else is true.
 #[test]
 fn a_write_off_is_refused_on_the_cash_basis() {

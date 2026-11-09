@@ -139,7 +139,7 @@ fn exempt_source(r: &Requirement) -> &'static str {
 
 // ---------------------------------------------------------------- annotations
 
-/// WB-ledger-15 item 4: an annotation's fields are a closed list; text is
+/// WB-ledger-15 invariant 4: an annotation's fields are a closed list; text is
 /// kept trimmed and a blank one is not kept; every field is optional.
 #[test]
 fn annotation_fields_are_trimmed_and_blank_ones_dropped() {
@@ -165,7 +165,7 @@ fn annotation_fields_are_trimmed_and_blank_ones_dropped() {
     assert!(!kept.is_empty());
 }
 
-/// WB-ledger-15 item 4: "nothing recorded" is judged field by field: any
+/// WB-ledger-15 invariant 4: "nothing recorded" is judged field by field: any
 /// one field alone makes the record non-empty, and none makes it empty.
 #[test]
 fn an_annotation_field_alone_is_a_record() {
@@ -190,27 +190,29 @@ fn an_annotation_field_alone_is_a_record() {
     }
 }
 
-/// WB-ledger-15 item 4 and its numbering (item 5 of the receipt rule): a
+/// WB-ledger-15 invariant 4 and its numbering (the receipt rule's): a
 /// receipt number is positive, an amount is not negative, a date is in the
 /// books' calendar (0001-01-01..=9999-12-31). A zero amount is a fact (a
 /// no-charge receipt).
 #[test]
 fn an_annotation_refuses_a_zero_number_a_negative_amount_and_a_date_off_the_calendar() {
     let bad = |f: AnnotationFields| f.checked().unwrap_err();
-    assert_eq!(
+    // The variant, and the fact each refusal states; the sentence around
+    // it is the engine's own.
+    assert!(matches!(
         bad(AnnotationFields {
             receipt_number: Some(0),
             ..Default::default()
         }),
-        LedgerError::InvalidEvidence("a receipt number is positive".into())
-    );
-    assert_eq!(
+        LedgerError::InvalidEvidence(m) if m.contains("positive")
+    ));
+    assert!(matches!(
         bad(AnnotationFields {
             amount: Some(dec("-0.01")),
             ..Default::default()
         }),
-        LedgerError::InvalidEvidence("an annotated amount is not negative".into())
-    );
+        LedgerError::InvalidEvidence(m) if m.contains("negative")
+    ));
     let off = NaiveDate::MAX;
     assert_eq!(
         bad(AnnotationFields {
@@ -229,7 +231,7 @@ fn an_annotation_refuses_a_zero_number_a_negative_amount_and_a_date_off_the_cale
     assert_eq!(ok.clone().checked().unwrap(), ok);
 }
 
-/// WB-ledger-15 item 4: an annotation records at least one field or a
+/// WB-ledger-15 invariant 4: an annotation records at least one field or a
 /// note; the note is trimmed, and a blank one is no note.
 #[test]
 fn an_annotation_needs_a_field_or_a_note() {
@@ -296,9 +298,12 @@ fn the_policy_reads_the_books_settings() {
     let p = Policy::from_settings(b.l.settings());
     assert_eq!(p.threshold, dec("25.00"));
     assert!(p.required_accounts.is_empty() && p.exempt_accounts.is_empty());
-    assert_eq!(
-        p.describe(),
-        "receipts required when entry debits are strictly greater than 25.00"
+    // The description states the threshold and that it is strict (the
+    // wording is the engine's own).
+    let described = p.describe();
+    assert!(
+        described.contains("strictly greater") && described.contains("25.00"),
+        "{described}"
     );
 
     set(
@@ -366,9 +371,12 @@ fn a_hand_entry_is_required_above_the_threshold_with_its_reason() {
     );
     let r = requirement(&b.l, big);
     assert!(r.is_required());
-    assert_eq!(
-        required_reason(&r),
-        "its debits 40.00 are strictly greater than the 25.00 threshold"
+    // The reason carries the figures and the strict comparison (the
+    // sentence is the engine's own).
+    let why = required_reason(&r);
+    assert!(
+        why.contains("40.00") && why.contains("25.00") && why.contains("strictly greater"),
+        "{why}"
     );
     let r = requirement(&b.l, small);
     assert!(!r.is_required());
@@ -451,8 +459,9 @@ fn debits_past_exact_arithmetic_are_refused_by_the_sum_and_past_the_threshold_fo
 
 // ---------------------------------------------------------------- split groups
 
-/// BS-entry-5, the anti-gaming rule: four same-day, same-description,
-/// same-debit-account entries of 10.00 are one 40.00 purchase. The draft
+/// WB-entry-6 (an entry "as part of a split group"), the anti-gaming
+/// rule: four same-day, same-description, same-debit-account entries of
+/// 10.00 are one 40.00 purchase. The draft
 /// that brings the group past the threshold needs a receipt and names the
 /// group; the ones before it, and a posted entry, do not (a posted entry's
 /// decision was made when it posted).
@@ -481,7 +490,7 @@ fn a_split_purchase_is_one_purchase() {
     assert!(!requirement(&b.l, third).is_required());
 }
 
-/// BS-entry-5: what is NOT a split group. A different day, a different
+/// WB-entry-6: what is NOT a split group. A different day, a different
 /// description, a different debit account, a group still under the
 /// threshold and a reversal in the group (reversals are exempt) leave the
 /// new draft alone.

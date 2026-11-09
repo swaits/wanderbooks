@@ -10,7 +10,8 @@
 //!       open and tie out: a document's payment is read from the line an
 //!       event names, the control check lists what it could not match.
 //! SOURCE: BS-entry-4 (replay takes what was journaled); BS-arap-6
-//!         INVARIANT 3 (the posting rows' line indices are stable);
+//!         invariant 2 (every control line a settlement posts carries its
+//!         document, so the posting rows' line indices are stable);
 //!         BS-arap-2 (a document's figures are read from its tagged lines,
 //!         and the control account ties to them plus the untagged lines).
 //! ```
@@ -119,7 +120,7 @@ impl Books {
     }
 }
 
-/// BS-arap-6 INVARIANT 3: a payment event that names the line (index 1, the
+/// BS-arap-6 invariant 2: a payment event that names the line (index 1, the
 /// receivables credit) tags exactly that line. The invoice then reads 40.00
 /// paid and 460.00 owed, and the control account ties out with nothing
 /// untagged.
@@ -183,7 +184,7 @@ fn a_payment_event_that_names_a_line_that_does_not_match_leaves_it_untagged() {
     assert!(!b.unattached(d(3, 31)).contains(&(e, 1)));
 }
 
-/// BS-arap-6 INVARIANT 3: a payment with an early-payment discount posts a
+/// BS-arap-6 statement 3 and invariant 2: a payment with an early-payment discount posts a
 /// payment line and a discount line against the same control account; the
 /// event names both. A 500.00 invoice settled with 490.00 in cash and
 /// 10.00 of discount reads paid 490.00, discounted 10.00, nothing owed.

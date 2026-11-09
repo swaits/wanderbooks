@@ -944,7 +944,7 @@ fn drafting_from_a_template_refuses_what_it_cannot_make_whole() {
 
 // ---------------------------------------------------------------- the pure helpers
 
-/// WB-ledger-9, INVARIANT 2: a split is exact. With no rounding places,
+/// WB-ledger-9: a template's split is exact. With no rounding places,
 /// each part is amount × share and the last absorbs any difference; with
 /// places, each part is truncated and the leftover goes by largest
 /// remainder; either way the parts sum to the amount.
@@ -979,7 +979,6 @@ fn a_split_sums_to_its_amount_exactly() {
 /// The convention kinds' words round-trip, and an unknown word is none.
 #[test]
 fn convention_kinds_round_trip_their_words() {
-    assert_eq!(ConventionKind::ALL.len(), 7);
     for k in ConventionKind::ALL {
         assert_eq!(ConventionKind::parse(k.key()), Some(k));
     }

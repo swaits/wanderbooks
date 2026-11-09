@@ -298,6 +298,11 @@ fn a_disposal_is_refused_unless_the_asset_is_active_and_the_proceeds_make_sense(
         refused(&mut l, |l| l.dispose_asset(id, d(6, 1), usd("-1.00"))),
         LedgerError::NegativeProceeds(dec("-1.00"))
     );
+    // The laptop went into service on 1/15: a day before that is refused.
+    assert!(matches!(
+        refused(&mut l, |l| l.dispose_asset(id, d(1, 14), usd("1.00"))),
+        LedgerError::DisposalBeforeAcquisition { .. }
+    ));
     l.dispose_asset(id, d(6, 1), usd("700.00")).unwrap();
     assert_eq!(
         refused(&mut l, |l| l.dispose_asset(id, d(7, 1), usd("1.00"))),
@@ -364,7 +369,7 @@ fn the_fiscal_year_does_not_move_under_a_closed_period() {
 
 // ---------------------------------------------------------------- evidence on the ledger
 
-/// WB-ledger-15 item 4 and 5: annotations are checked as `Annotation::
+/// WB-ledger-15 invariants 4 and 5: annotations are checked as `Annotation::
 /// checked` says before they are kept; a second annotation of the same file
 /// replaces the first; receipt numbers run from the highest annotated, so a
 /// human's duplicate is not renumbered.
@@ -420,7 +425,7 @@ fn annotations_replace_by_file_and_receipt_numbers_run_from_the_max() {
     assert_eq!(l.next_receipt_number(), u32::MAX, "saturates, never wraps");
 }
 
-/// WB-ledger-15 item 5: `entry.settles` names entries that exist, never
+/// WB-ledger-15 invariant 5: `entry.settles` names entries that exist, never
 /// the entry itself, never one twice; "reimbursed" is derived from it
 /// alone; a refusal changes nothing.
 #[test]

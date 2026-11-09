@@ -84,7 +84,7 @@ impl JournalLine {
     ///       hash chain covers) is a fixed point.
     /// SOURCE: R-2 (no floats in money paths); found by fuzz_journal_line
     ///         (2026-10-13): a float payload re-canonicalized differently;
-    ///         BS-format-1 (the envelope is frozen).
+    ///         WB-format-1 (the envelope is frozen).
     /// INVARIANTS:
     ///   1. NEVER accepts a floating-point number anywhere in the line:
     ///      amounts are decimal strings and ids are integers.
@@ -267,7 +267,7 @@ pub fn read_and_verify_journal(path: &Path) -> Result<Vec<JournalLine>, StoreErr
 ///
 /// ```text
 /// GOAL: books read whole and verified, or refused with the reason.
-/// SOURCE: docs/receipt-store.md "Line format"; BS-format-1.
+/// SOURCE: docs/receipt-store.md "Line format"; WB-format-1.
 /// INVARIANTS:
 ///   1. Line by line, in order: parse, seq, chain, then the format gate.
 ///   2. Damage before the first line this version can't read is

@@ -5,7 +5,7 @@
 //! GOAL: an older wanderbooks tells the human to update, not that the
 //!       books are damaged, and never shows books that differ from the
 //!       record without saying so.
-//! SOURCE: BS-format-1; plan/served.md 5.1 (format gate).
+//! SOURCE: WB-format-1; plan/served.md 5.1 (format gate).
 //! INVARIANTS:
 //!   1. A whole, chained line of a type this version doesn't know, or a
 //!      journal.format_set newer than it reads, is NewerJournal: from

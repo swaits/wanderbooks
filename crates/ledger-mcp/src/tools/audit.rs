@@ -6,7 +6,7 @@
 //!       that gives the same findings and the same workpaper for the same
 //!       books, and attestations that rest on a head that has not moved.
 //! SOURCE: IRS Pub. 583 (records); Rev. Proc. 98-25 §5.01 (the audit
-//!         trail); BS-ledger-13; DECISION D-9 (the bar), D-53
+//!         trail); WB-ledger-16; DECISION D-9 (the bar), D-53
 //!         (an audit is a run, not a job), IZ-1k (the head).
 //! INVARIANTS:
 //!   1. `books.audit` previews (what it will check; nothing changes),
@@ -356,7 +356,7 @@ impl BooksServer {
     /// ```text
     /// GOAL: the whole programme of checks over the books through a day,
     ///       its workpaper filed, the run journaled.
-    /// SOURCE: plan/served.md P8; BS-ledger-13; D-9, D-53.
+    /// SOURCE: plan/served.md P8; WB-ledger-16; D-9, D-53.
     /// INVARIANTS:
     ///   1. Without `confirmed`, a preview that lists the checks and
     ///      changes nothing; with it, the preview's digest is required.
@@ -529,7 +529,7 @@ impl BooksServer {
 
     /// ```text
     /// GOAL: an audit run's workpaper, whole.
-    /// SOURCE: plan/served.md P8 step 3; BS-ledger-13.
+    /// SOURCE: plan/served.md P8 step 3; WB-ledger-16.
     /// INVARIANTS:
     ///   1. Read-only; the JSON is the one filed, the PDF is handed over.
     /// ```
@@ -581,7 +581,7 @@ impl BooksServer {
 
     /// ```text
     /// GOAL: a checker's claim that a receipt supports an entry.
-    /// SOURCE: plan/served.md P8 step 4; BS-ledger-13; D-9.
+    /// SOURCE: plan/served.md P8 step 4; WB-ledger-16; D-9.
     /// INVARIANTS:
     ///   1. The reading is compared with the entry's amount and date; a
     ///      difference is recorded, marked, and never counts.
@@ -619,7 +619,7 @@ impl BooksServer {
 
     /// ```text
     /// GOAL: a checker's claim that it reviewed an entry whole.
-    /// SOURCE: plan/served.md P8 step 4; BS-ledger-13.
+    /// SOURCE: plan/served.md P8 step 4; WB-ledger-16.
     /// ```
     #[tool(
         name = "books.review_entry",
@@ -649,7 +649,7 @@ impl BooksServer {
     /// ```text
     /// GOAL: a checker's claim that a period is right, resting on an
     ///       audit run at the books' current head.
-    /// SOURCE: plan/served.md P8 step 4; BS-ledger-13; D-9; IZ-1k.
+    /// SOURCE: plan/served.md P8 step 4; WB-ledger-16; D-9; IZ-1k.
     /// INVARIANTS:
     ///   1. Refused unless an audit through the period's end stands at
     ///      the current head.
@@ -697,7 +697,7 @@ impl BooksServer {
 
     /// ```text
     /// GOAL: every claim that someone checked, and whether it counts.
-    /// SOURCE: plan/served.md P8 step 4; BS-ledger-13; D-9.
+    /// SOURCE: plan/served.md P8 step 4; WB-ledger-16; D-9.
     /// INVARIANTS:
     ///   1. `counted` is read against the bar as it stands now.
     /// ```

@@ -9,7 +9,7 @@
 //! ```text
 //! GOAL: a document's projects are journaled once, replay exactly, and
 //!       never reach books whose owner hasn't consented to the format.
-//! SOURCE: BS-statement-5 statement 6, BS-format-1, BS-entry-4; plan/served.md
+//! SOURCE: BS-statement-5 statement 6, WB-format-2, BS-entry-4; plan/served.md
 //!         D-39 (the owner's upgrade).
 //! ```
 

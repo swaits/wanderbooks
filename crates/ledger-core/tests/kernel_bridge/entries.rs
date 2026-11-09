@@ -39,6 +39,13 @@ fn arb_direction() -> impl Strategy<Value = kernel::Direction> {
     ]
 }
 
+/// Cents, plus the `i64` range's edges: [`arb_cents`] is bounded to ±2^40
+/// (what a journal line may carry), so it never reaches the negation that
+/// overflows, and the refusal path would go untested.
+fn arb_edge_cents() -> impl Strategy<Value = i64> {
+    prop_oneof![arb_cents(), Just(i64::MIN), Just(i64::MAX)]
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(1000))]
 
@@ -121,12 +128,15 @@ proptest! {
     }
 
     /// `kernel::reverse_target` is the exact opposite at both types, and
-    /// each refuses the same out-of-range inputs (law 24).
+    /// `i64` refuses its range's edge (`i64::MIN`, which no negation can
+    /// hold): the edge strategy reaches that arm, and Decimal, which can
+    /// hold the negation, answers the opposite (law 24). The refusal is
+    /// the integer proof model's bound, not the law's.
     #[test]
     fn reverse_target_agrees(
-        amount in arb_cents(),
-        cash in arb_cents(),
-        in_kind in arb_cents(),
+        amount in arb_edge_cents(),
+        cash in arb_edge_cents(),
+        in_kind in arb_edge_cents(),
         direction in arb_direction(),
     ) {
         let t = kernel::PartyTarget {
@@ -147,10 +157,24 @@ proptest! {
             cash: dec(r.cash),
             in_kind: dec(r.in_kind),
         };
-        prop_assert_eq!(
-            kernel::reverse_target(t).map(as_dec),
-            kernel::reverse_target(d)
-        );
+        match kernel::reverse_target(t) {
+            Some(r) => prop_assert_eq!(Some(as_dec(r)), kernel::reverse_target(d)),
+            None => {
+                prop_assert!(
+                    amount == i64::MIN || cash == i64::MIN || in_kind == i64::MIN,
+                    "reverse_target refused an in-range target"
+                );
+                prop_assert_eq!(
+                    kernel::reverse_target(d),
+                    Some(kernel::PartyTarget {
+                        amount: -dec(amount),
+                        direction: direction.flip(),
+                        cash: -dec(cash),
+                        in_kind: -dec(in_kind),
+                    })
+                );
+            }
+        }
     }
 
     /// `kernel::part_weight` is the same weight at i32, i64 and i128, and

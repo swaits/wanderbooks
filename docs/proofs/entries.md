@@ -45,9 +45,12 @@ verification, 3 covers, build included).
 - `part_weight_agrees`: `part_weight` is the same weight at `i32`, `i64`
   and `i128`, and `None` exactly for a part no month has (laws 26-28).
 - `reverse_target_agrees`: `reverse_target` is the exact opposite at both
-  types and refuses the same out-of-range inputs (law 24). The earlier
-  bridge only passed it to `and_then`, which is a mention, not a call; this
-  property calls it.
+  types. The edge strategy reaches `i64::MIN`, which `i64` refuses because
+  no negation can hold it; `Decimal` can hold the negation, so the property
+  compares its answer there (the exact opposite). The refusal is the
+  integer proof model's bound, not the law's. The earlier bridge only
+  passed it to `and_then`, which is a mention, not a call; this property
+  calls it.
 
 Why these laws: `Direction::of` is the sign classification the party
 direction law (23) is stated over, and `part_weight` is the weight the

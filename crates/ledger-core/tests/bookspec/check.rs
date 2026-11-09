@@ -38,6 +38,8 @@ pub(crate) fn check(b: &Books<'_>, x: &Expect) -> Option<&'static str> {
     );
     only(x.basis.is_some(), "basis", &["party_totals"]);
     only(x.payee.is_some(), "payee", &["vendor_1099"]);
+    only(x.document.is_some(), "document", &["document_dates"]);
+    only(x.of.is_some(), "of", &["aging"]);
     only(
         x.code.is_some(),
         "code",
@@ -101,6 +103,8 @@ pub(crate) fn check(b: &Books<'_>, x: &Expect) -> Option<&'static str> {
         "party_totals" => check_party_totals(b, x),
         "party_tin_last4" => check_party_tin_last4(b, x),
         "project" => check_project(b, x),
+        "aging" => check_aging(b, x),
+        "document_dates" => check_document_dates(b, x),
         q => {
             let &(_, by) = FORMAT_QUERIES
                 .iter()

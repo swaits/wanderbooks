@@ -41,6 +41,25 @@ impl Engine for Books<'_> {
     }
 }
 
+/// Why wanderbooks does not run `ex`: it is an example for an option of a
+/// CHOICE rule (`under`) that wanderbooks did not pick (`PICKS`). The
+/// runner skips such an example for the same reason; the loader tests do
+/// it with this.
+pub(crate) fn unpicked_option(ex: &Example) -> Option<String> {
+    ex.under.iter().find_map(|u| {
+        let rule = RuleId::parse(&u.rule).ok()?;
+        let &(_, _, pick) = PICKS
+            .iter()
+            .find(|&&(area, n, _)| RuleId::new(area, n) == rule)?;
+        (pick != u.option).then(|| {
+            format!(
+                "for {} under {}; wanderbooks picks {pick}",
+                u.rule, u.option
+            )
+        })
+    })
+}
+
 /// The option wanderbooks picks for each CHOICE record split out of an
 /// embedded choice (P14 unit S-C7); each is recorded in
 /// `docs/spec/claims/<area>.md` as `**Pick (BS-<area>-<n>):**`.

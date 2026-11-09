@@ -50,13 +50,13 @@ pub(crate) use ledger_core::parties::{Basis, MoneyAccounts};
 pub(crate) use ledger_core::settings::{Company, Source};
 pub(crate) use ledger_core::tax_capital::TaxCapitalRow;
 pub(crate) use ledger_core::{
-    AccountType, AssetId, CashFlowParams, CashFlowSection, CashFlowStatement, CloseTo, Currency,
-    Dated1099, Decision1099, DocumentLine, EntryId, EntryStatus, ExemptReason, Form1099,
-    InstrumentId, InstrumentKind, Ledger, LedgerError, MemberCapital, MemberClose, Money, NewAsset,
-    NewSchedule, PartyId, PartyMember, PartyShare, PaymentAccounts, ReconcilingKind, Role,
-    ScheduleConvention, ScheduleId, ScheduleKind, Share, Side, TinFacts, TinType, VendorId,
-    W9Facts, cash_flow, members_equity, profit_and_loss_for_period, trial_balance_as_of,
-    vendor_1099_report,
+    AccountType, AssetId, BillFields, CashFlowParams, CashFlowSection, CashFlowStatement, CloseTo,
+    Currency, Dated1099, Decision1099, DocumentLine, EntryId, EntryStatus, ExemptReason, Form1099,
+    InstrumentId, InstrumentKind, InvoiceFields, Ledger, LedgerError, MemberCapital, MemberClose,
+    Money, NewAsset, NewSchedule, PartyId, PartyMember, PartyShare, PaymentAccounts,
+    ReconcilingKind, Role, ScheduleConvention, ScheduleId, ScheduleKind, Share, Side, Terms,
+    TermsKind, TinFacts, TinType, VendorId, W9Facts, cash_flow, members_equity,
+    profit_and_loss_for_period, trial_balance_as_of, vendor_1099_report,
 };
 pub(crate) use ledger_store::{DepreciationRun, DisposalPreview, Store, StoreError};
 pub(crate) use rust_decimal::Decimal;
@@ -75,6 +75,7 @@ pub(crate) use common::*;
 pub(crate) use queries::assets::*;
 pub(crate) use queries::commands::*;
 pub(crate) use queries::dates::*;
+pub(crate) use queries::documents::*;
 pub(crate) use queries::formats::*;
 pub(crate) use queries::parties::*;
 pub(crate) use queries::statements::*;

@@ -9,6 +9,7 @@
 // One file per kernel-sweep unit; the properties above stay here.
 mod allocate;
 mod control;
+mod entries;
 mod fx;
 mod payroll;
 mod ratio;

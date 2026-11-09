@@ -76,7 +76,7 @@ Lean `Documents.control_agrees`, `Documents.Step.document_unattached`,
 (through role assignments and releases),
 `Documents.Reachable.control_is_documents`. The model's limits: it
 starts from empty books (legacy lines are covered by the identity
-`control_agrees` alone), it names documents by one id space (an injective
+`Documents.control_agrees` alone), it names documents by one id space (an injective
 coding of `DocRef`), and an account becoming a control account by its
 first document, holding lines from before, is outside it (those lines are
 listed as unattached).
@@ -325,8 +325,9 @@ check_discount}`, `arap::{Application, Fee, SettleParams, SettlementRow}`,
 (`a_settlement_names_its_lines_and_replays`, `settlement_waits_for_documents_v2`,
 `legacy_payment_events_keep_the_positional_rule`), `tests/arap_props.rs`;
 `ledger-cli` `tests/documents.rs`; `ledger-package`'s aging tie-out test.
-The Lean step is `Documents.Step.document` with every control line tagged
-(`Documents.settle_unattached`); no new `Step` constructor.
+The Lean step is the document constructor of the Lean documents model, with
+every control line tagged (`Documents.settle_unattached`); no new step
+constructor.
 
 ### Product rules
 

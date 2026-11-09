@@ -22,6 +22,11 @@ Lean `trial_balance_iff`, `Reachable.trial_balance`,
 
 **Claims:** yes
 
+**Enforced:** every posted entry obeys B-1, so `kernel::check_lines`
+refuses an unbalanced one; `Ledger::post_entry` applies it to every
+posting, and `kernel::normal_balance` reads each account by its type, so
+`reports::balance_sheet` and `reports::trial_balance` present the same
+assets and liabilities-plus-equity at every date.
 **Checked:** Kani `accounting_equation`; Lean `accounting_equation`,
 `Reachable.accounting_equation[_through]`; property
 `prop_balance_sheet_balances`.

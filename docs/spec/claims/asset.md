@@ -87,7 +87,7 @@ those dates say. (That depreciation starts on the in-service date and that
 the register holds the asset from the acquired date are `BS-asset-1`
 rules 23-24.)
 *Enforced:* `set_asset_acquisition` / `replay_set_asset_acquisition`,
-`Ledger::asset_acquired_date`, `dispose_asset`, `Asset::set_entry`.
+`Ledger::asset_acquired_date`, `dispose_asset`, `Ledger::set_asset_acquisition`.
 *Checked:* `ledger-core` `tests/spec_asset_basis.rs` (each bound and its
 replay pair); `ledger-store` `tests/bounds.rs`.
 
@@ -103,7 +103,7 @@ run again and that run reversed is the month's run.
 
 **bookspec:** `BS-asset-2`
 
-**Claims:** partly (the books' own AGENTS.md follows it; the engine enforces nothing)
+**Claims:** no (no engine enforcement exists: the policy is the books' own AGENTS.md, and the de minimis and 12-month elections are made on the return)
 
 **Pick:** none (AUTHORITY; procedural). The books' own AGENTS.md sets the policy; the de minimis and 12-month elections are made on the return.
 
@@ -124,11 +124,11 @@ None.
 **Pick:** `tag-and-never-reuse`: CHOICE (the owner, 2026-10-15): each asset may carry one tag, generated `PREFIX-0001` or the human's own, unique ignoring case and never reused, and the register reconciles to the cost and accumulated depreciation accounts.
 
 **Enforced:** `Ledger::set_asset_tag` / `check_asset_tag_for` /
-`check_asset_tag` (`tag_in_use`, the retag keeping the old tag reserved),
+`check_asset_tag` (the tag already taken is refused, the retag keeping the old tag reserved),
 `Ledger::set_asset_serial` / `check_asset_serial`, `assets::check_asset_tag`,
 `assets::check_serial`, `reports::fixed_asset_register`.
 **Checked:** `ledger-core` `tests/spec_asset_tags.rs`; `ledger-store`
-`tests/asset_tags.rs` (`a_tag_is_unique_ignoring_case`,
+`tests/asset_tags.rs` (`a_journaled_tag_taken_by_another_asset_is_refused_on_open`,
 `a_retagged_assets_old_tag_is_never_reused`);
 `ledger-cli` `tests/spec_assets.rs`.
 
@@ -184,7 +184,7 @@ and Needs attention asks for the value.
 *Enforced:* `replay_set_asset_tax_basis`, `AssetBasis::check_legacy_journaled`;
 `ledger-gui` Needs attention.
 *Checked:* `ledger-core` `tests/spec_asset_basis.rs`
-(`a_legacy_basis_record_reads_its_book_cost`); `ledger-store`
+(`legacy_tax_basis_set_lines_replay_to_todays_figures`); `ledger-store`
 `tests/asset_tags.rs`.
 
 **WB-asset-5** The tool surface never assumes a contributed property's

@@ -84,8 +84,7 @@ None.
 **Enforced:** posted entries immutable; `ledger_store::format`
 (`JournalFormat::admit`, `gate`): a record in a format version this
 version does not know is refused as newer, neither misread nor skipped,
-and never called corrupt (statement 4). **Checked:** Lean `Step.extends`,
-`Steps.extends`; property `prop_posted_entries_immutable`; `ledger-store`
+and never called corrupt (statement 4). **Checked:** Lean `Steps.extends`; property `prop_posted_entries_immutable`; `ledger-store`
 `tests/format.rs` (`old_reader_gets_newer_journal`,
 `a_newer_line_the_next_line_chains_onto_is_newer_and_intact`,
 `damaged_journals_are_still_corrupt`).
@@ -161,6 +160,11 @@ None.
 **Pick:** a reversal's evidence is its original's (a reversal needs no evidence of its own): CHOICE D-47 (the owner, 2026-10-26; options: a reversal's evidence is its original's / a reversal needs its own). The rest is AUTHORITY; a procedural rule.
 
 **Enforced:** the MCP receipt policy (not the engine; R-13).
+**Checked:** `ledger-cli` `tests/drafts.rs`
+(`a_draft_waits_for_its_receipt_and_posts`,
+`a_reversal_needs_no_receipt_of_its_own`); `ledger-store`
+`tests/store.rs` (`draft_states_replay_and_project`,
+`drafts_v2_waits_for_the_upgrade`).
 
 ### Product rules
 
@@ -190,10 +194,13 @@ frees its code); the control guard and `Ledger::control_check` (B-38).
 *Enforced:* `Ledger::assign_role` / `check_assign_role`. *Checked:* `ledger-store` replay of `role.assigned`.
 
 **WB-ledger-3** The account at a role's default code is the role's control account only once a document posts there (or the role is assigned to it): before that, a chart's own 1200 Equipment or a card at 2000 is the chart's.
-*Enforced and checked:* with B-23 above (`Ledger::check_controls`, the control guard, `Ledger::control_check`; `tests/spec_roles.rs`, `tests/spec_documents.rs`).
+**Enforced:** `Ledger::check_controls`, the control guard, `Ledger::control_check`; `tests/spec_roles.rs`, `tests/spec_documents.rs`.
+**Checked:** `tests/spec_roles.rs`, `tests/spec_documents.rs`.
 
 **WB-ledger-4** Until the balance of a receivables or payables control account moves with its documents (plan P4b S7), a receivables or payables role whose control account holds a balance stays where it is, and the refusal says so: it names no hand entry, which the control guard would refuse.
-*Enforced and checked:* with B-23 above (`Ledger::check_assign_role`, `Ledger::check_renumber_account`, the control guard; `tests/spec_roles.rs`, `tests/spec_documents.rs`).
+**Enforced:** `Ledger::check_assign_role`, `Ledger::check_renumber_account`,
+the control guard. **Checked:** `tests/spec_roles.rs`,
+`tests/spec_documents.rs`.
 
 ## B-29 The books keep how they are kept
 
@@ -225,7 +232,10 @@ checked to change no figure or entry;
 *Checked:* `ledger-config` `tests/codec_props.rs` (`exports_round_trip`) and codec unit tests; `ledger-store` `tests/settings.rs` (`books_written_under_p1_open_to_their_record`, fixture `old-books/p1_record`).
 
 **WB-ledger-6** No setting, convention id, convention, decision, open item or approval holds a number that reads as a full TIN (nine digits standing alone, bare or printed 3-2-4 or 2-7 with a dash or a space), except the company's own EIN, shown masked everywhere but reports, packages and the viewer, and a D-U-N-S number in its own key.
-*Enforced and checked:* with B-29 above (the settings and conventions checks and their tests).
+**Enforced:** `ledger_core::settings::check` and the conventions checks
+(`check_new`, `check_decision`, `check_open_item`).
+**Checked:** `ledger-core` settings and conventions unit tests;
+`ledger-store` `tests/settings.rs` (`settings_replay_is_pure`).
 
 **WB-ledger-7** Books keep their own settings, and only `books.set_setting` changes them; old books bring their settings file in once, whole, as they are adopted (`wanderbooks books adopt`), and nothing reads one after.
 *Enforced:* `Store::adopt_settings`; `ledger-mcp` adoption (`local.rs` `settings_to_move`: a settings file, whole, through `codec::import`).
@@ -269,7 +279,7 @@ which is journaled with its name trimmed too. **Checked:** `ledger-core`
 `ledger-core` `tests/spec_ledger.rs`
 (`a_new_name_is_one_trimmed_line_of_bounded_length`), `ledger-store`
 `tests/store.rs` (`a_new_accounts_name_is_journaled_trimmed`); Lean
-`Step.record` (a name is outside the model: `docs/verification.md` law 15);
+`Step.record_changes_no_figure` (a name is outside the model: `docs/verification.md` law 15);
 bookspec `examples/rename-changes-no-amount.toml`.
 
 ### Product rules
@@ -300,8 +310,8 @@ rounding). **Checked:** `ledger-core`
 `a_category_rounds_once_across_different_percents`); Kani
 `deductible_amount_rounds_once`, `deductible_amount_refuses_overflow`;
 bridge `deductible_amount_agrees`; Lean `bookspec/lean/Bookspec/Deductible.lean`
-(`Deductible.near`, `tie_away_pos`, `tie_away_neg`, `sign`, `neg`, `of_sum`,
-`per_account_differs`, `scale_books`, `scale_percents`: the one rounding, at any
+(`Deductible.near`, `Deductible.tie_away_pos`, `Deductible.tie_away_neg`, `Deductible.sign`, `Deductible.neg`, `Deductible.of_sum`,
+`Deductible.per_account_differs`, `Deductible.scale_books`, `Deductible.scale_percents`: the one rounding, at any
 number of accounts and any sizes); bookspec `examples/tax-category-required.toml`.
 
 ### Product rules
@@ -316,11 +326,16 @@ number of accounts and any sizes); bookspec `examples/tax-category-required.toml
 
 ## B-44 Evidence is read from the bytes, never trusted over them; identical files are kept once
 
-**bookspec:** `BS-ledger-12`
+**retired bookspec:** `BS-ledger-12`
 
 **Claims:** yes (wholly a product rule: BS-ledger-12 is retired, D-71)
 
 **Pick:** none (CONVENTION; Rev. Proc. 98-25 and Pub. 583 for the audit trail).
+
+**Enforced:** the product rule below, `WB-ledger-15` (its *Enforced:*
+paragraph names the import, store and attachment functions).
+**Checked:** the product rule below, `WB-ledger-15` (its *Checked:*
+paragraph names the import, store and CLI tests).
 
 ### Product rules
 
@@ -402,11 +417,16 @@ withdraw_attachment_duplicate}` and `Store::attach`'s dedup; feature
 
 ## B-45 An audit is deterministic over the books; an attestation is a claim by a named client
 
-**bookspec:** `BS-ledger-13`
+**retired bookspec:** `BS-ledger-13`
 
 **Claims:** yes (wholly a product rule: BS-ledger-13 is retired, D-71)
 
 **Pick:** CHOICE D-9 (owner-adopted recommendation, 2026-10-16): the attestation bar, and the CPA package waits for a counted audit unless given a reason. Otherwise CONVENTION (the SOURCE block below; Pub. 583 and Rev. Proc. 98-25 for the audit trail).
+
+**Enforced:** the product rule below, `WB-ledger-16` (its *Enforced:*
+paragraph names the audit and store functions).
+**Checked:** the product rule below, `WB-ledger-16` (its *Checked:*
+paragraph names the core, store, import and CLI tests).
 
 ### Product rules
 

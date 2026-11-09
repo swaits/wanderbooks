@@ -29,6 +29,25 @@ instead:
 - A unit's note lands in the same commit as its harnesses, so the proof
   and its description are never apart in history.
 
+## The harness-to-law table (machine-readable)
+
+The traceability gate
+(`crates/ledger-core/tests/bookspec/traceability.rs`) reads every note here
+for a table pairing each Kani harness with the bookspec law it proves:
+
+| Harness | Law |
+|---|---|
+| `round_step_is_multiple` | 40 |
+
+The first cell must be the harness name in backticks and the second a bare
+integer (the number in bookspec's `spec/laws.md`); extra columns are allowed
+after them (bounds, time, verification). The gate fails:
+
+- a kernel `pub fn` whose harnesses have no such row ("lacks a law");
+- a harness listed twice with different law numbers;
+- a law whose Rules column shares no `BS-` id with the function's own
+  `SOURCE:` line, when the function has one.
+
 `just prove` finds the harnesses by scanning `crates/ledger-core/src/proofs/`
 (`mod.rs` plus every `<unit>.rs`), not one file; `just prove-list` prints
 each harness, its module path, and whether it runs in `prove` or

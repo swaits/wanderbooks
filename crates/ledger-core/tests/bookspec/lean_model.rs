@@ -237,9 +237,7 @@ fn lean_word(e: &LedgerError) -> String {
         LedgerError::UnknownEntry(_) => "unknown_entry".to_string(),
         LedgerError::UnknownPeriod(_) => "unknown_period".to_string(),
         LedgerError::EntryNotPosted(_) => "not_drafted".to_string(),
-        LedgerError::DocumentReversalBeforeOriginal { .. } => {
-            "reversal_before_original".to_string()
-        }
+        LedgerError::ReversalBeforeOriginal { .. } => "reversal_before_original".to_string(),
         LedgerError::DuplicateAccountCode(_) => "code_taken".to_string(),
         other => refusal(other),
     }

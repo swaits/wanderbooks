@@ -207,7 +207,7 @@ oracle:
 # engine and the model disagreeing. `cases` sequences, one `lake` call for all of
 # them (crates/ledger-core/tests/bookspec/lean_model.rs); fails without lake.
 lean-model cases="64":
-    WANDERBOOKS_REQUIRE_LEAN=1 PROPTEST_CASES={{cases}} cargo test -p ledger-core --test bookspec lean_model -- --nocapture
+    WANDERBOOKS_REQUIRE_LEAN=1 WANDERBOOKS_D73_LANDED=1 PROPTEST_CASES={{cases}} cargo test -p ledger-core --test bookspec lean_model -- --nocapture
 
 # Fuzz one target for some seconds (nightly; corpus in fuzz/corpus/<target>)
 fuzz target="fuzz_op_sequence" seconds="300":

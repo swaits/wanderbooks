@@ -9,7 +9,7 @@ packagesDir = ".lake/packages"
 [[require]]
 name = "bookspec"
 git = "https://git.swaits.com/swaits/bookspec"
-rev = "bc92cf3f69c392cefc9bd319b103994b3bfb0d76"
+rev = "c597c8f845377d9eb868f0f4486759baf16eb5ea"
 subDir = "lean"
 
 [[lean_lib]]

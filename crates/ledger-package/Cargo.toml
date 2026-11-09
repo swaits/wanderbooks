@@ -21,7 +21,7 @@ zip = "9.0.1"
 workspace = true
 
 [dev-dependencies]
-bookspec-checker = { git = "https://git.swaits.com/swaits/bookspec", rev = "bc92cf3f69c392cefc9bd319b103994b3bfb0d76" }
+bookspec-checker = { git = "https://git.swaits.com/swaits/bookspec", rev = "c597c8f845377d9eb868f0f4486759baf16eb5ea" }
 proptest = "1"
 tempfile = "3"
 toml = "1"

@@ -1,5 +1,15 @@
 use crate::*;
 
+/// The engine's key for a bookspec setting key (`SETTING_KEYS`): the
+/// engine's own settings carry the `company.` prefix. A key the schema
+/// admits and this map lacks is a gap in the adapter, so it panics.
+pub(crate) fn engine_setting_key(bookspec_key: &str) -> &'static str {
+    match bookspec_key {
+        "fiscal_year_start" => "company.fiscal_year_start",
+        other => panic!("the adapter maps no engine key for the bookspec setting {other:?}"),
+    }
+}
+
 impl Books<'_> {
     /// A `setting` query (BS-ledger-9): the value the books keep, with who
     /// decided it and when. The books hold their settings in the journal
@@ -7,9 +17,13 @@ impl Books<'_> {
     pub(crate) fn answer_setting(&self, q: &Query) -> Result<Value, Refusal> {
         let rule = RuleId::new(Area::Ledger, 9);
         let key = q.key.as_deref().ok_or_else(|| self.missing("key"))?;
-        let recorded = self.l().settings().get(key).ok_or_else(|| {
-            Refusal::new(rule.clone(), format!("no setting {key:?} in the books"))
-        })?;
+        let recorded = self
+            .l()
+            .settings()
+            .get(engine_setting_key(key))
+            .ok_or_else(|| {
+                Refusal::new(rule.clone(), format!("no setting {key:?} in the books"))
+            })?;
         let value = match &recorded.value {
             Value::String(s) => s.clone(),
             other => other.to_string(),

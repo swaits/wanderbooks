@@ -833,7 +833,7 @@ impl Books<'_> {
                 // The books' own journaled command: the fact and who decided
                 // it are kept in the journal (BS-ledger-9).
                 let change = Change {
-                    key: s.key.clone(),
+                    key: engine_setting_key(&s.key).to_string(),
                     value: Some(Value::String(s.value.clone())),
                 };
                 let source = Source {

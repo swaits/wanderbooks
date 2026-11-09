@@ -7,8 +7,10 @@
 //!       reproducible and its workpaper hashes the same twice.
 //! SOURCE: IRS Pub. 583 (records that support entries); Rev. Proc. 98-25
 //!         §5.01 (the relationship between the records and the books must
-//!         be demonstrable); BS-statement-1 to BS-statement-3 (the
-//!         statements), BS-arap-2 (control accounts), BS-entry-5 (evidence);
+//!         be demonstrable); BS-statement-1, BS-statement-2, BS-ledger-4, BS-ledger-5,
+//!         BS-ledger-6, BS-period-1, BS-period-2, BS-partner-1 and
+//!         BS-statement-3 (the statements), BS-arap-2 (control accounts),
+//!         BS-entry-5 (evidence);
 //!         DECISION D-9 (the audit and its bar), D-53 (a run, not a job).
 //! INVARIANTS:
 //!   1. Pure: reads the ledger and the facts [`AuditInput`] hands in,

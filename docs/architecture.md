@@ -327,8 +327,9 @@ to move to its own repository (P13 step 6, D-34, Z-17):
   per rule: pass, fail or not claimed. It compares the engine's answers
   with the examples' exact expected values; it never asks the engine
   whether its own answer is right.
-- `bookspec/spec/rules-index.md` maps BS-entry-1 to BS-ledger-13 to the bookspec ids;
-  `docs/spec/rules.md` carries each stated rule's id under its heading.
+- `bookspec/spec/rules-index.md` maps all 45 rules in `docs/spec/rules.md`'s index to the bookspec ids;
+  the rules themselves are bookspec's `rules/` records, and wanderbooks'
+  claims on them are in `docs/spec/claims/` (`docs/spec/rules.md` is only the index).
 - `crates/ledger-core/tests/bookspec/` is the wanderbooks adapter: it
   implements `Engine` over `Store` (a dev-dependency only, so no engine
   crate depends on the specification) and remains the loader that checks

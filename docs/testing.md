@@ -1738,7 +1738,7 @@ mid-year, a refund, a loan, depreciation with a run reversed and caught
 up, a disposal that credits back part of a month's run, a distribution
 declared then paid, monthly closes with odd cents), checked on June 30,
 September 15 and December 31: the same fact from two pieces agrees, or
-rules.md says why not. Mutation runs wait for P12 (D-33).
+bookspec's rules / `docs/spec/claims/` say why not. Mutation runs wait for P12 (D-33).
 
 - **Engine** (`ledger-package/tests/p3_seams.rs`):
   `the_members_figures_agree_on_every_date` (members' equity, the K-1
@@ -2890,10 +2890,9 @@ adapter claims the rules the catalogue gives an example; a rule with no
 example is not claimed, never silently passed.
 
 Step 3 adds the rule identifiers: `BS-<area>-<n>` for the eleven areas,
-`bookspec/spec/rules-index.md` as the table from BS-entry-1 to BS-ledger-13, and each
-stated rule's id under its heading in `docs/spec/rules.md`. `DECISION`
+`bookspec/spec/rules-index.md` as the table covering all 45 rules in `docs/spec/rules.md`'s index. `DECISION`
 there is bookspec's `CHOICE`: the specification names the options, an
-engine declares its pick (`Claims::with_choice`). BS-arap-3 to BS-ledger-13 are
+engine declares its pick (`Claims::with_choice`). BS-arap-3, BS-arap-4, BS-arap-5, BS-arap-6, BS-entry-5, BS-ledger-12 and BS-ledger-13 are
 allocated (`plan/served.md` 8.0.3) and not yet stated; they carry an id and
 an area and no status.
 

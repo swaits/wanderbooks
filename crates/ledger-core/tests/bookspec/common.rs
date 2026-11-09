@@ -16,7 +16,7 @@ pub(crate) fn account_type(a: &AccountSpec, id: &str) -> AccountType {
 }
 
 /// The period `[from, to]` a period query covers, each date omitted
-/// resolved by the one rule (B-30) on `setup.today`; panics on
+/// resolved by the one rule (BS-period-3) on `setup.today`; panics on
 /// `as_of`, on an omitted date without `setup.today`, and on a period the
 /// rule refuses.
 pub(crate) fn period(ex: &Example, x: &Expect) -> (NaiveDate, NaiveDate) {
@@ -83,12 +83,12 @@ pub(crate) trait Pipe: Sized {
     }
 }
 impl<T> Pipe for T {}
-/// What an omitted date means for `ex` (B-30): its fiscal year
+/// What an omitted date means for `ex` (BS-period-3): its fiscal year
 /// on `setup.today`, which `query` needs.
 pub(crate) fn defaults(ex: &Example, query: &str) -> PeriodDefaults {
     let today = ex.setup.today.as_deref().unwrap_or_else(|| {
         panic!(
-            "{}: {query} omits a date: setup.today says what it means (B-30)",
+            "{}: {query} omits a date: setup.today says what it means (BS-period-3)",
             ex.id
         )
     });

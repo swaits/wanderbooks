@@ -4,7 +4,7 @@
 // are fine; panics, hangs, and broken books are not. After any sequence:
 // the trial balance balances, every posted entry validates, no draft sits
 // in a closed period (the Lean invariant Inv), and the control accounts
-// equal their documents (control_check's difference is zero, B-38).
+// equal their documents (control_check's difference is zero, BS-arap-2).
 //
 // The documents (invoices, bills), their settlements and payments, write-offs
 // and voids, and the draft-state ops (P12) run on the Ledger the store wraps:
@@ -411,7 +411,7 @@ fuzz_target!(|ops: Vec<Op>| {
             e.id()
         );
     }
-    // The control accounts equal their documents, at any day (B-38): too
+    // The control accounts equal their documents, at any day (BS-arap-2): too
     // large to compute is a refusal, never a difference.
     for d in [0u8, 60, 199] {
         if let Ok(checks) = l.control_check(day(d)) {

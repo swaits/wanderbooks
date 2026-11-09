@@ -108,7 +108,7 @@ P13 is a specification, not a feature, so no row of the semantic catalog
 moves and the floor stands. It adds the checker crate (`bookspec/checker`:
 the example schema, the rule identifiers `BS-<area>-<n>` and the `Engine`
 trait), the runner (`bookspec/runner`: pass, fail or not claimed per rule),
-and the rule index from BS-entry-1 to BS-ledger-13 (`bookspec/spec/rules-index.md`). Every
+and the rule index covering all 45 rules in `docs/spec/rules.md`'s index (`bookspec/spec/rules-index.md`). Every
 existing bookspec example still runs on every `cargo test`, through both
 the loader's own checks and the `Engine` trait.
 
@@ -142,8 +142,8 @@ The viewer's invoice page shows the number, terms, bill-to and PO and
 saves the issued copy beside the re-created one; the Money in list names an
 invoice by its number. The handbook's invoices-and-bills procedure is
 complete (issue, collect, pay on terms, void or write off, the fee, the
-CPA's list) and says what waits for the owner's upgrade. rules.md gains
-BS-arap-3 (terms) and BS-arap-4 (numbers and the issued copy). No golden moved.
+CPA's list) and says what waits for the owner's upgrade. `docs/spec/claims/arap.md` gains
+the claims for BS-arap-3 (terms) and BS-arap-4 (numbers and the issued copy). No golden moved.
 
 ### P9a self-host deployment (2026-10-26)
 

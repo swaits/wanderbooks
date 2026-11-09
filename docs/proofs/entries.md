@@ -16,7 +16,13 @@ the exception list before.
 | Harness | Law | Bounds |
 |---|---|---|
 | `direction_of_is_the_sign` | 23 | any `i64` amount; all three signs covered |
-| `part_weight_is_days_of_the_month` | 26 | `days` and `month_days` 0..=40; valid, partial, whole and invalid parts covered |
+| `part_weight_is_days_of_the_month` | 27 | `days` and `month_days` 0..=40; valid, partial, whole and invalid parts covered |
+
+`part_weight_is_days_of_the_month` proves the weight formula a proration
+charge is computed from, which is law 27's statement (each part but the
+last is its days times the monthly rate); it is a lemma for laws 26-28,
+not a restatement of law 26 (that the parts sum to the total, which is
+`prorate_parts_sum_to_total` below).
 
 The bookspec law each harness proves (machine-readable for the
 traceability gate, `crates/ledger-core/tests/bookspec/traceability.rs`):
@@ -24,7 +30,7 @@ traceability gate, `crates/ledger-core/tests/bookspec/traceability.rs`):
 | Harness | Law |
 |---|---|
 | `direction_of_is_the_sign` | 23 |
-| `part_weight_is_days_of_the_month` | 26 |
+| `part_weight_is_days_of_the_month` | 27 |
 
 Times: measured alone with
 `cargo kani -p ledger-core --exact --harness proofs::<name>` on 2026-11-08:
@@ -45,4 +51,5 @@ verification, 3 covers, build included).
 
 Why these laws: `Direction::of` is the sign classification the party
 direction law (23) is stated over, and `part_weight` is the weight the
-proration charges of laws 26-28 are computed from.
+proration charges of laws 26-28 are computed from, its harness numbered
+for the law it restates most closely (27).

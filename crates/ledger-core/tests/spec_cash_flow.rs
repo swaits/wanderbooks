@@ -280,9 +280,9 @@ fn defect1_reversed_contributions_foot_regression() {
 /// members paid):
 /// - Operating: the members paid #1 85.00, #2 12.97, #3 99.00, #6 7.49,
 ///   #21 216.40, #7 129.00 and #20 46.38 (the prepaid domain) for the
-///   company through 2100, each borrowed and spent on its date (rule 11):
+///   company through 2100, each borrowed and spent on its date (BS-statement-3 statement 16):
 ///   85.00 + 12.97 + 99.00 + 7.49 + 216.40 + 129.00 + 46.38 = 596.24, so
-///   −596.24, all class (d). #9 and its reversal #22 net out (rule 6).
+///   −596.24, all class (d). #9 and its reversal #22 net out (BS-statement-3 statement 11).
 ///   The card's #10 and #23 moved no cash and 2050 is not financing: no
 ///   line. Nothing else moved cash through an operating account.
 /// - Investing: every asset was contributed as property the members
@@ -1062,7 +1062,7 @@ fn an_expense_a_member_paid_into_capital_is_contributed_and_spent() {
 /// D-42 keeps property a member already owned noncash (ASC 230-10-50-4:
 /// no cash moved, to anyone): a laptop and its service plan contributed
 /// (Dr Equipment 1,000, Dr Prepaid 60 / Cr Capital 1,060). Only revenue
-/// and expense lines can a member pay for through capital (rule 11), so
+/// and expense lines can a member pay for through capital (BS-statement-3 statement 16), so
 /// nothing is constructive: no line; disclosed 1,060 (the laptop 1,000
 /// exchanged for capital); the prepaid's 60 reconciled as other noncash.
 #[test]
@@ -1228,7 +1228,7 @@ fn a_payment_made_for_the_company_and_its_reversal_net() {
     assert!(cf.noncash_disclosures.is_empty());
 }
 
-/// Rule 11, part paid by the company and part by a member, in one entry
+/// BS-statement-3 statement 16, part paid by the company and part by a member, in one entry
 /// (Dr Supplies 100 / Cr Cash 40 / Cr 2100 60): the cash settles 40
 /// (50-5), the member the other 60, so operating −100 with 60 on the
 /// company's behalf, financing +60: the same as the two entries apart.
@@ -1264,7 +1264,7 @@ fn part_paid_by_a_member_and_a_refund_a_member_received() {
     assert!(cf.noncash_disclosures.is_empty());
 }
 
-/// Rule 11's CONVENTION, pinned: what a lender or the members' account
+/// BS-statement-3 statement 16's CONVENTION, pinned: what a lender or the members' account
 /// pays for goes to operating balance-sheet lines before revenue and
 /// expense, so a member's capital (which can pay only for revenue and
 /// expense) is left the expenses. Supplies 100 and a prepaid 50, paid 50
@@ -1314,7 +1314,7 @@ fn a_lender_pays_balance_sheet_lines_first_and_a_customer_pays_a_member() {
     assert!(cf.noncash_disclosures.is_empty());
 }
 
-/// Rule 11's exceptions: interest charged into a loan (Dr Interest
+/// BS-statement-3 statement 16's exceptions: interest charged into a loan (Dr Interest
 /// expense 25 / Cr Bank loan 25) and a guaranteed payment credited to what
 /// the company owes a member (Dr Guaranteed payments 300 / Cr 2100) are
 /// the lender's and the member's own charges, paid to no one: noncash.
@@ -1674,7 +1674,7 @@ fn interest_paid_with_principal_splits_by_section() {
 
 /// ASC 230-10-45-12(a) and 45-16(b): collecting a 1,000 loan the company
 /// made, with 40 interest: the principal is investing, the interest
-/// (tax category interest_income) stays operating, class (b): rule 4's
+/// (tax category interest_income) stays operating, class (b): BS-statement-3 statement 5's
 /// exception.
 #[test]
 fn interest_collected_with_a_loan_stays_operating() {
@@ -2320,7 +2320,7 @@ fn two_kinds_of_one_class_are_one_line() {
 }
 
 /// Interest is operating in any entry (ASC 230-10-45-17(d), 45-25(e)),
-/// even one that disposes of equipment, where rule 4 makes the other
+/// even one that disposes of equipment, where BS-statement-3 statement 5 makes the other
 /// revenue and expense lines investing. Equipment (cost 1,000) handed to
 /// the bank against 1,000 of the loan, with 50 interest paid in cash (Dr
 /// 2500 1,000, Dr 6200 50 / Cr 1500 1,000, Cr cash 50): operating −50,
@@ -2352,7 +2352,7 @@ fn interest_paid_in_a_disposal_stays_operating() {
     );
 }
 
-/// Rule 4 for an investing account: selling a 1,000 note receivable (an
+/// BS-statement-3 statement 5 for an investing account: selling a 1,000 note receivable (an
 /// `investing_accounts` account) for 1,200 (Dr cash 1,200 / Cr 1250 1,000,
 /// Cr gain 200). Receipts from sales of other entities' debt instruments
 /// are investing (ASC 230-10-45-12(a)), the whole proceeds: investing
@@ -2388,7 +2388,7 @@ fn an_investments_gain_is_investing() {
     );
 }
 
-/// Rule 6, three levels down: A ← B ← C ← D with A before February. B and
+/// BS-statement-3 statement 11, three levels down: A ← B ← C ← D with A before February. B and
 /// C pair (walking from the root); D, a reversal of the reinstatement, is
 /// shown alone, labelled as the reversal it is ("Reversal of #C — …"),
 /// never "Reinstatement", under A's kind with its own sign: −300.
@@ -2411,12 +2411,12 @@ fn a_reversal_three_levels_down_is_labelled_a_reversal() {
     assert_eq!(line.reverses, Some(c));
 }
 
-/// Rule 3's CONVENTION, pinned: an entry's cash goes to the sections
+/// BS-statement-3 statement 4's CONVENTION, pinned: an entry's cash goes to the sections
 /// moving against it in the order operating, investing, financing. Supplies
 /// 100 and a vehicle 1,000 for 600 cash, Member A putting in the other 500
 /// as capital (Dr 6000 100, Dr 1520 1,000 / Cr cash 600, Cr 3000 500):
 /// operating takes its 100 first, investing the other 500; the vehicle's
-/// 500 for capital is noncash (property for capital, rule 11: capital pays
+/// 500 for capital is noncash (property for capital, BS-statement-3 statement 16: capital pays
 /// constructively only for revenue and expense, and the supplies were
 /// already paid in cash), disclosed (investing +500, financing −500). Had
 /// the member's 500 been a loan through 2100 (financing), it would have
@@ -2464,7 +2464,7 @@ fn cash_goes_to_the_sections_in_order() {
     assert!(cf.noncash_disclosures.is_empty());
 }
 
-/// Rule 5's CONVENTION, pinned: within a section the cash goes to its
+/// BS-statement-3 statement 10's CONVENTION, pinned: within a section the cash goes to its
 /// kinds in kind order (members in their order, then other equity, then
 /// borrowing). 500 cash and 100 of the loan repaid for 400 from Member A
 /// and 200 from Member B (Dr cash 500, Dr 2500 100 / Cr 3000 400, Cr 3001
@@ -2495,7 +2495,7 @@ fn cash_goes_to_a_sections_kinds_in_order() {
     assert_eq!(cf.noncash_disclosures[0].exchanged, x("100.00"));
 }
 
-/// Rule 12: a bill payment reversed in the period unpays the bill again.
+/// BS-statement-3 statement 17: a bill payment reversed in the period unpays the bill again.
 /// Equipment 1,000 on a bill (restored as a later version would journal
 /// it), paid on Feb 20 and the payment reversed on Feb 21: the payment
 /// and its reversal drop out, and the 1,000 still owed at the end of
@@ -2668,8 +2668,8 @@ mod random {
     /// depreciation, disposals (cash, on account, gain, loss, before any
     /// depreciation, the loss on a revenue or an expense account), loans in
     /// and out with interest, transfers, debt to equity, a fee withheld;
-    /// and what a member or lender pays or receives for the company (rule
-    /// 11, D-42): an expense into capital, a prepaid through 2100, part
+    /// and what a member or lender pays or receives for the company (BS-statement-3 statement
+    /// 16, D-42): an expense into capital, a prepaid through 2100, part
     /// cash and part a member's, a refund to a member, a customer paying a
     /// member, a member paying the card, revenue a member kept, and the
     /// shapes that stay noncash: interest charged into the loan, equipment
@@ -2738,7 +2738,7 @@ mod random {
 
     /// Templates whose entries are pure: their cash settles every section
     /// they move (or they move no cash and no section), or a member or
-    /// lender settles it all for the company (rule 11), whether 2100 is
+    /// lender settles it all for the company (BS-statement-3 statement 16), whether 2100 is
     /// financing or not.
     const PURE: [u8; 21] = [
         0, 2, 3, 5, 7, 8, 12, 14, 15, 16, 17, 18, 19, 22, 24, 25, 26, 27, 28, 31, 32,
@@ -2852,7 +2852,7 @@ mod random {
         }
     }
 
-    /// Rule 11 for a whole entry, independently of the engine: no cash
+    /// BS-statement-3 statement 16 for a whole entry, independently of the engine: no cash
     /// line, and every line either a source (2100 or 2500 when financing;
     /// a member's capital) or a use on the other side; capital pays or
     /// receives only revenue and expense; a liability pays for any
@@ -2888,7 +2888,7 @@ mod random {
 
     /// For pure books, each section's total is minus the movement of its
     /// accounts over the entries that touch cash (plan P3's wording), or
-    /// that a member or lender settled whole for the company (rule 11).
+    /// that a member or lender settled whole for the company (BS-statement-3 statement 16).
     pub fn model_sections(
         model: &Model,
         a: NaiveDate,
@@ -2898,7 +2898,7 @@ mod random {
         let mut out = [0i64; 3];
         for (_, d, lines, mirrored) in model.iter().filter(|(_, d, _, _)| *d >= a && *d <= e) {
             let _ = d;
-            // A reversal mirrors its root (rule 6): judged by the root's
+            // A reversal mirrors its root (BS-statement-3 statement 11): judged by the root's
             // shape, its lines flipped back.
             let root: Vec<(&str, Side, i64)> = lines
                 .iter()
@@ -3138,7 +3138,7 @@ proptest! {
     }
 }
 
-/// Rule 2 (P3 seam review): a distribution declared to a liability that
+/// BS-statement-3 statement 3 (P3 seam review): a distribution declared to a liability that
 /// holds only distributions (Dr capital / Cr 2400 Distributions Payable)
 /// and paid later is a distribution paid, financing (ASC
 /// 230-10-45-15(a)), under the payable's kind; the declaration is an
@@ -3198,7 +3198,7 @@ fn a_distribution_declared_then_paid_is_a_distribution_paid() {
     );
 }
 
-/// Rule 8 (P3 seam review): a disposal's lines on the asset's
+/// BS-statement-3 statement 13 (P3 seam review): a disposal's lines on the asset's
 /// depreciation expense account (the days a month's run posted past the
 /// disposal, credited back) are depreciation on the reconciliation, not
 /// gain or loss, so its depreciation line is the P&L's depreciation
@@ -3252,7 +3252,7 @@ fn a_disposals_depreciation_credit_back_is_depreciation() {
 /// (d). So is a penalty paid to a tax agency on any account. The same
 /// account paid to a lawyer stays (d), and so does a fee with no payee
 /// named (nothing says it went to a government). A reversal in the next
-/// period takes its original's class (rule 6), and a refund from a
+/// period takes its original's class (BS-statement-3 statement 11), and a refund from a
 /// government is a receipt, untouched: (c).
 #[test]
 fn a_payment_to_a_government_is_other_operating() {

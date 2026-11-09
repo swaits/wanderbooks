@@ -943,7 +943,7 @@ doesn't count them.
 ## P3: cash flow (defect 1, 2026-10-20)
 
 The statement of cash flows was rebuilt by the direct method (BS-statement-3, D-35), and what a member or a lender pays for the company shown as
-cash borrowed and spent (D-42, rule 11). Built, reviewed twice, `just
+cash borrowed and spent (D-42, BS-statement-3 statement 16). Built, reviewed twice, `just
 check` and `just prove`; no mutation run (D-33): what P12 must cover is at
 the end.
 
@@ -964,13 +964,13 @@ the end.
   its paragraph in the test's doc comment): disposals at a gain, a loss
   and before any depreciation (`disposal_proceeds_all_investing`); a sale
   on an IOU (disclosed, flagged, with the fix); property contributed;
-  what a member or lender pays or receives for the company (D-42, rule
-  11): an expense through Due to Members, equipment a bank paid for, an
+  what a member or lender pays or receives for the company (D-42,
+  BS-statement-3 statement 16): an expense through Due to Members, equipment a bank paid for, an
   expense paid into capital, a financing card, part cash and part a
   member's, a refund to a member, a customer paying a member, a payment
   made for the company and its reversal (in the period and alone, a
-  prepaid and equipment too), the reimbursement, the uses' order (rule
-  11's convention); and what stays noncash: property a member owned (with
+  prepaid and equipment too), the reimbursement, the uses' order (BS-statement-3 statement
+  16's convention); and what stays noncash: property a member owned (with
   members configured and without), the seller's credit (flagged), interest
   and guaranteed payments charged to a creditor, a fee withheld on a
   contra-liability. From the second review: odd shapes (two cash accounts
@@ -992,11 +992,11 @@ the end.
   (`operating_cash_is_classed_kind_by_kind`) and kept operating in a
   disposal; a loss on disposal on a revenue-typed or an expense-typed
   account; an investment sold at a gain; a reversal three levels down;
-  and both of rule 3's conventions pinned (the sections' order, the kinds'
+  and both of BS-statement-3 statement 4's conventions pinned (the sections' order, the kinds'
   order).
 - **Properties, 5,000 cases each** (`CF_CASES`, default 5,000, about 16 s):
   `prop_cash_flow_laws` over random books of 33 templates (every shape
-  the rule names, rule 11's included) and reversals of any earlier entry,
+  the statement names, BS-statement-3 statement 16's included) and reversals of any earlier entry,
   reversals included: the sections are the change in cash and the
   model's; each section is its lines and kinds; the reconciliation is
   operating; an entry's lines are its cash, what was handled for it
@@ -1007,11 +1007,11 @@ the end.
   `prop_pure_entries_sections_are_movements`: for pure entries, each
   section is minus its accounts' movement over the entries that touch
   cash or that a member or lender settled whole for the company (the
-  plan's wording, with rule 11 modelled apart from the engine; review
+  plan's wording, with BS-statement-3 statement 16 modelled apart from the engine; review
   item 7's definition of pure). The older properties in `spec_reports.rs`
   are kept with new oracles (financing is the cash part of equity and
   designated debt plus what the loan or capital paid or received for the
-  company, by an independent model of rules 3 and 11).
+  company, by an independent model of BS-statement-3 statements 4 and 16).
 - **Bridge:** `entry_flows_agree`, `apply_cash_and_exchanged_agree`,
   `constructive_agrees`.
 - **Proofs:** Kani `entry_flows_sum_to_cash`,
@@ -1030,17 +1030,17 @@ the end.
   (docs/verification.md, law 10).
 - **Sensitivity (P3 review, by hand, no mutation run):** 18 deliberate
   breaks to `cashflow.rs` and `kernel/` (a dropped reversal
-  flip, no netting, financing read as operating, no rule 4, no exchange
+  flip, no netting, financing read as operating, no BS-statement-3 statement 5's disposal rule, no exchange
   disclosure, no interest class, no warnings, the bill's payments
   ignored, the label's depth parity, repeated codes allowed, depreciation
   disclosed, the sections' or kinds' order reversed, the customer party
   ignored, accumulated depreciation in the exchange, the interest
-  exception dropped, rule 4 for investing accounts): 17 fail a test (4
+  exception dropped, BS-statement-3 statement 5 for investing accounts): 17 fail a test (4
   of them only since the review's tests); one is equivalent today
   (`mirrors` ignoring amounts: every reversal mirrors its original until
   P4's drafts).
 - **Sensitivity, second round (after D-42, by hand, no mutation run):**
-  17 breaks to rule 11 and the kernel's `constructive` (no lender pass, no
+  17 breaks to BS-statement-3 statement 16 and the kernel's `constructive` (no lender pass, no
   member pass, no receipts for the company, a reversal not mirrored, a
   lender paying for no investing, capital paying for property, receipts
   for property, receivables not received, guaranteed payments or

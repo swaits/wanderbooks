@@ -681,24 +681,24 @@ fn signed(side: Side, amount: Decimal) -> Decimal {
 enum Bucket {
     /// Operating balance-sheet lines (prepaids, payables, ...), the
     /// receivables control aside: classed per entry by the structure of
-    /// the entry's operating lines (rule 5), with `Receivables`, `Income`
+    /// the entry's operating lines (BS-statement-3 statement 7), with `Receivables`, `Income`
     /// and `GuaranteedPayments`.
     Operating,
     /// The receivables control account: classed with `Operating`. Apart
     /// because what a member or lender collects of it for the company is
-    /// a receipt on its behalf (rule 11), and another operating asset
+    /// a receipt on its behalf (BS-statement-3 statement 16), and another operating asset
     /// handed over is not.
     Receivables,
     /// Operating revenue and expense lines other than interest and
     /// guaranteed payments: classed with `Operating`. Apart from it
-    /// because only these can a member pay for through equity (rule 11),
+    /// because only these can a member pay for through equity (BS-statement-3 statement 16),
     /// and after it so cash and lenders settle balance-sheet lines first.
     Income,
     /// Guaranteed payments to members (tax category
     /// `guaranteed_payments`): classed with `Operating`. Apart because a
     /// member never pays their own guaranteed payment for the company:
     /// one charged to what the company owes them is accrued, not paid
-    /// (rule 11).
+    /// (BS-statement-3 statement 16).
     GuaranteedPayments,
     /// Operating: a line on an `interest_income` account, class (b) (ASC
     /// 230-10-45-25(b)), whatever else the entry settles.
@@ -717,14 +717,14 @@ enum Bucket {
     Equity(String),
     /// A `financing_accounts` liability, by code.
     Borrowing(String),
-    /// A liability a distribution was declared to (rule 2: distributions
+    /// A liability a distribution was declared to (BS-statement-3 statement 3: distributions
     /// payable), by code: its payment is a distribution paid (ASC
     /// 230-10-45-15(a)), never a supplier's.
     Declared(String),
 }
 
 /// One line of an entry, or one part of a line split between sections
-/// (the bill split, rule 12), tagged with its place on the statement.
+/// (the bill split, BS-statement-3 statement 17), tagged with its place on the statement.
 #[derive(Clone, Debug)]
 struct Part {
     account: AccountId,
@@ -755,12 +755,12 @@ struct Roles<'a> {
     receivables: Option<AccountId>,
     member_of: HashMap<AccountId, usize>,
     members: Vec<String>,
-    /// Liabilities a distribution was declared to (rule 2).
+    /// Liabilities a distribution was declared to (BS-statement-3 statement 3).
     declared: BTreeSet<AccountId>,
-    /// The registered fixed assets' depreciation expense accounts (rule 8).
+    /// The registered fixed assets' depreciation expense accounts (BS-statement-3 statement 13).
     depreciation: BTreeSet<AccountId>,
     /// What moves money with a party, for resolving an entry's party
-    /// shares to amounts (rule 5's payments to governments).
+    /// shares to amounts (BS-statement-3 statement 8's payments to governments).
     money: crate::parties::MoneyAccounts,
 }
 
@@ -854,7 +854,7 @@ impl<'a> Roles<'a> {
         self.cost.contains(&id) || (self.investing.contains(&id) && !self.accum.contains(&id))
     }
 
-    /// Where a balance-sheet account falls (rule 2): its section and kind.
+    /// Where a balance-sheet account falls (BS-statement-3 statement 3): its section and kind.
     fn place(&self, a: &Account) -> (Flow, Bucket) {
         if self.cash.contains(&a.id) {
             (Flow::Cash, Bucket::Operating)
@@ -878,7 +878,7 @@ impl<'a> Roles<'a> {
         }
     }
 
-    /// Rule 4: the kind an entry's revenue and expense lines go to when it
+    /// BS-statement-3 statement 5: the kind an entry's revenue and expense lines go to when it
     /// credits a registered cost account (property) or an investing
     /// account (the lowest code it credits); `None` otherwise.
     fn disposal(&self, basis: &JournalEntry) -> Result<Option<Bucket>, LedgerError> {
@@ -1026,7 +1026,7 @@ fn declared_payables(
 /// account.
 type KindOrder = (u8, u8, String);
 
-/// Rule 12 (D-35): a bill whose entry debits an investing asset carries
+/// BS-statement-3 statement 17 (D-35): a bill whose entry debits an investing asset carries
 /// that part, equipment first, to its payables lines and to its payments,
 /// so the payment is an investing outflow (ASC 230-10-45-13(c)). A bill
 /// posts to the general-expenses control today, so this is empty until a
@@ -1143,7 +1143,7 @@ struct Analysed<'a> {
     basis: &'a JournalEntry,
     parts: Vec<Part>,
     /// Its cash flows on the statement: each section's cash (constructive
-    /// cash included, rule 11; it nets to zero within the entry, so they
+    /// cash included, BS-statement-3 statement 16; it nets to zero within the entry, so they
     /// still sum to the entry's cash), and what no cash settled.
     flows: EntryFlows<Decimal>,
     /// Per section, the kinds with cash, in kind order.
@@ -1159,7 +1159,7 @@ struct KindCash {
     /// company's behalf.
     cash: Decimal,
     /// Of `cash`, what a member or lender paid or received for the company
-    /// (rule 11).
+    /// (BS-statement-3 statement 16).
     on_behalf: Decimal,
 }
 
@@ -1168,9 +1168,9 @@ struct KindWork {
     bucket: Bucket,
     /// Its net movement, debit-positive.
     moved: Decimal,
-    /// The entry's cash it took (rule 3).
+    /// The entry's cash it took (BS-statement-3 statement 4).
     cash: Decimal,
-    /// What a member or lender settled of it for the company (rule 11).
+    /// What a member or lender settled of it for the company (BS-statement-3 statement 16).
     on_behalf: Decimal,
 }
 
@@ -1185,9 +1185,9 @@ impl KindWork {
     }
 }
 
-/// Rule 11 (D-42), one pass: the kinds `source` picks pay for, or receive
+/// BS-statement-3 statement 16 (D-42), one pass: the kinds `source` picks pay for, or receive
 /// for, the kinds `uses` picks, by `kernel::constructive`, each in kind
-/// order (sections in rule 3's order, operating first).
+/// order (sections in BS-statement-3 statement 4's order, operating first).
 fn on_behalf(
     kinds: &mut [Vec<KindWork>; 3],
     way: OnBehalf,
@@ -1259,9 +1259,9 @@ fn analyse<'a>(
         let amount = line.amount.amount;
         let pl = !a.account_type.is_balance_sheet();
         let (flow, bucket) = if pl {
-            // Rule 4: a disposal's gains and losses are investing, except
+            // BS-statement-3 statement 5: a disposal's gains and losses are investing, except
             // interest, received or paid, which is operating in any entry
-            // (ASC 230-10-45-16(b), 45-17(d)) and its own class (rule 5).
+            // (ASC 230-10-45-16(b), 45-17(d)) and its own class (BS-statement-3 statement 7).
             let interest = match a.tax_category.as_deref() {
                 Some("interest_income") => Some(Bucket::InterestReceived),
                 Some("interest_expense") => Some(Bucket::InterestPaid),
@@ -1287,7 +1287,7 @@ fn analyse<'a>(
             accum: roles.accum.contains(&line.account),
             bucket,
         };
-        // Rule 12: the investing part of a bill's payables line.
+        // BS-statement-3 statement 17: the investing part of a bill's payables line.
         if !pl
             && flow == Flow::Operating
             && let Some((inv, kind)) = splits.parts.get(&(basis.id(), i))
@@ -1340,7 +1340,7 @@ fn analyse<'a>(
                 on_behalf: Decimal::ZERO,
             })
             .collect();
-        // Rule 3: the section's cash among its kinds, in kind order (the
+        // BS-statement-3 statement 4: the section's cash among its kinds, in kind order (the
         // convention again, within the section).
         if !cash.flows[k].is_zero() {
             let movements: Vec<Decimal> = work[k].iter().map(|w| w.moved).collect();
@@ -1357,7 +1357,7 @@ fn analyse<'a>(
             }
         }
     }
-    // Rule 11 (D-42): what no cash settled, a member or a lender paid (or
+    // BS-statement-3 statement 16 (D-42): what no cash settled, a member or a lender paid (or
     // received) for the company. A financing liability pays for operating
     // and investing kinds; a member's equity only for revenue and expense
     // (property a member contributes is noncash, ASC 230-10-50-4). Either
@@ -1366,7 +1366,7 @@ fn analyse<'a>(
     // handed over in kind is noncash). Never interest or guaranteed
     // payments: those are the lender's or the member's own charge, accrued
     // into what the company owes them, paid to no one. A reversal mirrors
-    // its root (rule 6): what the root paid, it receives back.
+    // its root (BS-statement-3 statement 11): what the root paid, it receives back.
     let lender = |k: usize, b: &Bucket| k == 2 && matches!(b, Bucket::Borrowing(_));
     let member =
         |k: usize, b: &Bucket| k == 2 && matches!(b, Bucket::Member(_) | Bucket::Equity(_));
@@ -1390,7 +1390,7 @@ fn analyse<'a>(
         noncash: [Decimal::ZERO; 3],
     };
     let mut kinds: [Vec<KindCash>; 3] = Default::default();
-    // Cash in and out of investing and financing, for rule 7.
+    // Cash in and out of investing and financing, for BS-statement-3 statement 12.
     let (mut inflow, mut outflow) = (Decimal::ZERO, Decimal::ZERO);
     for (k, ws) in work.into_iter().enumerate() {
         for w in ws {
@@ -1413,7 +1413,7 @@ fn analyse<'a>(
             }
         }
     }
-    // Rule 7: the exchange inside investing and financing, account by
+    // BS-statement-3 statement 12: the exchange inside investing and financing, account by
     // account (accumulated depreciation and gains and losses left out).
     let mut net: BTreeMap<AccountId, Decimal> = BTreeMap::new();
     for p in &parts {
@@ -1496,7 +1496,7 @@ fn negated(f: &EntryFlows<Decimal>) -> EntryFlows<Decimal> {
     }
 }
 
-/// Rule 6: pair each entry with its reversal when both are in the period,
+/// BS-statement-3 statement 11: pair each entry with its reversal when both are in the period,
 /// walking each chain from its root, so a reversal of a reversal is shown
 /// (review item 1). A pair nets only when its flows, kinds and exchange
 /// are exact negatives (review item 8); otherwise both are shown.
@@ -1542,7 +1542,7 @@ fn pairs(kept: &[Analysed<'_>]) -> HashSet<EntryId> {
     paired
 }
 
-/// A line's or disclosure's label (rule 6): never from the sign.
+/// A line's or disclosure's label (BS-statement-3 statement 11): never from the sign.
 fn label(ledger: &Ledger, a: &Analysed<'_>) -> String {
     let id = a.entry.id();
     match a.entry.reversal_of() {
@@ -1559,7 +1559,7 @@ fn label(ledger: &Ledger, a: &Analysed<'_>) -> String {
     }
 }
 
-/// Rule 5: the class of one kind of an entry's operating cash, from the
+/// BS-statement-3 statement 7: the class of one kind of an entry's operating cash, from the
 /// direction of its root's cash: interest received or paid by its own
 /// lines (whatever else the entry settles); everything else by the
 /// structure of the entry's other operating lines. A payment's part that
@@ -1622,7 +1622,7 @@ fn class_of(
     })
 }
 
-/// Rule 5: the accounts of an entry's other operating lines (not
+/// BS-statement-3 statement 7: the accounts of an entry's other operating lines (not
 /// interest), whose structure classes its operating cash.
 fn operating_accounts<'a>(
     roles: &Roles<'a>,
@@ -1652,7 +1652,7 @@ const PAY: [&str; 4] = [
     "pension_profit_sharing",
 ];
 
-/// Rule 5: of an operating payment the structure put in another class,
+/// BS-statement-3 statement 8: of an operating payment the structure put in another class,
 /// what went to a government, as (the government's size, everyone
 /// else's), from the entry's party shares (its chain root's: a reversal
 /// takes its original's). A party is a government if it has the
@@ -1708,7 +1708,7 @@ fn government_part(
     Ok((!ours.is_zero()).then_some((ours, theirs)))
 }
 
-/// Rule 5: `amount` split as `ours` to `theirs`, the government's part
+/// BS-statement-3 statement 8: `amount` split as `ours` to `theirs`, the government's part
 /// rounded half to even to the base currency's places, the rest the
 /// other's: the two always sum to `amount`.
 fn split_part(
@@ -1770,7 +1770,7 @@ fn codes<'p>(
 ///   2. An entry MUST contribute to the body only its cash, applied to the
 ///      sections moving against it in the order operating, investing,
 ///      financing, each up to its own movement (CONVENTION: the order),
-///      and what a member or lender paid or received for it (rule 11),
+///      and what a member or lender paid or received for it (BS-statement-3 statement 16),
 ///      which nets to zero within the entry; what neither settled is
 ///      disclosed, never reported as cash.
 ///   3. The revenue and expense lines of an entry crediting a registered
@@ -1828,7 +1828,7 @@ pub fn cash_flow(
     let closings = ledger.closing_entry_ids();
     let in_period = |d: NaiveDate| d >= params.start && d <= params.end;
 
-    // Rules 1, 3, 4: every non-closing entry in the period.
+    // BS-statement-3 statements 2, 4 and 5: every non-closing entry in the period.
     let mut kept: Vec<Analysed<'_>> = Vec::new();
     for entry in ledger.posted_entries() {
         if in_period(entry.date()) && !closings.contains(&entry.id()) {
@@ -1838,7 +1838,7 @@ pub fn cash_flow(
     let paired = pairs(&kept);
     let places = ledger.base_currency().allocation_places();
 
-    // Rule 5: the body, one line per entry, section and kind.
+    // BS-statement-3 statement 6: the body, one line per entry, section and kind.
     type Sorted = (KindOrder, NaiveDate, EntryId, CashFlowLine);
     let mut body: [Vec<Sorted>; 3] = Default::default();
     let mut totals = [Decimal::ZERO; 3];
@@ -1861,7 +1861,7 @@ pub fn cash_flow(
             {
                 let inflow = (*amount > Decimal::ZERO) != a.flip;
                 // The kind's cash, by caption: one piece, or two when a
-                // payment went partly to a government (rule 5).
+                // payment went partly to a government (BS-statement-3 statement 8).
                 let mut pieces = Vec::new();
                 if *section == CashFlowSection::Operating {
                     let class = class_of(&roles, a, bucket, inflow)?;
@@ -1937,7 +1937,7 @@ pub fn cash_flow(
     {
         sorted.sort_by(|x, y| (&x.0, x.1, x.2).cmp(&(&y.0, y.1, y.2)));
         *out = sorted.into_iter().map(|(_, _, _, l)| l).collect();
-        // Rule 9: each section's total is its lines (the pairs net to
+        // BS-statement-3 statement 14: each section's total is its lines (the pairs net to
         // zero).
         let mut sum = Decimal::ZERO;
         for l in out.iter() {
@@ -1952,7 +1952,7 @@ pub fn cash_flow(
         }
     }
 
-    // Rule 7: noncash investing and financing activities.
+    // BS-statement-3 statement 12: noncash investing and financing activities.
     let mut noncash_disclosures = Vec::new();
     for a in kept.iter().filter(|a| !paired.contains(&a.entry.id())) {
         let r = a.flows.noncash;
@@ -2002,7 +2002,7 @@ pub fn cash_flow(
     let operating_reconciliation = reconcile(&roles, &kept, &paired, totals[0])?;
     let warnings = warnings(&roles, &kept, &paired)?;
 
-    // Rule 9: the cash accounts' balances, and the footing.
+    // BS-statement-3 statement 14: the cash accounts' balances, and the footing.
     let (mut cash_beginning, mut cash_ending) = (Decimal::ZERO, Decimal::ZERO);
     for e in ledger.posted_entries() {
         for l in e.lines() {
@@ -2046,7 +2046,7 @@ pub fn cash_flow(
     })
 }
 
-/// Rule 8: net cash from operating = NI + G + X + W, over every kept entry
+/// BS-statement-3 statement 13: net cash from operating = NI + G + X + W, over every kept entry
 /// (netted pairs included: they sum to zero), checked against the
 /// operating section.
 fn reconcile(
@@ -2303,7 +2303,7 @@ mod tests {
         s.parse().unwrap()
     }
 
-    /// Rule 5's split of a payment between a government and the rest:
+    /// BS-statement-3 statement 8's split of a payment between a government and the rest:
     /// the government's part rounded half to even, the rest exact, a
     /// whole government payment untouched.
     #[test]
@@ -2319,7 +2319,7 @@ mod tests {
     }
 
     proptest::proptest! {
-        /// Rule 5: the two parts always sum to the payment, the
+        /// BS-statement-3 statement 8: the two parts always sum to the payment, the
         /// government's within half a cent of its exact share, a payment
         /// and its reversal split as mirrors.
         #[test]

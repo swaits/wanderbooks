@@ -126,6 +126,10 @@ pub(crate) fn every_bookspec_example_holds() {
         ("party_tin_last4", 5),
         ("iif_lines", 1),
         ("iif_changes", 1),
+        ("iif_line_ending", 1),
+        ("setting", 1),
+        ("role_account", 1),
+        ("tax_summary", 1),
         ("period", 6),
         ("day", 1),
         ("calendar_year", 1),
@@ -162,17 +166,19 @@ pub(crate) fn every_bookspec_example_holds() {
     // of BS-arap-2 (documents-kept-apart), -7, -8, -9, -10 (compare-exactly),
     // -11 (recovery-movement), -12 (net-of-expected-discount), -13
     // (net-against-the-deposit) and -14 (apportion-across-the-lines),
-    // BS-prepaid-2's equal-months and BS-ledger-20's refuse (each option's
-    // example, so no allow-list grows), BS-entry-6's check-only-when-posting
-    // and BS-ledger-17's reversal-needs-its-own (wanderbooks refuses a line on
-    // a header as it is added, and a reversal needs no evidence of its own),
-    // and BS-period-4's allow-partial-overlap, BS-1099-2's
-    // carry-the-last-amount and BS-partner-8's nowhere (wanderbooks nests
-    // periods, refuses a year whose threshold it does not know, and keeps
-    // the full TIN outside the books).
+    // BS-prepaid-2's equal-months, BS-prepaid-4's cent rule and BS-ledger-20's
+    // refuse (each option's example, so no allow-list grows), BS-entry-6's
+    // check-only-when-posting and BS-ledger-17's reversal-needs-its-own
+    // (wanderbooks refuses a line on a header as it is added, and a reversal
+    // needs no evidence of its own), BS-format-5's file place, -6's one
+    // fiscal year, -8's closes-written and -4's platform line ending,
+    // BS-ledger-21's round-per-account, BS-period-4's allow-partial-overlap,
+    // BS-1099-2's carry-the-last-amount and BS-partner-8's nowhere
+    // (wanderbooks nests periods, refuses a year whose threshold it does not
+    // know, and keeps the full TIN outside the books).
     assert_eq!(
         skipped.len(),
-        16,
-        "the sixteen unpicked-option examples: {skipped:?}"
+        22,
+        "the twenty-two unpicked-option examples: {skipped:?}"
     );
 }

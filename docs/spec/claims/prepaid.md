@@ -38,7 +38,19 @@ Rules: B-16.
 `daily_plans_pin_month_end_clamping`,
 `prop_daily_plan_sums_exactly_and_lands_on_month_ends`,
 `prop_monthly_even_plan_is_unchanged`; `ledger-cli`
-`mcp_daily_schedule`.
+`mcp_daily_schedule`; bookspec examples
+`schedule-daily-deferred-revenue`,
+`schedule-daily-small-first-and-last-month`,
+`schedule-equal-months-give-each-month-the-same-share` (each names no
+convention, so it takes the pick, and starts mid-month where daily and
+equal months differ; the equal-months one also names BS-prepaid-3's
+start-on-any-day), `schedule-equal-months-start-on-the-first`,
+`prepaid-a-new-yen-schedule-rounds-to-whole-yen` (BS-prepaid-4's minor
+unit: 333, 333 and 334 yen) and
+`prepaid-a-yen-schedule-under-the-cent-rule-keeps-cents` (the other
+option: 333.33, 333.33 and 333.34), run by
+`every_bookspec_example_holds` and
+`the_runner_reports_every_claimed_rule_green`.
 
 ### Product rules
 

@@ -216,8 +216,14 @@ pub(crate) fn new_schedule(
         months: s.months,
         balance_account: account(&s.balance_account),
         pl_account: account(&s.pl_account),
-        convention: ScheduleConvention::parse(&s.convention)
-            .unwrap_or_else(|| panic!("{what}: schedule convention {:?}", s.convention)),
+        // A schedule that names no convention takes the engine's method for
+        // new schedules (BS-prepaid-2): wanderbooks spreads new schedules by
+        // the day (D-11, D-37).
+        convention: match s.convention.as_deref() {
+            Some(c) => ScheduleConvention::parse(c)
+                .unwrap_or_else(|| panic!("{what}: schedule convention {c:?}")),
+            None => ScheduleConvention::Daily,
+        },
     }
 }
 
@@ -358,7 +364,8 @@ impl<'a> Books<'a> {
                 &what,
             );
             if let Some(c) = &a.tax_category {
-                took(self.store.set_account_tax(account, Some(c), None), &what);
+                let percent = a.deductible_percent.as_deref().map(|p| exact(p, &what));
+                took(self.store.set_account_tax(account, Some(c), percent), &what);
             }
         }
         let first = ex

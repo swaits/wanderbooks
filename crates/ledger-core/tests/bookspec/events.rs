@@ -25,11 +25,12 @@ impl Books<'_> {
             ("attach_receipt", e.attach_receipt.is_some()),
             ("discard_draft", e.discard_draft.is_some()),
             ("assign_role", e.assign_role.is_some()),
+            ("set_setting", e.set_setting.is_some()),
         ];
         match kinds.iter().filter(|(_, given)| *given).collect::<Vec<_>>()[..] {
             [(kind, _)] => kind,
             _ => panic!(
-                "{} event {n}: an event is one of lines, reverses, close, bill, invoice, write_off, payment, settlement, recovery, run_depreciation, dispose_asset, run_schedules, register_schedule, post_draft, set_draft_state, attach_receipt, discard_draft or assign_role",
+                "{} event {n}: an event is one of lines, reverses, close, bill, invoice, write_off, payment, settlement, recovery, run_depreciation, dispose_asset, run_schedules, register_schedule, post_draft, set_draft_state, attach_receipt, discard_draft, assign_role or set_setting",
                 self.ex.id
             ),
         }
@@ -826,6 +827,22 @@ impl Books<'_> {
                 // The books' own journaled command: it checks the role's
                 // account before it writes anything (BS-ledger-19).
                 self.store.assign_role(&a.role, Some(account))
+            }
+            "set_setting" => {
+                let s = e.set_setting.as_ref().expect("checked: a setting");
+                // The books' own journaled command: the fact and who decided
+                // it are kept in the journal (BS-ledger-9).
+                let change = Change {
+                    key: engine_setting_key(&s.key).to_string(),
+                    value: Some(Value::String(s.value.clone())),
+                };
+                let source = Source {
+                    decided_by: s.decided_by.clone(),
+                    decided_on: date(&s.decided_on, what),
+                    citation: None,
+                    note: None,
+                };
+                self.store.change_settings(&[change], &source).map(|_| ())
             }
             other => unreachable!("{other} is no event"),
         }

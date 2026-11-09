@@ -788,7 +788,7 @@ dependencies = [
 [[package]]
 name = "bookspec-checker"
 version = "0.1.0"
-source = "git+https://git.swaits.com/swaits/bookspec?rev=22d02feb884c14a5bdc7313da78e574bf8b3c90f#22d02feb884c14a5bdc7313da78e574bf8b3c90f"
+source = "git+https://git.swaits.com/swaits/bookspec?rev=b61fa50d68f280c048de9c0bcebf7c54d3e8f329#b61fa50d68f280c048de9c0bcebf7c54d3e8f329"
 dependencies = [
  "chrono",
  "include_dir",
@@ -801,7 +801,7 @@ dependencies = [
 [[package]]
 name = "bookspec-runner"
 version = "0.1.0"
-source = "git+https://git.swaits.com/swaits/bookspec?rev=22d02feb884c14a5bdc7313da78e574bf8b3c90f#22d02feb884c14a5bdc7313da78e574bf8b3c90f"
+source = "git+https://git.swaits.com/swaits/bookspec?rev=b61fa50d68f280c048de9c0bcebf7c54d3e8f329#b61fa50d68f280c048de9c0bcebf7c54d3e8f329"
 dependencies = [
  "bookspec-checker",
  "serde_json",

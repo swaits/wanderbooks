@@ -130,7 +130,12 @@ None.
 **Checked:** `ledger-core` `tests/spec_asset_tags.rs`; `ledger-store`
 `tests/asset_tags.rs` (`a_journaled_tag_taken_by_another_asset_is_refused_on_open`,
 `a_retagged_assets_old_tag_is_never_reused`);
-`ledger-cli` `tests/spec_assets.rs`.
+`ledger-cli` `tests/spec_assets.rs`; the bookspec examples
+`asset-a-tag-is-unique-ignoring-case-and-one-of-a-form` and
+`asset-a-retagged-assets-old-tag-is-never-reused`, run through
+`Store::set_asset_tag` by `every_bookspec_example_holds` and
+`the_runner_reports_every_claimed_rule_green`; the example for the option not
+picked, `asset-an-engine-that-keeps-no-tags-refuses-to-tag`, is skipped.
 
 ### Product rules
 
@@ -156,7 +161,7 @@ printer makes an Avery 5160 label sheet from the register's tags.
 **Pick (BS-asset-7):** `books-recorded-amounts`, the owner, D-41, 2026-10-20.
 
 **Pick (BS-asset-8):** `register-carries-tax-figures`, the owner, 2026-10-15; D-41, 2026-10-20.
-**Pick (BS-asset-9):** `traditional`, the owner, D-41, 2026-10-20; recorded as a choice the CPA confirms.
+**Pick (BS-asset-9):** `traditional`, the owner, D-41, 2026-10-20; recorded as a choice the CPA confirms. This is the books' convention, not an engine default: `Asset::sec704c_method` is left unset unless a command gives one, so no bookspec example shows the pick apart (the record's note says why).
 
 **Enforced:** `kernel::basis_figures` (Kani `basis_figures_laws`),
 `AssetBasis::check` (a purchase takes no contribution facts; a

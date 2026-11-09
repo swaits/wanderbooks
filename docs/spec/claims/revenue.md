@@ -13,7 +13,14 @@ Rules: B-17.
 **Claims:** yes
 
 **Enforced:** `payouts::payout_plan`. **Checked:**
-`a_payout_is_grossed_up_to_revenue_and_fees`.
+`a_payout_is_grossed_up_to_revenue_and_fees`; the bookspec examples
+`revenue-a-principals-payout-is-recorded-gross`,
+`revenue-an-agents-payout-is-its-commission-only` and
+`revenue-a-payout-that-does-not-reconcile-is-refused`, run through
+`payouts::payout_plan` (a payout whose deposit is not gross less fee is
+refused `InvalidPayout`, which the examples word payout_does_not_reconcile),
+by `every_bookspec_example_holds` and
+`the_runner_reports_every_claimed_rule_green`.
 
 ### Product rules
 

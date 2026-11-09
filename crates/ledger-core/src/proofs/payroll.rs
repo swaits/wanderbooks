@@ -97,28 +97,22 @@ fn any_employee() -> Employee {
 
 /// `net_pay` is `None` exactly when some running difference leaves the
 /// `i64` range, and otherwise the exact result: gross and five
-/// deductions over the whole `i64` range, checked against an `i128`
-/// running difference (which cannot overflow here) at every prefix.
-///
-/// The one exception is the `i64` instantiation's own: `Amount`'s
-/// `checked_sub` negates the subtrahend first, and `i64::MIN` has no
-/// negation, so a deduction of exactly `i64::MIN` is refused even where
-/// the difference would fit (`-1 - i64::MIN`). That is conservative (a
-/// refusal, never a wrong figure), and `Decimal`'s range is symmetric,
-/// so it does not arise in the engine; the harness assumes no deduction
-/// is `i64::MIN` and asserts the refusal at the fixed case.
+/// deductions over the whole `i64` range, `i64::MIN` included, checked
+/// against an `i128` running difference (which cannot overflow here) at
+/// every prefix. (`Amount` for `i64` subtracts natively since K-U8: the
+/// default negated the subtrahend first, refusing `-1 - i64::MIN`, which
+/// fits; this harness and K-U8's both found it.)
 #[kani::proof]
 fn net_pay_none_iff_a_prefix_overflows() {
     let gross: i64 = kani::any();
     let mut deductions = [0i64; DEDUCTIONS];
     for deduction in &mut deductions {
-        let d: i64 = kani::any();
-        kani::assume(d != i64::MIN);
-        *deduction = d;
+        *deduction = kani::any();
     }
-    assert!(
-        net_pay(-1i64, &[i64::MIN]).is_none(),
-        "i64::MIN has no negation: refused, conservatively"
+    assert_eq!(
+        net_pay(-1i64, &[i64::MIN]),
+        Some(i64::MAX),
+        "-1 - i64::MIN fits: the native subtraction answers it"
     );
     let mut running = i128::from(gross);
     let mut overflowed = false;

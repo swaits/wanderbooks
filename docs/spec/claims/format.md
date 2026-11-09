@@ -289,7 +289,14 @@ a file. **Checked:** `ledger-import` `tests/spec_import.rs`
 `tests/package.rs`
 (`the_package_refuses_an_entry_on_two_receivable_or_payable_accounts`);
 `ledger-cli` `oracle_mcp.rs`
-(`iif_and_the_package_refuse_an_entry_on_two_receivable_or_payable_accounts`).
+(`iif_and_the_package_refuse_an_entry_on_two_receivable_or_payable_accounts`);
+bookspec example
+`format-an-export-of-an-entry-on-two-control-accounts-is-refused`
+(BS-format-10, the option picked: an entry an earlier version wrote on a
+receivable and a payable account is refused for export, read off
+`IifError::SeveralReceivablePayableAccounts`), run by
+`every_bookspec_example_holds` and
+`the_runner_reports_every_claimed_rule_green`.
 
 **Enforced:** `ledger_import::iif` (`field`, `iif_accounts`, `iif_classes`,
 `journal_to_iif`, `Iif::warnings`, `Iif::changes`, `Iif::receivable_payable`),

@@ -37,7 +37,15 @@ decision, D-73, 2026-11-08). **Checked:** Kani
 store property `refused_commands_never_reach_the_journal` (no draft in a
 closed period); `periods_nest_but_never_partially_overlap`
 (`crates/ledger-core/tests/invariants.rs`) and `periods_nest`
-(`crates/ledger-core/tests/spec_ledger.rs`).
+(`crates/ledger-core/tests/spec_ledger.rs`); bookspec example
+`period-a-period-that-partly-overlaps-another-is-refused` (BS-period-4, the
+option picked: a February through April period that shares days with a
+closed quarter is refused through `Ledger::create_period`'s
+`PeriodsOverlap`, and the quarter stands), run by
+`every_bookspec_example_holds` and
+`the_runner_reports_every_claimed_rule_green`; the example for the option
+not picked, `period-a-period-that-partly-overlaps-another-is-allowed`, is
+skipped.
 
 ### Product rules
 

@@ -69,6 +69,19 @@ pub fn round_step<T: Amount>(amount: T, step: T, mode: Rounding) -> Option<T> {
 /// result carries exactly `places` places. This is the behaviour-preserving
 /// wrapper the call sites use while U2 proves `round_step` underneath
 /// them; it is not a second rounding rule.
+///
+/// ```text
+/// GOAL: round to a number of decimal places through the one kernel rule,
+///       so no call site keeps a second definition.
+/// SOURCE: BS-ledger-1 (law 40: rounding is a whole multiple of the step,
+///         each tie by its own rule).
+/// INVARIANTS:
+///   1. The value is `round_step` at 10^(−places); an amount no finer
+///      than `places` is unchanged.
+///   2. A non-zero result carries exactly `places` places; zero is never a
+///      negative zero.
+///   3. None on overflow.
+/// ```
 pub fn round_places(amount: Decimal, places: u32, mode: Rounding) -> Option<Decimal> {
     if amount.is_zero() {
         // Keep round_dp's scale, but never its negative zero.
@@ -97,6 +110,13 @@ pub fn round_places(amount: Decimal, places: u32, mode: Rounding) -> Option<Deci
 /// USD, whole yen for JPY, thousandths for KWD. A currency ISO 4217 gives
 /// no minor unit (gold, SDRs) is returned exactly, as the FX booking rule
 /// has always done (BS-ledger-1).
+///
+/// SOURCE: BS-ledger-1 (law 40; a currency's smallest unit is the step).
+///
+/// INVARIANTS:
+///   1. It is `round_places` at the currency's minor unit, or the amount
+///      itself when the currency has none.
+///   2. None on overflow.
 pub fn round_minor(amount: Decimal, currency: Currency, mode: Rounding) -> Option<Decimal> {
     match currency.minor_units() {
         Some(places) => round_places(amount, places, mode),

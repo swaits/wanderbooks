@@ -19,12 +19,34 @@ instead:
     Lean theorem it added;
   - anything the solver could not do, and what carries it instead (Lean
     at any size, a bridge property, an exhaustive unit test).
-- **Workers do not edit `docs/verification.md` or `verify/lean/Audit.lean`.**
-  The integrator folds the unit notes into `verification.md`'s tables and
-  prose, and adds the `#print axioms` lines to `Audit.lean` in one place,
-  in one edit per batch, after the batch's merges.
+- **Workers do not edit `docs/verification.md`.** The integrator folds
+  the unit notes into its tables and prose in one edit per batch, after
+  the batch's merges.
+- **A unit's Lean theorems go into bookspec**, on the unit's bookspec
+  branch: the theorem in `lean/Bookspec/`, its `#print axioms` line in
+  bookspec's `lean/Audit.lean`. Wanderbooks keeps no audit list of its
+  own; `just prove` audits bookspec's, from the pinned package (D-69).
 - A unit's note lands in the same commit as its harnesses, so the proof
   and its description are never apart in history.
+
+## The harness-to-law table (machine-readable)
+
+The traceability gate
+(`crates/ledger-core/tests/bookspec/traceability.rs`) reads every note here
+for a table pairing each Kani harness with the bookspec law it proves:
+
+| Harness | Law |
+|---|---|
+| `round_step_is_multiple` | 40 |
+
+The first cell must be the harness name in backticks and the second a bare
+integer (the number in bookspec's `spec/laws.md`); extra columns are allowed
+after them (bounds, time, verification). The gate fails:
+
+- a kernel `pub fn` whose harnesses have no such row ("lacks a law");
+- a harness listed twice with different law numbers;
+- a law whose Rules column shares no `BS-` id with the function's own
+  `SOURCE:` line, when the function has one.
 
 `just prove` finds the harnesses by scanning `crates/ledger-core/src/proofs/`
 (`mod.rs` plus every `<unit>.rs`), not one file; `just prove-list` prints

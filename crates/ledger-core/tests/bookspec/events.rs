@@ -13,6 +13,7 @@ impl Books<'_> {
             ("bill", e.bill.is_some()),
             ("invoice", e.invoice.is_some()),
             ("write_off", e.write_off.is_some()),
+            ("payment", e.payment.is_some()),
             ("run_depreciation", e.run_depreciation.is_some()),
             ("dispose_asset", e.dispose_asset.is_some()),
             ("run_schedules", e.run_schedules.is_some()),
@@ -21,7 +22,7 @@ impl Books<'_> {
         match kinds.iter().filter(|(_, given)| *given).collect::<Vec<_>>()[..] {
             [(kind, _)] => kind,
             _ => panic!(
-                "{} event {n}: an event is one of lines, reverses, close, bill, invoice, write_off, run_depreciation, dispose_asset, run_schedules or register_schedule",
+                "{} event {n}: an event is one of lines, reverses, close, bill, invoice, write_off, payment, run_depreciation, dispose_asset, run_schedules or register_schedule",
                 self.ex.id
             ),
         }
@@ -35,7 +36,7 @@ impl Books<'_> {
         // disposal is dated; the other commands date their own entries,
         // and every command describes its own.
         let own = matches!(kind, "lines" | "reverses" | "close" | "bill" | "invoice");
-        let dated = own || matches!(kind, "dispose_asset" | "write_off");
+        let dated = own || matches!(kind, "dispose_asset" | "write_off" | "payment");
         assert_eq!(
             e.date.is_some(),
             dated,
@@ -83,6 +84,10 @@ impl Books<'_> {
         assert!(
             e.write_off.is_none() || kind == "write_off",
             "{ex} event {n}: a write_off is its own event"
+        );
+        assert!(
+            e.payment.is_none() || kind == "payment",
+            "{ex} event {n}: a payment is its own event"
         );
     }
 
@@ -192,9 +197,37 @@ impl Books<'_> {
                 "{what}: entry {id}, which it made, is posted"
             );
         }
-        if (own || kind == "write_off") && e.refused.is_none() {
+        if (own || matches!(kind, "write_off" | "payment")) && e.refused.is_none() {
             assert_eq!(posted.len(), 1, "{what}: {kind} posts one entry");
         }
+    }
+
+    /// The terms a document's example gives, and the due date the books take
+    /// them to (BS-arap-3): the engine's own `Terms::due_date` for every
+    /// kind, a date the parties agreed ("Due 2026-11-15") included. The
+    /// example's spelling is the canonical one, so the engine must print it
+    /// back as written. Nothing of the date is read out of the text here:
+    /// the example can only pass if the engine computes it. Without terms a
+    /// document is due on its own date.
+    pub(crate) fn terms_due(
+        &self,
+        terms: Option<&str>,
+        date: NaiveDate,
+        what: &str,
+    ) -> (NaiveDate, Option<Terms>) {
+        let Some(text) = terms else {
+            return (date, None);
+        };
+        let parsed = Terms::parse(text).unwrap_or_else(|e| panic!("{what}: terms {text:?}: {e}"));
+        assert_eq!(
+            parsed.describe(),
+            text,
+            "{what}: the engine prints terms {text:?} back as written"
+        );
+        let due = parsed
+            .due_date(date)
+            .unwrap_or_else(|e| panic!("{what}: terms {text:?} on {date}: {e}"));
+        (due, Some(parsed))
     }
 
     /// An invoice's or bill's lines: `amount` (one line, described as the
@@ -368,8 +401,18 @@ impl Books<'_> {
                         v
                     }
                 };
+                let (due, terms) = self.terms_due(b.terms.as_deref(), day(), what);
                 self.store
-                    .create_bill(vendor, day(), day(), lines)
+                    .create_bill_with(
+                        vendor,
+                        day(),
+                        due,
+                        lines,
+                        BillFields {
+                            terms,
+                            ..BillFields::default()
+                        },
+                    )
                     .map(|_| ())
             }
             "invoice" => {
@@ -383,8 +426,18 @@ impl Books<'_> {
                         c
                     }
                 };
+                let (due, terms) = self.terms_due(i.terms.as_deref(), day(), what);
                 self.store
-                    .create_invoice(customer, day(), day(), lines)
+                    .create_invoice_with(
+                        customer,
+                        day(),
+                        due,
+                        lines,
+                        InvoiceFields {
+                            terms,
+                            ..InvoiceFields::default()
+                        },
+                    )
                     .map(|_| ())
             }
             "write_off" => {
@@ -431,6 +484,36 @@ impl Books<'_> {
                         }),
                     )
                     .map(drop)
+            }
+            "payment" => {
+                let p = e.payment.as_ref().expect("checked: a payment");
+                let entry = self.entry_of(p.document, what);
+                let amount = money(&p.amount);
+                let cash = self.id(&p.account);
+                let invoice = self
+                    .store
+                    .ledger()
+                    .invoices()
+                    .into_iter()
+                    .find(|i| i.entry_id == entry)
+                    .map(|i| i.id);
+                let bill = self
+                    .store
+                    .ledger()
+                    .bills()
+                    .into_iter()
+                    .find(|b| b.entry_id == entry)
+                    .map(|b| b.id);
+                match (invoice, bill) {
+                    (Some(invoice), _) => self
+                        .store
+                        .receive_payment(invoice, day(), amount, cash)
+                        .map(drop),
+                    (None, Some(bill)) => self.store.pay_bill(bill, day(), amount, cash).map(drop),
+                    (None, None) => {
+                        panic!("{what}: event {} posted no invoice or bill", p.document)
+                    }
+                }
             }
             "run_depreciation" => {
                 let r = e.run_depreciation.as_ref().expect("checked: a run");

@@ -59,8 +59,11 @@ schedules round to the currency's minor unit. Schedules an earlier
 version took mid-month under equal months replay as they were. (The
 engine change is unit K-U5's; this note records the claim.)
 
-**Enforced:** `schedules` replay (`amortization_plan`),
-`Ledger::schedule_month_hold`. **Checked:**
-`defect9_legacy_schedules_stay_monthly_even`,
+**Claims:** partly (the replay half is implemented; moving new monthly-even
+schedules to the currency's minor unit is K-U5, not landed)
+
+**Enforced:** `schedules::amortization_plan` (the cent rule, kept for
+replay), `Ledger::replay_register_schedule`, `Ledger::schedule_month_hold`.
+**Checked:** `defect9_legacy_schedules_stay_monthly_even`,
 `prop_monthly_even_plan_is_unchanged`,
 `a_schedule_month_posted_again_waits_for_month_reposting_and_replays`.

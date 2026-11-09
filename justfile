@@ -74,7 +74,9 @@ prove: (_kani "fast")
     set -euo pipefail
     cd verify/lean
     lake build
-    audit=$(lake env lean Audit.lean)
+    # The audit is bookspec's own, from the pinned package: the laws and
+    # their list live once there (D-69), so no copy here can fall behind.
+    audit=$(lake env lean .lake/packages/bookspec/lean/Audit.lean)
     if grep -v -E "depends on axioms: \[(propext|Quot.sound|Classical.choice)(, (propext|Quot.sound|Classical.choice))*\]$|does not depend on any axioms" <<<"$audit"; then
         echo "Lean audit: a theorem rests on something beyond the standard axioms" >&2
         exit 1

@@ -178,7 +178,7 @@ open, never a panic.
 *Enforced:* derived: `Invoice::total`/`balance`,
 `Bill::total`/`balance`, `AgingRow::total`, `ar_aging`, `ap_aging`,
 `PayrollLine::net_pay`, `payroll_entry_plan`, `parties::entry_flow`,
-`shares::share_target`, `shares::resolve`, `fixed_asset_register`,
+`shares::target`, `shares::resolve`, `fixed_asset_register`,
 `schedules::amortization_plan`, `month_end`, `depreciation_schedule`,
 `analysis::intervals`, `form1099::vendor_part`, `k1::share_property`,
 `ReceiptPolicy::entry_debits`.
@@ -203,7 +203,7 @@ pinned; every tool over every old book).
 `Ledger::{set_draft_state, discard_draft, posted_seq}`,
 `Store::{set_draft_state, discard_draft, post_entry_checked}` (the gate the server posts a hand draft by; `Store::post_entry` stays the primitive commands and fixtures post through); events
 `entry.draft_state_set`, `entry.draft_discarded` (feature `drafts_v2`).
-**Checked:** Lean `Step.discard`, `Step.discard_keeps_books`,
+**Checked:** Lean `Step.discard_keeps_books`,
 `Step.discard_unblocks_close`; `ledger-core` `tests/invariants.rs`
 (`discard_unblocks_close`); `ledger-store` `tests/store.rs`
 (`draft_states_replay_and_project`, `drafts_v2_waits_for_the_upgrade`,

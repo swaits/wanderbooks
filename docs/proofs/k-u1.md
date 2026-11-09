@@ -88,6 +88,16 @@ carries the same laws to every `Decimal` step, and Lean to any step.
 | `fx_booked_positive_for_positive` | positive inputs book non-negative, positive once the product reaches half a unit | 3.2 s (2 covers) |
 | `fx_booked_refuses_overflow` | an overflowing product and a non-positive rate are `None`, never a panic | 2.6 s (2 covers) |
 
+The bookspec law each harness proves (machine-readable for the
+traceability gate, `crates/ledger-core/tests/bookspec/traceability.rs`):
+
+| Harness | Law |
+|---|---|
+| `fx_booked_is_whole_unit` | 41 |
+| `fx_booked_within_half_unit` | 41 |
+| `fx_booked_positive_for_positive` | 41 |
+| `fx_booked_refuses_overflow` | 41 |
+
 What the harnesses do and do not prove, stated plainly:
 
 - `fx_booked_refuses_overflow` proves **two concrete overflow cases**

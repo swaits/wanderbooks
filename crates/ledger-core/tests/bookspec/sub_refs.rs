@@ -456,25 +456,31 @@ fn problems_in(text: &str) -> Vec<String> {
 
 #[test]
 pub(crate) fn a_statement_the_record_lacks_fails() {
-    // BS-entry-1 has four statements, four invariants and one scenario.
-    assert_eq!(problems_in("BS-entry-1 statement 99").len(), 1);
-    assert_eq!(problems_in("BS-entry-1 statement 5").len(), 1);
-    assert_eq!(problems_in("BS-entry-1 statement 0").len(), 1);
-    assert_eq!(problems_in("BS-entry-1 invariant 5").len(), 1);
-    assert_eq!(problems_in("BS-entry-1 scenario 2").len(), 1);
-    assert_eq!(problems_in("BS-nosuch-9 statement 1").len(), 1);
-    assert_eq!(
-        scan("BS-entry-1 statement 4", "t", &all_parts()),
-        (1, vec![])
-    );
-    assert_eq!(
-        scan("BS-entry-1 invariant 4", "t", &all_parts()),
-        (1, vec![])
-    );
-    assert_eq!(
-        scan("BS-entry-1 scenario 1", "t", &all_parts()),
-        (1, vec![])
-    );
+    // The bounds come from the pinned record, so a record that gains or
+    // loses a part moves them with it (BS-entry-1 lost a statement and its
+    // scenario in X-H1c; a hard-coded four would have broken here).
+    let parts = all_parts();
+    let id = "BS-arap-2";
+    let p = parts[id];
+    let (s, i, c) = (p.statements, p.invariants, p.scenarios);
+    assert!(s > 1 && i > 1 && c > 1, "{id} has every kind of part");
+    for text in [
+        format!("{id} statement {}", s + 50),
+        format!("{id} statement {}", s + 1),
+        format!("{id} statement 0"),
+        format!("{id} invariant {}", i + 1),
+        format!("{id} scenario {}", c + 1),
+        "BS-nosuch-9 statement 1".to_string(),
+    ] {
+        assert_eq!(problems_in(&text).len(), 1, "{text}");
+    }
+    for text in [
+        format!("{id} statement {s}"),
+        format!("{id} invariant {i}"),
+        format!("{id} scenario {c}"),
+    ] {
+        assert_eq!(scan(&text, "t", &parts), (1, vec![]), "{text}");
+    }
 }
 
 #[test]
@@ -482,46 +488,46 @@ pub(crate) fn lists_ranges_wraps_and_continuations_are_each_checked() {
     let parts = all_parts();
     // Every number of a list or range, in the parentheses a comment gives.
     assert_eq!(
-        scan("(BS-entry-1 statements 1, 2 and 4)", "t", &parts),
+        scan("(BS-arap-2 statements 1, 2 and 4)", "t", &parts),
         (3, vec![])
     );
-    assert_eq!(problems_in("(BS-entry-1 statements 1, 2 and 9)").len(), 1);
-    assert_eq!(problems_in("BS-entry-1 statements 2-9").len(), 1);
+    assert_eq!(problems_in("(BS-arap-2 statements 1, 2 and 99)").len(), 1);
+    assert_eq!(problems_in("BS-arap-2 statements 2-99").len(), 1);
     // A range counts each of its members; a list each of its numbers.
-    assert_eq!(scan("BS-entry-1 statements 1-4", "t", &parts), (4, vec![]));
+    assert_eq!(scan("BS-arap-2 statements 1-4", "t", &parts), (4, vec![]));
     assert_eq!(
-        scan("BS-entry-1 statements 1-2 and 4", "t", &parts),
+        scan("BS-arap-2 statements 1-2 and 4", "t", &parts),
         (3, vec![])
     );
-    assert_eq!(problems_in("BS-entry-1 statements 3-2").len(), 1);
+    assert_eq!(problems_in("BS-arap-2 statements 3-2").len(), 1);
     assert_eq!(problems_in("BS-nosuch-9 statements 1-3").len(), 1);
     assert_eq!(scan("BS-nosuch-9 statements 1-3", "t", &parts).0, 3);
     // A reference wrapped across a comment prefix reads as one.
-    assert_eq!(problems_in("/// (BS-entry-1\n/// statement 99)").len(), 1);
-    assert_eq!(problems_in("//! BS-entry-1 statement\n//!   99").len(), 1);
+    assert_eq!(problems_in("/// (BS-arap-2\n/// statement 99)").len(), 1);
+    assert_eq!(problems_in("//! BS-arap-2 statement\n//!   99").len(), 1);
     // A continuation on the same id is checked too, and one in the old
     // vocabulary fails.
     assert_eq!(
-        scan("BS-entry-1 invariant 1 and statement 3", "t", &parts),
+        scan("BS-arap-2 invariant 1 and statement 3", "t", &parts),
         (2, vec![])
     );
     assert_eq!(
-        problems_in("BS-entry-1 invariant 1 and statement 30").len(),
+        problems_in("BS-arap-2 invariant 1 and statement 99").len(),
         1
     );
-    assert_eq!(problems_in("BS-entry-1 invariant 1 and item 3").len(), 1);
+    assert_eq!(problems_in("BS-arap-2 invariant 1 and item 3").len(), 1);
     // A date or a number after a list is no reference.
     assert_eq!(
-        scan("BS-entry-1 statement 2, 2026-11-08", "t", &parts),
+        scan("BS-arap-2 statement 2, 2026-11-08", "t", &parts),
         (1, vec![])
     );
     // Prose that merely follows an id is no sub-reference.
     assert_eq!(
-        scan("BS-entry-1 states that a rule holds", "t", &parts),
+        scan("BS-arap-2 states that a rule holds", "t", &parts),
         (0, vec![])
     );
     assert_eq!(
-        scan("BS-entry-1 rule: debits equal credits", "t", &parts),
+        scan("BS-arap-2 rule: debits equal credits", "t", &parts),
         (0, vec![])
     );
 }

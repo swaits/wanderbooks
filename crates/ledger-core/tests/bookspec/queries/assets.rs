@@ -196,6 +196,19 @@ impl Books<'_> {
         ]))
     }
 
+    /// The tag the asset carries, or `"none"` (BS-asset-3).
+    pub(crate) fn answer_asset_tag(&self, q: &Query) -> Result<Value, Refusal> {
+        let name = q.asset.as_deref().ok_or_else(|| self.missing("asset"))?;
+        let a = self
+            .l()
+            .get_asset(self.asset(name, name))
+            .expect("a registered asset");
+        Ok(json_figures([(
+            "tag".to_string(),
+            a.tag.clone().unwrap_or_else(|| "none".to_string()),
+        )]))
+    }
+
     pub(crate) fn answer_asset_basis(&self, q: &Query) -> Result<Value, Refusal> {
         let name = q.asset.as_deref().ok_or_else(|| self.missing("asset"))?;
         let a = self
@@ -441,6 +454,25 @@ pub(crate) fn check_register_totals(b: &Books<'_>, x: &Expect) {
         ),
     ]);
     named(ex, x, &what, &figures);
+}
+
+/// Check one `asset_tag` expectation: the tag the asset carries now, or
+/// `"none"` (BS-asset-3); every value listed.
+pub(crate) fn check_asset_tag(b: &Books<'_>, x: &Expect) {
+    let ex = b.ex;
+    undated(ex, x);
+    let name = x
+        .asset
+        .as_deref()
+        .unwrap_or_else(|| panic!("{}: asset_tag names its asset", ex.id));
+    let what = format!("{} asset_tag of {name}", ex.id);
+    let a = b
+        .l()
+        .get_asset(b.asset(name, &what))
+        .expect("a registered asset");
+    exactly(ex, x, &BTreeSet::from(["tag".to_string()]));
+    let got = a.tag.clone().unwrap_or_else(|| "none".to_string());
+    assert_eq!(got, x.figures(&ex.id)["tag"], "{what}: tag");
 }
 
 /// Check one `asset_basis` expectation: the asset's basis facts and the

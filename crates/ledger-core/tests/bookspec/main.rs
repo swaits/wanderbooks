@@ -8,7 +8,8 @@
 //! its accounts, fixed assets, schedules, parties, members, payees,
 //! payees' dated 1099 decisions and payment methods, every event (an
 //! entry, a reversal, a close, a bill, or a command that posts what is
-//! due: a depreciation run, a disposal, a schedule run or registration),
+//! due: a depreciation run, a disposal, a schedule run or registration, a
+//! platform's payout or an asset's tag),
 //! each accepted or refused as it says, with the parties, payee and
 //! payment method it is tagged with, and every change that posts no entry
 //! (a rename, a policy, an asset's correction). The books are the
@@ -22,7 +23,7 @@
 //! `party_part`, `party_totals`, `party_tin_last4`, `period`, `day`,
 //! `calendar_year`, `account_names`, `uncategorized_accounts`, `run`,
 //! `disposal`, `depreciation_schedule`, `schedule_plan`, `register_row`,
-//! `register_totals`, `asset_basis`) are then checked value by value, and
+//! `register_totals`, `asset_basis`, `asset_tag`) are then checked value by value, and
 //! the commands it tries (`rename_account`, `add_account`,
 //! `set_tax_category`) accepted or refused on a copy of the books, each
 //! after the event it names (`after`) or the last; the formats appendix's

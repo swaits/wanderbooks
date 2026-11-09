@@ -246,7 +246,9 @@ an invoice's or bill's page (each line's project).
 and `tests/format_upgrade.rs` (`books_p2_served_cut_over_whole`); bookspec
 `projects-net-is-its-tagged-lines`,
 `projects-on-spec-costs-are-expenses` and
-`projects-invoice-and-bill-lines-count-by-project`; proptest
+`projects-invoice-and-bill-lines-count-by-project` (also BS-statement-9's
+rule-level example: one line per project, whose figures come out the same
+under both of its options); proptest
 `prop_document_parts_partition_the_total`; Kani `unrecovered_cost_laws`;
 proptests `prop_project_nets_partition_the_pnl`,
 `prop_project_set_round_trips`, `prop_project_contribution_is_the_net_to_date`

@@ -187,6 +187,16 @@ pub(crate) fn refusal(e: &LedgerError) -> String {
         LedgerError::ControlAccountMismatch { .. } => "role_account_mismatch",
         // A 1099 threshold for a year the books do not know (BS-1099-2).
         LedgerError::RuleNotKnown { .. } => "unknown_1099_year",
+        // A platform's payout whose deposit is not gross less fee
+        // (BS-revenue-1): `payout_plan` refuses it for no other reason that
+        // the examples name.
+        LedgerError::InvalidPayout(why) if why.starts_with("payout doesn't reconcile") => {
+            "payout_does_not_reconcile"
+        }
+        // A tag of a wrong form, and one another asset holds or ever held
+        // (BS-asset-3).
+        LedgerError::InvalidAssetTag { .. } => "asset_tag_invalid",
+        LedgerError::AssetTagTaken { .. } => "asset_tag_taken",
         other => return format!("another refusal: {other}"),
     }
     .to_string()

@@ -21,7 +21,7 @@ Rules: B-13, B-26, B-35, B-36.
 **Pick (BS-partner-7):** `running-split`, the owner, D-38, 2026-10-20.
 **Pick (BS-partner-15):** `contract-is-property-vendor-paid-is-cash`, the owner, 2026-10-15.
 
-**Pick (BS-partner-16):** `close-at-the-change`, the owner, 2026-10-16.
+**Pick (BS-partner-16):** `close-at-the-change`, the owner, 2026-10-16. The books close at the members a close is handed and a change of members or shares starts a new count of closes (`Ledger::members_regime`); no command closes a period at a change, so the pick states what the books do by convention at the close, and no bookspec example shows it (the record's note says why).
 
 **Enforced:** `CloseTo::Members`, `CloseTo::MembersCumulative`,
 `Ledger::members_regime`, `Regime::allocate`,
@@ -55,7 +55,13 @@ Rules: B-13, B-26, B-35, B-36.
 `old_books_name_each_closes_rule_and_true_up_at_the_next_close`;
 `ledger-gui` `a_members_page_shows_the_same_capital_before_and_after_a_close`,
 `a_yen_members_page_splits_in_whole_yen`; the bookspec examples
-`members-close.*`.
+`members-close.*`, and for BS-partner-15 the example
+`partner-a-prepaid-contract-is-property-and-a-vendor-paid-service-is-cash`
+(a prepaid contract credited straight to capital is property, a prepaid
+service paid through Due to Members is cash, by `k1_worksheet`), run by
+`every_bookspec_example_holds`; the examples for the options not picked,
+`partner-every-prepaid-service-is-cash` and
+`partner-every-prepaid-service-is-property`, are skipped.
 
 ### Product rules
 
@@ -421,7 +427,13 @@ package); the odd cents, `ledger_core::tax_capital::RunningSplit` on
 `ledger-package` `tests/package.rs`
 (`the_k1_worksheet_reports_tax_basis_capital`), `tests/p3_seams.rs`
 (`depreciation_is_one_figure_everywhere`,
-`the_cpa_package_as_of_each_date_is_the_tools_figures`).
+`the_cpa_package_as_of_each_date_is_the_tools_figures`); for BS-partner-17
+the bookspec example
+`partner-a-prepaid-contract-enters-the-tax-capital-at-its-book-amount-with-a-note`
+(the contract's 1,500.00 each at its book amount, with the note
+`Note::PrepaidAtBook`), run by `every_bookspec_example_holds`; the example for
+the option not picked, `partner-a-prepaid-contract-is-left-open-in-the-tax-capital`,
+is skipped.
 
 ### Product rules
 

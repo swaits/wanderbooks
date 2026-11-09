@@ -26,11 +26,13 @@ impl Books<'_> {
             ("discard_draft", e.discard_draft.is_some()),
             ("assign_role", e.assign_role.is_some()),
             ("set_setting", e.set_setting.is_some()),
+            ("payout", e.payout.is_some()),
+            ("tag_asset", e.tag_asset.is_some()),
         ];
         match kinds.iter().filter(|(_, given)| *given).collect::<Vec<_>>()[..] {
             [(kind, _)] => kind,
             _ => panic!(
-                "{} event {n}: an event is one of lines, reverses, close, bill, invoice, write_off, payment, settlement, recovery, run_depreciation, dispose_asset, run_schedules, register_schedule, post_draft, set_draft_state, attach_receipt, discard_draft, assign_role or set_setting",
+                "{} event {n}: an event is one of lines, reverses, close, bill, invoice, write_off, payment, settlement, recovery, run_depreciation, dispose_asset, run_schedules, register_schedule, post_draft, set_draft_state, attach_receipt, discard_draft, assign_role, set_setting, payout or tag_asset",
                 self.ex.id
             ),
         }
@@ -43,7 +45,10 @@ impl Books<'_> {
         // An entry of the example's own words: dated and described. A
         // disposal is dated; the other commands date their own entries,
         // and every command describes its own.
-        let own = matches!(kind, "lines" | "reverses" | "close" | "bill" | "invoice");
+        let own = matches!(
+            kind,
+            "lines" | "reverses" | "close" | "bill" | "invoice" | "payout"
+        );
         let dated = own
             || matches!(
                 kind,
@@ -198,7 +203,10 @@ impl Books<'_> {
         let ex = self.ex.id.as_str();
         let kind = self.event_kind(n, e);
         let what = format!("{ex} event {n}");
-        let own = matches!(kind, "lines" | "reverses" | "close" | "bill" | "invoice");
+        let own = matches!(
+            kind,
+            "lines" | "reverses" | "close" | "bill" | "invoice" | "payout"
+        );
         let head = self.store.head();
         let first = self.l().next_entry_id();
         let result = self.apply_event(n, e);
@@ -412,6 +420,47 @@ impl Books<'_> {
                     "{what}: wanderbooks has no draft reversal: it picks reversal-evidence-is-originals (BS-ledger-17), under which a reversal posts at once"
                 ),
             ))),
+            // A platform's payout (BS-revenue-1): the engine's own plan of its
+            // lines (`payout_plan`, which refuses unless gross - fee equals the
+            // deposit to the cent), posted as one entry. The plan is made
+            // before anything is journaled, so a refused payout leaves nothing.
+            "payout" => {
+                let p = e.payout.as_ref().expect("checked: a payout");
+                let line = |account: &str, amount: &str| ledger_core::PayoutLine {
+                    account: self.id(account),
+                    amount: exact(amount, what),
+                    class: None,
+                };
+                let payout = ledger_core::Payout {
+                    deposit_account: self.id(&p.deposit_account),
+                    deposit: exact(&p.deposit, what),
+                    revenue: vec![line(&p.revenue_account, &p.gross)],
+                    fees: match (&p.fee, &p.fee_account) {
+                        (Some(fee), Some(account)) => vec![line(account, fee)],
+                        _ => Vec::new(),
+                    },
+                    adjustments: Vec::new(),
+                };
+                let (plan, _) = ledger_core::payout_plan(&payout, self.store.ledger().chart())?;
+                let entry = self.store.create_entry(day(), description)?;
+                for (account, side, amount, _class) in plan {
+                    self.store
+                        .add_line(entry, account, side, Money::new(amount, self.currency))?;
+                }
+                if self.has_policy() {
+                    self.store.post_entry_checked(entry)
+                } else {
+                    self.store.post_entry(entry)
+                }
+            }
+            // A tag put on an asset (BS-asset-3): the engine's own command,
+            // which refuses a tag of a wrong form and one another asset holds
+            // or ever held.
+            "tag_asset" => {
+                let t = e.tag_asset.as_ref().expect("checked: a tag");
+                let asset = self.asset(&t.asset, what);
+                self.store.set_asset_tag(asset, &t.tag)
+            }
             "post_draft" => {
                 let p = e.post_draft.as_ref().expect("checked: a post");
                 let entry = self.entry_of(p.entry, what);

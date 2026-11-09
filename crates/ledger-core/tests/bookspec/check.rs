@@ -32,6 +32,7 @@ pub(crate) fn check(b: &Books<'_>, x: &Expect) -> Option<&'static str> {
             "depreciation_schedule",
             "register_row",
             "asset_basis",
+            "asset_tag",
         ],
     );
     only(x.schedule.is_some(), "schedule", &["schedule_plan"]);
@@ -130,6 +131,7 @@ pub(crate) fn check(b: &Books<'_>, x: &Expect) -> Option<&'static str> {
         "register_row" => check_register_row(b, x),
         "register_totals" => check_register_totals(b, x),
         "asset_basis" => check_asset_basis(b, x),
+        "asset_tag" => check_asset_tag(b, x),
         "k1_tax_basis" => check_k1_tax_basis(b, x),
         "k1_reconciliation" => check_k1_reconciliation(b, x),
         "balances" => check_balances(ex, l, x),

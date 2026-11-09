@@ -156,9 +156,12 @@ pub(crate) fn every_bookspec_example_holds() {
         files.len() - skipped.len(),
         skipped.len()
     );
+    // The examples for an option wanderbooks did not pick: the other option
+    // of BS-arap-7, -8 and -9, BS-prepaid-2's equal-months and BS-ledger-20's
+    // refuse (each option's example, so no allow-list grows).
     assert_eq!(
         skipped.len(),
-        3,
-        "the three unpicked-option examples: {skipped:?}"
+        5,
+        "the five unpicked-option examples: {skipped:?}"
     );
 }

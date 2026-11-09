@@ -1792,6 +1792,44 @@ mod refusals {
     }
 }
 
+/// D-75: the ten-place bound on a foreign amount is the command's, never
+/// replay's (B-28). A journal an earlier version wrote, holding a line with
+/// a 26-place foreign amount, opens with its figures exactly as journaled.
+#[test]
+fn a_journaled_foreign_line_finer_than_ten_places_still_opens() {
+    use serde_json::json;
+    let dir = test_dir("fx-fine-foreign");
+    let mut store = Store::create(&dir, Currency::USD).unwrap();
+    let cash = store
+        .add_account("1000", "Cash", AccountType::Asset, None, false)
+        .unwrap();
+    drop(store);
+    let mut w = JournalWriter::open(&dir.join(ledger_store::JOURNAL_FILE)).unwrap();
+    w.append(
+        "entry.created",
+        json!({"id": 1, "date": "2026-03-01", "description": "old fx"}),
+    )
+    .unwrap();
+    w.append(
+        "entry.line_added",
+        json!({"id": 1, "account": cash, "side": "debit", "amount": "0.01", "currency": "USD",
+               "foreign_currency": "EUR", "foreign_amount": "0.99999999999999999999999999",
+               "fx_rate": "0.005"}),
+    )
+    .unwrap();
+    drop(w);
+    let _ = std::fs::remove_file(dir.join(ledger_store::db_file()));
+    let store = Store::open(&dir).expect("the older foreign line still opens");
+    store.verify().unwrap();
+    let lines = store.ledger().get_entry(1).unwrap().lines();
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0].amount.amount, "0.01".parse::<Decimal>().unwrap());
+    assert_eq!(
+        lines[0].foreign_amount,
+        Some("0.99999999999999999999999999".parse::<Decimal>().unwrap())
+    );
+}
+
 /// Contract (2026-10-13): rules added to the engine never lock anyone out
 /// of books written before them. A journal holding what the new rules
 /// refuse (a child account of another type, partially overlapping periods,

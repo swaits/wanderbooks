@@ -743,6 +743,96 @@ fn disposal_proceeds_and_dates_are_bounded() {
         .unwrap();
 }
 
+/// D-75 (owner, 2026-11-08): a new line's foreign amount and its rate take
+/// at most ten decimal places each, as a base amount does (B-28), so the
+/// product is exact (at most twenty places, under Decimal's 28) and the
+/// booked amount is rounded once. Found by the K-U1 review: a 26-place
+/// foreign amount times 0.005 books 0.01 though the exact product is under
+/// half a cent, because Decimal rounded the product to 28 places first.
+/// Replay is exempt (B-28): an older line keeps its figures.
+#[test]
+fn a_foreign_amount_and_a_rate_take_at_most_ten_places() {
+    let dec = |s: &str| s.parse::<Decimal>().unwrap();
+    let mut b = books();
+    let e = b.ledger.try_create_entry(d(2026, 1, 1), "fx").unwrap();
+    let mut fx = |amount: &str, rate: &str| {
+        b.ledger.add_line_fx(
+            e,
+            b.cash,
+            Side::Debit,
+            Currency::EUR,
+            dec(amount),
+            dec(rate),
+        )
+    };
+    // Eleven places in the foreign amount, or in the rate: refused, naming
+    // which; ten and ten accepted.
+    assert_eq!(
+        fx("1.00000000001", "1"),
+        Err(LedgerError::ValueOutOfRange(
+            "foreign amount 1.00000000001".into()
+        ))
+    );
+    assert_eq!(
+        fx("1", "1.00000000001"),
+        Err(LedgerError::ValueOutOfRange("FX rate 1.00000000001".into()))
+    );
+    // The review's input: refused, not mis-booked as 0.01.
+    assert_eq!(
+        fx("0.99999999999999999999999999", "0.005"),
+        Err(LedgerError::ValueOutOfRange(
+            "foreign amount 0.99999999999999999999999999".into()
+        ))
+    );
+    // Ten places each: the product (twenty places) is exact and booked
+    // once. 0.0000000001 x 5000000000.0000000001 = 0.50000000000000000001
+    // books 0.50; 0.9999999999 x 0.5000000001 = 0.50000000004999999999
+    // books 0.50.
+    assert_eq!(fx("0.0000000001", "5000000000.0000000001"), Ok(()));
+    assert_eq!(fx("0.9999999999", "0.5000000001"), Ok(()));
+    // Trailing zeros are not places: 1.50000000000 is 1.5.
+    assert_eq!(fx("1.50000000000", "2.0000000000000"), Ok(()));
+    let lines = b.ledger.get_entry(e).unwrap().lines();
+    assert_eq!(lines.len(), 3, "the refused lines were not added");
+    assert_eq!(lines[0].amount.amount, dec("0.50"));
+    assert_eq!(lines[0].foreign_amount, Some(dec("0.0000000001")));
+    assert_eq!(lines[1].amount.amount, dec("0.50"));
+    assert_eq!(lines[2].amount.amount, dec("3.00"));
+    // The exact tie just under half a cent is not rounded up: with ten
+    // places each the product is held, so 0.4999999999 x 0.01 = 0.004999999999
+    // books to zero and is refused as before.
+    assert_eq!(
+        b.ledger.add_line_fx(
+            e,
+            b.cash,
+            Side::Debit,
+            Currency::EUR,
+            dec("0.4999999999"),
+            dec("0.01")
+        ),
+        Err(LedgerError::InvalidFxRate(dec("0.01")))
+    );
+    // Replay keeps an older line with a finer foreign amount, exactly as
+    // booked.
+    b.ledger
+        .replay_add_line_fx(
+            e,
+            b.cash,
+            Side::Debit,
+            usd(dec("0.01")),
+            Currency::EUR,
+            dec("0.99999999999999999999999999"),
+        )
+        .unwrap();
+    let lines = b.ledger.get_entry(e).unwrap().lines();
+    assert_eq!(lines.len(), 4);
+    assert_eq!(
+        lines[3].foreign_amount,
+        Some(dec("0.99999999999999999999999999"))
+    );
+    assert_eq!(lines[3].amount.amount, dec("0.01"));
+}
+
 /// The bounds are the line limit exactly: a new draft line (base or
 /// foreign) and a recurring template's line may be as large as a line, and
 /// no larger; a replayed one past it is accepted as journaled.

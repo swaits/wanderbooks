@@ -18,7 +18,9 @@ Rules: B-3, B-4, B-5, B-8, B-9, B-10, B-20, B-23, B-29, B-31, B-32, B-44, B-45.
 
 **Enforced:** `Ledger::add_line` (base currency only, no fraction of the
 minor unit), `Ledger::add_line_fx` (base amount = foreign amount × rate,
-rounded to the minor unit; original kept), `Ledger::post_entry` (every
+rounded once to the minor unit by `kernel::fx_booked_minor`; original kept;
+a foreign amount or a rate past ten places is refused, D-75, B-28),
+`Ledger::post_entry` (every
 line, whatever made it: payroll, closes, disposals; `FinerThanMinorUnit`,
 since 2026-10-13 after a payroll run posted $65.27794). Journals from
 before replay as booked (`replay_post_entry`). A new asset's cost and
@@ -29,8 +31,10 @@ replay as journaled. **Checked:**
 `an_asset_cost_finer_than_a_cent_is_refused`,
 `a_foreign_line_is_booked_in_whole_base_units`,
 `no_entry_posts_a_fraction_of_the_minor_unit`,
-`foreign_currency_line_is_rejected`, `fx_overflow_is_an_error`; the
-GnuCash oracle.
+`foreign_currency_line_is_rejected`, `fx_overflow_is_an_error`;
+`kernel_bridge/fx.rs` (the exact reference, ten places each); Kani
+`proofs::fx::*`; Lean `Fx.booked_near`, `Fx.booked_whole`, `Fx.booked_pos`;
+the GnuCash oracle.
 
 ### Product rules
 

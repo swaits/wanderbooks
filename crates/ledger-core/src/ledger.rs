@@ -1831,15 +1831,26 @@ impl Ledger {
     /// GOAL: book a foreign-currency amount in the ledger's one money.
     /// SOURCE: docs/spec/rules.md B-3 (Pacioli ch. 36: one money; ASC
     ///         830-20-30-1: at the transaction-date rate); minor units: ISO
-    ///         4217; rounding: DECISION (owner, 2026-10-13).
+    ///         4217; rounding: DECISION (owner, 2026-10-13); the ten-place
+    ///         bound (invariant 3): DECISION D-75 (owner, 2026-11-08),
+    ///         B-28's bound, stated in bookspec BS-entry-4.
     /// INVARIANTS:
     ///   1. The base amount MUST be a whole number of the base currency's
     ///      smallest unit, within half a unit of foreign * rate.
     ///   2. NEVER convert into the base currency itself.
+    ///   3. MUST refuse a foreign amount or a rate of more than ten
+    ///      decimal places (ValueOutOfRange), so the product keeps its
+    ///      scale (within Decimal's 28) and is rounded once; NEVER on
+    ///      replay.
     /// SCENARIOS:
     ///   1. IF 100.00 EUR at 1.0834567 into USD: SHOULD book 108.35.
     ///   2. IF 10.00 USD at 151.237 into JPY: SHOULD book 1512.
     ///   3. IF the rounded amount is zero: SHOULD refuse.
+    ///   4. IF the foreign amount is 0.99999999999999999999999999 at
+    ///      0.005 into USD: SHOULD refuse (more than ten places)
+    ///      BECAUSE Decimal rounds that product to 28 places before the
+    ///      cent rounding, booking a cent the exact product does not
+    ///      reach (found by the K-U1 review).
     /// ```
     pub fn add_line_fx(
         &mut self,
@@ -1863,6 +1874,22 @@ impl Ledger {
                 expected: "foreign currency".to_string(),
                 found: foreign_currency.code().to_string(),
             });
+        }
+        // D-75 (owner, 2026-11-08): a new line's foreign amount and its
+        // rate take at most MAX_LINE_SCALE places each, as a base amount
+        // does (B-28), so their product has at most twice that many (20,
+        // under Decimal's 28) and keeps its scale: the booked amount is
+        // rounded once, not after Decimal's own rounding of the product.
+        // (A 20-place product past about 7.9e8 still outgrows Decimal's 96
+        // bits; kernel::fx_booked's spec block names that open edge.)
+        // The command's bound, never replay's: a journal's older line with
+        // a finer foreign amount opens as it was booked (replay_add_line_fx).
+        if !crate::parties::is_replaying() {
+            for (what, value) in [("foreign amount", foreign_amount), ("FX rate", fx_rate)] {
+                if value.normalize().scale() > kernel::MAX_LINE_SCALE {
+                    return Err(LedgerError::ValueOutOfRange(format!("{what} {value}")));
+                }
+            }
         }
         // Booked in the base currency's smallest unit (cents for USD), half
         // away from zero: a ledger in one money holds no fractions of its

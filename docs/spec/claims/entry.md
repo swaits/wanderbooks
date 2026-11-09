@@ -68,16 +68,23 @@ None.
 
 **Claims:** yes
 
-**Pick:** the bounds are bookspec's (dates 0001-01-01 through 9999-12-31, an amount at most `kernel::MAX_LINE_AMOUNT` = 1,000,000,000,000,000, scale at most `MAX_LINE_SCALE` = 10), and one run of the recurring entries creates at most 1,000 drafts (`MAX_RECURRING_RUN`). Provenance: CHOICE (P0 review round 3, 2026-10-16, finding S1: the
+**Pick:** the bounds are bookspec's (dates 0001-01-01 through 9999-12-31, an amount at most `kernel::MAX_LINE_AMOUNT` = 1,000,000,000,000,000, scale at most `MAX_LINE_SCALE` = 10; a new foreign line's foreign amount and its FX rate take at most `MAX_LINE_SCALE` places each, so their product keeps its scale), and one run of the recurring entries creates at most 1,000 drafts (`MAX_RECURRING_RUN`). Provenance: CHOICE (P0 review round 3, 2026-10-16, finding S1: the
 server stops for every session when a request panics, so no input may
 reach one); CHOICE (P0 review round 4, 2026-10-17: posted is forever, so
 the bounds are the commands', never replay's). A new asset's life past
 9999 is refused at registration, the bound the life's last day held (P3
 settled the plan's defect 22 question this way); ones an earlier version
 took open, and their months after 9999-12 show as scheduled and never post.
+The ten-place bound on a foreign amount and a rate is D-75 (the owner,
+2026-11-08, "Cap them at 10 places"): the K-U1 review found that with a
+26-place foreign amount `Decimal` rounded the product to 28 places before
+the engine rounded it to the cent, booking a cent the exact product does
+not reach (0.99999999999999999999999999 x 0.005 into USD). A journal's
+older, finer foreign line replays as booked (`replay_add_line_fx`).
 
 **Enforced:** `ledger_core::calendar`; `Ledger::try_create_entry`,
-`add_line`, `add_line_fx`, `validate_new_asset`, `dispose_asset`,
+`add_line`, `add_line_fx` (the foreign amount and the rate, `ValueOutOfRange`,
+never on replay), `validate_new_asset`, `dispose_asset`,
 `schedules::validate_schedule`, `validate_recurring`,
 `periods::validate_period_range`, `arap::validate_lines`,
 `validate_due_date`, `payroll::check_payroll_ranges`, `payout_plan`,
@@ -87,9 +94,12 @@ took open, and their months after 9999-12 show as scheduled and never post.
 `run_recurring`; `ledger-mcp` `parse_date`, `parse_period_mcp`,
 `last_day_of_month`.
 **Checked:** `ledger-core` `tests/spec_bounds.rs` (each bound and its
-replay pair), `calendar.rs`, `assets.rs`
+replay pair; `a_foreign_amount_and_a_rate_take_at_most_ten_places`),
+`kernel_bridge/fx.rs` (`past_ten_places_the_reference_and_decimal_part_and_the_engine_refuses`,
+`ten_places_each_is_exact_through_the_engine`), `calendar.rs`, `assets.rs`
 `registration_rejects_date_overflow`, `invariants.rs`
-`out_of_range_amount_is_rejected`; `ledger-store` `tests/bounds.rs`;
+`out_of_range_amount_is_rejected`; `ledger-store` `tests/bounds.rs`,
+`tests/store.rs` `a_journaled_foreign_line_finer_than_ten_places_still_opens`;
 `ledger-cli` `server.rs` `periods_are_a_year_and_a_month`,
 `dates_are_four_digit_years_and_real_days`.
 

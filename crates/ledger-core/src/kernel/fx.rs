@@ -16,10 +16,34 @@ use rust_decimal::Decimal;
 ///
 /// The rate's precision is carried by the value itself: a `Decimal`
 /// rate keeps its own scale (1.0834567 is exact), and the product is the
-/// exact `Decimal` product before the single rounding, exactly as
-/// `Ledger::add_line_fx` computed it before this kernel existed. At
-/// `i64` (the Kani model) amounts and the rate are plain integers in
-/// the smallest unit, and the same law is proved of the product.
+/// `T::checked_mul` product before the single rounding. At `i64` (the
+/// Kani model) amounts and the rate are plain integers in the smallest
+/// unit, and the same law is proved of the product.
+///
+/// **The precondition that makes the product exact (D-75).** On
+/// `Decimal`, `checked_mul` is exact only while the product keeps its
+/// full scale: that scale (the two scales added) must be within 28, and
+/// the product's mantissa (the two mantissas multiplied) must fit
+/// `Decimal`'s 96 bits, under 7.9e28. A foreign amount and a rate of at
+/// most [`MAX_LINE_SCALE`](super::MAX_LINE_SCALE) (10) places each,
+/// trailing zeros not counted, meet the first half: a product of at most
+/// 20 places, under 28. `Ledger::add_line_fx` enforces that bound on
+/// every new line (never on replay). The second half is not enforced:
+/// a product of 20 places past about 7.9e8 needs more than 96 bits, and
+/// `Decimal` then drops places (see below). Under both halves the
+/// product is the exact one and the result is rounded exactly once.
+/// Outside them `Decimal::checked_mul` keeps the behaviours it has
+/// always had, which this function inherits and does not hide: a
+/// product that does not fit is rounded by `Decimal` (to 28 places, or
+/// to the places 96 bits hold) before this function rounds it (a second
+/// rounding, so a result can sit a unit off the exact product's:
+/// 0.99999999999999999999999999 x 0.005 is 0.00499999999999999999999999995
+/// exactly but 0.005 as held, and books 0.01; 1050000010.0000000001 x
+/// 9.9999999999 is 10500000099.89 to the cent but 10500000099.895 as
+/// held, and books 10500000099.90), and a product below 1e-28 (1e-28 x
+/// 1e-28) underflows to zero. Invariants 2 and 3 are stated for
+/// products that are exact; invariant 1 (a whole multiple of the step)
+/// holds regardless. The bridge pins both behaviours.
 ///
 /// ```text
 /// GOAL: book a foreign amount in the ledger's one money: the exact
@@ -36,15 +60,18 @@ use rust_decimal::Decimal;
 ///         bookspec's Lean).
 /// INVARIANTS:
 ///   1. Some(r) is a whole multiple of step: r = n x step for an
-///      integer n. None when step <= 0, when rate <= 0, or when the
-///      exact product or the rounded result cannot be held.
-///   2. In HalfAwayFromZero (the mode add_line_fx books in) r is
-///      within half a step of the exact product foreign x rate, an
-///      exact half going to the multiple farther from zero.
-///   3. Positive foreign and rate give a non-negative r, and a
-///      positive r whenever the exact product reaches half a step
-///      (a smaller product rounds to zero, which the caller refuses
-///      as it does today). The sign never crosses zero.
+///      integer n. None when step <= 0, when rate <= 0, or when T's
+///      checked_mul cannot hold the product (the exact product, under
+///      the precondition above) or the rounded result cannot be held.
+///   2. Under the precondition (both halves: the product is exact), in
+///      HalfAwayFromZero (the mode add_line_fx books in) r is within
+///      half a step of the exact product foreign x rate, an exact half
+///      going to the multiple farther from zero.
+///   3. Under the precondition, positive foreign and rate give a
+///      non-negative r, and a positive r whenever the exact product
+///      reaches half a step (a smaller product rounds to zero, which
+///      the caller refuses as it does today). The sign never crosses
+///      zero.
 ///   4. On Decimal the value equals the pre-kernel computation
 ///      (checked_mul, then round_minor half away from zero) exactly;
 ///      fx_booked_minor also keeps its scale.
@@ -53,6 +80,16 @@ use rust_decimal::Decimal;
 ///   2. IF 10.00 at 151.237 to the yen (step 1): SHOULD book 1512.
 ///   3. IF the rate is zero or negative: SHOULD be None, never a guess.
 ///   4. IF foreign x rate overflows: SHOULD be None, never a panic.
+///   5. IF foreign is 0.99999999999999999999999999 (26 places) and
+///      the rate 0.005 to the cent: outside the precondition, books
+///      0.01 where the exact product is under half a cent BECAUSE
+///      Decimal rounded the product first; the engine refuses such an
+///      input (D-75), and the bridge pins this behaviour.
+///   6. IF foreign 1050000010.0000000001 at 9.9999999999 to the cent
+///      (ten places each, a product past 96 bits): outside the
+///      precondition's second half, books 10500000099.90 where the
+///      exact product rounds to 10500000099.89; the bridge pins this
+///      open edge.
 /// ```
 pub fn fx_booked<T: Amount>(foreign: T, rate: T, step: T, mode: Rounding) -> Option<T> {
     if rate <= T::ZERO {

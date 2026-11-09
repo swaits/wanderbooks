@@ -12,7 +12,7 @@ Rules: B-27, B-34.
 
 ## B-27 The journal format gate: newer is not corrupt
 
-**bookspec:** `BS-format-1`
+**retired bookspec:** `BS-format-1`
 
 **Claims:** no (retired 2026-11-08, D-71: wholly wanderbooks'); its one
 engine-independent sentence — a reader that does not know a record's format

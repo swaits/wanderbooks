@@ -178,7 +178,7 @@ open, never a panic.
 *Enforced:* derived: `Invoice::total`/`balance`,
 `Bill::total`/`balance`, `AgingRow::total`, `ar_aging`, `ap_aging`,
 `PayrollLine::net_pay`, `payroll_entry_plan`, `parties::entry_flow`,
-`shares::share_target`, `shares::resolve`, `fixed_asset_register`,
+`shares::target`, `shares::resolve`, `fixed_asset_register`,
 `schedules::amortization_plan`, `month_end`, `depreciation_schedule`,
 `analysis::intervals`, `form1099::vendor_part`, `k1::share_property`,
 `ReceiptPolicy::entry_debits`.

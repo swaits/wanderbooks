@@ -311,8 +311,9 @@ check_discount}`, `arap::{Application, Fee, SettleParams, SettlementRow}`,
 (`a_settlement_names_its_lines_and_replays`, `settlement_waits_for_documents_v2`,
 `legacy_payment_events_keep_the_positional_rule`), `tests/arap_props.rs`;
 `ledger-cli` `tests/documents.rs`; `ledger-package`'s aging tie-out test.
-The Lean step is `Documents.Step.document` with every control line tagged
-(`Documents.settle_unattached`); no new `Step` constructor.
+The Lean step is the document constructor of the Lean documents model, with
+every control line tagged (`Documents.settle_unattached`); no new step
+constructor.
 
 ### Product rules
 

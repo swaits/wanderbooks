@@ -49,9 +49,10 @@ impl Books<'_> {
                     s if s.starts_with("a schedule month's posting") => "schedule_posting",
                     s if s.starts_with("a depreciation run") => "depreciation_run",
                     s if s.starts_with("an asset's disposal") => "asset_disposal",
-                    s if s.starts_with("a document's entry") || s.starts_with("a payroll") => {
-                        "document_entry"
-                    }
+                    // A payroll command's posting (a run, or the tax
+                    // remittance) is its own source, not a document's.
+                    s if s.starts_with("a payroll") => "payroll_posting",
+                    s if s.starts_with("a document's entry") => "document_entry",
                     other => {
                         return Err(engine_refusal(
                             RuleId::new(Area::Entry, 5),

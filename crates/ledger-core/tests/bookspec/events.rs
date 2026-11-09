@@ -402,9 +402,14 @@ impl Books<'_> {
                 }
                 Ok(())
             }
-            "reverses" if e.draft => panic!(
-                "{what}: wanderbooks has no draft reversal: it picks reversal-evidence-is-originals (BS-ledger-17), under which a reversal posts at once"
-            ),
+            // Not a panic: the example fails as an engine refusal (`another
+            // refusal: ...`), and the harness goes on to report it.
+            "reverses" if e.draft => Err(StoreError::Io(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                format!(
+                    "{what}: wanderbooks has no draft reversal: it picks reversal-evidence-is-originals (BS-ledger-17), under which a reversal posts at once"
+                ),
+            ))),
             "post_draft" => {
                 let p = e.post_draft.as_ref().expect("checked: a post");
                 let entry = self.entry_of(p.entry, what);
@@ -453,10 +458,16 @@ impl Books<'_> {
             }
             "lines" if e.refused.is_some() => {
                 // The books take an entry whole or not at all, so a
-                // refused one leaves no draft behind: it is tried on a
-                // clone, which is how the engine refuses it.
-                let mut probe = self.store.ledger().clone();
-                let entry = probe.create_entry(day(), description);
+                // refused one leaves no draft behind. The store journals a
+                // draft the moment it is made, so the entry is made, lined
+                // and posted on a rehearsal: the same books, replayed from
+                // their journal into a store of their own, which the engine
+                // refuses through its own gate (`post_entry_checked` under a
+                // policy, the server's path for a hand entry) and which is
+                // then thrown away. The refusal is the engine's, never
+                // rebuilt here.
+                let mut rehearsal = self.rehearsal(what);
+                let entry = rehearsal.create_entry(day(), description)?;
                 for (i, line) in e.lines.iter().enumerate() {
                     let side = match line.side.as_str() {
                         "debit" => Side::Debit,
@@ -465,36 +476,19 @@ impl Books<'_> {
                     };
                     let amount = Money::new(money(&line.amount), self.currency);
                     let account = self.id(&line.account);
-                    probe.add_line(entry, account, side, amount)?;
+                    rehearsal.add_line(entry, account, side, amount)?;
                     if let Some(p) = &line.project {
                         let class = *self.projects.get(p).unwrap_or_else(|| {
                             panic!("{what}: project {p:?} not in setup.projects")
                         });
-                        probe.set_line_class(entry, i, Some(class))?;
+                        rehearsal.set_line_class(entry, i, Some(class))?;
                     }
                 }
-                // The evidence gate, as the server's post runs it: a hand entry
-                // the policy covers has no document, and an event cannot
-                // attach one before the entry exists.
                 if self.has_policy() {
-                    let draft = probe.get_entry(entry).expect("just drafted").clone();
-                    let settings = probe.settings();
-                    if let ledger_core::evidence::Requirement::Required { reason } =
-                        ledger_core::evidence::requirement(&probe, &draft, settings)
-                    {
-                        let policy = ledger_core::evidence::Policy::from_settings(settings);
-                        return Err(StoreError::ReceiptRequired(Box::new(
-                            ledger_store::error::ReceiptRequiredInfo {
-                                entry_id: entry,
-                                debits: ledger_core::evidence::Policy::entry_debits(&draft).ok(),
-                                policy: policy.describe(),
-                                split_group: policy.split_group(&probe, entry, &draft),
-                                reason,
-                            },
-                        )));
-                    }
+                    rehearsal.post_entry_checked(entry)
+                } else {
+                    rehearsal.post_entry(entry)
                 }
-                Ok(probe.post_entry(entry)?)
             }
             "lines" => {
                 let post = |this: &mut Self| -> Result<(), StoreError> {

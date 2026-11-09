@@ -222,7 +222,14 @@ pinned; every tool over every old book).
 `entry-a-discarded-draft-leaves-the-books-unchanged`,
 `entry-a-drafts-state-is-a-note-and-a-posted-entry-has-none`,
 `period-a-draft-holds-its-period-open-until-it-is-discarded` (BS-period-2's
-`LedgerError::DraftsInPeriod`) and `entry-evidence-is-decided-in-one-place`.
+`LedgerError::DraftsInPeriod`), `entry-evidence-is-decided-in-one-place` and
+`entry-only-a-draft-can-be-posted-or-discarded` (`LedgerError::EntryAlreadyPosted`
+and `LedgerError::UnknownEntry`, through `Store::post_entry` and `Store::discard_draft`). An entry the example
+says is refused when posted at once is made, lined and posted on a rehearsal:
+the books replayed from their journal into a `Store` of their own (the
+journal and the blobs copied, `Store::open`), so the refusal, an evidence
+refusal included, is `Store::post_entry_checked`'s own and the example's books
+keep no draft the engine would have journaled.
 
 ### Product rules
 

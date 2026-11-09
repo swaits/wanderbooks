@@ -216,6 +216,50 @@ pub(crate) fn new_schedule(
     }
 }
 
+/// A store of the books as they stood (see [`Books::rehearsal`]), and the
+/// directory it lives in, which goes with it.
+pub(crate) struct Rehearsal {
+    store: Store,
+    _dir: tempfile::TempDir,
+}
+
+impl std::ops::Deref for Rehearsal {
+    type Target = Store;
+    fn deref(&self) -> &Store {
+        &self.store
+    }
+}
+
+impl std::ops::DerefMut for Rehearsal {
+    fn deref_mut(&mut self) -> &mut Store {
+        &mut self.store
+    }
+}
+
+/// Copy the directory `from` to `to`, the entries `keep` names (by file
+/// name) only, subdirectories whole.
+fn copy_tree(
+    from: &std::path::Path,
+    to: &std::path::Path,
+    keep: &dyn Fn(&str) -> bool,
+) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if !keep(&name.to_string_lossy()) {
+            continue;
+        }
+        let target = to.join(&name);
+        if entry.file_type()?.is_dir() {
+            copy_tree(&entry.path(), &target, &|_| true)?;
+        } else {
+            std::fs::copy(entry.path(), target)?;
+        }
+    }
+    Ok(())
+}
+
 impl<'a> Books<'a> {
     /// The books an example sets up, before any event: its shape checked,
     /// its accounts, fixed assets, schedules, parties, members, payees,
@@ -559,6 +603,27 @@ impl<'a> Books<'a> {
 
     /// The entry event `event` (counting from 1) posted: an event applied
     /// already, that posted exactly one.
+    /// The books as they stand, replayed from their journal into a store of
+    /// their own (a copy of the journal and the blobs, opened as any store
+    /// is), for a step the books must refuse without keeping a trace: a store
+    /// journals a draft the moment it is made, so a refused entry is made on
+    /// this and dropped with it. The directory lives as long as the store.
+    pub(crate) fn rehearsal(&self, what: &str) -> Rehearsal {
+        let from = self._dir.path().join("books");
+        let dir = tempfile::tempdir().unwrap();
+        let to = dir.path().join("books");
+        // The journal is the books; the database is derived, and the lock is
+        // this process's own.
+        copy_tree(&from, &to, &|name| {
+            name != ledger_store::store::LOCK_FILE
+                && !ledger_store::store::is_database_file(name)
+                && !name.contains(".db-")
+        })
+        .unwrap_or_else(|e| panic!("{what}: copying the books for a rehearsal: {e}"));
+        let store = took(Store::open(&to), &format!("{what}: the rehearsal"));
+        Rehearsal { store, _dir: dir }
+    }
+
     pub(crate) fn entry_of(&self, event: usize, what: &str) -> EntryId {
         assert!(
             event >= 1 && event <= self.posted.len(),

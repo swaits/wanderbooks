@@ -2340,7 +2340,7 @@ fn every_claim_is_backed() {
     }
     assert_eq!(
         EXCEPTIONS.len(),
-        14,
+        15,
         "the kernel exception list changes only on purpose"
     );
     // No ordinary function may fall through the right-law check: the
@@ -2519,16 +2519,21 @@ const EXCEPTIONS: &[(&str, &str, &str)] = &[
         "a Kani harness and a law",
         "it is the Decimal/currency wrapper around `round_step`; the harnesses and law 40 are round_step's, and the bridge carries them to Decimal",
     ),
+    (
+        "split_by_weights_with",
+        "a Kani harness and a law",
+        "it allocates two Vec buffers; every harness calls the fixed-array `split_by_weights_into` directly, and its law 18 is split_by_weights_into's",
+    ),
 ];
 
 /// The kernel functions the right-law check cannot apply to, pinned
 /// exactly: each is excepted above, and lacks either a harness law or a
-/// cited rule for one. `movements` and `reversal` allocate, so every
-/// harness proves their fixed-array helper; `round_places`, `round_minor`
-/// and `fx_booked_minor` are Decimal wrappers whose law is the inner
-/// function's; `Direction::key` is a wire name and `MonthPart::is_valid` a
-/// range predicate, with no law at all. A new name here is a deliberate
-/// widening, never a silent hole.
+/// cited rule for one. `movements`, `reversal` and
+/// `split_by_weights_with` allocate, so every harness proves their
+/// fixed-array helper; `round_places`, `round_minor` and `fx_booked_minor`
+/// are Decimal wrappers whose law is the inner function's; `Direction::key`
+/// is a wire name and `MonthPart::is_valid` a range predicate, with no law
+/// at all. A new name here is a deliberate widening, never a silent hole.
 const SKIPPED: &[&str] = &[
     "movements",
     "reversal",
@@ -2537,6 +2542,7 @@ const SKIPPED: &[&str] = &[
     "round_places",
     "round_minor",
     "fx_booked_minor",
+    "split_by_weights_with",
 ];
 
 #[test]

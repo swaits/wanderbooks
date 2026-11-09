@@ -4961,31 +4961,68 @@ impl Store {
     /// nothing, in books that haven't declared it): an older version reads
     /// every schedule as equal months, and would refuse a daily one's
     /// postings as wrong (rather than as newer).
+    ///
+    /// A monthly_even schedule's months round to its currency's minor
+    /// unit in books that declared `schedule_minor_unit` (D-72,
+    /// BS-prepaid-4), which the journal records as `"rounding":
+    /// "minor_unit"` on the schedule itself; in books that haven't it is
+    /// the cent rule, as before, and nothing new is written.
+    ///
+    /// ```text
+    /// GOAL: a new monthly-even schedule's months are whole units of its
+    ///       currency, and what an earlier version journaled never moves.
+    /// SOURCE: BS-prepaid-4, BS-format-1, BS-entry-8; D-72 (owner,
+    ///         2026-11-08).
+    /// INVARIANTS:
+    ///   1. The rule is a fact of the books when the schedule is written:
+    ///      minor unit exactly when the books declared the feature and the
+    ///      convention is monthly_even, and the flag is journaled with the
+    ///      schedule, so replay never consults the feature's position.
+    ///   2. A schedule journaling the flag requires the feature
+    ///      (`ensure_feature`): an older version stops at the declaration,
+    ///      never at the schedule.
+    ///   3. Books without the feature write exactly the line they always
+    ///      did: no `rounding` key.
+    /// SCENARIOS:
+    ///   1. IF the books declared the feature and ¥100,000 is spread over
+    ///      3 equal months: SHOULD plan ¥33,333, ¥33,333, ¥33,334.
+    ///   2. IF they haven't: SHOULD refuse it as a month finer than a yen
+    ///      (¥33,333.33), as before, until the owner's upgrade.
+    /// ```
     pub fn register_schedule(
         &mut self,
         new: ledger_core::NewSchedule,
     ) -> Result<ledger_core::ScheduleId, StoreError> {
-        self.rehearse(|l| l.register_schedule(new.clone()))?;
-        ledger_core::schedules::validate_schedule(&new, self.ledger.chart())?;
+        let rounding = if new.convention == ledger_core::ScheduleConvention::MonthlyEven
+            && self.format.has_feature(crate::format::SCHEDULE_MINOR_UNIT)
+        {
+            ledger_core::ScheduleRounding::MinorUnit
+        } else {
+            ledger_core::ScheduleRounding::Cent
+        };
+        self.rehearse(|l| l.register_schedule_under(new.clone(), rounding))?;
+        ledger_core::schedules::validate_schedule_under(&new, rounding, self.ledger.chart())?;
         let id = self.ledger.next_schedule_id();
         if new.convention == ledger_core::ScheduleConvention::Daily {
             self.ensure_feature(crate::format::SCHEDULE_CONVENTION)?;
         }
-        let line = self.append_journal(
-            "schedule.registered",
-            json!({
-                "id": id,
-                "description": new.description,
-                "kind": serde_json::to_value(new.kind)?,
-                "total": {"amount": new.total.amount.to_string(), "currency": new.total.currency.code()},
-                "start": new.start.to_string(),
-                "months": new.months,
-                "balance_account": new.balance_account,
-                "pl_account": new.pl_account,
-                "convention": new.convention.key(),
-            }),
-        )?;
-        let got = self.ledger.register_schedule(new)?;
+        let mut payload = json!({
+            "id": id,
+            "description": new.description,
+            "kind": serde_json::to_value(new.kind)?,
+            "total": {"amount": new.total.amount.to_string(), "currency": new.total.currency.code()},
+            "start": new.start.to_string(),
+            "months": new.months,
+            "balance_account": new.balance_account,
+            "pl_account": new.pl_account,
+            "convention": new.convention.key(),
+        });
+        if !rounding.is_cent() {
+            self.ensure_feature(crate::format::SCHEDULE_MINOR_UNIT)?;
+            payload["rounding"] = json!(rounding.key());
+        }
+        let line = self.append_journal("schedule.registered", payload)?;
+        let got = self.ledger.register_schedule_under(new, rounding)?;
         debug_assert_eq!(got, id);
         apply_line_to_sqlite(&self.conn, &line)?;
         Ok(id)
@@ -7414,16 +7451,36 @@ fn replay_line(
                     ));
                 }
             };
-            let got = ledger.replay_register_schedule(ledger_core::NewSchedule {
-                description: get_str(p, "description")?.to_string(),
-                kind: serde_json::from_value(p["kind"].clone())?,
-                total: parse_money(p, "total")?,
-                start: parse_date(get_str(p, "start")?)?,
-                months: get_u64(p, "months")? as u32,
-                balance_account: get_u64(p, "balance_account")?,
-                pl_account: get_u64(p, "pl_account")?,
-                convention,
-            })?;
+            // No rounding (every schedule before D-72): the cent rule, as
+            // it was posted. The rule is the schedule's own, never the
+            // books' later format. A rule this version doesn't know is
+            // newer, never corrupt (BS-format-1).
+            let rounding = match p.get("rounding") {
+                None | Some(Value::Null) => ledger_core::ScheduleRounding::Cent,
+                Some(Value::String(r)) => {
+                    ledger_core::ScheduleRounding::parse(r).ok_or_else(|| {
+                        crate::format::newer_content(line, format!("the schedule rounding {r}"))
+                    })?
+                }
+                Some(_) => {
+                    return Err(StoreError::JournalCorrupt(
+                        "schedule.registered rounding".into(),
+                    ));
+                }
+            };
+            let got = ledger.replay_register_schedule_under(
+                ledger_core::NewSchedule {
+                    description: get_str(p, "description")?.to_string(),
+                    kind: serde_json::from_value(p["kind"].clone())?,
+                    total: parse_money(p, "total")?,
+                    start: parse_date(get_str(p, "start")?)?,
+                    months: get_u64(p, "months")? as u32,
+                    balance_account: get_u64(p, "balance_account")?,
+                    pl_account: get_u64(p, "pl_account")?,
+                    convention,
+                },
+                rounding,
+            )?;
             if got != want {
                 return Err(StoreError::ReplayMismatch(format!(
                     "schedule id: journal says {want}, replay got {got}"

@@ -90,6 +90,79 @@ impl ScheduleConvention {
     }
 }
 
+/// The unit an equal-months (monthly-even) schedule rounds each month to:
+/// the rule it was written under (BS-prepaid-4, owner decision D-72).
+///
+/// ```text
+/// GOAL: a monthly-even schedule's months are whole units of its currency
+///       (yen, not 33,333.33 yen), and a schedule written under the old
+///       cent rule is never re-planned under a new one.
+/// SOURCE: BS-prepaid-4 (new monthly-even schedules round to the
+///         currency's minor unit, earlier ones keep the cent rule they
+///         were written under), BS-prepaid-1 (months whole to the minor
+///         unit), BS-entry-8 (what is journaled never moves);
+///         plan/served.md D-72 (owner, 2026-11-08).
+/// INVARIANTS:
+///   1. A schedule carries the rule it was written under, journaled on
+///      its `schedule.registered` line as `"rounding": "minor_unit"`,
+///      and nothing else decides it: not the books' later format, not the
+///      currency, not the date. A line with no `rounding` is `Cent`, as
+///      every schedule written before D-72 is, and replays exactly as it
+///      was posted (the sequence position of the format feature is never
+///      consulted: a flag survives a snapshot, a copy and a replay that
+///      starts mid-journal; a position survives none of them).
+///   2. `Cent` is two places for every currency, replay-frozen. For a
+///      currency with two places, `MinorUnit` gives the same plan
+///      (the same call), so a dollar schedule never differs by rule.
+///   3. `MinorUnit` is the currency's ISO 4217 minor unit (`Currency::
+///      minor_units`: USD 0.01, JPY 1, KWD 0.001), and two places for a
+///      code ISO gives none (gold, SDRs), as the daily plan does.
+///   4. Only `monthly_even` schedules carry it: a daily schedule always
+///      rounds to the minor unit, and is written without the flag.
+/// ```
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScheduleRounding {
+    /// Two places, whatever the currency: every schedule written before
+    /// D-72, and the default of [`crate::Ledger::register_schedule`].
+    #[default]
+    Cent,
+    /// The currency's minor unit: a monthly-even schedule written after
+    /// the store's `schedule_minor_unit` feature.
+    MinorUnit,
+}
+
+impl ScheduleRounding {
+    /// Its wire name: `cent` or `minor_unit`.
+    pub fn key(self) -> &'static str {
+        match self {
+            ScheduleRounding::Cent => "cent",
+            ScheduleRounding::MinorUnit => "minor_unit",
+        }
+    }
+
+    /// The rule named `key`.
+    pub fn parse(key: &str) -> Option<Self> {
+        [Self::Cent, Self::MinorUnit]
+            .into_iter()
+            .find(|r| r.key() == key)
+    }
+
+    /// True for [`ScheduleRounding::Cent`] (which the journal and the
+    /// serialized ledger leave unsaid, as every schedule before D-72 is).
+    pub fn is_cent(&self) -> bool {
+        *self == ScheduleRounding::Cent
+    }
+
+    /// The decimal places each month is rounded to, for `currency`.
+    pub fn places(self, currency: crate::Currency) -> u32 {
+        match self {
+            ScheduleRounding::Cent => 2,
+            ScheduleRounding::MinorUnit => currency.minor_units().unwrap_or(2),
+        }
+    }
+}
+
 /// An amortization schedule.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AmortizationSchedule {
@@ -119,6 +192,11 @@ pub struct AmortizationSchedule {
     /// before P3 serialize as they did.
     #[serde(default, skip_serializing_if = "ScheduleConvention::is_monthly_even")]
     pub convention: ScheduleConvention,
+    /// The unit a monthly_even schedule's months round to: the rule it was
+    /// written under ([`ScheduleRounding`]). Left unsaid when cent, so
+    /// books from before D-72 serialize as they did.
+    #[serde(default, skip_serializing_if = "ScheduleRounding::is_cent")]
+    pub rounding: ScheduleRounding,
     /// Every entry that ever posted each month, in order: a reversal of
     /// one un-posts its month, and reversing that reversal posts it again
     /// (Ledger::reverse_entry). Derived on replay, never serialized.
@@ -163,13 +241,17 @@ pub fn month_end(d: NaiveDate) -> NaiveDate {
 pub const EXACT_LIMIT: Decimal =
     Decimal::from_parts(0xe400_0000, 0xdcc8_0cd2, 0x0052_b7d2, false, 0);
 
-/// The schedule's monthly postings: (month-end date, amount). Equal
-/// amounts to the cent, the last month absorbing rounding, so they sum to
-/// the total exactly.
+/// The schedule's monthly postings under the cent rule: (month-end date,
+/// amount). Equal amounts to the cent, the last month absorbing rounding,
+/// so they sum to the total exactly. The rule every schedule written
+/// before D-72 replays under ([`ScheduleRounding::Cent`]); a schedule
+/// written since rounds to its currency's minor unit
+/// ([`amortization_plan_under`]).
 ///
 /// ```text
 /// INVARIANTS:
-///   1. The amounts sum to `total` exactly; all but the last are equal.
+///   1. The amounts sum to `total` exactly; all but the last are equal
+///      (kernel::even_parts, at two places).
 ///   2. NEVER panics: a schedule an earlier version journaled whose months
 ///      run past chrono's last day is refused with DateOutOfRange, and one
 ///      whose amounts exact arithmetic can't hold with TooLargeToCompute
@@ -179,6 +261,10 @@ pub const EXACT_LIMIT: Decimal =
 ///      sum of them (none exceeds the total), fits Decimal's 28 significant
 ///      digits, so INVARIANT 1 holds exactly; at it, Decimal's checked
 ///      operations round instead of failing.
+///   4. Unchanged forever: the figures, and the scale they print at, are
+///      exactly those every earlier version produced (a posted month's
+///      replay compares journaled lines as text). `tests/schedules.rs`
+///      checks it against a verbatim copy of the function before K-U5.
 /// ```
 ///
 /// Replay is unaffected: a posted schedule month passed the line limit
@@ -189,39 +275,111 @@ pub fn amortization_plan(
     start: NaiveDate,
     months: u32,
 ) -> Result<Vec<(NaiveDate, Decimal)>, LedgerError> {
+    plan_in_places(total, 2, start, months)
+}
+
+/// The equal-months plan of `total` under `rounding`: the cent rule
+/// ([`amortization_plan`]), or each month a whole number of the currency's
+/// minor unit (¥100,000 over 3 months is ¥33,333, ¥33,333, ¥33,334).
+/// A currency with two places gives the same plan under both rules.
+///
+/// ```text
+/// GOAL: an equal-months plan whose months are whole units of its
+///       currency.
+/// SOURCE: BS-prepaid-1, BS-prepaid-4 (D-72); the arithmetic and its
+///         laws are kernel::even_parts (BS-prepaid-1, law 43).
+/// INVARIANTS:
+///   1. The amounts sum to `total` exactly; all but the last are equal and
+///      a whole multiple of the rule's unit.
+///   2. Under `Cent`, exactly `amortization_plan`; under `MinorUnit` at
+///      two places, the same call, so the same figures.
+///   3. Never panics: the refusals are `amortization_plan`'s.
+/// ```
+pub fn amortization_plan_under(
+    rounding: ScheduleRounding,
+    total: Money,
+    start: NaiveDate,
+    months: u32,
+) -> Result<Vec<(NaiveDate, Decimal)>, LedgerError> {
+    plan_in_places(total.amount, rounding.places(total.currency), start, months)
+}
+
+/// The equal-months plan to `places` decimal places: the dates, and
+/// `kernel::even_parts` for the amounts.
+fn plan_in_places(
+    total: Decimal,
+    places: u32,
+    start: NaiveDate,
+    months: u32,
+) -> Result<Vec<(NaiveDate, Decimal)>, LedgerError> {
     let too_large = || LedgerError::TooLargeToCompute(format!("a {months}-month plan of {total}"));
     if total.abs() >= EXACT_LIMIT {
         return Err(too_large());
     }
-    // Two places whatever the currency: the monthly-even plan's cent rule is
-    // replay-frozen, and moving it to the currency's minor unit is K-U5
-    // (owner decision D-72), not this behaviour-preserving rounding unit.
-    let each = kernel::round_places(
-        total
-            .checked_div(Decimal::from(months))
-            .ok_or_else(too_large)?,
-        2,
-        kernel::Rounding::HalfToEven,
-    )
-    .ok_or_else(too_large)?;
     let first = start
         .with_day(1)
         .ok_or(LedgerError::DateOutOfRange(start))?;
-    (0..months)
+    // Every month end first, so a plan running past chrono's last day is
+    // refused (DateOutOfRange) before a month is allocated.
+    let ends = (0..months)
         .map(|i| {
-            let month = first
+            first
                 .checked_add_months(Months::new(i))
-                .ok_or(LedgerError::DateOutOfRange(start))?;
-            let amount = if i + 1 == months {
-                each.checked_mul(Decimal::from(months - 1))
-                    .and_then(|before| total.checked_sub(before))
-                    .ok_or_else(too_large)?
-            } else {
-                each
-            };
-            Ok((month_end(month), amount))
+                .map(month_end)
+                .ok_or(LedgerError::DateOutOfRange(start))
         })
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    let step = Decimal::try_from_i128_with_scale(1, places).map_err(|_| too_large())?;
+    let mut parts = vec![Decimal::ZERO; ends.len()];
+    kernel::even_parts(total, step, &mut parts).ok_or_else(too_large)?;
+    present_as_rounded(&mut parts, total, places);
+    Ok(ends.into_iter().zip(parts).collect())
+}
+
+/// The scale the plan's figures print at: what `kernel::round_places` and
+/// the plan's own subtraction gave every schedule before the kernel
+/// computed it. `even_parts` rounds with `round_step`, which returns an
+/// amount that is already a whole multiple of the step as it came (so
+/// 0.250 stays 0.250) and a zero as a bare 0; the plan has always shown
+/// such an amount at `places` places (0.25, 0.00), and a posted month's
+/// replay compares its journaled lines as text, so the same figure must
+/// print the same. The last month is `total` less the others, whose scale
+/// is the wider of the two (or the total's own, when the others are zero).
+/// Values never change: every rescale below is
+/// to or from trailing zeros, which the debug assertions check.
+///
+/// A one-month plan is its total, left as the kernel gives it. A zero
+/// total is never registered (validate_schedule_shape), but the plan of
+/// one prints as it always did: every month a bare 0 (the kernel's last
+/// month is `0 - 0`, which `Decimal` prints as `-0`).
+fn present_as_rounded(parts: &mut [Decimal], total: Decimal, places: u32) {
+    if total.is_zero() {
+        for part in parts.iter_mut() {
+            *part = Decimal::ZERO;
+        }
+        return;
+    }
+    let Some((last, rest)) = parts.split_last_mut() else {
+        return;
+    };
+    let Some(&first) = rest.first() else {
+        return;
+    };
+    let mut each = first;
+    if each.scale() > places || each.is_zero() {
+        each.rescale(places);
+        debug_assert_eq!(each, first, "rescaling an amount never changes it");
+    }
+    // Subtracting a zero (a month that rounded to nothing) leaves the
+    // total as it was, scale included; any other subtrahend widens it.
+    if !each.is_zero() {
+        let before = *last;
+        last.rescale(total.scale().max(each.scale()));
+        debug_assert_eq!(*last, before, "rescaling an amount never changes it");
+    }
+    for part in rest.iter_mut() {
+        *part = each;
+    }
 }
 
 /// The schedule's postings by the day: one per calendar month the span
@@ -287,8 +445,21 @@ pub fn plan_for(
     start: NaiveDate,
     months: u32,
 ) -> Result<Vec<(NaiveDate, Decimal)>, LedgerError> {
+    plan_under(ScheduleRounding::Cent, convention, total, start, months)
+}
+
+/// [`plan_for`] for a schedule written under `rounding`: the rule decides
+/// only a monthly_even plan's months (a daily plan always rounds to the
+/// currency's minor unit).
+pub fn plan_under(
+    rounding: ScheduleRounding,
+    convention: ScheduleConvention,
+    total: Money,
+    start: NaiveDate,
+    months: u32,
+) -> Result<Vec<(NaiveDate, Decimal)>, LedgerError> {
     match convention {
-        ScheduleConvention::MonthlyEven => amortization_plan(total.amount, start, months),
+        ScheduleConvention::MonthlyEven => amortization_plan_under(rounding, total, start, months),
         ScheduleConvention::Daily => daily_plan(total, start, months),
     }
 }
@@ -317,6 +488,18 @@ pub fn plan_for(
 ///      BECAUSE such a month could never post.
 /// ```
 pub fn validate_schedule(new: &NewSchedule, chart: &ChartOfAccounts) -> Result<(), LedgerError> {
+    validate_schedule_under(new, ScheduleRounding::Cent, chart)
+}
+
+/// [`validate_schedule`] for a schedule that will be written under
+/// `rounding` (the store's choice, by the journal feature
+/// `schedule_minor_unit`): under `MinorUnit` a yen schedule's months are
+/// whole yen, so ¥1,000 over 3 months (¥333, ¥333, ¥334) is accepted.
+pub fn validate_schedule_under(
+    new: &NewSchedule,
+    rounding: ScheduleRounding,
+    chart: &ChartOfAccounts,
+) -> Result<(), LedgerError> {
     validate_schedule_shape(new, chart)?;
     crate::calendar::check(new.start)?;
     let past_the_calendar = || {
@@ -361,7 +544,7 @@ pub fn validate_schedule(new: &NewSchedule, chart: &ChartOfAccounts) -> Result<(
     }
     crate::ledger::check_minor_units(new.total)?;
     let currency = new.total.currency;
-    if let Some((_, fine)) = plan_for(new.convention, new.total, new.start, new.months)?
+    if let Some((_, fine)) = plan_under(rounding, new.convention, new.total, new.start, new.months)?
         .into_iter()
         .find(|(_, a)| crate::ledger::check_minor_units(Money::new(*a, currency)).is_err())
     {
@@ -428,7 +611,13 @@ impl AmortizationSchedule {
     /// [`daily_plan`]); refused, never a panic, for one that can't be
     /// computed.
     pub fn plan(&self) -> Result<Vec<(NaiveDate, Decimal)>, LedgerError> {
-        plan_for(self.convention, self.total, self.start, self.months)
+        plan_under(
+            self.rounding,
+            self.convention,
+            self.total,
+            self.start,
+            self.months,
+        )
     }
 
     /// The first day it covers: its start (daily), or the 1st of its start's
@@ -650,6 +839,24 @@ mod tests {
         NaiveDate::from_ymd_opt(y, m, day).unwrap()
     }
 
+    /// A zero total's plan prints every month as a bare 0, as the cent
+    /// rule always has: never `-0` (the K-U5 review's probe found the last
+    /// month of a zero plan printed `-0`; a replayed month is compared as
+    /// text).
+    #[test]
+    fn a_zero_plan_prints_zero_every_month() {
+        for months in [1, 2, 3, 12] {
+            for scale in [0, 2, 5] {
+                let plan = amortization_plan(Decimal::new(0, scale), d(2026, 1, 1), months)
+                    .expect("a zero total plans");
+                assert!(
+                    plan.iter().all(|(_, a)| a.to_string() == "0"),
+                    "{months} months at scale {scale}: {plan:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn plans_sum_exactly_and_land_on_month_ends() {
         let plan = amortization_plan(Decimal::new(100_000, 2), d(2026, 11, 15), 3).unwrap();
@@ -723,6 +930,7 @@ mod tests {
             pl_account: 2,
             posted: BTreeSet::new(),
             convention: ScheduleConvention::MonthlyEven,
+            rounding: ScheduleRounding::Cent,
             postings: BTreeMap::new(),
         };
         assert!(s.due(NaiveDate::MAX).is_err());

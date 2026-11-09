@@ -56,14 +56,34 @@ equal months, the last absorbing rounding, forever: a posted month's
 replay re-derives its plan. Monthly-even schedules journaled before
 D-72 replay the cent rule (two places for every currency); only new
 schedules round to the currency's minor unit. Schedules an earlier
-version took mid-month under equal months replay as they were. (The
-engine change is unit K-U5's; this note records the claim.)
+version took mid-month under equal months replay as they were. The rule
+is the schedule's own flag, journaled on its `schedule.registered` line
+(`"rounding": "minor_unit"`, absent for the cent rule), never the
+sequence position of the journal feature `schedule_minor_unit`; the store
+writes it only in books that declared the feature, which an older reader
+refuses as newer books.
 
-**Claims:** partly (the replay half is implemented; moving new monthly-even
-schedules to the currency's minor unit is K-U5, not landed)
+**Claims:** yes
 
-**Enforced:** `schedules::amortization_plan` (the cent rule, kept for
-replay), `Ledger::replay_register_schedule`, `Ledger::schedule_month_hold`.
+**Enforced:** `kernel::even_parts` (the arithmetic, law 43),
+`schedules::amortization_plan` (the cent rule, kept for replay),
+`schedules::amortization_plan_under`, `ScheduleRounding`,
+`AmortizationSchedule`, `Ledger::register_schedule_under`,
+`Ledger::replay_register_schedule`, `Ledger::replay_register_schedule_under`,
+`Ledger::schedule_month_hold`, `Store::register_schedule`,
+`SCHEDULE_MINOR_UNIT`, `KNOWN_FEATURES`.
 **Checked:** `defect9_legacy_schedules_stay_monthly_even`,
 `prop_monthly_even_plan_is_unchanged`,
-`a_schedule_month_posted_again_waits_for_month_reposting_and_replays`.
+`a_schedule_month_posted_again_waits_for_month_reposting_and_replays`,
+`a_jpy_and_a_kwd_plan_are_whole_units`,
+`the_cent_rule_is_unchanged_and_usd_is_the_same_under_both_rules`,
+`prop_the_cent_rule_is_the_legacy_rule`,
+`a_schedule_carries_the_rule_it_was_written_under`,
+`new_books_round_a_yen_and_a_dinar_schedule_to_the_unit`,
+`a_schedule_written_before_the_feature_replays_to_the_same_plan_after_it`,
+`books_without_the_feature_keep_the_cent_rule_and_write_nothing_new`,
+`an_unknown_rounding_is_newer_not_corrupt`,
+`schedule_minor_unit_is_its_own_feature`, `even_parts_sum`,
+`even_parts_all_but_last_equal`, `even_parts_last_absorbs`,
+`even_parts_within_half_step`,
+`even_parts_refuses_no_months_and_a_bad_step`.

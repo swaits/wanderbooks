@@ -55,6 +55,7 @@ pub const KNOWN_FEATURES: &[&str] = &[
     VENDOR_1099_DECISIONS,
     MONTH_REPOSTING,
     SCHEDULE_CONVENTION,
+    SCHEDULE_MINOR_UNIT,
     ASSET_BASIS,
     TAX_CATEGORIES_GAIN_EXEMPT,
     DISPOSAL_BEFORE_SERVICE,
@@ -166,6 +167,18 @@ pub const MONTH_REPOSTING: &str = "month_reposting";
 /// `monthly_even`). An older version would read a daily schedule as equal
 /// months (P3 defect 9, plan/served.md D-11).
 pub const SCHEDULE_CONVENTION: &str = "schedule_convention";
+
+/// Feature: `schedule.registered` carries `rounding` (`minor_unit`): a
+/// monthly_even schedule written after this feature rounds each month to
+/// its currency's minor unit (a yen schedule in whole yen, a dinar one in
+/// thousandths); one with no `rounding` is the cent rule, two places for
+/// every currency, as every schedule before it is (BS-prepaid-4, D-72).
+/// An older version would read the schedule under the cent rule and
+/// refuse its first month as a posting that doesn't match its plan, or,
+/// replaying a month it can derive, post ¥33,333.33 where the books say
+/// ¥33,333. The flag rides on the schedule, never on where the feature
+/// was declared: a schedule written before it replays as it was posted.
+pub const SCHEDULE_MINOR_UNIT: &str = "schedule_minor_unit";
 
 /// Feature: `asset.basis_set`, a new event type: an asset's basis facts
 /// with the value at contribution and the §704(c) method (P3, defect 13).
@@ -1086,6 +1099,43 @@ mod tests {
         ));
         let up = older.upgrade().expect("waits for it");
         assert_eq!(up.adds(), vec!["the journal feature audits"]);
+    }
+
+    /// The version before K-U5 (every feature but `schedule_minor_unit`)
+    /// stops at the declaration as newer, so it never reads a ¥33,333
+    /// month under the cent rule (and refuses, or posts ¥33,333.33 where
+    /// the books say ¥33,333); and a `schedule.registered` naming a
+    /// rounding this version doesn't know is newer, never corrupt
+    /// (BS-prepaid-4, D-72, BS-format-1). Books that declared every
+    /// earlier feature still wait for it.
+    #[test]
+    fn schedule_minor_unit_is_its_own_feature() {
+        assert!(KNOWN_FEATURES.contains(&SCHEDULE_MINOR_UNIT));
+        let before: Vec<&str> = KNOWN_FEATURES
+            .iter()
+            .copied()
+            .filter(|f| *f != SCHEDULE_MINOR_UNIT)
+            .collect();
+        let l = line(
+            FORMAT_SET,
+            json!({"format": 2, "features": [SCHEDULE_CONVENTION, SCHEDULE_MINOR_UNIT]}),
+        );
+        match declared_knowing(&l, &before) {
+            Err(StoreError::NewerJournal { need, .. }) => {
+                assert_eq!(need, "journal features schedule_minor_unit")
+            }
+            other => panic!("expected NewerJournal, got {other:?}"),
+        }
+        let older = JournalFormat {
+            format: 2,
+            features: before.iter().map(|f| f.to_string()).collect(),
+        };
+        assert!(matches!(
+            older.require_feature(SCHEDULE_MINOR_UNIT),
+            Err(StoreError::FormatUpgradePending { .. })
+        ));
+        let up = older.upgrade().expect("waits for it");
+        assert_eq!(up.adds(), vec!["the journal feature schedule_minor_unit"]);
     }
 
     /// This version's format: the newest it reads, every feature it

@@ -4,11 +4,15 @@ name: check
 on:
   push:
   pull_request:
-# A newer push to the same branch makes an older check pointless: it is
-# cancelled, so only the newest reports.
+# On a pull request a newer push makes an older check pointless: it is
+# cancelled, so only the newest reports. On main a running check finishes:
+# the job takes about fifty minutes, and on 2026-11-09 a morning of pushes
+# cancelled every run, so nothing on main was checked for hours. A newer
+# push waits its turn (GitHub keeps only the newest waiting run), so the
+# tip is always checked next and no half-run check is thrown away.
 concurrency:
   group: check-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 jobs:
   check:
     runs-on: ubuntu-24.04

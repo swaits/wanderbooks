@@ -4207,6 +4207,54 @@ open/closed ids (a remembered size must not leak between them);
 equality gates, the `agent_later` flag.
 *(Consolidated, with the other units' targets, in "P12: the checklists" at the end of this file.)*
 
+## V-D2: tests where coverage was thinnest (2026-11-09)
+
+The V-D report (`docs/coverage-floor.md`) named the holes; V-D2 wrote 94
+tests that reach them. Each goes through the public API, names the rule it
+encodes in its doc comment (a `BS-` id, or a `WB-` product rule), and where
+it drives a command shows that a refusal changes nothing (the whole `Ledger`
+equals its clone; `Ledger: PartialEq`) and a success moves the numbers its
+rule says.
+
+| Area | File (tests) | Rules it encodes |
+|---|---|---|
+| `ledger-store` `reconcilable.rs` (0% -> 100%) | `ledger-store/tests/reconcilable.rs` (9) | the module's own INVARIANTS 1 and 2 and its SOURCE (`docs/parties-and-attachments.md` "Reconciliations"; no `BS-`/`WB-` id covers it yet, see the finding below): which accounts are reconciled (cash by name or by configured code, cards by the recorded method else the name, liabilities with a statement), and when one is due (a posted line through last month's end, no standing reconciliation reaching it; a voided one reaches nothing) |
+| `evidence.rs` (34% -> 100%, branches 9% -> 96%) | `ledger-core/tests/evidence_gate.rs` (19) | BS-entry-5, WB-entry-5, WB-entry-6 (strictly above the threshold, required and exempt accounts, the split-group rule, each exempt origin with its source, debits past exact arithmetic never a panic); WB-ledger-15 (an annotation's closed list of fields, trimmed, a positive number, a non-negative amount, a date in the calendar) |
+| `conventions.rs` (78% -> 97%) | `ledger-core/tests/conventions_refusals.rs` (18) | WB-ledger-5, -6, -9, -10 and the module's INVARIANTS 1 to 6: slug ids and no TIN, revisions and retirement, template shares summing to exactly 1, approval rules and the fingerprint, decisions and open items in order, source corrections, drafting from a template |
+| `settings.rs` (91% -> 98%) | `ledger-core/tests/settings_refusals.rs` (10) | WB-ledger-5, -6, -8, BS-entry-4 and the module's INVARIANTS 1 to 8: members, payment methods, replay's shapes, a change all or nothing, defaults |
+| `audit.rs` (80% -> 94%, branches 61% -> 84%) | `ledger-core/tests/audit_branches.rs` (14) | BS-ledger-13 / WB-ledger-16, BS-partner-1, BS-entry-5, D-9: severities and subjects, the cash flow and control checks, a split drifts only past a minor unit, evidence only through the date, the bar's parse and edges |
+| `ledger.rs` command steps (86% -> 97%) | `ledger-core/tests/document_commands.rs` (10), `ledger_edits.rs` (8), `replay_documents.rs` (6) | BS-arap-2, -5, -6 (send, settle, write-off, aging), BS-entry-4 (replay never refuses a line it cannot match), BS-ledger-19 / WB-ledger-10 (renumbering), BS-partner-8 / WB-partner-4 (party text), BS-asset-1 (disposal), the fiscal-year rule (Form 1128), WB-ledger-15 (annotations, `entry.settles`) |
+
+Coverage, from `just coverage` before and after (`docs/coverage-floor.md`
+has the per-file table): `ledger-core` 89.79% -> 95.45% lines, 82.26% ->
+88.90% branches; `ledger-store` 92.09% -> 92.58% lines. The floors rose to
+those numbers.
+
+**Finding (fixed in its own commit).** `reconcilable::cash_accounts` returned
+the name-matched cash accounts in `HashMap` order (`ChartOfAccounts::all` is
+"order unspecified"), so `books.digest`'s `unreconciled_accounts` could list
+the same books' accounts in a different order from run to run; `card_accounts`
+beside it sorts by account id. The test that found it
+(`cash_accounts_come_in_chart_order`) was committed `#[ignore]`d with the
+finding in its reason; the fix sorts the list and is the commit after the
+tests, so it can be dropped without touching them.
+
+**Not reached, by design.** The "cannot be made" arms of the audit's
+equation, control and register checks need a sum past `Decimal`'s range; a
+journal line is capped at 1e15 (`kernel::MAX_LINE_AMOUNT`), so no posted
+book reaches them, and a draft is not read by those statements. The same
+holds for most of the roughly 190 lines left in `ledger.rs`: replay-only and
+overflow refusals.
+
+**For P12 (mutation targets).** `evidence::Policy::reason_for` (the strict
+`<=` and the exempt-all test), `Policy::split_group` (the three equalities
+that make a group, the reversal skip, the `total > threshold` end),
+`conventions::check_template` (the share bounds and the sum), `check_rule`
+(the amount bound), `Ledger::settlement_lines` (each refusal's order),
+`Ledger::mark_sent_steps` (the day of the send against a later void),
+`audit::check_split` (`> unit`, not `>=`), `AttestationBar::parse`'s range
+(1..=64), `reconcilable::reconciliation_due` (`<=` through, `<` reconciled).
+
 ## P12: the checklists
 
 The **For P12** paragraphs above (kept where they were written, with their

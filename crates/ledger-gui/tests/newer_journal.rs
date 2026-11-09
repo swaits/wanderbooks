@@ -4,7 +4,7 @@
 //! ```text
 //! GOAL: Tobin, Mo or the CPA, on an older viewer, learn to update it,
 //!       not that the books are damaged.
-//! SOURCE: BS-format-1; plan/served.md 5.1 (the viewer reads the journal
+//! SOURCE: WB-format-1; plan/served.md 5.1 (the viewer reads the journal
 //!         directly, so it meets the same gate).
 //! ```
 

@@ -3,8 +3,16 @@ use crate::*;
 impl Books<'_> {
     pub(crate) fn answer_iif(&self, q: &Query) -> Result<Value, Refusal> {
         let as_of = self.q_day(q)?;
-        let iif = export_iif(self.l(), &self.ex.setup.cash_accounts, as_of)
-            .map_err(|e| engine_refusal(RuleId::new(Area::Format, 2), e))?;
+        let iif = export_iif(self.l(), &self.ex.setup.cash_accounts, as_of).map_err(|e| {
+            // An entry on more than one A/R or A/P account is BS-format-10's
+            // refusal; every other IIF refusal stays BS-format-2's.
+            match e {
+                ledger_import::IifError::SeveralReceivablePayableAccounts { .. } => {
+                    Refusal::of_reason("several_receivable_payable_accounts")
+                }
+                other => engine_refusal(RuleId::new(Area::Format, 2), other),
+            }
+        })?;
         match q.name.as_str() {
             "iif_lines" => {
                 let mut lines: Vec<&str> = iif.text.split("\r\n").collect();
@@ -56,9 +64,9 @@ pub(crate) const FORMAT_QUERIES: [(&str, &str); 2] = [
     ),
 ];
 
-/// A format query's shape, checked here; its values are checked by
-/// [`FORMAT_QUERIES`]' test.
-pub(crate) fn check_format_shape(ex: &Example, x: &Expect) {
+/// A refused format query (BS-format-10): the appendix and the day, no
+/// values.
+pub(crate) fn check_format_refused(ex: &Example, x: &Expect) {
     assert_eq!(
         ex.appendix.as_deref(),
         Some("formats"),
@@ -66,7 +74,6 @@ pub(crate) fn check_format_shape(ex: &Example, x: &Expect) {
         ex.id,
         x.query
     );
-    // ledger-package reads the as_of itself: given, never defaulted.
     assert!(x.as_of.is_some(), "{}: {} gives as_of", ex.id, x.query);
     day(ex, x);
     assert!(
@@ -75,6 +82,15 @@ pub(crate) fn check_format_shape(ex: &Example, x: &Expect) {
         ex.id,
         x.query
     );
+}
+
+/// A format query's shape, checked here; its values are checked by
+/// [`FORMAT_QUERIES`]' test.
+pub(crate) fn check_format_shape(ex: &Example, x: &Expect) {
+    check_format_refused(ex, x);
+    if x.refused.is_some() {
+        return;
+    }
     match (x.query.as_str(), x.values(&ex.id)) {
         ("iif_lines", Values::Lines(_)) => {}
         ("iif_changes", Values::Rows(rows)) => {

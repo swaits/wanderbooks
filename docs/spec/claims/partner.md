@@ -128,7 +128,14 @@ the books' last fours).
 `tests/spec_parties.rs`, `tests/spec_vault.rs` (every response, every
 file handed over, the server's log, and every file in the books' folder
 outside `vault/` and the files kept for their download scanned for the
-TINs in any formatting), `tests/tin_files.rs`
+TINs in any formatting), bookspec examples
+`partner-a-return-takes-the-full-tin-from-the-vault` (BS-partner-8, the
+option picked: the books hold 6789 and the return takes 123-45-6789 from
+the vault) and `partner-a-return-with-no-full-tin-is-refused` (the nowhere
+option, which wanderbooks does not pick: the return is refused
+tin_not_held), the first run by `every_bookspec_example_holds` and
+`the_runner_reports_every_claimed_rule_green`, the second skipped;
+`tests/tin_files.rs`
 (`a_tin_bearing_file_is_refused_from_every_session_and_after_a_restart`,
 `text_with_a_vault_tin_or_a_printed_one_is_refused_and_a_bank_export_is_not`,
 `text_probing_for_a_tin_is_refused_alike_by_every_filing_tool`), and the

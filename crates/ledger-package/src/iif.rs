@@ -38,7 +38,7 @@ pub fn export_iif(
     ledger: &Ledger,
     cash_codes: &[String],
     as_of: NaiveDate,
-) -> Result<ledger_import::Iif, String> {
+) -> Result<ledger_import::Iif, ledger_import::IifError> {
     use ledger_import::{QbAccountType as Qb, iif_accounts, iif_classes, journal_to_iif};
     let fixed: std::collections::HashSet<AccountId> = ledger
         .registered_assets()
@@ -71,5 +71,5 @@ pub fn export_iif(
         .posted_entries()
         .filter(|e| e.date() <= as_of && !closes.contains(&e.id()))
         .collect();
-    journal_to_iif(&accounts, &iif_classes(ledger), &entries).map_err(|e| e.to_string())
+    journal_to_iif(&accounts, &iif_classes(ledger), &entries)
 }

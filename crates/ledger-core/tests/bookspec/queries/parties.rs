@@ -7,7 +7,13 @@ impl Books<'_> {
         let l = self.l();
         let sources = self.payment_accounts()?;
         let r = vendor_1099_report(l, year, None, &sources, &self.party_members, Some(to))
-            .map_err(|e| engine_refusal(RuleId::new(Area::Tax1099, 1), e))?;
+            .map_err(|e| match e {
+                // A year whose threshold is not published is BS-1099-2's
+                // refusal, never a guess (the engine picks
+                // refuse-an-unknown-year).
+                LedgerError::RuleNotKnown { .. } => Refusal::of_reason("unknown_1099_year"),
+                other => engine_refusal(RuleId::new(Area::Tax1099, 1), other),
+            })?;
         let _ = from;
         let mut m = JsonMap::new();
         for (name, vendor) in &self.payees {
@@ -41,7 +47,10 @@ impl Books<'_> {
             &self.party_members,
             Some(to),
         )
-        .map_err(|e| engine_refusal(RuleId::new(Area::Tax1099, 1), e))?;
+        .map_err(|e| match e {
+            LedgerError::RuleNotKnown { .. } => Refusal::of_reason("unknown_1099_year"),
+            other => engine_refusal(RuleId::new(Area::Tax1099, 1), other),
+        })?;
         let line = r.vendors.iter().find(|l| l.vendor_id == v).ok_or_else(|| {
             Refusal::new(
                 RuleId::new(Area::Tax1099, 1),
@@ -157,6 +166,34 @@ impl Books<'_> {
             .and_then(|p| p.tin_last4())
             .unwrap_or_default();
         Ok(json_figures([("tin_last4".to_string(), got.to_string())]))
+    }
+
+    /// The full TIN a return produced for `party` carries (BS-partner-8,
+    /// outside-the-books): read from the vault outside the books, never
+    /// from the books' records, which hold only the last four. A party
+    /// whose number the vault does not hold is refused `tin_not_held`.
+    pub(crate) fn return_tin(&self, party: PartyId) -> Result<String, Refusal> {
+        let vault = self
+            .vault
+            .as_ref()
+            .ok_or_else(|| Refusal::of_reason("tin_not_held"))?;
+        let tin = vault
+            .tin(party)
+            .map_err(|_| Refusal::of_reason("tin_not_held"))?
+            .ok_or_else(|| Refusal::of_reason("tin_not_held"))?;
+        Ok(tin.formatted())
+    }
+
+    pub(crate) fn answer_return_tin(&self, q: &Query) -> Result<Value, Refusal> {
+        let name = q.party.as_deref().ok_or_else(|| self.missing("party"))?;
+        let party = *self.parties.get(name).ok_or_else(|| {
+            Refusal::new(
+                RuleId::new(Area::Partner, 8),
+                format!("party {name:?} not in setup"),
+            )
+        })?;
+        let tin = self.return_tin(party)?;
+        Ok(json_figures([("tin".to_string(), tin)]))
     }
 
     pub(crate) fn answer_project(&self, q: &Query) -> Result<Value, Refusal> {
@@ -475,6 +512,30 @@ pub(crate) fn check_project(b: &Books<'_>, x: &Expect) {
 /// Check one `party_tin_last4` expectation: the last four of the party's
 /// TIN the books keep (its TIN facts', else its W-9's; `""` for none:
 /// BS-partner-2).
+/// Check one `return_tin` expectation: the full TIN a return produced for
+/// the party carries, taken from the vault outside the books
+/// (BS-partner-8's outside-the-books option).
+pub(crate) fn check_return_tin(b: &Books<'_>, x: &Expect) {
+    let ex = b.ex;
+    assert!(
+        x.from.is_none() && x.to.is_none() && x.as_of.is_none(),
+        "{}: return_tin takes no dates",
+        ex.id
+    );
+    let party = expect_party(b, x);
+    exactly(ex, x, &["tin".to_string()].into());
+    let got = b
+        .return_tin(party)
+        .unwrap_or_else(|r| panic!("{}: return_tin refused ({})", ex.id, r.reason));
+    assert_eq!(
+        got,
+        x.figures(&ex.id)["tin"],
+        "{}: {:?}'s return TIN",
+        ex.id,
+        x.party
+    );
+}
+
 pub(crate) fn check_party_tin_last4(b: &Books<'_>, x: &Expect) {
     let ex = b.ex;
     assert!(

@@ -5,7 +5,7 @@
 //! ```text
 //! GOAL: a yen schedule's months are whole yen, and what an earlier
 //!       version journaled never moves.
-//! SOURCE: BS-prepaid-4, BS-format-1, BS-entry-8; plan/served.md D-72
+//! SOURCE: BS-prepaid-4, WB-format-2, BS-entry-8; plan/served.md D-72
 //!         (owner, 2026-11-08).
 //! INVARIANTS:
 //!   1. In books that declared the feature, a monthly_even schedule's

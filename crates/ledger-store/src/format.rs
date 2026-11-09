@@ -377,7 +377,7 @@ impl JournalFormat {
     /// ```text
     /// GOAL: an older wanderbooks never misreads newer books, and never
     ///       calls them corrupt.
-    /// SOURCE: BS-format-1; plan/served.md 5.1 (format gate).
+    /// SOURCE: WB-format-1; plan/served.md 5.1 (format gate).
     /// INVARIANTS:
     ///   1. Only lines that parsed, chained and kept their seq reach the
     ///      gate: damage stays JournalCorrupt.
@@ -647,7 +647,7 @@ fn newer(line: &JournalLine, need: String) -> StoreError {
 /// ```text
 /// GOAL: damage is never reported as books from a newer wanderbooks, and
 ///       books from a newer wanderbooks never as damage.
-/// SOURCE: BS-format-1 (the envelope and its hash are frozen across
+/// SOURCE: WB-format-1 (the envelope and its hash are frozen across
 ///         formats); docs/receipt-store.md "Line format" (a line's hash is
 ///         checked only by the next line's prev).
 /// INVARIANTS:

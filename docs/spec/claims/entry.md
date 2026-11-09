@@ -107,7 +107,13 @@ replay pair; `a_foreign_amount_and_a_rate_take_at_most_ten_places`),
 `out_of_range_amount_is_rejected`; `ledger-store` `tests/bounds.rs`,
 `tests/store.rs` `a_journaled_foreign_line_finer_than_ten_places_still_opens`;
 `ledger-cli` `server.rs` `periods_are_a_year_and_a_month`,
-`dates_are_four_digit_years_and_real_days`.
+`dates_are_four_digit_years_and_real_days`; bookspec examples
+`entry-a-date-past-9999-is-refused` and
+`entry-an-amount-past-the-line-cap-is-refused` (BS-entry-7, the option picked:
+the books refuse `try_create_entry`'s date past 9999 and `add_line`'s amount
+past the cap, read off `LedgerError::DateOutOfRange` and
+`LedgerError::AmountOutOfRange`), run by `every_bookspec_example_holds` and
+`the_runner_reports_every_claimed_rule_green`.
 
 ### Product rules
 

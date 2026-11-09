@@ -9,7 +9,7 @@
 //!       the viewer and bookspec use.
 //! SOURCE: BS-statement-5 (DECISION, owner, 2026-10-21; job
 //!         costing; ASC 450-30-25-1 for on-spec work), BS-period-3 (omitted
-//!         dates), BS-format-1 (journal feature `projects`).
+//!         dates), WB-format-2 (journal feature `projects`).
 //! INVARIANTS:
 //!   1. Every field is checked before anything is written; a refusal
 //!      journals nothing.

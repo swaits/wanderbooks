@@ -165,10 +165,14 @@ pub(crate) fn every_bookspec_example_holds() {
     // BS-prepaid-2's equal-months and BS-ledger-20's refuse (each option's
     // example, so no allow-list grows), BS-entry-6's check-only-when-posting
     // and BS-ledger-17's reversal-needs-its-own (wanderbooks refuses a line on
-    // a header as it is added, and a reversal needs no evidence of its own).
+    // a header as it is added, and a reversal needs no evidence of its own),
+    // and BS-period-4's allow-partial-overlap, BS-1099-2's
+    // carry-the-last-amount and BS-partner-8's nowhere (wanderbooks nests
+    // periods, refuses a year whose threshold it does not know, and keeps
+    // the full TIN outside the books).
     assert_eq!(
         skipped.len(),
-        13,
-        "the thirteen unpicked-option examples: {skipped:?}"
+        16,
+        "the sixteen unpicked-option examples: {skipped:?}"
     );
 }

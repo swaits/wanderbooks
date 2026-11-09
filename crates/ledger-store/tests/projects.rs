@@ -6,7 +6,7 @@
 //! GOAL: a project's record is journaled once, whole, replays exactly,
 //!       and books waiting for their format upgrade can still add
 //!       projects by name but write nothing an older reader would misread.
-//! SOURCE: BS-statement-5, BS-format-1; D-39 (the owner's upgrade).
+//! SOURCE: BS-statement-5, WB-format-2; D-39 (the owner's upgrade).
 //! ```
 
 use chrono::NaiveDate;

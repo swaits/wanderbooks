@@ -12,6 +12,12 @@
 //! branch are counted, and that count is a floor-style constant: it
 //! changes only on purpose, in the same commit as the constant.
 //!
+//! A bookspec id whose record is retired is no source: the retired
+//! record states what the rule was, not what governs now. It is kept
+//! only in a historical mention that names a live successor in the same
+//! clause ("formerly BS-ledger-13, now WB-ledger-16"), so a reader can
+//! follow the rule forward without the code resting on a retired id.
+//!
 //! The second check flags any retired rule number (the old wanderbooks
 //! numbering, a word-boundary capital letter, hyphen and a number from
 //! 1 to 45) in every tracked text file, outside the excluded index and
@@ -146,6 +152,8 @@ fn is_path_like(token: &str) -> bool {
 struct ClauseCtx<'a> {
     root: &'a Path,
     bs_ids: &'a BTreeSet<String>,
+    /// The retired records' ids and why each was retired.
+    retired_bs: &'a BTreeMap<String, String>,
     wb_ids: &'a BTreeSet<String>,
     identifiers: &'a BTreeSet<String>,
     basenames: &'a BTreeSet<String>,
@@ -158,15 +166,29 @@ fn check_clause(clause: &str, ctx: &ClauseCtx<'_>, bad: &mut Vec<String>, at: &s
     };
     let mut errors: Vec<String> = Vec::new();
     let mut cited = false;
-    for id in ids_in(text, "BS-") {
+    let bs_ids = ids_in(text, "BS-");
+    let wb_ids = ids_in(text, "WB-");
+    // A live rule named in the same clause is a retired id's successor:
+    // the retirement names it, or the claims file does.
+    let successor = wb_ids.iter().any(|id| ctx.wb_ids.contains(id))
+        || bs_ids
+            .iter()
+            .any(|id| ctx.bs_ids.contains(id) && !ctx.retired_bs.contains_key(id));
+    for id in &bs_ids {
         cited = true;
-        if !ctx.bs_ids.contains(&id) {
+        if !ctx.bs_ids.contains(id) {
             errors.push(format!("unknown bookspec id {id}"));
+        } else if let Some(reason) = ctx.retired_bs.get(id)
+            && !successor
+        {
+            errors.push(format!(
+                "retired bookspec id {id} is no source ({reason}); cite the rule that states it now, or name its successor in this clause"
+            ));
         }
     }
-    for id in ids_in(text, "WB-") {
+    for id in &wb_ids {
         cited = true;
-        if !ctx.wb_ids.contains(&id) {
+        if !ctx.wb_ids.contains(id) {
             errors.push(format!("unknown product rule {id}"));
         }
     }
@@ -255,6 +277,24 @@ pub(crate) fn every_source_line_cites_an_existing_rule_or_source() {
         .map(|r| r.id.to_string())
         .collect();
     assert!(!bs_ids.is_empty(), "the pinned bookspec has rules");
+
+    let retired_bs: BTreeMap<String, String> = bookspec_checker::records()
+        .iter()
+        .filter(|r| r.is_retired())
+        .map(|r| {
+            (
+                r.id.to_string(),
+                r.retired
+                    .as_ref()
+                    .map(|retired| retired.reason.clone())
+                    .unwrap_or_default(),
+            )
+        })
+        .collect();
+    assert!(
+        !retired_bs.is_empty(),
+        "the pinned bookspec has retired rules"
+    );
 
     let claims_dir = root.join("docs/spec/claims");
     let mut wb_ids = BTreeSet::new();
@@ -350,6 +390,7 @@ pub(crate) fn every_source_line_cites_an_existing_rule_or_source() {
             let ctx = ClauseCtx {
                 root: &root,
                 bs_ids: &bs_ids,
+                retired_bs: &retired_bs,
                 wb_ids: &wb_ids,
                 identifiers: &identifiers,
                 basenames: &basenames,
@@ -375,6 +416,62 @@ pub(crate) fn every_source_line_cites_an_existing_rule_or_source() {
         "every source clause cites a rule or source that exists:\n{}",
         bad.join("\n")
     );
+}
+
+#[test]
+fn a_retired_bookspec_id_is_no_source() {
+    let bs_ids: BTreeSet<String> = ["BS-format-1", "BS-ledger-12", "BS-ledger-13", "BS-ledger-7"]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    let retired: BTreeMap<String, String> = [
+        ("BS-format-1", "wholly a product rule"),
+        ("BS-ledger-12", "kept as WB-ledger-15"),
+        ("BS-ledger-13", "kept as WB-ledger-16"),
+    ]
+    .into_iter()
+    .map(|(id, why)| (id.to_string(), why.to_string()))
+    .collect();
+    let wb_ids: BTreeSet<String> = ["WB-format-1", "WB-ledger-15", "WB-ledger-16"]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    let root = repo_root();
+    let empty: BTreeSet<String> = BTreeSet::new();
+    let ctx = ClauseCtx {
+        root: &root,
+        bs_ids: &bs_ids,
+        retired_bs: &retired,
+        wb_ids: &wb_ids,
+        identifiers: &empty,
+        basenames: &empty,
+    };
+    let problems = |text: &str| {
+        let mut bad = Vec::new();
+        check_clause(text, &ctx, &mut bad, "t");
+        bad
+    };
+
+    // A bare retired id is no source, however much plan or decision
+    // text surrounds it.
+    assert_eq!(problems("SOURCE: BS-ledger-13.").len(), 1);
+    assert_eq!(
+        problems("SOURCE: BS-ledger-12; plan/served.md P6.").len(),
+        1
+    );
+    assert_eq!(problems("SOURCE: BS-format-1; D-39.").len(), 1);
+
+    // A historical mention that names a live successor in the same
+    // clause is allowed, so the rule can be followed forward.
+    assert!(problems("SOURCE: formerly BS-ledger-13, now WB-ledger-16.").is_empty());
+    assert!(problems("SOURCE: formerly BS-ledger-12, now WB-ledger-15.").is_empty());
+    assert!(problems("SOURCE: formerly BS-format-1, now WB-format-1.").is_empty());
+    assert!(
+        problems("SOURCE: formerly BS-ledger-12, now BS-ledger-7 and WB-ledger-15.").is_empty()
+    );
+
+    // A live rule alone passes as it always did.
+    assert!(problems("SOURCE: BS-ledger-7.").is_empty());
 }
 
 fn retired_count(text: &str) -> usize {

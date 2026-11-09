@@ -191,7 +191,14 @@ None.
 `check_assign_role`, `Ledger::check_renumber_account` (an assigned role
 frees its code); the control guard and `Ledger::control_check` (B-38).
 **Checked:** `ledger-core` `tests/spec_roles.rs`, `tests/spec_documents.rs`;
-`ledger-store` replay of `role.assigned`.
+`ledger-store` replay of `role.assigned`; bookspec example
+`ledger-a-role-on-a-header-or-wrong-typed-account-is-refused` (BS-ledger-19,
+the option picked: the receivables role on a header account and the payables
+role on a postable revenue account are refused through `Store::assign_role`
+and `Ledger::check_assign_role`'s `ControlAccountMismatch`, and the chart is
+as it was), run by
+`every_bookspec_example_holds` and
+`the_runner_reports_every_claimed_rule_green`.
 
 ### Product rules
 

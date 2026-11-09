@@ -7,7 +7,7 @@
 //!       wherever they are evidence.
 //! SOURCE: plan/served.md P6 step 4 (defect 4) and step 5 (defect 10);
 //!         IZ-18 (no FIFO guess: `entry.settles` only); Rev. Proc. 98-25
-//!         (an audit trail); BS-ledger-12.
+//!         (an audit trail); WB-ledger-15.
 //! ```
 
 use super::*;
@@ -23,7 +23,7 @@ impl BooksServer {
     /// ```text
     /// GOAL: find a filed file by its exact bytes, its receipt number, or
     ///       what its text says.
-    /// SOURCE: plan/served.md P6 step 4; BS-ledger-12.
+    /// SOURCE: plan/served.md P6 step 4; WB-ledger-15.
     /// INVARIANTS:
     ///   1. EXACTLY one of sha256, receipt_number and text is given.
     ///   2. Withdrawn files are listed too, marked (a duplicate is found
@@ -96,7 +96,7 @@ impl BooksServer {
     /// ```text
     /// GOAL: record what a human read off a file, without touching the file
     ///       or the ledger's amounts.
-    /// SOURCE: plan/served.md P6 step 5 (defect 10); BS-ledger-12.
+    /// SOURCE: plan/served.md P6 step 5 (defect 10); WB-ledger-15.
     /// INVARIANTS:
     ///   1. Journaled as `attachment.annotated`; a refusal journals nothing.
     ///   2. The fields are the closed list of `AnnotationFieldsParam`; at
@@ -206,7 +206,7 @@ impl BooksServer {
     /// GOAL: hold identical files once, linked wherever they were evidence,
     ///       without ever leaving an entry the receipt policy covers with
     ///       none.
-    /// SOURCE: plan/served.md P6 step 4 (defect 4); BS-ledger-12.
+    /// SOURCE: plan/served.md P6 step 4 (defect 4); WB-ledger-15.
     /// INVARIANTS:
     ///   1. Records sharing one blob SHA are one set; the oldest is kept
     ///      and linked to every subject the others had.

@@ -22,6 +22,11 @@ workspace = true
 [dev-dependencies]
 criterion = "0.8.2"
 proptest = "1"
+# `tests/decimal_exact.rs`: an independent exact reference (arbitrary
+# precision rationals) for `Decimal`, the one numeric type the money paths
+# trust. Test-only, like every dev-dependency here.
+num-bigint = "0.4"
+num-rational = "0.4"
 # bookspec examples are TOML (tests/bookspec/), run on the engine's own
 # store (a dev-dependency only: the store depends on this crate), each in
 # a directory of its own.

@@ -1513,7 +1513,7 @@ impl BooksServer {
         } else {
             cash
         };
-        ledger_package::export_iif(store.ledger(), cash, as_of)
+        ledger_package::export_iif(store.ledger(), cash, as_of).map_err(|e| e.to_string())
     }
     /// The general journal as JSON or CSV: each entry posted in the
     /// period (BS-period-3, as the XLSX journal), in posting order.

@@ -564,7 +564,7 @@ pub fn build_package<B: PackageBooks + ?Sized>(
     let seq = books.journal_seq();
     // The journal through as_of for QuickBooks, closes left out, and what
     // it writes differently (INVARIANT 8).
-    let iif = export_iif(ledger, cash_codes, as_of)?;
+    let iif = export_iif(ledger, cash_codes, as_of).map_err(|e| e.to_string())?;
     let (warnings, iif_changes) = (iif.warnings(), iif.changes.len());
     let receivable_payable: Vec<String> = iif
         .receivable_payable

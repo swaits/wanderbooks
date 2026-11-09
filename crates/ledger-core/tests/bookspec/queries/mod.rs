@@ -3,6 +3,7 @@ use crate::*;
 pub(crate) mod assets;
 pub(crate) mod commands;
 pub(crate) mod dates;
+pub(crate) mod documents;
 pub(crate) mod formats;
 pub(crate) mod parties;
 pub(crate) mod statements;
@@ -84,6 +85,8 @@ impl Books<'_> {
             "party_totals" => self.answer_party_totals(q),
             "party_tin_last4" => self.answer_party_tin_last4(q),
             "project" => self.answer_project(q),
+            "aging" => self.answer_aging(q),
+            "document_dates" => self.answer_document_dates(q),
             "run" => self.answer_run(q),
             "disposal" => self.answer_disposal(q),
             "depreciation_schedule" => self.answer_depreciation_schedule(q),

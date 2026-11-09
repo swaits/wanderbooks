@@ -497,9 +497,9 @@ pub enum TermsKind {
     /// Due `n` days after the last day of the document's month (Net n
     /// EOM).
     NetEom(u16),
-    /// Due on a date the parties agreed; the caller passes it to
-    /// [`Terms::due_date`], and [`Terms::describe`] carries it for
-    /// people.
+    /// Due on a date the parties agreed. The date lives in the [`Terms`]
+    /// ([`Terms::agreed_date`]); [`Terms::due_date`] returns it, and
+    /// [`Terms::describe`] prints it for people.
     Custom,
 }
 
@@ -523,7 +523,8 @@ pub struct EarlyDiscount {
 ///         goods; for services, the contract.
 /// INVARIANTS:
 ///   1. Net n = date + n; Net n EOM = the last day of date's month + n;
-///      due on receipt = date; Custom = the given date. Every result is
+///      due on receipt = date; Custom = the date the terms give (never
+///      the document's own date). Every result is
 ///      >= the document date and in the calendar (calendar::check); n is
 ///      0..=3650.
 ///   2. discount_by = date + d, d < the net days; no discount with due on
@@ -532,6 +533,7 @@ pub struct EarlyDiscount {
 ///      canonical spellings, case-insensitively, and nothing else.
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "TermsWire")]
 pub struct Terms {
     /// How the due date counts.
     kind: TermsKind,
@@ -541,6 +543,52 @@ pub struct Terms {
     /// The canonical text: "Net 30", "Net 15 EOM", "2/10 net 30", "Due on
     /// receipt", "Due 2026-11-15".
     text: String,
+    /// The date custom terms give, and only custom terms: `Some` exactly
+    /// when `kind` is [`TermsKind::Custom`]. Terms stored before this field
+    /// existed carry the date only in their text; reading them fills it
+    /// from there ([`TermsWire`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    agreed: Option<NaiveDate>,
+}
+
+/// Terms as stored. Reading is the one place a missing `agreed` is filled
+/// from the canonical text ("Due 2026-11-15"), so a book written before
+/// custom terms carried their date still reads, and a Custom without any
+/// readable date is refused rather than invented.
+#[derive(Deserialize)]
+struct TermsWire {
+    kind: TermsKind,
+    #[serde(default)]
+    discount: Option<EarlyDiscount>,
+    text: String,
+    #[serde(default)]
+    agreed: Option<NaiveDate>,
+}
+
+impl TryFrom<TermsWire> for Terms {
+    type Error = String;
+
+    fn try_from(w: TermsWire) -> Result<Self, String> {
+        let agreed = match (w.kind, w.agreed) {
+            (TermsKind::Custom, Some(d)) => Some(d),
+            (TermsKind::Custom, None) => Some(
+                w.text
+                    .trim()
+                    .to_lowercase()
+                    .strip_prefix("due ")
+                    .and_then(|r| NaiveDate::parse_from_str(r.trim(), "%Y-%m-%d").ok())
+                    .ok_or_else(|| format!("custom terms {:?} give no date", w.text))?,
+            ),
+            (_, None) => None,
+            (_, Some(_)) => return Err("only custom terms carry an agreed date".into()),
+        };
+        Ok(Terms {
+            kind: w.kind,
+            discount: w.discount,
+            text: w.text,
+            agreed,
+        })
+    }
 }
 
 impl Terms {
@@ -579,24 +627,31 @@ impl Terms {
             kind,
             discount,
             text: compose_terms_text(kind, discount),
+            agreed: None,
         })
     }
 
     /// Custom terms due on `due`: the parties agreed a date rather than a
-    /// count of days. Its text carries the date for people; the document
-    /// stores the due date itself.
+    /// count of days. The terms keep the date ([`Terms::agreed_date`]) and
+    /// print it for people; [`Terms::due_date`] returns it.
     pub fn custom(due: NaiveDate) -> Result<Self, LedgerError> {
         crate::calendar::check(due)?;
         Ok(Terms {
             kind: TermsKind::Custom,
             discount: None,
             text: format!("Due {due}"),
+            agreed: Some(due),
         })
     }
 
     /// How the due date counts.
     pub fn kind(&self) -> TermsKind {
         self.kind
+    }
+
+    /// The date custom terms give; `None` for every other kind.
+    pub fn agreed_date(&self) -> Option<NaiveDate> {
+        self.agreed
     }
 
     /// The early-payment discount, when there is one.
@@ -611,17 +666,24 @@ impl Terms {
 
     /// The date payment is due for a document dated `date`.
     ///
-    /// For [`TermsKind::Custom`] the caller passes the agreed date itself
-    /// (there is no count to derive it from); for every other kind `date`
-    /// is the document's date. The result is never before `date` and
-    /// always in the calendar: a due date past 9999-12-31 is refused
+    /// `date` is the document's date. Custom terms are due on the date
+    /// they give, whatever `date` is (BS-arap-3 statement 1); an agreed
+    /// date before `date` is refused like any due date before its
+    /// document ([`validate_due_date`]). The result is never before `date`
+    /// and always in the calendar: a due date past 9999-12-31 is refused
     /// ([`LedgerError::DateOverflow`]), never a panic.
     pub fn due_date(&self, date: NaiveDate) -> Result<NaiveDate, LedgerError> {
         crate::calendar::check(date)?;
-        let due = match self.kind {
-            TermsKind::DueOnReceipt | TermsKind::Custom => date,
-            TermsKind::Net(n) => add_days(date, n)?,
-            TermsKind::NetEom(n) => add_days(last_day_of_month(date)?, n)?,
+        let due = match (self.kind, self.agreed) {
+            (TermsKind::Custom, Some(agreed)) => agreed,
+            (TermsKind::Custom, None) => {
+                return Err(LedgerError::TermsUnreadable(
+                    "custom terms give no date".into(),
+                ));
+            }
+            (TermsKind::DueOnReceipt, _) => date,
+            (TermsKind::Net(n), _) => add_days(date, n)?,
+            (TermsKind::NetEom(n), _) => add_days(last_day_of_month(date)?, n)?,
         };
         validate_due_date(date, due)?;
         Ok(due)

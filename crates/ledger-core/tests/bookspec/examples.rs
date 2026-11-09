@@ -1,3 +1,4 @@
+use crate::engine::unpicked_option;
 use crate::*;
 
 /// The `Engine` adapter over `Store` runs every example through the
@@ -17,6 +18,40 @@ pub(crate) fn the_runner_reports_every_claimed_rule_green() {
         "the runner is not green:\n{}",
         report.failures().join("\n")
     );
+    // An example for an option wanderbooks did not pick is not run; every
+    // other one is, and passes.
+    let skipped = report.skipped();
+    let unpicked: Vec<&str> = examples
+        .iter()
+        .filter(|ex| unpicked_option(ex).is_some())
+        .map(|ex| ex.id.as_str())
+        .collect();
+    assert_eq!(
+        skipped.len(),
+        unpicked.len(),
+        "the runner skips exactly the examples for unpicked options: {skipped:?}"
+    );
+    for id in &unpicked {
+        assert!(
+            skipped.iter().any(|s| s.starts_with(&format!("{id}:"))),
+            "{id} is skipped"
+        );
+    }
+    let ran = report.examples.len() - skipped.len();
+    let passed = report
+        .examples
+        .iter()
+        .filter(|e| e.skipped.is_none() && e.failure.is_none())
+        .count();
+    eprintln!(
+        "bookspec runner: {} examples, {ran} run, {passed} passed, {} skipped (an option wanderbooks did not pick)",
+        report.examples.len(),
+        skipped.len()
+    );
+    for s in &skipped {
+        eprintln!("  skipped {s}");
+    }
+    assert_eq!(ran, passed, "every example run passed");
     for rule in bookspec_checker::covered_rules() {
         assert_eq!(
             report.rules.get(&rule.id),
@@ -39,6 +74,7 @@ pub(crate) fn every_bookspec_example_holds() {
     let files = bookspec_checker::examples();
     let mut ids = BTreeSet::new();
     let mut checked: BTreeMap<String, usize> = BTreeMap::new();
+    let mut skipped = Vec::new();
     for (name, text) in &files {
         let ex = Example::from_toml(text).unwrap_or_else(|e| panic!("{name}: {e}"));
         let stem = name.strip_suffix(".toml").unwrap();
@@ -57,6 +93,12 @@ pub(crate) fn every_bookspec_example_holds() {
         );
         assert!(!ex.sources.is_empty(), "{}: every rule is sourced", ex.id);
         assert!(!ex.expect.is_empty(), "{}: something to expect", ex.id);
+        // The examples for an option wanderbooks did not pick are for
+        // another engine; they are read (above) and not run.
+        if let Some(why) = unpicked_option(&ex) {
+            skipped.push(format!("{} {why}", ex.id));
+            continue;
+        }
         for (q, by) in run(&ex) {
             if let Some(by) = by {
                 eprintln!("{}: {q} is checked by {by}", ex.id);
@@ -102,8 +144,24 @@ pub(crate) fn every_bookspec_example_holds() {
         ("k1_tax_basis", 4),
         ("k1_reconciliation", 2),
         ("project", 6),
+        ("aging", 4),
+        ("document_dates", 8),
     ] {
         let n = checked.get(q).copied().unwrap_or(0);
         assert!(n >= at_least, "{q} ran {n} times, fewer than {at_least}");
     }
+    eprintln!(
+        "bookspec examples: {} files, {} run, {} skipped (an option wanderbooks did not pick): {skipped:?}",
+        files.len(),
+        files.len() - skipped.len(),
+        skipped.len()
+    );
+    // The examples for an option wanderbooks did not pick: the other option
+    // of BS-arap-7, -8 and -9, BS-prepaid-2's equal-months and BS-ledger-20's
+    // refuse (each option's example, so no allow-list grows).
+    assert_eq!(
+        skipped.len(),
+        5,
+        "the five unpicked-option examples: {skipped:?}"
+    );
 }

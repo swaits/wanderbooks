@@ -27,6 +27,17 @@ Rules: B-18, B-38, B-39, B-40, B-41, B-42.
 `a_payment_never_predates_its_document`, `aging_as_of_ignores_a_later_reversal`,
 `a_voided_invoice_never_ages`, `status_is_a_function_of_journal_and_date`.
 
+**Bookspec examples:** `arap-aging-buckets` (BS-arap-1);
+`arap-a-document-due-today-is-current` (BS-arap-7);
+`arap-an-aging-shows-what-stood-on-its-day` (BS-arap-8);
+`arap-a-payment-before-its-invoice-is-refused` (BS-arap-9), run by the
+adapter through `Ledger::{ar_aging, ap_aging, receive_payment, pay_bill}`
+(`tests/bookspec/queries/documents.rs`). The examples for the options
+wanderbooks did not pick (`arap-a-document-due-today-is-one-day-past-due`,
+`arap-an-aging-shows-what-stands-today`,
+`arap-a-payment-before-its-invoice-is-accepted`) name them (`under`) and the
+runner skips them for the pick above.
+
 ## B-38 A document's figures are its ledger lines that stand; a control account is its documents
 
 **bookspec:** `BS-arap-2`
@@ -137,7 +148,10 @@ check_void_document}`, the control guard). **Checked:**
 **Enforced:** `ledger_core::Terms` (`new`, `parse`, `due_date`,
 `discount_by`, `describe`), `kernel::discount_max`, `kernel::line_amount`,
 `Ledger::check_document_line_account`.
-**Checked:** `ledger-core` `tests/spec_documents.rs`
+**Checked:** bookspec example `arap-terms-give-due-and-discount-dates`
+(the adapter takes each due date from `Terms::due_date`, but for a date
+the parties agreed, which that call leaves to its caller, and each discount
+date from `Terms::discount_by`); `ledger-core` `tests/spec_documents.rs`
 (`terms_derive_due_dates`, `discount_bounds_and_late_reason`,
 `terms_describe_and_parse_round_trip`, `qty_times_price_must_equal_amount`,
 `document_line_account_refuses_roles_cash_and_placeholders`,

@@ -143,6 +143,7 @@ pub(crate) fn refusal(e: &LedgerError) -> String {
         LedgerError::InvalidDepreciationPeriod(_) => "invalid_depreciation_period",
         LedgerError::InvalidSchedule(_) => "invalid_schedule",
         LedgerError::UntaggedControlLine { .. } => "untagged_control_line",
+        LedgerError::PaymentBeforeDocument { .. } => "payment_before_document",
         LedgerError::UnbalancedEntry { .. } => "unbalanced",
         LedgerError::TooFewLines => "too_few_lines",
         LedgerError::NegativeAmountLine => "negative_amount",

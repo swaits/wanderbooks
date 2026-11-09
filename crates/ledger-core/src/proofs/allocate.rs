@@ -4,10 +4,11 @@
 //! The divisor is fixed in every harness: CBMC's bit-blasted division by
 //! a symbolic `i64` did not finish in 30 minutes in K-U2
 //! (`docs/proofs/k-u2.md`), and every split here divides by a total or a
-//! step. The fixed weights and totals cover a tied split (2/3/5), a zero
-//! weight, a total of one, and a step that is not a power of ten; the
-//! bridge carries the same laws to every `Decimal` weight and step, and
-//! bookspec's Lean proves them for any number of parts.
+//! step. The fixed weights and totals cover three different weights
+//! (2/3/5), a zero weight and a total of one; the steps used are 1 and
+//! 10. The bridge carries the same laws to every `Decimal` weight and
+//! step, and bookspec's Lean proves them of the exact-share model for any
+//! number of parts.
 //!
 //! ```text
 //! GOAL: the parts of a weighted split sum to the whole exactly, each
@@ -21,8 +22,10 @@
 //! INVARIANTS:
 //!   1. The parts sum to the whole, for every policy.
 //!   2. Under largest remainder each part is within one unit (the step)
-//!      of its exact share: `-total < part x total - whole x weight <
-//!      total` at step one.
+//!      of its exact share: `-total < part x total - whole x weight <=
+//!      total` at step one. The upper bound is inclusive on `i64` (its
+//!      division truncates); the bridge checks the strict `Decimal`
+//!      bound.
 //!   3. No part is negative or above the whole for non-negative weights
 //!      that do not exceed the total.
 //!   4. A zero total gives zeros; all-zero weights hand the whole out by
@@ -30,17 +33,19 @@
 //!      units as there are parts.
 //!   5. Overflow is `None`, never a panic.
 //! SCENARIOS:
-//!   1. IF 101 by 1/1/1 to the unit: SHOULD be 34/34/33 (the tied unit
-//!      to the first), never 33/34/34.
+//!   1. IF 101 by 1/1/1 to the unit: SHOULD be 34/34/33 (the rounded
+//!      remainders tie, so the units go to the earlier parts), never
+//!      33/34/34.
 //!   2. IF a quotient rounds up across the step: `share_floor_with`
 //!      SHOULD still give the exact floor, by multiplication.
 //!   3. IF the product `whole x weight` is past `i64`: SHOULD be None.
 //! ```
 //!
-//! Bounds: amounts up to 1,000, weights up to 100, totals and steps fixed
-//! (`10`, `1`, `7`). The laws are about the shape of the split, not the
-//! magnitude; Lean proves them at any size and the bridge checks the
-//! `Decimal` engine.
+//! Bounds: amounts up to 1,000, weights up to 100, totals fixed (10 and
+//! 0), steps 1 and 10. The laws are about the shape of the split, not the
+//! magnitude; Lean proves them of the exact-share model at any size, and
+//! the bridge checks the `Decimal` engine, whose ranking uses the rounded
+//! quotient.
 
 use crate::kernel::{self, Leftover, Rounding, share_floor_with, share_of, split_by_weights_into};
 

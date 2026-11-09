@@ -365,7 +365,8 @@ fn too_large() -> LedgerError {
 ///   2. A member's exact running total is Σ whole × weight / Σ weights
 ///      over every split so far; their running total (Σ of their parts)
 ///      is the largest-remainder rounding to the cent of the exact running
-///      totals (ties to the earlier member), so it is within a cent of
+///      totals (a tie in the rounded remainders to the earlier member; an
+///      exact tie follows the quotient's 28th digit, K-U10), so it is within a cent of
 ///      exact, strictly. A negative running whole is rounded as its
 ///      magnitude and negated; a running whole of zero is rounded by the
 ///      sign of the whole just split. So a run of losses mirrors the run
@@ -655,7 +656,8 @@ fn entry_wholes(
 ///      their part: the pair leaves every later entry's cents as they
 ///      would be without it. Its own parts (it reads as the contrary
 ///      kind, a distribution for a contribution) are split on its own,
-///      largest remainder, ties to the earlier member.
+///      largest remainder, a tie in the rounded remainders to the earlier
+///      member (an exact tie follows the quotient's 28th digit, K-U10).
 /// ```
 fn entry_parts(
     ledger: &Ledger,

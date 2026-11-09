@@ -451,8 +451,9 @@ fn original_target(
 
 /// Split `whole` (at most the sum of `sizes`) over `sizes` in proportion,
 /// to the cent, leftover cents by largest remainder (k1's
-/// share_property), ties to the earlier in `order` (each part's rank).
-/// None past exact arithmetic.
+/// `share_property`), a tie in the rounded remainders to the earlier in
+/// `order` (each part's rank); an exact tie follows the quotient's 28th
+/// digit, and K-U10 decides the exact ranking. None past exact arithmetic.
 fn share_by(whole: Decimal, sizes: &[Decimal], order: &[usize]) -> Option<Vec<Decimal>> {
     let ranked: Vec<Decimal> = order.iter().map(|&i| sizes[i]).collect();
     let shared = crate::k1::share_property(whole, &ranked, 2).ok()?;

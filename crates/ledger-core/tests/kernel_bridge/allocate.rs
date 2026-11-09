@@ -11,8 +11,8 @@
 //! `Decimal::MAX` and scale 28, each `None` or exact, never a panic.
 
 use ledger_core::kernel::{
-    Leftover, Rounding, round_places, round_step, share_floor_with, share_of, split_by_weights,
-    split_by_weights_with,
+    Leftover, Rounding, round_places, round_step, share_floor_with, share_of,
+    split_by_weights_into, split_by_weights_with,
 };
 use proptest::prelude::*;
 use rust_decimal::Decimal;
@@ -157,12 +157,12 @@ proptest! {
     fn i64_and_decimal_agree(k in 0i64..=100_000) {
         let whole = k * 10;
         let weights = [2i64, 3, 5];
-        let narrow = split_by_weights(
+        let narrow = split_by_weights_with(
             whole,
             &weights,
             10,
             1,
-            Rounding::TowardZero,
+            |x| round_step(x, 1, Rounding::TowardZero),
             Leftover::LargestRemainder,
         )
         .unwrap();
@@ -238,21 +238,21 @@ proptest! {
     #[test]
     fn leftovers_at_each_policy(whole in 0i64..=1_000_000) {
         let weights = [2i64, 3, 5];
-        let first = split_by_weights(
+        let first = split_by_weights_with(
             whole,
             &weights,
             10,
             1,
-            Rounding::TowardZero,
+            |x| round_step(x, 1, Rounding::TowardZero),
             Leftover::FirstAbsorbs,
         )
         .unwrap();
-        let last = split_by_weights(
+        let last = split_by_weights_with(
             whole,
             &weights,
             10,
             1,
-            Rounding::TowardZero,
+            |x| round_step(x, 1, Rounding::TowardZero),
             Leftover::LastAbsorbs,
         )
         .unwrap();
@@ -289,6 +289,60 @@ proptest! {
         let want = reference(i128::from(whole), &vec![1i128; members], members as i128, 1).unwrap();
         let got = decimal_split(dec(whole), &weights, Decimal::from(members), 2, Leftover::LargestRemainder).unwrap();
         prop_assert_eq!(cents(&got), want);
+    }
+
+    /// The exact reference ranks the exact remainders; the kernel ranks
+    /// the rounded quotients' remainders. With a small non-terminating
+    /// total the two orders agree except at an exact tie, which this
+    /// property excludes and `finding_ties_follow_the_rounded_quotient`
+    /// pins.
+    #[test]
+    fn largest_remainder_ranks_like_the_exact_reference(
+        whole_start in 0i64..=2_000,
+        weights in prop::collection::vec(1i64..=9, 2..=4),
+    ) {
+        // Distinct weights, and a total with a factor of 3 or 7 (a
+        // non-terminating division), by construction: no case is
+        // rejected, and no exact tie is left to the property.
+        let mut weights = weights;
+        weights.sort_unstable();
+        for (i, w) in weights.iter_mut().enumerate() {
+            *w += i as i64;
+        }
+        let plain: i64 = weights.iter().sum();
+        if plain % 3 != 0 && plain % 7 != 0 {
+            *weights.last_mut().unwrap() += 3 - plain % 3;
+        }
+        let total: i64 = weights.iter().sum();
+        let whole = (whole_start..whole_start + total)
+            .find(|&w| {
+                let mut rems: Vec<i128> = weights
+                    .iter()
+                    .map(|&x| (i128::from(w) * i128::from(x)) % i128::from(total))
+                    .collect();
+                rems.sort_unstable();
+                rems.dedup();
+                rems.len() == weights.len()
+            })
+            .expect("whole ≡ 1 mod total leaves distinct remainders");
+        let decimal_weights: Vec<Decimal> = weights.iter().copied().map(Decimal::from).collect();
+        let got = split_by_weights_with(
+            Decimal::from(whole),
+            &decimal_weights,
+            Decimal::from(total),
+            Decimal::ONE,
+            |x| round_step(x, Decimal::ONE, Rounding::TowardZero),
+            Leftover::LargestRemainder,
+        )
+        .unwrap();
+        let want = reference(
+            i128::from(whole),
+            &weights.iter().map(|&w| i128::from(w)).collect::<Vec<_>>(),
+            i128::from(total),
+            1,
+        )
+        .unwrap();
+        prop_assert_eq!(got.iter().map(|&p| integer(p)).collect::<Vec<_>>(), want);
     }
 
     /// `share_floor_with` is the exact floor of the rational, even when
@@ -414,16 +468,175 @@ fn decimal_edges_are_none_or_exact() {
 
     // A zero total is zeros, whatever the weights.
     assert_eq!(
-        split_by_weights(
+        split_by_weights_with(
             dec(5),
             &[dec(1), dec(2)],
             Decimal::ZERO,
             Decimal::ONE,
-            Rounding::TowardZero,
+            |x| round_step(x, Decimal::ONE, Rounding::TowardZero),
             Leftover::LargestRemainder
         ),
         Some(vec![Decimal::ZERO, Decimal::ZERO])
     );
+}
+
+/// The absorbing parts keep the scale the pre-U3 code produced. Decimal's
+/// equality ignores scale, so these compare the strings: the old
+/// `shares::split_first` added the shortfall to the first rounded share
+/// (4860 by 6/0.7/0.5 gave `4050`, not `4050.00`), and 902 by
+/// 1/0.000001/0.000001 gave `902.00` there; the kernel now computes the
+/// same expression, not the algebraically equal `whole − Σ rest`.
+#[test]
+fn the_absorbing_parts_keep_the_old_scale() {
+    let text = |parts: &[Decimal]| parts.iter().map(Decimal::to_string).collect::<Vec<_>>();
+    let weights = [parse("6"), parse("0.7"), parse("0.5")];
+    let got = split_by_weights_with(
+        parse("4860"),
+        &weights,
+        parse("7.2"),
+        parse("0.01"),
+        |x| round_places(x, 2, Rounding::TowardZero),
+        Leftover::FirstAbsorbs,
+    )
+    .unwrap();
+    assert_eq!(text(&got), ["4050", "472.50", "337.50"]);
+
+    let weights = [Decimal::ONE, parse("0.000001"), parse("0.000001")];
+    let got = split_by_weights_with(
+        parse("902"),
+        &weights,
+        parse("1.000002"),
+        parse("0.01"),
+        |x| round_places(x, 2, Rounding::TowardZero),
+        Leftover::FirstAbsorbs,
+    )
+    .unwrap();
+    assert_eq!(text(&got), ["902.00", "0.00", "0.00"]);
+
+    // LastAbsorbs is the old `plug_last` (and the no-places conventions
+    // split): the last part is the whole less the others, same scale.
+    let got = split_by_weights_with(
+        parse("4860"),
+        &weights[..1],
+        Decimal::ONE,
+        Decimal::ONE,
+        Some,
+        Leftover::LastAbsorbs,
+    )
+    .unwrap();
+    assert_eq!(text(&got), ["4860"]);
+    let got = split_by_weights_with(
+        parse("7"),
+        &[parse("0.5"), parse("0.5")],
+        Decimal::ONE,
+        Decimal::ONE,
+        Some,
+        Leftover::LastAbsorbs,
+    )
+    .unwrap();
+    assert_eq!(text(&got), ["3.5", "3.5"]);
+}
+
+/// The buffer API and the allocating one agree, including scale: the
+/// bridge calls `split_by_weights_into` itself (fixed arrays), as the
+/// traceability gate requires.
+#[test]
+fn split_into_matches_the_allocating_split() {
+    let weights = [parse("6"), parse("0.7"), parse("0.5")];
+    let mut parts = [Decimal::ZERO; 3];
+    let mut remainders = [Decimal::ZERO; 3];
+    split_by_weights_into(
+        parse("4860"),
+        &weights,
+        parse("7.2"),
+        parse("0.01"),
+        |x| round_places(x, 2, Rounding::TowardZero),
+        Leftover::FirstAbsorbs,
+        &mut parts,
+        &mut remainders,
+    )
+    .unwrap();
+    let with = split_by_weights_with(
+        parse("4860"),
+        &weights,
+        parse("7.2"),
+        parse("0.01"),
+        |x| round_places(x, 2, Rounding::TowardZero),
+        Leftover::FirstAbsorbs,
+    )
+    .unwrap();
+    assert_eq!(
+        parts.iter().map(Decimal::to_string).collect::<Vec<_>>(),
+        with.iter().map(Decimal::to_string).collect::<Vec<_>>()
+    );
+}
+
+/// The EM's finding, pinned rather than fixed: a split ranks the rounded
+/// quotients' remainders, so an exact tie goes where the 28th digit sends
+/// it, not to the earlier part. 20.00 split 4/1/1 over 6 gives
+/// 13.33/3.34/3.33 (exact ranking would give 13.34/3.33/3.33), and 20 at
+/// whole units gives 13/4/3 (exact would give 14/3/3). The pre-U3 sites
+/// did the same. The owner decides the exact ranking in K-U10.
+#[test]
+fn finding_ties_follow_the_rounded_quotient() {
+    let weights = [Decimal::from(4), Decimal::ONE, Decimal::ONE];
+    let got = decimal_split(
+        parse("20.00"),
+        &weights,
+        Decimal::from(6),
+        2,
+        Leftover::LargestRemainder,
+    )
+    .unwrap();
+    assert_eq!(
+        got.iter().map(Decimal::to_string).collect::<Vec<_>>(),
+        ["13.33", "3.34", "3.33"]
+    );
+    let got = decimal_split(
+        Decimal::from(20),
+        &weights,
+        Decimal::from(6),
+        0,
+        Leftover::LargestRemainder,
+    )
+    .unwrap();
+    assert_eq!(
+        got.iter().map(Decimal::to_string).collect::<Vec<_>>(),
+        ["13", "4", "3"]
+    );
+}
+
+/// The review's hang: `0.1113 × 5909471247797156928749568911.8 ÷
+/// 0.11134381908633486049673` to the cent put the rounded product far
+/// past the exact floor, and the correction walked without end. It now
+/// refuses past the cap, quickly; the other two buckets keep exact floors.
+#[test]
+fn share_floor_refuses_past_the_correction_cap() {
+    let b = [
+        parse("0.1113"),
+        parse("0.00004381908373486049673"),
+        parse("0.0000000000026"),
+    ];
+    let v = parse("-5909471247797156928749568911.8");
+    let total = b
+        .iter()
+        .copied()
+        .try_fold(Decimal::ZERO, |s, x| s.checked_add(x))
+        .unwrap();
+    let started = std::time::Instant::now();
+    let got = share_floor_with(b[0].abs(), v.abs(), total, parse("0.01"), |x| {
+        round_places(x, 2, Rounding::TowardZero)
+    });
+    assert_eq!(got, None);
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    for bucket in &b[1..] {
+        assert!(
+            share_floor_with(bucket.abs(), v.abs(), total, parse("0.01"), |x| {
+                round_places(x, 2, Rounding::TowardZero)
+            },)
+            .is_some()
+        );
+    }
 }
 
 /// The K-U10 finding: at `Decimal`'s mantissa edge, `checked_div`'s

@@ -146,6 +146,8 @@ pub(crate) fn every_bookspec_example_holds() {
         ("project", 6),
         ("aging", 4),
         ("document_dates", 8),
+        ("document", 8),
+        ("invoice_numbers", 1),
     ] {
         let n = checked.get(q).copied().unwrap_or(0);
         assert!(n >= at_least, "{q} ran {n} times, fewer than {at_least}");
@@ -157,11 +159,14 @@ pub(crate) fn every_bookspec_example_holds() {
         skipped.len()
     );
     // The examples for an option wanderbooks did not pick: the other option
-    // of BS-arap-7, -8 and -9, BS-prepaid-2's equal-months and BS-ledger-20's
-    // refuse (each option's example, so no allow-list grows).
+    // of BS-arap-2 (documents-kept-apart), -7, -8, -9, -10 (compare-exactly),
+    // -11 (recovery-movement), -12 (net-of-expected-discount), -13
+    // (net-against-the-deposit) and -14 (apportion-across-the-lines),
+    // BS-prepaid-2's equal-months and BS-ledger-20's refuse (each option's
+    // example, so no allow-list grows).
     assert_eq!(
         skipped.len(),
-        5,
-        "the five unpicked-option examples: {skipped:?}"
+        11,
+        "the eleven unpicked-option examples: {skipped:?}"
     );
 }

@@ -144,6 +144,17 @@ pub(crate) fn refusal(e: &LedgerError) -> String {
         LedgerError::InvalidSchedule(_) => "invalid_schedule",
         LedgerError::UntaggedControlLine { .. } => "untagged_control_line",
         LedgerError::PaymentBeforeDocument { .. } => "payment_before_document",
+        LedgerError::DuplicateVendorRef { .. } => "duplicate_vendor_reference",
+        // An invoice with a bill, and documents of two parties, are the one
+        // refusal: a customer and a vendor are two parties (BS-arap-6).
+        LedgerError::SettlementMixedKinds(_) | LedgerError::SettlementPartiesDiffer(..) => {
+            "settlement_mixes_parties"
+        }
+        LedgerError::SettlementDuplicateDocument(_) => "settlement_repeats_a_document",
+        LedgerError::Overpayment(..) => "application_above_owed",
+        LedgerError::DiscountNeedsReason { .. } => "discount_needs_reason",
+        LedgerError::DiscountOnAssetBill { .. } => "discount_on_asset_bill",
+        LedgerError::FeeAboveCash { .. } => "fee_above_cash",
         LedgerError::UnbalancedEntry { .. } => "unbalanced",
         LedgerError::TooFewLines => "too_few_lines",
         LedgerError::NegativeAmountLine => "negative_amount",

@@ -87,6 +87,8 @@ impl Books<'_> {
             "project" => self.answer_project(q),
             "aging" => self.answer_aging(q),
             "document_dates" => self.answer_document_dates(q),
+            "document" => self.answer_document(q),
+            "invoice_numbers" => self.answer_invoice_numbers(q),
             "run" => self.answer_run(q),
             "disposal" => self.answer_disposal(q),
             "depreciation_schedule" => self.answer_depreciation_schedule(q),

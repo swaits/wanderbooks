@@ -749,9 +749,24 @@ pub enum LedgerError {
     #[error("{0}")]
     InvalidFee(String),
 
-    /// A settlement's figures can't be exact: the cash and discounts
-    /// don't cover the applications, or the fee leaves a negative deposit
-    /// (BS-arap-6 INVARIANT 1).
+    /// A processor's fee is above the cash it was withheld from: a
+    /// processor cannot keep more than it was paid (BS-arap-6). A fee equal
+    /// to the cash is [`LedgerError::InvalidSettlement`]: the deposit would
+    /// be nothing.
+    #[error(
+        "the processor's fee of {fee} is above the cash of {cash}: a processor can't keep more than it was paid"
+    )]
+    FeeAboveCash {
+        /// The fee asked for.
+        fee: Decimal,
+        /// The settlement's cash, summed over its applications.
+        cash: Decimal,
+    },
+
+    /// A settlement's figures can't be exact (BS-arap-6 INVARIANT 1): an
+    /// amount too large to add, a negative fee, or a fee that leaves
+    /// nothing to deposit; a fee above the cash is
+    /// [`LedgerError::FeeAboveCash`].
     #[error("{0}")]
     InvalidSettlement(String),
 

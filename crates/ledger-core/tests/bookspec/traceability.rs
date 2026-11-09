@@ -255,8 +255,9 @@ fn impl_ranges(code: &str) -> Vec<(usize, usize, String)> {
             i = end;
             continue;
         }
-        // The type is the last identifier before the opening brace, and
-        // after `for` when it is a trait impl.
+        // The type is the path's last segment after `for` when it is a
+        // trait impl, with a leading generic parameter list skipped (an
+        // `impl<T> Foo<T>` names `Foo`, not `T`).
         let mut j = end;
         while j < chars.len() && chars[j] != '{' {
             j += 1;
@@ -269,22 +270,7 @@ fn impl_ranges(code: &str) -> Vec<(usize, usize, String)> {
             Some((_, after)) => after,
             None => &header,
         };
-        let mut last = String::new();
-        let mut k = 0;
-        while k < segment.len() {
-            let rest: Vec<char> = segment[k..].chars().collect();
-            match word_at(&rest, 0) {
-                Some((w, used)) => {
-                    last = w;
-                    k += segment[k..]
-                        .chars()
-                        .take(used)
-                        .map(char::len_utf8)
-                        .sum::<usize>();
-                }
-                None => k += segment[k..].chars().next().map(char::len_utf8).unwrap_or(1),
-            }
-        }
+        let last = impl_type_name(segment);
         if let Some(close) = matching_brace(&chars, j, ('{', '}')) {
             let start = chars[..i].iter().map(|c| c.len_utf8()).sum::<usize>();
             let end = chars[..=close].iter().map(|c| c.len_utf8()).sum::<usize>();
@@ -293,6 +279,23 @@ fn impl_ranges(code: &str) -> Vec<(usize, usize, String)> {
         i = end;
     }
     out
+}
+
+/// The type an impl header after `impl` (and after `for`) names.
+fn impl_type_name(segment: &str) -> String {
+    let mut rest = segment.trim_start();
+    if rest.starts_with('<') {
+        let chars: Vec<char> = rest.chars().collect();
+        if let Some(close) = matching_brace(&chars, 0, ('<', '>')) {
+            let consumed: usize = chars[..=close].iter().map(|c| c.len_utf8()).sum();
+            rest = rest[consumed..].trim_start();
+        }
+    }
+    let head: String = rest
+        .chars()
+        .take_while(|c| !matches!(c, '<' | '{') && !c.is_whitespace())
+        .collect();
+    head.rsplit("::").next().unwrap_or(&head).to_string()
 }
 
 /// Every top-level item of a brace block, split on commas.
@@ -424,7 +427,7 @@ fn struct_fields(code: &str, name: &str) -> Vec<String> {
 
 /// Enum variants and struct fields in `code`, for definitions outside the
 /// crate's `src` (an integration test's own model types).
-fn collect_types(code: &str, items: &mut BTreeSet<String>, bare: &mut BTreeSet<String>) {
+fn collect_types(code: &str, items: &mut BTreeSet<String>, qualified: &mut BTreeSet<String>) {
     let chars: Vec<char> = code.chars().collect();
     let mut i = 0;
     while i < chars.len() {
@@ -439,14 +442,16 @@ fn collect_types(code: &str, items: &mut BTreeSet<String>, bare: &mut BTreeSet<S
         if word == "enum" || word == "struct" {
             let j = skip_space(&chars, end);
             if let Some((name, _)) = word_at(&chars, j) {
-                let found = if word == "enum" {
-                    enum_variants(code, &name)
+                if word == "enum" {
+                    for variant in enum_variants(code, &name) {
+                        qualified.insert(format!("{name}::{variant}"));
+                        items.insert(variant);
+                    }
                 } else {
-                    struct_fields(code, &name)
-                };
-                for item in found {
-                    items.insert(item.clone());
-                    bare.insert(item);
+                    for field in struct_fields(code, &name) {
+                        qualified.insert(format!("{name}::{field}"));
+                        items.insert(field);
+                    }
                 }
             }
         }
@@ -454,8 +459,9 @@ fn collect_types(code: &str, items: &mut BTreeSet<String>, bare: &mut BTreeSet<S
     }
 }
 
-/// The names a `use` statement imports.
-fn collect_imports(code: &str, items: &mut BTreeSet<String>) {
+/// The names a `use` statement imports. They are not definitions: only an
+/// external type's associated item (`NaiveDate::MAX`) is excused by them.
+fn collect_imports(code: &str, imports: &mut BTreeSet<String>) {
     for line in code.lines() {
         let line = line.trim_start();
         let Some(rest) = line.strip_prefix("use ") else {
@@ -473,7 +479,7 @@ fn collect_imports(code: &str, items: &mut BTreeSet<String>) {
                         "use" | "crate" | "self" | "super" | "as" | "pub"
                     )
                 {
-                    items.insert(word.clone());
+                    imports.insert(word.clone());
                 }
                 word.clear();
             }
@@ -483,11 +489,24 @@ fn collect_imports(code: &str, items: &mut BTreeSet<String>) {
 
 #[derive(Default)]
 struct Definitions {
-    /// Every Rust item name, bare or `Type::method`.
+    /// Every bare Rust item name (a `fn`, type, variant, field, `const`,
+    /// module or macro) defined under `crates/*/src` or in a test file.
     items: BTreeSet<String>,
-    bare: BTreeSet<String>,
-    /// Test and property names under `crates/*/tests`, `#[test]` in src,
-    /// and proptest functions.
+    /// The exact `Type::item` names: an impl's functions, an enum's
+    /// variants, an impl's associated `const`s and types.
+    qualified: BTreeSet<String>,
+    /// The items defined in each module's own file (a directory module
+    /// keeps its submodules' items too, which is what it re-exports).
+    module_items: BTreeMap<String, BTreeSet<String>>,
+    /// Type names defined under `crates/*/src`.
+    types: BTreeSet<String>,
+    /// Names a `use` line imports (external types included).
+    imports: BTreeSet<String>,
+    /// `[package] name` of every crate.
+    crates: BTreeSet<String>,
+    /// The exact tool names `ledger-mcp` registers.
+    product_surfaces: BTreeSet<String>,
+    /// Test names: a `#[test]` fn or a `proptest!` body, in src or tests.
     tests: BTreeSet<String>,
     /// `#[kani::proof]` functions under `src/proofs/`.
     harnesses: BTreeSet<String>,
@@ -497,7 +516,7 @@ struct Definitions {
     proof_files: BTreeSet<String>,
     /// Every string literal in `crates/*` source.
     literals: BTreeSet<String>,
-    /// All crate source text, for product-surface names.
+    /// All crate source text, for wildcard prefixes.
     surface: String,
     /// Rules by id and whether the record is retired.
     rules: BTreeMap<String, bool>,
@@ -558,8 +577,159 @@ fn collect_function_bodies(code: &str, out: &mut Vec<(String, String)>) {
     }
 }
 
+/// The `[package] name` of a Cargo manifest.
+fn package_name(text: &str) -> Option<String> {
+    let mut in_package = false;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_package = line == "[package]";
+            continue;
+        }
+        if in_package {
+            if let Some(rest) = line.strip_prefix("name") {
+                let rest = rest.trim_start();
+                if let Some(rest) = rest.strip_prefix('=') {
+                    let rest = rest.trim();
+                    if let Some(rest) = rest.strip_prefix('"') {
+                        return rest.split('"').next().map(str::to_string);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// The module(s) a source file defines items for: its own file stem (or
+/// `mod.rs`'s directory), and every enclosing directory that is a module
+/// root, because a directory module re-exports its submodules' items.
+fn module_keys(path: &Path) -> Vec<String> {
+    let mut keys = Vec::new();
+    let file = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    if file == "mod.rs" {
+        if let Some(dir) = path
+            .parent()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+        {
+            keys.push(dir.to_string());
+        }
+    } else if file != "lib.rs" {
+        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+            keys.push(stem.to_string());
+        }
+    }
+    let mut dir = path.parent();
+    while let Some(d) = dir {
+        if d.file_name().is_some_and(|n| n == "src") {
+            break;
+        }
+        if d.join("mod.rs").is_file() {
+            if let Some(name) = d.file_name().and_then(|n| n.to_str()) {
+                keys.push(name.to_string());
+            }
+        }
+        dir = d.parent();
+    }
+    keys
+}
+
+/// Test names: a `#[test]` fn or a function inside a `proptest!` block.
+fn collect_test_names(code: &str, tests: &mut BTreeSet<String>) {
+    for attr in ["#[test]", "#[tokio::test"] {
+        for (name, _) in collect_bodies_with_attribute(code, attr) {
+            tests.insert(name);
+        }
+    }
+    let chars: Vec<char> = code.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i..].starts_with(&PROPTEST) {
+            if let Some(open) = code[i..].find('{') {
+                let at = i + open;
+                if let Some(close) = matching_brace(&chars, at, ('{', '}')) {
+                    let block: String = chars[at + 1..close].iter().collect();
+                    let mut fns = Vec::new();
+                    collect_function_bodies(&block, &mut fns);
+                    for (name, _) in fns {
+                        tests.insert(name);
+                    }
+                    i = close;
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
+}
+
+/// Every function and associated `const`/type in an impl block, qualified
+/// by the implementing type.
+fn collect_impl_qualified(block: &str, ty: &str, qualified: &mut BTreeSet<String>) {
+    let chars: Vec<char> = block.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if !(chars[i].is_ascii_alphabetic() || chars[i] == '_') {
+            i += 1;
+            continue;
+        }
+        let Some((word, end)) = word_at(&chars, i) else {
+            i += 1;
+            continue;
+        };
+        if word == "fn" || word == "const" || word == "type" {
+            let j = skip_space(&chars, end);
+            if let Some((next, _)) = word_at(&chars, j) {
+                // `const fn` is a function; the `fn` arm records it.
+                if word != "const" || next != "fn" {
+                    qualified.insert(format!("{ty}::{next}"));
+                }
+            }
+        }
+        i = end;
+    }
+}
+
+/// The exact tool names `ledger-mcp` registers: every `name = "books.…"`
+/// in its source.
+fn collect_tool_names(root: &Path, out: &mut BTreeSet<String>) {
+    let mut files = Vec::new();
+    walk(&root.join("crates/ledger-mcp/src"), "rs", &mut files);
+    for path in files {
+        let text = read(&path);
+        let needle = "name = \"";
+        let mut at = 0;
+        while let Some(rel) = text[at..].find(needle) {
+            let start = at + rel + needle.len();
+            let Some(end) = text[start..].find('"') else {
+                break;
+            };
+            let name = &text[start..start + end];
+            if name.starts_with("books.") {
+                out.insert(name.to_string());
+            }
+            at = start + end + 1;
+        }
+    }
+}
+
 fn build_definitions(root: &Path) -> Definitions {
     let mut defs = Definitions::default();
+
+    // Crate names: the workspace root, `fuzz`, and each crate's package.
+    let mut manifests = vec![root.join("Cargo.toml"), root.join("fuzz/Cargo.toml")];
+    for entry in std::fs::read_dir(root.join("crates")).expect("crates") {
+        manifests.push(entry.expect("a crate").path().join("Cargo.toml"));
+    }
+    for manifest in manifests {
+        if let Ok(text) = std::fs::read_to_string(&manifest) {
+            if let Some(name) = package_name(&text) {
+                defs.crates.insert(name);
+            }
+        }
+    }
+    collect_tool_names(root, &mut defs.product_surfaces);
 
     let mut src_files = Vec::new();
     for entry in std::fs::read_dir(root.join("crates")).expect("crates") {
@@ -570,6 +740,7 @@ fn build_definitions(root: &Path) -> Definitions {
         }
     }
     src_files.sort();
+    let proofs = root.join("crates/ledger-core/src/proofs");
     let mut enums = Vec::new();
     let mut structs = Vec::new();
     for path in &src_files {
@@ -580,7 +751,13 @@ fn build_definitions(root: &Path) -> Definitions {
         for literal in literals(&text) {
             defs.literals.insert(literal);
         }
-        collect_imports(&code, &mut defs.items);
+        // A proof harness is never a plain Rust item: it resolves only as a
+        // `#[kani::proof]` fn, or deleting the attribute would go unseen.
+        if path.starts_with(&proofs) {
+            continue;
+        }
+        collect_imports(&code, &mut defs.imports);
+        let keys = module_keys(path);
         // Keywords and names.
         let chars: Vec<char> = code.chars().collect();
         let mut i = 0;
@@ -604,8 +781,19 @@ fn build_definitions(root: &Path) -> Definitions {
                         if word == "struct" {
                             structs.push((path.clone(), name.clone()));
                         }
+                        if matches!(
+                            word.as_str(),
+                            "struct" | "enum" | "union" | "trait" | "type"
+                        ) {
+                            defs.types.insert(name.clone());
+                        }
                         defs.items.insert(name.clone());
-                        defs.bare.insert(name);
+                        for key in &keys {
+                            defs.module_items
+                                .entry(key.clone())
+                                .or_default()
+                                .insert(name.clone());
+                        }
                     }
                 }
                 "macro_rules" => {
@@ -614,7 +802,12 @@ fn build_definitions(root: &Path) -> Definitions {
                         j = skip_space(&chars, j + 1);
                         if let Some((name, _)) = word_at(&chars, j) {
                             defs.items.insert(name.clone());
-                            defs.bare.insert(name);
+                            for key in &keys {
+                                defs.module_items
+                                    .entry(key.clone())
+                                    .or_default()
+                                    .insert(name.clone());
+                            }
                         }
                     }
                 }
@@ -622,35 +815,29 @@ fn build_definitions(root: &Path) -> Definitions {
             }
             i = end;
         }
-        // Methods, qualified by their impl.
+        // Methods, associated items and variants, qualified by their type.
         for (start, end, ty) in impl_ranges(&code) {
-            let block = &code[start..end];
-            let mut fns = Vec::new();
-            collect_pub_fns(block, &mut fns);
-            for (name, _) in fns {
-                let qualified = format!("{ty}::{name}");
-                defs.items.insert(qualified);
-                defs.items.insert(name.clone());
-                defs.bare.insert(name);
-            }
+            collect_impl_qualified(&code[start..end], &ty, &mut defs.qualified);
         }
     }
     for (path, name) in enums {
         let code = strip_code(&read(&path));
         for variant in enum_variants(&code, &name) {
             defs.items.insert(variant.clone());
-            defs.bare.insert(variant);
+            defs.qualified.insert(format!("{name}::{variant}"));
         }
     }
     for (path, name) in structs {
         let code = strip_code(&read(&path));
         for field in struct_fields(&code, &name) {
             defs.items.insert(field.clone());
-            defs.bare.insert(field);
+            // A public field is the type's item too (`Iif::changes`).
+            defs.qualified.insert(format!("{name}::{field}"));
         }
     }
 
-    // Tests: every fn under `tests/`, and `#[test]`/proptest in src.
+    // Tests: a `#[test]` fn or a `proptest!` body, in src or tests. A
+    // plain helper under `tests/` is not a test.
     let mut test_files = Vec::new();
     for entry in std::fs::read_dir(root.join("crates")).expect("crates") {
         let dir = entry.expect("a crate").path().join("tests");
@@ -661,42 +848,13 @@ fn build_definitions(root: &Path) -> Definitions {
     test_files.sort();
     for path in &test_files {
         let code = strip_code(&read(path));
-        collect_types(&code, &mut defs.items, &mut defs.bare);
-        collect_imports(&code, &mut defs.items);
-        let mut fns = Vec::new();
-        collect_function_bodies(&code, &mut fns);
-        for (name, _) in fns {
-            defs.tests.insert(name);
-        }
+        collect_types(&code, &mut defs.items, &mut defs.qualified);
+        collect_imports(&code, &mut defs.imports);
+        collect_test_names(&code, &mut defs.tests);
     }
     for path in &src_files {
-        let text = read(path);
-        let code = strip_code(&text);
-        let chars: Vec<char> = code.chars().collect();
-        // `#[test]` functions.
-        for (name, _) in collect_bodies_with_attribute(&code, "#[test]") {
-            defs.tests.insert(name);
-        }
-        // Proptest blocks.
-        let mut i = 0;
-        while i < chars.len() {
-            if chars[i..].starts_with(&PROPTEST) {
-                if let Some(open) = code[i..].find('{') {
-                    let at = i + open;
-                    if let Some(close) = matching_brace(&chars, at, ('{', '}')) {
-                        let block: String = chars[at + 1..close].iter().collect();
-                        let mut fns = Vec::new();
-                        collect_function_bodies(&block, &mut fns);
-                        for (name, _) in fns {
-                            defs.tests.insert(name);
-                        }
-                        i = close;
-                        continue;
-                    }
-                }
-            }
-            i += 1;
-        }
+        let code = strip_code(&read(path));
+        collect_test_names(&code, &mut defs.tests);
     }
 
     // Kani harnesses and proof files.
@@ -748,87 +906,74 @@ fn build_definitions(root: &Path) -> Definitions {
     defs
 }
 
-/// `pub fn` names in an impl block, with their offsets (unused offsets are
-/// kept for a future stricter check).
-fn collect_pub_fns(block: &str, out: &mut Vec<(String, usize)>) {
-    let chars: Vec<char> = block.chars().collect();
-    let mut i = 0;
-    while i < chars.len() {
-        if !(chars[i].is_ascii_alphabetic() || chars[i] == '_') {
-            i += 1;
-            continue;
-        }
-        let Some((word, end)) = word_at(&chars, i) else {
-            i += 1;
-            continue;
-        };
-        if word != "pub" {
-            i = end;
-            continue;
-        }
-        let mut j = skip_space(&chars, end);
-        if chars.get(j) == Some(&'(') {
-            if let Some(close) = matching_brace(&chars, j, ('(', ')')) {
-                j = skip_space(&chars, close + 1);
-            }
-        }
-        if let Some((kw, kw_end)) = word_at(&chars, j) {
-            if kw == "fn" {
-                let k = skip_space(&chars, kw_end);
-                if let Some((name, _)) = word_at(&chars, k) {
-                    out.push((name, i));
-                }
-            }
-        }
-        i = end;
-    }
-}
-
 /// Functions preceded (within the previous attribute block) by `attr`.
 fn collect_bodies_with_attribute(code: &str, attr: &str) -> Vec<(String, String)> {
+    let chars: Vec<char> = code.chars().collect();
     let mut out = Vec::new();
     let mut search = 0;
     while let Some(at) = code[search..].find(attr) {
         let start = search + at;
-        let after = start + attr.len();
-        let tail = &code[after..];
-        let Some(fn_at) = tail.find("fn ") else {
+        // The attribute runs from its `[` to the matching `]`; an
+        // attribute may carry arguments (`#[tokio::test(flavor = …)]`).
+        let Some(open) = code[start..].find('[').map(|p| start + p) else {
             break;
         };
-        // Nothing but attributes/whitespace may sit between them.
-        let between = &tail[..fn_at];
-        if between.contains('\n') {
-            let only_attrs = between.lines().all(|line| {
-                let line = line.trim();
-                line.is_empty()
-                    || line.starts_with("#[")
-                    || line.starts_with("//")
-                    || line.starts_with(']')
-            });
-            if !only_attrs {
-                search = after;
-                continue;
+        let open = code[..open].chars().count();
+        let Some(close) = matching_brace(&chars, open, ('[', ']')) else {
+            break;
+        };
+        let mut i = skip_space(&chars, close + 1);
+        // Further attributes may sit between this one and the item.
+        while chars.get(i) == Some(&'#') {
+            let j = if chars.get(i + 1) == Some(&'!') {
+                i + 2
+            } else {
+                i + 1
+            };
+            if chars.get(j) != Some(&'[') {
+                break;
+            }
+            let Some(c) = matching_brace(&chars, j, ('[', ']')) else {
+                break;
+            };
+            i = skip_space(&chars, c + 1);
+        }
+        // Visibility and modifiers, then `fn`.
+        while let Some((word, end)) = word_at(&chars, i) {
+            match word.as_str() {
+                "pub" => {
+                    i = skip_space(&chars, end);
+                    if chars.get(i) == Some(&'(') {
+                        if let Some(c) = matching_brace(&chars, i, ('(', ')')) {
+                            i = skip_space(&chars, c + 1);
+                        }
+                    }
+                }
+                "async" | "const" | "unsafe" | "extern" => {
+                    i = skip_space(&chars, end);
+                }
+                "fn" => {
+                    i = skip_space(&chars, end);
+                    break;
+                }
+                _ => break,
             }
         }
-        let at = after + fn_at + 3;
-        let chars: Vec<char> = code.chars().collect();
-        let prefix_len = code[..at].chars().count();
-        let j = skip_space(&chars, prefix_len);
-        let Some((name, _)) = word_at(&chars, j) else {
-            search = after;
+        let Some((name, _)) = word_at(&chars, i) else {
+            search = start + attr.len();
             continue;
         };
-        let mut k = j;
+        let mut k = i;
         while k < chars.len() && chars[k] != '{' && chars[k] != ';' {
             k += 1;
         }
         if chars.get(k) == Some(&'{') {
-            if let Some(close) = matching_brace(&chars, k, ('{', '}')) {
-                let body: String = chars[k + 1..close].iter().collect();
+            if let Some(end) = matching_brace(&chars, k, ('{', '}')) {
+                let body: String = chars[k + 1..end].iter().collect();
                 out.push((name, body));
             }
         }
-        search = after;
+        search = start + attr.len();
     }
     out
 }
@@ -895,23 +1040,23 @@ fn kernel_functions(root: &Path) -> Vec<(String, String)> {
     out
 }
 
-/// True when `body` calls `name`, bare or qualified, including a method
-/// call written `.name(`.
+/// True when `body` calls `name`: a qualified call (`Type::name(`), or a
+/// bare `name(` that is not a method call (`.name(`). A word mention is
+/// not a call.
 fn calls(body: &str, name: &str) -> bool {
-    if contains_call(body, &format!("{name}(")) {
-        return true;
+    if name.contains("::") {
+        return contains_qualified_call(body, name);
     }
-    let last = name.rsplit("::").next().unwrap_or(name);
-    contains_call(body, &format!("{last}(")) || contains_word(body, last)
+    contains_bare_call(body, name)
 }
 
-fn contains_word(body: &str, word: &str) -> bool {
+fn contains_qualified_call(body: &str, name: &str) -> bool {
+    let needle = format!("{name}(");
     let mut at = 0;
-    while let Some(rel) = body[at..].find(word) {
+    while let Some(rel) = body[at..].find(&needle) {
         let pos = at + rel;
         let before = body[..pos].chars().next_back();
-        let after = body[pos + word.len()..].chars().next();
-        if !before.is_some_and(is_word_char) && !after.is_some_and(is_word_char) {
+        if !before.is_some_and(is_word_char) {
             return true;
         }
         at = pos + 1;
@@ -919,12 +1064,15 @@ fn contains_word(body: &str, word: &str) -> bool {
     false
 }
 
-fn contains_call(body: &str, needle: &str) -> bool {
+/// A bare `name(` that is neither a method call (`.name(`) nor the tail of
+/// a longer identifier; a qualified call (`::name(`) counts.
+fn contains_bare_call(body: &str, name: &str) -> bool {
+    let needle = format!("{name}(");
     let mut at = 0;
-    while let Some(rel) = body[at..].find(needle) {
+    while let Some(rel) = body[at..].find(&needle) {
         let pos = at + rel;
         let before = body[..pos].chars().next_back();
-        if !before.is_some_and(is_word_char) {
+        if !before.is_some_and(is_word_char) && before != Some('.') {
             return true;
         }
         at = pos + 1;
@@ -952,11 +1100,23 @@ fn resolve(
         }
         return Ok(Class::RuleId);
     }
-    if token.starts_with("books.") || token.starts_with("books:") {
-        if defs.surface.contains(token) || defs.literals.iter().any(|l| l.contains(token)) {
+    if token.starts_with("books.") {
+        // The exact tool registrations, or an exact name the books declare
+        // (a setting key such as `books.cash_accounts`).
+        if defs.product_surfaces.contains(token) || defs.literals.contains(token) {
             return Ok(Class::ProductSurface);
         }
-        return Err(format!("product surface {token} names nothing"));
+        return Err(format!("product surface {token} names no tool or setting"));
+    }
+    if token.starts_with("books:") {
+        // A scope (`books:post`) or a resource URI (`books://digest`), each
+        // an exact name in the source.
+        if defs.literals.contains(token) {
+            return Ok(Class::ProductSurface);
+        }
+        return Err(format!(
+            "product surface {token} names no scope or resource"
+        ));
     }
     if token.contains("://") {
         if defs.surface.contains(token) {
@@ -1029,17 +1189,26 @@ fn resolve(
     if is_audited(token) {
         return Ok(Class::LeanTheorem);
     }
-    let last = token.rsplit("::").next().unwrap_or(token);
-    if defs.items.contains(token) || defs.items.contains(last) || defs.bare.contains(last) {
-        return Ok(Class::RustItem);
+    if token.contains("::") {
+        return resolve_qualified(token, defs, bases, all_paths);
     }
-    if defs.tests.contains(last) {
-        return Ok(Class::Test);
-    }
-    if defs.harnesses.contains(last) {
+    // A harness before an item: a proof function is never an ordinary item,
+    // so deleting its `#[kani::proof]` attribute leaves the claim unbacked.
+    if defs.harnesses.contains(token) {
         return Ok(Class::KaniHarness);
     }
-    if defs.fuzz.contains(last) {
+    if defs.items.contains(token) {
+        return Ok(Class::RustItem);
+    }
+    // An imported type (`Decimal`): a real item, though defined elsewhere.
+    if defs.imports.contains(token) && token.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+    {
+        return Ok(Class::RustItem);
+    }
+    if defs.tests.contains(token) {
+        return Ok(Class::Test);
+    }
+    if defs.fuzz.contains(token) {
         return Ok(Class::FuzzTarget);
     }
     // A suffix fragment of a harness name, as in `_at_tenths`.
@@ -1049,7 +1218,7 @@ fn resolve(
     {
         return Ok(Class::KaniHarness);
     }
-    if is_crate_name(token, bases) {
+    if is_crate_name(token, defs) {
         return Ok(Class::Crate);
     }
     if is_fixture_dir(token, all_paths) {
@@ -1067,17 +1236,64 @@ fn resolve(
     if is_nonn_name(token) {
         return Ok(Class::NonName);
     }
-    // Lowercase dotted names that are settings, events or features, when
-    // they appear as a string literal or source text.
-    if token.contains('.') && defs.surface.contains(token) {
-        return Ok(Class::StringValue);
-    }
     if is_kebab(token) {
         return Err(format!(
             "option-like name {token} names no option or example"
         ));
     }
     Err(format!("{token} names no known item"))
+}
+
+/// A `::` path: the last two segments name an item its container defines.
+///
+/// A capitalized head is a type, so `Type::item` must be an impl function,
+/// an enum variant, or an associated `const`/type. A lowercase head is a
+/// module, so `module::item` must be defined in that module's own file. A
+/// leading `crate` or crate name is dropped first.
+fn resolve_qualified(
+    token: &str,
+    defs: &Definitions,
+    bases: &[PathBuf],
+    all_paths: &[String],
+) -> Result<Class, String> {
+    let mut segments: Vec<&str> = token.split("::").collect();
+    if matches!(segments.first(), Some(&"crate") | Some(&"self")) {
+        segments.remove(0);
+    }
+    while segments.first().is_some_and(|s| is_crate_name(s, defs)) {
+        segments.remove(0);
+    }
+    let Some(item) = segments.last().copied() else {
+        return Err(format!("{token} names no item"));
+    };
+    if segments.len() == 1 {
+        return resolve(item, defs, bases, all_paths);
+    }
+    let container = segments[segments.len() - 2];
+    let head_uppercase = container
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_uppercase());
+    if head_uppercase {
+        let qualified = format!("{container}::{item}");
+        if defs.qualified.contains(&qualified) {
+            return Ok(Class::RustItem);
+        }
+        // An external type's associated item (`NaiveDate::MAX`): the type
+        // is imported, not defined in the tree, so its items are not here.
+        if !defs.types.contains(container) && defs.imports.contains(container) {
+            return Ok(Class::RustItem);
+        }
+        return Err(format!("{token} names no `{qualified}`"));
+    }
+    if defs
+        .module_items
+        .get(container)
+        .is_some_and(|items| items.contains(item))
+    {
+        return Ok(Class::RustItem);
+    }
+    Err(format!("{token} names no item in module `{container}`"))
 }
 
 fn resolve_wildcard(token: &str, defs: &Definitions) -> Result<Class, String> {
@@ -1131,15 +1347,17 @@ fn resolve_wildcard(token: &str, defs: &Definitions) -> Result<Class, String> {
     Err(format!("wildcard {token} matches nothing"))
 }
 
+/// The audited theorem list, parsed once.
+fn audited_theorems() -> &'static BTreeSet<String> {
+    static AUDITED: std::sync::OnceLock<BTreeSet<String>> = std::sync::OnceLock::new();
+    AUDITED.get_or_init(|| bookspec_checker::audited_theorems(bookspec_checker::audit_lean()))
+}
+
 fn is_audited(name: &str) -> bool {
     let bare = name.strip_prefix("Bookspec.").unwrap_or(name);
-    // Audit.lean is inside `namespace Bookspec`, so its names are relative;
-    // a name may be written with any suffix of its namespace.
-    let audited = bookspec_checker::audited_theorems(bookspec_checker::audit_lean());
-    audited.contains(bare)
-        || audited.iter().any(|a| {
-            a == name || a.ends_with(&format!(".{name}")) || bare.ends_with(&format!(".{a}"))
-        })
+    // Audit.lean lists bare names (inside `namespace Bookspec`); a citation
+    // may write either form, but never a namespace suffix.
+    audited_theorems().contains(bare) || audited_theorems().contains(name)
 }
 
 fn is_path_like(token: &str) -> bool {
@@ -1189,12 +1407,10 @@ fn is_fixture_dir(token: &str, all_paths: &[String]) -> bool {
         .any(|path| path.contains("/fixtures/") && path.split('/').any(|part| part == token))
 }
 
-fn is_crate_name(token: &str, bases: &[PathBuf]) -> bool {
+/// A `[package] name` of one of the crates (dashed or underscored).
+fn is_crate_name(token: &str, defs: &Definitions) -> bool {
     let dashed = token.replace('_', "-");
-    bases.iter().any(|base| {
-        base.file_name()
-            .is_some_and(|name| name == token || name == dashed.as_str())
-    })
+    defs.crates.contains(token) || defs.crates.contains(&dashed)
 }
 
 fn is_nonn_name(token: &str) -> bool {
@@ -1277,6 +1493,57 @@ fn law_rows(text: &str) -> Vec<(String, u32)> {
         }
     }
     out
+}
+
+/// Record a harness's law row; a harness listed twice with different laws
+/// is a conflict, not a precedence.
+fn record_law(
+    laws: &mut BTreeMap<String, u32>,
+    failures: &mut Vec<String>,
+    name: String,
+    law: u32,
+    source: &str,
+) {
+    match laws.get(&name) {
+        Some(&existing) if existing != law => failures.push(format!(
+            "harness `{name}` is listed with law {existing} and law {law} ({source}); one row says the law"
+        )),
+        Some(_) => {}
+        None => {
+            laws.insert(name, law);
+        }
+    }
+}
+
+/// The `BS-` ids a kernel function's own doc comment cites: the spec block
+/// directly above the definition (attributes may sit between).
+fn source_ids(text: &str, qualified: &str) -> BTreeSet<String> {
+    let method = qualified.rsplit("::").next().unwrap_or(qualified);
+    let needle = format!("fn {method}");
+    let mut ids = BTreeSet::new();
+    let mut at = 0;
+    while let Some(rel) = text[at..].find(&needle) {
+        let pos = at + rel;
+        let before = text[..pos].chars().next_back();
+        let after = text[pos + needle.len()..].chars().next();
+        if !before.is_some_and(is_word_char) && !after.is_some_and(is_word_char) {
+            let line_start = text[..pos].rfind('\n').map(|p| p + 1).unwrap_or(0);
+            for line in text[..line_start].lines().rev() {
+                let trimmed = line.trim();
+                if let Some(rest) = trimmed.strip_prefix("///") {
+                    for word in rest.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-')) {
+                        if word.starts_with("BS-") {
+                            ids.insert(word.to_string());
+                        }
+                    }
+                } else if !trimmed.starts_with("#[") {
+                    break;
+                }
+            }
+        }
+        at = pos + 1;
+    }
+    ids
 }
 
 fn claimed_ids(root: &Path) -> (BTreeSet<String>, BTreeSet<String>) {
@@ -1658,13 +1925,18 @@ fn every_claim_is_backed() {
 
     let mut laws: BTreeMap<String, u32> = BTreeMap::new();
     for (name, law) in law_rows(&read(&root.join("docs/verification.md"))) {
-        laws.insert(name, law);
+        record_law(&mut laws, &mut failures, name, law, "docs/verification.md");
     }
     let mut proof_notes = Vec::new();
     walk(&root.join("docs/proofs"), "md", &mut proof_notes);
     for path in &proof_notes {
+        let source = path
+            .strip_prefix(&root)
+            .unwrap_or(path)
+            .display()
+            .to_string();
         for (name, law) in law_rows(&read(path)) {
-            laws.entry(name).or_insert(law);
+            record_law(&mut laws, &mut failures, name, law, &source);
         }
     }
     let laws_md = bookspec_checker::spec_files()
@@ -1672,21 +1944,44 @@ fn every_claim_is_backed() {
         .find(|(name, _)| *name == "laws.md")
         .map(|(_, text)| text)
         .expect("bookspec's spec/laws.md");
-    let law_numbers: BTreeSet<u32> = laws_md
-        .lines()
-        .filter_map(|line| {
-            let cells: Vec<&str> = line.trim().split('|').map(str::trim).collect();
-            if cells.len() < 5 {
-                return None;
-            }
-            cells[1].parse::<u32>().ok()
-        })
-        .collect();
+    let mut law_rules: BTreeMap<u32, BTreeSet<String>> = BTreeMap::new();
+    for line in laws_md.lines() {
+        let cells: Vec<&str> = line.trim().split('|').map(str::trim).collect();
+        if cells.len() < 5 {
+            continue;
+        }
+        let Ok(number) = cells[1].parse::<u32>() else {
+            continue;
+        };
+        let rules: BTreeSet<String> = cells[3]
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+            .filter(|w| w.starts_with("BS-"))
+            .map(str::to_string)
+            .collect();
+        law_rules.insert(number, rules);
+    }
+    let law_numbers: BTreeSet<u32> = law_rules.keys().copied().collect();
     assert!(!law_numbers.is_empty(), "bookspec numbers its laws");
+
+    // The kernel sources, by file name, for the spec block above each one.
+    let mut kernel_texts: BTreeMap<String, String> = BTreeMap::new();
+    let mut kernel_paths = Vec::new();
+    walk(
+        &root.join("crates/ledger-core/src/kernel"),
+        "rs",
+        &mut kernel_paths,
+    );
+    for path in &kernel_paths {
+        if let Some(file) = path.file_name().and_then(|n| n.to_str()) {
+            kernel_texts.insert(file.to_string(), read(path));
+        }
+    }
 
     let mut kernel_checked = 0usize;
     let kernel_seen = kernel.len();
     let mut seen_exceptions = BTreeSet::new();
+    let mut right_law_applied = 0usize;
+    let mut right_law_skipped = 0usize;
     for (name, file) in &kernel {
         let harnesses: Vec<&str> = harness_bodies
             .iter()
@@ -1702,6 +1997,38 @@ fn every_claim_is_backed() {
             .iter()
             .filter_map(|h| laws.get(*h))
             .find(|n| law_numbers.contains(n));
+        // The harness's law row must serve the rule the function's own spec
+        // block cites: a `fx_booked` harness mapped to law 4 would fail.
+        let ids = kernel_texts
+            .get(file)
+            .map(|text| source_ids(text, name))
+            .unwrap_or_default();
+        let fn_laws: BTreeSet<u32> = harnesses
+            .iter()
+            .filter_map(|h| laws.get(*h).copied())
+            .filter(|n| law_numbers.contains(n))
+            .collect();
+        let applicable: Vec<u32> = fn_laws
+            .iter()
+            .copied()
+            .filter(|n| law_rules.get(n).is_some_and(|rules| !rules.is_empty()))
+            .collect();
+        if !ids.is_empty() && !applicable.is_empty() {
+            right_law_applied += 1;
+            let shared = applicable.iter().any(|n| {
+                law_rules
+                    .get(n)
+                    .is_some_and(|rules| rules.iter().any(|id| ids.contains(id)))
+            });
+            if !shared {
+                failures.push(format!(
+                    "kernel `{name}` ({file}) cites {}; its harness law(s) {applicable:?} cite no shared rule",
+                    ids.iter().cloned().collect::<Vec<_>>().join(", ")
+                ));
+            }
+        } else {
+            right_law_skipped += 1;
+        }
         let mut lacks = Vec::new();
         if harnesses.is_empty() {
             lacks.push("a Kani harness");
@@ -1805,6 +2132,9 @@ fn every_claim_is_backed() {
         println!("  {}: {count}", class.name());
     }
     println!("kernel functions checked: {kernel_seen} ({kernel_checked} fully backed)");
+    println!(
+        "harness law matches the function's rule: {right_law_applied} applied, {right_law_skipped} skipped"
+    );
     println!("kernel exceptions: {}", EXCEPTIONS.len());
     println!("law rows checked: {law_rows_checked}");
 
@@ -1907,10 +2237,67 @@ const EXCEPTIONS: &[(&str, &str, &str)] = &[
 fn made_up_names_do_not_resolve() {
     let root = repo_root();
     let (defs, bases, all_paths) = main_index(&root);
-    for token in ["no_such_fn_xyz", "NoSuch.theorem", "books.no_such_tool_xyz"] {
+    for token in [
+        "no_such_fn_xyz",
+        "NoSuch.theorem",
+        "books.no_such_tool_xyz",
+        // An associated item the type does not have.
+        "Ledger::no_such_method",
+        // A real item under the wrong type (`target` is the free fn in
+        // `shares`, not a `Ledger` method).
+        "Ledger::target",
+        // A test helper, not a `#[test]` or `proptest!` function.
+        "arb_cents",
+        // A product name that is not a registered tool.
+        "books.add",
+        // A Lean name that is not audited, with or without the prefix.
+        "Bookspec.NoSuch.theorem",
+    ] {
         assert!(
             resolve(token, &defs, &bases, &all_paths).is_err(),
             "made-up name `{token}` must not resolve"
         );
     }
+    // A directory is not a crate (`tests` resolves only as `mod tests`).
+    assert!(
+        !is_crate_name("tests", &defs),
+        "a directory name must not pass as a crate"
+    );
+}
+
+#[test]
+fn a_harness_listed_twice_must_agree() {
+    let mut laws = BTreeMap::new();
+    let mut failures = Vec::new();
+    record_law(&mut laws, &mut failures, "harness".into(), 4, "a.md");
+    record_law(&mut laws, &mut failures, "harness".into(), 4, "b.md");
+    assert!(failures.is_empty(), "the same law twice is not a conflict");
+    record_law(&mut laws, &mut failures, "harness".into(), 5, "c.md");
+    assert_eq!(failures.len(), 1, "two laws for one harness is a conflict");
+}
+
+#[test]
+fn harnesses_resolve_only_as_proofs() {
+    let root = repo_root();
+    let (defs, bases, all_paths) = main_index(&root);
+    let harness = defs
+        .harnesses
+        .iter()
+        .next()
+        .expect("the proofs carry harnesses");
+    assert_eq!(
+        resolve(harness, &defs, &bases, &all_paths),
+        Ok(Class::KaniHarness),
+        "a harness classifies as a Kani harness"
+    );
+    // `any_proration` is a plain helper in `src/proofs/`, not a proof.
+    assert!(
+        !defs.harnesses.contains("any_proration"),
+        "the helper is not a harness"
+    );
+    assert_ne!(
+        resolve("any_proration", &defs, &bases, &all_paths).ok(),
+        Some(Class::KaniHarness),
+        "a proof helper without `#[kani::proof]` is not a harness"
+    );
 }

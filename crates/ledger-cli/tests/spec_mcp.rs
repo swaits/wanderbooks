@@ -1490,7 +1490,7 @@ enum Op {
         party: Pick,
         amount: String,
         /// The vendor's own invoice number: two bills by one vendor with
-        /// the same number are refused (B-40).
+        /// the same number are refused (BS-arap-4).
         vendor_ref: String,
     },
     PayBill {
@@ -2703,7 +2703,7 @@ fn db_digest(path: &Path) -> String {
     ledger_store::journal::sha256_hex(dump.as_bytes())
 }
 
-/// P4b S1 over the real server (rules.md B-38, D-45): a payment carries
+/// P4b S1 over the real server (BS-arap-2, D-45): a payment carries
 /// its method and reference and answers with the invoice's derived
 /// figures; an invoice with a payment standing can't be voided (the
 /// refusal names the payment); one entered twice is voided and shows as

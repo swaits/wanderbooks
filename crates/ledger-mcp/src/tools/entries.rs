@@ -234,7 +234,7 @@ impl BooksServer {
         // A payment method exists only in books that declare the
         // payment_instruments feature (books.add_instrument needs it), so
         // tagging the draft with one below can't be refused for the format
-        // after the draft's first line (B-27).
+        // after the draft's first line (BS-format-1).
         let id = store
             .create_entry(date, &p.description)
             .map_err(|e| e.to_string())?;
@@ -595,7 +595,7 @@ impl BooksServer {
             .iter()
             .map(|l| {
                 // A draft line an earlier version journaled may name an
-                // account the chart doesn't have (rules.md B-28).
+                // account the chart doesn't have (BS-entry-4).
                 let (code, name) = match store.ledger().chart().get(l.account) {
                     Some(a) => (a.code.clone(), a.name.clone()),
                     None => (String::new(), format!("(no account {})", l.account)),
@@ -851,7 +851,7 @@ mod tests {
 
     /// lines_settled: posted, or a draft with lines whose debits equal its
     /// credits; a draft whose sides are past exact arithmetic (one an
-    /// earlier version journaled, rules.md B-28) is not settled.
+    /// earlier version journaled, BS-entry-4) is not settled.
     #[test]
     fn settled_lines_are_posted_or_balanced_drafts() {
         let mut l = Ledger::new(Currency::USD);

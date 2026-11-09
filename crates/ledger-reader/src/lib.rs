@@ -197,7 +197,7 @@ pub fn extract(bytes: &[u8], mime_type: &str, file_name: &str) -> Extracted {
             }
             // A file CALLED a PDF whose bytes are text (a text file named
             // .pdf): read the text, so the TIN scan and the reader see what
-            // it says (B-26: the scan fails closed). One with the PDF magic
+            // it says (BS-partner-2: the scan fails closed). One with the PDF magic
             // that won't read is a failed extraction.
             Err(_) if !magic_pdf => match plain_text(bytes, &mime, &ext) {
                 Some(text) => found(Some(text), 1),

@@ -1,5 +1,5 @@
 # Partners' capital accounts: what a member's money and property count as
-Governs what a member's party totals count (rules.md B-35): a member's capital account rises by the money and the property (net of liabilities on it) the member contributes, and falls by the money and property distributed to them; a partnership liability the member pays for it is money the member contributed. The K-1's capital account analysis (Item L) reports the same contributions and distributions. wanderbooks counts these from the books as they are; the tax-basis figures stay with the CPA.
+Governs what a member's party totals count (BS-partner-3): a member's capital account rises by the money and the property (net of liabilities on it) the member contributes, and falls by the money and property distributed to them; a partnership liability the member pays for it is money the member contributed. The K-1's capital account analysis (Item L) reports the same contributions and distributions. wanderbooks counts these from the books as they are; the tax-basis figures stay with the CPA.
 
 ## Treas. Reg. §1.704-1(b)(2)(iv)(b): basic rules of capital accounts
 Source: <https://www.ecfr.gov/api/renderer/v1/content/enhanced/current/title-26?part=1&section=1.704-1>  

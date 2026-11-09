@@ -3329,7 +3329,7 @@ pub struct CreateBillParams {
     pub confirmed: Option<bool>,
 }
 
-/// One invoice or bill a payment applies to (plan P4b S6; B-42).
+/// One invoice or bill a payment applies to (plan P4b S6; BS-arap-6).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PaymentApplicationParam {
@@ -3763,8 +3763,8 @@ pub struct AgingDocumentOut {
     pub days_overdue: i64,
 }
 
-/// The aging's account against its documents (the control check, B-23,
-/// B-38 INVARIANT 1).
+/// The aging's account against its documents (the control check, BS-ledger-8,
+/// BS-arap-2 INVARIANT 1).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct AgingControlOut {
     /// "1200 Accounts Receivable" or "2000 Accounts Payable".
@@ -4015,7 +4015,7 @@ pub struct ListClassesOut {
 }
 
 // ---------------------------------------------------------------------------
-// Projects (a class with its facts, rules.md B-37)
+// Projects (a class with its facts, BS-statement-5)
 // ---------------------------------------------------------------------------
 //
 // A `project` reference is a class's id or its name (ignoring capitals),

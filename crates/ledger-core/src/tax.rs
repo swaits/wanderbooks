@@ -400,7 +400,7 @@ pub fn check_category(
 /// no postings, so nothing of its own reaches the return).
 ///
 /// ```text
-/// GOAL: the accounts a tax category is for (rules.md B-32).
+/// GOAL: the accounts a tax category is for (BS-ledger-11).
 /// SOURCE: IRS Pub. 583, "Your books must show your gross income, as well
 ///         as your deductions and credits"; Rev. Proc. 98-25 §5.01, a
 ///         relationship between "the amounts ... by account and the
@@ -540,7 +540,7 @@ struct CategoryBuild {
 /// Build the tax summary for `[start, end]`, closing entries excluded (like
 /// the P&L). Each category's deductible amount is the exact sum of its
 /// accounts' shares (book × deductible percent ÷ 100), rounded once to
-/// the cent, half away from zero (B-21: "round off only the total"); the
+/// the cent, half away from zero (BS-entry-3: "round off only the total"); the
 /// book amounts stay exact. The share arithmetic is
 /// [`crate::kernel::deductible_amount`], so Kani proves the one rounding.
 pub fn tax_summary(

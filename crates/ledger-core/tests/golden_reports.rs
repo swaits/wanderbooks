@@ -34,7 +34,7 @@ fn post(ledger: &mut Ledger, date: NaiveDate, description: &str, lines: &[(Accou
     // As replay posts it: this fixture holds hand lines on the receivable
     // and payable control accounts (1200, 2000), which books an earlier
     // version wrote still hold and every report must read; the control
-    // guard (rules.md B-38) refuses them as new work.
+    // guard (BS-arap-2) refuses them as new work.
     ledger_core::parties::replaying(|| {
         let id = ledger.create_entry(date, description);
         for (account, side, amount) in lines {

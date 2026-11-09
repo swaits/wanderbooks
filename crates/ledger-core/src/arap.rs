@@ -9,7 +9,7 @@
 //! * `receive_payment`: Dr Cash, Cr A/R.
 //! * `pay_bill`: Dr A/P, Cr Cash.
 //!
-//! A document keeps no figure of its own (plan P4b, D-45; rules.md B-38):
+//! A document keeps no figure of its own (plan P4b, D-45; BS-arap-2):
 //! every ledger line on a receivables or payables account carries the
 //! document it belongs to ([`DocTag`]), and what is paid and still owed,
 //! and the document's status, are read from those lines that stand
@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 
 /// The most days a payment term may run: ten years, far beyond any trade
 /// term, and short of the calendar's end for every document date the
-/// books can hold (B-39).
+/// books can hold (BS-arap-3).
 pub const MAX_TERMS_DAYS: u16 = 3_650;
 
 /// Opaque customer handle.
@@ -198,12 +198,12 @@ pub enum DocStatus {
     Paid,
     /// Nothing owed, the last of it written off (S7).
     WrittenOff,
-    /// Its own entry doesn't stand: reversed (B-9), number kept.
+    /// Its own entry doesn't stand: reversed (BS-ledger-5), number kept.
     Void,
     /// Less than nothing owed: more paid against it than it is for, a
     /// credit balance owed back (to the customer on an invoice, by the
     /// vendor on a bill). Only in books an earlier version left out of
-    /// bounds (B-38 INVARIANT 2); never a receivable or a payable, so
+    /// bounds (BS-arap-2 INVARIANT 2); never a receivable or a payable, so
     /// never aged.
     Overpaid,
     /// Its own entry stands but carries no line tagged with it (an older
@@ -263,7 +263,7 @@ pub struct DocState {
 
 impl DocState {
     /// It owes less than nothing or more than its total: books an earlier
-    /// version left out of bounds (B-38 INVARIANT 2; plan P4b.14 item 3),
+    /// version left out of bounds (BS-arap-2 INVARIANT 2; plan P4b.14 item 3),
     /// which the control check lists for attention.
     pub fn out_of_bounds(&self) -> bool {
         self.outstanding < Decimal::ZERO || self.outstanding > self.total
@@ -275,7 +275,7 @@ impl DocState {
 /// ```text
 /// GOAL: one status from the ledger's figures, whatever happened to the
 ///       document, its payments and their reversals.
-/// SOURCE: docs/spec/rules.md B-38; plan/served.md P4b.3 ("Status as of D");
+/// SOURCE: BS-arap-2; plan/served.md P4b.3 ("Status as of D");
 ///         ASC 310-10 (a credit balance is not a receivable).
 /// INVARIANTS:
 ///   1. Void exactly when its own entry doesn't stand (`origin_stands`
@@ -426,7 +426,7 @@ impl PaymentDetails {
     }
 }
 
-/// One document a settlement applies to (plan P4b S6; rules.md B-42): the
+/// One document a settlement applies to (plan P4b S6; BS-arap-6): the
 /// cash paid on it, the early-payment discount taken off it, and why a
 /// discount outside its terms was taken anyway.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -456,7 +456,7 @@ pub struct Fee {
     pub vendor: Option<VendorId>,
 }
 
-/// Everything one settlement needs (plan P4b S6; rules.md B-42): its date,
+/// Everything one settlement needs (plan P4b S6; BS-arap-6): its date,
 /// description, deposit account, the party every document belongs to, the
 /// applications, and the processor's fee when one was withheld.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -484,7 +484,7 @@ pub struct SettleParams {
 /// when it is a control line ([`Application`]'s payment or discount).
 pub type SettlementRow = (crate::AccountId, crate::Side, Decimal, Option<DocTag>);
 
-/// How a document's payment terms count their days (rules.md B-39; plan
+/// How a document's payment terms count their days (BS-arap-3; plan
 /// P4b S4.1): from the document's date, from the end of its month, or a
 /// date the parties agreed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -514,11 +514,11 @@ pub struct EarlyDiscount {
 }
 
 /// Payment terms: one due date, and the early-payment discount open
-/// before it (rules.md B-39; plan P4b S4.1, A-2, A-8).
+/// before it (BS-arap-3; plan P4b S4.1, A-2, A-8).
 ///
 /// ```text
 /// GOAL: terms give one due date and one discount date, exactly.
-/// SOURCE: docs/spec/rules.md B-39; plan/served.md 8.3.13 (B-39);
+/// SOURCE: BS-arap-3; plan/served.md 8.3.13 (BS-arap-3);
 ///         CONVENTION: standard trade-terms notation; UCC §2-310(a) for
 ///         goods; for services, the contract.
 /// INVARIANTS:
@@ -976,7 +976,7 @@ pub struct DocumentLine {
     /// Line amount (positive).
     pub amount: Decimal,
     /// The project (a class) the line's revenue or cost belongs to, if
-    /// any (rules.md B-37): the posted entry's revenue or expense line for
+    /// any (BS-statement-5): the posted entry's revenue or expense line for
     /// it carries the tag; the receivable or payable line never does.
     /// Documents journaled before the `document_line_projects` feature
     /// have none.
@@ -1035,7 +1035,7 @@ pub struct Invoice {
     pub entry_id: u64,
     /// The number it was issued under ("INV-0007"), from
     /// [`crate::Ledger::next_invoice_number`]; stored at issue, never
-    /// recomputed, kept by a void (A-2, B-40). None on a legacy invoice:
+    /// recomputed, kept by a void (A-2, BS-arap-4). None on a legacy invoice:
     /// it is shown as "Invoice {id}" and never counted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub number: Option<String>,
@@ -1061,7 +1061,7 @@ pub struct Invoice {
 
 /// The sum of a document's lines; refused (TooLargeToCompute), never a
 /// panic, past exact arithmetic. A document is restored from its journal
-/// line as written (rules.md B-28), so its lines are bounded only by what
+/// line as written (BS-entry-4), so its lines are bounded only by what
 /// the version that wrote it checked.
 pub fn document_total(lines: &[DocumentLine], what: &str) -> Result<Decimal, LedgerError> {
     crate::kernel::total_of(lines, |l| l.amount)
@@ -1082,9 +1082,9 @@ pub type DocumentPartKey = (Option<crate::AccountId>, Option<crate::ClassId>);
 /// GOAL: a document's lines post to their accounts and count toward their
 ///       projects, and a document whose lines name neither posts exactly
 ///       as before.
-/// SOURCE: docs/spec/rules.md B-37 item 3 (job costing: the revenue and
+/// SOURCE: BS-statement-5 item 3 (job costing: the revenue and
 ///         direct costs identified with one job) and item 8 (an
-///         invoice's or bill's line names its project); B-39 and plan
+///         invoice's or bill's line names its project); BS-arap-3 and plan
 ///         P4b S4.1 A-10 (every bill line names its account).
 /// INVARIANTS:
 ///   1. The parts sum to the document's total (conservation), and each
@@ -1166,7 +1166,7 @@ pub struct Bill {
     /// The auto-posted journal entry.
     pub entry_id: u64,
     /// The vendor's own invoice number, when given: what a duplicate
-    /// check reads (B-40; [`crate::Ledger::check_vendor_ref`]).
+    /// check reads (BS-arap-4; [`crate::Ledger::check_vendor_ref`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vendor_ref: Option<String>,
     /// The day we received the bill, when it differs from its date.
@@ -1198,7 +1198,7 @@ impl Bill {
 /// Validate document lines: at least one, all positive amounts, each in a
 /// journal line's range, and a quantity and unit price that multiply to
 /// the amount exactly (plan P4b S4.1). For new documents; replay restores
-/// them as journaled (rules.md B-28).
+/// them as journaled (BS-entry-4).
 pub fn validate_lines(lines: &[DocumentLine]) -> Result<(), LedgerError> {
     if lines.is_empty() {
         return Err(LedgerError::EmptyDocumentLines);
@@ -1251,7 +1251,7 @@ pub fn validate_lines(lines: &[DocumentLine]) -> Result<(), LedgerError> {
 
 /// Validate that due date is not before the document date, and both are
 /// in the calendar the books keep (P0 review round 3, S1). For new
-/// documents; replay restores them as journaled (rules.md B-28).
+/// documents; replay restores them as journaled (BS-entry-4).
 pub fn validate_due_date(date: NaiveDate, due_date: NaiveDate) -> Result<(), LedgerError> {
     crate::calendar::check(date)?;
     crate::calendar::check(due_date)?;
@@ -1354,7 +1354,7 @@ pub struct AgingDocument {
 ///
 /// ```text
 /// GOAL: say how overdue a balance is, as of a date.
-/// SOURCE: docs/spec/rules.md B-18 (bucket edges: CONVENTION, ASC
+/// SOURCE: BS-arap-1 (bucket edges: CONVENTION, ASC
 ///         326-20-55-38 illustrative; due today is Current: DECISION,
 ///         owner 2026-10-13).
 /// INVARIANTS:

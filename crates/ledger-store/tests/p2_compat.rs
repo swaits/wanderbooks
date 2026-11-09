@@ -1,5 +1,5 @@
 //! Books P2 wrote, served by this version before the owner's go-ahead
-//! (plan/served.md 3.9, D-39; rules.md B-27, B-28): nothing is written
+//! (plan/served.md 3.9, D-39; BS-format-1, BS-entry-4): nothing is written
 //! that P2 can't read, or would read with another meaning, and every line
 //! P2 wrote opens.
 //!
@@ -23,7 +23,7 @@
 //!      upgrade (a category P2 knew, months run in order, a disposal on or
 //!      after the in-service date).
 //!   3. A line P2 accepted replays, in the writer and the viewer, however
-//!      the commands' checks have widened since (B-28).
+//!      the commands' checks have widened since (BS-entry-4).
 //! ```
 
 use chrono::NaiveDate;

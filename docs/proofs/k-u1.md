@@ -174,6 +174,6 @@ rounding) and `Fx.booked_whole` (every booked amount in `Z * u`). The
 D-75 bound is stated in BS-entry-4 as an engine-neutral MUST (a foreign
 amount and an exchange rate each take at most ten decimal places, trailing
 zeros not counted; replay exempt, BS-entry-8), with D-75 as its
-provenance. wanderbooks' claim for B-28 (`docs/spec/claims/entry.md`)
+provenance. wanderbooks' claim for BS-entry-4 (`docs/spec/claims/entry.md`)
 lists the enforcement (`add_line_fx`, `ValueOutOfRange`, never on replay)
 and the checks.

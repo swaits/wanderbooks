@@ -1106,7 +1106,7 @@ fn a_receipts_index_amount_is_the_entrys_debit_total_as_written() {
 }
 
 // ---------------------------------------------------------------------------
-// As of one day (rules.md B-33), and the QuickBooks file (B-34)
+// As of one day (BS-statement-4), and the QuickBooks file (BS-format-2)
 // ---------------------------------------------------------------------------
 
 /// The IIF's transactions in file order: each one's DOCNUM, memo, and
@@ -1208,7 +1208,7 @@ fn as_of_package_iif_stops_at_as_of() {
     ));
 }
 
-/// B-33 at its edges, through ledger_package::export_iif (the package's
+/// BS-statement-4 at its edges, through ledger_package::export_iif (the package's
 /// own): an entry dated as_of is in and one dated the day after is not; a
 /// reversal after as_of leaves its original in, under the original's id;
 /// as of a day before the first entry the file declares the accounts and
@@ -1409,7 +1409,7 @@ fn books_around(dir: &Path, as_of: NaiveDate, later: bool, desk: bool) -> Books 
 }
 
 /// Plan P3, defect 21: "a test pins every file in an as-of package to
-/// it". B-33: no figure, entry, receipt or worksheet row reflects anything
+/// it". BS-statement-4: no figure, entry, receipt or worksheet row reflects anything
 /// dated after as_of. Two sets of books, the same through as_of, one with
 /// activity in the days after (a 1099 payment with its receipt, an asset
 /// bought, a reversal of an entry dated as_of, the members' contributions,
@@ -1717,7 +1717,7 @@ fn one_list_of_cash_accounts_per_package() {
     assert_eq!(text(&plain, "1099-worksheet-2026.csv"), tool(&cash));
 }
 
-/// rules.md B-34 rule 8 (P3 cutover review, open point 1): the
+/// BS-format-2 rule 8 (P3 cutover review, open point 1): the
 /// package's QuickBooks file declares every project as a class and
 /// carries each line's project in CLASS; a project name written
 /// differently is listed in the warnings and the README, whose IIF line
@@ -1776,7 +1776,7 @@ fn the_package_iif_carries_each_lines_project() {
     );
 }
 
-/// rules.md B-34 rule 8 with B-37 item 8: an invoice's or a bill's
+/// BS-format-2 rule 8 with BS-statement-5 item 8: an invoice's or a bill's
 /// lines carry their projects into CLASS through the entry they post,
 /// the revenue or expense line of each project tagged, an untagged
 /// part and the receivable or payable line left without a class.
@@ -1921,7 +1921,7 @@ fn the_readme_lists_what_the_iif_writes_differently() {
     assert!(!text(&p, "README.txt").contains("Written differently"));
 }
 
-/// B-34 rule 7 (P3 review round 2): the file names no customer or vendor
+/// BS-format-2 rule 7 (P3 review round 2): the file names no customer or vendor
 /// (Intuit states no such need for an IIF journal; QuickBooks Desktop asks
 /// for one on a journal entry to accounts receivable or payable, and takes
 /// one such account a transaction: sources/intuit-iif.md), so the README
@@ -1939,7 +1939,7 @@ fn the_readme_names_the_entries_on_receivables_and_payables() {
         s.add_account(code, name, ty, None, false).unwrap();
     }
     // Hand lines on receivables and payables, as books an earlier version
-    // wrote hold them (the control guard, rules.md B-38, refuses them as
+    // wrote hold them (the control guard, BS-arap-2, refuses them as
     // new work): posted as replay posts them.
     let (invoiced, billed) = ledger_core::parties::replaying(|| {
         let invoiced = post(
@@ -2114,7 +2114,7 @@ fn random_ledger(
         }
         let e = posted[pick.index(posted.len())];
         let on = l.get_entry(e).unwrap().date() + chrono::Duration::days(*days);
-        // An entry is reversed at most once (B-10): a second pick is skipped.
+        // An entry is reversed at most once (BS-ledger-6): a second pick is skipped.
         let _ = l.reverse_entry(e, on, "Reversal");
     }
     for m in 1..=closed {
@@ -2134,7 +2134,7 @@ fn random_ledger(
 proptest::proptest! {
     #![proptest_config(proptest::prelude::ProptestConfig::with_cases(2000))]
 
-    /// B-33 and B-34 over random books, random as_of (before the first
+    /// BS-statement-4 and BS-format-2 over random books, random as_of (before the first
     /// entry, on an entry's date, after the last), reversals on either side
     /// of it and closed months: the IIF holds exactly the posted entries
     /// dated on or before as_of that aren't closes, in posting order, each
@@ -2297,8 +2297,8 @@ fn the_bookspec_iif_example_matches_the_engine() {
     assert_eq!(checked, 2);
 }
 
-/// The package's statement of cash flows is the direct method's (rules.md
-/// B-14, D-35): operating by ASC 230-10-45-25 class, financing by kind
+/// The package's statement of cash flows is the direct method's (
+/// BS-statement-3, D-35): operating by ASC 230-10-45-25 class, financing by kind
 /// with each member named, and both schedules: the reconciliation of net
 /// income to operating cash (45-30) and the noncash investing and
 /// financing activities (50-3; "None" here: every entry moved cash).
@@ -2329,7 +2329,7 @@ fn the_cash_flow_carries_both_schedules() {
     assert!(p.files.iter().any(|(n, _)| n == "cash-flow.pdf"));
 }
 
-/// The K-1 worksheet reports tax-basis capital (rules.md B-36; Form 1065
+/// The K-1 worksheet reports tax-basis capital (BS-partner-4; Form 1065
 /// instructions, Item L, the tax-basis method), beside the book figures,
 /// with the reconciliation. By hand, per member of two at 50/50: cash in
 /// 1,000.00; a laptop (worth 1,440.00, adjusted basis 1,688.40) and a
@@ -2481,7 +2481,7 @@ fn the_k1_worksheet_reports_tax_basis_capital() {
 
 /// The CPA package's aging CSVs are the agings, one row per open document
 /// and a tie-out line that equals the control account (plan P4b S6,
-/// 8.3.10; rules.md B-23, B-38 INVARIANT 1).
+/// 8.3.10; BS-ledger-8, BS-arap-2 INVARIANT 1).
 #[test]
 fn the_aging_csvs_tie_to_the_control_check() {
     let dir = tempfile::Builder::new()

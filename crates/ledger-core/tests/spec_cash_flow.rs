@@ -1,4 +1,4 @@
-//! The statement of cash flows (rules.md B-14), from the rule and its
+//! The statement of cash flows (BS-statement-3), from the rule and its
 //! sources, never from the implementation.
 //!
 //! Every expected figure is worked by hand in the test's doc comment from
@@ -53,7 +53,7 @@ impl Books {
         // As replay posts it: these books hold hand lines on receivables
         // or payables (1200, 2000), which books an earlier version wrote
         // still hold and every report must read; the control guard
-        // (rules.md B-38) refuses them as new work.
+        // (BS-arap-2) refuses them as new work.
         ledger_core::parties::replaying(|| {
             let e = self.l.create_entry(date, desc);
             for &(code, side, amount) in lines {
@@ -168,7 +168,7 @@ fn s(t: &str) -> String {
     t.to_string()
 }
 
-/// The laws every statement keeps (rules.md B-14 rules 8 and 9): each
+/// The laws every statement keeps (BS-statement-3 rules 8 and 9): each
 /// section is its lines, and its kinds; the sections are the change in
 /// cash; net income and the reconciling items are operating.
 fn foots(cf: &CashFlowStatement) {
@@ -205,7 +205,7 @@ fn no_distribution(cf: &CashFlowStatement) {
 /// The minimal reproduction of defect 1. Property contributed (Dr
 /// Equipment 2,340 / Cr Capital), the asset registered, the entry reversed
 /// the same day. No cash moved, and the entry and its reversal cancel
-/// (rules.md B-14 rules 1, 6): every section 0.00, no lines, no
+/// (BS-statement-3 rules 1, 6): every section 0.00, no lines, no
 /// disclosures, footing 0 / 0 / 0. Before the fix: investing −2,340.00
 /// against a change in cash of 0.00 (the reversal's credit to the
 /// equipment account belonged to no section).
@@ -276,7 +276,7 @@ fn defect1_reversed_contributions_foot_regression() {
 /// | 22 | 03-20 | reverses #9                             |           |                 |
 /// | 23 | 03-30 | API credits on the card                 | 6300 42.75 | 2050           |
 ///
-/// By hand, the year to 2026-03-31 (rules.md B-14; D-42 for what the
+/// By hand, the year to 2026-03-31 (BS-statement-3; D-42 for what the
 /// members paid):
 /// - Operating: the members paid #1 85.00, #2 12.97, #3 99.00, #6 7.49,
 ///   #21 216.40, #7 129.00 and #20 46.38 (the prepaid domain) for the
@@ -876,7 +876,7 @@ fn a_property_contribution_is_a_noncash_disclosure() {
     assert_eq!(n.label, format!("Laptop contributed (#{e})"));
 }
 
-/// D-42, rules.md B-14 rule 11 (ASC 230 is silent on a payment a third
+/// D-42, BS-statement-3 rule 11 (ASC 230 is silent on a payment a third
 /// party makes on the entity's behalf; PwC FSP 6.9.3.1, DART Roadmap 7.2
 /// and BDO Blueprint 3.4 present it by substance, as constructive receipt
 /// and disbursement). An expense a member pays personally (Dr Supplies
@@ -1011,7 +1011,7 @@ fn equipment_a_lender_paid_for_is_borrowed_and_invested() {
     assert_eq!(cf.net_change_in_cash, x("-500.00"));
 }
 
-/// The expense-to-capital case (rules.md B-14 rule 11): a member pays a
+/// The expense-to-capital case (BS-statement-3 rule 11): a member pays a
 /// vendor for the company and the books credit the member's capital (Dr
 /// Supplies 80 / Cr Capital — Member A), no cash. The member paid cash to
 /// a third party on the company's behalf, as through 2100; only the form
@@ -1150,7 +1150,7 @@ fn equipment_on_the_sellers_credit_stays_noncash_and_flagged() {
     assert!(w.message.contains("borrowed and spent"), "{}", w.message);
 }
 
-/// rules.md B-14 rule 6 with rule 11: a payment a member made for the
+/// BS-statement-3 rule 6 with rule 11: a payment a member made for the
 /// company and its reversal, both in February, drop out together (their
 /// flows, constructive cash included, are exact negatives: Kani
 /// `constructive_mirrors`); no line, no disclosure, no total moves. The
@@ -1351,7 +1351,7 @@ fn interest_and_guaranteed_payments_charged_to_a_creditor_stay_noncash() {
     );
 }
 
-/// rules.md B-14 rule 6 (B-9: a correction undoes what it corrects): an
+/// BS-statement-3 rule 6 (BS-ledger-5: a correction undoes what it corrects): an
 /// entry and its reversal both in the period drop out of every line and
 /// disclosure, and no total moves (their flows are exact negatives, Kani
 /// `entry_flows_of_a_reversal_mirror`).
@@ -1390,7 +1390,7 @@ fn an_entry_and_its_reversal_in_the_period_drop_out() {
     assert_eq!(cf.net_change_in_cash, before.net_change_in_cash);
 }
 
-/// rules.md B-14 rule 6: a reversal shown alone (its original in an
+/// BS-statement-3 rule 6: a reversal shown alone (its original in an
 /// earlier period) is labelled "Reversal of #N — <N's description>" and
 /// listed under its original's kind, never as a distribution (D1-c).
 #[test]
@@ -1414,7 +1414,7 @@ fn a_reversal_alone_is_labelled_reversal_of() {
     no_distribution(&cf);
 }
 
-/// rules.md B-14 rules 4 and 6: a reversal takes its chain root's
+/// BS-statement-3 rules 4 and 6: a reversal takes its chain root's
 /// sections, class and kind, with its own sign. Reversing January's cash
 /// sale at a 300 gain in February: investing −500 under "Proceeds from
 /// sales of property and equipment", G +300 (the gain, reversed, is still
@@ -1766,7 +1766,7 @@ fn operating_classes_follow_asc_230_10_45_25() {
 
 /// ASC 230-10-45-28(b): depreciation is an item of net income with no
 /// cash effect, a reconciling item; it is not an investing or financing
-/// activity, so nothing is disclosed (rules.md B-14 rule 7).
+/// activity, so nothing is disclosed (BS-statement-3 rule 7).
 #[test]
 fn depreciation_is_reconciling_not_disclosed() {
     let mut b = funded();
@@ -1862,7 +1862,7 @@ fn operating_reconciliation_ties_to_operating_cash() {
     );
 }
 
-/// rules.md B-11 and B-14 rule 10: a period close moves earnings into
+/// BS-period-1 and BS-statement-3 rule 10: a period close moves earnings into
 /// equity; it earns and spends nothing, so it is never in the statement.
 #[test]
 fn closing_entries_never_appear() {
@@ -1881,7 +1881,7 @@ fn closing_entries_never_appear() {
     assert!(!text.contains(&format!("entry: {close},")));
 }
 
-/// The period is [start, end] inclusive (rules.md B-14 rule 1): a
+/// The period is [start, end] inclusive (BS-statement-3 rule 1): a
 /// contribution on the start date is a flow, not opening cash.
 #[test]
 fn cash_flow_starts_counting_on_the_start_date() {
@@ -1921,7 +1921,7 @@ fn a_transfer_between_cash_accounts_is_not_a_flow() {
     assert!(cf.noncash_disclosures.is_empty());
 }
 
-/// Review round 2, footing in odd shapes (rules.md B-14 rules 1, 6, 9,
+/// Review round 2, footing in odd shapes (BS-statement-3 rules 1, 6, 9,
 /// 11), by hand:
 /// - two cash accounts in one entry, a transfer less its fee (Dr Savings
 ///   99, Dr Supplies 1 / Cr Cash 100): only the net, −1, moves cash,
@@ -2035,7 +2035,7 @@ fn a_note_received_for_equipment_is_disclosed() {
 /// ASC 230-10-50-4: a trade-in. A new vehicle (2,000, on 1520) for the
 /// old equipment (cost 1,000 on 1500, accumulated 800, gain 300) and
 /// 1,500 cash: investing −1,500 and an exchange of 500 disclosed. Within
-/// one cost account a trade-in nets away (a limit B-14 records).
+/// one cost account a trade-in nets away (a limit BS-statement-3 records).
 #[test]
 fn a_trade_in_is_disclosed() {
     let mut b = funded();
@@ -2216,7 +2216,7 @@ fn financing_lists_each_members_contributions_and_distributions() {
 /// ASC 230-10-45-25 requires interest received (b) and interest paid (e)
 /// "at a minimum" apart from the other classes, so an entry's operating
 /// cash is classed kind by kind: its interest lines are (b) or (e)
-/// whatever else it settles, the rest by its structure (rules.md B-14
+/// whatever else it settles, the rest by its structure (BS-statement-3
 /// rule 5). By hand:
 /// - a payment of 900 on a loan the settings leave operating, with 100
 ///   interest (Dr 2500 900, Dr 6200 100 / Cr cash 1,000): (d) −900 and
@@ -2547,7 +2547,7 @@ fn a_reversed_bill_payment_leaves_the_purchase_unpaid() {
 }
 
 // ---------------------------------------------------------------------------
-// Role refusals (rules.md B-14 rule 2) and the footing check (rule 9).
+// Role refusals (BS-statement-3 rule 2) and the footing check (rule 9).
 // ---------------------------------------------------------------------------
 
 fn refused(b: &Books, cash: &[&str], financing: &[&str], investing: &[&str]) -> String {
@@ -2617,7 +2617,7 @@ fn a_registered_asset_account_cannot_be_cash() {
     assert!(m.contains("a registered fixed asset's account"), "{m}");
 }
 
-/// rules.md B-14 rule 9: any difference between the sections and the
+/// BS-statement-3 rule 9: any difference between the sections and the
 /// change in cash is an engine error, never a statement.
 #[test]
 fn foot_refuses_any_difference() {
@@ -2638,7 +2638,7 @@ fn foot_refuses_any_difference() {
 }
 
 // ---------------------------------------------------------------------------
-// Properties over random books (rules.md B-14; plan P3: 5,000 cases).
+// Properties over random books (BS-statement-3; plan P3: 5,000 cases).
 // ---------------------------------------------------------------------------
 
 mod random {
@@ -3011,7 +3011,7 @@ use random::*;
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(cases()))]
 
-    /// rules.md B-14 over random books, reversals of reversals included:
+    /// BS-statement-3 over random books, reversals of reversals included:
     /// 1. the sections sum to the change in cash, which is the model's;
     /// 2. each section is its lines and its kinds, and 3. net income and
     ///    the reconciling items are operating (`foots`);
@@ -3244,7 +3244,7 @@ fn a_disposals_depreciation_credit_back_is_depreciation() {
     assert_eq!(cf.cash_from_investing, x("975.00"));
 }
 
-/// rules.md B-14 rule 5 (the P3 cutover review's open point 2): ASC
+/// BS-statement-3 rule 5 (the P3 cutover review's open point 2): ASC
 /// 230-10-45-17(c), "Cash payments to governments for taxes, duties,
 /// fines, and other fees or penalties", is not 45-17(b)'s "Cash payments
 /// to other suppliers and employees": a state's filing fee booked to an
@@ -3316,7 +3316,7 @@ fn a_payment_to_a_government_is_other_operating() {
     assert_eq!((line.class, line.amount), (Some(OtherPayments), x("75.00")));
 }
 
-/// rules.md B-14 rule 5: the payee decides on any account, and the tax
+/// BS-statement-3 rule 5: the payee decides on any account, and the tax
 /// category still does without one: a license on `taxes_licenses` with no
 /// party is (g). An entry naming a government and a supplier together
 /// (half each) is split by their shares, as ASC 230-10-45-22 has each
@@ -3371,7 +3371,7 @@ fn a_government_payee_moves_a_fee_on_any_account() {
     assert_eq!(classes(&cf, shared), [(OtherPayments, x("-100.00"))]);
 }
 
-/// rules.md B-14 rule 5: a split by shares that leaves an odd cent rounds
+/// BS-statement-3 rule 5: a split by shares that leaves an odd cent rounds
 /// the government's part half to even, the supplier's the rest, so the
 /// line still sums to the payment; its reversal next month mirrors it to
 /// the cent. Fixed amounts split as given.
@@ -3450,7 +3450,7 @@ fn a_shared_government_payment_splits_to_the_cent() {
     );
 }
 
-/// rules.md B-14 rule 5: a reversal takes its original's payee, so the
+/// BS-statement-3 rule 5: a reversal takes its original's payee, so the
 /// pair always lands in one class and nets. A state's fee paid in
 /// February and reversed in March: (g) both. The books keep a reversal
 /// chain's parties one (Ledger::set_entry_parties INVARIANT 5): tagging
@@ -3500,7 +3500,7 @@ fn a_reversal_takes_its_originals_payee() {
     assert_eq!(classes(&b), both(ToSuppliersAndEmployees));
 }
 
-/// rules.md B-14 rules 5 and 11: a payment shared between a state and an
+/// BS-statement-3 rules 5 and 11: a payment shared between a state and an
 /// agent that a member paid personally (Dr 6000 137.00 / Cr 2100, the
 /// members' financing account) is borrowed and spent, and its spending is
 /// split by the parties' shares as a bank payment's is, the part no bank
@@ -3577,7 +3577,7 @@ fn a_shared_government_payment_a_member_paid_splits_both_ways() {
     assert_eq!(cf.net_change_in_cash, Decimal::ZERO);
 }
 
-/// rules.md B-14 rule 5 (CONVENTION): payroll keeps its structure. Taxes
+/// BS-statement-3 rule 5 (CONVENTION): payroll keeps its structure. Taxes
 /// withheld from employees and remitted to the tax agency are the
 /// employees' pay (45-17(b), "Cash payments to other suppliers and
 /// employees"), and the payroll payables mix them with the employer's
@@ -3636,7 +3636,7 @@ fn a_payroll_remittance_to_a_tax_agency_stays_pay() {
     assert_eq!(class(employer), Some(OtherPayments));
 }
 
-/// rules.md B-14 rule 5: a government selling goods or services is a
+/// BS-statement-3 rule 5: a government selling goods or services is a
 /// supplier (45-17(b), "for other goods or services"), not 45-17(c)'s
 /// taxes, fees or penalties: the post office named with the `vendor`
 /// role, postage stays (d). The roles decide, so a post office given the
@@ -3664,7 +3664,7 @@ fn a_government_selling_services_is_a_supplier() {
 }
 
 /// A bill whose line is equipment, paid later: the payment's cash is
-/// investing, through the bill's split (D-35; rules.md B-14), not
+/// investing, through the bill's split (D-35; BS-statement-3), not
 /// operating. Plan P4b S6 keeps this true when the bill is paid as part
 /// of a settlement.
 #[test]

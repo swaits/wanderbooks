@@ -383,14 +383,14 @@ pub fn apply_decision(decisions: &mut Vec<Dated1099>, new: Dated1099) -> Applied
 }
 
 /// The checks a new 1099 decision passes before it is recorded (replay
-/// skips them: rules.md B-28): the decision ([`Decision1099::check`]),
+/// skips them: BS-entry-4): the decision ([`Decision1099::check`]),
 /// its source, its date in the books' calendar, and that a dated decision
 /// records a change. Returns what recording it would do.
 ///
 /// ```text
 /// GOAL: no dated decision silently leaves the vendor's earlier payments
 ///       undecided.
-/// SOURCE: DECISION D-40 (owner, 2026-10-20); docs/spec/rules.md B-19.
+/// SOURCE: DECISION D-40 (owner, 2026-10-20); BS-1099-1.
 /// SCENARIOS:
 ///   1. IF `new` is dated, would be recorded, and no decision other than
 ///      undetermined is in force at any time before its date: SHOULD
@@ -428,7 +428,7 @@ pub fn check_new_decision(decisions: &[Dated1099], new: &Dated1099) -> Result<Ap
 ///
 /// ```text
 /// GOAL: the dollar amount at which a vendor's payments become reportable.
-/// SOURCE: docs/spec/rules.md B-19 (26 U.S.C. §6041(a), (h), §6041A(a)(2),
+/// SOURCE: BS-1099-1 (26 U.S.C. §6041(a), (h), §6041A(a)(2),
 ///         Pub. L. 119-21 §70433(f): payments made after December 31,
 ///         2025; sources/irs-1099-thresholds.md,
 ///         sources/irs-1099-payment-method.md).
@@ -604,7 +604,7 @@ pub struct PaymentAccounts {
 /// GOAL: a payment line's role comes from what the books record, and a
 ///       line whose method isn't recorded is never presumed a card's
 ///       unless only a card pays through its account.
-/// SOURCE: docs/spec/rules.md B-19 (P3 review R2); DECISION D-40 (a bank
+/// SOURCE: BS-1099-1 (P3 review R2); DECISION D-40 (a bank
 ///         payment with no method recorded counts).
 /// INVARIANTS (first match wins):
 ///   1. Cash: one of the books' cash accounts.
@@ -868,7 +868,7 @@ fn bounds(
 /// settings), entries dated after `through` left out.
 ///
 /// ```text
-/// SOURCE: docs/spec/rules.md B-19 (26 U.S.C. §6041(a): payments made in
+/// SOURCE: BS-1099-1 (26 U.S.C. §6041(a): payments made in
 ///         the year; Treas. Reg. §1.6041-1(a)(1)(iv): card and network
 ///         payments go on Form 1099-K; §1.6041-1(e)(1): the company is the
 ///         payor when a member pays its bill; §1.6041-3: payees no return
@@ -876,7 +876,7 @@ fn bounds(
 ///         crate::shares (an entry with several parties, each with their
 ///         share; DECISION, owner, 2026-10-15); DECISION D-40 (owner,
 ///         2026-10-20: dated decisions; a bank payment with no method
-///         recorded counts); B-33 (a worksheet as of a day).
+///         recorded counts); BS-statement-4 (a worksheet as of a day).
 /// DEFINITIONS:
 ///   buckets(e): kernel::payment_bucket per line (role from `sources` and
 ///     the instruments' accounts; tag from Ledger::entry_instrument),
@@ -888,7 +888,7 @@ fn bounds(
 ///     sources.financing), what the shares resolve against (the MCP server
 ///     checks them with the same).
 ///   target(e): crate::shares::target(e, money).amount: what the shares
-///     split (rules.md B-35); a reversal's is its original's negated.
+///     split (BS-partner-3); a reversal's is its original's negated.
 /// INVARIANTS:
 ///   1. Refuses when `sources.cash` is empty (name the books' cash
 ///      accounts; never every asset: P3 review R5), and, with no
@@ -899,7 +899,7 @@ fn bounds(
 ///      makes a worksheet as of a day: the payments from January 1
 ///      through it (§6041(a) and §6041A(a)(2) count what is paid "in any
 ///      calendar year"; a CPA package as of June 30 shows the year to
-///      date, rules.md B-33).
+///      date, BS-statement-4).
 ///   3. An entry naming at most one party: the vendor's amounts are
 ///      buckets(e).
 ///   4. An entry naming several parties (one of them the vendor's party,

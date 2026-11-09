@@ -3,7 +3,7 @@
 //! The sum of a collection of money figures, in one place. A raw `Decimal`
 //! `+`, `+=` or `.sum()` panics at `Decimal::MAX`; these return `None`
 //! instead, so the caller can refuse with `TooLargeToCompute` and never
-//! crash a book (rules.md B-28: a replayed journal line is accepted "of
+//! crash a book (BS-entry-4: a replayed journal line is accepted "of
 //! any size", so a restored figure is the realistic path to the edge).
 //! The signed sum of `(Side, amount)` lines is [`super::net`] and the pair
 //! of columns [`super::totals`]; they were here first and stay the one
@@ -17,8 +17,8 @@ use super::Amount;
 /// ```text
 /// GOAL: a book's or report's total is the exact sum of its figures, or
 ///       refused; no total is ever rounded, wrapped or a crash.
-/// SOURCE: docs/spec/rules.md B-21 (amounts are exact; rounding is
-///         confined to returns), B-28 (replayed lines are accepted "of any
+/// SOURCE: BS-entry-3 (amounts are exact; rounding is
+///         confined to returns), BS-entry-4 (replayed lines are accepted "of any
 ///         size"; no input may reach a panic); bookspec BS-entry-3,
 ///         BS-entry-4; CONVENTION.
 /// INVARIANTS:
@@ -49,7 +49,7 @@ pub fn total<T: Amount>(values: impl IntoIterator<Item = T>) -> Option<T> {
 /// ```text
 /// GOAL: the sum of a mapped field (a row's amount, a member's share) is
 ///       the exact sum of the mapping, or refused.
-/// SOURCE: docs/spec/rules.md B-21, B-28; bookspec BS-entry-3,
+/// SOURCE: BS-entry-3, BS-entry-4; bookspec BS-entry-3,
 ///         BS-entry-4; CONVENTION.
 /// INVARIANTS:
 ///   1. total_of(items, f) = total(f(item) for item in items), exactly.
@@ -69,7 +69,7 @@ pub fn total_of<T: Amount, I>(
 /// ```text
 /// GOAL: the sum of a derived figure (a column's contributions less its
 ///       distributions) is exact, or refused.
-/// SOURCE: docs/spec/rules.md B-21, B-28; bookspec BS-entry-3,
+/// SOURCE: BS-entry-3, BS-entry-4; bookspec BS-entry-3,
 ///         BS-entry-4; CONVENTION.
 /// INVARIANTS:
 ///   1. total_try(items, f) = Some(Σ f(item)) exactly when every f(item)

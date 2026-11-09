@@ -1,5 +1,5 @@
 # A promise to pay is not payment: Helvering v. Price, 309 U.S. 409 (1940)
-Governs why a party's totals never count a promise as a payment (rules.md B-35): a bill, a fee charged on the party's own card, equipment bought on the seller's own note, or a distribution still owed counts when it is paid, not when it is promised. The Supreme Court held that a taxpayer reporting on the cash basis who gave his own note, even a secured one, had not paid. Opinions of the Supreme Court are works of the United States Government (`us-public-domain-status.md`).
+Governs why a party's totals never count a promise as a payment (BS-partner-3): a bill, a fee charged on the party's own card, equipment bought on the seller's own note, or a distribution still owed counts when it is paid, not when it is promised. The Supreme Court held that a taxpayer reporting on the cash basis who gave his own note, even a secured one, had not paid. Opinions of the Supreme Court are works of the United States Government (`us-public-domain-status.md`).
 
 ## Helvering v. Price, 309 U.S. 409, 412-413 (1940)
 Source: <https://tile.loc.gov/storage-services/service/ll/usrep/usrep309/usrep309409/usrep309409.pdf> (United States Reports, Library of Congress)  

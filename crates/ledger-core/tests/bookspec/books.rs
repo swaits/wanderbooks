@@ -281,7 +281,7 @@ impl<'a> Books<'a> {
             s.rounding
         );
         // The engine splits a close among the members by largest
-        // remainder (rules.md B-13): an example closing to the members
+        // remainder (BS-partner-1): an example closing to the members
         // says so.
         assert!(
             s.rounding == "largest-remainder"

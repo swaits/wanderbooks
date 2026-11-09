@@ -31,7 +31,7 @@ pub struct State {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum RegisterRange {
     /// What a register opens on when nobody chose dates: the fiscal year
-    /// to date (rules.md B-30, `Books::default_period`), its opening
+    /// to date (BS-period-3, `Books::default_period`), its opening
     /// balance carried in.
     #[default]
     Default,

@@ -44,7 +44,7 @@ pub fn interval_start(d: NaiveDate, interval: Interval) -> NaiveDate {
 /// `[start, end]` split on calendar interval boundaries, first and last
 /// pieces clipped to the range. Empty when `end < start`. Never panics:
 /// an interval that would end past chrono's last day ends at `end`
-/// (rules.md B-28: books an earlier version wrote may hold such dates).
+/// (BS-entry-4: books an earlier version wrote may hold such dates).
 pub fn intervals(
     start: NaiveDate,
     end: NaiveDate,
@@ -264,7 +264,7 @@ mod tests {
     }
 
     /// At chrono's last day (books an earlier version wrote may hold it):
-    /// the last interval ends there, never a panic (rules.md B-28).
+    /// the last interval ends there, never a panic (BS-entry-4).
     #[test]
     fn intervals_reach_chronos_last_day() {
         let y = NaiveDate::MAX.year();

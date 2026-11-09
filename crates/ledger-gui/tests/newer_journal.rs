@@ -4,7 +4,7 @@
 //! ```text
 //! GOAL: Tobin, Mo or the CPA, on an older viewer, learn to update it,
 //!       not that the books are damaged.
-//! SOURCE: rules.md B-27; plan/served.md 5.1 (the viewer reads the journal
+//! SOURCE: BS-format-1; plan/served.md 5.1 (the viewer reads the journal
 //!         directly, so it meets the same gate).
 //! ```
 
@@ -66,7 +66,7 @@ fn rate() -> serde_json::Value {
 }
 
 /// The last line can't be checked: the viewer says so, and never that the
-/// books are not damaged (rules.md B-27).
+/// books are not damaged (BS-format-1).
 fn says_newer_or_damaged(text: &str) {
     assert!(text.starts_with("Journal line"), "{text}");
     assert!(text.contains("or the line is damaged"), "{text}");

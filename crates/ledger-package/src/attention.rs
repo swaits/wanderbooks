@@ -71,7 +71,7 @@
 //!      amortization: no counterparty by nature) (one item: Info under
 //!      suggest, Todo under require; its prompt names
 //!      books.set_entry_party); each warning of the fiscal year's
-//!      statement of cash flows (rules.md B-14 rule 12: equipment sold for
+//!      statement of cash flows (BS-statement-3 rule 12: equipment sold for
 //!      an IOU, Todo; bought on an operating payable, Info; one per
 //!      entry, its detail the warning's fix); a filed PDF whose text
 //!      extraction failed (Todo, one per file: a human must read its
@@ -87,7 +87,7 @@
 //!   3. Nothing else: books with none of those yield no items, except
 //!      that a figure behind an item that can't be computed (an
 //!      amortization plan past chrono's last day, an aging past exact
-//!      arithmetic: books an earlier version wrote, rules.md B-28) is one
+//!      arithmetic: books an earlier version wrote, BS-entry-4) is one
 //!      Problem item saying so, never a panic or a guess.
 //!   4. Every item's prompt starts "In wanderbooks," or names
 //!      wanderbooks, and its amounts are the books' exact amounts.
@@ -477,7 +477,7 @@ pub fn find_with(
     }
 
     // Every revenue and expense account (not a header) without a tax
-    // category, with activity or not (rules.md B-32): the one list the
+    // category, with activity or not (BS-ledger-11): the one list the
     // digest gives the agent too.
     let uncategorized: Vec<String> = ledger_core::tax::uncategorized_accounts(ledger)
         .into_iter()
@@ -1341,8 +1341,8 @@ pub fn find_with(
         });
     }
 
-    // The statement of cash flows' warnings this fiscal year (rules.md
-    // B-14 rule 12, D-35): equipment sold for an IOU, flagged with its fix
+    // The statement of cash flows' warnings this fiscal year (
+    // BS-statement-3 rule 12, D-35): equipment sold for an IOU, flagged with its fix
     // (Todo); equipment bought on an operating payable, following how the
     // payable is classified (Info). A statement the settings can't give
     // (no cash accounts yet) has none.
@@ -1867,7 +1867,7 @@ fn paid_this_year(
     a.paid - a.received
 }
 
-/// A figure the books can't compute (rules.md B-28: books an earlier
+/// A figure the books can't compute (BS-entry-4: books an earlier
 /// version wrote may hold dates past chrono's calendar or amounts past
 /// exact arithmetic): a Problem saying so and why, never a guess.
 fn cant_compute(what: String, why: &LedgerError, target: Target) -> Attention {

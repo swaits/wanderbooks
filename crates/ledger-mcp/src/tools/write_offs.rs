@@ -1,12 +1,12 @@
-//! `books.write_off_invoice`'s group: bad debts (plan P4b S7; rules.md
-//! B-41). A file of its own (plan 8.2 U0a) so S4.4's document tools and
+//! `books.write_off_invoice`'s group: bad debts (plan P4b S7;
+//! BS-arap-5). A file of its own (plan 8.2 U0a) so S4.4's document tools and
 //! this one land apart: a tool is added to its group's file and nowhere
 //! else.
 
 use super::*;
 
 /// An invoice's figures after a write-off, as the tool answers them: read
-/// from its tagged lines that stand (rules.md B-38), at the end of the
+/// from its tagged lines that stand (BS-arap-2), at the end of the
 /// books.
 fn write_off_out(
     ledger: &Ledger,
@@ -50,7 +50,7 @@ impl BooksServer {
         let date = parse_date(&p.date)?;
         let mut store = self.lock()?;
         // The event type is new: books that haven't declared documents_v2
-        // refuse it with the upgrade remedy, journaling nothing (B-27).
+        // refuse it with the upgrade remedy, journaling nothing (BS-format-1).
         store
             .ensure_feature(ledger_store::format::DOCUMENTS_V2)
             .map_err(|e| e.to_string())?;
@@ -65,7 +65,7 @@ impl BooksServer {
             Some(a) => parse_amount(a)?,
             None => owed,
         };
-        // The evidence is the point of a write-off (B-41 INVARIANT 1): one
+        // The evidence is the point of a write-off (BS-arap-5 INVARIANT 1): one
         // of the two, and the preview says so too rather than posting
         // without it later.
         match (p.upload_id.is_some(), p.existing_attachment_id.is_some()) {

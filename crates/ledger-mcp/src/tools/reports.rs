@@ -549,7 +549,7 @@ impl BooksServer {
                 .chart()
                 .find_by_code(&code)
                 .ok_or_else(|| format!("unknown account {code}"))?;
-            // The dates resolved (rules.md B-30), sent as resolved, so what
+            // The dates resolved (BS-period-3), sent as resolved, so what
             // the agent is told and what the viewer shows can't differ.
             let (s, e) = self
                 .periods()
@@ -728,7 +728,7 @@ impl BooksServer {
         if let Some(n) = blobs {
             checked.push(format!("{n} stored files match their SHA-256"));
         }
-        // Receivables and payables equal their documents (rules.md B-38
+        // Receivables and payables equal their documents (BS-arap-2
         // INVARIANT 1): an identity, so a difference is an engine error.
         let checks = store
             .ledger()
@@ -956,8 +956,8 @@ impl BooksServer {
                 return Err("iif takes as_of, not start or end: the file holds every posted entry from the first through as_of, so QuickBooks' balances match the books'".to_string());
             }
             // As of today by default, like every other as-of export
-            // (rules.md B-30); never a period, so the general journal's
-            // default period never shortens it (D-36, B-34).
+            // (BS-period-3); never a period, so the general journal's
+            // default period never shortens it (D-36, BS-format-2).
             let as_of = self.as_of(p.as_of.as_deref())?;
             let iif = self.export_iif(as_of, &p.cash_accounts)?;
             let warnings = iif.warnings();
@@ -1044,7 +1044,7 @@ impl BooksServer {
             expenses: Decimal,
         }
         let mut by_class: HashMap<Option<u32>, Acc> = HashMap::new();
-        // A closing entry isn't income or spending (rules.md B-11): left
+        // A closing entry isn't income or spending (BS-period-1): left
         // out, as profit_and_loss_for_period leaves it out (found by
         // pnl_by_class_excludes_closing_entries, 2026-10-14).
         let closings = ledger.closing_entry_ids();
@@ -1114,7 +1114,7 @@ impl BooksServer {
     /// GOAL: everything the CPA needs for the return in one zip, the K-1s'
     ///       and 1099s' TINs included, without a full TIN ever landing in
     ///       the books (a git repository) or the conversation.
-    /// SOURCE: docs/mcp-interface.md; B-26; DECISION (owner,
+    /// SOURCE: docs/mcp-interface.md; BS-partner-2; DECISION (owner,
     ///         2026-10-15): "it needs to be in the damn CPA package."
     /// INVARIANTS:
     ///   1. The zip is handed over (tools/files.rs INVARIANT 6: an export
@@ -1516,7 +1516,7 @@ impl BooksServer {
         ledger_package::export_iif(store.ledger(), cash, as_of)
     }
     /// The general journal as JSON or CSV: each entry posted in the
-    /// period (rules.md B-30, as the XLSX journal), in posting order.
+    /// period (BS-period-3, as the XLSX journal), in posting order.
     fn export_journal(&self, format: &str, p: &ExportParams) -> Result<String, String> {
         let (start, end) = self.statement_range(p.start.as_deref(), p.end.as_deref())?;
         let store = self.lock()?;

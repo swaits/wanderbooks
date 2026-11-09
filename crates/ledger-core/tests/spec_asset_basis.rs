@@ -1,6 +1,6 @@
 //! Spec-derived tests for an asset's basis facts and tax figures
-//! (rules.md B-25), its two dates and its two accumulated figures
-//! (rules.md B-15, B-24): `BasisRule`, `Sec704cMethod`, `AssetBasis`
+//! (BS-asset-4), its two dates and its two accumulated figures
+//! (BS-asset-1, BS-asset-3): `BasisRule`, `Sec704cMethod`, `AssetBasis`
 //! (`check`, `check_journaled`, `check_legacy_journaled`),
 //! `Ledger::set_asset_basis` / `replay_set_asset_basis` /
 //! `replay_set_asset_tax_basis`, `Asset::basis_figures`,
@@ -942,7 +942,7 @@ fn posted_follows_the_entries_dates() {
     assert_eq!(l.live_depreciation_run(id, "2026-01"), None);
 }
 
-/// A reversal of the reversal reinstates the run (B-9), and the run counts
+/// A reversal of the reversal reinstates the run (BS-ledger-5), and the run counts
 /// again: the month is not due twice (review R2).
 #[test]
 fn a_reinstated_run_counts_and_is_live() {
@@ -963,7 +963,7 @@ fn a_reinstated_run_counts_and_is_live() {
 /// −100.00, as the trial balance does (review R2). No command can write one
 /// any more (D-73: a reversal is dated on or after its original, so
 /// `reverse_entry` refuses it), but a journal an earlier version wrote holds
-/// them and replays as it was (B-28): this test replays one.
+/// them and replays as it was (BS-entry-4): this test replays one.
 #[test]
 fn a_reversal_dated_before_its_run_matches_the_trial_balance() {
     let (mut l, a, id, e) = one_run();

@@ -296,7 +296,7 @@ fn schedule_through_purchase_date_covers_one_day() {
 
 #[test]
 fn van_schedule_is_the_hand_computed_one() {
-    // Rank 1, computed by hand (rules.md B-15), replacing an unreviewed
+    // Rank 1, computed by hand (BS-asset-1), replacing an unreviewed
     // golden file (2026-10-13; every row of the old file was checked
     // against this computation first, and matched).
     // $60,000 over 60 months is $1,000 a month. Bought 2026-01-15: January

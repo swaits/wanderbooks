@@ -27,7 +27,7 @@ pub trait Amount: Copy + Ord {
     fn from_u32(n: u32) -> Option<Self>;
     /// `self * rhs`, or `None` when it cannot be represented exactly.
     ///
-    /// A quantity times a unit price (a document line, B-39) is the one
+    /// A quantity times a unit price (a document line, BS-arap-3) is the one
     /// use: it never rounds.
     fn checked_mul(self, rhs: Self) -> Option<Self>;
     /// `self / rhs` exactly, or `None` when `rhs` is zero or the quotient
@@ -38,8 +38,8 @@ pub trait Amount: Copy + Ord {
     /// [`Decimal`] dollars), ties away from zero; never a negative zero.
     /// `None` when `rhs` is zero or the quotient cannot be represented.
     ///
-    /// The one use is a tax category's deductible amount (rules.md B-32,
-    /// B-21), whose shares are added exactly and rounded once, never
+    /// The one use is a tax category's deductible amount (BS-ledger-11,
+    /// BS-entry-3), whose shares are added exactly and rounded once, never
     /// share by share.
     fn checked_div_round_cent(self, rhs: Self) -> Option<Self>;
     /// `self` rounded to a whole multiple of `step`, in `mode`; `None`
@@ -330,7 +330,7 @@ pub fn net<T: Amount>(lines: impl IntoIterator<Item = (Side, T)>) -> Option<T> {
 /// ```text
 /// GOAL: an early-payment discount never takes more than its percentage
 ///       says, in exact money.
-/// SOURCE: docs/spec/rules.md B-39 INVARIANT 2, B-42; plan/served.md
+/// SOURCE: BS-arap-3 INVARIANT 2, BS-arap-6; plan/served.md
 ///         8.3.13; CHOICE: the gross method, A-8 (the discount is
 ///         booked when taken, never estimated).
 /// INVARIANTS:
@@ -360,14 +360,14 @@ pub struct Settlement<T> {
     pub deposit: T,
 }
 
-/// The arithmetic of a settlement (rules.md B-42; plan P4b S6): each
+/// The arithmetic of a settlement (BS-arap-6; plan P4b S6): each
 /// document's cash and discount, and the processor's fee withheld from the
 /// cash that reaches the bank.
 ///
 /// ```text
 /// GOAL: a settlement is exact: what the documents are settled by is the
 ///       cash plus the discounts, and the deposit is the cash less the fee.
-/// SOURCE: docs/spec/rules.md B-42; plan/served.md 8.3.6, 8.3.13 (B-42);
+/// SOURCE: BS-arap-6; plan/served.md 8.3.6, 8.3.13 (BS-arap-6);
 ///         CONVENTION; DECISION: the gross method (A-8) and the fee's
 ///         gross presentation (A-4).
 /// INVARIANTS:
@@ -412,7 +412,7 @@ pub fn settle<T: Amount>(cash: &[T], discounts: &[T], fee: T) -> Option<Settleme
 /// ```text
 /// GOAL: a line's quantity times its unit price is the amount it posts,
 ///       to the last decimal place.
-/// SOURCE: docs/spec/rules.md B-39; plan/served.md 8.3.4 ("kernel::
+/// SOURCE: BS-arap-3; plan/served.md 8.3.4 ("kernel::
 ///         line_amount(q, u) == amount exactly").
 /// INVARIANTS:
 ///   1. Some(p) gives p = quantity x unit_price exactly.
@@ -431,8 +431,8 @@ pub fn line_amount<T: Amount>(quantity: T, unit_price: T) -> Option<T> {
 /// ```text
 /// GOAL: a category's deductible amount is its exact shares added and
 ///       rounded once, never a sum of rounded shares.
-/// SOURCE: docs/spec/rules.md B-32 (CHOICE: owner, 2026-11-07, D-67) and
-///         B-21 (Form 1065 instructions: "include cents when adding the
+/// SOURCE: BS-ledger-11 (CHOICE: owner, 2026-11-07, D-67) and
+///         BS-entry-3 (Form 1065 instructions: "include cents when adding the
 ///         amounts and round off only the total"); plan/served.md 10.1.
 /// INVARIANTS:
 ///   1. On Some(a), a is the exact sum S = Σ(book_i × percent_i ÷ 100)
@@ -579,7 +579,7 @@ pub fn credit_line<T: Amount>(credit: T) -> Option<(Side, T)> {
 }
 
 // ---------------------------------------------------------------------------
-// 1099 payments: where each payment line goes (rules.md B-19)
+// 1099 payments: where each payment line goes (BS-1099-1)
 // ---------------------------------------------------------------------------
 
 /// A line's role in a payment to a vendor, from its account.
@@ -646,7 +646,7 @@ impl Bucket {
 /// GOAL: every payment line to a vendor counts toward its 1099, is a card
 ///       or payment-network payment (Form 1099-K), or is unknown; never
 ///       guessed.
-/// SOURCE: docs/spec/rules.md B-19 (Treas. Reg. §1.6041-1(a)(1)(iv): a
+/// SOURCE: BS-1099-1 (Treas. Reg. §1.6041-1(a)(1)(iv): a
 ///         transaction reportable under §6050W is not reported under
 ///         §6041; §1.6041-1(e)(1): a member writing a check at the
 ///         company's direction doesn't make the member the payor;
@@ -693,7 +693,7 @@ pub fn split_payment<T: Amount>(lines: &[(Option<Bucket>, Side, T)]) -> Option<[
 /// ```text
 /// GOAL: a card bill paid from the bank, a member reimbursed, or a loan
 ///       paid down never counts toward a vendor's 1099.
-/// SOURCE: docs/spec/rules.md B-19 (26 U.S.C. §6041(a): payments made to
+/// SOURCE: BS-1099-1 (26 U.S.C. §6041(a): payments made to
 ///         the payee; P3 review R1, 2026-10-20).
 /// INVARIANTS:
 ///   1. The buckets' sum P is kept exactly.
@@ -758,8 +758,8 @@ pub fn plug_last<T: Amount>(whole: T, parts: &mut [T]) -> Option<()> {
 /// ```text
 /// GOAL: split a whole into parts, each a whole number of units where
 ///       possible, summing to the whole exactly, without favoring anyone.
-/// SOURCE: docs/spec/rules.md B-13 (shares: 26 U.S.C. §704(a); cent
-///         rounding: DECISION, owner 2026-10-13), B-21 (exact totals).
+/// SOURCE: BS-partner-1 (shares: 26 U.S.C. §704(a); cent
+///         rounding: DECISION, owner 2026-10-13), BS-entry-3 (exact totals).
 /// INVARIANTS:
 ///   1. MUST make the parts sum to `whole` exactly.
 ///   2. MUST change each part by zero or one unit (the first in order
@@ -835,7 +835,7 @@ pub fn apportion<T: Amount>(whole: T, parts: &mut [T], remainders: &[T], unit: T
 /// ```text
 /// GOAL: members' running totals that never drift a unit from their
 ///       exact shares, whatever earlier closes did.
-/// SOURCE: docs/spec/rules.md B-13 (shares: 26 U.S.C. §704(a); capital
+/// SOURCE: BS-partner-1 (shares: 26 U.S.C. §704(a); capital
 ///         accounts carry the allocations: Treas. Reg.
 ///         §1.704-1(b)(2)(iv)(b); cent rounding: DECISION, owner
 ///         2026-10-13; counted from the first close: D-10, 2026-10-16).
@@ -880,7 +880,7 @@ pub fn apportion_cumulative<T: Amount>(
     Some(())
 }
 
-/// Where a line falls on the statement of cash flows (rules.md B-14 rule
+/// Where a line falls on the statement of cash flows (BS-statement-3 rule
 /// 2): a cash account, or one of the three sections.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Flow {
@@ -895,8 +895,8 @@ pub enum Flow {
 }
 
 impl Flow {
-    /// The three sections, in the order cash is applied to them (rules.md
-    /// B-14 rule 3): operating, investing, financing.
+    /// The three sections, in the order cash is applied to them (
+    /// BS-statement-3 rule 3): operating, investing, financing.
     pub const SECTIONS: [Flow; 3] = [Flow::Operating, Flow::Investing, Flow::Financing];
 }
 
@@ -938,7 +938,7 @@ pub fn take<T: Amount>(remaining: T, movement: T) -> Option<T> {
 /// ```text
 /// GOAL: split an entry's cash among the parts it settled, without
 ///       inventing or losing any.
-/// SOURCE: rules.md B-14 rule 3 (ASC 230-10-50-5: only the cash portion
+/// SOURCE: BS-statement-3 rule 3 (ASC 230-10-50-5: only the cash portion
 ///         of a part-cash transaction is a cash flow; the order is a
 ///         CONVENTION, the ASC is silent).
 /// INVARIANTS:
@@ -965,7 +965,7 @@ pub fn apply_cash<T: Amount>(cash: T, movements: &[T], applied: &mut [T]) -> Opt
     (remaining == T::ZERO).then_some(())
 }
 
-/// An entry's cash flows (rules.md B-14 rule 3): the net movement of its
+/// An entry's cash flows (BS-statement-3 rule 3): the net movement of its
 /// cash lines, applied to the sections moving against it in the order
 /// operating, investing, financing, each up to its own movement; what is
 /// left of a section's movement is the part no cash settled. `None` when
@@ -1036,7 +1036,7 @@ fn credits_and_debits<T: Amount>(movements: &[T]) -> Option<(T, T)> {
 }
 
 /// Which way money a member or a lender handled for the company went
-/// (rules.md B-14 rule 11, D-42).
+/// (BS-statement-3 rule 11, D-42).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum OnBehalf {
     /// Paid for the company: sources credited (borrowed, contributed)
@@ -1058,8 +1058,8 @@ impl OnBehalf {
 }
 
 /// What a member or a lender paid, or received, for the company with no
-/// cash account moving: a constructive receipt and disbursement (rules.md
-/// B-14 rule 11, D-42). `sources` are what is left unsettled of the
+/// cash account moving: a constructive receipt and disbursement (
+/// BS-statement-3 rule 11, D-42). `sources` are what is left unsettled of the
 /// entry's kinds that can pay or receive for the company (a financing
 /// liability, a member's equity), `uses` of the kinds they can pay or
 /// receive for, each debit-positive. [`OnBehalf::Paid`]: `amount =
@@ -1075,7 +1075,7 @@ impl OnBehalf {
 /// GOAL: show money a member or lender handled for the company as the
 ///       company's own, borrowed (or contributed) and spent, without
 ///       inventing or losing a cent.
-/// SOURCE: rules.md B-14 rule 11 (D-42; ASC 230 is silent, PwC Viewpoint
+/// SOURCE: BS-statement-3 rule 11 (D-42; ASC 230 is silent, PwC Viewpoint
 ///         FSP 6.9.3.1, Deloitte DART Roadmap 7.2, BDO Blueprint 3.4).
 /// INVARIANTS:
 ///   1. The parts net to zero: Σ from + Σ to = 0, so the entry's cash
@@ -1108,7 +1108,7 @@ pub fn constructive<T: Amount>(
 }
 
 /// How much of an entry is an exchange inside investing and financing
-/// that no cash settled (rules.md B-14 rule 7, ASC 230-10-50-4: debt
+/// that no cash settled (BS-statement-3 rule 7, ASC 230-10-50-4: debt
 /// converted to equity, one asset traded for another). `debits` and
 /// `credits` are the net debits and net credits of the entry's investing
 /// and financing balance-sheet accounts (each account netted first; both
@@ -1123,7 +1123,7 @@ pub fn exchanged<T: Amount>(debits: T, credits: T, inflow: T, outflow: T) -> Opt
     Some(d.min(c).max(T::ZERO))
 }
 
-/// Which way an entry moved value with its parties (rules.md B-35).
+/// Which way an entry moved value with its parties (BS-partner-3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Direction {
     /// The company paid the party, or gave it value: a line on the
@@ -1172,7 +1172,7 @@ impl Direction {
 }
 
 /// What an entry's parties split, and what of it counts in their totals
-/// (rules.md B-35).
+/// (BS-partner-3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PartyTarget<T> {
     /// The whole, signed as a line on the parties' own account would be
@@ -1216,7 +1216,7 @@ fn least<T: Amount>(a: T, b: T) -> T {
     if a < b { a } else { b }
 }
 
-/// What an entry's parties split and what of it counts (rules.md B-35
+/// What an entry's parties split and what of it counts (BS-partner-3
 /// item 3, every case but a close and a reversal, which the caller
 /// handles: a close is its parties' own-account movement with direction
 /// neither, a reversal is [`reverse_target`] of its original's).
@@ -1227,7 +1227,7 @@ fn least<T: Amount>(a: T, b: T) -> T {
 ///       money or as property, so a property contribution and its
 ///       reversal never read alike, and a promise is never counted as if
 ///       it were paid.
-/// SOURCE: rules.md B-35 (B-2 signs; DECISION, owner, 2026-10-20: a
+/// SOURCE: BS-partner-3 (BS-entry-2 signs; DECISION, owner, 2026-10-20: a
 ///         member's entry counts what moved their capital, money is cash,
 ///         cards, the members' financing and loans, and a liability credit
 ///         never counts as paying that liability's own creditor; Helvering
@@ -1321,7 +1321,7 @@ pub fn party_target<T: Amount>(
     })
 }
 
-/// A reversal's target from its original's (rules.md B-35 item 3; B-9: a
+/// A reversal's target from its original's (BS-partner-3 item 3; BS-ledger-5: a
 /// correction is the opposite entry): every amount negated (never to a
 /// negative zero), paid and received swapped. An involution. `None` past
 /// the type's range.
@@ -1495,10 +1495,10 @@ fn round_to_unit<T: Units>(num: T, den: T, unit: T) -> Option<T> {
 /// GOAL: how much of a total a span of days has used up by a given day,
 ///       each day of a month bearing the same share, the whole total
 ///       reached on the span's last day and never before.
-/// SOURCE: docs/spec/rules.md B-15 (straight line, partial months by days;
+/// SOURCE: BS-asset-1 (straight line, partial months by days;
 ///         ASC 360-10-35-4: "systematic and rational", as equitably as
-///         possible to the periods served), B-16 (daily schedules, D-11),
-///         B-21 (exact totals).
+///         possible to the periods served), BS-prepaid-1 (daily schedules, D-11),
+///         BS-entry-3 (exact totals).
 /// INVARIANTS (W = months × MONTH_L, m = part.month_days, d = part.days):
 ///   1. Not the last part: round(total × (before + k × MONTH_L / m) / W):
 ///      the monthly rate total/months times the days held over the days
@@ -1520,8 +1520,8 @@ fn round_to_unit<T: Units>(num: T, den: T, unit: T) -> Option<T> {
 ///      W), or any product overflows:
 ///      - SHOULD return None
 ///      - NEVER panic
-///      BECAUSE a figure the books can't compute is refused (rules.md
-///      B-28), and symbolic parts are not a calendar.
+///      BECAUSE a figure the books can't compute is refused (
+///      BS-entry-4), and symbolic parts are not a calendar.
 ///   2. IF 12,000.00 over 12 months from Jan 1, through Dec 15 (the last
 ///      part, 31 days, before = 11 months):
 ///      - SHOULD be 11,000.00 + 1,000.00 × 15/31 = 11,483.87
@@ -1584,7 +1584,7 @@ pub fn prorated_through<T: Units>(
 /// ```text
 /// GOAL: one month's posting of a span spread by day (depreciation,
 ///       daily prepaid and deferred-revenue schedules).
-/// SOURCE: docs/spec/rules.md B-15, B-16 (D-11), B-21; plan/served.md P3
+/// SOURCE: BS-asset-1, BS-prepaid-1 (D-11), BS-entry-3; plan/served.md P3
 ///         defect 9 (one shared prorate_by_days, Kani: parts sum to the
 ///         total, each is days × rate within one unit, the last absorbs
 ///         the remainder).
@@ -1651,7 +1651,7 @@ pub fn prorate_by_days<T: Units>(
 /// SOURCE: plan/served.md P3 "Settled in design" (2026-10-20): a month of
 ///         depreciation skipped is caught up in the month the run is made
 ///         (an immaterial miss; a material one is restated, ASC 250);
-///         docs/spec/rules.md B-15.
+///         BS-asset-1.
 /// INVARIANTS:
 ///   1. The result is >= 0.
 ///   2. Whenever every posted[i] <= scheduled[i], posted[i] + result <=
@@ -1707,7 +1707,7 @@ pub fn catch_ups<T: Amount>(scheduled: &[T], posted: &[T], out: &mut [T]) -> Opt
 /// ```text
 /// GOAL: a disposal clears exactly what the schedule says was used up
 ///       through its day, whatever the runs posted.
-/// SOURCE: docs/spec/rules.md B-15 (a disposed asset depreciates through
+/// SOURCE: BS-asset-1 (a disposed asset depreciates through
 ///         its disposal day); Ledger::dispose_asset INVARIANT 1 (gain =
 ///         proceeds − book value at the disposal date).
 /// ```
@@ -1737,7 +1737,7 @@ pub struct BasisFigures<T> {
 /// ```text
 /// GOAL: the three tax figures of an asset, each named for what it is,
 ///       from one function the register, the tools and the viewer share.
-/// SOURCE: docs/spec/rules.md B-25: IRC §1012(a) (cost); IRC §723 (the
+/// SOURCE: BS-asset-4: IRC §1012(a) (cost); IRC §723 (the
 ///         contributor's adjusted basis carries over); Treas. Reg.
 ///         §1.168(i)-4(b)(1) (property converted from personal use: "the
 ///         lesser of its fair market value or its adjusted depreciable
@@ -1782,12 +1782,12 @@ pub fn basis_figures<T: Amount>(
 }
 
 /// A project's unrecovered cost from its tagged revenue and expenses to
-/// date: what it would take to be repaid in full (rules.md B-37 item 4).
+/// date: what it would take to be repaid in full (BS-statement-5 item 4).
 ///
 /// ```text
 /// GOAL: the "if repaid" figure of work done on spec, from one function
 ///       the tools, the viewer and bookspec share.
-/// SOURCE: docs/spec/rules.md B-37 item 4 (ASC 450-30-25-1: a hoped-for
+/// SOURCE: BS-statement-5 item 4 (ASC 450-30-25-1: a hoped-for
 ///         payment is a gain contingency, never recorded before it is
 ///         received; so this is a figure, never a receivable).
 /// INVARIANTS:
@@ -1826,7 +1826,7 @@ pub enum Bounds {
 /// ```text
 /// GOAL: one definition of "a document is never overpaid and never owes
 ///       more than it is for", at every date, not only at the end.
-/// SOURCE: docs/spec/rules.md B-38 INVARIANT 2 (0 <= outstanding(d, D)
+/// SOURCE: BS-arap-2 INVARIANT 2 (0 <= outstanding(d, D)
 ///         <= total(d) at every D); plan/served.md P4b.3 (Bounds).
 /// INVARIANTS:
 ///   1. Within exactly when every prefix sum of `deltas` is within
@@ -1873,7 +1873,7 @@ fn out_of_bounds<T: Amount>(total: T, running: T) -> Option<(T, bool)> {
 /// GOAL: a command never puts a document out of bounds, yet books an
 ///       earlier version left out of bounds (a void under a payment that
 ///       stands) take the step that mends them.
-/// SOURCE: docs/spec/rules.md B-38 INVARIANT 2, B-28 (replay accepts what
+/// SOURCE: BS-arap-2 INVARIANT 2, BS-entry-4 (replay accepts what
 ///         was written; the bound is the commands'); plan/served.md
 ///         P4b.14 item 3 (the remedy: reverse the payment).
 /// INVARIANTS:
@@ -1918,7 +1918,7 @@ pub fn bounds_kept<T: Amount>(total: T, before: &[T], after: &[T]) -> Bounds {
 mod tests {
     use super::*;
 
-    /// rules.md B-14 rule 3, by hand. Equipment 1,000 for 300 cash and a
+    /// BS-statement-3 rule 3, by hand. Equipment 1,000 for 300 cash and a
     /// 700 note: investing takes the 300, the note's 700 and the rest of
     /// the equipment's are the noncash part.
     #[test]
@@ -1964,7 +1964,7 @@ mod tests {
         assert_eq!(apply_cash(10, &[-3], &mut out), None);
     }
 
-    /// The exchange measure (rules.md B-14 rule 7) on the review's
+    /// The exchange measure (BS-statement-3 rule 7) on the review's
     /// hand-checked cases.
     #[test]
     fn exchanged_matches_the_hand_checked_cases() {
@@ -1986,7 +1986,7 @@ mod tests {
         assert_eq!(exchanged(1000i64, 1000, 1000, 1000), Some(0));
     }
 
-    /// rules.md B-14 rule 11 (D-42), by hand.
+    /// BS-statement-3 rule 11 (D-42), by hand.
     #[test]
     fn constructive_pays_and_receives_for_the_company() {
         use OnBehalf::{Paid, Received};
@@ -2339,7 +2339,7 @@ mod tests {
         assert!(!i64::MIN.in_line_range());
     }
 
-    /// B-9: a reversal flips every side and keeps accounts and amounts, so
+    /// BS-ledger-5: a reversal flips every side and keeps accounts and amounts, so
     /// with the original it nets every account to zero.
     #[test]
     fn a_reversal_flips_every_line_and_nets_to_zero() {

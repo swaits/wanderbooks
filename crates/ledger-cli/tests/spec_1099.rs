@@ -285,7 +285,7 @@ fn books(name: &str) -> Mcp {
 
 /// [`books`], as P2 left them when `p2`: journal format 2 with none of
 /// P3's features, books an older version wrote, waiting for their format
-/// upgrade (rules.md B-27).
+/// upgrade (BS-format-1).
 fn books_in(name: &str, p2: bool) -> Mcp {
     let dir = test_dir(name);
     if p2 {
@@ -610,7 +610,7 @@ fn a_members_method_off_the_financing_accounts_warns() {
     assert!(out["warnings"].as_array().unwrap().is_empty(), "{out}");
 }
 
-/// B-27 and the format-upgrade gate (D-39): books.set_w9 journals the W-9
+/// BS-format-1 and the format-upgrade gate (D-39): books.set_w9 journals the W-9
 /// and then the vendor's W-9 flag, a line of the vendor_1099_decisions
 /// feature, so it asks for the feature before the command's first line,
 /// never between its lines. In books waiting for their format upgrade

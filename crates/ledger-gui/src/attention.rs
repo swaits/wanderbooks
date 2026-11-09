@@ -151,7 +151,7 @@ mod tests {
         .unwrap()
     }
 
-    /// INVARIANT 2's cash flow items (rules.md B-14 rule 12, D-35): a
+    /// INVARIANT 2's cash flow items (BS-statement-3 rule 12, D-35): a
     /// sale of equipment for an IOU is a Todo naming the entry, with the
     /// statement's fix; equipment bought on an operating card is Info; a
     /// sale for cash asks nothing.

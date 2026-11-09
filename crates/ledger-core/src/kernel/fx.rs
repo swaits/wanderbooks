@@ -54,7 +54,7 @@ use rust_decimal::Decimal;
 ///         from ISO 4217), and its CHOICE BS-ledger-14
 ///         "book-in-the-smallest-unit" (the owner, 2026-10-13: book in
 ///         the smallest unit, half away from zero); wanderbooks
-///         docs/spec/claims/ledger.md B-3 states the same pick. The
+///         docs/spec/claims/ledger.md BS-ledger-1 states the same pick. The
 ///         rounding itself is kernel::round_step (BS-ledger-1,
 ///         BS-entry-3); owner decision D-69 (the laws live once, in
 ///         bookspec's Lean).
@@ -102,7 +102,7 @@ pub fn fx_booked<T: Amount>(foreign: T, rate: T, step: T, mode: Rounding) -> Opt
 /// [`fx_booked`] at a currency's minor unit, on `Decimal`: the spelling
 /// `Ledger::add_line_fx` books through. A currency ISO 4217 gives no
 /// minor unit (gold, SDRs) books the exact product, as `round_minor`
-/// has always done (B-3). The result's scale is the pre-kernel
+/// has always done (BS-ledger-1). The result's scale is the pre-kernel
 /// computation's: `round_places` keeps an amount already at or under
 /// the minor places unchanged, and otherwise carries exactly the minor
 /// places (a booked 1.50 prints "1.50", never "1.5000").

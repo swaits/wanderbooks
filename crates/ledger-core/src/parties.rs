@@ -32,7 +32,7 @@
 //!      not placeholders, payables or payroll withholdings: what the
 //!      company owes that party itself on (a card's issuer, a loan's
 //!      lender, a member for what the members advanced). A credit to one
-//!      never counts as paying that party (rules.md B-35; DECISION, owner,
+//!      never counts as paying that party (BS-partner-3; DECISION, owner,
 //!      2026-10-20).
 //! ```
 
@@ -305,7 +305,7 @@ impl Party {
     /// GOAL: one answer to "which TIN is on file for them?" wherever the
     ///       books show a last four (defect 11: the directory showed a
     ///       member's as missing because it read W-9 facts only).
-    /// SOURCE: rules.md B-26 (Treas. Reg. §301.6109-4(a): a truncated TIN
+    /// SOURCE: BS-partner-2 (Treas. Reg. §301.6109-4(a): a truncated TIN
     ///         shows its last four); INVARIANT 2a (DECISION, owner,
     ///         2026-10-15: the two never disagree, so either answers).
     /// SCENARIOS:
@@ -321,7 +321,7 @@ impl Party {
     /// ```
     pub fn tin_last4(&self) -> Option<&str> {
         // Exactly four digits or nothing, however the facts were built
-        // (the setters check it; this never shows more, B-26).
+        // (the setters check it; this never shows more, BS-partner-2).
         let four = |s: &str| s.len() == 4 && s.chars().all(|c| c.is_ascii_digit());
         self.tin
             .as_ref()
@@ -596,9 +596,9 @@ std::thread_local! {
 /// ```text
 /// GOAL: books an earlier version wrote open, forever, however a later
 ///       version widens what reads as a full TIN.
-/// SOURCE: rules.md B-28 ("Replay accepts every line an earlier version
+/// SOURCE: BS-entry-4 ("Replay accepts every line an earlier version
 ///         accepted": the bounds are the commands', never replay's);
-///         B-26 (no full TIN in the books).
+///         BS-partner-2 (no full TIN in the books).
 /// INVARIANTS:
 ///   1. Within it, a text is refused only if P2's detector
 ///      ([`journaled_tin_runs`]) refuses it: every name, reason and fact
@@ -625,8 +625,8 @@ pub fn replaying<T>(f: impl FnOnce() -> T) -> T {
 
 /// Whether a journaled line is being replayed now ([`replaying`]): the
 /// rules a later version added that refuse new work (the control guard,
-/// a document's bounds, rules.md B-38) never refuse a line an earlier
-/// version accepted (B-28).
+/// a document's bounds, BS-arap-2) never refuse a line an earlier
+/// version accepted (BS-entry-4).
 pub fn is_replaying() -> bool {
     REPLAYING.with(std::cell::Cell::get)
 }
@@ -681,7 +681,7 @@ fn journaled_tin_runs(chars: &[char]) -> Vec<(usize, usize)> {
 
 /// `text` with every run [`has_full_tin`] finds masked: each of its
 /// digits becomes `•`, separators kept. For refusals that quote what they
-/// were given, so no error echoes a full TIN (docs/spec/rules.md B-26).
+/// were given, so no error echoes a full TIN (BS-partner-2).
 pub fn redact_full_tins(text: &str) -> std::borrow::Cow<'_, str> {
     let mut chars: Vec<char> = text.chars().collect();
     let runs = full_tin_runs(&chars);
@@ -828,7 +828,7 @@ impl PartyField {
     ];
 
     /// Whether `field` is a field this version knows. A `party.updated`
-    /// naming another was written by a newer version (rules.md B-27).
+    /// naming another was written by a newer version (BS-format-1).
     pub fn known_field(field: &str) -> bool {
         Self::FIELDS.contains(&field)
     }
@@ -850,7 +850,7 @@ impl PartyField {
     }
 }
 
-/// Which of a party's totals to report (rules.md B-35 item 4). Not the
+/// Which of a party's totals to report (BS-partner-3 item 4). Not the
 /// books' accounting method (`books.accounting_basis`): party totals count
 /// what moved, whichever method the books keep.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -928,7 +928,7 @@ impl Activity {
     }
 }
 
-/// The accounts [`entry_flow`] reads money from (rules.md B-35, defect
+/// The accounts [`entry_flow`] reads money from (BS-partner-3, defect
 /// 24): the cash accounts (every asset account but receivables when none
 /// are given), and the money liabilities: the cards ([`card_accounts`]),
 /// what the members advanced and loans (`books.financing_accounts`).
@@ -949,8 +949,8 @@ impl MoneyAccounts {
     /// what the company owes a party itself never counts as paying it (a
     /// fee charged on its own card, interest added to its own loan,
     /// equipment bought on its own note, a distribution still owed to a
-    /// member), and a debit to it is what the money paid for (rules.md
-    /// B-35; DECISION, owner, 2026-10-20).
+    /// member), and a debit to it is what the money paid for (
+    /// BS-partner-3; DECISION, owner, 2026-10-20).
     pub fn for_parties(
         &self,
         ledger: &crate::Ledger,
@@ -981,8 +981,8 @@ impl MoneyAccounts {
 /// ```text
 /// GOAL: a card is known from what the books record, and a promise (a
 ///       gift card sold) or a member's own card is never the company's.
-/// SOURCE: rules.md B-35 item 5 (DECISION, owner, 2026-10-20: money is
-///         cash, cards, the members' financing and loans), B-19 (payment
+/// SOURCE: BS-partner-3 item 5 (DECISION, owner, 2026-10-20: money is
+///         cash, cards, the members' financing and loans), BS-1099-1 (payment
 ///         methods, plan P3 defect 12).
 /// INVARIANTS:
 ///   1. When the books record a business-card payment method: exactly
@@ -1148,7 +1148,7 @@ pub fn entry_flow(
 ) -> Result<EntryFlow, crate::LedgerError> {
     use crate::Side;
     use rust_decimal::Decimal;
-    // A draft's lines are as journaled, of any size (rules.md B-28): every
+    // A draft's lines are as journaled, of any size (BS-entry-4): every
     // sum is checked, and one past exact arithmetic is refused.
     let too_large =
         || crate::LedgerError::TooLargeToCompute(format!("entry {}'s money flow", entry.id()));
@@ -1256,14 +1256,14 @@ pub fn entry_flow(
 
 /// The money an entry moved with the parties it names, and what for,
 /// read as party figures read it: a reversal's is exactly its original's
-/// negated (B-9), never re-read from its own lines; and a liability owed
+/// negated (BS-ledger-5), never re-read from its own lines; and a liability owed
 /// to a party named is not money for the entry
 /// ([`MoneyAccounts::for_parties`]).
 ///
 /// ```text
 /// GOAL: what a party's entry paid for, right for reversals too.
-/// SOURCE: rules.md B-9 ("a mistake is corrected by an opposite entry"),
-///         B-35.
+/// SOURCE: BS-ledger-5 ("a mistake is corrected by an opposite entry"),
+///         BS-partner-3.
 /// INVARIANTS:
 ///   1. An entry reversing none: entry_flow of its lines, with
 ///      money.for_parties(the parties of `shares`).
@@ -1327,8 +1327,8 @@ pub fn activity(
 ///       get from them?" for the MCP server and the viewer alike, right
 ///       when an entry was with several parties, for property as well as
 ///       money, and for reversals.
-/// SOURCE: docs/parties-and-attachments.md (Parties, Shares); rules.md
-///         B-35 (DECISION, owner, 2026-10-15 and 2026-10-20).
+/// SOURCE: docs/parties-and-attachments.md (Parties, Shares);
+///         BS-partner-3 (DECISION, owner, 2026-10-15 and 2026-10-20).
 /// INVARIANTS:
 ///   1. entries: every entry Ledger::entry_parties names the party in
 ///      (hand tags, vendor tags, bills and their payments, invoices and
@@ -1376,7 +1376,7 @@ pub fn activity_with(
         }
         let shares = ledger.entry_parties(id);
         // The target first: an entry that counts nothing is never
-        // unresolved for shares that don't fit it (rules.md B-35 item 4).
+        // unresolved for shares that don't fit it (BS-partner-3 item 4).
         let Ok(t) = crate::shares::target(ledger, id, shares, money) else {
             a.unresolved.insert(id);
             continue;

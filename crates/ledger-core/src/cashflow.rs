@@ -1,4 +1,4 @@
-//! The statement of cash flows (rules.md B-14), by the direct method: each
+//! The statement of cash flows (BS-statement-3), by the direct method: each
 //! entry that moved cash, in the section of the accounts it settled, gross;
 //! the reconciliation of net income to operating cash as a separate
 //! schedule; and the investing and financing activities no cash settled,
@@ -77,7 +77,7 @@ pub enum OperatingClass {
     /// (e) Interest paid.
     InterestPaid,
     /// (f) Income taxes paid. No tax category marks an entity-level income
-    /// tax yet, so nothing is filed here (rules.md B-14 rule 5).
+    /// tax yet, so nothing is filed here (BS-statement-3 rule 5).
     IncomeTaxesPaid,
     /// (g) Other operating cash payments.
     OtherPayments,
@@ -178,7 +178,7 @@ pub struct CashFlowLine {
     /// The cash, + in.
     pub amount: Decimal,
     /// Of `amount`, what a member or a lender paid or received for the
-    /// company with no cash account moving (rules.md B-14 rule 11, D-42):
+    /// company with no cash account moving (BS-statement-3 rule 11, D-42):
     /// a constructive receipt or payment. Zero for most lines.
     pub on_behalf: Decimal,
     /// Codes of this kind's accounts the entry moved, sorted.
@@ -295,7 +295,7 @@ pub struct OperatingReconciliation {
     pub net_cash_from_operating: Decimal,
 }
 
-/// The footing check (rules.md B-14 rule 9).
+/// The footing check (BS-statement-3 rule 9).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CashFlowFooting {
     /// Operating + investing + financing.
@@ -344,7 +344,7 @@ pub struct CashFlowWarning {
     pub message: String,
 }
 
-/// The statement of cash flows, direct method (rules.md B-14).
+/// The statement of cash flows, direct method (BS-statement-3).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CashFlowStatement {
     /// Period start, inclusive.
@@ -440,7 +440,7 @@ pub enum RoleList {
     Investing,
 }
 
-/// A contradiction among the cash flow account roles (rules.md B-14 rule
+/// A contradiction among the cash flow account roles (BS-statement-3 rule
 /// 2): the statement refuses rather than guess.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RoleProblem {
@@ -546,7 +546,7 @@ impl RoleProblem {
     }
 }
 
-/// Every contradiction among the cash flow account roles (rules.md B-14
+/// Every contradiction among the cash flow account roles (BS-statement-3
 /// rule 2), in a fixed order. Codes the chart lacks are the caller's to
 /// report. The one check behind both the statement's refusal and the
 /// settings' problems, so the two never drift apart.
@@ -554,7 +554,7 @@ impl RoleProblem {
 /// ```text
 /// GOAL: the statement's account roles partition the chart, so every
 ///       account is in exactly one section.
-/// SOURCE: rules.md B-14 rule 2 (ASC 230-10-45-10: every cash receipt and
+/// SOURCE: BS-statement-3 rule 2 (ASC 230-10-45-10: every cash receipt and
 ///         payment is investing, financing or operating).
 /// INVARIANTS:
 ///   1. Cash and investing accounts MUST be assets; financing accounts
@@ -639,7 +639,7 @@ pub fn role_problems(
     out
 }
 
-/// rules.md B-14 rule 9, on its own so the check is tested directly (it
+/// BS-statement-3 rule 9, on its own so the check is tested directly (it
 /// cannot fail on posted entries): the sections sum to the change in
 /// cash, or nothing is produced.
 pub fn foot(sections_sum: Decimal, net_change: Decimal) -> Result<CashFlowFooting, LedgerError> {
@@ -977,8 +977,8 @@ impl<'a> Roles<'a> {
     }
 }
 
-/// The liabilities that hold distributions declared by `end` (rules.md
-/// B-14 rule 2), among the accounts `open` leaves to be placed: each
+/// The liabilities that hold distributions declared by `end` (
+/// BS-statement-3 rule 2), among the accounts `open` leaves to be placed: each
 /// credited, in the posted entries dated on or before `end` (closes and
 /// reversals aside), only by entries whose debits are all to equity (Dr
 /// Distributions / Cr Distributions Payable; a corporation's Dr Retained
@@ -1031,7 +1031,7 @@ type KindOrder = (u8, u8, String);
 /// so the payment is an investing outflow (ASC 230-10-45-13(c)). A bill
 /// posts to the general-expenses control today, so this is empty until a
 /// bill can carry an equipment line (P4b S4). A bill's payments are the
-/// entries whose payables line carries it (rules.md B-38).
+/// entries whose payables line carries it (BS-arap-2).
 #[derive(Default)]
 struct BillSplits {
     /// By (entry, line index): the investing part of that payables line,
@@ -1741,15 +1741,15 @@ fn codes<'p>(
     Ok(out.into_iter().collect())
 }
 
-/// The statement of cash flows for a period, direct method (rules.md
-/// B-14).
+/// The statement of cash flows for a period, direct method (
+/// BS-statement-3).
 ///
 /// ```text
 /// GOAL: the statement of cash flows for a period: each entry's cash by
 ///       section and kind, the noncash investing and financing activities,
 ///       and net income reconciled to operating cash; footing exactly or
 ///       not at all.
-/// SOURCE: rules.md B-14 (ASC 230-10-10-1 cash receipts and payments;
+/// SOURCE: BS-statement-3 (ASC 230-10-10-1 cash receipts and payments;
 ///         45-4, 45-5 what cash is; 45-7, 45-26 gross; 45-10 the three
 ///         sections; 45-12 to 45-17 what each holds; 45-24 reconciles
 ///         beginning and ending cash; 45-25 the

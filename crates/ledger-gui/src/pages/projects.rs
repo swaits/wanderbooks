@@ -1,9 +1,9 @@
 //! Projects: every class, with its facts (what it is, where it stands, who
 //! it is for), and one project completely: its snapshot (revenue, direct
 //! costs, contribution before overhead and its margin, to date or this
-//! fiscal year, rules.md B-37 item 7), revenue and costs by month with the
+//! fiscal year, BS-statement-5 item 7), revenue and costs by month with the
 //! running net, costs by category and by account, its entries, documents,
-//! decisions and history (rules.md B-37). Every figure is ledger-core's (`project_figures`,
+//! decisions and history (BS-statement-5). Every figure is ledger-core's (`project_figures`,
 //! `project_to_date`, `project_entries`), the same the server's
 //! `books.projects` and `books.project` return; this module only arranges
 //! them, and never writes.
@@ -29,7 +29,7 @@ use rust_decimal::Decimal;
 pub struct State {
     /// Only projects with this status (None: every one).
     pub status: Option<ProjectStatus>,
-    /// A project's snapshot shows this fiscal year to date (B-30's
+    /// A project's snapshot shows this fiscal year to date (BS-period-3's
     /// omitted dates), not to date.
     pub fiscal: bool,
 }
@@ -419,7 +419,7 @@ impl Snap {
 }
 
 /// The note on contribution: what it counts and what it leaves out.
-pub const CONTRIBUTION_NOTE: &str = "Revenue less this project's direct costs: every expense line tagged to it, fixed and variable alike (what management accounting calls a segment margin, not a variable-cost contribution margin). Company overhead that isn't tagged to a project (rent, software, insurance, the owner's time) isn't counted, so a project in the black can still leave the company in the red. A management-accounting view (rules.md B-37 item 7), not a GAAP figure.";
+pub const CONTRIBUTION_NOTE: &str = "Revenue less this project's direct costs: every expense line tagged to it, fixed and variable alike (what management accounting calls a segment margin, not a variable-cost contribution margin). Company overhead that isn't tagged to a project (rent, software, insurance, the owner's time) isn't counted, so a project in the black can still leave the company in the red. A management-accounting view (B-37 item 7), not a GAAP figure.";
 
 /// The snapshot: a header with where it stands to date and the to date /
 /// fiscal year switch, then its tiles (`shown`: to date, or for `year`,
@@ -730,7 +730,7 @@ pub struct PageFigures {
     /// The by-month chart's span ([`chart_span`]) and figures, when
     /// anything tagged is posted.
     pub months: Option<((NaiveDate, NaiveDate), ledger_core::ProjectFigures)>,
-    /// The fiscal year to date (B-30's omitted dates, as `books.project`),
+    /// The fiscal year to date (BS-period-3's omitted dates, as `books.project`),
     /// only when the snapshot shows it.
     pub year: Option<ledger_core::ProjectFigures>,
 }

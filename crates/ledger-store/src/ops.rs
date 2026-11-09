@@ -78,7 +78,7 @@ pub enum ViewerTarget {
         /// Account code.
         code: String,
         /// First date, YYYY-MM-DD. `books.show` always sends both dates,
-        /// resolved (rules.md B-30); `None` only from an earlier writer,
+        /// resolved (BS-period-3); `None` only from an earlier writer,
         /// which the viewer resolves by the same rule.
         start: Option<String>,
         /// Last date, YYYY-MM-DD (see `start`).
@@ -91,7 +91,7 @@ pub enum ViewerTarget {
         /// ar_aging, ap_aging, fixed_asset_register.
         report: String,
         /// First date, YYYY-MM-DD. `books.show` always sends both dates,
-        /// resolved (rules.md B-30); `None` only from an earlier writer,
+        /// resolved (BS-period-3); `None` only from an earlier writer,
         /// which the viewer resolves by the same rule.
         start: Option<String>,
         /// Last date, YYYY-MM-DD (see `start`): the as-of day of a report

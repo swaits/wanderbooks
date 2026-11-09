@@ -1,11 +1,11 @@
 //! Books an earlier wanderbooks wrote open in the viewer, and every page
-//! renders over them, never a panic (rules.md B-28: posted is forever; a
+//! renders over them, never a panic (BS-entry-4: posted is forever; a
 //! figure the books can't compute is said, never guessed).
 //!
 //! ```text
 //! GOAL: the viewer shows books written under older rules, whatever they
 //!       hold that the commands now refuse.
-//! SOURCE: rules.md B-28; DECISION (P0 review round 4: replay accepts what
+//! SOURCE: BS-entry-4; DECISION (P0 review round 4: replay accepts what
 //!         main 188c90ea accepted, and derived figures refuse rather than
 //!         panic).
 //! INVARIANTS:
@@ -508,7 +508,7 @@ fn books_that_keep_no_settings_read_no_file_beside_them() {
     }
 }
 
-/// rules.md B-37: the classes an earlier version wrote read as projects
+/// BS-statement-5: the classes an earlier version wrote read as projects
 /// with the default facts (active, kind not recorded), listed by name,
 /// their figures ledger-core's.
 #[test]

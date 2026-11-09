@@ -807,7 +807,7 @@ fn every_tool_is_documented_and_every_documented_tool_exists() {
     assert_eq!(got, ["books.chart", "books.decisions", "books.open_items"]);
 }
 
-/// rules.md B-30 (defect 16): every report tool says what its omitted
+/// BS-period-3 (defect 16): every report tool says what its omitted
 /// dates mean in the one sentence the resolver's kind gives
 /// (PeriodKind::describe), and each date parameter in the schema's
 /// own words (START_DOC, END_DOC, AS_OF_DOC, YEAR_DOC); the two tools
@@ -961,7 +961,7 @@ fn data_masked(text: &str) -> usize {
     text.matches("•••-••-••••").count() + text.matches("•••••••••").count()
 }
 
-/// redact_error (B-26): every full TIN in an error's message and data
+/// redact_error (BS-partner-2): every full TIN in an error's message and data
 /// is masked, wherever the data holds it (a string, in an array, in a
 /// nested object), and what holds none is left as it was.
 #[test]

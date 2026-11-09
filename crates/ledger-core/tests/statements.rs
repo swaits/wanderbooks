@@ -547,11 +547,11 @@ fn statement_json(
 /// The golden: every number in `golden/members_equity_two_member.json` was
 /// computed by hand, from the entries, in
 /// `plan/golden-worksheets/members_equity_two_member.md`, before the engine's
-/// output was looked at. Rules: B-13 (capital account = contributions +
+/// output was looked at. Rules: BS-partner-1 (capital account = contributions +
 /// allocated income − distributions; cent rounding by largest remainder, the
 /// odd cent to the member listed first; unclosed earnings split cumulatively)
-/// and B-7 (the Total ties to balance-sheet equity). The same numbers hold
-/// whether or not January is closed (B-13: a member's capital on a date never
+/// and BS-statement-2 (the Total ties to balance-sheet equity). The same numbers hold
+/// whether or not January is closed (BS-partner-1: a member's capital on a date never
 /// moves when its period closes).
 #[test]
 fn golden_members_equity_two_member() {
@@ -1102,7 +1102,7 @@ fn cf_params(start: NaiveDate, end: NaiveDate, cash: AccountId) -> CashFlowParam
 }
 
 fn reconciles(cf: &ledger_core::CashFlowStatement) {
-    // B-14 / cash_flow INVARIANT 4: the three sections sum to the change in
+    // BS-statement-3 / cash_flow INVARIANT 4: the three sections sum to the change in
     // cash, exactly, and net income and its reconciling items to operating.
     assert_eq!(
         cf.cash_from_operations + cf.cash_from_investing + cf.cash_from_financing,
@@ -1444,7 +1444,7 @@ fn lines(ls: &[ledger_core::reports::CashFlowLine]) -> Vec<(String, Decimal)> {
 /// amounts borrowed"): borrowing and repayment are separate lines, one
 /// per entry, borrowing first (each lender's, by code), then repayments.
 /// The software the owner paid personally is borrowed from the owner and
-/// spent on its date (rules.md B-14 rule 11, D-42: constructive receipt
+/// spent on its date (BS-statement-3 rule 11, D-42: constructive receipt
 /// and disbursement). Financing: +100 + 1,000 − 100 − 400 = 600; nothing
 /// is disclosed.
 #[test]
@@ -1487,7 +1487,7 @@ fn a_loan_the_entity_makes_is_investing_gross() {
     assert_eq!(cf.cash_from_investing, dec(-300));
 }
 
-/// Oracle: D-42 (rules.md B-14 rule 11; ASC 230 is silent on a payment
+/// Oracle: D-42 (BS-statement-3 rule 11; ASC 230 is silent on a payment
 /// made on the entity's behalf, PwC FSP 6.9.3.1 and DART Roadmap 7.2
 /// present it as constructive receipt and disbursement). The owner paying
 /// software personally is cash the company borrowed (financing +100) and
@@ -1691,7 +1691,7 @@ mod cumulative_closes {
             .collect()
     }
 
-    /// Oracle: rules.md B-13 (cumulative closes; docs/testing.md #12),
+    /// Oracle: BS-partner-1 (cumulative closes; docs/testing.md #12),
     /// hand-computed. Closing each cent on its own gives the earlier member
     /// every tie: A 0.03, B 0.00 after three months. Cumulatively: after
     /// month 1 the run's 0.01 splits A 0.01 / B 0; after month 2, 0.02
@@ -1723,7 +1723,7 @@ mod cumulative_closes {
     }
 
     proptest::proptest! {
-        /// Oracle: rules.md B-13, cumulative closes. For any run of monthly
+        /// Oracle: BS-partner-1, cumulative closes. For any run of monthly
         /// profits and losses closed into three members at 33.33% /
         /// 33.33% / 33.34%, each member's total from the run is within one
         /// cent of their exact share of everything closed.
@@ -1782,7 +1782,7 @@ mod cumulative_closes {
         assert_eq!((a, b), (cents("0.02"), cents("0")));
     }
 
-    /// The rule since P3 (rules.md B-13, D-10): a close to retained
+    /// The rule since P3 (BS-partner-1, D-10): a close to retained
     /// earnings allocates nothing to the members and is skipped, so March's
     /// members close continues January's count: the running 0.02 splits
     /// 0.01 / 0.01, and March gives B the cent.

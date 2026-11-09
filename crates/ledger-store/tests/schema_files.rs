@@ -1,6 +1,6 @@
 //! Each projection schema in a file of its own (ledger_store::db_file_for;
 //! plan/served.md 3.9: before the owner consents to a format upgrade, the
-//! way back to an older version is always there; rules.md B-27).
+//! way back to an older version is always there; BS-format-1).
 //!
 //! ```text
 //! GOAL: an older version, gone back to, finds the books it can open,

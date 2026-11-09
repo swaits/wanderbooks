@@ -5,7 +5,7 @@
 //! Expected behavior comes only from the tool descriptions and parameter /
 //! result doc comments in `src/server.rs` and `src/types.rs` (the declared
 //! interface, as `tools/list` serves it), `docs/mcp-interface.md` ("Tools —
-//! fixed assets"), and `docs/spec/rules.md` B-24. The harness is the
+//! fixed assets"), and BS-asset-3. The harness is the
 //! minimal subset of `tests/spec_mcp.rs`: every success validates against
 //! the tool's `outputSchema`, and every refusal leaves `journal.jsonl`
 //! byte-identical (server invariant 2: a refused call changes nothing).
@@ -441,7 +441,7 @@ fn register_with_a_bad_tag_or_serial_registers_nothing() {
     assert_eq!(t, "FL-0002");
 }
 
-/// A generated tag is never one any asset held (B-24).
+/// A generated tag is never one any asset held (BS-asset-3).
 #[test]
 fn register_never_generates_a_released_tag() {
     let mut m = books("released");
@@ -624,7 +624,7 @@ fn dispose_asset_takes_the_tag_and_the_tag_stays_reserved() {
     confirm["receipt_attachment_ids"] = json!([doc]);
     m.ok("books.dispose_asset", confirm);
     assert_eq!(m.asset(a)["status"], "disposed");
-    // B-24: a disposed asset's tag is never reused.
+    // BS-asset-3: a disposed asset's tag is never reused.
     m.refuse(
         "books.label_asset",
         json!({"asset": b.to_string(), "tag": t}),
@@ -815,7 +815,7 @@ fn export_fixed_asset_register_as_of_leaves_out_later_assets() {
     assert!(!text.contains("LATE-1"), "{text}");
 }
 
-// ------------------------------------------------- tax basis (rules.md B-25)
+// ------------------------------------------------- tax basis (BS-asset-4)
 //
 // From the `books.set_asset_tax_basis` and `books.register_asset`
 // descriptions, `SetAssetTaxBasisParams` / `AssetBasisOut` /
@@ -1116,7 +1116,7 @@ fn register_asset_refuses_a_bad_basis_and_registers_nothing() {
     assert_eq!(m.assets().len(), 1, "nothing registered");
 }
 
-// ------------------------------------------- the dates (rules.md B-15)
+// ------------------------------------------- the dates (BS-asset-1)
 
 /// purchase_date is an alias for in_service_date for one release, noted.
 #[test]
@@ -1199,7 +1199,7 @@ fn acquired_date_comes_from_the_acquisition_entry() {
     );
 }
 
-// ------------------------------- posted and scheduled (rules.md B-15 rule 8)
+// ------------------------------- posted and scheduled (BS-asset-1 rule 8)
 
 /// Named regression 1 (the brief's reproduction 1, its figures made up): a
 /// $1,440.00 laptop, 36 months, in service 2026-05-15, nothing run. As of
@@ -1501,7 +1501,7 @@ fn dispose_args(x: u64, date: &str, proceeds: &str) -> Value {
 /// days, 500.00 (the final depreciation); accumulated 5,500.00, book value
 /// 6,500.00, gain 500.00. Afterwards books.asset_schedule ends there, and
 /// books.list_assets lists it as gone: not held, every figure 0.00 (it
-/// left the books with its disposal; rules.md B-15 rule 8). Before P3 the
+/// left the books with its disposal; BS-asset-1 rule 8). Before P3 the
 /// schedule showed June 7,000.00, accumulated 12,000.00, book value 0.00.
 #[test]
 fn a_disposed_asset_lists_what_it_depreciated_through_its_disposal() {

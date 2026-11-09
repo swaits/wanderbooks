@@ -11,7 +11,7 @@
 //! — and postings go through the normal entry machinery, so every
 //! accounting invariant holds.
 //!
-//! Two figures of accumulated depreciation, never confused (rules.md B-15 rule 8):
+//! Two figures of accumulated depreciation, never confused (BS-asset-1 rule 8):
 //! what the schedule says is due through a date
 //! ([`accumulated_scheduled_through`]) and what the books carry, the runs
 //! posted and not reversed ([`crate::Ledger::accumulated_posted`]). Book
@@ -72,7 +72,7 @@ pub struct Asset {
     pub id: AssetId,
     /// What it is, e.g. "2023 Sprinter van".
     pub description: String,
-    /// The day it was placed in service: depreciation starts here (B-15).
+    /// The day it was placed in service: depreciation starts here (BS-asset-1).
     /// The day the company acquired it is its acquisition entry's
     /// ([`crate::Ledger::asset_acquired_date`]), never later than this.
     #[serde(rename = "purchase_date")]
@@ -274,7 +274,7 @@ pub struct AssetBasis {
     /// The §704(c) method chosen for it, if chosen (contributions only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sec704c_method: Option<Sec704cMethod>,
-    /// Who gave the facts, when, and on what (rules.md B-29).
+    /// Who gave the facts, when, and on what (BS-ledger-9).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<crate::settings::Source>,
 }
@@ -334,7 +334,7 @@ impl AssetBasis {
     }
 
     /// The checks every journaled `asset.basis_set` passed, which replay
-    /// applies (rules.md B-28): the facts fit the rule and none is
+    /// applies (BS-entry-4): the facts fit the rule and none is
     /// negative. No bound on size or places.
     pub fn check_journaled(&self) -> Result<(), String> {
         if self.rule == BasisRule::Purchase {
@@ -365,7 +365,7 @@ impl AssetBasis {
     /// written (the rule through 2026-10-16), for a record with no value
     /// at contribution: a purchase takes no contributor basis; a
     /// contribution needs one, non-negative, in cents at most. Replay of
-    /// that event applies exactly these (rules.md B-28).
+    /// that event applies exactly these (BS-entry-4).
     pub fn check_legacy_journaled(&self) -> Result<(), String> {
         use BasisRule::*;
         match (self.rule, self.contributor_adjusted_basis) {
@@ -610,7 +610,7 @@ struct MonthLine {
 ///
 /// ```text
 /// GOAL: how much of an asset's cost has been used up, month by month.
-/// SOURCE: docs/spec/rules.md B-15 (straight line; salvage never
+/// SOURCE: BS-asset-1 (straight line; salvage never
 ///         depreciated; partial months by days; ASC 360-10-35-4: cost less
 ///         salvage over the useful life "in a systematic and rational
 ///         manner", as equitably as possible to the periods served);
@@ -642,7 +642,7 @@ struct MonthLine {
 ///      either side of one).
 ///   7. NEVER panics: a figure that can't be computed (a life past
 ///      chrono's last day, amounts past exact arithmetic) is refused
-///      (rules.md B-28).
+///      (BS-entry-4).
 /// SCENARIOS:
 ///   1. IF $12,000 over 12 months from Jan 1, through Jun 15:
 ///      - SHOULD end with June at 500.00 (15 of 30 days), accumulated
@@ -743,7 +743,7 @@ fn schedule_months(asset: &Asset, through: NaiveDate) -> Result<Vec<MonthLine>, 
 /// (inclusive), exact to the minor unit ([`depreciation_schedule`]): the
 /// tools' `accumulated_scheduled_through`. What the books carry is
 /// [`crate::Ledger::accumulated_posted`]; the two agree once every month
-/// due is posted (rules.md B-15 rule 8).
+/// due is posted (BS-asset-1 rule 8).
 pub fn accumulated_scheduled_through(
     asset: &Asset,
     as_of: NaiveDate,
@@ -758,7 +758,7 @@ pub fn accumulated_scheduled_through(
 /// the schedule's own book value (as [`ScheduleLine::book_value`]), never
 /// what the books carry, which is cost less
 /// [`crate::Ledger::accumulated_posted`] (the register's and the tools'
-/// `book_value`, rules.md B-24).
+/// `book_value`, BS-asset-3).
 pub fn scheduled_book_value(asset: &Asset, as_of: NaiveDate) -> Result<Decimal, LedgerError> {
     asset
         .cost
@@ -795,9 +795,9 @@ pub struct PostedRun {
 /// GOAL: the catch-up rule reads the books as they stood at each month
 ///       end: a run reversed after its month ended still carried that
 ///       month, so running the month again would carry it twice.
-/// SOURCE: docs/spec/rules.md B-9 (a mistake is corrected by an opposite
-///         entry, dated when it is made), B-10 (reversing the reversal
-///         re-instates), B-15 (the catch-up rule).
+/// SOURCE: BS-ledger-5 (a mistake is corrected by an opposite
+///         entry, dated when it is made), BS-ledger-6 (reversing the reversal
+///         re-instates), BS-asset-1 (the catch-up rule).
 /// INVARIANTS:
 ///   1. Through any month's end, the effects sum to what the runs' entries
 ///      and their reversals dated on or before it carry in the asset's
@@ -1010,7 +1010,7 @@ fn cumulatives(
 /// SOURCE: plan/served.md P3 "Settled in design" (2026-10-20): a month of
 ///         depreciation skipped is caught up in the month the run is made
 ///         (an immaterial miss; a material one is restated, ASC 250, a
-///         correction for a human and the CPA); docs/spec/rules.md B-15.
+///         correction for a human and the CPA); BS-asset-1.
 /// INVARIANTS:
 ///   1. amount = catch_up_room for the month: kernel::catch_up over the
 ///      month ends M from this month's through the latest month an effect
@@ -1124,11 +1124,11 @@ pub struct DisposalAmounts {
 
 /// Whether an asset can be disposed of for `proceeds`: it is active and
 /// the proceeds aren't negative. The checks every journaled
-/// disposal passed, so replaying one never depends on a figure (rules.md
-/// B-28). The date's floor, the day the company acquired the asset, needs
+/// disposal passed, so replaying one never depends on a figure (
+/// BS-entry-4). The date's floor, the day the company acquired the asset, needs
 /// its acquisition entry, so the ledger checks it for new disposals only
 /// (`Ledger::dispose_asset`): a disposal may fall on the in-service date
-/// (one day held, accrual being inclusive, B-15), or before it once the
+/// (one day held, accrual being inclusive, BS-asset-1), or before it once the
 /// asset is acquired (nothing accrued yet).
 pub fn check_disposal(asset: &Asset, proceeds: Money) -> Result<(), LedgerError> {
     if asset.status != AssetStatus::Active {

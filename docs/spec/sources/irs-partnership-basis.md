@@ -1,5 +1,5 @@
 # Tax basis of fixed assets: cost, contributed property, and personal-use conversion
-Governs the tax figures the fixed asset register carries beside book value (rules.md B-25): the §723 basis, the depreciable basis, and the §704(c) built-in gain or loss at contribution; and the property contributed at its adjusted basis on the K-1 worksheet's tax-basis capital (rules.md B-36). Property the partnership buys has a cost basis (IRC §1012); property a member contributes keeps the member's adjusted basis (IRC §723), and the difference from its fair market value is the built-in gain or loss that §704(c) makes the partnership account for; property a member converts from personal use has a depreciable basis of the lesser of fair market value and adjusted basis (Treas. Reg. §1.168(i)-4(b)(1)). wanderbooks records the basis; tax depreciation (MACRS, conventions, elections) stays with the CPA.
+Governs the tax figures the fixed asset register carries beside book value (BS-asset-4): the §723 basis, the depreciable basis, and the §704(c) built-in gain or loss at contribution; and the property contributed at its adjusted basis on the K-1 worksheet's tax-basis capital (BS-partner-4). Property the partnership buys has a cost basis (IRC §1012); property a member contributes keeps the member's adjusted basis (IRC §723), and the difference from its fair market value is the built-in gain or loss that §704(c) makes the partnership account for; property a member converts from personal use has a depreciable basis of the lesser of fair market value and adjusted basis (Treas. Reg. §1.168(i)-4(b)(1)). wanderbooks records the basis; tax depreciation (MACRS, conventions, elections) stays with the CPA.
 
 ## 26 U.S.C. §1012(a): basis is cost
 Source: <https://www.law.cornell.edu/uscode/text/26/1012>  
@@ -99,6 +99,6 @@ SHA-256 of the retrieved file (`p946.html`): `bcc1d04f59bbfc4e74181831c112745e62
 >   - Increased by the cost of any permanent improvements or additions and other costs that must be added to basis.
 >   - Decreased by any deductions you claimed for casualty and theft losses and other items that reduced your basis.
 
-**Placed in Service** (for tax depreciation, the CPA's; the book in-service date rests on ASC 360-10-35-4, rules.md B-15)
+**Placed in Service** (for tax depreciation, the CPA's; the book in-service date rests on ASC 360-10-35-4, BS-asset-1)
 
 > You place property in service when it is ready and available for a specific use, whether in a business activity, an income-producing activity, a tax-exempt activity, or a personal activity. Even if you are not using the property, it is in service when it is ready and available for its specific use.

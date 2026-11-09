@@ -1,5 +1,5 @@
-//! An invoice's or bill's lines in the journal (rules.md B-37 item 8,
-//! B-27): a line naming its project carries `class_id` (journal feature
+//! An invoice's or bill's lines in the journal (BS-statement-5 item 8,
+//! BS-format-1): a line naming its project carries `class_id` (journal feature
 //! `document_line_projects`), and the entry's revenue or expense line for
 //! that project is tagged by `entry.line_class_set` right after its
 //! `entry.line_added`. A document naming no project is journaled exactly
@@ -9,7 +9,7 @@
 //! ```text
 //! GOAL: a document's projects are journaled once, replay exactly, and
 //!       never reach books whose owner hasn't consented to the format.
-//! SOURCE: docs/spec/rules.md B-37 item 8, B-27, B-28; plan/served.md
+//! SOURCE: BS-statement-5 item 8, BS-format-1, BS-entry-4; plan/served.md
 //!         D-39 (the owner's upgrade).
 //! ```
 
@@ -479,7 +479,7 @@ fn old_invoices_and_bills_replay_unchanged() {
 
 /// A document line's `class_id` that isn't a class id is damage, never
 /// silently no project; null is none, and an id is taken as journaled
-/// (replay checks no line, B-28).
+/// (replay checks no line, BS-entry-4).
 #[test]
 fn a_document_lines_class_id_that_isnt_an_id_is_corrupt() {
     let journal = |dir: &Path, class: Value| {

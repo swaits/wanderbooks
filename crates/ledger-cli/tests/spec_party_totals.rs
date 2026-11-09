@@ -7,7 +7,7 @@
 //!
 //! Expected behavior comes only from the tool descriptions and parameter /
 //! result doc comments in `src/server.rs` and `src/types.rs` (as
-//! `tools/list` serves them) and rules.md B-35. The harness is the minimal
+//! `tools/list` serves them) and BS-partner-3. The harness is the minimal
 //! subset of `tests/spec_mcp.rs` (copied from `tests/spec_parties.rs`):
 //! every success validates against the tool's `outputSchema`, and every
 //! refusal leaves `journal.jsonl` byte-identical.
@@ -291,7 +291,7 @@ fn books(name: &str) -> Mcp {
 
 /// [`books`], as P2 left them when `p2`: journal format 2 with none of
 /// P3's features, books an older version wrote, waiting for their format
-/// upgrade (rules.md B-27).
+/// upgrade (BS-format-1).
 fn books_in(name: &str, p2: bool) -> Mcp {
     let dir = test_dir(name);
     if p2 {
@@ -380,7 +380,7 @@ fn reverse(m: &mut Mcp, entry: u64, date: &str) -> u64 {
         .unwrap_or_else(|| panic!("a reversal of {entry}"))
 }
 
-/// Defect 14 over the MCP (rules.md B-35): `resolved` is signed as a line
+/// Defect 14 over the MCP (BS-partner-3): `resolved` is signed as a line
 /// on the party's own account, with its direction and its money and
 /// property; a reversal is the exact opposite; party totals take a basis,
 /// cash by default and echoed, all adding property in kind, so that a
@@ -603,7 +603,7 @@ fn defect24_creditor_of_round_trips_and_a_card_fee_is_not_a_payment() {
     assert_eq!(m.ok("books.verify", json!({}))["status"], "ok");
 }
 
-/// rules.md B-27: `books.update_party` asks for the `party_creditors`
+/// BS-format-1: `books.update_party` asks for the `party_creditors`
 /// feature before the first line it writes, never between them. In books
 /// waiting for their format upgrade (P2's), a name change with the first
 /// creditor is refused whole, journaling nothing (never the notes changed

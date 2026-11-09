@@ -59,21 +59,21 @@ that would fail if it broke:
 
 | Law | Test |
 |---|---|
-| Books from a newer wanderbooks are "newer", never "corrupt", from the writer, the viewer and the server; damage stays corruption (rules.md B-27) | `ledger-store` `tests/format.rs` (`old_reader_gets_newer_journal`, `damaged_journals_are_still_corrupt`); `ledger-gui` `tests/newer_journal.rs`; `ledger-cli` `tests/startup.rs` |
+| Books from a newer wanderbooks are "newer", never "corrupt", from the writer, the viewer and the server; damage stays corruption (BS-format-1) | `ledger-store` `tests/format.rs` (`old_reader_gets_newer_journal`, `damaged_journals_are_still_corrupt`); `ledger-gui` `tests/newer_journal.rs`; `ledger-cli` `tests/startup.rs` |
 | A line the gate refuses is called newer only once the next line's `prev` checks its hash; a last line is "newer or damaged" | `a_damaged_line_that_looks_newer_is_corrupt_when_the_next_line_checks_it`, `an_unreadable_last_line_is_reported_as_newer_or_damaged`, `a_newer_line_the_next_line_chains_onto_is_newer_and_intact` (the message vouches for that line only) |
 | The envelope and its hash are frozen across formats: a next line in a newer format (a float, a string seq, keys of its own) settles by its `prev` alone, never as corrupt; a key beside the envelope is newer, never dropped, and still checked through; a refused line followed by an unreadable one is "newer or damaged" | `format.rs` `a_newer_format_frames_its_lines_its_own_way`, `an_unknown_envelope_key_is_newer_and_checked_through`, `a_refused_line_followed_by_a_garbled_line_is_unverified` |
 | The writer and the viewer read bytes alike: a line that isn't UTF-8 is corrupt to both; an older version never repairs (truncates) newer books | `a_line_that_is_not_utf8_is_corrupt_for_the_viewer_and_the_writer`, `an_old_reader_never_repairs_newer_books` |
 | A newer format is newer whatever its features look like; a blank line is damage to the viewer as to the writer | `format.rs` `a_newer_format_is_newer_whatever_its_features_look_like`; `a_blank_line_is_corrupt_for_the_viewer_and_the_writer` |
 | A request that panics stops the server: every later request, on every session, is refused | `server.rs` `a_request_that_panics_stops_the_server` |
-| No input reaches a panic (each would stop the server for every session): every tool with arguments generated from its schema and made hostile (wrong types, u64::MAX, decimals of 30+ digits or absurd exponents, dates like 0000-00-00, 99999-12-31, +262142-12-31, 2026-02-30, periods like 999999-01, control and format characters, long strings), every resource URI generated; the inputs that once panicked, pinned; after each property the server restarts and the books reopen (a call a command accepts but replay refuses would brick them); every tool and resource over every old book (rules.md B-28) | `ledger-cli` `tests/hostile_args.rs` `hostile_tool_arguments_never_stop_the_server` (with a floor: most calls reach a tool, some succeed), `hostile_resource_uris_never_stop_the_server`, `inputs_that_once_panicked_are_refused_or_answered`, `old_books_answer_every_tool`; `MCP_CASES` and `OLD_BOOKS_CASES` (default 3 per tool per book) set the cases |
-| Dates are in 0001-01-01 through 9999-12-31 and amounts at most a line's, for every new command; replay accepts every line an earlier version accepted (each bound has its pair: the command refuses past it, the replayed old line is accepted); a figure derived past exact arithmetic or chrono's calendar is refused, never a panic; a recurring run makes at most 1,000 drafts (rules.md B-28) | `ledger-core` `tests/spec_bounds.rs`, `calendar.rs` tests, `plans_at_the_edges_are_computed_or_refused`, `intervals_reach_chronos_last_day`, `a_vendor_part_is_scaled_exactly_or_refused`, the `share_property` cases; `ledger-store` `tests/bounds.rs`, `tests/store.rs` (the old-books tests); `server.rs` `periods_are_a_year_and_a_month`, `dates_are_four_digit_years_and_real_days` |
-| Opening the books changes nothing until every complete line passes in memory (chain, gate, first line, replay); the viewer applies the writer's first-line rule (rules.md B-27) | `format.rs` `a_bad_complete_line_before_a_torn_tail_leaves_the_journal_as_it_was`, `the_first_line_is_store_created_for_the_viewer_and_the_writer`; `fuzz_store_replay` (the first line varies) |
+| No input reaches a panic (each would stop the server for every session): every tool with arguments generated from its schema and made hostile (wrong types, u64::MAX, decimals of 30+ digits or absurd exponents, dates like 0000-00-00, 99999-12-31, +262142-12-31, 2026-02-30, periods like 999999-01, control and format characters, long strings), every resource URI generated; the inputs that once panicked, pinned; after each property the server restarts and the books reopen (a call a command accepts but replay refuses would brick them); every tool and resource over every old book (BS-entry-4) | `ledger-cli` `tests/hostile_args.rs` `hostile_tool_arguments_never_stop_the_server` (with a floor: most calls reach a tool, some succeed), `hostile_resource_uris_never_stop_the_server`, `inputs_that_once_panicked_are_refused_or_answered`, `old_books_answer_every_tool`; `MCP_CASES` and `OLD_BOOKS_CASES` (default 3 per tool per book) set the cases |
+| Dates are in 0001-01-01 through 9999-12-31 and amounts at most a line's, for every new command; replay accepts every line an earlier version accepted (each bound has its pair: the command refuses past it, the replayed old line is accepted); a figure derived past exact arithmetic or chrono's calendar is refused, never a panic; a recurring run makes at most 1,000 drafts (BS-entry-4) | `ledger-core` `tests/spec_bounds.rs`, `calendar.rs` tests, `plans_at_the_edges_are_computed_or_refused`, `intervals_reach_chronos_last_day`, `a_vendor_part_is_scaled_exactly_or_refused`, the `share_property` cases; `ledger-store` `tests/bounds.rs`, `tests/store.rs` (the old-books tests); `server.rs` `periods_are_a_year_and_a_month`, `dates_are_four_digit_years_and_real_days` |
+| Opening the books changes nothing until every complete line passes in memory (chain, gate, first line, replay); the viewer applies the writer's first-line rule (BS-format-1) | `format.rs` `a_bad_complete_line_before_a_torn_tail_leaves_the_journal_as_it_was`, `the_first_line_is_store_created_for_the_viewer_and_the_writer`; `fuzz_store_replay` (the first line varies) |
 | UTF-16 text without a byte-order mark is scanned like any text; a refused `books.set_w9` marks no file; a refused resource read never echoes a TIN | `tin_files.rs` (tests) `utf16_text_without_a_byte_order_mark_is_scanned_either_way_round`, `a_refused_set_w9_never_marks_its_file`, unit test `only_nul_interleaved_bytes_read_as_utf16_without_a_mark`; `spec_vault.rs` `resource_refusals_never_echo_a_tin` |
 | idempotentHint only where a repeat with the same arguments leaves the journal and the vault as they were; every tool's hints pinned in one table | `spec_vault.rs` `idempotent_tools_change_nothing_when_repeated`; `annotations_complete` |
 | books.settings lists every receipt-required and exempt account, uncut; a fresh company is "a new company"; the lint catches `just` however it ends and where the books are | `mcp_journeys.rs` `every_receipt_account_left_out_of_the_connect_text_is_in_books_settings`; `handbook.rs` `a_fresh_company_is_a_new_company`; `tool_text_lint_catches_helpers_and_locations` |
 | A file with full TINs is never written to a path (handed over instead, D-29), and never filed into the books: every file the server read or wrote with TINs (from any session, after a restart, out of a CPA package), by every filing tool | `mcp_journeys.rs` `tin_bearing_files_are_refused_when_given_back_to_be_filed`; `spec_vault.rs` `a_package_is_handed_over_and_never_written`; `tin_files.rs` (tests) `a_tin_bearing_file_is_refused_from_every_session_and_after_a_restart`; unit test `a_recorded_tin_file_is_refused_by_every_reader_of_the_registry` |
-| Text filed into the books is refused when it holds a TIN the vault keeps (nine digits, 3-2-4 by hyphen, space or dot, 2-7 by hyphen or space, anywhere) or a stand-alone printed SSN or EIN (123-45-6789, 12-3456789), and only then: a bank export (routing numbers, long references, a date next to an amount) and a longer number holding an SSN shape go in; a locked vault leaves the printed shapes (rules.md B-26) | `tin_files.rs` (tests) `text_with_a_vault_tin_or_a_printed_one_is_refused_and_a_bank_export_is_not`; unit tests `text_holding_a_vault_tin_is_refused_in_every_rendering`, `a_printed_ssn_or_ein_is_refused`, `a_longer_number_holding_a_tin_shape_passes`, `an_ordinary_bank_export_passes`, `binary_bytes_are_not_scanned` |
-| Filing is no TIN oracle: text with more than two TIN-shaped numbers ending in a known TIN's last four (the books' TIN and W-9 facts, then the vault's own) is refused before the vault is opened, byte for byte alike whether one is the vault's TIN or none is, the vault open or locked, by every filing tool; one or two such numbers are compared against the vault, one number written many ways counts once, and other last fours never count (rules.md B-26) | `tin_files.rs` (tests) `text_probing_for_a_tin_is_refused_alike_by_every_filing_tool`; unit tests `text_probing_for_a_tin_is_refused_alike_whether_or_not_it_holds_it` (the vault never opened for a probe), `one_or_two_candidates_are_compared_against_the_vault` |
+| Text filed into the books is refused when it holds a TIN the vault keeps (nine digits, 3-2-4 by hyphen, space or dot, 2-7 by hyphen or space, anywhere) or a stand-alone printed SSN or EIN (123-45-6789, 12-3456789), and only then: a bank export (routing numbers, long references, a date next to an amount) and a longer number holding an SSN shape go in; a locked vault leaves the printed shapes (BS-partner-2) | `tin_files.rs` (tests) `text_with_a_vault_tin_or_a_printed_one_is_refused_and_a_bank_export_is_not`; unit tests `text_holding_a_vault_tin_is_refused_in_every_rendering`, `a_printed_ssn_or_ein_is_refused`, `a_longer_number_holding_a_tin_shape_passes`, `an_ordinary_bank_export_passes`, `binary_bytes_are_not_scanned` |
+| Filing is no TIN oracle: text with more than two TIN-shaped numbers ending in a known TIN's last four (the books' TIN and W-9 facts, then the vault's own) is refused before the vault is opened, byte for byte alike whether one is the vault's TIN or none is, the vault open or locked, by every filing tool; one or two such numbers are compared against the vault, one number written many ways counts once, and other last fours never count (BS-partner-2) | `tin_files.rs` (tests) `text_probing_for_a_tin_is_refused_alike_by_every_filing_tool`; unit tests `text_probing_for_a_tin_is_refused_alike_whether_or_not_it_holds_it` (the vault never opened for a probe), `one_or_two_candidates_are_compared_against_the_vault` |
 | The connect text fits its budgets, its lead stands alone, it states the receipt rule enforced (exact threshold in the base currency, required and exempt accounts, reversals) and the parties rule in force, and the company name can't break it (control and format characters) | `handbook.rs` `instructions_budget`, `a_typical_company_gets_the_whole_connect_text`, `the_company_name_is_one_plain_line`; `receipt_policy.rs` `the_rule_told_is_the_rule_enforced`, `a_long_or_odd_account_list_stays_short_and_plain`; a new session is told the settings in force: `a_new_session_is_told_the_settings_in_force` |
 | No text the agent is given (whole tool JSON, resources, connect text, handbook, every error template and refusal) points at files, git, GitHub, repo docs, flags or helper commands; descriptions fit 700 characters (listed exceptions, P5; and what git itself said of a failed backup, which `books.backup` passes on to the human as git said it, its paths hidden) | `tool_text_lint`, `tool_descriptions_fit_700_characters`; `ledger-core` `an_unknown_year_threshold_is_never_guessed` |
 | Every tool is annotated (openWorldHint false on all but `books.back_up_now`), and the read-only hint is true in behaviour (journal, every file of the books' folder but what every call writes by design: the access log, `ops/` (the viewer's side channel for `books.show`, which is not the books), the books' own backup and the files handed over; the database's rows and the vault unchanged) | `annotations_complete`; `spec_mcp.rs` `read_only_tools_change_nothing` (checked on every call in `Mcp::tool`) |
@@ -96,7 +96,7 @@ viewer against its lib tests and `newer_journal`). Final run:
 | `ledger-core` | 1 | 1 | 0 | 0 | 0 |
 
 (`ledger-cli`'s change makes no mutant.) After the filing scan's probe
-bound (rules.md B-26), `tin_files.rs` alone was run again against the
+bound (BS-partner-2), `tin_files.rs` alone was run again against the
 whole P0 diff: 74 mutants, 74 caught, among them every mutant of the
 bound (`probes` made true or false, `>` made `>=`, `==` or `<`, the
 last four's `%` made `/` or `+`, here and for the vault's own last
@@ -628,7 +628,7 @@ are kept with the run's output, outside the repository.
 
 ## P3: odd cents (2026-10-20)
 
-Defect 17 (rules.md B-13; D-10, D-38), built without its mutation run
+Defect 17 (BS-partner-1; D-10, D-38), built without its mutation run
 (D-33); what P12 must cover is listed at the end. Every expected figure is
 worked by hand in the test's comment.
 
@@ -737,7 +737,7 @@ pass.
 ## P3: the IIF and as-of (2026-10-20)
 
 Defects 7 and 21 (plan P3; the owner's decisions D-36). Rules
-`docs/spec/rules.md` B-33 (a package as of a day) and B-34 (the IIF). No
+BS-statement-4 (a package as of a day) and BS-format-2 (the IIF). No
 mutation run (D-33): what P12 must cover is at the end.
 
 **Named regression tests**, each from its reproduction, on anonymized
@@ -877,7 +877,7 @@ each name; with `SHOT_DIR` set, it saves `scripts.png`: looked at,
 and Hebrew, but doesn't reorder the words of a right-to-left phrase:
 "مكتب الرياض" shows its two words left to right.
 
-**TINs in any script (B-26).** `ledger_core::parties::has_full_tin`
+**TINs in any script (BS-partner-2).** `ledger_core::parties::has_full_tin`
 missed "１２３－４５－６７８９": the fullwidth hyphen-minus, the ideographic
 and thin spaces, the Hebrew maqaf and the other Unicode dashes weren't
 separators, and a zero-width space or a right-to-left mark between digits
@@ -942,8 +942,7 @@ doesn't count them.
 
 ## P3: cash flow (defect 1, 2026-10-20)
 
-The statement of cash flows was rebuilt by the direct method (rules.md
-B-14, D-35), and what a member or a lender pays for the company shown as
+The statement of cash flows was rebuilt by the direct method (BS-statement-3, D-35), and what a member or a lender pays for the company shown as
 cash borrowed and spent (D-42, rule 11). Built, reviewed twice, `just
 check` and `just prove`; no mutation run (D-33): what P12 must cover is at
 the end.
@@ -1089,7 +1088,7 @@ in `take` where both bounds coincide, and the kind order's tie-breaks.
 
 ## P3: rename, defaults and tax categories (2026-10-20)
 
-Defects 15, 16 and 8 (`plan/served.md` P3; rules.md B-30, B-31, B-32).
+Defects 15, 16 and 8 (`plan/served.md` P3; BS-period-3, BS-ledger-10, BS-ledger-11).
 Every fixture is fictional (Fernhill Labs LLC, its members and vendors);
 no mutation run (D-33): the targets are listed for P12 below.
 
@@ -1132,7 +1131,7 @@ no mutation run (D-33): the targets are listed for P12 below.
   (every figure, entry and earlier journal line, every projection row but
   `accounts.name`; refusals append nothing; reopen, rebuild and viewer),
   `a_journaled_rename_replays_past_the_command_rules` and
-  `a_journaled_clear_replays_under_refuse` (B-28's pairs, review R5),
+  `a_journaled_clear_replays_under_refuse` (BS-entry-4's pairs, review R5),
   `the_tax_category_policy_refuses_only_what_it_says`,
   `books_written_under_p3_keep_their_names` (fixture `old-books/p3_rename`,
   written once by `write_p3_rename_fixture`, `--ignored`; its figures are
@@ -1220,7 +1219,7 @@ cash flow statement:
   fiscal year.
 - `ledger-core` `tests/bookspec/`: the three examples are in the
   loader's one shape, and the loader gained what they need (bookspec
-  `README.md`): `setup.today` and omitted dates resolved by B-30,
+  `README.md`): `setup.today` and omitted dates resolved by BS-period-3,
   `header` and `tax_category` on an account, a `bill` event, `[[changes]]`
   (a rename, the policy) made after an event's expectations, the queries
   `period`, `day`, `calendar_year`, `account_names` and
@@ -1240,7 +1239,7 @@ cash flow statement:
   `iif_writes_plain_ascii_and_lists_every_change`,
   `iif_warnings_never_hold_a_tin`) make their siblings of one name, names
   with a tab and names holding a TIN by replay (`replay_add_account`), as
-  books written before P3 hold them: B-31 refuses them in a new name, and
+  books written before P3 hold them: BS-ledger-10 refuses them in a new name, and
   the file must still keep them apart, write them on one line and mask
   them.
 - `books.cash_flow`'s description is the direct method's, shortened to
@@ -1281,26 +1280,26 @@ A party's part of an entry is signed as a line on its own account, with a
 direction and its money and property; party totals take a basis; money is
 cash, cards and the financing accounts; a credit to a liability a party is
 owed itself never pays it; the directory's TIN last four comes from TIN or
-W-9 facts (rules.md B-35, B-26). Built, reviewed and checked under D-33:
+W-9 facts (BS-partner-3, BS-partner-2). Built, reviewed and checked under D-33:
 no mutation run here; what P12 must cover is at the end.
 
 | What | Where | Oracle |
 |---|---|---|
-| The audit's table (F36, F37), row by row: resolved, direction, cash, in kind; reversals the exact opposite; bills and invoices signed; totals on both bases | `ledger-core/tests/spec_party_totals.rs` `defect14_shares_take_the_partys_side_and_reversals_flip` | B-35, by hand |
+| The audit's table (F36, F37), row by row: resolved, direction, cash, in kind; reversals the exact opposite; bills and invoices signed; totals on both bases | `ledger-core/tests/spec_party_totals.rs` `defect14_shares_take_the_partys_side_and_reversals_flip` | BS-partner-3, by hand |
 | Basis all is the members' equity statement, cash the K-1's cash contributions | `basis_all_is_the_members_equity_statement_and_cash_the_k1s`; property `member_totals_are_the_members_equity_statement` (members contributing and taking out money and property, alone and jointly, subject to a loan, through 2100 then converted, through their distributions accounts, depreciated property with money, declared to distributions payable and paid later, reversed later in the year; checked over every span from the year's start and, received less paid, over every span) | `reports::members_equity`, `k1::k1_detail` |
-| A reversed member card payment nets to zero (brief §1.4) | `defect14_a_reversed_member_card_payment_nets_to_zero` | B-9 |
-| Accruals through another liability count once (defect 24) | `defect24_an_accrual_through_another_liability_counts_once` | B-35 item 5 |
-| A credit to a party's own liability never pays it: a card fee, a distribution owed, a seller's note, property subject to a loan | `defect24_a_credit_to_a_partys_own_liability_never_pays_it`; the documented limit, pinned: `a_distribution_owed_counts_twice_until_the_members_are_named_its_creditors` | B-35 item 6; Treas. Reg. §1.704-1(b)(2)(iv)(b)(2); Helvering v. Price |
-| Review, 2026-10-21: a distribution declared to distributions payable counts once, when paid (it counted twice); a distribution of money and depreciated property splits by what moved (the money read as property); a gift card sold is received once (it was a "card": twice); a refund is received; tin_last4 never shows more than four digits | `defect24_a_distribution_declared_to_a_payable_counts_once_when_paid`, `a_distribution_of_money_and_depreciated_property_splits_by_what_moved`, `defect24_a_gift_card_sold_is_received_once`, `a_refund_is_received_from_the_vendor`, `defect11_a_partys_tin_last4_is_its_tin_facts_else_its_w9s` (SCENARIO 6) | B-35 items 3, 5; B-26 |
+| A reversed member card payment nets to zero (brief §1.4) | `defect14_a_reversed_member_card_payment_nets_to_zero` | BS-ledger-5 |
+| Accruals through another liability count once (defect 24) | `defect24_an_accrual_through_another_liability_counts_once` | BS-partner-3 item 5 |
+| A credit to a party's own liability never pays it: a card fee, a distribution owed, a seller's note, property subject to a loan | `defect24_a_credit_to_a_partys_own_liability_never_pays_it`; the documented limit, pinned: `a_distribution_owed_counts_twice_until_the_members_are_named_its_creditors` | BS-partner-3 item 6; Treas. Reg. §1.704-1(b)(2)(iv)(b)(2); Helvering v. Price |
+| Review, 2026-10-21: a distribution declared to distributions payable counts once, when paid (it counted twice); a distribution of money and depreciated property splits by what moved (the money read as property); a gift card sold is received once (it was a "card": twice); a refund is received; tin_last4 never shows more than four digits | `defect24_a_distribution_declared_to_a_payable_counts_once_when_paid`, `a_distribution_of_money_and_depreciated_property_splits_by_what_moved`, `defect24_a_gift_card_sold_is_received_once`, `a_refund_is_received_from_the_vendor`, `defect11_a_partys_tin_last4_is_its_tin_facts_else_its_w9s` (SCENARIO 6) | BS-partner-3 items 3, 5; BS-partner-2 |
 | A mixed contribution splits as the K-1 does, ties to the first member | `a_members_mixed_entry_splits_as_the_k1_does` | k1 INVARIANTS 3, 4 |
 | Read from journaled facts: an archived member, a one-member company | `a_members_entry_keeps_its_reading_after_they_leave` | review R2 |
 | A close is neither; a basis is cash or all; creditor_of's checks; tin_last4's five scenarios; the kernel's cases | `a_close_tagged_with_its_members_is_neither`, `a_basis_is_cash_or_all`, `a_creditor_is_named_only_on_a_liability_with_one_owner`, `defect11_a_partys_tin_last4_is_its_tin_facts_else_its_w9s`, `party_target_cases_by_hand` | specs |
-| Properties: a reversal's target, parts and flow are the original's negated; parts sum to the target, each with its sign; a sole party's money part is the flow as before P3; tin_last4 is every source present | `a_reversal_is_the_exact_opposite`, `a_sole_partys_money_part_is_the_flow_as_before`, `tin_last4_is_every_source_present` (`PROPTEST_CASES`, default 256; 5,000 run clean) | B-35, B-9 |
+| Properties: a reversal's target, parts and flow are the original's negated; parts sum to the target, each with its sign; a sole party's money part is the flow as before P3; tin_last4 is every source present | `a_reversal_is_the_exact_opposite`, `a_sole_partys_money_part_is_the_flow_as_before`, `tin_last4_is_every_source_present` (`PROPTEST_CASES`, default 256; 5,000 run clean) | BS-partner-3, BS-ledger-5 |
 | Decimal and i64 agree on party_target and reverse_target | `kernel_bridge/` `party_target_agrees` | the bridge |
 | Kani: the direction is the sign, the target is odd, reverse_target an involution | `proofs/` `party_target_direction_is_its_sign`, `party_target_is_odd`, `reverse_target_is_an_involution` | the kernel spec |
 | The journal: party.creditor_set one line each, under the feature the books declared when created; in books an older version wrote, refused (FormatUpgradePending, nothing journaled) until the format upgrade; refusals journal nothing; books without creditors never change, in either format; corrupt lines refused | `ledger-store/tests/party_creditors.rs` | the format gate |
 | Over the MCP: get_entry's direction, cash, in_kind; party totals by basis, echoed, others refused; basis all equals members' equity; creditor_of round trips and a card fee isn't a payment; the post_entry preview's parts are what it posts | `ledger-cli/tests/spec_party_totals.rs` | the tool docs |
-| Defect 11 over the MCP: a member's TIN last four in the directory, a W-9's, none, after a purge | `ledger-cli/tests/spec_vault.rs` `defect11_the_directory_shows_a_members_tin_last4` | B-26 |
+| Defect 11 over the MCP: a member's TIN last four in the directory, a W-9's, none, after a purge | `ledger-cli/tests/spec_vault.rs` `defect11_the_directory_shows_a_members_tin_last4` | BS-partner-2 |
 | The viewer shows the tools' numbers, labelled cash basis, with the in-kind line; its what-for reads a reversal as `parties::flow` does | `ledger-gui/tests/parties.rs` `the_party_page_shows_the_basis_and_in_kind`, `a_reversed_member_card_payment_is_nothing_on_the_issuers_page` | `activity_with`, `flow` |
 | bookspec | `bookspec/examples/p3-party-*.toml` | the same cases, by hand |
 
@@ -1330,10 +1329,10 @@ never disagree, parties INVARIANT 2a, enforced on replay).
 The 1099 decision kept as a decision (nec, misc, not_reportable with its
 reason kind and words, undetermined), with who decided and the date it
 takes effect (D-40); payment methods and the tag on each payment; one
-report for the server, the package and the viewer (rules.md B-19). No
+report for the server, the package and the viewer (BS-1099-1). No
 mutation run (D-33); the list P12 must cover is at the end.
 
-| Law (rules.md B-19) | Tests |
+| Law (BS-1099-1) | Tests |
 |---|---|
 | Undecided is not "not reportable" (defect 18) | `undecided_is_not_not_reportable` |
 | "No 1099" is a decision with who and when; "none" refused (defect 23) | `a_vendor_marked_no_1099_is_not_undecided`, `the_cutovers_reasons_are_recorded_as_given`, `set_vendor_1099_says_what_a_decision_needs` (`ledger-cli` `spec_1099.rs`) |
@@ -1393,11 +1392,11 @@ must cover is at the end.
 
 | What | Where | Oracle |
 |---|---|---|
-| One rule for what a card is: the recorded business cards' liabilities, else (none recorded) liabilities named "card", not "gift"; never a member's card, a member's check or a platform; a debit card on the bank is none; money follows it | `ledger-core` `tests/spec_party_totals.rs` `a_card_is_a_recorded_business_card_else_a_liability_named_card` | B-35 item 5, `parties::card_accounts` INVARIANTS 1-4 |
-| Party totals and the 1099 worksheet never contradict: paid less received is the worksheet's paid + excluded_card + undetermined + not_reportable plus its other receipts, for a vendor named alone, whatever the methods, refunds and reversals | property `party_totals_are_the_1099s_buckets` (`ledger-core` `tests/form1099.rs`; `PROPTEST_CASES`, default 256; 2,000 run clean; dropping a bucket from the sum fails at once) | B-35 item 9, by hand |
-| The same, one year by hand: a member's check, a member's card, a member's payment of unknown method, a company card charge and a company check to one contractor, then the member reimbursed | `bookspec/examples/1099-and-party-totals-for-a-members-payment.toml` | B-35 item 9; Treas. Reg. §1.6041-1(e)(1), (a)(1)(iv) |
-| The CPA package's 1099 worksheet is `books.vendor_1099`'s CSV for the package's accounts (the request's, else the settings', R18) through its as_of, byte for byte; without `through` the files differ; a `through` outside the year and an unknown account are refused | `ledger-cli` `oracle_mcp.rs` `cpa_package_holds_the_year_and_its_evidence`; `ledger-package` `tests/package.rs` `payments_to_a_vendor_come_from_the_packages_accounts`, `one_list_of_cash_accounts_per_package`, `the_1099_worksheet_stops_at_as_of` | B-33; mcp-interface.md |
-| A feature is asked for before a command's first line: `books.update_party` with a field and the first creditor, in P2's books waiting for their format upgrade, is refused whole (nothing journaled, never the field without the creditor); once upgraded, as in books this version made, it journals the field, then the creditor, declaring nothing | `ledger-cli` `tests/spec_party_totals.rs` `update_party_asks_for_the_creditor_feature_before_its_first_line` | B-27 |
+| One rule for what a card is: the recorded business cards' liabilities, else (none recorded) liabilities named "card", not "gift"; never a member's card, a member's check or a platform; a debit card on the bank is none; money follows it | `ledger-core` `tests/spec_party_totals.rs` `a_card_is_a_recorded_business_card_else_a_liability_named_card` | BS-partner-3 item 5, `parties::card_accounts` INVARIANTS 1-4 |
+| Party totals and the 1099 worksheet never contradict: paid less received is the worksheet's paid + excluded_card + undetermined + not_reportable plus its other receipts, for a vendor named alone, whatever the methods, refunds and reversals | property `party_totals_are_the_1099s_buckets` (`ledger-core` `tests/form1099.rs`; `PROPTEST_CASES`, default 256; 2,000 run clean; dropping a bucket from the sum fails at once) | BS-partner-3 item 9, by hand |
+| The same, one year by hand: a member's check, a member's card, a member's payment of unknown method, a company card charge and a company check to one contractor, then the member reimbursed | `bookspec/examples/1099-and-party-totals-for-a-members-payment.toml` | BS-partner-3 item 9; Treas. Reg. §1.6041-1(e)(1), (a)(1)(iv) |
+| The CPA package's 1099 worksheet is `books.vendor_1099`'s CSV for the package's accounts (the request's, else the settings', R18) through its as_of, byte for byte; without `through` the files differ; a `through` outside the year and an unknown account are refused | `ledger-cli` `oracle_mcp.rs` `cpa_package_holds_the_year_and_its_evidence`; `ledger-package` `tests/package.rs` `payments_to_a_vendor_come_from_the_packages_accounts`, `one_list_of_cash_accounts_per_package`, `the_1099_worksheet_stops_at_as_of` | BS-statement-4; mcp-interface.md |
+| A feature is asked for before a command's first line: `books.update_party` with a field and the first creditor, in P2's books waiting for their format upgrade, is refused whole (nothing journaled, never the field without the creditor); once upgraded, as in books this version made, it journals the field, then the creditor, declaring nothing | `ledger-cli` `tests/spec_party_totals.rs` `update_party_asks_for_the_creditor_feature_before_its_first_line` | BS-format-1 |
 | One bookspec loader for every example, the parties' and the 1099s' with them: `setup.parties`, `setup.members` (`distributions_account`), `setup.payees` (a party's vendor record), `setup.status_changes`, `setup.instruments`, events' `parties` and `instrument`, and the queries `vendor_1099`, `k1`, `party_part`, `party_totals`, `party_tin_last4`; refused: a party or payment method not in the setup, a reversal naming parties, party totals without a basis, a 1099 line leaving a figure out, a wrong direction or status | `ledger-core` `tests/bookspec/` (`every_bookspec_example_holds`, `a_party_not_in_the_setup_is_refused`, `a_party_parts_direction_is_checked`, `a_reversal_naming_parties_is_refused`, `party_totals_without_a_basis_are_refused`, `a_vendor_1099_line_leaving_a_figure_out_is_refused`, `a_vendor_1099_status_is_checked`, `a_payment_method_not_in_the_setup_is_refused`) | bookspec/README.md |
 
 **For P12 (mutation targets, none run, D-33):** `parties::card_accounts`
@@ -1411,8 +1410,7 @@ method setup.
 
 ## P3: depreciation and schedules (defects 22 and 9, 2026-10-20)
 
-Every expected figure below was worked by hand from the rule (rules.md
-B-15, B-16) and is written out in the test's doc comment; the fixtures are
+Every expected figure below was worked by hand from the rule (BS-asset-1, BS-prepaid-1) and is written out in the test's doc comment; the fixtures are
 made up (asset X: 12,000.00 over 12 months from 2026-01-01; a 1,200.00
 policy from March 15). Each regression that is an accounting rule is also
 a bookspec example (`bookspec/examples/`, P13, D-34).
@@ -1448,7 +1446,7 @@ a bookspec example (`bookspec/examples/`, P13, D-34).
 | Every order of runs, reversals (any day, before an entry's own included), re-runs, re-instatements, disposals and closes on one asset keeps the books right: refusals journal nothing; at every month end before the disposal the expense is the accumulated depreciation and within the schedule; one run in effect per month; a disposal's month and the end at the schedule through its day, accumulated 0.00, the gain proceeds less book value; an active asset run month by month past its life takes exactly cost less salvage (P3 review round 2) | store `asset_orders.rs` `every_order_of_runs_reversals_disposals_and_closes_keeps_the_books_right` (exhaustive, three commands deep; four and five with `WB_ORDERS_DEPTH`, run clean 2026-10-21), `prop_any_sequence_keeps_the_books_right` (64 cases, up to 9 commands, any day) |
 | The viewer reads an asset as the store does, whatever the runs, reversals and disposals: what the books carry, each finished month's status against a run of it, what is unposted (P3 review round 2) | GUI `prop_the_viewer_reads_an_asset_as_the_store_does` (48 cases), `the_viewer_counts_a_run_reinstated_after_its_rerun_was_reversed` |
 | A run re-instated after its month was run again and that run reversed still counts: in the store, the disposal and the viewer (P3 review round 2; before, the projection's row named the reversed re-run) | store `a_run_reinstated_after_its_rerun_was_reversed_still_counts`; GUI `the_viewer_counts_a_run_reinstated_after_its_rerun_was_reversed` |
-| Every reversal is dated on or after its original, any kind of entry (D-73); a journal holding an earlier-dated one still opens with the same figures (B-28): store `reversal_dates.rs` `a_plain_entrys_reversal_is_not_dated_before_it`, `a_journal_with_an_earlier_dated_reversal_opens_as_it_was` |
+| Every reversal is dated on or after its original, any kind of entry (D-73); a journal holding an earlier-dated one still opens with the same figures (BS-entry-4): store `reversal_dates.rs` `a_plain_entrys_reversal_is_not_dated_before_it`, `a_journal_with_an_earlier_dated_reversal_opens_as_it_was` |
 | A depreciation run's or schedule month's reversal can't be dated before the entry it reverses (P3 review round 2: a run of March reversed on Jan 31, then a disposal on Feb 15, ended February with a 1,000.00 debit in accumulated depreciation) | store `a_reversal_dated_before_the_entry_it_reverses_is_refused` |
 | A disposal waits only until what the runs carry at its month's end is what they carry now, so a late change undone after its month closed lets it through (P3 review round 2; round 1 refused it for ever) | store `a_disposal_is_taken_once_a_late_change_is_undone_after_its_month_closed` |
 | Depreciation still due when the disposal's month has a run is charged in the disposal entry, never as a second run of the month (P3 review round 2; no store test held it) | store `a_disposal_whose_month_has_run_charges_what_is_still_due_in_its_entry` |
@@ -1496,7 +1494,7 @@ none (`r >= step - r` against `>` is killed by `half_a_unit_rounds_up`).
 
 D-39 and plan/served.md 3.9 (`format_upgrade_pending`): books an older
 wanderbooks wrote wait for the owner's go-ahead before they move to this
-version's journal format (rules.md B-27). Mutation testing waits for P12
+version's journal format (BS-format-1). Mutation testing waits for P12
 (D-33); the targets are listed at the end.
 
 - `ledger-store` `format.rs` unit tests: this version's format is the
@@ -1629,7 +1627,7 @@ basis. Mutation runs wait for P12 (D-33); none was run.
   note; the gain property's disposal flagged with its built-in gain),
   property subject to a liability (negative tax property), and three
   members with unequal shares, one contributing nothing; and, from the
-  owner's ask of 2026-10-22 (B-36 with D-38), three odd-cent devices
+  owner's ask of 2026-10-22 (BS-partner-4 with D-38), three odd-cent devices
   contributed 50/50 whose built-in loss runs cumulatively, a cent apart
   for the year and from June on a beginning carried from January
   (`tied_odd_cents_of_property_basis_run_cumulatively`; it fails with
@@ -1745,13 +1743,13 @@ rules.md says why not. Mutation runs wait for P12 (D-33).
 - **Engine** (`ledger-package/tests/p3_seams.rs`):
   `the_members_figures_agree_on_every_date` (members' equity, the K-1
   worksheet, party totals on both bases, the cash flow's contributions,
-  advances and distributions, B-35 items 4 and 8),
+  advances and distributions, BS-partner-3 items 4 and 8),
   `a_distribution_declared_then_paid_is_financing_when_paid`,
-  `the_1099_worksheet_ties_to_party_totals_and_the_ledger` (B-35 item 9,
-  B-19), `depreciation_is_one_figure_everywhere` (the P&L, the cash flow
+  `the_1099_worksheet_ties_to_party_totals_and_the_ledger` (BS-partner-3 item 9,
+  BS-1099-1), `depreciation_is_one_figure_everywhere` (the P&L, the cash flow
   add-back, the tax-basis K-1's open item, the IIF, the register posted
   and scheduled, the balance sheet), `every_statement_foots_on_every_date`,
-  `the_cpa_package_as_of_each_date_is_the_tools_figures` (B-33).
+  `the_cpa_package_as_of_each_date_is_the_tools_figures` (BS-statement-4).
 - **Viewer** (`ledger-gui/tests/p3_seams.rs`): its capital statements,
   party money, cash flow, register and 1099 worksheet, read from the
   books' folder and settings file as it opens them, are the engine's.
@@ -1761,14 +1759,14 @@ rules.md says why not. Mutation runs wait for P12 (D-33).
   `books.vendor_1099` through each date, `books.party` on both bases.
 - **Found and fixed** (each test fails before its fix): a distribution
   declared to a payable and paid later read as cash paid to suppliers
-  (B-14 rule 2; `a_distribution_declared_then_paid_is_a_distribution_paid`
+  (BS-statement-3 rule 2; `a_distribution_declared_then_paid_is_a_distribution_paid`
   in `ledger-core/tests/spec_cash_flow.rs`, with the property
   `prop_cf_financing_is_equity_plus_designated_debt`'s model extended);
   a disposal's depreciation credit-back was in the cash flow's gain or
-  loss, not its depreciation (B-14 rule 8;
+  loss, not its depreciation (BS-statement-3 rule 8;
   `a_disposals_depreciation_credit_back_is_depreciation`), and the
-  tax-basis K-1's book depreciation left it out (B-36); `books.list_assets`
-  as of a day said "disposed" for a later disposal (B-15 rule 8).
+  tax-basis K-1's book depreciation left it out (BS-partner-4); `books.list_assets`
+  as of a day said "disposed" for a later disposal (BS-asset-1 rule 8).
 
 ## P3: the surface review (2026-10-21)
 
@@ -1838,7 +1836,7 @@ The earlier P3 sections' lists stand (one name corrected:
 The owner's ask: "a Projects page that treats a class as a project ...
 Projects are entities too", a company rule to link things to projects
 (the convention `link-to-projects`), and the sidebar's links drawn under
-the status box in a short window (rules.md B-37). Mutation runs wait for
+the status box in a short window (BS-statement-5). Mutation runs wait for
 P12 (D-33); none was run.
 
 - **ledger-core:** `tests/spec_projects.rs`
@@ -1977,7 +1975,7 @@ feature check; the decision `projects` omit-when-empty;
 
 The owner's ask: a "mini financial snapshot" of one project on its page,
 overhead left out, so it shows at a glance whether the project is in the
-black or the red, with charts (rules.md B-37 item 7: contribution before
+black or the red, with charts (BS-statement-5 item 7: contribution before
 overhead, revenue less every traced cost, a segment margin in Garrison's
 sense; a presentation choice, not GAAP). Every figure is ledger-core's:
 `ProjectToDate::{net, margin_pct, any_tagged, revenue_by_account,
@@ -2046,7 +2044,7 @@ fail.
   `the_running_net_is_each_months_net_to_date` (sweeping the pointer over
   the bars and over the net's own strip shows each month's
   `months_net_to_date`, in order),
-  `the_fiscal_year_switch_shows_the_default_period` (B-30's omitted dates,
+  `the_fiscal_year_switch_shows_the_default_period` (BS-period-3's omitted dates,
   as `books.project`, with fiscal-year costs unlike to date's; the pill
   stays to date; switching writes nothing to the journal),
   `a_fiscal_year_with_nothing_says_so`,
@@ -2087,11 +2085,11 @@ rounding strategy; `project_figures`' opening net and running sum;
 
 ## Invoices and bills take a project (2026-10-22)
 
-rules.md B-37 item 8: each invoice and bill line takes an optional project
+BS-statement-5 item 8: each invoice and bill line takes an optional project
 (`books.create_invoice` / `books.create_bill` `class`); the entry's revenue
 or expense side is one line per project (`arap::document_parts`), the
 receivable or payable and the payments untagged; journaled as the line's
-`class_id` behind the new feature `document_line_projects` (B-27).
+`class_id` behind the new feature `document_line_projects` (BS-format-1).
 
 - **ledger-core:** `tests/spec_document_projects.rs`
   (`an_invoices_revenue_is_one_line_per_project_and_the_receivable_none`,
@@ -2203,7 +2201,7 @@ The P3 cutover review's open points 1 (the IIF left CLASS empty) and 2
 the tax-basis member split) waits for the owner: nothing is posted
 before the year-end close. No mutation run (D-33).
 
-**Point 1, the IIF's classes** (rules.md B-34 rule 8): `ledger-import`
+**Point 1, the IIF's classes** (BS-format-2 rule 8): `ledger-import`
 `tests/spec_import.rs`
 `iif_writes_each_lines_class_and_declares_the_classes_first` (the file
 exact: the `!CLASS` list after the accounts, before `!TRNS`, every class
@@ -2236,7 +2234,7 @@ and the property. The property found (seed in
 name yield to a changed one ("Café" twice beside "Cafe (1)" and "Cafe (1)
 (1)"); the cap is gone, a tag that changes nothing is skipped instead.
 
-**Point 2, payments to governments** (rules.md B-14 rule 5): `ledger-core`
+**Point 2, payments to governments** (BS-statement-3 rule 5): `ledger-core`
 `tests/spec_cash_flow.rs` `a_payment_to_a_government_is_other_operating`
 (a filing fee on an organization-costs account paid to a government
 agency, and a penalty on supplies paid to a tax agency, are (g); the
@@ -2525,22 +2523,21 @@ accounting question), CHANGE (a source says otherwise; work pending).
 | 1 | A P&L whose start is after its end is refused | DESIGN | No standard governs a reversed range; refusing beats silently swapping a typo |
 | 2 | A balance sheet omits zero-balance accounts | CONFIRMED | Reg. S-X 210.4-03(a): "No caption should be shown ... as to which the items and conditions are not present." A comparative statement must still show a zero beside a non-zero prior column |
 | 3 | The lifetime `profit_and_loss` counts closing entries | CONFIRMED | Used as earnings not yet closed on the balance sheet; closed income is already in capital (OpenStax Principles of Financial Accounting 5.1). Renamed `unclosed_earnings` (2026-10-14) |
-| 4 | Closing a period with nothing to close still locks it | CONVENTION | A close is a lock (B-12); a dormant month must still lock and count for close-in-order |
+| 4 | Closing a period with nothing to close still locks it | CONVENTION | A close is a lock (BS-period-2); a dormant month must still lock and count for close-in-order |
 | 5 | Draws and distributions are closed into capital at period end | CONFIRMED | OpenStax 5.1: dividends "are closed to the permanent account"; drawing accounts close to owner's capital. Monthly closes mean the year's K-1 Item L withdrawals sum across months |
 | 6 | Reconciliation balances | CONFIRMED | Signed by the account's normal side (a card reads as owed), as statements show it; `reconciling_a_card_reads_its_normal_side_...` |
-| 7 | A member's ending on one equity statement may differ by a cent from the next statement's beginning | CHANGED 2026-10-13; CHANGED P3 | A capital account is one running balance (Treas. Reg. §1.704-1(b)(2)(iv)(b); the Item L quote this row once gave was misread, P3 review R-4). Undistributed earnings now split cumulatively as of each date, so each member's capital chains exactly (`each_members_capital_chains_across_statements`; it fails on the old code); since P3 the split is what the count's next close would give, so a date's capital never moves when its month is closed (D-38; `each_members_capital_chains_and_holds_through_closes`); rules.md B-13 |
-| 8 | Cash flow nets one line per account; investing comes only from registered assets | CHANGED 2026-10-13 | ASC 230-10-45-7: gross receipts and payments "more relevant" than net; 45-8 limits netting to quick-turnover items. Financing and investing are now gross; loans made and investments bought are investing (230-10-20, 45-13) via `[books] investing_accounts`. Owner-advanced expenses: PwC 6.9.3.1 constructive treatment via `[books] financing_accounts` (rules.md B-14) |
-| 8a | Cash flow by the indirect method; member-paid expenses as constructive receipts | CHANGED 2026-10-20 | The direct method with the reconciliation as a separate schedule (ASC 230-10-45-25, 45-30); noncash investing and financing activities disclosed, only the cash portion reported (50-3, 50-5). Member-paid expenses stay constructive receipts and disbursements, now gross and on each payment's date, and the same for a lender's payments and an expense paid into capital: a choice (D-42, after a day as noncash under D-35), since ASC 230 doesn't address payments made on the entity's behalf and the firm guides present them so (PwC 6.9.3.1, DART 7.2, BDO 3.4, EY 4.6.2; KPMG Q8.3.10 also accepts noncash for property a lender pays for). rules.md B-14 rule 11, P3 defect 1 |
+| 7 | A member's ending on one equity statement may differ by a cent from the next statement's beginning | CHANGED 2026-10-13; CHANGED P3 | A capital account is one running balance (Treas. Reg. §1.704-1(b)(2)(iv)(b); the Item L quote this row once gave was misread, P3 review R-4). Undistributed earnings now split cumulatively as of each date, so each member's capital chains exactly (`each_members_capital_chains_across_statements`; it fails on the old code); since P3 the split is what the count's next close would give, so a date's capital never moves when its month is closed (D-38; `each_members_capital_chains_and_holds_through_closes`); BS-partner-1 |
+| 8 | Cash flow nets one line per account; investing comes only from registered assets | CHANGED 2026-10-13 | ASC 230-10-45-7: gross receipts and payments "more relevant" than net; 45-8 limits netting to quick-turnover items. Financing and investing are now gross; loans made and investments bought are investing (230-10-20, 45-13) via `[books] investing_accounts`. Owner-advanced expenses: PwC 6.9.3.1 constructive treatment via `[books] financing_accounts` (BS-statement-3) |
+| 8a | Cash flow by the indirect method; member-paid expenses as constructive receipts | CHANGED 2026-10-20 | The direct method with the reconciliation as a separate schedule (ASC 230-10-45-25, 45-30); noncash investing and financing activities disclosed, only the cash portion reported (50-3, 50-5). Member-paid expenses stay constructive receipts and disbursements, now gross and on each payment's date, and the same for a lender's payments and an expense paid into capital: a choice (D-42, after a day as noncash under D-35), since ASC 230 doesn't address payments made on the entity's behalf and the firm guides present them so (PwC 6.9.3.1, DART 7.2, BDO 3.4, EY 4.6.2; KPMG Q8.3.10 also accepts noncash for property a lender pays for). BS-statement-3 rule 11, P3 defect 1 |
 | 9 | An asset's life ends at purchase + life months, that day not held; day-count proration | CONVENTION | Exactly N months of service; day proration and the mid-month convention are both accepted book policies (ASC 360-10-35-4, read 2026-10-14: any systematic and rational allocation) |
 | 10 | A payroll entry has one line per account total | CONFIRMED | The per-employee detail the IRS requires ("Amounts and dates of all wage ... payments", Employment Tax Recordkeeping) is kept in the run; a summary entry is standard |
 | 11 | A period with exactly the dates of an existing one is allowed | DESIGN | Nothing governs duplicate periods; harmless (the second close locks only). Refusing exact duplicates is an option |
-| 12 | Each close into members' capital rounds on its own (ties to the earlier member) | CHANGED 2026-10-13; CHANGED P3 | Twelve monthly 50/50 closes could leave one member several cents ahead. A run of members closes split cumulatively from 2026-10-13 (Lean `runPart_telescopes`; property `each_member_stays_within_a_cent_of_their_share` fails on the per-close rule), but any other close restarted the run. Since P3 a count of members closes runs from the company's first close (D-10), skipping closes to anything else and ignoring the members' order, so no member is ever a cent from their share (`the_audit_odd_cent_never_piles_up_across_closes` fails on the run rule; Kani `cumulative_close_never_drifts_a_unit_at_*`, Lean `allocW_cumulative_drift`); journaled `"cumulative_since"`, older closes replay as booked (rules.md B-13) |
+| 12 | Each close into members' capital rounds on its own (ties to the earlier member) | CHANGED 2026-10-13; CHANGED P3 | Twelve monthly 50/50 closes could leave one member several cents ahead. A run of members closes split cumulatively from 2026-10-13 (Lean `runPart_telescopes`; property `each_member_stays_within_a_cent_of_their_share` fails on the per-close rule), but any other close restarted the run. Since P3 a count of members closes runs from the company's first close (D-10), skipping closes to anything else and ignoring the members' order, so no member is ever a cent from their share (`the_audit_odd_cent_never_piles_up_across_closes` fails on the run rule; Kani `cumulative_close_never_drifts_a_unit_at_*`, Lean `allocW_cumulative_drift`); journaled `"cumulative_since"`, older closes replay as booked (BS-partner-1) |
 
 Questions are settled from the sources, not by any one company's CPA
 (wanderbooks is general software). Where the standards leave a real
 choice, it is a per-company setting with a sourced default, for that
-company's accountant to review: the cash flow account roles (rules.md
-B-14) are the first.
+company's accountant to review: the cash flow account roles (BS-statement-3) are the first.
 
 ## Gap list: what isn't covered, and what would bring it in
 
@@ -2559,7 +2556,7 @@ B-14) are the first.
 
 ## P4b S1, part A: documents read their figures from standing lines (2026-10-23)
 
-rules.md B-38 (plan P4b, D-45): every line on receivables or payables
+BS-arap-2 (plan P4b, D-45): every line on receivables or payables
 carries its document (`Ledger.line_docs`); what a document owes, was paid
 and is (Open, Partly paid, Paid, Void) is read from those lines as of a
 day; hand lines on the control accounts are refused; a reversal is
@@ -2581,7 +2578,7 @@ the wiring into verify, the digest and Needs attention) is part B.
   line for line; Jan 22 unchanged; Jan 31 Fernhill owes 100.00 and Tobin
   80.00 again (their payments' reversals); Mar 31 the voided invoice
   leaves the aging and the reopened ones age at 31-60.
-- **ledger-core:** `tests/spec_documents.rs`, one test per B-38 scenario
+- **ledger-core:** `tests/spec_documents.rs`, one test per BS-arap-2 scenario
   (`reversing_a_payment_reopens_the_invoice`,
   `a_voided_invoice_never_ages`, `void_refused_while_paid`,
   `aging_as_of_ignores_a_later_reversal`,
@@ -2626,7 +2623,7 @@ the wiring into verify, the digest and Needs attention) is part B.
   `a_void_is_journaled_as_its_reversal`,
   `a_payment_journals_its_method_and_reference` (a plain payment's
   payload field for field as before), `legacy_documents_replay_with_tags`);
-  `tests/arap_props.rs` `status_is_a_function_of_journal_and_date` (B-38
+  `tests/arap_props.rs` `status_is_a_function_of_journal_and_date` (BS-arap-2
   INVARIANT 4: random invoices, bills, payments with and without a
   method and reference, voids, reversals of any entry, closed months and
   refused hand lines through `Store`; at half time and at the end the
@@ -2671,7 +2668,7 @@ check; `control_check`'s chain netting.
 
 ## P4b S1, part B: void, control check, and each payment's details (2026-10-24)
 
-The MCP layer of rules.md B-38 (plan P4b S1, part B). Part A (above) is
+The MCP layer of BS-arap-2 (plan P4b S1, part B). Part A (above) is
 the engine: the tags, the derived figures, the guards. Part B puts it on
 the wire: `books.void_document` reverses a document's own entry with the
 reason, `books.control_check` ties each control account to its documents,
@@ -2727,7 +2724,7 @@ and per document, both loops); the `digest` that includes it and the
 `books.documents` and `books.document` (`7d2bf0b7`) and the viewer's
 Money in and Money out lists and a document's page (`b7b7f171`). No
 format change and no engine rule: both read the figures part A derives
-(B-38), and the viewer reads the same ledger directly (I-8).
+(BS-arap-2), and the viewer reads the same ledger directly (I-8).
 
 The plan calls the timeline's reversed items "struck through"; as built
 they are labelled: a payment reversed later reads "Payment (reversed
@@ -2787,7 +2784,7 @@ An invoice as a PDF: `ledger_import::invoice_pdf::invoice_pdf` typesets
 books once, so the server's download and the viewer's Save give the same
 bytes for the same books. `books.document { pdf: true }` hands the file
 over; a bill's PDF is the vendor's, so it is refused. No format change
-and no engine rule: the figures are part A's (B-38) and the template does
+and no engine rule: the figures are part A's (BS-arap-2) and the template does
 no arithmetic.
 
 - **`crates/ledger-import/src/invoice_pdf.rs`:**
@@ -2833,7 +2830,7 @@ it but asserts only that it succeeds).
 ## P7: the TIN scanner's separators (2026-10-26)
 *(Consolidated, with the other units' targets, in "P12: the checklists" at the end of this file.)*
 
-rules.md B-26; plan 8.2 P7, with vault v2 closed by D-48 (nothing of
+BS-partner-2; plan 8.2 P7, with vault v2 closed by D-48 (nothing of
 HPKE, keyslots or human pages is built here). The scanner
 (`ledger_core::parties::has_full_tin`, `redact_full_tins`) reads the
 commas, parentheses and any run of spaces that a TIN's groups can be
@@ -2843,9 +2840,9 @@ separates only a 3-2-4 or 2-7 group, so an amount's comma-grouped
 thousands (`1,234,567.89`, 1-3-3-2) stay an amount. The legacy run
 reading is unchanged for everything it found (the property asserts it
 never forgets one), and replay still reads a journaled line as P2 did
-(`parties::replaying`, B-28). The access log's masking and digest use
+(`parties::replaying`, BS-entry-4). The access log's masking and digest use
 the same function; the filing scan keeps its narrow printed shapes
-(B-26: a bank export's routing numbers must go in) and gains the comma
+(BS-partner-2: a bank export's routing numbers must go in) and gains the comma
 renderings.
 
 Tests: `tin_shapes_with_any_separator_are_found`
@@ -2893,10 +2890,10 @@ adapter claims the rules the catalogue gives an example; a rule with no
 example is not claimed, never silently passed.
 
 Step 3 adds the rule identifiers: `BS-<area>-<n>` for the eleven areas,
-`bookspec/spec/rules-index.md` as the table from B-1 to B-45, and each
+`bookspec/spec/rules-index.md` as the table from BS-entry-1 to BS-ledger-13, and each
 stated rule's id under its heading in `docs/spec/rules.md`. `DECISION`
 there is bookspec's `CHOICE`: the specification names the options, an
-engine declares its pick (`Claims::with_choice`). B-39 to B-45 are
+engine declares its pick (`Claims::with_choice`). BS-arap-3 to BS-ledger-13 are
 allocated (`plan/served.md` 8.0.3) and not yet stated; they carry an id and
 an area and no status.
 
@@ -3277,7 +3274,7 @@ each item's target (`Target::Invoice`) and `books.mark_sent` step args.
 
 ## P4b S6: paying on terms (2026-10-27)
 
-rules.md B-42; plan 8.2 P4b S6. One payment settles several documents of
+BS-arap-6; plan 8.2 P4b S6. One payment settles several documents of
 one party, with the early-payment discounts their terms allow, the
 processor's fee posted gross, a bills-due list, the agings' detail and
 tie-out, and the aging exports.
@@ -3355,15 +3352,15 @@ viewer's `discount_by` and `days_overdue` flags.
 
 ## P4b S7: bad debts (write-offs), 2026-10-27
 
-The write-off (plan 8.2 S7; rules.md B-41): an invoice that will not be
+The write-off (plan 8.2 S7; BS-arap-5): an invoice that will not be
 collected leaves the receivables as a deduction, with its evidence filed
 in the same call.
 
 - **ledger-core, `tests/spec_documents.rs`:**
-  `half_paid_rest_written_off_is_written_off` (B-38 SCENARIO 7: 50 paid,
+  `half_paid_rest_written_off_is_written_off` (BS-arap-2 SCENARIO 7: 50 paid,
   50 written off, one balanced entry Dr 6990 / Cr 1200, the receivable
   line tagged `WriteOff`, receivables down by exactly the write-off);
-  `write_off_refused_on_cash_basis` (B-41 INVARIANT 3: refused, the
+  `write_off_refused_on_cash_basis` (BS-arap-5 INVARIANT 3: refused, the
   snapshot unchanged, no draft left); `write_off_above_outstanding_refused`
   (the bound at the day, a zero and a negative amount, then the exact
   amount owed taken); `write_off_then_recovery_same_year` (D-49: the
@@ -3408,14 +3405,14 @@ in the same call.
   (a write-off of at most what is owed leaves nothing owed below zero over
   the date-sum). Both theorems are in `Audit.lean`. No kernel function
   was added, so no Kani harness.
-- **bookspec:** `bad-debt-direct-write-off` (B-41, CHOICE: invoice 100,
+- **bookspec:** `bad-debt-direct-write-off` (BS-arap-5, CHOICE: invoice 100,
   two partial write-offs, the balances and the trial balance) and
-  `arap-hand-control-posting-refused` (B-38: an entry an earlier version
+  `arap-hand-control-posting-refused` (BS-arap-2: an entry an earlier version
   wrote on receivables replays, attempts the control guard now refuses,
   and the books still tie out). The example schema gained the `write_off`
   event and lets a refused `lines` event say so (an entry posts whole or
   not at all); the refusal vocabulary gained `untagged_control_line`,
-  which belongs to B-38.
+  which belongs to BS-arap-2.
 
 **For P12 (mutation targets, none run, D-33):** `Ledger::write_off_steps`'
 cash-basis comparison (the `eq_ignore_ascii_case`, the early return), its
@@ -3434,7 +3431,7 @@ check, and the preview's clone; attention's year comparison and its
 ## P6: the evidence pipeline (2026-10-27)
 
 Extraction, dedup, annotations and company record categories (plan P6;
-rules.md B-44). One in-process extractor in `ledger-reader`
+BS-ledger-12). One in-process extractor in `ledger-reader`
 (`crates/ledger-reader/src/lib.rs`): `pdf_text` and `pdf_lines` (promoted from the PDF
 reader test), `page_count`, `page_png` (promoted from the viewer's private
 rasterizer), `xlsx_text` (cells as the exact decimal strings the sheet XML

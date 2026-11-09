@@ -12,7 +12,7 @@
 //! checks ([`crate::journal::read_journal_and_format`], and
 //! [`crate::Snapshot`] line by line).
 //!
-//! What every format shares is frozen (rules.md B-27): a line is the
+//! What every format shares is frozen (BS-format-1): a line is the
 //! envelope `{seq, ts, type, payload, prev}` and nothing beside it, and
 //! its hash is the SHA-256 of its canonical JSON (keys sorted, no
 //! whitespace). A newer format adds its fields inside `payload`. So this
@@ -27,7 +27,7 @@
 //! The other way round, books an older version wrote are in an older
 //! format: this version reads them as they are, and writes nothing that
 //! needs a format or feature they haven't declared until the owner says
-//! go (the format upgrade, rules.md B-27, plan/served.md 3.9, D-39:
+//! go (the format upgrade, BS-format-1, plan/served.md 3.9, D-39:
 //! [`JournalFormat::upgrade`], [`current`]). New books declare this
 //! version's whole format as they are created.
 
@@ -43,7 +43,7 @@ pub const SUPPORTED_JOURNAL_FORMAT: u32 = 2;
 /// unknown), or a field or value on an event type it knows (which it
 /// would misread silently). The books declare it (`journal.format_set`)
 /// before their first such line, so the older version stops there instead
-/// (rules.md B-27). Every one is declared at once: by new books as they
+/// (BS-format-1). Every one is declared at once: by new books as they
 /// are created, and by older books at their format upgrade ([`current`]);
 /// until then a write that needs one is refused.
 pub const KNOWN_FEATURES: &[&str] = &[
@@ -72,7 +72,7 @@ pub const KNOWN_FEATURES: &[&str] = &[
 /// Feature: `period.closed` closes to members with `"rounding":
 /// "cumulative_since"` and `since_seq`, the count of members closes
 /// starting at the first since the members or shares last changed (P3
-/// defect 17, rules.md B-13). An older version would call the rounding
+/// defect 17, BS-partner-1). An older version would call the rounding
 /// unknown, or (before the format gate) replay the close under the run
 /// rule, which can split it differently.
 pub const MEMBERS_CUMULATIVE: &str = "members_cumulative";
@@ -136,14 +136,14 @@ pub const DISPOSAL_BEFORE_SERVICE: &str = "disposal_before_service";
 
 /// Feature: an `asset.depreciation_posted` whose amount is not its month's
 /// own depreciation: earlier months skipped or reversed caught up in it, or
-/// a final month left over past the life (P3's run rule, B-15). An earlier
+/// a final month left over past the life (P3's run rule, BS-asset-1). An earlier
 /// version reads every run as its month's own: it would show the caught-up
 /// months as not yet run, and running them post their depreciation twice
 /// (P3 review, 2026-10-21).
 pub const DEPRECIATION_CATCH_UP: &str = "depreciation_catch_up";
 
 /// The feature `party.creditor_set` lines need: a party named the
-/// creditor of a liability (rules.md B-35, P3 defect 24).
+/// creditor of a liability (BS-partner-3, P3 defect 24).
 pub const PARTY_CREDITORS: &str = "party_creditors";
 
 /// Payment methods (`instrument.added`) and the entries tagged with one
@@ -171,7 +171,7 @@ pub const SCHEDULE_CONVENTION: &str = "schedule_convention";
 /// with the value at contribution and the §704(c) method (P3, defect 13).
 pub const ASSET_BASIS: &str = "asset_basis";
 
-/// Feature: projects (rules.md B-37): `project.set`, a new event type (a
+/// Feature: projects (BS-statement-5): `project.set`, a new event type (a
 /// class's project facts); `attachment.linked` to the subject kind
 /// `project` (an older version would call it corrupt); and
 /// `decision.recorded` with `projects` (an older version would drop them
@@ -179,7 +179,7 @@ pub const ASSET_BASIS: &str = "asset_basis";
 pub const PROJECTS: &str = "projects";
 
 /// Feature: an `invoice.created` or `bill.created` line naming its project
-/// (`class_id`, rules.md B-37 item 8). An older version would restore the
+/// (`class_id`, BS-statement-5 item 8). An older version would restore the
 /// document without its lines' projects, silently. Its own feature, not
 /// `projects`': books that consented to projects before it existed must
 /// consent again before a document names one.
@@ -187,7 +187,7 @@ pub const DOCUMENT_LINE_PROJECTS: &str = "document_line_projects";
 
 /// Feature: an `invoice.payment_received` or `bill.paid` accepted only
 /// because an earlier payment on its document was reversed (plan P4b S1,
-/// D-45; rules.md B-38): this version reads a document's figures from the
+/// D-45; BS-arap-2): this version reads a document's figures from the
 /// ledger lines that stand, so a reversed payment no longer counts and the
 /// right one is taken. An older version adds every payment event to the
 /// document's paid amount, standing or not: it would replay the new
@@ -211,7 +211,7 @@ pub const DOCUMENTS_V2: &str = "documents_v2";
 /// payment pays back), and `attachment.withdrawn` carrying `duplicate_of`.
 /// An older version doesn't know those event types, or would withdraw a
 /// duplicate without saying what it duplicates; it stops at the
-/// declaration instead (rules.md B-27, B-44).
+/// declaration instead (BS-format-1, BS-ledger-12).
 pub const ATTACHMENT_TEXT: &str = "attachment_text";
 
 /// Feature: `drafts_v2` (plan P4, D-52): `entry.draft_state_set` (a draft
@@ -220,7 +220,7 @@ pub const ATTACHMENT_TEXT: &str = "attachment_text";
 /// event types: it would refuse them as unknown, or, replaying around
 /// them, keep a discarded draft that blocks a period's close and call a
 /// waiting draft one being built; it stops at the declaration instead
-/// (rules.md B-27, B-43).
+/// (BS-format-1, BS-entry-5).
 pub const DRAFTS_V2: &str = "drafts_v2";
 
 /// Feature: `source_revisions` (plan P5): `convention.source_revised`,
@@ -229,7 +229,7 @@ pub const DRAFTS_V2: &str = "drafts_v2";
 /// leaving its text as it was. An older version doesn't know those event
 /// types: it would refuse them as unknown, or, replaying around them,
 /// show the old source as the decision's authority; it stops at the
-/// declaration instead (rules.md B-27).
+/// declaration instead (BS-format-1).
 pub const SOURCE_REVISIONS: &str = "source_revisions";
 
 /// Feature: `audits` (plan P8): `audit.run` (a programme of checks run
@@ -240,7 +240,7 @@ pub const SOURCE_REVISIONS: &str = "source_revisions";
 /// waits for an audit (`policy.cpa_package_requires_audit`). An older
 /// version doesn't know those event types or settings; it stops at the
 /// declaration instead of dropping the claims a handoff rests on
-/// (rules.md B-27, B-45).
+/// (BS-format-1, BS-ledger-13).
 pub const AUDITS: &str = "audits";
 
 /// The line type that declares the journal format.
@@ -364,7 +364,7 @@ impl JournalFormat {
     /// ```text
     /// GOAL: an older wanderbooks never misreads newer books, and never
     ///       calls them corrupt.
-    /// SOURCE: rules.md B-27; plan/served.md 5.1 (format gate).
+    /// SOURCE: BS-format-1; plan/served.md 5.1 (format gate).
     /// INVARIANTS:
     ///   1. Only lines that parsed, chained and kept their seq reach the
     ///      gate: damage stays JournalCorrupt.
@@ -496,8 +496,8 @@ impl JournalFormat {
         }
     }
 
-    /// The format upgrade books in this format wait for, if any (rules.md
-    /// B-27, plan/served.md 3.9, D-39).
+    /// The format upgrade books in this format wait for, if any (
+    /// BS-format-1, plan/served.md 3.9, D-39).
     ///
     /// ```text
     /// GOAL: books an older version wrote are never moved to a newer
@@ -587,7 +587,7 @@ fn declared_knowing(line: &JournalLine, known: &[&str]) -> Result<JournalFormat,
 /// The refusal for a line of a type this version knows that holds a
 /// value only a newer version writes: a setting key, a convention kind
 /// (`need` says which). Never "corrupt": the books are fine, this reader
-/// is old (rules.md B-27).
+/// is old (BS-format-1).
 pub(crate) fn newer_content(line: &JournalLine, need: String) -> StoreError {
     newer(line, need)
 }
@@ -598,7 +598,7 @@ pub(crate) fn unknown_type(line: &JournalLine) -> StoreError {
 }
 
 /// The gate for one line as read: a line with a key beside the envelope's
-/// is newer (rules.md B-27: this version never drops a key it can't
+/// is newer (BS-format-1: this version never drops a key it can't
 /// read), and any other goes to `admit` (JournalFormat::admit).
 pub(crate) fn gate(
     read: &ReadLine,
@@ -634,7 +634,7 @@ fn newer(line: &JournalLine, need: String) -> StoreError {
 /// ```text
 /// GOAL: damage is never reported as books from a newer wanderbooks, and
 ///       books from a newer wanderbooks never as damage.
-/// SOURCE: rules.md B-27 (the envelope and its hash are frozen across
+/// SOURCE: BS-format-1 (the envelope and its hash are frozen across
 ///         formats); docs/receipt-store.md "Line format" (a line's hash is
 ///         checked only by the next line's prev).
 /// INVARIANTS:
@@ -848,7 +848,7 @@ mod tests {
     /// The version the live books run (every feature through `projects`)
     /// stops at a declaration of `document_line_projects` as newer, never
     /// restoring an invoice or bill without its lines' projects; and books
-    /// that declared `projects` alone still wait for it (B-27, D-39).
+    /// that declared `projects` alone still wait for it (BS-format-1, D-39).
     #[test]
     fn document_line_projects_is_its_own_feature() {
         assert!(KNOWN_FEATURES.contains(&DOCUMENT_LINE_PROJECTS));
@@ -887,7 +887,7 @@ mod tests {
     /// `document_line_projects`) stops at a declaration of
     /// `document_standing` as newer, never adding a payment taken after a
     /// reversal on top of the reversed one; and books that declared every
-    /// earlier feature still wait for it (B-27, D-39).
+    /// earlier feature still wait for it (BS-format-1, D-39).
     #[test]
     fn document_standing_is_its_own_feature() {
         assert!(KNOWN_FEATURES.contains(&DOCUMENT_STANDING));
@@ -921,7 +921,7 @@ mod tests {
     /// The version before P6 (every feature through `documents_v2`) stops
     /// at a declaration of `attachment_text` as newer, never dropping a
     /// file's extraction, annotations or settlements; and books that
-    /// declared every earlier feature still wait for it (B-27, D-39).
+    /// declared every earlier feature still wait for it (BS-format-1, D-39).
     #[test]
     fn attachment_text_is_its_own_feature() {
         assert!(KNOWN_FEATURES.contains(&ATTACHMENT_TEXT));
@@ -956,7 +956,7 @@ mod tests {
     /// `document_standing`) stops at a declaration of `documents_v2` as
     /// newer, never restoring a party's email or default terms as absent
     /// (or a document without its numbers, once S4.3 writes them); books
-    /// that declared every earlier feature still wait for it (B-27, D-39).
+    /// that declared every earlier feature still wait for it (BS-format-1, D-39).
     #[test]
     fn documents_v2_is_its_own_feature() {
         assert!(KNOWN_FEATURES.contains(&DOCUMENTS_V2));
@@ -991,7 +991,7 @@ mod tests {
     /// stops at a declaration of `drafts_v2` as newer, never keeping a
     /// discarded draft or calling a waiting one a draft being built; and
     /// books that declared every earlier feature still wait for it
-    /// (B-27, D-39).
+    /// (BS-format-1, D-39).
     #[test]
     fn drafts_v2_is_its_own_feature() {
         assert!(KNOWN_FEATURES.contains(&DRAFTS_V2));
@@ -1024,7 +1024,7 @@ mod tests {
 
     /// The version before P5 (every feature through `drafts_v2`) stops at a
     /// declaration of `source_revisions` as newer, and books that declared
-    /// every earlier feature still wait for it (B-27, D-39).
+    /// every earlier feature still wait for it (BS-format-1, D-39).
     #[test]
     fn source_revisions_is_its_own_feature() {
         assert!(KNOWN_FEATURES.contains(&SOURCE_REVISIONS));
@@ -1057,7 +1057,7 @@ mod tests {
 
     /// The version before P8 stops at a declaration of `audits` as newer,
     /// never dropping an attestation a handoff rests on; books that
-    /// declared every earlier feature still wait for it (B-27, D-39).
+    /// declared every earlier feature still wait for it (BS-format-1, D-39).
     #[test]
     fn audits_is_its_own_feature() {
         assert!(KNOWN_FEATURES.contains(&AUDITS));
@@ -1221,7 +1221,7 @@ mod tests {
     /// A format newer than this version reads is newer whatever shape the
     /// rest of its declaration takes, and however large its number: a
     /// newer format may define its features differently, so they are
-    /// judged only for a format this version reads (rules.md B-27).
+    /// judged only for a format this version reads (BS-format-1).
     #[test]
     fn a_newer_format_is_newer_whatever_its_features_look_like() {
         let mut f = JournalFormat::default();

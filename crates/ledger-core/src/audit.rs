@@ -1,4 +1,4 @@
-//! The audit's statements checks (plan P8; rules.md B-45): the books,
+//! The audit's statements checks (plan P8; BS-ledger-13): the books,
 //! read as an auditor would, through a date, as a list of findings.
 //!
 //! ```text
@@ -7,8 +7,8 @@
 //!       reproducible and its workpaper hashes the same twice.
 //! SOURCE: IRS Pub. 583 (records that support entries); Rev. Proc. 98-25
 //!         §5.01 (the relationship between the records and the books must
-//!         be demonstrable); docs/spec/rules.md B-6 to B-14 (the
-//!         statements), B-38 (control accounts), B-43 (evidence);
+//!         be demonstrable); BS-statement-1 to BS-statement-3 (the
+//!         statements), BS-arap-2 (control accounts), BS-entry-5 (evidence);
 //!         DECISION D-9 (the audit and its bar), D-53 (a run, not a job).
 //! INVARIANTS:
 //!   1. Pure: reads the ledger and the facts [`AuditInput`] hands in,
@@ -668,7 +668,7 @@ fn settings_problems(problems: &[String]) -> Vec<Finding> {
 }
 
 // ---------------------------------------------------------------------------
-// Scope, method and the attestation bar (rules.md B-45; D-9)
+// Scope, method and the attestation bar (BS-ledger-13; D-9)
 // ---------------------------------------------------------------------------
 
 /// What an audit covers.
@@ -761,7 +761,7 @@ impl Effort {
 }
 
 /// How an attestation was made, as the client says (self-reported: the
-/// books record the claim, never prove it; rules.md B-45).
+/// books record the claim, never prove it; BS-ledger-13).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct Method {
     /// The model that checked, as it names itself.

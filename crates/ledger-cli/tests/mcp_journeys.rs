@@ -1081,7 +1081,7 @@ fn mcp_import_export() {
 
     // The IIF is plain ASCII text with CR LF line endings, handed over
     // (D-46); what it writes differently from the books is in warnings
-    // (rules.md B-34).
+    // (BS-format-2).
     let iif = mcp.call(
         "books.export",
         json!({"format": "iif", "report": "journal"}),
@@ -1344,7 +1344,7 @@ fn mcp_period_statements() {
     assert_eq!(feb["net_income"], "-0.50");
     assert_eq!(feb["expense_accounts"][0]["code"], "6000");
     assert_eq!(feb["expense_accounts"][0]["amount"], "3.00");
-    // No start (rules.md B-30): the fiscal year that holds the end, to
+    // No start (BS-period-3): the fiscal year that holds the end, to
     // it. The fiscal year starts 02-01, so January's 4.00 of sales is
     // last year's, and February's 2.50 is this one's.
     let ytd = mcp.call("books.profit_and_loss", json!({"end": "2026-02-28"}));
@@ -1616,7 +1616,7 @@ fn mcp_partnership_from_template() {
     );
 }
 
-/// Contract (rules.md B-13, D-10; docs/mcp-interface.md close_period and
+/// Contract (BS-partner-1, D-10; docs/mcp-interface.md close_period and
 /// list_periods): a close to the members shows each member's running
 /// split, the same in the preview as once confirmed, and the periods say
 /// which rule they closed under. Two members at 50% each, hand-computed:
@@ -1748,7 +1748,7 @@ fn close_period_shows_each_members_running_split() {
     assert_eq!(me["members"][1]["ending"], "0.01");
 }
 
-/// Contract (rules.md B-13, D-10; docs/mcp-interface.md list_periods and
+/// Contract (BS-partner-1, D-10; docs/mcp-interface.md list_periods and
 /// close_period) on books an earlier version wrote: ledger-store's
 /// old-books fixture x_member_closes (two members at 50%, A with a
 /// distributions account; three closes untagged, three
@@ -2214,7 +2214,7 @@ fn mcp_vendor_1099() {
     let r = mcp.call("books.vendor_1099", json!({"year": 2026}));
     assert_eq!(r["vendors"][0]["paid"], "0.00");
     // A year whose threshold isn't known yet: refused, with what to do
-    // (rules.md B-19). An explicit threshold works.
+    // (BS-1099-1). An explicit threshold works.
     let why = mcp.call_err("books.vendor_1099", json!({"year": 2027}));
     for needle in [
         "only through 2026",
@@ -2311,7 +2311,7 @@ fn mcp_receipts_always_required_when_threshold_is_zero() {
 }
 
 /// `books.cash_flow` with no accounts passed reads the roles from
-/// `[books]` in wanderbooks.toml (rules.md B-14): the expense the owners
+/// `[books]` in wanderbooks.toml (BS-statement-3): the expense the owners
 /// paid through 2100 is borrowed from them and spent on its date, each
 /// line with `on_behalf` (D-42, rule 11); repaying the advance is
 /// financing; a loan to a member is investing; the statement is the direct
@@ -2419,7 +2419,7 @@ fn cash_flow_reads_its_account_roles_from_the_books_settings() {
     }
 }
 
-/// rules.md B-14 rule 2: roles that contradict the chart are refused,
+/// BS-statement-3 rule 2: roles that contradict the chart are refused,
 /// naming the setting and the fix, never a statement on a wrong partition.
 #[test]
 fn cash_flow_refuses_contradictory_roles() {
@@ -2727,7 +2727,7 @@ fn post_pair(mcp: &mut Mcp, date: &str, dr: &str, cr: &str, amount: &str) -> u64
     id
 }
 
-/// Defect 16 (rules.md B-30): one default period everywhere. On books with
+/// Defect 16 (BS-period-3): one default period everywhere. On books with
 /// a July fiscal year and a first entry in the fiscal year before, every
 /// period report given only an end covers the fiscal year that holds it
 /// (2025-07-01 through 2026-03-31, never the first entry's day, never
@@ -2858,8 +2858,8 @@ fn iif_docnums(iif: &str) -> Vec<u64> {
     ids
 }
 
-/// The default period (rules.md B-30) against the IIF (B-34, D-36) and
-/// the CPA package (B-33): a general journal asked for without dates is
+/// The default period (BS-period-3) against the IIF (BS-format-2, D-36) and
+/// the CPA package (BS-statement-4): a general journal asked for without dates is
 /// the fiscal year to date, but the IIF is never a period. Without dates
 /// it holds every posted entry from the first through today, under
 /// either name of the report, and a start or end is refused; the
@@ -2956,7 +2956,7 @@ fn the_default_period_never_shortens_the_iif_or_the_package() {
     assert_eq!(iif_docnums(&read("general-journal.iif")), every[..3]);
 }
 
-/// Defect 15 (rules.md B-31) over the real binary: books.rename_account
+/// Defect 15 (BS-ledger-10) over the real binary: books.rename_account
 /// gives an account a new name and nothing else. The chart shows it; a
 /// past period's P&L export prints it; the general journal's IIF declares
 /// the account by it; the books verify, the journal grew by the rename
@@ -3082,7 +3082,7 @@ fn rename_account_end_to_end_defect_15() {
     );
 }
 
-/// Review R10 (rules.md B-31): on books that name no cash accounts
+/// Review R10 (BS-ledger-10): on books that name no cash accounts
 /// (books.cash_accounts unset, so they are picked by name), a rename that
 /// moves an account into or out of the cash or card accounts says so; one
 /// that moves nothing says nothing of them. A convention naming the old

@@ -72,7 +72,7 @@ pub const LEGACY_DB_FILE: &str = "wanderbooks.db";
 ///       open (plan/served.md 3.9: before consent, the way back is always
 ///       there), however far this version's projection has moved.
 /// SOURCE: plan/served.md 3.9, the lead's decision (2026-10-21: each
-///         schema in a file of its own); rules.md B-27.
+///         schema in a file of its own); BS-format-1.
 /// INVARIANTS:
 ///   1. A version opens or creates only its own schema's file (or the
 ///      legacy file when that already holds its schema); a missing one is
@@ -506,7 +506,7 @@ struct AttachRequest<'a> {
     description: Option<&'a str>,
 }
 
-/// The evidence a bad-debt write-off files (plan P4b S7; rules.md B-41
+/// The evidence a bad-debt write-off files (plan P4b S7; BS-arap-5
 /// INVARIANT 1): the file that shows the debt is worthless — collection
 /// correspondence, a bankruptcy notice (Treas. Reg. §1.166-2). Given as
 /// bytes to file in the same call, or as an attachment already in the
@@ -909,7 +909,7 @@ impl Store {
     ///
     /// ```text
     /// GOAL: books that tell every reader which format they are in.
-    /// SOURCE: rules.md B-27; plan/served.md 5.1 (format gate).
+    /// SOURCE: BS-format-1; plan/served.md 5.1 (format gate).
     /// SCENARIOS:
     ///   1. IF the format is newer than SUPPORTED_JOURNAL_FORMAT, or 0:
     ///      SHOULD refuse (FormatRefused), journaling nothing
@@ -969,7 +969,7 @@ impl Store {
     ///       instead of misreading a line it thinks it knows, and books
     ///       move past what their owner's older version reads only when
     ///       the owner says so.
-    /// SOURCE: rules.md B-27; plan/served.md 5.1 (format gate), 3.9 and
+    /// SOURCE: BS-format-1; plan/served.md 5.1 (format gate), 3.9 and
     ///         D-39 (the format upgrade).
     /// SCENARIOS:
     ///   1. IF the books declared it: SHOULD pass.
@@ -1001,7 +1001,7 @@ impl Store {
     /// GOAL: older books move to this version's format at once, on the
     ///       record, exactly once.
     /// SOURCE: plan/served.md 3.9 ("Format changes are the server's
-    ///         gate"); D-39; rules.md B-27.
+    ///         gate"); D-39; BS-format-1.
     /// INVARIANTS:
     ///   1. One journal line declares the whole format: the format moves
     ///      exactly once, never feature by feature.
@@ -1072,7 +1072,7 @@ impl Store {
         self.ensure_features(&needed)?;
         self.ensure_format()?;
         // invoicing.first_number is settable only while no numbered invoice
-        // exists (A-2, rules.md B-40): the series has begun, and a number is
+        // exists (A-2, BS-arap-4): the series has begun, and a number is
         // never reused or renumbered. Changing or clearing it is refused
         // before anything is journaled.
         if changes.iter().any(|c| c.key == "invoicing.first_number")
@@ -1356,7 +1356,7 @@ impl Store {
     ///
     /// ```text
     /// GOAL: an account created with the line of the return it maps to.
-    /// SOURCE: rules.md B-32 (policy.require_tax_category).
+    /// SOURCE: BS-ledger-11 (policy.require_tax_category).
     /// INVARIANTS:
     ///   1. Rehearsed whole first: a refusal (of the account, or of its
     ///      category) journals nothing.
@@ -1512,7 +1512,7 @@ impl Store {
     /// ```text
     /// GOAL: a draft that is finished and waiting on its receipt says so,
     ///       durably, and replays the same.
-    /// SOURCE: docs/spec/rules.md B-27, B-43; plan P4.
+    /// SOURCE: BS-format-1, BS-entry-5; plan P4.
     /// SCENARIOS:
     ///   1. IF the engine refuses it (unknown or posted entry, a note the
     ///      books won't keep): SHOULD refuse, journaling nothing.
@@ -1543,7 +1543,7 @@ impl Store {
     /// ```text
     /// GOAL: a draft that will never post can go, so it stops holding its
     ///       period open, and the journal still says why.
-    /// SOURCE: docs/spec/rules.md B-8, B-43; plan P4.
+    /// SOURCE: BS-ledger-4, BS-entry-5; plan P4.
     /// SCENARIOS:
     ///   1. IF the entry is unknown or posted, or the reason is empty or
     ///      breaks the books' text rule: SHOULD refuse, journaling
@@ -1584,7 +1584,7 @@ impl Store {
     }
 
     /// [`Self::post_entry`] behind the evidence gate (plan P4, I-5, D-47;
-    /// rules.md B-43): refuses, journaling nothing, a draft that
+    /// BS-entry-5): refuses, journaling nothing, a draft that
     /// [`ledger_core::evidence::requirement`] says needs evidence while it
     /// has no receipt filed on it or linked to it. This is the path the
     /// server posts a hand-made draft by; [`Self::post_entry`] stays the
@@ -1594,7 +1594,7 @@ impl Store {
     /// ```text
     /// GOAL: no draft the receipt policy covers posts without the
     ///       document that supports it, decided in one place.
-    /// SOURCE: docs/spec/rules.md B-43; IRS Pub. 583.
+    /// SOURCE: BS-entry-5; IRS Pub. 583.
     /// SCENARIOS:
     ///   1. IF the entry is covered and has no receipt: SHOULD refuse
     ///      (ReceiptRequired), NEVER journal.
@@ -1748,7 +1748,7 @@ impl Store {
     /// ```text
     /// GOAL: a reversal never leaves a fixed asset's figures and its books
     ///       apart.
-    /// SOURCE: docs/spec/rules.md B-9, B-15; P3 depreciation review R3.
+    /// SOURCE: BS-ledger-5, BS-asset-1; P3 depreciation review R3.
     /// SCENARIOS (the entry, or the original its reversal chain starts
     /// from, since reversing a reversal re-instates that original):
     ///   1. IF it is an asset's disposal entry:
@@ -1774,7 +1774,7 @@ impl Store {
     ///      reverses is refused for every entry, by `Ledger::check_reversal`
     ///      with `ReversalBeforeOriginal`, D-73; it was this store's check
     ///      for runs and schedule months alone. A journal an earlier
-    ///      version wrote replays as it was, B-28.)
+    ///      version wrote replays as it was, BS-entry-4.)
     ///   6. Otherwise: a run of an active asset is un-posted (its month is
     ///      due again, caught up by the next run).
     /// ```
@@ -2142,10 +2142,10 @@ impl Store {
     /// depreciable_basis, built_in_gain_704c}`: the facts, and for the
     /// line's readers the figures as derived when written (null for a
     /// purchase's depreciable basis: the cost, whatever it becomes).
-    /// Replay reads the facts and never recomputes the figures (rules.md
-    /// B-28). It needs the journal feature `asset_basis`: refused,
+    /// Replay reads the facts and never recomputes the figures (
+    /// BS-entry-4). It needs the journal feature `asset_basis`: refused,
     /// journaling nothing, in books that haven't declared it (books an
-    /// older version wrote, until their format upgrade: B-27).
+    /// older version wrote, until their format upgrade: BS-format-1).
     pub fn set_asset_basis(
         &mut self,
         id: AssetId,
@@ -2287,7 +2287,7 @@ impl Store {
     ///
     /// ```text
     /// GOAL: the books carry the schedule through the month's end.
-    /// SOURCE: docs/spec/rules.md B-15; plan/served.md P3 "Settled in
+    /// SOURCE: BS-asset-1; plan/served.md P3 "Settled in
     ///         design" (2026-10-20): a month skipped is caught up in the
     ///         month the run is made (an immaterial miss; a material one is
     ///         restated, ASC 250, by a human and the CPA).
@@ -2485,8 +2485,8 @@ impl Store {
     ///       after its month, a run reversed and re-instated after the
     ///       disposal's month) is that run's own error and correction, dated
     ///       when they were made, the same with or without the disposal.
-    /// SOURCE: docs/spec/rules.md B-15 (a disposed asset depreciates through
-    ///         its disposal day); B-9 (a mistake is corrected by an opposite
+    /// SOURCE: BS-asset-1 (a disposed asset depreciates through
+    ///         its disposal day); BS-ledger-5 (a mistake is corrected by an opposite
     ///         entry); plan/served.md P3, settled in design (a miss is
     ///         corrected in the period the correction is made, a material
     ///         one restated); Ledger::dispose_asset INVARIANT 1. P3 review
@@ -2589,7 +2589,7 @@ impl Store {
     /// ```text
     /// GOAL: a disposal takes exactly the depreciation of the days held,
     ///       whatever the runs posted.
-    /// SOURCE: docs/spec/rules.md B-15 (the disposal day is held);
+    /// SOURCE: BS-asset-1 (the disposal day is held);
     ///         Ledger::dispose_asset INVARIANTS 1, 2; P3 depreciation
     ///         review R2.
     /// INVARIANTS:
@@ -2986,7 +2986,7 @@ impl Store {
         self.rehearse(|l| l.close_period_to(id, to))?;
         if matches!(to, CloseTo::Members(_) | CloseTo::MembersCumulative { .. }) {
             // A close counted from its regime's start: an older version
-            // would replay it under the run rule (format gate, B-27).
+            // would replay it under the run rule (format gate, BS-format-1).
             // Refused before anything is journaled until the books
             // declare it.
             self.ensure_feature(crate::format::MEMBERS_CUMULATIVE)?;
@@ -3145,7 +3145,7 @@ impl Store {
     /// then no-ops, which keeps replay deterministic: every account
     /// creation is an `account.added` event. The engine's account
     /// (`Ledger::add_control_account`): never refused for its name or a
-    /// missing tax category (rules.md B-32), so an invoice, a bill or a
+    /// missing tax category (BS-ledger-11), so an invoice, a bill or a
     /// payroll run is never refused over a chart label.
     fn ensure_control_account(
         &mut self,
@@ -3234,7 +3234,7 @@ impl Store {
         Ok((entry_id, journaled))
     }
 
-    /// The feature a document's lines need (rules.md B-27): a line naming
+    /// The feature a document's lines need (BS-format-1): a line naming
     /// a project is `document_line_projects`'s; a document naming none is
     /// written as every version before it wrote one.
     fn ensure_document_lines(&self, lines: &[DocumentLine]) -> Result<(), StoreError> {
@@ -3244,7 +3244,7 @@ impl Store {
         Ok(())
     }
 
-    /// The feature a document's new fields need (rules.md B-27): an
+    /// The feature a document's new fields need (BS-format-1): an
     /// invoice or bill naming a number, terms, a snapshot, a reference, a
     /// memo or a duplicate's reason, or a line naming its account, quantity
     /// or unit price, needs `documents_v2` (plan P4b S4.3; D-52). A
@@ -3319,7 +3319,7 @@ impl Store {
     /// GOAL: a document's new fields are journaled with it, so replay can
     ///       never lose them, and a document naming none is written byte
     ///       for byte as an earlier version wrote it.
-    /// SOURCE: docs/spec/rules.md B-27, B-40 (plan P4b S4.3); A-2, A-13.
+    /// SOURCE: BS-format-1, BS-arap-4 (plan P4b S4.3); A-2, A-13.
     /// INVARIANTS:
     ///   1. A write naming a number, terms, a snapshot, a reference, a memo,
     ///      a line account, quantity or unit price MUST need journal feature
@@ -3446,7 +3446,7 @@ impl Store {
     }
 
     /// The issued copy of an invoice, filed in the call that issues it
-    /// (plan P4b S4.3 item 11, A-7; rules.md B-40 item 3): the entry, then
+    /// (plan P4b S4.3 item 11, A-7; BS-arap-4 item 3): the entry, then
     /// `invoice.created`, then `receipt.attached` on the entry
     /// (`INV-0007.pdf`, `application/pdf`, "Issued invoice"), then
     /// `attachment.linked` to the invoice. The server renders the PDF
@@ -3462,7 +3462,7 @@ impl Store {
     /// GOAL: the copy sent is kept with the invoice, or nothing is.
     /// SOURCE: IRS Pub. 583 (keep invoices); Rev. Proc. 98-25 (the audit
     ///         trail keeps the record as issued); plan P4b S4.3, 8.3.11;
-    ///         rules.md B-40 item 3.
+    ///         BS-arap-4 item 3.
     /// INVARIANTS:
     ///   1. Every refusal (an unknown customer, an invalid line or due
     ///      date, a duplicate number, a closed period, a feature the books
@@ -3811,7 +3811,7 @@ impl Store {
     /// ```text
     /// GOAL: a payment is journaled once and replays to the same figures,
     ///       in any version that can open the books.
-    /// SOURCE: docs/spec/rules.md B-27, B-38; plan/served.md P4b.7
+    /// SOURCE: BS-format-1, BS-arap-2; plan/served.md P4b.7
     ///         (document_standing).
     /// SCENARIOS:
     ///   1. IF the engine refuses it (overpaid, before the invoice, a
@@ -3908,7 +3908,7 @@ impl Store {
     }
 
     /// Settle one or more invoices or bills in one entry (plan P4b S6;
-    /// rules.md B-42): the core posts it ([`ledger_core::Ledger::settle`]);
+    /// BS-arap-6): the core posts it ([`ledger_core::Ledger::settle`]);
     /// this journals its lines once and one `invoice.payment_received` or
     /// `bill.paid` per application, each naming the control line it tags,
     /// then the payment method. A single legacy-shaped payment is
@@ -4026,7 +4026,7 @@ impl Store {
         Ok(live)
     }
 
-    /// Write off an invoice as a bad debt (plan P4b S7; rules.md B-41),
+    /// Write off an invoice as a bad debt (plan P4b S7; BS-arap-5),
     /// filing its evidence in the same call. The write-off's entry (Dr
     /// 6990 Bad Debt Expense / Cr A/R) is journaled through the standard
     /// entry flow, then `invoice.written_off`, then the evidence: a
@@ -4038,7 +4038,7 @@ impl Store {
     /// GOAL: a bad debt comes off the receivables with the proof it was
     ///       worthless, in one call that is all or nothing.
     /// SOURCE: IRC §166(a); Treas. Reg. §1.166-1(e), -2(a), -3(a);
-    ///         docs/spec/rules.md B-41; plan P4b S7, 8.3.6.
+    ///         BS-arap-5; plan P4b S7, 8.3.6.
     /// INVARIANTS:
     ///   1. A write that needs journal feature documents_v2 (the event
     ///      type) MUST be refused in books that haven't declared it,
@@ -4144,7 +4144,7 @@ impl Store {
         }
         Ok((entry_id, attachment_id))
     }
-    /// The journal features a settlement needs (rules.md B-27, B-42):
+    /// The journal features a settlement needs (BS-format-1, BS-arap-6):
     /// `documents_v2` for more than one application, a discount or a fee
     /// (an older version would drop them, and the balance would be wrong),
     /// `document_standing` when an application pays more than an older
@@ -4207,7 +4207,7 @@ impl Store {
     /// ```text
     /// GOAL: a send is journaled once and replays to the same record, in
     ///       every version that can read the books.
-    /// SOURCE: docs/spec/rules.md B-27, B-38; plan P4b S5, A-4.
+    /// SOURCE: BS-format-1, BS-arap-2; plan P4b S5, A-4.
     /// SCENARIOS:
     ///   1. IF the engine refuses it (unknown or void invoice, a date
     ///      before the invoice, no recipients, a text the books won't
@@ -4528,13 +4528,13 @@ impl Store {
         Ok(live)
     }
 
-    /// Add a project (rules.md B-37): `class.added`, then `project.set`
+    /// Add a project (BS-statement-5): `class.added`, then `project.set`
     /// when `facts` say more than the defaults. Returns its id.
     ///
     /// ```text
     /// GOAL: a project in one command, journaled as two events only when
     ///       it has facts, so a name-only project is a plain class.
-    /// SOURCE: docs/spec/rules.md B-37 item 1; B-27 (journal feature
+    /// SOURCE: BS-statement-5 item 1; BS-format-1 (journal feature
     ///         `projects`).
     /// INVARIANTS:
     ///   1. A refusal journals nothing: the whole record is rehearsed, and
@@ -5186,7 +5186,7 @@ impl Store {
     ///
     /// ```text
     /// GOAL: rename an account, keeping the name it had in the journal.
-    /// SOURCE: rules.md B-31; Rev. Proc. 98-25 (docs/spec/sources/
+    /// SOURCE: BS-ledger-10; Rev. Proc. 98-25 (docs/spec/sources/
     ///         irs-records.md): a report printed under the old name can
     ///         be tied to the new one.
     /// INVARIANTS:
@@ -5251,7 +5251,7 @@ impl Store {
     /// Set (or clear) an account's tax category and deductible percent.
     /// Journaled as `account.tax_set`. Under
     /// `policy.require_tax_category = refuse`, an account that needs a
-    /// category is never left without one (rules.md B-32;
+    /// category is never left without one (BS-ledger-11;
     /// `Ledger::check_tax_category_kept`).
     pub fn set_account_tax(
         &mut self,
@@ -5646,7 +5646,7 @@ impl Store {
     // ------------------------------------------------------------------
 
     /// The journal feature a link to `subject` needs, if any: a subject
-    /// kind an older version doesn't know (a project, rules.md B-37).
+    /// kind an older version doesn't know (a project, BS-statement-5).
     /// Callers filing a file with links ask it before filing, so a refusal
     /// leaves nothing half-filed.
     pub fn subject_feature(subject: Subject) -> Option<&'static str> {
@@ -6847,8 +6847,8 @@ fn document_line_json(l: &DocumentLine) -> Value {
         "description": l.description,
         "amount": l.amount.to_string(),
     });
-    // Its project, behind the feature document_line_projects (rules.md
-    // B-27, B-37 item 8); a line naming none is written as before it.
+    // Its project, behind the feature document_line_projects (
+    // BS-format-1, BS-statement-5 item 8); a line naming none is written as before it.
     if let Some(c) = l.class_id {
         v["class_id"] = json!(c);
     }
@@ -6927,7 +6927,7 @@ fn invoice_fields_json(payload: &mut Value, fields: &arap::InvoiceFields) {
 }
 
 /// Add a bill's new fields to its `bill.created` payload, each key only when
-/// set. A duplicate's reason is journaled for the record (rules.md B-40 item
+/// set. A duplicate's reason is journaled for the record (BS-arap-4 item
 /// 4); the bill itself keeps none.
 fn bill_fields_json(payload: &mut Value, fields: &arap::BillFields) {
     if let Some(r) = &fields.vendor_ref {
@@ -7151,7 +7151,7 @@ fn parse_side(s: &str) -> Result<Side, StoreError> {
 /// earlier version accepted ("+10000-01-01" and "-0001-01-01" included).
 /// The calendar the books keep (ledger_core::calendar) bounds new
 /// commands, never replay: a date an earlier version journaled always
-/// replays (rules.md B-28).
+/// replays (BS-entry-4).
 fn parse_date(s: &str) -> Result<chrono::NaiveDate, StoreError> {
     chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
         .map_err(|_| StoreError::JournalCorrupt(format!("bad date {s}")))
@@ -7248,7 +7248,7 @@ fn get_opt_decimal(p: &Value, key: &str) -> Result<Decimal, StoreError> {
 /// A full TIN is found as the version before P3 found one
 /// (`ledger_core::parties::replaying`): a name, reason or fact an earlier
 /// version took replays, however the commands' detector has widened since
-/// (rules.md B-28).
+/// (BS-entry-4).
 pub(crate) fn replay_line_into_ledger(
     ledger: &mut Ledger,
     line: &JournalLine,
@@ -7384,7 +7384,7 @@ fn replay_line(
             let want = get_u64(p, "id")?;
             let orig = get_u64(p, "reverses")?;
             // As journaled: a reversal later rules would refuse (a void
-            // under a payment that stands) replays (rules.md B-28).
+            // under a payment that stands) replays (BS-entry-4).
             let got = ledger.replay_reverse_entry(
                 orig,
                 parse_date(get_str(p, "date")?)?,
@@ -7400,7 +7400,7 @@ fn replay_line(
             let want = get_u64(p, "id")?;
             // No convention (every schedule before P3): equal months, as
             // they were posted. A convention this version doesn't know is
-            // newer, never corrupt (rules.md B-27).
+            // newer, never corrupt (BS-format-1).
             let convention = match p.get("convention") {
                 None | Some(Value::Null) => ledger_core::ScheduleConvention::MonthlyEven,
                 Some(Value::String(c)) => {
@@ -7525,7 +7525,7 @@ fn replay_line(
         }
         "account.renamed" => {
             // Only that the account exists: the name rules are the
-            // command's (rules.md B-28). `code`, `previous` and `reason`
+            // command's (BS-entry-4). `code`, `previous` and `reason`
             // are the record, not state.
             ledger.replay_rename_account(get_u64(p, "account_id")?, get_str(p, "name")?)?;
         }
@@ -7567,7 +7567,7 @@ fn replay_line(
         | "attachment.text_extracted" => {
             // Not accounting state; the projection records them. (The text
             // record is checked for shape here: an unknown status is newer,
-            // rules.md B-27.)
+            // BS-format-1.)
             if line.line_type == "attachment.text_extracted" {
                 crate::meta::text_extracted_of(line)?;
             }
@@ -7578,7 +7578,7 @@ fn replay_line(
         }
         "audit.run" => {
             // Not accounting state; the projection records it. Checked
-            // for shape here (an unknown scope is newer, rules.md B-27).
+            // for shape here (an unknown scope is newer, BS-format-1).
             crate::meta::audit_run_of(line)?;
         }
         // A claim that someone checked; no figure moves.
@@ -7647,7 +7647,7 @@ fn replay_line(
         }
         "party.updated" => {
             // A field this version doesn't know: a newer one wrote it
-            // (rules.md B-27). A known field with a bad value is damage.
+            // (BS-format-1). A known field with a bad value is damage.
             if let Some(field) = p
                 .get("change")
                 .and_then(|c| c.get("field"))
@@ -7754,7 +7754,7 @@ fn replay_line(
             // this line says it was the asset's run for the month, which is
             // what the books carry for the asset (Ledger::accumulated_posted).
             // Replay checks only that it is well formed and names an asset
-            // and entry that exist (rules.md B-28).
+            // and entry that exist (BS-entry-4).
             let amount = get_str(p, "amount")?.parse::<Decimal>().map_err(|_| {
                 StoreError::JournalCorrupt("asset.depreciation_posted amount".into())
             })?;
@@ -8083,8 +8083,8 @@ fn optional_decimal(p: &Value, key: &str) -> Result<Option<Decimal>, ()> {
 
 /// An `asset.basis_set`'s facts. A rule or §704(c) method this version
 /// doesn't know was written by a newer one: NewerJournal, never corrupt
-/// (rules.md B-27). The figures the line carries are type-checked and
-/// otherwise left to its readers: replay never recomputes them (B-28).
+/// (BS-format-1). The figures the line carries are type-checked and
+/// otherwise left to its readers: replay never recomputes them (BS-entry-4).
 fn asset_basis_from_journal(
     line: &JournalLine,
     p: &Value,
@@ -8122,7 +8122,7 @@ fn asset_basis_from_journal(
 
 /// A journaled close's target. A rounding rule only a newer version
 /// writes (an unknown name, or a value that isn't a name) is newer, never
-/// corrupt (rules.md B-27).
+/// corrupt (BS-format-1).
 fn close_to_from_journal(line: &JournalLine, v: Option<&Value>) -> Result<CloseTo, StoreError> {
     let corrupt = |what: &str| StoreError::JournalCorrupt(format!("close_to: {what}"));
     let ids = |v: &Value| -> Result<Vec<AccountId>, StoreError> {
@@ -9002,11 +9002,11 @@ fn apply_line_rows(conn: &Connection, line: &JournalLine) -> Result<(), StoreErr
             )?;
         }
         // A payment moves no document row: what a document is paid is read
-        // from the ledger lines tagged with it (schema v15, rules.md B-38).
+        // from the ledger lines tagged with it (schema v15, BS-arap-2).
         "invoice.payment_received" => {}
         // A write-off moves no document row either: written_off and the
         // status are derived from the tagged lines (the tag is set by
-        // replay; rules.md B-41).
+        // replay; BS-arap-5).
         "invoice.written_off" => {}
         "bill.paid" => {
             conn.execute(
@@ -9396,8 +9396,8 @@ pub enum Subject {
     Schedule(u64),
     /// A reconciliation (its statement).
     Reconciliation(u64),
-    /// A project (its contract, spec, pitch, correspondence; rules.md
-    /// B-37). Journal feature `projects`.
+    /// A project (its contract, spec, pitch, correspondence;
+    /// BS-statement-5). Journal feature `projects`.
     Project(u64),
     /// The company itself (formation documents).
     Company,

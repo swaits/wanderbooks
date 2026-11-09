@@ -182,7 +182,7 @@ fn runway(ui: &mut Ui, b: &Books) {
                 return;
             }
             // Exact or refused: books near the arithmetic's limit show a
-            // note, never a crash (rules.md B-28).
+            // note, never a crash (BS-entry-4).
             let Some(net) = ledger_core::kernel::total_try(&months, |&(_, _, i, o)| {
                 ledger_core::kernel::Amount::checked_sub(i, o)
             })
@@ -335,7 +335,7 @@ fn coming_up(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
         let Some(inv) = b.ledger.get_invoice(id) else {
             continue;
         };
-        // As of today, from the lines tagged with it (rules.md B-38): a
+        // As of today, from the lines tagged with it (BS-arap-2): a
         // reversed payment reopens it, a void closes it.
         let state = b.doc_today(ledger_core::DocRef::Invoice(id));
         let balance = crate::books::owed_of(&state);

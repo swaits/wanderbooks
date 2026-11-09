@@ -1,8 +1,8 @@
-//! A party named the creditor of a liability (rules.md B-35, P3 defect
+//! A party named the creditor of a liability (BS-partner-3, P3 defect
 //! 24), in the store: journaled as `party.creditor_set {id, account_id,
 //! on}`, which needs the journal feature `party_creditors`: books this
 //! version made declared it when they were created; books an older
-//! version wrote refuse it until their format upgrade (rules.md B-27).
+//! version wrote refuse it until their format upgrade (BS-format-1).
 //!
 //! Oracles: `Store::set_party_creditor`'s doc, `format::KNOWN_FEATURES`
 //! and `PARTY_CREDITORS`, `Store::ensure_feature`'s doc (refused,

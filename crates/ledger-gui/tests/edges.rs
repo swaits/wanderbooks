@@ -1,5 +1,5 @@
-//! The viewer's figures at the edges P0 review round 4 checked (rules.md
-//! B-28): the party period of a year chrono can't hold, the party chart's
+//! The viewer's figures at the edges P0 review round 4 checked (
+//! BS-entry-4): the party period of a year chrono can't hold, the party chart's
 //! last months, one party's part of a split entry, an amortization
 //! schedule due, and the page state tests set.
 //!

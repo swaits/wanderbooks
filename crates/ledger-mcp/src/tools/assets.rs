@@ -585,7 +585,7 @@ impl BooksServer {
         };
         // One registration is several commands: rehearse them all on a
         // copy first, and ask for the journal feature the basis needs
-        // (B-27), so a refusal anywhere (the tag, the serial, the link, the
+        // (BS-format-1), so a refusal anywhere (the tag, the serial, the link, the
         // basis, books waiting for their format upgrade) journals nothing.
         {
             let mut copy = store.ledger().clone();
@@ -742,7 +742,7 @@ impl BooksServer {
                     cost: money(a.cost.amount),
                     useful_life_months: a.useful_life_months,
                     // As of as_of, like every figure here: a disposal
-                    // after it hasn't happened yet (rules.md B-33).
+                    // after it hasn't happened yet (BS-statement-4).
                     status: if disposed { "disposed" } else { "active" }.to_string(),
                     held: acquired <= as_of && !disposed,
                     accumulated_posted: figure(|r| r.accumulated_posted),

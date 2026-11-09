@@ -103,7 +103,7 @@ Each law, and what proves it. Kani harnesses are in
      `Reachable.accounting_equation_through` (any number of accounts)
 9. **Period statements add up**: a year's P&L is the sum of its months'.
    - Lean `statements_add_up`
-10. **The statement of cash flows foots** (rules.md B-14, plan P3 defect
+10. **The statement of cash flows foots** (BS-statement-3, plan P3 defect
     1): each entry's cash is applied to the sections moving against it,
     operating, investing, financing, each up to its own movement; what a
     member or a lender paid or received for the entry, with no cash
@@ -196,13 +196,13 @@ sequence of commands, of any length**:
     model's `record` step touches only the records by definition, so the
     proof says the model is sound, not the engine; the engine's side is
     checked by `settings_replay_is_pure`, which snapshots every figure and
-    entry around each record (rules.md B-29), and for the 1099 records by
+    entry around each record (BS-ledger-9), and for the 1099 records by
     `decision_and_method_records_change_no_entry` (ledger-store
     `tests/form1099.rs`; they change the 1099 worksheet by design, never
     an entry). Settings that change how the
     same entries are presented (the fiscal year, cash flow roles, members)
     are outside this law by design. A rename (`rename_account`, P3,
-    rules.md B-31) is a record too: the model's chart is `(code, type)`
+    BS-ledger-10) is a record too: the model's chart is `(code, type)`
     (`Ledger.lean`), names are not modelled, so a rename is the identity
     on the model and needs no new `Step` (plan I-13 is met as P1 met it
     for records). The engine's side is the property
@@ -231,7 +231,7 @@ sequence of commands, of any length**:
     - Lean `net_closings_is_net_income`, `close_credits_net_income`
 18. **An allocation's parts sum to the whole, to the unit**, however the
     other shares were rounded, and only the last share changes; and the
-    largest-remainder apportionment (`kernel::apportion`, rules.md B-13)
+    largest-remainder apportionment (`kernel::apportion`, BS-partner-1)
     succeeds exactly when the rounded-down parts are short of the whole by
     less than a unit each, then sums to the whole, gives each part nothing
     or one unit (one part may also take the sub-unit fraction), and never
@@ -245,12 +245,12 @@ sequence of commands, of any length**:
     of cumulative closes is their allocation of everything the run closed
     (so its rounding is one allocation's, never a sum of them), and each
     close hands out exactly its net, for any allocation whose parts sum to
-    the whole (rules.md B-13). Since P3 this is the run rule closes
+    the whole (BS-partner-1). Since P3 this is the run rule closes
     journaled `"cumulative"` replay under (`CloseTo::MembersRun`).
     - Lean `runPart_telescopes`, `closePart_total` · property
       `each_member_stays_within_a_cent_of_their_share`
 
-The P3 odd cent (defect 17; rules.md B-13; D-10, D-38) adds three laws:
+The P3 odd cent (defect 17; BS-partner-1; D-10, D-38) adds three laws:
 
 20. **A cumulative members close hands out exactly its net, and leaves each
     member's running total one allocation of everything the count closed**,
@@ -267,7 +267,7 @@ The P3 odd cent (defect 17; rules.md B-13; D-10, D-38) adds three laws:
       `allocate_cumulative_agrees_with_the_integer_model`
 21. **Bounded drift: no member's running total is ever a minor unit from
     their exact share.** With shares w_i / W (exact decimals) and every
-    amount a whole number of minor units (B-3), after every cumulative
+    amount a whole number of minor units (BS-ledger-1), after every cumulative
     close |(given_i + part_i)·W − T·w_i| < W, whatever earlier closes gave.
     The precondition is the code's: `periods::allocate_cumulative` refuses a
     product Decimal would round, so the remainders it ranks are exact, and
@@ -285,7 +285,7 @@ The P3 odd cent (defect 17; rules.md B-13; D-10, D-38) adds three laws:
       `Apportion.allocW_cumulative_drift` (the two together): any number of
       members, any amounts
     - property `members_capital_never_drifts_a_cent_from_their_share`
-    - the tax-basis K-1's running split (B-36 with D-38, 2026-10-22),
+    - the tax-basis K-1's running split (BS-partner-4 with D-38, 2026-10-22),
       whose splits each carry their own weights, so the exact running
       share is a sum of quotients and Decimal's division can leave it a
       hair under the cent it is (`tax_capital::RunningSplit` takes it to
@@ -319,7 +319,7 @@ The P3 odd cent (defect 17; rules.md B-13; D-10, D-38) adds three laws:
     the money and property in it each carry the whole's sign and never
     exceed it; a money target is all cash; a contribution counts all of
     itself; a distribution counts no more money than it paid and no more
-    property than it gave, the rest still owed (rules.md B-35).
+    property than it gave, the rest still owed (BS-partner-3).
     - Kani `party_target_direction_is_its_sign` · bridge
       `party_target_agrees`
 24. **A reversal is the exact opposite of what it reverses**: the target
@@ -330,7 +330,7 @@ The P3 odd cent (defect 17; rules.md B-13; D-10, D-38) adds three laws:
     engine never reads those off a reversal's lines: its reversal arm
     takes the original's target), reversing twice gives the original
     back, and a reversal's movement over any accounts is the original's
-    negated (B-9).
+    negated (BS-ledger-5).
     - Kani `party_target_is_odd`, `reverse_target_is_an_involution` ·
       Lean `partyTarget_odd`, `capitalTarget_odd` (with `cashIsMoney`
       shown satisfiable), `reverseTarget_involutive`,
@@ -340,7 +340,7 @@ The P3 odd cent (defect 17; rules.md B-13; D-10, D-38) adds three laws:
 ### 1099 payments
 
 25. **A payment to a vendor is split, never lost or counted twice**:
-    each payment line goes in the bucket rules.md B-19's table names (its
+    each payment line goes in the bucket BS-1099-1's table names (its
     16 cases: with no payment method naming its account, a financing line
     never counts and a card account's line is always a card's); the
     buckets are each exactly the credits minus debits of their lines; and
@@ -357,8 +357,8 @@ The P3 odd cent (defect 17; rules.md B-13; D-10, D-38) adds three laws:
 
 ### Proration by days, catching up, truing up (P3, defects 22 and 9)
 
-Depreciation (rules.md B-15) and daily prepaid and deferred-revenue
-schedules (B-16) spread a total over a span of days with one kernel
+Depreciation (BS-asset-1) and daily prepaid and deferred-revenue
+schedules (BS-prepaid-1) spread a total over a span of days with one kernel
 function, `kernel::prorate_by_days` (each month's share through
 `kernel::prorated_through`), in exact integer arithmetic over a common
 unit, `MONTH_L` = lcm(28, 29, 30, 31) = 377,580 parts of a month, so a day
@@ -461,14 +461,14 @@ out, proved equal to `cum` over `W` = months × MONTH_L and over `W` × the
 last month's days, with the two meeting where the last month starts
 (`roundUnit_scale`). The one hypothesis is the calendar's: every part
 but the last ends short of the span (`e < W`), which a walk from any
-in-service date keeps (B-15: a first month of at most one, then whole
+in-service date keeps (BS-asset-1: a first month of at most one, then whole
 months); an exhaustive test walks the kernel itself over every
 1-to-3-month span of two calendar years, and the bridge and the exact
 unit tests check the rest.
 
 ### An asset's basis figures (P3, defect 13)
 
-The register's tax figures beside book value (rules.md B-25) come from
+The register's tax figures beside book value (BS-asset-4) come from
 one kernel function, `kernel::basis_figures`, for every rule:
 
 31. **Each figure follows from the rule and the facts, and none
@@ -484,7 +484,7 @@ one kernel function, `kernel::basis_figures`, for every rule:
 
 ### A project's unrecovered cost (P3, projects)
 
-The "if repaid" figure of work done on spec (rules.md B-37 item 4) is
+The "if repaid" figure of work done on spec (BS-statement-5 item 4) is
 one kernel function, `kernel::unrecovered_cost`:
 
 32. **Never below zero, the shortfall exactly, and no overflow**: the
@@ -506,7 +506,7 @@ tagged with d and dated on or before D, whatever their entries' standing:
 a reversal's mirror carries the same tag and cancels) plus the legacy
 untagged lines that still stand. A document never owes less than nothing
 or more than its total on any day a payment path or a reversal touches
-it. Rule: `docs/spec/rules.md` B-38.
+it. Rule: BS-arap-2.
 
 - Kernel: `kernel::running_bounds(total, deltas)` and
   `kernel::bounds_kept(total, before, after)` decide, at every date in
@@ -537,7 +537,7 @@ it. Rule: `docs/spec/rules.md` B-38.
 
 ### Payment terms and document lines (P4b S4.1)
 
-Payment terms (rules.md B-39) give a due date and a discount date by
+Payment terms (BS-arap-3) give a due date and a discount date by
 calendar arithmetic in `arap::Terms`, and the two money figures they touch
 come from the kernel:
 
@@ -599,13 +599,13 @@ come from the kernel:
 
 ### Bad debts (P4b S7)
 
-A write-off (rules.md B-41) is `Ledger::write_off`: a new command, so a new
+A write-off (BS-arap-5) is `Ledger::write_off`: a new command, so a new
 Lean step, and no new kernel function (its two lines are one debit and one
 credit, and the bounds are the existing date-sum's).
 
 37. **A write-off of at most what is owed leaves nothing owed below
     zero.** The step posts the document's control line credited (tagged
-    with it, so it is the same sum B-38 fixed) and the amount of
+    with it, so it is the same sum BS-arap-2 fixed) and the amount of
     bad-debt expense debited (untagged, off the control accounts).
     `through_append` reads the write-off's own two lines through the day
     separately; `docSum_writeOffLines` gives the control line's −amount;
@@ -648,7 +648,7 @@ new command, so a new Lean step, and no kernel function.
       a period with an open draft can't close, discarded it can, and
       every balance and id is as it was).
 
-### A tax category's deductible amount (B-32, D-67)
+### A tax category's deductible amount (BS-ledger-11, D-67)
 
 39. **A category's deductible amount is its accounts' exact shares added
     and rounded once**, to the cent, half away from zero: round(Σ bookᵢ ×
@@ -878,7 +878,7 @@ Be precise about the claims:
   entries out of the sections but not out of the cash accounts'
   balances; the two agree because a close moves only revenue, expense
   and equity (`Ledger::validate_close_to`) and cash accounts must be
-  assets (rules.md B-14 rule 2). The Lean model's close step lets a
+  assets (BS-statement-3 rule 2). The Lean model's close step lets a
   target be any balance-sheet account, so `Reachable.cashflow_foots`
   takes any selection of entries with the cash over the same selection,
   and `Reachable.cashflow_is_change_in_cash` counts every entry, closes
@@ -893,17 +893,17 @@ balances, so it added no Kani harness and no Lean theorem; nothing here
 was weakened. What it added is checked by tests and properties (listed in
 `docs/testing.md`, "P0 guard rails"): the journal format gate (newer is
 never called corrupt, damage always is; the envelope and its hash are
-frozen across formats, rules.md B-27), the server failing closed after a
+frozen across formats, BS-format-1), the server failing closed after a
 panic, the import roots' lockdown (a property over generated paths, and a
 component walk that refuses a folder swapped for a link; removed with the
 import roots in P2 slice 5), files with full
-TINs kept out of the books (B-26), and the agent text lint. Out of scope
+TINs kept out of the books (BS-partner-2), and the agent text lint. Out of scope
 for proof today: the format gate and the walk are I/O, and bookspec's Lean
 model stops at the ledger.
 
 ### P3: the odd cent (2026-10-20)
 
-The cumulative members close (rules.md B-13) adds a kernel function,
+The cumulative members close (BS-partner-1) adds a kernel function,
 `kernel::apportion_cumulative`, which Kani proves exact and refusal-safe
 for up to three parts and checks against the integer model of
 `periods::allocate_cumulative` for bounded drift; Lean proves the drift

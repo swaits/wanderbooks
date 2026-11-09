@@ -192,13 +192,13 @@ impl Books<'_> {
 /// The 1099 report a `vendor_1099_paid` or `vendor_1099` expectation
 /// asks for: the calendar year of `to`, from January 1 through `to`, out
 /// of the cash and financing accounts, an entry's shares resolved with
-/// the members who are parties (rules.md B-19, B-33).
+/// the members who are parties (BS-1099-1, BS-statement-4).
 pub(crate) fn report_1099(
     b: &Books<'_>,
     x: &Expect,
 ) -> (NaiveDate, NaiveDate, ledger_core::Vendor1099Report) {
     let (ex, l) = (b.ex, b.l());
-    // A calendar-year count, never the fiscal default (rules.md B-30):
+    // A calendar-year count, never the fiscal default (BS-period-3):
     // both dates given.
     assert!(
         x.from.is_some() && x.to.is_some(),
@@ -231,7 +231,7 @@ pub(crate) fn report_1099(
 
 /// Check one `vendor_1099_paid` expectation: each payee's payments that
 /// count toward its 1099 ([`report_1099`]), a payment card's left out,
-/// every payee listed (rules.md B-19, B-33).
+/// every payee listed (BS-1099-1, BS-statement-4).
 pub(crate) fn check_vendor_1099_paid(b: &Books<'_>, x: &Expect) {
     let ex = b.ex;
     let (from, to, r) = report_1099(b, x);
@@ -254,7 +254,7 @@ pub(crate) fn check_vendor_1099_paid(b: &Books<'_>, x: &Expect) {
 /// applied, and what was `paid` (counts toward its 1099),
 /// `excluded_card` (a card or payment network's, Form 1099-K),
 /// `undetermined` (its payment method not recorded) and `not_reportable`
-/// (paid while decided not reportable); every one given (rules.md B-19).
+/// (paid while decided not reportable); every one given (BS-1099-1).
 pub(crate) fn check_vendor_1099(b: &Books<'_>, x: &Expect) {
     let ex = b.ex;
     let name = x
@@ -299,7 +299,7 @@ pub(crate) fn check_vendor_1099(b: &Books<'_>, x: &Expect) {
 
 /// The money party shares resolve against: the cash accounts (every
 /// asset account but receivables when none are named), the cards and the
-/// financing accounts (rules.md B-35 item 5).
+/// financing accounts (BS-partner-3 item 5).
 pub(crate) fn party_money(ex: &Example, l: &Ledger) -> MoneyAccounts {
     ledger_core::parties::money_accounts(
         l,
@@ -320,7 +320,7 @@ pub(crate) fn expect_party(b: &Books<'_>, x: &Expect) -> PartyId {
 }
 
 /// Check one `party_part` expectation: entry N's part for the party
-/// (rules.md B-35): `resolved`, signed as a line on the party's own
+/// (BS-partner-3): `resolved`, signed as a line on the party's own
 /// account (debit-positive: paid or given positive, received negative),
 /// the entry's `direction` (`paid`, `received` or `neither`), and what
 /// of it moved as money (`cash`) and as property (`in_kind`); every one
@@ -368,7 +368,7 @@ pub(crate) fn check_party_part(b: &Books<'_>, x: &Expect) {
 /// Check one `party_totals` expectation: what was `paid` to and
 /// `received` from the party from `from` through `to` on `basis` (`cash`:
 /// money; `all`: money and property in kind), each entry's part on its
-/// root original's side (rules.md B-35 item 4); both given.
+/// root original's side (BS-partner-3 item 4); both given.
 pub(crate) fn check_party_totals(b: &Books<'_>, x: &Expect) {
     let (ex, l) = (b.ex, b.l());
     assert!(
@@ -421,8 +421,8 @@ pub(crate) fn check_party_totals(b: &Books<'_>, x: &Expect) {
     );
 }
 
-/// Check one `project` expectation (rules.md B-37): the project's
-/// `revenue`, `expenses` and `net` for the period (B-30 resolving omitted
+/// Check one `project` expectation (BS-statement-5): the project's
+/// `revenue`, `expenses` and `net` for the period (BS-period-3 resolving omitted
 /// dates), the same `to_date` (every tagged line through `to`), and its
 /// `unrecovered_cost` (`"none"` unless it is on spec); every one given.
 /// Through ledger_core::project_figures, as the tools and the viewer.
@@ -474,7 +474,7 @@ pub(crate) fn check_project(b: &Books<'_>, x: &Expect) {
 
 /// Check one `party_tin_last4` expectation: the last four of the party's
 /// TIN the books keep (its TIN facts', else its W-9's; `""` for none:
-/// rules.md B-26).
+/// BS-partner-2).
 pub(crate) fn check_party_tin_last4(b: &Books<'_>, x: &Expect) {
     let ex = b.ex;
     assert!(

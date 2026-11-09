@@ -55,7 +55,7 @@ pub enum LedgerError {
     TooLargeToCompute(String),
 
     /// An amount finer than its currency's smallest unit (ISO 4217 minor
-    /// units): no one can pay a fraction of a cent (rules.md B-3).
+    /// units): no one can pay a fraction of a cent (BS-ledger-1).
     #[error(
         "amount {amount} {currency} has more than {places} decimal places; round it to the {currency} minor unit first"
     )]
@@ -505,7 +505,7 @@ pub enum LedgerError {
         end: String,
     },
 
-    /// The statement of cash flows would not foot (rules.md B-14 rule 9):
+    /// The statement of cash flows would not foot (BS-statement-3 rule 9):
     /// an engine error, never output. It cannot happen on balanced books
     /// (Lean `cashflow_sections_sum_to_cash_change`); if it does, the
     /// engine is wrong, and nothing is shown rather than a wrong figure.
@@ -523,13 +523,13 @@ pub enum LedgerError {
     },
 
     /// The cash flow statement's account roles (cash, financing, investing)
-    /// contradict each other or the chart (rules.md B-14 rule 2). The text
+    /// contradict each other or the chart (BS-statement-3 rule 2). The text
     /// names the setting and says what to change.
     #[error("cash flow account roles: {0}")]
     CashFlowRoles(String),
 
     /// A report period given only a start, after today: an omitted end is
-    /// today (rules.md B-30), so the period would end before it starts.
+    /// today (BS-period-3), so the period would end before it starts.
     #[error(
         "invalid date range: start {start} is after the end, which defaults to today ({today}): pass end"
     )]
@@ -608,12 +608,12 @@ pub enum LedgerError {
 
     /// A document line's quantity and unit price don't multiply to its
     /// amount, or only one of the two is given: the engine never rounds
-    /// one (plan P4b S4.1; rules.md B-39).
+    /// one (plan P4b S4.1; BS-arap-3).
     #[error("{0}")]
     LineArithmetic(String),
 
     /// A document line is on an account that kind of document can't post
-    /// to (plan P4b S4.1, A-10; rules.md B-39): a role account, a cash
+    /// to (plan P4b S4.1, A-10; BS-arap-3): a role account, a cash
     /// account, or a type the document's side doesn't take.
     #[error("account {code} \"{name}\" cannot take {kind} line: {why}")]
     DocumentLineAccount {
@@ -628,8 +628,8 @@ pub enum LedgerError {
     },
 
     /// A vendor's invoice number (normalized) already names a standing
-    /// bill of that vendor, and no duplicate reason was given (rules.md
-    /// B-40).
+    /// bill of that vendor, and no duplicate reason was given (
+    /// BS-arap-4).
     #[error(
         "vendor invoice number '{vendor_ref}' is already on another standing bill of this vendor; \
          give duplicate_reason when it really is a second bill"
@@ -642,7 +642,7 @@ pub enum LedgerError {
     },
 
     /// An invoice number already names an invoice: numbers are never
-    /// reused (rules.md B-40, A-2).
+    /// reused (BS-arap-4, A-2).
     #[error("invoice number '{0}' is already used; numbers are never reused")]
     DuplicateInvoiceNumber(String),
 
@@ -654,7 +654,7 @@ pub enum LedgerError {
 
     /// An early-payment discount needs net days to be open before: it
     /// can't be given with due-on-receipt, end-of-month or custom terms
-    /// (rules.md B-39).
+    /// (BS-arap-3).
     #[error(
         "an early-payment discount needs net terms with a fixed number of days; it can't be given with due-on-receipt, end-of-month or custom terms"
     )]
@@ -662,7 +662,7 @@ pub enum LedgerError {
 
     /// `invoicing.first_number` asked to move after a numbered invoice
     /// exists: the series has begun, and a number is never reused or
-    /// renumbered (rules.md B-40, A-2). The store's check lands with the
+    /// renumbered (BS-arap-4, A-2). The store's check lands with the
     /// invoice numbers it reads (P4b S4.3).
     #[error(
         "invoicing.first_number is locked: a numbered invoice already exists, so the series has begun and its numbers are never reused"
@@ -695,13 +695,13 @@ pub enum LedgerError {
     SettlementMixedKinds(String),
 
     /// A settlement's documents don't all belong to the one party it
-    /// names (rules.md B-42 INVARIANT 1).
+    /// names (BS-arap-6 INVARIANT 1).
     #[error("{0} is not {1}'s: a settlement covers one party only")]
     SettlementPartiesDiffer(String, u64),
 
     /// A discount needs a reason: none is stated in the document's terms,
     /// or it is larger than its terms allow, or it is taken after the
-    /// discount date (rules.md B-42 INVARIANT 2).
+    /// discount date (BS-arap-6 INVARIANT 2).
     #[error(
         "{doc}: the discount of {discount} needs a reason ({because}); pass discount_reason with the payment"
     )]
@@ -751,7 +751,7 @@ pub enum LedgerError {
 
     /// A settlement's figures can't be exact: the cash and discounts
     /// don't cover the applications, or the fee leaves a negative deposit
-    /// (rules.md B-42 INVARIANT 1).
+    /// (BS-arap-6 INVARIANT 1).
     #[error("{0}")]
     InvalidSettlement(String),
 
@@ -761,7 +761,7 @@ pub enum LedgerError {
     InvalidPayment(String),
 
     /// Receivables or payables can't move while their account holds a
-    /// balance (rules.md B-23, B-38): that balance is the documents', and
+    /// balance (BS-ledger-8, BS-arap-2): that balance is the documents', and
     /// a hand entry moving it is refused by the control guard; it moves
     /// with its documents (plan P4b S7).
     #[error(
@@ -781,7 +781,7 @@ pub enum LedgerError {
     },
 
     /// Receivables or payables can't move to an account holding lines
-    /// that are no document's (rules.md B-38 INVARIANT 1): they would
+    /// that are no document's (BS-arap-2 INVARIANT 1): they would
     /// become hand lines on a control account.
     #[error(
         "account {code} \"{name}\" holds lines no invoice or bill carries (entry {entry} first), \
@@ -814,7 +814,7 @@ pub enum LedgerError {
     },
 
     /// A line on a receivables or payables control account carries no
-    /// document (rules.md B-23, B-38): the control account must always
+    /// document (BS-ledger-8, BS-arap-2): the control account must always
     /// equal its documents, so only the document commands post there.
     #[error(
         "account {account} is a control account (its balance is its invoices or bills): {at} can't be posted there by hand. Use books.create_invoice, books.receive_payment, books.create_bill or books.pay_bill; to void a document, books.reverse_entry of its entry"
@@ -828,14 +828,14 @@ pub enum LedgerError {
     },
 
     /// A reversal or payment would leave a document owing less than nothing
-    /// or more than its total at some date (rules.md B-38 INVARIANT 2): the
+    /// or more than its total at some date (BS-arap-2 INVARIANT 2): the
     /// message says which document, when, and what to reverse first.
     #[error("{0}")]
     DocumentBounds(String),
 
-    /// A reversal is dated before the entry it reverses (rules.md B-9,
+    /// A reversal is dated before the entry it reverses (BS-ledger-5,
     /// D-73): a correction comes after what it corrects, for every kind of
-    /// entry. New commands only; replay never refuses (B-28).
+    /// entry. New commands only; replay never refuses (BS-entry-4).
     #[error("entry {entry} is dated {original}: its reversal can't be dated before it, on {date}")]
     ReversalBeforeOriginal {
         /// The entry reversed.
@@ -852,12 +852,12 @@ pub enum LedgerError {
 
     /// A draft's state or discard was refused: the message says why (a
     /// note or reason that breaks the books' text rule, no reason given).
-    /// Plan P4, rules.md B-43.
+    /// Plan P4, BS-entry-5.
     #[error("{0}")]
     InvalidDraft(String),
 
     /// A void invoice can't be recorded as sent: it was never a document
-    /// the customer should have received (plan P4b S5, B-38).
+    /// the customer should have received (plan P4b S5, BS-arap-2).
     #[error("invoice {0} is void: a void invoice was never sent")]
     DocumentVoid(u64),
 
@@ -866,8 +866,8 @@ pub enum LedgerError {
     /// books' text rule). Plan P4b S5.
     #[error("{0}")]
     InvalidSend(String),
-    /// A bad debt can't be written off on cash-basis books (rules.md
-    /// B-41 INVARIANT 3; IRC §166(a); Treas. Reg. §1.166-1(e)): the
+    /// A bad debt can't be written off on cash-basis books (
+    /// BS-arap-5 INVARIANT 3; IRC §166(a); Treas. Reg. §1.166-1(e)): the
     /// invoice was never counted as income, so there is no basis to
     /// deduct.
     #[error(
@@ -937,11 +937,11 @@ pub enum LedgerError {
     UnknownClass(u32),
 
     /// Another class (project) already has this name, ignoring capitals
-    /// (rules.md B-37).
+    /// (BS-statement-5).
     #[error("a project named {0:?} already exists: names are unique, ignoring capitals")]
     DuplicateClassName(String),
 
-    /// A project's facts the books can't take (rules.md B-37): the reason.
+    /// A project's facts the books can't take (BS-statement-5): the reason.
     #[error("{0}")]
     InvalidProject(String),
 

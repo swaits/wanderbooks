@@ -120,7 +120,7 @@ pub const PAYMENT_PROCESSING_FEES: ControlAccount = control(
     AccountType::Expense,
 );
 /// A control account; see [`ControlAccount`]. Bad-debt expense (plan P4b
-/// S7, 8.3.4; rules.md B-41): where a write-off's debit goes, created on
+/// S7, 8.3.4; BS-arap-5): where a write-off's debit goes, created on
 /// demand like the others.
 pub const BAD_DEBTS: ControlAccount = control(
     "bad_debts",
@@ -276,7 +276,7 @@ pub struct Ledger {
     payroll_runs: HashMap<PayrollRunId, PayrollRun>,
     /// Classes for divisional P&L tracking.
     classes: HashMap<ClassId, Class>,
-    /// The project facts set for classes (rules.md B-37); a class not here
+    /// The project facts set for classes (BS-statement-5); a class not here
     /// has the defaults.
     projects: std::collections::BTreeMap<ClassId, crate::classes::ProjectFacts>,
     next_account_id: AccountId,
@@ -303,7 +303,7 @@ pub struct Ledger {
     /// The payment method each entry was paid with, for 1099 reporting.
     entry_instruments: HashMap<EntryId, crate::InstrumentId>,
     /// The document each receivables or payables line belongs to, by
-    /// (entry, line index) (rules.md B-38, plan P4b.3): written by the
+    /// (entry, line index) (BS-arap-2, plan P4b.3): written by the
     /// document commands in the step that posts the line, derived on
     /// replay from the document events, and copied onto a reversal's
     /// mirror line. Every figure about a document is read from these.
@@ -493,8 +493,8 @@ impl Ledger {
     ///
     /// ```text
     /// GOAL: a schedule month is never recognized twice at a month end.
-    /// SOURCE: docs/spec/rules.md B-9 (a correction is dated when it is
-    ///         made), B-16; P3 depreciation review R3 (a reversed month is
+    /// SOURCE: BS-ledger-5 (a correction is dated when it is
+    ///         made), BS-prepaid-1; P3 depreciation review R3 (a reversed month is
     ///         due again: when the reversal is the month's own).
     /// ```
     pub fn schedule_month_reversed_after(
@@ -645,7 +645,7 @@ impl Ledger {
     /// [`Self::register_recurring`] with the checks every journaled
     /// `recurring.registered` passed when it was written
     /// (schedules::validate_recurring_journaled), for replay only
-    /// (rules.md B-28). Never for new work.
+    /// (BS-entry-4). Never for new work.
     pub fn replay_register_recurring(
         &mut self,
         new: NewRecurring,
@@ -689,7 +689,7 @@ impl Ledger {
     ///
     /// ```text
     /// GOAL: turn one due occurrence of a recurring entry into a draft.
-    /// SOURCE: docs/spec/rules.md B-12; Lean invariant Inv.draftsOpen.
+    /// SOURCE: BS-period-2; Lean invariant Inv.draftsOpen.
     /// SCENARIOS:
     ///   1. IF the date falls in a closed period:
     ///      - SHOULD refuse (ClosedPeriod)
@@ -732,8 +732,8 @@ impl Ledger {
         let (description, lines) = (r.description.clone(), r.lines.clone());
         let entry = self.create_entry(date, &description);
         for (account, side, money) in lines {
-            // The template's lines as journaled: no size bound (rules.md
-            // B-28); a draft too large to post is refused at its post.
+            // The template's lines as journaled: no size bound (
+            // BS-entry-4); a draft too large to post is refused at its post.
             if let Err(e) = self.add_line_journaled(entry, account, side, money, false) {
                 self.entries.remove(&entry);
                 self.next_entry_id = entry;
@@ -954,11 +954,11 @@ impl Ledger {
     /// ```text
     /// GOAL: register an account under a unique code and a name no
     ///       sibling has.
-    /// SOURCE: rules.md B-4 (the five elements); R-4; DECISION (owner,
-    ///         2026-10-13): a child has its parent's type; rules.md B-31
+    /// SOURCE: BS-ledger-2 (the five elements); R-4; DECISION (owner,
+    ///         2026-10-13): a child has its parent's type; BS-ledger-10
     ///         (names: QuickBooks matches accounts by name,
     ///         docs/spec/sources/intuit-iif.md; no full TIN in what every
-    ///         report prints, B-26; DECISION, owner, 2026-10-20).
+    ///         report prints, BS-partner-2; DECISION, owner, 2026-10-20).
     /// SCENARIOS:
     ///   1. IF the code is empty or taken: SHOULD refuse.
     ///   2. IF the parent doesn't exist: SHOULD refuse.
@@ -1021,7 +1021,7 @@ impl Ledger {
     /// Create the account a control role posts to, at its code with its
     /// name (invoices, bills, payroll and closes create them when first
     /// needed). The engine's own names: never refused for a sibling's
-    /// name, and never for a missing tax category (rules.md B-32), so an
+    /// name, and never for a missing tax category (BS-ledger-11), so an
     /// invoice is never refused over a chart label.
     pub fn add_control_account(&mut self, c: &ControlAccount) -> Result<AccountId, LedgerError> {
         self.replay_add_account(c.code, c.name, c.account_type, None, false)
@@ -1128,8 +1128,8 @@ impl Ledger {
     ///
     /// ```text
     /// GOAL: let the human rename an account without touching its history.
-    /// SOURCE: rules.md B-31; DECISION (owner, plan/served.md 4.9 and P3
-    ///         "Settled in design", 2026-10-20); rules.md B-8 (posted is
+    /// SOURCE: BS-ledger-10; DECISION (owner, plan/served.md 4.9 and P3
+    ///         "Settled in design", 2026-10-20); BS-ledger-4 (posted is
     ///         forever: entries name accounts by id, so a name is a label).
     /// INVARIANTS:
     ///   1. Only the name changes: the account's id, code, type, parent,
@@ -1140,7 +1140,7 @@ impl Ledger {
     ///   2. A refusal MUST leave the books unchanged.
     ///   3. The rules are the command's: replay takes any journaled name
     ///      for an account that exists (Self::replay_rename_account,
-    ///      rules.md B-28).
+    ///      BS-entry-4).
     /// SCENARIOS:
     ///   1. IF the account is unknown: SHOULD refuse with UnknownAccount.
     ///   2. IF the name is blank: SHOULD refuse with EmptyAccountName.
@@ -1185,7 +1185,7 @@ impl Ledger {
 
     /// Replay a journaled rename: the account must exist; the name is
     /// taken as journaled, whatever later versions refuse in a new one
-    /// (rules.md B-28).
+    /// (BS-entry-4).
     pub fn replay_rename_account(
         &mut self,
         account: AccountId,
@@ -1196,8 +1196,8 @@ impl Ledger {
 
     /// Check a rename's reason before it is journaled: one to
     /// [`crate::settings::MAX_LONG_TEXT`] characters, line breaks and tabs
-    /// allowed but no other control character, and no full TIN (rules.md
-    /// B-26). Returns it trimmed.
+    /// allowed but no other control character, and no full TIN (
+    /// BS-partner-2). Returns it trimmed.
     pub fn check_rename_reason(reason: &str) -> Result<String, LedgerError> {
         let r = crate::settings::long_text("reason", reason, crate::settings::MAX_LONG_TEXT)
             .map_err(LedgerError::InvalidRenameReason)?;
@@ -1210,9 +1210,9 @@ impl Ledger {
     }
 
     /// Whether `policy.require_tax_category` lets an account be created
-    /// with `category` (rules.md B-32): under `refuse`, a revenue or
+    /// with `category` (BS-ledger-11): under `refuse`, a revenue or
     /// expense account that isn't a header needs one. The command's check
-    /// only, never replay's (rules.md B-28); the accounts the engine
+    /// only, never replay's (BS-entry-4); the accounts the engine
     /// creates for a control role never meet it.
     pub fn check_tax_category_required(
         &self,
@@ -1235,7 +1235,7 @@ impl Ledger {
     }
 
     /// Whether `policy.require_tax_category` lets `account`'s category be
-    /// set to `category` (rules.md B-32): under `refuse`, an account that
+    /// set to `category` (BS-ledger-11): under `refuse`, an account that
     /// needs one ([`crate::tax::account_needs_category`]) keeps one. The
     /// command's check only, never replay's.
     pub fn check_tax_category_kept(
@@ -1328,7 +1328,7 @@ impl Ledger {
     /// ```text
     /// GOAL: let a chart keep its own numbering: the engine's roles go to
     ///       the accounts the human picks, not only to fixed codes.
-    /// SOURCE: docs/spec/rules.md B-4 (the elements), B-23 (control roles);
+    /// SOURCE: BS-ledger-2 (the elements), BS-ledger-8 (control roles);
     ///         DECISION (owner, 2026-10-15): roles are journaled, not
     ///         configured, so replay never depends on a file.
     /// INVARIANTS:
@@ -1356,7 +1356,7 @@ impl Ledger {
     ///      freely.
     ///      - For receivables and payables: DocumentRoleHoldsBalance
     ///        instead, which names no hand entry (the control guard
-    ///        refuses one, B-38): their balance moves with its documents,
+    ///        refuses one, BS-arap-2): their balance moves with its documents,
     ///        a later command (plan P4b S7). Only on their control account
     ///        (Self::control_role_of): the account at the default code,
     ///        before any document posted there, is the chart's own, and
@@ -1367,8 +1367,8 @@ impl Ledger {
     ///      would move to holds a posted line that is no document's:
     ///      - SHOULD refuse (RoleAccountHasHandLines), naming the entry
     ///      - NEVER make a hand line a control account's
-    ///      BECAUSE no command adds an untagged control line (B-38
-    ///      INVARIANT 1). Replay never refuses (B-28).
+    ///      BECAUSE no command adds an untagged control line (BS-arap-2
+    ///      INVARIANT 1). Replay never refuses (BS-entry-4).
     ///   An account the role moves off keeps its documents' lines, and
     ///   stays guarded while it holds them (Self::control_role_of).
     /// ```
@@ -1539,7 +1539,7 @@ impl Ledger {
     ///
     /// ```text
     /// GOAL: start a draft entry for new work.
-    /// SOURCE: docs/spec/rules.md B-12; Lean invariant Inv.draftsOpen.
+    /// SOURCE: BS-period-2; Lean invariant Inv.draftsOpen.
     /// SCENARIOS:
     ///   0. IF the date is outside the calendar the books keep
     ///      (crate::calendar): SHOULD refuse (DateOutOfRange).
@@ -1601,7 +1601,7 @@ impl Ledger {
     /// post (P0 review round 3, S1); a recurring entry's draft is generated
     /// with the checks its template passed when it was journaled
     /// (`bounded` false), so a journaled `recurring.generated` always
-    /// replays (rules.md B-28).
+    /// replays (BS-entry-4).
     fn add_line_journaled(
         &mut self,
         entry: EntryId,
@@ -1620,7 +1620,7 @@ impl Ledger {
     }
 
     /// The document role an account is the control account of, if any:
-    /// receivables or payables (rules.md B-23, B-38; a later control role
+    /// receivables or payables (BS-ledger-8, BS-arap-2; a later control role
     /// joins them). An account is one when the role is assigned to it
     /// ([`Self::assign_role`]), or when it holds a line of one of the
     /// role's documents (the role's default code, once a document has
@@ -1632,7 +1632,7 @@ impl Ledger {
     ///       no other: a chart's own account at a role's default code
     ///       (1200 Equipment, a card at 2000) is anyone's until a document
     ///       posts there.
-    /// SOURCE: docs/spec/rules.md B-23, B-38 INVARIANT 1.
+    /// SOURCE: BS-ledger-8, BS-arap-2 INVARIANT 1.
     /// INVARIANTS:
     ///   1. Some(role) when the role is assigned to the account, or the
     ///      account holds a line tagged with one of the role's documents
@@ -1670,7 +1670,7 @@ impl Ledger {
 
     /// Refuse a line by hand on a control account (the control guard,
     /// plan P4b.3): such a line is the document commands' alone, so the
-    /// account always equals its documents. Replay never refuses (B-28).
+    /// account always equals its documents. Replay never refuses (BS-entry-4).
     fn check_hand_line(&self, entry: EntryId, account: AccountId) -> Result<(), LedgerError> {
         if crate::parties::is_replaying() || self.control_role_of(account).is_none() {
             return Ok(());
@@ -1730,12 +1730,12 @@ impl Ledger {
     /// a receivables or payables account carries its document, but the
     /// mirror of an untagged line in a reversal that takes it off the
     /// books (reversing an old hand line is how it is cleaned up).
-    /// Replay never refuses (B-28).
+    /// Replay never refuses (BS-entry-4).
     ///
     /// ```text
     /// GOAL: no command adds a line on a control account that is no
     ///       document's; one only takes a legacy one away.
-    /// SOURCE: docs/spec/rules.md B-38 INVARIANT 1 and item 3 (the
+    /// SOURCE: BS-arap-2 INVARIANT 1 and item 3 (the
     ///         exemption).
     /// INVARIANTS:
     ///   1. A tagged line passes.
@@ -1793,7 +1793,7 @@ impl Ledger {
 
     /// [`Self::add_line`] without the account check added on 2026-10-13 or
     /// the size bound added in P0, for replaying journals written before
-    /// them (rules.md B-28): a draft line replays as journaled, and its post
+    /// them (BS-entry-4): a draft line replays as journaled, and its post
     /// refuses it if it is out of range. Never for new work.
     pub fn replay_add_line(
         &mut self,
@@ -1829,11 +1829,11 @@ impl Ledger {
     ///
     /// ```text
     /// GOAL: book a foreign-currency amount in the ledger's one money.
-    /// SOURCE: docs/spec/rules.md B-3 (Pacioli ch. 36: one money; ASC
+    /// SOURCE: BS-ledger-1 (Pacioli ch. 36: one money; ASC
     ///         830-20-30-1: at the transaction-date rate); minor units: ISO
     ///         4217; rounding: DECISION (owner, 2026-10-13); the ten-place
     ///         bound (invariant 3): DECISION D-75 (owner, 2026-11-08),
-    ///         B-28's bound, stated in bookspec BS-entry-4.
+    ///         BS-entry-4's bound, stated in bookspec BS-entry-4.
     /// INVARIANTS:
     ///   1. The base amount MUST be a whole number of the base currency's
     ///      smallest unit, within half a unit of foreign * rate.
@@ -1877,7 +1877,7 @@ impl Ledger {
         }
         // D-75 (owner, 2026-11-08): a new line's foreign amount and its
         // rate take at most MAX_LINE_SCALE places each, as a base amount
-        // does (B-28), so their product has at most twice that many (20,
+        // does (BS-entry-4), so their product has at most twice that many (20,
         // under Decimal's 28) and keeps its scale: the booked amount is
         // rounded once, not after Decimal's own rounding of the product.
         // (A 20-place product past about 7.9e8 still outgrows Decimal's 96
@@ -1893,7 +1893,7 @@ impl Ledger {
         }
         // Booked in the base currency's smallest unit (cents for USD), half
         // away from zero: a ledger in one money holds no fractions of its
-        // smallest unit (rules.md B-3; DECISION, owner 2026-10-13, after
+        // smallest unit (BS-ledger-1; DECISION, owner 2026-10-13, after
         // the GnuCash cross-check found the difference). The kernel's
         // fx_booked_minor is that computation (foreign x rate exactly,
         // rounded once); the rate and zero-result refusals above and
@@ -1921,7 +1921,7 @@ impl Ledger {
 
     /// A foreign-currency line exactly as a journal recorded it: the base
     /// amount as booked (rounded or not, by the rule of its day, and of any
-    /// size: the bound is the command's, rules.md B-28) and the foreign
+    /// size: the bound is the command's, BS-entry-4) and the foreign
     /// original. For replay only; new work uses [`Self::add_line_fx`].
     pub fn replay_add_line_fx(
         &mut self,
@@ -1956,8 +1956,8 @@ impl Ledger {
     ///
     /// ```text
     /// GOAL: make a draft part of the books, once and for good.
-    /// SOURCE: docs/spec/rules.md B-1, B-2, B-3, B-8 (Pacioli ch. 36: write
-    ///         only forward), B-12.
+    /// SOURCE: BS-entry-1, BS-entry-2, BS-ledger-1, BS-ledger-4 (Pacioli ch. 36: write
+    ///         only forward), BS-period-2.
     /// INVARIANTS:
     ///   1. MUST post only an entry that passes JournalEntry::validate.
     ///   2. MUST append it to the log; NEVER reorder, change, or remove an
@@ -1975,17 +1975,17 @@ impl Ledger {
     ///   5. IF a line is finer than its currency's minor unit (a fraction
     ///      of a cent): SHOULD refuse (FinerThanMinorUnit)
     ///      BECAUSE a ledger in one money holds no fractions of its
-    ///      smallest unit (B-3); found when a payroll run posted $65.27794
+    ///      smallest unit (BS-ledger-1); found when a payroll run posted $65.27794
     ///      (the store's refusal property in CI, 2026-10-13).
     ///   6. IF a line is on a receivables or payables account (the role's
     ///      account now) and carries no document:
     ///      - SHOULD refuse (UntaggedControlLine), naming the document
     ///        tools
     ///      - NEVER refuse the mirror of an untagged line in a reversal
-    ///        BECAUSE a control account must equal its documents (B-23,
-    ///        B-38): only the document commands post there, and reversing
+    ///        BECAUSE a control account must equal its documents (BS-ledger-8,
+    ///        BS-arap-2): only the document commands post there, and reversing
     ///        an old hand line is how it is cleaned up. Replay never
-    ///        refuses (B-28).
+    ///        refuses (BS-entry-4).
     /// ```
     pub fn post_entry(&mut self, entry: EntryId) -> Result<(), LedgerError> {
         if let Some(e) = self.entries.get(&entry) {
@@ -2036,13 +2036,13 @@ impl Ledger {
     }
 
     /// Set where a draft stands: still being built, or awaiting its
-    /// evidence (plan P4, rules.md B-43). A state is a note on the draft
+    /// evidence (plan P4, BS-entry-5). A state is a note on the draft
     /// and moves no figure; the draft's lines are what they were.
     ///
     /// ```text
     /// GOAL: let a draft say it is finished and waiting on a document,
     ///       so it is neither lost nor mistaken for work in progress.
-    /// SOURCE: docs/spec/rules.md B-43 (DECISION D-47: a draft waits on
+    /// SOURCE: BS-entry-5 (DECISION D-47: a draft waits on
     ///         evidence; the evidence is checked when it posts); IRS
     ///         Pub. 583 "supporting documents".
     /// INVARIANTS:
@@ -2064,8 +2064,8 @@ impl Ledger {
         Ok(())
     }
 
-    /// [`Self::set_draft_state`] as journaled, for replay (rules.md
-    /// B-28): the state is restored on a draft that exists; a state
+    /// [`Self::set_draft_state`] as journaled, for replay (
+    /// BS-entry-4): the state is restored on a draft that exists; a state
     /// naming an entry since posted or discarded is refused like the
     /// command, which journal order makes impossible.
     #[doc(hidden)]
@@ -2078,7 +2078,7 @@ impl Ledger {
         Ok(())
     }
 
-    /// Throw a draft away, with the reason (plan P4, rules.md B-43): the
+    /// Throw a draft away, with the reason (plan P4, BS-entry-5): the
     /// only way out of an open draft that will never post, and so the way
     /// a period it holds open can close. The draft was never in the books,
     /// so no balance moves; the id is spent (ids are never reused); the
@@ -2087,7 +2087,7 @@ impl Ledger {
     /// ```text
     /// GOAL: remove a draft that will not post, leaving the books and
     ///       every id as they were.
-    /// SOURCE: docs/spec/rules.md B-43; B-8 (a posted entry is never
+    /// SOURCE: BS-entry-5; BS-ledger-4 (a posted entry is never
     ///         removed: only a draft is); Lean Step.discard.
     /// INVARIANTS:
     ///   1. Only a draft is discarded: a posted entry is refused
@@ -2235,8 +2235,8 @@ impl Ledger {
     ///
     /// ```text
     /// GOAL: decide whether `entry` may be reversed on `date`.
-    /// SOURCE: docs/spec/rules.md B-9 (Pacioli ch. 31, 36), B-10 (DECISION,
-    ///         owner 2026-10-13), B-12 (closed periods).
+    /// SOURCE: BS-ledger-5 (Pacioli ch. 31, 36), BS-ledger-6 (DECISION,
+    ///         owner 2026-10-13), BS-period-2 (closed periods).
     /// INVARIANTS:
     ///   1. MUST NOT mutate anything.
     ///   2. NEVER accepts a reversal that `reverse_entry` would then refuse.
@@ -2269,10 +2269,10 @@ impl Ledger {
     ///      - SHOULD refuse (ReversalBeforeOriginal)
     ///      - NEVER refuse the same day
     ///      - NEVER refuse on replay
-    ///      BECAUSE a correction comes after what it corrects (B-9; owner
+    ///      BECAUSE a correction comes after what it corrects (BS-ledger-5; owner
     ///      decision D-73, 2026-11-08; plan P4b.3, "Dating rules"). Books
     ///      written before D-73 may hold an earlier-dated reversal and
-    ///      reopen as they were (B-28).
+    ///      reopen as they were (BS-entry-4).
     ///   7. IF reversing it would leave a document it carries owing less
     ///      than nothing or more than its total at some date (a void
     ///      under a payment that stands; re-instating a payment beside
@@ -2281,8 +2281,8 @@ impl Ledger {
     ///        reverse first
     ///      - NEVER refuse reversing a payment, which only reopens its
     ///        document
-    ///      BECAUSE 0 <= outstanding <= total at every date (B-38
-    ///      INVARIANT 2). Replay never refuses (B-28).
+    ///      BECAUSE 0 <= outstanding <= total at every date (BS-arap-2
+    ///      INVARIANT 2). Replay never refuses (BS-entry-4).
     /// ```
     pub fn check_reversal(&self, entry: EntryId, date: NaiveDate) -> Result<(), LedgerError> {
         let original = self
@@ -2372,8 +2372,8 @@ impl Ledger {
     /// for nothing.
     ///
     /// ```text
-    /// SOURCE: docs/spec/rules.md B-9 (a mistake is corrected by an
-    ///         opposite entry), B-10 (reversed at most once; reversing the
+    /// SOURCE: BS-ledger-5 (a mistake is corrected by an
+    ///         opposite entry), BS-ledger-6 (reversed at most once; reversing the
     ///         reversal re-instates it).
     /// ```
     pub fn in_effect(&self, entry: EntryId) -> bool {
@@ -2388,7 +2388,7 @@ impl Ledger {
     /// ```text
     /// GOAL: say whether an entry counts on a given day, so a document's
     ///       status (a void) and its aging are right as of any date.
-    /// SOURCE: docs/spec/rules.md B-9, B-10, B-38; plan/served.md P4b.3
+    /// SOURCE: BS-ledger-5, BS-ledger-6, BS-arap-2; plan/served.md P4b.3
     ///         ("Standing as of a date").
     /// INVARIANTS:
     ///   1. stands_on(e, NaiveDate::MAX) is in_effect(e).
@@ -2455,7 +2455,7 @@ impl Ledger {
     /// [`Self::reverse_entry`] as a journal recorded it: without the
     /// checks later versions added for documents (a reversal's date, a
     /// document's bounds, the control guard), for replaying journals
-    /// written before them (rules.md B-28). Never for new work.
+    /// written before them (BS-entry-4). Never for new work.
     pub fn replay_reverse_entry(
         &mut self,
         entry: EntryId,
@@ -2487,7 +2487,7 @@ impl Ledger {
             self.replay_add_line(id, line.account, kernel::flip(line.side), line.amount)?;
             // The reversal offsets the original line for line: carry the
             // class so divisional P&L nets correctly, and the document so
-            // it moves by exactly the opposite (B-38 INVARIANT 3).
+            // it moves by exactly the opposite (BS-arap-2 INVARIANT 3).
             if line.class_id.is_some() {
                 self.set_line_class(id, idx, line.class_id)?;
             }
@@ -2553,7 +2553,7 @@ impl Ledger {
     /// refused like one past chrono's last day (P0 review round 3, S1; P3:
     /// the bound is the last day held, so a life ending on 9999-12-31 is
     /// taken); and the cost and salvage in the currency's minor unit
-    /// (rules.md B-3: every depreciation and disposal line derives from
+    /// (BS-ledger-1: every depreciation and disposal line derives from
     /// them, and a line finer than a cent could never post).
     pub fn validate_new_asset(&self, new: &NewAsset) -> Result<(), LedgerError> {
         self.check_new_asset(new, true)
@@ -2563,7 +2563,7 @@ impl Ledger {
     /// passed when it was written (the rule through 2026-10-16):
     /// [`Self::validate_new_asset`] without the calendar bound or the minor
     /// unit, the end of the life only representable. Replay applies
-    /// exactly these (rules.md B-28).
+    /// exactly these (BS-entry-4).
     pub fn validate_new_asset_journaled(&self, new: &NewAsset) -> Result<(), LedgerError> {
         self.check_new_asset(new, false)
     }
@@ -2636,7 +2636,7 @@ impl Ledger {
     ///
     /// ```text
     /// GOAL: put a fixed asset on the register, to depreciate monthly.
-    /// SOURCE: docs/spec/rules.md B-15; B-22 (capitalize vs expense).
+    /// SOURCE: BS-asset-1; BS-asset-2 (capitalize vs expense).
     /// SCENARIOS:
     ///   1. IF the description is blank, cost isn't positive, salvage is
     ///      negative or not below cost, the useful life is zero months, or the
@@ -2649,8 +2649,8 @@ impl Ledger {
 
     /// [`Self::register_asset`] with the checks every journaled
     /// `asset.registered` passed when it was written
-    /// ([`Self::validate_new_asset_journaled`]), for replay only (rules.md
-    /// B-28). Never for new work.
+    /// ([`Self::validate_new_asset_journaled`]), for replay only (
+    /// BS-entry-4). Never for new work.
     pub fn replay_register_asset(&mut self, new: NewAsset) -> Result<AssetId, LedgerError> {
         self.validate_new_asset_journaled(&new)?;
         self.insert_asset(new)
@@ -2782,7 +2782,7 @@ impl Ledger {
     /// ```text
     /// GOAL: from an asset, its source document and capital entry; from
     ///       the entry, the asset; and the day the company acquired it.
-    /// SOURCE: DECISION (owner, 2026-10-15); rules.md B-15 (P3, settled in
+    /// SOURCE: DECISION (owner, 2026-10-15); BS-asset-1 (P3, settled in
     ///         design 2026-10-20: an asset's acquired date comes from the
     ///         entry it is linked to).
     /// INVARIANTS:
@@ -2790,7 +2790,7 @@ impl Ledger {
     ///      reversed, and debits the asset's cost account.
     ///   2. The linked entry is dated on or before the asset's in-service
     ///      date, and on or before its disposal: the register then holds
-    ///      the asset exactly while the books carry its cost (B-24).
+    ///      the asset exactly while the books carry its cost (BS-asset-3).
     ///   3. A refusal MUST leave the books unchanged.
     /// SCENARIOS:
     ///   1. IF the asset or entry is unknown, or the entry fails 1 or 2:
@@ -2811,7 +2811,7 @@ impl Ledger {
 
     /// [`Self::set_asset_acquisition`] with the checks every journaled
     /// `asset.acquisition_linked` passed when it was written (INVARIANT 1,
-    /// without the dates of INVARIANT 2), for replay only (rules.md B-28).
+    /// without the dates of INVARIANT 2), for replay only (BS-entry-4).
     pub fn replay_set_asset_acquisition(
         &mut self,
         id: AssetId,
@@ -2859,8 +2859,8 @@ impl Ledger {
     ///
     /// ```text
     /// GOAL: the register holds an asset from the day the books carry its
-    ///       cost, which can be before it serves (B-24).
-    /// SOURCE: rules.md B-15, B-24; P3, settled in design (2026-10-20):
+    ///       cost, which can be before it serves (BS-asset-3).
+    /// SOURCE: BS-asset-1, BS-asset-3; P3, settled in design (2026-10-20):
     ///         "an asset's acquired date comes from the entry it is linked
     ///         to".
     /// INVARIANTS:
@@ -2993,7 +2993,7 @@ impl Ledger {
     /// GOAL: the register carries the tax figures beside book value, each
     ///       named for what it is, so book and tax never get confused and
     ///       the CPA sees both.
-    /// SOURCE: docs/spec/rules.md B-25; docs/spec/sources/
+    /// SOURCE: BS-asset-4; docs/spec/sources/
     ///         irs-partnership-basis.md; DECISION D-41 (owner, 2026-10-20).
     /// INVARIANTS:
     ///   1. The record passes AssetBasis::check: a purchase takes no
@@ -3034,7 +3034,7 @@ impl Ledger {
     /// [`Self::set_asset_basis`] with the checks every journaled
     /// `asset.basis_set` passed (AssetBasis::check_journaled: the facts fit
     /// the rule, none negative, no bound on size), for replay and the
-    /// projection's read-back only (rules.md B-28). The figures the line
+    /// projection's read-back only (BS-entry-4). The figures the line
     /// carries are for its readers: replay never recomputes them, so a
     /// later change to how a figure is derived never refuses books an
     /// earlier version wrote. Never for new work.
@@ -3057,7 +3057,7 @@ impl Ledger {
     /// Replay a pre-P3 `asset.tax_basis_set` (rule and contributor basis,
     /// no value at contribution, which reads as the book cost): the checks
     /// it passed when written (AssetBasis::check_legacy_journaled), for
-    /// replay and the projection's read-back only (rules.md B-28). Never for
+    /// replay and the projection's read-back only (BS-entry-4). Never for
     /// new work.
     pub fn replay_set_asset_tax_basis(
         &mut self,
@@ -3116,8 +3116,8 @@ impl Ledger {
 
     /// [`Self::correct_asset`] with the checks every journaled
     /// `asset.corrected` passed when it was written
-    /// ([`Self::validate_new_asset_journaled`]), for replay only (rules.md
-    /// B-28). Never for new work.
+    /// ([`Self::validate_new_asset_journaled`]), for replay only (
+    /// BS-entry-4). Never for new work.
     pub fn replay_correct_asset(
         &mut self,
         id: AssetId,
@@ -3212,7 +3212,7 @@ impl Ledger {
     /// ```text
     /// GOAL: a run the books record is the entry that posted it, no more
     ///       and no less, so accumulated_posted is what the books carry.
-    /// SOURCE: rules.md B-15 rules 6 and 8, B-24; B-28 (new commands are bounded; replay checks
+    /// SOURCE: BS-asset-1 rules 6 and 8, BS-asset-3; BS-entry-4 (new commands are bounded; replay checks
     ///         only what every journaled run passed:
     ///         record_depreciation_run).
     /// ```
@@ -3263,7 +3263,7 @@ impl Ledger {
 
     /// Record a depreciation run (`asset.depreciation_posted`). Checks only
     /// that the asset and the entry exist: every run an earlier version
-    /// journaled replays, whatever its period or amount (rules.md B-28; a
+    /// journaled replays, whatever its period or amount (BS-entry-4; a
     /// store checks new runs first, [`Self::check_depreciation_run`]). A
     /// second line for the same asset, period and entry (a journal edited
     /// by hand; a store never writes one) is the run already recorded: one
@@ -3300,7 +3300,7 @@ impl Ledger {
     }
 
     /// Each posted reversal's original: original entry → its reversal (an
-    /// entry is reversed at most once, B-10). Read once for many runs
+    /// entry is reversed at most once, BS-ledger-6). Read once for many runs
     /// ([`assets::depreciation_effects`], [`Self::accumulated_posted_all`]),
     /// never per run: the viewer asks it of every asset.
     pub(crate) fn posted_reversals(&self) -> HashMap<EntryId, EntryId> {
@@ -3333,9 +3333,9 @@ impl Ledger {
     /// ```text
     /// GOAL: book value is cost less what the books carry, never the
     ///       schedule's figure.
-    /// SOURCE: rules.md B-24 (the register reconciles to the general
-    ///         ledger); B-8, B-9, B-10 (a reversal undoes what it reverses,
-    ///         and reversing the reversal reinstates it); B-15 (what the
+    /// SOURCE: BS-asset-3 (the register reconciles to the general
+    ///         ledger); BS-ledger-4, BS-ledger-5, BS-ledger-6 (a reversal undoes what it reverses,
+    ///         and reversing the reversal reinstates it); BS-asset-1 (what the
     ///         catch-up rule reads, the same entries).
     /// INVARIANTS:
     ///   1. Disposed on or before as_of: 0.
@@ -3439,7 +3439,7 @@ impl Ledger {
     ///
     /// ```text
     /// GOAL: take an asset off the books when sold or scrapped.
-    /// SOURCE: docs/spec/rules.md B-15; CONVENTION (gain or loss on disposal).
+    /// SOURCE: BS-asset-1; CONVENTION (gain or loss on disposal).
     /// INVARIANTS:
     ///   1. The gain (or loss) MUST equal proceeds minus book value at the
     ///      disposal date.
@@ -3463,7 +3463,7 @@ impl Ledger {
     /// [`Self::dispose_asset`] with the checks every journaled
     /// `asset.disposed` passed when it was written (no bound on the
     /// proceeds or the date beyond the disposal's own), for replay only
-    /// (rules.md B-28). Never for new work.
+    /// (BS-entry-4). Never for new work.
     pub fn replay_dispose_asset(
         &mut self,
         id: AssetId,
@@ -3494,13 +3494,13 @@ impl Ledger {
         let asset = self.assets.get(&id).ok_or(LedgerError::UnknownAsset(id))?;
         // Activeness and the proceeds' sign; no depreciation is computed,
         // so a journaled disposal replays even where the figure can't be
-        // (rules.md B-28).
+        // (BS-entry-4).
         assets::check_disposal(asset, proceeds)?;
         if strict {
             // Never before the company acquired it. A command's bound, not
             // replay's: the acquired date needs the link, which a
-            // projection read-back restores after the disposal (rules.md
-            // B-28).
+            // projection read-back restores after the disposal (
+            // BS-entry-4).
             let acquired = self.asset_acquired_date(id).expect("known asset");
             if date < acquired {
                 return Err(LedgerError::DisposalBeforeAcquisition {
@@ -3527,7 +3527,7 @@ impl Ledger {
     ///
     /// ```text
     /// GOAL: name a span of days that can later be closed.
-    /// SOURCE: rules.md B-12 (IRS Pub. 538: tax years, calendar or fiscal);
+    /// SOURCE: BS-period-2 (IRS Pub. 538: tax years, calendar or fiscal);
     ///         DECISION (owner, 2026-10-13): periods nest, never
     ///         partially overlap.
     /// SCENARIOS:
@@ -3569,7 +3569,7 @@ impl Ledger {
     /// [`Self::create_period`] without the nesting rule added on
     /// 2026-10-13 or the calendar bound added in P0 (only the order is
     /// checked, periods::validate_period_order), for replaying journals
-    /// written before them (rules.md B-28).
+    /// written before them (BS-entry-4).
     pub fn replay_create_period(
         &mut self,
         name: &str,
@@ -3648,7 +3648,7 @@ impl Ledger {
     ///      everything closed to these members and shares so far, to the
     ///      currency's minor unit (odd units by largest remainder, ties to
     ///      the member listed first), less what earlier closes gave them
-    ///      (rules.md B-13; D-10), and their own distribution account. The
+    ///      (BS-partner-1; D-10), and their own distribution account. The
     ///      count starts at the first members close, or at the first since
     ///      the members or shares last changed (`Ledger::members_regime`);
     ///      closes to anything else are skipped. A close that posts an
@@ -3664,7 +3664,7 @@ impl Ledger {
     /// ```text
     /// GOAL: close a period: zero every revenue and expense account's balance
     ///       as of its last day into equity, and lock it.
-    /// SOURCE: docs/spec/rules.md B-11 (Pacioli ch. 27, 34), B-12, B-13 (26
+    /// SOURCE: BS-period-1 (Pacioli ch. 27, 34), BS-period-2, BS-partner-1 (26
     ///         U.S.C. §704(a)); R-? Periods and close.
     /// INVARIANTS:
     ///   1. After a close, every revenue and expense account MUST have a zero
@@ -3836,7 +3836,7 @@ impl Ledger {
     /// What a members close (`to`, closing `net`; `posts` when its entry
     /// posts; numbered `close_seq`) credits each member, in `to`'s order,
     /// and the rule it is made under: the rule journaled for replayed
-    /// closes, else the cumulative rule (rules.md B-13): each member's
+    /// closes, else the cumulative rule (BS-partner-1): each member's
     /// split of the count's running total, to the base currency's minor
     /// unit, less what the count's earlier closes gave them. A close that
     /// posts nothing credits nothing, so a true-up of earlier rounding
@@ -3899,7 +3899,7 @@ impl Ledger {
     }
 
     /// The members regime a close with `members` ((capital account, share)
-    /// pairs) belongs to (rules.md B-13), counting only closes whose
+    /// pairs) belongs to (BS-partner-1), counting only closes whose
     /// period ends on or before `through` (all when `None`): walking the
     /// closes newest first by [`Period::close_seq`], members closes under
     /// any rule with the same SET of (capital, share) pairs (order and
@@ -4354,7 +4354,7 @@ impl Ledger {
     /// GOAL: "no 1099" is a decision kept with its reason and who made it,
     ///       never the same as "never decided" (plan defects 18, 23), and
     ///       each payment takes the decision in force on its date (D-40).
-    /// SOURCE: docs/spec/rules.md B-19; crate::form1099::plan_decision.
+    /// SOURCE: BS-1099-1; crate::form1099::plan_decision.
     /// SCENARIOS:
     ///   1. IF the vendor is unknown, or the decision fails its checks:
     ///      SHOULD refuse, changing nothing.
@@ -4373,7 +4373,7 @@ impl Ledger {
 
     /// [`Self::set_vendor_1099`] as journaled: the vendor must exist, and
     /// the decision is recorded as the line says, without the checks a
-    /// new decision passes (rules.md B-28). A line written before
+    /// new decision passes (BS-entry-4). A line written before
     /// decisions were kept replays as a decision from the beginning with
     /// no source (a null as undetermined: plan 5.5).
     pub fn replay_vendor_1099(
@@ -4544,7 +4544,7 @@ impl Ledger {
     ///
     /// ```text
     /// GOAL: the 1099 worksheet knows how each payment was made.
-    /// SOURCE: docs/spec/rules.md B-19; crate::instruments.
+    /// SOURCE: BS-1099-1; crate::instruments.
     /// SCENARIOS:
     ///   1. IF the entry or the payment method is unknown: SHOULD refuse.
     ///   2. Tagging MUST change no amount (it's metadata, allowed on posted
@@ -4580,7 +4580,7 @@ impl Ledger {
     ///
     /// ```text
     /// GOAL: tag an entry with the vendor it paid, for 1099s.
-    /// SOURCE: docs/spec/rules.md B-19; Self::set_entry_parties
+    /// SOURCE: BS-1099-1; Self::set_entry_parties
     ///         INVARIANTS 2 and 5 (the vendor tag follows the parties, never
     ///         the other way round, on an entry naming several).
     /// SCENARIOS:
@@ -5207,7 +5207,7 @@ impl Ledger {
     ///       credit to it never counts as paying that party (a fee on its
     ///       own card, interest on its own loan, a distribution still owed
     ///       to a member: a promise, not a payment).
-    /// SOURCE: crate::parties INVARIANT 5; rules.md B-35 (DECISION, owner,
+    /// SOURCE: crate::parties INVARIANT 5; BS-partner-3 (DECISION, owner,
     ///         2026-10-20: "a liability credit never counts as paying that
     ///         liability's own creditor").
     /// SCENARIOS:
@@ -5376,7 +5376,7 @@ impl Ledger {
     /// [`Self::set_entry_parties`] with the checks every journaled
     /// `entry.parties_set` passed when it was written
     /// (crate::shares::check_shares_journaled: no upper bound on an
-    /// amount), for replay only (rules.md B-28). Never for new work.
+    /// amount), for replay only (BS-entry-4). Never for new work.
     pub fn replay_set_entry_parties(
         &mut self,
         entry: EntryId,
@@ -5566,7 +5566,7 @@ impl Ledger {
     /// ```text
     /// GOAL: never post a control role (receivables, payables, revenue,
     ///       payroll, retained earnings) to an account of the wrong kind.
-    /// SOURCE: docs/spec/rules.md B-4 (the elements); DECISION (owner,
+    /// SOURCE: BS-ledger-2 (the elements); DECISION (owner,
     ///         2026-10-13): refuse with a reason, never force the chart's
     ///         numbering.
     /// INVARIANTS:
@@ -5668,7 +5668,7 @@ impl Ledger {
     /// ```text
     /// GOAL: a document's lines go where its kind can put them, never to a
     ///       control, a cash account or a header.
-    /// SOURCE: docs/spec/rules.md B-39; plan P4b S4.1 ("Line accounts"),
+    /// SOURCE: BS-arap-3; plan P4b S4.1 ("Line accounts"),
     ///         A-10 (every bill line names its account);
     ///         ASC 606-10-45-2 (deferred revenue is a liability).
     /// INVARIANTS:
@@ -5762,14 +5762,14 @@ impl Ledger {
     /// GOAL: bill a customer and recognize the revenue (accrual basis).
     /// SOURCE: IRS Pub. 538, accrual method (docs/spec/sources/irs-periods-and-methods.md:
     ///         "report income in the year it is earned"); ASC 606-10-25-23;
-    ///         control accounts: Ledger::check_controls; rules.md B-38, B-39.
+    ///         control accounts: Ledger::check_controls; BS-arap-2, BS-arap-3.
     /// INVARIANTS:
     ///   1. MUST post one balanced entry: Dr 1200 receivables, Cr the lines'
     ///      accounts, for the sum of the lines, dated the invoice date: one
     ///      line per (account, project) part the lines name, the parts
     ///      naming neither as one (arap::document_parts), each revenue line
-    ///      tagged with its project; the receivable line never (rules.md
-    ///      B-37 item 8).
+    ///      tagged with its project; the receivable line never (
+    ///      BS-statement-5 item 8).
     ///   2. The receivable line MUST carry the invoice (Origin), in the
     ///      step that posts it: the invoice starts Open, owing its total.
     ///   3. A refusal MUST leave the books unchanged.
@@ -5897,14 +5897,14 @@ impl Ledger {
     ///       basis).
     /// SOURCE: IRS Pub. 538, accrual method ("deduct ... expenses in the year
     ///         incurred"); control accounts: Ledger::check_controls;
-    ///         rules.md B-38, B-39 (plan P4b S4.1, A-10).
+    ///         BS-arap-2, BS-arap-3 (plan P4b S4.1, A-10).
     /// INVARIANTS:
     ///   1. MUST post one balanced entry: Dr the lines' accounts, Cr 2000
     ///      payables, for the sum of the lines, dated the bill date, tagged
     ///      with the vendor (1099s): one line per (account, project) part
     ///      the lines name, the parts naming neither as one
     ///      (arap::document_parts), each tagged with its project; the
-    ///      payable line never (rules.md B-37 item 8).
+    ///      payable line never (BS-statement-5 item 8).
     ///   2. The payable line MUST carry the bill (Origin), in the step that
     ///      posts it.
     ///   3. A refusal MUST leave the books unchanged.
@@ -6016,7 +6016,7 @@ impl Ledger {
         Ok(id)
     }
 
-    /// The number the next invoice is issued under (A-2, B-40): `prefix`,
+    /// The number the next invoice is issued under (A-2, BS-arap-4): `prefix`,
     /// then `first_number` plus the count of numbered invoices issued so
     /// far, zero-padded to four digits and wider past 9,999 (never
     /// truncated). Stored at issue, never recomputed; a void keeps its
@@ -6032,7 +6032,7 @@ impl Ledger {
     }
 
     /// Refuse a vendor invoice number that already names a standing bill
-    /// of the same vendor (B-40), unless `duplicate_reason` says why it is
+    /// of the same vendor (BS-arap-4), unless `duplicate_reason` says why it is
     /// entered again. Case, spaces and hyphens are ignored: "ACME-123",
     /// "acme 123" and "Acme123" are the same number.
     pub fn check_vendor_ref(
@@ -6072,8 +6072,8 @@ impl Ledger {
     /// ```text
     /// GOAL: record a send as a fact of the document's life, without
     ///       touching a figure: a send moves no money.
-    /// SOURCE: docs/spec/rules.md B-38 (a document keeps no figure of its
-    ///         own), B-27 (the invoice.sent line, feature documents_v2);
+    /// SOURCE: BS-arap-2 (a document keeps no figure of its
+    ///         own), BS-format-1 (the invoice.sent line, feature documents_v2);
     ///         plan P4b S5, A-4 (the books record sends; they never send).
     /// INVARIANTS:
     ///   1. The invoice MUST exist, and a send MUST NOT be dated before it.
@@ -6150,7 +6150,7 @@ impl Ledger {
     }
 
     /// Record a send without checking it: replay support for journaling
-    /// stores. Nothing is validated on replay (rules.md B-28); the invoice
+    /// stores. Nothing is validated on replay (BS-entry-4); the invoice
     /// must already have been replayed from its own events.
     #[doc(hidden)]
     pub fn replay_invoice_sent(
@@ -6199,8 +6199,8 @@ impl Ledger {
             .collect()
     }
 
-    /// The document a ledger line belongs to, if it carries one (rules.md
-    /// B-38): `(entry, line index)`.
+    /// The document a ledger line belongs to, if it carries one (
+    /// BS-arap-2): `(entry, line index)`.
     pub fn line_doc(&self, entry: EntryId, line: usize) -> Option<arap::DocTag> {
         self.line_docs.get(&(entry, line)).copied()
     }
@@ -6258,14 +6258,14 @@ impl Ledger {
     }
 
     /// What a document is as of a day, read from the ledger lines tagged
-    /// with it (rules.md B-38; plan P4b.3, "Derived figures"). `None` for
+    /// with it (BS-arap-2; plan P4b.3, "Derived figures"). `None` for
     /// a document dated after `as_of` (it wasn't issued yet).
     ///
     /// ```text
     /// GOAL: every figure about a document (paid, outstanding, status,
     ///       overdue) is read from its tagged lines, so a reversal, a void
     ///       or a bounced payment is right by construction.
-    /// SOURCE: docs/spec/rules.md B-38 (INVARIANTS 1-4), B-9, B-10, B-18;
+    /// SOURCE: BS-arap-2 (INVARIANTS 1-4), BS-ledger-5, BS-ledger-6, BS-arap-1;
     ///         ASC 310-10 (receivables), ASC 405-20-40-1 (payables).
     /// INVARIANTS:
     ///   1. outstanding = the signed sum of every posted line tagged with
@@ -6282,7 +6282,7 @@ impl Ledger {
     ///      TooLargeToCompute past exact arithmetic.
     /// SCENARIOS:
     ///   1. IF an invoice of 100 was paid 100 and the payment reversed:
-    ///      SHOULD be Open, owing 100 (scenario 1 of B-38).
+    ///      SHOULD be Open, owing 100 (scenario 1 of BS-arap-2).
     ///   2. IF its own entry was reversed with nothing paid: SHOULD be Void,
     ///      owing nothing.
     ///   3. IF asked between a payment and its reversal: SHOULD be Paid.
@@ -6359,7 +6359,7 @@ impl Ledger {
     /// naming it (live or replayed). What a version before document
     /// standing (plan P4b S1) counts as paid, so the store knows when a
     /// payment needs that feature. Refused (TooLargeToCompute), never a
-    /// panic, past exact arithmetic: replayed amounts are any size (B-28).
+    /// panic, past exact arithmetic: replayed amounts are any size (BS-entry-4).
     pub fn payments_recorded(&self, doc: arap::DocRef) -> Result<Decimal, LedgerError> {
         self.payment_events
             .get(&doc)
@@ -6414,8 +6414,8 @@ impl Ledger {
 
     /// Refuse a step that would move `doc` by `extra` (dated movements)
     /// if, at some date, it would then owe less than nothing or more than
-    /// its total where it didn't before ([`kernel::bounds_kept`]; rules.md
-    /// B-38 INVARIANT 2). Books an earlier version left out of bounds
+    /// its total where it didn't before ([`kernel::bounds_kept`];
+    /// BS-arap-2 INVARIANT 2). Books an earlier version left out of bounds
     /// (a void under a payment that stands) take any step that makes no
     /// date worse, so the remedy (reversing the payment) is accepted.
     fn check_item_bounds(
@@ -6475,8 +6475,8 @@ impl Ledger {
 
     /// The least `doc` owes on any day from `date` on (from its own date,
     /// for a date before it): what a payment may be, and what a write-off
-    /// may be, so no later day ends out of bounds (rules.md B-38
-    /// INVARIANT 2, B-41 INVARIANT 1).
+    /// may be, so no later day ends out of bounds (BS-arap-2
+    /// INVARIANT 2, BS-arap-5 INVARIANT 1).
     fn least_owed_from(&self, doc: arap::DocRef, date: NaiveDate) -> Result<Decimal, LedgerError> {
         let (doc_date, ..) = self.doc_header(doc)?;
         let from = date.max(doc_date);
@@ -6546,14 +6546,14 @@ impl Ledger {
     }
 
     /// Settle one or more invoices or bills in one entry (plan P4b S6;
-    /// rules.md B-42): cash against each, an early-payment discount where
+    /// BS-arap-6): cash against each, an early-payment discount where
     /// the document's terms allow it (or a reason says why), and the
     /// processor's fee on a customer payment, posted gross.
     ///
     /// ```text
     /// GOAL: record a payment that settles several documents at once, with
     ///       the early-payment discounts and the processor's fee, exactly.
-    /// SOURCE: docs/spec/rules.md B-42; plan/served.md 8.3.6, 8.3.13;
+    /// SOURCE: BS-arap-6; plan/served.md 8.3.6, 8.3.13;
     ///         CONVENTION; DECISION: the gross method (A-8) and the fee's
     ///         gross presentation (A-4).
     /// INVARIANTS:
@@ -6978,8 +6978,8 @@ impl Ledger {
     ///
     /// ```text
     /// GOAL: record a customer's payment against an invoice.
-    /// SOURCE: IRS Pub. 538 (accrual); CONVENTION (A/R workflow); rules.md
-    ///         B-38; plan/served.md P4b.3 ("Payment accounts"), P4b.6.
+    /// SOURCE: IRS Pub. 538 (accrual); CONVENTION (A/R workflow);
+    ///         BS-arap-2; plan/served.md P4b.3 ("Payment accounts"), P4b.6.
     /// INVARIANTS:
     ///   1. MUST post Dr the deposit account, Cr 1200 receivables, for the
     ///      amount; the receivables line carries the invoice (Payment), so
@@ -6993,10 +6993,10 @@ impl Ledger {
     ///      - SHOULD refuse (Overpayment), saying what can be paid
     ///      - NEVER let a standing payment exceed the total
     ///      - a reversed payment no longer counts, so the right one is
-    ///        accepted after the wrong one is reversed (B-38 scenario 5)
+    ///        accepted after the wrong one is reversed (BS-arap-2 scenario 5)
     ///   3. IF the deposit account is a control, revenue, expense or
     ///      equity account, or holds any role: SHOULD refuse
-    ///      (PaymentAccount; B-38 scenario 8).
+    ///      (PaymentAccount; BS-arap-2 scenario 8).
     ///   4. IF dated before the invoice: SHOULD refuse (PaymentBeforeDocument).
     /// ```
     pub fn receive_payment_with(
@@ -7052,8 +7052,8 @@ impl Ledger {
     ///
     /// ```text
     /// GOAL: record paying a vendor's bill.
-    /// SOURCE: IRS Pub. 538 (accrual); CONVENTION (A/P workflow); rules.md
-    ///         B-38; plan/served.md P4b.3, P4b.6.
+    /// SOURCE: IRS Pub. 538 (accrual); CONVENTION (A/P workflow);
+    ///         BS-arap-2; plan/served.md P4b.3, P4b.6.
     /// INVARIANTS:
     ///   1. MUST post Dr 2000 payables, Cr the payer account, for the
     ///      amount, tagged with the vendor; the payables line carries the
@@ -7099,7 +7099,7 @@ impl Ledger {
         })
     }
 
-    /// Write off an invoice as a bad debt (plan P4b S7; rules.md B-41).
+    /// Write off an invoice as a bad debt (plan P4b S7; BS-arap-5).
     ///
     /// ```text
     /// GOAL: take an invoice off the receivables when it will not be
@@ -7108,7 +7108,7 @@ impl Ledger {
     ///         §1.166-1(e) (a debt never counted as income has no basis),
     ///         §1.166-2(a) (worthlessness on all the pertinent evidence),
     ///         §1.166-3(a) (a partial write-off, to the extent charged
-    ///         off); docs/spec/rules.md B-41; plan/served.md P4b S7,
+    ///         off); BS-arap-5; plan/served.md P4b S7,
     ///         A-5 (the direct write-off method); ASC 326-20 noted (an
     ///         allowance is the GAAP preference; a small company's CPA
     ///         accepts the direct method, stated).
@@ -7123,7 +7123,7 @@ impl Ledger {
     ///   3. 0 < amount <= the least the invoice owes on any day from
     ///      `date` on (on the day, when nothing later lowers it): a
     ///      partial write-off is allowed (§1.166-3(a)), and no day may
-    ///      owe less than nothing (B-38 INVARIANT 2).
+    ///      owe less than nothing (BS-arap-2 INVARIANT 2).
     ///   4. The day MUST be in the calendar, in an open period, and not
     ///      before the invoice.
     ///   5. A refusal MUST leave the books unchanged.
@@ -7137,7 +7137,7 @@ impl Ledger {
     ///   4. IF it is dated before the invoice or in a closed period:
     ///      SHOULD refuse.
     ///   5. Half paid, the rest written off: Written off, with 50 paid and
-    ///      50 written off (B-38 SCENARIO 7).
+    ///      50 written off (BS-arap-2 SCENARIO 7).
     /// ```
     pub fn write_off(
         &mut self,
@@ -7234,7 +7234,7 @@ impl Ledger {
         Ok(entry)
     }
 
-    /// Void a document: reverse its own entry (B-9), described "Void
+    /// Void a document: reverse its own entry (BS-ledger-5), described "Void
     /// invoice 7: reason". It keeps its id (and, later, its number); its
     /// status as of the void's date on is Void. Plain
     /// [`Self::reverse_entry`] of the same entry gives the same result.
@@ -7242,7 +7242,7 @@ impl Ledger {
     /// ```text
     /// GOAL: a document that should never have existed (a duplicate, the
     ///       wrong customer) is undone by an opposite entry, never erased.
-    /// SOURCE: docs/spec/rules.md B-9, B-10, B-12, B-38 (scenarios 2, 3);
+    /// SOURCE: BS-ledger-5, BS-ledger-6, BS-period-2, BS-arap-2 (scenarios 2, 3);
     ///         plan/served.md P4b.5, P4b.6; ASC 250 (an immaterial error is
     ///         corrected in the period found).
     /// INVARIANTS:
@@ -7310,7 +7310,7 @@ impl Ledger {
     /// ```text
     /// GOAL: show that receivables and payables equal their documents, and
     ///       list every line that is no document's.
-    /// SOURCE: docs/spec/rules.md B-23, B-38 INVARIANT 1:
+    /// SOURCE: BS-ledger-8, BS-arap-2 INVARIANT 1:
     ///         GL(A, D) = Σ_docs outstanding(d, D) + unattached(A, D).
     /// INVARIANTS:
     ///   1. balance sums every posted line on the account dated on or
@@ -7511,7 +7511,7 @@ impl Ledger {
     /// is for `amount` (any amount when `None`: a document's own entry
     /// has one such line). An entry with
     /// no such line stays untagged, and its line is listed by
-    /// [`Self::control_check`]: replay never refuses (B-28).
+    /// [`Self::control_check`]: replay never refuses (BS-entry-4).
     fn tag_replayed(
         &mut self,
         entry: EntryId,
@@ -7546,11 +7546,11 @@ impl Ledger {
         }
     }
 
-    /// Tag the line a new payment event names (plan P4b S6; rules.md B-42
+    /// Tag the line a new payment event names (plan P4b S6; BS-arap-6
     /// INVARIANT 3): line `index` of `entry`, when it is on the role's
     /// account, on the side the movement posts, untagged, and for `amount`.
     /// Otherwise it stays untagged and the control check lists it; replay
-    /// never refuses (B-28).
+    /// never refuses (BS-entry-4).
     fn tag_replayed_at(
         &mut self,
         entry: EntryId,
@@ -7622,7 +7622,7 @@ impl Ledger {
             return Err(LedgerError::ReplayIdMismatch(id, self.next_invoice_id));
         }
         // Restored exactly as journaled: replay checks no line or date
-        // (none did when it was written; rules.md B-28). Figures derived
+        // (none did when it was written; BS-entry-4). Figures derived
         // from them (the total, aging) refuse what they can't compute.
         self.next_invoice_id += 1;
         self.invoices.insert(
@@ -7703,7 +7703,7 @@ impl Ledger {
             return Err(LedgerError::ReplayIdMismatch(id, self.next_bill_id));
         }
         // Restored exactly as journaled: replay checks no line or date
-        // (none did when it was written; rules.md B-28). Figures derived
+        // (none did when it was written; BS-entry-4). Figures derived
         // from them (the total, aging) refuse what they can't compute.
         self.next_bill_id += 1;
         self.bills.insert(
@@ -7744,7 +7744,7 @@ impl Ledger {
     /// own entry events; this tags its receivables line with the invoice
     /// (the first untagged one for `amount`, so several payment events
     /// naming one entry tag its lines in order: the ordinal rule, plan
-    /// P4b.3). Nothing is bounded on replay (rules.md B-28).
+    /// P4b.3). Nothing is bounded on replay (BS-entry-4).
     #[doc(hidden)]
     pub fn replay_invoice_payment(
         &mut self,
@@ -7756,10 +7756,10 @@ impl Ledger {
     }
 
     /// [`Self::replay_invoice_payment`] with the line a new event names and
-    /// the discount it took (plan P4b S6; rules.md B-42 INVARIANT 3). A
+    /// the discount it took (plan P4b S6; BS-arap-6 INVARIANT 3). A
     /// line the event names but that can't be matched (no such line, the
     /// wrong account or side, or already tagged) stays untagged, and the
-    /// control check lists it: replay never refuses (B-28).
+    /// control check lists it: replay never refuses (BS-entry-4).
     #[doc(hidden)]
     pub fn replay_invoice_payment_at(
         &mut self,
@@ -7807,12 +7807,12 @@ impl Ledger {
     }
 
     /// Apply a write-off without posting: replay support for journaling
-    /// stores (plan P4b S7; rules.md B-41). The write-off's entry was
+    /// stores (plan P4b S7; BS-arap-5). The write-off's entry was
     /// already rebuilt from its own entry events; this tags its
     /// receivables line with the invoice (the first untagged control line
     /// for `amount`, on the credit side), tags the entry with the
     /// customer, and refreshes the invoice's figures. Nothing is bounded
-    /// on replay (rules.md B-28).
+    /// on replay (BS-entry-4).
     #[doc(hidden)]
     pub fn replay_invoice_write_off(
         &mut self,
@@ -7903,11 +7903,11 @@ impl Ledger {
     /// A/R aging as of a date: one row per customer with an outstanding
     /// balance, bucketed by days past due. Refused (TooLargeToCompute),
     /// never a panic, when a sum is past exact arithmetic: documents are
-    /// restored as journaled (rules.md B-28).
+    /// restored as journaled (BS-entry-4).
     ///
     /// ```text
     /// GOAL: what each customer owes as of a day, by how overdue.
-    /// SOURCE: docs/spec/rules.md B-18, B-38 INVARIANT 5.
+    /// SOURCE: BS-arap-1, BS-arap-2 INVARIANT 5.
     /// INVARIANTS:
     ///   1. Each invoice issued by `as_of` that owes something then
     ///      (Self::doc_state's outstanding) is in exactly one bucket, at
@@ -8213,7 +8213,7 @@ impl Ledger {
     ///
     /// ```text
     /// GOAL: an account's balance on its normal side.
-    /// SOURCE: docs/spec/rules.md B-5.
+    /// SOURCE: BS-ledger-3.
     /// INVARIANTS:
     ///   1. MUST equal the account's debits minus credits for debit-normal
     ///      types (asset, expense), and credits minus debits otherwise.
@@ -8372,7 +8372,7 @@ impl Ledger {
         let mut paid: Vec<(crate::PartyId, Decimal)> = Vec::new();
         let mut unnamed = false;
         for l in lines {
-            // A run is restored as journaled (rules.md B-28): its figures
+            // A run is restored as journaled (BS-entry-4): its figures
             // are checked, and a net past exact arithmetic refused.
             let net = l.net_pay()?;
             if net.is_zero() {
@@ -8511,7 +8511,7 @@ impl Ledger {
             return Err(LedgerError::ReplayIdMismatch(id, self.next_payroll_run_id));
         }
         // Restored exactly as journaled: the run's figures are checked by
-        // the command, not by replay (rules.md B-28).
+        // the command, not by replay (BS-entry-4).
         self.next_payroll_run_id += 1;
         if self.entries.contains_key(&entry_id) {
             self.name_payroll_parties(entry_id, &lines)?;
@@ -8593,7 +8593,7 @@ impl Ledger {
     }
 
     /// Apply a journaled settings change (`settings.set` at `seq`): as
-    /// checked when made, or as replayed (shape only, rules.md B-28).
+    /// checked when made, or as replayed (shape only, BS-entry-4).
     pub fn apply_settings(
         &mut self,
         changes: &[crate::settings::Change],
@@ -8645,7 +8645,7 @@ impl Ledger {
     }
 
     /// [`Self::annotate_attachment`] as journaled (`attachment.annotated`),
-    /// for replay only (rules.md B-28).
+    /// for replay only (BS-entry-4).
     pub fn replay_annotate_attachment(
         &mut self,
         annotation: crate::evidence::Annotation,
@@ -8696,7 +8696,7 @@ impl Ledger {
     }
 
     /// [`Self::set_entry_settles`] as journaled (`entry.settles`), for
-    /// replay only (rules.md B-28).
+    /// replay only (BS-entry-4).
     pub fn replay_set_entry_settles(
         &mut self,
         entry: EntryId,
@@ -9292,11 +9292,11 @@ impl Ledger {
     // ------------------------------------------------------------------
 
     /// Add a class (division) for line-level P&L tracking: a project with
-    /// only its name (rules.md B-37). Returns its id.
+    /// only its name (BS-statement-5). Returns its id.
     ///
     /// ```text
     /// GOAL: a new class under a name no other class has.
-    /// SOURCE: docs/spec/rules.md B-37 item 1.
+    /// SOURCE: BS-statement-5 item 1.
     /// SCENARIOS:
     ///   1. IF the name is blank: SHOULD refuse (EmptyClassName).
     ///   2. IF it is longer than a line, holds a control character or a
@@ -9318,7 +9318,7 @@ impl Ledger {
     ///
     /// ```text
     /// GOAL: one rule for every name a command gives a class.
-    /// SOURCE: docs/spec/rules.md B-37 item 1; B-26 (no full TIN).
+    /// SOURCE: BS-statement-5 item 1; BS-partner-2 (no full TIN).
     /// SCENARIOS:
     ///   1. IF `except` is a class and the name is its own, exactly: SHOULD
     ///      keep it as stored, unchecked, so a fact-only change never
@@ -9395,11 +9395,11 @@ impl Ledger {
     ///
     /// ```text
     /// GOAL: tag a draft line with a class (or clear it).
-    /// SOURCE: R-? Tracking classes.
+    /// SOURCE: BS-statement-5 (a project is a class); R-? Tracking classes.
     /// SCENARIOS:
     ///   1. IF the entry is posted:
     ///      - SHOULD refuse
-    ///      - NEVER change a posted line (B-8)
+    ///      - NEVER change a posted line (BS-ledger-4)
     ///   2. IF the line or class doesn't exist: SHOULD refuse.
     /// ```
     pub fn set_line_class(
@@ -9467,7 +9467,7 @@ impl Ledger {
     /// ```text
     /// GOAL: refuse any project record the books can't take, before a
     ///       line is written.
-    /// SOURCE: docs/spec/rules.md B-37 item 1 (and B-26: no full TIN).
+    /// SOURCE: BS-statement-5 item 1 (and BS-partner-2: no full TIN).
     /// SCENARIOS:
     ///   1. IF the class doesn't exist: SHOULD refuse (UnknownClass).
     ///   2. IF the name is blank, too long, or another class has it
@@ -9512,7 +9512,7 @@ impl Ledger {
     /// Replay a journaled project record: only what replay can't do
     /// without (the class and the party exist), never the text rules, so a
     /// rule tightened later never breaks old books (as
-    /// `AssetBasis::check_journaled`, rules.md B-25).
+    /// `AssetBasis::check_journaled`, BS-asset-4).
     #[doc(hidden)]
     pub fn replay_set_project(
         &mut self,
@@ -9546,13 +9546,13 @@ impl Ledger {
     }
 }
 
-/// A class name as names compare (rules.md B-37 item 1): trimmed, in
+/// A class name as names compare (BS-statement-5 item 1): trimmed, in
 /// lower case (Unicode's, so `Éclair` and `éCLAIR` are one name).
 fn fold_class_name(name: &str) -> String {
     name.trim().to_lowercase()
 }
 
-/// Refuse an amount finer than its currency's minor unit (rules.md B-3).
+/// Refuse an amount finer than its currency's minor unit (BS-ledger-1).
 /// A currency with no defined minor unit (ISO 4217 "N.A.") is not checked.
 pub(crate) fn check_minor_units(amount: Money) -> Result<(), LedgerError> {
     match amount.currency.minor_units() {
@@ -9585,7 +9585,7 @@ fn member_key(members: &[periods::MemberClose]) -> Vec<(AccountId, Decimal)> {
 }
 
 /// Two members closes' (capital account, share) lists name the same
-/// members with the same shares, in any order (rules.md B-13: a reorder of
+/// members with the same shares, in any order (BS-partner-1: a reorder of
 /// the members is not a change of members). Shares compare by value, so
 /// 0.5 is 0.50.
 fn same_member_set(a: &[(AccountId, Decimal)], b: &[(AccountId, Decimal)]) -> bool {
@@ -9599,7 +9599,7 @@ fn same_member_set(a: &[(AccountId, Decimal)], b: &[(AccountId, Decimal)]) -> bo
 
 /// A vendor invoice number as the duplicate check compares it: lower case,
 /// with spaces and hyphens removed ("ACME-123" and "acme 123" are the
-/// same number; rules.md B-40).
+/// same number; BS-arap-4).
 fn normalize_vendor_ref(vendor_ref: &str) -> String {
     vendor_ref
         .chars()
@@ -9634,7 +9634,7 @@ impl Regime {
     /// own order when no close has begun the count), the parts back in `members`'
     /// order. So a count's ties go to the same member whatever order later
     /// closes, statements or the settings list the members in, and a
-    /// reorder of the members moves no cent (rules.md B-13, D-38).
+    /// reorder of the members moves no cent (BS-partner-1, D-38).
     pub(crate) fn allocate(
         &self,
         members: &[(AccountId, Decimal)],

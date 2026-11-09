@@ -239,7 +239,7 @@ fn recurring_entries_generate_drafts_never_posts() {
     let _ = b.revenue;
 }
 
-/// Regression (B-12, found by the store's refusal property on
+/// Regression (BS-period-2, found by the store's refusal property on
 /// 2026-10-13): a recurring occurrence dated in a closed period is
 /// refused, leaves nothing behind, and is reported as needing a human.
 #[test]
@@ -825,7 +825,7 @@ fn plan_values(plan: Vec<(NaiveDate, Decimal)>) -> Vec<serde_json::Value> {
 /// A year of prepaid insurance at 100.00 a month (three months posted,
 /// 900.00 left) and three months of deferred revenue at 333.33, 333.33,
 /// 333.34 (the last period takes the rounding, so the three sum to
-/// 1,000.00 exactly: rules.md B-16).
+/// 1,000.00 exactly: BS-prepaid-1).
 #[test]
 fn golden_amortization_plans() {
     let mut b = books();

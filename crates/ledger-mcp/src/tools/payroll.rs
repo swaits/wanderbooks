@@ -146,7 +146,7 @@ impl BooksServer {
             .list_payroll_runs()
             .into_iter()
             .map(|r| {
-                // A run is as journaled (rules.md B-28): a total past exact
+                // A run is as journaled (BS-entry-4): a total past exact
                 // arithmetic refuses the list, never a panic.
                 let total_gross =
                     checked_sum(r.lines.iter().map(|l| Ok(l.gross_pay)), "gross pay")?;

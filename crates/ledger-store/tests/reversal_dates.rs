@@ -1,13 +1,13 @@
 //! A reversal is dated on or after the entry it reverses, for every kind of
-//! entry (D-73, 2026-11-08; rules.md B-9; bookspec BS-ledger-5): a
+//! entry (D-73, 2026-11-08; BS-ledger-5; bookspec BS-ledger-5): a
 //! correction comes after what it corrects. A journal an earlier version
 //! wrote may hold one dated before its original, and it opens as it was
-//! (B-28: bounds bind new commands, never replay).
+//! (BS-entry-4: bounds bind new commands, never replay).
 //!
 //! ```text
 //! GOAL: no new reversal precedes its original; no old one stops a journal
 //!       from opening, or moves a figure.
-//! SOURCE: docs/spec/rules.md B-9, B-28; plan/served.md D-73.
+//! SOURCE: BS-ledger-5, BS-entry-4; plan/served.md D-73.
 //! ```
 
 use chrono::NaiveDate;
@@ -114,7 +114,7 @@ fn a_plain_entrys_reversal_is_not_dated_before_it() {
 
 /// A journal an earlier version wrote, holding a reversal dated before its
 /// original, opens exactly as it was: same figures, chain verified, in the
-/// writer and again after a snapshot-less reopen (B-28).
+/// writer and again after a snapshot-less reopen (BS-entry-4).
 #[test]
 fn a_journal_with_an_earlier_dated_reversal_opens_as_it_was() {
     let (dir, s, rent, cash, e) = books("replay");

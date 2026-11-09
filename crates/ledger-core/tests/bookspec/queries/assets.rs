@@ -225,7 +225,7 @@ impl Books<'_> {
 /// Check one `run` expectation: what the `run_depreciation` event `event`
 /// posted (`amount`: zero when nothing was due, or the month already had
 /// its run) and, of it, what it caught up beyond its own month's
-/// depreciation (`caught_up`), both listed (rules.md B-15).
+/// depreciation (`caught_up`), both listed (BS-asset-1).
 pub(crate) fn check_run(b: &Books<'_>, x: &Expect) {
     let ex = b.ex;
     undated(ex, x);
@@ -256,7 +256,7 @@ pub(crate) fn check_run(b: &Books<'_>, x: &Expect) {
 }
 
 /// Check one `disposal` expectation: what the disposal of `asset` took, as
-/// the engine computed it when posting it (rules.md B-15), every figure
+/// the engine computed it when posting it (BS-asset-1), every figure
 /// listed: `final_depreciation` (posted in its own entry before the
 /// disposal), `catch_up_depreciation` and `excess_depreciation` (charged,
 /// and credited back, in the disposal entry), `accumulated` (cleared),
@@ -288,7 +288,7 @@ pub(crate) fn check_disposal(b: &Books<'_>, x: &Expect) {
 }
 
 /// Check one `depreciation_schedule` expectation: the schedule of `asset`
-/// through `as_of` (rules.md B-15), each month named (`"YYYY-MM"`) its
+/// through `as_of` (BS-asset-1), each month named (`"YYYY-MM"`) its
 /// depreciation, 0.00 for a month the schedule doesn't reach;
 /// `accumulated` and `book_value` through `as_of`; the example names the
 /// figures it shows.
@@ -326,7 +326,7 @@ pub(crate) fn check_depreciation_schedule(b: &Books<'_>, x: &Expect) {
 
 /// Check one `schedule_plan` expectation: what the schedule's plan
 /// recognizes at each month end named (`"YYYY-MM-DD"`, 0.00 at a month end
-/// the plan doesn't post), and `total`, all it recognizes (rules.md B-16);
+/// the plan doesn't post), and `total`, all it recognizes (BS-prepaid-1);
 /// the example names the figures it shows.
 pub(crate) fn check_schedule_plan(b: &Books<'_>, x: &Expect) {
     let ex = b.ex;
@@ -364,7 +364,7 @@ pub(crate) fn check_schedule_plan(b: &Books<'_>, x: &Expect) {
 }
 
 /// Check one `register_row` expectation: the asset's row of the fixed
-/// asset register as of `as_of` (rules.md B-15 rules 7 and 8, B-24):
+/// asset register as of `as_of` (BS-asset-1 rules 7 and 8, BS-asset-3):
 /// `acquired` and `in_service` (`YYYY-MM-DD`), `cost`,
 /// `accumulated_scheduled` (the schedule's), `accumulated_posted` (what
 /// the books carry), `unposted` (the one less the other), `book_value`
@@ -403,7 +403,7 @@ pub(crate) fn check_register_row(b: &Books<'_>, x: &Expect) {
 }
 
 /// Check one `register_totals` expectation: the fixed asset register's
-/// totals as of `as_of`, over the assets held (rules.md B-24, B-25):
+/// totals as of `as_of`, over the assets held (BS-asset-3, BS-asset-4):
 /// `total_cost`, `total_accumulated_scheduled`, `total_accumulated_posted`,
 /// `total_book_value`, `total_depreciable_basis`, `total_tax_basis_723`,
 /// `missing_basis` (how many held have none), and how it reconciles to
@@ -440,7 +440,7 @@ pub(crate) fn check_register_totals(b: &Books<'_>, x: &Expect) {
 }
 
 /// Check one `asset_basis` expectation: the asset's basis facts and the
-/// tax figures they give (rules.md B-25): `rule`,
+/// tax figures they give (BS-asset-4): `rule`,
 /// `contributor_adjusted_basis`, `fmv_at_contribution`, `tax_basis_723`,
 /// `depreciable_basis`, `built_in_gain_704c` (a loss negative), each
 /// `"none"` where the asset has none (a purchase's §723 basis), and

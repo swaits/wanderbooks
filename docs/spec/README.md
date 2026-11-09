@@ -24,7 +24,7 @@ layers differ in what they cover and in whether we may copy them:
 
 ```text
 SOURCE: Pacioli ch. 36 (sources/pacioli-1494.md); IRS Pub. 583 (sources/irs-records.md)
-SOURCE: ASC 830-20-30-1 (cited, rules.md B-3)
+SOURCE: ASC 830-20-30-1 (cited, BS-ledger-1)
 SOURCE: CHOICE (the owner, 2026-10-13)
 SOURCE: CONVENTION (QuickBooks aging); nearest authority ASC 326-20-55-38 (illustrative)
 ```
@@ -73,12 +73,12 @@ each checked again against the same sources in the P3 review (numbers,
 pages and wording hold). Open: 105-10-05-1 to 05-3, read only in their
 2009 text (ASU 2009-01, and as Wiley GAAP 2020 quotes them); their
 current wording is unconfirmed. Also open (P3 surface review, 2026-10-21): ASC 230-10-45-15(f) (debt
-issue costs, cited by B-14 rule 11) is in neither list above; ASC
-606-10-25-31, 25-32 and 55-20 (B-16's over-time method) are not yet read;
-B-15 rule 6 cites ASC 250 with no paragraph; B-17's 606-10-55-39 is in
+issue costs, cited by BS-statement-3 rule 11) is in neither list above; ASC
+606-10-25-31, 25-32 and 55-20 (BS-prepaid-1's over-time method) are not yet read;
+BS-asset-1 rule 6 cites ASC 250 with no paragraph; BS-revenue-1's 606-10-55-39 is in
 neither list. Each is to be read in the ASC basic view and listed in
 `sources/fasb-asc.md` before it is relied on further. Also open (plan
-P4b, 2026-10-23): B-38 cites ASC 310-10, 405-20-40-1 and 606-10-45-4,
-none yet read in the ASC basic view; B-38 keeps the CONVENTION label
+P4b, 2026-10-23): BS-arap-2 cites ASC 310-10, 405-20-40-1 and 606-10-45-4,
+none yet read in the ASC basic view; BS-arap-2 keeps the CONVENTION label
 until they are vendored with a SHA-256, as P4b.16 lists with the sources
-B-39 to B-41 will need.
+BS-arap-3 to BS-arap-5 will need.

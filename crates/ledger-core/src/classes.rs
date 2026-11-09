@@ -10,7 +10,7 @@
 //! on drafts only; posted entries are immutable, so their classes are frozen.
 //!
 //! A class is also a project: the class with its facts ([`ProjectFacts`]:
-//! what it is, where it stands, who it is for; rules.md B-37). Every class
+//! what it is, where it stands, who it is for; BS-statement-5). Every class
 //! is one; a class an earlier version wrote has the default facts.
 
 use chrono::NaiveDate;
@@ -28,7 +28,7 @@ pub struct Class {
     pub name: String,
 }
 
-/// Where a project stands (rules.md B-37).
+/// Where a project stands (BS-statement-5).
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
 )]
@@ -85,7 +85,7 @@ impl ProjectStatus {
     }
 }
 
-/// What kind of work a project is (rules.md B-37): it decides the
+/// What kind of work a project is (BS-statement-5): it decides the
 /// accounting questions its costs raise.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum ProjectKind {
@@ -141,7 +141,7 @@ pub const MAX_LINKS: usize = 8;
 /// One link: one line of text ([`crate::settings::line_text`]'s length
 /// and control-character rules) with no full TIN as a web address holds
 /// one ([`crate::settings::holds_printed_tin_in_link`]: a printed SSN or
-/// EIN is refused, a store listing's `id284882215` is not; rules.md B-26).
+/// EIN is refused, a store listing's `id284882215` is not; BS-partner-2).
 fn link_text(l: &str) -> Result<String, String> {
     use crate::settings::{MAX_TEXT, holds_printed_tin_in_link, line_text};
     // line_text's TIN rule is a plain text's, so it sees the link with
@@ -167,13 +167,13 @@ fn link_text(l: &str) -> Result<String, String> {
 /// GOAL: say what a project is, where it stands and who it is for, in
 ///       the few facts a job cost sheet carries, without a project
 ///       manager's sprawl (no budgets, estimates or percent complete).
-/// SOURCE: docs/spec/rules.md B-37; DECISION (owner, 2026-10-21: "Projects
+/// SOURCE: BS-statement-5; DECISION (owner, 2026-10-21: "Projects
 ///         are entities too and can have name, description, whatever
 ///         other metadata"); job-order costing (a job cost sheet: the
 ///         job, its customer, its dates).
 /// INVARIANTS:
 ///   1. No field holds a full taxpayer identification number
-///      (settings::line_text / long_text, rules.md B-26).
+///      (settings::line_text / long_text, BS-partner-2).
 ///   2. ended_on only when the project is finished or abandoned, and
 ///      never before started_on.
 ///   3. The party, if any, is in the directory (archived allowed).

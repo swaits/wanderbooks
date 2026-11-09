@@ -95,7 +95,7 @@ impl ReceiptPolicy {
     }
 
     /// Total debits of the entry (one side of the balanced entry). A
-    /// draft's lines are as journaled, of any size (rules.md B-28): a total
+    /// draft's lines are as journaled, of any size (BS-entry-4): a total
     /// past exact arithmetic is refused (TooLargeToCompute), never a panic.
     pub fn entry_debits(entry: &JournalEntry) -> Result<Decimal, ledger_core::LedgerError> {
         ledger_core::evidence::Policy::entry_debits(entry)
@@ -363,7 +363,7 @@ mod rule_tests {
     }
 
     /// A draft an earlier version journaled may hold debits exact
-    /// arithmetic can't sum (rules.md B-28): its total is refused, never a
+    /// arithmetic can't sum (BS-entry-4): its total is refused, never a
     /// panic, and for the policy it is past any threshold: a receipt is
     /// required, and it is no part of a split.
     #[test]

@@ -63,7 +63,7 @@ impl Currency {
     /// code ISO 4217 gives none (gold, SDRs), the most a line may carry
     /// (kernel::MAX_LINE_SCALE). Every posted amount is then a whole number
     /// of the unit split to, so no member's running share is ever a unit
-    /// from exact (rules.md B-13); split to cents, a finer amount's
+    /// from exact (BS-partner-1); split to cents, a finer amount's
     /// leftover fraction would all go to one member.
     pub fn allocation_places(&self) -> u32 {
         self.minor_units().unwrap_or(crate::kernel::MAX_LINE_SCALE)
@@ -156,7 +156,7 @@ impl Money {
 /// The exact sum of some figures ([`crate::kernel::total`]), or
 /// `TooLargeToCompute` naming `what` when a running sum cannot be held:
 /// the engine's way to total a column without a raw `.sum()` that would
-/// panic at `Decimal::MAX` (rules.md B-21, B-28).
+/// panic at `Decimal::MAX` (BS-entry-3, BS-entry-4).
 pub fn sum_exact(
     values: impl IntoIterator<Item = Decimal>,
     what: &str,
@@ -213,7 +213,7 @@ impl fmt::Debug for Money {
 /// GOAL: depreciation and daily schedules round to the currency's own
 ///       smallest unit (cents, whole yen, thousandths of a dinar), never a
 ///       fixed two places.
-/// SOURCE: docs/spec/rules.md B-3 (no fraction of the minor unit; ISO 4217,
+/// SOURCE: BS-ledger-1 (no fraction of the minor unit; ISO 4217,
 ///         sources/iso-4217.md).
 /// INVARIANTS:
 ///   1. amount = units × 10^-scale exactly; unit = 10^(scale − minor).

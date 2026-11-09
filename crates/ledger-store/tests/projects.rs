@@ -1,4 +1,4 @@
-//! Projects in the journal (rules.md B-37): `class.added`, then the whole
+//! Projects in the journal (BS-statement-5): `class.added`, then the whole
 //! record as `project.set` (journal feature `projects`); links to a
 //! project and decisions naming one wait for the feature too.
 //!
@@ -6,7 +6,7 @@
 //! GOAL: a project's record is journaled once, whole, replays exactly,
 //!       and books waiting for their format upgrade can still add
 //!       projects by name but write nothing an older reader would misread.
-//! SOURCE: docs/spec/rules.md B-37, B-27; D-39 (the owner's upgrade).
+//! SOURCE: BS-statement-5, BS-format-1; D-39 (the owner's upgrade).
 //! ```
 
 use chrono::NaiveDate;

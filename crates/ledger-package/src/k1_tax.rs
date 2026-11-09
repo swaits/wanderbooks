@@ -7,7 +7,7 @@
 //!       line by line beside the book figures, each figure the books can't
 //!       know left blank and named, never guessed.
 //! SOURCE: ledger_core::tax_capital (INVARIANTS 1-5); Instructions for Form
-//!         1065 (2025), Item L, "Tax-basis method" (rules.md B-36);
+//!         1065 (2025), Item L, "Tax-basis method" (BS-partner-4);
 //!         DECISION D-41 (owner, 2026-10-20).
 //! INVARIANTS:
 //!   1. Per member, in order: the seven Item L lines (beginning; capital

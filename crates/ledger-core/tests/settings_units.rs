@@ -458,7 +458,7 @@ fn counts_are_positive_whole_numbers() {
 }
 
 /// `Kind::Terms`: canonicalized through [`ledger_core::Terms`], so two
-/// spellings of one agreement are one value (rules.md B-39).
+/// spellings of one agreement are one value (BS-arap-3).
 #[test]
 fn terms_keep_one_canonical_spelling() {
     let terms = |s: &str| checked("invoicing.default_terms", json!(s));
@@ -575,7 +575,7 @@ fn contact_details_are_in_the_company_profile() {
 
 /// Replay checks the new kinds by shape, never by a later version's
 /// bounds: a count is a positive whole number, terms any string, and a
-/// method list of objects with their fields (rules.md B-28).
+/// method list of objects with their fields (BS-entry-4).
 #[test]
 fn replay_shapes_the_new_kinds() {
     let count = key("invoicing.unsent_days").unwrap();

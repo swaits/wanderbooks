@@ -2,7 +2,7 @@
 //! (receivables, revenue, payables, general expense, retained earnings, the
 //! seven payroll accounts) assigned to the chart's own accounts.
 //!
-//! Oracles are `docs/spec/rules.md` B-4 (the five elements) and B-23
+//! Oracles are BS-ledger-2 (the five elements) and BS-ledger-8
 //! (control roles), the spec block on `Ledger::assign_role`, the doc
 //! comments of `Ledger::role_account`, `role_assignment`,
 //! `check_assign_role`, `control_account`, `ControlAccount::key`, the spec
@@ -48,7 +48,7 @@ fn line(desc: &str, amount: &str) -> DocumentLine {
     }
 }
 
-/// The thirteen role keys, as the spec lists them (B-23, B-41's
+/// The thirteen role keys, as the spec lists them (BS-ledger-8, BS-arap-5's
 /// bad_debts, and `UnknownRole`).
 const KEYS: [&str; 13] = [
     "receivables",
@@ -106,9 +106,9 @@ fn bal(l: &Ledger, id: AccountId) -> Decimal {
 
 /// Draft, add lines, post. Panics on any refusal (setup only). Posted as
 /// replay posts it: these books hold hand lines on receivables or payables
-/// (moving a role's balance by hand, B-23's path before documents read
+/// (moving a role's balance by hand, BS-ledger-8's path before documents read
 /// their lines), which books an earlier version wrote still hold; the
-/// control guard (rules.md B-38) refuses them as new work.
+/// control guard (BS-arap-2) refuses them as new work.
 fn post(l: &mut Ledger, date: NaiveDate, lines: &[(AccountId, Side, &str)]) -> EntryId {
     ledger_core::parties::replaying(|| {
         let id = l.try_create_entry(date, "test entry").unwrap();
@@ -250,7 +250,7 @@ fn alice() -> PayrollLine {
 
 // ------------------------------------------------------------ the roles
 
-/// Oracle: B-23 (and B-41 for bad_debts) names the roles and their default
+/// Oracle: BS-ledger-8 (and BS-arap-5 for bad_debts) names the roles and their default
 /// codes; `control_account` finds a role by its `key`; `UnknownRole` lists
 /// the thirteen keys.
 #[test]
@@ -601,7 +601,7 @@ fn an_unknown_account_is_refused() {
 
 // ----------------------------------------- SCENARIO 2: type / placeholder
 
-/// Oracle: SCENARIO 2 + INVARIANT 3 + B-4: every role refuses an account of
+/// Oracle: SCENARIO 2 + INVARIANT 3 + BS-ledger-2: every role refuses an account of
 /// each other type with ControlAccountMismatch naming the account, the
 /// role, the type needed and the type found.
 #[test]
@@ -688,7 +688,7 @@ fn none_is_refused_when_the_default_code_holds_a_wrong_typed_account() {
     }
 
     // The role assigned elsewhere, then 1200 taken by a wrong type (an
-    // assignment frees the code, B-23 / check_renumber_account): None is
+    // assignment frees the code, BS-ledger-8 / check_renumber_account): None is
     // refused, and the assignment stays.
     let (mut l, _) = books();
     let ar = add(&mut l, "1100", "Trade Receivables", AccountType::Asset);
@@ -784,7 +784,7 @@ fn none_is_refused_when_its_codes_account_fills_another_role() {
 
 // --------------------------------------------- SCENARIO 4: balances move
 
-/// Oracle: SCENARIO 4 + B-23 ("moves only when its account holds no
+/// Oracle: SCENARIO 4 + BS-ledger-8 ("moves only when its account holds no
 /// balance, so the bookkeeper first moves the balance with an entry").
 #[test]
 fn receivables_cannot_move_while_holding_a_balance_but_can_once_moved_out() {
@@ -814,7 +814,7 @@ fn receivables_cannot_move_while_holding_a_balance_but_can_once_moved_out() {
         other => panic!("expected DocumentRoleHoldsBalance, got {other:?}"),
     }
     // Moving the balance by hand is refused now (the control guard,
-    // rules.md B-38): until a role's balance moves with its documents
+    // BS-arap-2): until a role's balance moves with its documents
     // (plan P4b S7), a receivables role holding a balance stays put.
     let e = l.try_create_entry(d(2026, 3, 2), "move").unwrap();
     assert!(matches!(
@@ -874,7 +874,7 @@ fn every_balance_sheet_role_holds_while_its_account_has_a_balance() {
         );
         if c.key == RECEIVABLES.key || c.key == PAYABLES.key {
             // No document posted there: the balance is the chart's own,
-            // so the role moves (B-38); it can't come back to an account
+            // so the role moves (BS-arap-2); it can't come back to an account
             // holding hand lines.
             l.assign_role(c.key, Some(target)).unwrap();
             assert!(
@@ -924,7 +924,7 @@ fn none_is_refused_while_the_assigned_balance_sheet_account_holds_a_balance() {
     let _ = cash;
 }
 
-/// Oracle: SCENARIO 4 "Revenue and expense roles move freely"; B-23
+/// Oracle: SCENARIO 4 "Revenue and expense roles move freely"; BS-ledger-8
 /// "earlier postings stay where they are"; INVARIANT 4.
 #[test]
 fn revenue_and_expense_roles_move_even_with_a_balance() {
@@ -1048,7 +1048,7 @@ fn check_assign_role_agrees_and_does_not_mutate() {
 
 // ------------------------------------------- renumbering and the codes
 
-/// Oracle: B-23 + check_renumber_account ("an assigned role frees its
+/// Oracle: BS-ledger-8 + check_renumber_account ("an assigned role frees its
 /// code"); renumber_account SCENARIO 2 for an unassigned role's code.
 #[test]
 fn an_assigned_role_frees_its_code_for_renumbering() {

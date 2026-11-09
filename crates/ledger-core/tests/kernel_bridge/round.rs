@@ -361,7 +361,7 @@ fn round_places_keeps_the_old_scale() {
 }
 
 /// `round_minor` picks the currency's own unit; a currency with none is
-/// returned exactly (the FX rule, B-3).
+/// returned exactly (the FX rule, BS-ledger-1).
 #[test]
 fn round_minor_follows_the_currency() {
     use ledger_core::Currency;

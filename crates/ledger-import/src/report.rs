@@ -183,7 +183,7 @@ fn account_lines(lines: &[StatementLine]) -> impl Iterator<Item = Row> + '_ {
 ///
 /// ```text
 /// GOAL: the P&L as printed, footing.
-/// SOURCE: docs/spec/rules.md B-14; footing (each column adds to its
+/// SOURCE: BS-statement-3; footing (each column adds to its
 ///         printed totals) is the reader's check on any statement.
 /// INVARIANTS:
 ///   1. Revenue lines sum to "Total revenue"; expense lines to "Total
@@ -221,7 +221,7 @@ pub struct YearEarnings {
 ///
 /// ```text
 /// GOAL: the balance sheet as printed, footing and balancing.
-/// SOURCE: rules.md B-7 (the accounting equation); footing.
+/// SOURCE: BS-statement-2 (the accounting equation); footing.
 /// INVARIANTS:
 ///   1. Asset lines sum to "Total assets", liability lines to "Total
 ///      liabilities", equity lines (accounts and the earnings lines) to the
@@ -317,7 +317,7 @@ pub fn balance_sheet(
     )
 }
 
-/// Lay out a statement of cash flows, direct method (rules.md B-14, D-35):
+/// Lay out a statement of cash flows, direct method (BS-statement-3, D-35):
 /// operating cash one row per class ASC 230-10-45-25 requires; investing
 /// and financing one row per kind ("Contributions from members — Name"),
 /// each with its total and its transactions listed under it; then the
@@ -326,7 +326,7 @@ pub fn balance_sheet(
 ///
 /// ```text
 /// GOAL: the statement of cash flows as printed, footing and reconciling.
-/// SOURCE: rules.md B-14 (ASC 230-10-45-24, -25, -29, -30; 50-3, 50-6:
+/// SOURCE: BS-statement-3 (ASC 230-10-45-24, -25, -29, -30; 50-3, 50-6:
 ///         the noncash schedule on the same page); D-35 (layout by kind).
 /// INVARIANTS:
 ///   1. The operating class rows sum to "Net cash from operating
@@ -425,7 +425,7 @@ pub fn cash_flow(cf: &CashFlowStatement) -> Statement {
 ///
 /// ```text
 /// GOAL: the trial balance as printed, footing.
-/// SOURCE: rules.md B-6 (the trial balance balances; B-1); footing.
+/// SOURCE: BS-statement-1 (the trial balance balances; BS-entry-1); footing.
 /// INVARIANTS:
 ///   1. Each column's lines sum to its total; the totals are equal for
 ///      balanced books.
@@ -462,7 +462,7 @@ pub fn trial_balance(tb: &TrialBalance, as_of: NaiveDate) -> Statement {
 ///
 /// ```text
 /// GOAL: each member's capital roll-forward as printed.
-/// SOURCE: rules.md B-13 (Form 1065 Schedule K-1, Item L); footing.
+/// SOURCE: BS-partner-1 (Form 1065 Schedule K-1, Item L); footing.
 /// INVARIANTS:
 ///   1. In every column, beginning + contributions + net income +
 ///      distributions (printed negative) + other = ending.

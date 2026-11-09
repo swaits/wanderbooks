@@ -1,5 +1,5 @@
 //! `books.receive_payment`, `books.pay_bill`, `books.bills_due` and the
-//! agings: paying on terms (plan P4b S6; rules.md B-42). A payment settles
+//! agings: paying on terms (plan P4b S6; BS-arap-6). A payment settles
 //! one or several invoices (or bills) of one party, with the early-payment
 //! discounts their terms allow and the processor's fee on a customer
 //! payment posted gross. Split from `tools/documents.rs` so S4.4's work
@@ -247,7 +247,7 @@ fn settlement(
 }
 
 /// What a payment settled: each document's figures after it (derived from
-/// its lines that stand, rules.md B-38) and what reached or left the
+/// its lines that stand, BS-arap-2) and what reached or left the
 /// account.
 fn payment_out(
     ledger: &Ledger,

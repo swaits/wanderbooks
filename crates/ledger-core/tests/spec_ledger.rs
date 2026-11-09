@@ -130,7 +130,7 @@ fn try_post(
 }
 
 /// [`try_post`] through the replay path, which books written before the
-/// minor-unit rule (B-3, 2026-10-13) still take: for the kernel's own
+/// minor-unit rule (BS-ledger-1, 2026-10-13) still take: for the kernel's own
 /// limits below a cent.
 fn try_replay_post(
     l: &mut Ledger,
@@ -245,7 +245,7 @@ fn tb_has_code(l: &Ledger, as_of: NaiveDate, code: &str) -> bool {
 // add_account
 // ---------------------------------------------------------------------------
 
-/// Oracle: R-4 / B-4: an added account is findable by its code with exactly
+/// Oracle: R-4 / BS-ledger-2: an added account is findable by its code with exactly
 /// the type, parent, and placeholder flag it was given.
 #[test]
 fn an_added_account_is_registered_under_its_code() {
@@ -339,7 +339,7 @@ fn a_refused_account_never_uses_up_an_id() {
     assert_eq!(id, announced);
 }
 
-/// Oracle: add_account SCENARIO 3 (B-4 DECISION): a child of another type is
+/// Oracle: add_account SCENARIO 3 (BS-ledger-2 DECISION): a child of another type is
 /// refused with ParentTypeMismatch and NEVER added.
 #[test]
 fn a_child_account_has_its_parents_type() {
@@ -390,7 +390,7 @@ fn a_new_draft_gets_the_next_id_one_past_the_last() {
     assert!(e.lines().is_empty());
 }
 
-/// Oracle: try_create_entry SCENARIO 1 (B-12): a date inside a closed period,
+/// Oracle: try_create_entry SCENARIO 1 (BS-period-2): a date inside a closed period,
 /// first and last day included, is refused with ClosedPeriod and creates
 /// nothing; the day after the period is accepted.
 #[test]
@@ -444,7 +444,7 @@ fn lines_are_kept_in_the_order_added() {
     );
 }
 
-/// Oracle: B-1 DECISION (owner, 2026-10-13): a line on an unknown account
+/// Oracle: BS-entry-1 DECISION (owner, 2026-10-13): a line on an unknown account
 /// is refused when added (UnknownAccount), not only at post.
 #[test]
 fn a_line_on_an_unknown_account_is_refused_when_added() {
@@ -458,7 +458,7 @@ fn a_line_on_an_unknown_account_is_refused_when_added() {
     assert_eq!(observe(&b.l), before);
 }
 
-/// Oracle: B-1 DECISION / R-4: a line on a placeholder account is refused
+/// Oracle: BS-entry-1 DECISION / R-4: a line on a placeholder account is refused
 /// when added (PlaceholderAccount).
 #[test]
 fn a_line_on_a_placeholder_account_is_refused_when_added() {
@@ -473,7 +473,7 @@ fn a_line_on_a_placeholder_account_is_refused_when_added() {
     assert_eq!(observe(&b.l), before);
 }
 
-/// Oracle: B-3 / R-5 and the add_line doc: a foreign-currency amount is
+/// Oracle: BS-ledger-1 / R-5 and the add_line doc: a foreign-currency amount is
 /// refused, never converted (CurrencyMismatch).
 #[test]
 fn a_foreign_currency_line_is_refused_not_converted() {
@@ -493,7 +493,7 @@ fn a_foreign_currency_line_is_refused_not_converted() {
     assert_eq!(observe(&b.l), before);
 }
 
-/// Oracle: R-3 / B-8 and the PostedEntryImmutable doc ("add lines"): a posted
+/// Oracle: R-3 / BS-ledger-4 and the PostedEntryImmutable doc ("add lines"): a posted
 /// entry takes no more lines.
 #[test]
 fn a_posted_entry_takes_no_more_lines() {
@@ -523,7 +523,7 @@ fn a_line_on_an_unknown_entry_is_refused() {
     assert_eq!(observe(&b.l), before);
 }
 
-/// Oracle: B-3 (ASC 830-20-30-1) and the add_line_fx doc: base = foreign ×
+/// Oracle: BS-ledger-1 (ASC 830-20-30-1) and the add_line_fx doc: base = foreign ×
 /// rate (100 EUR × 1.10 = 110.00 USD), the original kept; the entry then
 /// balances in base currency.
 #[test]
@@ -569,7 +569,7 @@ fn a_non_positive_fx_rate_is_refused() {
     }
 }
 
-/// Oracle: rules.md B-3 "Checked: fx_overflow_is_an_error" and B-21 (exact
+/// Oracle: BS-ledger-1 "Checked: fx_overflow_is_an_error" and BS-entry-3 (exact
 /// amounts): a product that can't be represented is refused, never rounded
 /// or wrapped.
 #[test]
@@ -584,7 +584,7 @@ fn fx_overflow_is_an_error() {
     assert_eq!(observe(&b.l), before);
 }
 
-/// Oracle: B-1 DECISION applies to add_line_fx too: unknown account refused
+/// Oracle: BS-entry-1 DECISION applies to add_line_fx too: unknown account refused
 /// when added.
 #[test]
 fn a_foreign_line_on_an_unknown_account_is_refused_when_added() {
@@ -598,7 +598,7 @@ fn a_foreign_line_on_an_unknown_account_is_refused_when_added() {
     assert_eq!(observe(&b.l), before);
 }
 
-/// Oracle: B-3 + line range (AmountOutOfRange: at most one quadrillion):
+/// Oracle: BS-ledger-1 + line range (AmountOutOfRange: at most one quadrillion):
 /// a foreign line converting to 2,000,000,000,000,000 USD never posts.
 #[test]
 fn a_foreign_line_beyond_line_range_never_posts() {
@@ -631,7 +631,7 @@ fn posting_an_unknown_entry_is_refused() {
     assert_eq!(observe(&b.l), before);
 }
 
-/// Oracle: post_entry SCENARIO 2 (B-8): a posted entry is never posted
+/// Oracle: post_entry SCENARIO 2 (BS-ledger-4): a posted entry is never posted
 /// twice (EntryAlreadyPosted), the log unchanged.
 #[test]
 fn a_posted_entry_is_never_posted_twice() {
@@ -647,7 +647,7 @@ fn a_posted_entry_is_never_posted_twice() {
     assert_eq!(b.l.posted_entries().count(), 1);
 }
 
-/// Oracle: post_entry SCENARIO 3 (B-12): an entry dated in a closed period
+/// Oracle: post_entry SCENARIO 3 (BS-period-2): an entry dated in a closed period
 /// is refused (ClosedPeriod), even one drafted through the unchecked
 /// constructor.
 #[test]
@@ -670,7 +670,7 @@ fn an_entry_dated_in_a_closed_period_never_posts() {
     assert_eq!(observe(&b.l), before);
 }
 
-/// Oracle: R-1/B-1: fewer than two lines is refused (TooFewLines), for zero
+/// Oracle: R-1/BS-entry-1: fewer than two lines is refused (TooFewLines), for zero
 /// lines and for one.
 #[test]
 fn an_entry_with_fewer_than_two_lines_never_posts() {
@@ -690,7 +690,7 @@ fn an_entry_with_fewer_than_two_lines_never_posts() {
     assert_eq!(b.l.posted_entries().count(), 0);
 }
 
-/// Oracle: R-1/B-1 (no epsilon): 100.00 against 99.99 is refused with the
+/// Oracle: R-1/BS-entry-1 (no epsilon): 100.00 against 99.99 is refused with the
 /// offending totals.
 #[test]
 fn an_unbalanced_entry_is_refused_with_its_totals() {
@@ -744,7 +744,7 @@ fn exact_decimal_sums_balance() {
     assert_eq!(r, None);
 }
 
-/// Oracle: R-6 / B-2: a zero-amount line is refused (ZeroAmountLine).
+/// Oracle: R-6 / BS-entry-2: a zero-amount line is refused (ZeroAmountLine).
 #[test]
 fn a_zero_amount_line_never_posts() {
     let mut b = books();
@@ -761,7 +761,7 @@ fn a_zero_amount_line_never_posts() {
     assert_eq!(b.l.posted_entries().count(), 0);
 }
 
-/// Oracle: B-2: a negative amount is refused (NegativeAmountLine): the side
+/// Oracle: BS-entry-2: a negative amount is refused (NegativeAmountLine): the side
 /// says the direction.
 #[test]
 fn a_negative_amount_line_never_posts() {
@@ -799,7 +799,7 @@ fn line_range_is_one_quadrillion_and_ten_places() {
         ok(&mut b, "1000000000000000.01"),
         Some(LedgerError::AmountOutOfRange)
     );
-    // Below a cent, new work is refused first (B-3); replayed books meet
+    // Below a cent, new work is refused first (BS-ledger-1); replayed books meet
     // the kernel's ten-place limit.
     assert!(matches!(
         ok(&mut b, "0.0000000001"),
@@ -886,7 +886,7 @@ fn the_log_is_in_posting_order() {
 // check_reversal / reverse_entry
 // ---------------------------------------------------------------------------
 
-/// Oracle: B-9 (Pacioli's storno): the reversal has the same lines with
+/// Oracle: BS-ledger-5 (Pacioli's storno): the reversal has the same lines with
 /// sides flipped, is posted, dated as asked, linked by `reversal_of`, and
 /// returns every balance to what it was.
 #[test]
@@ -917,12 +917,12 @@ fn a_reversal_mirrors_the_original_and_cancels_it() {
     for a in [b.exp, b.cash, b.card] {
         assert_eq!(b.l.account_balance(a).unwrap(), Decimal::ZERO);
     }
-    // The original is untouched (B-8): never erased.
+    // The original is untouched (BS-ledger-4): never erased.
     assert_eq!(b.l.get_entry(e).unwrap().status(), EntryStatus::Posted);
     assert_eq!(b.l.posted_entries().count(), 2);
 }
 
-/// Oracle: B-10 / check_reversal SCENARIO 2: an entry is reversed at most
+/// Oracle: BS-ledger-6 / check_reversal SCENARIO 2: an entry is reversed at most
 /// once (EntryAlreadyReversed(entry, by)); reversing the reversal is allowed
 /// and re-instates it, and does not reopen the original.
 #[test]
@@ -986,7 +986,7 @@ fn only_posted_entries_are_reversed() {
     assert_eq!(observe(&b.l), before);
 }
 
-/// Oracle: B-10 / check_reversal SCENARIO 3: a closing entry is never
+/// Oracle: BS-ledger-6 / check_reversal SCENARIO 3: a closing entry is never
 /// reversed (ClosingEntryIrreversible), even dated in an open period.
 #[test]
 fn a_closing_entry_is_never_reversed() {
@@ -1015,7 +1015,7 @@ fn a_closing_entry_is_never_reversed() {
     assert_eq!(observe(&b.l), before);
 }
 
-/// Oracle: check_reversal SCENARIO 4 (B-12): a reversal dated in a closed
+/// Oracle: check_reversal SCENARIO 4 (BS-period-2): a reversal dated in a closed
 /// period is refused (ClosedPeriod); dated after it, accepted.
 #[test]
 fn a_reversal_is_never_dated_in_a_closed_period() {
@@ -1184,7 +1184,7 @@ fn assert_balanced(l: &Ledger, id: EntryId) {
     assert_eq!(dr, cr, "closing entry must balance");
 }
 
-/// Oracle: close INVARIANTS 1-3 and B-11: closing to retained earnings
+/// Oracle: close INVARIANTS 1-3 and BS-period-1: closing to retained earnings
 /// zeroes revenue and expense as of Jan 31, credits 3999 (created, equity)
 /// with exactly the net 700.00, is dated Jan 31, balances, locks the
 /// period, and leaves February's 50.00 sale untouched.
@@ -1296,7 +1296,7 @@ fn a_period_with_drafts_never_closes() {
     assert_eq!(observe(&b.l), before);
 }
 
-/// Oracle: close SCENARIO 3 (B-12): closing out of order is refused
+/// Oracle: close SCENARIO 3 (BS-period-2): closing out of order is refused
 /// (CloseOutOfOrder(id, later)).
 #[test]
 fn periods_close_in_order() {
@@ -1443,7 +1443,7 @@ fn members(shares: &[(AccountId, &str, Option<AccountId>)]) -> CloseTo {
     )
 }
 
-/// Oracle: B-13 / AGENTS.md (50/50): net 700.00 splits 350.00 / 350.00; each
+/// Oracle: BS-partner-1 / AGENTS.md (50/50): net 700.00 splits 350.00 / 350.00; each
 /// member's distributions close into their own capital.
 #[test]
 fn a_partnership_close_splits_by_share() {
@@ -1488,7 +1488,7 @@ fn net_books(net: &str) -> (Books, PeriodId, AccountId) {
     (b, jan, cap_c)
 }
 
-/// Oracle: B-13 DECISION (largest remainder, ties to the earlier member),
+/// Oracle: BS-partner-1 DECISION (largest remainder, ties to the earlier member),
 /// hand-computed: 1.05 at 0.3/0.3/0.4 is exactly 0.315/0.315/0.42; rounded
 /// down 0.31/0.31/0.42 leaves one cent, remainders .005/.005/0 tie, so the
 /// first member gets it: 0.32/0.31/0.42. (The retired last-absorbs rule
@@ -1507,7 +1507,7 @@ fn members_split_by_largest_remainder_ties_to_the_earlier() {
     assert_eq!(b.l.account_balance(cap_c).unwrap(), dec("0.42"));
 }
 
-/// Oracle: B-13 / kernel::apportion INVARIANT 3, hand-computed: 0.07 at
+/// Oracle: BS-partner-1 / kernel::apportion INVARIANT 3, hand-computed: 0.07 at
 /// 0.2/0.3/0.5 is exactly 0.014/0.021/0.035; rounded down 0.01/0.02/0.03
 /// (sum 0.06), remainders .004/.001/.005, so the largest remainder (the
 /// third) gets the cent: 0.01/0.02/0.04, wherever it sits in the list.
@@ -1736,7 +1736,7 @@ fn only_a_posted_line_can_clear() {
 // account_balance
 // ---------------------------------------------------------------------------
 
-/// Oracle: account_balance INVARIANT 1 / B-5 and trial balance SCENARIO 2:
+/// Oracle: account_balance INVARIANT 1 / BS-ledger-3 and trial balance SCENARIO 2:
 /// asset debited 100 and credited 30 is 70; credit-normal accounts read
 /// credits minus debits; a contra balance is negative.
 #[test]
@@ -1818,7 +1818,7 @@ fn the_balance_of_an_unknown_account_is_refused() {
 // ---------------------------------------------------------------------------
 
 /// Oracle: set_line_class GOAL: a draft line is tagged (and cleared with
-/// None); SCENARIO 1 (B-8): a posted line NEVER changes; SCENARIO 2: an
+/// None); SCENARIO 1 (BS-ledger-4): a posted line NEVER changes; SCENARIO 2: an
 /// unknown line or class is refused.
 #[test]
 fn only_draft_lines_take_a_class() {
@@ -2287,7 +2287,7 @@ proptest! {
         prop_assert_eq!(observe_but_account_ids(&f.b.l), before, "command {} changed the books ({:?})", k, r);
     }
 
-    /// Oracle: B-1/B-6 and post_entry INVARIANT 2 against the test's own
+    /// Oracle: BS-entry-1/BS-statement-1 and post_entry INVARIANT 2 against the test's own
     /// model: every balanced random entry posts, the log is exactly the
     /// posting sequence, earlier entries never change, every balance equals
     /// the model on its normal side, and the trial balance balances.
@@ -2314,7 +2314,7 @@ proptest! {
         prop_assert!(trial_balance(&b.l).balanced());
     }
 
-    /// Oracle: close INVARIANTS 1-4 and B-13 against the test's own model,
+    /// Oracle: close INVARIANTS 1-4 and BS-partner-1 against the test's own model,
     /// for random books closed 50/50 to members at Jan 31: revenue and
     /// expense are zero as of Jan 31; what remains is exactly February and
     /// March; the members' credits sum to January's net with A taking the
@@ -2551,7 +2551,7 @@ fn renumber_refusals_leave_the_books_unchanged() {
 }
 
 // ---------------------------------------------------------------------
-// Ledger::rename_account (P3, defect 15; rules.md B-31).
+// Ledger::rename_account (P3, defect 15; BS-ledger-10).
 // ---------------------------------------------------------------------
 
 proptest! {
@@ -2721,7 +2721,7 @@ fn a_closed_period_or_a_role_never_blocks_a_rename() {
     assert_eq!(l.role_account(&ledger_core::GENERAL_EXPENSES), Some(b.exp));
 }
 
-/// rename_account INVARIANT 3 (rules.md B-28's pair): replay takes a
+/// rename_account INVARIANT 3 (BS-entry-4's pair): replay takes a
 /// journaled name the command now refuses (blank, a sibling's, nine
 /// digits, unchanged) for an account that exists, and refuses only an
 /// unknown account.
@@ -2738,7 +2738,7 @@ fn a_journaled_rename_replays_past_the_command_rules() {
     );
 }
 
-/// add_account SCENARIOS 5-6 (rules.md B-31): a new account named like a
+/// add_account SCENARIOS 5-6 (BS-ledger-10): a new account named like a
 /// sibling (ignoring capitals and surrounding space; top-level accounts
 /// are siblings) or holding a run of nine digits is refused, using up no
 /// id; under another parent the name is free. Replay takes them all, and
@@ -2838,12 +2838,12 @@ fn a_rename_reason_is_bounded_text_without_a_tin() {
     assert!(Ledger::check_rename_reason(&"x".repeat(2_000)).is_ok());
 }
 
-/// add_account SCENARIOS 7-8 and rename_account SCENARIO 6 (rules.md
-/// B-31): a new name is one line of at most MAX_ACCOUNT_NAME characters,
+/// add_account SCENARIOS 7-8 and rename_account SCENARIO 6 (
+/// BS-ledger-10): a new name is one line of at most MAX_ACCOUNT_NAME characters,
 /// kept trimmed, by a new account and a rename alike: 200 characters are
 /// taken, 201 refused, and so is a line break, a tab or another control
 /// character; surrounding space is dropped the same way on both paths.
-/// Replay takes any journaled name (B-28).
+/// Replay takes any journaled name (BS-entry-4).
 #[test]
 fn a_new_name_is_one_trimmed_line_of_bounded_length() {
     use ledger_core::account::MAX_ACCOUNT_NAME;

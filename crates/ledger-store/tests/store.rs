@@ -723,7 +723,7 @@ fn schedules_and_recurring_entries_replay_exactly() {
     assert!(store.run_recurring(date(2, 28)).unwrap().is_empty());
 }
 
-/// Regression (B-12, found by the refusal property on 2026-10-13):
+/// Regression (BS-period-2, found by the refusal property on 2026-10-13):
 /// `run_recurring` leaves occurrences in a closed period ungenerated
 /// instead of creating drafts there, and still generates the rest.
 #[test]
@@ -1246,7 +1246,7 @@ mod refusals {
             }]
         };
         match *op {
-            // Named for the code: a sibling's name is refused (B-31), and
+            // Named for the code: a sibling's name is refused (BS-ledger-10), and
             // a code is the first refusal.
             Op::AddAccount(c, t, p, h) => store
                 .add_account(
@@ -1772,7 +1772,7 @@ mod refusals {
     /// Regression (CI, 2026-10-13): a payroll run with unrounded employer
     /// tax posted $65.27794, and sums of it differed in scale between the
     /// journal replay and the SQLite read-back. Posting now refuses
-    /// fractions of a cent (B-3; `no_entry_posts_a_fraction_of_the_minor_unit`);
+    /// fractions of a cent (BS-ledger-1; `no_entry_posts_a_fraction_of_the_minor_unit`);
     /// this replays the sequence with the tax rounded, as callers must.
     #[test]
     fn regression_payroll_with_a_fraction_of_a_cent() {
@@ -1793,7 +1793,7 @@ mod refusals {
 }
 
 /// D-75: the ten-place bound on a foreign amount is the command's, never
-/// replay's (B-28). A journal an earlier version wrote, holding a line with
+/// replay's (BS-entry-4). A journal an earlier version wrote, holding a line with
 /// a 26-place foreign amount, opens with its figures exactly as journaled.
 #[test]
 fn a_journaled_foreign_line_finer_than_ten_places_still_opens() {
@@ -2398,7 +2398,7 @@ fn books_written_under_older_rules_still_open() {
     );
     // The write-off replays as written: its line is the invoice's
     // (WriteOff), so what it owes fell by 30.00 and what was written off
-    // rose by it (B-41, B-38).
+    // rose by it (BS-arap-5, BS-arap-2).
     let st = store
         .ledger()
         .invoice_state(2, NaiveDate::from_ymd_opt(2026, 6, 30).unwrap())
@@ -2426,7 +2426,7 @@ fn books_written_under_older_rules_still_open() {
 /// written through main 188c90ea's Store API (or, for x_older_rules, its
 /// JournalWriter, as above), and expected.json by main's own code: verify,
 /// the canonical report snapshot, and every record as replayed. They hold
-/// what P0 bounds for new commands only (rules.md B-28): dates before 0001
+/// what P0 bounds for new commands only (BS-entry-4): dates before 0001
 /// and after 9999 (to chrono's first and last days), draft, recurring and
 /// share amounts past the line limit (to Decimal's largest), a contributor
 /// basis past it, sub-cent document and payroll lines, an asset life of
@@ -2500,7 +2500,7 @@ fn old_books_figures(l: &ledger_core::Ledger) -> serde_json::Value {
     })
 }
 
-/// Contract (posted is forever, rules.md B-28; P0 review round 4,
+/// Contract (posted is forever, BS-entry-4; P0 review round 4,
 /// 2026-10-17): every book an earlier version wrote opens, in the writer
 /// (Store::open, its database rebuilt from the journal) and the viewer
 /// (Snapshot::load) alike, verifies as it did, and replays to exactly the
@@ -2540,7 +2540,7 @@ fn books_an_earlier_version_wrote_open_to_its_figures() {
     }
 }
 
-/// Every figure the engine derives from old books (B-28: computed, or
+/// Every figure the engine derives from old books (BS-entry-4: computed, or
 /// refused with TooLargeToCompute or DateOutOfRange, never a panic): every
 /// report over the books' whole span and the calendar's, every asset's
 /// schedule and register row, every amortization plan, every recurring
@@ -2636,7 +2636,7 @@ fn every_figure_of(l: &ledger_core::Ledger) -> (usize, usize) {
         tally(reports::general_ledger(l, start, end).map(|_| ()));
         tally(reports::members_equity(l, start, end, &members).map(|_| ()));
         // The statement of cash flows foots on every book, or is refused
-        // for a reason: never an engine error (rules.md B-14 rule 9).
+        // for a reason: never an engine error (BS-statement-3 rule 9).
         let cf = reports::cash_flow(
             l,
             &reports::CashFlowParams {
@@ -2738,7 +2738,7 @@ fn every_figure_of(l: &ledger_core::Ledger) -> (usize, usize) {
     (ok, refused)
 }
 
-/// B-28 over every old book: each figure is computed or refused, never a
+/// BS-entry-4 over every old book: each figure is computed or refused, never a
 /// panic, in the writer's ledger and the viewer's.
 #[test]
 fn every_figure_over_old_books_is_computed_or_refused() {
@@ -2909,7 +2909,7 @@ fn store_add(store: &mut Store, code: &str, t: AccountType) -> ledger_core::Acco
     store.add_account(code, code, t, None, false).unwrap()
 }
 
-/// Contract (rules.md B-13): each members close journals its rounding rule
+/// Contract (BS-partner-1): each members close journals its rounding rule
 /// and replays under it: "cumulative_since" with the close its count starts
 /// at for new closes (P3), "cumulative" for the run rule of 2026-10-13 to
 /// P3, "largest_remainder" for the per-close rule of earlier on 2026-10-13.
@@ -3387,7 +3387,7 @@ fn searching_entries_filters_and_pages() {
 }
 
 /// The database's invoice row keeps no figure of its own (schema 15,
-/// rules.md B-38): what it has been paid is the ledger's, read from the
+/// BS-arap-2): what it has been paid is the ledger's, read from the
 /// lines tagged with it, so a reversed payment no longer counts; the row
 /// is the same before and after each payment, and verify agrees.
 #[test]
@@ -3607,7 +3607,7 @@ fn a_database_with_damaged_pages_is_rebuilt() {
 
 // ---------------------------------------------------------------------------
 // P3: renaming an account, and the tax category policy (defects 15 and 8;
-// rules.md B-31, B-32).
+// BS-ledger-10, BS-ledger-11).
 // ---------------------------------------------------------------------------
 
 /// Every row of every projection table but the journal's own (`events`,
@@ -3675,7 +3675,7 @@ fn figures_but_names(l: &ledger_core::Ledger) -> serde_json::Value {
     })
 }
 
-/// rename_account (repro 1.2; rules.md B-31): a rename changes the
+/// rename_account (repro 1.2; BS-ledger-10): a rename changes the
 /// account's name and nothing else: no figure, entry or line, no earlier
 /// journal line, no projection row but `accounts.name`; the journal gains
 /// one `account.renamed` line (keyed by id, with the old name and the
@@ -3778,7 +3778,7 @@ fn rename_account_changes_only_the_name_defect_15() {
     assert_eq!(snap.ledger().chart().get(rent).unwrap().name, "Rent");
 }
 
-/// rules.md B-28's pair for renames (review R5): the command refuses a
+/// BS-entry-4's pair for renames (review R5): the command refuses a
 /// blank name, a sibling's or nine digits; replay takes a journaled line
 /// holding any of them (a later version may tighten the rules, never lock
 /// out books it wrote), and refuses only an account that doesn't exist.
@@ -3850,7 +3850,7 @@ fn tax_policy(store: &mut Store, value: Option<&str>) {
         .unwrap();
 }
 
-/// add_account_with_tax and the policy (rules.md B-32): under warn an
+/// add_account_with_tax and the policy (BS-ledger-11): under warn an
 /// account is created without a category; under refuse a revenue or
 /// expense account that isn't a header is refused without one, journaling
 /// nothing, and created with one as account.added then account.tax_set;
@@ -3996,7 +3996,7 @@ fn the_tax_category_policy_refuses_only_what_it_says() {
     Store::open(&dir).unwrap().verify().unwrap();
 }
 
-/// rules.md B-28's pair for the policy (review R5): the policy is the
+/// BS-entry-4's pair for the policy (review R5): the policy is the
 /// commands', never replay's. A journal that sets refuse and then clears
 /// a category, or adds an uncategorized expense account, replays.
 #[test]
@@ -4065,7 +4065,7 @@ mod p3_properties {
             ..ProptestConfig::default()
         })]
 
-        /// rules.md B-31 (the engine-side counterpart to the Lean note,
+        /// BS-ledger-10 (the engine-side counterpart to the Lean note,
         /// docs/verification.md law 15): on books with postings, any sequence
         /// of renames changes no figure (the ledger's statements, without
         /// names), no entry and no earlier journal line; live equals
@@ -4098,7 +4098,7 @@ mod p3_properties {
             prop_assert!(live.differs_from(reopened.ledger()).is_empty());
         }
 
-        /// rules.md B-32: add_account_with_tax is refused exactly when the
+        /// BS-ledger-11: add_account_with_tax is refused exactly when the
         /// policy is refuse, the account needs a category (revenue or
         /// expense, not a header) and none is given, or when the category
         /// doesn't fit; a refusal journals nothing.
@@ -4303,7 +4303,7 @@ fn books_written_under_p3_keep_their_names() {
     assert_eq!(chart_of(snap.ledger()), want);
 }
 
-/// rules.md B-31: a new account's name is journaled trimmed, as a rename
+/// BS-ledger-10: a new account's name is journaled trimmed, as a rename
 /// journals one, so the live books, a reopen and the projection all read
 /// the same name; the command's text rules refuse a name a report can't
 /// print on one line, journaling nothing.

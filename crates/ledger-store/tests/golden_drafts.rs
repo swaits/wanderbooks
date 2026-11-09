@@ -1,9 +1,9 @@
 //! Golden file for draft states, discard and the one evidence gate
 //! (`docs/parity.md`: "Draft states and discard" and "One evidence gate").
 //!
-//! Rules: `docs/spec/rules.md` B-43 (a draft waits on its evidence; one that
+//! Rules: BS-entry-5 (a draft waits on its evidence; one that
 //! will never post can be discarded), D-47 (a reversal needs no receipt of
-//! its own), B-12 (a period with an open draft cannot close).
+//! its own), BS-period-2 (a period with an open draft cannot close).
 //!
 //! It is a `Store` fixture, not a bare `Ledger`, because the gate's second
 //! half (is a receipt on file) lives in the store. Every expected value is

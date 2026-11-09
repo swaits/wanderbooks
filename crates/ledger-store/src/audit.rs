@@ -1,4 +1,4 @@
-//! The audit's journal and the integrity checks (plan P8; rules.md B-45):
+//! The audit's journal and the integrity checks (plan P8; BS-ledger-13):
 //! `audit.run`, `receipt.attested`, `entry.reviewed` and `period.attested`,
 //! what "the current head" means, and the findings only the store can see.
 //!
@@ -7,7 +7,7 @@
 //!       head, so the same books give the same run once, and an
 //!       attestation rests on a head that has not moved.
 //! SOURCE: IRS Pub. 583 (records); Rev. Proc. 98-25 §5.01 (the audit
-//!         trail); docs/spec/rules.md B-45; DECISION D-9 (the bar), D-53
+//!         trail); BS-ledger-13; DECISION D-9 (the bar), D-53
 //!         (an audit is a run, not a job), IZ-1k (the head).
 //! INVARIANTS:
 //!   1. The figure head is the seq of the last journal line that bears on

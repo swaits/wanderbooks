@@ -470,7 +470,7 @@ impl App {
     ///
     /// ```text
     /// GOAL: the viewer shows what the agent was told it shows.
-    /// SOURCE: rules.md B-30 (one default period; a start after the end is
+    /// SOURCE: BS-period-3 (one default period; a start after the end is
     ///         refused, never swapped); plan/served.md P3 defect 15.
     /// INVARIANTS:
     ///   1. A target's dates are taken as the server resolved them, an

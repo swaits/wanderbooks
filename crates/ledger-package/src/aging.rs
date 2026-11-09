@@ -1,5 +1,5 @@
 //! The receivables and payables agings as files (plan P4b S6, 8.3.10;
-//! rules.md B-18, B-23): one row per open document, and a tie-out line
+//! BS-arap-1, BS-ledger-8): one row per open document, and a tie-out line
 //! against the control account. The server's `books.export` and the CPA
 //! package build the same CSV from this, and its XLSX/PDF from
 //! [`aging_statement`], so a CPA's two copies can't differ.

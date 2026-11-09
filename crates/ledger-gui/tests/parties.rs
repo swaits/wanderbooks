@@ -282,7 +282,7 @@ fn fixture(tag: &str) -> Fixture {
     let e = pay(&mut s, d(2026, 1, 20), "Old Co", cash, 12_300);
     s.set_entry_party(e, Some(old)).unwrap();
     s.update_party(old, PartyField::Archived(true)).unwrap();
-    // What the members advanced is money (rules.md B-35 item 5): Due to
+    // What the members advanced is money (BS-partner-3 item 5): Due to
     // Shareholders is a financing account; the cash account stays the
     // books' (the settings file names both).
     journal_settings(
@@ -353,10 +353,10 @@ fn each_partys_totals_are_the_books_numbers() {
     assert_eq!(sam.threshold_1099, Some(r.threshold));
     // Cash counts (1,000 + the bill's 500); what the owner paid for the
     // company through the financing account waits on how they paid
-    // (rules.md B-19); the card's charge is no payment out of cash.
+    // (BS-1099-1); the card's charge is no payment out of cash.
     assert_eq!(line.paid, cents(150_000));
     assert_eq!(line.undetermined, cents(30_000));
-    // Party totals count all of it as paid to Sam (B-35 item 9): the
+    // Party totals count all of it as paid to Sam (BS-partner-3 item 9): the
     // 1099's buckets, and the card's 200 (no business card is recorded,
     // so the worksheet lists it nowhere).
     assert_eq!(
@@ -935,7 +935,7 @@ fn party_money_by_period_and_what_for() {
     assert_eq!(line.paid, cents(50_000));
     // 2026: the cash 1,000 and the bill's 500 paid count; the owner's
     // 300 through the financing account waits on how it was paid
-    // (rules.md B-19); the card's 200 is no payment out of cash.
+    // (BS-1099-1); the card's 200 is no payment out of cash.
     let (line, _) = b.party_1099(f.sam, 2026).unwrap();
     assert_eq!(line.paid, cents(150_000));
     assert_eq!(line.undetermined, cents(30_000));
@@ -1270,7 +1270,7 @@ fn entries_list_every_party_with_its_resolved_share() {
         vec![(m.tobin, Some(cents(5_000))), (m.mo, Some(cents(5_000)))]
     );
     assert_eq!(e.party.as_deref(), Some("Tobin Harlow & Morgan Ellis"));
-    // Property (rules.md B-35): what moved each member's capital, signed
+    // Property (BS-partner-3): what moved each member's capital, signed
     // as their own account shows it: received, in kind (before P3 it read
     // +600.00, the sign of a payment).
     let e = b.entry(m.property).unwrap();
@@ -1423,7 +1423,7 @@ fn show(dir: &Path, route: Route) -> Harness<'static, App> {
     h
 }
 
-/// The viewer shows the tools' numbers (rules.md B-35): a member's party
+/// The viewer shows the tools' numbers (BS-partner-3): a member's party
 /// flow is books.party's activity on both bases, labelled cash basis, with
 /// the in-kind line under it; the entry page says each part in words, a
 /// property contribution "received $600.00, in kind" and its reversal
@@ -1490,7 +1490,7 @@ fn the_party_page_shows_the_basis_and_in_kind() {
 }
 
 /// The viewer's what-for reads a reversal as parties::flow does, the
-/// opposite of its original (rules.md B-35 item 3; design §1.4): a member
+/// opposite of its original (BS-partner-3 item 3; design §1.4): a member
 /// paying the card from their own funds (Dr card / Cr 2100), tagged with
 /// the issuer, then reversed, is nothing on the issuer's page, paid or
 /// what for. Its lines alone read as a second payment.
@@ -1534,7 +1534,7 @@ fn a_reversed_member_card_payment_is_nothing_on_the_issuers_page() {
     assert_eq!(flow.what_for, vec![], "the breakdown nets to nothing");
 }
 
-/// Screenshots of the party pages and the entry pages B-35 changed, for
+/// Screenshots of the party pages and the entry pages BS-partner-3 changed, for
 /// eyes: set `SHOT_DIR`.
 #[test]
 fn party_basis_screenshots() {

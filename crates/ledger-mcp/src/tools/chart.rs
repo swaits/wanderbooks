@@ -241,8 +241,8 @@ impl BooksServer {
         let mut store = self.lock()?;
         let id = resolve_account(&store, &p.account)?;
         let reason = p.reason.as_deref().map(str::trim).filter(|r| !r.is_empty());
-        // The sets the books pick by name, before and after (rules.md
-        // B-31: a rename moves no amount, but it can move an account into
+        // The sets the books pick by name, before and after (
+        // BS-ledger-10: a rename moves no amount, but it can move an account into
         // or out of one of these).
         let configured_cash = self.settings().roles.cash.clone();
         let picked = |ledger: &Ledger| {

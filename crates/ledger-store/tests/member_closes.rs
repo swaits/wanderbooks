@@ -1,4 +1,4 @@
-//! Members closes in the journal (P3 defect 17, rules.md B-13, B-27):
+//! Members closes in the journal (P3 defect 17, BS-partner-1, BS-format-1):
 //! the cumulative rule's feature declaration, its `since_seq`, what a
 //! newer or damaged rounding tag does on replay, and the first close after
 //! the upgrade on books an earlier version wrote. Every expected figure is
@@ -166,7 +166,7 @@ fn three_cumulative_closes(dir: &Path) -> Books {
     b
 }
 
-/// Contract (rules.md B-27; P3 defect 17; D-39): a members close counted
+/// Contract (BS-format-1; P3 defect 17; D-39): a members close counted
 /// from its regime's start needs the `members_cumulative` feature, so an
 /// older version stops at its declaration (it would replay the close under
 /// the run rule). New books declare it on their second line, with the rest
@@ -262,7 +262,7 @@ fn the_first_cumulative_close_declares_its_feature() {
 /// A change to a journaled close's target.
 type Edit = dyn Fn(&mut Value);
 
-/// Contract (rules.md B-27; P3 review R-9): a rounding rule only a newer
+/// Contract (BS-format-1; P3 review R-9): a rounding rule only a newer
 /// version writes is newer, never corrupt: an unknown name, or a value
 /// that isn't a name. A `since_seq` beside another rule, or a
 /// "cumulative_since" without a usable one, is damage.
@@ -325,7 +325,7 @@ fn an_unknown_rounding_is_newer_not_corrupt() {
     }
 }
 
-/// Contract (B-13, B-8): a count that starts after the books' first close
+/// Contract (BS-partner-1, BS-ledger-4): a count that starts after the books' first close
 /// journals the close it starts at, and replays to it. January's cent
 /// closes at 50/50 (close 1, A's: the tie). February's at 60/40 starts a
 /// new count at close 2 (0.006 / 0.004: A's), and March's continues it
@@ -364,7 +364,7 @@ fn a_count_that_starts_later_journals_its_start() {
     assert_eq!((bal(b.caps[0]), bal(b.caps[1])), (dec("0.02"), dec("0.01")));
 }
 
-/// Contract (B-8, B-13): replay re-derives where each count of members
+/// Contract (BS-ledger-4, BS-partner-1): replay re-derives where each count of members
 /// closes starts and refuses a close journaled with another start, so a
 /// wrong `since_seq` makes the books refuse to open, never show figures
 /// split some other way.

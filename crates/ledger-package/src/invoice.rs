@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! GOAL: print an invoice from the books, as of a day.
-//! SOURCE: plan/served.md P4b.11 (the "current" version); rules.md B-38
+//! SOURCE: plan/served.md P4b.11 (the "current" version); BS-arap-2
 //!         (a document's figures are its lines that stand).
 //! INVARIANTS:
 //!   1. Its figures are the invoice's derived state as of the day (as of

@@ -56,7 +56,7 @@ pub enum CloseTo {
     /// gives a member their share of everything closed to the members so
     /// far, to the currency's minor unit, less what earlier closes gave
     /// them, so no member is ever a minor unit from their exact share
-    /// (rules.md B-13; D-10). What new closes are made with; the books
+    /// (BS-partner-1; D-10). What new closes are made with; the books
     /// journal it as [`CloseTo::MembersCumulative`].
     Members(Vec<MemberClose>),
     /// [`CloseTo::Members`] as journaled: the count of members closes
@@ -130,7 +130,7 @@ pub fn allocate(
 
 /// [`allocate`], refusing with `TooLargeToCompute` instead of panicking
 /// when a share of `amount` is beyond exact arithmetic (a replayed close
-/// carries a journaled amount of any size, rules.md B-28). The same split,
+/// carries a journaled amount of any size, BS-entry-4). The same split,
 /// to the cent, for every amount [`allocate`] accepts.
 pub fn try_allocate(
     amount: rust_decimal::Decimal,
@@ -177,7 +177,7 @@ pub fn allocate_last_absorbs(
 
 /// [`allocate_last_absorbs`], refusing with `TooLargeToCompute` instead of
 /// panicking when `amount × share` or the plug is beyond exact arithmetic
-/// (replay of a legacy close with a huge journaled amount, rules.md B-28).
+/// (replay of a legacy close with a huge journaled amount, BS-entry-4).
 /// The same split, to the cent, for every amount [`allocate_last_absorbs`]
 /// accepts: this is the frozen rule, only its overflow now an error.
 pub fn try_allocate_last_absorbs(
@@ -205,22 +205,22 @@ pub fn try_allocate_last_absorbs(
 /// ([`crate::Currency::allocation_places`]) instead of cents, less what
 /// earlier closes gave each member (`given`, in the order of `shares`).
 /// Each member's running total is then one split of the running total
-/// (rules.md B-13; [`crate::kernel::apportion_cumulative`]). A loss is
+/// (BS-partner-1; [`crate::kernel::apportion_cumulative`]). A loss is
 /// the negation of the same gain: it splits |total| against `given`
 /// negated, then negates.
 ///
 /// ```text
 /// GOAL: no member's running share of earnings is ever a minor unit from
 ///       their exact share, whatever earlier closes gave them.
-/// SOURCE: docs/spec/rules.md B-13 (26 U.S.C. §704(a); Treas. Reg.
+/// SOURCE: BS-partner-1 (26 U.S.C. §704(a); Treas. Reg.
 ///         §1.704-1(b)(2)(iv)(b); largest remainder: DECISION, owner
-///         2026-10-13; from the first close: D-10); B-3 (the minor unit).
+///         2026-10-13; from the first close: D-10); BS-ledger-1 (the minor unit).
 /// INVARIANTS:
 ///   1. The parts MUST sum to total − Σ given exactly.
 ///   2. given[i] + part[i] MUST be member i's largest-remainder split of
 ///      total to `places` (ties to the earlier member): one split.
 ///   3. So when total is a whole number of units of `places` (every posted
-///      line is at its currency's allocation_places: its minor unit, B-3,
+///      line is at its currency's allocation_places: its minor unit, BS-ledger-1,
 ///      or for a currency without one the finest a line carries),
 ///      |given[i] + part[i] − total × share[i]| is under one unit (Lean
 ///      allocW_drift, cumulative_drift; Kani
@@ -326,7 +326,7 @@ pub struct Period {
     /// What a close under the run rule ([`CloseTo::MembersRun`], journaled
     /// `"cumulative"`) allocated, once closed that way. Only those closes
     /// have one: its serialized form is what earlier versions wrote, and
-    /// stays so (rules.md B-28). Every members close's split, under any
+    /// stays so (BS-entry-4). Every members close's split, under any
     /// rule, is [`Period::members_closed`].
     #[serde(default)]
     pub member_close: Option<MemberCloseRecord>,
@@ -415,7 +415,7 @@ impl Period {
 /// Validate a period's date range before creation.
 /// [`validate_period_order`], and both ends inside the calendar the books
 /// keep (crate::calendar; P0 review round 3, S1). For new periods; replay
-/// checks only the order (rules.md B-28).
+/// checks only the order (BS-entry-4).
 pub fn validate_period_range(start: NaiveDate, end: NaiveDate) -> Result<(), LedgerError> {
     crate::calendar::check(start)?;
     crate::calendar::check(end)?;

@@ -511,7 +511,7 @@ pub fn books(dir: &std::path::Path) -> Books {
             }
             4 => {
                 // Ben pays Delta with his own check, at the company's
-                // direction: the company is the payor (B-19).
+                // direction: the company is the payor (BS-1099-1).
                 let e = post(
                     &mut s,
                     &day(20),

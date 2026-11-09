@@ -24,8 +24,8 @@ pub enum EntryStatus {
 }
 
 /// Where a draft entry stands (plan P4, `drafts_v2`): still being built,
-/// or finished and waiting on the document that supports it (rules.md
-/// B-43). Meaningful while the entry is a draft; a posted entry keeps
+/// or finished and waiting on the document that supports it (
+/// BS-entry-5). Meaningful while the entry is a draft; a posted entry keeps
 /// the state it had and nothing reads it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DraftState {

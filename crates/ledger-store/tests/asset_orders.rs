@@ -8,7 +8,7 @@
 //!       never carry a month twice, take exactly cost less salvage over
 //!       the life, and dispose at proceeds less the book value of the
 //!       days held.
-//! SOURCE: docs/spec/rules.md B-9, B-10, B-15; plan/served.md P3 (settled
+//! SOURCE: BS-ledger-5, BS-ledger-6, BS-asset-1; plan/served.md P3 (settled
 //!         in design: a skipped month is caught up in the month the run is
 //!         made); Ledger::dispose_asset INVARIANT 1.
 //! INVARIANTS (checked after every command, refused or not):

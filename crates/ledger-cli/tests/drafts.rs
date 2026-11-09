@@ -1,12 +1,12 @@
 //! Drafts, the evidence gate and the preview digest over the wire (plan
-//! P4; rules.md B-43, D-47, D-50): a draft waits for its receipt and
+//! P4; BS-entry-5, D-47, D-50): a draft waits for its receipt and
 //! posts when it arrives, a discard unblocks a close, a report and the CPA
 //! package say when drafts are open, a reversal needs no receipt of its
 //! own, and every tool with `confirmed` takes the `preview` it returned
 //! and refuses a stale one.
 //!
 //! Expected behavior comes from `docs/mcp-interface.md` ("Tools — drafts",
-//! "The preview digest") and rules.md B-43. Every call goes through a real
+//! "The preview digest") and BS-entry-5. Every call goes through a real
 //! books server as an agent reaches it (`common.rs`).
 
 mod common;
@@ -129,7 +129,7 @@ fn a_draft_waits_for_its_receipt_and_posts() {
     assert!(listed["drafts"].as_array().unwrap().is_empty());
 }
 
-/// B-43: the structured `receipt_required` error is the one the MCP built
+/// BS-entry-5: the structured `receipt_required` error is the one the MCP built
 /// before the gate moved into the store.
 #[test]
 fn the_gate_moved_and_the_mcp_error_is_unchanged() {

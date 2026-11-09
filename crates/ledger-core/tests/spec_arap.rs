@@ -4,7 +4,7 @@
 //! Oracles are the spec blocks in the `ledger-core` interface (doc comments
 //! on `Ledger::create_invoice`, `create_bill`, `receive_payment`, `pay_bill`,
 //! `arap::aging_bucket`, the `ControlAccount` / `ControlAccountMismatch`
-//! docs) and `docs/spec/rules.md` B-18. Expected values are computed by hand
+//! docs) and BS-arap-1. Expected values are computed by hand
 //! from those, never from the code under test.
 
 use std::str::FromStr;
@@ -124,7 +124,7 @@ fn fingerprint(l: &Ledger) -> String {
     out
 }
 
-/// Expected bucket index from rules.md B-18, written independently:
+/// Expected bucket index from BS-arap-1, written independently:
 /// 0 Current (on or before due), 1: 1-30, 2: 31-60, 3: 61-90, 4: 90+.
 fn expected_bucket(due: NaiveDate, as_of: NaiveDate) -> usize {
     let days = (as_of - due).num_days();
@@ -288,7 +288,7 @@ fn derive_status_examples() {
 
 // ------------------------------------------------------------ aging_bucket
 
-/// Oracle: aging_bucket SCENARIO 1 and B-18 DECISION: due today is Current.
+/// Oracle: aging_bucket SCENARIO 1 and BS-arap-1 DECISION: due today is Current.
 #[test]
 fn aging_due_today_is_current() {
     let r = aging_bucket(d(2026, 10, 13), d(2026, 10, 13), dec("42.00"));
@@ -307,7 +307,7 @@ fn aging_not_yet_due_is_current() {
 }
 
 /// Oracle: aging_bucket SCENARIOS 2-5 at each edge (1, 30, 31, 60, 61, 90,
-/// 91 days past due), B-18.
+/// 91 days past due), BS-arap-1.
 #[test]
 fn aging_boundaries_by_days_past_due() {
     let due = d(2026, 1, 1);
@@ -795,7 +795,7 @@ fn receive_payment_partial_then_full() {
 }
 
 /// Oracle: receive_payment SCENARIO 1 (amount not positive) — refusal leaves
-/// the books unchanged (B-8 general refusal rule, as for post_entry).
+/// the books unchanged (BS-ledger-4 general refusal rule, as for post_entry).
 #[test]
 fn receive_payment_refuses_non_positive_amount() {
     let (mut l, cash) = books();
@@ -984,7 +984,7 @@ fn pay_bill_refuses_bad_amounts_books_unchanged() {
 // ------------------------------------------------------------------ aging
 
 /// Oracle: ar_aging doc (one row per customer with an outstanding balance,
-/// bucketed by days past due) and B-18 buckets; fully paid customers get no
+/// bucketed by days past due) and BS-arap-1 buckets; fully paid customers get no
 /// row.
 ///
 /// ASSUMED: rows carry the customer's name and their order is unspecified
@@ -1040,7 +1040,7 @@ fn ar_aging_example() {
 }
 
 /// Oracle: ap_aging doc (one row per vendor with an outstanding balance) and
-/// B-18 (1-30 and 61-90 buckets).
+/// BS-arap-1 (1-30 and 61-90 buckets).
 #[test]
 fn ap_aging_example() {
     let (mut l, cash) = books();
@@ -1124,7 +1124,7 @@ proptest! {
     /// unchanged); DocumentStatus docs (status law); Invoice::balance doc;
     /// conservation (1200 balance = sum of open invoice balances, 4000 =
     /// sum of invoice totals, cash = sum received, since every movement on
-    /// them comes through invoices and payments); ar_aging doc + B-18
+    /// them comes through invoices and payments); ar_aging doc + BS-arap-1
     /// (each open balance in exactly one bucket; buckets sum to open
     /// balances; due today is Current).
     #[test]
@@ -1215,7 +1215,7 @@ proptest! {
     /// Oracles: pay_bill INVARIANTS 1-2 and SCENARIO 1; DocumentStatus docs;
     /// Bill::balance doc; conservation (2000 = sum of open bill balances,
     /// 6999 = sum of bill totals, cash = -sum paid); every payment entry
-    /// tagged with its vendor; ap_aging doc + B-18.
+    /// tagged with its vendor; ap_aging doc + BS-arap-1.
     #[test]
     fn prop_bills_and_payments_conserve(
         docs in proptest::collection::vec(doc_strategy(), 1..6),

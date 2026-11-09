@@ -31,8 +31,8 @@ pub fn money(d: Decimal) -> String {
     }
 }
 
-/// What the viewer shows for a figure the books can't compute (rules.md
-/// B-28: an earlier version's draft lines, shares, or bases past exact
+/// What the viewer shows for a figure the books can't compute (
+/// BS-entry-4: an earlier version's draft lines, shares, or bases past exact
 /// arithmetic): said in words, never a number.
 pub const CANT_COMPUTE: &str = "too large to compute";
 
@@ -233,7 +233,7 @@ mod tests {
     use std::str::FromStr;
 
     /// money_or / dollars_or: a figure as money_ or dollars does, and one
-    /// the books can't compute in words, never a number (rules.md B-28).
+    /// the books can't compute in words, never a number (BS-entry-4).
     #[test]
     fn a_figure_or_why_not() {
         let v = Decimal::new(-123_456, 2);

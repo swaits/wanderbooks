@@ -40,7 +40,7 @@
 //!   4. Decision and open-item ids are allocated in order and journaled;
 //!      a decision supersedes at most one live decision; an item resolves
 //!      once.
-//!   5. Replay takes what was journaled (rules.md B-28): text limits and
+//!   5. Replay takes what was journaled (BS-entry-4): text limits and
 //!      chart checks are for new commands only.
 //!   6. No text holds a full TIN (settings INVARIANT 4).
 //! ```
@@ -273,7 +273,7 @@ pub struct NewDecision {
     pub supersedes: Option<u64>,
     /// The rule or document it rests on, if any.
     pub citation: Option<String>,
-    /// The projects (classes) it is about, if any (rules.md B-37).
+    /// The projects (classes) it is about, if any (BS-statement-5).
     pub projects: Vec<crate::ClassId>,
 }
 

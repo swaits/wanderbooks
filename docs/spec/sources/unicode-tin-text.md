@@ -1,6 +1,6 @@
 # Unicode character properties: how a TIN can be written
 
-Governs `ledger_core::parties::has_full_tin` (rules.md B-26): which
+Governs `ledger_core::parties::has_full_tin` (BS-partner-2): which
 characters separate a TIN's digits, and which are invisible between them.
 The Unicode Character Database is © Unicode, Inc., under the Unicode
 License v3, which permits copying the data files; the code point lists
@@ -53,7 +53,7 @@ form is one of the ASCII separators.
 - `'/'`: U+FF0F FULLWIDTH SOLIDUS.
 - `'_'`: U+FE33, U+FE34, U+FE4D..U+FE4F, U+FF3F FULLWIDTH LOW LINE.
 
-## How the books read them (rules.md B-26)
+## How the books read them (BS-partner-2)
 
 A TIN is nine numerals (any script's: `char::is_numeric`) with at most
 three separators between neighbors. In ASCII the separators are exactly

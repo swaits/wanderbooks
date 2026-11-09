@@ -618,8 +618,8 @@ pub fn fit_font(
 
 /// A date picker for `d` (`id` its egui id salt), returning the date
 /// picked. The picker's calendar holds years -9999 through 9999; a date
-/// outside them (books an earlier version wrote may hold one, rules.md
-/// B-28) is shown as text and kept, never truncated into another year.
+/// outside them (books an earlier version wrote may hold one,
+/// BS-entry-4) is shown as text and kept, never truncated into another year.
 pub fn date_picker(ui: &mut Ui, id: &str, d: chrono::NaiveDate) -> chrono::NaiveDate {
     use chrono::Datelike;
     let jiff_date = i16::try_from(d.year())

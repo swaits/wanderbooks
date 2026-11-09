@@ -1,10 +1,10 @@
-//! Audits and attestations over the wire (plan P8; rules.md B-45, D-9):
+//! Audits and attestations over the wire (plan P8; BS-ledger-13, D-9):
 //! a deterministic run and workpaper, claims weighed against the bar when
 //! asked, the CPA package that waits for a counted audit, and books that
 //! have not declared `audits`.
 //!
 //! Expected behavior comes from `docs/mcp-interface.md` ("Tools — audit
-//! and attestations") and rules.md B-45. Every call goes through a real
+//! and attestations") and BS-ledger-13. Every call goes through a real
 //! books server as an agent reaches it (`common.rs`).
 
 mod common;

@@ -23,7 +23,7 @@ wrapper: when the amount carries no more places than `places` it is returned
 unchanged, otherwise the result carries exactly `places` places, matching
 `Decimal::round_dp_with_strategy` to the character (including its scale).
 `round_minor` picks `10^-currency.minor_units()`; a currency ISO 4217 gives
-no minor unit is returned exactly, the FX rule's existing behaviour (B-3).
+no minor unit is returned exactly, the FX rule's existing behaviour (BS-ledger-1).
 
 The `Amount` trait gained `checked_round_to_step`, implemented for
 `Decimal`, `i32` and `i64` exactly as `checked_div_round_cent` was: the

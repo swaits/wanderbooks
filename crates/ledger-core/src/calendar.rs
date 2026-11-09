@@ -94,7 +94,7 @@ pub(crate) fn fiscal_year_unclamped(md: (u32, u32), d: NaiveDate) -> (NaiveDate,
 ///       the CPA package's year, and every default period derive from.
 /// SOURCE: IRS Pub. 538 (docs/spec/sources/irs-periods-and-methods.md):
 ///         "A tax year is an annual accounting period for keeping records
-///         and reporting income and expenses"; rules.md B-28 (no date
+///         and reporting income and expenses"; BS-entry-4 (no date
 ///         outside the calendar).
 /// INVARIANTS:
 ///   1. For d in the calendar: FIRST_DAY <= result <= d, and d is before
@@ -108,7 +108,7 @@ pub fn fiscal_year_start_on(md: (u32, u32), d: NaiveDate) -> NaiveDate {
     fiscal_year_start_unclamped(md, d).max(FIRST_DAY)
 }
 
-/// What an omitted date means, by the kind of report (rules.md B-30): the
+/// What an omitted date means, by the kind of report (BS-period-3): the
 /// text every tool description and date parameter shows, so none can say
 /// other than [`PeriodDefaults`] does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -152,13 +152,13 @@ pub const YEAR_DOC: &str =
     "Calendar year. Omitted: this calendar year (1099s and party totals count by calendar year).";
 
 /// The defaults an omitted date takes, today, under the company's fiscal
-/// year: the one rule (rules.md B-30) the report tools, the viewer and
+/// year: the one rule (BS-period-3) the report tools, the viewer and
 /// the tool descriptions share. Built by [`period_defaults`].
 ///
 /// ```text
 /// GOAL: one meaning for "no dates", everywhere: a report asked for
 ///       without dates covers this fiscal year so far.
-/// SOURCE: rules.md B-30; IRS Pub. 538 ("an annual accounting period for
+/// SOURCE: BS-period-3; IRS Pub. 538 ("an annual accounting period for
 ///         keeping records and reporting income and expenses"); 26 U.S.C.
 ///         §6041(a) ("in any calendar year") and §6041A(a)(2) ("during
 ///         such calendar year") for the calendar-year counts; DECISION
@@ -251,7 +251,7 @@ impl PeriodDefaults {
 
 /// The days in a month of a year chrono holds, without stepping to the
 /// next month, so chrono's last month (December 262142, whose next month
-/// chrono can't hold) has its 31 days too (rules.md B-28: a schedule an
+/// chrono can't hold) has its 31 days too (BS-entry-4: a schedule an
 /// earlier version accepted is computed, never a panic).
 pub fn days_in_month(year: i32, month: u32) -> u32 {
     match month {
@@ -290,7 +290,7 @@ pub struct SpanPart {
 /// ```text
 /// GOAL: cut a span of days (an asset's life, a schedule's coverage) into
 ///       the calendar months it touches, for proration by days.
-/// SOURCE: docs/spec/rules.md B-15, B-16; kernel::prorate_by_days.
+/// SOURCE: BS-asset-1, BS-prepaid-1; kernel::prorate_by_days.
 /// INVARIANTS:
 ///   1. The parts' days sum to the span's days; every part has 1 to its
 ///      month's days (a valid kernel::MonthPart), and only the last is
@@ -567,7 +567,7 @@ mod tests {
         );
     }
 
-    /// The descriptions say what the resolver does (B-30), in the words
+    /// The descriptions say what the resolver does (BS-period-3), in the words
     /// every tool shows.
     #[test]
     fn the_descriptions_name_the_rule() {

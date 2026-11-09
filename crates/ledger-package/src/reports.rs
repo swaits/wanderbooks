@@ -8,7 +8,7 @@
 //!         books.cash_flow, books.export_cpa_package); ASC 230-10-20
 //!         (financing and investing activities).
 //! INVARIANTS:
-//!   1. A range's omitted dates are the one default (rules.md B-30,
+//!   1. A range's omitted dates are the one default (BS-period-3,
 //!      `ledger_core::calendar::PeriodDefaults`): an omitted end is
 //!      `today`, an omitted start the first day of the fiscal year that
 //!      holds the end; a start after the end, given or derived, is
@@ -16,7 +16,7 @@
 //!   2. The cash flow statement needs at least one cash account, and
 //!      every code it is given must be in the chart; account lists a call
 //!      leaves empty default to the settings' roles. It foots, or it is
-//!      refused (an engine error, never a figure: rules.md B-14 rule 9);
+//!      refused (an engine error, never a figure: BS-statement-3 rule 9);
 //!      roles that contradict each other or the chart are refused by the
 //!      engine, naming the setting, so the viewer and the server refuse
 //!      alike. Members are named on their contributions and
@@ -73,7 +73,7 @@ impl<'a> Settings<'a> {
 
 /// Resolve a statement's date range (INVARIANT 1): the dates as given,
 /// each omitted one the books' default for `company` on `today`
-/// (rules.md B-30).
+/// (BS-period-3).
 pub fn statement_range(
     company: &Company,
     start: Option<&str>,

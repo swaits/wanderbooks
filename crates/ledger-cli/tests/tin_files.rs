@@ -1,4 +1,4 @@
-//! Files that carry full TINs never enter the books (rules.md B-26;
+//! Files that carry full TINs never enter the books (BS-partner-2;
 //! tin_files.rs).
 //!
 //! ```text
@@ -6,7 +6,7 @@
 //!       (books.get_receipt would hand its bytes to any agent), however it
 //!       comes back: the W-9 books.set_w9 read, books.get_w9's copy, a CPA
 //!       package or a file from one, or text with a TIN in it.
-//! SOURCE: rules.md B-26; DECISION (P0 review round 2, 2026-10-16).
+//! SOURCE: BS-partner-2; DECISION (P0 review round 2, 2026-10-16).
 //! INVARIANTS (oracle):
 //!   1. Every file the server read or wrote with full TINs is refused by
 //!      every way a file enters the books (books.attach_receipt and

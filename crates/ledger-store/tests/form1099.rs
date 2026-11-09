@@ -8,7 +8,7 @@
 //! ```text
 //! GOAL: the decision ("no 1099" included) and how each payment was made
 //!       are kept as records, and no version ever misreads them.
-//! SOURCE: rules.md B-19, B-27; ledger_store::form1099 INVARIANTS 1-5.
+//! SOURCE: BS-1099-1, BS-format-1; ledger_store::form1099 INVARIANTS 1-5.
 //! ```
 
 use chrono::NaiveDate;
@@ -139,7 +139,7 @@ fn types(dir: &Path) -> Vec<(String, serde_json::Value)> {
         .collect()
 }
 
-/// B-27: a line that needs a feature is written only in books that
+/// BS-format-1: a line that needs a feature is written only in books that
 /// declare it, and a command never declares one on the way. Books an
 /// older version wrote (format 1) refuse a decision and a payment method
 /// while they wait for their format upgrade, journaling nothing; the
@@ -500,7 +500,7 @@ fn marking_a_w9_keeps_who_decided_the_1099() {
     assert_eq!(v.decisions_1099, [decision]);
 }
 
-/// B-27: a value only a newer version writes, in a line of a type this
+/// BS-format-1: a value only a newer version writes, in a line of a type this
 /// version knows (a 1099 decision, a reason kind, a payment method's
 /// kind), is newer, never corrupt; a malformed one is corrupt.
 #[test]

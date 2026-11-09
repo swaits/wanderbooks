@@ -554,7 +554,7 @@ proptest! {
         }
     }
 
-    /// cash_flow INVARIANTS 1-5 (direct method, rules.md B-14, D-35): the
+    /// cash_flow INVARIANTS 1-5 (direct method, BS-statement-3, D-35): the
     /// operating class rows foot to "Net cash from operating activities",
     /// each other section's kind rows to theirs, and each kind's
     /// transaction details to its kind's row; the three sum to
@@ -1637,7 +1637,7 @@ proptest! {
             let name = if name.trim().is_empty() { "x" } else { name.as_str() };
             let parent = parent.map(|p| ids[p]);
             // Replayed, as books written before P3 hold them: a sibling's
-            // name, a tab, nine digits (rules.md B-31 refuses them in a
+            // name, a tab, nine digits (BS-ledger-10 refuses them in a
             // new name, never in a journaled one).
             ids.push(l.replay_add_account(&code_of(i), name, AccountType::Expense, parent, false).unwrap());
         }
@@ -2046,8 +2046,8 @@ fn iif_writes_plain_ascii_and_lists_every_change() {
         ("6050", "René 😀"),
         ("６０７０", "Wide number"),
     ] {
-        // Replayed: a tab in a name is refused in a new one (rules.md
-        // B-31), never in one books written before P3 hold.
+        // Replayed: a tab in a name is refused in a new one (
+        // BS-ledger-10), never in one books written before P3 hold.
         l.replay_add_account(code, name, AccountType::Expense, None, false)
             .unwrap();
     }
@@ -2154,7 +2154,7 @@ fn iif_every_line_ends_cr_lf() {
 fn iif_distinct_accounts_never_share_a_name() {
     let mut l = Ledger::new(Currency::USD);
     // Replayed, as books written before P3 hold them: siblings of one
-    // name (rules.md B-31 refuses one in a new name, never in a journaled
+    // name (BS-ledger-10 refuses one in a new name, never in a journaled
     // one), which the file must still keep apart.
     let mut add = |code: &str, name: &str, parent: Option<&str>| {
         let p = parent.map(|c| l.chart().find_by_code(c).unwrap().id);
@@ -2546,7 +2546,7 @@ fn iif_warnings_group_the_memos_by_what_is_written_differently() {
     );
 }
 
-/// INVARIANT 7: no warning holds a full TIN (rules.md B-26), though entry
+/// INVARIANT 7: no warning holds a full TIN (BS-partner-2), though entry
 /// descriptions and account names aren't checked for one: a memo's TIN
 /// written with en dashes shows only the dashes; one in fullwidth digits,
 /// one in Arabic-Indic digits, and an account name holding one, are
@@ -2557,7 +2557,7 @@ fn iif_warnings_group_the_memos_by_what_is_written_differently() {
 fn iif_warnings_never_hold_a_tin() {
     let (mut l, cash, rev, _) = small_ledger();
     // Replayed, as books written before P3 hold them: a name holding a
-    // TIN, or a tab, is refused in a new name (rules.md B-31), never in a
+    // TIN, or a tab, is refused in a new name (BS-ledger-10), never in a
     // journaled one, so the file must still mask it.
     l.replay_add_account(
         "6300",
@@ -4009,7 +4009,7 @@ fn tax_summary_difference_and_schedule_k() {
     );
 }
 
-/// A gain on business property (rules.md B-32; ledger_core::tax
+/// A gain on business property (BS-ledger-11; ledger_core::tax
 /// `TaxSummary::form_4797`): on a Schedule C business's summary it is in
 /// its own Form 4797 section, at its book amount with no tax amount, and
 /// outside the net, never Schedule C income.
@@ -5077,7 +5077,7 @@ fn iif_writes_each_lines_class_and_declares_the_classes_first() {
 }
 
 /// iif INVARIANT 9: a class's NAME is written as an account's own level
-/// is (B-34 rules 3, 4): plain ASCII, a colon a '-' (a colon starts a
+/// is (BS-format-2 rules 3, 4): plain ASCII, a colon a '-' (a colon starts a
 /// subclass, the `!CLASS` header help), trimmed, at most NAME_MAX; names
 /// alike ignoring case once written get " (id)", round after round, as
 /// accounts get their codes; and each name written differently is a

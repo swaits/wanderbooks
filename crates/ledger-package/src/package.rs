@@ -6,7 +6,7 @@
 //! GOAL: everything the CPA needs for the return in one zip, the K-1s'
 //!       and 1099s' TINs included when asked, built the same by the
 //!       server and the viewer.
-//! SOURCE: docs/mcp-interface.md; B-26; B-33 (as of one day); B-34 (the
+//! SOURCE: docs/mcp-interface.md; BS-partner-2; BS-statement-4 (as of one day); BS-format-2 (the
 //!         IIF); DECISION (owner, 2026-10-15): "it needs to be in the damn
 //!         CPA package."
 //! INVARIANTS:
@@ -38,7 +38,7 @@
 //!      Withdrawn files never.
 //!   5. Read-only (crate INVARIANT 1): the package is returned, its files
 //!      and the zip, and written nowhere.
-//!   6. As of one day (B-33): no figure, entry, receipt or worksheet row
+//!   6. As of one day (BS-statement-4): no figure, entry, receipt or worksheet row
 //!      reflects anything dated after as_of; the chart and documents/ are
 //!      as they stand when the package is made.
 //!   7. One list of cash accounts and one of financing accounts per
@@ -48,7 +48,7 @@
 //!   8. Every account name, number or place and every memo
 //!      general-journal.iif writes differently from the books (it holds
 //!      plain ASCII, within QuickBooks Desktop's limits and its rule that
-//!      a subaccount has its parent's type: B-34) is in `warnings` and the
+//!      a subaccount has its parent's type: BS-format-2) is in `warnings` and the
 //!      README, the memos grouped by what is written differently; the
 //!      README also names the entries with a line on accounts receivable
 //!      or payable, which the file gives no customer or vendor.
@@ -134,8 +134,8 @@ pub fn build_package<B: PackageBooks + ?Sized>(
     let mut tin_gaps: Vec<String> = Vec::new();
 
     // The fiscal year to date: the tax year holding as_of (IRS Pub. 538),
-    // the fiscal-year fact itself, not "what omitted dates mean" (rules.md
-    // B-30), so the package's year never follows a default.
+    // the fiscal-year fact itself, not "what omitted dates mean" (
+    // BS-period-3), so the package's year never follows a default.
     let fy = ledger_core::calendar::fiscal_year_start_on(company.fiscal_year_start, as_of);
     let (fy_start, as_of_s) = (fy.to_string(), as_of.to_string());
     let xlsx = |r: XlsxReport<'_>| report_to_xlsx(&r, &meta).map_err(|e| e.to_string());
@@ -373,7 +373,7 @@ pub fn build_package<B: PackageBooks + ?Sized>(
         files.push((format!("{name}.xlsx"), xlsx(XlsxReport::Statement(st))?));
     }
     // The receivables and payables agings, each with its tie-out line to
-    // the control account (B-23, 8.3.10): the same CSV books.export and
+    // the control account (BS-ledger-8, 8.3.10): the same CSV books.export and
     // the viewer make.
     files.push((
         "ar_aging.csv".into(),
@@ -432,8 +432,8 @@ pub fn build_package<B: PackageBooks + ?Sized>(
             worksheet_1099 = true;
         }
         // The worksheet can't be made (the year's threshold isn't known,
-        // or the package names no cash accounts): never guess (rules.md
-        // B-19); say so in the package instead.
+        // or the package names no cash accounts): never guess (
+        // BS-1099-1); say so in the package instead.
         Err(e) => files.push((
             format!("1099-worksheet-{year}-NOT-INCLUDED.txt"),
             format!("{e}\n").into_bytes(),

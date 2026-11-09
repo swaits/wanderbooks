@@ -154,7 +154,7 @@ fn day(y: i32, m: u32, d: u32) -> chrono::NaiveDate {
     chrono::NaiveDate::from_ymd_opt(y, m, d).unwrap()
 }
 
-/// Defect 15, repros 1.1.1-1.1.2 (rules.md B-30): a target the viewer
+/// Defect 15, repros 1.1.1-1.1.2 (BS-period-3): a target the viewer
 /// can't honour is ignored whole, never swapped or guessed: a start after
 /// the end (an earlier writer's, or a hand-edited ops/show.jsonl), text
 /// that isn't a date, an unknown split or comparison. The page, the
@@ -206,7 +206,7 @@ fn show_never_swaps_an_inverted_target_defect_15() {
     }
 }
 
-/// Defect 16, repro 1.1.4 (rules.md B-30): a report target with only an
+/// Defect 16, repro 1.1.4 (BS-period-3): a report target with only an
 /// end covers that end's fiscal year to it (2025-01-01 to 2025-06-30, not
 /// the swapped 2025-06-30 to 2026-01-01); with no dates, the default (the
 /// fiscal year to date, named "Year to date"); dates that are a preset's

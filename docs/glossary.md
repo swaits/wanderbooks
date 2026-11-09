@@ -62,7 +62,7 @@ definitions exactly.
   reports it: cash plus the adjusted tax basis of property contributed,
   plus their share of income as figured for tax, less cash and the adjusted
   tax basis of property distributed (Form 1065 instructions, Item L).
-- **Project** — A class with its facts (rules.md B-37): what it is, where it
+- **Project** — A class with its facts (BS-statement-5): what it is, where it
   stands (active, paused, finished, abandoned), what kind of work it is
   (internal product, client work, on spec, other), who it is for, its
   dates and links. Its figures are the revenue and expense lines tagged to

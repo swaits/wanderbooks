@@ -93,8 +93,7 @@ apply is safe — on startup the applier replays every journal line with
   through that link (plan 8.3.11). An `invoice.written_off` (plan 8.3.6,
   P4b S7) carries `{invoice_id, entry_id, date, amount, reason}`; replay
   tags the entry's receivables line `WriteOff`, and the projection keeps
-  no written-off figure either: it is the tagged lines' sum (rules.md
-  B-38, B-41). Its evidence of worthlessness rides beside it, as a
+  no written-off figure either: it is the tagged lines' sum (BS-arap-2, BS-arap-5). Its evidence of worthlessness rides beside it, as a
   `receipt.attached` on the write-off's entry and an `attachment.linked`
   to the invoice, filed in the same call.
 - `prev`: hex SHA-256 of the previous line's canonical JSON (keys sorted, no
@@ -164,7 +163,7 @@ a backup is then proven where it lands, by a drill (docs/mcp-interface.md,
   only leaves an entry through a recorded unlink. Blobs are untouched: a
   withdrawn file is still hash-verified and readable, and the journal shows
   when it was filed, linked, unlinked, and withdrawn, and why.
-- **Extraction is derived, and journaled** (P6, rules.md B-44):
+- **Extraction is derived, and journaled** (P6, BS-ledger-12):
   `attachment.text_extracted {attachment_id, text_sha256, extractor,
   version, pages, status}` records what reading a file found (`ok`,
   `none`, `failed`); the text itself is a content-addressed blob like any
@@ -176,7 +175,7 @@ a backup is then proven where it lands, by a drill (docs/mcp-interface.md,
   read off a file (the closed field list; a later annotation replaces the
   earlier record), and `entry.settles {entry_id, settles[]}` says which
   entries a payment pays back (the only source of "reimbursed").
-- **Audits and attestations are records, not figures** (P8, rules.md B-45,
+- **Audits and attestations are records, not figures** (P8, BS-ledger-13,
   feature `audits`): `audit.run {id, through, through_seq, scope,
   program_version, tb_hash, findings_sha256, workpaper_attachment?,
   workpaper_pdf?}` says a programme of checks was run through a day at the
@@ -206,7 +205,7 @@ Suspected corruption is fixed by rebuild, never by forensics.
   schema keeps a file of its own, and a version never migrates, writes or
   deletes another schema's (`ledger_store::db_file_for`; the legacy
   `wanderbooks.db` is used only while it holds this version's schema;
-  rules.md B-27). The journal lives next to it
+  BS-format-1). The journal lives next to it
   at `$WANDERBOOKS_DATA/journal.jsonl`; blobs under
   `$WANDERBOOKS_DATA/blobs/`. WAL mode on, `synchronous=FULL`,
   `integrity_check` on startup.

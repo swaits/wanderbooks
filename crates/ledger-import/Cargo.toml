@@ -20,7 +20,7 @@ typst-layout = "0.15.1"
 qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
 # The reader (extract.rs moved out: D-61); re-exported as `extract`.
 ledger-reader = { path = "../ledger-reader" }
-# BSD-3-Clause: the IIF's transliteration to ASCII (iif.rs, rules.md B-34).
+# BSD-3-Clause: the IIF's transliteration to ASCII (iif.rs, BS-format-2).
 # Pinned exactly: a new table would change what a CPA's file says.
 deunicode = { version = "=1.6.0", default-features = false }
 

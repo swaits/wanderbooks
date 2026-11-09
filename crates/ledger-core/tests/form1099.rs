@@ -116,7 +116,7 @@ fn pay(
 ) -> EntryId {
     // As replay posts it: money from a vendor on receivables (1200) by
     // hand, as books an earlier version wrote can hold it; the control
-    // guard (rules.md B-38) refuses that as new work.
+    // guard (BS-arap-2) refuses that as new work.
     let e = ledger_core::parties::replaying(|| {
         let e = l.create_entry(date, "payment");
         let m = Money::new(dec(amt), Currency::USD);
@@ -219,7 +219,7 @@ fn cash_paid_per_vendor_and_who_is_reportable() {
 #[test]
 fn years_and_thresholds() {
     let l = books();
-    // SOURCE: rules.md B-19 (sources/irs-1099-thresholds.md; Pub. L.
+    // SOURCE: BS-1099-1 (sources/irs-1099-thresholds.md; Pub. L.
     // 119-21 §70433(f): payments made after December 31, 2025).
     assert_eq!(default_threshold(2025), Ok(dec("600")));
     assert_eq!(default_threshold(2026), Ok(dec("2000")));
@@ -805,7 +805,7 @@ fn a_debit_card_payment_from_the_bank_is_excluded_when_tagged() {
     assert_eq!((v.paid, v.excluded_card), (dec("300.00"), dec("1200.00")));
 }
 
-/// Never guessed (B-19): only a company card's account presumes a card.
+/// Never guessed (BS-1099-1): only a company card's account presumes a card.
 /// The members' account 2100, left out of the financing accounts, carries
 /// a member's card; a platform's balance 1050 carries a payment platform.
 /// Each also pays by check or friends-and-family transfer (counting), so
@@ -1511,7 +1511,7 @@ fn an_undated_old_decision_is_in_force_from_the_beginning() {
     assert!(b.decision_needed);
 }
 
-/// kernel::payment_bucket, every one of its 16 cases against the B-19
+/// kernel::payment_bucket, every one of its 16 cases against the BS-1099-1
 /// table (a complete check, not a sample).
 #[test]
 fn payment_bucket_is_the_table_in_all_16_cases() {
@@ -2317,7 +2317,7 @@ proptest! {
         }
     }
 
-    /// rules.md B-35 item 9: party totals and the 1099 worksheet never
+    /// BS-partner-3 item 9: party totals and the 1099 worksheet never
     /// contradict. For books whose cash accounts are named, whose company
     /// card is recorded as a business-card payment method (or that have
     /// no card at all: without the method, 2050's name says nothing, so
@@ -2521,12 +2521,12 @@ fn card_accounts_are_the_company_cards_liabilities() {
 /// plan/golden-worksheets/1099-worksheet.md before this test was run.
 /// 2025 and 2026 together pin the year boundary: Dana's 300.00 on
 /// 2025-12-30 counts in 2025 only, and the threshold moves from 600 to
-/// 2,000 (rules.md B-19).
+/// 2,000 (BS-1099-1).
 #[test]
 fn golden_1099_worksheet() {
     let mut l = books();
     // Record the card (worksheet, "With the card recorded"): Sam's 5,000
-    // is then a card payment, excluded and listed (B-19). books() leaves
+    // is then a card payment, excluded and listed (BS-1099-1). books() leaves
     // it unrecorded, and other tests rely on that.
     let card = l.chart().find_by_code("2100").unwrap().id;
     l.add_instrument(

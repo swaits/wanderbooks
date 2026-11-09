@@ -89,7 +89,7 @@ Cited (not quoted, but for the lines below): the Class list's keyword is CLASS; 
 
 > If the class is a subclass of another class, the name includes the name of the parent classes, beginning with the highest level class. If you are creating an import file, use a colon (:) to separate subclass names.
 
-So a class's NAME, like an account's, is one level per colon: the books, whose classes have no parents, write a colon in a class's name as '-', as in an account's (rules.md B-34 rule 8). The page states no length limit and nothing about case.
+So a class's NAME, like an account's, is one level per colon: the books, whose classes have no parents, write a colon in a class's name as '-', as in an account's (BS-format-2 rule 8). The page states no length limit and nothing about case.
 
 ### IIF Example Files: list declarations
 SHA-256 of `IIF Import Kit/IIF Example Files/QB 2007 & Enterprise 7.0 and later/Import First - List Declarations (Not Version Specific).iif` (the same bytes in each version's folder): `13c730b23bcb8c142621b04206e3628241d83051442c9b14ea2416d21163439c`
@@ -151,7 +151,7 @@ Retrieved: 2026-10-20
 
 Cited (not quoted): "User recognizable name for the Account", with ValidRange "QBW: Max=31" (QuickBooks Desktop; QuickBooks Online: 100). Its `Account.AcctNum` page (`.../95a0835b-80bd-4fe1-2d7f-96ea2c372442.htm`) states no length.
 
-So the limits are Intuit's own: an account name (one level of a subaccount's NAME, as the account's own name is entered) at most 31 characters, an account number at most 7, a memo at most 4,095. The books write each within them: a longer level is cut to 31 (then no two NAMEs may match), a longer number is left out of ACCNUM (it is optional; the NAME identifies the account), a longer memo is cut to 4,095, and every one is listed (rules.md B-34).
+So the limits are Intuit's own: an account name (one level of a subaccount's NAME, as the account's own name is entered) at most 31 characters, an account number at most 7, a memo at most 4,095. The books write each within them: a longer level is cut to 31 (then no two NAMEs may match), a longer number is left out of ACCNUM (it is optional; the NAME identifies the account), a longer memo is cut to 4,095, and every one is listed (BS-format-2).
 
 ## Add, edit, or delete accounts in QuickBooks Desktop (US, updated 8/4/2026)
 Source: <https://quickbooks.intuit.com/learn-support/en-us/help-article/chart-accounts/add-edit-delete-accounts-quickbooks-desktop-mac/L95VT34uN_US_en_US>  
@@ -162,7 +162,7 @@ Tagged for QuickBooks Desktop (Mac Plus, Premier Plus, Pro Plus, Accountant, Ent
 
 > The parent and subaccount must be the same account type.
 
-So the books write a subaccount whose QuickBooks type differs from its parent's (a bank account under a header that is no bank, an asset's cost account under a "Fixed assets" header) at the top level, its own subaccounts with it, and list it (rules.md B-34). Intuit's own journal sample (`journal.zip`, above) declares `Construction:Labor` without ever declaring `Construction`, so QuickBooks makes a missing parent itself; the books declare each parent before its subaccounts all the same, so a parent keeps its own type and number rather than taking ones QuickBooks guesses.
+So the books write a subaccount whose QuickBooks type differs from its parent's (a bank account under a header that is no bank, an asset's cost account under a "Fixed assets" header) at the top level, its own subaccounts with it, and list it (BS-format-2). Intuit's own journal sample (`journal.zip`, above) declares `Construction:Labor` without ever declaring `Construction`, so QuickBooks makes a missing parent itself; the books declare each parent before its subaccounts all the same, so a parent keeps its own type and number rather than taking ones QuickBooks guesses.
 
 ## Customer and vendor names on accounts receivable and payable
 
@@ -180,7 +180,7 @@ Searched 2026-10-20. What Intuit says:
 
 Not Intuit, for the record: a third-party IIF vendor answering on Intuit's community (BigRedConsulting, 14 April 2020, <https://quickbooks.intuit.com/learn-support/en-us/other-questions/iif-import-error-3040/00/535675>) wrote that "a NAME is required for any AR row", about a bill, not a journal; QuickBooks Desktop sync tools quote the refusal "Transaction split lines to accounts receivable must include a customer on that split line" (Acctivate, <https://hub.acctivate.com/articles/troubleshoot/synchronization/transaction-split-lines-to-accounts-receivable-must-include-a-customer-on-that-split-line>).
 
-No Intuit source says what an IIF journal import does with an A/R or A/P line that has no NAME (refuses it, imports it, or asks). So the books write no NAME (writing names would need the customer and vendor lists declared too, with a name unique across them) and the package README names the entries with an A/R or A/P line, so the CPA can add the name in QuickBooks if it asks (rules.md B-34 rule 7).
+No Intuit source says what an IIF journal import does with an A/R or A/P line that has no NAME (refuses it, imports it, or asks). So the books write no NAME (writing names would need the customer and vendor lists declared too, with a name unique across them) and the package README names the entries with an A/R or A/P line, so the CPA can add the name in QuickBooks if it asks (BS-format-2 rule 7).
 
 ## How long a class's name may be
 
@@ -203,7 +203,7 @@ Not Intuit, for the record: Conductor's QuickBooks Desktop API reference (a serv
 
 > Maximum length: 31 characters.
 
-So the books hold a class's NAME to 31 characters, as an account's own level (Intuit's own limit for a class, above), and keep no two alike ignoring case (Conductor: case-insensitive; rules.md B-34 rule 8).
+So the books hold a class's NAME to 31 characters, as an account's own level (Intuit's own limit for a class, above), and keep no two alike ignoring case (Conductor: case-insensitive; BS-format-2 rule 8).
 
 ## What QuickBooks does with an over-long name (not Intuit)
 Source: Thomson Reuters, Accounting CS help, "Export payroll journal entries", <https://thomsonreuters.com/en-us/help/accounting-cs/integrate-data-with-other-applications/export-payroll-journal-entries>  
@@ -221,7 +221,7 @@ Intuit's own journal sample (above) wraps fields holding a comma in double quote
 
   > For imports, you will break the import if you have double quotes within your text
 
-So the books write a double quote as a single one, listed like any other change (rules.md B-34).
+So the books write a double quote as a single one, listed like any other change (BS-format-2).
 
 ## Not found in any Intuit source
 
@@ -230,7 +230,7 @@ Searched 2026-10-13 and 2026-10-20 (the help articles above and every document i
 - an escaping mechanism for tabs, line breaks, or double quotes inside a field (no escape syntax is documented; the only safe reading is that fields must not contain tabs or line breaks, and, from the reports above, double quotes);
 - an explicit sentence that a transaction's TRNS and SPL amounts must sum to zero (every example does; the sign rule implies it);
 - the allowed number of decimal places, or whether thousands separators or currency symbols are accepted in AMOUNT;
-- the character encoding beyond "ASCII text" (so the books write plain ASCII, transliterating anything else and listing what changed: rules.md B-34, DECISION D-36);
+- the character encoding beyond "ASCII text" (so the books write plain ASCII, transliterating anything else and listing what changed: BS-format-2, DECISION D-36);
 - whether a four-digit year is accepted everywhere despite the "MM/DD/YY" wording (Intuit's 2007+ example uses one);
 - what QuickBooks Desktop does on import with an account name, account number or memo longer than its limits (only the non-Intuit note above, for names), how many levels of subaccounts it allows, or a limit on a whole NAME with its parents;
 - how long a journal entry's number (DOCNUM) may be (the limits article has no row for it; the books' entry ids are a few digits);

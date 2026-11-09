@@ -924,7 +924,7 @@ impl BooksServer {
                 due: i.new.due.map(|d| d.to_string()),
             })
             .collect();
-        // The projects under way, by name (rules.md B-37): at most 20.
+        // The projects under way, by name (BS-statement-5): at most 20.
         const START_PROJECTS: usize = 20;
         let mut projects: Vec<ProjectBriefOut> = ledger
             .list_classes()

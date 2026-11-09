@@ -1799,7 +1799,7 @@ fn a_locked_vault_still_builds_the_package() {
     assert!(w.iter().all(|r| r["tin"].is_empty()));
 }
 
-/// B-26 ("No tool output, error, or log holds a full TIN"): a TIN put in
+/// BS-partner-2 ("No tool output, error, or log holds a full TIN"): a TIN put in
 /// the wrong field is refused, and the refusal never repeats it, however
 /// it was written: as a party name, a bare number where a string goes, or
 /// a share's percent.
@@ -1841,7 +1841,7 @@ fn refusals_never_echo_a_tin() {
     }
 }
 
-/// B-26 for resource reads: a refused `resources/read` quotes the URI it
+/// BS-partner-2 for resource reads: a refused `resources/read` quotes the URI it
 /// was given, in its message and its data, and never repeats a TIN in it,
 /// however the URI carries one (a receipt id, a handbook section, an
 /// unknown path, a digest's `since`).

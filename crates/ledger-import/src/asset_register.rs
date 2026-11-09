@@ -51,7 +51,7 @@
 //!      the tax table with its note's number.
 //! ```
 //!
-//! SOURCE (7-9): docs/spec/rules.md B-25;
+//! SOURCE (7-9): BS-asset-4;
 //! docs/spec/sources/irs-partnership-basis.md.
 
 use crate::pdf::PdfError;

@@ -117,7 +117,7 @@ fn assert_every_reader_agrees(dir: &std::path::Path, s: &Store) {
 /// until their format upgrade (the owner's go-ahead, D-39); then it is
 /// made, after the one declaration.
 /// `invoicing.first_number` is settable only while no numbered invoice
-/// exists (A-2, rules.md B-40): once a number has been issued the series
+/// exists (A-2, BS-arap-4): once a number has been issued the series
 /// has begun, so changing or clearing the starting number is refused before
 /// anything is journaled, and a legacy invoice (no number) never locks it.
 #[test]
@@ -568,7 +568,7 @@ fn a_template_amount_is_at_most_a_lines() {
 }
 
 /// A setting key or convention kind this version doesn't know is a newer
-/// version's, never damage (rules.md B-27).
+/// version's, never damage (BS-format-1).
 #[test]
 fn a_newer_key_or_kind_is_newer() {
     for (event, payload) in [
@@ -773,7 +773,7 @@ fn figures(s: &Store) -> (Value, Vec<ledger_core::JournalEntry>) {
 
 fn run(s: &mut Store, op: &Op) {
     // A record (anything but a post or a template's draft) changes no
-    // figure and no entry (rules.md B-29; Lean Step.record_changes_no_figure).
+    // figure and no entry (BS-ledger-9; Lean Step.record_changes_no_figure).
     let records = !matches!(op, Op::Post(_) | Op::Template(_));
     let before = records.then(|| figures(s));
     run_op(s, op);

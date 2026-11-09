@@ -4,7 +4,7 @@
 //! (ledger_core::calendar), and what can't be computed exactly is refused,
 //! never wrapped or panicked on (P0 review round 3, finding S1: a panic
 //! stops the books server). The bounds are the commands' only: replay
-//! accepts every line an earlier version accepted (rules.md B-28, posted
+//! accepts every line an earlier version accepted (BS-entry-4, posted
 //! is forever; P0 review round 4), so each bound here has its pair, a
 //! replay of an old line past it, accepted.
 //!
@@ -617,7 +617,7 @@ fn replayed_bases_and_shares_past_the_limit_are_accepted() {
     );
 }
 
-/// A replayed payment is as journaled: no bound (rules.md B-28), and no
+/// A replayed payment is as journaled: no bound (BS-entry-4), and no
 /// refusal: it tags the line of its entry that carries it, or (an entry
 /// it doesn't match) nothing. The command's bound is what the invoice
 /// owes (Overpayment).
@@ -719,7 +719,7 @@ fn disposal_proceeds_and_dates_are_bounded() {
     // Replay keeps what every version checked: no disposal twice, no
     // negative proceeds. The date floor (the acquired date, P3) is a
     // command's: replay accepts a disposal before it, which every earlier
-    // version's commands refused anyway (rules.md B-28: replay accepts
+    // version's commands refused anyway (BS-entry-4: replay accepts
     // more, never less).
     assert_eq!(
         b.ledger
@@ -744,12 +744,12 @@ fn disposal_proceeds_and_dates_are_bounded() {
 }
 
 /// D-75 (owner, 2026-11-08): a new line's foreign amount and its rate take
-/// at most ten decimal places each, as a base amount does (B-28), so the
+/// at most ten decimal places each, as a base amount does (BS-entry-4), so the
 /// product is exact (at most twenty places, under Decimal's 28) and the
 /// booked amount is rounded once. Found by the K-U1 review: a 26-place
 /// foreign amount times 0.005 books 0.01 though the exact product is under
 /// half a cent, because Decimal rounded the product to 28 places first.
-/// Replay is exempt (B-28): an older line keeps its figures.
+/// Replay is exempt (BS-entry-4): an older line keeps its figures.
 #[test]
 fn a_foreign_amount_and_a_rate_take_at_most_ten_places() {
     let dec = |s: &str| s.parse::<Decimal>().unwrap();
@@ -963,7 +963,7 @@ fn new_asset(
     }
 }
 
-/// B-3 (P3): a new asset's cost and salvage are in the currency's minor
+/// BS-ledger-1 (P3): a new asset's cost and salvage are in the currency's minor
 /// unit (every depreciation and disposal line derives from them, and a
 /// line finer than a cent never posts). Its replay pair: an asset an
 /// earlier version took in tenths of a cent opens, and its schedule is
@@ -998,7 +998,7 @@ fn an_asset_cost_finer_than_a_cent_is_refused() {
     assert_eq!(s[11].accumulated, "1200.005".parse::<Decimal>().unwrap());
 }
 
-/// B-28 (P3: lives past 9999, plan/served.md defect 22): a new asset's
+/// BS-entry-4 (P3: lives past 9999, plan/served.md defect 22): a new asset's
 /// last day of depreciation is at most 9999-12-31, the calendar's last
 /// day, so every month of its life is one the books can post. A life
 /// ending on that day is taken (P0 bounded the life's exclusive end, one
@@ -1040,7 +1040,7 @@ fn a_life_ending_after_it_is_refused() {
     }
 }
 
-/// B-28 (P3): a daily schedule's last day is in the calendar: one month
+/// BS-entry-4 (P3): a daily schedule's last day is in the calendar: one month
 /// from 9999-12-15 covers through 10000-01-14, refused; one month from
 /// 9999-12-01 ends on 9999-12-31, taken. Replay takes either.
 #[test]

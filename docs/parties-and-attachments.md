@@ -6,7 +6,7 @@ subject. Status: built (2026-10-15 to 2026-10-17: parties with roles, the
 TIN vault, attachments linked to any subject; the party's contact block,
 D-55, landed with P4b S4.4 on 2026-10-29; the same bytes filed twice are
 one attachment since P6, the same day). The design is kept as
-written; departures are in `plan/served.md` and `docs/spec/rules.md` B-26.
+written; departures are in `plan/served.md` and BS-partner-2.
 
 ## Why together
 
@@ -50,7 +50,7 @@ W4Facts { received: NaiveDate, state: String, kept_at: String }
 The 1099 form stays on the vendor record (`vendor.1099_set`); a party
 reaches it through `vendor`.
 
-Rules (to vendor as B-26 with sources):
+Rules (to vendor as BS-partner-2 with sources):
 
 - A full TIN or SSN is never in the journal: `tin_last4` is exactly four
   digits, and any nine-digit run in any party field is refused (the engine
@@ -102,7 +102,7 @@ derived. Spec: `ledger_core::shares`.
   (`set_entry_party`) is one derived share: all of it.
   `Ledger::entry_party` means "the sole party"; `entry_parties` lists
   them all.
-- **What a share is of** (rules.md B-35, P3 defect 14): one signed
+- **What a share is of** (BS-partner-3, P3 defect 14): one signed
   target, debit-positive as a line on the parties' own account (positive:
   the company paid or gave; negative: it received), with its direction
   (paid, received, neither) and what of it was money and what property in
@@ -154,7 +154,7 @@ derived. Spec: `ledger_core::shares`.
   entry has balanced lines, and `post_entry` refuses (`party_shares`)
   until they do. Replay never consults settings.
 - **Money:** `parties::activity_with` counts each party's part on two
-  bases (B-35 item 4): cash (its money: cash, a card, the members'
+  bases (BS-partner-3 item 4): cash (its money: cash, a card, the members'
   financing, a loan) and all (adding property contributed or distributed
   in kind), the viewer labelling the first "cash basis". Money accounts
   are the cash accounts, the cards and `[books] financing_accounts`; any

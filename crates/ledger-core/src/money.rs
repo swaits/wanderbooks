@@ -69,6 +69,17 @@ impl Currency {
         self.minor_units().unwrap_or(crate::kernel::MAX_LINE_SCALE)
     }
 
+    /// One allocation unit as an amount: `1` at [`Self::allocation_places`]
+    /// (a cent, a whole yen, a thousandth of a dinar, the finest a line
+    /// carries for a code with no minor unit). This is the one place that
+    /// turns the places into an amount, so a split and a check of that
+    /// split take their unit from the same rule and cannot drift apart
+    /// (BS-partner-1 statement 4: the allocation is the split of the
+    /// amount to the base currency's smallest unit).
+    pub fn allocation_unit(&self) -> Decimal {
+        Decimal::new(1, self.allocation_places())
+    }
+
     /// The three-letter code, e.g. `"USD"`.
     pub fn code(&self) -> &str {
         std::str::from_utf8(&self.0).expect("currency codes are ASCII by construction")

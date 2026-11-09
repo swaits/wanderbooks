@@ -474,7 +474,12 @@ pub fn check_control(checks: &[crate::arap::ControlCheck]) -> Vec<Finding> {
 }
 
 fn closes(ledger: &Ledger, through: NaiveDate) -> Vec<Finding> {
-    let unit = Decimal::new(1, ledger.base_currency().minor_units().unwrap_or(2));
+    // The unit the allocation itself splits to, from the one helper both
+    // sides use (`Currency::allocation_unit`, on `allocation_places`):
+    // for a currency with no minor unit the split is far finer than a
+    // cent, and the audit must not check it at a cent (BS-partner-1
+    // statement 4).
+    let unit = ledger.base_currency().allocation_unit();
     let mut out = Vec::new();
     for p in ledger.list_periods() {
         if p.status != PeriodStatus::Closed || p.end > through {

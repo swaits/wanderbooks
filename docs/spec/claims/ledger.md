@@ -519,7 +519,10 @@ INVARIANTS:
      rule that posted an entry (its true-up, statement 6; the close
      journals its rule and whether it posted), a member's running total
      MUST be under one minor unit from its exact share, so a drift of a
-     unit or more is a finding. Before that true-up the count may still
+     unit or more is a finding. The unit is the allocation's own
+     (`Currency::allocation_unit`, on `allocation_places`: a whole yen
+     for JPY, the finest a line carries for a code with no minor unit),
+     never a cent taken separately. Before that true-up the count may still
      carry the rounding of closes made under the older rules, so only a
      drift beyond one unit is. Closes under the older rules are not read.
 SCENARIOS:
@@ -552,6 +555,7 @@ journal feature `audits`.
 (`the_cash_flow_check_says_what_it_found`,
 `control_accounts_report_differences_unattached_lines_and_overpaid_documents`,
 `a_close_split_drifts_by_the_regime_it_was_made_under`,
+`a_jpy_close_is_checked_at_the_allocations_unit`,
 `a_count_is_trued_up_by_the_first_cumulative_close_that_posts`,
 `a_reversal_without_its_own_receipt_is_info_and_only_when_the_policy_would_cover_it`,
 `the_bar_setting_parses_what_it_names_and_refuses_the_rest`,

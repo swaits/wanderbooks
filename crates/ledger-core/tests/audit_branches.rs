@@ -311,6 +311,80 @@ fn a_close_split_drifts_by_the_regime_it_was_made_under() {
     );
 }
 
+/// BS-partner-1 statement 4 (the allocation is the split to the base
+/// currency's smallest unit) and WB-ledger-16 invariant 8: a JPY close is
+/// checked at the allocation's unit -- a whole yen, JPY having no minor
+/// unit below it -- not at a cent. A drift of half a yen is under that
+/// unit; a drift of a whole yen after the true-up is not.
+#[test]
+fn a_jpy_close_is_checked_at_the_allocations_unit() {
+    // The one helper both the split and its audit use.
+    assert_eq!(Currency::JPY.allocation_unit(), dec("1"));
+    assert_eq!(Currency::USD.allocation_unit(), dec("0.01"));
+    // A code ISO 4217 gives no minor unit splits at the finest a line
+    // carries, so its audit unit is that, not a cent.
+    assert_eq!(
+        Currency::new("XAU").unwrap().allocation_unit(),
+        dec("0.0000000001")
+    );
+    let yen = Currency::JPY.allocation_unit();
+    let m = |running: &str, exact: &str| MemberSplit {
+        capital: 3001,
+        share: dec("0.5"),
+        part: dec(running),
+        running: dec(running),
+        exact: dec(exact),
+    };
+    // Half a yen of drift is under one yen (it would be fifty cents'
+    // worth of drift at a cent unit, and flagged there).
+    assert!(audit::check_split(1, "Jan", &[m("100.5", "100")], yen, true).is_empty());
+    // A whole yen after the true-up is a finding (statement 5's >= unit).
+    let f = audit::check_split(1, "Jan", &[m("101", "100")], yen, true);
+    assert_eq!(codes(&f), ["close_split_drifts"]);
+
+    // End to end: a yen members close splits in whole yen and the audit
+    // of the closed period raises no close finding.
+    let mut l = Ledger::new(Currency::JPY);
+    let cash = l
+        .add_account("1000", "Bank", AccountType::Asset, None, false)
+        .unwrap();
+    let revenue = l
+        .add_account("4000", "Sales", AccountType::Revenue, None, false)
+        .unwrap();
+    let caps: Vec<u64> = ["3001", "3002"]
+        .iter()
+        .map(|c| {
+            l.add_account(c, c, AccountType::Equity, None, false)
+                .unwrap()
+        })
+        .collect();
+    let e = l.create_entry(d(1, 5), "sale");
+    l.add_line(e, cash, Side::Debit, Money::new(dec("101"), Currency::JPY))
+        .unwrap();
+    l.add_line(e, revenue, Side::Credit, Money::new(dec("101"), Currency::JPY))
+        .unwrap();
+    l.post_entry(e).unwrap();
+    let jan = l.create_period("2026-01", d(1, 1), d(1, 31)).unwrap();
+    let members = caps
+        .iter()
+        .map(|&capital| MemberClose {
+            capital,
+            share: dec("0.5"),
+            distributions: None,
+        })
+        .collect();
+    l.close_period_to(jan, &CloseTo::Members(members)).unwrap();
+    // 101 yen at 50/50 splits 51 / 50 whole yen (exact 50.5 each).
+    let balances: Vec<Decimal> = caps.iter().map(|&a| l.account_balance(a).unwrap()).collect();
+    assert_eq!(balances, [dec("51"), dec("50")]);
+    let f = run(&l, &Settings::default(), &all_receipts(&l), d(12, 31));
+    assert!(
+        !codes(&f).contains(&"close_split_drifts"),
+        "{:?}",
+        codes(&f)
+    );
+}
+
 /// BS-partner-1 statement 6 and 8 (WB-partner-1): a count is trued up by
 /// the first close under the cumulative rule that posts an entry, not by
 /// a close of an older rule or one that posts nothing; the books say so

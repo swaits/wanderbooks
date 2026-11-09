@@ -96,15 +96,16 @@ fn same_or_rounded(
         (None, None) => {}
         // Rounded at a coarser scale at some step (a later step may bring
         // it back to scale 2): not exact, and no panic; the finding.
-        // The figure is still within one unit, at its own scale, of the
-        // exact value (`exact`, in cents).
+        // The figure is still close to the exact value (`exact`, in
+        // cents): each coarser step loses at most one unit of its scale
+        // (at worst the whole units, 100 cents), over at most four steps.
+        // (A later step can bring the scale back to 2, so the bound is
+        // not tied to the final scale.)
         (Some(g), None) => {
-            prop_assert!(g.scale() < 2, "{g} is not a coarser scale");
-            let unit = 10i128.pow(2 - g.scale());
-            let shown = g.mantissa() * unit;
+            let shown = g.mantissa() * 10i128.pow(2u32.saturating_sub(g.scale()));
             prop_assert!(
-                (shown - exact).abs() <= unit,
-                "{g} is not within one unit of {exact} cents"
+                g.scale() <= 2 && (shown - exact).abs() <= 400,
+                "{g} is not within four whole units of {exact} cents"
             );
         }
         (None, Some(w)) => prop_assert!(false, "refused an exact {w}"),

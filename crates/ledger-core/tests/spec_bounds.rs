@@ -934,6 +934,64 @@ fn the_bound_is_the_line_limit_itself() {
     );
 }
 
+/// Opening old books is a real input: a draft line an earlier version
+/// accepted past the line limit replays as journaled (the line is kept),
+/// and the post of that draft refuses it, `AmountOutOfRange`, leaving it a
+/// draft (BS-entry-4: the limit is a line's; a refusal changes nothing).
+/// A foreign line is bounded by its booked base amount, the same way. (A
+/// journal's foreign original is kept as written; no journal writes one
+/// whose base amount is in range and itself is not, so that is not pinned
+/// here.)
+#[test]
+fn a_replayed_line_past_the_limit_is_refused_when_it_posts() {
+    let mut b = books();
+    let (cash, revenue) = (b.cash, b.revenue);
+    for fx in [false, true] {
+        let e = b.ledger.create_entry(d(2026, 2, 1), "old and huge");
+        for amount in [Decimal::MAX, too_big()] {
+            let e2 = b.ledger.create_entry(d(2026, 2, 1), "old and huge");
+            if fx {
+                b.ledger
+                    .replay_add_line_fx(
+                        e2,
+                        cash,
+                        Side::Debit,
+                        usd(amount),
+                        Currency::EUR,
+                        Decimal::ONE,
+                    )
+                    .unwrap();
+            } else {
+                b.ledger
+                    .replay_add_line(e2, cash, Side::Debit, usd(amount))
+                    .unwrap();
+            }
+            b.ledger
+                .replay_add_line(e2, revenue, Side::Credit, usd(amount))
+                .unwrap();
+            let before = b.ledger.clone();
+            assert_eq!(
+                b.ledger.replay_post_entry(e2).unwrap_err(),
+                LedgerError::AmountOutOfRange,
+                "fx: {fx}, amount {amount}"
+            );
+            assert_eq!(b.ledger, before, "the refused post changed nothing");
+            assert_eq!(
+                b.ledger.get_entry(e2).unwrap().status(),
+                ledger_core::EntryStatus::Draft
+            );
+        }
+        // The same draft at the limit itself posts: the bound is the
+        // limit's, nothing stricter.
+        for (account, side) in [(cash, Side::Debit), (revenue, Side::Credit)] {
+            b.ledger
+                .replay_add_line(e, account, side, usd(MAX_LINE_AMOUNT))
+                .unwrap();
+        }
+        b.ledger.replay_post_entry(e).unwrap();
+    }
+}
+
 // ------------------------------------------------- P3: assets, schedules
 
 /// The equipment accounts an asset needs, on these books.

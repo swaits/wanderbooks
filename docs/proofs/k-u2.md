@@ -54,6 +54,21 @@ bookspec's Lean proves them for any step.
 | `round_step_sign_preserved` | every mode: `0 <= x` gives `0 <= r`, `x <= 0` gives `r <= 0` | 13 s wall incl. build (3 covers) |
 | `round_step_refuses_nonpositive_step` | a step of zero or less is `None` | 8 s total (1 cover) |
 
+The bookspec law each harness proves (machine-readable for the
+traceability gate, `crates/ledger-core/tests/bookspec/traceability.rs`):
+
+| Harness | Law |
+|---|---|
+| `round_step_is_multiple` | 40 |
+| `round_step_is_nearest` | 40 |
+| `round_step_ties` | 40 |
+| `round_step_is_idempotent` | 40 |
+| `round_step_never_negative_zero` | 40 |
+| `round_step_toward_zero_bounds` | 40 |
+| `round_step_toward_neg_inf_is_floor` | 40 |
+| `round_step_sign_preserved` | 40 |
+| `round_step_refuses_nonpositive_step` | 40 |
+
 The three directed-mode harnesses were added after review: the spec block's
 invariants 3, 4 and 6 had no proof of their own (Lean had the ties, Kani
 checked these two modes only at exact ties). Demonstrated: with

@@ -34,6 +34,18 @@ model-checking/kani#4904), each with `kani::cover!`.
 | `total_try_is_map_sum` | `total_try` of differences is the sum of the differences; a failing map fails the total | 0..=4 pairs, in-range | 5.3 s |
 | `total_overflow_is_none` | for two arbitrary `i64`s, `total` is `Some` exactly when the true sum fits; both overflow directions covered | all `i64` pairs | 0.5 s |
 
+The bookspec law each harness proves (machine-readable for the
+traceability gate, `crates/ledger-core/tests/bookspec/traceability.rs`):
+
+| Harness | Law |
+|---|---|
+| `total_empty_is_zero` | 4 |
+| `total_append` | 4 |
+| `total_is_sound` | 4 |
+| `total_of_is_map_sum` | 4 |
+| `total_try_is_map_sum` | 4 |
+| `total_overflow_is_none` | 4 |
+
 Times: alone, `cargo kani --exact --harness`, the shared dev machine under
 `nice -n 10`, 2026-11-08. `total_append` was 115 s at runs of up to 4 and
 was reduced to up to 3 (the same law; 60 s) to keep `just prove` fast. A

@@ -960,11 +960,19 @@ fn a_reinstated_run_counts_and_is_live() {
 }
 
 /// A reversal dated before its run: between the two dates the books carry
-/// −100.00, as the trial balance does (review R2).
+/// −100.00, as the trial balance does (review R2). No command can write one
+/// any more (D-73: a reversal is dated on or after its original, so
+/// `reverse_entry` refuses it), but a journal an earlier version wrote holds
+/// them and replays as it was (B-28): this test replays one.
 #[test]
 fn a_reversal_dated_before_its_run_matches_the_trial_balance() {
     let (mut l, a, id, e) = one_run();
-    l.reverse_entry(e, date(2026, 1, 15), "early").unwrap();
+    assert!(matches!(
+        l.reverse_entry(e, date(2026, 1, 15), "early"),
+        Err(LedgerError::ReversalBeforeOriginal { .. })
+    ));
+    l.replay_reverse_entry(e, date(2026, 1, 15), "early")
+        .unwrap();
     let on = date(2026, 1, 20);
     assert_eq!(l.accumulated_posted(id, on).unwrap(), d("-100.00"));
     let tb = ledger_core::trial_balance_as_of(&l, on);

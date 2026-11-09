@@ -510,11 +510,11 @@ fn reversal_before_original_refused_for_documents() {
             .unwrap();
     assert!(matches!(
         b.l.reverse_entry(pay, d(2026, 1, 19), "early"),
-        Err(LedgerError::DocumentReversalBeforeOriginal { .. })
+        Err(LedgerError::ReversalBeforeOriginal { .. })
     ));
     assert!(matches!(
         b.l.void_document(DocRef::Invoice(inv), d(2026, 1, 9), "early"),
-        Err(LedgerError::DocumentReversalBeforeOriginal { .. })
+        Err(LedgerError::ReversalBeforeOriginal { .. })
     ));
     // The same day is fine.
     b.l.reverse_entry(pay, d(2026, 1, 20), "same day").unwrap();

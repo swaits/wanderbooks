@@ -1983,6 +1983,47 @@ fn inv4_post_and_reverse_preview_without_confirmed() {
     assert_eq!(tb["balanced"], true);
 }
 
+/// D-73: a reversal is dated on or after its original, for every entry. The
+/// preview refuses as the post does, naming the dates, and neither journals
+/// anything; the same day is taken.
+#[test]
+fn a_reversal_dated_before_its_entry_is_refused_in_preview_and_post() {
+    let dir = test_dir("rev-dated-before");
+    let toml = books_toml(&dir, "0.00", "");
+    let mut m = Mcp::start(&dir, &toml);
+    m.accounts(BASE_CHART);
+    let e = m.draft(
+        "2026-05-10",
+        "Rent",
+        &[("6000", "debit", "500.00"), ("1000", "credit", "500.00")],
+    );
+    m.attach(Some(e), b"rent receipt");
+    m.post(e).ok("post");
+    let before = m.journal();
+    for confirmed in [None, Some(false), Some(true)] {
+        let mut args = json!({"entry_id": e, "date": "2026-05-09", "description": "early"});
+        if let Some(c) = confirmed {
+            args["confirmed"] = json!(c);
+        }
+        let why = m.refuse("books.reverse_entry", args);
+        assert!(
+            why.contains("can't be dated before it") && why.contains("2026-05-10"),
+            "{why}"
+        );
+    }
+    assert!(m.journal() == before, "a refused reversal wrote");
+    let p = m.ok(
+        "books.reverse_entry",
+        json!({"entry_id": e, "date": "2026-05-10", "description": "same day"}),
+    );
+    assert_eq!(p["status"], "preview", "{p}");
+    m.ok(
+        "books.reverse_entry",
+        json!({"entry_id": e, "date": "2026-05-10", "description": "same day",
+               "confirmed": true}),
+    );
+}
+
 // ------------------------------------------ invariant 5: receipt policy
 
 #[test]

@@ -218,7 +218,9 @@ impl Model {
             return false;
         };
         let reversed_already = self.posted.iter().any(|e| e.reversal_of == Some(entry));
-        if reversed_already || orig.closes || self.closed_on(date) {
+        // D-73 (bookspec BS-ledger-5): a correction is dated on or after
+        // what it corrects.
+        if reversed_already || orig.closes || self.closed_on(date) || date < orig.date {
             return false;
         }
         let lines = orig

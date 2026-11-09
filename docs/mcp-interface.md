@@ -584,9 +584,9 @@ every tool over every book in ledger-store's `tests/fixtures/old-books`.
   and a reversal whose reversal would post a depreciation period or a
   schedule month a second time (naming the entry that posts it now), or
   re-instate a run a later run caught up (carrying the books past the
-  schedule); and a reversal of a depreciation run or a schedule month's
-  posting (or of a reversal in its chain) dated before that entry's own
-  date (a correction comes after what it corrects, B-9).
+  schedule); and a reversal of any entry dated before that entry's own
+  date (a correction comes after what it corrects, B-9, D-73; the preview
+  refuses the same way, and books written before D-73 open as they were).
 - `books.get_entry { entry_id }` → full entry with lines (each `{
   account_id, code, name, side, amount, class_id?, project? }`: a tagged
   line's project, its id and name), receipts, and

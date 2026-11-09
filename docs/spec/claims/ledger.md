@@ -106,6 +106,25 @@ and never called corrupt (statement 4). **Checked:** Lean `Step.extends`,
 `reversal_of`). **Checked:** Kani `reversal_mirrors`, `reversal_cancels`;
 Lean `accepted_reversal_iff`, `movement_with_reversal`.
 
+**Pick (D-73, the owner, 2026-11-08):** every reversal is dated on or after
+the entry it reverses, for every kind of entry (it was enforced only for
+document reversals and for schedule and depreciation runs): a correction
+comes after what it corrects. The same day is allowed. New commands only:
+a journal an earlier version wrote may hold a reversal dated before its
+original, and it replays as it was (B-28).
+**Enforced:** `Ledger::check_reversal` (SCENARIO 6) refuses with
+`ReversalBeforeOriginal`, after the schedule double-post check (SCENARIO 5); the
+store's `check_reverse_entry` and so `books.reverse_entry` (preview and
+post alike) and every document void go through it, and replay is exempt
+(`crate::parties::is_replaying`). **Checked:** store
+`a_plain_entrys_reversal_is_not_dated_before_it`,
+`a_journal_with_an_earlier_dated_reversal_opens_as_it_was`; core
+`reversal_before_original_refused_for_documents`,
+`a_reversal_dated_before_its_run_matches_the_trial_balance` (replayed);
+the model oracle `the_ledger_matches_its_model` (its `reverse` requires
+the date, as BS-ledger-5 and its CHOICE BS-ledger-16 do, and the Lean
+model's `reverse` step since L-G1).
+
 ### Product rules
 
 None.

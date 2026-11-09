@@ -133,7 +133,12 @@ pub(crate) fn refusal(e: &LedgerError) -> String {
         LedgerError::DuplicateAccountCode(_) => "code_taken",
         LedgerError::TaxCategoryRequired { .. } => "tax_category_required",
         LedgerError::DepreciationPastDisposal(_) => "depreciation_past_disposal",
-        LedgerError::AssetEntryIrreversible(..) => "entry_irreversible",
+        // A reversal dated before its original (D-73) is the examples'
+        // "entry_irreversible" too: bookspec's depreciation example words
+        // the refusal that way, whichever engine check makes it.
+        LedgerError::AssetEntryIrreversible(..) | LedgerError::ReversalBeforeOriginal { .. } => {
+            "entry_irreversible"
+        }
         LedgerError::AssetAlreadyDisposed(_) => "already_disposed",
         LedgerError::InvalidDepreciationPeriod(_) => "invalid_depreciation_period",
         LedgerError::InvalidSchedule(_) => "invalid_schedule",

@@ -35,8 +35,8 @@ adapter through `Ledger::{ar_aging, ap_aging, receive_payment, pay_bill}`
 (`tests/bookspec/queries/documents.rs`). The examples for the options
 wanderbooks did not pick (`arap-a-document-due-today-is-one-day-past-due`,
 `arap-an-aging-shows-what-stands-today`,
-`arap-a-payment-before-its-invoice-is-accepted`) name them (`under`) and the
-runner skips them for the pick above.
+`arap-a-payment-before-its-invoice-is-accepted`) name the option they rest
+on, and the runner skips them for the pick above.
 
 ## B-38 A document's figures are its ledger lines that stand; a control account is its documents
 

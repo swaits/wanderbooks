@@ -15,6 +15,12 @@
 //! property compares the `Decimal` answer to the rational one *exactly*;
 //! the rounding operations compare to the correctly rounded rational.
 //!
+//! Exact only up to the sums the books reach. Near `Decimal::MAX` the add
+//! rounds dust away (`MAX + 0.4` gives `Some(MAX)`, found by unit K-U4 and
+//! pinned below; plan unit K-U10 makes the kernel refuse it), and a product
+//! whose scale can't fit 28 places is rounded (the reason for decision
+//! D-75's ten-place bound on foreign amounts and rates).
+//!
 //! This is a test of the dependency, not of the engine. When a property
 //! fails, the finding is `rust_decimal`'s, and the failing case stays here
 //! as a regression named for the defect.
@@ -426,6 +432,17 @@ fn checked_add_and_sub_return_none_past_the_maximum() {
         Decimal::MAX.checked_add(-Decimal::ONE),
         Some(Decimal::MAX - Decimal::ONE)
     );
+}
+
+/// Inexact at the edge: within one unit of `Decimal::MAX`, `checked_add`
+/// rounds the fraction away instead of refusing (K-U4's finding). Pinned
+/// so the day `rust_decimal` or the kernel (unit K-U10) makes it exact,
+/// this test says so.
+#[test]
+fn checked_add_rounds_dust_away_next_to_the_maximum() {
+    let dust = Decimal::new(4, 1);
+    assert_eq!(Decimal::MAX.checked_add(dust), Some(Decimal::MAX));
+    assert_eq!(Decimal::MAX.checked_add(Decimal::new(5, 1)), None);
 }
 
 #[test]

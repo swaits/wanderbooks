@@ -39,6 +39,17 @@ fn src() -> Source {
     }
 }
 
+/// A folder the host calls rooted. `backup.folder` is a folder on the
+/// server's own computer, so it is checked by the host's path rules: on
+/// Windows `/mnt/backup/books` names no disk and is refused (the
+/// portable-windows gate, 2026-11-09), so the test names one the host
+/// takes.
+const BACKUP_FOLDER: &str = if cfg!(windows) {
+    r"D:\backup\books"
+} else {
+    "/mnt/backup/books"
+};
+
 fn change(k: &str, v: Value) -> Change {
     Change {
         key: k.into(),
@@ -540,7 +551,7 @@ fn readers_give_the_default_unset_and_the_word_when_set() {
         ),
         ("policy.cpa_package_requires_audit", json!("refuse")),
         ("backup.git_remote", json!("git@git.example:books.git")),
-        ("backup.folder", json!("/mnt/backup/books")),
+        ("backup.folder", json!(BACKUP_FOLDER)),
     ]);
     assert_eq!(set.schedule_convention(), ScheduleConvention::MonthlyEven);
     assert_eq!(set.parties(), PartyPolicy::Require);
@@ -552,7 +563,7 @@ fn readers_give_the_default_unset_and_the_word_when_set() {
     );
     assert_eq!(set.cpa_package_requires_audit(), Some(true));
     assert_eq!(set.backup_git_remote(), Some("git@git.example:books.git"));
-    assert_eq!(set.backup_folder(), Some("/mnt/backup/books"));
+    assert_eq!(set.backup_folder(), Some(BACKUP_FOLDER));
 
     let warn = settings(&[("policy.cpa_package_requires_audit", json!("warn"))]);
     assert_eq!(warn.cpa_package_requires_audit(), Some(false));

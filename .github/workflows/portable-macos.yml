@@ -52,7 +52,11 @@ jobs:
       - name: Everything compiles
         run: cargo build --workspace --all-targets
       - name: Tests
-        run: cargo test --workspace
+        # Every failure in one run: this job takes most of an hour, and
+        # cargo stops at the first failing test binary otherwise, hiding
+        # whatever fails after it (2026-11-09: four red pushes showed one
+        # test).
+        run: cargo test --workspace --no-fail-fast
       - name: What the build used
         if: always()
         shell: bash

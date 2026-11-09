@@ -1716,15 +1716,20 @@ fn split_part(
     (ours, theirs): (Decimal, Decimal),
     places: u32,
 ) -> Result<(Decimal, Decimal), LedgerError> {
-    let whole = add(ours, theirs, "an entry's party shares")?;
-    let part = crate::kernel::share_of(amount, ours, whole)
-        .ok_or_else(|| too_large("a payment's government part"))?;
-    let part = crate::kernel::round_places(part, places, crate::kernel::Rounding::HalfToEven)
-        .ok_or_else(|| too_large("a payment's government part"))?;
-    let rest = amount
-        .checked_sub(part)
-        .ok_or_else(|| too_large("a payment's government part"))?;
-    Ok((part, rest))
+    // The shares' own sum fails with the party-shares message, as it did
+    // before the split moved into the kernel; the rest of the split's
+    // arithmetic keeps the government-part message.
+    add(ours, theirs, "an entry's party shares")?;
+    let step = Decimal::try_from_i128_with_scale(1, places)
+        .map_err(|_| too_large("a payment's government part"))?;
+    crate::kernel::split_ratio(
+        amount,
+        ours,
+        theirs,
+        step,
+        crate::kernel::Rounding::HalfToEven,
+    )
+    .ok_or_else(|| too_large("a payment's government part"))
 }
 
 /// The codes of the accounts in some parts, sorted, once each.

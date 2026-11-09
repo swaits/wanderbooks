@@ -627,14 +627,10 @@ impl ProjectToDate {
 ///   3. NEVER panics: None when the quotient can't be represented.
 /// ```
 pub fn contribution_margin_pct(contribution: Decimal, revenue: Decimal) -> Option<Decimal> {
-    if revenue <= Decimal::ZERO {
-        return None;
-    }
-    let mut x = crate::kernel::round_places(
-        contribution
-            .checked_div(revenue)?
-            .checked_mul(Decimal::ONE_HUNDRED)?,
-        1,
+    let mut x = crate::kernel::percent_of(
+        contribution,
+        revenue,
+        Decimal::new(1, 1),
         crate::kernel::Rounding::HalfToEven,
     )?;
     // Display padding only: the margin always prints its one place.

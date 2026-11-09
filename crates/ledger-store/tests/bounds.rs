@@ -9,8 +9,8 @@
 //!       run without end; no journal line an earlier version wrote is
 //!       refused for a bound added after it.
 //! SOURCE: DECISION (P0 review round 3, 2026-10-16, S1; round 4,
-//!         2026-10-17); ledger_core calendar.rs and kernel.rs
-//!         MAX_LINE_AMOUNT.
+//!         2026-10-17); ledger_core `crates/ledger-core/src/calendar.rs`
+//!         and `crates/ledger-core/src/kernel/entries.rs` MAX_LINE_AMOUNT.
 //! ```
 
 use chrono::NaiveDate;

@@ -1505,8 +1505,8 @@ impl Books {
     ///
     /// ```text
     /// GOAL: the monthly close leaves every bank and card account
-    ///       reconciled through last month's end (docs/parties-and-
-    ///       attachments.md, Reconciliations: "an account with activity
+    ///       reconciled through last month's end
+    ///       (docs/parties-and-attachments.md, Reconciliations: "an account with activity
     ///       not reconciled through last month's end").
     /// SOURCE: that rule; CONVENTION (a bank or card statement closes
     ///         monthly; AGENTS.md's monthly close reconciles the bank);

@@ -100,8 +100,7 @@ impl BooksServer {
     /// ```text
     /// GOAL: a monthly reconciliation that leaves proof: which statement,
     ///       which balance, which lines it cleared.
-    /// SOURCE: CONVENTION (bank reconciliation); docs/parties-and-
-    ///         attachments.md "Reconciliations"; Store::complete_reconciliation.
+    /// SOURCE: CONVENTION (bank reconciliation); docs/parties-and-attachments.md "Reconciliations"; Store::complete_reconciliation.
     /// INVARIANTS:
     ///   1. Without confirmed=true nothing is recorded: the preview reports
     ///      the difference, the cleared and uncleared lines, and the

@@ -219,7 +219,7 @@ fn cash_paid_per_vendor_and_who_is_reportable() {
 #[test]
 fn years_and_thresholds() {
     let l = books();
-    // SOURCE: BS-1099-1 (sources/irs-1099-thresholds.md; Pub. L.
+    // SOURCE: BS-1099-1 (docs/spec/sources/irs-1099-thresholds.md; Pub. L.
     // 119-21 §70433(f): payments made after December 31, 2025).
     assert_eq!(default_threshold(2025), Ok(dec("600")));
     assert_eq!(default_threshold(2026), Ok(dec("2000")));

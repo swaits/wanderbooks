@@ -214,7 +214,7 @@ impl fmt::Debug for Money {
 ///       smallest unit (cents, whole yen, thousandths of a dinar), never a
 ///       fixed two places.
 /// SOURCE: BS-ledger-1 (no fraction of the minor unit; ISO 4217,
-///         sources/iso-4217.md).
+///         docs/spec/sources/iso-4217.md).
 /// INVARIANTS:
 ///   1. amount = units × 10^-scale exactly; unit = 10^(scale − minor).
 ///   2. A currency with no minor unit (gold, SDRs) counts as two places.

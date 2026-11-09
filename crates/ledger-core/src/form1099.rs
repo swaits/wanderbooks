@@ -84,7 +84,7 @@ impl Form1099 {
 
 /// Why a vendor gets no 1099: the kind of payee no return is required
 /// for. Each has its authority ([`ExemptReason::citation`],
-/// sources/irs-1099-payment-method.md); a decision adds the facts in
+/// docs/spec/sources/irs-1099-payment-method.md); a decision adds the facts in
 /// words.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -430,8 +430,8 @@ pub fn check_new_decision(decisions: &[Dated1099], new: &Dated1099) -> Result<Ap
 /// GOAL: the dollar amount at which a vendor's payments become reportable.
 /// SOURCE: BS-1099-1 (26 U.S.C. §6041(a), (h), §6041A(a)(2),
 ///         Pub. L. 119-21 §70433(f): payments made after December 31,
-///         2025; sources/irs-1099-thresholds.md,
-///         sources/irs-1099-payment-method.md).
+///         2025; docs/spec/sources/irs-1099-thresholds.md,
+///         docs/spec/sources/irs-1099-payment-method.md).
 /// SCENARIOS:
 ///   1. IF `year` <= 2025: SHOULD be $600.
 ///   2. IF `year` == 2026: SHOULD be $2,000.
@@ -872,7 +872,7 @@ fn bounds(
 ///         the year; Treas. Reg. §1.6041-1(a)(1)(iv): card and network
 ///         payments go on Form 1099-K; §1.6041-1(e)(1): the company is the
 ///         payor when a member pays its bill; §1.6041-3: payees no return
-///         is required for; sources/irs-1099-payment-method.md);
+///         is required for; docs/spec/sources/irs-1099-payment-method.md);
 ///         crate::shares (an entry with several parties, each with their
 ///         share; DECISION, owner, 2026-10-15); DECISION D-40 (owner,
 ///         2026-10-20: dated decisions; a bank payment with no method

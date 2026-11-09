@@ -650,7 +650,7 @@ impl Bucket {
 ///         transaction reportable under §6050W is not reported under
 ///         §6041; §1.6041-1(e)(1): a member writing a check at the
 ///         company's direction doesn't make the member the payor;
-///         sources/irs-1099-payment-method.md); DECISION D-40 (owner,
+///         docs/spec/sources/irs-1099-payment-method.md); DECISION D-40 (owner,
 ///         2026-10-20: a bank payment with no method recorded counts).
 /// INVARIANTS (first match wins):
 ///   1. The tag names this line's account: Card for a card or network,

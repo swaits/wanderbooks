@@ -2993,8 +2993,8 @@ impl Ledger {
     /// GOAL: the register carries the tax figures beside book value, each
     ///       named for what it is, so book and tax never get confused and
     ///       the CPA sees both.
-    /// SOURCE: BS-asset-4; docs/spec/sources/
-    ///         irs-partnership-basis.md; DECISION D-41 (owner, 2026-10-20).
+    /// SOURCE: BS-asset-4; DECISION D-41 (owner, 2026-10-20);
+    ///         docs/spec/sources/irs-partnership-basis.md.
     /// INVARIANTS:
     ///   1. The record passes AssetBasis::check: a purchase takes no
     ///      contribution facts; a contribution needs the adjusted basis and

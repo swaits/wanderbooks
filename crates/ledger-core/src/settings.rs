@@ -12,7 +12,7 @@
 //!       sees the same way.
 //! SOURCE: plan/served.md I-3 (the journal holds all books state) and 5.3
 //!         (setting keys); the validators carried over from
-//!         ledger-config's wanderbooks.toml parser, whose SOURCE lines
+//!         the `crates/ledger-config/src/lib.rs` parser (`parse`), whose SOURCE lines
 //!         they keep (IRS Pub. 538, Treas. Reg. §301.7701-3, IRC §704(a)).
 //! INVARIANTS:
 //!   1. Only keys in KEYS exist; a value is checked by its key's kind

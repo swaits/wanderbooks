@@ -13,8 +13,10 @@
 //!       ledger unchanged; a replayed line an earlier version wrote past
 //!       the same bound is accepted exactly as written.
 //! SOURCE: DECISION (P0 review round 3, 2026-10-16, S1; round 4,
-//!         2026-10-17); kernel.rs MAX_LINE_AMOUNT (rules.md: a line over a
-//!         quadrillion is a mistake); calendar.rs (four-digit years).
+//!         2026-10-17); `crates/ledger-core/src/kernel/entries.rs`
+//!         MAX_LINE_AMOUNT (BS-entry-4: a line over a
+//!         quadrillion is a mistake); `crates/ledger-core/src/calendar.rs`
+//!         (four-digit years).
 //! ```
 
 use chrono::{Datelike, NaiveDate};

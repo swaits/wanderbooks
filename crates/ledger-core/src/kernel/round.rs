@@ -32,9 +32,9 @@ pub enum Rounding {
 ///       unit, once, with the mode named at the call.
 /// SOURCE: docs/spec/claims/ledger.md BS-ledger-1 (a ledger in one money holds no
 ///         fractions of its smallest unit; FX books the base currency's
-///         minor unit, half away from zero), claims/entry.md BS-entry-3 (exact
+///         minor unit, half away from zero), docs/spec/claims/entry.md BS-entry-3 (exact
 ///         amounts in the books; round only where a rule says to), and
-///         claims/ledger.md BS-ledger-11; the call sites' own rules (BS-partner-1, BS-statement-3,
+///         docs/spec/claims/ledger.md BS-ledger-11; the call sites' own rules (BS-partner-1, BS-statement-3,
 ///         BS-asset-1, BS-prepaid-1, BS-1099-1, BS-partner-3, BS-partner-4, BS-statement-5); owner decision D-69 (the
 ///         laws live once, in bookspec's Lean).
 /// INVARIANTS:

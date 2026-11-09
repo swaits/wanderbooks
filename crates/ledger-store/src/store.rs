@@ -5186,8 +5186,8 @@ impl Store {
     ///
     /// ```text
     /// GOAL: rename an account, keeping the name it had in the journal.
-    /// SOURCE: BS-ledger-10; Rev. Proc. 98-25 (docs/spec/sources/
-    ///         irs-records.md): a report printed under the old name can
+    /// SOURCE: BS-ledger-10; Rev. Proc. 98-25
+    ///         (docs/spec/sources/irs-records.md): a report printed under the old name can
     ///         be tied to the new one.
     /// INVARIANTS:
     ///   1. Only the account's name changes (Ledger::rename_account
@@ -5967,8 +5967,8 @@ impl Store {
     /// ```text
     /// GOAL: a monthly close that leaves proof: which statement, which
     ///       balance, which lines it cleared.
-    /// SOURCE: CONVENTION (bank reconciliation); docs/parties-and-
-    ///         attachments.md "Reconciliations"; DECISION (owner,
+    /// SOURCE: CONVENTION (bank reconciliation);
+    ///         docs/parties-and-attachments.md "Reconciliations"; DECISION (owner,
     ///         2026-10-15).
     /// INVARIANTS:
     ///   1. Recorded only when the difference is exactly zero

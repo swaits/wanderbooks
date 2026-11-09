@@ -502,6 +502,21 @@ impl<'a> Books<'a> {
                 "{what}: twice"
             );
         }
+        // The evidence policy the example assumes (BS-entry-5): the books'
+        // own setting, as an engine holds it (BS-ledger-9). An example that
+        // states none has no policy, and its drafts post by the primitive.
+        if let Some(over) = &s.evidence_over {
+            use ledger_core::settings::Change;
+            let change = Change {
+                key: "policy.evidence.threshold".into(),
+                value: Some(serde_json::json!(over)),
+            };
+            took(
+                self.store
+                    .change_settings(&[change], &bookspec_source(&ex.id)),
+                &format!("{}: the evidence policy", ex.id),
+            );
+        }
         self.members = members;
         self.party_members = party_members;
         self.parties = parties;

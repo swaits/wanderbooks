@@ -160,7 +160,7 @@ pub(crate) fn check_document_dates(b: &Books<'_>, x: &Expect) {
     check_figures(b, x, b.answer_document_dates(&x.query()));
 }
 
-fn check_figures(b: &Books<'_>, x: &Expect, answer: Result<Value, Refusal>) {
+pub(crate) fn check_figures(b: &Books<'_>, x: &Expect, answer: Result<Value, Refusal>) {
     let ex = b.ex;
     let Value::Object(got) =
         answer.unwrap_or_else(|r| panic!("{}: {}: {}", ex.id, x.query, r.reason))

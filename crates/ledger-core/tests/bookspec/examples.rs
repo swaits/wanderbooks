@@ -163,10 +163,12 @@ pub(crate) fn every_bookspec_example_holds() {
     // -11 (recovery-movement), -12 (net-of-expected-discount), -13
     // (net-against-the-deposit) and -14 (apportion-across-the-lines),
     // BS-prepaid-2's equal-months and BS-ledger-20's refuse (each option's
-    // example, so no allow-list grows).
+    // example, so no allow-list grows), BS-entry-6's check-only-when-posting
+    // and BS-ledger-17's reversal-needs-its-own (wanderbooks refuses a line on
+    // a header as it is added, and a reversal needs no evidence of its own).
     assert_eq!(
         skipped.len(),
-        11,
-        "the eleven unpicked-option examples: {skipped:?}"
+        13,
+        "the thirteen unpicked-option examples: {skipped:?}"
     );
 }

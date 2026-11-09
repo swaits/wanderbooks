@@ -1,4 +1,45 @@
-# STATUS — 2026-11-07: the plan's build units are done; golden files raised the parity floor to 36; the owner's runs and trials are left
+# STATUS — 2026-11-08: P14 under way: bookspec is the definitive spec, the kernel sweep half done, the Lean model checks the code
+
+## 2026-11-08: P14, bookspec the definitive spec (plan/p14-bookspec.md)
+
+Decisions D-68 to D-75 (plan/served.md 10.1). What landed, every unit
+reviewed by a second model before it merged:
+
+- **bookspec** (git.swaits.com/swaits/bookspec, pinned at aaa02ca; its
+  history purged of committed build output, force-pushed): one TOML
+  record per rule with a plain-English description and link checks
+  (S-A); the 21 sources vendored with exact licence lines and every
+  citation checked verbatim (S-B); every accounting rule complete as a
+  record (S-C1..C6), wanderbooks' rules.md reduced to claims and
+  WB-<area>-<n> product rules; every CHOICE its own record (64), a
+  declared pick must name a real option (S-C7); self-contained: its
+  GnuCash oracle, a README for the spec, Lean in its CI (S-K1).
+- **Lean**: the laws live once, in bookspec (L-F1, L-F2: wanderbooks
+  requires the package at the same pin as its Rust crates; a test
+  enforces it); 174 audited theorems there. The model refuses what the
+  spec refuses (reverse-once, the reversal date, period overlap, an
+  inverted period) and runs as a step proved sound and complete (L-G1);
+  it runs bookspec's examples itself, agreeing with the Rust derivation
+  (L-G3); and a weekly differential test runs random command sequences
+  through the Rust ledger and the Lean model: they agree (L-G5, D-74).
+- **Kernel sweep**: modules (K-U0); one rounding primitive for every
+  mode, proved at any step (K-U2, law 40); every report and book total
+  checked (K-U4, ~110 sites); FX conversion in the kernel (K-U1, law
+  41, D-75's ten-place bound); the tax share (law 39, earlier today).
+- **Found and fixed**: Money::checked_add panicked on overflow; the IIF
+  export wrote an entry on two A/R or A/P accounts QuickBooks would
+  refuse; a reversal could be dated before its original (D-73); a
+  26-place foreign amount booked a cent the product never reached
+  (D-75). Found, scheduled: rust_decimal's add and multiply round at
+  their edges (K-U10).
+- **Coverage**: a report and floor (core 90%, store 92%, weekly), and
+  rust_decimal checked against exact rationals (V-D).
+
+**Next** (plan/p14-bookspec.md): S-E (the B-n references to bookspec
+ids), X-H1/X-H2 (examples for the 39 rules without one), X-I, X-J
+(the traceability gate), X-O (hledger), K-U3, U5 (D-72), U6-U10, V-D2,
+L-G2/G4. The owner's overnight P12 run, trials, release, icon and
+re-audit remain his.
 
 ## 2026-11-07: eleven golden files, the floor 25 → 36, D-67
 

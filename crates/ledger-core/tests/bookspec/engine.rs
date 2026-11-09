@@ -120,7 +120,7 @@ pub(crate) const PICKS: &[(Area, u32, &str)] = &[
     (Area::Arap, 7, "due-today-is-current"),
     (Area::Arap, 8, "as-of-the-day"),
     (Area::Arap, 9, "refuse-a-payment-before-its-document"),
-    (Area::Arap, 10, "ignore-case-and-spaces"),
+    (Area::Arap, 10, "ignore-case-spaces-and-hyphens"),
     (Area::Arap, 11, "reverse-then-plain-entry"),
     (Area::Arap, 12, "gross-when-taken"),
     (Area::Arap, 13, "gross"),

@@ -184,13 +184,8 @@ behind the feature `documents_v2`. **Checked:**
 
 **Claims:** yes
 
-**Pick:** a vendor's invoice reference is compared after the normalization that drops case and spaces (`Ledger::check_vendor_ref`); the old text names no separate decision for it.
-**Pick (BS-arap-10):** `ignore-case-and-spaces`; a vendor's invoice reference is compared after the normalization that drops case and spaces.
-
-wanderbooks goes one step past the option: it also drops hyphens, so
-"ACME-123", "acme 123" and "Acme123" are one reference (`Ledger::check_vendor_ref`,
-pinned by `duplicate_vendor_ref_refused_unless_a_reason_is_given`); the record's option
-names case and spaces only, and none of its examples distinguishes the two.
+**Pick:** a vendor's invoice reference is compared after the normalization that drops case, spaces and hyphens (`Ledger::check_vendor_ref`), so "ACME-123", "acme 123" and "Acme123" are one reference (pinned by `duplicate_vendor_ref_refused_unless_a_reason_is_given`); plan P4b S4 (the owner) specifies it.
+**Pick (BS-arap-10):** `ignore-case-spaces-and-hyphens`; a vendor's invoice reference is compared after the normalization that drops case, spaces (any whitespace) and hyphens.
 
 **Enforced:** `Ledger::next_invoice_number`, `Ledger::check_vendor_ref`,
 `PartySnapshot::from_party` (the snapshots at issue, D-55);
@@ -210,8 +205,8 @@ every amount through `amount_parts`).
 invoice with `Ledger::next_invoice_number` and reads the place back from the
 number the engine stored), `arap-a-vendor-invoice-is-entered-once`
 (the refusal of a second bill, from `Ledger::check_vendor_ref`) and, for
-BS-arap-10, `arap-a-vendor-reference-differing-in-case-and-spaces-is-a-duplicate`;
-`arap-a-vendor-reference-differing-in-case-and-spaces-is-not-a-duplicate`
+BS-arap-10, `arap-a-vendor-reference-differing-in-case-spaces-and-hyphens-is-a-duplicate`;
+`arap-a-vendor-reference-differing-in-case-spaces-and-hyphens-is-not-a-duplicate`
 names `compare-exactly` and is skipped; the page `ledger-import`
 `tests/spec_import.rs::invoice_pdf_prints_what_it_should` and the unit tests
 `labels_are_data`, `an_invoice_renders_deterministically`,

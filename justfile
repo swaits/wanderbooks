@@ -38,6 +38,7 @@ check-shard shard:
             RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --quiet
             just server-only
             just check-shards-agree
+            just deny
             ;;
         # The viewer's tests are half of the suite's time, in two halves
         # of their own: its unit tests, and its integration tests. Between
@@ -55,6 +56,15 @@ check-shard shard:
             exit 1
             ;;
     esac
+
+# What every dependency must be (deny.toml): free of known vulnerabilities
+# (the RustSec database, fetched now), not yanked, under a licence that
+# fits MIT OR Apache-2.0, and from crates.io or the bookspec repository.
+# The first run (2026-11-09) found 23 advisories in the lock file. A new
+# advisory turns this red on an unchanged tree: that is its job, and the
+# weekly run makes it within a week of the advisory, push or no push.
+deny:
+    cargo deny check
 
 # CI's list of parts is this file's: a part CI never runs is a check
 # nobody makes, and a part only CI names fails there, not here.

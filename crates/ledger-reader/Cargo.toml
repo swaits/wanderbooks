@@ -3,6 +3,7 @@ name = "ledger-reader"
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
+publish.workspace = true
 description = "The one reader: a PDF's text and pages, an XLSX's cells as exact decimal strings (plan P6, D-61)."
 
 [dependencies]

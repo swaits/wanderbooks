@@ -13,6 +13,8 @@
 
 use chrono::{Datelike, NaiveDate};
 use ledger_core::RETAINED_EARNINGS_CODE;
+use ledger_core::kernel::total_of;
+use ledger_core::money::{add_in_range, sub_in_range};
 use ledger_core::reports::{
     BalanceSheetStatement, CashFlowSection, CashFlowStatement, MembersEquityStatement,
     ProfitAndLossStatement, StatementLine, TrialBalance,
@@ -275,9 +277,14 @@ pub fn balance_sheet(
                 .iter()
                 .map(|l| one(RowKind::Line, format!("{} {}", l.code, l.name), l.amount)),
         );
-        let retained: Decimal = retained.iter().map(|l| l.amount).sum::<Decimal>()
-            + bs.current_earnings
-            - earnings.net_income_ytd;
+        let retained: Decimal = sub_in_range(
+            add_in_range(
+                total_of(retained.iter(), |l| l.amount)
+                    .expect("figures drawn from the books are in range, so their sum is"),
+                bs.current_earnings,
+            ),
+            earnings.net_income_ytd,
+        );
         if !retained.is_zero() {
             rows.push(one(RowKind::Line, "Retained earnings", retained));
         }
@@ -288,7 +295,7 @@ pub fn balance_sheet(
         ));
     } else {
         rows.extend(account_lines(&bs.equity));
-        let prior = bs.current_earnings - earnings.unclosed;
+        let prior = sub_in_range(bs.current_earnings, earnings.unclosed);
         if !prior.is_zero() {
             rows.push(one(
                 RowKind::Line,
@@ -307,7 +314,7 @@ pub fn balance_sheet(
     rows.push(one(
         RowKind::Total,
         format!("Total liabilities and {}", equity_name.to_lowercase()),
-        bs.total_liabilities + bs.total_equity,
+        add_in_range(bs.total_liabilities, bs.total_equity),
     ));
     statement(
         "Balance Sheet",
@@ -482,7 +489,11 @@ pub fn members_equity(me: &MembersEquityStatement) -> Statement {
         row(RowKind::Line, "Beginning balance", pick(&|c| c.beginning)),
         row(RowKind::Line, "Contributions", pick(&|c| c.contributions)),
         row(RowKind::Line, "Net income (loss)", pick(&|c| c.net_income)),
-        row(RowKind::Line, "Distributions", pick(&|c| -c.distributions)),
+        row(
+            RowKind::Line,
+            "Distributions",
+            pick(&|c| ledger_core::money::neg(c.distributions)),
+        ),
     ];
     if !me.total.other.is_zero() {
         rows.push(row(RowKind::Line, "Other changes", pick(&|c| c.other)));
@@ -501,7 +512,13 @@ pub fn members_equity(me: &MembersEquityStatement) -> Statement {
 /// difference where they disagree (meals at 50%, penalties at 0%), and any
 /// account still needing a category.
 pub fn tax_summary(ts: &ledger_core::TaxSummary) -> Statement {
-    let diff = |b: Decimal, t: Decimal| if b == t { None } else { Some(b - t) };
+    let diff = |b: Decimal, t: Decimal| {
+        if b == t {
+            None
+        } else {
+            Some(sub_in_range(b, t))
+        }
+    };
     let lines = |ls: &[ledger_core::TaxSummaryLine]| -> Vec<Row> {
         ls.iter()
             .map(|l| {
@@ -519,8 +536,10 @@ pub fn tax_summary(ts: &ledger_core::TaxSummary) -> Statement {
             .collect()
     };
     let total = |kind, label: &str, ls: &[ledger_core::TaxSummaryLine]| {
-        let b: Decimal = ls.iter().map(|l| l.book).sum();
-        let t: Decimal = ls.iter().map(|l| l.tax).sum();
+        let b: Decimal = total_of(ls.iter(), |l| l.book)
+            .expect("figures drawn from the books are in range, so their sum is");
+        let t: Decimal = total_of(ls.iter(), |l| l.tax)
+            .expect("figures drawn from the books are in range, so their sum is");
         row(kind, label, vec![Some(b), Some(t), diff(b, t)])
     };
     let mut rows = vec![section("Income")];

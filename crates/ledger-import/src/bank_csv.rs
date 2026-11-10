@@ -118,7 +118,7 @@ pub fn parse_bank_csv_with(
             4 => {
                 // Money out in the third column, money in in the fourth.
                 match (!fields[2].is_empty(), !fields[3].is_empty()) {
-                    (true, false) => -parse_amount(fields[2])?,
+                    (true, false) => ledger_core::money::neg(parse_amount(fields[2])?),
                     (false, true) => parse_amount(fields[3])?,
                     (false, false) => Decimal::ZERO,
                     (true, true) => {
@@ -227,7 +227,7 @@ fn parse_amount(s: &str) -> Result<Decimal, BankCsvError> {
         return Err(bad());
     }
     if neg {
-        amount = -amount;
+        amount = ledger_core::money::neg(amount);
     }
     Ok(amount)
 }

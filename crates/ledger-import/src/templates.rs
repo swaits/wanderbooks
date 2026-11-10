@@ -115,10 +115,17 @@ fn acct(code: &str, name: &str, t: &str, tax: Option<&str>) -> ChartRow {
 /// Equal shares for `n` owners as percents to two places, the last
 /// absorbing the remainder so they sum to exactly 100.
 fn equal_shares(n: usize) -> Vec<Decimal> {
-    let each = (Decimal::from(100) / Decimal::from(n as u64)).round_dp(2);
+    use ledger_core::kernel::{Amount, Rounding, round_places, total};
+    let hundred = Decimal::from(100);
+    let Some(each) = Amount::checked_div(hundred, Decimal::from(n as u64))
+        .and_then(|q| round_places(q, 2, Rounding::HalfToEven))
+    else {
+        return Vec::new(); // no owners: no shares (the raw `/` panicked here)
+    };
     let mut v = vec![each; n];
     if let Some((last, rest)) = v.split_last_mut() {
-        *last = Decimal::from(100) - rest.iter().sum::<Decimal>();
+        let given = total(rest.iter().copied()).expect("fewer than a hundred percent, n times");
+        *last = Amount::checked_sub(hundred, given).expect("a hundred minus the shares given fits");
     }
     v
 }

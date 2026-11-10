@@ -994,10 +994,7 @@ pub fn journal_to_iif(
 /// Debit positive, credit negative (Intuit: "Debit amounts are always
 /// positive, credit amounts are always negative").
 fn signed(side: Side, amount: Decimal) -> Decimal {
-    match side {
-        Side::Debit => amount,
-        Side::Credit => -amount,
-    }
+    ledger_core::money::signed_amount(side, amount)
 }
 
 /// Two decimal places, no thousands separators.

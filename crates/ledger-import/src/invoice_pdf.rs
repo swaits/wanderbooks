@@ -266,7 +266,7 @@ pub fn template_data(doc: &InvoiceDoc) -> Result<serde_json::Value, PdfError> {
         "total": dollars(doc.total),
         "settled": doc.settled.iter().map(|(label, a)| serde_json::json!({
             "label": label,
-            "amount": dollars(-*a),
+            "amount": dollars(ledger_core::money::neg(*a)),
         })).collect::<Vec<_>>(),
         "balance_label": "Balance due",
         "balance": dollars(doc.balance),

@@ -11,14 +11,63 @@ netlify := "npm_config_ignore_scripts=true npx --yes netlify-cli@27"
 default:
     @just --list
 
+# The parts `check` is cut into. A laptop runs them one after another
+# (`just check`); CI runs each on a runner of its own, side by side
+# (.github/workflows/check.yml), because one runner took 72 minutes for the
+# lot on 2026-11-09 (56 of them tests, one binary at a time). There is one
+# definition, `check-shard`, so the two cannot drift: what CI checks is
+# what `just check` checks. `rest` is every crate not named by another
+# part, so a new crate is tested without anyone adding it to a list.
+check_shards := "lint gui-unit gui-tests cli rest"
+
 # Everything CI should check: format, clippy and rustdoc (zero warnings), tests
 check: sweep-test-tmp
-    cargo fmt --all --check
-    cargo clippy --workspace --all-targets -- -D warnings
-    RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --quiet
-    cargo test --workspace
-    @just server-only
-    @just sweep-test-tmp
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for shard in {{check_shards}}; do just check-shard "$shard"; done
+    just sweep-test-tmp
+
+# One part of `check` (one of check_shards)
+check-shard shard:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{shard}}" in
+        lint)
+            cargo fmt --all --check
+            cargo clippy --workspace --all-targets -- -D warnings
+            RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --quiet
+            just server-only
+            just check-shards-agree
+            ;;
+        # The viewer's tests are half of the suite's time, in two halves
+        # of their own: its unit tests, and its integration tests. Between
+        # them they are every target `cargo test -p ledger-gui` runs: the
+        # library, the executable, each file under tests/, the doc tests.
+        gui-unit)
+            cargo test -p ledger-gui --lib --bins
+            cargo test -p ledger-gui --doc
+            ;;
+        gui-tests) cargo test -p ledger-gui --test '*' ;;
+        cli) cargo test -p ledger-cli ;;
+        rest) cargo test --workspace --exclude ledger-gui --exclude ledger-cli ;;
+        *)
+            echo "check-shard: no part named '{{shard}}' (the parts: {{check_shards}})" >&2
+            exit 1
+            ;;
+    esac
+
+# CI's list of parts is this file's: a part CI never runs is a check
+# nobody makes, and a part only CI names fails there, not here.
+check-shards-agree:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ci=$(sed -n 's/^ *shard: \[\(.*\)\] *$/\1/p' .github/workflows/check.yml | tr -d ' ' | tr ',' '\n' | sort)
+    here=$(tr ' ' '\n' <<<"{{check_shards}}" | sort)
+    if [ -z "$ci" ] || [ "$ci" != "$here" ]; then
+        echo "check.yml runs [$(echo $ci)], the justfile's check_shards are [$(echo $here)]" >&2
+        exit 1
+    fi
+    echo "check: CI runs every part ($(echo $here))"
 
 # The server-only build (plan D-22, for another machine) builds, passes
 # clippy and the one executable's own tests, and links no window libraries.

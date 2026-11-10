@@ -404,11 +404,17 @@ downgrading is theirs). Anything else (an AppImage, whose file is named by
   `rollback` refuses while a book declares a format or feature the kept
   version does not know;
 - an AppImage runs the program from a mount that goes away with the image,
-  so the host learns the image's own path from `APPIMAGE` (the one variable
-  `start.rs` adds to its scrubbed environment, only when it names an
-  absolute file; the host reads it about itself and never tells an agent),
-  runs and restarts from that file, and tells a replaced program by its
-  inode, size and last write, like any other;
+  so the host learns the image's own path from `APPIMAGE` (with `APPDIR`,
+  the two variables `start.rs` adds to its scrubbed environment; the host
+  reads them about itself and never tells an agent), runs and restarts
+  from that file, and tells a replaced program by its inode, size and last
+  write, like any other. `APPIMAGE` is believed only when the image is
+  this program's own: it names an absolute file, `APPDIR` an absolute
+  folder, and the running executable is inside `APPDIR` (`start.rs`
+  INVARIANT 6). Everything an AppImage app starts inherits both, so a
+  `wanderbooks` run from a terminal, an editor or an agent's app that is
+  itself an AppImage sees that app's image named there; it is never run
+  as the host, named in an agent's pointer file, or replaced by `update`;
 - updates are also **staged** (step 4): while the books are open the host
   looks at the feed at most once a day (`update_check` knob; the look is
   noted in `updates/checked`), and only downloads and verifies a newer

@@ -143,7 +143,10 @@ pub enum Install {
 
 /// What kind of install the executable at `exe` is. A package puts
 /// `<prefix>/share/wanderbooks/install-method` beside `<prefix>/bin`, with
-/// its manager's name in it; an AppImage says where it is in `APPIMAGE`.
+/// its manager's name in it; an AppImage says where it is in `APPIMAGE`,
+/// which is `appimage` only when the image is this program's own
+/// (start.rs INVARIANT 6: an update replaces that file, so it is never
+/// one another app's `APPIMAGE` names).
 pub fn install_kind(exe: &Path, appimage: Option<&Path>) -> Install {
     if let Some(image) = appimage.filter(|p| p.is_file()) {
         return Install::SelfUpdating(image.to_path_buf());
@@ -160,7 +163,7 @@ pub fn install_kind(exe: &Path, appimage: Option<&Path>) -> Install {
 /// How the running program was installed.
 pub fn this_install() -> Result<Install, String> {
     let exe = crate::start::this_executable()?;
-    let image = std::env::var_os("APPIMAGE").map(PathBuf::from);
+    let image = crate::start::this_appimage().map(|own| own.image);
     Ok(install_kind(&exe, image.as_deref()))
 }
 

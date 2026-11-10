@@ -34,6 +34,14 @@ and not yet pushed (one gate and one push at the end, D-60):
 - **Every `Ledger` command mapped to its step of the Lean model**
   (`docs/command-steps.md`, kept whole by a test): 119 commands, 14
   steps, and the four gaps it found are written down for bookspec.
+- **Another app's AppImage is no longer taken for this program's** (found
+  by the batch's gate, which ran in a session started from an AppImage
+  app): `APPIMAGE` was believed whenever it named a file, and every
+  program such an app starts inherits it. Run from that app's terminal
+  or agent, wanderbooks started that image as its host, and `wanderbooks
+  update` wrote wanderbooks over that app's file. Believed now only when
+  the program runs from inside the image's mount (`start.rs` INVARIANT
+  6), with a test for the host and one for the update.
 - **Routing**: delegated work goes by tier (`docs/routing.md`), one line
   per task in `docs/delegation-log.md`.
 

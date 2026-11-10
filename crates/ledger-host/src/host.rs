@@ -227,8 +227,8 @@ fn identity_from(meta: &std::fs::Metadata) -> Identity {
 /// image file (`APPIMAGE`), not the program inside the mount.
 #[cfg(unix)]
 fn running_identity() -> Option<Identity> {
-    if let Some(image) = crate::start::own_appimage(std::env::var_os("APPIMAGE").as_deref()) {
-        return Some(identity_from(&std::fs::metadata(image).ok()?));
+    if let Some(own) = crate::start::this_appimage() {
+        return Some(identity_from(&std::fs::metadata(own.image).ok()?));
     }
     let running = if cfg!(target_os = "linux") {
         std::fs::metadata("/proc/self/exe").ok()?

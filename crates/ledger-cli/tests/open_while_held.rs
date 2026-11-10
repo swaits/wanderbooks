@@ -254,12 +254,16 @@ impl Running {
     /// Wait for a line containing `text`.
     fn expect(&self, text: &str, secs: u64) -> String {
         let deadline = Instant::now() + Duration::from_secs(secs);
+        let mut seen = Vec::new();
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
             match self.lines.recv_timeout(left) {
                 Ok(line) if line.contains(text) => return line,
-                Ok(_) => {}
-                Err(_) => panic!("no line with {text:?} in {secs} s"),
+                Ok(line) => seen.push(line),
+                // What did arrive says why: a refusal, or nothing at all.
+                Err(e) => {
+                    panic!("no line with {text:?} in {secs} s ({e}); the lines seen: {seen:?}")
+                }
             }
         }
     }
@@ -1201,6 +1205,43 @@ fn books_commands_hold_the_books_while_they_run() {
             assert!(!String::from_utf8_lossy(text).contains(&root), "{o:?}");
         }
     }
+}
+
+/// start.rs INVARIANT 6: started from inside another app's AppImage (a
+/// terminal, an editor, an agent's app: each hands `APPIMAGE` and `APPDIR`
+/// to everything it starts), this program is still the one that runs as
+/// the host. That image is never run.
+#[test]
+fn another_apps_appimage_is_never_run_as_the_host() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = Home::new("foreign");
+    // The other app: a program that leaves a mark if it is ever run.
+    let mark = home.dir.path().join("other-app-ran");
+    let other = home.dir.path().join("Other.AppImage");
+    std::fs::write(&other, format!("#!/bin/sh\n: > '{}'\n", mark.display())).unwrap();
+    std::fs::set_permissions(&other, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mount = home.dir.path().join("other-mount");
+    std::fs::create_dir(&mount).unwrap();
+    let mut c = home.cmd("books");
+    c.args(["create", "acme"])
+        .env("APPIMAGE", &other)
+        .env("APPDIR", &mount)
+        .stdin(Stdio::null());
+    let out = c.output().unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let mut c = home.cmd("serve");
+    c.env("APPIMAGE", &other).env("APPDIR", &mount);
+    let held = Running::start(c);
+    held.expect("The books are open", 30);
+    let host = home.host().unwrap();
+    assert_eq!(
+        std::fs::read_link(format!("/proc/{host}/exe")).unwrap(),
+        std::fs::canonicalize(&home.exe).unwrap(),
+        "the host is another program"
+    );
+    assert!(!mark.exists(), "the other app's image was run");
+    held.signal(libc::SIGINT);
+    assert!(home.wait_closed(10));
 }
 
 /// Under a systemd app scope (as uwsm sets up), closing the app that

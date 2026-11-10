@@ -1515,12 +1515,8 @@ pub fn books_home_in(documents: &Path, book: &str) -> PathBuf {
 /// this runs from one (its mount goes away with the process), else this
 /// executable as it is on disk.
 fn pointer_program() -> Result<PathBuf, String> {
-    if let Some(image) = std::env::var_os("APPIMAGE")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute() && p.is_file())
-    {
-        return Ok(image);
-    }
+    // Its own image only (start.rs INVARIANT 6): never the image of the
+    // app this was started from.
     crate::start::this_executable()
 }
 

@@ -3828,9 +3828,19 @@ it (the same program with a tail, so its hash differs). All in
 Step 3's gap and step 4 (same file):
 
 - `a_replaced_appimage_restarts_the_books`: the programs run from one copy
-  (a mount's) while `APPIMAGE` names another (the image); `update`
-  replaces only the image; the host restarts onto it (its `/proc/PID/exe`
-  is the image), the mount's copy is untouched, the session writes on.
+  (a mount's, named by `APPDIR`) while `APPIMAGE` names another (the
+  image); `update` replaces only the image; the host restarts onto it (its
+  `/proc/PID/exe` is the image), the mount's copy is untouched, the
+  session writes on.
+- `an_update_never_replaces_another_apps_appimage` (2026-11-10): with
+  `APPIMAGE` and `APPDIR` naming another app's image and mount (as a
+  terminal or an agent's app that is an AppImage hands them on), `update`
+  replaces this program and leaves that file as it was. Before the fix it
+  wrote wanderbooks over it. Its pair in `open_while_held.rs`,
+  `another_apps_appimage_is_never_run_as_the_host`: the books open, the
+  host is this program, the other image is never run. The rule itself
+  (`start.rs` INVARIANT 6) is `ledger-host`'s
+  `an_appimage_is_ours_only_when_the_program_runs_from_its_mount`.
 - `the_host_stages_a_daily_update_and_the_next_start_applies_it`: with a
   local feed named in `updates/feed`, the host stages 9.0.0 by itself;
   the program, the host and the session are unchanged meanwhile; after

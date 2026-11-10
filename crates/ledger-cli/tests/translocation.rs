@@ -6,8 +6,10 @@
 //!
 //! The check is on the path the program would give the agent
 //! (`ledger_host::start::this_executable`), so a test can stand in for
-//! macOS on any Unix: `APPIMAGE` names a file there, and a path with an
-//! `AppTranslocation` part is refused just as the real one is.
+//! macOS on any Unix: `APPIMAGE` names a file there (with `APPDIR` naming
+//! the folder the program runs from, as an image's launcher sets the two:
+//! `APPIMAGE` alone is not believed, start.rs INVARIANT 6), and a path
+//! with an `AppTranslocation` part is refused just as the real one is.
 
 #![cfg(unix)]
 
@@ -95,9 +97,14 @@ fn translocated_app_refuses_to_connect() {
     );
     std::fs::create_dir_all(translocated.parent().unwrap()).unwrap();
     std::fs::write(&translocated, b"").unwrap();
+    // The folder the program under test runs from stands in for the mount.
+    let mount = Path::new(env!("CARGO_BIN_EXE_wanderbooks"))
+        .parent()
+        .unwrap();
     let out = home
         .cmd("connect", &bin)
         .env("APPIMAGE", &translocated)
+        .env("APPDIR", mount)
         .args(["claude", "--book", "beta"])
         .output()
         .unwrap();
@@ -122,6 +129,7 @@ fn translocated_app_refuses_to_connect() {
     let out = home
         .cmd("connect", &bin)
         .env("APPIMAGE", &ordinary)
+        .env("APPDIR", mount)
         .args(["claude", "--book", "beta"])
         .output()
         .unwrap();

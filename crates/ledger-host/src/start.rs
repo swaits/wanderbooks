@@ -4,7 +4,8 @@
 //! GOAL: the host never inherits anything from whoever opened the books:
 //!       not their environment, descriptors, session, umask, or the app's
 //!       scope (which would take the host down with the app).
-//! SOURCE: plan/served.md 3.9; test host_starts_clean, host_survives_app_scope.
+//! SOURCE: plan/served.md 3.9; test host_starts_clean, host_survives_app_scope;
+//!         for INVARIANT 6, docs.appimage.org, "Environment variables".
 //! INVARIANTS:
 //!   1. The host's environment is a fixed list: PATH (fixed), HOME (from
 //!      the account's record, never the opener's), and XDG_RUNTIME_DIR
@@ -13,8 +14,9 @@
 //!      it names a socket this account owns (the owner's ssh agent, so the
 //!      server's backups reach a private git repository, D-30). Nothing
 //!      else passes (a scope's own identifiers, such as INVOCATION_ID, are
-//!      systemd's). One more: APPIMAGE, only when it names an absolute
-//!      file, so the host knows its own AppImage (below).
+//!      systemd's). Two more: APPIMAGE and APPDIR, only when they are
+//!      this program's own (INVARIANT 6), so the host knows its own
+//!      AppImage (below).
 //!   2. Its standard input and output are null, its errors go to
 //!      run/host.log (0600); it starts a new session with umask 077. Every
 //!      other descriptor is closed (std opens them close-on-exec, and the
@@ -30,6 +32,17 @@
 //!      reads that path about itself and never tells it to an agent (I-2),
 //!      so a replaced image restarts the books like any replaced program.
 //!   5. The opener doesn't wait for it, and reaps it when it ends.
+//!   6. APPIMAGE is believed only when this program runs from inside the
+//!      image it names: APPIMAGE is an absolute file, APPDIR an absolute
+//!      folder, and this executable's file is under APPDIR. Both are
+//!      inherited by everything an AppImage app starts (a terminal, an
+//!      editor, an agent's app), so on their own they say only that some
+//!      ancestor was an AppImage. A variable that is someone else's is
+//!      never run as the host, written into an agent's pointer file, or
+//!      replaced by `update`. (The AppImage documentation: APPIMAGE is
+//!      the "(Absolute) path to AppImage file (with symlinks resolved)",
+//!      APPDIR the "Path of mountpoint of the SquashFS image contained in
+//!      the AppImage".)
 //! ```
 
 use crate::knobs::Knobs;
@@ -70,8 +83,8 @@ const LOG_LIMIT: u64 = 8 * 1024 * 1024;
 /// replaced file reads as "… (deleted)"; the path, not the old file, is
 /// what a new host runs.
 pub fn this_executable() -> Result<PathBuf, String> {
-    if let Some(image) = own_appimage(std::env::var_os("APPIMAGE").as_deref()) {
-        return Ok(PathBuf::from(image));
+    if let Some(own) = this_appimage() {
+        return Ok(own.image);
     }
     let exe = std::env::current_exe().map_err(|e| format!("can't find this program: {e}"))?;
     let text = exe.to_string_lossy();
@@ -98,11 +111,50 @@ pub fn translocation_refusal(exe: &Path) -> Option<&'static str> {
         )
 }
 
-/// The AppImage this process runs from: `APPIMAGE` when it is an
-/// absolute path to a file.
-pub fn own_appimage(value: Option<&std::ffi::OsStr>) -> Option<std::ffi::OsString> {
-    let path = Path::new(value?);
-    (path.is_absolute() && path.is_file()).then(|| path.as_os_str().to_os_string())
+/// This program's own AppImage (INVARIANT 6): the image's file, and the
+/// folder it is mounted (or unpacked) at.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnImage {
+    /// `APPIMAGE`: the file a host is started from and an update replaces.
+    pub image: PathBuf,
+    /// `APPDIR`: where the program inside the image runs from.
+    pub mount: PathBuf,
+}
+
+/// The AppImage the program at `exe` runs from, given `APPIMAGE` and
+/// `APPDIR` (INVARIANT 6): none unless the image is an absolute file,
+/// the mount an absolute folder, and `exe` is inside the mount. The two
+/// variables alone prove nothing: every program an AppImage app starts
+/// inherits them.
+pub fn own_appimage(
+    image: Option<&std::ffi::OsStr>,
+    mount: Option<&std::ffi::OsStr>,
+    exe: &Path,
+) -> Option<OwnImage> {
+    let image = Path::new(image?);
+    let mount = Path::new(mount?);
+    if !image.is_absolute() || !image.is_file() || !mount.is_absolute() {
+        return None;
+    }
+    // Compared as the files they are, so a link in either path neither
+    // hides the program nor lets another folder stand in for the mount.
+    let inside = std::fs::canonicalize(exe)
+        .ok()?
+        .starts_with(std::fs::canonicalize(mount).ok()?);
+    inside.then(|| OwnImage {
+        image: image.to_path_buf(),
+        mount: mount.to_path_buf(),
+    })
+}
+
+/// The AppImage this process runs from, if it runs from one
+/// ([`own_appimage`], of this process's environment and executable).
+pub fn this_appimage() -> Option<OwnImage> {
+    own_appimage(
+        std::env::var_os("APPIMAGE").as_deref(),
+        std::env::var_os("APPDIR").as_deref(),
+        &std::env::current_exe().ok()?,
+    )
 }
 
 /// This account's user ID.
@@ -180,11 +232,11 @@ fn own_agent(named: Option<&std::ffi::OsStr>) -> Option<std::ffi::OsString> {
 
 #[cfg(unix)]
 /// The host's environment (INVARIANT 1), given the opener's
-/// `SSH_AUTH_SOCK`.
+/// `SSH_AUTH_SOCK` and its own AppImage, if it runs from one.
 fn host_env(
     home: &Path,
     ssh_agent: Option<&std::ffi::OsStr>,
-    appimage: Option<&std::ffi::OsStr>,
+    appimage: Option<&OwnImage>,
 ) -> Vec<(String, std::ffi::OsString)> {
     let mut env = vec![
         ("PATH".to_string(), PATH.into()),
@@ -199,8 +251,9 @@ fn host_env(
     if let Some(agent) = own_agent(ssh_agent) {
         env.push(("SSH_AUTH_SOCK".into(), agent));
     }
-    if let Some(image) = own_appimage(appimage) {
-        env.push(("APPIMAGE".into(), image));
+    if let Some(own) = appimage {
+        env.push(("APPIMAGE".into(), own.image.clone().into_os_string()));
+        env.push(("APPDIR".into(), own.mount.clone().into_os_string()));
     }
     env
 }
@@ -294,7 +347,7 @@ pub fn start_host(
             .envs(host_env(
                 &home,
                 std::env::var_os("SSH_AUTH_SOCK").as_deref(),
-                std::env::var_os("APPIMAGE").as_deref(),
+                this_appimage().as_ref(),
             ))
             .current_dir("/")
             .stdin(Stdio::null())
@@ -569,7 +622,8 @@ mod tests {
                     "XDG_RUNTIME_DIR",
                     "DBUS_SESSION_BUS_ADDRESS",
                     "SSH_AUTH_SOCK",
-                    "APPIMAGE"
+                    "APPIMAGE",
+                    "APPDIR"
                 ]
                 .contains(n),
                 "{n}"
@@ -579,20 +633,96 @@ mod tests {
         assert_eq!(env[1].1, "/home/someone");
     }
 
-    #[test]
-    fn only_an_absolute_file_passes_as_the_appimage() {
-        let dir = tempfile::tempdir().unwrap();
-        let image = dir.path().join("W.AppImage");
+    /// A pretend image: `W.AppImage`, and the program in its mount.
+    fn pretend_image(dir: &Path) -> (PathBuf, PathBuf, PathBuf) {
+        let image = dir.join("W.AppImage");
         std::fs::write(&image, b"x").unwrap();
-        let home = Path::new("/home/someone");
-        let has = |v: Option<&std::ffi::OsStr>| {
-            host_env(home, None, v).iter().any(|(n, _)| n == "APPIMAGE")
+        let mount = dir.join("mount");
+        std::fs::create_dir_all(mount.join("usr/bin")).unwrap();
+        let exe = mount.join("usr/bin/wanderbooks");
+        std::fs::write(&exe, b"x").unwrap();
+        (image, mount, exe)
+    }
+
+    #[test]
+    fn an_appimage_is_ours_only_when_the_program_runs_from_its_mount() {
+        let dir = tempfile::tempdir().unwrap();
+        let (image, mount, exe) = pretend_image(dir.path());
+        let own = |i: Option<&Path>, m: Option<&Path>, exe: &Path| {
+            own_appimage(i.map(Path::as_os_str), m.map(Path::as_os_str), exe)
         };
-        assert!(has(Some(image.as_os_str())));
-        assert!(!has(None));
-        assert!(!has(Some("W.AppImage".as_ref())), "relative");
-        assert!(!has(Some(dir.path().as_os_str())), "a folder");
-        assert!(!has(Some(dir.path().join("gone").as_os_str())));
+        assert_eq!(
+            own(Some(&image), Some(&mount), &exe),
+            Some(OwnImage {
+                image: image.clone(),
+                mount: mount.clone()
+            })
+        );
+        // Another app's image, inherited: this program is not in its mount
+        // (a terminal, an editor or an agent's app that is an AppImage
+        // hands both variables to everything it starts).
+        let elsewhere = dir.path().join("bin");
+        std::fs::create_dir(&elsewhere).unwrap();
+        let other = elsewhere.join("wanderbooks");
+        std::fs::write(&other, b"x").unwrap();
+        assert_eq!(own(Some(&image), Some(&mount), &other), None);
+        // A folder beside the mount whose name starts like it is not it.
+        let beside = dir.path().join("mount-2");
+        std::fs::create_dir(&beside).unwrap();
+        let near = beside.join("wanderbooks");
+        std::fs::write(&near, b"x").unwrap();
+        assert_eq!(own(Some(&image), Some(&mount), &near), None);
+        // Neither variable alone, nor a path that is not what it says.
+        assert_eq!(own(Some(&image), None, &exe), None, "no APPDIR");
+        assert_eq!(own(None, Some(&mount), &exe), None, "no APPIMAGE");
+        assert_eq!(
+            own(Some(Path::new("W.AppImage")), Some(&mount), &exe),
+            None,
+            "relative"
+        );
+        assert_eq!(own(Some(dir.path()), Some(&mount), &exe), None, "a folder");
+        assert_eq!(
+            own(Some(&dir.path().join("gone")), Some(&mount), &exe),
+            None,
+            "no such file"
+        );
+        assert_eq!(
+            own(Some(&image), Some(Path::new("mount")), &exe),
+            None,
+            "a relative mount"
+        );
+        assert_eq!(
+            own(Some(&image), Some(&dir.path().join("no-mount")), &exe),
+            None,
+            "no such mount"
+        );
+        // A link to the mount is the mount; a link out of it is not in it.
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&mount, &link).unwrap();
+        assert!(own(Some(&image), Some(&link), &exe).is_some());
+        let out = mount.join("usr/bin/out");
+        std::os::unix::fs::symlink(&other, &out).unwrap();
+        assert_eq!(own(Some(&image), Some(&mount), &out), None);
+    }
+
+    #[test]
+    fn the_host_is_told_its_appimage_only_when_there_is_one() {
+        let home = Path::new("/home/someone");
+        let names = |own: Option<&OwnImage>| -> Vec<String> {
+            host_env(home, None, own)
+                .into_iter()
+                .map(|(n, _)| n)
+                .collect()
+        };
+        let own = OwnImage {
+            image: "/opt/W.AppImage".into(),
+            mount: "/tmp/.mount_W".into(),
+        };
+        let env = host_env(home, None, Some(&own));
+        let value = |name: &str| env.iter().find(|(n, _)| n == name).map(|(_, v)| v.clone());
+        assert_eq!(value("APPIMAGE"), Some("/opt/W.AppImage".into()));
+        assert_eq!(value("APPDIR"), Some("/tmp/.mount_W".into()));
+        assert!(!names(None).iter().any(|n| n == "APPIMAGE" || n == "APPDIR"));
     }
 
     #[test]

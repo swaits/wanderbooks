@@ -150,7 +150,10 @@ impl Home {
     /// The environment of the pretend AppImage, if this is one.
     fn image_env(&self, c: &mut Command) {
         if let Some(image) = &self.image {
-            c.env("APPIMAGE", image);
+            // As an AppImage's launcher sets them: the image, and the
+            // mount the program runs from.
+            c.env("APPIMAGE", image)
+                .env("APPDIR", self.exe.parent().unwrap());
         }
     }
 
@@ -728,6 +731,7 @@ fn update_under_writes_in(home: Home) -> (Home, Agent, Vec<String>) {
         );
         let key = release.dir.path().join("release.pub");
         let image = home.image.clone();
+        let mount = home.exe.parent().unwrap().to_path_buf();
         std::thread::spawn(move || {
             let _keep = &release;
             let mut c = Command::new(exe);
@@ -739,7 +743,7 @@ fn update_under_writes_in(home: Home) -> (Home, Agent, Vec<String>) {
                 .env("PATH", "/usr/bin:/bin")
                 .env("HOME", dir);
             if let Some(image) = image {
-                c.env("APPIMAGE", image);
+                c.env("APPIMAGE", image).env("APPDIR", mount);
             }
             c.output().unwrap()
         })
@@ -830,6 +834,50 @@ fn a_replaced_appimage_restarts_the_books() {
         image
     );
     assert!(agent.add_account("4001").is_ok(), "the session carries on");
+}
+
+/// start.rs INVARIANT 6: `APPIMAGE` and `APPDIR` are inherited by
+/// everything an AppImage app starts (a terminal, an editor, an agent's
+/// app). When this program is not inside that image, the image is someone
+/// else's file: an update replaces this program and never that file.
+#[test]
+fn an_update_never_replaces_another_apps_appimage() {
+    let home = Home::new("foreign");
+    let old = home.program();
+    let other = home.dir.path().join("Other.AppImage");
+    std::fs::write(&other, b"another app's image").unwrap();
+    let mount = home.dir.path().join("other-mount");
+    std::fs::create_dir(&mount).unwrap();
+    let release = Release::new();
+    let next = newer(&home, "9.0.0");
+    release.publish("9.0.0", &next, |_| {});
+    let mut c = Command::new(&home.exe);
+    c.args(["update", "--root"])
+        .arg(home.root())
+        .arg("--feed")
+        .arg(format!(
+            "file://{}",
+            release.dir.path().join("manifest.json").display()
+        ))
+        .arg("--trusted-key")
+        .arg(release.dir.path().join("release.pub"))
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", home.dir.path())
+        .env("APPIMAGE", &other)
+        .env("APPDIR", &mount)
+        .stdin(Stdio::null());
+    let out = c.output().unwrap();
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(
+        std::fs::read(&other).unwrap() == b"another app's image",
+        "the other app's image was written over"
+    );
+    assert_eq!(sha256(&home.program()), sha256(&next), "this program");
+    assert_eq!(
+        sha256(&std::fs::read(home.updates().join("previous/wanderbooks")).unwrap()),
+        sha256(&old)
+    );
 }
 
 #[test]

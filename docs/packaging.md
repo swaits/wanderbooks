@@ -76,6 +76,21 @@ What the trial found, each of which is built around now:
    `a_replaced_appimage_restarts_the_books` (the programs run from one
    copy while `APPIMAGE` names another, as a mount does); not run against
    a real image mount in this wave.
+
+   **That reading trusted the variable alone, and it was wrong**
+   (found 2026-11-10, when the gate ran in a session started from another
+   app's AppImage). Every program an AppImage app starts inherits
+   `APPIMAGE` and `APPDIR`, so a `wanderbooks` run from such an app's
+   terminal or agent took that app's image for its own: it started that
+   image as the host ("the books server keeps failing to start"), would
+   have named it in an agent's pointer file, and `wanderbooks update`
+   replaced that app's file with wanderbooks. The image is now believed
+   only when the running executable is inside `APPDIR` (`start.rs`
+   INVARIANT 6; `an_appimage_is_ours_only_when_the_program_runs_from_its_mount`,
+   `another_apps_appimage_is_never_run_as_the_host`,
+   `an_update_never_replaces_another_apps_appimage`). Still not run
+   against a real image mount: the first trial of a built AppImage checks
+   that `update` and a restart find the image there.
 8. **Onboarding with no terminal does not exist yet.** The unit's Done-when
    (1) says an AppImage "opens, onboards and posts an entry with no
    terminal". The AppImage opens (a bare launch is the viewer), but the viewer

@@ -2464,7 +2464,11 @@ impl Store {
                 preview.excess_depreciation,
             ),
             (gain_loss_account, Side::Credit, preview.gain_loss),
-            (gain_loss_account, Side::Debit, -preview.gain_loss),
+            (
+                gain_loss_account,
+                Side::Debit,
+                ledger_core::money::neg(preview.gain_loss),
+            ),
         ]
         .into_iter()
         .filter(|(_, _, a)| *a > Decimal::ZERO)
@@ -2540,7 +2544,12 @@ impl Store {
                 .enumerate()
                 .filter_map(|(i, e)| {
                     let d = self.ledger.get_entry(e)?.date();
-                    Some((e, d, if i % 2 == 0 { amount } else { -amount }))
+                    let carried = if i % 2 == 0 {
+                        amount
+                    } else {
+                        ledger_core::money::neg(amount)
+                    };
+                    Some((e, d, carried))
                 })
                 .collect();
             let what = format!("{period}'s depreciation run");
@@ -2661,10 +2670,8 @@ impl Store {
         let runs = self.live_runs(asset_id);
         let too_large =
             || StoreError::JournalCorrupt(format!("asset {asset_id}'s depreciation is too large"));
-        let posted = runs
-            .iter()
-            .try_fold(Decimal::ZERO, |t, r| t.checked_add(r.amount))
-            .ok_or_else(too_large)?;
+        let posted =
+            ledger_core::kernel::total_of(runs.iter(), |r| r.amount).ok_or_else(too_large)?;
         let target = ledger_core::accumulated_scheduled_through(asset, date)?;
         let (up, down) = ledger_core::kernel::true_up(target, posted).ok_or_else(too_large)?;
         let in_month = runs.iter().any(|r| r.period == period);
@@ -2673,13 +2680,9 @@ impl Store {
         } else {
             (up, Decimal::ZERO)
         };
-        let accumulated = posted
-            .checked_add(final_depreciation)
+        let accumulated = ledger_core::kernel::Amount::checked_add(posted, final_depreciation)
             .ok_or_else(too_large)?;
-        let book_value = asset
-            .cost
-            .amount
-            .checked_sub(target)
+        let book_value = ledger_core::kernel::Amount::checked_sub(asset.cost.amount, target)
             .ok_or_else(too_large)?;
         Ok(DisposalPreview {
             asset_id,
@@ -2690,9 +2693,7 @@ impl Store {
             excess_depreciation: down,
             catch_up_depreciation,
             book_value,
-            gain_loss: proceeds
-                .amount
-                .checked_sub(book_value)
+            gain_loss: ledger_core::kernel::Amount::checked_sub(proceeds.amount, book_value)
                 .ok_or_else(too_large)?,
             period,
         })
@@ -4170,7 +4171,10 @@ impl Store {
                 ledger_core::DocRef::Bill(id) => self.ledger.get_bill(id).map(|b| b.total()),
             };
             if let Some(total) = total {
-                let older_owed = total?.checked_sub(self.ledger.payments_recorded(app.doc)?);
+                let older_owed = ledger_core::kernel::Amount::checked_sub(
+                    total?,
+                    self.ledger.payments_recorded(app.doc)?,
+                );
                 if older_owed.is_none_or(|owed| app.cash > owed) {
                     self.ensure_feature(crate::format::DOCUMENT_STANDING)?;
                 }

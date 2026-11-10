@@ -61,7 +61,7 @@ check-shard shard:
 
 # The crates with no Decimal arithmetic outside the kernel. A crate joins
 # this list when its count reaches zero (K-U12) and never leaves it.
-kernel_only_crates := "ledger-core ledger-cli ledger-host ledger-reader ledger-vault"
+kernel_only_crates := "ledger-core ledger-cli ledger-host ledger-reader ledger-vault ledger-store ledger-config"
 
 # Money arithmetic lives in the kernel and nowhere else (AGENTS.md, bar
 # item 1). The compiler is asked (scripts/raw-decimal-arith.sh): a raw

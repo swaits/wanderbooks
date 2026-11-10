@@ -642,11 +642,13 @@ impl Store {
                 "attachment {attachment_id} is not filed on or linked to entry {entry_id}"
             )));
         }
-        let debits = entry
-            .lines()
-            .iter()
-            .filter(|l| l.side == ledger_core::Side::Debit)
-            .try_fold(Decimal::ZERO, |s, l| s.checked_add(l.amount.amount));
+        let debits = ledger_core::kernel::total_of(
+            entry
+                .lines()
+                .iter()
+                .filter(|l| l.side == ledger_core::Side::Debit),
+            |l| l.amount.amount,
+        );
         let amount_agrees =
             debits == Some(amount) || entry.lines().iter().any(|l| l.amount.amount == amount);
         let disagrees = !amount_agrees || date != entry.date();

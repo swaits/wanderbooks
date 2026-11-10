@@ -169,7 +169,11 @@ fn parse_share(name: &str, s: &str) -> Result<Decimal, String> {
     let s = s.trim();
     let bad = || format!("member {name}: share {s:?} must be like \"50%\" or \"0.5\"");
     let share = match s.strip_suffix('%') {
-        Some(pct) => pct.trim().parse::<Decimal>().map_err(|_| bad())? / Decimal::from(100),
+        Some(pct) => ledger_core::kernel::Amount::checked_div(
+            pct.trim().parse::<Decimal>().map_err(|_| bad())?,
+            Decimal::from(100),
+        )
+        .ok_or_else(bad)?,
         None => s.parse::<Decimal>().map_err(|_| bad())?,
     };
     if share <= Decimal::ZERO || share > Decimal::ONE {
@@ -359,7 +363,9 @@ pub fn parse(text: &str) -> Result<BooksSettings, String> {
         }
     }
     if !company.members.is_empty() {
-        let total: Decimal = company.members.iter().map(|m| m.share).sum();
+        let total = ledger_core::kernel::total_of(company.members.iter(), |m| m.share).ok_or(
+            "member shares are too long to add exactly: write each with fewer decimal places",
+        )?;
         if total != Decimal::ONE {
             return Err(format!("member shares sum to {total}, not 100%"));
         }

@@ -39,6 +39,7 @@ check-shard shard:
             just server-only
             just check-shards-agree
             just deny
+            just notices-check
             ;;
         # The viewer's tests are half of the suite's time, in two halves
         # of their own: its unit tests, and its integration tests. Between
@@ -65,6 +66,18 @@ check-shard shard:
 # weekly run makes it within a week of the advisory, push or no push.
 deny:
     cargo deny check
+
+# The third-party notices every licence asks to travel with
+# (THIRD-PARTY-NOTICES.txt): each crate the `wanderbooks` binary links and
+# its licence text, then the fonts embedded, each with its licence. Writes
+# the file; commit it.
+notices:
+    scripts/notices.sh
+
+# Whether THIRD-PARTY-NOTICES.txt still matches the dependencies: a crate
+# added, removed or upgraded without regenerating it fails (`just notices`).
+notices-check:
+    scripts/notices.sh --check
 
 # CI's list of parts is this file's: a part CI never runs is a check
 # nobody makes, and a part only CI names fails there, not here.

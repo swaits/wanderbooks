@@ -30,6 +30,9 @@ node = "26"
 # none yanked, none under a licence that does not fit MIT OR Apache-2.0,
 # none from a source nobody named (deny.toml).
 cargo-deny = "0.20.2"
+# `just notices`: cargo-about reads every crate the program links and the
+# licence it carries, to write THIRD-PARTY-NOTICES.txt.
+"cargo:cargo-about" = { version = "0.9.3", features = ["cli"] }
 # A compile cache shared by every jj workspace's target dir: point
 # cargo's build.rustc-wrapper at it (~/.cargo/config.toml).
 sccache = "0.18.0"

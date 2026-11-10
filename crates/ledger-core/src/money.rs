@@ -208,13 +208,18 @@ pub fn sub_exact(a: Decimal, b: Decimal, what: &str) -> Result<Decimal, LedgerEr
 /// `-value`, through the kernel. A `Decimal`'s negation is always exact,
 /// so this never fails (a zero comes back as a negative zero, bit for bit
 /// what a raw `-` gives).
-pub(crate) fn neg(value: Decimal) -> Decimal {
+///
+/// This and the four helpers below are public for the crates around the
+/// core (the store, the tools, the viewer): they too may hold no raw
+/// `Decimal` operator (`just kernel-only`), and a sign or a sum of posted
+/// figures is said here once rather than in each of them.
+pub fn neg(value: Decimal) -> Decimal {
     crate::kernel::Amount::checked_neg(value).expect("Decimal negation is exact")
 }
 
 /// A line's amount signed by its side ([`crate::kernel::signed`]):
 /// a debit as it is, a credit negated.
-pub(crate) fn signed_amount(side: Side, amount: Decimal) -> Decimal {
+pub fn signed_amount(side: Side, amount: Decimal) -> Decimal {
     crate::kernel::signed(side, amount).expect("Decimal negation is exact")
 }
 
@@ -222,7 +227,7 @@ pub(crate) fn signed_amount(side: Side, amount: Decimal) -> Decimal {
 /// the line is on `normal`, negated when it is on the other side. With
 /// `normal` the account's normal side this is the line's effect on the
 /// balance as a reader sees it.
-pub(crate) fn on_side(normal: Side, side: Side, amount: Decimal) -> Decimal {
+pub fn on_side(normal: Side, side: Side, amount: Decimal) -> Decimal {
     match normal {
         Side::Debit => signed_amount(side, amount),
         Side::Credit => signed_amount(crate::kernel::flip(side), amount),
@@ -233,12 +238,12 @@ pub(crate) fn on_side(normal: Side, side: Side, amount: Decimal) -> Decimal {
 /// exact (BS-entry-3, BS-entry-4 bound every line). A sum that could not
 /// be held exactly is a broken ledger, so it panics rather than round.
 /// Anything a caller can make too large uses [`add_exact`] instead.
-pub(crate) fn add_in_range(a: Decimal, b: Decimal) -> Decimal {
+pub fn add_in_range(a: Decimal, b: Decimal) -> Decimal {
     crate::kernel::Amount::checked_add(a, b).expect("posted lines are in range, so their sums are")
 }
 
 /// `a - b` for figures built from posted lines: see [`add_in_range`].
-pub(crate) fn sub_in_range(a: Decimal, b: Decimal) -> Decimal {
+pub fn sub_in_range(a: Decimal, b: Decimal) -> Decimal {
     crate::kernel::Amount::checked_sub(a, b).expect("posted lines are in range, so their sums are")
 }
 

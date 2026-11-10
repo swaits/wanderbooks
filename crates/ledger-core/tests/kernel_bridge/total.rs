@@ -121,23 +121,22 @@ fn decimal_edge_table() {
     );
 }
 
-/// FINDING (K-U4), pinned as a canary: `rust_decimal` rounds sub-unit dust
-/// away when a sum lands on `Decimal::MAX`, so `Amount::checked_add` for
-/// `Decimal` is not exact at the very edge (`MAX + 0.4 = MAX`, but `MAX +
-/// 0.5` is `None`). The kernel's "exact or `None`" contract (and `total`'s
-/// invariant 2) therefore holds for `Decimal` everywhere except figures
-/// within one unit of `Decimal::MAX` (~7.9 x 10^28, 10^13 times a journal
-/// line's cap). The fix belongs in `impl Amount for Decimal`
-/// (`kernel/entries.rs`), not in `total`; when it lands this test fails
-/// and is flipped to expect `None`. See docs/proofs/k-u4.md.
+/// K-U4's finding, closed by K-U10: `rust_decimal` rounds sub-unit dust
+/// away when a sum lands on `Decimal::MAX` (`MAX + 0.4 = MAX`, but `MAX +
+/// 0.5` is `None`), so `Amount::checked_add` for `Decimal` was not "exact
+/// or `None`" within one unit of `Decimal::MAX`. `impl Amount for Decimal`
+/// now checks the sum is the exact one, so `total`'s invariant 2 holds
+/// there too: the rounded sum is refused. See docs/proofs/k-u4.md and
+/// k-u10.md.
 #[test]
-fn finding_decimal_add_rounds_dust_at_the_edge() {
+fn a_sum_past_exact_arithmetic_is_refused() {
     let max = Decimal::MAX;
     let dust = Decimal::new(4, 1);
     assert_eq!(
-        kernel::total([max, dust]),
+        rust_decimal::Decimal::checked_add(max, dust),
         Some(max),
-        "rust_decimal rounds the 0.4 away"
+        "rust_decimal rounds the 0.4 away; the kernel does not"
     );
+    assert_eq!(kernel::total([max, dust]), None);
     assert_eq!(kernel::total([max, Decimal::new(5, 1)]), None);
 }

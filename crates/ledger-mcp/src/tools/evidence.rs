@@ -330,7 +330,7 @@ impl BooksServer {
                 links: g.link.iter().map(|s| subject_out(&store, *s)).collect(),
             })
             .collect();
-        let withdrawn = out_groups.iter().map(|g| g.withdraw.len()).sum();
+        let withdrawn = out_groups.iter().flat_map(|g| g.withdraw.iter()).count();
         let digest = self.preview_of(
             &store,
             "books.consolidate_duplicates",

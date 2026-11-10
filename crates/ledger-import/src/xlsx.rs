@@ -387,11 +387,11 @@ fn general_journal(
             match line.side {
                 ledger_core::Side::Debit => {
                     number(sheet, row, 5, line.amount.amount, &f.plain)?;
-                    debits += line.amount.amount;
+                    debits = ledger_core::money::add_in_range(debits, line.amount.amount);
                 }
                 ledger_core::Side::Credit => {
                     number(sheet, row, 6, line.amount.amount, &f.plain)?;
-                    credits += line.amount.amount;
+                    credits = ledger_core::money::add_in_range(credits, line.amount.amount);
                 }
             }
             row += 1;

@@ -268,7 +268,7 @@ fn notes_for(ledger: &Ledger, r: &ledger_core::Vendor1099Report) -> Vec<String> 
     for p in &r.other_receipts {
         // Money in is negative; its reversal gives it back.
         let what = if p.amount < Decimal::ZERO {
-            format!("received {} from", money(-p.amount))
+            format!("received {} from", money(ledger_core::money::neg(p.amount)))
         } else {
             format!("reversed {} received from", money(p.amount))
         };

@@ -27,7 +27,7 @@ pub fn money(n: Decimal) -> String {
     // is what drops a negative zero.
     let mut n = ledger_import::round_display(n, n.scale().max(2));
     if n.scale() < 2 {
-        n.rescale(2);
+        n = ledger_core::kernel::rescale_exact(n, 2).unwrap_or(n);
     }
     n.to_string()
 }
@@ -47,7 +47,7 @@ pub fn share_text(n: Decimal) -> String {
     let mut n = n.normalize();
     n = ledger_import::round_display(n, n.scale().max(2));
     if n.scale() < 2 {
-        n.rescale(2);
+        n = ledger_core::kernel::rescale_exact(n, 2).unwrap_or(n);
     }
     n.to_string()
 }

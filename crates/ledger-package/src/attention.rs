@@ -100,6 +100,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use chrono::{Datelike, NaiveDate};
+use ledger_core::kernel::Amount;
 use ledger_core::parties::MoneyAccounts;
 use ledger_core::{
     AccountId, AccountType, AssetId, DocRef, DocStatus, EntryId, EntryStatus, Ledger, LedgerError,
@@ -344,7 +345,7 @@ pub fn find_with(
     if missing.len() > 3 {
         let total = missing
             .iter()
-            .try_fold(Decimal::ZERO, |t, e| t.checked_add(e.amount?));
+            .try_fold(Decimal::ZERO, |t, e| Amount::checked_add(t, e.amount?));
         let list: Vec<String> = missing
             .iter()
             .map(|e| format!("{} ({}, {})", e.id, e.description, e.date))
@@ -428,7 +429,7 @@ pub fn find_with(
         if !due.is_empty() {
             let Some(total) = due
                 .iter()
-                .try_fold(Decimal::ZERO, |t, (_, a)| t.checked_add(*a))
+                .try_fold(Decimal::ZERO, |t, (_, a)| Amount::checked_add(t, *a))
             else {
                 out.push(cant_compute(
                     format!("Amortization schedule \"{}\"", s.description),
@@ -704,7 +705,10 @@ pub fn find_with(
             .map(|r| {
                 [r.days_60, r.days_90, r.days_90_plus]
                     .into_iter()
-                    .try_fold(r.days_30, Decimal::checked_add)
+                    .try_fold(
+                        r.days_30,
+                        <Decimal as ledger_core::kernel::Amount>::checked_add,
+                    )
                     .ok_or_else(too_large)
             })
             .collect::<Result<Vec<_>, _>>()?
@@ -713,7 +717,7 @@ pub fn find_with(
             .collect();
         let total = late
             .iter()
-            .try_fold(Decimal::ZERO, |t, d| t.checked_add(*d))
+            .try_fold(Decimal::ZERO, |t, d| Amount::checked_add(t, *d))
             .ok_or_else(too_large)?;
         Ok::<_, LedgerError>((late.len(), total))
     };
@@ -870,7 +874,7 @@ pub fn find_with(
         };
         match lines
             .iter()
-            .try_fold(Decimal::ZERO, |t, l| t.checked_sub(l.amount))
+            .try_fold(Decimal::ZERO, |t, l| Amount::checked_sub(t, l.amount))
         {
             Some(amount) => written_off.push((inv.id, inv.number.clone(), last.date, amount)),
             None => out.push(cant_compute(
@@ -1133,7 +1137,7 @@ pub fn find_with(
             (
                 format!(
                     "{} of registered assets not in the books",
-                    dollars(-unregistered)
+                    dollars(ledger_core::money::neg(unregistered))
                 ),
                 "Registered assets cost more than their cost accounts hold: a purchase entry may be missing.",
             )
@@ -1864,7 +1868,7 @@ fn paid_this_year(
         .max(today);
     let end = last.min(NaiveDate::from_ymd_opt(today.year(), 12, 31).expect("valid"));
     let a = ledger_core::parties::activity_with(ledger, party, (start, end), money, members);
-    a.paid - a.received
+    ledger_core::money::sub_in_range(a.paid, a.received)
 }
 
 /// A figure the books can't compute (BS-entry-4: books an earlier

@@ -6,6 +6,7 @@
 //! there and this slice's do not collide (plan/served.md 8.2 P4b S6).
 
 use super::*;
+use ledger_core::money::{add_in_range, sub_in_range};
 
 /// A document as the payment tools and the agings name it ("invoice:7",
 /// "bill:12").
@@ -257,7 +258,7 @@ fn payment_out(
     let mut documents = Vec::with_capacity(params.applications.len());
     let mut deposited = Decimal::ZERO;
     for app in &params.applications {
-        deposited += app.cash;
+        deposited = add_in_range(deposited, app.cash);
         let st = ledger
             .doc_state(app.doc, chrono::NaiveDate::MAX)
             .map_err(|e| e.to_string())?
@@ -270,7 +271,7 @@ fn payment_out(
         });
     }
     let fee = params.fee.as_ref().map_or(Decimal::ZERO, |f| f.amount);
-    deposited -= fee;
+    deposited = sub_in_range(deposited, fee);
     let (remaining, status) = match documents.as_slice() {
         [one] => (Some(one.outstanding.clone()), Some(one.status.clone())),
         _ => (None, None),
@@ -413,7 +414,7 @@ impl BooksServer {
                 Some((by, max)) if by >= as_of => (
                     Some(by.to_string()),
                     Some(money(max)),
-                    Some(money(st.outstanding - max)),
+                    Some(money(sub_in_range(st.outstanding, max))),
                 ),
                 _ => (None, None, None),
             };
@@ -438,7 +439,7 @@ impl BooksServer {
         let mut by_date = Vec::new();
         let mut running = Decimal::ZERO;
         for (bill, owed) in &bills {
-            running += owed;
+            running = add_in_range(running, *owed);
             match by_date.last_mut() {
                 Some(DueDateTotalOut { date, amount }) if *date == bill.due_date => {
                     *amount = money(running);

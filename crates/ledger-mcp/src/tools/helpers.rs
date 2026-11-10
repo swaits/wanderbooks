@@ -7,6 +7,7 @@
 
 use super::*;
 use ledger_core::InstrumentId;
+use ledger_core::kernel::Amount;
 use ledger_store::StoreError;
 
 /// The book's id, as the commands given to agents name it: its folder's
@@ -462,7 +463,7 @@ pub(crate) fn checked_sum(
 ) -> Result<Decimal, String> {
     values.into_iter().try_fold(Decimal::ZERO, |sum, v| {
         let v = v.map_err(|e| e.to_string())?;
-        sum.checked_add(v).ok_or_else(|| {
+        Amount::checked_add(sum, v).ok_or_else(|| {
             ledger_core::LedgerError::TooLargeToCompute(what.to_string()).to_string()
         })
     })
@@ -548,7 +549,9 @@ pub(crate) fn lines_settled(entry: &JournalEntry) -> bool {
             .lines()
             .iter()
             .filter(|l| l.side == s)
-            .try_fold(Decimal::ZERO, |sum, l| sum.checked_add(l.amount.amount))
+            .try_fold(Decimal::ZERO, |sum, l| {
+                Amount::checked_add(sum, l.amount.amount)
+            })
     };
     match (side(Side::Debit), side(Side::Credit)) {
         (Some(debits), Some(credits)) => !entry.lines().is_empty() && debits == credits,

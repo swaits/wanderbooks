@@ -135,7 +135,7 @@ pub fn tax_basis_csv(ledger: &Ledger, names: &[String], tc: &TaxCapital) -> Stri
                 Some(t) => [
                     money(book),
                     money(t),
-                    money(book - t),
+                    money(ledger_core::money::sub_in_range(book, t)),
                     "tax basis".into(),
                     note,
                 ],
@@ -244,7 +244,7 @@ pub fn tax_basis_csv(ledger: &Ledger, names: &[String], tc: &TaxCapital) -> Stri
             name,
             "Reconciliation: less property distributed, at book",
             recon(
-                Some(-r.property_distributed),
+                Some(ledger_core::money::neg(r.property_distributed)),
                 "the company's adjusted tax basis in it is the CPA's",
             ),
         );

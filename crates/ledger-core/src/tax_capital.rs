@@ -462,7 +462,11 @@ impl RunningSplit {
         }
         let mut exact = self.exact.clone();
         for (x, w) in exact.iter_mut().zip(weights) {
-            *x = crate::kernel::Amount::checked_add(*x, Self::share(whole, *w, sum)?)
+            // A sum of rounded quotients, itself rounded where 96 bits
+            // end (INVARIANT 4 is what that leaves): three thirds of 28
+            // digits are no exact Decimal, so the exact sum would refuse
+            // every split by thirds.
+            *x = crate::kernel::Amount::checked_add_rounded(*x, Self::share(whole, *w, sum)?)
                 .ok_or_else(too_large)?;
         }
         let total = crate::kernel::Amount::checked_add(self.total, whole).ok_or_else(too_large)?;
@@ -546,9 +550,12 @@ impl RunningSplit {
         let mut exact = self.exact.clone();
         let mut given = self.given.clone();
         for i in 0..n {
-            exact[i] =
-                crate::kernel::Amount::checked_sub(exact[i], Self::share(whole, weights[i], sum)?)
-                    .ok_or_else(too_large)?;
+            // The rounding difference `split`'s sum is the other half of.
+            exact[i] = crate::kernel::Amount::checked_sub_rounded(
+                exact[i],
+                Self::share(whole, weights[i], sum)?,
+            )
+            .ok_or_else(too_large)?;
             given[i] =
                 crate::kernel::Amount::checked_sub(given[i], parts[i]).ok_or_else(too_large)?;
         }

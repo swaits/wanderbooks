@@ -58,7 +58,12 @@ pub trait Amount: Copy + Ord {
     /// For [`Decimal`] the exact product may need more than 96 bits (ten
     /// places each, D-75, is twenty places, and past 7.9e8 the mantissa
     /// passes `Decimal`'s): it is held wider than `Decimal` for the one
-    /// rounding, never rounded early and then again.
+    /// rounding, never rounded early and then again. Two refusals come
+    /// with that, both far from any books: a product that is not exact
+    /// and is past about 7.9e26 divided by 10^(the step's places), and a
+    /// product that is not exact at a step of 27 or 28 places (the
+    /// rounding needs two places below the step, and `Decimal` ends at
+    /// 28). An exact product is rounded at any step.
     fn checked_mul_round_to_step(self, rhs: Self, step: Self, mode: Rounding) -> Option<Self> {
         super::round::round_step(self.checked_mul(rhs)?, step, mode)
     }

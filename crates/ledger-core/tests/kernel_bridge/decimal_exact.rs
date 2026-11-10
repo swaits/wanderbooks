@@ -14,6 +14,12 @@
 //!    compared as strings (value and scale): nothing exact moves.
 //! 3. Where the old result was rounded, the kernel returns `None`.
 //! 4. Where the old result was `None`, so is the kernel's.
+//! 5. `Some` exactly when the exact result is a `Decimal` at all (a
+//!    mantissa under 2^96 at some scale of 0 to 28), decided from the
+//!    rational alone, with none of `rust_decimal`'s arithmetic: nothing
+//!    representable is refused. Laws 2 to 4 compare with `rust_decimal`;
+//!    this one does not, so it would catch `rust_decimal` rounding a
+//!    result it could have held.
 //!
 //! And over the posted range (BS-entry-4's line cap and ten places) the
 //! kernel equals the old for every input.
@@ -39,6 +45,21 @@ fn shown(d: Option<Decimal>) -> String {
 /// the exact result: the old figure if it is exact, else `None`.
 fn expected(old: Option<Decimal>, exact: &BigRational) -> Option<Decimal> {
     old.filter(|o| rat(*o) == *exact)
+}
+
+/// Whether an exact rational is a `Decimal`: `m x 10^-s` with `|m| < 2^96`
+/// and `s <= 28`. The fewest places that make it whole are tried in turn;
+/// more places only make the mantissa longer.
+fn representable(q: &BigRational) -> bool {
+    let ten = BigRational::from_integer(BigInt::from(10u8));
+    let mut scaled = q.clone();
+    for _ in 0..=28 {
+        if scaled.is_integer() {
+            return scaled.numer().magnitude().bits() <= 96;
+        }
+        scaled *= &ten;
+    }
+    false
 }
 
 /// Any `Decimal`: mantissas across the whole 96 bits (small, near the
@@ -87,6 +108,7 @@ proptest! {
             prop_assert_eq!(rat(r), exact.clone(), "{} + {} is rounded", a, b);
         }
         prop_assert_eq!(shown(got), shown(expected(old, &exact)));
+        prop_assert_eq!(got.is_some(), representable(&exact), "{} + {}", a, b);
     }
 
     /// Subtract: the same laws, against `rust_decimal`'s own subtraction
@@ -100,6 +122,7 @@ proptest! {
             prop_assert_eq!(rat(r), exact.clone(), "{} - {} is rounded", a, b);
         }
         prop_assert_eq!(shown(got), shown(expected(old, &exact)));
+        prop_assert_eq!(got.is_some(), representable(&exact), "{} - {}", a, b);
     }
 
     /// Multiply: the same laws.
@@ -112,6 +135,7 @@ proptest! {
             prop_assert_eq!(rat(r), exact.clone(), "{} x {} is rounded", a, b);
         }
         prop_assert_eq!(shown(got), shown(expected(old, &exact)));
+        prop_assert_eq!(got.is_some(), representable(&exact), "{} x {}", a, b);
     }
 
     /// Whatever the kernel refuses, `rust_decimal` either refused or
@@ -214,6 +238,52 @@ proptest! {
             prop_assert_eq!(shown(Some(new)), shown(Some(old)));
         }
     }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(24))]
+
+    /// The same over thousands of lines, where the total's mantissa comes
+    /// near 2^96 (5,000 lines of 10^15 at ten places is 5e28 of 7.9e28):
+    /// every step is `rust_decimal`'s, and none is refused.
+    #[test]
+    fn posted_range_running_totals_of_thousands_of_lines_are_unchanged(
+        lines in proptest::collection::vec(arb_line_amount(), 4000..=5000),
+        same_sign in any::<bool>(),
+    ) {
+        let mut old = Decimal::ZERO;
+        let mut new = Decimal::ZERO;
+        for l in lines {
+            let l = if same_sign { l.abs() } else { l };
+            old = Decimal::checked_add(old, l).expect("posted sums fit");
+            new = Amount::checked_add(new, l).expect("posted sums stay exact");
+            prop_assert_eq!(shown(Some(new)), shown(Some(old)));
+        }
+    }
+}
+
+/// Where a running total stops being exact: 7,922 lines of the largest
+/// ten-place amount under the cap (999999999999999.9999999999, a mantissa
+/// of 10^25 - 1) sum exactly; the next one passes 2^96 at ten places.
+/// `rust_decimal` drops a place and rounds; the kernel refuses.
+#[test]
+fn a_running_total_is_refused_where_it_would_first_round() {
+    let line = Decimal::from_i128_with_scale(10i128.pow(25) - 1, 10);
+    assert!(line.in_line_range());
+    let mut old = Decimal::ZERO;
+    let mut new = Decimal::ZERO;
+    for n in 1..=7_922 {
+        old = Decimal::checked_add(old, line).unwrap();
+        new = Amount::checked_add(new, line).unwrap_or_else(|| panic!("line {n} is exact"));
+        assert_eq!(shown(Some(new)), shown(Some(old)), "line {n}");
+    }
+    assert_eq!(
+        rat(new),
+        rat(line) * BigRational::from_integer(BigInt::from(7_922))
+    );
+    let rounded = Decimal::checked_add(old, line).unwrap();
+    assert_ne!(rat(rounded), rat(old) + rat(line), "rust_decimal rounds");
+    assert_eq!(Amount::checked_add(new, line), None);
 }
 
 /// The K-U4 canary, flipped: a sum within one unit of `Decimal::MAX`
@@ -376,16 +446,18 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(30000))]
 
     /// `checked_mul_round_to_step` is the exact product rounded once, in
-    /// every mode, at the steps the books use (one, a cent, a mill) and
-    /// at steps of 5 and 25 of them,
+    /// every mode, at the steps the books use (one, a cent, a mill), at
+    /// steps of 5 and 25 of them, and at steps of any number of places,
     /// whether or not the exact product fits 96 bits, ties and signs
-    /// included; `None` only for a figure past about 10^23 (the real digits, the
-    /// sticky digit and the step's places must fit 96 bits).
+    /// included. `None` only where the kernel says so: the figure times
+    /// 10^(the step's places + 2) does not fit 96 bits (one real digit
+    /// below the step and the sticky digit have no room), or the step has
+    /// 27 or 28 places (no room below it at all).
     #[test]
     fn the_fx_product_is_rounded_once_from_the_exact_one(
         foreign in arb_ten_place(26),
         rate in arb_ten_place(14),
-        places in 0u32..=3,
+        places in prop_oneof![4 => 0u32..=3, 1 => 0u32..=28],
         unit in prop_oneof![Just(1i128), Just(5i128), Just(25i128)],
         mode in arb_mode(),
         negative in any::<bool>(),
@@ -395,15 +467,24 @@ proptest! {
         // half steps sit one place below it, where the kept digit is real.
         let step = Decimal::from_i128_with_scale(unit, places);
         let got = Amount::checked_mul_round_to_step(foreign, rate, step, mode);
-        let count = round_rational(&(rat(foreign) * rat(rate) / rat(step)), mode);
+        let exact = rat(foreign) * rat(rate);
+        let count = round_rational(&(exact.clone() / rat(step)), mode);
         let want = BigRational::from_integer(count) * rat(step);
         match got {
             Some(g) => prop_assert_eq!(rat(g), want, "{} x {} to {} places, {:?}", foreign, rate, places, mode),
-            None => prop_assert!(
-                want.numer().magnitude() / want.denom().magnitude()
-                    > BigInt::from(10u8).pow(23).magnitude().clone(),
-                "{} x {} refused though it is only {}", foreign, rate, want
-            ),
+            None => {
+                // The digits the rounding needs: the figure to one place
+                // below the step, then the sticky digit.
+                let step_places = step.normalize().scale();
+                let needed = (exact.clone()
+                    * BigRational::from_integer(BigInt::from(10u8).pow(step_places + 2)))
+                .to_integer();
+                let room = (BigInt::from(1u8) << 96u32) - BigInt::from(10u8);
+                prop_assert!(
+                    step_places >= 27 || *needed.magnitude() >= *room.magnitude(),
+                    "{} x {} to a step of {} refused though it is only {}", foreign, rate, step, want
+                );
+            }
         }
     }
 }
@@ -451,6 +532,40 @@ fn the_k_u1_edge_books_the_cent_the_exact_product_gives() {
     );
 }
 
+/// A step of 27 or 28 places leaves no place below it for the digit and
+/// the sticky digit the one rounding needs (`Decimal` ends at 28), so a
+/// product that is not exact is refused there in every mode, though its
+/// rounded figure (zero, here) is a `Decimal`. A refusal, never a guess;
+/// no currency's step is near it. At 26 places the same product rounds.
+#[test]
+fn a_step_of_27_places_refuses_a_product_that_is_not_exact() {
+    let tiny = Decimal::from_i128_with_scale(1, 28);
+    for mode in [
+        Rounding::TowardZero,
+        Rounding::TowardNegativeInfinity,
+        Rounding::HalfAwayFromZero,
+        Rounding::HalfToEven,
+    ] {
+        for places in [27, 28] {
+            let step = Decimal::from_i128_with_scale(1, places);
+            assert_eq!(
+                Amount::checked_mul_round_to_step(tiny, tiny, step, mode),
+                None
+            );
+            // A product that is exact is rounded there as at any step.
+            assert_eq!(
+                Amount::checked_mul_round_to_step(Decimal::ONE, step, step, mode),
+                Some(step)
+            );
+        }
+        let step = Decimal::from_i128_with_scale(1, 26);
+        assert_eq!(
+            Amount::checked_mul_round_to_step(tiny, tiny, step, mode),
+            Some(Decimal::ZERO)
+        );
+    }
+}
+
 // ------------------------------------------------------ exact division
 
 proptest! {
@@ -458,13 +573,32 @@ proptest! {
 
     /// `checked_div_exact` is the exact quotient or `None`: never a
     /// quotient `rust_decimal` rounded (10 / 3), whose product with the
-    /// divisor rounds back to the dividend.
+    /// divisor rounds back to the dividend; and `Some` whenever the exact
+    /// quotient is a `Decimal`, so an exact division is never refused.
     #[test]
     fn div_exact_is_exact_or_none(a in arb_line_amount(), m in 1i128..100_000, s in 0u32..=4) {
         let b = Decimal::from_i128_with_scale(m, s);
-        if let Some(q) = Amount::checked_div_exact(a, b) {
+        let got = Amount::checked_div_exact(a, b);
+        if let Some(q) = got {
             prop_assert_eq!(rat(q) * rat(b), rat(a), "{} / {} gave {}", a, b, q);
         }
+        prop_assert_eq!(got.is_some(), representable(&(rat(a) / rat(b))), "{} / {}", a, b);
+    }
+
+    /// The same over the whole range of `Decimal`, divisors that divide
+    /// evenly included (a quotient times a divisor, divided back).
+    #[test]
+    fn div_exact_over_the_whole_range((a, b) in arb_pair(), back in any::<bool>()) {
+        let b = if b.is_zero() { Decimal::ONE } else { b };
+        // Half the cases: a dividend built as a product, so the exact
+        // quotient exists and is a `Decimal`.
+        let a = if back { Amount::checked_mul(a, b).unwrap_or(a) } else { a };
+        let exact = rat(a) / rat(b);
+        let got = Amount::checked_div_exact(a, b);
+        if let Some(q) = got {
+            prop_assert_eq!(rat(q), exact.clone(), "{} / {} gave {}", a, b, q);
+        }
+        prop_assert_eq!(got.is_some(), representable(&exact), "{} / {}", a, b);
     }
 }
 

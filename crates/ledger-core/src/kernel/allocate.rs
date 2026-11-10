@@ -9,7 +9,10 @@
 //! division, so a `Decimal` quotient is rounded at 28 significant digits
 //! (and a machine integer's is truncated), never an exact rational.
 //! Multiplication is not exact either at `Decimal`'s 96-bit mantissa:
-//! `checked_mul` rounds the product there. Every invariant below is
+//! `checked_mul_rounded` rounds the product there, and this module uses
+//! it by name wherever a rounded product is the figure meant (the
+//! kernel's `checked_mul` is exact or refused, K-U10, and would refuse a
+//! share by a percent of 27 places). Every invariant below is
 //! stated of that computation, and of the parts after the named leftover
 //! policy, which do sum to the whole exactly. See `docs/proofs/k-u3.md`
 //! for the edges where a product's or a quotient's rounding can change a

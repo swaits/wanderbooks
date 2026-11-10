@@ -201,8 +201,14 @@ fn product_is_exact(a: Decimal, b: Decimal, product: Decimal) -> bool {
 /// rounded one. `None` when the product is too large to hold with those
 /// digits: the figure times 10^(step places + 2) must fit 96 bits, so a
 /// figure past about 7.9e26 at a whole-unit step, 7.9e24 at a cent (10^9
-/// times a journal line's cap). A zero product is exact and never gets
-/// here.
+/// times a journal line's cap). For the same reason a step of 27 or 28
+/// places is always `None` here: `Decimal` ends at 28 places, so there is
+/// no place below such a step for the real digit and the sticky one. That
+/// refuses some figures whose rounded result `Decimal` could hold (1e-28
+/// squared to a step of 1e-27 is zero); a refusal, never a guess, and no
+/// currency's step is within twenty places of it (pinned in the bridge:
+/// `a_step_of_27_places_refuses_a_product_that_is_not_exact`). A zero
+/// product is exact and never gets here.
 pub(super) fn mul_for_rounding(a: Decimal, b: Decimal, step_scale: u32) -> Option<Decimal> {
     let negative = (a.mantissa() < 0) != (b.mantissa() < 0);
     let mut digits = Wide::mul_wide(a.mantissa().unsigned_abs(), b.mantissa().unsigned_abs());

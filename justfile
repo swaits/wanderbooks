@@ -213,8 +213,38 @@ _kani set:
     if [ "{{set}}" = fast ]; then
         args=()
         for h in $names; do args+=(--harness "$h"); done
-        timeout 1800 cargo kani -j "$(nproc)" --output-format terse --exact "${args[@]}" | tee "$logs/fast.log"
-        checked "$logs/fast.log" "$(wc -l <<<"$names")"
+        # Two caps, both in seconds. KANI_HARNESS_CAP is one harness's:
+        # Kani stops that harness and carries on with the rest.
+        # KANI_FAST_CAP is the whole set's: on a machine busy with other
+        # builds the set needs more than its 30 minutes, and until
+        # 2026-11-09 it was cut off there with exit 124 and nothing named.
+        # Either way the harnesses that failed and the ones that never
+        # finished are listed below.
+        status=0
+        timeout "${KANI_FAST_CAP:-1800}" cargo kani -j "$(nproc)" --output-format terse --exact \
+            -Z unstable-options --harness-timeout "${KANI_HARNESS_CAP:-900}s" "${args[@]}" |
+            tee "$logs/fast.log" || status=$?
+        if [ "$status" != 0 ] || ! checked "$logs/fast.log" "$(wc -l <<<"$names")"; then
+            # With -j Kani prints a harness's whole block when it ends:
+            # "Checking harness <name>..." down to its "VERIFICATION:-" line.
+            awk -v cap="${KANI_HARNESS_CAP:-900}" '
+                NR == FNR { asked[$1] = 1; next }
+                match($0, /Checking harness [^ ]+\.\.\./) { h = substr($0, RSTART + 17, RLENGTH - 20); next }
+                /VERIFICATION:- / && h != "" { ended[h] = 1; if ($0 !~ /VERIFICATION:- SUCCESSFUL/) failed[h] = 1; last = h; h = ""; next }
+                /CBMC timed out/ && last != "" { timed[last] = 1 }
+                END {
+                    for (n in asked) {
+                        if (n in timed) print "Kani: ran past its " cap " s (KANI_HARNESS_CAP): " n
+                        else if (n in failed) print "Kani: FAILED: " n
+                        else if (!(n in ended)) print "Kani: not finished: " n
+                    }
+                }' <(printf '%s\n' $names) "$logs/fast.log" | sort >&2
+            if [ "$status" = 124 ]; then
+                echo "Kani: the fast set was cut off at ${KANI_FAST_CAP:-1800} s; on a busy machine give it longer (KANI_FAST_CAP=7200 just prove)" >&2
+            fi
+            echo "Kani (fast): not verified (exit $status), see $logs/fast.log" >&2
+            exit 1
+        fi
     else
         cargo kani --only-codegen --output-format terse
         failed=0

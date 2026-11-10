@@ -1240,7 +1240,9 @@ just prove-all   # both
 ```
 
 `just prove` runs every Kani harness but the justfile's `kani_slow`, in
-parallel (`-j $(nproc)`), the whole run under a 30-minute timeout; fetches
+parallel (`-j $(nproc)`), each harness under a 15-minute cap
+(`KANI_HARNESS_CAP`, seconds) and the whole run under a 30-minute one
+(`KANI_FAST_CAP`, seconds); fetches
 and builds bookspec's Lean proofs (seconds; the git dependency is pinned in
 `verify/lean/lakefile.toml` and its manifest); and fails if any theorem
 depends on anything beyond Lean's standard axioms (`propext`,
@@ -1256,6 +1258,16 @@ harness with its module path and the set it runs in, resolving the slow
 list without spending a verification. CI's weekly run does both, on
 two runners (`.github/workflows/scheduled.yml`). Kani downloads its
 pinned nightly and CBMC into `~/.kani` on first use.
+
+**A run that is cut off says what it left (2026-11-09).** Until then the
+fast set had the one 30-minute cap and nothing else: on a machine busy
+with other builds `timeout` ended it with exit 124, and the output named
+neither a failed harness nor an unfinished one, so "red" could not be
+told from "slow". Now a run that does not verify every harness lists
+each one that failed, each that ran past its own cap, and each that
+never finished, and a cut-off run says so and how to give it longer:
+`KANI_FAST_CAP=7200 just prove`. The caps are not the proof: raising one
+changes how long a harness may take, never what it must show.
 
 **Why the split (2026-10-21, the P3 surface review).** With all of P3 the
 suite is 55 harnesses. One `just prove` at four jobs (a CI runner's

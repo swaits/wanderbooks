@@ -304,9 +304,10 @@ impl Steps {
         if self.scale == self.minor {
             return Some(d);
         }
-        let mut d = d.normalize();
+        let d = d.normalize();
         if d.scale() < self.minor {
-            d.rescale(self.minor);
+            // Trailing zeros only, so never refused.
+            return Some(crate::kernel::rescale_exact(d, self.minor).unwrap_or(d));
         }
         Some(d)
     }

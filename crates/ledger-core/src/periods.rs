@@ -146,7 +146,11 @@ pub fn try_allocate(
     let magnitude = amount.abs();
     let exact: Vec<Decimal> = shares
         .iter()
-        .map(|s| magnitude.checked_mul(*s).ok_or_else(too_large))
+        .map(|s| {
+            // The rounding product, as this rule has always computed it
+            // (posted closes replay with it); the shares sum to one.
+            crate::kernel::Amount::checked_mul_rounded(magnitude, *s).ok_or_else(too_large)
+        })
         .collect::<Result<_, _>>()?;
     let mut parts: Vec<Decimal> = exact
         .iter()
@@ -198,8 +202,8 @@ pub fn try_allocate_last_absorbs(
     let mut parts: Vec<_> = shares
         .iter()
         .map(|s| {
-            amount
-                .checked_mul(*s)
+            // The rounding product: this rule is frozen for replay.
+            crate::kernel::Amount::checked_mul_rounded(amount, *s)
                 .and_then(|p| round_places(p, 2, Rounding::HalfAwayFromZero))
                 .ok_or_else(too_large)
         })

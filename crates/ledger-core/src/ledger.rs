@@ -4046,7 +4046,12 @@ impl Ledger {
                     share,
                     part,
                     running,
-                    exact: share * regime.closed,
+                    // A share is positive and the shares sum to one
+                    // (close_period_to_members), so the product is no
+                    // larger than the total and Decimal holds it, rounded
+                    // at its 28th digit where the factors carry more.
+                    exact: crate::kernel::Amount::checked_mul_rounded(share, regime.closed)
+                        .expect("a share of at most one of a total Decimal holds"),
                 },
             )
             .collect();

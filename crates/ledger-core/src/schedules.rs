@@ -365,17 +365,24 @@ fn present_as_rounded(parts: &mut [Decimal], total: Decimal, places: u32) {
     let Some(&first) = rest.first() else {
         return;
     };
+    // `rescale_exact` refuses to round: a figure that is not a whole
+    // number of the places asked for (none is: `even_parts` rounded each
+    // to the step) would be left as the kernel gave it.
     let mut each = first;
     if each.scale() > places || each.is_zero() {
-        each.rescale(places);
-        debug_assert_eq!(each, first, "rescaling an amount never changes it");
+        let written = kernel::rescale_exact(each, places);
+        debug_assert!(written.is_some(), "a month is a whole number of steps");
+        each = written.unwrap_or(each);
     }
     // Subtracting a zero (a month that rounded to nothing) leaves the
     // total as it was, scale included; any other subtrahend widens it.
     if !each.is_zero() {
-        let before = *last;
-        last.rescale(total.scale().max(each.scale()));
-        debug_assert_eq!(*last, before, "rescaling an amount never changes it");
+        let written = kernel::rescale_exact(*last, total.scale().max(each.scale()));
+        debug_assert!(
+            written.is_some(),
+            "the last month is the total less whole steps"
+        );
+        *last = written.unwrap_or(*last);
     }
     for part in rest.iter_mut() {
         *part = each;

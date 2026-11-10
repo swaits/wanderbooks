@@ -627,15 +627,15 @@ impl ProjectToDate {
 ///   3. NEVER panics: None when the quotient can't be represented.
 /// ```
 pub fn contribution_margin_pct(contribution: Decimal, revenue: Decimal) -> Option<Decimal> {
-    let mut x = crate::kernel::percent_of(
+    let x = crate::kernel::percent_of(
         contribution,
         revenue,
         Decimal::new(1, 1),
         crate::kernel::Rounding::HalfToEven,
     )?;
-    // Display padding only: the margin always prints its one place.
-    x.rescale(1);
-    Some(x)
+    // Display padding only: the margin always prints its one place. It
+    // is a whole number of tenths, so writing it with one changes nothing.
+    Some(crate::kernel::rescale_exact(x, 1).unwrap_or(x))
 }
 
 /// The most months [`ProjectFigures::months`] holds: the period's last.

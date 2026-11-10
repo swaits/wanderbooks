@@ -21,6 +21,8 @@ use crate::widgets;
 use chrono::{Datelike, NaiveDate};
 use egui::{RichText, Ui, vec2};
 use egui_phosphor::regular as icon;
+use ledger_core::kernel::Amount;
+use ledger_core::money::neg;
 use ledger_core::{ClassId, ProjectFacts, ProjectKind, ProjectStatus};
 use rust_decimal::Decimal;
 
@@ -93,7 +95,7 @@ fn summary(rows: &[Listed]) -> String {
     let net: Option<Decimal> = rows
         .iter()
         .map(|r| r.to_date.as_ref().map(|t| t.net()))
-        .try_fold(Decimal::ZERO, |t, n| t.checked_add(n?));
+        .try_fold(Decimal::ZERO, |t, n| Amount::checked_add(t, n?));
     let counts = if parts.len() == 1 && rows.len() > 1 {
         format!(
             "{}, all {}",
@@ -953,7 +955,7 @@ fn accounts_card(
             let amt = widgets::amount_col_w(ui.available_width(), 1, 160.0, 140.0);
             let w = ui.available_width();
             let mut line = |ui: &mut Ui, l: &ledger_core::StatementLine, expense: bool| {
-                let shown = if expense { -l.amount } else { l.amount };
+                let shown = if expense { neg(l.amount) } else { l.amount };
                 let resp = row(
                     ui,
                     w,

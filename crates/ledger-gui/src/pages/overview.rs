@@ -12,6 +12,8 @@ use crate::widgets::{self, Kpi};
 use egui::{RichText, Ui};
 use egui_phosphor::regular as icon;
 use ledger_core::analysis::{Interval, pnl_by_interval};
+use ledger_core::kernel::Amount;
+use ledger_core::money::neg;
 use ledger_core::reports::profit_and_loss_for_period;
 use rust_decimal::Decimal;
 
@@ -66,7 +68,8 @@ fn headline(b: &Books) -> String {
     if let Some(burn) = k.monthly_burn {
         if burn > Decimal::ZERO
             && k.cash > Decimal::ZERO
-            && let Some(months) = k.cash.checked_div(burn).map(|m| fmt::round_display(m, 1))
+            && let Some(months) =
+                Amount::checked_div(k.cash, burn).map(|m| fmt::round_display(m, 1))
         {
             s.push_str(&format!(
                 " Lately you spend {} a month more than you earn: about {} months of runway.",
@@ -82,7 +85,7 @@ fn headline(b: &Books) -> String {
     } else if k.net_ytd < Decimal::ZERO {
         s.push_str(&format!(
             " You've spent {} more than you've earned this year.",
-            fmt::dollars(-k.net_ytd)
+            fmt::dollars(neg(k.net_ytd))
         ));
     }
     if (b.today - first).num_days() < 60 {
@@ -136,7 +139,7 @@ fn kpis(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
             .collect();
     let runway = match k.monthly_burn {
         Some(burn) if burn > Decimal::ZERO && k.cash > Decimal::ZERO => (
-            k.cash.checked_div(burn).map_or_else(
+            Amount::checked_div(k.cash, burn).map_or_else(
                 || "—".to_string(),
                 |m| format!("{} mo", fmt::round_display(m, 1)),
             ),

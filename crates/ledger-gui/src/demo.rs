@@ -8,6 +8,8 @@
 //! attention" list. Deterministic for a given `today`.
 
 use chrono::{Datelike, Days, Months, NaiveDate};
+use ledger_core::kernel::Amount;
+use ledger_core::money::{add_in_range, sub_in_range};
 use ledger_core::{
     AccountType, CloseTo, Currency, Dated1099, Decision1099, Form1099, Frequency, InstrumentKind,
     Money, NewAsset, NewRecurring, NewSchedule, ScheduleKind, Side, arap::DocumentLine,
@@ -59,6 +61,15 @@ impl Rng {
 
 fn usd(d: Decimal) -> Money {
     Money::new(d, Currency::USD)
+}
+
+/// `amount` to the nearest whole `step`, a half to the even multiple.
+fn to_step(amount: Decimal, step: Decimal) -> Decimal {
+    use ledger_core::kernel::{Rounding, round_places};
+    let steps = Amount::checked_div(amount, step)
+        .and_then(|q| round_places(q, 0, Rounding::HalfToEven))
+        .expect("a demo amount over a whole step rounds");
+    Amount::checked_mul(steps, step).expect("a whole number of steps fits")
 }
 
 fn dec(n: i64) -> Decimal {
@@ -608,7 +619,7 @@ pub fn build(dir: &Path, today: NaiveDate) -> Result<(), StoreError> {
                 None,
                 None,
             )?;
-            card_balance += amt;
+            card_balance = add_in_range(card_balance, amt);
         }
         // Advertising some months.
         if month_index % 3 == 1 {
@@ -629,7 +640,7 @@ pub fn build(dir: &Path, today: NaiveDate) -> Result<(), StoreError> {
                     None,
                     None,
                 )?;
-                card_balance += amt;
+                card_balance = add_in_range(card_balance, amt);
             }
         }
         // Meals and supplies.
@@ -659,7 +670,7 @@ pub fn build(dir: &Path, today: NaiveDate) -> Result<(), StoreError> {
                 None,
                 None,
             )?;
-            card_balance += amt;
+            card_balance = add_in_range(card_balance, amt);
         }
         if month_index % 4 == 2 {
             let date = day(m, 21);
@@ -685,13 +696,13 @@ pub fn build(dir: &Path, today: NaiveDate) -> Result<(), StoreError> {
                     None,
                     None,
                 )?;
-                card_balance += amt;
+                card_balance = add_in_range(card_balance, amt);
             }
         }
         if month_index == 7 {
             let date = day(m, 9);
             if in_range(date) {
-                let amt = dec(1186) + rng.amount(0, 90);
+                let amt = add_in_range(dec(1186), rng.amount(0, 90));
                 post(
                     &mut s,
                     date,
@@ -712,7 +723,7 @@ pub fn build(dir: &Path, today: NaiveDate) -> Result<(), StoreError> {
                     None,
                     None,
                 )?;
-                card_balance += amt;
+                card_balance = add_in_range(card_balance, amt);
             }
         }
         // Pay the card in full on the 25th.
@@ -748,7 +759,7 @@ pub fn build(dir: &Path, today: NaiveDate) -> Result<(), StoreError> {
                 continue;
             }
             let cust = customers[rng.pick(customers.len() as u64) as usize];
-            let amt = (rng.amount(1800, 7800) / dec(50)).round() * dec(50);
+            let amt = to_step(rng.amount(1800, 7800), dec(50));
             let inv = s.create_invoice(
                 cust,
                 date,
@@ -791,14 +802,17 @@ pub fn build(dir: &Path, today: NaiveDate) -> Result<(), StoreError> {
                 // A booked figure, so the kernel's rounding and not the
                 // display's: ten percent to the cent, a half to the even
                 // cent, as these books have always been drawn.
-                let fee = ledger_core::kernel::round_places(
-                    gross * Decimal::new(10, 2),
-                    2,
-                    ledger_core::kernel::Rounding::HalfToEven,
-                )
-                .expect("a tenth of a four-digit sale rounds to the cent")
-                    + Decimal::new(30, 2);
-                let net = gross - fee;
+                let fee = add_in_range(
+                    ledger_core::kernel::round_places(
+                        Amount::checked_mul(gross, Decimal::new(10, 2))
+                            .expect("a tenth of a four-digit sale fits"),
+                        2,
+                        ledger_core::kernel::Rounding::HalfToEven,
+                    )
+                    .expect("a tenth of a four-digit sale rounds to the cent"),
+                    Decimal::new(30, 2),
+                );
+                let net = sub_in_range(gross, fee);
                 let e = s.create_entry(date, "Gumroad payout — template sales")?;
                 s.add_line(e, checking, Side::Debit, usd(net))?;
                 s.add_line(e, fees, Side::Debit, usd(fee))?;
@@ -830,7 +844,7 @@ pub fn build(dir: &Path, today: NaiveDate) -> Result<(), StoreError> {
         if month_index % 2 == 0 && month_index > 0 {
             let date = day(m, 28);
             if in_range(date) {
-                let amt = (rng.amount(900, 2200) / dec(25)).round() * dec(25);
+                let amt = to_step(rng.amount(900, 2200), dec(25));
                 post(
                     &mut s,
                     date,

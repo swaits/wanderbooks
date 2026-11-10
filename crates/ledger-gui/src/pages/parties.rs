@@ -17,6 +17,7 @@ use crate::widgets;
 use chrono::{Datelike, NaiveDate};
 use egui::{CornerRadius, RichText, Stroke, Ui, vec2};
 use egui_phosphor::regular as icon;
+use ledger_core::money::{add_in_range, neg};
 use ledger_core::{Party, PartyId, Role};
 use rust_decimal::Decimal;
 
@@ -296,7 +297,7 @@ pub fn role_counts(b: &Books, show_archived: bool) -> Vec<(Role, usize)> {
 /// with a plus (in green), as the transactions list shows cash.
 fn paid_cell(paid: Decimal, p: &theme::Palette) -> (String, egui::Color32) {
     if paid < Decimal::ZERO {
-        (format!("+{}", fmt::money(-paid)), p.positive)
+        (format!("+{}", fmt::money(neg(paid))), p.positive)
     } else if paid.is_zero() {
         ("—".into(), p.faint)
     } else {
@@ -570,8 +571,8 @@ pub fn in_kind_text(flow: &crate::books::PartyFlow) -> Option<String> {
     }
     Some(format!(
         "With property contributed or distributed: paid {}, received {}",
-        fmt::dollars(flow.paid + flow.paid_in_kind),
-        fmt::dollars(flow.received + flow.received_in_kind)
+        fmt::dollars(add_in_range(flow.paid, flow.paid_in_kind)),
+        fmt::dollars(add_in_range(flow.received, flow.received_in_kind))
     ))
 }
 
@@ -1552,7 +1553,7 @@ fn what_for_card(ui: &mut Ui, b: &Books, flow: &PartyFlow, label: &str, go: &mut
                         .find(|(r, _)| b.ledger.role_account(r) == Some(*account))
                         .map(|(_, n)| *n);
                     let (text, color) = if *amount < Decimal::ZERO {
-                        (format!("+{}", fmt::money(-*amount)), p.positive)
+                        (format!("+{}", fmt::money(neg(*amount))), p.positive)
                     } else {
                         (fmt::money(*amount), p.text)
                     };
@@ -1580,7 +1581,7 @@ fn what_for_card(ui: &mut Ui, b: &Books, flow: &PartyFlow, label: &str, go: &mut
                         ("Net".into(), 0.0, false, p.text),
                         (
                             if net < Decimal::ZERO {
-                                format!("+{}", fmt::money(-net))
+                                format!("+{}", fmt::money(neg(net)))
                             } else {
                                 fmt::money(net)
                             },

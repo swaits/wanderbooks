@@ -14,6 +14,8 @@ use chrono::{Days, Months};
 use egui::{CornerRadius, RichText, Sense, Ui, vec2};
 use egui_phosphor::regular as icon;
 use ledger_core::analysis::{Interval, interval_start, pnl_by_interval};
+use ledger_core::kernel::Amount;
+use ledger_core::money::sub_in_range;
 use ledger_core::reports::profit_and_loss_for_period;
 use rust_decimal::Decimal;
 use std::collections::BTreeMap;
@@ -30,7 +32,7 @@ pub(crate) fn pct(part: Decimal, whole: Decimal) -> Option<Decimal> {
         ledger_core::kernel::Rounding::HalfToEven,
     )?;
     // One place always, so 100% prints as "100.0", as 64.0 does.
-    x.rescale(1);
+    x = ledger_core::kernel::rescale_exact(x, 1).unwrap_or(x);
     Some(x)
 }
 
@@ -43,7 +45,7 @@ pub fn show(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
             .as_ref()
             .map(|p| (p.total_revenue, p.total_expenses))
             .unwrap_or_default();
-        let net = rev - exp;
+        let net = sub_in_range(rev, exp);
         let margin = pct(net, rev);
         let sentence = match margin {
             Some(m) => format!(
@@ -204,7 +206,10 @@ fn spending_changes(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
             match slot {
                 0 => e.1 = l.amount,
                 1 => e.2 = l.amount,
-                _ => e.3 = l.amount / Decimal::from(3),
+                _ => {
+                    e.3 = Amount::checked_div(l.amount, Decimal::from(3))
+                        .expect("a third of a posted amount fits")
+                }
             }
         }
     };
@@ -267,7 +272,9 @@ fn spending_changes(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                         w - cw * 3.0 - 8.0,
                     );
                     // Flag a category already running well above its average.
-                    let hot = *avg > Decimal::ZERO && *now > *avg * Decimal::new(125, 2);
+                    let hot = *avg > Decimal::ZERO
+                        && Amount::checked_mul_rounded(*avg, Decimal::new(125, 2))
+                            .is_some_and(|limit| *now > limit);
                     let vals = [(*now, hot), (*last, false), (*avg, false)];
                     for (i, (v, flag)) in vals.iter().enumerate() {
                         let x = r.right() - cw * (2 - i) as f32 - 4.0;
@@ -321,7 +328,7 @@ fn by_customer(ui: &mut Ui, b: &Books) {
                 .map(|c| c.name.clone())
                 .unwrap_or_default();
             let sum = by.entry(who).or_default();
-            match inv.total().ok().and_then(|t| sum.checked_add(t)) {
+            match inv.total().ok().and_then(|t| Amount::checked_add(*sum, t)) {
                 Some(t) => *sum = t,
                 None => cant = Some(format!("invoice {id}'s total can't be computed exactly")),
             }
@@ -371,7 +378,7 @@ fn by_customer(ui: &mut Ui, b: &Books) {
 /// The sum of the customers' totals, None past exact arithmetic.
 fn rows_total(by: &BTreeMap<String, Decimal>) -> Option<Decimal> {
     by.values()
-        .try_fold(Decimal::ZERO, |t, v| t.checked_add(*v))
+        .try_fold(Decimal::ZERO, |t, v| Amount::checked_add(t, *v))
 }
 
 /// Each project's net income this year, a bar each; a bar opens its
@@ -398,7 +405,7 @@ fn by_class(ui: &mut Ui, b: &Books, go: &mut Option<Route>) {
                 .iter()
                 .filter_map(|c| {
                     let pl = profit_and_loss_for_period(&b.ledger, ys, ye, Some(c.id)).ok()?;
-                    let net = pl.total_revenue - pl.total_expenses;
+                    let net = sub_in_range(pl.total_revenue, pl.total_expenses);
                     (!pl.total_revenue.is_zero() || !pl.total_expenses.is_zero())
                         .then(|| (c.id, c.name.clone(), net))
                 })

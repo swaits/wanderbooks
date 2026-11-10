@@ -12,6 +12,8 @@ use crate::widgets;
 use egui::{CornerRadius, RichText, Sense, Ui, vec2};
 use egui_phosphor::regular as icon;
 use ledger_core::assets::accumulated_scheduled_through;
+use ledger_core::kernel::Amount;
+use ledger_core::money::sub_in_range;
 use ledger_core::{AssetStatus, PeriodStatus};
 use rust_decimal::Decimal;
 
@@ -247,7 +249,14 @@ pub fn show(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                                 ui.label(RichText::new(&m.name).font(theme::semibold(13.5)));
                                 widgets::pill(
                                     ui,
-                                    &format!("{}%", (m.share * Decimal::from(100)).normalize()),
+                                    &format!(
+                                        "{}%",
+                                        Amount::checked_mul_rounded(m.share, Decimal::from(100))
+                                            .expect(
+                                                "a member's share is at most one, so a hundred times it fits"
+                                            )
+                                            .normalize()
+                                    ),
                                     p.accent,
                                     p.accent_soft,
                                 );
@@ -384,7 +393,7 @@ fn assets(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                 let later = b.ledger.asset_acquired_date(a.id).filter(|d| *d > b.today);
                 let acc = b.ledger.accumulated_posted(a.id, b.today);
                 let scheduled = accumulated_scheduled_through(a, b.today);
-                let dep = a.cost.amount - a.salvage_value.amount;
+                let dep = sub_in_range(a.cost.amount, a.salvage_value.amount);
                 ui.horizontal_wrapped(|ui| {
                     if widgets::link(
                         ui,
@@ -416,7 +425,10 @@ fn assets(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                             ),
                             (_, Some(_)) => format!("book value {}", fmt::dollars(Decimal::ZERO)),
                             (Ok(acc), None) => {
-                                format!("book value {}", fmt::dollars(a.cost.amount - *acc))
+                                format!(
+                                    "book value {}",
+                                    fmt::dollars(sub_in_range(a.cost.amount, *acc))
+                                )
                             }
                             (Err(e), None) => format!("book value can't be computed: {e}"),
                         };
@@ -433,13 +445,15 @@ fn assets(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                         let frac: f32 = if dep.is_zero() {
                             1.0
                         } else {
-                            (*acc / dep).try_into().unwrap_or(0.0)
+                            Amount::checked_div(*acc, dep)
+                                .and_then(|x| x.try_into().ok())
+                                .unwrap_or(0.0)
                         };
                         let note = match scheduled {
                             Ok(s) if s > *acc => {
                                 format!(
                                     " · {} more scheduled through today",
-                                    fmt::dollars(s - *acc)
+                                    fmt::dollars(sub_in_range(s, *acc))
                                 )
                             }
                             Ok(_) => String::new(),
@@ -514,11 +528,10 @@ fn schedules(ui: &mut Ui, b: &Books) {
                         continue;
                     }
                 };
-                let recognized = total.checked_sub(remaining);
+                let recognized = Amount::checked_sub(total, remaining);
                 let frac: f32 = match recognized {
                     _ if total.is_zero() => 1.0,
-                    Some(r) => r
-                        .checked_div(total)
+                    Some(r) => Amount::checked_div(r, total)
                         .and_then(|x| x.try_into().ok())
                         .unwrap_or(0.0),
                     None => 0.0,
@@ -580,7 +593,9 @@ fn recurring(ui: &mut Ui, b: &Books) {
                     .lines
                     .iter()
                     .filter(|(_, s, _)| *s == ledger_core::Side::Debit)
-                    .try_fold(Decimal::ZERO, |t, (_, _, m)| t.checked_add(m.amount));
+                    .try_fold(Decimal::ZERO, |t, (_, _, m)| {
+                        Amount::checked_add(t, m.amount)
+                    });
                 let next = (0..)
                     .map_while(|k| {
                         r.frequency
@@ -715,7 +730,8 @@ fn parties(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                             .filter_map(|i| b.ledger.get_invoice(i))
                             .filter(|i| i.customer_id == c.id)
                             .try_fold(Decimal::ZERO, |t, i| {
-                                t.checked_add(
+                                Amount::checked_add(
+                                    t,
                                     b.owed_today(ledger_core::DocRef::Invoice(i.id)).ok()?,
                                 )
                             });

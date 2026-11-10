@@ -6,6 +6,8 @@
 use chrono::{Datelike, NaiveDate};
 use ledger_config::BooksSettings;
 use ledger_core::analysis::{balance_history, balance_series};
+use ledger_core::kernel::{Amount, share_of, total_of};
+use ledger_core::money::{add_in_range, signed_amount, sub_in_range};
 use ledger_core::reports::{balance_sheet_as_of, profit_and_loss_for_period};
 use ledger_core::{
     AccountId, AccountType, AssetId, AssetRegister, AssetStatus, BillId, EntryId, EntryStatus,
@@ -139,7 +141,11 @@ impl AssetTrail {
     /// effect, and what its disposal trued up (so a disposed asset's is
     /// what the disposal took, ledger_store's dispose_preview).
     pub fn posted(&self) -> Decimal {
-        self.depreciation.values().map(|(_, a)| *a).sum::<Decimal>() + self.disposal_true_up
+        add_in_range(
+            total_of(self.depreciation.values(), |(_, a)| *a)
+                .expect("an asset's posted runs are in range, so their sum is"),
+            self.disposal_true_up,
+        )
     }
 }
 
@@ -389,7 +395,7 @@ pub struct PartyFlow {
 impl PartyFlow {
     /// Paid out less received in.
     pub fn net(&self) -> Decimal {
-        self.paid - self.received
+        sub_in_range(self.paid, self.received)
     }
 }
 
@@ -717,8 +723,8 @@ impl Books {
                 .iter()
                 .filter(|l| cash_accounts.contains(&l.account))
                 .try_fold(Decimal::ZERO, |sum, l| match l.side {
-                    Side::Debit => sum.checked_add(l.amount.amount),
-                    Side::Credit => sum.checked_sub(l.amount.amount),
+                    Side::Debit => Amount::checked_add(sum, l.amount.amount),
+                    Side::Credit => Amount::checked_sub(sum, l.amount.amount),
                 });
             // Core tags every entry with its counterparty (hand tags,
             // vendor tags, bills, invoices, their payments, reversals).
@@ -953,14 +959,16 @@ impl Books {
             &[today - chrono::Days::new(30), today],
         );
         let bs = balance_sheet_as_of(l, today).ok();
-        let receivables: Decimal = l
-            .chart()
-            .all()
-            .filter(|a| {
-                a.account_type == AccountType::Asset && a.name.to_lowercase().contains("receivable")
-            })
-            .map(|a| self.balance_on(a.id, today))
-            .sum();
+        let receivables: Decimal = ledger_core::kernel::total(
+            l.chart()
+                .all()
+                .filter(|a| {
+                    a.account_type == AccountType::Asset
+                        && a.name.to_lowercase().contains("receivable")
+                })
+                .map(|a| self.balance_on(a.id, today)),
+        )
+        .expect("figures drawn from the books are in range, so their sum is");
         let ms = self.month_start();
         let prev_start = ms - chrono::Months::new(1);
         let prev_end = ms - chrono::Days::new(1);
@@ -981,7 +989,7 @@ impl Books {
         let first_entry = posted().min();
         let last_entry = posted().max();
         let monthly_burn = three.and_then(|p| {
-            let loss = p.total_expenses - p.total_revenue;
+            let loss = sub_in_range(p.total_expenses, p.total_revenue);
             // Only months the books cover count toward the average.
             let months = match first_entry {
                 Some(f) if f > ms - chrono::Months::new(3) => {
@@ -994,7 +1002,9 @@ impl Books {
                 None => 0,
             };
             (loss > Decimal::ZERO && months > 0)
-                .then(|| crate::fmt::round_display(loss / Decimal::from(months), 2))
+                .then(|| Amount::checked_div(loss, Decimal::from(months)))
+                .flatten()
+                .map(|avg| crate::fmt::round_display(avg, 2))
         });
         Kpis {
             cash: cash[1],
@@ -1006,7 +1016,7 @@ impl Books {
             revenue_prev_month: prev.as_ref().map(|p| p.total_revenue).unwrap_or_default(),
             expenses_prev_month: prev.as_ref().map(|p| p.total_expenses).unwrap_or_default(),
             net_ytd: ytd
-                .map(|p| p.total_revenue - p.total_expenses)
+                .map(|p| sub_in_range(p.total_revenue, p.total_expenses))
                 .unwrap_or_default(),
             monthly_burn,
             first_entry,
@@ -1105,7 +1115,7 @@ impl Books {
         let in_year = |d: NaiveDate| d.year() == year;
         // A sum that can't be computed exactly stays None (INVARIANT 4a).
         let add = |sum: &mut Option<Decimal>, v: Result<Decimal, LedgerError>| {
-            *sum = sum.and_then(|s| s.checked_add(v.ok()?));
+            *sum = sum.and_then(|s| Amount::checked_add(s, v.ok()?));
         };
         let mut out: BTreeMap<PartyId, PartyInfo> = l
             .parties()
@@ -1131,7 +1141,7 @@ impl Books {
                 .filter(|e| a.entries.contains(&e.id))
                 .map(|e| e.id)
                 .collect();
-            info.paid_ytd = a.paid - a.received;
+            info.paid_ytd = sub_in_range(a.paid, a.received);
         }
         for inv in l.invoices() {
             let id = inv.id;
@@ -1661,7 +1671,8 @@ impl Books {
                     continue;
                 }
                 for (account, amount) in self.party_what_for(e, party) {
-                    *by.entry(account).or_default() += amount;
+                    let slot = by.entry(account).or_default();
+                    *slot = add_in_range(*slot, amount);
                 }
             }
             what_for = by.into_iter().filter(|(_, v)| !v.is_zero()).collect();
@@ -1805,14 +1816,14 @@ impl Books {
         let Some(target) = info
             .parties
             .iter()
-            .try_fold(Decimal::ZERO, |t, p| t.checked_add(p.resolved?))
+            .try_fold(Decimal::ZERO, |t, p| Amount::checked_add(t, p.resolved?))
         else {
             return Vec::new();
         };
         let fraction = if info.parties.len() <= 1 {
             Decimal::ONE
         } else {
-            match resolved.checked_div(target) {
+            match Amount::checked_div(resolved, target) {
                 Some(f) => f,
                 None => return Vec::new(),
             }
@@ -1837,7 +1848,8 @@ impl Books {
             if me.is_some_and(|m| m.capital == a || m.distributions == Some(a)) {
                 own.push((a, v));
             } else if !several || !member_line(a) {
-                let Some(part) = v.checked_mul(fraction) else {
+                // `fraction` is a quotient, so this product is a rounded figure by construction.
+                let Some(part) = Amount::checked_mul_rounded(v, fraction) else {
                     return Vec::new();
                 };
                 scaled.push((a, truncate_cents(part)));
@@ -1846,14 +1858,14 @@ impl Books {
         let Some(left) = own
             .iter()
             .chain(&scaled)
-            .try_fold(Decimal::ZERO, |t, (_, v)| t.checked_add(*v))
-            .and_then(|have| cash.checked_sub(have))
+            .try_fold(Decimal::ZERO, |t, (_, v)| Amount::checked_add(t, *v))
+            .and_then(|have| Amount::checked_sub(cash, have))
         else {
             return Vec::new();
         };
         if !left.is_zero() {
             match scaled.first_mut().or(own.first_mut()) {
-                Some(first) => first.1 += left,
+                Some(first) => first.1 = add_in_range(first.1, left),
                 None => own.push((e.lines()[0].account, left)),
             }
         }
@@ -1923,10 +1935,9 @@ impl Books {
                 })
                 .collect()
         };
-        let due_to_members: Decimal = due_accounts
-            .iter()
-            .map(|&a| self.balance_on(a, span.1))
-            .sum();
+        let due_to_members: Decimal =
+            total_of(due_accounts.iter(), |&a| self.balance_on(a, span.1))
+                .expect("figures drawn from the books are in range, so their sum is");
         let shares: Vec<Decimal> = members.iter().map(|x| x.share).collect();
         let owed_to_member = ledger_core::periods::allocate_cumulative(
             due_to_members,
@@ -2084,15 +2095,15 @@ pub fn share_of_what_for(
         .what_for
         .iter()
         .map(|(a, v)| {
-            let part = v.checked_mul(share)?.checked_div(flow.net)?;
+            let part = share_of(*v, share, flow.net)?;
             Some((*a, truncate_cents(part)))
         })
         .collect::<Option<_>>()?;
     let have = parts
         .iter()
-        .try_fold(Decimal::ZERO, |t, (_, v)| t.checked_add(*v))?;
-    let left = share.checked_sub(have)?;
-    parts[0].1 = parts[0].1.checked_add(left)?;
+        .try_fold(Decimal::ZERO, |t, (_, v)| Amount::checked_add(t, *v))?;
+    let left = Amount::checked_sub(share, have)?;
+    parts[0].1 = Amount::checked_add(parts[0].1, left)?;
     Some(parts)
 }
 
@@ -2156,7 +2167,8 @@ fn asset_trails(ledger: &Ledger, journal: &[JournalLine]) -> HashMap<AssetId, As
             ledger.get_asset(*id),
             t.disposal_entry.and_then(|e| ledger.get_entry(e)),
         ) {
-            let runs: Decimal = t.depreciation.values().map(|(_, a)| *a).sum();
+            let runs: Decimal = total_of(t.depreciation.values(), |(_, a)| *a)
+                .expect("an asset's posted runs are in range, so their sum is");
             let gain_loss = gain_loss_accounts.get(id).copied().flatten();
             t.disposal_true_up = disposal_true_up(a, e, gain_loss, runs);
         }
@@ -2225,18 +2237,17 @@ fn disposal_true_up(
     runs: Decimal,
 ) -> Decimal {
     if gain_loss_account.is_some_and(|g| g != asset.expense_account) {
-        return entry
-            .lines()
-            .iter()
-            .filter(|l| l.account == asset.expense_account)
-            .map(|l| match l.side {
-                Side::Debit => l.amount.amount,
-                Side::Credit => -l.amount.amount,
-            })
-            .sum();
+        return total_of(
+            entry
+                .lines()
+                .iter()
+                .filter(|l| l.account == asset.expense_account),
+            |l| signed_amount(l.side, l.amount.amount),
+        )
+        .expect("a posted entry's lines are in range, so their sum is");
     }
     ledger_core::accumulated_scheduled_through(asset, NaiveDate::MAX)
-        .map_or(Decimal::ZERO, |t| t - runs)
+        .map_or(Decimal::ZERO, |t| sub_in_range(t, runs))
 }
 
 /// What a document's state ([`Books::doc_today`]) says it owes, read once

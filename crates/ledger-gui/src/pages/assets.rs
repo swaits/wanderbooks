@@ -21,6 +21,7 @@ use crate::widgets;
 use chrono::{Datelike, NaiveDate};
 use egui::{Color32, CornerRadius, Margin, RichText, Sense, Ui, vec2};
 use egui_phosphor::regular as icon;
+use ledger_core::money::{neg, sub_in_range};
 use ledger_core::{
     Asset, AssetId, AssetRegister, AssetRegisterRow, AssetStatus, BasisRule, Sec704cMethod,
 };
@@ -91,7 +92,7 @@ pub fn notices(b: &Books, r: &AssetRegister) -> Vec<Notice> {
                 ),
             });
         }
-        let accruing = unposted - due_amount;
+        let accruing = sub_in_range(unposted, due_amount);
         if accruing > Decimal::ZERO {
             out.push(Notice {
                 problem: false,
@@ -108,7 +109,7 @@ pub fn notices(b: &Books, r: &AssetRegister) -> Vec<Notice> {
             problem: true,
             text: format!(
                 "The books carry {} more accumulated depreciation than the schedules through {} — ask the bookkeeper to check the depreciation entries.",
-                fmt::dollars(-unposted),
+                fmt::dollars(neg(unposted)),
                 fmt::date(r.as_of)
             ),
         });
@@ -127,7 +128,7 @@ pub fn notices(b: &Books, r: &AssetRegister) -> Vec<Notice> {
             problem: true,
             text: format!(
                 "{} of registered cost isn't in the books' asset cost accounts — ask the bookkeeper to check the purchase entries.",
-                fmt::dollars(-unregistered)
+                fmt::dollars(neg(unregistered))
             ),
         });
     }
@@ -324,7 +325,7 @@ impl TaxFacts {
 /// figure, for a built-in gain (+) or loss (−).
 pub fn gain_or_loss(g: Decimal) -> (&'static str, Decimal) {
     if g < Decimal::ZERO {
-        ("Built-in loss", -g)
+        ("Built-in loss", neg(g))
     } else {
         ("Built-in gain", g)
     }
@@ -399,7 +400,7 @@ pub(crate) fn row(
         ui.painter().rect_filled(r, CornerRadius::same(4), p.hover);
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    let fixed: f32 = cells.iter().map(|c| c.1).sum();
+    let fixed: f32 = cells.iter().map(|c| c.1).fold(0.0_f32, |a, b| a + b);
     let flex = (w - fixed).max(40.0);
     let painter = ui.painter_at(r);
     let font = if strong {

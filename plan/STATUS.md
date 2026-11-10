@@ -1,4 +1,58 @@
-# STATUS — 2026-11-09: P14 most of the way: every rule cited by its bookspec id, a traceability gate, three quarters of the rules with examples, the kernel sweep through U5
+# STATUS — 2026-11-10: the evaluation batch: no money arithmetic outside the kernel in any crate, exact Decimal sums, four gates the build did not have
+
+## 2026-11-10: the evaluation batch (plan/2026-11-09_TRIAGE.md)
+
+A full evaluation of the project on 2026-11-09 found nothing wrong in the
+live books and a list of things the gates did not see. The triage has
+each item, how it was known and what closed it. What landed, on `main`
+and not yet pushed (one gate and one push at the end, D-60):
+
+- **The kernel rule is kept, and the compiler checks it** (K-U11a,
+  K-U12): 210 places in ledger-core and 183 in the crates around it did
+  `Decimal` arithmetic outside `kernel/`. All go through the kernel, and
+  `just kernel-only` (the lint part of `just check`) fails on a new one
+  in any crate, or on a crate it does not list. `docs/proofs/k-u11.md`,
+  `k-u12.md`.
+- **Decimal sums and products are exact or refused** (K-U10a): they
+  rounded silently past 28 digits. One figure a new line can book moves
+  by a cent; no posted line is recomputed and no golden moved. Three
+  operations round, each by name. `docs/proofs/k-u10.md`.
+- **A tie between shares goes to the earlier part, exactly** (K-U10b,
+  D-76, the owner's decision): 20.00 by 4/1/1 is 13.34 / 3.33 / 3.33.
+- **Display rounding in one place, percentages in Decimal** (K-U9); the
+  audit checks a close at the allocation's unit and a legacy close by
+  its member count (V-D3).
+- **Gates that did not exist**: a supply-chain gate (`just deny`; its
+  first run found 23 known vulnerabilities, closed by upgrades, and the
+  upgrade found the XLSX reader dropping every `&` in a cell);
+  third-party licence notices generated, checked and printed by
+  `wanderbooks licenses`; every font the viewer ships named with a
+  permissive licence (Inter, Hack, Noto); `overflow-checks` on in the
+  shipped program; recorded regression seeds replayed again; CI's
+  `check` as five parts; `just prove` with a cap per harness and a list
+  of what did not finish.
+- **Every `Ledger` command mapped to its step of the Lean model**
+  (`docs/command-steps.md`, kept whole by a test): 119 commands, 14
+  steps, and the four gaps it found are written down for bookspec.
+- **Routing**: delegated work goes by tier (`docs/routing.md`), one line
+  per task in `docs/delegation-log.md`.
+
+Kani 107 harnesses (97 in `just prove`, 10 slow); bookspec's Lean 212
+audited theorems at the pin (79cb439). Parity floor 36.
+
+**Not verified yet**: the batch's one `just check` and `just prove`, and
+CI on the push (the five-part `check`, `deny`, `notices-check` and
+`kernel-only` have never run there). No Linux package has been built
+since the notices file joined them.
+
+**Next**: the gate and the push; then the triage's P2.5 (a `renumber`
+step, a `ReplayStep` relation, the registers' steps, a wider
+differential test: Lean in bookspec), P2.7 (the three allocation
+preludes into the kernel, with Kani, Lean and bridge coverage), Kani for
+the 256-bit helpers, coverage beyond core and store, then X-K2, X-O and
+L-G4. The owner's: `just p12-night`, the two format upgrades on the live
+books, the trials, the first `release` run and `just package-linux`,
+Q-6.
 
 ## 2026-11-09: P14 continued (plan/p14-bookspec.md)
 

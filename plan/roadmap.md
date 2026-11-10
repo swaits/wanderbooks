@@ -3,7 +3,7 @@
 Where wanderbooks has been, where it is, and where it is going. The
 detailed plan for the remaining work is `plan/served.md` (section 8.0:
 status, order, hand-off); `plan/STATUS.md` says where things stand this
-week. Revised 2026-10-28.
+week. Revised 2026-11-10.
 
 ## Done
 
@@ -33,10 +33,10 @@ historical now).
 
 Done: the GnuCash differential (`just oracle`: 200 random books, 15,800
 exact comparisons, adjudicated from principles; `docs/oracle.md` Layer
-5), the mutation, fuzz and proof layers. Open: fixture books diffed as
-`snapshot()` output automatically, and the machine-readable parity
-catalog with CI enforcing the non-regression floor (the floor is 21
-`done` rows, enforced by review until then).
+5), the mutation, fuzz and proof layers, and the parity catalog with its
+floor enforced (36 `done` rows; `parity_floor.rs` in `just check`, and
+CI's `scripts/parity-floor.sh` against the base commit). Open: fixture
+books diffed as `snapshot()` output automatically.
 
 ### "Served" P0 to P3, Projects, P4b S1 to S4.3 (2026-10-16 to 2026-10-27)
 
@@ -59,9 +59,26 @@ nothing. Next: S4.5 (the PDF, viewer and handbook of `documents_v2`),
 P11a step 0 beside it, and after P4 the owner's one upgrade of the live
 books (D-57).
 
-## Next
+## Since (2026-10-29 to 2026-11-10)
 
-The order is `plan/served.md` 8.0.2. Two tracks run beside each other:
+The build units of `plan/served.md` 8.2 have landed; `plan/STATUS.md`
+has each, by date. Then P14 (`plan/p14-bookspec.md`): bookspec became
+the definitive accounting specification, its rules cited by id, its Lean
+the one copy of the laws, and the kernel sweep moved every piece of
+money arithmetic behind proofs. The 2026-11-09 evaluation
+(`plan/2026-11-09_TRIAGE.md`) then closed what the gates did not see.
+
+What is left is the triage's order of work (the Lean steps the command
+inventory found missing, the allocation preludes, bookspec's examples
+and second implementation) and the owner's own: the overnight P12 run,
+the trials on a Mac, on Windows and on a clean Linux, the first release,
+signing, the re-audit (P10), and Q-6 before P9b.
+
+## The plan as it stood on 2026-10-28
+
+Kept for the record; both tracks below have landed except where the
+paragraph above says otherwise. The order was `plan/served.md` 8.0.2.
+Two tracks ran beside each other:
 
 1. **The installed app: the destination (D-56, owner 2026-10-28).**
    P11a: the platform groundwork first (the macOS and Windows keyring

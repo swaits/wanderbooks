@@ -12,6 +12,7 @@
 //! falls, what a member or lender paid for the company, pairs reversals,
 //! names the kinds and checks the result foots.
 
+use crate::money::{add_in_range, neg, signed_amount, sub_in_range};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use chrono::NaiveDate;
@@ -405,7 +406,7 @@ impl CashFlowStatement {
         for l in self.lines(section) {
             match out.last_mut() {
                 Some(k) if k.kind == l.kind => {
-                    k.amount += l.amount;
+                    k.amount = add_in_range(k.amount, l.amount);
                     k.entries.push(l.entry);
                 }
                 _ => out.push(CashFlowKind {
@@ -643,8 +644,7 @@ pub fn role_problems(
 /// cannot fail on posted entries): the sections sum to the change in
 /// cash, or nothing is produced.
 pub fn foot(sections_sum: Decimal, net_change: Decimal) -> Result<CashFlowFooting, LedgerError> {
-    let difference = sections_sum
-        .checked_sub(net_change)
+    let difference = crate::kernel::Amount::checked_sub(sections_sum, net_change)
         .ok_or_else(|| too_large("the cash flow statement's footing"))?;
     if !difference.is_zero() {
         return Err(LedgerError::CashFlowDoesNotFoot {
@@ -665,14 +665,11 @@ fn too_large(what: &str) -> LedgerError {
 }
 
 fn add(a: Decimal, b: Decimal, what: &str) -> Result<Decimal, LedgerError> {
-    a.checked_add(b).ok_or_else(|| too_large(what))
+    crate::kernel::Amount::checked_add(a, b).ok_or_else(|| too_large(what))
 }
 
 fn signed(side: Side, amount: Decimal) -> Decimal {
-    match side {
-        Side::Debit => amount,
-        Side::Credit => -amount,
-    }
+    signed_amount(side, amount)
 }
 
 /// What a line part belongs to within its section: the kind its cash is
@@ -1075,7 +1072,7 @@ fn bill_splits(roles: &Roles<'_>, chains: &Chains) -> Result<BillSplits, LedgerE
             if l.side == Side::Credit && left > Decimal::ZERO && operating_liability(l.account)? {
                 let part = left.min(l.amount.amount);
                 out.parts.insert((b.id(), i), (part, bucket.clone()));
-                left -= part;
+                left = sub_in_range(left, part);
             }
         }
         // Each payment pays the equipment part first, in the order paid:
@@ -1085,13 +1082,13 @@ fn bill_splits(roles: &Roles<'_>, chains: &Chains) -> Result<BillSplits, LedgerE
         // paid nothing for good: its reversal unpays it on the reversal's
         // date, and it leaves the equipment part for the payment that
         // stands (P4b.2 gap 6: it used to keep it, as the bill did).
-        let mut owed = equipment - left;
+        let mut owed = sub_in_range(equipment, left);
         let payments = ledger
             .doc_lines(crate::DocRef::Bill(bill.id))
             .into_iter()
             .filter(|l| l.movement == crate::Movement::Payment && !l.reversal);
         for pl in payments {
-            let (pay, amount) = (pl.entry, -pl.amount);
+            let (pay, amount) = (pl.entry, neg(pl.amount));
             let Some(p) = ledger.get_entry(pay) else {
                 continue;
             };
@@ -1107,20 +1104,20 @@ fn bill_splits(roles: &Roles<'_>, chains: &Chains) -> Result<BillSplits, LedgerE
                     let paid = out.paid.entry(b.id()).or_default();
                     paid.push((p.date(), part));
                     // Its reversal unpays it; a reinstatement pays it again.
-                    let mut undo = -part;
+                    let mut undo = neg(part);
                     let mut cur = p.id();
                     while let Some(&r) = chains.reversed_by.get(&cur) {
                         let Some(re) = ledger.get_entry(r).filter(|_| r > cur) else {
                             break;
                         };
                         paid.push((re.date(), undo));
-                        undo = -undo;
+                        undo = neg(undo);
                         cur = r;
                     }
                     if ledger.in_effect(p.id()) {
-                        owed -= part;
+                        owed = sub_in_range(owed, part);
                     }
-                    this -= part;
+                    this = sub_in_range(this, part);
                 }
             }
         }
@@ -1301,7 +1298,7 @@ fn analyse<'a>(
                     ..part.clone()
                 });
             }
-            part.amount = amount - inv;
+            part.amount = sub_in_range(amount, inv);
             if part.amount.is_zero() {
                 continue;
             }
@@ -1401,7 +1398,7 @@ fn analyse<'a>(
                 if total > Decimal::ZERO {
                     inflow = add(inflow, total, "an entry's exchange")?;
                 } else {
-                    outflow = add(outflow, -total, "an entry's exchange")?;
+                    outflow = add(outflow, neg(total), "an entry's exchange")?;
                 }
             }
             if !total.is_zero() {
@@ -1427,7 +1424,7 @@ fn analyse<'a>(
         if m > Decimal::ZERO {
             debits = add(debits, m, "an entry's exchange")?;
         } else {
-            credits = add(credits, -m, "an entry's exchange")?;
+            credits = add(credits, neg(m), "an entry's exchange")?;
         }
     }
     let exchanged = kernel::exchanged(debits, credits, inflow, outflow)
@@ -1490,9 +1487,9 @@ impl Chains {
 
 fn negated(f: &EntryFlows<Decimal>) -> EntryFlows<Decimal> {
     EntryFlows {
-        cash: -f.cash,
-        flows: f.flows.map(|x| -x),
-        noncash: f.noncash.map(|x| -x),
+        cash: neg(f.cash),
+        flows: f.flows.map(neg),
+        noncash: f.noncash.map(neg),
     }
 }
 
@@ -1526,8 +1523,8 @@ fn pairs(kept: &[Analysed<'_>]) -> HashSet<EntryId> {
                     r.kinds[k].len() == x.kinds[k].len()
                         && r.kinds[k].iter().zip(&x.kinds[k]).all(|(rk, xk)| {
                             rk.bucket == xk.bucket
-                                && rk.cash == -xk.cash
-                                && rk.on_behalf == -xk.on_behalf
+                                && rk.cash == neg(xk.cash)
+                                && rk.on_behalf == neg(xk.on_behalf)
                         })
                 });
             if mirror {
@@ -1968,7 +1965,7 @@ pub fn cash_flow(
         {
             for &(date, part) in paid {
                 if date <= params.end {
-                    exchanged -= part;
+                    exchanged = sub_in_range(exchanged, part);
                 }
             }
             exchanged = exchanged.max(Decimal::ZERO);
@@ -2017,8 +2014,7 @@ pub fn cash_flow(
             }
         }
     }
-    let net_change_in_cash = cash_ending
-        .checked_sub(cash_beginning)
+    let net_change_in_cash = crate::kernel::Amount::checked_sub(cash_ending, cash_beginning)
         .ok_or_else(|| too_large("the change in cash"))?;
     let sections_sum = add(
         add(totals[0], totals[1], "the sections' sum")?,
@@ -2072,7 +2068,7 @@ fn reconcile(
         let (mut g, mut dep) = (Decimal::ZERO, Decimal::ZERO);
         for p in &a.parts {
             if p.pl {
-                net_income = add(net_income, -p.signed(), WHAT)?;
+                net_income = add(net_income, neg(p.signed()), WHAT)?;
                 if p.flow == Flow::Investing {
                     if roles.depreciation.contains(&p.account) {
                         dep = add(dep, p.signed(), WHAT)?;
@@ -2204,7 +2200,7 @@ fn reconcile(
                 if up { "Increase in" } else { "Decrease in" },
                 named(&code)
             ),
-            amount: -movement,
+            amount: neg(movement),
             account: Some(code),
             entries: Vec::new(),
         });

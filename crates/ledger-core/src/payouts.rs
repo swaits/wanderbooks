@@ -17,7 +17,7 @@
 //! no platform: callers (or a format-specific parser) supply the numbers
 //! from the payout statement, which is the entry's receipt.
 
-use crate::money::{add_exact, sub_exact, sum_exact_of};
+use crate::money::{add_exact, neg, on_side, sub_exact, sum_exact_of};
 use crate::{AccountId, AccountType, ChartOfAccounts, ClassId, LedgerError, Side};
 use rust_decimal::Decimal;
 
@@ -170,10 +170,7 @@ pub fn payout_plan(
     let fees = sum_exact_of(&payout.fees, |l| l.amount, "the payout's fees")?;
     let adjustments = sum_exact_of(
         &payout.adjustments,
-        |a| match a.side {
-            Side::Credit => a.amount,
-            Side::Debit => -a.amount,
-        },
+        |a| on_side(Side::Credit, a.side, a.amount),
         "the payout's adjustments",
     )?;
     let expected = add_exact(
@@ -193,7 +190,12 @@ pub fn payout_plan(
     if payout.deposit > Decimal::ZERO {
         plan.push((payout.deposit_account, Side::Debit, payout.deposit, None));
     } else if payout.deposit < Decimal::ZERO {
-        plan.push((payout.deposit_account, Side::Credit, -payout.deposit, None));
+        plan.push((
+            payout.deposit_account,
+            Side::Credit,
+            neg(payout.deposit),
+            None,
+        ));
     }
     plan.extend(
         payout

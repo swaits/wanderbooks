@@ -50,6 +50,28 @@ pub trait Amount: Copy + Ord {
     fn checked_mul_rounded(self, rhs: Self) -> Option<Self> {
         self.checked_mul(rhs)
     }
+    /// `self + rhs` as the amount type adds, which for [`Decimal`] is
+    /// `rust_decimal`'s: exact where the sum fits 96 bits and scale 28,
+    /// otherwise rounded to what it holds. `None` only on overflow.
+    ///
+    /// The engine's rounding sum, beside its rounding product and its
+    /// rounding division, and for one use: a running total of rounded
+    /// shares (`whole x weight / total`, each a quotient of 28 significant
+    /// digits). Three thirds of 28 digits are not a sum 96 bits hold, and
+    /// the total they stand for was never an exact figure: the caller
+    /// rounds it to the places it means before a cent is taken from it
+    /// (`tax_capital`'s `RunningSplit`, INVARIANT 4). Nothing else calls
+    /// it; a sum of amounts is [`Amount::checked_add`], exact or refused.
+    /// A machine integer never rounds, so there it is `checked_add`.
+    fn checked_add_rounded(self, rhs: Self) -> Option<Self> {
+        self.checked_add(rhs)
+    }
+    /// `self - rhs` as the amount type subtracts: [`Amount::checked_add_rounded`]'s
+    /// other half, for taking a rounded share back out of such a running
+    /// total. For a machine integer it is `checked_sub`.
+    fn checked_sub_rounded(self, rhs: Self) -> Option<Self> {
+        self.checked_sub(rhs)
+    }
     /// `self * rhs`, computed exactly and rounded once to a whole multiple
     /// of `step` in `mode`; `None` when `step` is not positive or the
     /// result cannot be represented.
@@ -141,6 +163,12 @@ impl Amount for Decimal {
     }
     fn checked_mul_rounded(self, rhs: Self) -> Option<Self> {
         Decimal::checked_mul(self, rhs)
+    }
+    fn checked_add_rounded(self, rhs: Self) -> Option<Self> {
+        Decimal::checked_add(self, rhs)
+    }
+    fn checked_sub_rounded(self, rhs: Self) -> Option<Self> {
+        Decimal::checked_sub(self, rhs)
     }
     fn checked_mul_round_to_step(self, rhs: Self, step: Self, mode: Rounding) -> Option<Self> {
         if let Some(product) = super::decimal_exact::exact_mul(self, rhs) {

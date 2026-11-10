@@ -37,6 +37,7 @@ check-shard shard:
             cargo clippy --workspace --all-targets -- -D warnings
             RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --quiet
             just server-only
+            just kernel-only
             just check-shards-agree
             just deny
             just notices-check
@@ -57,6 +58,23 @@ check-shard shard:
             exit 1
             ;;
     esac
+
+# The crates with no Decimal arithmetic outside the kernel. A crate joins
+# this list when its count reaches zero (K-U12) and never leaves it.
+kernel_only_crates := "ledger-core ledger-cli ledger-host ledger-reader ledger-vault"
+
+# Money arithmetic lives in the kernel and nowhere else (AGENTS.md, bar
+# item 1). The compiler is asked (scripts/raw-decimal-arith.sh): a raw
+# operator on a Decimal, one of rust_decimal's own arithmetic or rounding
+# methods, or an Iterator::sum outside `src/kernel/` fails. Those panic or
+# round where the kernel's operations are exact or refuse (K-U10), and the
+# proofs are about the kernel only.
+kernel-only:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for crate in {{kernel_only_crates}}; do
+        scripts/raw-decimal-arith.sh "$crate"
+    done
 
 # What every dependency must be (deny.toml): free of known vulnerabilities
 # (the RustSec database, fetched now), not yanked, under a licence that

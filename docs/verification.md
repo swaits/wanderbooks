@@ -1065,6 +1065,17 @@ kernel. What the proofs and their reviews found, beyond the tidying:
   never refused; they now prove both, from the rational alone. One
   refusal remains by design: a product that is not exact, rounded to a
   step of 27 or 28 places. `docs/proofs/k-u10.md` has the account.
+- **No `Decimal` arithmetic outside the kernel, checked by the compiler
+  (K-U11).** Bar item 1 was a rule nothing enforced: 210 places in
+  ledger-core added, negated, multiplied or summed a `Decimal` outside
+  `kernel/`, by raw operators (which panic) or by rust_decimal's own
+  `checked_*` methods (which round silently). All go through the kernel
+  now and `just kernel-only`, in the lint part of `just check`, fails on
+  a new one. It found one more rounding figure to name: a running total
+  of 28-digit shares (`checked_add_rounded`), which exact addition
+  refused for every split by thirds. `kernel::rescale_exact` is the one
+  place a figure's written places change, and it refuses to round.
+  `docs/proofs/k-u11.md` has the account.
 - **The sweep changed no posted figure.** Every golden and existing test
   passed unchanged. `round_places` reproduces `round_dp_with_strategy` to
   the character except a negative-zero input (which no call site can
@@ -1124,13 +1135,16 @@ Be precise about the claims:
   `checked_sub` and `checked_mul` for `Decimal` are exact or `None`
   (`tests/kernel_bridge/decimal_exact.rs`: `Some` exactly when the exact
   result is a `Decimal`), and a foreign amount at a rate is rounded once
-  from the exact product. Two operations round, each by name:
+  from the exact product. Three operations round, each by name:
   `checked_div` at 28 significant digits (K-U3's
   `finding_the_quotients_rounding_can_cross_a_step`, K-U5's `the_edges`
-  at `Decimal::MAX / 2`) and a share's `checked_mul_rounded`. Neither
-  edge is reachable by a posted line (the line cap is 10^15, and
-  schedules refuse totals of `EXACT_LIMIT` or more), so the laws hold at
-  the engine's inputs. Not proved by Kani: the 256-bit helpers, which
+  at `Decimal::MAX / 2`), a share's `checked_mul_rounded`, and a running
+  total of such shares, `checked_add_rounded` and `checked_sub_rounded`
+  (K-U11: the K-1 worksheet's running split, whose thirds of 28 digits
+  are no exact sum; `docs/proofs/k-u11.md`). Neither edge of the first
+  two is reachable by a posted line (the line cap is 10^15, and schedules
+  refuse totals of `EXACT_LIMIT` or more), so the laws hold at the
+  engine's inputs. Not proved by Kani: the 256-bit helpers, which
   rest on the bridge properties and unit tests against `num_bigint`.
 - **The FX overflow harness proves two concrete cases, not every
   overflow.** `fx_booked_refuses_overflow` proves `i64::MAX × 2` and

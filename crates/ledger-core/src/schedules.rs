@@ -365,17 +365,24 @@ fn present_as_rounded(parts: &mut [Decimal], total: Decimal, places: u32) {
     let Some(&first) = rest.first() else {
         return;
     };
+    // `rescale_exact` refuses to round: a figure that is not a whole
+    // number of the places asked for (none is: `even_parts` rounded each
+    // to the step) would be left as the kernel gave it.
     let mut each = first;
     if each.scale() > places || each.is_zero() {
-        each.rescale(places);
-        debug_assert_eq!(each, first, "rescaling an amount never changes it");
+        let written = kernel::rescale_exact(each, places);
+        debug_assert!(written.is_some(), "a month is a whole number of steps");
+        each = written.unwrap_or(each);
     }
     // Subtracting a zero (a month that rounded to nothing) leaves the
     // total as it was, scale included; any other subtrahend widens it.
     if !each.is_zero() {
-        let before = *last;
-        last.rescale(total.scale().max(each.scale()));
-        debug_assert_eq!(*last, before, "rescaling an amount never changes it");
+        let written = kernel::rescale_exact(*last, total.scale().max(each.scale()));
+        debug_assert!(
+            written.is_some(),
+            "the last month is the total less whole steps"
+        );
+        *last = written.unwrap_or(*last);
     }
     for part in rest.iter_mut() {
         *part = each;
@@ -668,13 +675,15 @@ impl AmortizationSchedule {
     /// The amount not yet recognized: the sum of the plan's unposted
     /// months.
     pub fn remaining(&self) -> Result<Decimal, LedgerError> {
-        self.plan()?
-            .into_iter()
-            .filter(|(d, _)| !self.posted.contains(d))
-            .try_fold(Decimal::ZERO, |sum, (_, a)| sum.checked_add(a))
-            .ok_or_else(|| {
-                LedgerError::TooLargeToCompute(format!("schedule {}'s remaining amount", self.id))
-            })
+        crate::kernel::total_of(
+            self.plan()?
+                .into_iter()
+                .filter(|(d, _)| !self.posted.contains(d)),
+            |(_, a)| a,
+        )
+        .ok_or_else(|| {
+            LedgerError::TooLargeToCompute(format!("schedule {}'s remaining amount", self.id))
+        })
     }
 }
 
@@ -808,8 +817,7 @@ pub fn validate_recurring_journaled(
             Side::Debit => &mut debits,
             Side::Credit => &mut credits,
         };
-        *total = total
-            .checked_add(money.amount)
+        *total = crate::kernel::Amount::checked_add(*total, money.amount)
             .ok_or_else(|| LedgerError::TooLargeToCompute("the recurring entry's total".into()))?;
     }
     if debits != credits {

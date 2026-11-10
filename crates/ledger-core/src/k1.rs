@@ -68,7 +68,7 @@
 //! ```
 
 use crate::kernel::Amount;
-use crate::money::{add_exact, sub_exact, sum_exact_of, sum_exact_try};
+use crate::money::{add_exact, neg, sub_exact, sum_exact_of, sum_exact_try};
 use crate::reports::{MemberCapital, members_equity};
 use crate::{AccountId, AccountType, EntryId, Ledger, LedgerError, PartyId, Side};
 use chrono::NaiveDate;
@@ -314,7 +314,7 @@ pub(crate) fn entry_lines(
             "a member's distributions",
         )?;
         if !taken.is_zero() {
-            lines.push(line(i, K1Kind::Distribution, -taken));
+            lines.push(line(i, K1Kind::Distribution, neg(taken)));
         }
     }
     Ok(lines)
@@ -347,10 +347,7 @@ pub(crate) fn share_property(
     use crate::kernel::{Leftover, Rounding, round_places, split_by_weights_with};
     let too_large =
         || LedgerError::TooLargeToCompute("a member's share of contributed property".into());
-    let total = credits
-        .iter()
-        .try_fold(Decimal::ZERO, |t, c| t.checked_add(*c))
-        .ok_or_else(too_large)?;
+    let total = crate::kernel::total_of(credits.iter(), |c| *c).ok_or_else(too_large)?;
     let whole = pool.min(total);
     if whole <= Decimal::ZERO || total <= Decimal::ZERO {
         return Ok(vec![Decimal::ZERO; credits.len()]);

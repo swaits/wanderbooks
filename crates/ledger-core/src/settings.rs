@@ -850,10 +850,11 @@ pub fn parse_share(name: &str, s: &str) -> Result<Decimal, String> {
     let s = s.trim();
     let bad = || format!("member {name}: share {s:?} must be like \"50%\" or \"0.5\"");
     let share = match s.strip_suffix('%') {
-        Some(pct) => decimal(pct.trim())
-            .ok_or_else(bad)?
-            .checked_div(Decimal::from(100))
-            .ok_or_else(bad)?,
+        Some(pct) => crate::kernel::Amount::checked_div(
+            decimal(pct.trim()).ok_or_else(bad)?,
+            Decimal::from(100),
+        )
+        .ok_or_else(bad)?,
         None => decimal(s).ok_or_else(bad)?,
     };
     if share <= Decimal::ZERO || share > Decimal::ONE {
@@ -1404,9 +1405,7 @@ fn check_members(list: &[Value]) -> Result<Vec<Member>, String> {
         }
     }
     if !members.is_empty() {
-        let total = members
-            .iter()
-            .try_fold(Decimal::ZERO, |t, m| t.checked_add(m.share))
+        let total = crate::kernel::total_of(members.iter(), |m| m.share)
             .ok_or("member shares are too large to add")?;
         if total != Decimal::ONE {
             return Err(format!("member shares sum to {total}, not 100%"));

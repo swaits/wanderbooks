@@ -200,12 +200,11 @@ impl Policy {
     /// total past exact arithmetic is refused (TooLargeToCompute), never
     /// a panic.
     pub fn entry_debits(entry: &JournalEntry) -> Result<Decimal, LedgerError> {
-        entry
-            .lines()
-            .iter()
-            .filter(|l| l.side == Side::Debit)
-            .try_fold(Decimal::ZERO, |sum, l| sum.checked_add(l.amount.amount))
-            .ok_or_else(|| LedgerError::TooLargeToCompute(format!("entry {}'s debits", entry.id())))
+        crate::kernel::total_of(
+            entry.lines().iter().filter(|l| l.side == Side::Debit),
+            |l| l.amount.amount,
+        )
+        .ok_or_else(|| LedgerError::TooLargeToCompute(format!("entry {}'s debits", entry.id())))
     }
 
     fn account_codes(ledger: &Ledger, entry: &JournalEntry) -> Vec<String> {
@@ -343,7 +342,7 @@ impl Policy {
             // A sum past exact arithmetic is past the threshold.
             total = Self::entry_debits(other)
                 .ok()
-                .and_then(|d| total.checked_add(d))
+                .and_then(|d| crate::kernel::Amount::checked_add(total, d))
                 .unwrap_or(Decimal::MAX);
         }
         if !group.is_empty() && total > self.threshold {

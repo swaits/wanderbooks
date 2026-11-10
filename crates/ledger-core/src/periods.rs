@@ -14,6 +14,7 @@
 //! through the *next* open period (or a reversal dated in an open period).
 
 use crate::LedgerError;
+use crate::money::neg;
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 
@@ -145,7 +146,11 @@ pub fn try_allocate(
     let magnitude = amount.abs();
     let exact: Vec<Decimal> = shares
         .iter()
-        .map(|s| magnitude.checked_mul(*s).ok_or_else(too_large))
+        .map(|s| {
+            // The rounding product, as this rule has always computed it
+            // (posted closes replay with it); the shares sum to one.
+            crate::kernel::Amount::checked_mul_rounded(magnitude, *s).ok_or_else(too_large)
+        })
         .collect::<Result<_, _>>()?;
     let mut parts: Vec<Decimal> = exact
         .iter()
@@ -157,13 +162,13 @@ pub fn try_allocate(
     let remainders: Vec<Decimal> = exact
         .iter()
         .zip(&parts)
-        .map(|(e, p)| e.checked_sub(*p).ok_or_else(too_large))
+        .map(|(e, p)| crate::kernel::Amount::checked_sub(*e, *p).ok_or_else(too_large))
         .collect::<Result<_, _>>()?;
     crate::kernel::apportion(magnitude, &mut parts, &remainders, Decimal::new(1, 2))
         .ok_or_else(too_large)?;
     if amount.is_sign_negative() {
         for p in &mut parts {
-            *p = -*p;
+            *p = neg(*p);
         }
     }
     Ok(parts)
@@ -197,8 +202,8 @@ pub fn try_allocate_last_absorbs(
     let mut parts: Vec<_> = shares
         .iter()
         .map(|s| {
-            amount
-                .checked_mul(*s)
+            // The rounding product: this rule is frozen for replay.
+            crate::kernel::Amount::checked_mul_rounded(amount, *s)
                 .and_then(|p| round_places(p, 2, Rounding::HalfAwayFromZero))
                 .ok_or_else(too_large)
         })
@@ -270,7 +275,10 @@ pub fn allocate_cumulative(
     }
     let loss = total < Decimal::ZERO;
     let magnitude = total.abs().normalize();
-    let given: Vec<Decimal> = given.iter().map(|&g| if loss { -g } else { g }).collect();
+    let given: Vec<Decimal> = given
+        .iter()
+        .map(|&g| if loss { neg(g) } else { g })
+        .collect();
     let mut parts = Vec::with_capacity(shares.len());
     let mut remainders = Vec::with_capacity(shares.len());
     for share in shares {
@@ -278,8 +286,7 @@ pub fn allocate_cumulative(
         // Exact exactly when Decimal kept every digit: a product it had to
         // round comes back with fewer places than its factors carry (a
         // zero product, which it returns without places, is exact).
-        let exact = magnitude
-            .checked_mul(share)
+        let exact = crate::kernel::Amount::checked_mul(magnitude, share)
             .filter(|e| e.is_zero() || e.scale() == magnitude.scale() + share.scale())
             .ok_or_else(|| {
                 LedgerError::TooLargeToCompute(format!(
@@ -290,7 +297,11 @@ pub fn allocate_cumulative(
             LedgerError::TooLargeToCompute(format!("a member's share {share} of {magnitude}"))
         })?;
         parts.push(floor);
-        remainders.push(exact - floor);
+        remainders.push(crate::money::sub_exact(
+            exact,
+            floor,
+            "a member's share of the period's income",
+        )?);
     }
     crate::kernel::apportion_cumulative(
         magnitude,
@@ -302,7 +313,7 @@ pub fn allocate_cumulative(
     .ok_or_else(|| LedgerError::TooLargeToCompute(format!("the members' shares of {total}")))?;
     if loss {
         for p in parts.iter_mut().filter(|p| !p.is_zero()) {
-            *p = -*p;
+            *p = neg(*p);
         }
     }
     Ok(parts)

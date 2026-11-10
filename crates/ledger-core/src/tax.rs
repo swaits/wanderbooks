@@ -12,6 +12,7 @@
 //! Scope is deliberate, like fixed assets: no tax depreciation (MACRS,
 //! Section 179, bonus), no basis computations, no filing. Not tax advice.
 
+use crate::money::{neg, sub_in_range};
 use crate::{AccountType, Ledger, LedgerError};
 use chrono::NaiveDate;
 use rust_decimal::Decimal;
@@ -513,21 +514,29 @@ pub struct TaxSummary {
 impl TaxSummary {
     /// Book net income of the categorized accounts.
     pub fn book_net(&self) -> Decimal {
-        sum(&self.income, |l| l.book)
-            - sum(&self.cost_of_goods, |l| l.book)
-            - sum(&self.deductions, |l| l.book)
+        sub_in_range(
+            sub_in_range(
+                sum(&self.income, |l| l.book),
+                sum(&self.cost_of_goods, |l| l.book),
+            ),
+            sum(&self.deductions, |l| l.book),
+        )
     }
 
     /// Income less deductible amounts, before the CPA's other adjustments.
     pub fn tax_net(&self) -> Decimal {
-        sum(&self.income, |l| l.tax)
-            - sum(&self.cost_of_goods, |l| l.tax)
-            - sum(&self.deductions, |l| l.tax)
+        sub_in_range(
+            sub_in_range(
+                sum(&self.income, |l| l.tax),
+                sum(&self.cost_of_goods, |l| l.tax),
+            ),
+            sum(&self.deductions, |l| l.tax),
+        )
     }
 }
 
 fn sum(lines: &[TaxSummaryLine], f: fn(&TaxSummaryLine) -> Decimal) -> Decimal {
-    lines.iter().map(f).sum()
+    crate::kernel::total_of(lines, f).expect("posted lines are in range, so their sums are")
 }
 
 /// A category's line while it is being built, with the exact `(book,
@@ -570,7 +579,7 @@ pub fn tax_summary(
         // Income from an expense-type account (e.g. a contra) counts with
         // its sign flipped, so returns reduce receipts.
         let book = if c.kind == TaxKind::Income && account.account_type == AccountType::Expense {
-            -line.amount
+            neg(line.amount)
         } else {
             line.amount
         };
@@ -593,9 +602,7 @@ pub fn tax_summary(
             (&mut build.line, &mut build.shares)
         };
         entry.accounts.push(name);
-        entry.book = entry
-            .book
-            .checked_add(book)
+        entry.book = crate::kernel::Amount::checked_add(entry.book, book)
             .ok_or_else(|| too_large("book amount"))?;
         shares.push((book, pct));
     }

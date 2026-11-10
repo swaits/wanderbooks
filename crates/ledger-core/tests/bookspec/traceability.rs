@@ -2340,7 +2340,7 @@ fn every_claim_is_backed() {
     }
     assert_eq!(
         EXCEPTIONS.len(),
-        15,
+        16,
         "the kernel exception list changes only on purpose"
     );
     // No ordinary function may fall through the right-law check: the
@@ -2520,6 +2520,11 @@ const EXCEPTIONS: &[(&str, &str, &str)] = &[
         "it is the Decimal/currency wrapper around `round_step`; the harnesses and law 40 are round_step's, and the bridge carries them to Decimal",
     ),
     (
+        "rescale_exact",
+        "a Kani harness and a law",
+        "it adds or drops trailing zeros and refuses anything else, so it has no arithmetic for whole-number money to model (an i64 amount has no places); bridge `rescale_exact_never_changes_the_value` checks the value, the sign and the two refusals over Decimal's whole range",
+    ),
+    (
         "split_by_weights_with",
         "a Kani harness and a law",
         "it allocates two Vec buffers; every harness calls the fixed-array `split_by_weights_into` directly, and its law 18 is split_by_weights_into's",
@@ -2532,8 +2537,9 @@ const EXCEPTIONS: &[(&str, &str, &str)] = &[
 /// `split_by_weights_with` allocate, so every harness proves their
 /// fixed-array helper; `round_places`, `round_minor` and `fx_booked_minor`
 /// are Decimal wrappers whose law is the inner function's; `Direction::key`
-/// is a wire name and `MonthPart::is_valid` a range predicate, with no law
-/// at all. A new name here is a deliberate widening, never a silent hole.
+/// is a wire name, `MonthPart::is_valid` a range predicate and
+/// `rescale_exact` a change of trailing zeros, with no law at all. A new
+/// name here is a deliberate widening, never a silent hole.
 const SKIPPED: &[&str] = &[
     "movements",
     "reversal",
@@ -2542,6 +2548,7 @@ const SKIPPED: &[&str] = &[
     "round_places",
     "round_minor",
     "fx_booked_minor",
+    "rescale_exact",
     "split_by_weights_with",
 ];
 

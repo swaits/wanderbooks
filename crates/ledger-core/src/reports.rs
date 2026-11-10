@@ -4,7 +4,10 @@
 //! (`docs/oracle.md`) diffs: the same fixture books through two engines must
 //! produce byte-identical [`snapshot`] output.
 
-use crate::money::{add_exact, sub_exact, sum_exact, sum_exact_of, sum_exact_try};
+use crate::money::{
+    add_exact, add_in_range, neg, on_side, signed_amount, sub_exact, sub_in_range, sum_exact,
+    sum_exact_of, sum_exact_try,
+};
 use crate::{AccountType, Class, ClassId, JournalEntry, JournalLine, Ledger, LedgerError};
 use chrono::NaiveDate;
 use rust_decimal::Decimal;
@@ -92,7 +95,8 @@ fn trial_balance_where(ledger: &Ledger, include: &dyn Fn(&JournalEntry) -> bool)
         for line in entry.lines() {
             let signed = crate::kernel::signed(line.side, line.amount.amount)
                 .expect("Decimal negation is exact");
-            *movements.entry(line.account).or_default() += signed;
+            let slot = movements.entry(line.account).or_default();
+            *slot = add_in_range(*slot, signed);
         }
     }
     let mut accounts: Vec<_> = ledger.chart().all().collect();
@@ -110,8 +114,8 @@ fn trial_balance_where(ledger: &Ledger, include: &dyn Fn(&JournalEntry) -> bool)
             continue;
         }
         let (debit, credit) = crate::kernel::columns(movement).expect("Decimal negation is exact");
-        total_debits += debit;
-        total_credits += credit;
+        total_debits = add_in_range(total_debits, debit);
+        total_credits = add_in_range(total_credits, credit);
         lines.push(TrialBalanceLine {
             code: account.code.clone(),
             name: account.name.clone(),
@@ -140,7 +144,7 @@ pub struct ProfitAndLoss {
 impl ProfitAndLoss {
     /// Revenue minus expenses. Positive is profit.
     pub fn net_income(&self) -> Decimal {
-        self.revenue - self.expenses
+        sub_in_range(self.revenue, self.expenses)
     }
 }
 
@@ -262,11 +266,11 @@ fn profit_and_loss_where(
             if account.placeholder {
                 continue;
             }
-            let signed = if line.side == account.account_type.normal_side() {
-                line.amount.amount
-            } else {
-                -line.amount.amount
-            };
+            let signed = on_side(
+                account.account_type.normal_side(),
+                line.side,
+                line.amount.amount,
+            );
             match account.account_type {
                 AccountType::Revenue => revenue = add_exact(revenue, signed, "total revenue")?,
                 AccountType::Expense => expenses = add_exact(expenses, signed, "total expenses")?,
@@ -297,7 +301,7 @@ pub struct BalanceSheet {
 impl BalanceSheet {
     /// The accounting equation: assets == liabilities + equity, exactly.
     pub fn balanced(&self) -> bool {
-        self.assets == self.liabilities + self.equity
+        crate::kernel::Amount::checked_add(self.liabilities, self.equity) == Some(self.assets)
     }
 }
 
@@ -362,7 +366,7 @@ pub struct ProfitAndLossStatement {
 impl ProfitAndLossStatement {
     /// Revenue minus expenses. Positive is profit.
     pub fn net_income(&self) -> Decimal {
-        self.total_revenue - self.total_expenses
+        sub_in_range(self.total_revenue, self.total_expenses)
     }
 }
 
@@ -391,7 +395,8 @@ pub struct BalanceSheetStatement {
 impl BalanceSheetStatement {
     /// The accounting equation: assets == liabilities + equity, exactly.
     pub fn balanced(&self) -> bool {
-        self.total_assets == self.total_liabilities + self.total_equity
+        crate::kernel::Amount::checked_add(self.total_liabilities, self.total_equity)
+            == Some(self.total_assets)
     }
 }
 
@@ -408,10 +413,7 @@ fn statement_lines(
             if !include(entry, line) {
                 continue;
             }
-            let signed = match line.side {
-                crate::Side::Debit => line.amount.amount,
-                crate::Side::Credit => -line.amount.amount,
-            };
+            let signed = signed_amount(line.side, line.amount.amount);
             let slot = movement.entry(line.account).or_default();
             *slot = add_exact(*slot, signed, "an account's movement")?;
         }
@@ -425,10 +427,8 @@ fn statement_lines(
         if account.placeholder || m.is_zero() {
             continue;
         }
-        let amount = match account.account_type.normal_side() {
-            crate::Side::Debit => m,
-            crate::Side::Credit => -m,
-        };
+        let amount = crate::kernel::normal_balance(account.account_type, m)
+            .expect("Decimal negation is exact");
         out.insert(
             account.code.clone(),
             (
@@ -594,7 +594,7 @@ impl ProjectToDate {
     /// Revenue less expenses: the project's contribution before overhead
     /// (WB-statement-7), since only its own tagged lines count.
     pub fn net(&self) -> Decimal {
-        self.revenue - self.expenses
+        sub_in_range(self.revenue, self.expenses)
     }
 
     /// Its contribution margin to date: [`contribution_margin_pct`] of
@@ -627,15 +627,15 @@ impl ProjectToDate {
 ///   3. NEVER panics: None when the quotient can't be represented.
 /// ```
 pub fn contribution_margin_pct(contribution: Decimal, revenue: Decimal) -> Option<Decimal> {
-    let mut x = crate::kernel::percent_of(
+    let x = crate::kernel::percent_of(
         contribution,
         revenue,
         Decimal::new(1, 1),
         crate::kernel::Rounding::HalfToEven,
     )?;
-    // Display padding only: the margin always prints its one place.
-    x.rescale(1);
-    Some(x)
+    // Display padding only: the margin always prints its one place. It
+    // is a whole number of tenths, so writing it with one changes nothing.
+    Some(crate::kernel::rescale_exact(x, 1).unwrap_or(x))
 }
 
 /// The most months [`ProjectFigures::months`] holds: the period's last.
@@ -690,12 +690,13 @@ pub fn project_figures(
     // before them).
     let mut running = months
         .iter()
-        .try_fold(to_date.net(), |t, m| t.checked_sub(m.net()))
+        .try_fold(to_date.net(), |t, m| {
+            crate::kernel::Amount::checked_sub(t, m.net())
+        })
         .ok_or(LedgerError::AmountOutOfRange)?;
     let mut months_net_to_date = Vec::with_capacity(months.len());
     for m in &months {
-        running = running
-            .checked_add(m.net())
+        running = crate::kernel::Amount::checked_add(running, m.net())
             .ok_or(LedgerError::AmountOutOfRange)?;
         months_net_to_date.push(running);
     }
@@ -758,21 +759,18 @@ pub fn project_entries(ledger: &Ledger, id: ClassId) -> Vec<(crate::EntryId, Dec
             let Some(account) = ledger.chart().get(line.account) else {
                 continue;
             };
-            let debit = matches!(line.side, crate::Side::Debit);
             match account.account_type {
                 AccountType::Revenue => {
-                    amount += if debit {
-                        -line.amount.amount
-                    } else {
-                        line.amount.amount
-                    }
+                    amount = add_in_range(
+                        amount,
+                        on_side(crate::Side::Credit, line.side, line.amount.amount),
+                    );
                 }
                 AccountType::Expense => {
-                    amount -= if debit {
-                        line.amount.amount
-                    } else {
-                        -line.amount.amount
-                    }
+                    amount = sub_in_range(
+                        amount,
+                        on_side(crate::Side::Debit, line.side, line.amount.amount),
+                    );
                 }
                 _ => {}
             }
@@ -952,10 +950,7 @@ pub fn general_ledger(
     for entry in &entries {
         let lines = entry.lines();
         for (i, line) in lines.iter().enumerate() {
-            let signed = match line.side {
-                crate::Side::Debit => line.amount.amount,
-                crate::Side::Credit => -line.amount.amount,
-            };
+            let signed = signed_amount(line.side, line.amount.amount);
             if entry.date() < start {
                 let slot = begin.entry(line.account).or_default();
                 *slot = add_exact(*slot, signed, "an account's beginning balance")?;
@@ -1005,15 +1000,15 @@ pub fn general_ledger(
             continue;
         }
         let normal = account.account_type.normal_side();
-        let to_normal = |m: Decimal| if normal == crate::Side::Debit { m } else { -m };
-        let beginning_balance = to_normal(begin_movement) + Decimal::ZERO;
+        let to_normal = |m: Decimal| on_side(normal, crate::Side::Debit, m);
+        let beginning_balance = add_in_range(to_normal(begin_movement), Decimal::ZERO);
         let mut balance = beginning_balance;
         let (mut total_debits, mut total_credits) = (Decimal::ZERO, Decimal::ZERO);
         let mut posted = Vec::with_capacity(lines.len());
         for (side, amount, mut p) in lines {
             balance = add_exact(
                 balance,
-                if side == normal { amount } else { -amount },
+                on_side(normal, side, amount),
                 "an account's running balance",
             )?;
             total_debits = add_exact(total_debits, p.debit, "an account's total debits")?;
@@ -1602,7 +1597,7 @@ impl AssetRegister {
     /// don't carry yet (run `run_depreciation`); negative if the books
     /// carry more.
     pub fn unposted_depreciation(&self) -> Decimal {
-        self.total_accumulated_scheduled - self.ledger_accumulated
+        sub_in_range(self.total_accumulated_scheduled, self.ledger_accumulated)
     }
 
     /// Accumulated depreciation in the accounts that no held asset's runs
@@ -1610,14 +1605,14 @@ impl AssetRegister {
     /// from a run; otherwise an entry made by hand (or a run reversed
     /// after its asset left the books) is in them.
     pub fn unattributed_accumulated(&self) -> Decimal {
-        self.ledger_accumulated - self.total_accumulated_posted
+        sub_in_range(self.ledger_accumulated, self.total_accumulated_posted)
     }
 
     /// Cost in the ledger's cost accounts that no held asset accounts for
     /// (equipment bought but not registered), or negative if registered
     /// cost isn't in the books.
     pub fn unregistered_cost(&self) -> Decimal {
-        self.ledger_cost - self.total_cost
+        sub_in_range(self.ledger_cost, self.total_cost)
     }
 }
 
@@ -1656,9 +1651,7 @@ pub fn register_row(
     let book_value = if disposed.is_some() {
         Decimal::ZERO
     } else {
-        a.cost
-            .amount
-            .checked_sub(post)
+        crate::kernel::Amount::checked_sub(a.cost.amount, post)
             .ok_or_else(|| LedgerError::TooLargeToCompute(format!("asset {}'s book value", a.id)))?
     };
     Ok(Some(AssetRegisterRow {
@@ -1745,23 +1738,18 @@ pub fn fixed_asset_register(
         cost_accounts.insert(a.cost_account);
         accum_accounts.insert(a.accum_depr_account);
         if row.disposed.is_none() {
-            cost = cost
-                .checked_add(row.cost)
+            cost = crate::kernel::Amount::checked_add(cost, row.cost)
                 .ok_or_else(|| too_large("cost"))?;
-            scheduled = scheduled
-                .checked_add(row.accumulated_scheduled)
+            scheduled = crate::kernel::Amount::checked_add(scheduled, row.accumulated_scheduled)
                 .ok_or_else(|| too_large("accumulated depreciation"))?;
-            posted_total = posted_total
-                .checked_add(row.accumulated_posted)
+            posted_total = crate::kernel::Amount::checked_add(posted_total, row.accumulated_posted)
                 .ok_or_else(|| too_large("posted depreciation"))?;
             match row.depreciable_basis {
                 Some(b) => {
-                    depreciable_total = depreciable_total
-                        .checked_add(b)
+                    depreciable_total = crate::kernel::Amount::checked_add(depreciable_total, b)
                         .ok_or_else(|| too_large("depreciable basis"))?;
                     if let Some(b) = row.tax_basis_723 {
-                        total_723 = total_723
-                            .checked_add(b)
+                        total_723 = crate::kernel::Amount::checked_add(total_723, b)
                             .ok_or_else(|| too_large("§723 basis"))?;
                     }
                 }
@@ -1779,7 +1767,7 @@ pub fn fixed_asset_register(
         tb.lines
             .iter()
             .find(|l| &l.code == code)
-            .map(|l| l.debit - l.credit)
+            .map(|l| sub_in_range(l.debit, l.credit))
             .unwrap_or(Decimal::ZERO)
     };
     Ok(AssetRegister {
@@ -1788,17 +1776,16 @@ pub fn fixed_asset_register(
         total_cost: cost,
         total_accumulated_scheduled: scheduled,
         total_accumulated_posted: posted_total,
-        total_book_value: cost
-            .checked_sub(posted_total)
+        total_book_value: crate::kernel::Amount::checked_sub(cost, posted_total)
             .ok_or_else(|| too_large("book value"))?,
         total_depreciable_basis: depreciable_total,
         total_tax_basis_723: total_723,
         missing_basis: missing,
         ledger_cost: sum_exact_of(&cost_accounts, |&id| net(id), "the ledger's asset cost")?,
-        ledger_accumulated: -sum_exact_of(
+        ledger_accumulated: neg(sum_exact_of(
             &accum_accounts,
             |&id| net(id),
             "the ledger's accumulated depreciation",
-        )?,
+        )?),
     })
 }

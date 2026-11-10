@@ -106,6 +106,36 @@ pub fn round_places(amount: Decimal, places: u32, mode: Rounding) -> Option<Deci
     Some(rounded)
 }
 
+/// `amount` written with `places` decimal places, when that changes no
+/// digit of its value: trailing zeros are added or dropped, nothing else.
+/// This is how a figure is given the places it prints with (a margin of
+/// "100.0", a month of "0.25" that the kernel returned as 0.250), and it
+/// is the one such place: `Decimal::rescale` rounds half away from zero
+/// when asked for fewer places than the value has, silently, and this
+/// refuses instead.
+///
+/// ```text
+/// GOAL: change how many places an amount is written with, never the
+///       amount.
+/// SOURCE: BS-ledger-1 (law 40: a whole multiple of the step is its own
+///         rounding in every mode, so writing it at the step's places
+///         rounds nothing).
+/// INVARIANTS:
+///   1. A result equals `amount`, and keeps its sign (a zero's too).
+///   2. None exactly when `amount` is no whole multiple of 10^(−places)
+///      (it would have to be rounded), or `places` is past Decimal's 28.
+///   3. A result carries `places` places, or, where Decimal's 96 bits
+///      cannot hold the amount that wide, as many as they can hold.
+/// ```
+pub fn rescale_exact(amount: Decimal, places: u32) -> Option<Decimal> {
+    if places > Decimal::MAX_SCALE {
+        return None;
+    }
+    let mut written = amount;
+    written.rescale(places);
+    (written == amount).then_some(written)
+}
+
 /// `amount` rounded to whole `currency` minor units in `mode`: cents for
 /// USD, whole yen for JPY, thousandths for KWD. A currency ISO 4217 gives
 /// no minor unit (gold, SDRs) is returned exactly, as the FX booking rule

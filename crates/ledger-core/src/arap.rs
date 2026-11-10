@@ -145,11 +145,7 @@ impl DocRef {
     /// A line's amount as this document counts it: plus on
     /// [`Self::owed_side`], minus on the other.
     pub fn counted(self, side: crate::Side, amount: Decimal) -> Decimal {
-        if side == self.owed_side() {
-            amount
-        } else {
-            -amount
-        }
+        crate::money::on_side(self.owed_side(), side, amount)
     }
 }
 
@@ -1368,7 +1364,8 @@ impl AgingRow {
     /// Add `other`'s buckets to this row's; refused past exact arithmetic.
     pub(crate) fn add(&mut self, other: &AgingRow) -> Result<(), LedgerError> {
         let too_large = || LedgerError::TooLargeToCompute(format!("{}'s aging", self.name));
-        let sum = |a: Decimal, b: Decimal| a.checked_add(b).ok_or_else(too_large);
+        let sum =
+            |a: Decimal, b: Decimal| crate::kernel::Amount::checked_add(a, b).ok_or_else(too_large);
         let (current, days_30, days_60, days_90, days_90_plus) = (
             sum(self.current, other.current)?,
             sum(self.days_30, other.days_30)?,

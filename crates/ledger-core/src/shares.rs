@@ -128,6 +128,7 @@
 
 pub use crate::kernel::Direction;
 use crate::kernel::{self, PartyTarget};
+use crate::money::{neg, on_side};
 use crate::{AccountId, AccountType, EntryId, JournalEntry, Ledger, LedgerError, PartyId, Side};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
@@ -257,7 +258,12 @@ pub fn check_shares_journaled(
                     ));
                 }
                 any_percent = true;
-                percent += p;
+                percent = crate::kernel::Amount::checked_add(percent, p).ok_or_else(|| {
+                    format!(
+                        "party {}'s percent has too many digits to add up exactly",
+                        s.party
+                    )
+                })?;
             }
             Share::Derived => {}
         }
@@ -275,9 +281,7 @@ fn too_large(what: String) -> crate::LedgerError {
 
 /// The sum of `values`, or None past exact arithmetic.
 fn checked_sum(values: impl IntoIterator<Item = Decimal>) -> Option<Decimal> {
-    values
-        .into_iter()
-        .try_fold(Decimal::ZERO, |s, v| s.checked_add(v))
+    crate::kernel::total(values)
 }
 
 /// Split `magnitude` (non-negative) by `weights` (positive, any sum): each
@@ -407,7 +411,7 @@ fn original_target(
         kind(a) == Some(AccountType::Asset) && !money.cash.contains(&a) && Some(a) != receivables
     };
     let add = |t: &mut Decimal, v: Decimal| -> Result<(), LedgerError> {
-        *t = t.checked_add(v).ok_or_else(past_exact)?;
+        *t = crate::kernel::Amount::checked_add(*t, v).ok_or_else(past_exact)?;
         Ok(())
     };
     let zero = Decimal::ZERO;
@@ -528,12 +532,13 @@ pub fn split(
                 let parts: Vec<Decimal> = named
                     .iter()
                     .map(|m| {
-                        checked_sum(entry.lines().iter().filter(|l| on(m, l.account)).map(|l| {
-                            match l.side {
-                                Side::Credit => l.amount.amount,
-                                Side::Debit => -l.amount.amount,
-                            }
-                        }))
+                        checked_sum(
+                            entry
+                                .lines()
+                                .iter()
+                                .filter(|l| on(m, l.account))
+                                .map(|l| on_side(Side::Credit, l.side, l.amount.amount)),
+                        )
                         .map(|s| s.abs())
                     })
                     .collect::<Option<_>>()
@@ -576,7 +581,7 @@ pub fn split(
     let left: Vec<Decimal> = sizes
         .iter()
         .zip(&in_kind_sizes)
-        .map(|(s, k)| s.checked_sub(*k))
+        .map(|(s, k)| crate::kernel::Amount::checked_sub(*s, *k))
         .collect::<Option<_>>()
         .ok_or_else(past_exact)?;
     let cash_sizes = if cash == checked_sum(left.iter().copied()).ok_or_else(past_exact)? {
@@ -587,7 +592,7 @@ pub fn split(
         share_by(cash, &left, &order).ok_or_else(past_exact)?
     };
     let negative = target.amount < Decimal::ZERO;
-    let signed = |v: Decimal| if negative && !v.is_zero() { -v } else { v };
+    let signed = |v: Decimal| if negative && !v.is_zero() { neg(v) } else { v };
     Ok(shares
         .iter()
         .enumerate()

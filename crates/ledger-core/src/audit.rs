@@ -36,7 +36,7 @@ use serde::Serialize;
 
 use crate::evidence::{Policy, Requirement};
 use crate::settings::Settings;
-use crate::{AccountType, DocStatus, EntryId, EntryStatus, Ledger, PeriodStatus, Side};
+use crate::{AccountType, DocStatus, EntryId, EntryStatus, Ledger, PeriodStatus};
 
 /// How much a finding matters.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -350,10 +350,7 @@ fn closed_net(ledger: &Ledger, through: NaiveDate) -> Option<Decimal> {
             let Some(a) = ledger.chart().get(l.account) else {
                 continue;
             };
-            let signed = match l.side {
-                Side::Debit => l.amount.amount,
-                Side::Credit => -l.amount.amount,
-            };
+            let signed = crate::money::signed_amount(l.side, l.amount.amount);
             if matches!(a.account_type, AccountType::Revenue | AccountType::Expense) {
                 net = crate::kernel::Amount::checked_add(net, signed)?;
             }
@@ -536,16 +533,29 @@ pub fn check_split(
     trued_up: bool,
 ) -> Vec<Finding> {
     // B(n) as derived above: (n-1)*u/2, floored at u. `unit` is a power
-    // of ten and n is small, so the product and the halving are exact.
+    // of ten and n is small, so the product and the halving are exact. A
+    // bound exact arithmetic could not hold (no real unit and member
+    // count reach it) falls to the floor, the stricter of the two: the
+    // audit then raises a drift it might have allowed, never hides one.
     let legacy_bound = {
         let others = Decimal::new(split.len().saturating_sub(1) as i64, 0);
-        let last = others * unit / Decimal::new(2, 0);
-        if last > unit { last } else { unit }
+        match crate::kernel::Amount::checked_mul(others, unit)
+            .and_then(|product| crate::kernel::Amount::checked_div_exact(product, Decimal::TWO))
+        {
+            Some(last) if last > unit => last,
+            _ => unit,
+        }
     };
     split
         .iter()
         .filter(|m| {
-            let drift = (m.running - m.exact).abs();
+            // A difference exact arithmetic cannot hold is no drift
+            // under a unit: raised.
+            let Some(drift) =
+                crate::kernel::Amount::checked_sub(m.running, m.exact).map(|d| d.abs())
+            else {
+                return true;
+            };
             if trued_up {
                 drift >= unit
             } else {

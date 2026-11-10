@@ -37,6 +37,7 @@
 //! them and the report takes an override. Confirm with the CPA.
 
 use crate::kernel::{self, Bucket, PayRole, Tag};
+use crate::money::neg;
 use crate::settings::Source;
 use crate::{AccountId, AccountType, EntryId, Ledger, LedgerError, VendorId};
 use chrono::{Datelike, NaiveDate};
@@ -769,7 +770,7 @@ fn split_share(b: [Decimal; 3], v: Decimal) -> Result<[Decimal; 3], LedgerError>
     kernel::apportion(av, &mut parts, &rems, cent).ok_or_else(too_large)?;
     if v.is_sign_negative() {
         for x in parts.iter_mut().filter(|x| !x.is_zero()) {
-            *x = -*x;
+            *x = neg(*x);
         }
     }
     Ok(parts)
@@ -831,8 +832,7 @@ struct Tally {
 }
 
 fn add(to: &mut Decimal, x: Decimal) -> Result<(), LedgerError> {
-    *to = to
-        .checked_add(x)
+    *to = crate::kernel::Amount::checked_add(*to, x)
         .ok_or_else(|| LedgerError::TooLargeToCompute("a vendor's payments for the year".into()))?;
     Ok(())
 }
@@ -1236,8 +1236,7 @@ fn untagged_payments(
             continue;
         }
         let [counts, _, unknown] = entry_buckets(ledger, e, roles)?;
-        let out_of_pocket = counts
-            .checked_add(unknown)
+        let out_of_pocket = crate::kernel::Amount::checked_add(counts, unknown)
             .ok_or_else(|| LedgerError::TooLargeToCompute("a payment".into()))?;
         if out_of_pocket <= Decimal::ZERO {
             continue;

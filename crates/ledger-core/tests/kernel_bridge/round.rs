@@ -258,6 +258,73 @@ proptest! {
             prop_assert_eq!(got.to_string(), want.to_string());
         }
     }
+
+    /// `rescale_exact` changes how an amount is written, never the
+    /// amount. Over Decimal's whole range, against whole-number
+    /// arithmetic that shares nothing with it: it refuses exactly when
+    /// the amount is no whole multiple of 10^-places, and what it returns
+    /// is the same value with the same sign, at `places` places or, where
+    /// 96 bits cannot hold it that wide, as many as they can.
+    #[test]
+    fn rescale_exact_never_changes_the_value(
+        mantissa in prop_oneof![
+            -(1i128 << 60)..=(1i128 << 60),
+            -MAX_MANTISSA..=MAX_MANTISSA,
+            (0u32..=27, -9i128..=9).prop_map(|(zeros, digit)| digit * 10i128.pow(zeros)),
+        ],
+        scale in 0u32..=28,
+        places in 0u32..=28,
+    ) {
+        use num_bigint::BigInt;
+        let amount = Decimal::try_from_i128_with_scale(mantissa, scale).expect("in Decimal's range");
+        let whole_multiple = places >= scale || mantissa % 10i128.pow(scale - places) == 0;
+        let got = ledger_core::kernel::rescale_exact(amount, places);
+        prop_assert_eq!(got.is_some(), whole_multiple, "{} at {} places", amount, places);
+        if let Some(written) = got {
+            // The same number: both mantissas brought to 28 places.
+            let at_28 = |m: i128, s: u32| BigInt::from(m) * BigInt::from(10u8).pow(28 - s);
+            prop_assert_eq!(at_28(written.mantissa(), written.scale()), at_28(mantissa, scale));
+            prop_assert_eq!(written.is_sign_negative(), amount.is_sign_negative());
+            let no_room = written.mantissa().unsigned_abs() * 10 > MAX_MANTISSA.unsigned_abs();
+            prop_assert!(
+                written.scale() == places || (written.scale() < places && no_room),
+                "{} written as {} at {} places", amount, written, places
+            );
+        }
+    }
+}
+
+/// Decimal's largest mantissa: 96 bits.
+const MAX_MANTISSA: i128 = (1i128 << 96) - 1;
+
+/// `rescale_exact` at the edges, each row checked by hand: the places a
+/// figure prints with, a zero's sign, and the two refusals.
+#[test]
+fn rescale_exact_at_the_edges() {
+    use ledger_core::kernel::rescale_exact;
+    let text =
+        |amount: &str, places: u32| rescale_exact(parse(amount), places).map(|d| d.to_string());
+    assert_eq!(text("100", 1).as_deref(), Some("100.0"));
+    assert_eq!(text("0.250", 2).as_deref(), Some("0.25"));
+    assert_eq!(text("0", 2).as_deref(), Some("0.00"));
+    assert_eq!(text("12.5", 1).as_deref(), Some("12.5"));
+    assert_eq!(text("-3.10", 1).as_deref(), Some("-3.1"));
+    // A digit would be lost: refused, where `Decimal::rescale` rounds.
+    assert_eq!(text("0.255", 2), None);
+    assert_eq!(text("-0.001", 2), None);
+    assert_eq!(text("1", 29), None);
+    // A negative zero keeps its sign and takes the places (a schedule's
+    // posted month is compared as text on replay).
+    let minus_zero = rescale_exact(-Decimal::ZERO, 2).unwrap();
+    assert!(minus_zero.is_zero() && minus_zero.is_sign_negative());
+    assert_eq!(minus_zero.scale(), 2);
+    // No room for two more places in 96 bits: as many as fit, the value
+    // untouched.
+    let wide = Decimal::from_i128_with_scale(MAX_MANTISSA, 0);
+    assert_eq!(rescale_exact(wide, 2), Some(wide));
+    assert_eq!(rescale_exact(wide, 2).unwrap().scale(), 0);
+    let nearly = Decimal::from_i128_with_scale(MAX_MANTISSA / 10, 0);
+    assert_eq!(rescale_exact(nearly, 2).unwrap().scale(), 1);
 }
 
 /// The edge table, each row checked by hand.

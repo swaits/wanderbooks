@@ -917,11 +917,9 @@ impl Activity {
         match basis {
             Basis::Cash => (self.paid, self.received),
             Basis::All => (
-                self.paid
-                    .checked_add(self.paid_in_kind)
+                crate::kernel::Amount::checked_add(self.paid, self.paid_in_kind)
                     .expect("activity_with keeps the all-basis sums exact"),
-                self.received
-                    .checked_add(self.received_in_kind)
+                crate::kernel::Amount::checked_add(self.received, self.received_in_kind)
                     .expect("activity_with keeps the all-basis sums exact"),
             ),
         }
@@ -1152,8 +1150,10 @@ pub fn entry_flow(
     // sum is checked, and one past exact arithmetic is refused.
     let too_large =
         || crate::LedgerError::TooLargeToCompute(format!("entry {}'s money flow", entry.id()));
-    let plus = |a: Decimal, b: Decimal| a.checked_add(b).ok_or_else(too_large);
-    let minus = |a: Decimal, b: Decimal| a.checked_sub(b).ok_or_else(too_large);
+    let plus =
+        |a: Decimal, b: Decimal| crate::kernel::Amount::checked_add(a, b).ok_or_else(too_large);
+    let minus =
+        |a: Decimal, b: Decimal| crate::kernel::Amount::checked_sub(a, b).ok_or_else(too_large);
     let (mut cash_cr, mut cash_dr, mut liab_cr, mut liab_dr) =
         (Decimal::ZERO, Decimal::ZERO, Decimal::ZERO, Decimal::ZERO);
     for l in entry.lines() {
@@ -1199,13 +1199,13 @@ pub fn entry_flow(
             let (part, rest) = match l.side {
                 Side::Debit => {
                     let take = a.min(down_left);
-                    down_left -= take;
-                    (take, a - take)
+                    down_left = minus(down_left, take)?;
+                    (take, minus(a, take)?)
                 }
                 Side::Credit => {
                     let take = a.min(up_left);
-                    up_left -= take;
-                    (-take, -(a - take))
+                    up_left = minus(up_left, take)?;
+                    (crate::money::neg(take), crate::money::neg(minus(a, take)?))
                 }
             };
             match left.iter_mut().find(|(x, _)| *x == l.account) {
@@ -1214,10 +1214,7 @@ pub fn entry_flow(
             }
             part
         } else {
-            match l.side {
-                Side::Debit => a,
-                Side::Credit => -a,
-            }
+            crate::money::signed_amount(l.side, a)
         };
         add(&mut by, &mut order, l.account, part)?;
     }
@@ -1226,17 +1223,18 @@ pub fn entry_flow(
         .map(|(_, v)| *v)
         .filter(|v| *v > Decimal::ZERO)
         .try_fold(Decimal::ZERO, &plus)?;
-    let owed_up = -left
-        .iter()
-        .map(|(_, v)| *v)
-        .filter(|v| *v < Decimal::ZERO)
-        .try_fold(Decimal::ZERO, &plus)?;
+    let owed_up = crate::money::neg(
+        left.iter()
+            .map(|(_, v)| *v)
+            .filter(|v| *v < Decimal::ZERO)
+            .try_fold(Decimal::ZERO, &plus)?,
+    );
     let across = owed_down.min(owed_up);
     let mut across_left = across;
     for (account, v) in left {
         if v > Decimal::ZERO && !across_left.is_zero() {
             let take = v.min(across_left);
-            across_left -= take;
+            across_left = minus(across_left, take)?;
             add(&mut by, &mut order, account, take)?;
         }
     }
@@ -1298,7 +1296,7 @@ pub fn flow(
         if v.is_zero() {
             rust_decimal::Decimal::ZERO
         } else {
-            -v
+            crate::money::neg(v)
         }
     };
     Ok(EntryFlow {
@@ -1395,19 +1393,22 @@ pub fn activity_with(
         // the root original's side; every total, the all-basis sums
         // included, stays exact or the entry counts nothing.
         let next = match t.counts_as {
-            Direction::Paid => a
-                .paid
-                .checked_add(p.cash)
-                .zip(a.paid_in_kind.checked_add(p.in_kind))
+            Direction::Paid => crate::kernel::Amount::checked_add(a.paid, p.cash)
+                .zip(crate::kernel::Amount::checked_add(
+                    a.paid_in_kind,
+                    p.in_kind,
+                ))
                 .map(|(c, k)| (c, k, a.received, a.received_in_kind)),
-            _ => a
-                .received
-                .checked_sub(p.cash)
-                .zip(a.received_in_kind.checked_sub(p.in_kind))
+            _ => crate::kernel::Amount::checked_sub(a.received, p.cash)
+                .zip(crate::kernel::Amount::checked_sub(
+                    a.received_in_kind,
+                    p.in_kind,
+                ))
                 .map(|(c, k)| (a.paid, a.paid_in_kind, c, k)),
         };
         match next.filter(|(pc, pk, rc, rk)| {
-            pc.checked_add(*pk).is_some() && rc.checked_add(*rk).is_some()
+            crate::kernel::Amount::checked_add(*pc, *pk).is_some()
+                && crate::kernel::Amount::checked_add(*rc, *rk).is_some()
         }) {
             Some((pc, pk, rc, rk)) => {
                 a.paid = pc;

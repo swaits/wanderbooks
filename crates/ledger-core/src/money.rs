@@ -4,7 +4,7 @@
 //! [`Money`] arithmetic is checked: adding different currencies is an error,
 //! not a guess.
 
-use crate::LedgerError;
+use crate::{LedgerError, Side};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -205,6 +205,43 @@ pub fn sub_exact(a: Decimal, b: Decimal, what: &str) -> Result<Decimal, LedgerEr
         .ok_or_else(|| LedgerError::TooLargeToCompute(what.to_string()))
 }
 
+/// `-value`, through the kernel. A `Decimal`'s negation is always exact,
+/// so this never fails (a zero comes back as a negative zero, bit for bit
+/// what a raw `-` gives).
+pub(crate) fn neg(value: Decimal) -> Decimal {
+    crate::kernel::Amount::checked_neg(value).expect("Decimal negation is exact")
+}
+
+/// A line's amount signed by its side ([`crate::kernel::signed`]):
+/// a debit as it is, a credit negated.
+pub(crate) fn signed_amount(side: Side, amount: Decimal) -> Decimal {
+    crate::kernel::signed(side, amount).expect("Decimal negation is exact")
+}
+
+/// A line's amount counted from one side of an account: as it is when
+/// the line is on `normal`, negated when it is on the other side. With
+/// `normal` the account's normal side this is the line's effect on the
+/// balance as a reader sees it.
+pub(crate) fn on_side(normal: Side, side: Side, amount: Decimal) -> Decimal {
+    match normal {
+        Side::Debit => signed_amount(side, amount),
+        Side::Credit => signed_amount(crate::kernel::flip(side), amount),
+    }
+}
+
+/// `a + b` for figures built from posted lines, where the sum is always
+/// exact (BS-entry-3, BS-entry-4 bound every line). A sum that could not
+/// be held exactly is a broken ledger, so it panics rather than round.
+/// Anything a caller can make too large uses [`add_exact`] instead.
+pub(crate) fn add_in_range(a: Decimal, b: Decimal) -> Decimal {
+    crate::kernel::Amount::checked_add(a, b).expect("posted lines are in range, so their sums are")
+}
+
+/// `a - b` for figures built from posted lines: see [`add_in_range`].
+pub(crate) fn sub_in_range(a: Decimal, b: Decimal) -> Decimal {
+    crate::kernel::Amount::checked_sub(a, b).expect("posted lines are in range, so their sums are")
+}
+
 impl fmt::Debug for Money {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} {}", self.amount, self.currency)
@@ -267,9 +304,10 @@ impl Steps {
         if self.scale == self.minor {
             return Some(d);
         }
-        let mut d = d.normalize();
+        let d = d.normalize();
         if d.scale() < self.minor {
-            d.rescale(self.minor);
+            // Trailing zeros only, so never refused.
+            return Some(crate::kernel::rescale_exact(d, self.minor).unwrap_or(d));
         }
         Some(d)
     }
@@ -291,6 +329,56 @@ mod tests {
 
     fn d(cents: i64) -> Decimal {
         Decimal::new(cents, 2)
+    }
+
+    /// The sign helpers against the plain rule they stand for, on both
+    /// sides and both signs: a line counts as it is on the named side and
+    /// negated on the other, and a debit is the plus side of `signed`.
+    #[test]
+    fn sign_helpers_follow_the_side() {
+        for amount in [d(0), d(1), d(-1), d(123_456), d(-999)] {
+            assert_eq!(neg(amount), -amount);
+            assert_eq!(signed_amount(Side::Debit, amount), amount);
+            assert_eq!(signed_amount(Side::Credit, amount), -amount);
+            for normal in [Side::Debit, Side::Credit] {
+                for side in [Side::Debit, Side::Credit] {
+                    let plain = if side == normal { amount } else { -amount };
+                    let got = on_side(normal, side, amount);
+                    assert_eq!(got, plain);
+                    // Bit for bit, the sign of a zero included.
+                    assert_eq!(got.is_sign_negative(), plain.is_sign_negative());
+                    assert_eq!(got.scale(), plain.scale());
+                }
+            }
+        }
+    }
+
+    /// The in-range sum and difference are the raw operators' figures,
+    /// scale and the sign of a zero included.
+    #[test]
+    fn in_range_arithmetic_is_the_raw_operators() {
+        let figures = [
+            d(0),
+            -d(0),
+            d(1),
+            d(-1),
+            Decimal::new(5, 1),
+            d(123_456),
+            Decimal::new(-7, 4),
+        ];
+        for a in figures {
+            for b in figures {
+                for (got, plain) in [(add_in_range(a, b), a + b), (sub_in_range(a, b), a - b)] {
+                    assert_eq!(got, plain);
+                    assert_eq!(
+                        got.is_sign_negative(),
+                        plain.is_sign_negative(),
+                        "{a} and {b}"
+                    );
+                    assert_eq!(got.scale(), plain.scale(), "{a} and {b}");
+                }
+            }
+        }
     }
 
     #[test]

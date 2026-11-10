@@ -125,6 +125,42 @@ proptest! {
         prop_assert_eq!(got.is_some(), representable(&exact), "{} - {}", a, b);
     }
 
+    /// The rounding sum and difference (a running total of rounded shares,
+    /// K-U11): `rust_decimal`'s own, to the digit and the scale; the exact
+    /// figure wherever exact arithmetic gives one; and where it rounds,
+    /// within half a unit of the last place it keeps.
+    #[test]
+    fn the_rounding_sum_is_the_exact_one_wherever_that_exists((a, b) in arb_pair()) {
+        for (got, old, exact_op, exact) in [
+            (
+                Amount::checked_add_rounded(a, b),
+                Decimal::checked_add(a, b),
+                Amount::checked_add(a, b),
+                rat(a) + rat(b),
+            ),
+            (
+                Amount::checked_sub_rounded(a, b),
+                Decimal::checked_sub(a, b),
+                Amount::checked_sub(a, b),
+                rat(a) - rat(b),
+            ),
+        ] {
+            prop_assert_eq!(shown(got), shown(old), "{} and {}", a, b);
+            if exact_op.is_some() {
+                prop_assert_eq!(shown(got), shown(exact_op), "{} and {}", a, b);
+            }
+            if let Some(r) = got {
+                let off = rat(r) - exact;
+                let half_unit = BigRational::new(
+                    BigInt::from(1u8),
+                    BigInt::from(2u8) * BigInt::from(10u8).pow(r.scale()),
+                );
+                let off = if off < BigRational::from_integer(BigInt::from(0u8)) { -off } else { off };
+                prop_assert!(off <= half_unit, "{} and {} gave {}", a, b, r);
+            }
+        }
+    }
+
     /// Multiply: the same laws.
     #[test]
     fn mul_is_exact_or_none((a, b) in arb_pair()) {

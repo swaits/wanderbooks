@@ -35,3 +35,9 @@ opt-level = 3
 # AppImage, .deb and .rpm are not carrying debug tables.
 [profile.release]
 strip = "symbols"
+# The shipped program refuses the way the tested one does. Without this an
+# integer that overflows wraps silently in a release build and panics in
+# a test build, so the tests would be checking a program nobody runs.
+# Money is Decimal and goes through the kernel's checked arithmetic; this
+# covers the integers around it (counts, sequence numbers, minor units).
+overflow-checks = true

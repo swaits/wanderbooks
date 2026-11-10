@@ -291,58 +291,31 @@ proptest! {
         prop_assert_eq!(cents(&got), want);
     }
 
-    /// The exact reference ranks the exact remainders; the kernel ranks
-    /// the rounded quotients' remainders. With a small non-terminating
-    /// total the two orders agree except at an exact tie, which this
-    /// property excludes and `finding_ties_follow_the_rounded_quotient`
-    /// pins.
+    /// The exact reference ranks the exact remainders, and so does the
+    /// kernel (K-U10): with any weights, ties included (equal weights,
+    /// the 4/1/1 shape, a whole that leaves equal remainders), the split
+    /// is the reference's, at whole units and at the cent.
     #[test]
     fn largest_remainder_ranks_like_the_exact_reference(
-        whole_start in 0i64..=2_000,
-        weights in prop::collection::vec(1i64..=9, 2..=4),
+        whole in 0i64..=100_000,
+        weights in prop::collection::vec(1i64..=9, 2..=5),
     ) {
-        // Distinct weights, and a total with a factor of 3 or 7 (a
-        // non-terminating division), by construction: no case is
-        // rejected, and no exact tie is left to the property.
-        let mut weights = weights;
-        weights.sort_unstable();
-        for (i, w) in weights.iter_mut().enumerate() {
-            *w += i as i64;
-        }
-        let plain: i64 = weights.iter().sum();
-        if plain % 3 != 0 && plain % 7 != 0 {
-            *weights.last_mut().unwrap() += 3 - plain % 3;
-        }
         let total: i64 = weights.iter().sum();
-        let whole = (whole_start..whole_start + total)
-            .find(|&w| {
-                let mut rems: Vec<i128> = weights
-                    .iter()
-                    .map(|&x| (i128::from(w) * i128::from(x)) % i128::from(total))
-                    .collect();
-                rems.sort_unstable();
-                rems.dedup();
-                rems.len() == weights.len()
-            })
-            .expect("whole ≡ 1 mod total leaves distinct remainders");
         let decimal_weights: Vec<Decimal> = weights.iter().copied().map(Decimal::from).collect();
-        let got = split_by_weights_with(
-            Decimal::from(whole),
-            &decimal_weights,
-            Decimal::from(total),
-            Decimal::ONE,
-            |x| round_step(x, Decimal::ONE, Rounding::TowardZero),
-            Leftover::LargestRemainder,
-        )
-        .unwrap();
-        let want = reference(
-            i128::from(whole),
-            &weights.iter().map(|&w| i128::from(w)).collect::<Vec<_>>(),
-            i128::from(total),
-            1,
-        )
-        .unwrap();
-        prop_assert_eq!(got.iter().map(|&p| integer(p)).collect::<Vec<_>>(), want);
+        let wide: Vec<i128> = weights.iter().map(|&w| i128::from(w)).collect();
+        for places in [0u32, 2] {
+            let got = decimal_split(
+                Decimal::new(whole, places),
+                &decimal_weights,
+                Decimal::from(total),
+                places,
+                Leftover::LargestRemainder,
+            )
+            .unwrap();
+            let want = reference(i128::from(whole), &wide, i128::from(total), 1).unwrap();
+            let got = if places == 0 { got.iter().map(|&p| integer(p)).collect() } else { cents(&got) };
+            prop_assert_eq!(got, want);
+        }
     }
 
     /// `share_floor_with` is the exact floor of the rational, even when
@@ -571,14 +544,13 @@ fn split_into_matches_the_allocating_split() {
     );
 }
 
-/// The EM's finding, pinned rather than fixed: a split ranks the rounded
-/// quotients' remainders, so an exact tie goes where the 28th digit sends
-/// it, not to the earlier part. 20.00 split 4/1/1 over 6 gives
-/// 13.33/3.34/3.33 (exact ranking would give 13.34/3.33/3.33), and 20 at
-/// whole units gives 13/4/3 (exact would give 14/3/3). The pre-U3 sites
-/// did the same. The owner decides the exact ranking in K-U10.
+/// K-U10 (the owner's decision): a split ranks the exact remainders, so an
+/// exact tie goes to the earlier part, as the docs and the Lean model say.
+/// 20.00 split 4/1/1 over 6 is 13.34/3.33/3.33 (the rounded quotients'
+/// ranking gave 13.33/3.34/3.33), and 20 at whole units is 14/3/3 (it gave
+/// 13/4/3). Equal weights tie on every odd cent and give it to the first.
 #[test]
-fn finding_ties_follow_the_rounded_quotient() {
+fn ties_go_to_the_earlier_part() {
     let weights = [Decimal::from(4), Decimal::ONE, Decimal::ONE];
     let got = decimal_split(
         parse("20.00"),
@@ -590,7 +562,7 @@ fn finding_ties_follow_the_rounded_quotient() {
     .unwrap();
     assert_eq!(
         got.iter().map(Decimal::to_string).collect::<Vec<_>>(),
-        ["13.33", "3.34", "3.33"]
+        ["13.34", "3.33", "3.33"]
     );
     let got = decimal_split(
         Decimal::from(20),
@@ -602,7 +574,21 @@ fn finding_ties_follow_the_rounded_quotient() {
     .unwrap();
     assert_eq!(
         got.iter().map(Decimal::to_string).collect::<Vec<_>>(),
-        ["13", "4", "3"]
+        ["14", "3", "3"]
+    );
+    // A negative total keeps the share's own order: ties still go first.
+    let neg = [Decimal::from(-4), Decimal::from(-1), Decimal::from(-1)];
+    let got = decimal_split(
+        parse("20.00"),
+        &neg,
+        Decimal::from(-6),
+        2,
+        Leftover::LargestRemainder,
+    )
+    .unwrap();
+    assert_eq!(
+        got.iter().map(Decimal::to_string).collect::<Vec<_>>(),
+        ["13.34", "3.33", "3.33"]
     );
 }
 

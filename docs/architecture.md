@@ -38,7 +38,7 @@ the specification in `bookspec/` (which never depends on the engine).
 | `ledger-mcp` | the books server: the MCP tools (122), resources, the handbook, scopes, the door and the access log, backups' scheduling | all of the above |
 | `ledger-host` | the host and its leases, the agent bridge (`wanderbooks mcp`), tokens in 0600 files under the data root (D-63), the owner's commands, uploads and downloads, `update` and `rollback` (P11a), books homes and how to start an agent in one (P11b) | `ledger-store`, `ledger-mcp`, `ledger-config` |
 | `ledger-gui` | the viewer: read-only, live, egui; the Books menu hands work to the server; the agent dock and the first-run page (P11b) | `ledger-core`, `ledger-store`, `ledger-config`, `ledger-import`, `ledger-package`, `ledger-vault`, `ledger-host` |
-| `ledger-cli` | `wanderbooks`, the one executable: every mode (`serve`, `server`, `host`, `mcp`, `gui`, `setup`, `books`, `token`, `connect`, `doctor`, …) and the over-the-wire test suites | everything |
+| `ledger-cli` | `wanderbooks`, the one executable: every mode (`serve`, `server`, `host`, `mcp`, `gui`, `setup`, `books`, `token`, `connect`, `doctor`, `licenses`, …) and the over-the-wire test suites | everything |
 | `bookspec/checker`, `bookspec/runner` | the example schema and parser, the rule catalogue, the `Engine` trait; the per-rule runner | nothing of ours (the adapter in `ledger-core`'s tests depends on them) |
 
 Dependency direction is always inward toward `ledger-core`; nothing in

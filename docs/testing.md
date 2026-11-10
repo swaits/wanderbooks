@@ -21,6 +21,7 @@ promise.
 | Fault injection (store) | a full disk or a cut-off append leaves whole, openable books (1) | `ledger-store/tests/faults.rs`, `store.rs` (`power_loss_at_any_byte_of_the_last_append_is_recovered`) | `just check` | ~5s | every change |
 | Concurrency (store) | a viewer reading while the books are written sees only whole books, never a false "differs" (2) | `ledger-store/tests/concurrency.rs` | `just check` | <1s | every change |
 | Model-based stateful | the Lean state machine, transcribed (3) | `tests/model.rs` | `just check` | ~3s | every change |
+| Model coverage | every public command on `Ledger` is named on `docs/command-steps.md` with the step of the Lean model it is, and the commands that are no step are a pinned list (3) | `tests/command_steps.rs` | `just check` | <1s | every change |
 | Differential: Decimal vs i64 | the kernel at two types (3) | `kernel_bridge/` | `just check` | <1s | every change |
 | Differential: GnuCash | another implementation, adjudicated (3) | `tests/oracle_gnucash.rs`, bookspec `gnucash/oracle/` | `just oracle` | ~2 min | weekly |
 | Formal proofs | Kani (bounded) and Lean (unbounded) | `src/proofs/`, `verify/lean/` | `just prove` (51 harnesses and Lean), `just prove-slow` (the 9 in the justfile's `kani_slow`, each under its own 30-minute cap); 60 harnesses in all with the checker canary (2026-10-28) | prove ~5 min and prove-slow ~8 min at four jobs on a quiet laptop (each ~25 min under heavy load; docs/verification.md, "Running it") | weekly (CI runs both) |

@@ -188,6 +188,13 @@ Each step carries the checks the engine makes before it mutates. These
 theorems hold in **every state reachable from empty books, by any
 sequence of commands, of any length**:
 
+"Commands" there are the model's steps. Which command of the engine is
+which step is `docs/command-steps.md`: 119 commands, of which one
+(`renumber_account`) is no step, and 17 are the doors a journal is
+replayed through, four of which do not make a check the model's step
+requires. That page says what the theorems below do and do not cover for
+each, and `tests/command_steps.rs` fails when a command has no row.
+
 11. **The invariant holds**: chart codes are unique, every posted entry is
     acceptable and on known accounts, and no draft is dated in a closed
     period. (That last one is why the store can journal a post before

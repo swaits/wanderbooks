@@ -224,6 +224,7 @@ clone, with status. Rules:
 | `docs/spec/claims/` | Wanderbooks' claims on each bookspec rule: the CHOICE picked, where the engine enforces it, which tests check it, and product rules `WB-<area>-<n>` |
 | https://git.swaits.com/swaits/bookspec | Where the rules live (D-68): `rules/` records, `spec/rules/` reading pages, `spec/rules-index.md`; every rule is `BS-<area>-<n>` |
 | `docs/verification.md` | The formal proofs: every accounting law, its Kani harness and Lean theorem, what they found |
+| `docs/command-steps.md` | Which step of bookspec's Lean model each `Ledger` command is, and which commands the proofs do not cover |
 | `docs/parity.md` | Feature catalog and the non-regression floor |
 | `docs/capability-parity.md` | Parity vs the GSheet+GDrive system + the cutover rule |
 | `docs/mcp-interface.md` | The MCP tool surface: the primary interface spec |

@@ -429,14 +429,27 @@ fn a_legacy_last_absorbs_close_drifts_by_member_count_before_its_true_up() {
     // Four members: largest legitimate drift 3 * 0.005 = 0.015, either way.
     assert!(audit::check_split(1, "Jan", &split(4, "0.015"), unit, false).is_empty());
     assert!(audit::check_split(1, "Jan", &split(4, "-0.015"), unit, false).is_empty());
-    // One unit past it (0.025) is flagged, exactly one member.
-    let f = audit::check_split(1, "Jan", &split(4, "0.025"), unit, false);
-    assert_eq!(codes(&f), ["close_split_drifts"]);
+    // Anything past it is flagged, exactly one member: a tenth of a
+    // unit past (a bound of two units would let this through), and a
+    // whole unit past.
+    for drift in ["0.016", "-0.016", "0.025"] {
+        let f = audit::check_split(1, "Jan", &split(4, drift), unit, false);
+        assert_eq!(codes(&f), ["close_split_drifts"], "{drift}");
+    }
+    // Three members and two: the bound is the unit itself, as it was.
+    assert!(audit::check_split(1, "Jan", &split(3, "0.01"), unit, false).is_empty());
+    assert!(audit::check_split(1, "Jan", &split(2, "0.01"), unit, false).is_empty());
+    for n in [2, 3] {
+        let f = audit::check_split(1, "Jan", &split(n, "0.011"), unit, false);
+        assert_eq!(codes(&f), ["close_split_drifts"], "{n} members");
+    }
     // Five members: largest legitimate drift 4 * 0.005 = 0.02.
     assert!(audit::check_split(1, "Jan", &split(5, "0.02"), unit, false).is_empty());
     assert!(audit::check_split(1, "Jan", &split(5, "-0.02"), unit, false).is_empty());
-    let f = audit::check_split(1, "Jan", &split(5, "0.03"), unit, false);
-    assert_eq!(codes(&f), ["close_split_drifts"]);
+    for drift in ["0.021", "0.03"] {
+        let f = audit::check_split(1, "Jan", &split(5, drift), unit, false);
+        assert_eq!(codes(&f), ["close_split_drifts"], "{drift}");
+    }
     // After the true-up the same splits answer to statement 5: the
     // four-member split at its legacy bound is past one unit, so it is
     // flagged, and one just under a unit is not.

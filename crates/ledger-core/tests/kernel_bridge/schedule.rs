@@ -242,16 +242,25 @@ fn the_edges() {
     // answer is not None, because the plug is exact; but the quotient
     // MAX / 2 = ...167.5 has 29 digits, so Decimal's division rounds it to
     // ...168 first, and the part is half a unit from the exact quotient,
-    // a hundred steps at the cent: the K-U10 item, which is why the
-    // callers refuse totals of 10^26 or more (EXACT_LIMIT).
+    // a hundred steps at the cent: the K-U10 item (the division's, left
+    // as it is), which is why the callers refuse totals of 10^26 or more
+    // (EXACT_LIMIT). The sum of the parts is exact or refused (K-U10):
+    // 599 parts of 1.3e26 at the cent need more than 96 bits at scale 2,
+    // and `rust_decimal` used to round that sum.
     for months in [1usize, 2, 3, 7, 600] {
         for step in ["1", "0.01", "0.001"] {
-            let parts = decimal_parts(widest, parse(step), months)
-                .expect("MAX fits: the quotient is smaller, the last is the remainder");
+            let parts = decimal_parts(widest, parse(step), months);
+            if months == 600 && step != "1" {
+                assert_eq!(
+                    parts, None,
+                    "{months} months at {step}: the sum is not exact"
+                );
+                continue;
+            }
+            let parts =
+                parts.expect("MAX fits: the quotient is smaller, the last is the remainder");
             assert_eq!(
-                parts
-                    .iter()
-                    .try_fold(Decimal::ZERO, |a, &b| a.checked_add(b)),
+                kernel::total(parts.iter().copied()),
                 Some(widest),
                 "{months} months at {step}"
             );

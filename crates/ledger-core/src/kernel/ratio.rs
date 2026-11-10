@@ -31,8 +31,8 @@ use super::{Amount, Rounding, round_step, share_of};
 ///   1. Some(r) is round_step(part / whole × 100, step, mode), computed
 ///      division first and then the multiplication, the order every call
 ///      site used before U6. For Decimal the quotient is exact while it
-///      fits 28 significant digits and the product while it fits the
-///      96-bit mantissa; either operation rounds at that edge (K-U10).
+///      fits 28 significant digits and rounds past them; the product by
+///      100 is exact or refused, never rounded (K-U10).
 ///      For a machine integer the division truncates toward zero.
 ///   2. None when whole <= 0, step <= 0, or a quotient, product or
 ///      rounded result is not representable. Never a panic.

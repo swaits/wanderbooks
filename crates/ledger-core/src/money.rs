@@ -145,9 +145,7 @@ impl Money {
     /// panic, never rounded).
     pub fn checked_add(self, rhs: Money) -> Result<Money, LedgerError> {
         self.check_currency(&rhs)?;
-        let amount = self
-            .amount
-            .checked_add(rhs.amount)
+        let amount = crate::kernel::Amount::checked_add(self.amount, rhs.amount)
             .ok_or_else(|| LedgerError::TooLargeToCompute(format!("{} plus {}", self, rhs)))?;
         Ok(Money::new(amount, self.currency))
     }
@@ -156,9 +154,7 @@ impl Money {
     /// `TooLargeToCompute` when the difference is past exact arithmetic.
     pub fn checked_sub(self, rhs: Money) -> Result<Money, LedgerError> {
         self.check_currency(&rhs)?;
-        let amount = self
-            .amount
-            .checked_sub(rhs.amount)
+        let amount = crate::kernel::Amount::checked_sub(self.amount, rhs.amount)
             .ok_or_else(|| LedgerError::TooLargeToCompute(format!("{} minus {}", self, rhs)))?;
         Ok(Money::new(amount, self.currency))
     }

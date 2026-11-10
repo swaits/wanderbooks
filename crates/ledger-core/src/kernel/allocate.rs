@@ -9,7 +9,10 @@
 //! division, so a `Decimal` quotient is rounded at 28 significant digits
 //! (and a machine integer's is truncated), never an exact rational.
 //! Multiplication is not exact either at `Decimal`'s 96-bit mantissa:
-//! `checked_mul` rounds the product there. Every invariant below is
+//! `checked_mul_rounded` rounds the product there, and this module uses
+//! it by name wherever a rounded product is the figure meant (the
+//! kernel's `checked_mul` is exact or refused, K-U10, and would refuse a
+//! share by a percent of 27 places). Every invariant below is
 //! stated of that computation, and of the parts after the named leftover
 //! policy, which do sum to the whole exactly. See `docs/proofs/k-u3.md`
 //! for the edges where a product's or a quotient's rounding can change a
@@ -47,10 +50,13 @@ pub enum Leftover {
 ///         government's part of a payment), BS-arap-3 (a document line's
 ///         exact amount).
 /// INVARIANTS:
-///   1. Some(s) is the amount type's `checked_mul` of whole and weight,
-///      then its checked division by total. For Decimal the product and
-///      quotient are exact while they fit 96 bits and scale 28, and are
-///      rounded at that edge (rust_decimal's checked operations, K-U10);
+///   1. Some(s) is the amount type's `checked_mul_rounded` of whole and
+///      weight, then its checked division by total. For Decimal the
+///      product and quotient are exact while they fit 96 bits and scale
+///      28, and are rounded at that edge (rust_decimal's checked
+///      operations: a share by a percent of 27 places is a rounded figure
+///      by construction, and is computed so, to the digit; K-U10 left
+///      this one product rounding, because the quotient rounds anyway);
 ///      for a machine integer the division truncates toward zero. This is
 ///      the computation the six call sites made before U3, to the digit.
 ///   2. None when total is zero, or when the product or quotient is not
@@ -68,7 +74,7 @@ pub enum Leftover {
 ///      be None.
 /// ```
 pub fn share_of<T: Amount>(whole: T, weight: T, total: T) -> Option<T> {
-    whole.checked_mul(weight)?.checked_div(total)
+    whole.checked_mul_rounded(weight)?.checked_div(total)
 }
 
 /// The largest whole multiple of `step` not above `whole × weight ÷ total`,
@@ -120,7 +126,7 @@ pub fn share_floor_with<T: Amount>(
     if total <= T::ZERO || step <= T::ZERO {
         return None;
     }
-    let num = whole.checked_mul(weight)?;
+    let num = whole.checked_mul_rounded(weight)?;
     let quotient = num.checked_div(total)?;
     let mut part = round(quotient)?;
     // The quotient may have rounded across the exact floor: take whole
@@ -130,7 +136,7 @@ pub fn share_floor_with<T: Amount>(
     // K-U10, pinned in the bridge). Both directions are bounded so a
     // quotient rounded far across the floor refuses instead of hanging.
     let mut steps = 0;
-    while part.checked_mul(total)? > num {
+    while part.checked_mul_rounded(total)? > num {
         if steps == MAX_CORRECTION_STEPS {
             return None;
         }
@@ -143,13 +149,13 @@ pub fn share_floor_with<T: Amount>(
             return None;
         }
         let next = part.checked_add(step)?;
-        if next.checked_mul(total)? > num {
+        if next.checked_mul_rounded(total)? > num {
             break;
         }
         part = next;
         steps += 1;
     }
-    let remainder = num.checked_sub(part.checked_mul(total)?)?;
+    let remainder = num.checked_sub(part.checked_mul_rounded(total)?)?;
     Some((part, remainder))
 }
 

@@ -77,16 +77,17 @@ fn dec_wide(cents: i128) -> Decimal {
     Decimal::from_i128_with_scale(cents, 2)
 }
 
-/// `Decimal`'s answer against the exact reference: the same figure, or
-/// `None` or a rounded figure when the reference is `None`. FINDING (K-U8, the K-U4 finding
-/// again): where a step's exact result does not fit the 96-bit mantissa at
-/// scale 2, `rust_decimal` does not refuse but rounds the result to a
-/// coarser scale (so `Amount::checked_add` is not "exact or `None`" near
-/// the top of the range, not only at `Decimal::MAX`). The reference is
-/// `None` there and `Decimal` is `Some` at a scale below 2; the
-/// assertion pins that shape, and the canary test below flips when the
-/// fix lands in `impl Amount for Decimal`.
-fn same_or_rounded(
+/// `Decimal`'s answer against the exact reference: the same figure at
+/// scale 2, or `None` where the reference is `None`. K-U8's finding
+/// (the K-U4 finding again) was that where a step's exact result did not
+/// fit the 96-bit mantissa at scale 2, `rust_decimal` did not refuse but
+/// rounded the result to a coarser scale; K-U10 closed it, so a figure
+/// that is not the exact one is a failure. One shape is not a rounding:
+/// an exact sum whose last digit is a zero fits a coarser scale (so the
+/// reference's cents overflow at that step and `Decimal`'s figure does
+/// not, and a later step may bring it back to scale 2); it must equal
+/// the exact value.
+fn exact_or_refused(
     got: Option<Decimal>,
     want: Option<i128>,
     exact: i128,
@@ -94,18 +95,13 @@ fn same_or_rounded(
     match (got, want) {
         (Some(g), Some(w)) => prop_assert_eq!((g.mantissa(), g.scale()), (w, 2)),
         (None, None) => {}
-        // Rounded at a coarser scale at some step (a later step may bring
-        // it back to scale 2): not exact, and no panic; the finding.
-        // The figure is still close to the exact value (`exact`, in
-        // cents): each coarser step loses at most one unit of its scale
-        // (at worst the whole units, 100 cents), over at most four steps.
-        // (A later step can bring the scale back to 2, so the bound is
-        // not tied to the final scale.)
         (Some(g), None) => {
-            let shown = g.mantissa() * 10i128.pow(2u32.saturating_sub(g.scale()));
+            let cents = g
+                .mantissa()
+                .checked_mul(10i128.pow(2u32.saturating_sub(g.scale())));
             prop_assert!(
-                g.scale() <= 2 && (shown - exact).abs() <= 400,
-                "{g} is not within four whole units of {exact} cents"
+                g.scale() <= 2 && cents == Some(exact),
+                "{g} is not the exact {exact} cents"
             );
         }
         (None, Some(w)) => prop_assert!(false, "refused an exact {w}"),
@@ -160,15 +156,15 @@ proptest! {
         let (a, b, c, d, e) = (f[0], f[1], f[2], f[3], f[4]);
         let got = kernel::aging_total(dec_wide(a), dec_wide(b), dec_wide(c), dec_wide(d), dec_wide(e));
         let want = ref_chain(&[(a, true), (b, true), (c, true), (d, true), (e, true)]);
-        same_or_rounded(got, want, a + b + c + d + e)?;
+        exact_or_refused(got, want, a + b + c + d + e)?;
 
         let got = kernel::control_difference(dec_wide(a), dec_wide(b), dec_wide(c));
         let want = ref_chain(&[(a, true), (b, false), (c, false)]);
-        same_or_rounded(got, want, a - b - c)?;
+        exact_or_refused(got, want, a - b - c)?;
 
         let got = kernel::reconciliation_total(dec_wide(a), dec_wide(b), dec_wide(c), dec_wide(d));
         let want = ref_chain(&[(a, true), (b, true), (c, true), (d, false)]);
-        same_or_rounded(got, want, a + b + c - d)?;
+        exact_or_refused(got, want, a + b + c - d)?;
     }
 }
 
@@ -231,16 +227,14 @@ fn reconciliation_laptop() {
     );
 }
 
-/// FINDING (K-U8, K-U10 candidate), pinned as a canary: the dust the K-U4
-/// finding saw at `Decimal::MAX` is wider than that. Two cents-scale
-/// figures whose exact sum needs more than 96 bits at scale 2 sum to a
-/// rounded figure at scale 1, not to `None`. Here 0.01 plus the largest
-/// scale-2 figure is 792281625142643375935439503.36, which `rust_decimal`
-/// returns as 792281625142643375935439503.4. Reachable only with figures
-/// near 7.9 x 10^26, a hundred billion times a journal line's cap, so the
-/// engine's line cap keeps it out of every ordinary path.
+/// K-U8's finding, closed by K-U10: the dust the K-U4 finding saw at
+/// `Decimal::MAX` was wider than that. Two cents-scale figures whose exact
+/// sum needs more than 96 bits at scale 2 summed to a rounded figure at
+/// scale 1, not to `None`: 0.01 plus the largest scale-2 figure is
+/// 792281625142643375935439503.36, which `rust_decimal` returns as
+/// 792281625142643375935439503.4. The kernel now refuses it.
 #[test]
-fn finding_decimal_add_rounds_scale_near_the_top() {
+fn a_sum_past_exact_arithmetic_is_refused() {
     let top = Decimal::from_i128_with_scale((1i128 << 96) - 1, 2);
     let got = kernel::aging_total(
         Decimal::new(1, 2),
@@ -249,8 +243,12 @@ fn finding_decimal_add_rounds_scale_near_the_top() {
         Decimal::ZERO,
         top,
     );
+    assert_eq!(got, None);
+    // The old chain's figure, for the record: rounded.
     assert_eq!(
-        got.map(|g| (g.mantissa(), g.scale())),
+        Decimal::new(1, 2)
+            .checked_add(top)
+            .map(|g| (g.mantissa(), g.scale())),
         Some((7922816251426433759354395034, 1))
     );
 }
@@ -270,6 +268,24 @@ fn arb_decimal() -> impl Strategy<Value = Decimal> {
         .prop_map(|(m, s)| Decimal::from_i128_with_scale(m, s))
 }
 
+fn rat(d: Decimal) -> num_rational::BigRational {
+    num_rational::BigRational::new(
+        num_bigint::BigInt::from(d.mantissa()),
+        num_bigint::BigInt::from(10u8).pow(d.scale()),
+    )
+}
+
+/// `rust_decimal`'s `a + b` (or `a - b`) as it returned it, only when it
+/// is the exact result: the reference the kernel's checked sum must equal.
+fn exact_only(got: Option<Decimal>, a: Decimal, b: Decimal, add: bool) -> Option<Decimal> {
+    let exact = if add {
+        rat(a) + rat(b)
+    } else {
+        rat(a) - rat(b)
+    };
+    got.filter(|g| rat(*g) == exact)
+}
+
 fn shown(d: Option<Decimal>) -> String {
     d.map_or("None".into(), |d| format!("{d} (scale {})", d.scale()))
 }
@@ -279,26 +295,28 @@ proptest! {
 
     /// The routed sites give the figures, scales and refusals the
     /// hand-written chains they replaced did (K-U8's compatibility check),
-    /// compared as strings: the old `AgingRow::total`, the old
-    /// `control_check` difference, the old `Reconciliation::total`.
+    /// compared as strings, except that a step whose result `rust_decimal`
+    /// had to round is now refused (K-U10): the old `AgingRow::total`, the
+    /// old `control_check` difference, the old `Reconciliation::total`,
+    /// each step filtered through an exact rational reference.
     #[test]
     fn kernel_matches_the_replaced_chains(f in prop::array::uniform5(arb_decimal())) {
         let old_aging = [f[1], f[2], f[3], f[4]]
             .into_iter()
-            .try_fold(f[0], Decimal::checked_add);
+            .try_fold(f[0], |a, b| exact_only(Decimal::checked_add(a, b), a, b, true));
         prop_assert_eq!(
             shown(kernel::aging_total(f[0], f[1], f[2], f[3], f[4])),
             shown(old_aging)
         );
-        let old_diff = f[0].checked_sub(f[1]).and_then(|d| d.checked_sub(f[2]));
+        let old_diff = exact_only(Decimal::checked_sub(f[0], f[1]), f[0], f[1], false)
+            .and_then(|d| exact_only(Decimal::checked_sub(d, f[2]), d, f[2], false));
         prop_assert_eq!(
             shown(kernel::control_difference(f[0], f[1], f[2])),
             shown(old_diff)
         );
-        let old_recon = f[0]
-            .checked_add(f[1])
-            .and_then(|x| x.checked_add(f[2]))
-            .and_then(|x| x.checked_sub(f[3]));
+        let old_recon = exact_only(Decimal::checked_add(f[0], f[1]), f[0], f[1], true)
+            .and_then(|x| exact_only(Decimal::checked_add(x, f[2]), x, f[2], true))
+            .and_then(|x| exact_only(Decimal::checked_sub(x, f[3]), x, f[3], false));
         prop_assert_eq!(
             shown(kernel::reconciliation_total(f[0], f[1], f[2], f[3])),
             shown(old_recon)

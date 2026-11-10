@@ -335,8 +335,8 @@ fn ten_places_each_is_exact_through_the_engine() {
 /// D-75's bound is what keeps the reference and the engine equal: the
 /// K-U1 review's input, 0.99999999999999999999999999 (26 places) x 0.005,
 /// is 0.00499999999999999999999999995 exactly (under half a cent, so
-/// 0.00), but `Decimal` rounds the product to 28 places first and the
-/// kernel books 0.01. The engine refuses any foreign amount or rate of
+/// 0.00); `Decimal` rounded the product to 28 places first and the
+/// kernel booked 0.01 (K-U10: it now books 0.00 too). The engine refuses any foreign amount or rate of
 /// eleven or more places before it computes.
 #[test]
 fn past_ten_places_the_reference_and_decimal_part_and_the_engine_refuses() {
@@ -355,8 +355,8 @@ fn past_ten_places_the_reference_and_decimal_part_and_the_engine_refuses() {
     );
     assert_eq!(
         fx_booked_minor(foreign, rate, Currency::USD, Rounding::HalfAwayFromZero),
-        Some(parse("0.01")),
-        "outside D-75 the kernel inherits Decimal's early rounding"
+        Some(parse("0.00")),
+        "outside D-75 too, the product is rounded once, from the exact one (K-U10)"
     );
     let (mut ledger, cash, entry) = usd_books();
     for (foreign, rate) in [
@@ -376,17 +376,18 @@ fn past_ten_places_the_reference_and_decimal_part_and_the_engine_refuses() {
 }
 
 /// The other half of exactness (found by this bridge, reported with
-/// D-75): ten places each keep the product's scale within 28, but
-/// `Decimal`'s mantissa is 96 bits (7.9e28), and a product of twenty
-/// places past about 7.9e8 does not fit. `Decimal` then drops places
-/// from the product, and the kernel rounds the already rounded value.
-/// 1050000010.0000000001 x 9.9999999999 is 10500000099.89499999999999999999
-/// exactly, and 10500000099.89 to the cent, but `Decimal` holds
-/// 10500000099.895 and the kernel books 10500000099.90. Pinned as it is
-/// today, outside the precondition of `fx_booked` (which says the
-/// mantissas' product must fit); a unit to refuse it is the owner's call.
+/// D-75, closed by K-U10): ten places each keep the product's scale
+/// within 28, but `Decimal`'s mantissa is 96 bits (7.9e28), and a product
+/// of twenty places past about 7.9e8 does not fit. `Decimal` used to drop
+/// places from the product and the kernel rounded the already rounded
+/// value: 1050000010.0000000001 x 9.9999999999 is
+/// 10500000099.89499999999999999999 exactly, and 10500000099.89 to the
+/// cent, but `Decimal` held 10500000099.895 and the kernel booked
+/// 10500000099.90. The kernel now holds the exact product wide for its
+/// one rounding, so it books what the reference does, and `Amount`'s own
+/// product refuses what `Decimal` cannot hold (decimal_exact.rs).
 #[test]
-fn the_mantissa_edge_is_outside_the_precondition_and_pinned() {
+fn the_mantissa_edge_books_the_exact_products_cent() {
     let foreign = parse("1050000010.0000000001");
     let rate = parse("9.9999999999");
     assert_eq!(foreign.scale(), 10);
@@ -403,6 +404,6 @@ fn the_mantissa_edge_is_outside_the_precondition_and_pinned() {
     );
     assert_eq!(
         fx_booked_minor(foreign, rate, Currency::USD, Rounding::HalfAwayFromZero),
-        Some(parse("10500000099.90"))
+        Some(parse("10500000099.89"))
     );
 }

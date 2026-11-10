@@ -6,15 +6,21 @@
 #   scripts/notices.sh           write THIRD-PARTY-NOTICES.txt
 #   scripts/notices.sh --check   fail if it is out of date (`just notices-check`)
 #
-# The file has two parts. The first is cargo-about's: every crate the
+# The file has three parts. The first is cargo-about's: every crate the
 # `wanderbooks` binary links, with the licence it carries and that
 # licence's text. cargo-about reads the manifest of `ledger-cli` (the one
 # executable), every feature and every platform the program ships on, so
 # the list is what the program contains, not what this machine happens to
-# build. The second part is the fonts the program embeds: each file under
-# `crates/ledger-gui/assets/fonts/` and `crates/ledger-import/fonts/`,
-# with the licence file beside it. A font file that no entry below names
-# fails the script, so a new font cannot ship without its notice.
+# build. Where cargo-about cannot match a crate's own licence file (a
+# compound file, or none packaged) it prints the licence's standard text,
+# whose copyright line is a placeholder; MIT, BSD and ISC ask for the
+# notice itself. So the second part (`scripts/notices-packaged.py`) gives
+# the licence files those crates were packaged with, whole, and names the
+# repository of each crate packaged with none. The third part is the fonts
+# the program embeds: each file under `crates/ledger-gui/assets/fonts/`
+# and `crates/ledger-import/fonts/`, with the licence file beside it. A
+# font file that no entry below names fails the script, so a new font
+# cannot ship without its notice.
 #
 # The output is plain text, says nothing about this machine (no dates, no
 # absolute paths), and is the same on two runs; `--check` compares it with
@@ -130,7 +136,8 @@ write_notices() {
     # Without it, a crate packaged without its licence file is looked up
     # in its git repository, so the file could change with no change
     # here. The cost: such a crate gets the licence's standard text,
-    # without the copyright line its repository holds. The manifest is
+    # without the copyright line its repository holds (the second part
+    # of the file names that repository). The manifest is
     # ledger-cli's, the one executable: that dependency graph is what the
     # binary links.
     if ! cargo about generate --locked --all-features --offline \
@@ -140,9 +147,15 @@ write_notices() {
         echo "registry, every platform's included: if one is missing, run \`cargo fetch --locked\` first." >&2
         exit 2
     fi
+    command -v python3 >/dev/null || {
+        echo "notices: python3 is not installed" >&2
+        exit 2
+    }
+    python3 scripts/notices-packaged.py "$work/about.txt" > "$work/packaged.txt"
     {
         cat "$work/about.txt"
         echo
+        cat "$work/packaged.txt"
         font_section
     } > "$work/all.txt"
     # Plain text: trailing whitespace off every line, and exactly one

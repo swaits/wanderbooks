@@ -31,6 +31,11 @@ fn licenses_prints_the_notices_and_nothing_on_stderr() {
         "rusqlite",
         "Inter Project Authors",
         "Bitstream",
+        // A crate whose own licence file cargo-about cannot match (two
+        // licences in one file) still travels with its copyright line.
+        "LICENCE FILES AS PACKAGED",
+        "Kang Seonghoon",
+        "Packaged with no licence file",
     ] {
         assert!(text.contains(needle), "{needle:?} is not in the notices");
     }

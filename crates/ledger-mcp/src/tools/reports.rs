@@ -4,6 +4,7 @@
 //! Split whole out of `server.rs` (plan/served.md 8.2 U0a).
 
 use super::*;
+use ledger_core::money::{add_in_range, sub_in_range};
 
 /// What the digest lists from the control check: each line on a control
 /// account that is no document's, and each document needing attention.
@@ -37,18 +38,15 @@ fn movement_over(
             .iter()
             .flat_map(|e| e.lines())
             .filter(|l| l.account == account),
-        |l| match l.side {
-            Side::Debit => l.amount.amount,
-            Side::Credit => -l.amount.amount,
-        },
+        |l| ledger_core::money::signed_amount(l.side, l.amount.amount),
         "an account's movement",
     )
     .map_err(|e| e.to_string())?;
     let account = ledger.chart().get(account).expect("account exists");
-    Ok(match account.account_type.normal_side() {
-        Side::Debit => movement,
-        Side::Credit => -movement,
-    })
+    Ok(ledger_core::money::signed_amount(
+        account.account_type.normal_side(),
+        movement,
+    ))
 }
 
 fn lines_out(lines: &[ledger_core::StatementLine]) -> Vec<StatementLineOut> {
@@ -1057,19 +1055,16 @@ impl BooksServer {
                     Some(a) => a,
                     _ => continue,
                 };
-                let signed = match line.side {
-                    Side::Debit => line.amount.amount,
-                    Side::Credit => -line.amount.amount,
-                };
                 // Normal-side positive.
-                let normal = match account.account_type.normal_side() {
-                    Side::Debit => signed,
-                    Side::Credit => -signed,
-                };
+                let normal = ledger_core::money::on_side(
+                    account.account_type.normal_side(),
+                    line.side,
+                    line.amount.amount,
+                );
                 let acc = by_class.entry(line.class_id).or_default();
                 match account.account_type {
-                    AccountType::Revenue => acc.revenue += normal,
-                    AccountType::Expense => acc.expenses += normal,
+                    AccountType::Revenue => acc.revenue = add_in_range(acc.revenue, normal),
+                    AccountType::Expense => acc.expenses = add_in_range(acc.expenses, normal),
                     _ => {}
                 }
             }
@@ -1099,7 +1094,7 @@ impl BooksServer {
                 class,
                 revenue: money(acc.revenue),
                 expenses: money(acc.expenses),
-                net_income: money(acc.revenue - acc.expenses),
+                net_income: money(sub_in_range(acc.revenue, acc.expenses)),
             })
             .collect();
         Ok(Json(ProfitAndLossByClassOut {

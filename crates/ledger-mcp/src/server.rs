@@ -1343,11 +1343,7 @@ fn preview_lines_for(
             .account_balance(*account_id)
             .map_err(|e| e.to_string())?;
         let normal = account.account_type.normal_side();
-        let delta = if *side == normal {
-            amount.amount
-        } else {
-            -amount.amount
-        };
+        let delta = ledger_core::money::on_side(normal, *side, amount.amount);
         let after =
             ledger_core::money::add_exact(before, delta, "the account's balance after the line")
                 .map_err(|e| e.to_string())?;

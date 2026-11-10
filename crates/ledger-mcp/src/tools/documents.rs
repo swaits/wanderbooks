@@ -7,6 +7,7 @@
 use super::*;
 use ledger_core::Terms;
 use ledger_core::arap::{self, PartySnapshot};
+use ledger_core::kernel::Amount;
 
 /// A document's id.
 fn doc_id(doc: ledger_core::DocRef) -> u64 {
@@ -934,8 +935,7 @@ impl BooksServer {
             if !keep {
                 continue;
             }
-            owed = owed
-                .checked_add(st.outstanding)
+            owed = Amount::checked_add(owed, st.outstanding)
                 .ok_or("the total is too large to compute")?;
             rows.push((
                 due,

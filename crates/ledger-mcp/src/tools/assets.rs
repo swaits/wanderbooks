@@ -150,7 +150,7 @@ fn basis_out(a: &ledger_core::Asset) -> Result<Option<AssetBasisOut>, String> {
         sec704c_1c_note: loss.map(|l| {
             format!(
                 "a built-in loss of {}: it counts only for the contributing member(s); for the others the basis is treated as the value at contribution (IRC §704(c)(1)(C))",
-                money(-l)
+                money(ledger_core::money::neg(l))
             )
         }),
         sec704c_method: b.sec704c_method.map(|m| m.key().to_string()),
@@ -748,7 +748,10 @@ impl BooksServer {
                     accumulated_posted: figure(|r| r.accumulated_posted),
                     accumulated_scheduled_through: figure(|r| r.accumulated_scheduled),
                     unposted_depreciation: figure(|r| {
-                        r.accumulated_scheduled - r.accumulated_posted
+                        ledger_core::money::sub_in_range(
+                            r.accumulated_scheduled,
+                            r.accumulated_posted,
+                        )
                     }),
                     book_value: figure(|r| r.book_value),
                     schedule_error,
@@ -930,7 +933,7 @@ impl BooksServer {
                 proceeds.amount,
                 preview.catch_up_depreciation,
                 if preview.gain_loss < Decimal::ZERO {
-                    -preview.gain_loss
+                    ledger_core::money::neg(preview.gain_loss)
                 } else {
                     Decimal::ZERO
                 },

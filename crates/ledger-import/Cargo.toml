@@ -11,7 +11,7 @@ rust_decimal = "1"
 chrono = "0.4"
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
-rust_xlsxwriter = "0.90"
+rust_xlsxwriter = "0.102"
 typst-as-lib = { version = "0.17", default-features = false }
 typst-pdf = "0.15.1"
 typst = "0.15.1"

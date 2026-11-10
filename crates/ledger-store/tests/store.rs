@@ -3629,7 +3629,7 @@ fn projection_but_names(dir: &std::path::Path) -> Vec<(String, Vec<String>)> {
         .into_iter()
         .map(|t| {
             let mut stmt = conn.prepare(&format!("SELECT * FROM \"{t}\"")).unwrap();
-            let names: Vec<String> = stmt.column_names().iter().map(|c| c.to_string()).collect();
+            let names: Vec<String> = stmt.column_names().map(str::to_string).collect();
             let mut rows: Vec<String> = stmt
                 .query_map([], |r| {
                     Ok((0..names.len())

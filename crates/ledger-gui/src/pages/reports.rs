@@ -14,6 +14,8 @@ use chrono::{Datelike, Days, Months, NaiveDate};
 use egui::{CornerRadius, RichText, Sense, Stroke, Ui, vec2};
 use egui_phosphor::regular as icon;
 use ledger_core::analysis::{Interval, intervals};
+use ledger_core::kernel::Amount;
+use ledger_core::money::{add_in_range, neg, sub_in_range};
 use ledger_core::reports::{
     balance_sheet_as_of, general_ledger, members_equity, profit_and_loss_for_period,
     trial_balance_as_of,
@@ -237,9 +239,9 @@ impl Table {
             }
             let (a, b) = (r.cells[0].value, r.cells[1].value);
             let diff = match (a, b) {
-                (Some(a), Some(b)) => Some(a - b),
+                (Some(a), Some(b)) => Some(sub_in_range(a, b)),
                 (Some(a), None) => Some(a),
-                (None, Some(b)) => Some(-b),
+                (None, Some(b)) => Some(neg(b)),
                 _ => None,
             };
             // No percent of a zero or negative base: it would mislead.
@@ -474,7 +476,7 @@ fn pnl(b: &Books, cols: &Cols, total: bool) -> Table {
                         .and_then(|st| pick(st).iter().find(|l| &l.code == code))
                         .map(|l| l.amount)
                         .unwrap_or_default();
-                    totals[i] += v;
+                    totals[i] = add_in_range(totals[i], v);
                     Cell {
                         value: Some(v),
                         drill: id.map(|account| Drill {
@@ -499,7 +501,10 @@ fn pnl(b: &Books, cols: &Cols, total: bool) -> Table {
     t.row(
         Kind::Grand,
         "Net income",
-        rev.iter().zip(&exp).map(|(r, e)| Cell::of(r - e)).collect(),
+        rev.iter()
+            .zip(&exp)
+            .map(|(r, e)| Cell::of(sub_in_range(*r, *e)))
+            .collect(),
     );
     t
 }
@@ -572,12 +577,12 @@ fn balance_sheet(b: &Books, dates: &[(NaiveDate, String)]) -> Table {
     t.row(
         Kind::Grand,
         "Total liabilities and equity",
-        total(&|s| s.total_liabilities + s.total_equity),
+        total(&|s| add_in_range(s.total_liabilities, s.total_equity)),
     );
     if stmts
         .iter()
         .flatten()
-        .all(|s| s.total_assets == s.total_liabilities + s.total_equity)
+        .all(|s| s.total_assets == add_in_range(s.total_liabilities, s.total_equity))
     {
         t.note(format!(
             "{} Assets equal liabilities plus equity in every column.",
@@ -656,12 +661,13 @@ fn cash_flow_table(b: &Books, cols: &Cols, total: bool) -> Table {
                 .iter()
                 .zip(&stmts)
                 .map(|((s, e, _), st)| Cell {
-                    value: st.as_ref().ok().map(|st| {
-                        rows(st)
-                            .into_iter()
-                            .filter(|r| r.0 == key)
-                            .map(|r| r.2)
-                            .sum()
+                    // Blank where the statement was refused, or the sum can't be
+                    // computed exactly.
+                    value: st.as_ref().ok().and_then(|st| {
+                        ledger_core::kernel::total_of(
+                            rows(st).into_iter().filter(|r| r.0 == key),
+                            |r| r.2,
+                        )
                     }),
                     drill: id.map(|account| Drill {
                         account,
@@ -929,7 +935,9 @@ fn owners_equity(b: &Books, s: NaiveDate, e: NaiveDate) -> Table {
         );
         row(&mut t, Kind::Line, "Contributions", &|m| m.contributions);
         row(&mut t, Kind::Line, "Share of net income", &|m| m.net_income);
-        row(&mut t, Kind::Line, "Distributions", &|m| -m.distributions);
+        row(&mut t, Kind::Line, "Distributions", &|m| {
+            neg(m.distributions)
+        });
         row(&mut t, Kind::Line, "Other", &|m| m.other);
         row(
             &mut t,
@@ -939,7 +947,15 @@ fn owners_equity(b: &Books, s: NaiveDate, e: NaiveDate) -> Table {
         );
         let shares: Vec<String> = members
             .iter()
-            .map(|m| format!("{} {}%", m.name, (m.share * Decimal::from(100)).normalize()))
+            .map(|m| {
+                format!(
+                    "{} {}%",
+                    m.name,
+                    Amount::checked_mul_rounded(m.share, Decimal::from(100))
+                        .expect("a member's share is at most one, so a hundred times it fits")
+                        .normalize()
+                )
+            })
             .collect();
         t.note(format!("Ownership: {}.", shares.join(", ")));
         return t;
@@ -953,8 +969,8 @@ fn owners_equity(b: &Books, s: NaiveDate, e: NaiveDate) -> Table {
         // Nothing is dated before chrono's first day: nothing to begin with.
         let begin = s.pred_opt().map_or(Decimal::ZERO, |d| b.balance_on(a, d));
         let end = b.balance_on(a, e);
-        tb += begin;
-        te += end;
+        tb = add_in_range(tb, begin);
+        te = add_in_range(te, end);
         let d = Some(Drill {
             account: a,
             start: s,
@@ -966,7 +982,7 @@ fn owners_equity(b: &Books, s: NaiveDate, e: NaiveDate) -> Table {
             vec![
                 Cell::of(begin),
                 Cell {
-                    value: Some(end - begin),
+                    value: Some(sub_in_range(end, begin)),
                     drill: d,
                 },
                 Cell::of(end),
@@ -986,7 +1002,7 @@ fn owners_equity(b: &Books, s: NaiveDate, e: NaiveDate) -> Table {
         "Net income not yet closed",
         vec![
             Cell::of(ni_begin),
-            Cell::of(ni_end - ni_begin),
+            Cell::of(sub_in_range(ni_end, ni_begin)),
             Cell::of(ni_end),
         ],
     );
@@ -994,9 +1010,12 @@ fn owners_equity(b: &Books, s: NaiveDate, e: NaiveDate) -> Table {
         Kind::Grand,
         "Total equity",
         vec![
-            Cell::of(tb + ni_begin),
-            Cell::of(te + ni_end - tb - ni_begin),
-            Cell::of(te + ni_end),
+            Cell::of(add_in_range(tb, ni_begin)),
+            Cell::of(sub_in_range(
+                sub_in_range(add_in_range(te, ni_end), tb),
+                ni_begin,
+            )),
+            Cell::of(add_in_range(te, ni_end)),
         ],
     );
     t
@@ -1130,7 +1149,7 @@ fn aging(
             total,
         ];
         for (i, x) in v.iter().enumerate() {
-            match tot[i].checked_add(*x) {
+            match Amount::checked_add(tot[i], *x) {
                 Some(sum) => tot[i] = sum,
                 None => return cant_compute(t, &too_large()),
             }
@@ -1310,7 +1329,7 @@ fn asset_register(b: &Books, as_of: NaiveDate) -> Table {
                 value: Some(r.ledger_accumulated),
                 drill: accum_drill,
             },
-            Cell::of(r.ledger_cost - r.ledger_accumulated),
+            Cell::of(sub_in_range(r.ledger_cost, r.ledger_accumulated)),
             Cell {
                 value: Some(r.ledger_accumulated),
                 drill: accum_drill,
@@ -1324,9 +1343,12 @@ fn asset_register(b: &Books, as_of: NaiveDate) -> Table {
         Kind::Subtotal,
         "Register less books",
         vec![
-            Cell::of(-r.unregistered_cost()),
-            Cell::of(-r.unattributed_accumulated()),
-            Cell::of(r.total_book_value - (r.ledger_cost - r.ledger_accumulated)),
+            Cell::of(neg(r.unregistered_cost())),
+            Cell::of(neg(r.unattributed_accumulated())),
+            Cell::of(sub_in_range(
+                r.total_book_value,
+                sub_in_range(r.ledger_cost, r.ledger_accumulated),
+            )),
             Cell::of(r.unposted_depreciation()),
             Cell::none(),
             Cell::none(),
@@ -2129,8 +2151,9 @@ fn gl(ui: &mut Ui, b: &Books, s: NaiveDate, e: NaiveDate, shell: &mut Shell<'_>)
             // Narrow, the description gives way down to 120 points, then
             // the table scrolls sideways.
             let fixed = [86.0, 52.0, 0.0, 110.0, 110.0, 120.0];
-            let w = ui.available_width().max(fixed.iter().sum::<f32>() + 120.0);
-            let flex = w - fixed.iter().sum::<f32>();
+            let fixed_total = fixed.iter().fold(0.0_f32, |a, b| a + *b);
+            let w = ui.available_width().max(fixed_total + 120.0);
+            let flex = w - fixed_total;
             widgets::min_width(ui, &format!("gl_{}", a.code), w, |ui| {
                 let row = |ui: &mut Ui,
                            vals: [String; 6],

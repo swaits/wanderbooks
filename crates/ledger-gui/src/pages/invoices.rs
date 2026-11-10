@@ -16,6 +16,7 @@ use crate::widgets;
 use chrono::NaiveDate;
 use egui::Ui;
 use egui_phosphor::regular as icon;
+use ledger_core::money::add_in_range;
 use ledger_core::{DocRef, DocState, DocStatus, DocumentLine};
 use rust_decimal::Decimal;
 
@@ -200,7 +201,7 @@ pub fn summary(b: &Books, bills: bool) -> Option<(Decimal, usize, usize)> {
         if let Ok(Some(st)) = &it.state
             && Filter::Open.keeps(st)
         {
-            owed += st.outstanding;
+            owed = add_in_range(owed, st.outstanding);
             if st.overdue_days > 0 {
                 late += 1;
             } else if it.due <= week {
@@ -265,10 +266,10 @@ pub fn show_list(ui: &mut Ui, b: &Books, bills: bool, shell: &mut Shell<'_>) {
         for it in &all {
             match &it.state {
                 Ok(Some(st)) if Filter::Open.keeps(st) => {
-                    owed += st.outstanding;
+                    owed = add_in_range(owed, st.outstanding);
                     open_n += 1;
                     if st.overdue_days > 0 {
-                        late += st.outstanding;
+                        late = add_in_range(late, st.outstanding);
                         late_n += 1;
                     }
                 }
@@ -473,8 +474,8 @@ fn tie_out(b: &Books, bills: bool) -> (String, String, bool) {
                 return ("Agrees".into(), "No account holds them yet".into(), true);
             }
             let names: Vec<String> = mine.iter().map(|c| b.account_label(c.account)).collect();
-            let loose: usize = mine.iter().map(|c| c.unattached.len()).sum();
-            let odd: usize = mine.iter().map(|c| c.attention.len()).sum();
+            let loose: usize = mine.iter().fold(0_usize, |n, c| n + c.unattached.len());
+            let odd: usize = mine.iter().fold(0_usize, |n, c| n + c.attention.len());
             let off = mine.iter().any(|c| !c.difference.is_zero());
             if off {
                 ("Differs".into(), "An engine error: report it".into(), false)

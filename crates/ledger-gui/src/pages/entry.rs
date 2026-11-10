@@ -11,6 +11,8 @@ use crate::widgets;
 use egui::{CornerRadius, Margin, RichText, Stroke, Ui, vec2};
 use egui_phosphor::regular as icon;
 use ledger_core::arap::DocumentLine;
+use ledger_core::kernel::Amount;
+use ledger_core::money::sub_in_range;
 use ledger_core::{EntryStatus, Side};
 use ledger_store::Attachment;
 use rust_decimal::Decimal;
@@ -264,11 +266,13 @@ pub fn detail(ui: &mut Ui, b: &Books, e: &EntryInfo, shell: &mut Shell<'_>) {
                             let a = fmt::money(line.amount.amount);
                             let (d, c) = match line.side {
                                 Side::Debit => {
-                                    dr = dr.and_then(|t| t.checked_add(line.amount.amount));
+                                    dr =
+                                        dr.and_then(|t| Amount::checked_add(t, line.amount.amount));
                                     (a, String::new())
                                 }
                                 Side::Credit => {
-                                    cr = cr.and_then(|t| t.checked_add(line.amount.amount));
+                                    cr =
+                                        cr.and_then(|t| Amount::checked_add(t, line.amount.amount));
                                     (String::new(), a)
                                 }
                             };
@@ -720,7 +724,7 @@ pub fn share_text(
                     t.push_str(&format!(", {} in kind", fmt::dollars(in_kind.abs())));
                 }
             }
-            let owed = v - cash - in_kind;
+            let owed = sub_in_range(sub_in_range(v, cash), in_kind);
             if d != Direction::Neither && !owed.is_zero() {
                 t.push_str(&format!(", {} still owed", fmt::dollars(owed.abs())));
             }

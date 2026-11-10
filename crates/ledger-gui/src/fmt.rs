@@ -71,7 +71,7 @@ pub use ledger_import::format::round_display;
 pub fn compact(d: Decimal) -> String {
     let a = d.abs();
     let scaled = |divisor: Decimal, places: u32| {
-        a.checked_div(divisor)
+        ledger_core::kernel::Amount::checked_div(a, divisor)
             .map(|v| round_display(v, places))
             .unwrap_or(a)
     };
@@ -142,7 +142,7 @@ pub fn plain(display: &str) -> Option<String> {
 /// honest percent (the one rule every percent in the viewer follows;
 /// the caller shows nothing, or "—", for `None`).
 pub fn pct_change(prev: Decimal, now: Decimal) -> Option<Decimal> {
-    let part = now.checked_sub(prev)?;
+    let part = ledger_core::kernel::Amount::checked_sub(now, prev)?;
     let mut x = ledger_core::kernel::percent_of(
         part,
         prev,
@@ -150,7 +150,7 @@ pub fn pct_change(prev: Decimal, now: Decimal) -> Option<Decimal> {
         ledger_core::kernel::Rounding::HalfAwayFromZero,
     )?;
     // One place always, so no change prints "0.0", never "0" or "-0.0".
-    x.rescale(1);
+    x = ledger_core::kernel::rescale_exact(x, 1).unwrap_or(x);
     Some(x)
 }
 

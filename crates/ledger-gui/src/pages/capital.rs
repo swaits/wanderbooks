@@ -12,6 +12,8 @@ use crate::nav::Route;
 use crate::theme::{self, pal};
 use crate::widgets;
 use egui::{Align, Layout, RichText, Sense, Ui, vec2};
+use ledger_core::kernel::Amount;
+use ledger_core::money::{add_in_range, neg, sub_in_range};
 use rust_decimal::Decimal;
 
 /// What a capital line is, in words.
@@ -29,7 +31,8 @@ pub fn kind_label(k: CapitalKind) -> &'static str {
 /// decimal multiplication (never a float, never rounded); only a
 /// negative zero is dropped.
 pub fn percent(share: Decimal) -> String {
-    let p = share * Decimal::ONE_HUNDRED;
+    let p = Amount::checked_mul_rounded(share, Decimal::ONE_HUNDRED)
+        .expect("a member's share is at most one, so a hundred times it fits");
     let p = if p.is_zero() { Decimal::ZERO } else { p };
     format!("{}%", p.normalize())
 }
@@ -181,7 +184,7 @@ pub fn capital_card(
                 ui,
                 "Distributions",
                 16.0,
-                Some(fmt::accounting(-st.distributions_taken)),
+                Some(fmt::accounting(neg(st.distributions_taken))),
                 None,
                 false,
             );
@@ -189,9 +192,16 @@ pub fn capital_card(
                 line(ui, "Other changes", 16.0, amt(st.other), None, false);
             }
             underline(ui, false, false);
-            let change = st.contributions_cash + st.contributions_property + st.income_share
-                - st.distributions_taken
-                + st.other;
+            let change = add_in_range(
+                sub_in_range(
+                    add_in_range(
+                        add_in_range(st.contributions_cash, st.contributions_property),
+                        st.income_share,
+                    ),
+                    st.distributions_taken,
+                ),
+                st.other,
+            );
             line(
                 ui,
                 "Net change in capital",

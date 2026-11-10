@@ -13,6 +13,8 @@ use chrono::{Datelike, Days, NaiveDate};
 use egui::{CornerRadius, RichText, Sense, Ui, vec2};
 use egui_phosphor::regular as icon;
 use ledger_core::analysis::{Interval, balance_history, flows_by_interval, interval_start};
+use ledger_core::kernel::Amount;
+use ledger_core::money::{add_in_range, neg, sub_in_range};
 use rust_decimal::Decimal;
 
 pub fn show(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
@@ -29,7 +31,7 @@ pub fn show(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
         );
         let (cin, cout): (Decimal, Decimal) =
             flows.iter().fold((Decimal::ZERO, Decimal::ZERO), |a, f| {
-                (a.0 + f.2, a.1 + f.3)
+                (add_in_range(a.0, f.2), add_in_range(a.1, f.3))
             });
         widgets::page_header(
             ui,
@@ -74,7 +76,7 @@ pub fn show(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                     .collect();
                 let bal = b.balance_on(*id, b.today);
                 let ago = b.balance_on(*id, since);
-                let delta = bal - ago;
+                let delta = sub_in_range(bal, ago);
                 let r = widgets::kpi(
                     ui,
                     widgets::Kpi {
@@ -186,7 +188,7 @@ fn runway(ui: &mut Ui, b: &Books) {
             let Some(net) = ledger_core::kernel::total_try(&months, |&(_, _, i, o)| {
                 ledger_core::kernel::Amount::checked_sub(i, o)
             })
-            .and_then(|sum| sum.checked_div(Decimal::from(months.len() as u64))) else {
+            .and_then(|sum| Amount::checked_div(sum, Decimal::from(months.len() as u64))) else {
                 ui.label(RichText::new("The figures are too large to compute.").color(p.muted));
                 return;
             };
@@ -224,13 +226,10 @@ fn runway(ui: &mut Ui, b: &Books) {
                 if net < Decimal::ZERO {
                     // Checked: a sub-cent average (lines an earlier version
                     // booked) makes a runway past any calendar.
-                    let months_left = b
-                        .kpis
-                        .cash
-                        .checked_div(-net)
+                    let months_left = Amount::checked_div(b.kpis.cash, neg(net))
                         .map(|m| fmt::round_display(m, 1));
                     let out = months_left
-                        .and_then(|m| m.checked_mul(Decimal::from(30)))
+                        .and_then(|m| Amount::checked_mul(m, Decimal::from(30)))
                         .and_then(|d| u64::try_from(d).ok())
                         .and_then(|d| b.today.checked_add_days(Days::new(d)));
                     big(
@@ -319,9 +318,9 @@ fn coming_up(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
             .filter(|(a, _, _)| b.cash_accounts.contains(a))
             .try_fold(Decimal::ZERO, |sum, (_, s, m)| {
                 if *s == ledger_core::Side::Debit {
-                    sum.checked_add(m.amount)
+                    Amount::checked_add(sum, m.amount)
                 } else {
-                    sum.checked_sub(m.amount)
+                    Amount::checked_sub(sum, m.amount)
                 }
             });
         for d in occurrences_from(r, b.today, horizon) {
@@ -378,7 +377,7 @@ fn coming_up(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
         items.push(Upcoming {
             date: bill.due_date,
             label: format!("Bill {id} to {who}"),
-            amount: balance.map(|x| -x),
+            amount: balance.map(neg),
             route: Some(Route::Entry(bill.entry_id)),
         });
     }
@@ -409,9 +408,9 @@ fn coming_up(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                 (Some(Decimal::ZERO), Some(Decimal::ZERO)),
                 |(inflow, outflow), i| match i.amount {
                     Some(a) if a > Decimal::ZERO => {
-                        (inflow.and_then(|x| x.checked_add(a)), outflow)
+                        (inflow.and_then(|x| Amount::checked_add(x, a)), outflow)
                     }
-                    Some(a) => (inflow, outflow.and_then(|x| x.checked_sub(a))),
+                    Some(a) => (inflow, outflow.and_then(|x| Amount::checked_sub(x, a))),
                     None => (None, None),
                 },
             );

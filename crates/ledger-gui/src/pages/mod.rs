@@ -88,7 +88,7 @@ pub fn columns(ui: &mut Ui, min_width: f32, weights: &[f32], mut add: impl FnMut
         }
         return;
     }
-    let total: f32 = weights.iter().sum();
+    let total: f32 = weights.iter().fold(0.0_f32, |a, b| a + *b);
     let avail = ui.available_width() - gap * (weights.len() as f32 - 1.0);
     let top = ui.cursor().min;
     let mut x = top.x;

@@ -68,7 +68,7 @@ fn signed(b: &Books, account: AccountId, side: Side, amount: Decimal) -> Decimal
         .chart()
         .get(account)
         .map_or(Side::Debit, |a| a.account_type.normal_side());
-    if side == normal { amount } else { -amount }
+    ledger_core::money::on_side(normal, side, amount)
 }
 
 /// Every posted line on the reconciliation's account dated on or before
@@ -168,7 +168,8 @@ pub fn show(ui: &mut Ui, b: &Books, id: u64, shell: &mut Shell<'_>) {
         let all = lines(b, r);
         let cleared: Vec<_> = all.iter().filter(|l| l.5).collect();
         let outstanding: Vec<_> = all.iter().filter(|l| !l.5).collect();
-        let cleared_total: Decimal = cleared.iter().map(|l| l.4).sum();
+        let cleared_total: Decimal = ledger_core::kernel::total_of(cleared.iter(), |l| l.4)
+            .expect("figures drawn from the books are in range, so their sum is");
         let st = b.statement(r.attachment_id);
         super::columns(ui, 860.0, &[1.0, 1.0], |col, ui| {
             if col == 0 {

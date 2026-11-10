@@ -126,12 +126,20 @@ write_notices() {
         echo "notices: cargo is not installed (mise install)" >&2
         exit 2
     }
-    # --offline: no network lookup, so the same crates give the same file
-    # on every machine. The manifest is ledger-cli's, the one executable:
-    # that dependency graph is what the binary links.
-    cargo about generate --locked --all-features --offline \
+    # --offline: cargo-about reads only the crates' own packaged files.
+    # Without it, a crate packaged without its licence file is looked up
+    # in its git repository, so the file could change with no change
+    # here. The cost: such a crate gets the licence's standard text,
+    # without the copyright line its repository holds. The manifest is
+    # ledger-cli's, the one executable: that dependency graph is what the
+    # binary links.
+    if ! cargo about generate --locked --all-features --offline \
         -m crates/ledger-cli/Cargo.toml -c about.toml \
-        deploy/notices/about.hbs > "$work/about.txt"
+        deploy/notices/about.hbs > "$work/about.txt"; then
+        echo "notices: cargo-about failed. It reads every crate in Cargo.lock from the local" >&2
+        echo "registry, every platform's included: if one is missing, run \`cargo fetch --locked\` first." >&2
+        exit 2
+    fi
     {
         cat "$work/about.txt"
         echo

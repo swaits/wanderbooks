@@ -19,6 +19,7 @@ pub mod chart_csv;
 /// The one reader, now the `ledger-reader` crate (D-61), kept at its old path.
 pub use ledger_reader as extract;
 pub mod fonts;
+pub mod format;
 pub mod iif;
 pub mod invoice_pdf;
 pub mod labels;
@@ -32,6 +33,7 @@ pub use asset_register::{asset_register_pdf, asset_register_xlsx};
 pub use bank_csv::{BankCsvError, BankTransaction, DateOrder, parse_bank_csv, parse_bank_csv_with};
 pub use chart_csv::{ChartRow, parse_chart_csv};
 pub use extract::{ExtractError, page_count, page_png, pdf_lines, pdf_text, text_of, xlsx_text};
+pub use format::round_display;
 pub use iif::{
     Iif, IifAccount, IifChange, IifClass, IifError, IifField, LeftOut, MEMO_MAX, NAME_MAX,
     NUMBER_MAX, QbAccountType, iif_accounts, iif_classes, journal_to_iif,

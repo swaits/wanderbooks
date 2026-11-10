@@ -11,7 +11,13 @@
 //! agent).
 
 use std::env;
+use std::io::Write;
 use std::path::PathBuf;
+
+/// Every third-party licence the program must travel with, built into it
+/// by the build (`just notices`; scripts/notices.sh). `wanderbooks
+/// licenses` prints it.
+const NOTICES: &str = include_str!("../../../THIRD-PARTY-NOTICES.txt");
 
 fn print_usage() {
     eprintln!("usage: wanderbooks setup [--root PATH] [--home DIR]");
@@ -29,6 +35,7 @@ fn print_usage() {
     eprintln!("       wanderbooks download --book ID [--token NAME] ATTACHMENT --to FOLDER");
     eprintln!("       wanderbooks serve | close | doctor");
     eprintln!("       wanderbooks update [--check] | rollback");
+    eprintln!("       wanderbooks licenses");
     eprintln!();
     eprintln!("  setup      make the books' private folder (only your account can open it)");
     eprintln!("  gui        open the live, read-only view of the books (a book of the data root)");
@@ -45,6 +52,7 @@ fn print_usage() {
     eprintln!("  close      close the books now: everything holding them lets go");
     eprintln!("  doctor     whether the books are open, what holds them, what went wrong");
     eprintln!("  update     bring this program to the newest release (`rollback` goes back)");
+    eprintln!("  licenses   the licences of the libraries and fonts this program includes");
 }
 
 /// The viewer's arguments for `wanderbooks gui ARGS` (plan 3.6): a lone
@@ -381,6 +389,25 @@ fn run_server(args: Vec<String>) -> i32 {
     }
 }
 
+/// `wanderbooks licenses`: the third-party notices compiled into the
+/// program. It opens no books and reads no file: what it prints is part of
+/// this binary. A pipe that closes early (`| head`) is how the reader
+/// finished, not an error, so a write error is ignored.
+fn run_licenses(args: Vec<String>) -> i32 {
+    if !args.is_empty() {
+        eprintln!("usage: wanderbooks licenses");
+        return 2;
+    }
+    let mut out = std::io::stdout().lock();
+    let header = format!(
+        "wanderbooks {} is licensed under MIT OR Apache-2.0.\n\n",
+        env!("CARGO_PKG_VERSION")
+    );
+    let _ = out.write_all(header.as_bytes());
+    let _ = out.write_all(NOTICES.as_bytes());
+    0
+}
+
 /// The modes that open and hold the books (plan 3.9): the host, the
 /// agents' bridge, and the owner's commands.
 fn run_local(mode: &str, args: Vec<String>) -> i32 {
@@ -478,6 +505,7 @@ fn main() {
         Some("gui") => std::process::exit(run_gui(all.collect())),
         Some("setup") => std::process::exit(run_setup(all.collect())),
         Some("server") => std::process::exit(run_server(all.collect())),
+        Some("licenses") => std::process::exit(run_licenses(all.collect())),
         Some(
             mode @ ("host" | "mcp" | "serve" | "close" | "books" | "doctor" | "token" | "connect"
             | "passphrase" | "update" | "rollback"),
@@ -499,16 +527,29 @@ fn main() {
         std::process::exit(2);
     }
     // A mode named after a flag: it must come first.
-    match words
-        .iter()
-        .map(String::as_str)
-        .find(|w| !w.starts_with('-'))
-    {
-        Some(
-            mode @ ("gui" | "setup" | "server" | "host" | "mcp" | "serve" | "connect" | "close"
-            | "books" | "doctor" | "token" | "passphrase" | "update" | "rollback"
-            | "upload" | "download"),
-        ) => {
+    match words.iter().map(String::as_str).find(|w| {
+        matches!(
+            *w,
+            "gui"
+                | "setup"
+                | "server"
+                | "host"
+                | "mcp"
+                | "serve"
+                | "connect"
+                | "close"
+                | "books"
+                | "doctor"
+                | "token"
+                | "passphrase"
+                | "update"
+                | "rollback"
+                | "upload"
+                | "download"
+                | "licenses"
+        )
+    }) {
+        Some(mode) => {
             eprintln!("`{mode}` must come first: wanderbooks {mode} [its own flags]");
             std::process::exit(2);
         }

@@ -72,10 +72,15 @@ printf 'disallowed-methods = [%s]\n' "$methods" > "$work/all/clippy.toml"
     printf 'arithmetic-side-effects-allowed = ["rust_decimal::Decimal", "rust_decimal::decimal::Decimal"]\n'
 } > "$work/rest/clippy.toml"
 
+# The library and the programs: a package with no library (ledger-cli) is
+# its programs alone, and cargo refuses `--lib` there.
+targets=(--bins)
+if [ -f "crates/$pkg/src/lib.rs" ]; then targets=(--lib --bins); fi
+
 # One clippy run: the findings as `file<TAB>line<TAB>column<TAB>lint<TAB>what<TAB>source`.
 run() {
     local name=$1 status=0
-    CLIPPY_CONF_DIR="$work/$name" cargo clippy --quiet -p "$pkg" --lib \
+    CLIPPY_CONF_DIR="$work/$name" cargo clippy --quiet -p "$pkg" "${targets[@]}" \
         --target-dir "target/raw-arith/$name" --message-format=json -- \
         -A clippy::all -W clippy::arithmetic_side_effects -W clippy::disallowed_methods \
         > "$work/$name.json" 2> "$work/$name.err" || status=$?

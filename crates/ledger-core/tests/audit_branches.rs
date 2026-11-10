@@ -311,6 +311,155 @@ fn a_close_split_drifts_by_the_regime_it_was_made_under() {
     );
 }
 
+/// BS-partner-1 statement 4 (the allocation is the split to the base
+/// currency's smallest unit) and WB-ledger-16 invariant 8: a JPY close is
+/// checked at the allocation's unit -- a whole yen, JPY having no minor
+/// unit below it -- not at a cent. A drift of half a yen is under that
+/// unit; a drift of a whole yen after the true-up is not.
+#[test]
+fn a_jpy_close_is_checked_at_the_allocations_unit() {
+    // The one helper both the split and its audit use.
+    assert_eq!(Currency::JPY.allocation_unit(), dec("1"));
+    assert_eq!(Currency::USD.allocation_unit(), dec("0.01"));
+    // A code ISO 4217 gives no minor unit splits at the finest a line
+    // carries, so its audit unit is that, not a cent.
+    assert_eq!(
+        Currency::new("XAU").unwrap().allocation_unit(),
+        dec("0.0000000001")
+    );
+    let yen = Currency::JPY.allocation_unit();
+    let m = |running: &str, exact: &str| MemberSplit {
+        capital: 3001,
+        share: dec("0.5"),
+        part: dec(running),
+        running: dec(running),
+        exact: dec(exact),
+    };
+    // Half a yen of drift is under one yen (it would be fifty cents'
+    // worth of drift at a cent unit, and flagged there).
+    assert!(audit::check_split(1, "Jan", &[m("100.5", "100")], yen, true).is_empty());
+    // A whole yen after the true-up is a finding (statement 5's >= unit).
+    let f = audit::check_split(1, "Jan", &[m("101", "100")], yen, true);
+    assert_eq!(codes(&f), ["close_split_drifts"]);
+
+    // End to end: a yen members close splits in whole yen and the audit
+    // of the closed period raises no close finding.
+    let mut l = Ledger::new(Currency::JPY);
+    let cash = l
+        .add_account("1000", "Bank", AccountType::Asset, None, false)
+        .unwrap();
+    let revenue = l
+        .add_account("4000", "Sales", AccountType::Revenue, None, false)
+        .unwrap();
+    let caps: Vec<u64> = ["3001", "3002"]
+        .iter()
+        .map(|c| {
+            l.add_account(c, c, AccountType::Equity, None, false)
+                .unwrap()
+        })
+        .collect();
+    let e = l.create_entry(d(1, 5), "sale");
+    l.add_line(e, cash, Side::Debit, Money::new(dec("101"), Currency::JPY))
+        .unwrap();
+    l.add_line(
+        e,
+        revenue,
+        Side::Credit,
+        Money::new(dec("101"), Currency::JPY),
+    )
+    .unwrap();
+    l.post_entry(e).unwrap();
+    let jan = l.create_period("2026-01", d(1, 1), d(1, 31)).unwrap();
+    let members = caps
+        .iter()
+        .map(|&capital| MemberClose {
+            capital,
+            share: dec("0.5"),
+            distributions: None,
+        })
+        .collect();
+    l.close_period_to(jan, &CloseTo::Members(members)).unwrap();
+    // 101 yen at 50/50 splits 51 / 50 whole yen (exact 50.5 each).
+    let balances: Vec<Decimal> = caps
+        .iter()
+        .map(|&a| l.account_balance(a).unwrap())
+        .collect();
+    assert_eq!(balances, [dec("51"), dec("50")]);
+    let f = run(&l, &Settings::default(), &all_receipts(&l), d(12, 31));
+    assert!(
+        !codes(&f).contains(&"close_split_drifts"),
+        "{:?}",
+        codes(&f)
+    );
+}
+
+/// BS-partner-1 statement 6 and WB-ledger-16 invariant 8: before the
+/// true-up, a legacy last-absorbs close's largest legitimate drift is
+/// derived (the rule states the per-member facts, not the bound): with
+/// n members and unit u, each member but the last was rounded to within
+/// u/2, and the last absorbed the sum of those roundings, up to
+/// (n-1)*u/2 -- so 3u/2 with four members and 2u with five (floored at
+/// u, which statement 6's per-close and run allowances give). At that
+/// drift a close is not flagged; one unit past it, it is. After the
+/// true-up, BS-partner-1 statement 5's strict bound holds instead: a
+/// drift of a unit or more is flagged.
+#[test]
+fn a_legacy_last_absorbs_close_drifts_by_member_count_before_its_true_up() {
+    let unit = dec("0.01");
+    // A split of `n` members whose last-listed member carries `drift`
+    // (running against an exact 1.00) and whose others are exact.
+    let split = |n: usize, drift: &str| -> Vec<MemberSplit> {
+        (0..n)
+            .map(|i| {
+                let running = if i + 1 == n {
+                    dec("1.00") + dec(drift)
+                } else {
+                    dec("1.00")
+                };
+                MemberSplit {
+                    capital: 3001 + i as u64,
+                    share: dec("0.25"),
+                    part: running,
+                    running,
+                    exact: dec("1.00"),
+                }
+            })
+            .collect()
+    };
+    // Four members: largest legitimate drift 3 * 0.005 = 0.015, either way.
+    assert!(audit::check_split(1, "Jan", &split(4, "0.015"), unit, false).is_empty());
+    assert!(audit::check_split(1, "Jan", &split(4, "-0.015"), unit, false).is_empty());
+    // Anything past it is flagged, exactly one member: a tenth of a
+    // unit past (a bound of two units would let this through), and a
+    // whole unit past.
+    for drift in ["0.016", "-0.016", "0.025"] {
+        let f = audit::check_split(1, "Jan", &split(4, drift), unit, false);
+        assert_eq!(codes(&f), ["close_split_drifts"], "{drift}");
+    }
+    // Three members and two: the bound is the unit itself, as it was.
+    assert!(audit::check_split(1, "Jan", &split(3, "0.01"), unit, false).is_empty());
+    assert!(audit::check_split(1, "Jan", &split(2, "0.01"), unit, false).is_empty());
+    for n in [2, 3] {
+        let f = audit::check_split(1, "Jan", &split(n, "0.011"), unit, false);
+        assert_eq!(codes(&f), ["close_split_drifts"], "{n} members");
+    }
+    // Five members: largest legitimate drift 4 * 0.005 = 0.02.
+    assert!(audit::check_split(1, "Jan", &split(5, "0.02"), unit, false).is_empty());
+    assert!(audit::check_split(1, "Jan", &split(5, "-0.02"), unit, false).is_empty());
+    for drift in ["0.021", "0.03"] {
+        let f = audit::check_split(1, "Jan", &split(5, drift), unit, false);
+        assert_eq!(codes(&f), ["close_split_drifts"], "{drift}");
+    }
+    // After the true-up the same splits answer to statement 5: the
+    // four-member split at its legacy bound is past one unit, so it is
+    // flagged, and one just under a unit is not.
+    let f = audit::check_split(1, "Jan", &split(4, "0.015"), unit, true);
+    assert_eq!(codes(&f), ["close_split_drifts"]);
+    assert!(audit::check_split(1, "Jan", &split(4, "0.009"), unit, true).is_empty());
+    let f = audit::check_split(1, "Jan", &split(4, "0.01"), unit, true);
+    assert_eq!(codes(&f), ["close_split_drifts"]);
+}
+
 /// BS-partner-1 statement 6 and 8 (WB-partner-1): a count is trued up by
 /// the first close under the cumulative rule that posts an entry, not by
 /// a close of an older rule or one that posts nothing; the books say so

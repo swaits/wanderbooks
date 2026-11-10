@@ -40,6 +40,8 @@ merged. bookspec main is at 2b3b6c9 (wanderbooks pinned there).
   of bookspec's theorem list (151 of 177). Kept and pinned: an exact tie
   between shares goes where Decimal's 28th digit sends it, as it always
   has (K-U10 puts exact ranking to the owner, with the cents it moves).
+  Decided since (D-76, merged 5e9591725): a tie goes to the earlier
+  part, ranked on exact remainders.
 
 **Next**: X-H1d's fixes, X-H1e; S-C8, S-E4, V-D3 (small, from the
 reviews); K-U6..U9, K-U10 (with the owner's tie-break decision); X-K2,
@@ -78,7 +80,8 @@ reviewed by a second model before it merged:
   refuse; a reversal could be dated before its original (D-73); a
   26-place foreign amount booked a cent the product never reached
   (D-75). Found, scheduled: rust_decimal's add and multiply round at
-  their edges (K-U10).
+  their edges (K-U10; closed 2026-11-09, merged e632855f1: the kernel's
+  sums and products are exact or refused).
 - **Coverage**: a report and floor (core 90%, store 92%, weekly), and
   rust_decimal checked against exact rationals (V-D).
 

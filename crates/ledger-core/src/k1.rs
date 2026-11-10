@@ -34,9 +34,8 @@
 //!      it) is shared among the members credited in proportion to their
 //!      credits, to the base currency's minor unit (cents, whole yen),
 //!      leftover units by largest remainder
-//!      (kernel::apportion, a tie in the rounded remainders to the
-//!      earlier member; an exact tie follows the quotient's 28th digit,
-//!      K-U10): each takes at
+//!      (kernel::apportion over the exact remainders, a tie to the
+//!      earlier member, K-U10): each takes at
 //!      most its own credit, and the split depends on the order the
 //!      members are given only for a tied leftover cent (never on line
 //!      order). Joint property is joint (BS-partner-1's

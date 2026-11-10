@@ -24,9 +24,14 @@ pub fn kind_label(k: CapitalKind) -> &'static str {
     }
 }
 
-/// A share as a percent: 0.5 → "50%", 0.3333 → "33.33%".
+/// A share as a percent: 0.5 → "50%", 0.3333 → "33.33%". A share is a
+/// stored fraction, not a ratio of two amounts, so this is exact
+/// decimal multiplication (never a float, never rounded); only a
+/// negative zero is dropped.
 pub fn percent(share: Decimal) -> String {
-    format!("{}%", (share * Decimal::ONE_HUNDRED).normalize())
+    let p = share * Decimal::ONE_HUNDRED;
+    let p = if p.is_zero() { Decimal::ZERO } else { p };
+    format!("{}%", p.normalize())
 }
 
 /// One statement row: an indented label, an amount column, and an

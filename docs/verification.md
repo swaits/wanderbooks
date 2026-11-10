@@ -188,6 +188,13 @@ Each step carries the checks the engine makes before it mutates. These
 theorems hold in **every state reachable from empty books, by any
 sequence of commands, of any length**:
 
+"Commands" there are the model's steps. Which command of the engine is
+which step is `docs/command-steps.md`: 119 commands, of which one
+(`renumber_account`) is no step, and 17 are the doors a journal is
+replayed through, four of which do not make a check the model's step
+requires. That page says what the theorems below do and do not cover for
+each, and `tests/command_steps.rs` fails when a command has no row.
+
 11. **The invariant holds**: chart codes are unique, every posted entry is
     acceptable and on known accounts, and no draft is dated in a closed
     period. (That last one is why the store can journal a post before
@@ -885,7 +892,7 @@ replay rules.
       `largest_remainder_ranks_like_the_exact_reference`,
       `the_absorbing_parts_keep_the_old_scale`,
       `split_into_matches_the_allocating_split`,
-      `finding_ties_follow_the_rounded_quotient`,
+      `ties_go_to_the_earlier_part`,
       `share_floor_refuses_past_the_correction_cap`,
       `finding_the_quotients_rounding_can_cross_a_step`
     - `split_by_weights_with` is an `EXCEPTIONS` wrapper (it allocates two
@@ -981,20 +988,22 @@ kernel. What the proofs and their reviews found, beyond the tidying:
   decimal places, before computing and never on replay (D-75,
   `ValueOutOfRange`); `past_ten_places_the_reference_and_decimal_part_and_the_engine_refuses`
   pins it.
-- **The 96-bit half of that precondition is not enforced.** Ten places
+- **The 96-bit half of that precondition was not enforced.** Ten places
   each still allow a product of twenty places past about 7.9e8, which
   needs more than 96 bits: `1050000010.0000000001 × 9.9999999999` is
   `10500000099.89499999999999999999` exactly (10500000099.89 to the cent)
-  but `Decimal` holds 10500000099.895 and the engine books
-  10500000099.90. `the_mantissa_edge_is_outside_the_precondition_and_pinned`
-  pins it; refusing it is the owner's decision (K-U10).
-- **`Decimal`'s addition is not exact in the top unit of `MAX`.**
+  but `Decimal` held 10500000099.895 and the engine booked
+  10500000099.90. Closed by K-U10: the kernel holds the product in 256
+  bits and rounds it once, so the line books 10500000099.89
+  (`the_mantissa_edge_books_the_exact_products_cent`). A line already
+  posted is not recomputed: replay reads the booked amount.
+- **`Decimal`'s addition was not exact in the top unit of `MAX`.**
   `Decimal::MAX.checked_add(0.4)` is `Some(MAX)`: `rust_decimal` rounds
   sub-unit dust when the sum needs a 97th bit (`MAX + 0.5` is `None`), so
-  the kernel's "exact or `None`" contract fails there for every function
+  the kernel's "exact or `None`" contract failed there for every function
   that adds, not only `total`. No posted line reaches it (the line cap is
-  10^15); `finding_decimal_add_rounds_dust_at_the_edge` and
-  `decimal_edge_table` pin it, and it is K-U10's to settle.
+  10^15). Closed by K-U10: the kernel's sum is the exact one or `None`
+  (`a_sum_past_exact_arithmetic_is_refused`, `decimal_edge_table`).
 - **A share's quotient can cross a step, and its product's rounding can
   hide it.** At `Decimal`'s 96-bit mantissa edge, `checked_div`'s rounding
   can move a share across a step and `checked_mul`'s rounding hides that
@@ -1007,7 +1016,12 @@ kernel. What the proofs and their reviews found, beyond the tidying:
   division carries the same edge: `MAX / 2` rounds before the step, so the
   part is not within half a step of the exact quotient (`the_edges` pins
   it); the engine's callers refuse totals of `EXACT_LIMIT` (10^26) or
-  more, so no schedule reaches it. Both are K-U10 items.
+  more, so no schedule reaches it. K-U10 settled the products: a product
+  that is the amount itself (`checked_mul`) is exact or refused, so the
+  square above is `None`; a share's product keeps rounding, under its own
+  name (`checked_mul_rounded`), since a share by a percent of 27 places
+  is a rounded figure by construction and is divided next. The division
+  (`checked_div`) is the engine's rounding division and is unchanged.
 - **One panic became a refusal.** `k1::share_property`'s old
   `apportion(...).expect(...)` would panic at that edge; the kernel
   returns `None` and the site reports `TooLargeToCompute`.
@@ -1024,13 +1038,33 @@ kernel. What the proofs and their reviews found, beyond the tidying:
   337.50`, the kernel `4050.00, …`), and that scale reaches `Part.amount`.
   The kernel computes the old expression, pinned by
   `the_absorbing_parts_keep_the_old_scale`.
-- **Ties follow the rounded quotient.** The split ranks the rounded
-  quotients' remainders, not exact rationals, so an exact tie goes where
-  the 28th digit sends it: 20.00 split 4/1/1 over 6 is `13.33, 3.34,
-  3.33` (exact ranking `13.34, 3.33, 3.33`), and 20 whole is `13, 4, 3`
-  (exact `14, 3, 3`). The pre-sweep sites did the same;
-  `finding_ties_follow_the_rounded_quotient` pins it, and the owner decides
-  the exact ranking in K-U10, unchanged here.
+- **Ties go to the earlier part, exactly (K-U10).** The split ranked the
+  rounded quotients' remainders, so an exact tie went where the 28th digit
+  sent it: 20.00 split 4/1/1 over 6 was `13.33, 3.34, 3.33` and 20 whole
+  was `13, 4, 3`. The pre-sweep sites did the same, and K-U3 kept it and
+  pinned it. It now ranks the exact remainder `whole x weight - part x
+  total` (as `share_floor_with` does), so a tie goes to the earlier part:
+  `13.34, 3.33, 3.33` and `14, 3, 3`, which is what bookspec's
+  `Apportion.lean` models (`remW`, ties to the earlier member).
+  `ties_go_to_the_earlier_part` pins it, and `tests/kernel_bridge/ties.rs`
+  measures what it moves against the old ranking: nothing between two
+  parts or by equal weights, at most a cent a part elsewhere. The owner
+  decided for the exact ranking (D-76, 2026-11-09). Kani then found the
+  same on whole numbers: with the exact ranking a part whose share is
+  exact can no longer take a leftover unit (5 by 2/3/5 is 1, 2, 2, where
+  the truncated quotients gave 2, 1, 2), so a cover in
+  `split_by_weights_within_one_step` could not be reached; the harness
+  now asserts the strict bound and that an exact share takes no unit.
+- **`Decimal`'s sums and products are exact or refused (K-U10).**
+  `rust_decimal` rounds a sum or product it cannot hold and returns
+  `Some`; the kernel's `Amount for Decimal` now checks each result in 256
+  bits and refuses a rounded one. `checked_div_exact` accepted a rounded
+  quotient that multiplied back (`10 / 3`), found in review of the unit;
+  it refuses them. An independent review then found the bridge
+  properties proved a returned figure exact, not that an exact figure is
+  never refused; they now prove both, from the rational alone. One
+  refusal remains by design: a product that is not exact, rounded to a
+  step of 27 or 28 places. `docs/proofs/k-u10.md` has the account.
 - **The sweep changed no posted figure.** Every golden and existing test
   passed unchanged. `round_places` reproduces `round_dp_with_strategy` to
   the character except a negative-zero input (which no call site can
@@ -1085,16 +1119,19 @@ Be precise about the claims:
   checked; the sweep's bridge properties compare the engine to an
   independent exact `i128` reference for every step, count and amount the
   `Decimal` type can hold.
-- **The sweep's `Decimal` edges are pinned, not refused.** `checked_mul`
-  rounds at 96 bits (`fx`'s `the_mantissa_edge_is_outside_the_precondition_and_pinned`
-  and `123456789.0123456789²`), `checked_div` rounds at 28 significant
-  digits (K-U3's `finding_the_quotients_rounding_can_cross_a_step`, K-U5's
-  `the_edges` at `Decimal::MAX / 2`), and `checked_add` rounds sub-unit
-  dust in the top unit of `MAX` (K-U4's
-  `finding_decimal_add_rounds_dust_at_the_edge`). None is reachable by a
-  posted line (the line cap is 10^15, and schedules refuse totals of
-  `EXACT_LIMIT` or more), so the laws hold at the engine's inputs; whether
-  the kernel should refuse these shapes outright is K-U10's decision.
+- **The sweep's `Decimal` sums and products are refused at their edges;
+  its divisions are pinned.** Since K-U10 the kernel's `checked_add`,
+  `checked_sub` and `checked_mul` for `Decimal` are exact or `None`
+  (`tests/kernel_bridge/decimal_exact.rs`: `Some` exactly when the exact
+  result is a `Decimal`), and a foreign amount at a rate is rounded once
+  from the exact product. Two operations round, each by name:
+  `checked_div` at 28 significant digits (K-U3's
+  `finding_the_quotients_rounding_can_cross_a_step`, K-U5's `the_edges`
+  at `Decimal::MAX / 2`) and a share's `checked_mul_rounded`. Neither
+  edge is reachable by a posted line (the line cap is 10^15, and
+  schedules refuse totals of `EXACT_LIMIT` or more), so the laws hold at
+  the engine's inputs. Not proved by Kani: the 256-bit helpers, which
+  rest on the bridge properties and unit tests against `num_bigint`.
 - **The FX overflow harness proves two concrete cases, not every
   overflow.** `fx_booked_refuses_overflow` proves `i64::MAX × 2` and
   `100 × i64::MAX` (step 1) are `None`, and that a non-positive rate is
@@ -1240,7 +1277,9 @@ just prove-all   # both
 ```
 
 `just prove` runs every Kani harness but the justfile's `kani_slow`, in
-parallel (`-j $(nproc)`), the whole run under a 30-minute timeout; fetches
+parallel (`-j $(nproc)`), each harness under a 15-minute cap
+(`KANI_HARNESS_CAP`, seconds) and the whole run under a 30-minute one
+(`KANI_FAST_CAP`, seconds); fetches
 and builds bookspec's Lean proofs (seconds; the git dependency is pinned in
 `verify/lean/lakefile.toml` and its manifest); and fails if any theorem
 depends on anything beyond Lean's standard axioms (`propext`,
@@ -1256,6 +1295,16 @@ harness with its module path and the set it runs in, resolving the slow
 list without spending a verification. CI's weekly run does both, on
 two runners (`.github/workflows/scheduled.yml`). Kani downloads its
 pinned nightly and CBMC into `~/.kani` on first use.
+
+**A run that is cut off says what it left (2026-11-09).** Until then the
+fast set had the one 30-minute cap and nothing else: on a machine busy
+with other builds `timeout` ended it with exit 124, and the output named
+neither a failed harness nor an unfinished one, so "red" could not be
+told from "slow". Now a run that does not verify every harness lists
+each one that failed, each that ran past its own cap, and each that
+never finished, and a cut-off run says so and how to give it longer:
+`KANI_FAST_CAP=7200 just prove`. The caps are not the proof: raising one
+changes how long a harness may take, never what it must show.
 
 **Why the split (2026-10-21, the P3 surface review).** With all of P3 the
 suite is 55 harnesses. One `just prove` at four jobs (a CI runner's
@@ -1380,7 +1429,7 @@ included):
 | `fx_booked_positive_for_positive` | 41 | prove | 3.2 |
 | `fx_booked_refuses_overflow` | 41 | prove | 2.6 |
 | `split_by_weights_sums` | 18 | prove | 23.9 |
-| `split_by_weights_within_one_step` | 42 | prove | 14.4 |
+| `split_by_weights_within_one_step` | 42 | prove | 22 |
 | `split_by_weights_no_part_exceeds` | 18 | prove | 12.4 |
 | `split_by_weights_first_absorbs` | 18 | prove | 2.3 |
 | `split_by_weights_last_absorbs` | 18 | prove | 4.3 |

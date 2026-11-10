@@ -62,21 +62,30 @@ pub fn dollars(d: Decimal) -> String {
     }
 }
 
+/// The one display rounding, shared with every other renderer.
+pub use ledger_import::format::round_display;
+
 /// Rounded for chart axes and tight tiles: `$1.2k`, `$3.4M`, `$950`.
+/// Exact decimal arithmetic: a money amount never goes through a float,
+/// not even to shorten it for an axis.
 pub fn compact(d: Decimal) -> String {
-    let f: f64 = d.try_into().unwrap_or(0.0);
-    let a = f.abs();
-    let s = if a >= 1_000_000.0 {
-        format!("${:.1}M", a / 1_000_000.0)
-    } else if a >= 10_000.0 {
-        format!("${:.0}k", a / 1_000.0)
-    } else if a >= 1_000.0 {
-        format!("${:.1}k", a / 1_000.0)
+    let a = d.abs();
+    let scaled = |divisor: Decimal, places: u32| {
+        a.checked_div(divisor)
+            .map(|v| round_display(v, places))
+            .unwrap_or(a)
+    };
+    let s = if a >= Decimal::from(1_000_000) {
+        format!("${:.1}M", scaled(Decimal::from(1_000_000), 1))
+    } else if a >= Decimal::from(10_000) {
+        format!("${:.0}k", scaled(Decimal::from(1_000), 0))
+    } else if a >= Decimal::from(1_000) {
+        format!("${:.1}k", scaled(Decimal::from(1_000), 1))
     } else {
-        format!("${a:.0}")
+        format!("${:.0}", round_display(a, 0))
     };
     // No sign on what rounds to zero ("$0", not "−$0").
-    if f < 0.0 && s != "$0" {
+    if d.is_sign_negative() && !d.is_zero() && s != "$0" {
         format!("\u{2212}{s}")
     } else {
         s
@@ -127,14 +136,22 @@ pub fn plain(display: &str) -> Option<String> {
     })
 }
 
-/// A percent change from `prev` to `now`, if `prev` isn't zero.
-pub fn pct_change(prev: Decimal, now: Decimal) -> Option<f64> {
-    if prev.is_zero() {
-        return None;
-    }
-    let p: f64 = prev.try_into().ok()?;
-    let n: f64 = now.try_into().ok()?;
-    Some((n - p) / p.abs() * 100.0)
+/// A percent change from `prev` to `now`: `(now - prev) / prev * 100`
+/// to one place, half away from zero. `None` when `prev` is zero or
+/// negative: a change from no base, or from a negative base, has no
+/// honest percent (the one rule every percent in the viewer follows;
+/// the caller shows nothing, or "—", for `None`).
+pub fn pct_change(prev: Decimal, now: Decimal) -> Option<Decimal> {
+    let part = now.checked_sub(prev)?;
+    let mut x = ledger_core::kernel::percent_of(
+        part,
+        prev,
+        Decimal::new(1, 1),
+        ledger_core::kernel::Rounding::HalfAwayFromZero,
+    )?;
+    // One place always, so no change prints "0.0", never "0" or "-0.0".
+    x.rescale(1);
+    Some(x)
 }
 
 /// `Oct 12, 2026`.
@@ -275,5 +292,32 @@ mod tests {
         assert_eq!(plain("1_000.00"), None);
         assert_eq!(plain("1e3"), None);
         assert_eq!(plain(""), None);
+    }
+
+    /// pct_change: exact decimal percent to one place; no percent of a
+    /// zero or negative base (the viewer's one percent rule).
+    #[test]
+    fn a_percent_change_is_decimal_or_none() {
+        assert_eq!(pct_change(dec("200"), dec("250")), Some(dec("25.0")));
+        assert_eq!(pct_change(dec("200"), dec("150")), Some(dec("-25.0")));
+        assert_eq!(pct_change(dec("3"), dec("4")), Some(dec("33.3")));
+        assert_eq!(pct_change(dec("0"), dec("5")), None);
+        assert_eq!(pct_change(dec("-100"), dec("-50")), None);
+        assert_eq!(pct_change(dec("-100"), dec("50")), None);
+        // No negative zero: no change is +0.0.
+        assert_eq!(
+            pct_change(dec("100"), dec("100")).map(|p| p.to_string()),
+            Some("0.0".into())
+        );
+    }
+
+    /// compact: decimal shortening, half away from zero, no "-$0".
+    #[test]
+    fn compact_is_decimal() {
+        assert_eq!(compact(dec("1250000")), "$1.3M");
+        assert_eq!(compact(dec("1150000")), "$1.2M");
+        assert_eq!(compact(dec("10500")), "$11k");
+        assert_eq!(compact(dec("999")), "$999");
+        assert_eq!(compact(dec("-0.4")), "$0");
     }
 }

@@ -12,7 +12,8 @@ use rust_decimal::Decimal;
 pub trait Amount: Copy + Ord {
     /// Zero.
     const ZERO: Self;
-    /// `self + rhs`, or `None` when it cannot be represented exactly.
+    /// `self + rhs`, or `None` when it cannot be represented exactly (for
+    /// [`Decimal`], never a sum `rust_decimal` had to round: K-U10).
     fn checked_add(self, rhs: Self) -> Option<Self>;
     /// `-self`, or `None` when it cannot be represented.
     fn checked_neg(self) -> Option<Self>;
@@ -27,9 +28,45 @@ pub trait Amount: Copy + Ord {
     fn from_u32(n: u32) -> Option<Self>;
     /// `self * rhs`, or `None` when it cannot be represented exactly.
     ///
-    /// A quantity times a unit price (a document line, BS-arap-3) is the one
-    /// use: it never rounds.
+    /// A quantity times a unit price (a document line, BS-arap-3), a
+    /// category's book amount times its percent, and the other products
+    /// that are the amount itself: it never rounds. For [`Decimal`] that
+    /// is a check, not a given (K-U10): `rust_decimal` rounds a product
+    /// whose mantissa passes 96 bits or whose scale passes 28, and this
+    /// refuses it instead.
     fn checked_mul(self, rhs: Self) -> Option<Self>;
+    /// `self * rhs` as the amount type multiplies, which for [`Decimal`] is
+    /// `rust_decimal`'s: exact where the product fits 96 bits and scale
+    /// 28, otherwise rounded to what it holds. `None` only on overflow.
+    ///
+    /// This is the engine's rounding product, as [`Amount::checked_div`]
+    /// is its rounding division, and for the same use: a proportional
+    /// share (`whole x weight / total`, [`crate::kernel::share_of`]) whose
+    /// weight is a percent or a ratio of many places (33.333...3, twenty
+    /// seven places) is a rounded figure by construction, and has always
+    /// been computed this way, to the digit. Nothing else calls it; a
+    /// product that is the amount is [`Amount::checked_mul`]. A machine
+    /// integer never rounds, so there it is `checked_mul`.
+    fn checked_mul_rounded(self, rhs: Self) -> Option<Self> {
+        self.checked_mul(rhs)
+    }
+    /// `self * rhs`, computed exactly and rounded once to a whole multiple
+    /// of `step` in `mode`; `None` when `step` is not positive or the
+    /// result cannot be represented.
+    ///
+    /// The one use is a foreign amount at a rate ([`crate::kernel::fx_booked`]).
+    /// For [`Decimal`] the exact product may need more than 96 bits (ten
+    /// places each, D-75, is twenty places, and past 7.9e8 the mantissa
+    /// passes `Decimal`'s): it is held wider than `Decimal` for the one
+    /// rounding, never rounded early and then again. Two refusals come
+    /// with that, both far from any books: a product that is not exact
+    /// and is past about 7.9e26 divided by 10^(the step's places), and a
+    /// product that is not exact at a step of 27 or 28 places (the
+    /// rounding needs two places below the step, and `Decimal` ends at
+    /// 28). An exact product is rounded at any step.
+    fn checked_mul_round_to_step(self, rhs: Self, step: Self, mode: Rounding) -> Option<Self> {
+        super::round::round_step(self.checked_mul(rhs)?, step, mode)
+    }
     /// `self / rhs` exactly, or `None` when `rhs` is zero or the quotient
     /// is not a whole amount of `Self` (never a rounded share).
     fn checked_div_exact(self, rhs: Self) -> Option<Self>;
@@ -79,8 +116,16 @@ pub const MAX_LINE_SCALE: u32 = 10;
 
 impl Amount for Decimal {
     const ZERO: Self = Decimal::ZERO;
+    // Exact or `None` (K-U10): `rust_decimal`'s own add and multiply round a
+    // result that needs more than 96 bits (or a scale past 28) instead of
+    // refusing it; `decimal_exact` checks the figure is the exact one.
     fn checked_add(self, rhs: Self) -> Option<Self> {
-        Decimal::checked_add(self, rhs)
+        super::decimal_exact::exact_add(self, rhs)
+    }
+    // `rust_decimal`'s own subtraction, checked the same way (it is not
+    // `self + (-rhs)` for a zero: that gives a negative zero).
+    fn checked_sub(self, rhs: Self) -> Option<Self> {
+        super::decimal_exact::exact_sub(self, rhs)
     }
     fn checked_neg(self) -> Option<Self> {
         Some(-self)
@@ -92,11 +137,30 @@ impl Amount for Decimal {
         Some(Decimal::from(n))
     }
     fn checked_mul(self, rhs: Self) -> Option<Self> {
+        super::decimal_exact::exact_mul(self, rhs)
+    }
+    fn checked_mul_rounded(self, rhs: Self) -> Option<Self> {
         Decimal::checked_mul(self, rhs)
+    }
+    fn checked_mul_round_to_step(self, rhs: Self, step: Self, mode: Rounding) -> Option<Self> {
+        if let Some(product) = super::decimal_exact::exact_mul(self, rhs) {
+            return super::round::round_step(product, step, mode);
+        }
+        // The exact product does not fit `Decimal`: round it once, from a
+        // wider integer, not twice.
+        if step <= Decimal::ZERO {
+            return None;
+        }
+        let proxy = super::decimal_exact::mul_for_rounding(self, rhs, step.normalize().scale())?;
+        super::round::round_step(proxy, step, mode)
     }
     fn checked_div_exact(self, rhs: Self) -> Option<Self> {
         let q = self.checked_div(rhs)?;
-        (q.checked_mul(rhs) == Some(self)).then_some(q)
+        // The exact product, not `rust_decimal`'s: a rounded quotient
+        // times the divisor rounds back to the dividend there (10 / 3 is
+        // 3.333...3, and 3.333...3 x 3 is held as 10), which would pass a
+        // rounded share as an exact one.
+        (super::decimal_exact::exact_mul(q, rhs) == Some(self)).then_some(q)
     }
     fn checked_div(self, rhs: Self) -> Option<Self> {
         Decimal::checked_div(self, rhs)

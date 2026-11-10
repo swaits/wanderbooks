@@ -49,7 +49,7 @@ the precondition, and states that `Decimal::checked_mul`'s two
 behaviours outside it are inherited, not hidden: rounding past scale 28
 (and past 96 bits), and `1e-28 x 1e-28` underflowing to zero.
 
-**An open edge, not closed by D-75.** The 96-bit half of the
+**An open edge, not closed by D-75 (closed since by K-U10, `docs/proofs/k-u10.md`).** The 96-bit half of the
 precondition is not enforced: ten places each still allow a product of
 twenty places past about 7.9e8, which needs more than 96 bits.
 `1050000010.0000000001 x 9.9999999999` is 10500000099.89499999999999999999

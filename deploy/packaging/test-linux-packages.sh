@@ -51,6 +51,10 @@ test "$before" = "$after"
 test "$head_before" = "$(head_of)"
 if as_tester 'wanderbooks update' >/tmp/update.out 2>&1; then echo "update did not refuse" >&2; exit 1; fi
 grep -q 'package manager' /tmp/update.out
+# The new package carries the third-party notices, as a file and in the
+# program, and the two are the same text.
+test -s /usr/share/doc/wanderbooks/THIRD-PARTY-NOTICES.txt
+as_tester 'wanderbooks licenses' | tail -n +3 | cmp -s - /usr/share/doc/wanderbooks/THIRD-PARTY-NOTICES.txt
 as_tester 'wanderbooks close' >/dev/null 2>&1 || true
 echo "OK"
 INNER

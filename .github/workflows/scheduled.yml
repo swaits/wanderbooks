@@ -22,6 +22,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: jdx/mise-action@v2
       - run: just prove-slow
+  # A dependency's advisory is published when it is, not when we push:
+  # the same check as in `just check`, so a week is the longest one waits.
+  deny:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - run: just deny
   lean-model:
     runs-on: ubuntu-24.04
     steps:

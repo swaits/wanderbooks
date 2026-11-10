@@ -324,9 +324,10 @@ fn origins_and_parties() {
 fn percent_change_and_tax_forms() {
     let d = |s: &str| s.parse::<Decimal>().unwrap();
     assert_eq!(fmt::pct_change(d("0"), d("5")), None);
-    assert_eq!(fmt::pct_change(d("100"), d("150")), Some(50.0));
-    assert_eq!(fmt::pct_change(d("200"), d("150")), Some(-25.0));
-    assert_eq!(fmt::pct_change(d("-100"), d("-50")), Some(50.0));
+    assert_eq!(fmt::pct_change(d("100"), d("150")), Some(d("50.0")));
+    assert_eq!(fmt::pct_change(d("200"), d("150")), Some(d("-25.0")));
+    // K-U9: no percent of a negative base (it misleads); Decimal, never f64.
+    assert_eq!(fmt::pct_change(d("-100"), d("-50")), None);
     use ledger_core::TaxForm::*;
     for (f, number) in [
         (ScheduleC, "Schedule C"),

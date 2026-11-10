@@ -4,6 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+publish.workspace = true
 description = "Read-only, live desktop view of wanderbooks books."
 
 [[bin]]
@@ -17,8 +18,12 @@ ledger-config = { path = "../ledger-config" }
 ledger-import = { path = "../ledger-import" }
 ledger-vault = { path = "../ledger-vault" }
 ledger-package = { path = "../ledger-package" }
-eframe = { version = "0.36", default-features = false, features = ["default_fonts", "wgpu", "wayland", "x11", "persistence"] }
-egui = "0.36"
+# No `default_fonts`, on eframe or on egui: egui's own font set includes
+# Ubuntu Light, under the Ubuntu Font Licence, which Debian and Fedora class
+# as non-free. The viewer names every font it draws with (theme.rs,
+# assets/fonts/README.md), and `just deny` refuses that licence.
+eframe = { version = "0.36", default-features = false, features = ["wgpu", "wayland", "x11", "persistence"] }
+egui = { version = "0.36", default-features = false }
 egui_extras = { version = "0.36", features = ["image", "datepicker", "serde"] }
 egui-phosphor = "0.14"
 # Markdown documents, drawn as text. No image loading (no `load-images`,

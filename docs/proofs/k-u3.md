@@ -73,12 +73,14 @@ split when the whole divides), the step is 1 (or 10 for the floor
 harness), and the bounds are `whole` 0 to 1,000 (100 for the floor
 harness). The laws are about the shape of the split, not the magnitude;
 Lean proves them of the exact-share model at any size, and the bridge
-checks the `Decimal` engine, whose ranking uses the rounded quotient.
+checks the `Decimal` engine, whose ranking is the exact remainder (K-U10:
+`whole × weight − part × total`, ties to the earlier part, the same
+quantity `share_floor_with` returns).
 
 | Harness | Law | Verification |
 |---|---|---|
 | `split_by_weights_sums` | 18 | the parts sum to the whole exactly; a shortfall is handed out; the largest weight takes more. 23.9 s (2 covers) |
-| `split_by_weights_within_one_step` | 42 | each part is above `-total` and at most `total` from its share, scaled by the total; a part off its share and a part exactly one step above are reached. 14.4 s (2 covers) |
+| `split_by_weights_within_one_step` | 42 | each part is above `-total` and below `total` from its share, scaled by the total, and a part whose share is exact takes no unit; a part off its share, and a unit handed out while the first part's share is exact, are reached. 22 s (2 covers) |
 | `split_by_weights_no_part_exceeds` | 18 | no part is negative or above the whole. 12.4 s (1 cover) |
 | `split_by_weights_first_absorbs` | 18 | the first part is its rounded share plus the shortfall; the sum is the whole; no part exceeds it. 2.3 s (1 cover) |
 | `split_by_weights_last_absorbs` | 18 | the last part is the whole less the others; the sum is the whole; no part exceeds it. 4.3 s (1 cover) |
@@ -86,13 +88,16 @@ checks the `Decimal` engine, whose ranking uses the rounded quotient.
 | `share_of_refuses_overflow` | 42 | `share_of(whole, 2, 1) = whole × 2` exactly when the product fits; a zero total and an overflowing product are `None`, never a panic. 0.47 s (2 covers) |
 | `share_floor_is_the_exact_floor` | 42 | the part is a multiple of the step, one more step passes the share, and the remainder is exact below `step × total`; the correction down is reached. 5.1 s (2 covers) |
 
-The upper bound of `split_by_weights_within_one_step` is inclusive on
-the `i64` model: its division truncates, so a part that divides exactly
-can still take a unit when another part's truncation left one over
-(`whole = 5`, weights 2/3/5: the first's 1 becomes 2, exactly one step
-above its truncated share). The `Decimal` quotient keeps the fraction, a
-part with no remainder never takes a unit, and the bridge checks the
-strict bound there.
+The upper bound of `split_by_weights_within_one_step` was inclusive on
+the `i64` model until K-U10: `i64`'s division truncates, the ranking read
+the quotient, and a part that divided exactly could take the unit another
+part's truncation left over (`whole = 5`, weights 2/3/5: the first's 1
+became 2). The ranking is now the exact remainder, which no division
+touches, so the split is 1, 2, 2 and the bound is strict on `i64` as on
+`Decimal`. Kani said so itself: with the exact ranking the old cover "a
+part exactly one step above its truncated share" could not be reached,
+and `just prove` fails on a cover that cannot. The harness now asserts
+the strict bound and that an exact share takes no unit.
 
 `share_floor_is_the_exact_floor` needed `#[kani::unwind(4)]`: without a
 bound on the correction loops, CBMC tried to unwind them without end and
@@ -143,10 +148,9 @@ harness 500.8 s, the run inside its 3600-second cap). Lean:
   no-rounding split, at the scales the call sites produce.
 - `decimal_edges_are_none_or_exact`: `Decimal::MAX`, a product past it, a
   zero total, and scale 28: each `None` or exact, never a panic.
-- `largest_remainder_ranks_like_the_exact_reference`: random distinct
-  weights over a non-terminating total (a factor of 3 or 7), against the
-  exact `i128` reference's ranking; exact ties are pinned below, not left
-  to fail this property.
+- `largest_remainder_ranks_like_the_exact_reference`: random weights (ties
+  included, since K-U10) at whole units and at the cent, against the exact
+  `i128` reference's ranking.
 - `the_absorbing_parts_keep_the_old_scale`: the strings, scale included,
   for 4860 by 6/0.7/0.5 (first `4050`, as the old `split_first` gave) and
   902 by 1/0.000001/0.000001 (first `902.00`); last absorbs against the
@@ -154,9 +158,10 @@ harness 500.8 s, the run inside its 3600-second cap). Lean:
 - `split_into_matches_the_allocating_split`: the fixed-array
   `split_by_weights_into` and `split_by_weights_with` agree, scale
   included (the gate requires a bridge that calls the fixed-array form).
-- `finding_ties_follow_the_rounded_quotient`: 20.00 split 4/1/1 over 6 is
-  13.33/3.34/3.33, and 20 whole is 13/4/3, not the exact tie's earlier
-  part (K-U10 decides).
+- `ties_go_to_the_earlier_part`: 20.00 split 4/1/1 over 6 is
+  13.34/3.33/3.33, and 20 whole is 14/3/3 (K-U10: the ranking is exact;
+  the rounded quotient gave 13.33/3.34/3.33 and 13/4/3). A negative total
+  keeps the share's own order.
 - `share_floor_refuses_past_the_correction_cap`: the review's
   0.1113 × 5909471247797156928749568911.8 ÷ 0.11134381908633486049673
   returns `None` promptly instead of hanging.
@@ -208,9 +213,9 @@ the `allocW_*` theorems were reused, not restated.
    `split` at ~684 is not arithmetic (it reads `k1_detail` rows) and
    needed no routing.
 2. **The `i64` model's division truncates.** The Kani within-one-step
-   bound is therefore inclusive on `i64`; the `Decimal` bridge checks the
-   strict bound for the engine. This is a model statement, not an engine
-   change.
+   bound was therefore inclusive on `i64` while the ranking read the
+   quotient; since K-U10 ranks the exact remainder it is strict there
+   too (above).
 3. **K-U10, Decimal's edges.** At `Decimal`'s 96-bit mantissa edge,
    `checked_div`'s rounding can move a share across a step, and
    `checked_mul`'s rounding hides it from `share_floor_with`'s correction.
@@ -249,11 +254,17 @@ the `allocW_*` theorems were reused, not restated.
    checked arithmetic), and `the_absorbing_parts_keep_the_old_scale`
    compares strings. `LastAbsorbs` was already the old `plug_last` and the
    no-places conventions split, and the same property checks it.
-7. **Ties follow the rounded quotient.** `split_by_weights_into` ranks the
-   rounded quotients' remainders, not exact rationals, so an exact tie goes
-   where the 28th digit sends it, not to the earlier part:
-   20.00 split 4/1/1 over 6 is `13.33, 3.34, 3.33` (exact ranking would be
-   `13.34, 3.33, 3.33`), and 20 whole is `13, 4, 3` (exact would be
-   `14, 3, 3`). The pre-U3 sites did the same. Pinned by
-   `finding_ties_follow_the_rounded_quotient`; the owner decides the exact
-   ranking in K-U10, and the ranking is unchanged here.
+7. **Ties go to the earlier part, exactly (K-U10).** The first version of
+   `split_by_weights_into` (and the pre-U3 call sites) ranked the leftover
+   units by the rounded quotients' remainders, so an exact tie went where
+   the quotient's 28th digit sent it: 20.00 split 4/1/1 over 6 was
+   `13.33, 3.34, 3.33` and 20 whole was `13, 4, 3`. It now ranks the exact
+   integer remainder `whole × weight − part × total` (the quantity
+   `share_floor_with` returns; the sign flipped for a negative total), so
+   a tie goes to the earlier part, as `apportion`'s docs and bookspec's
+   `Apportion.lean` (`remW`, `allocNat`: ties to the earlier member) say:
+   `13.34, 3.33, 3.33` and `14, 3, 3`. Pinned by
+   `ties_go_to_the_earlier_part`; `tests/kernel_bridge/ties.rs` keeps the
+   old ranking as a reference and measures what the change moves. A
+   recomputed past report can differ from what it showed before by a cent
+   between parties (a posted entry never moves).

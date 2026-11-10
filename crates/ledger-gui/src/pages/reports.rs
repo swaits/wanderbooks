@@ -242,10 +242,14 @@ impl Table {
                 (None, Some(b)) => Some(-b),
                 _ => None,
             };
+            // No percent of a zero or negative base: it would mislead.
             let pct = match (diff, b) {
-                (Some(d), Some(b)) if !b.is_zero() => {
-                    Some((d / b.abs() * Decimal::from(100)).round_dp(1))
-                }
+                (Some(d), Some(b)) => ledger_core::kernel::percent_of(
+                    d,
+                    b,
+                    Decimal::new(1, 1),
+                    ledger_core::kernel::Rounding::HalfToEven,
+                ),
                 _ => None,
             };
             r.cells.push(Cell {
@@ -268,15 +272,20 @@ impl Table {
             .and_then(|r| r.cells.first())
             .and_then(|c| c.value)
             .unwrap_or_default();
-        if income.is_zero() {
+        if income <= Decimal::ZERO {
             return;
         }
         self.columns.push("% of income".into());
         self.pct_from = Some(self.columns.len() - 1);
         for r in &mut self.rows {
             if let Some(v) = r.cells.first().and_then(|c| c.value) {
-                r.cells
-                    .push(Cell::of((v / income * Decimal::from(100)).round_dp(1)));
+                let p = ledger_core::kernel::percent_of(
+                    v,
+                    income,
+                    Decimal::new(1, 1),
+                    ledger_core::kernel::Rounding::HalfToEven,
+                );
+                r.cells.push(p.map_or_else(Cell::none, Cell::of));
             }
         }
     }
@@ -334,7 +343,7 @@ impl Table {
             for c in &r.cells {
                 out.push('\t');
                 if let Some(v) = c.value {
-                    out.push_str(&v.round_dp(2).to_string());
+                    out.push_str(&crate::fmt::round_display(v, 2).to_string());
                 }
             }
             out.push('\n');
@@ -2399,6 +2408,38 @@ mod tests {
             Some((d(2025, 4, 1), d(2025, 6, 30)))
         );
         assert_eq!(prior(&st, NaiveDate::MIN, d(2026, 1, 1)), None);
+    }
+
+    /// The change column: no percent of a zero or negative base.
+    #[test]
+    fn a_change_from_a_negative_base_has_no_percent() {
+        let table = |now: i64, prior: i64| {
+            let mut t = Table::new(vec!["Now".into(), "Prior".into()]);
+            t.row(
+                Kind::Line,
+                "Rent",
+                vec![Cell::of(Decimal::from(now)), Cell::of(Decimal::from(prior))],
+            );
+            t.add_change();
+            t
+        };
+        // From a positive base: (150 - 100) / 100 = 50.0%.
+        assert_eq!(
+            table(150, 100).rows[0].cells[3].value,
+            Some(Decimal::new(500, 1))
+        );
+        // From a negative or zero base: a change, but no percent.
+        assert_eq!(table(-50, -100).rows[0].cells[3].value, None);
+        assert_eq!(table(50, 0).rows[0].cells[3].value, None);
+        // A share of negative income adds no column at all.
+        let mut t = Table::new(vec!["Now".into()]);
+        t.row(
+            Kind::Subtotal,
+            "Total income",
+            vec![Cell::of(Decimal::from(-100))],
+        );
+        t.add_share_of_income();
+        assert_eq!(t.columns.len(), 1);
     }
 
     /// too_many_columns: a split's column count, counted from the months

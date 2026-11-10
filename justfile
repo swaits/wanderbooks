@@ -11,14 +11,86 @@ netlify := "npm_config_ignore_scripts=true npx --yes netlify-cli@27"
 default:
     @just --list
 
+# The parts `check` is cut into. A laptop runs them one after another
+# (`just check`); CI runs each on a runner of its own, side by side
+# (.github/workflows/check.yml), because one runner took 72 minutes for the
+# lot on 2026-11-09 (56 of them tests, one binary at a time). There is one
+# definition, `check-shard`, so the two cannot drift: what CI checks is
+# what `just check` checks. `rest` is every crate not named by another
+# part, so a new crate is tested without anyone adding it to a list.
+check_shards := "lint gui-unit gui-tests cli rest"
+
 # Everything CI should check: format, clippy and rustdoc (zero warnings), tests
 check: sweep-test-tmp
-    cargo fmt --all --check
-    cargo clippy --workspace --all-targets -- -D warnings
-    RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --quiet
-    cargo test --workspace
-    @just server-only
-    @just sweep-test-tmp
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for shard in {{check_shards}}; do just check-shard "$shard"; done
+    just sweep-test-tmp
+
+# One part of `check` (one of check_shards)
+check-shard shard:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{shard}}" in
+        lint)
+            cargo fmt --all --check
+            cargo clippy --workspace --all-targets -- -D warnings
+            RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --quiet
+            just server-only
+            just check-shards-agree
+            just deny
+            just notices-check
+            ;;
+        # The viewer's tests are half of the suite's time, in two halves
+        # of their own: its unit tests, and its integration tests. Between
+        # them they are every target `cargo test -p ledger-gui` runs: the
+        # library, the executable, each file under tests/, the doc tests.
+        gui-unit)
+            cargo test -p ledger-gui --lib --bins
+            cargo test -p ledger-gui --doc
+            ;;
+        gui-tests) cargo test -p ledger-gui --test '*' ;;
+        cli) cargo test -p ledger-cli ;;
+        rest) cargo test --workspace --exclude ledger-gui --exclude ledger-cli ;;
+        *)
+            echo "check-shard: no part named '{{shard}}' (the parts: {{check_shards}})" >&2
+            exit 1
+            ;;
+    esac
+
+# What every dependency must be (deny.toml): free of known vulnerabilities
+# (the RustSec database, fetched now), not yanked, under a licence that
+# fits MIT OR Apache-2.0, and from crates.io or the bookspec repository.
+# The first run (2026-11-09) found 23 advisories in the lock file. A new
+# advisory turns this red on an unchanged tree: that is its job, and the
+# weekly run makes it within a week of the advisory, push or no push.
+deny:
+    cargo deny check
+
+# The third-party notices every licence asks to travel with
+# (THIRD-PARTY-NOTICES.txt): each crate the `wanderbooks` binary links and
+# its licence text, then the fonts embedded, each with its licence. Writes
+# the file; commit it.
+notices:
+    scripts/notices.sh
+
+# Whether THIRD-PARTY-NOTICES.txt still matches the dependencies: a crate
+# added, removed or upgraded without regenerating it fails (`just notices`).
+notices-check:
+    scripts/notices.sh --check
+
+# CI's list of parts is this file's: a part CI never runs is a check
+# nobody makes, and a part only CI names fails there, not here.
+check-shards-agree:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ci=$(sed -n 's/^ *shard: \[\(.*\)\] *$/\1/p' .github/workflows/check.yml | tr -d ' ' | tr ',' '\n' | sort)
+    here=$(tr ' ' '\n' <<<"{{check_shards}}" | sort)
+    if [ -z "$ci" ] || [ "$ci" != "$here" ]; then
+        echo "check.yml runs [$(echo $ci)], the justfile's check_shards are [$(echo $here)]" >&2
+        exit 1
+    fi
+    echo "check: CI runs every part ($(echo $here))"
 
 # The server-only build (plan D-22, for another machine) builds, passes
 # clippy and the one executable's own tests, and links no window libraries.
@@ -164,8 +236,38 @@ _kani set:
     if [ "{{set}}" = fast ]; then
         args=()
         for h in $names; do args+=(--harness "$h"); done
-        timeout 1800 cargo kani -j "$(nproc)" --output-format terse --exact "${args[@]}" | tee "$logs/fast.log"
-        checked "$logs/fast.log" "$(wc -l <<<"$names")"
+        # Two caps, both in seconds. KANI_HARNESS_CAP is one harness's:
+        # Kani stops that harness and carries on with the rest.
+        # KANI_FAST_CAP is the whole set's: on a machine busy with other
+        # builds the set needs more than its 30 minutes, and until
+        # 2026-11-09 it was cut off there with exit 124 and nothing named.
+        # Either way the harnesses that failed and the ones that never
+        # finished are listed below.
+        status=0
+        timeout "${KANI_FAST_CAP:-1800}" cargo kani -j "$(nproc)" --output-format terse --exact \
+            -Z unstable-options --harness-timeout "${KANI_HARNESS_CAP:-900}s" "${args[@]}" |
+            tee "$logs/fast.log" || status=$?
+        if [ "$status" != 0 ] || ! checked "$logs/fast.log" "$(wc -l <<<"$names")"; then
+            # With -j Kani prints a harness's whole block when it ends:
+            # "Checking harness <name>..." down to its "VERIFICATION:-" line.
+            awk -v cap="${KANI_HARNESS_CAP:-900}" '
+                NR == FNR { asked[$1] = 1; next }
+                match($0, /Checking harness [^ ]+\.\.\./) { h = substr($0, RSTART + 17, RLENGTH - 20); next }
+                /VERIFICATION:- / && h != "" { ended[h] = 1; if ($0 !~ /VERIFICATION:- SUCCESSFUL/) failed[h] = 1; last = h; h = ""; next }
+                /CBMC timed out/ && last != "" { timed[last] = 1 }
+                END {
+                    for (n in asked) {
+                        if (n in timed) print "Kani: ran past its " cap " s (KANI_HARNESS_CAP): " n
+                        else if (n in failed) print "Kani: FAILED: " n
+                        else if (!(n in ended)) print "Kani: not finished: " n
+                    }
+                }' <(printf '%s\n' $names) "$logs/fast.log" | sort >&2
+            if [ "$status" = 124 ]; then
+                echo "Kani: the fast set was cut off at ${KANI_FAST_CAP:-1800} s; on a busy machine give it longer (KANI_FAST_CAP=7200 just prove)" >&2
+            fi
+            echo "Kani (fast): not verified (exit $status), see $logs/fast.log" >&2
+            exit 1
+        fi
     else
         cargo kani --only-codegen --output-format terse
         failed=0

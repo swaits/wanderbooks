@@ -1,5 +1,10 @@
 # Every change: format, clippy and rustdoc with zero warnings, every test.
 # Tools come from mise.toml, the same as on a laptop.
+#
+# `just check` is cut into parts (the justfile's check_shards), one runner
+# each, side by side: on one runner the job took 72 minutes on 2026-11-09,
+# and a red test was an hour away. The list below must be the justfile's
+# (the lint part checks that), so no part can be left out here unseen.
 name: check
 on:
   push:
@@ -15,7 +20,14 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 jobs:
   check:
+    name: check (${{ matrix.shard }})
     runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    strategy:
+      # One red part does not stop the others: the run lists every failure.
+      fail-fast: false
+      matrix:
+        shard: [lint, gui-unit, gui-tests, cli, rest]
     # The runner's disk is small (the first run after P6 landed died in
     # the linker: "No space left on device", ld killed by SIGBUS). A fresh
     # runner gains nothing from incremental caches, and line tables keep
@@ -31,7 +43,7 @@ jobs:
         with:
           fetch-depth: 2
       - name: The base branch, for the parity floor
-        if: github.event_name == 'pull_request'
+        if: matrix.shard == 'lint' && github.event_name == 'pull_request'
         run: |
           git fetch --no-tags --depth=1 origin \
             "+refs/heads/${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}"
@@ -50,6 +62,7 @@ jobs:
       # new tip's parent: a push of several commits could otherwise lower
       # the floor in an earlier one unseen.
       - name: The parity floor holds
+        if: matrix.shard == 'lint'
         env:
           BEFORE: ${{ github.event.before }}
         run: |
@@ -61,7 +74,7 @@ jobs:
           else
             scripts/parity-floor.sh HEAD^1
           fi
-      - run: just check
+      - run: just check-shard ${{ matrix.shard }}
       - name: What the build used
         if: always()
         run: df -h / | tail -1

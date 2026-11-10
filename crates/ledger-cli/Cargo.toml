@@ -4,6 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+publish.workspace = true
 description = "wanderbooks: the one executable (viewer, books server, host, agents' bridge, owner's commands)."
 
 [[bin]]
@@ -32,7 +33,7 @@ jsonschema = { version = "0.58", default-features = false }
 libc = "0.2"
 proptest = "1"
 reqwest = "0.13"
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled", "fallible_uint"] }
 rust_decimal = "1"
 rmcp = { version = "3", features = ["client", "transport-streamable-http-client-reqwest"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
@@ -61,4 +62,5 @@ assets = [
   { source = "target/release/wanderbooks", dest = "/usr/bin/wanderbooks", mode = "0755" },
   { source = "deploy/packaging/install-method-rpm", dest = "/usr/share/wanderbooks/install-method", mode = "0644" },
   { source = "deploy/packaging/wanderbooks-static.desktop", dest = "/usr/share/applications/wanderbooks.desktop", mode = "0644" },
+  { source = "THIRD-PARTY-NOTICES.txt", dest = "/usr/share/doc/wanderbooks/THIRD-PARTY-NOTICES.txt", mode = "0644" },
 ]

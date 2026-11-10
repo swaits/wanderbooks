@@ -17,9 +17,11 @@
 //!
 //! Exact only up to the sums the books reach. Near `Decimal::MAX` the add
 //! rounds dust away (`MAX + 0.4` gives `Some(MAX)`, found by unit K-U4 and
-//! pinned below; plan unit K-U10 makes the kernel refuse it), and a product
-//! whose scale can't fit 28 places is rounded (the reason for decision
-//! D-75's ten-place bound on foreign amounts and rates).
+//! pinned below), and a product whose scale can't fit 28 places is rounded
+//! (the reason for decision D-75's ten-place bound on foreign amounts and
+//! rates). These are `rust_decimal`'s own behaviours, pinned here as
+//! such; the kernel's `Amount for Decimal` refuses both (K-U10, checked
+//! in `tests/kernel_bridge/decimal_exact.rs`).
 //!
 //! This is a test of the dependency, not of the engine. When a property
 //! fails, the finding is `rust_decimal`'s, and the failing case stays here
@@ -436,8 +438,8 @@ fn checked_add_and_sub_return_none_past_the_maximum() {
 
 /// Inexact at the edge: within one unit of `Decimal::MAX`, `checked_add`
 /// rounds the fraction away instead of refusing (K-U4's finding). Pinned
-/// so the day `rust_decimal` or the kernel (unit K-U10) makes it exact,
-/// this test says so.
+/// so the day `rust_decimal` makes it exact, this test says so; the
+/// kernel's `Amount::checked_add` refuses it (K-U10).
 #[test]
 fn checked_add_rounds_dust_away_next_to_the_maximum() {
     let dust = Decimal::new(4, 1);

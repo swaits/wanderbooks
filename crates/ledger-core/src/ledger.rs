@@ -1908,7 +1908,8 @@ impl Ledger {
         // under Decimal's 28) and keeps its scale: the booked amount is
         // rounded once, not after Decimal's own rounding of the product.
         // (A 20-place product past about 7.9e8 still outgrows Decimal's 96
-        // bits; kernel::fx_booked's spec block names that open edge.)
+        // bits; since K-U10 the kernel holds that product in 256 bits for
+        // the one rounding, so it too is booked from the exact product.)
         // The command's bound, never replay's: a journal's older line with
         // a finer foreign amount opens as it was booked (replay_add_line_fx).
         if !crate::parties::is_replaying() {

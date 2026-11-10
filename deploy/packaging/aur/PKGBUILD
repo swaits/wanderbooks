@@ -13,7 +13,8 @@ depends=('gcc-libs' 'glibc')
 provides=('wanderbooks')
 conflicts=('wanderbooks')
 options=('!lto' '!strip')
-# The tarball holds usr/bin/wanderbooks, usr/share/applications/ and
+# The tarball holds usr/bin/wanderbooks, usr/share/applications/,
+# usr/share/doc/wanderbooks/THIRD-PARTY-NOTICES.txt and
 # usr/share/wanderbooks/install-method (which makes `wanderbooks update`
 # refuse and send the owner to pacman).
 source=("wanderbooks_${pkgver}_x86_64.tar.gz::https://github.com/swaits/wanderbooks/releases/download/v${pkgver}/wanderbooks_${pkgver}_x86_64.tar.gz")

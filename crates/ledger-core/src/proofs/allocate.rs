@@ -22,10 +22,11 @@
 //! INVARIANTS:
 //!   1. The parts sum to the whole, for every policy.
 //!   2. Under largest remainder each part is within one unit (the step)
-//!      of its exact share: `-total < part x total - whole x weight <=
-//!      total` at step one. The upper bound is inclusive on `i64` (its
-//!      division truncates); the bridge checks the strict `Decimal`
-//!      bound.
+//!      of its exact share: `-total < part x total - whole x weight <
+//!      total` at step one, and a part whose share is exact takes no
+//!      unit. Both rest on the ranking by the exact remainder (K-U10,
+//!      D-76): `i64`'s division truncates, and the ranking no longer
+//!      reads the quotient.
 //!   3. No part is negative or above the whole for non-negative weights
 //!      that do not exceed the total.
 //!   4. A zero total gives zeros; all-zero weights hand the whole out by
@@ -33,7 +34,7 @@
 //!      units as there are parts.
 //!   5. Overflow is `None`, never a panic.
 //! SCENARIOS:
-//!   1. IF 101 by 1/1/1 to the unit: SHOULD be 34/34/33 (the rounded
+//!   1. IF 101 by 1/1/1 to the unit: SHOULD be 34/34/33 (the exact
 //!      remainders tie, so the units go to the earlier parts), never
 //!      33/34/34.
 //!   2. IF a quotient rounds up across the step: `share_floor_with`
@@ -44,8 +45,8 @@
 //! Bounds: amounts up to 1,000, weights up to 100, totals fixed (10 and
 //! 0), steps 1 and 10. The laws are about the shape of the split, not the
 //! magnitude; Lean proves them of the exact-share model at any size, and
-//! the bridge checks the `Decimal` engine, whose ranking uses the rounded
-//! quotient.
+//! the bridge checks the `Decimal` engine, which ranks the same exact
+//! remainders.
 
 use crate::kernel::{self, Leftover, Rounding, share_floor_with, share_of, split_by_weights_into};
 
@@ -93,23 +94,28 @@ fn split_by_weights_sums() {
 }
 
 /// Each part is within one step of its share: scaled by the total,
-/// `part x total - whole x weight` is above `-total` and at most `total`.
+/// `part x total - whole x weight` is above `-total` and below `total`,
+/// and a part whose share is exact takes no unit.
 ///
-/// The upper bound is inclusive on the `i64` model: its division
-/// truncates, so a part that divides exactly can still take a unit when
-/// another part's truncation left one over (`whole = 5`, weights 2/3/5:
-/// the first's 1 becomes 2, exactly one step above its truncated share).
-/// The `Decimal` quotient keeps the fraction, a part with no remainder
-/// never takes a unit, and the bridge checks the strict bound there
-/// (`decimal_split_satisfies_the_kani_laws`); Lean's `shares_of_near`
-/// proves it for the exact-share model at any size.
+/// The upper bound was inclusive on the `i64` model while the ranking
+/// read the quotient: `i64`'s division truncates, every remainder read
+/// as zero, and a part that divided exactly could take the unit another
+/// part's truncation left over (`whole = 5`, weights 2/3/5: the first's 1
+/// became 2). The ranking is the exact remainder `whole x weight - part x
+/// total` since K-U10 (D-76), which no division touches, so the unit goes
+/// to a part that is short (1, 2, 2) and the bound is strict here as on
+/// `Decimal` (`decimal_split_satisfies_the_kani_laws`); Lean's
+/// `shares_of_near` proves it for the exact-share model at any size.
 #[kani::proof]
 fn split_by_weights_within_one_step() {
     let whole = any_whole();
     let (parts, _) = split(whole, 1, Leftover::LargestRemainder).expect("in range");
     for i in 0..N {
         let drift = parts[i] * TOTAL - whole * WEIGHTS[i];
-        assert!(-TOTAL < drift && drift <= TOTAL);
+        assert!(-TOTAL < drift && drift < TOTAL);
+        if (whole * WEIGHTS[i]) % TOTAL == 0 {
+            assert_eq!(drift, 0);
+        }
     }
     kani::cover!(
         parts
@@ -119,11 +125,8 @@ fn split_by_weights_within_one_step() {
         "a part off its exact share by the rounding"
     );
     kani::cover!(
-        parts
-            .iter()
-            .enumerate()
-            .any(|(i, &p)| p * TOTAL - whole * WEIGHTS[i] == TOTAL),
-        "a part exactly one step above its truncated share"
+        (whole * WEIGHTS[0]) % TOTAL == 0 && whole % TOTAL != 0,
+        "a unit is handed out while the first part's share is exact"
     );
 }
 

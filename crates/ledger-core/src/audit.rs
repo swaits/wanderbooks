@@ -189,7 +189,7 @@ pub const CODES: &[CodeRow] = &[
     CodeRow {
         code: "close_split_drifts",
         severity: Severity::Failure,
-        predicate: "a member's running share of the closes is more than a minor unit from its exact share",
+        predicate: "a member's running share of the closes drifts past the bound its regime allows from its exact share",
     },
     CodeRow {
         code: "schedule_behind",
@@ -474,7 +474,12 @@ pub fn check_control(checks: &[crate::arap::ControlCheck]) -> Vec<Finding> {
 }
 
 fn closes(ledger: &Ledger, through: NaiveDate) -> Vec<Finding> {
-    let unit = Decimal::new(1, ledger.base_currency().minor_units().unwrap_or(2));
+    // The unit the allocation itself splits to, from the one helper both
+    // sides use (`Currency::allocation_unit`, on `allocation_places`):
+    // for a currency with no minor unit the split is far finer than a
+    // cent, and the audit must not check it at a cent (BS-partner-1
+    // statement 4).
+    let unit = ledger.base_currency().allocation_unit();
     let mut out = Vec::new();
     for p in ledger.list_periods() {
         if p.status != PeriodStatus::Closed || p.end > through {
@@ -496,8 +501,33 @@ fn closes(ledger: &Ledger, through: NaiveDate) -> Vec<Finding> {
 /// that posted an entry ([`crate::Ledger::member_close_trued_up`]). Until
 /// then the count may still carry the rounding of closes made under the
 /// older rules, which the first such close trues up (BS-partner-1
-/// statement 6; WB-partner-1), so only a drift beyond a unit is raised.
-/// Once trued up, a drift of a unit or more is raised: the bound is strict.
+/// statement 6; WB-partner-1).
+///
+/// ```text
+/// SOURCE: BS-partner-1 statement 5 (after a close that posts, a member's
+///         total MUST be under one smallest unit from their exact share);
+///         BS-partner-1 statement 6 (the rounding left by an earlier rule
+///         is trued up by the first close that posts: a last-absorbs close
+///         rounded each member but the last to within half a unit, and
+///         the last absorbed up to half a unit for each of the others --
+///         a unit with three members, more with four or more); WB-ledger-16
+///         invariant 8.
+/// DERIVED: the rule states those per-member facts; it does not state an
+///   audit bound. The pre-true-up bound below is derived from them:
+///   with n members and unit u under last-absorbs, member i (not last)
+///   carries rounding e_i with |e_i| <= u/2, and the last member's part
+///   is the remainder, so e_last = -(e_1 + ... + e_{n-1}) and
+///   |e_last| <= (n-1) * u/2. The largest drift any member of one such
+///   close may legitimately carry is therefore (n-1)*u/2: u with three
+///   members, 3u/2 with four, 2u with five. Statement 6 also allows
+///   under u per member for each break in an earlier run and for each
+///   per-close close, so the allowance is floored at u:
+///   B(n) = max(u, (n-1)*u/2). A drift past B(n) is raised; a drift of
+///   exactly B(n) is legitimate (every non-last tie rounding the same
+///   way reaches it), so the pre-true-up test is strict (> B(n)).
+///   Once trued up, statement 5's bound is strict the other way: a
+///   drift of a unit or more is raised (>= u).
+/// ```
 pub fn check_split(
     period: u64,
     name: &str,
@@ -505,11 +535,22 @@ pub fn check_split(
     unit: Decimal,
     trued_up: bool,
 ) -> Vec<Finding> {
+    // B(n) as derived above: (n-1)*u/2, floored at u. `unit` is a power
+    // of ten and n is small, so the product and the halving are exact.
+    let legacy_bound = {
+        let others = Decimal::new(split.len().saturating_sub(1) as i64, 0);
+        let last = others * unit / Decimal::new(2, 0);
+        if last > unit { last } else { unit }
+    };
     split
         .iter()
         .filter(|m| {
             let drift = (m.running - m.exact).abs();
-            if trued_up { drift >= unit } else { drift > unit }
+            if trued_up {
+                drift >= unit
+            } else {
+                drift > legacy_bound
+            }
         })
         .map(|m| {
             Finding::new(

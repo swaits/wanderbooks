@@ -2,8 +2,8 @@
 //! Inter with tabular figures, and the spacing the whole app shares.
 
 use egui::{
-    Color32, Context, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Margin, Stroke,
-    TextStyle, Visuals,
+    Color32, Context, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, FontTweak,
+    Margin, Stroke, TextStyle, Visuals,
 };
 use std::sync::Arc;
 
@@ -104,6 +104,8 @@ pub fn pal(ctx: &Context) -> Palette {
 
 pub const SEMIBOLD: &str = "semibold";
 pub const BOLD: &str = "bold";
+/// The fixed-width face, by the name it is registered under.
+const MONO: &str = "Hack";
 
 pub fn regular(size: f32) -> FontId {
     FontId::new(size, FontFamily::Proportional)
@@ -122,63 +124,101 @@ pub fn install_fonts(ctx: &Context) {
     ctx.set_fonts(font_definitions());
 }
 
-/// The viewer's fonts: Inter with tabular figures frozen in, so every
-/// number in the app lines up digit for digit; egui's own fonts and
-/// Phosphor's icons as fallbacks in every family; then the PDFs' Noto
-/// fallbacks (`ledger_import::fonts::FALLBACKS`: Chinese, Japanese,
-/// Korean, Arabic, Hebrew, Thai, Devanagari), the very bytes the PDFs use,
-/// so a name in any of those scripts shows as written, never as empty
-/// boxes, and no font is in the binary twice. (egui shapes each word,
-/// joining Arabic and setting it right to left, but doesn't reorder the
-/// words of a right-to-left phrase: they read left to right.)
+/// The viewer's fonts, every one named here and kept in `assets/fonts/`
+/// with its licence (`assets/fonts/README.md`); egui's own default set is
+/// switched off, since it carries Ubuntu Light under a licence Debian and
+/// Fedora class as non-free:
+///
+/// - Inter with tabular figures frozen in, so every number in the app
+///   lines up digit for digit: the text face, in three weights.
+/// - Hack for fixed-width text (identifiers, hashes, JSON), with Inter
+///   behind it for the letters Hack lacks.
+/// - Phosphor's icons, then Noto Emoji and the emoji icon font, as
+///   fallbacks: the symbols egui's own widgets and a Markdown document
+///   draw (a submenu's arrow, the date picker's calendar, an alert's
+///   mark), and an emoji in a memo.
+/// - The PDFs' Noto fallbacks (`ledger_import::fonts::FALLBACKS`: Chinese,
+///   Japanese, Korean, Arabic, Hebrew, Thai, Devanagari), the very bytes
+///   the PDFs use, so a name in any of those scripts shows as written,
+///   never as empty boxes, and no font is in the binary twice. (egui
+///   shapes each word, joining Arabic and setting it right to left, but
+///   doesn't reorder the words of a right-to-left phrase: they read left
+///   to right.)
 pub fn font_definitions() -> FontDefinitions {
-    let mut fonts = FontDefinitions::default();
-    let add = |fonts: &mut FontDefinitions, name: &str, bytes: &'static [u8]| {
-        fonts
-            .font_data
-            .insert(name.to_owned(), Arc::new(FontData::from_static(bytes)));
+    let mut fonts = FontDefinitions::empty();
+    let add = |fonts: &mut FontDefinitions, name: &str, data: FontData| {
+        fonts.font_data.insert(name.to_owned(), Arc::new(data));
+    };
+    // The two symbol fonts are drawn a little smaller, as egui draws them,
+    // so a symbol sits with the text beside it.
+    let smaller = |bytes: &'static [u8], scale: f32| {
+        FontData::from_static(bytes).tweak(FontTweak {
+            scale,
+            ..Default::default()
+        })
     };
     add(
         &mut fonts,
         "InterTab-Regular",
-        include_bytes!("../assets/fonts/InterTab-Regular.ttf"),
+        FontData::from_static(include_bytes!("../assets/fonts/InterTab-Regular.ttf")),
     );
     add(
         &mut fonts,
         "InterTab-SemiBold",
-        include_bytes!("../assets/fonts/InterTab-SemiBold.ttf"),
+        FontData::from_static(include_bytes!("../assets/fonts/InterTab-SemiBold.ttf")),
     );
     add(
         &mut fonts,
         "InterTab-Bold",
-        include_bytes!("../assets/fonts/InterTab-Bold.ttf"),
+        FontData::from_static(include_bytes!("../assets/fonts/InterTab-Bold.ttf")),
+    );
+    add(
+        &mut fonts,
+        MONO,
+        FontData::from_static(include_bytes!("../assets/fonts/Hack-Regular.ttf")),
+    );
+    add(
+        &mut fonts,
+        "NotoEmoji-Regular",
+        smaller(
+            include_bytes!("../assets/fonts/NotoEmoji-Regular.ttf"),
+            0.81,
+        ),
+    );
+    add(
+        &mut fonts,
+        "emoji-icon-font",
+        smaller(include_bytes!("../assets/fonts/emoji-icon-font.ttf"), 0.90),
     );
     egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
-    let fallbacks: Vec<String> = fonts
-        .families
-        .get(&FontFamily::Proportional)
-        .cloned()
-        .unwrap_or_default();
-    // Text first, icons as a fallback. The bundled Inter copies have their
-    // private-use glyphs removed, so Phosphor's icons (which live there)
-    // are never shadowed.
-    let family = |primary: &str| {
-        let mut v = vec![primary.to_owned()];
-        v.extend(fallbacks.iter().cloned());
-        v
+    // Text first, then icons and symbols. The bundled Inter copies have
+    // their private-use glyphs removed, so Phosphor's icons (which live
+    // there) are never shadowed.
+    let symbols = ["NotoEmoji-Regular", "emoji-icon-font"];
+    let family = |first: &[&str]| -> Vec<String> {
+        first
+            .iter()
+            .chain(&symbols)
+            .map(|name| (*name).to_owned())
+            .collect()
     };
-    fonts
-        .families
-        .insert(FontFamily::Proportional, family("InterTab-Regular"));
+    fonts.families.insert(
+        FontFamily::Proportional,
+        family(&["InterTab-Regular", "phosphor"]),
+    );
     fonts.families.insert(
         FontFamily::Name(SEMIBOLD.into()),
-        family("InterTab-SemiBold"),
+        family(&["InterTab-SemiBold", "phosphor"]),
+    );
+    fonts.families.insert(
+        FontFamily::Name(BOLD.into()),
+        family(&["InterTab-Bold", "phosphor"]),
     );
     fonts
         .families
-        .insert(FontFamily::Name(BOLD.into()), family("InterTab-Bold"));
+        .insert(FontFamily::Monospace, family(&[MONO, "InterTab-Regular"]));
     for (name, bytes) in &ledger_import::fonts::FALLBACKS {
-        add(&mut fonts, name, bytes);
+        add(&mut fonts, name, FontData::from_static(bytes));
         for list in fonts.families.values_mut() {
             list.push((*name).to_owned());
         }
@@ -278,10 +318,10 @@ mod tests {
     use super::*;
 
     /// font_definitions: every family ends with the PDFs' Noto fallbacks,
-    /// in their order, after Inter, egui's fonts and the icons, each font
-    /// the very bytes ledger-import bundles (the same pointer: one copy in
-    /// the binary); and a name in each script shows with real glyphs in
-    /// every family the viewer uses.
+    /// in their order, after its own face, the icons and the symbol fonts,
+    /// each Noto font the very bytes ledger-import bundles (the same
+    /// pointer: one copy in the binary); and a name in each script shows
+    /// with real glyphs in every family the viewer uses.
     #[test]
     fn every_family_falls_back_to_the_noto_fonts() {
         let defs = font_definitions();
@@ -300,6 +340,7 @@ mod tests {
             assert_eq!(list[list.len() - names.len()..], names[..], "{family:?}");
         }
         assert!(defs.families[&FontFamily::Proportional][0] == "InterTab-Regular");
+        assert!(defs.families[&FontFamily::Monospace][0] == MONO);
         for (name, bytes) in &ledger_import::fonts::FALLBACKS {
             let data: &[u8] = &defs.font_data[*name].font;
             assert!(
@@ -333,5 +374,115 @@ mod tests {
                 assert!(missing.is_empty(), "{text} in {id:?}: {missing:?}");
             }
         }
+    }
+
+    /// font_definitions: the viewer draws with the fonts it names and no
+    /// others. egui's default set is off (it carries Ubuntu Light, under
+    /// the Ubuntu Font Licence), so a family is exactly what theme.rs
+    /// lists; and without that set nothing the viewer shows turns into an
+    /// empty box: every character egui's widgets, the date picker and a
+    /// Markdown document draw by themselves, and every character in the
+    /// viewer's own source, has a glyph.
+    #[test]
+    fn the_viewer_names_every_font_and_draws_every_symbol() {
+        assert!(
+            FontDefinitions::default().font_data.is_empty(),
+            "egui's default fonts are compiled in: a dependency switched `default_fonts` on"
+        );
+        let defs = font_definitions();
+        let mut bundled: Vec<&str> = defs.font_data.keys().map(String::as_str).collect();
+        bundled.sort_unstable();
+        let mut expected = vec![
+            "Hack",
+            "InterTab-Bold",
+            "InterTab-Regular",
+            "InterTab-SemiBold",
+            "NotoEmoji-Regular",
+            "emoji-icon-font",
+            "phosphor",
+        ];
+        expected.extend(ledger_import::fonts::FALLBACKS.iter().map(|(n, _)| *n));
+        expected.sort_unstable();
+        assert_eq!(bundled, expected);
+        for (family, list) in &defs.families {
+            for name in list {
+                assert!(defs.font_data.contains_key(name), "{family:?}: {name}");
+            }
+        }
+
+        let ctx = Context::default();
+        ctx.set_fonts(defs);
+        let mut out = ctx.run_ui(egui::RawInput::default(), |_| {});
+        out.textures_delta.clear();
+        // egui's `has_glyph` says no for every character the replacement
+        // glyph's own font draws (here Noto Emoji), so it cannot be the
+        // whole test. What decides is what is drawn: a character is missing
+        // when its glyph is the one drawn for a code point no font has.
+        let glyph = |c: char, id: &FontId| {
+            let galley =
+                ctx.fonts_mut(|f| f.layout_no_wrap(c.to_string(), id.clone(), Color32::WHITE));
+            galley.rows[0].row.glyphs[0].uv_rect
+        };
+        const NO_FONT_HAS: char = '\u{0378}';
+        let missing = |text: &str, id: &FontId| -> Vec<char> {
+            let blank = glyph(NO_FONT_HAS, id);
+            text.chars()
+                .filter(|c| {
+                    !c.is_whitespace()
+                        && !ctx.fonts_mut(|f| f.has_glyph(id, *c))
+                        && glyph(*c, id) == blank
+                })
+                .collect()
+        };
+        // The test can fail: an unassigned code point is missing, and so
+        // is a letter of a script no bundled font covers (Cherokee).
+        const CHEROKEE: char = '\u{13E3}';
+        assert_eq!(
+            missing("a\u{0378}\u{2022}\u{13E3}", &regular(14.0)),
+            vec![NO_FONT_HAS, CHEROKEE]
+        );
+        // What the libraries draw: a submenu's arrow and the arrow keys
+        // (egui), the date picker's calendar and its arrows (egui_extras),
+        // a code block's copy button and the five alert marks
+        // (egui_commonmark), a check mark, a bullet, an ellipsis.
+        let libraries = "⏵⏴⏶⏷📆🗐✔❕💡💬🔴⚙•…";
+        for id in [regular(14.0), semibold(14.0), bold(14.0)] {
+            assert_eq!(missing(libraries, &id), Vec::<char>::new(), "{id:?}");
+        }
+        // What the viewer itself draws: every character of its source
+        // outside the comments.
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = vec![src];
+        let mut seen = 0;
+        while let Some(path) = files.pop() {
+            if path.is_dir() {
+                files.extend(std::fs::read_dir(&path).unwrap().map(|e| e.unwrap().path()));
+                continue;
+            }
+            if path.extension().is_none_or(|e| e != "rs") {
+                continue;
+            }
+            for (n, line) in std::fs::read_to_string(&path).unwrap().lines().enumerate() {
+                let code = line.trim_start();
+                if code.starts_with("//") {
+                    continue;
+                }
+                // A private-use character is a Phosphor icon by its
+                // escape, and a variation selector draws nothing.
+                let drawn: String = code
+                    .chars()
+                    .filter(|c| !c.is_ascii() && *c != '\u{FE0F}')
+                    .collect();
+                seen += drawn.chars().count();
+                assert_eq!(
+                    missing(&drawn, &regular(14.0)),
+                    Vec::<char>::new(),
+                    "{}:{}",
+                    path.display(),
+                    n + 1
+                );
+            }
+        }
+        assert!(seen > 50, "the source walk found {seen} characters");
     }
 }

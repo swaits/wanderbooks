@@ -9,7 +9,10 @@
 //! division, so a `Decimal` quotient is rounded at 28 significant digits
 //! (and a machine integer's is truncated), never an exact rational.
 //! Multiplication is not exact either at `Decimal`'s 96-bit mantissa:
-//! `checked_mul` rounds the product there. Every invariant below is
+//! `checked_mul_rounded` rounds the product there, and this module uses
+//! it by name wherever a rounded product is the figure meant (the
+//! kernel's `checked_mul` is exact or refused, K-U10, and would refuse a
+//! share by a percent of 27 places). Every invariant below is
 //! stated of that computation, and of the parts after the named leftover
 //! policy, which do sum to the whole exactly. See `docs/proofs/k-u3.md`
 //! for the edges where a product's or a quotient's rounding can change a
@@ -21,11 +24,10 @@ use super::{Amount, apportion, plug_last};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Leftover {
     /// Each part is rounded down; the units left over go one each to the
-    /// largest remainders. The remainders are the rounded quotients'
-    /// differences, not exact rationals, so ranking follows the quotient:
-    /// an exact tie can go where the quotient's 28th digit sends it, and
-    /// only a tie in the rounded remainders goes to the earlier part. K-U10
-    /// decides the exact ranking. [`apportion`].
+    /// largest remainders. The remainders are exact: `whole x weight -
+    /// part x total`, an integer comparison, never the rounded quotient's
+    /// difference, so an exact tie goes to the earlier part (the Lean
+    /// model's rank, bookspec's `Apportion`). [`apportion`].
     LargestRemainder,
     /// The last part becomes the whole less the others. [`plug_last`].
     LastAbsorbs,
@@ -47,10 +49,13 @@ pub enum Leftover {
 ///         government's part of a payment), BS-arap-3 (a document line's
 ///         exact amount).
 /// INVARIANTS:
-///   1. Some(s) is the amount type's `checked_mul` of whole and weight,
-///      then its checked division by total. For Decimal the product and
-///      quotient are exact while they fit 96 bits and scale 28, and are
-///      rounded at that edge (rust_decimal's checked operations, K-U10);
+///   1. Some(s) is the amount type's `checked_mul_rounded` of whole and
+///      weight, then its checked division by total. For Decimal the
+///      product and quotient are exact while they fit 96 bits and scale
+///      28, and are rounded at that edge (rust_decimal's checked
+///      operations: a share by a percent of 27 places is a rounded figure
+///      by construction, and is computed so, to the digit; K-U10 left
+///      this one product rounding, because the quotient rounds anyway);
 ///      for a machine integer the division truncates toward zero. This is
 ///      the computation the six call sites made before U3, to the digit.
 ///   2. None when total is zero, or when the product or quotient is not
@@ -68,7 +73,7 @@ pub enum Leftover {
 ///      be None.
 /// ```
 pub fn share_of<T: Amount>(whole: T, weight: T, total: T) -> Option<T> {
-    whole.checked_mul(weight)?.checked_div(total)
+    whole.checked_mul_rounded(weight)?.checked_div(total)
 }
 
 /// The largest whole multiple of `step` not above `whole × weight ÷ total`,
@@ -120,7 +125,7 @@ pub fn share_floor_with<T: Amount>(
     if total <= T::ZERO || step <= T::ZERO {
         return None;
     }
-    let num = whole.checked_mul(weight)?;
+    let num = whole.checked_mul_rounded(weight)?;
     let quotient = num.checked_div(total)?;
     let mut part = round(quotient)?;
     // The quotient may have rounded across the exact floor: take whole
@@ -130,7 +135,7 @@ pub fn share_floor_with<T: Amount>(
     // K-U10, pinned in the bridge). Both directions are bounded so a
     // quotient rounded far across the floor refuses instead of hanging.
     let mut steps = 0;
-    while part.checked_mul(total)? > num {
+    while part.checked_mul_rounded(total)? > num {
         if steps == MAX_CORRECTION_STEPS {
             return None;
         }
@@ -143,13 +148,13 @@ pub fn share_floor_with<T: Amount>(
             return None;
         }
         let next = part.checked_add(step)?;
-        if next.checked_mul(total)? > num {
+        if next.checked_mul_rounded(total)? > num {
             break;
         }
         part = next;
         steps += 1;
     }
-    let remainder = num.checked_sub(part.checked_mul(total)?)?;
+    let remainder = num.checked_sub(part.checked_mul_rounded(total)?)?;
     Some((part, remainder))
 }
 
@@ -195,11 +200,13 @@ const MAX_CORRECTION_STEPS: usize = 4096;
 ///      a part more than one step from the exact rational (K-U10, pinned
 ///      in the bridge). Under the first/last-absorbs policies only the
 ///      absorbing part may be further, by the rounding of all the others.
-///      The largest-remainder ranking compares the rounded quotients'
-///      remainders, not exact rationals: an exact tie can go where
-///      `Decimal`'s 28th digit sends it, and only a tie in the rounded
-///      remainders goes to the earlier part (K-U10 decides the exact
-///      rule; the bridge pins today's answer).
+///      The largest-remainder ranking compares the exact remainders
+///      `whole x weight - part x total` (the quantity `share_floor_with`
+///      returns, scaled by total; the sign flipped for a negative total),
+///      never the rounded quotients' differences. An exact tie goes to the
+///      earlier part, whatever `Decimal`'s 28th digit would have said
+///      (K-U10, the owner's decision; exact while the products are, as
+///      above).
 ///   3. With total not zero, no part exceeds the whole when every weight
 ///      is in [0, total] and the whole is not negative; no part is
 ///      negative when the weights and the whole are not.
@@ -213,13 +220,19 @@ const MAX_CORRECTION_STEPS: usize = 4096;
 ///      promised.
 /// SCENARIOS:
 ///   1. IF 100 by 1/1/1 to the cent by largest remainder: SHOULD be
-///      33.34, 33.33, 33.33 (the rounded remainders tie, so the cent goes
+///      33.34, 33.33, 33.33 (the exact remainders tie, so the cent goes
 ///      to the earlier part).
 ///   2. IF 0.01 by 1/1 to the cent by largest remainder: SHOULD be
 ///      0.01, 0.00.
 ///   3. IF 10 by weights 2/3/5 by first-absorbs: SHOULD be the rounded
 ///      shares with the first taking the whole less the others.
-///   4. IF the total is zero, or every weight is zero: SHOULD be zeros (a
+///   4. IF 20.00 by 4/1/1 over 6 to the cent by largest remainder: SHOULD
+///      be 13.34, 3.33, 3.33. The exact remainders (0.02, 0.02, 0.02 over
+///      6, as 80 - 79.98, 20 - 19.98) tie, so the cent goes to the first.
+///      The rounded quotients (13.33...3 keeps one fewer fractional digit
+///      than 3.33...3 at 28 significant digits) would have put the
+///      second's remainder above the first's.
+///   5. IF the total is zero, or every weight is zero: SHOULD be zeros (a
 ///      zero total) or the largest-remainder handout of the whole (a
 ///      positive total with zero weights, as the conventions' template
 ///      split has always done).
@@ -257,8 +270,26 @@ pub fn split_by_weights_into<T: Amount>(
             if unit <= T::ZERO {
                 return None;
             }
+            // Rank by the exact remainder, never the rounded quotient's
+            // difference: `whole x weight - part x total`, the exact
+            // rational's fraction scaled by `total`, the same quantity
+            // `share_floor_with` returns. A negative total flips the
+            // scale's sign, so the order is the share's own. The two
+            // products are the rounding ones: each is exact while it fits
+            // Decimal's mantissa (every split of posted amounts by whole
+            // weights or basis points), and where a weight of 27 places
+            // makes a product round, the split is still made, ranked by
+            // the nearest figures Decimal holds, not refused. Their
+            // difference is exact: the subtraction refuses otherwise.
             for i in 0..weights.len() {
-                remainders[i] = remainders[i].checked_sub(parts[i])?;
+                let exact = whole
+                    .checked_mul_rounded(weights[i])?
+                    .checked_sub(parts[i].checked_mul_rounded(total)?)?;
+                remainders[i] = if total < T::ZERO {
+                    T::ZERO.checked_sub(exact)?
+                } else {
+                    exact
+                };
             }
             apportion(whole, parts, remainders, unit)
         }

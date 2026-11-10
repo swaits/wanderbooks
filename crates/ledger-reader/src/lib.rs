@@ -494,29 +494,59 @@ fn read_zip(zip: &mut zip::ZipArchive<Cursor<&[u8]>>, name: &str) -> Option<Stri
     Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
+/// What a reference in a cell's text stands for: `&amp;` is `&`, `&#233;`
+/// is `é`. The parser hands a reference over as its own event, apart from
+/// the text around it, so a reader that skipped it would turn `AT&amp;T`
+/// into `ATT`. A name that is none of XML's five is kept as it was written:
+/// a workbook has no DTD to define another.
+fn reference_text(r: &quick_xml::events::BytesRef<'_>) -> Result<String, ExtractError> {
+    if let Some(c) = r
+        .resolve_char_ref()
+        .map_err(|e| ExtractError::Xlsx(e.to_string()))?
+    {
+        return Ok(c.to_string());
+    }
+    let name: &str = r;
+    Ok(match quick_xml::escape::resolve_predefined_entity(name) {
+        Some(text) => text.to_owned(),
+        None => format!("&{name};"),
+    })
+}
+
 /// The text of each `<si>` in `xl/sharedStrings.xml`, rich-text runs
 /// concatenated.
 fn shared_strings(xml: &str) -> Result<Vec<String>, ExtractError> {
+    use quick_xml::events::Event;
     let mut reader = quick_xml::Reader::from_str(xml);
     let mut out = Vec::new();
     let mut current: Option<String> = None;
     let mut in_text = false;
     loop {
         match reader.read_event() {
-            Ok(quick_xml::events::Event::Start(e)) if e.name().as_ref() == b"si" => {
+            Ok(Event::Start(e)) if e.name().as_ref() == "si" => {
                 current = Some(String::new());
             }
-            Ok(quick_xml::events::Event::End(e)) if e.name().as_ref() == b"si" => {
+            Ok(Event::End(e)) if e.name().as_ref() == "si" => {
                 out.push(current.take().unwrap_or_default());
             }
-            Ok(quick_xml::events::Event::Start(e)) if e.name().as_ref() == b"t" => in_text = true,
-            Ok(quick_xml::events::Event::End(e)) if e.name().as_ref() == b"t" => in_text = false,
-            Ok(quick_xml::events::Event::Text(t)) if in_text => {
+            Ok(Event::Start(e)) if e.name().as_ref() == "t" => in_text = true,
+            Ok(Event::End(e)) if e.name().as_ref() == "t" => in_text = false,
+            Ok(Event::Text(t)) if in_text => {
                 if let Some(s) = &mut current {
-                    s.push_str(&t.decode().map_err(|e| ExtractError::Xlsx(e.to_string()))?);
+                    s.push_str(&t.xml10_content());
                 }
             }
-            Ok(quick_xml::events::Event::Eof) => break,
+            Ok(Event::CData(t)) if in_text => {
+                if let Some(s) = &mut current {
+                    s.push_str(&t.xml10_content());
+                }
+            }
+            Ok(Event::GeneralRef(r)) if in_text => {
+                if let Some(s) = &mut current {
+                    s.push_str(&reference_text(&r)?);
+                }
+            }
+            Ok(Event::Eof) => break,
             Ok(_) => {}
             Err(e) => return Err(ExtractError::Xlsx(e.to_string())),
         }
@@ -537,30 +567,32 @@ fn sheet_cells(xml: &str, shared: &[String]) -> Result<String, ExtractError> {
     let mut inline = String::new();
     let mut in_inline_text = false;
     loop {
+        // The text this event adds to the cell being read, if any.
+        let mut text: Option<String> = None;
         match reader.read_event() {
             Ok(Event::Start(e)) => match e.name().as_ref() {
-                b"row" => row = Vec::new(),
-                b"c" => {
+                "row" => row = Vec::new(),
+                "c" => {
                     cell_type.clear();
                     value.clear();
                     inline.clear();
                     for a in e.attributes().flatten() {
-                        if a.key.as_ref() == b"t" {
-                            cell_type = String::from_utf8_lossy(&a.value).into_owned();
+                        if a.key.as_ref() == "t" {
+                            cell_type = a.value.into_owned();
                         }
                     }
                 }
-                b"v" => {
+                "v" => {
                     in_value = true;
                     value.clear();
                 }
-                b"is" => in_inline = true,
-                b"t" if in_inline => in_inline_text = true,
+                "is" => in_inline = true,
+                "t" if in_inline => in_inline_text = true,
                 _ => {}
             },
             Ok(Event::End(e)) => match e.name().as_ref() {
-                b"row" => rows.push(std::mem::take(&mut row)),
-                b"c" => {
+                "row" => rows.push(std::mem::take(&mut row)),
+                "c" => {
                     let text = match cell_type.as_str() {
                         "s" => value
                             .parse::<usize>()
@@ -576,22 +608,24 @@ fn sheet_cells(xml: &str, shared: &[String]) -> Result<String, ExtractError> {
                     };
                     row.push(text);
                 }
-                b"v" => in_value = false,
-                b"is" => in_inline = false,
-                b"t" if in_inline => in_inline_text = false,
+                "v" => in_value = false,
+                "is" => in_inline = false,
+                "t" if in_inline => in_inline_text = false,
                 _ => {}
             },
-            Ok(Event::Text(t)) => {
-                let text = t.decode().map_err(|e| ExtractError::Xlsx(e.to_string()))?;
-                if in_inline_text {
-                    inline.push_str(&text);
-                } else if in_value {
-                    value.push_str(&text);
-                }
-            }
+            Ok(Event::Text(t)) => text = Some(t.xml10_content().into_owned()),
+            Ok(Event::CData(t)) => text = Some(t.xml10_content().into_owned()),
+            Ok(Event::GeneralRef(r)) => text = Some(reference_text(&r)?),
             Ok(Event::Eof) => break,
             Ok(_) => {}
             Err(e) => return Err(ExtractError::Xlsx(e.to_string())),
+        }
+        if let Some(text) = text {
+            if in_inline_text {
+                inline.push_str(&text);
+            } else if in_value {
+                value.push_str(&text);
+            }
         }
     }
     Ok(rows
@@ -621,5 +655,40 @@ mod tests {
             Err(ExtractError::TooLarge { .. })
         ));
         assert!(text_of(&bytes, "text/plain", "big.txt").is_none());
+    }
+
+    /// A reference in a cell is its character, not a gap: `AT&amp;T` reads
+    /// `AT&T`. The parser reports each reference as its own event, and a
+    /// reader that took only the text events would return `ATT` (it did,
+    /// from quick-xml 0.38 until this test).
+    #[test]
+    fn a_reference_in_a_cell_is_its_character() {
+        let shared = shared_strings(
+            "<sst><si><t>AT&amp;T</t></si>\
+             <si><r><t>caf&#233; </t></r><r><t>&lt;3&gt; &quot;x&quot; &apos;y&apos; &#x41;</t></r></si>\
+             <si><t>&nbsp;kept</t></si></sst>",
+        )
+        .unwrap();
+        assert_eq!(shared, ["AT&T", "café <3> \"x\" 'y' A", "&nbsp;kept"]);
+
+        let cells = sheet_cells(
+            "<worksheet><sheetData><row>\
+             <c t=\"s\"><v>0</v></c>\
+             <c t=\"inlineStr\"><is><t>R&amp;D</t></is></c>\
+             <c t=\"str\"><v>a&lt;b</v></c>\
+             <c><v>12.50</v></c>\
+             <c t=\"b\"><v>1</v></c>\
+             </row></sheetData></worksheet>",
+            &shared,
+        )
+        .unwrap();
+        assert_eq!(cells, "AT&T\tR&D\ta<b\t12.50\tTRUE");
+    }
+
+    /// A character reference that names no character is refused, not
+    /// dropped.
+    #[test]
+    fn a_reference_to_no_character_is_refused() {
+        assert!(shared_strings("<sst><si><t>&#xFFFFFFFF;</t></si></sst>").is_err());
     }
 }

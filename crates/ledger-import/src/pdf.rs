@@ -83,7 +83,7 @@ pub fn template_data(st: &Statement, meta: &ReportMeta) -> serde_json::Value {
             "currency": r.currency,
             "amounts": r.amounts.iter().enumerate().map(|(i, a)| a.map(|a| {
                 if st.percent_from.is_some_and(|f| i >= f) {
-                    let a = a.round_dp(1);
+                    let a = crate::format::round_display(a, 1);
                     let negative = a.is_sign_negative() && !a.is_zero();
                     return serde_json::json!({
                         "digits": format!("{}%", a.abs().normalize()),

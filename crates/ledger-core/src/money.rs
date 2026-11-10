@@ -69,6 +69,17 @@ impl Currency {
         self.minor_units().unwrap_or(crate::kernel::MAX_LINE_SCALE)
     }
 
+    /// One allocation unit as an amount: `1` at [`Self::allocation_places`]
+    /// (a cent, a whole yen, a thousandth of a dinar, the finest a line
+    /// carries for a code with no minor unit). This is the one place that
+    /// turns the places into an amount, so a split and a check of that
+    /// split take their unit from the same rule and cannot drift apart
+    /// (BS-partner-1 statement 4: the allocation is the split of the
+    /// amount to the base currency's smallest unit).
+    pub fn allocation_unit(&self) -> Decimal {
+        Decimal::new(1, self.allocation_places())
+    }
+
     /// The three-letter code, e.g. `"USD"`.
     pub fn code(&self) -> &str {
         std::str::from_utf8(&self.0).expect("currency codes are ASCII by construction")
@@ -134,9 +145,7 @@ impl Money {
     /// panic, never rounded).
     pub fn checked_add(self, rhs: Money) -> Result<Money, LedgerError> {
         self.check_currency(&rhs)?;
-        let amount = self
-            .amount
-            .checked_add(rhs.amount)
+        let amount = crate::kernel::Amount::checked_add(self.amount, rhs.amount)
             .ok_or_else(|| LedgerError::TooLargeToCompute(format!("{} plus {}", self, rhs)))?;
         Ok(Money::new(amount, self.currency))
     }
@@ -145,9 +154,7 @@ impl Money {
     /// `TooLargeToCompute` when the difference is past exact arithmetic.
     pub fn checked_sub(self, rhs: Money) -> Result<Money, LedgerError> {
         self.check_currency(&rhs)?;
-        let amount = self
-            .amount
-            .checked_sub(rhs.amount)
+        let amount = crate::kernel::Amount::checked_sub(self.amount, rhs.amount)
             .ok_or_else(|| LedgerError::TooLargeToCompute(format!("{} minus {}", self, rhs)))?;
         Ok(Money::new(amount, self.currency))
     }

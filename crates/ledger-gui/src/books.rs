@@ -993,10 +993,8 @@ impl Books {
                 Some(_) => 3,
                 None => 0,
             };
-            (loss > Decimal::ZERO && months > 0).then(|| {
-                (loss / Decimal::from(months))
-                    .round_dp_with_strategy(2, rust_decimal::RoundingStrategy::MidpointAwayFromZero)
-            })
+            (loss > Decimal::ZERO && months > 0)
+                .then(|| crate::fmt::round_display(loss / Decimal::from(months), 2))
         });
         Kpis {
             cash: cash[1],
@@ -1774,7 +1772,6 @@ impl Books {
         e: &ledger_core::JournalEntry,
         party: PartyId,
     ) -> Vec<(AccountId, Decimal)> {
-        use rust_decimal::RoundingStrategy::ToZero;
         let Some(info) = self
             .entry_index
             .get(&e.id())
@@ -1843,7 +1840,7 @@ impl Books {
                 let Some(part) = v.checked_mul(fraction) else {
                     return Vec::new();
                 };
-                scaled.push((a, part.round_dp_with_strategy(2, ToZero)));
+                scaled.push((a, truncate_cents(part)));
             }
         }
         let Some(left) = own
@@ -2065,11 +2062,18 @@ impl Books {
 /// going to the first account, so the parts sum to `share` exactly. None
 /// when amount times share is past exact arithmetic (both near the line
 /// limit), never a panic or a rounded guess.
+/// `part` truncated to cents through the kernel's one rounding
+/// primitive: a split's leftover policy (toward zero, the rest to the
+/// first part), not display rounding, so it never rounds a share up.
+fn truncate_cents(part: Decimal) -> Decimal {
+    ledger_core::kernel::round_places(part, 2, ledger_core::kernel::Rounding::TowardZero)
+        .unwrap_or(part)
+}
+
 pub fn share_of_what_for(
     flow: &ledger_core::parties::EntryFlow,
     share: Decimal,
 ) -> Option<Vec<(AccountId, Decimal)>> {
-    use rust_decimal::RoundingStrategy::ToZero;
     if share == flow.net || flow.what_for.is_empty() {
         return Some(flow.what_for.clone());
     }
@@ -2081,7 +2085,7 @@ pub fn share_of_what_for(
         .iter()
         .map(|(a, v)| {
             let part = v.checked_mul(share)?.checked_div(flow.net)?;
-            Some((*a, part.round_dp_with_strategy(2, ToZero)))
+            Some((*a, truncate_cents(part)))
         })
         .collect::<Option<_>>()?;
     let have = parts

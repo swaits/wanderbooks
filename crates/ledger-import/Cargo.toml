@@ -3,6 +3,7 @@ name = "ledger-import"
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
+publish.workspace = true
 
 [dependencies]
 ledger-core = { path = "../ledger-core" }
@@ -11,7 +12,7 @@ rust_decimal = "1"
 chrono = "0.4"
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
-rust_xlsxwriter = "0.90"
+rust_xlsxwriter = "0.102"
 typst-as-lib = { version = "0.17", default-features = false }
 typst-pdf = "0.15.1"
 typst = "0.15.1"

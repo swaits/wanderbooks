@@ -6,6 +6,10 @@ members = ["crates/ledger-core", "crates/ledger-store", "crates/ledger-config", 
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://git.swaits.com/swaits/wanderbooks"
+# The crates are parts of one program, built from this tree and shipped as
+# its packages. None is a library for crates.io, and saying so lets
+# `cargo deny` accept their path dependencies on each other.
+publish = false
 
 [workspace.lints.rust]
 missing_docs = "warn"
@@ -35,3 +39,9 @@ opt-level = 3
 # AppImage, .deb and .rpm are not carrying debug tables.
 [profile.release]
 strip = "symbols"
+# The shipped program refuses the way the tested one does. Without this an
+# integer that overflows wraps silently in a release build and panics in
+# a test build, so the tests would be checking a program nobody runs.
+# Money is Decimal and goes through the kernel's checked arithmetic; this
+# covers the integers around it (counts, sequence numbers, minor units).
+overflow-checks = true

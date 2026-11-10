@@ -28,9 +28,13 @@ depends = ["libc6", "libgcc-s1"]
 
 [deb.files]
 "deploy/packaging/install-method-deb" = "usr/share/wanderbooks/install-method"
+# The notices the third-party licences ask to travel with the program
+# (`just notices`); `wanderbooks licenses` prints the same text.
+"THIRD-PARTY-NOTICES.txt" = "usr/share/doc/wanderbooks/THIRD-PARTY-NOTICES.txt"
 
 [pacman]
 depends = ["gcc-libs", "glibc"]
 
 [pacman.files]
 "deploy/packaging/install-method-aur" = "usr/share/wanderbooks/install-method"
+"THIRD-PARTY-NOTICES.txt" = "usr/share/doc/wanderbooks/THIRD-PARTY-NOTICES.txt"

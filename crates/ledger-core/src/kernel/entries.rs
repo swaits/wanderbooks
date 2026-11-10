@@ -151,7 +151,11 @@ impl Amount for Decimal {
     }
     fn checked_div_exact(self, rhs: Self) -> Option<Self> {
         let q = self.checked_div(rhs)?;
-        (q.checked_mul(rhs) == Some(self)).then_some(q)
+        // The exact product, not `rust_decimal`'s: a rounded quotient
+        // times the divisor rounds back to the dividend there (10 / 3 is
+        // 3.333...3, and 3.333...3 x 3 is held as 10), which would pass a
+        // rounded share as an exact one.
+        (super::decimal_exact::exact_mul(q, rhs) == Some(self)).then_some(q)
     }
     fn checked_div(self, rhs: Self) -> Option<Self> {
         Decimal::checked_div(self, rhs)

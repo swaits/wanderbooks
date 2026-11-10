@@ -376,7 +376,8 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(30000))]
 
     /// `checked_mul_round_to_step` is the exact product rounded once, in
-    /// every mode, at the steps the books use (one, a cent, a mill),
+    /// every mode, at the steps the books use (one, a cent, a mill) and
+    /// at steps of 5 and 25 of them,
     /// whether or not the exact product fits 96 bits, ties and signs
     /// included; `None` only for a figure past about 10^23 (the real digits, the
     /// sticky digit and the step's places must fit 96 bits).
@@ -385,15 +386,17 @@ proptest! {
         foreign in arb_ten_place(26),
         rate in arb_ten_place(14),
         places in 0u32..=3,
+        unit in prop_oneof![Just(1i128), Just(5i128), Just(25i128)],
         mode in arb_mode(),
         negative in any::<bool>(),
     ) {
         let foreign = if negative { -foreign } else { foreign };
-        let step = Decimal::from_i128_with_scale(1, places);
+        // A step that is not a power of ten too (a nickel, 0.025): its
+        // half steps sit one place below it, where the kept digit is real.
+        let step = Decimal::from_i128_with_scale(unit, places);
         let got = Amount::checked_mul_round_to_step(foreign, rate, step, mode);
-        let scale = BigRational::from_integer(BigInt::from(10u8).pow(places));
-        let count = round_rational(&(rat(foreign) * rat(rate) * scale.clone()), mode);
-        let want = BigRational::from_integer(count) / scale;
+        let count = round_rational(&(rat(foreign) * rat(rate) / rat(step)), mode);
+        let want = BigRational::from_integer(count) * rat(step);
         match got {
             Some(g) => prop_assert_eq!(rat(g), want, "{} x {} to {} places, {:?}", foreign, rate, places, mode),
             None => prop_assert!(
@@ -446,4 +449,49 @@ fn the_k_u1_edge_books_the_cent_the_exact_product_gives() {
         book(below, Rounding::HalfAwayFromZero),
         Some("1000000000.10".parse().unwrap())
     );
+}
+
+// ------------------------------------------------------ exact division
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(30000))]
+
+    /// `checked_div_exact` is the exact quotient or `None`: never a
+    /// quotient `rust_decimal` rounded (10 / 3), whose product with the
+    /// divisor rounds back to the dividend.
+    #[test]
+    fn div_exact_is_exact_or_none(a in arb_line_amount(), m in 1i128..100_000, s in 0u32..=4) {
+        let b = Decimal::from_i128_with_scale(m, s);
+        if let Some(q) = Amount::checked_div_exact(a, b) {
+            prop_assert_eq!(rat(q) * rat(b), rat(a), "{} / {} gave {}", a, b, q);
+        }
+    }
+}
+
+/// A third, a seventh, a ninth: no exact quotient, so `None`, where the
+/// check through `rust_decimal`'s rounding product let each through. A
+/// quarter and a basis-point division are exact and are kept.
+#[test]
+fn a_rounded_quotient_is_not_an_exact_one() {
+    let d = |s: &str| s.parse::<Decimal>().unwrap();
+    for (a, b) in [
+        ("10", "3"),
+        ("20", "3"),
+        ("10", "7"),
+        ("80", "9"),
+        ("10", "6"),
+        ("1000000.00", "3"),
+    ] {
+        assert_eq!(
+            Amount::checked_div_exact(d(a), d(b)),
+            None,
+            "{a} / {b} has no exact quotient"
+        );
+    }
+    assert_eq!(Amount::checked_div_exact(d("10"), d("4")), Some(d("2.5")));
+    assert_eq!(
+        Amount::checked_div_exact(d("123456.78") * d("250"), d("10000")),
+        Some(d("3086.4195"))
+    );
+    assert_eq!(Amount::checked_div_exact(d("1"), d("0")), None);
 }

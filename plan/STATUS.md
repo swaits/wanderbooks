@@ -13,7 +13,7 @@ merged. bookspec main is at 2b3b6c9 (wanderbooks pinned there).
 - **The traceability gate** (X-J): every claim backed by real code, tests,
   Kani harnesses and audited Lean theorems, resolved strictly; every
   kernel function has a harness, a bridge property and a law whose rules
-  its SOURCE cites (60 functions, 15 listed exceptions). It found a false
+  its SOURCE cites (62 functions, 16 listed exceptions since K-U11a). It found a false
   claim (B-22), one ahead of the code (WB-prepaid-2, now done by K-U5),
   and nineteen stale names.
 - **Examples** (X-I, X-H1a..d): the spec floors run against the base

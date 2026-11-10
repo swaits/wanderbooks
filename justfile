@@ -59,9 +59,11 @@ check-shard shard:
             ;;
     esac
 
-# The crates with no Decimal arithmetic outside the kernel. A crate joins
-# this list when its count reaches zero (K-U12) and never leaves it.
-kernel_only_crates := "ledger-core ledger-cli ledger-host ledger-reader ledger-vault ledger-store ledger-config ledger-import ledger-package ledger-mcp"
+# The crates with no Decimal arithmetic outside the kernel: every crate of
+# the workspace, since K-U12. None leaves the list, and `kernel-only`
+# fails when a folder under crates/ is not in it, so a new crate joins it
+# on the day it is added.
+kernel_only_crates := "ledger-core ledger-cli ledger-host ledger-reader ledger-vault ledger-store ledger-config ledger-import ledger-package ledger-mcp ledger-gui"
 
 # Money arithmetic lives in the kernel and nowhere else (AGENTS.md, bar
 # item 1). The compiler is asked (scripts/raw-decimal-arith.sh): a raw
@@ -72,6 +74,13 @@ kernel_only_crates := "ledger-core ledger-cli ledger-host ledger-reader ledger-v
 kernel-only:
     #!/usr/bin/env bash
     set -euo pipefail
+    for dir in crates/*/; do
+        crate=$(basename "$dir")
+        case " {{kernel_only_crates}} " in
+            *" $crate "*) ;;
+            *) echo "kernel-only: $crate is not in kernel_only_crates (justfile): add it, and bring it to zero" >&2; exit 1 ;;
+        esac
+    done
     for crate in {{kernel_only_crates}}; do
         scripts/raw-decimal-arith.sh "$crate"
     done

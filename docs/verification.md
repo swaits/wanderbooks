@@ -1075,7 +1075,10 @@ kernel. What the proofs and their reviews found, beyond the tidying:
   of 28-digit shares (`checked_add_rounded`), which exact addition
   refused for every split by thirds. `kernel::rescale_exact` is the one
   place a figure's written places change, and it refuses to round.
-  `docs/proofs/k-u11.md` has the account.
+  `docs/proofs/k-u11.md` has the account. K-U12 did the same for the
+  crates around the core (183 places, 123 of them in the viewer), so the
+  gate covers every crate of the workspace and fails on a crate it does
+  not list; `docs/proofs/k-u12.md`.
 - **The sweep changed no posted figure.** Every golden and existing test
   passed unchanged. `round_places` reproduces `round_dp_with_strategy` to
   the character except a negative-zero input (which no call site can

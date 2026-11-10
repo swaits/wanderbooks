@@ -19,7 +19,7 @@ only listing was `opencode` / `opencode/muse-ember-1.0`). The owner's rule
 (2026-11-09): keep checking Muse Code for it, and use it from the day it is
 listed there, not through OpenCode. Check with `orchestrator_capabilities`
 (`search: "ember"`) before each batch of delegations; until it is listed,
-run-only tasks go to the scout row. Last checked 2026-11-09 19:30 MST: not
+run-only tasks go to the scout row. Last checked 2026-11-09 21:05 MST: not
 listed.
 
 Rules that do not change with the data: set provider, model and effort on

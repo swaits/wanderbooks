@@ -524,6 +524,12 @@ fn closes(ledger: &Ledger, through: NaiveDate) -> Vec<Finding> {
 ///   way reaches it), so the pre-true-up test is strict (> B(n)).
 ///   Once trued up, statement 5's bound is strict the other way: a
 ///   drift of a unit or more is raised (>= u).
+///   B(n) is one last-absorbs close's worst case. Books that made
+///   several such closes before their first cumulative one can carry
+///   more than B(n) legitimately (each close rounds on its own), and
+///   the audit raises it: a finding to read that the next close which
+///   posts trues up, never a drift passed that one close's bound would
+///   have raised.
 /// ```
 pub fn check_split(
     period: u64,

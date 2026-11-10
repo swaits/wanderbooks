@@ -80,6 +80,7 @@
 
 use crate::k1::{K1Kind, K1Row, k1_detail};
 use crate::money::sum_exact_of;
+use crate::money::{neg, signed_amount};
 use crate::reports::MemberCapital;
 use crate::{AccountId, AssetId, AssetStatus, EntryId, Ledger, LedgerError, Side};
 use chrono::NaiveDate;
@@ -120,16 +121,11 @@ fn disposal_depreciation(
     }) else {
         return Ok(Decimal::ZERO);
     };
-    e.lines()
-        .iter()
-        .filter(|l| l.account == a.expense_account)
-        .try_fold(Decimal::ZERO, |t, l| {
-            t.checked_add(match l.side {
-                Side::Debit => l.amount.amount,
-                Side::Credit => -l.amount.amount,
-            })
-        })
-        .ok_or_else(|| LedgerError::TooLargeToCompute(format!("asset {}'s depreciation", a.id)))
+    crate::kernel::total_of(
+        e.lines().iter().filter(|l| l.account == a.expense_account),
+        |l| signed_amount(l.side, l.amount.amount),
+    )
+    .ok_or_else(|| LedgerError::TooLargeToCompute(format!("asset {}'s depreciation", a.id)))
 }
 
 /// A figure the books can't know, with what they do have.
@@ -437,10 +433,7 @@ impl RunningSplit {
                 weights.len()
             )));
         }
-        let sum = weights
-            .iter()
-            .try_fold(Decimal::ZERO, |t, w| t.checked_add(*w))
-            .ok_or_else(too_large)?;
+        let sum = crate::kernel::total_of(weights.iter(), |w| *w).ok_or_else(too_large)?;
         Ok((sum > Decimal::ZERO).then_some(sum))
     }
 
@@ -469,11 +462,10 @@ impl RunningSplit {
         }
         let mut exact = self.exact.clone();
         for (x, w) in exact.iter_mut().zip(weights) {
-            *x = x
-                .checked_add(Self::share(whole, *w, sum)?)
+            *x = crate::kernel::Amount::checked_add(*x, Self::share(whole, *w, sum)?)
                 .ok_or_else(too_large)?;
         }
-        let total = self.total.checked_add(whole).ok_or_else(too_large)?;
+        let total = crate::kernel::Amount::checked_add(self.total, whole).ok_or_else(too_large)?;
         // A loss is rounded as its magnitude, then negated; at a running
         // whole of zero, by the sign of this whole (INVARIANT 2).
         let sign = if total < Decimal::ZERO || (total.is_zero() && whole < Decimal::ZERO) {
@@ -485,7 +477,13 @@ impl RunningSplit {
         // rounded down to the cent, what rounding took its remainder.
         let snapped: Vec<Decimal> = exact
             .iter()
-            .map(|x| round_places(x * sign, EXACT_PLACES, Rounding::HalfToEven))
+            .map(|x| {
+                round_places(
+                    crate::kernel::Amount::checked_mul(*x, sign)?,
+                    EXACT_PLACES,
+                    Rounding::HalfToEven,
+                )
+            })
             .collect::<Option<_>>()
             .ok_or_else(too_large)?;
         let mut parts: Vec<Decimal> = snapped
@@ -493,10 +491,20 @@ impl RunningSplit {
             .map(|x| round_places(*x, 2, Rounding::TowardNegativeInfinity))
             .collect::<Option<_>>()
             .ok_or_else(too_large)?;
-        let remainders: Vec<Decimal> = snapped.iter().zip(&parts).map(|(x, p)| x - p).collect();
-        let given: Vec<Decimal> = self.given.iter().map(|g| g * sign).collect();
+        let remainders: Vec<Decimal> = snapped
+            .iter()
+            .zip(&parts)
+            .map(|(x, p)| crate::kernel::Amount::checked_sub(*x, *p))
+            .collect::<Option<_>>()
+            .ok_or_else(too_large)?;
+        let given: Vec<Decimal> = self
+            .given
+            .iter()
+            .map(|g| crate::kernel::Amount::checked_mul(*g, sign))
+            .collect::<Option<_>>()
+            .ok_or_else(too_large)?;
         crate::kernel::apportion_cumulative(
-            total * sign,
+            crate::kernel::Amount::checked_mul(total, sign).ok_or_else(too_large)?,
             &mut parts,
             &remainders,
             Decimal::new(1, 2),
@@ -504,8 +512,8 @@ impl RunningSplit {
         )
         .ok_or_else(too_large)?;
         for (p, g) in parts.iter_mut().zip(self.given.iter_mut()) {
-            *p *= sign;
-            *g = g.checked_add(*p).ok_or_else(too_large)?;
+            *p = crate::kernel::Amount::checked_mul(*p, sign).ok_or_else(too_large)?;
+            *g = crate::kernel::Amount::checked_add(*g, *p).ok_or_else(too_large)?;
         }
         self.exact = exact;
         self.total = total;
@@ -538,12 +546,13 @@ impl RunningSplit {
         let mut exact = self.exact.clone();
         let mut given = self.given.clone();
         for i in 0..n {
-            exact[i] = exact[i]
-                .checked_sub(Self::share(whole, weights[i], sum)?)
-                .ok_or_else(too_large)?;
-            given[i] = given[i].checked_sub(parts[i]).ok_or_else(too_large)?;
+            exact[i] =
+                crate::kernel::Amount::checked_sub(exact[i], Self::share(whole, weights[i], sum)?)
+                    .ok_or_else(too_large)?;
+            given[i] =
+                crate::kernel::Amount::checked_sub(given[i], parts[i]).ok_or_else(too_large)?;
         }
-        self.total = self.total.checked_sub(whole).ok_or_else(too_large)?;
+        self.total = crate::kernel::Amount::checked_sub(self.total, whole).ok_or_else(too_large)?;
         self.exact = exact;
         self.given = given;
         Ok(())
@@ -611,21 +620,17 @@ fn entry_wholes(
     // Distributions are negative lines; weights are what each took.
     let taken: Vec<Decimal> = by_member(K1Kind::Distribution)?
         .into_iter()
-        .map(|d| -d)
+        .map(neg)
         .collect();
     if taken.iter().any(|t| *t > Decimal::ZERO) {
-        let property = e
-            .lines()
-            .iter()
-            .filter(|l| {
+        let property = crate::kernel::total_of(
+            e.lines().iter().filter(|l| {
                 l.side == Side::Credit && crate::k1::is_property_account(ledger, cash, l.account)
-            })
-            .try_fold(Decimal::ZERO, |t, l| t.checked_add(l.amount.amount))
-            .ok_or_else(too_large)?;
-        let total_taken = taken
-            .iter()
-            .try_fold(Decimal::ZERO, |t, x| t.checked_add(*x))
-            .ok_or_else(too_large)?;
+            }),
+            |l| l.amount.amount,
+        )
+        .ok_or_else(too_large)?;
+        let total_taken = crate::kernel::total_of(taken.iter(), |x| *x).ok_or_else(too_large)?;
         let property = property.min(total_taken);
         if property > Decimal::ZERO {
             out.push((DISTRIBUTED, property, taken));
@@ -736,14 +741,13 @@ fn entry_property(
     entry: &crate::JournalEntry,
     cash: &[AccountId],
 ) -> Result<EntryProperty, LedgerError> {
-    let pool = entry
-        .lines()
-        .iter()
-        .filter(|l| {
+    let pool = crate::kernel::total_of(
+        entry.lines().iter().filter(|l| {
             l.side == Side::Debit && crate::k1::is_property_account(ledger, cash, l.account)
-        })
-        .try_fold(Decimal::ZERO, |t, l| t.checked_add(l.amount.amount))
-        .ok_or_else(too_large)?;
+        }),
+        |l| l.amount.amount,
+    )
+    .ok_or_else(too_large)?;
     // Prepaid accounts: those a prepaid-expense schedule amortizes, and no
     // registered asset carries its cost in (INVARIANT 6).
     let prepaid_account = |id: AccountId| {
@@ -751,17 +755,16 @@ fn entry_property(
             s.kind == crate::schedules::ScheduleKind::PrepaidExpense && s.balance_account == id
         }) && !ledger.registered_assets().any(|a| a.cost_account == id)
     };
-    let prepaid = entry
-        .lines()
-        .iter()
-        .filter(|l| {
+    let prepaid = crate::kernel::total_of(
+        entry.lines().iter().filter(|l| {
             l.side == Side::Debit
                 && crate::k1::is_property_account(ledger, cash, l.account)
                 && prepaid_account(l.account)
-        })
-        .try_fold(Decimal::ZERO, |t, l| t.checked_add(l.amount.amount))
-        .ok_or_else(too_large)?;
-    let pool = pool.checked_sub(prepaid).ok_or_else(too_large)?;
+        }),
+        |l| l.amount.amount,
+    )
+    .ok_or_else(too_large)?;
+    let pool = crate::kernel::Amount::checked_sub(pool, prepaid).ok_or_else(too_large)?;
     let (mut linked, mut big, mut unknown) = (Decimal::ZERO, Decimal::ZERO, Decimal::ZERO);
     for a in ledger
         .registered_assets()
@@ -772,11 +775,14 @@ fn entry_property(
         // Its book amount in the entry: the value at contribution, which
         // the books recorded (D-41), or the book cost.
         let value = a.fmv_at_contribution().unwrap_or(a.cost.amount);
-        linked = linked.checked_add(value).ok_or_else(too_large)?;
+        linked = crate::kernel::Amount::checked_add(linked, value).ok_or_else(too_large)?;
         match contributed {
-            Some(g) => big = big.checked_add(g).ok_or_else(too_large)?,
+            Some(g) => big = crate::kernel::Amount::checked_add(big, g).ok_or_else(too_large)?,
             // No basis, or a purchase's basis on a contribution: unknown.
-            None => unknown = unknown.checked_add(value).ok_or_else(too_large)?,
+            None => {
+                unknown =
+                    crate::kernel::Amount::checked_add(unknown, value).ok_or_else(too_large)?
+            }
         }
     }
     if linked > pool {
@@ -787,11 +793,11 @@ fn entry_property(
             mismatch: Some((linked, pool)),
         });
     }
-    let rest = pool.checked_sub(linked).ok_or_else(too_large)?;
+    let rest = crate::kernel::Amount::checked_sub(pool, linked).ok_or_else(too_large)?;
     Ok(EntryProperty {
         built_in_gain: big,
         prepaid,
-        without_basis: unknown.checked_add(rest).ok_or_else(too_large)?,
+        without_basis: crate::kernel::Amount::checked_add(unknown, rest).ok_or_else(too_large)?,
         mismatch: None,
     })
 }
@@ -855,8 +861,9 @@ fn span(
                         book: pp,
                     });
                 }
-                big[i] = big[i].checked_add(g).ok_or_else(too_large)?;
-                without[i] = without[i].checked_add(w).ok_or_else(too_large)?;
+                big[i] = crate::kernel::Amount::checked_add(big[i], g).ok_or_else(too_large)?;
+                without[i] =
+                    crate::kernel::Amount::checked_add(without[i], w).ok_or_else(too_large)?;
                 if let Some((linked, property)) = p.mismatch {
                     prop_open[i].push(Open::LinkedValueExceedsEntry {
                         entry: id,
@@ -873,7 +880,8 @@ fn span(
         for i in 0..n {
             let book = part.get(DISTRIBUTED, i);
             if !book.is_zero() {
-                distributed[i] = distributed[i].checked_add(book).ok_or_else(too_large)?;
+                distributed[i] = crate::kernel::Amount::checked_add(distributed[i], book)
+                    .ok_or_else(too_large)?;
                 dist_open[i].push(Open::PropertyDistribution { entry: id, book });
             }
         }
@@ -888,13 +896,15 @@ fn span(
         if a.in_service_date <= end && !gone_before {
             in_service = true;
         }
-        let d = ledger
-            .depreciation_posted_between(a.id, start, end)?
-            .checked_add(disposal_depreciation(ledger, a, start, end)?)
-            .ok_or_else(too_large)?;
-        book_depr = book_depr.checked_add(d).ok_or_else(too_large)?;
+        let d = crate::kernel::Amount::checked_add(
+            ledger.depreciation_posted_between(a.id, start, end)?,
+            disposal_depreciation(ledger, a, start, end)?,
+        )
+        .ok_or_else(too_large)?;
+        book_depr = crate::kernel::Amount::checked_add(book_depr, d).ok_or_else(too_large)?;
         if a.basis.as_ref().is_some_and(|b| b.rule.is_contribution()) {
-            contributed_depr = contributed_depr.checked_add(d).ok_or_else(too_large)?;
+            contributed_depr =
+                crate::kernel::Amount::checked_add(contributed_depr, d).ok_or_else(too_large)?;
         }
     }
     if in_service || !book_depr.is_zero() {
@@ -930,10 +940,8 @@ fn span(
             None => TaxLine::complete(book.beginning),
         };
         let contributions_property = TaxLine {
-            known: book
-                .contributions_property
-                .checked_sub(big[i])
-                .and_then(|x| x.checked_sub(without[i]))
+            known: crate::kernel::Amount::checked_sub(book.contributions_property, big[i])
+                .and_then(|x| crate::kernel::Amount::checked_sub(x, without[i]))
                 .ok_or_else(too_large)?,
             open: std::mem::take(&mut prop_open[i]),
             notes: std::mem::take(&mut prop_notes[i]),
@@ -957,20 +965,16 @@ fn span(
             notes: Vec::new(),
         };
         let distributions = TaxLine {
-            known: book
-                .distributions
-                .checked_sub(distributed[i])
+            known: crate::kernel::Amount::checked_sub(book.distributions, distributed[i])
                 .ok_or_else(too_large)?,
             open: std::mem::take(&mut dist_open[i]),
             notes: Vec::new(),
         };
-        let known = beginning
-            .known
-            .checked_add(book.contributions_cash)
-            .and_then(|x| x.checked_add(contributions_property.known))
-            .and_then(|x| x.checked_add(net_income.known))
-            .and_then(|x| x.checked_add(other.known))
-            .and_then(|x| x.checked_sub(distributions.known))
+        let known = crate::kernel::Amount::checked_add(beginning.known, book.contributions_cash)
+            .and_then(|x| crate::kernel::Amount::checked_add(x, contributions_property.known))
+            .and_then(|x| crate::kernel::Amount::checked_add(x, net_income.known))
+            .and_then(|x| crate::kernel::Amount::checked_add(x, other.known))
+            .and_then(|x| crate::kernel::Amount::checked_sub(x, distributions.known))
             .ok_or_else(too_large)?;
         let ending = TaxLine {
             known,
@@ -987,9 +991,7 @@ fn span(
             notes: Vec::new(),
         };
         let reconciliation = Reconciliation {
-            beginning: book
-                .beginning
-                .checked_sub(beginning.known)
+            beginning: crate::kernel::Amount::checked_sub(book.beginning, beginning.known)
                 .ok_or_else(too_large)?,
             built_in_gain_704c: big[i],
             property_without_basis: without[i],

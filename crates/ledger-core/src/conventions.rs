@@ -779,10 +779,16 @@ fn check_template(t: &Template) -> Result<Template, String> {
                     l.share
                 )
             })?;
-        match l.side {
-            Side::Debit => debit += share,
-            Side::Credit => credit += share,
-        }
+        let side_total = match l.side {
+            Side::Debit => &mut debit,
+            Side::Credit => &mut credit,
+        };
+        *side_total = crate::kernel::Amount::checked_add(*side_total, share).ok_or_else(|| {
+            format!(
+                "template line {n}: share {:?} has too many digits to add up exactly",
+                l.share
+            )
+        })?;
         let account = line_text(&format!("template line {n} account"), &l.account, 64)?;
         if account.starts_with('{') && slot(&account).is_none() {
             return Err(format!(

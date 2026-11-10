@@ -6,6 +6,7 @@
 //! is no other way to change the books, which is what makes the ledger an
 //! audit trail and what will make the future oracle harness trustworthy.
 
+use crate::money::{add_in_range, neg, on_side};
 use crate::schedules::{
     self, AmortizationSchedule, NewRecurring, NewSchedule, RecurringEntry, RecurringId, ScheduleId,
 };
@@ -2368,9 +2369,11 @@ impl Ledger {
         for (i, l) in original.lines().iter().enumerate() {
             if let Some(tag) = self.line_docs.get(&(original.id(), i)) {
                 // The mirror moves the document by the opposite.
-                let by = -tag.doc.counted(l.side, l.amount.amount);
+                let by = neg(tag.doc.counted(l.side, l.amount.amount));
                 match moves.iter_mut().find(|(d, _)| *d == tag.doc) {
-                    Some((_, m)) => *m += by,
+                    Some((_, m)) => {
+                        *m = crate::money::add_exact(*m, by, "a document's movement in a reversal")?
+                    }
                     None => moves.push((tag.doc, by)),
                 }
             }
@@ -3438,11 +3441,13 @@ impl Ledger {
     ) -> Result<Decimal, LedgerError> {
         let too_large =
             || LedgerError::TooLargeToCompute(format!("asset {id}'s posted depreciation"));
-        assets::run_chain_entries(self, &self.depreciation_run_entries(id), reversals)
-            .into_iter()
-            .filter(|(d, _)| *d >= from && *d <= to)
-            .try_fold(Decimal::ZERO, |t, (_, a)| t.checked_add(a))
-            .ok_or_else(too_large)
+        crate::kernel::total_of(
+            assets::run_chain_entries(self, &self.depreciation_run_entries(id), reversals)
+                .into_iter()
+                .filter(|(d, _)| *d >= from && *d <= to),
+            |(_, a)| a,
+        )
+        .ok_or_else(too_large)
     }
 
     /// The run the books carry for an asset's month, if any: the first one
@@ -3756,7 +3761,7 @@ impl Ledger {
         let mut sweep = |from: AccountId, into: AccountId, this: &Self| {
             // An equity balance (credit-normal) is −movement; zeroing it
             // moves exactly that much into the target.
-            let balance = -this.movement_through(from, period.end);
+            let balance = neg(this.movement_through(from, period.end));
             if !balance.is_zero() {
                 sweep_lines.push((from, into, balance));
             }
@@ -3829,7 +3834,7 @@ impl Ledger {
             // A sweep zeroes the source (opposite its balance) and moves
             // the balance into the target.
             for (from, into, balance) in sweep_lines {
-                post(self, from, -balance)?;
+                post(self, from, neg(balance))?;
                 post(self, into, balance)?;
             }
             self.post_entry(entry)?;
@@ -4004,10 +4009,10 @@ impl Ledger {
             regime.trued_up |= matches!(m.rule, periods::MemberRule::Cumulative { .. })
                 && p.closing_entry.is_some();
             regime.order.clone_from(&m.members);
-            regime.closed += m.net;
+            regime.closed = add_in_range(regime.closed, m.net);
             for ((capital, _), part) in m.members.iter().zip(&m.parts) {
                 if let Some(i) = members.iter().position(|(c, _)| c == capital) {
-                    regime.given[i] += *part;
+                    regime.given[i] = add_in_range(regime.given[i], *part);
                 }
             }
         }
@@ -4078,7 +4083,7 @@ impl Ledger {
         let mut total = Decimal::ZERO;
         for p in closed {
             match &p.member_close {
-                Some(r) if r.members == members => total += r.net,
+                Some(r) if r.members == members => total = add_in_range(total, r.net),
                 _ => break,
             }
         }
@@ -6346,7 +6351,8 @@ impl Ledger {
             return Ok(None);
         }
         let too_large = || LedgerError::TooLargeToCompute(format!("{doc}'s figures"));
-        let add = |a: Decimal, b: Decimal| a.checked_add(b).ok_or_else(too_large);
+        let add =
+            |a: Decimal, b: Decimal| crate::kernel::Amount::checked_add(a, b).ok_or_else(too_large);
         let (mut outstanding, mut paid, mut discounted, mut written_off) =
             (Decimal::ZERO, Decimal::ZERO, Decimal::ZERO, Decimal::ZERO);
         let lines = self.doc_lines(doc);
@@ -6356,9 +6362,9 @@ impl Ledger {
         for l in lines.into_iter().filter(|l| l.date <= as_of) {
             outstanding = add(outstanding, l.amount)?;
             match l.movement {
-                arap::Movement::Payment => paid = add(paid, -l.amount)?,
-                arap::Movement::Discount => discounted = add(discounted, -l.amount)?,
-                arap::Movement::WriteOff => written_off = add(written_off, -l.amount)?,
+                arap::Movement::Payment => paid = add(paid, neg(l.amount))?,
+                arap::Movement::Discount => discounted = add(discounted, neg(l.amount))?,
+                arap::Movement::WriteOff => written_off = add(written_off, neg(l.amount))?,
                 arap::Movement::Origin | arap::Movement::Adopted | arap::Movement::RoleMove => {}
             }
         }
@@ -6410,12 +6416,14 @@ impl Ledger {
     /// payment needs that feature. Refused (TooLargeToCompute), never a
     /// panic, past exact arithmetic: replayed amounts are any size (BS-entry-4).
     pub fn payments_recorded(&self, doc: arap::DocRef) -> Result<Decimal, LedgerError> {
-        self.payment_events
-            .get(&doc)
-            .map_or(&[][..], Vec::as_slice)
-            .iter()
-            .try_fold(Decimal::ZERO, |sum, &a| sum.checked_add(a))
-            .ok_or_else(|| LedgerError::TooLargeToCompute(format!("{doc}'s payments")))
+        crate::kernel::total_of(
+            self.payment_events
+                .get(&doc)
+                .map_or(&[][..], Vec::as_slice)
+                .iter(),
+            |&a| a,
+        )
+        .ok_or_else(|| LedgerError::TooLargeToCompute(format!("{doc}'s payments")))
     }
 
     /// The payment entries that stand against a document now: each
@@ -6456,7 +6464,7 @@ impl Ledger {
             .chain(extra.iter().copied());
         for (date, amount) in moves {
             let day = by_date.entry(date).or_default();
-            *day = day.checked_add(amount).ok_or_else(too_large)?;
+            *day = crate::kernel::Amount::checked_add(*day, amount).ok_or_else(too_large)?;
         }
         Ok(by_date.into_values().collect())
     }
@@ -6533,11 +6541,13 @@ impl Ledger {
         let too_large = || LedgerError::TooLargeToCompute(format!("{doc}'s figures"));
         let mut running = Decimal::ZERO;
         for l in lines.iter().filter(|l| l.date <= from) {
-            running = running.checked_add(l.amount).ok_or_else(too_large)?;
+            running =
+                crate::kernel::Amount::checked_add(running, l.amount).ok_or_else(too_large)?;
         }
         let mut room = running;
         for l in lines.iter().filter(|l| l.date > from) {
-            running = running.checked_add(l.amount).ok_or_else(too_large)?;
+            running =
+                crate::kernel::Amount::checked_add(running, l.amount).ok_or_else(too_large)?;
             room = room.min(running);
         }
         Ok(room)
@@ -6729,9 +6739,10 @@ impl Ledger {
                 });
             }
             let room = self.payment_room(app.doc, params.date)?;
-            let applied = app.cash.checked_add(app.discount).ok_or_else(|| {
-                LedgerError::TooLargeToCompute(format!("{}'s settlement", app.doc))
-            })?;
+            let applied =
+                crate::kernel::Amount::checked_add(app.cash, app.discount).ok_or_else(|| {
+                    LedgerError::TooLargeToCompute(format!("{}'s settlement", app.doc))
+                })?;
             if applied > room {
                 return Err(LedgerError::Overpayment(applied, room));
             }
@@ -6753,9 +6764,7 @@ impl Ledger {
         // A fee above the cash is its own refusal; the kernel would also
         // answer `None` for it, with no way to say which of its refusals it
         // was. A sum that overflows is left to the kernel (too large).
-        if let Some(total_cash) = cash
-            .iter()
-            .try_fold(Decimal::ZERO, |sum, c| sum.checked_add(*c))
+        if let Some(total_cash) = crate::kernel::total_of(cash.iter(), |c| *c)
             && fee_amount > total_cash
         {
             return Err(LedgerError::FeeAboveCash {
@@ -6779,9 +6788,9 @@ impl Ledger {
         let mut total_discount = Decimal::ZERO;
         for app in &params.applications {
             if app.discount > Decimal::ZERO {
-                total_discount = total_discount
-                    .checked_add(app.discount)
-                    .ok_or_else(|| LedgerError::TooLargeToCompute("the discounts".into()))?;
+                total_discount =
+                    crate::kernel::Amount::checked_add(total_discount, app.discount)
+                        .ok_or_else(|| LedgerError::TooLargeToCompute("the discounts".into()))?;
             }
         }
         let discount_account = if any_discount {
@@ -7411,7 +7420,7 @@ impl Ledger {
             };
             for l in self.doc_lines(doc).into_iter().filter(|l| l.date <= as_of) {
                 let t = doc_totals.entry(l.account).or_default();
-                *t = t.checked_add(l.amount).ok_or_else(too_large)?;
+                *t = crate::kernel::Amount::checked_add(*t, l.amount).ok_or_else(too_large)?;
             }
             if let Some(st) = self.doc_state(doc, as_of)?
                 && (st.out_of_bounds() || st.status == arap::DocStatus::Unattached)
@@ -7443,7 +7452,7 @@ impl Ledger {
             } else {
                 Side::Credit
             };
-            if side == plus { amount } else { -amount }
+            on_side(plus, side, amount)
         };
         let mut out = Vec::new();
         for (account, role) in accounts {
@@ -7454,9 +7463,11 @@ impl Ledger {
                     if l.account != account {
                         continue;
                     }
-                    balance = balance
-                        .checked_add(counted(role, l.side, l.amount.amount))
-                        .ok_or_else(too_large)?;
+                    balance = crate::kernel::Amount::checked_add(
+                        balance,
+                        counted(role, l.side, l.amount.amount),
+                    )
+                    .ok_or_else(too_large)?;
                     if !self.line_docs.contains_key(&(e.id(), i)) {
                         let top = self.reversal_chain(e.id())[0];
                         if !tops.contains(&(top, i)) {
@@ -7479,12 +7490,15 @@ impl Ledger {
                         continue;
                     };
                     debug_assert!(n == 0 || e.reversal_of().is_some());
-                    net = net
-                        .checked_add(counted(role, l.side, l.amount.amount))
-                        .ok_or_else(too_large)?;
+                    net = crate::kernel::Amount::checked_add(
+                        net,
+                        counted(role, l.side, l.amount.amount),
+                    )
+                    .ok_or_else(too_large)?;
                 }
                 if !net.is_zero() {
-                    unattached_sum = unattached_sum.checked_add(net).ok_or_else(too_large)?;
+                    unattached_sum = crate::kernel::Amount::checked_add(unattached_sum, net)
+                        .ok_or_else(too_large)?;
                     unattached.push(arap::UnattachedLine {
                         entry: top,
                         line: i,
@@ -7521,10 +7535,8 @@ impl Ledger {
         let Ok(Some(st)) = self.doc_state(doc, NaiveDate::MAX) else {
             return;
         };
-        let Some(settled) = st
-            .paid
-            .checked_add(st.discounted)
-            .and_then(|s| s.checked_add(st.written_off))
+        let Some(settled) = crate::kernel::Amount::checked_add(st.paid, st.discounted)
+            .and_then(|s| crate::kernel::Amount::checked_add(s, st.written_off))
         else {
             return;
         };
@@ -8189,18 +8201,14 @@ impl Ledger {
                     continue;
                 }
                 // Signed in the account's normal side: positive = normal balance.
-                let signed = match (line.side, normal) {
-                    (Side::Debit, Side::Debit) => line.amount.amount,
-                    (Side::Credit, Side::Credit) => line.amount.amount,
-                    (Side::Debit, Side::Credit) => -line.amount.amount,
-                    (Side::Credit, Side::Debit) => -line.amount.amount,
-                };
-                book += signed;
+                let signed = on_side(normal, line.side, line.amount.amount);
+                book = crate::money::add_exact(book, signed, "the account's book balance")?;
                 if entry.date() > statement_date {
                     continue;
                 }
                 if self.is_cleared(entry.id(), idx) {
-                    cleared += signed;
+                    cleared =
+                        crate::money::add_exact(cleared, signed, "the account's cleared balance")?;
                 } else {
                     uncleared_lines.push(UnclearedLine {
                         entry_id: entry.id(),
@@ -8224,9 +8232,9 @@ impl Ledger {
                 cleared
             },
             statement_balance,
-            difference: cleared.checked_sub(statement_balance).ok_or_else(|| {
-                LedgerError::TooLargeToCompute("the reconciliation's difference".into())
-            })?,
+            difference: crate::kernel::Amount::checked_sub(cleared, statement_balance).ok_or_else(
+                || LedgerError::TooLargeToCompute("the reconciliation's difference".into()),
+            )?,
             uncleared_lines,
         })
     }
@@ -8441,7 +8449,7 @@ impl Ledger {
             match l.employee {
                 Some(p) => match paid.iter_mut().find(|(x, _)| *x == p) {
                     Some((_, v)) => {
-                        *v = v.checked_add(net).ok_or_else(|| {
+                        *v = crate::kernel::Amount::checked_add(*v, net).ok_or_else(|| {
                             LedgerError::TooLargeToCompute(format!("party {p}'s net pay"))
                         })?
                     }
@@ -9208,11 +9216,10 @@ impl Ledger {
             .iter()
             .filter_map(|l| self.chart.get(l.account).map(|a| a.code.as_str()))
             .collect();
-        let debits = e
-            .lines()
-            .iter()
-            .filter(|l| l.side == Side::Debit)
-            .try_fold(Decimal::ZERO, |t, l| t.checked_add(l.amount.amount))
+        let debits =
+            crate::kernel::total_of(e.lines().iter().filter(|l| l.side == Side::Debit), |l| {
+                l.amount.amount
+            })
             .ok_or_else(|| LedgerError::TooLargeToCompute(format!("entry {entry}'s debits")))?;
         let approvals = self.conventions.approvals(entry);
         let key = crate::parties::name_key;

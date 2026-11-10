@@ -6,6 +6,7 @@
 //! are built from the same posted entries and statements as everything
 //! else, so a number on a chart always ties to a number on a statement.
 
+use crate::money::{add_in_range, on_side, sub_in_range};
 use crate::reports::profit_and_loss_for_period;
 use crate::{AccountId, AccountType, Ledger, LedgerError, Side};
 use chrono::{Datelike, Days, Months, NaiveDate};
@@ -84,11 +85,11 @@ pub fn balance_series(
             let Some(account) = ledger.chart().get(line.account) else {
                 continue;
             };
-            let signed = if line.side == account.account_type.normal_side() {
-                line.amount.amount
-            } else {
-                -line.amount.amount
-            };
+            let signed = on_side(
+                account.account_type.normal_side(),
+                line.side,
+                line.amount.amount,
+            );
             postings.push((entry.date(), signed));
         }
     }
@@ -98,7 +99,7 @@ pub fn balance_series(
     let mut i = 0;
     for date in dates {
         while i < postings.len() && postings[i].0 <= *date {
-            running += postings[i].1;
+            running = add_in_range(running, postings[i].1);
             i += 1;
         }
         out.push(running);
@@ -137,7 +138,7 @@ pub struct IntervalPnl {
 impl IntervalPnl {
     /// Revenue minus expenses.
     pub fn net(&self) -> Decimal {
-        self.revenue - self.expenses
+        sub_in_range(self.revenue, self.expenses)
     }
 }
 
@@ -203,14 +204,14 @@ pub fn flows_by_interval(
         let mut net = Decimal::ZERO;
         for line in entry.lines().iter().filter(|l| set.contains(&l.account)) {
             match line.side {
-                Side::Debit => net += line.amount.amount,
-                Side::Credit => net -= line.amount.amount,
+                Side::Debit => net = add_in_range(net, line.amount.amount),
+                Side::Credit => net = sub_in_range(net, line.amount.amount),
             }
         }
         if net > Decimal::ZERO {
-            slot.2 += net;
+            slot.2 = add_in_range(slot.2, net);
         } else {
-            slot.3 -= net;
+            slot.3 = sub_in_range(slot.3, net);
         }
     }
     out

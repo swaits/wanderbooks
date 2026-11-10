@@ -22,6 +22,7 @@
 //! the §704(c) built-in gain or loss at contribution.
 
 use crate::money::Steps;
+use crate::money::neg;
 use crate::{
     AccountId, AccountType, ChartOfAccounts, EntryId, EntryStatus, Ledger, LedgerError, Money,
     kernel,
@@ -684,11 +685,9 @@ fn schedule_months(asset: &Asset, through: NaiveDate) -> Result<Vec<MonthLine>, 
     }
     let too_large =
         || LedgerError::TooLargeToCompute(format!("asset {}'s depreciation schedule", asset.id));
-    let depreciable = asset
-        .cost
-        .amount
-        .checked_sub(asset.salvage_value.amount)
-        .ok_or_else(too_large)?;
+    let depreciable =
+        crate::kernel::Amount::checked_sub(asset.cost.amount, asset.salvage_value.amount)
+            .ok_or_else(too_large)?;
     if depreciable <= Decimal::ZERO {
         return Ok(Vec::new());
     }
@@ -721,10 +720,7 @@ fn schedule_months(asset: &Asset, through: NaiveDate) -> Result<Vec<MonthLine>, 
                 period: format!("{:04}-{:02}", p.year, p.month),
                 amount: steps.decimal(through_k - charged).ok_or_else(too_large)?,
                 accumulated,
-                book_value: asset
-                    .cost
-                    .amount
-                    .checked_sub(accumulated)
+                book_value: crate::kernel::Amount::checked_sub(asset.cost.amount, accumulated)
                     .ok_or_else(too_large)?,
             },
         });
@@ -760,11 +756,11 @@ pub fn accumulated_scheduled_through(
 /// [`crate::Ledger::accumulated_posted`] (the register's and the tools'
 /// `book_value`, BS-asset-3).
 pub fn scheduled_book_value(asset: &Asset, as_of: NaiveDate) -> Result<Decimal, LedgerError> {
-    asset
-        .cost
-        .amount
-        .checked_sub(accumulated_scheduled_through(asset, as_of)?)
-        .ok_or_else(|| LedgerError::TooLargeToCompute(format!("asset {}'s book value", asset.id)))
+    crate::kernel::Amount::checked_sub(
+        asset.cost.amount,
+        accumulated_scheduled_through(asset, as_of)?,
+    )
+    .ok_or_else(|| LedgerError::TooLargeToCompute(format!("asset {}'s book value", asset.id)))
 }
 
 /// A change to what the books carry for an asset's depreciation, in the
@@ -839,7 +835,7 @@ pub(crate) fn run_chain_entries(
                 .get_entry(id)
                 .filter(|x| x.status() == EntryStatus::Posted)
             {
-                out.push((e.date(), if adds { amount } else { -amount }));
+                out.push((e.date(), if adds { amount } else { neg(amount) }));
             }
             link = reversals.get(&id).copied();
             adds = !adds;
@@ -929,8 +925,7 @@ pub fn run_amounts(
                 RunAmount {
                     amount,
                     scheduled: own,
-                    over: g
-                        .checked_sub(s)
+                    over: crate::kernel::Amount::checked_sub(g, s)
                         .map_or(Decimal::ZERO, |o| o.max(Decimal::ZERO)),
                 },
             )
@@ -981,7 +976,7 @@ fn cumulatives(
             li += 1;
         }
         while let Some(r) = runs.get(ri).filter(|r| (r.year, r.month) <= (y, m)) {
-            carry = carry.checked_add(r.amount).ok_or_else(too_large)?;
+            carry = crate::kernel::Amount::checked_add(carry, r.amount).ok_or_else(too_large)?;
             ri += 1;
         }
         months.push((y, m));
@@ -1096,8 +1091,7 @@ pub fn catch_up_room(
     let too_large =
         || LedgerError::TooLargeToCompute(format!("asset {}'s depreciation run", asset.id));
     let c = cumulatives(asset, (year, month), latest, &lines, posted)?;
-    let over = c.carried[0]
-        .checked_sub(c.scheduled[0])
+    let over = crate::kernel::Amount::checked_sub(c.carried[0], c.scheduled[0])
         .ok_or_else(too_large)?
         .max(Decimal::ZERO);
     Ok(RunAmount {
@@ -1154,15 +1148,13 @@ pub fn disposal_amounts(
     check_disposal(asset, proceeds)?;
     let accumulated = accumulated_scheduled_through(asset, date)?;
     let too_large = || LedgerError::TooLargeToCompute(format!("asset {}'s disposal", asset.id));
-    let book = asset
-        .cost
-        .amount
-        .checked_sub(accumulated)
-        .ok_or_else(too_large)?;
+    let book =
+        crate::kernel::Amount::checked_sub(asset.cost.amount, accumulated).ok_or_else(too_large)?;
     Ok(DisposalAmounts {
         book_value: book,
         accumulated,
-        gain_loss: proceeds.amount.checked_sub(book).ok_or_else(too_large)?,
+        gain_loss: crate::kernel::Amount::checked_sub(proceeds.amount, book)
+            .ok_or_else(too_large)?,
     })
 }
 

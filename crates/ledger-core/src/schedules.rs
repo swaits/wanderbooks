@@ -668,13 +668,15 @@ impl AmortizationSchedule {
     /// The amount not yet recognized: the sum of the plan's unposted
     /// months.
     pub fn remaining(&self) -> Result<Decimal, LedgerError> {
-        self.plan()?
-            .into_iter()
-            .filter(|(d, _)| !self.posted.contains(d))
-            .try_fold(Decimal::ZERO, |sum, (_, a)| sum.checked_add(a))
-            .ok_or_else(|| {
-                LedgerError::TooLargeToCompute(format!("schedule {}'s remaining amount", self.id))
-            })
+        crate::kernel::total_of(
+            self.plan()?
+                .into_iter()
+                .filter(|(d, _)| !self.posted.contains(d)),
+            |(_, a)| a,
+        )
+        .ok_or_else(|| {
+            LedgerError::TooLargeToCompute(format!("schedule {}'s remaining amount", self.id))
+        })
     }
 }
 
@@ -808,8 +810,7 @@ pub fn validate_recurring_journaled(
             Side::Debit => &mut debits,
             Side::Credit => &mut credits,
         };
-        *total = total
-            .checked_add(money.amount)
+        *total = crate::kernel::Amount::checked_add(*total, money.amount)
             .ok_or_else(|| LedgerError::TooLargeToCompute("the recurring entry's total".into()))?;
     }
     if debits != credits {

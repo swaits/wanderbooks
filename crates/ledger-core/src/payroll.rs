@@ -177,17 +177,19 @@ pub fn payroll_entry_plan(
     // exact, or refused here as TooLargeToCompute, never a panic.
     let gross = crate::kernel::total_of(lines.iter(), |l| l.gross_pay).ok_or_else(too_large)?;
     let employer = crate::kernel::total_try(lines.iter(), |l| {
-        l.ss_employer.checked_add(l.medicare_employer)
+        crate::kernel::Amount::checked_add(l.ss_employer, l.medicare_employer)
     })
     .ok_or_else(too_large)?;
     let federal =
         crate::kernel::total_of(lines.iter(), |l| l.federal_withholding).ok_or_else(too_large)?;
     let state =
         crate::kernel::total_of(lines.iter(), |l| l.state_withholding).ok_or_else(too_large)?;
-    let ss = crate::kernel::total_try(lines.iter(), |l| l.ss_employee.checked_add(l.ss_employer))
-        .ok_or_else(too_large)?;
+    let ss = crate::kernel::total_try(lines.iter(), |l| {
+        crate::kernel::Amount::checked_add(l.ss_employee, l.ss_employer)
+    })
+    .ok_or_else(too_large)?;
     let medicare = crate::kernel::total_try(lines.iter(), |l| {
-        l.medicare_employee.checked_add(l.medicare_employer)
+        crate::kernel::Amount::checked_add(l.medicare_employee, l.medicare_employer)
     })
     .ok_or_else(too_large)?;
     let other =

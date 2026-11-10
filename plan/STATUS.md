@@ -56,11 +56,15 @@ store's last test file with nothing failed, and the second ran what it
 had not reached (that file, the vault, the doc tests). Its first run, a
 commit earlier, failed one test, and that was the AppImage fault above.
 
-**Not verified yet**: CI on the push (the five-part `check`, `deny`,
-`notices-check` and `kernel-only` have never run there). No Linux
-package has been built since the notices file joined them, and none
-with the AppImage rule: the first built image shows `update` and a
-restart still find it.
+**CI on the push** (8ec1b7995, 2026-11-10): all four gates green. `check`
+ran as five parts for the first time, the slowest (the viewer's tests)
+done 43 minutes after the push where the one job took 72; `deny`,
+`notices-check` and `kernel-only` passed there in the lint part. macOS,
+Windows (1 h 49 min) and `two-user` passed.
+
+**Not verified yet**: no Linux package has been built since the notices
+file joined them, and none with the AppImage rule: the first built image
+shows `update` and a restart still find it.
 
 **Next**: the gate and the push; then the triage's P2.5 (a `renumber`
 step, a `ReplayStep` relation, the registers' steps, a wider

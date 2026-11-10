@@ -69,6 +69,7 @@
 
 mod allocate;
 mod control;
+mod decimal_exact;
 mod entries;
 mod fx;
 mod payroll;

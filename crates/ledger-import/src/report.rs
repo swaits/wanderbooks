@@ -632,7 +632,7 @@ pub fn period_label(start: NaiveDate, end: NaiveDate) -> String {
 ///      to the cent.
 /// ```
 pub fn format_amount(d: Decimal) -> String {
-    let rounded = d.round_dp_with_strategy(2, rust_decimal::RoundingStrategy::MidpointAwayFromZero);
+    let rounded = crate::format::round_display(d, 2);
     let negative = rounded.is_sign_negative() && !rounded.is_zero();
     let fixed = format!("{:.2}", rounded.abs());
     let (int, frac) = fixed.split_once('.').expect("two decimals");
@@ -664,7 +664,7 @@ pub struct AmountParts {
 
 /// Split an amount for aligned accounting display. Exact: no floats.
 pub fn amount_parts(d: Decimal) -> AmountParts {
-    let rounded = d.round_dp_with_strategy(2, rust_decimal::RoundingStrategy::MidpointAwayFromZero);
+    let rounded = crate::format::round_display(d, 2);
     AmountParts {
         digits: format_amount(rounded.abs()),
         negative: rounded.is_sign_negative() && !rounded.is_zero(),

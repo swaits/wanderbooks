@@ -64,8 +64,10 @@ fn headline(b: &Books) -> String {
         fmt::dollars(k.liabilities)
     );
     if let Some(burn) = k.monthly_burn {
-        if burn > Decimal::ZERO && k.cash > Decimal::ZERO {
-            let months = (k.cash / burn).round_dp(1);
+        if burn > Decimal::ZERO
+            && k.cash > Decimal::ZERO
+            && let Some(months) = k.cash.checked_div(burn).map(|m| fmt::round_display(m, 1))
+        {
             s.push_str(&format!(
                 " Lately you spend {} a month more than you earn: about {} months of runway.",
                 fmt::dollars(burn),
@@ -100,11 +102,11 @@ fn change(
     p: &theme::Palette,
 ) -> Option<(String, egui::Color32)> {
     let pct = fmt::pct_change(prev, now)?;
-    let good = (pct >= 0.0) == up_is_good;
-    let arrow = if pct >= 0.0 { "▲" } else { "▼" };
+    let good = (pct >= Decimal::ZERO) == up_is_good;
+    let arrow = if pct >= Decimal::ZERO { "▲" } else { "▼" };
     Some((
-        format!("{arrow} {:.0}% vs {what}", pct.abs()),
-        if pct.abs() < 0.5 {
+        format!("{arrow} {}% vs {what}", fmt::round_display(pct.abs(), 0)),
+        if pct.abs() < Decimal::new(5, 1) {
             p.muted
         } else if good {
             p.positive
@@ -134,7 +136,10 @@ fn kpis(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
             .collect();
     let runway = match k.monthly_burn {
         Some(burn) if burn > Decimal::ZERO && k.cash > Decimal::ZERO => (
-            format!("{} mo", (k.cash / burn).round_dp(1)),
+            k.cash.checked_div(burn).map_or_else(
+                || "—".to_string(),
+                |m| format!("{} mo", fmt::round_display(m, 1)),
+            ),
             Some((format!("burning {}/mo", fmt::compact(burn)), p.warning)),
         ),
         _ if k.first_entry.is_none() => ("—".to_string(), None),

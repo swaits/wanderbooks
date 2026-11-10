@@ -22,7 +22,10 @@ use rust_decimal::Decimal;
 /// "318.42", "1000.00". Padding only, never rounding: an exact amount with
 /// more places (an FX-converted line) keeps them. Never "-0".
 pub fn money(n: Decimal) -> String {
-    let mut n = if n.is_zero() { Decimal::ZERO } else { n };
+    // Padding only, never rounding: the display rounding at the
+    // amount's own scale (at least two places) is the identity, and it
+    // is what drops a negative zero.
+    let mut n = ledger_import::round_display(n, n.scale().max(2));
     if n.scale() < 2 {
         n.rescale(2);
     }
@@ -42,6 +45,7 @@ pub fn total_text(total: Option<Decimal>) -> String {
 /// share, never on its spelling.
 pub fn share_text(n: Decimal) -> String {
     let mut n = n.normalize();
+    n = ledger_import::round_display(n, n.scale().max(2));
     if n.scale() < 2 {
         n.rescale(2);
     }

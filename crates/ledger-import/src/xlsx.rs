@@ -442,7 +442,7 @@ fn exact_text(d: Decimal) -> String {
 /// cents, at most 15 significant digits. None otherwise.
 fn exact_f64(d: Decimal) -> Option<f64> {
     use rust_decimal::prelude::ToPrimitive;
-    let cents = d.round_dp(2);
+    let cents = crate::format::round_display(d, 2);
     if cents != d || cents.abs() > Decimal::new(999_999_999_999_999, 2) {
         return None;
     }

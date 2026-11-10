@@ -788,7 +788,16 @@ pub fn build(dir: &Path, today: NaiveDate) -> Result<(), StoreError> {
             let date = day(m, 1);
             if in_range(date) {
                 let gross = rng.amount(450, 1600);
-                let fee = (gross * Decimal::new(10, 2)).round_dp(2) + Decimal::new(30, 2);
+                // A booked figure, so the kernel's rounding and not the
+                // display's: ten percent to the cent, a half to the even
+                // cent, as these books have always been drawn.
+                let fee = ledger_core::kernel::round_places(
+                    gross * Decimal::new(10, 2),
+                    2,
+                    ledger_core::kernel::Rounding::HalfToEven,
+                )
+                .expect("a tenth of a four-digit sale rounds to the cent")
+                    + Decimal::new(30, 2);
                 let net = gross - fee;
                 let e = s.create_entry(date, "Gumroad payout — template sales")?;
                 s.add_line(e, checking, Side::Debit, usd(net))?;

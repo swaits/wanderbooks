@@ -62,4 +62,5 @@ assets = [
   { source = "target/release/wanderbooks", dest = "/usr/bin/wanderbooks", mode = "0755" },
   { source = "deploy/packaging/install-method-rpm", dest = "/usr/share/wanderbooks/install-method", mode = "0644" },
   { source = "deploy/packaging/wanderbooks-static.desktop", dest = "/usr/share/applications/wanderbooks.desktop", mode = "0644" },
+  { source = "THIRD-PARTY-NOTICES.txt", dest = "/usr/share/doc/wanderbooks/THIRD-PARTY-NOTICES.txt", mode = "0644" },
 ]

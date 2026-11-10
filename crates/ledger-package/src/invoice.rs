@@ -269,7 +269,7 @@ pub fn invoice_document(
         {
             label.push_str(&format!(" · ref {r}"));
         }
-        settled.push((label, -l.amount));
+        settled.push((label, ledger_core::money::neg(l.amount)));
         last_paid = Some(l.date);
     }
     for (label, amount) in [

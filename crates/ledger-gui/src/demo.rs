@@ -788,7 +788,8 @@ pub fn build(dir: &Path, today: NaiveDate) -> Result<(), StoreError> {
             let date = day(m, 1);
             if in_range(date) {
                 let gross = rng.amount(450, 1600);
-                let fee = (gross * Decimal::new(10, 2)).round_dp(2) + Decimal::new(30, 2);
+                let fee =
+                    crate::fmt::round_display(gross * Decimal::new(10, 2), 2) + Decimal::new(30, 2);
                 let net = gross - fee;
                 let e = s.create_entry(date, "Gumroad payout — template sales")?;
                 s.add_line(e, checking, Side::Debit, usd(net))?;

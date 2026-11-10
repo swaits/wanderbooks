@@ -18,15 +18,20 @@ use ledger_core::reports::profit_and_loss_for_period;
 use rust_decimal::Decimal;
 use std::collections::BTreeMap;
 
+/// `part` as a percent of `whole`, to one place, half to even (the
+/// margin rule the books use, `kernel::percent_of`). `None` when
+/// `whole` is zero or negative: a percent of no base, or of a negative
+/// base, means nothing, and the page shows "—" for it.
 pub(crate) fn pct(part: Decimal, whole: Decimal) -> Option<Decimal> {
-    part.checked_div(whole)?
-        .checked_mul(Decimal::from(100))
-        .map(|x| {
-            // One place always, so 100% prints as "100.0", as 64.0 does.
-            let mut x = x.round_dp(1);
-            x.rescale(1);
-            x
-        })
+    let mut x = ledger_core::kernel::percent_of(
+        part,
+        whole,
+        Decimal::new(1, 1),
+        ledger_core::kernel::Rounding::HalfToEven,
+    )?;
+    // One place always, so 100% prints as "100.0", as 64.0 does.
+    x.rescale(1);
+    Some(x)
 }
 
 pub fn show(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
@@ -269,7 +274,7 @@ fn spending_changes(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                         ui.painter().text(
                             egui::pos2(x, r.center().y),
                             egui::Align2::RIGHT_CENTER,
-                            fmt::money(v.round_dp(2)),
+                            fmt::money(fmt::round_display(*v, 2)),
                             theme::regular(13.0),
                             if *flag { p.warning } else { p.text },
                         );
@@ -438,6 +443,9 @@ mod tests {
         assert_eq!(pct(cents(500), cents(500)).unwrap().to_string(), "100.0");
         assert_eq!(pct(cents(-100), cents(200)).unwrap().to_string(), "-50.0");
         assert_eq!(pct(Decimal::MAX, Decimal::new(1, 2)), None);
+        // No percent of a negative base.
+        assert_eq!(pct(cents(100), cents(-200)), None);
+        assert_eq!(pct(cents(-100), cents(-200)), None);
     }
 
     /// "Invoiced by customer, this year": this fiscal year's invoices only.

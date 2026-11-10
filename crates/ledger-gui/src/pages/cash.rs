@@ -190,7 +190,7 @@ fn runway(ui: &mut Ui, b: &Books) {
                 ui.label(RichText::new("The figures are too large to compute.").color(p.muted));
                 return;
             };
-            let net = net.round_dp(2);
+            let net = fmt::round_display(net, 2);
             let big = |ui: &mut Ui, label: &str, value: String, color| {
                 ui.vertical(|ui| {
                     ui.label(
@@ -224,7 +224,11 @@ fn runway(ui: &mut Ui, b: &Books) {
                 if net < Decimal::ZERO {
                     // Checked: a sub-cent average (lines an earlier version
                     // booked) makes a runway past any calendar.
-                    let months_left = b.kpis.cash.checked_div(-net).map(|m| m.round_dp(1));
+                    let months_left = b
+                        .kpis
+                        .cash
+                        .checked_div(-net)
+                        .map(|m| fmt::round_display(m, 1));
                     let out = months_left
                         .and_then(|m| m.checked_mul(Decimal::from(30)))
                         .and_then(|d| u64::try_from(d).ok())

@@ -48,10 +48,19 @@ and not yet pushed (one gate and one push at the end, D-60):
 Kani 107 harnesses (97 in `just prove`, 10 slow); bookspec's Lean 212
 audited theorems at the pin (79cb439). Parity floor 36.
 
-**Not verified yet**: the batch's one `just check` and `just prove`, and
-CI on the push (the five-part `check`, `deny`, `notices-check` and
-`kernel-only` have never run there). No Linux package has been built
-since the notices file joined them.
+**The batch's gate** (2026-11-10): `just prove` passed on 0178809a3 (97
+harnesses, Lean 212 theorems; the one commit after it touches no
+ledger-core file). `just check` passed on 3bc198594 in two runs: the
+first was stopped by a two-hour limit on a loaded machine inside the
+store's last test file with nothing failed, and the second ran what it
+had not reached (that file, the vault, the doc tests). Its first run, a
+commit earlier, failed one test, and that was the AppImage fault above.
+
+**Not verified yet**: CI on the push (the five-part `check`, `deny`,
+`notices-check` and `kernel-only` have never run there). No Linux
+package has been built since the notices file joined them, and none
+with the AppImage rule: the first built image shows `update` and a
+restart still find it.
 
 **Next**: the gate and the push; then the triage's P2.5 (a `renumber`
 step, a `ReplayStep` relation, the registers' steps, a wider

@@ -670,10 +670,7 @@ pub fn call_within(
     let not_sent = |why: String| CallError::NotSent(why);
     // A list changes nothing: its only question is whether it answered.
     let look = match request {
-        Request::List
-        | Request::TokenList
-        | Request::TokenCheck { .. }
-        | Request::Sessions => None,
+        Request::List | Request::TokenList | Request::TokenCheck { .. } | Request::Sessions => None,
         Request::OpenBook { .. } | Request::CloseBook { .. } => {
             Some("`wanderbooks books list` says whether the books are open")
         }

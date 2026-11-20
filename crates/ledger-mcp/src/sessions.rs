@@ -188,7 +188,14 @@ mod tests {
             }),
             100,
         );
-        board.finished("s1", "books.trial_balance", &Outcome::Error, None, None, 200);
+        board.finished(
+            "s1",
+            "books.trial_balance",
+            &Outcome::Error,
+            None,
+            None,
+            200,
+        );
         let note = &board.snapshot(&["s1".into()])["s1"];
         let said = note.client.as_ref().unwrap();
         assert!(!said.name.contains("6789"), "a TIN is masked: {said:?}");

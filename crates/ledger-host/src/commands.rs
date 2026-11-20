@@ -3683,6 +3683,78 @@ mod tests {
         );
     }
 
+    /// `doctor` says who is connected to each open book: the token's name,
+    /// the client and what the agent said, when, the calls running, the
+    /// last call; and that none is when none is.
+    #[test]
+    fn doctor_says_who_is_connected() {
+        let none = [admin::BookSessions {
+            book: "acme".into(),
+            sessions: Vec::new(),
+        }];
+        assert_eq!(session_lines(&none), ["Assistants connected: none."]);
+        let open = [
+            admin::BookSessions {
+                book: "acme".into(),
+                sessions: vec![
+                    admin::SessionInfo {
+                        token: "agent".into(),
+                        client_name: Some("claude-code".into()),
+                        client_version: Some("2.1".into()),
+                        agent: Some(admin::SessionAgent {
+                            model: Some("m-1".into()),
+                            reasoning_effort: None,
+                            harness: Some("h-1".into()),
+                        }),
+                        connected_at: "2026-11-20T10:00:00Z".into(),
+                        running: 2,
+                        last: Some(admin::LastCall {
+                            tool: "books.chart".into(),
+                            outcome: "ok".into(),
+                            at: "2026-11-20T10:01:00Z".into(),
+                        }),
+                    },
+                    admin::SessionInfo {
+                        token: "web".into(),
+                        client_name: None,
+                        client_version: None,
+                        agent: None,
+                        connected_at: "2026-11-20T10:02:00Z".into(),
+                        running: 0,
+                        last: None,
+                    },
+                ],
+            },
+            admin::BookSessions {
+                book: "beta".into(),
+                sessions: Vec::new(),
+            },
+        ];
+        assert_eq!(
+            session_lines(&open),
+            [
+                "Assistants connected:",
+                "  acme:",
+                "    token \"agent\", claude-code 2.1 (says: m-1, h-1), connected 2026-11-20T10:00:00Z, 2 calls running, last books.chart (ok) at 2026-11-20T10:01:00Z",
+                "    token \"web\", a client that hasn't said who it is, connected 2026-11-20T10:02:00Z, no call running, no call yet",
+                "  beta: none",
+            ]
+        );
+        let closed = admin::BookStatus {
+            id: "acme".into(),
+            open: false,
+            closed: true,
+            problem: None,
+            format_upgrade: None,
+            database: None,
+            other_databases: Vec::new(),
+        };
+        assert_eq!(
+            book_line(&closed),
+            "acme  closed (`wanderbooks books open acme` opens it)"
+        );
+    }
+
     /// `doctor` names the database file a book uses, and any other
     /// schema's beside it as left alone; nothing for books that didn't
     /// open.

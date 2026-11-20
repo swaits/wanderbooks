@@ -2034,7 +2034,13 @@ impl ServerHandler for BooksServer {
         use ledger_store::access::Outcome;
         // Reading a resource is reading the books: books:read, recorded
         // (access.rs).
-        let call = Call::new(&self.access, &self.board, &context, "resource", &request.uri);
+        let call = Call::new(
+            &self.access,
+            &self.board,
+            &context,
+            "resource",
+            &request.uri,
+        );
         let result = self.resource(request, &call).await;
         {
             let outcome = match &result {

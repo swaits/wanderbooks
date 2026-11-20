@@ -4290,6 +4290,35 @@ that make a group, the reversal skip, the `total > threshold` end),
 `audit::check_split` (`> unit`, not `>=`), `AttestationBar::parse`'s range
 (1..=64), `reconcilable::reconciliation_due` (`<=` through, `<` reconciled).
 
+## P15 A1: open and close one book, and who is connected (2026-11-20)
+
+The server opens and closes one book while it runs (`ledger-mcp/src/local.rs`
+INVARIANTS 3, 10 to 12; `admin.rs` INVARIANTS 8 and 9; `sessions.rs`). The
+rule the tests prove: for every call, either it ran completely and is in
+the journal, or it was refused and nothing of it is; after a close is
+answered no call on that book runs until it is opened again; and a close of
+one book never refuses or holds up a call on another.
+
+| Test | What it proves |
+|---|---|
+| `local::tests::a_closed_book_is_refused_as_closed_and_the_other_still_serves` | a closed book's door says `closed` with the words an agent can relay, a name that is no book says `no-such-books`, the other book still passes the door, the list shows closed (not a problem), closing twice is `was_not_open`, opening is `opened` then `already_open`, a name that is no book is `no_such_book` |
+| `local::tests::a_closed_book_can_be_opened_by_another_program_and_not_by_two` | a close releases the store's writer lock (another `Store::open` succeeds); while another holds it, opening says `another program has these books open` and the book is listed with that problem; once it lets go it opens |
+| `local::tests::a_close_waits_for_the_requests_inside_and_refuses_the_next` | a close answers only after a request already inside the book's gate has left; a request arriving meanwhile is refused as closed at once; another book's door is not held up |
+| `local::tests::the_books_open_at_the_start_are_chosen_by_option` | `--open` takes `all`, `none`, or ids, and refuses a bad id |
+| `local::tests::the_sessions_request_says_who_is_connected_and_never_their_token` | the sessions list: the token's name, the client from `initialize` (known before any call), the agent's self-report, the last call; no token text; an ended session is not listed; a book's sessions end with it and a reopened book has none |
+| `sessions::tests` (3) | the running count rides in the call's guard; the last call, the client and the agent are kept, masked of any full TIN; a note for an ended session is dropped |
+| `book_open_close::books_left_closed_at_the_start_say_so_and_open_when_asked` | a real server started with `--open BOOK`: the other book is listed closed and says so on the MCP, download, export and upload routes; a name that is no book is 404; opening serves |
+| `book_open_close::the_open_option_takes_none_and_refuses_a_book_that_doesnt_exist` | `--open none` leaves every book closed; `--open nobody` exits 2 before opening anything |
+| `book_open_close::the_sessions_request_names_each_connection_and_never_its_token` | over the real socket: two tokens, two clients, an agent's report, neither token's text nor SHA-256 in the answer, an ended session gone, a close ends the book's sessions |
+| `book_open_close::closing_and_opening_a_book_over_and_over_loses_and_duplicates_nothing` | the hammer: 6 agents on one book and 4 on another make journaled drafts and reads while the first is closed and reopened 12 times; both journals are replayed afterwards: every acknowledged draft is in its journal exactly once under the id it was told, no refused call left anything, the closed book's journal and access log never moved between the close answer and the reopening, the other book never refused a call and kept answering while the first was closed, and the books replay with gapless ids |
+| `commands::tests::doctor_says_who_is_connected` | the doctor's lines for sessions |
+
+**For P12 (mutation targets).** `Gate::enter` (count before looking at `shut`),
+`Books::close_one`'s order (shut and list closed, `SharedStore::close`, the
+gate emptied, sessions ended, the last backup, `let_go`), `door`'s entering
+before it touches the book, and the gate's riding in the upload and
+download tasks.
+
 ## P12: the checklists
 
 The **For P12** paragraphs above (kept where they were written, with their

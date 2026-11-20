@@ -267,7 +267,10 @@ reach through the bridge.
 - **Served books** (`wanderbooks server`, started by the host; an agent
   connects with `wanderbooks mcp --book ID`, the bridge: stdio to the
   agent, the server's socket upstream): every book
-  in the data root, on a socket in the root's private `run/` folder that
+  in the data root that is open (all of them at the start, unless
+  `wanderbooks server --open none|ID[,ID…]` says otherwise; one is opened
+  or closed while the server runs, "Opening and closing one book" below),
+  on a socket in the root's private `run/` folder that
   only this account can connect to. Every request carries a bearer token
   live for that book (refused 401 without one, 403 with another book's).
   Refusals at the door, tool calls, uploads, downloads and exports are
@@ -275,6 +278,12 @@ reach through the bridge.
   book stops taking requests (an upload, download or export is then
   refused, 503).
   - `/b/{book}/mcp`: the book's MCP service. A request is at most 1 MiB.
+  - A book that exists but is **closed** is refused on every route below
+    and on this one: 503 with `x-wanderbooks-refused: closed` and the words
+    `The books "ID" aren't open: open them in Wanderbooks.` (the bridge
+    hands them to the agent as they are). A book that doesn't exist is 404
+    `no-such-books`; one that failed to open is 503 `not-open` with why.
+    Nothing of a closed book is written, its access log included.
   - `PUT /b/{book}/u/{upload}`: an upload's bytes (`books.begin_upload`),
     from the token that began it; what `wanderbooks upload --book B
     [--token NAME] UPLOAD FILE` sends. Streamed to the disk, kept only if
@@ -330,6 +339,41 @@ reach through the bridge.
     It is written to a
     hidden file and hard-linked in: never a partial file under the real
     name, never over another file.
+
+### Opening and closing one book (plan/p15-app-and-relay.md 3.1, D-77, D-78)
+
+The desktop app has one tab per company, and a company is reachable by
+agents exactly while its tab is open, so the books server opens and closes
+**one** book while it runs. These are requests on the admin socket (the
+command line sends them: `wanderbooks books open ID`, `wanderbooks books
+close ID`; `books list` and `doctor` show each book as open, closed, or
+didn't open, with why). Protocol version 1: the requests are new, the
+`closed` flag of a listed book defaults to false.
+
+- `open_book { id }` opens a closed (or failed) book of the data root with
+  exactly the checks of the server's start (verified, a drifted database
+  rebuilt, a format upgrade waited for as at the start). Answers `opened`,
+  `already_open`, `no_such_book`, or `could_not_open` with why (the book
+  stays listed, with that `problem`).
+- `close_book { id }` answers `closed`, `was_not_open` or `no_such_book`.
+  In this order: new calls on the book are refused (the door is shut and
+  the book listed closed); the calls running on it finish, on every route
+  (nothing is killed, nothing is half-done); its MCP sessions end (an agent's next request on one
+  gets the "isn't open" words above, and after a reopening a 404 "Session
+  not found", which a client takes as "open a new one"); its last backup is
+  made, as at the server's close; its store is let go, releasing the
+  writer lock, so another process could open the book. Only then is
+  "closed" answered. Every other book keeps serving, and none of its
+  calls waits for this close. For every call, either it ran completely
+  and is in the journal, or it was refused unrun and nothing of it is; after
+  the answer, no call on that book runs until it is opened again.
+- `sessions` lists, for each open book, its live MCP sessions: the token's
+  **name** (never the token, its text or its hash), the client's name and
+  version from `initialize`, the agent's self-report (`books.start`'s
+  `agent`, if it made one), when it connected, how many of its calls are
+  running now, and its last tool with its outcome and time. A session
+  that ended is not listed; nothing is kept across a server restart.
+  `wanderbooks doctor` prints these lines under "Assistants connected".
 
 ## Server instructions
 

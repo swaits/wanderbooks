@@ -287,6 +287,15 @@ re-verifies the journal.
 
 ## The local transport and the Windows arms (`ledger-mcp::ipc`, `ledger-store::winsec`, P11c, D-62)
 
+The books server opens the books of the data root at its start (all, or the
+ones `--open` names), and opens or closes **one** while it runs (admin
+requests `open_book` and `close_book`, `ledger-mcp/src/local.rs`
+INVARIANT 10; plan/p15-app-and-relay.md 3.1): each open book has a gate
+every request enters before it touches the book, which a close shuts and
+waits empty, so the app's tab for a company can be its book's open state.
+`sessions.rs` keeps the per-book board of who is connected (the admin
+`sessions` request).
+
 The books server, the host and everything that talks to them meet on
 channels only this account can open (plan 3.9). `ledger_mcp::ipc` is the
 one seam: `Endpoint` (a socket in the root's `run/` on Unix; the pipe

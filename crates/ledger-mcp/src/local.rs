@@ -222,10 +222,17 @@ impl Book {
 /// `shut` before it looks at the count (both sequentially consistent), so
 /// a request either sees the door shut, or is counted where the close will
 /// wait for it: never neither.
+///
+/// An MCP request's answer may still be on its way after its handler is
+/// done (the tool runs in the session's own task, its answer streamed back):
+/// the handler takes an [`Answering`] before it leaves, which rides in the
+/// answer's body until the body ends, so a close can wait for the answers
+/// (as the server's own close does) before it ends the sessions.
 #[derive(Default)]
 pub(crate) struct Gate {
     shut: std::sync::atomic::AtomicBool,
     inside: AtomicUsize,
+    answering: AtomicUsize,
     left: tokio::sync::Notify,
 }
 
@@ -235,6 +242,25 @@ struct Inside(Arc<Gate>);
 impl Drop for Inside {
     fn drop(&mut self) {
         self.0.inside.fetch_sub(1, Ordering::SeqCst);
+        self.0.left.notify_waiters();
+    }
+}
+
+impl Inside {
+    /// An answer on its way out, for a request still inside: counted until
+    /// the answer is sent.
+    fn answering(&self) -> Answering {
+        self.0.answering.fetch_add(1, Ordering::SeqCst);
+        Answering(self.0.clone())
+    }
+}
+
+/// An answer on its way out of a book's door (see [`Gate`]).
+struct Answering(Arc<Gate>);
+
+impl Drop for Answering {
+    fn drop(&mut self) {
+        self.0.answering.fetch_sub(1, Ordering::SeqCst);
         self.0.left.notify_waiters();
     }
 }
@@ -257,6 +283,18 @@ impl Gate {
         loop {
             let left = self.left.notified();
             if self.inside.load(Ordering::SeqCst) == 0 {
+                return;
+            }
+            left.await;
+        }
+    }
+
+    /// Wait until every answer on its way out has been sent. Call after
+    /// [`Self::emptied`]: no request is inside to start another.
+    async fn answered(&self) {
+        loop {
+            let left = self.left.notified();
+            if self.answering.load(Ordering::SeqCst) == 0 {
                 return;
             }
             left.await;
@@ -1049,8 +1087,19 @@ impl Books {
         self.hold(&id, Book::Closed);
         // No tool starts, and every one that did start has finished.
         rt.block_on(store.close());
-        // Every request inside the door has finished, its record written.
+        // Every request inside the door has finished, its record written;
+        // and the answers on their way out are sent (for a while at most: a
+        // client that never reads its answer doesn't hold the book open,
+        // as at the server's close).
         rt.block_on(gate.emptied());
+        if rt
+            .block_on(tokio::time::timeout(ANSWER_GRACE, gate.answered()))
+            .is_err()
+        {
+            eprintln!(
+                "wanderbooks server: a client didn't take its answer; closing the books {id} without it"
+            );
+        }
         // Its sessions end, and are forgotten.
         self.end_sessions(&id, &ended);
         // The last backup, as at the server's close; then nothing more of
@@ -1219,10 +1268,7 @@ impl Books {
         // Its requests end first (a books.back_up_now among them waits for
         // a run of the loop's), then its last run.
         if let Some(Book::Open {
-            store,
-            gate,
-            ended,
-            ..
+            store, gate, ended, ..
         }) = &old
         {
             gate.shut();
@@ -2144,10 +2190,13 @@ async fn mcp(
             board.forget(sid);
         }
     }
+    // The answer may still be on its way: it counts, for the server's close
+    // and for this book's, until its body ends.
+    let answering = _inside.answering();
     response.map(|body| {
         use http_body_util::BodyExt;
         axum::body::Body::new(body.map_frame(move |frame| {
-            let _held = &counted;
+            let _held = (&counted, &answering);
             frame
         }))
     })
@@ -3898,10 +3947,7 @@ mod tests {
     /// Headers carrying `bearer`.
     fn bearing(bearer: &str) -> axum::http::HeaderMap {
         let mut h = axum::http::HeaderMap::new();
-        h.insert(
-            "authorization",
-            format!("Bearer {bearer}").parse().unwrap(),
-        );
+        h.insert("authorization", format!("Bearer {bearer}").parse().unwrap());
         h
     }
 
@@ -3933,10 +3979,16 @@ mod tests {
         let (_, beta) = token(&books, "beta", "agent");
         assert_eq!(at_the_door(&books, "acme", &acme).await, None);
 
-        assert_eq!(ask(&books, Request::CloseBook { id: "acme".into() }).await, closed("acme"));
+        assert_eq!(
+            ask(&books, Request::CloseBook { id: "acme".into() }).await,
+            closed("acme")
+        );
         let (status, code, said) = at_the_door(&books, "acme", &acme).await.unwrap();
         assert_eq!((status, code.as_deref()), (503, Some("closed")));
-        assert_eq!(said, "The books \"acme\" aren't open: open them in Wanderbooks.");
+        assert_eq!(
+            said,
+            "The books \"acme\" aren't open: open them in Wanderbooks."
+        );
         // Told apart from books that don't exist.
         let (status, code, _) = at_the_door(&books, "nobody", &acme).await.unwrap();
         assert_eq!((status, code.as_deref()), (404, Some("no-such-books")));
@@ -3963,7 +4015,13 @@ mod tests {
             }
         );
         assert_eq!(
-            ask(&books, Request::CloseBook { id: "nobody".into() }).await,
+            ask(
+                &books,
+                Request::CloseBook {
+                    id: "nobody".into()
+                }
+            )
+            .await,
             Response::CloseBook {
                 id: "nobody".into(),
                 outcome: admin::CloseOutcome::NoSuchBook
@@ -3980,7 +4038,13 @@ mod tests {
             opened("acme", admin::OpenOutcome::AlreadyOpen)
         );
         assert_eq!(
-            ask(&books, Request::OpenBook { id: "nobody".into() }).await,
+            ask(
+                &books,
+                Request::OpenBook {
+                    id: "nobody".into()
+                }
+            )
+            .await,
             opened("nobody", admin::OpenOutcome::NoSuchBook)
         );
         assert_eq!(at_the_door(&books, "acme", &acme).await, None);
@@ -3997,14 +4061,20 @@ mod tests {
         let dir = books.root.book_dir(&BookId::parse("acme").unwrap());
         // Held: the same program can't open the store a second time.
         assert!(Store::open(&dir).is_err(), "the server holds the books");
-        assert_eq!(ask(&books, Request::CloseBook { id: "acme".into() }).await, closed("acme"));
+        assert_eq!(
+            ask(&books, Request::CloseBook { id: "acme".into() }).await,
+            closed("acme")
+        );
         // Let go: another opens, writes (an account), and holds it.
         let other = Store::open(&dir).expect("the lock was released");
         match ask(&books, Request::OpenBook { id: "acme".into() }).await {
             Response::OpenBook {
                 outcome: admin::OpenOutcome::CouldNotOpen(why),
                 ..
-            } => assert!(why.contains("another program has these books open"), "{why}"),
+            } => assert!(
+                why.contains("another program has these books open"),
+                "{why}"
+            ),
             other => panic!("{other:?}"),
         }
         match ask(&books, Request::List).await {
@@ -4093,15 +4163,20 @@ mod tests {
         create(&books, "beta");
         let (_, agent) = token(&books, "acme", "agent");
         let sessions_of = |r: Response, book: &str| match r {
-            Response::Sessions(all) => all
-                .into_iter()
-                .find(|b| b.book == book)
-                .unwrap_or_else(|| panic!("{book} isn't listed"))
-                .sessions,
+            Response::Sessions(all) => {
+                all.into_iter()
+                    .find(|b| b.book == book)
+                    .unwrap_or_else(|| panic!("{book} isn't listed"))
+                    .sessions
+            }
             other => panic!("{other:?}"),
         };
         assert!(sessions_of(ask(&books, Request::Sessions).await, "acme").is_empty());
-        let r = send_mcp(&books, mcp_request(Method::POST, &agent, None, initialize())).await;
+        let r = send_mcp(
+            &books,
+            mcp_request(Method::POST, &agent, None, initialize()),
+        )
+        .await;
         let sid = r.headers()[SESSION_HEADER].to_str().unwrap().to_string();
         let (status, _, said) = answer(r).await;
         assert_eq!(status, 200, "{said}");
@@ -4157,7 +4232,10 @@ mod tests {
         );
         assert_eq!(s.running, 0);
         let last = s.last.as_ref().expect("a last call");
-        assert_eq!((last.tool.as_str(), last.outcome.as_str()), ("books.start", "ok"));
+        assert_eq!(
+            (last.tool.as_str(), last.outcome.as_str()),
+            ("books.start", "ok")
+        );
         assert!(s.connected_at.ends_with('Z'), "{}", s.connected_at);
         assert!(sessions_of(ask(&books, Request::Sessions).await, "beta").is_empty());
 
@@ -4172,16 +4250,26 @@ mod tests {
 
         // Closed with the book: a session that was open is gone, and the
         // reopened book has none.
-        let r = send_mcp(&books, mcp_request(Method::POST, &agent, None, initialize())).await;
+        let r = send_mcp(
+            &books,
+            mcp_request(Method::POST, &agent, None, initialize()),
+        )
+        .await;
         let again = r.headers()[SESSION_HEADER].to_str().unwrap().to_string();
         assert_eq!(answer(r).await.0, 200);
-        assert_eq!(bound(&books), [again.clone()]);
-        assert_eq!(ask(&books, Request::CloseBook { id: "acme".into() }).await, closed("acme"));
+        assert_eq!(bound(&books), std::slice::from_ref(&again));
+        assert_eq!(
+            ask(&books, Request::CloseBook { id: "acme".into() }).await,
+            closed("acme")
+        );
         assert!(bound(&books).is_empty());
         let list = Request::Sessions;
         match ask(&books, list).await {
             Response::Sessions(all) => {
-                assert!(all.iter().all(|b| b.book != "acme"), "closed books list none")
+                assert!(
+                    all.iter().all(|b| b.book != "acme"),
+                    "closed books list none"
+                )
             }
             other => panic!("{other:?}"),
         }

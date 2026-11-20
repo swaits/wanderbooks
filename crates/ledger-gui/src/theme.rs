@@ -131,10 +131,10 @@ pub const BADGE_HUES: [(Color32, Color32); 8] = [
         Color32::from_rgb(0x7E, 0x22, 0xCE),
         Color32::from_rgb(0xC0, 0x84, 0xFC),
     ),
-    // slate
+    // cyan
     (
-        Color32::from_rgb(0x47, 0x55, 0x69),
-        Color32::from_rgb(0x94, 0xA3, 0xB8),
+        Color32::from_rgb(0x0E, 0x74, 0x90),
+        Color32::from_rgb(0x22, 0xD3, 0xEE),
     ),
 ];
 
@@ -417,19 +417,40 @@ pub fn apply_scheme(ctx: &Context, scheme: &crate::schemes::Scheme) {
 mod tests {
     use super::*;
 
+    /// The saturation of a colour in HSL (0 for a grey).
+    fn hsl_saturation(c: Color32) -> f32 {
+        let [r, g, b] = [c.r(), c.g(), c.b()].map(|v| f32::from(v) / 255.0);
+        let max = r.max(g).max(b);
+        let min = r.min(g).min(b);
+        let l = (max + min) / 2.0;
+        if max == min {
+            0.0
+        } else {
+            (max - min) / (1.0 - (2.0 * l - 1.0).abs())
+        }
+    }
+
     /// WCAG AA for each badge hue in both themes: its letter 4.5:1 on
     /// it, and 3:1 for the badge against every surface it is drawn on.
+    /// Prints every measured ratio (`--nocapture`), and no hue is a grey
+    /// (HSL saturation at least 0.4: a grey badge reads as disabled).
     #[test]
     fn every_badge_hue_reads_in_both_themes() {
         use crate::schemes::{contrast, on};
+        let mut table = String::new();
+        let mut failures = Vec::new();
         for (name, p, pick) in [("light", &LIGHT, 0), ("dark", &DARK, 1)] {
             for (i, hues) in BADGE_HUES.iter().enumerate() {
                 let hue = if pick == 0 { hues.0 } else { hues.1 };
+                let sat = hsl_saturation(hue);
                 let letter = contrast(on(hue), hue);
-                assert!(
-                    letter >= 4.5,
-                    "{name} hue {i} {hue:?}: letter {letter:.2}:1"
-                );
+                let mut line = format!("{name} hue {i} {hue:?}: sat {sat:.2} letter {letter:.2}");
+                if sat < 0.4 {
+                    failures.push(format!("{name} hue {i} {hue:?}: grey (sat {sat:.2})"));
+                }
+                if letter < 4.5 {
+                    failures.push(format!("{name} hue {i} {hue:?}: letter {letter:.2}:1"));
+                }
                 // The tab's (in front, behind, hovered) and the card's.
                 for (what, ground) in [
                     ("surface", p.surface),
@@ -438,10 +459,17 @@ mod tests {
                     ("hover", p.hover),
                 ] {
                     let r = contrast(hue, ground);
-                    assert!(r >= 3.0, "{name} hue {i} {hue:?} on {what}: {r:.2}:1");
+                    line.push_str(&format!(" {what} {r:.2}"));
+                    if r < 3.0 {
+                        failures.push(format!("{name} hue {i} {hue:?} on {what}: {r:.2}:1"));
+                    }
                 }
+                table.push_str(&line);
+                table.push('\n');
             }
         }
+        println!("{table}");
+        assert!(failures.is_empty(), "{failures:?}\n{table}");
     }
 
     #[test]

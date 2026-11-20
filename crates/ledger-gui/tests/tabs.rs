@@ -1589,7 +1589,7 @@ fn a_hue_is_the_books_id_alone_on_the_tab_and_the_card_in_both_themes_and_after_
     );
     assert_eq!(
         hue("beta", false),
-        egui::Color32::from_rgb(0x47, 0x55, 0x69)
+        egui::Color32::from_rgb(0x0E, 0x74, 0x90)
     );
     assert_eq!(
         hue("gamma", false),

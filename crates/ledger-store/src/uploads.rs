@@ -28,6 +28,12 @@
 //!   4. No error names a path.
 //!   5. A token has at most MAX_LIVE grants under way, so what one agent
 //!      can keep on the disk is bounded.
+//!   6. Uploads can be closed (`close`, under the lock every change to
+//!      the folder is made under): after it nothing is granted, received,
+//!      taken, swept, given back or forgotten, by any holder of these
+//!      uploads from before, so a book let go (closed, or replaced by a
+//!      restore) is never touched by a sweep, a late request or a claim
+//!      dropped after, whoever has the book open by then.
 //! ```
 
 use crate::journal::sha256_hex;
@@ -36,6 +42,8 @@ use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
+/// What an upload is told when its books were let go (INVARIANT 6).
+const CLOSED: &str = "the books aren't open";
 /// The uploads' folder, in a book's folder.
 pub const UPLOADS_DIR: &str = "uploads";
 /// The largest file taken (plan 4.7).
@@ -99,7 +107,10 @@ impl Claim {
 impl Drop for Claim {
     fn drop(&mut self) {
         if !self.spent {
-            let _held = self.uploads.locked();
+            let held = self.uploads.locked();
+            if *held {
+                return;
+            }
             let _ = std::fs::rename(
                 self.uploads.path(&self.id, TAKEN),
                 self.uploads.path(&self.id, "bin"),
@@ -169,8 +180,8 @@ pub struct Uploads {
     dir: PathBuf,
     /// Held while grants are made or swept and while bytes change name
     /// (INVARIANTS 1, 2, 5): one server serves a book, so this orders
-    /// every request to its uploads.
-    lock: std::sync::Arc<std::sync::Mutex<()>>,
+    /// every request to its uploads. True once closed (INVARIANT 6).
+    lock: std::sync::Arc<std::sync::Mutex<bool>>,
 }
 
 /// The longest file name taken, in bytes (most file systems' limit).
@@ -287,8 +298,23 @@ impl Uploads {
         Ok(uploads)
     }
 
-    fn locked(&self) -> std::sync::MutexGuard<'_, ()> {
+    fn locked(&self) -> std::sync::MutexGuard<'_, bool> {
         self.lock.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The lock, if the uploads aren't closed (INVARIANT 6).
+    fn locked_open(&self) -> Result<std::sync::MutexGuard<'_, bool>, UploadError> {
+        let held = self.locked();
+        if *held {
+            return Err(UploadError::Bad(CLOSED.into()));
+        }
+        Ok(held)
+    }
+
+    /// Change nothing in these uploads from now on (INVARIANT 6): waits
+    /// for the change being made, if one is.
+    pub fn close(&self) {
+        *self.locked() = true;
     }
 
     fn path(&self, id: &str, ext: &str) -> PathBuf {
@@ -327,7 +353,7 @@ impl Uploads {
                 "purpose is receipt, document, import (a bank or chart CSV) or w9".into(),
             ));
         }
-        let _held = self.locked();
+        let _held = self.locked_open()?;
         self.sweep_held(now);
         // INVARIANT 5.
         if self.live_for(token, now) >= MAX_LIVE {
@@ -378,6 +404,7 @@ impl Uploads {
             return Err(UploadError::Unknown(id.chars().take(40).collect()));
         }
         let unknown = || UploadError::Unknown(id.to_string());
+        drop(self.locked_open()?);
         let bytes = std::fs::read(self.path(id, "json")).map_err(|_| unknown())?;
         let grant: Grant = serde_json::from_slice(&bytes).map_err(|_| unknown())?;
         if grant.expires <= now {
@@ -406,7 +433,7 @@ impl Uploads {
         // One request at a time (INVARIANT 2): no bytes kept or held, and
         // no `.part` of another request.
         let mut out = {
-            let _held = self.locked();
+            let _held = self.locked_open()?;
             if done.exists() || self.path(id, TAKEN).exists() {
                 return Err(UploadError::AlreadySent);
             }
@@ -459,7 +486,11 @@ impl Uploads {
             Ok(()) => {
                 // Kept only if its grant still stands (it may have lapsed,
                 // or been filed by another request's bytes, meanwhile).
-                let _held = self.locked();
+                let held = self.locked();
+                if *held {
+                    let _ = std::fs::remove_file(&part);
+                    return Err(UploadError::Bad(CLOSED.into()));
+                }
                 let standing = std::fs::read(self.path(id, "json"))
                     .ok()
                     .and_then(|b| serde_json::from_slice::<Grant>(&b).ok())
@@ -493,7 +524,7 @@ impl Uploads {
         let taken = self.path(id, TAKEN);
         // The rename is the hold: of two calls, one gets it.
         {
-            let _held = self.locked();
+            let _held = self.locked_open()?;
             if let Err(e) = std::fs::rename(self.path(id, "bin"), &taken) {
                 return Err(match e.kind() {
                     std::io::ErrorKind::NotFound if taken.exists() => UploadError::InUse,
@@ -527,14 +558,19 @@ impl Uploads {
     /// be written): the grant stands, its bytes are to be sent again.
     pub fn discard(&self, id: &str) {
         if is_id(id) {
-            let _held = self.locked();
-            let _ = std::fs::remove_file(self.path(id, "bin"));
+            let held = self.locked();
+            if !*held {
+                let _ = std::fs::remove_file(self.path(id, "bin"));
+            }
         }
     }
 
     /// Forget grant `id` and anything kept for it.
     fn forget(&self, id: &str) {
-        let _held = self.locked();
+        let held = self.locked();
+        if *held {
+            return;
+        }
         for ext in ["json", "part", "bin", TAKEN] {
             let _ = std::fs::remove_file(self.path(id, ext));
         }
@@ -543,8 +579,10 @@ impl Uploads {
     /// Sweep away every grant that lapsed by `now`, and anything left
     /// without one (INVARIANT 3).
     pub fn sweep(&self, now: i64) {
-        let _held = self.locked();
-        self.sweep_held(now);
+        let held = self.locked();
+        if !*held {
+            self.sweep_held(now);
+        }
     }
 
     /// [`Self::sweep`], the lock held.
@@ -586,6 +624,48 @@ mod tests {
             NOW,
         )
         .unwrap()
+    }
+
+    /// Closed, uploads are granted, received, taken, swept and given back
+    /// by no one, and a claim dropped after puts nothing back (INVARIANT 6).
+    #[test]
+    fn closed_uploads_change_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let u = Uploads::open(dir.path(), NOW).unwrap();
+        let bytes = b"%PDF-1.4 a receipt".to_vec();
+        let g = grant_for(&u, "tok_a", &bytes);
+        u.receive(&g.id, "tok_a", &mut &bytes[..], NOW).unwrap();
+        let received = u.take(&g.id, "tok_a", NOW).unwrap();
+        let seen = || {
+            let mut names: Vec<_> = std::fs::read_dir(dir.path().join(UPLOADS_DIR))
+                .unwrap()
+                .map(|f| f.unwrap().file_name())
+                .collect();
+            names.sort();
+            names
+        };
+        let held = seen();
+        u.close();
+        assert!(
+            u.grant(
+                "tok_a",
+                &sha256_hex(&bytes),
+                bytes.len() as u64,
+                "application/pdf",
+                "r.pdf",
+                "receipt",
+                NOW
+            )
+            .is_err()
+        );
+        assert!(u.receive(&g.id, "tok_a", &mut &bytes[..], NOW).is_err());
+        assert!(u.take(&g.id, "tok_a", NOW).is_err());
+        u.discard(&g.id);
+        u.sweep(NOW + 10 * UPLOAD_TTL);
+        // The call that held the bytes lets go of them, unspent: nothing
+        // is put back, nor forgotten, in a folder that is no longer ours.
+        drop(received);
+        assert_eq!(seen(), held);
     }
 
     #[test]

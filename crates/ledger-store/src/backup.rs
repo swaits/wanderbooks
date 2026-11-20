@@ -82,6 +82,10 @@ pub enum BackupError {
     /// A git command ran past its time limit.
     #[error("git {0} took too long and was stopped")]
     TimedOut(String),
+    /// A git command stopped because the books it served were let go
+    /// ([`Git::with_cancel`]).
+    #[error("git {0} was stopped: the books are closing")]
+    Cancelled(String),
     /// A folder target that isn't there (an external disk not mounted).
     #[error("the backup folder isn't there (is its disk connected?)")]
     NoFolder,
@@ -114,6 +118,9 @@ pub struct Git {
     exe: PathBuf,
     /// How long it may say nothing before it is stopped (GIT_TIMEOUT).
     quiet: Duration,
+    /// Set by whoever serves the books when they are let go: a git
+    /// command running is stopped, with what it started, and none starts.
+    cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl Git {
@@ -145,8 +152,25 @@ impl Git {
             .map(|exe| Git {
                 exe,
                 quiet: GIT_TIMEOUT,
+                cancel: None,
             })
             .ok_or(BackupError::NoGit)
+    }
+
+    /// This git, stopped (every command running, and any that would
+    /// start) once `cancel` is set: how the server's close ends a backup
+    /// that is still going, instead of leaving it to run against books it
+    /// reported closed.
+    #[must_use]
+    pub fn with_cancel(mut self, cancel: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Self {
+        self.cancel = Some(cancel);
+        self
+    }
+
+    fn cancelled(&self) -> bool {
+        self.cancel
+            .as_ref()
+            .is_some_and(|c| c.load(std::sync::atomic::Ordering::SeqCst))
     }
 
     /// A git command with a clean configuration (INVARIANT 4).
@@ -222,6 +246,9 @@ impl Git {
     /// (a push or a clone reports its progress as it goes).
     fn run(&self, what: &str, args: &[&std::ffi::OsStr]) -> Result<String, BackupError> {
         use std::sync::atomic::{AtomicU64, Ordering};
+        if self.cancelled() {
+            return Err(BackupError::Cancelled(what.to_string()));
+        }
         let mut c = self.command();
         // A path made canonical on Windows carries `\\?\`, which git refuses.
         c.args(args.iter().map(|a| match a.to_str() {
@@ -306,6 +333,12 @@ impl Git {
             let quiet_for = started
                 .elapsed()
                 .saturating_sub(Duration::from_millis(heard.load(Ordering::Relaxed)));
+            if self.cancelled() {
+                kill_group(child.id());
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(BackupError::Cancelled(what.to_string()));
+            }
             if quiet_for > self.quiet {
                 kill_group(child.id());
                 let _ = child.kill();
@@ -1877,6 +1910,7 @@ mod tests {
         Git {
             exe: wrapper,
             quiet: GIT_TIMEOUT,
+            cancel: None,
         }
     }
 
@@ -1928,7 +1962,59 @@ mod tests {
         let exe = dir.join("fake-git");
         std::fs::write(&exe, format!("#!/bin/sh\n{script}\n")).unwrap();
         std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
-        Git { exe, quiet }
+        Git {
+            exe,
+            quiet,
+            cancel: None,
+        }
+    }
+
+    /// Cancelled, a git that is running is stopped at once, with all it
+    /// started, and one that would start doesn't (the server's close ends
+    /// a backup instead of leaving it to run against closed books).
+    #[test]
+    fn a_cancelled_git_stops_what_runs_and_starts_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid = dir.path().join("pid");
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let slow = fake_git(
+            dir.path(),
+            &format!("sleep 30 & echo $! > '{}'; sleep 30", pid.display()),
+            Duration::from_secs(60),
+        )
+        .with_cancel(cancel.clone());
+        let running = {
+            let slow = slow.clone();
+            std::thread::spawn(move || slow.run("slow", &[]))
+        };
+        // It is running (it wrote its child's pid) before it is cancelled.
+        let by = Instant::now() + Duration::from_secs(10);
+        while !pid.exists() {
+            assert!(Instant::now() < by, "the fake git never started");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let cancelled_at = Instant::now();
+        cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            running.join().unwrap().unwrap_err(),
+            BackupError::Cancelled("slow".into())
+        );
+        assert!(cancelled_at.elapsed() < Duration::from_secs(5));
+        let child: i32 = std::fs::read_to_string(&pid)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        // SAFETY: signal 0 only asks whether the process is there.
+        assert_ne!(unsafe { libc::kill(child, 0) }, 0, "what it started ran on");
+        // And none starts now.
+        std::fs::remove_file(&pid).unwrap();
+        assert_eq!(
+            slow.run("again", &[]).unwrap_err(),
+            BackupError::Cancelled("again".into())
+        );
+        assert!(!pid.exists(), "a cancelled git started anyway");
     }
 
     #[test]
@@ -2005,6 +2091,7 @@ mod tests {
         let odd = Git {
             exe: quoted.join("git"),
             quiet: GIT_TIMEOUT,
+            cancel: None,
         };
         let b = dir.path().join("book");
         let s = book(&b);

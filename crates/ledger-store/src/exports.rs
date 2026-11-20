@@ -21,6 +21,11 @@
 //!      lapsed ones are swept when the books open, whenever one is made,
 //!      and by the server's sweeper. A token has at most MAX_LIVE.
 //!   4. No error names a path.
+//!   5. Exports can be closed (`close`, under the lock every change to the
+//!      folder is made under): after it none is made, given or swept by
+//!      any holder of these exports from before, so a book let go is
+//!      never touched by a late request or a sweep, whoever has it open
+//!      by then.
 //! ```
 
 use crate::journal::sha256_hex;
@@ -87,8 +92,9 @@ impl From<std::io::Error> for ExportError {
 #[derive(Debug, Clone)]
 pub struct Exports {
     dir: PathBuf,
-    /// Held while exports are made or swept (INVARIANT 3).
-    lock: std::sync::Arc<std::sync::Mutex<()>>,
+    /// Held while exports are made or swept (INVARIANT 3). True once
+    /// closed (INVARIANT 5).
+    lock: std::sync::Arc<std::sync::Mutex<bool>>,
 }
 
 /// `ex_` and 32 letters `a` to `p`, a letter a nibble (INVARIANT 1).
@@ -132,8 +138,14 @@ impl Exports {
         Ok(exports)
     }
 
-    fn locked(&self) -> std::sync::MutexGuard<'_, ()> {
+    fn locked(&self) -> std::sync::MutexGuard<'_, bool> {
         self.lock.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Change nothing in these exports, and give none, from now on
+    /// (INVARIANT 5): waits for the change being made, if one is.
+    pub fn close(&self) {
+        *self.locked() = true;
     }
 
     fn path(&self, id: &str, ext: &str) -> PathBuf {
@@ -152,7 +164,10 @@ impl Exports {
         if let Some(why) = file_name_problem(file_name).or_else(|| mime_problem(mime)) {
             return Err(ExportError::Bad(why));
         }
-        let _held = self.locked();
+        let held = self.locked();
+        if *held {
+            return Err(ExportError::Bad("the books aren't open".into()));
+        }
         self.sweep_held(now);
         if self.live_for(token, now) >= MAX_LIVE {
             return Err(ExportError::Bad(format!(
@@ -196,6 +211,9 @@ impl Exports {
             return Err(ExportError::Unknown(id.chars().take(40).collect()));
         }
         let unknown = || ExportError::Unknown(id.to_string());
+        if *self.locked() {
+            return Err(ExportError::Bad("the books aren't open".into()));
+        }
         let record = std::fs::read(self.path(id, "json")).map_err(|_| unknown())?;
         let export: Export = serde_json::from_slice(&record).map_err(|_| unknown())?;
         if export.expires <= now {
@@ -228,8 +246,10 @@ impl Exports {
     /// Sweep away every export that lapsed by `now`, and anything left
     /// without one (INVARIANT 3).
     pub fn sweep(&self, now: i64) {
-        let _held = self.locked();
-        self.sweep_held(now);
+        let held = self.locked();
+        if !*held {
+            self.sweep_held(now);
+        }
     }
 
     fn sweep_held(&self, now: i64) {
@@ -258,6 +278,29 @@ mod tests {
     use super::*;
 
     const NOW: i64 = 1_800_000_000;
+
+    /// Closed, exports are made, given and swept by no one (INVARIANT 5).
+    #[test]
+    fn closed_exports_change_nothing_and_give_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let x = Exports::open(dir.path(), NOW).unwrap();
+        let e = x.put("t", "a.csv", "text/csv", b"x", NOW).unwrap();
+        x.close();
+        let seen = || {
+            let mut names: Vec<_> = std::fs::read_dir(dir.path().join(EXPORTS_DIR))
+                .unwrap()
+                .map(|f| f.unwrap().file_name())
+                .collect();
+            names.sort();
+            names
+        };
+        let before = seen();
+        assert!(x.put("t", "b.csv", "text/csv", b"y", NOW).is_err());
+        assert!(x.get(&e.id, "t", NOW).is_err());
+        // A sweep long after everything lapsed removes nothing.
+        x.sweep(NOW + 10 * EXPORT_TTL);
+        assert_eq!(seen(), before);
+    }
 
     #[test]
     fn an_export_is_kept_fifteen_minutes() {

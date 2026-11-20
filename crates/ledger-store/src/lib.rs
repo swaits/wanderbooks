@@ -22,6 +22,7 @@ pub mod access;
 pub mod auth;
 pub mod backup;
 pub mod blob;
+pub mod cancel;
 pub mod chain;
 pub mod describe;
 pub mod error;

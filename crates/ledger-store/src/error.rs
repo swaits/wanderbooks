@@ -5,6 +5,10 @@ use thiserror::Error;
 /// Every way a store operation can fail.
 #[derive(Debug, Error)]
 pub enum StoreError {
+    /// A verification was told to stop ([`crate::cancel`]): the books it
+    /// was reading are being let go.
+    #[error("stopped: the books are closing")]
+    Cancelled,
     /// An attachment link names a subject that doesn't exist.
     #[error("no {0} to link to")]
     UnknownSubject(String),

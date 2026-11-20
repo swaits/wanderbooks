@@ -743,7 +743,9 @@ mod tests {
         assert_eq!(feed.reads, 2, "the body was read after the close");
         let left = names_in(dir.path());
         assert!(
-            !left.iter().any(|n| n.ends_with(".part") || n.ends_with(".bin")),
+            !left
+                .iter()
+                .any(|n| n.ends_with(".part") || n.ends_with(".bin")),
             "{left:?}"
         );
     }
@@ -771,7 +773,9 @@ mod tests {
         assert!(refused.to_string().contains("aren't open"), "{refused}");
         let left = names_in(dir.path());
         assert!(
-            !left.iter().any(|n| n.ends_with(".part") || n.ends_with(".bin")),
+            !left
+                .iter()
+                .any(|n| n.ends_with(".part") || n.ends_with(".bin")),
             "{left:?}"
         );
     }

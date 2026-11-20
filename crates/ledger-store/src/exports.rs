@@ -346,12 +346,7 @@ mod tests {
         );
         // A writer that sends nothing lets the read end (an empty file,
         // not the size kept: the fetch is refused).
-        drop(
-            std::fs::OpenOptions::new()
-                .write(true)
-                .open(&bin)
-                .unwrap(),
-        );
+        drop(std::fs::OpenOptions::new().write(true).open(&bin).unwrap());
         assert!(fetching.join().unwrap().is_err());
         closed
             .recv_timeout(std::time::Duration::from_secs(5))

@@ -669,6 +669,7 @@ impl Store {
         // open with the journal and the database as they were.
         let mut ledger = Ledger::new(base_currency);
         for line in &lines {
+            crate::cancel::check()?;
             replay_line_into_ledger(&mut ledger, line, base_currency)?;
         }
         // Only then is an append cut off mid-line (never acknowledged) set
@@ -845,6 +846,7 @@ impl Store {
         // The ledger is already their replay (Store::open): only the
         // projection is caught up here.
         for line in lines.iter().filter(|l| l.seq > last_applied) {
+            crate::cancel::check()?;
             apply_line_to_sqlite(&self.conn, line)?;
         }
         Ok(())
@@ -6273,8 +6275,10 @@ impl Store {
         let lines = read_and_verify_journal(self.journal.path())?;
         let mut replayed = Ledger::new(self.base_currency);
         for line in &lines {
+            crate::cancel::check()?;
             replay_line_into_ledger(&mut replayed, line, self.base_currency)?;
         }
+        crate::cancel::check()?;
         let a = reports::snapshot(&replayed).map_err(StoreError::Ledger)?;
         let b = reports::snapshot(&self.ledger).map_err(StoreError::Ledger)?;
         if a != b {
@@ -6426,6 +6430,7 @@ impl Store {
             .collect::<Result<_, _>>()?;
         let mut n = 0u64;
         for sha in shas {
+            crate::cancel::check()?;
             self.blobs.get(&sha)?;
             n += 1;
         }
@@ -6449,10 +6454,12 @@ impl Store {
         Self::write_meta(&self.conn, "last_applied_seq", "0")?;
         let lines = read_and_verify_journal(self.journal.path())?;
         for line in &lines {
+            crate::cancel::check()?;
             apply_line_to_sqlite(&self.conn, line)?;
         }
         self.ledger = Ledger::new(self.base_currency);
         for line in &lines {
+            crate::cancel::check()?;
             replay_line_into_ledger(&mut self.ledger, line, self.base_currency)?;
         }
         Ok(())

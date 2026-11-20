@@ -48,7 +48,66 @@
 //!      that says nothing for GIT_TIMEOUT is stopped with all it started.
 //!      What git said of itself is kept in whole lines; callers hide the
 //!      paths in it before an agent sees it (ledger-mcp backup.rs,
-//!      root.rs).
+//!      root.rs). None of ours starts another git to go on after it ends
+//!      (`gc.auto=0`, `maintenance.auto=false`): when a git of ours has
+//!      ended, nothing it began is still working.
+//!   5. A git killed (cancelled, or silent for GIT_TIMEOUT) can leave lock
+//!      files, and none that is stale is left for a person to remove. Once
+//!      the killed command is reaped AND every process it started is gone
+//!      (a killed process can still take a lock in its last instructions,
+//!      so the process group is waited for, GROUP_GONE_WAIT, and nothing
+//!      is removed while it isn't), the locks in the repositories that
+//!      command could write are dealt with, each noted ([`LockNote`], for
+//!      the caller's record):
+//!        (A killed `init` of the archive, or of a folder target's new
+//!        repository, is such a command too: its HEAD lock is dealt with
+//!        the same way.)
+//!        a. The book's own archive: every lock in it is removed at once.
+//!           This process holds the book's store lock (the caller's duty:
+//!           it is the only holder of the lock that lets a git run on the
+//!           archive, and runs one git at a time on it), so no other
+//!           wanderbooks process can be running git on it, and the one of
+//!           ours that could have made a lock is the one just killed. The
+//!           same holds when the book opens (`clear_archive_locks`, called
+//!           with the store open): a lock found then is a dead git's (the
+//!           server killed, a power cut).
+//!        b. A target on this computer (a folder, or a repository named by
+//!           a path): its git is our `receive-pack`, a child of the one
+//!           killed. What may write the folder is, by what this code and
+//!           D-30 allow, this book's backups (one push at a time, one
+//!           process per book by the store lock) and nothing else; but the
+//!           folder is the owner's (an external disk, a synced folder such
+//!           as Syncthing's) and the code cannot enforce that no other
+//!           computer, no other data root backing up a book of the same
+//!           id, and no hand of the owner's pushes to it too (the only
+//!           guard is INVARIANT 2: a push that finds it moved reports it
+//!           and forces nothing). So a lock there is removed only if ALL
+//!           hold: our command was killed and everything it started is
+//!           gone; the lock was NOT there when the push began (one that was
+//!           belongs to someone else, or to an earlier crash we can't tell
+//!           from it: it is left, and noted as left); and it has stood
+//!           unchanged for LOCK_SETTLE after the kill (a live writer holds
+//!           a ref lock for the milliseconds of a ref update, so a lock
+//!           still there, unchanged, that long is a dead writer's). What
+//!           this cannot see: a second writer that took the same lock
+//!           during our push and then stalled, holding it, past LOCK_SETTLE
+//!           (a hung disk or sync). That writer is outside what the
+//!           product supports, and the lock is the one a push of theirs
+//!           would also fail on. A repository far away (ssh, https) is
+//!           never touched: its receiving end cleans up when the
+//!           connection ends.
+//!   6. A step that has to end when the books are let go (the caller's
+//!      cancel flag, [`Git::with_cancel`]) ends promptly, wherever it is,
+//!      and leaves nothing half-made: it looks for the flag between every
+//!      git command and phase of a verification (`clone`, `tree`,
+//!      `checkout`, `replay`, `verify`, `blobs`, `vault`, `prefix`), once
+//!      per file listed or hashed, once per chunk of the journal compared
+//!      and once per journal line replayed (cancel.rs); a git command
+//!      running is killed. A stopped drill or proof removes its scratch
+//!      clone (the one removal that is not itself stopped: it is as long
+//!      as the clone is big). The longest between two looks is one git
+//!      command's kill (a signal, GROUP_GONE_WAIT, and up to 10 s for its
+//!      pipes), one journal line, one file, or one 64 KiB chunk.
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -112,6 +171,40 @@ impl From<std::io::Error> for BackupError {
     }
 }
 
+/// A lock file a git left, as it was dealt with (INVARIANT 5): for the
+/// caller's own record of the backup (never names a path of the data root:
+/// the repository is `archive`, or the target's kind, and the lock is
+/// named from the repository's own folder).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LockNote {
+    /// `archive`, `folder` or `repository`.
+    pub repo: &'static str,
+    /// The lock, as a path in the repository (`index.lock`,
+    /// `refs/heads/main.lock`).
+    pub lock: String,
+    /// Removed (stale by construction), or left (it could be a live
+    /// writer's).
+    pub removed: bool,
+    /// Why: what ended the git that made it, or why it was left.
+    pub why: &'static str,
+}
+
+/// What a caller may watch of a git's work, and look at after it (tests,
+/// and the server's record of a backup).
+#[derive(Clone, Default)]
+struct Watch {
+    /// Told the name of each phase of a verification as it begins.
+    phase: Option<std::sync::Arc<dyn Fn(&str) + Send + Sync>>,
+    /// The lock files dealt with since the caller last took them.
+    notes: std::sync::Arc<std::sync::Mutex<Vec<LockNote>>>,
+}
+
+impl std::fmt::Debug for Watch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Watch")
+    }
+}
+
 /// The git program, found once.
 #[derive(Debug, Clone)]
 pub struct Git {
@@ -121,6 +214,7 @@ pub struct Git {
     /// Set by whoever serves the books when they are let go: a git
     /// command running is stopped, with what it started, and none starts.
     cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    watch: Watch,
 }
 
 impl Git {
@@ -153,6 +247,7 @@ impl Git {
                 exe,
                 quiet: GIT_TIMEOUT,
                 cancel: None,
+                watch: Watch::default(),
             })
             .ok_or(BackupError::NoGit)
     }
@@ -171,6 +266,56 @@ impl Git {
         self.cancel
             .as_ref()
             .is_some_and(|c| c.load(std::sync::atomic::Ordering::SeqCst))
+    }
+
+    /// Ok, or `Cancelled(what)` once this git was cancelled: looked at
+    /// between a step's phases and inside its loops over files, so a step
+    /// that is not running a git command ends as promptly as one that is
+    /// (INVARIANT 6).
+    fn check(&self, what: &str) -> Result<(), BackupError> {
+        if self.cancelled() {
+            Err(BackupError::Cancelled(what.to_string()))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// This git, telling `watch` the name of each phase of a verification
+    /// as it begins (a seam for tests and for the server's own test knob
+    /// that makes a drill slow: `watch` may wait, but must give up when
+    /// the cancel flag is set).
+    #[must_use]
+    pub fn with_phase_watch(mut self, watch: std::sync::Arc<dyn Fn(&str) + Send + Sync>) -> Self {
+        self.watch.phase = Some(watch);
+        self
+    }
+
+    /// This git, sharing `sink` for the lock files it deals with
+    /// (INVARIANT 5), which the caller takes with [`take_lock_notes`]:
+    /// every git made from the same sink reports into it.
+    #[must_use]
+    pub fn with_lock_notes(mut self, sink: LockNotes) -> Self {
+        self.watch.notes = sink.0;
+        self
+    }
+
+    /// The lock files dealt with since this was last called.
+    pub fn take_lock_notes(&self) -> Vec<LockNote> {
+        std::mem::take(&mut *self.watch.notes.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+
+    fn note(&self, note: LockNote) {
+        self.watch
+            .notes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(note);
+    }
+
+    fn phase(&self, name: &str) {
+        if let Some(watch) = &self.watch.phase {
+            watch(name);
+        }
     }
 
     /// A git command with a clean configuration (INVARIANT 4).
@@ -215,6 +360,13 @@ impl Git {
                 "log.showSignature=false",
                 "-c",
                 "push.gpgSign=false",
+                // No git of ours starts another to go on after it ends
+                // (a detached `gc` would outlive a stopped backup and hold
+                // locks: INVARIANT 5).
+                "-c",
+                "gc.auto=0",
+                "-c",
+                "maintenance.auto=false",
                 // A link is never made from a backup's tree (verify
                 // refuses one before checkout, too).
                 "-c",
@@ -245,6 +397,45 @@ impl Git {
     /// process it started, once it has said nothing for GIT_TIMEOUT
     /// (a push or a clone reports its progress as it goes).
     fn run(&self, what: &str, args: &[&std::ffi::OsStr]) -> Result<String, BackupError> {
+        self.run_killed(what, args).0
+    }
+
+    /// [`Self::run`], and whether the command had to be killed (cancelled
+    /// or gone quiet) and what became of everything it started.
+    fn run_killed(
+        &self,
+        what: &str,
+        args: &[&std::ffi::OsStr],
+    ) -> (Result<String, BackupError>, Killed) {
+        let killed = std::cell::Cell::new(Killed::No);
+        let result = self.run_with(what, args, &killed);
+        (result, killed.get())
+    }
+
+    /// [`Self::run`] where every repository the command may write (its
+    /// `guards`) has its stale locks dealt with once the command was
+    /// killed and all it started is gone (INVARIANT 5).
+    fn run_in(
+        &self,
+        what: &str,
+        args: &[&std::ffi::OsStr],
+        guards: &[&Watched],
+    ) -> Result<String, BackupError> {
+        let (result, killed) = self.run_killed(what, args);
+        if killed != Killed::No {
+            for guard in guards {
+                guard.after_kill(self, killed == Killed::Gone);
+            }
+        }
+        result
+    }
+
+    fn run_with(
+        &self,
+        what: &str,
+        args: &[&std::ffi::OsStr],
+        killed: &std::cell::Cell<Killed>,
+    ) -> Result<String, BackupError> {
         use std::sync::atomic::{AtomicU64, Ordering};
         if self.cancelled() {
             return Err(BackupError::Cancelled(what.to_string()));
@@ -337,12 +528,14 @@ impl Git {
                 kill_group(child.id());
                 let _ = child.kill();
                 let _ = child.wait();
+                killed.set(group_gone(child.id()));
                 return Err(BackupError::Cancelled(what.to_string()));
             }
             if quiet_for > self.quiet {
                 kill_group(child.id());
                 let _ = child.kill();
                 let _ = child.wait();
+                killed.set(group_gone(child.id()));
                 return Err(BackupError::TimedOut(what.to_string()));
             }
             std::thread::sleep(Duration::from_millis(20));
@@ -363,6 +556,218 @@ impl Git {
 
 /// The most kept of what a git says of itself.
 const OUTPUT_MAX: usize = 1 << 20;
+
+/// What became of a git command that was killed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Killed {
+    /// It ended by itself.
+    No,
+    /// Killed, and it and everything it started is gone.
+    Gone,
+    /// Killed, but something it started was still there when we stopped
+    /// looking (GROUP_GONE_WAIT).
+    Lingering,
+}
+
+/// How long, after a git was killed, to wait for everything it started to
+/// be gone.
+pub const GROUP_GONE_WAIT: Duration = Duration::from_secs(2);
+
+/// Wait until the process group `pid` led has no process left, for
+/// GROUP_GONE_WAIT at most: a killed process can run a few more
+/// instructions before the kernel takes it, and could take a lock in them.
+fn group_gone(pid: u32) -> Killed {
+    #[cfg(unix)]
+    {
+        let by = Instant::now() + GROUP_GONE_WAIT;
+        loop {
+            // SAFETY: signal 0 only asks whether a process is in the group.
+            let found = unsafe { libc::kill(-(pid as libc::pid_t), 0) };
+            if found != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+                return Killed::Gone;
+            }
+            if Instant::now() >= by {
+                return Killed::Lingering;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+    #[cfg(windows)]
+    {
+        // taskkill /T /F ended the tree before it returned.
+        let _ = pid;
+        Killed::Gone
+    }
+}
+
+/// Where the lock files of a repository are (every lock git makes in a
+/// bare repository: its own folder, its refs, the pack and info folders of
+/// its objects), as paths in it.
+fn locks_in(repo: &Path) -> Vec<String> {
+    fn here(dir: &Path, rel: &str, deep: bool, out: &mut Vec<String>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let Ok(kind) = e.file_type() else { continue };
+            if kind.is_file() && name.ends_with(".lock") {
+                out.push(format!("{rel}{name}"));
+            } else if deep && kind.is_dir() {
+                here(&e.path(), &format!("{rel}{name}/"), true, out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    here(repo, "", false, &mut out);
+    here(&repo.join("refs"), "refs/", true, &mut out);
+    here(
+        &repo.join("objects").join("info"),
+        "objects/info/",
+        false,
+        &mut out,
+    );
+    here(
+        &repo.join("objects").join("pack"),
+        "objects/pack/",
+        false,
+        &mut out,
+    );
+    out.sort();
+    out
+}
+
+/// How long a lock found in a target after our git was killed must stay
+/// there, unchanged, before it is taken for a dead writer's (INVARIANT 5):
+/// a live git holds one for the milliseconds of a ref update.
+pub const LOCK_SETTLE: Duration = Duration::from_millis(1500);
+
+/// A shared place for the lock files dealt with (see
+/// [`Git::with_lock_notes`]).
+#[derive(Clone, Default)]
+pub struct LockNotes(std::sync::Arc<std::sync::Mutex<Vec<LockNote>>>);
+
+impl LockNotes {
+    /// What was dealt with since this was last called.
+    pub fn take(&self) -> Vec<LockNote> {
+        std::mem::take(&mut *self.0.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+}
+
+/// A repository a git command may leave locks in when it is killed.
+pub struct Watched {
+    dir: PathBuf,
+    /// `archive`, `folder` or `repository`.
+    kind: &'static str,
+    /// For a target: the locks there when the command began, which are
+    /// never ours to remove. None for the book's own archive, where every
+    /// lock is ours (INVARIANT 5).
+    before: Option<std::collections::BTreeSet<String>>,
+}
+
+impl Watched {
+    /// The book's own archive: this process holds the book's store lock, so
+    /// no other process runs git on it, and one killed of ours is the only
+    /// one that could have left a lock.
+    fn archive(dir: &Path) -> Self {
+        Self {
+            dir: dir.to_path_buf(),
+            kind: "archive",
+            before: None,
+        }
+    }
+
+    /// A target repository on this computer, looked at before the command
+    /// that may write it begins.
+    fn target(dir: &Path, kind: &'static str) -> Self {
+        Self {
+            dir: dir.to_path_buf(),
+            kind,
+            before: Some(locks_in(dir).into_iter().collect()),
+        }
+    }
+
+    /// The command was killed. Once all it started is `gone`, deal with
+    /// the locks (INVARIANT 5).
+    fn after_kill(&self, git: &Git, gone: bool) {
+        let note = |lock: &str, removed: bool, why: &'static str| {
+            git.note(LockNote {
+                repo: self.kind,
+                lock: lock.to_string(),
+                removed,
+                why,
+            });
+        };
+        let now = locks_in(&self.dir);
+        if !gone {
+            for lock in &now {
+                note(lock, false, "what git started was still running");
+            }
+            return;
+        }
+        let stamp = |lock: &str| {
+            std::fs::metadata(self.dir.join(lock))
+                .and_then(|m| m.modified())
+                .ok()
+        };
+        let Some(before) = &self.before else {
+            for lock in &now {
+                if std::fs::remove_file(self.dir.join(lock)).is_ok() {
+                    note(lock, true, "git was stopped");
+                }
+            }
+            return;
+        };
+        // A target: never a lock that was there before our command began.
+        let mut ours: Vec<(String, Option<std::time::SystemTime>)> = Vec::new();
+        for lock in &now {
+            if before.contains(lock) {
+                note(lock, false, "it was there before the push began");
+            } else {
+                ours.push((lock.clone(), stamp(lock)));
+            }
+        }
+        if ours.is_empty() {
+            return;
+        }
+        // One that a live writer took meanwhile is gone within the
+        // milliseconds of its ref update; one still there, unchanged, after
+        // LOCK_SETTLE is a dead writer's, and the only one ours could be.
+        std::thread::sleep(LOCK_SETTLE);
+        for (lock, was) in ours {
+            match stamp(&lock) {
+                Some(is) if Some(is) == was => {
+                    if std::fs::remove_file(self.dir.join(&lock)).is_ok() {
+                        note(&lock, true, "git was stopped");
+                    }
+                }
+                Some(_) => note(&lock, false, "it changed after git was stopped"),
+                None => {}
+            }
+        }
+    }
+}
+
+/// The locks a git of ours left in the book's archive at an earlier time
+/// (killed with the server, a power cut), for the caller to say it removed
+/// them. Call it only while this process holds the book's store lock: no
+/// other wanderbooks process can then be running git on the archive, and no
+/// git of this process's is, so every lock in it is stale (INVARIANT 5).
+pub fn clear_archive_locks(book_dir: &Path) -> Vec<LockNote> {
+    let archive = book_dir.join(ARCHIVE_DIR);
+    let mut notes = Vec::new();
+    for lock in locks_in(&archive) {
+        if std::fs::remove_file(archive.join(&lock)).is_ok() {
+            notes.push(LockNote {
+                repo: "archive",
+                lock,
+                removed: true,
+                why: "found when the books opened",
+            });
+        }
+    }
+    notes
+}
 
 /// What git said when it failed: its messages without its progress, the
 /// last whole lines of it (never a line cut part way, which could hide a
@@ -414,9 +819,12 @@ fn archive(git: &Git, book_dir: &Path) -> Result<PathBuf, BackupError> {
     if !dir.join("HEAD").is_file() {
         crate::root::private_book_folder(book_dir, ARCHIVE_DIR)
             .map_err(|e| BackupError::Damaged(e.to_string()))?;
-        git.run(
+        // A git killed in the middle of making it leaves HEAD's lock, which
+        // would stop every later `init` (INVARIANT 5).
+        git.run_in(
             "init",
             &[os("init"), os("--bare"), os("-q"), dir.as_os_str()],
+            &[&Watched::archive(&dir)],
         )?;
     }
     let _ = std::fs::remove_file(dir.join("info").join("attributes"));
@@ -440,6 +848,7 @@ pub fn commit(
 ) -> Result<Option<Made>, BackupError> {
     let archive = archive(git, book_dir)?;
     clear_old_locks(&archive);
+    let guard = Watched::archive(&archive);
     let git_dir = format!("--git-dir={}", archive.display());
     let work_tree = format!("--work-tree={}", book_dir.display());
     let paths: Vec<&str> = BACKED_UP
@@ -457,7 +866,7 @@ pub fn commit(
             os("--"),
         ];
         add.extend(paths.iter().map(|p| os(p)));
-        git.run("add", &add)?;
+        git.run_in("add", &add, &[&guard])?;
     }
     // What was backed up and is now gone altogether (a vault purged to
     // nothing) goes from the next commit too.
@@ -478,7 +887,7 @@ pub fn commit(
             os("--"),
         ];
         rm.extend(gone.iter().map(|p| os(p)));
-        git.run("rm", &rm)?;
+        git.run_in("rm", &rm, &[&guard])?;
     }
     // Every file there is in it, nothing else (INVARIANT 1).
     let listed = git.run(
@@ -493,7 +902,7 @@ pub fn commit(
     indexed.sort();
     let mut on_disk = Vec::new();
     for p in &paths {
-        files_under(book_dir, Path::new(p), &mut on_disk)?;
+        files_under(git, book_dir, Path::new(p), &mut on_disk)?;
     }
     on_disk.sort();
     if on_disk
@@ -539,7 +948,7 @@ pub fn commit(
     // The books it holds by name too (a restore tells their own from
     // others').
     let message = format!("seq {} head {}\n\nbook {book}", head.0, head.1);
-    git.run(
+    git.run_in(
         "commit",
         &[
             os(&git_dir),
@@ -551,6 +960,7 @@ pub fn commit(
             os("-m"),
             os(&message),
         ],
+        &[&guard],
     )?;
     let commit = git.run("rev-parse", &[os(&git_dir), os("rev-parse"), os("HEAD")])?;
     Ok(Some(Made { commit, head }))
@@ -566,9 +976,10 @@ pub fn stage_blobs(git: &Git, book_dir: &Path) -> Result<(), BackupError> {
     }
     let archive = archive(git, book_dir)?;
     clear_old_locks(&archive);
+    let guard = Watched::archive(&archive);
     let git_dir = format!("--git-dir={}", archive.display());
     let work_tree = format!("--work-tree={}", book_dir.display());
-    git.run(
+    git.run_in(
         "add",
         &[
             os(&git_dir),
@@ -579,6 +990,7 @@ pub fn stage_blobs(git: &Git, book_dir: &Path) -> Result<(), BackupError> {
             os("--"),
             os(blobs),
         ],
+        &[&guard],
     )?;
     Ok(())
 }
@@ -600,12 +1012,20 @@ fn clear_old_locks(archive: &Path) {
 
 /// Every file under `rel` in `base` (or `rel` itself), as paths relative to
 /// `base` with `/` between their parts.
-fn files_under(base: &Path, rel: &Path, out: &mut Vec<String>) -> Result<(), BackupError> {
+fn files_under(
+    git: &Git,
+    base: &Path,
+    rel: &Path,
+    out: &mut Vec<String>,
+) -> Result<(), BackupError> {
+    // Looked at once per entry: a folder of any size is left promptly
+    // (INVARIANT 6).
+    git.check("listing the files")?;
     let full = base.join(rel);
     let meta = std::fs::symlink_metadata(&full)?;
     if meta.is_dir() {
         for entry in std::fs::read_dir(&full)? {
-            files_under(base, &rel.join(entry?.file_name()), out)?;
+            files_under(git, base, &rel.join(entry?.file_name()), out)?;
         }
     } else {
         let parts: Vec<String> = rel
@@ -801,9 +1221,12 @@ pub fn push(
                 if !may_create {
                     return Err(BackupError::NoBackupThere);
                 }
-                git.run(
+                // The repository is new: any lock in it is ours, by the
+                // same rules as a push's (INVARIANT 5b).
+                git.run_in(
                     "init",
                     &[os("init"), os("--bare"), os("-q"), repo.as_os_str()],
+                    &[&Watched::target(&repo, target.kind())],
                 )?;
             }
             repo.display().to_string()
@@ -833,7 +1256,19 @@ pub fn push(
         args.push(os(&receive));
     }
     args.extend([os(&to), os("HEAD:refs/heads/main")]);
-    match git.run("push", &args) {
+    // The repositories this push may leave a lock in if it is killed: the
+    // archive, and the target if it is on this computer (one far away
+    // cleans up after its own connection's end, and isn't ours to touch).
+    let mine = Watched::archive(&archive);
+    let theirs = (matches!(target, Target::Folder(_)) || is_local(&to)).then(|| {
+        Watched::target(
+            Path::new(to.strip_prefix("file://").unwrap_or(&to)),
+            target.kind(),
+        )
+    });
+    let mut guards = vec![&mine];
+    guards.extend(theirs.as_ref());
+    match git.run_in("push", &args, &guards) {
         Ok(_) => {}
         Err(BackupError::Git(_, said))
             if said.contains("non-fast-forward")
@@ -876,6 +1311,15 @@ pub fn verify(git: &Git, source: &str, scratch: &Path) -> Result<Verified, Backu
     if is_local(source) {
         plain_repository(git, source)?;
     }
+    // Stops at its next step once the books are let go (cancel.rs); what
+    // it had cloned is the caller's scratch folder, removed by the caller.
+    let _stoppable = git.cancel.clone().map(crate::cancel::scope);
+    let store_err = |e: crate::StoreError| match e {
+        crate::StoreError::Cancelled => BackupError::Cancelled("verifying".into()),
+        e => BackupError::Damaged(e.to_string()),
+    };
+    git.phase("clone");
+    git.check("clone")?;
     git.run(
         "clone",
         &[
@@ -890,6 +1334,7 @@ pub fn verify(git: &Git, source: &str, scratch: &Path) -> Result<Verified, Backu
             scratch.as_os_str(),
         ],
     )?;
+    git.phase("tree");
     let git_dir = format!("--git-dir={}", scratch.join(".git").display());
     // Its tree before any of it is written out: plain files, only where a
     // book keeps what is backed up. A link or a submodule (which could
@@ -907,6 +1352,7 @@ pub fn verify(git: &Git, source: &str, scratch: &Path) -> Result<Verified, Backu
         ],
     )?;
     for entry in listed.split('\0').filter(|e| !e.is_empty()) {
+        git.check("reading its tree")?;
         let (meta, path) = entry.split_once('\t').unwrap_or((entry, ""));
         let mode = meta.split(' ').next().unwrap_or("");
         let top = path.split('/').next().unwrap_or("");
@@ -916,6 +1362,7 @@ pub fn verify(git: &Git, source: &str, scratch: &Path) -> Result<Verified, Backu
             )));
         }
     }
+    git.phase("checkout");
     let work_tree = format!("--work-tree={}", scratch.display());
     git.run(
         "checkout",
@@ -928,13 +1375,12 @@ pub fn verify(git: &Git, source: &str, scratch: &Path) -> Result<Verified, Backu
             os("main"),
         ],
     )?;
-    let mut store = crate::Store::open(scratch).map_err(|e| BackupError::Damaged(e.to_string()))?;
-    store
-        .verify_and_heal()
-        .map_err(|e| BackupError::Damaged(e.to_string()))?;
-    let blobs = store
-        .verify_blobs()
-        .map_err(|e| BackupError::Damaged(e.to_string()))?;
+    git.phase("replay");
+    let mut store = crate::Store::open(scratch).map_err(store_err)?;
+    git.phase("verify");
+    store.verify_and_heal().map_err(store_err)?;
+    git.phase("blobs");
+    let blobs = store.verify_blobs().map_err(store_err)?;
     let head = store.head();
     // Every TIN record the books name is there, and the key that opens
     // them.
@@ -950,12 +1396,14 @@ pub fn verify(git: &Git, source: &str, scratch: &Path) -> Result<Verified, Backu
         .flatten()
         .collect();
     drop(store);
+    git.phase("vault");
     if !named.is_empty() {
         use sha2::{Digest, Sha256};
         let vault = scratch.join(crate::root::VAULT_DIR);
         let mut held = std::collections::BTreeSet::new();
         if vault.is_dir() {
             for f in std::fs::read_dir(&vault)? {
+                git.check("reading its vault")?;
                 held.insert(hex::encode(Sha256::digest(std::fs::read(f?.path())?)));
             }
         }
@@ -1018,12 +1466,15 @@ pub fn drill(
         return Err(BackupError::NoFolder);
     }
     let checked = verify(git, &target.source(book), scratch).and_then(|v| {
-        match is_prefix(live, &v.tree.join(crate::JOURNAL_FILE)) {
+        git.phase("prefix");
+        match is_prefix_with(live, &v.tree.join(crate::JOURNAL_FILE), || {
+            git.check("comparing journals")
+        }) {
             Ok(true) => Ok(v.head),
             Ok(false) => Err(BackupError::Damaged(
                 "its journal isn't this book's history".into(),
             )),
-            Err(e) => Err(e.into()),
+            Err(e) => Err(e),
         }
     });
     let _ = std::fs::remove_dir_all(scratch);
@@ -1061,8 +1512,10 @@ pub fn prove_archive(
                 "its journal isn't the books' own, byte for byte".into(),
             ));
         }
+        git.phase("compare");
+        git.check("comparing")?;
         for kept in [crate::root::VAULT_DIR, crate::root::KEYS_DIR] {
-            if held_files(book_dir, kept)? != held_files(&v.tree, kept)? {
+            if held_files(git, book_dir, kept)? != held_files(git, &v.tree, kept)? {
                 return Err(BackupError::Damaged(format!(
                     "its {} isn't the books' own, file for file",
                     if kept == crate::root::KEYS_DIR {
@@ -1098,16 +1551,17 @@ pub struct Proven {
 
 /// Every file under `rel` in `base`, by its path there, with its bytes
 /// (none when `rel` isn't there).
-fn held_files(base: &Path, rel: &str) -> Result<Vec<(String, Vec<u8>)>, BackupError> {
+fn held_files(git: &Git, base: &Path, rel: &str) -> Result<Vec<(String, Vec<u8>)>, BackupError> {
     if std::fs::symlink_metadata(base.join(rel)).is_err() {
         return Ok(Vec::new());
     }
     let mut names = Vec::new();
-    files_under(base, Path::new(rel), &mut names)?;
+    files_under(git, base, Path::new(rel), &mut names)?;
     names.sort();
     names
         .into_iter()
         .map(|n| {
+            git.check("reading the files")?;
             let bytes = std::fs::read(base.join(&n))?;
             Ok((n, bytes))
         })
@@ -1117,11 +1571,25 @@ fn held_files(base: &Path, rel: &str) -> Result<Vec<(String, Vec<u8>)>, BackupEr
 /// Whether the journal at `backup` is a byte prefix of the one at `live`
 /// (a drill: the backup holds the book's history, nothing else).
 pub fn is_prefix(live: &Path, backup: &Path) -> std::io::Result<bool> {
+    is_prefix_with(live, backup, || Ok(())).map_err(|e| match e {
+        BackupError::Io(kind) => std::io::Error::from(kind),
+        other => std::io::Error::other(other.to_string()),
+    })
+}
+
+/// [`is_prefix`], asking `each` before every chunk read (a step that has
+/// to stop looks for its stop there, INVARIANT 6).
+fn is_prefix_with(
+    live: &Path,
+    backup: &Path,
+    mut each: impl FnMut() -> Result<(), BackupError>,
+) -> Result<bool, BackupError> {
     use std::io::Read;
     let mut a = std::fs::File::open(live)?;
     let mut b = std::fs::File::open(backup)?;
     let (mut x, mut y) = (vec![0u8; 64 * 1024], vec![0u8; 64 * 1024]);
     loop {
+        each()?;
         let n = b.read(&mut y)?;
         if n == 0 {
             return Ok(true);
@@ -1911,6 +2379,7 @@ mod tests {
             exe: wrapper,
             quiet: GIT_TIMEOUT,
             cancel: None,
+            watch: Watch::default(),
         }
     }
 
@@ -1956,6 +2425,351 @@ mod tests {
         );
     }
 
+    /// A git that is the real one with the hooks folder of its own: each
+    /// `core.hooksPath=/dev/null` it is given (in its own arguments, and in
+    /// the `--receive-pack` command a push to this computer runs) names
+    /// `hooks` instead, where a `reference-transaction` hook waits, while
+    /// `hooks/slow` exists, at the point where git holds its ref locks (and
+    /// a commit its index lock): how a real git is made slow enough to be
+    /// killed inside the work. `hooks/hooked` has a line per hook that waited.
+    fn slow_git(dir: &Path, real: &Git) -> (Git, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let hooks = dir.join("slow-hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        let hook = hooks.join("reference-transaction");
+        std::fs::write(
+            &hook,
+            "#!/bin/sh\ncat >/dev/null\n[ \"$1\" = prepared ] || exit 0\nd=\"$(dirname \"$0\")\"\nif [ -e \"$d/slow\" ]; then\n  echo $$ >> \"$d/hooked\"\n  while [ -e \"$d/slow\" ]; do sleep 0.05; done\nfi\nexit 0\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let wrapper = dir.join("slow-git");
+        std::fs::write(
+            &wrapper,
+            format!(
+                "#!/bin/sh\nn=$#\nwhile [ $n -gt 0 ]; do\n  a=\"$1\"; shift\n  case \"$a\" in\n    *core.hooksPath=/dev/null*) a=$(printf '%s' \"$a\" | sed 's|core.hooksPath=/dev/null|core.hooksPath={}|g') ;;\n  esac\n  set -- \"$@\" \"$a\"\n  n=$((n-1))\ndone\nexec '{}' \"$@\"\n",
+                hooks.display(),
+                real.exe.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        (
+            Git {
+                exe: wrapper,
+                quiet: GIT_TIMEOUT,
+                cancel: None,
+                watch: Watch::default(),
+            },
+            hooks,
+        )
+    }
+
+    /// Wait until a hook of `slow_git` is waiting.
+    fn wait_hooked(hooks: &Path) {
+        let by = Instant::now() + Duration::from_secs(30);
+        while !hooks.join("hooked").exists() {
+            assert!(Instant::now() < by, "git never reached its ref update");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn fsck(git: &Git, repo: &Path) {
+        git.run(
+            "fsck",
+            &[
+                os(&format!("--git-dir={}", repo.display())),
+                os("fsck"),
+                os("--strict"),
+            ],
+        )
+        .unwrap_or_else(|e| panic!("the repository isn't whole: {e}"));
+    }
+
+    /// INVARIANT 5, the archive: a real git killed inside a commit (holding
+    /// the index and ref locks) leaves them, and once it is reaped they are
+    /// removed at once, each noted; the next backup needs no hand, and the
+    /// repository passes git's own check.
+    #[test]
+    fn a_git_killed_mid_commit_leaves_no_lock_and_the_next_backup_succeeds() {
+        let real = Git::find().expect("git is installed");
+        let dir = tempfile::tempdir().unwrap();
+        let (slow, hooks) = slow_git(dir.path(), &real);
+        let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancelled = slow.clone().with_cancel(flag.clone());
+        let b = dir.path().join("book");
+        let mut s = book(&b);
+        commit(&slow, &b, "acme", s.head()).unwrap().unwrap();
+        s.add_account("6000", "Supplies", AccountType::Expense, None, false)
+            .unwrap();
+        let archive = b.join(ARCHIVE_DIR);
+        std::fs::write(hooks.join("slow"), b"").unwrap();
+        let running = {
+            let (git, b, head) = (cancelled.clone(), b.clone(), s.head());
+            std::thread::spawn(move || commit(&git, &b, "acme", head))
+        };
+        wait_hooked(&hooks);
+        // Inside the commit's ref update it holds the ref locks (its index
+        // lock is given up before): that is what a kill leaves.
+        let held = locks_in(&archive);
+        assert!(held.contains(&"HEAD.lock".to_string()), "{held:?}");
+        assert!(
+            held.contains(&"refs/heads/main.lock".to_string()),
+            "{held:?}"
+        );
+        flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            running.join().unwrap().unwrap_err(),
+            BackupError::Cancelled("commit".into())
+        );
+        assert_eq!(locks_in(&archive), Vec::<String>::new());
+        let notes = cancelled.take_lock_notes();
+        for lock in &held {
+            assert!(
+                notes.iter().any(|n| n.repo == "archive"
+                    && &n.lock == lock
+                    && n.removed
+                    && n.why == "git was stopped"),
+                "{lock} wasn't noted: {notes:?}"
+            );
+        }
+        // The next backup, with no one to remove anything by hand.
+        std::fs::remove_file(hooks.join("slow")).unwrap();
+        let made = commit(&slow, &b, "acme", s.head())
+            .unwrap()
+            .expect("the next backup is made");
+        assert_eq!(made.head, s.head());
+        fsck(&real, &archive);
+    }
+
+    /// INVARIANT 5, the index lock: a real git killed inside `add` (here
+    /// hashing a very large, empty, stored file) holds the index lock, which
+    /// a kill leaves; it goes at once, and the next backup needs no hand.
+    #[test]
+    fn a_git_killed_mid_add_leaves_no_index_lock() {
+        let real = Git::find().expect("git is installed");
+        let dir = tempfile::tempdir().unwrap();
+        let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let git = real.clone().with_cancel(flag.clone());
+        let b = dir.path().join("book");
+        let s = book(&b);
+        commit(&real, &b, "acme", s.head()).unwrap().unwrap();
+        let big = b.join("blobs").join("big-and-empty");
+        std::fs::File::create(&big)
+            .unwrap()
+            .set_len(64 << 30)
+            .unwrap();
+        let archive = b.join(ARCHIVE_DIR);
+        let running = {
+            let (git, b) = (git.clone(), b.clone());
+            std::thread::spawn(move || stage_blobs(&git, &b))
+        };
+        let by = Instant::now() + Duration::from_secs(30);
+        while !archive.join("index.lock").exists() {
+            assert!(Instant::now() < by, "git never took the index lock");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        // Hashing, with the lock held.
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(archive.join("index.lock").exists());
+        flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            running.join().unwrap().unwrap_err(),
+            BackupError::Cancelled("add".into())
+        );
+        assert_eq!(locks_in(&archive), Vec::<String>::new());
+        let notes = git.take_lock_notes();
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.lock == "index.lock" && n.removed && n.repo == "archive"),
+            "{notes:?}"
+        );
+        std::fs::remove_file(&big).unwrap();
+        stage_blobs(&real, &b).unwrap();
+        fsck(&real, &archive);
+    }
+
+    /// INVARIANT 5, a folder target: a real git killed inside a push (its
+    /// receive-pack holding the target's ref lock) leaves the lock there;
+    /// once the push is reaped and the lock has stood unchanged for
+    /// LOCK_SETTLE it is removed and noted, the next push succeeds, and
+    /// both repositories pass git's check. A lock that was there before the
+    /// push began is another's, and stays.
+    #[test]
+    fn a_git_killed_mid_push_leaves_no_lock_in_the_target_but_never_removes_another() {
+        let real = Git::find().expect("git is installed");
+        let dir = tempfile::tempdir().unwrap();
+        let (slow, hooks) = slow_git(dir.path(), &real);
+        let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancelled = slow.clone().with_cancel(flag.clone());
+        let b = dir.path().join("book");
+        let mut s = book(&b);
+        commit(&slow, &b, "acme", s.head()).unwrap().unwrap();
+        let folder = dir.path().join("disk");
+        std::fs::create_dir(&folder).unwrap();
+        let target = Target::Folder(folder.clone());
+        push(&slow, &b, "acme", &target, true).unwrap();
+        let repo = folder.join("acme.git");
+        // Another writer's lock, held before our push begins.
+        std::fs::write(repo.join("refs/heads/another.lock"), b"").unwrap();
+        s.add_account("6000", "Supplies", AccountType::Expense, None, false)
+            .unwrap();
+        commit(&slow, &b, "acme", s.head()).unwrap().unwrap();
+        std::fs::write(hooks.join("slow"), b"").unwrap();
+        let running = {
+            let (git, b, target) = (cancelled.clone(), b.clone(), target.clone());
+            std::thread::spawn(move || push(&git, &b, "acme", &target, true))
+        };
+        wait_hooked(&hooks);
+        assert!(repo.join("refs/heads/main.lock").exists());
+        let stopped = Instant::now();
+        flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            running.join().unwrap().unwrap_err(),
+            BackupError::Cancelled("push".into())
+        );
+        assert!(
+            stopped.elapsed() >= LOCK_SETTLE,
+            "removed before the lock had stood for the settling time"
+        );
+        assert!(!repo.join("refs/heads/main.lock").exists());
+        assert!(
+            repo.join("refs/heads/another.lock").exists(),
+            "a lock that was there before the push was removed"
+        );
+        let notes = cancelled.take_lock_notes();
+        assert!(
+            notes.iter().any(|n| n.repo == "folder"
+                && n.lock == "refs/heads/main.lock"
+                && n.removed
+                && n.why == "git was stopped"),
+            "{notes:?}"
+        );
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.lock == "refs/heads/another.lock" && !n.removed),
+            "{notes:?}"
+        );
+        // The next push, nobody's hand in it.
+        std::fs::remove_file(hooks.join("slow")).unwrap();
+        std::fs::remove_file(hooks.join("hooked")).unwrap();
+        let commit_id = push(&slow, &b, "acme", &target, true).unwrap();
+        let said = real
+            .run(
+                "rev-parse",
+                &[
+                    os(&format!("--git-dir={}", repo.display())),
+                    os("rev-parse"),
+                    os("refs/heads/main"),
+                ],
+            )
+            .unwrap();
+        assert_eq!(said, commit_id);
+        fsck(&real, &repo);
+        fsck(&real, &b.join(ARCHIVE_DIR));
+    }
+
+    /// INVARIANT 5, at open: every lock found in the book's archive is
+    /// removed (this process holds the books' lock, so no other git can be
+    /// there) and each is noted.
+    #[test]
+    fn locks_found_in_the_archive_when_the_books_open_are_removed_and_noted() {
+        let git = Git::find().expect("git is installed");
+        let dir = tempfile::tempdir().unwrap();
+        let b = dir.path().join("book");
+        let s = book(&b);
+        commit(&git, &b, "acme", s.head()).unwrap().unwrap();
+        let archive = b.join(ARCHIVE_DIR);
+        let planted = [
+            "index.lock",
+            "HEAD.lock",
+            "packed-refs.lock",
+            "refs/heads/main.lock",
+        ];
+        for lock in planted {
+            std::fs::write(archive.join(lock), b"").unwrap();
+        }
+        let notes = clear_archive_locks(&b);
+        let mut named: Vec<_> = notes.iter().map(|n| n.lock.clone()).collect();
+        named.sort();
+        let mut want: Vec<_> = planted.iter().map(|l| l.to_string()).collect();
+        want.sort();
+        assert_eq!(named, want);
+        assert!(notes.iter().all(|n| n.removed && n.repo == "archive"));
+        assert_eq!(locks_in(&archive), Vec::<String>::new());
+        assert_eq!(clear_archive_locks(&b), Vec::new());
+    }
+
+    /// INVARIANT 6: a drill stops inside whichever phase it is told to stop
+    /// in, never going on to the next, and leaves nothing (its scratch
+    /// folder is removed). The stop is set as the phase begins; each case
+    /// fails when the stop is no longer looked at inside that phase.
+    #[test]
+    fn a_drill_stops_inside_the_phase_it_is_told_to_stop_in() {
+        let real = Git::find().expect("git is installed");
+        let dir = tempfile::tempdir().unwrap();
+        let b = dir.path().join("book");
+        let s = book(&b);
+        commit(&real, &b, "acme", s.head()).unwrap().unwrap();
+        let folder = dir.path().join("disk");
+        std::fs::create_dir(&folder).unwrap();
+        let target = Target::Folder(folder);
+        push(&real, &b, "acme", &target, true).unwrap();
+        let order = [
+            "clone", "tree", "checkout", "replay", "verify", "blobs", "vault", "prefix",
+        ];
+        for stop_in in ["clone", "replay", "verify", "blobs", "prefix"] {
+            let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+            let git = real.clone().with_cancel(flag.clone()).with_phase_watch({
+                let (flag, seen) = (flag.clone(), seen.clone());
+                std::sync::Arc::new(move |phase: &str| {
+                    seen.lock().unwrap().push(phase.to_string());
+                    if phase == stop_in {
+                        flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
+                })
+            });
+            let scratch = dir.path().join(format!("scratch-{stop_in}"));
+            let drilled = drill(
+                &git,
+                &target,
+                "acme",
+                &b.join(crate::JOURNAL_FILE),
+                &scratch,
+            );
+            assert!(
+                matches!(drilled, Err(BackupError::Cancelled(_))),
+                "{stop_in}: {drilled:?}"
+            );
+            let seen = seen.lock().unwrap().clone();
+            let last = order
+                .iter()
+                .position(|p| *p == seen.last().unwrap())
+                .unwrap();
+            let at = order.iter().position(|p| *p == stop_in).unwrap();
+            assert_eq!(last, at, "{stop_in}: went on to {seen:?}");
+            assert!(!scratch.exists(), "{stop_in}: its scratch folder was left");
+        }
+        // Not stopped, it goes through every phase.
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let git = real.clone().with_phase_watch({
+            let seen = seen.clone();
+            std::sync::Arc::new(move |phase: &str| seen.lock().unwrap().push(phase.to_string()))
+        });
+        drill(
+            &git,
+            &target,
+            "acme",
+            &b.join(crate::JOURNAL_FILE),
+            &dir.path().join("whole"),
+        )
+        .unwrap();
+        assert_eq!(*seen.lock().unwrap(), order.map(String::from));
+    }
+
     /// A stand-in for git: a script.
     fn fake_git(dir: &Path, script: &str, quiet: Duration) -> Git {
         use std::os::unix::fs::PermissionsExt;
@@ -1966,6 +2780,7 @@ mod tests {
             exe,
             quiet,
             cancel: None,
+            watch: Watch::default(),
         }
     }
 
@@ -2092,6 +2907,7 @@ mod tests {
             exe: quoted.join("git"),
             quiet: GIT_TIMEOUT,
             cancel: None,
+            watch: Watch::default(),
         };
         let b = dir.path().join("book");
         let s = book(&b);

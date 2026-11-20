@@ -17,9 +17,10 @@ Note on run/verify: Muse Ember was released on 2026-11-09 and the owner's
 rule was to use it from the day the Muse Code provider listed it, not
 through OpenCode. `orchestrator_capabilities` listed `muse` /
 `muse-ember-1.0` (option `reasoningEffort`, default high) on 2026-11-20.
-It has not yet run a task here: an earlier try (2026-11-16) failed with
-"model does not exist or you lack access". If it fails again, run-only
-tasks go back to the scout row and this note says so.
+Its first task here (2026-11-20) failed at once with "model does not
+exist or you lack access", as a try on 2026-11-16 had: the provider lists
+a model the account cannot use. Until a task runs on it, run-only tasks
+go to the scout row; try it again at the next batch.
 
 Rules that do not change with the data: set provider, model and effort on
 every call; two tiers fit, take the cheaper; two failures, move up a tier

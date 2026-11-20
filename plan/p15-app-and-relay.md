@@ -247,6 +247,36 @@ Where both ends are ours (the app's line to the relay) there is no
 authority: the line is encrypted and authenticated with the app's own
 key, pinned in the relay's table (D-85).
 
+**The relay is also the domain's DNS server.** A small authoritative
+server for `wanderbooks.link`, part of the relay service, answers two
+questions: any name under the domain is at the relay's address, and the
+proof code for a name is the one its app just handed in (held in memory
+for minutes). Nothing is stored per user. A hosted DNS provider with an
+API was set aside: one more outside dependency, thousands of stored
+records, and a catch-all record stops covering names beneath any label
+that has a record of its own (RFC 4592; to be shown by a test), so each
+user would need a wildcard record as well. The cost: DNS must stay up,
+on at least two name servers, and is a public service to protect
+against abuse.
+
+**Is a certificate per installation a permitted use?** Checked
+2026-11-20 with quotes (a worker's reading; the lead has not re-read
+the pages). Tailscale's documentation: each machine's certificate is
+requested "using Let's Encrypt", Tailscale publishes the record for the
+DNS challenge, and the keys are "generated and stored locally on your
+machine". Home Assistant Cloud's source does the same per instance.
+Plex has issued from Let's Encrypt since 2021. Let's Encrypt's
+subscriber agreement asks only that the subscriber hold its own key,
+which the app does. Its rate-limit page offers a higher limit to "a
+large hosting provider or organization working on a Let's Encrypt
+integration", taking "a few weeks"; a staff reply to a vendor with
+50,000 devices called that case "a good candidate for a rate limit
+override". One vendor's request was denied in 2023, so the request is
+made for the registered domain, from one account, with the use
+explained, and it is not guaranteed. Until it is granted: 50 new
+installations a week. Fallbacks that speak the same protocol and are
+free: Google Trust Services, ZeroSSL (limits not confirmed).
+
 **Names.** Each app has a public name of four words (D-82) and asks for
 a wildcard certificate under it; the endpoint is a long random label
 beneath (`<secret>.<four-words>.wanderbooks.link`). The certificate logs

@@ -277,6 +277,21 @@ explained, and it is not guaranteed. Until it is granted: 50 new
 installations a week. Fallbacks that speak the same protocol and are
 free: Google Trust Services, ZeroSSL (limits not confirmed).
 
+**Authorities are data, not code** (owner, 2026-11-20: Let's Encrypt
+must be swappable for Google Trust Services or ZeroSSL). Every
+authority we would use speaks the same protocol (ACME, RFC 8555). The
+app's certificate code knows that protocol and nothing about any one
+authority. At each issuance it asks the relay service for the list to
+try, in order: for each authority its directory address, whether it
+needs an account binding, and if so a binding credential the relay
+service obtained for this app. Changing or adding an authority is a
+change to that list on our server, with no new release of the app. What
+differs between authorities beyond the protocol (renewal information,
+lifetimes, limits) sits behind one small trait. The tests issue from a
+local test authority configured two ways, one with an account binding
+and one without, and fail over from the first to the second, so the
+swap is exercised and not only designed.
+
 **Names.** Each app has a public name of four words (D-82) and asks for
 a wildcard certificate under it; the endpoint is a long random label
 beneath (`<secret>.<four-words>.wanderbooks.link`). The certificate logs

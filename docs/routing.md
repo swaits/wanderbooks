@@ -8,19 +8,18 @@ file wins. The evidence is `docs/delegation-log.md`, one line per task.
 | Task type | Provider | Model | Effort |
 |---|---|---|---|
 | scout (find, summarize, rename, boilerplate, small edits) | `claudeAgent` | `claude-haiku-5-5` | effort medium |
-| run/verify (run suites, reproduce, collect logs, check a build) | see the note | Muse Ember | |
+| run/verify (run suites, reproduce, collect logs, check a build) | `muse` | `muse-ember-1.0` | reasoningEffort high |
 | implement, refactor (well specified, clear acceptance) | `opencode` | `opencode-go/deepseek-v4.1-flash` | variant high |
 | debug, hard implement (several modules, subtle, or tier 2 failed once) | `claudeAgent` | `claude-sonnet-5-5` | effort high |
 | review (a risky design, or a large change before merge) | `muse` | `muse-wonder-full-1.0` | reasoningEffort high |
 
-Note on run/verify: the plan names Muse Ember through Muse Code. Ember was
-released on 2026-11-09 and the Muse Code provider did not list it yet (the
-only listing was `opencode` / `opencode/muse-ember-1.0`). The owner's rule
-(2026-11-09): keep checking Muse Code for it, and use it from the day it is
-listed there, not through OpenCode. Check with `orchestrator_capabilities`
-(`search: "ember"`) before each batch of delegations; until it is listed,
-run-only tasks go to the scout row. Last checked 2026-11-09 23:45 MST: not
-listed.
+Note on run/verify: Muse Ember was released on 2026-11-09 and the owner's
+rule was to use it from the day the Muse Code provider listed it, not
+through OpenCode. `orchestrator_capabilities` listed `muse` /
+`muse-ember-1.0` (option `reasoningEffort`, default high) on 2026-11-20.
+It has not yet run a task here: an earlier try (2026-11-16) failed with
+"model does not exist or you lack access". If it fails again, run-only
+tasks go back to the scout row and this note says so.
 
 Rules that do not change with the data: set provider, model and effort on
 every call; two tiers fit, take the cheaper; two failures, move up a tier
@@ -31,3 +30,5 @@ work to the review tier without asking.
 
 - 2026-11-09: the starting tiers, as the owner gave them. No task type has
   5 logged samples yet, so nothing has moved.
+- 2026-11-20: run/verify moves to Muse Ember through Muse Code, which now
+  lists it. No sample yet.

@@ -206,6 +206,16 @@ fn the_sessions_request_names_each_connection_and_never_its_token() {
         Response::Sessions(all) => all,
         other => panic!("{other:?}"),
     };
+    // `initialized` is a notification, handled after its 202: each client's
+    // name is known once the server has (waited for, not guessed).
+    wait_for("both clients are known", Duration::from_secs(60), || {
+        sessions(&home)
+            .iter()
+            .find(|b| b.book == A)
+            .is_some_and(|a| {
+                a.sessions.len() == 2 && a.sessions.iter().all(|s| s.client_name.is_some())
+            })
+    });
     let all = sessions(&home);
     let text = serde_json::to_string(&all).unwrap();
     for token in [&one, &two] {

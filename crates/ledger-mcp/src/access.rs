@@ -120,6 +120,8 @@ pub(crate) const UNAUTHORIZED: &str = "unauthorized";
 pub(crate) const INSUFFICIENT_SCOPE: &str = "insufficient_scope";
 /// The books were closing.
 pub(crate) const CLOSING: &str = "closing";
+/// A close cut the request while its body was still arriving.
+pub(crate) const CUT: &str = "cut_by_close";
 /// The server had stopped.
 pub(crate) const STOPPED: &str = "stopped";
 /// A file's bytes or text came as an argument (D-46).

@@ -361,7 +361,13 @@ didn't open, with why). Protocol version 1: the requests are new, the
   the book listed closed); the calls running on it finish, on every route
   (nothing is killed, nothing is half-done); the answers on their way out
   are sent, for 10 seconds at most (a client that never reads its answer
-  doesn't hold the book open); its MCP sessions end (an agent's next
+  doesn't hold the book open); a request whose body has not been read
+  to its end when that time runs out (counted from the start of the
+  close: an upload or a call that began and stopped sending) is cut: its
+  connection is closed, an upload's part file is removed, nothing of an
+  MCP call reached the journal, and the access log says `cut_by_close`;
+  a call whose body arrived whole and is running is never cut, it
+  finishes; its MCP sessions end (an agent's next
   request on one gets the "isn't open" words above, and after a reopening
   a 404 "Session not found", which a client takes as "open a new one"); its
   last backup is made, as at the server's close, for 60 seconds at most:

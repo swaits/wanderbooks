@@ -778,6 +778,30 @@ mod raw {
             self.stream.write_all(rest).unwrap();
         }
 
+        /// Everything the server sends until it closes the connection,
+        /// which it must do within `within`.
+        pub fn until_closed(&mut self, within: Duration) -> String {
+            self.stream.set_read_timeout(Some(within)).unwrap();
+            let mut seen = std::mem::take(&mut self.taken);
+            let mut buf = [0u8; 4096];
+            loop {
+                match self.stream.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => seen.extend_from_slice(&buf[..n]),
+                    Err(e)
+                        if matches!(
+                            e.kind(),
+                            std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::BrokenPipe
+                        ) =>
+                    {
+                        break;
+                    }
+                    Err(e) => panic!("the connection was left open: {e}"),
+                }
+            }
+            String::from_utf8_lossy(&seen).to_string()
+        }
+
         /// The response's status line and headers (the body is left).
         pub fn head(&mut self) -> (u16, String) {
             self.stream
@@ -1260,6 +1284,242 @@ fn an_upload_in_flight_finishes_before_the_close_is_answered() {
     assert!(server.close().success());
 }
 
+/// Whether the access log of `id` holds a record of `action` on `subject`
+/// that the close cut (never a record of it having run).
+fn cut_records(home: &Home, id: &str, action: &str) -> Vec<ledger_store::access::Recorded> {
+    access_of(home, id)
+        .into_iter()
+        .filter(|r| {
+            r.access.action == action
+                && r.access.result
+                    == ledger_store::access::Outcome::Refused("cut_by_close".to_string())
+        })
+        .collect()
+}
+
+/// An upload whose body stalls half way (the client neither sends the rest
+/// nor hangs up) is inside the book's door, and would hold the close for
+/// ever. The close waits the grace, cuts it: its connection is closed, its
+/// part file is gone, its record says the close cut it, nothing was
+/// kept. The close is answered, and the log is a whole chain through a
+/// reopening (local.rs INVARIANT 10, the cut).
+#[cfg(unix)]
+#[test]
+fn a_stalled_upload_body_cannot_hold_a_close_and_leaves_no_part_file() {
+    let home = Home::new("close-stalled-upload");
+    let server = Server::start_with(&home, &["--answer-grace", "600", "--timers", "10"]);
+    home.create(A, "USD");
+    let mut w = Wire::new(&home, A);
+    w.initialize("uploader");
+    let bytes: Vec<u8> = (0..200_000u32).map(|n| (n % 251) as u8).collect();
+    let (id, mut raw) = half_sent_upload(&home, &mut w, A, &bytes);
+    let started = std::time::Instant::now();
+    assert_eq!(close_book(&home, A), CloseOutcome::Closed);
+    let took = started.elapsed();
+    assert!(
+        took >= Duration::from_millis(500),
+        "the upload was cut before the grace ran out ({took:?})"
+    );
+    assert!(
+        took < Duration::from_secs(20),
+        "a stalled upload held the close ({took:?})"
+    );
+    assert_eq!(parts_under(&home.book_dir(A)), Vec::<String>::new());
+    assert!(
+        !tree_of(&home.book_dir(A))
+            .keys()
+            .any(|k| k.contains(&id) && k.ends_with(".bin")),
+        "bytes of a cut upload were kept"
+    );
+    let said = raw.until_closed(Duration::from_secs(10));
+    assert!(said.contains("cut_by_close"), "{said}");
+    assert_eq!(cut_records(&home, A, "upload").len(), 1);
+    stands_still(
+        &home,
+        A,
+        Duration::from_millis(300),
+        "after the close was answered",
+    );
+    assert_eq!(open_book(&home, A), OpenOutcome::Opened);
+    let mut again = Wire::new(&home, A);
+    again.initialize("after");
+    draft(&mut again, "after");
+    access_of(&home, A);
+    assert!(server.close().success());
+    access_of(&home, A);
+}
+
+/// The same for an MCP call whose body never finishes arriving: no tool saw
+/// it, so nothing is in the journal; the close is not held; the record says
+/// the close cut it.
+#[cfg(unix)]
+#[test]
+fn a_stalled_mcp_body_cannot_hold_a_close_and_nothing_of_it_is_journaled() {
+    let home = Home::new("close-stalled-mcp");
+    let server = Server::start_with(&home, &["--answer-grace", "600", "--timers", "10"]);
+    home.create(A, "USD");
+    let mut w = Wire::new(&home, A);
+    w.initialize("caller");
+    draft(&mut w, "before");
+    let mut raw = raw::Raw::connect(&home, A);
+    let body = json!({"jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": {
+        "name": "books.draft_entry",
+        "arguments": {"date": "2026-03-01", "description": "never finished"}}})
+    .to_string();
+    raw.start(
+        "POST",
+        "mcp",
+        &[
+            ("content-type", "application/json"),
+            ("accept", "application/json, text/event-stream"),
+            ("mcp-session-id", w.session().unwrap()),
+            ("mcp-protocol-version", w.version().unwrap()),
+        ],
+        body.as_bytes(),
+        body.len() / 2,
+    );
+    std::thread::sleep(Duration::from_millis(200));
+    let started = std::time::Instant::now();
+    assert_eq!(close_book(&home, A), CloseOutcome::Closed);
+    let took = started.elapsed();
+    assert!(
+        took >= Duration::from_millis(500),
+        "cut too early ({took:?})"
+    );
+    assert!(took < Duration::from_secs(20), "held by a stall ({took:?})");
+    let said = raw.until_closed(Duration::from_secs(10));
+    assert!(said.contains("cut_by_close"), "{said}");
+    assert!(
+        !files_of(&home, A)
+            .0
+            .iter()
+            .any(|l| l.payload["description"] == json!("never finished")),
+        "a call whose body never arrived was journaled"
+    );
+    assert_eq!(cut_records(&home, A, "connect").len(), 1);
+    assert_eq!(open_book(&home, A), OpenOutcome::Opened);
+    let mut again = Wire::new(&home, A);
+    again.initialize("after");
+    draft(&mut again, "after");
+    access_of(&home, A);
+    assert!(server.close().success());
+}
+
+/// A slow upload that is still arriving, and finishes within the grace, is
+/// not cut: it is kept and answered, as without a close.
+#[cfg(unix)]
+#[test]
+fn a_slow_upload_that_finishes_within_the_grace_is_not_cut() {
+    let home = Home::new("close-slow-upload");
+    let server = Server::start_with(&home, &["--answer-grace", "2500", "--timers", "10"]);
+    home.create(A, "USD");
+    let mut w = Wire::new(&home, A);
+    w.initialize("uploader");
+    let bytes: Vec<u8> = (0..200_000u32).map(|n| (n % 247) as u8).collect();
+    let (id, mut raw) = half_sent_upload(&home, &mut w, A, &bytes);
+    let closing = std::thread::spawn({
+        let admin = home.run().join("admin.sock");
+        move || ledger_mcp::admin::call(&admin, Request::CloseBook { id: A.into() }).unwrap()
+    });
+    wait_for("the book is listed closed", Duration::from_secs(30), || {
+        listed(&home, A).1
+    });
+    for chunk in bytes[bytes.len() / 2..].chunks(25_000) {
+        std::thread::sleep(Duration::from_millis(150));
+        raw.finish(chunk);
+    }
+    let (status, head) = raw.head();
+    assert_eq!(status, 200, "{head}");
+    match closing.join().unwrap() {
+        Response::CloseBook { outcome, .. } => assert_eq!(outcome, CloseOutcome::Closed),
+        other => panic!("{other:?}"),
+    }
+    assert!(cut_records(&home, A, "upload").is_empty());
+    assert!(
+        tree_of(&home.book_dir(A))
+            .keys()
+            .any(|k| k.ends_with(&format!("{id}.bin"))),
+        "the bytes were kept"
+    );
+    assert!(server.close().success());
+}
+
+/// A call whose body is whole and that is running when the grace runs out
+/// is not cut: it ends, is answered and recorded as having run, and only
+/// then is the close answered.
+#[cfg(unix)]
+#[test]
+fn a_running_call_is_never_cut_when_the_grace_runs_out() {
+    let home = Home::new("close-running-call");
+    let shim = shim_git(&home);
+    let server = server_with_shim(
+        &home,
+        &shim,
+        &[
+            "--answer-grace",
+            "400",
+            "--close-backup",
+            "500",
+            "--backup-quiet",
+            "3600000",
+            "--timers",
+            "20",
+        ],
+    );
+    home.create(A, "USD");
+    let disk = home.dir.path().join("disk");
+    std::fs::create_dir_all(&disk).unwrap();
+    let mut w = Wire::new(&home, A);
+    w.initialize("owner");
+    set_backup_folder(&mut w, &disk);
+    draft(&mut w, "moves the head");
+    std::fs::write(shim.join("stall"), b"").unwrap();
+    let mut raw = raw::Raw::connect(&home, A);
+    let body = json!({"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {
+        "name": "books.back_up_now", "arguments": {}}})
+    .to_string();
+    raw.start(
+        "POST",
+        "mcp",
+        &[
+            ("content-type", "application/json"),
+            ("accept", "application/json, text/event-stream"),
+            ("mcp-session-id", w.session().unwrap()),
+            ("mcp-protocol-version", w.version().unwrap()),
+        ],
+        body.as_bytes(),
+        body.len(),
+    );
+    wait_for("the call reached git", Duration::from_secs(30), || {
+        shim.join("stalled").exists()
+    });
+    let closing = std::thread::spawn({
+        let admin = home.run().join("admin.sock");
+        move || ledger_mcp::admin::call(&admin, Request::CloseBook { id: A.into() }).unwrap()
+    });
+    // Well past the grace: the call is still running, and not cut.
+    std::thread::sleep(Duration::from_millis(1200));
+    assert!(
+        !closing.is_finished(),
+        "the close didn't wait for a running call"
+    );
+    std::fs::remove_file(shim.join("stall")).unwrap();
+    let (status, head) = raw.head();
+    assert_eq!(status, 200, "{head}");
+    let _ = closing.join().unwrap();
+    assert!(cut_records(&home, A, "books.back_up_now").is_empty());
+    assert!(cut_records(&home, A, "connect").is_empty());
+    assert!(
+        access_of(&home, A)
+            .iter()
+            .any(|r| r.access.subject == "books.back_up_now"
+                && r.access.result == ledger_store::access::Outcome::Ok),
+        "the call that ran is on record as having run"
+    );
+    drop(raw);
+    assert!(server.close().success());
+}
+
 /// A backup of `id`, taken now to its folder target; the repository.
 #[cfg(unix)]
 fn backed_up_to_folder(home: &Home, w: &mut Wire, id: &str) -> PathBuf {
@@ -1290,7 +1550,7 @@ fn a_restore_over_an_open_book_waits_for_what_is_inside_it() {
         &home,
         &[
             "--answer-grace",
-            "500",
+            "15000",
             "--timers",
             "10",
             "--backup-quiet",
@@ -1302,6 +1562,8 @@ fn a_restore_over_an_open_book_waits_for_what_is_inside_it() {
     w.initialize("owner");
     let repo = backed_up_to_folder(&home, &mut w, A);
     let bytes: Vec<u8> = (0..200_000u32).map(|n| (n % 241) as u8).collect();
+    // (The grace is longer than the 5 seconds watched below: an upload
+    // that finishes within it is waited for, never cut.)
     let (id, mut raw) = half_sent_upload(&home, &mut w, A, &bytes);
     let source = repo.display().to_string();
     let preview = match home.admin(Request::Restore {
@@ -1381,6 +1643,75 @@ fn a_restore_over_an_open_book_waits_for_what_is_inside_it() {
     let at_answer = tree_of(&legacy);
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(moved(&at_answer, &tree_of(&legacy)), Vec::<String>::new());
+    assert!(server.close().success());
+}
+
+/// A restore over an open book is held by an upload that stalls no longer
+/// than the grace: the upload is cut (no part file in `legacy/`, its record
+/// in the replaced book's log says so), and the restore is answered.
+#[cfg(unix)]
+#[test]
+fn a_restore_over_an_open_book_is_not_held_by_a_stalled_upload() {
+    let home = Home::new("restore-stalled");
+    let server = Server::start_with(
+        &home,
+        &[
+            "--answer-grace",
+            "600",
+            "--timers",
+            "10",
+            "--backup-quiet",
+            "3600000",
+        ],
+    );
+    home.create(A, "USD");
+    let mut w = Wire::new(&home, A);
+    w.initialize("owner");
+    let repo = backed_up_to_folder(&home, &mut w, A);
+    let bytes: Vec<u8> = (0..200_000u32).map(|n| (n % 239) as u8).collect();
+    let (id, mut raw) = half_sent_upload(&home, &mut w, A, &bytes);
+    let source = repo.display().to_string();
+    let preview = match home.admin(Request::Restore {
+        id: A.into(),
+        source: source.clone(),
+        replace: true,
+        confirmed: false,
+        expect_head: None,
+    }) {
+        Response::RestorePreview(p) => p,
+        other => panic!("{other:?}"),
+    };
+    let started = std::time::Instant::now();
+    let restored = match home.admin(Request::Restore {
+        id: A.into(),
+        source,
+        replace: true,
+        confirmed: true,
+        expect_head: Some(preview.head),
+    }) {
+        Response::Restored(r) => r,
+        other => panic!("{other:?}"),
+    };
+    assert!(started.elapsed() < Duration::from_secs(30));
+    assert!(restored.replaced.is_some(), "{restored:?}");
+    let said = raw.until_closed(Duration::from_secs(10));
+    assert!(said.contains("cut_by_close"), "{said}");
+    let legacy = home.root().join("legacy");
+    assert_eq!(parts_under(&legacy), Vec::<String>::new());
+    let old = std::fs::read_dir(&legacy)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let (records, _) = ledger_store::access::read(&old).expect("the replaced book's log is whole");
+    assert!(
+        records.iter().any(|r| r.access.action == "upload"
+            && r.access.subject == id
+            && r.access.result
+                == ledger_store::access::Outcome::Refused("cut_by_close".to_string())),
+        "{records:?}"
+    );
     assert!(server.close().success());
 }
 

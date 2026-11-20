@@ -68,8 +68,9 @@
 //!      one change at a time (create, adopt and restore among them). Open:
 //!      a closed (or failed) book of the root is opened and verified as at
 //!      the start. Close: from the moment it begins, a call on that book is
-//!      refused at its door, unrun, and not in its journal; a call already
-//!      running on it, on any route, finishes (nothing is killed, nothing
+//!      refused at its door, unrun, and not in its journal; a request not
+//!      yet whole when the grace runs out is cut (INVARIANT 15); a call
+//!      already running on it, on any route, finishes (nothing is killed, nothing
 //!      is half-done); the answers on their way out are sent, for the
 //!      answer grace at most; its MCP sessions end; its last backup is
 //!      made, for BACKUP_AT_CLOSE at most; and the book is let go
@@ -122,6 +123,25 @@
 //!      and none checks for a duplicate): a draft asked for twice is two
 //!      drafts. That is an open design point (plan/p15-app-and-relay.md),
 //!      not something the close hides.
+//!  15. A request that has begun and never finishes arriving can't hold a
+//!      close: when the answer grace (counted from the start of the close,
+//!      or of the server's) has run out, every request inside the door
+//!      whose body has not yet been read to its end is cut. The line is
+//!      the body's end, and no later: a body read to its end is whole,
+//!      whatever the request does after (a call running, its answer being
+//!      sent), and is never cut; a body not yet read to its end, however
+//!      slowly or quickly it is coming, is cut at that moment. A cut
+//!      request's connection is closed (`Connection: close`, 503,
+//!      `x-wanderbooks-refused: cut_by_close`), what it had written is
+//!      removed (an upload's part file, by `receive` on its read error),
+//!      and its access record, written before its answer, says
+//!      `cut_by_close`. Nothing of an MCP call can have been journaled:
+//!      the service reads the whole body before it gives any message to a
+//!      session or a tool (rmcp `expect_json`, which answers a body that
+//!      fails with an error before anything else), and the handler checks
+//!      for the cut again before it binds a session. This holds for a
+//!      book's close, for a restore over an open book (both are
+//!      `Books::release`) and for the server's close.
 //! SCENARIOS:
 //!   1. Two books open; one is closed while agents call both: the other
 //!      answers throughout, the closed one's calls are refused unrun
@@ -147,6 +167,11 @@
 //!      is left in `legacy/`.
 //!   8. The timers run every few milliseconds on a book that is closed and
 //!      opened over and over: while it is closed not a file of it moves.
+//!   9. An upload stops sending half way, and another call's body stops
+//!      half way, and the book is closed: the close waits the grace, cuts
+//!      both (no part file, nothing journaled, the records say cut), and
+//!      answers closed. An upload still coming within the grace, and a
+//!      call running past it, are not cut.
 //! ```
 
 use crate::admin::{self, Request, Response};
@@ -347,6 +372,26 @@ pub(crate) struct Gate {
     inside: AtomicUsize,
     answering: AtomicUsize,
     left: tokio::sync::Notify,
+    /// Cancelled when the close's grace has run out: a request inside
+    /// whose body hasn't finished arriving is cut (see [`Arrival`]).
+    cut: CancellationToken,
+}
+
+/// Where a request's body is: still coming, whole, or cut by a close.
+/// The body of a request inside a book's door is wrapped by
+/// [`Inside::arriving`], which changes this state in one place only (its
+/// own poll), so a body is never both whole and cut.
+pub(crate) struct Arrival(std::sync::atomic::AtomicU8);
+
+const ARRIVING: u8 = 0;
+const ARRIVED: u8 = 1;
+const CUT: u8 = 2;
+
+impl Arrival {
+    /// Whether a close cut this request's body before it was whole.
+    fn was_cut(&self) -> bool {
+        self.0.load(Ordering::SeqCst) == CUT
+    }
 }
 
 /// A request inside a book's door, counted until dropped.
@@ -366,6 +411,58 @@ impl Inside {
         self.0.answering.fetch_add(1, Ordering::SeqCst);
         Answering(self.0.clone())
     }
+
+    /// The request, its body watched: it is whole once the body's end has
+    /// been read (a request with no body is whole at once), and until
+    /// then a close whose grace ran out cuts it: the body fails, as a
+    /// connection that dropped would, and the returned [`Arrival`] says
+    /// so. A body already whole is never cut, whatever runs after it.
+    fn arriving(&self, request: axum::extract::Request) -> (axum::extract::Request, Arc<Arrival>) {
+        use axum::body::HttpBody as _;
+        use futures_util::StreamExt;
+        use std::task::Poll;
+        let arrival = Arc::new(Arrival(std::sync::atomic::AtomicU8::new(ARRIVING)));
+        let (parts, body) = request.into_parts();
+        if body.is_end_stream() {
+            arrival.0.store(ARRIVED, Ordering::SeqCst);
+            return (axum::extract::Request::from_parts(parts, body), arrival);
+        }
+        let mut data = body.into_data_stream();
+        let mut cut = Box::pin(self.0.cut.clone().cancelled_owned());
+        let seen = arrival.clone();
+        let stream = futures_util::stream::poll_fn(move |cx| {
+            match seen.0.load(Ordering::SeqCst) {
+                ARRIVED => return Poll::Ready(None),
+                CUT => return Poll::Ready(Some(Err(cut_error()))),
+                _ => {}
+            }
+            // Checked before the data: a body that keeps coming past the
+            // grace is cut too, not only one that stalled.
+            if cut.as_mut().poll(cx).is_ready() {
+                seen.0.store(CUT, Ordering::SeqCst);
+                return Poll::Ready(Some(Err(cut_error())));
+            }
+            match data.poll_next_unpin(cx) {
+                Poll::Ready(None) => {
+                    seen.0.store(ARRIVED, Ordering::SeqCst);
+                    Poll::Ready(None)
+                }
+                Poll::Ready(Some(r)) => Poll::Ready(Some(r.map_err(std::io::Error::other))),
+                Poll::Pending => Poll::Pending,
+            }
+        });
+        (
+            axum::extract::Request::from_parts(parts, axum::body::Body::from_stream(stream)),
+            arrival,
+        )
+    }
+}
+
+fn cut_error() -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::ConnectionAborted,
+        "the request wasn't finished when the books closed",
+    )
 }
 
 /// An answer on its way out of a book's door (see [`Gate`]).
@@ -384,6 +481,13 @@ impl Gate {
         self.inside.fetch_add(1, Ordering::SeqCst);
         let inside = Inside(self.clone());
         (!self.shut.load(Ordering::SeqCst)).then_some(inside)
+    }
+
+    /// Cut every request inside whose body isn't whole (see
+    /// [`Inside::arriving`]); the ones whose body is whole are left to
+    /// finish.
+    fn cut_unfinished(&self) {
+        self.cut.cancel();
     }
 
     /// Let no request in from now on.
@@ -1216,7 +1320,10 @@ impl Books {
     ///
     /// In this order, each step ending before the next begins:
     ///  1. the store's tools finish, and its door empties (every request
-    ///     inside has finished, its record written);
+    ///     inside has finished, its record written); a request whose body
+    ///     isn't whole when ANSWER_GRACE has run out is cut (its
+    ///     connection closed, what it wrote removed, its record saying the
+    ///     close cut it), a running call is not;
     ///  2. the answers on their way out are sent, for ANSWER_GRACE at most:
     ///     a client that never reads its answer doesn't hold the book
     ///     open (the call it was answering ran and is in the journal and
@@ -1244,9 +1351,22 @@ impl Books {
             backups,
             ended,
         } = parts;
-        // No tool starts, and every one that did start has finished.
-        rt.block_on(store.close());
-        rt.block_on(gate.emptied());
+        // No tool starts, and every one that did start has finished. A
+        // request that has begun and isn't whole when the grace runs out
+        // is cut, so one that never finishes sending can't hold the book;
+        // a call whose body is whole and that is running is left to end.
+        rt.block_on(async {
+            let cutter = {
+                let (gate, grace) = (gate.clone(), self.timers.answer_grace);
+                tokio::spawn(async move {
+                    tokio::time::sleep(grace).await;
+                    gate.cut_unfinished();
+                })
+            };
+            store.close().await;
+            gate.emptied().await;
+            cutter.abort();
+        });
         if rt
             .block_on(tokio::time::timeout(
                 self.timers.answer_grace,
@@ -1283,6 +1403,14 @@ impl Books {
         exports.close();
         rt.block_on(store.let_go());
         problem.map(|why| self.hide(why))
+    }
+
+    /// The door of every open book.
+    fn gates(&self) -> Vec<Arc<Gate>> {
+        self.held()
+            .values()
+            .filter_map(|b| b.parts().map(|p| p.gate))
+            .collect()
     }
 
     /// End the MCP sessions of the book `id` and forget their bindings.
@@ -1745,6 +1873,36 @@ async fn refused_at_door(
     response
 }
 
+/// The answer to a request a close cut while its body was still arriving
+/// (INVARIANT 10): recorded in the access log as cut by the close, and the
+/// connection ends with it.
+async fn cut_by_the_close(
+    book: &Book,
+    inside: Inside,
+    principal: Principal,
+    asked: &Asked,
+) -> axum::response::Response {
+    let mut response = refused_at_door(
+        book,
+        inside,
+        principal,
+        asked,
+        crate::access::CUT,
+        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        "the books closed before this request was all sent: it wasn't run".into(),
+    )
+    .await;
+    close_connection(&mut response);
+    response
+}
+
+fn close_connection(response: &mut axum::response::Response) {
+    response.headers_mut().insert(
+        axum::http::header::CONNECTION,
+        axum::http::HeaderValue::from_static("close"),
+    );
+}
+
 /// The door to `book` (INVARIANT 8): the books held open, the server not
 /// closing, and a live token for those books; else the answer refusing
 /// the request (recorded in the books' access log, where there is one).
@@ -1918,6 +2076,10 @@ async fn upload(
     else {
         unreachable!("the door lets only open books through")
     };
+    // Its body watched: a close whose grace ran out cuts it while it is
+    // still arriving, which ends `receive` with its part file removed.
+    let (request, arrival) = inside.arriving(request);
+    let cut_seen = arrival.clone();
     // Streamed to the disk as it comes, never held whole; `receive` reads
     // no more than the size declared and one byte. The bytes and their
     // record are one blocking task, which runs to its end even if the
@@ -1951,6 +2113,12 @@ async fn upload(
             let _ = std::io::copy(&mut (&mut body).take(rest), &mut std::io::sink());
         }
         let (status, outcome, text) = match &received {
+            _ if cut_seen.was_cut() => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Outcome::Refused(crate::access::CUT.into()),
+                "the books closed before this upload was all sent: send it again once they are open"
+                    .to_string(),
+            ),
             Ok(g) => (
                 StatusCode::OK,
                 Outcome::Ok,
@@ -2003,10 +2171,14 @@ async fn upload(
         )
             .into_response();
     };
-    match outcome {
+    let mut response = match outcome {
         Outcome::Refused(code) => (status, [(REFUSED_HEADER, code)], text).into_response(),
         _ => (status, text).into_response(),
+    };
+    if arrival.was_cut() {
+        close_connection(&mut response);
     }
+    response
 }
 
 /// `GET /b/{book}/a/{attachment}`: a stored file's bytes, for a token
@@ -2275,6 +2447,11 @@ async fn mcp(
         kind: "agent".into(),
         label: t.name.clone(),
     };
+    // Its body watched: a close whose grace ran out cuts it while it is
+    // still arriving (never once whole), before any tool has seen it.
+    let (rewatched, arrival) = inside.arriving(request);
+    request = rewatched;
+    let who = principal(&token);
     let session = request
         .headers()
         .get(SESSION_HEADER)
@@ -2308,6 +2485,9 @@ async fn mcp(
         request = axum::extract::Request::from_parts(parts, axum::body::Body::from(bytes));
         opens
     };
+    if arrival.was_cut() {
+        return cut_by_the_close(&held, inside, who, &Asked::connect(&method)).await;
+    }
     if full {
         return refused_at_door(
             &held,
@@ -2340,6 +2520,14 @@ async fn mcp(
         Ok(response) => response,
         Err(never) => match never {},
     };
+    // The service reads a whole body before it hands any message to a
+    // session or a tool (rmcp's `expect_json`, which ends in an error
+    // answer on a body that fails), so a body cut here reached nothing:
+    // no call ran, nothing is in the journal.
+    if arrival.was_cut() {
+        drop(response);
+        return cut_by_the_close(&held, inside, who, &Asked::connect(&method)).await;
+    }
     // A session the answer opened is bound to the token that opened it;
     // one ended, or found gone, is forgotten.
     {
@@ -2871,9 +3059,21 @@ async fn serve(
     };
     tokio::select! {
         () = answers => {}
-        () = tokio::time::sleep(ANSWER_GRACE) => {
+        () = tokio::time::sleep(books.timers.answer_grace) => {
             eprintln!("wanderbooks server: a client didn't finish its request; closing without it");
         }
+        () = stops.hurry.cancelled() => {}
+    }
+    // A request that began and still isn't whole is cut, whatever it had
+    // written removed and its record saying so; a call whose body is whole
+    // has finished already (the stores were closed above).
+    let gates = books.gates();
+    for gate in &gates {
+        gate.cut_unfinished();
+    }
+    tokio::select! {
+        () = async { for gate in &gates { gate.emptied().await } } => {}
+        () = tokio::time::sleep(HTTP_GRACE) => {}
         () = stops.hurry.cancelled() => {}
     }
     books.sessions.cancel();

@@ -7,6 +7,12 @@
 //! points); with no company open there is no sidebar and it runs the whole
 //! width.
 //!
+//! The bar spans the whole window, above the sidebar: a tab is the top
+//! level, and the sidebar (its company badge, its pages, its status) is
+//! the company in the tab's, which the layout shows. With no company open
+//! it is the window's top all the same. The "+" follows the last tab, and
+//! stays at the right edge, whole, while the tabs scroll.
+//!
 //! ```text
 //! GOAL: a person has several companies open at once, each in its own
 //!       tab, and moves between them, opens and closes them, without
@@ -16,8 +22,9 @@
 //!         company is reachable exactly while it has a tab).
 //! INVARIANTS:
 //!   1. One tab per open company, in the order opened, showing the
-//!      company's name (the id of its books until the name is read). The
-//!      bar is there with one company open, and with none.
+//!      company's badge (as the sidebar's header draws it, small) and
+//!      name (the name last known, else the id of its books, until it is
+//!      read). The bar is there with one company open, and with none.
 //!   2. The tab shown is marked by more than colour: a heavier name, a
 //!      bar in the accent colour along its top edge, and "selected" to
 //!      assistive technology.
@@ -25,12 +32,15 @@
 //!      technology with the company's name; a middle click on a tab
 //!      closes it as well.
 //!   4. "+" lists only companies of the data root that are not open
-//!      (a company can't be opened twice), and says so when there are
-//!      none.
-//!   5. Tabs never overlap or leave the bar: they shrink to a least
-//!      width, then the strip scrolls, with a step control at each end
-//!      that is clipped; the tab shown is scrolled into view when it
-//!      changes.
+//!      (a company can't be opened twice), by name with the id of the
+//!      books beside it (the id alone for a company never opened), and
+//!      says so when there are none.
+//!   5. Tabs never overlap or leave the bar: each is as wide as its
+//!      content between a least and a greatest width (a longer name is
+//!      cut, whole in its hover text), then the strip scrolls, with a
+//!      step control at each end; the tab shown is scrolled into view
+//!      when it changes. Each tab leaves room left of its close control
+//!      for a state mark (drawn by a later unit, nothing now).
 //!   6. This only says what was asked (show, close, open); the app does
 //!      it.
 //! ```
@@ -42,13 +52,30 @@ use egui::{
 use egui_phosphor::regular as icon;
 use std::time::{Duration, Instant};
 
-/// The bar's height.
+/// The bar's height: what the bar takes from the window, which the tests
+/// of the sidebar's fit add to their window heights (D-78).
 pub const BAR_H: f32 = 36.0;
 /// A tab's widest and least widths (a name is cut with an ellipsis to fit).
-const TAB_MAX: f32 = 220.0;
-const TAB_MIN: f32 = 120.0;
+const TAB_MAX: f32 = 240.0;
+const TAB_MIN: f32 = 110.0;
 /// The close control's size.
 const CLOSE: f32 = 20.0;
+/// The badge's size, and its gap to the name.
+const BADGE: f32 = 18.0;
+const GAP: f32 = 8.0;
+/// Room left of the close control for the connection state, which a later
+/// unit draws there.
+const STATE_W: f32 = 14.0;
+/// The room round a tab's content: left and right.
+const PAD_L: f32 = 10.0;
+const PAD_R: f32 = 6.0;
+/// The "+"'s width, and the gap before it.
+const PLUS_W: f32 = 30.0;
+const PLUS_GAP: f32 = 6.0;
+/// The "+" list's width.
+const LIST_W: f32 = 260.0;
+/// The gap between tabs.
+const TAB_GAP: f32 = 2.0;
 /// How long a reading of the data root's companies is kept while "+" is
 /// open.
 const LIST_KEPT: Duration = Duration::from_millis(750);
@@ -59,6 +86,15 @@ pub struct Tab {
     pub title: String,
     /// More about it, on hover.
     pub detail: String,
+}
+
+/// A company of the data root that is not open, as "+" lists it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Listed {
+    /// The id of its books.
+    pub id: String,
+    /// Its name as last known, if it was ever opened here.
+    pub name: Option<String>,
 }
 
 /// What a person asked of the bar.
@@ -77,7 +113,7 @@ pub enum TabAction {
 #[derive(Default)]
 pub struct TabBar {
     reveal: bool,
-    listed: Option<(Instant, Vec<String>)>,
+    listed: Option<(Instant, Vec<Listed>)>,
 }
 
 impl TabBar {
@@ -86,15 +122,16 @@ impl TabBar {
         self.reveal = true;
     }
 
-    /// The bar. `shown` is the tab in front, if there is one; `others`
-    /// reads the ids of the root's companies that are not open (called
-    /// now and then while "+" is open, never otherwise).
+    /// The bar, across the top of the window. `shown` is the tab in
+    /// front, if there is one; `others` reads the companies of the root
+    /// that are not open (called now and then while "+" is open, never
+    /// otherwise).
     pub fn show(
         &mut self,
         ui: &mut Ui,
         tabs: &[Tab],
         shown: Option<usize>,
-        others: &dyn Fn() -> Vec<String>,
+        others: &dyn Fn() -> Vec<Listed>,
     ) -> Option<TabAction> {
         let p = pal(ui.ctx());
         let mut action = None;
@@ -102,19 +139,27 @@ impl TabBar {
         egui::Panel::top("company_tabs")
             .exact_size(BAR_H)
             .resizable(false)
-            .frame(
-                Frame::new()
-                    .fill(p.sidebar)
-                    .inner_margin(Margin::symmetric(8, 0))
-                    .stroke(Stroke::new(1.0, p.border)),
-            )
+            .frame(Frame::new().inner_margin(Margin::symmetric(8, 0)))
             .show(ui, |ui| {
-                ui.spacing_mut().item_spacing = vec2(2.0, 0.0);
+                ui.spacing_mut().item_spacing = vec2(TAB_GAP, 0.0);
                 let bar = ui.max_rect();
-                // The "+" at the right end, always whole; the tabs get the
-                // rest.
-                let plus_w = 30.0;
-                let strip_w = (ui.available_width() - plus_w - 6.0).max(0.0);
+                // The line along the bar's foot; the tab in front covers
+                // it, and so is one with what is below.
+                let outer = ui.clip_rect();
+                ui.painter().rect_filled(outer, 0.0, p.sidebar);
+                ui.painter().hline(
+                    outer.x_range(),
+                    outer.bottom() - 0.5,
+                    Stroke::new(1.0, p.border),
+                );
+                // The tabs as wide as they are, the "+" right after them;
+                // when they don't fit, the "+" stays at the right edge
+                // and the tabs scroll.
+                let widths: Vec<f32> = tabs.iter().map(|t| tab_width(ui, t)).collect();
+                let total: f32 =
+                    widths.iter().sum::<f32>() + widths.len().saturating_sub(1) as f32 * TAB_GAP;
+                let room = (ui.available_width() - PLUS_W - PLUS_GAP).max(0.0);
+                let strip_w = total.min(room);
                 let strip = egui::Rect::from_min_size(bar.min, vec2(strip_w, bar.height()));
                 let mut strip_ui = ui.new_child(
                     UiBuilder::new()
@@ -122,10 +167,18 @@ impl TabBar {
                         .layout(Layout::left_to_right(Align::Max)),
                 );
                 strip_ui.set_clip_rect(strip);
-                self.strip(&mut strip_ui, tabs, shown, &mut reveal, &mut action);
+                self.strip(
+                    &mut strip_ui,
+                    tabs,
+                    &widths,
+                    total > room + 0.5,
+                    shown,
+                    &mut reveal,
+                    &mut action,
+                );
                 let plus = egui::Rect::from_min_size(
-                    egui::pos2(strip.right() + 6.0, bar.top()),
-                    vec2(plus_w, bar.height()),
+                    egui::pos2(strip.right() + PLUS_GAP, bar.top()),
+                    vec2(PLUS_W, bar.height()),
                 );
                 let mut plus_ui = ui.new_child(
                     UiBuilder::new()
@@ -143,28 +196,29 @@ impl TabBar {
     }
 
     /// The tabs, scrolling sideways when they don't fit.
+    #[allow(clippy::too_many_arguments)]
     fn strip(
         &mut self,
         ui: &mut Ui,
         tabs: &[Tab],
+        widths: &[f32],
+        overflows: bool,
         shown: Option<usize>,
         reveal: &mut bool,
         action: &mut Option<TabAction>,
     ) {
         let p = pal(ui.ctx());
         let room = ui.available_width();
-        let n = tabs.len().max(1) as f32;
-        let each = ((room - (n - 1.0) * 2.0) / n).clamp(TAB_MIN, TAB_MAX);
-        let overflows = each * n + (n - 1.0) * 2.0 > room + 0.5;
         // A step control at each end while the tabs overflow.
         let step_w = if overflows { 22.0 } else { 0.0 };
+        let step_by = widths.first().copied().unwrap_or(TAB_MIN) + TAB_GAP;
         let area_id = ui.id().with("tab_scroll");
         let mut step = 0.0_f32;
         if overflows {
             let (r, resp) = ui.allocate_exact_size(vec2(step_w, 26.0), Sense::click());
             step_button(ui, r, &resp, icon::CARET_LEFT, "Earlier tabs");
             if resp.clicked() {
-                step = -each;
+                step = -step_by;
             }
         }
         let view_w = room - 2.0 * step_w;
@@ -178,11 +232,11 @@ impl TabBar {
             .max_width(view_w.max(0.0))
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
             .show(ui, |ui| {
-                ui.spacing_mut().item_spacing.x = 2.0;
+                ui.spacing_mut().item_spacing.x = TAB_GAP;
                 ui.horizontal_top(|ui| {
                     for (i, tab) in tabs.iter().enumerate() {
                         let here = shown == Some(i);
-                        let r = one_tab(ui, i, tab, here, each, &p, action);
+                        let r = one_tab(ui, i, tab, here, widths[i], &p, action);
                         if here && *reveal {
                             r.scroll_to_me(Some(Align::Center));
                             *reveal = false;
@@ -197,7 +251,7 @@ impl TabBar {
             step_button(ui, r, &resp, icon::CARET_RIGHT, "Later tabs");
             if resp.clicked() {
                 let mut s = out.state;
-                s.offset.x = (offset + each).min(max);
+                s.offset.x = (offset + step_by).min(max);
                 s.store(ui.ctx(), out.id);
             }
         }
@@ -210,16 +264,16 @@ impl TabBar {
     fn plus(
         &mut self,
         ui: &mut Ui,
-        others: &dyn Fn() -> Vec<String>,
+        others: &dyn Fn() -> Vec<Listed>,
         action: &mut Option<TabAction>,
     ) {
         let p = pal(ui.ctx());
-        let button = egui::Button::new(RichText::new(icon::PLUS).size(16.0).color(p.muted))
+        let button = egui::Button::new(RichText::new(icon::PLUS).size(16.0).color(p.text))
             .frame(false)
             .min_size(vec2(28.0, 28.0));
         let (response, open) =
             egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
-                ui.set_min_width(200.0);
+                ui.set_min_width(LIST_W);
                 let stale = self
                     .listed
                     .as_ref()
@@ -231,11 +285,11 @@ impl TabBar {
                 let list = self
                     .listed
                     .as_ref()
-                    .map(|(_, l)| l.as_slice())
-                    .unwrap_or(&[]);
+                    .map(|(_, l)| l.clone())
+                    .unwrap_or_default();
                 if list.is_empty() {
                     ui.label(
-                        RichText::new("Every company here is open.")
+                        RichText::new("Every company is already open.")
                             .font(theme::regular(13.0))
                             .color(p.muted),
                     );
@@ -245,9 +299,9 @@ impl TabBar {
                             .font(theme::regular(12.0))
                             .color(p.muted),
                     );
-                    for id in list {
-                        if ui.button(id).clicked() {
-                            *action = Some(TabAction::Open(id.clone()));
+                    for c in &list {
+                        if listed_row(ui, c, &p).clicked() {
+                            *action = Some(TabAction::Open(c.id.clone()));
                             ui.close();
                         }
                     }
@@ -257,11 +311,52 @@ impl TabBar {
         if open.is_none() {
             self.listed = None;
         }
+        // Named as it always was for assistive technology; the hover says
+        // what it does.
         response.widget_info(|| {
             egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Open another company")
         });
-        response.on_hover_text("Open another company");
+        response.on_hover_text("Open a company");
     }
+}
+
+/// One company in the "+" list: its name, the id of its books beside it
+/// in small text (the id alone when the name was never known).
+fn listed_row(ui: &mut Ui, c: &Listed, p: &theme::Palette) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(LIST_W, 28.0), Sense::click());
+    let primary = c.name.as_deref().unwrap_or(&c.id);
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, primary));
+    if resp.hovered() {
+        ui.painter()
+            .rect_filled(rect, CornerRadius::same(6), p.hover);
+    }
+    let mut right = rect.right() - 8.0;
+    if c.name.is_some() {
+        let g = ui
+            .painter()
+            .layout_no_wrap(c.id.clone(), theme::regular(11.0), p.muted);
+        right -= g.size().x;
+        ui.painter().galley(
+            egui::pos2(right, rect.center().y - g.size().y / 2.0),
+            g,
+            p.muted,
+        );
+    }
+    let mut job = egui::text::LayoutJob::single_section(
+        primary.to_string(),
+        egui::TextFormat::simple(theme::regular(13.0), p.text),
+    );
+    job.wrap.max_width = (right - 8.0 - (rect.left() + 8.0)).max(10.0);
+    job.wrap.max_rows = 1;
+    job.wrap.break_anywhere = true;
+    job.wrap.overflow_character = Some('…');
+    let g = ui.painter().layout_job(job);
+    ui.painter().galley(
+        egui::pos2(rect.left() + 8.0, rect.center().y - g.size().y / 2.0),
+        g,
+        p.text,
+    );
+    resp
 }
 
 /// A step control at an end of the strip.
@@ -280,6 +375,22 @@ fn step_button(ui: &Ui, r: egui::Rect, resp: &egui::Response, glyph: &str, label
     );
 }
 
+/// What a tab holds besides its name: the badge, the room for the state
+/// mark, the close control and the room round them.
+const TAB_FIXED: f32 = PAD_L + BADGE + GAP + GAP + STATE_W + CLOSE + PAD_R;
+
+/// A tab's width: its content's, between the least and the greatest. The
+/// name is measured in the heavier face for every tab, so the tab in front
+/// doesn't move the others.
+fn tab_width(ui: &Ui, tab: &Tab) -> f32 {
+    let g = ui.painter().layout_no_wrap(
+        tab.title.clone(),
+        theme::semibold(13.0),
+        egui::Color32::PLACEHOLDER,
+    );
+    (TAB_FIXED + g.size().x.ceil()).clamp(TAB_MIN, TAB_MAX)
+}
+
 /// One tab, `width` wide.
 fn one_tab(
     ui: &mut Ui,
@@ -290,12 +401,12 @@ fn one_tab(
     p: &theme::Palette,
     action: &mut Option<TabAction>,
 ) -> egui::Response {
-    let height = BAR_H - 6.0;
+    let height = BAR_H - 4.0;
     let (rect, resp) = ui.allocate_exact_size(vec2(width, height), Sense::click());
     // The tab's own id for its close control: tabs are told apart by
     // their place, and two tabs never share one.
     let close_rect = egui::Rect::from_center_size(
-        egui::pos2(rect.right() - 6.0 - CLOSE / 2.0, rect.center().y),
+        egui::pos2(rect.right() - PAD_R - CLOSE / 2.0, rect.center().y),
         vec2(CLOSE, CLOSE),
     );
     let close = ui.interact(close_rect, resp.id.with("close"), Sense::click());
@@ -317,47 +428,62 @@ fn one_tab(
             sw: 0,
             se: 0,
         };
-        let fill = if here {
-            Some(p.bg)
-        } else if resp.hovered() || close.hovered() {
-            Some(p.hover)
-        } else {
-            None
-        };
-        if let Some(fill) = fill {
-            painter.rect_filled(rect, top, fill);
-        }
         if here {
-            // A bar along the top edge and the page's own fill: the tab
-            // in front is part of the page below it.
-            painter.rect_filled(
-                egui::Rect::from_min_size(rect.min, vec2(rect.width(), 3.0)),
-                CornerRadius {
-                    nw: 8,
-                    ne: 8,
-                    sw: 0,
-                    se: 0,
-                },
-                p.accent,
+            // The lit tab: the page's surface, outlined on its top and
+            // sides, open at the foot where it meets what is below, with a
+            // bar in the accent colour along its top edge.
+            painter.rect_filled(rect, top, p.surface);
+            painter.rect_stroke(
+                rect,
+                top,
+                Stroke::new(1.0, p.border),
+                egui::StrokeKind::Inside,
             );
             painter.rect_filled(
                 egui::Rect::from_min_max(
-                    egui::pos2(rect.left(), rect.bottom() - 1.0),
-                    egui::pos2(rect.right(), rect.bottom() + 1.0),
+                    egui::pos2(rect.left() + 1.0, rect.bottom() - 1.0),
+                    egui::pos2(rect.right() - 1.0, rect.bottom() + 1.0),
                 ),
                 0.0,
-                p.bg,
+                p.surface,
             );
+            painter.rect_filled(
+                egui::Rect::from_min_size(rect.min, vec2(rect.width(), 3.0)),
+                top,
+                p.accent,
+            );
+        } else if resp.hovered() || close.hovered() {
+            painter.rect_filled(rect.shrink2(vec2(0.0, 2.0)), CornerRadius::same(8), p.hover);
         }
+        // The badge, as the sidebar's header draws it.
+        let badge = egui::Rect::from_center_size(
+            egui::pos2(rect.left() + PAD_L + BADGE / 2.0, rect.center().y + 1.0),
+            vec2(BADGE, BADGE),
+        );
+        painter.rect_filled(badge, CornerRadius::same(5), p.accent);
+        let initial = tab
+            .title
+            .chars()
+            .next()
+            .map(|c| c.to_uppercase().next().unwrap_or(c))
+            .unwrap_or('W');
+        painter.text(
+            badge.center(),
+            egui::Align2::CENTER_CENTER,
+            initial,
+            theme::bold(11.0),
+            crate::schemes::on(p.accent),
+        );
         let font = if here {
             theme::semibold(13.0)
         } else {
             theme::regular(13.0)
         };
-        let text_w = rect.width() - 14.0 - CLOSE - 10.0;
+        let text_x = badge.right() + GAP;
+        let text_w = close_rect.left() - STATE_W - GAP - text_x;
         let mut job = egui::text::LayoutJob::single_section(
             tab.title.clone(),
-            egui::TextFormat::simple(font, if here { p.text } else { p.muted }),
+            egui::TextFormat::simple(font, p.text),
         );
         job.wrap.max_width = text_w.max(10.0);
         job.wrap.max_rows = 1;
@@ -365,10 +491,7 @@ fn one_tab(
         job.wrap.overflow_character = Some('…');
         let galley = painter.layout_job(job);
         painter.galley(
-            egui::pos2(
-                rect.left() + 14.0,
-                rect.center().y - galley.size().y / 2.0 + 1.0,
-            ),
+            egui::pos2(text_x, rect.center().y - galley.size().y / 2.0 + 1.0),
             galley,
             p.text,
         );
@@ -380,7 +503,11 @@ fn one_tab(
             egui::Align2::CENTER_CENTER,
             icon::X,
             egui::FontId::proportional(12.0),
-            if close.hovered() { p.text } else { p.muted },
+            if close.hovered() || here {
+                p.text
+            } else {
+                p.muted
+            },
         );
     }
     let resp = resp.on_hover_text(&tab.detail);

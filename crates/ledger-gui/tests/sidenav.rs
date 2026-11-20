@@ -24,6 +24,7 @@ use ledger_core::{AccountType, Currency, Money, Side};
 use ledger_gui::books::Books;
 use ledger_gui::nav::{Route, Section};
 use ledger_gui::owner::{Agent, Owner, RestorePlan};
+use ledger_gui::tabs::BAR_H;
 use ledger_gui::{App, Source, data};
 use ledger_store::{DiskCheck, Store};
 use rust_decimal::Decimal;
@@ -372,7 +373,8 @@ fn grid(scale: f32) {
         for side in [Pane::Sidebar, Pane::Rail] {
             let mut h = f.harness(footer, Route::Projects, side.width(), 920.0, scale);
             for px in (300..=920).step_by(20) {
-                let pt = px as f32 / scale;
+                // The tab bar takes BAR_H points of the window; D-78.
+                let pt = px as f32 / scale + BAR_H;
                 h.set_size(vec2(side.width(), pt));
                 h.run_steps(4);
                 let tag = format!("{footer:?} {side:?} {px}px @{scale}");
@@ -413,7 +415,8 @@ fn no_link_is_ever_under_the_footer_at_scale_2() {
 fn at_1479x519_every_link_shows_unscrolled() {
     let f = Fixture::new();
     for footer in FOOTERS {
-        let mut h = f.harness(footer, Route::Projects, 1479.0, 519.0, 1.0);
+        // The tab bar takes BAR_H points of the window; D-78.
+        let mut h = f.harness(footer, Route::Projects, 1479.0, 519.0 + BAR_H, 1.0);
         let (view, _, scrolls) = drawn(&h, Pane::Sidebar);
         assert!(!scrolls, "{footer:?}: the links scroll");
         for s in Section::ALL {
@@ -546,7 +549,8 @@ fn the_rail_at_519_shows_every_link_unscrolled() {
     let f = Fixture::new();
     for footer in FOOTERS {
         for route in [Route::Projects, Route::Overview, Route::Journal] {
-            let h = f.harness(footer, route.clone(), 900.0, 519.0, 1.0);
+            // The tab bar takes BAR_H points of the window; D-78.
+            let h = f.harness(footer, route.clone(), 900.0, 519.0 + BAR_H, 1.0);
             let tag = format!("{footer:?} {route:?}");
             let (view, _, scrolls) = drawn(&h, Pane::Rail);
             assert!(!scrolls, "{tag}: the rail's links scroll");
@@ -638,7 +642,9 @@ fn going_somewhere_scrolls_its_link_into_view() {
 #[test]
 fn a_tall_sidebar_is_unchanged() {
     let f = Fixture::new();
-    let mut h = f.harness(Footer::Owners, Route::Overview, 1440.0, 920.0, 1.0);
+    // The tab bar takes BAR_H points of the window, and the sidebar is
+    // what is below it; D-78.
+    let mut h = f.harness(Footer::Owners, Route::Overview, 1440.0, 920.0 + BAR_H, 1.0);
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/goldens");
     let shapes = sidebar_shapes(&h);
     let bless = std::env::var("SIDENAV_BLESS").is_ok();
@@ -664,7 +670,9 @@ fn a_tall_sidebar_is_unchanged() {
     let png = dir.join("sidenav-1440x920.png");
     match h.render() {
         Ok(img) => {
-            let side = image::imageops::crop_imm(&img, 0, 0, 224, img.height()).to_image();
+            let side =
+                image::imageops::crop_imm(&img, 0, BAR_H as u32, 224, img.height() - BAR_H as u32)
+                    .to_image();
             if bless {
                 side.save(&png).unwrap();
             } else {
@@ -687,7 +695,8 @@ fn a_tall_sidebar_is_unchanged() {
 fn sidebar_shapes(h: &Harness<'_, App>) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for s in &h.output().shapes {
-        if s.clip_rect.max.x <= 224.5 {
+        // Below the tab bar (D-78): the shapes that are the sidebar's.
+        if s.clip_rect.max.x <= 224.5 && s.clip_rect.min.y >= BAR_H - 0.5 {
             for b in format!("{:?}", s.shape).bytes() {
                 hash ^= b as u64;
                 hash = hash.wrapping_mul(0x100_0000_01b3);

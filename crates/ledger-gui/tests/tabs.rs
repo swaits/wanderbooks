@@ -28,6 +28,12 @@
 //!      sizes and times as they were.
 //!   8. The tab bar and the empty state look as pictured
 //!      (`tests/snapshots/`).
+//!   9. The bar spans the whole window above the sidebar; its "+" is
+//!      right after the last tab, and at the right edge, whole, when the
+//!      tabs overflow.
+//!  10. A company's name is remembered when it is loaded: the "+" list
+//!      shows it (the id alone for a company never opened), and so does a
+//!      tab whose books are not loaded yet.
 //! ```
 
 use chrono::NaiveDate;
@@ -625,7 +631,7 @@ fn closing_a_tab_releases_its_lock_its_threads_and_its_agent() {
     // Beta can be opened again: a new tab, a new lock.
     h.get_by_label("Open another company").click();
     h.run_steps(3);
-    h.get_by_label("beta").click();
+    h.get_by_label("Beta Co").click();
     h.run_steps(3);
     assert_eq!(titles(&h).len(), 2);
     until(&mut h, "beta's lock is taken again", |_| {
@@ -652,7 +658,11 @@ fn plus_lists_only_the_companies_not_open_and_none_opens_twice() {
     // Every one is open: the list says so.
     h.get_by_label("Open another company").click();
     h.run_steps(3);
-    assert!(shows(&h, "Every company here is open."), "{:?}", texts(&h));
+    assert!(
+        shows(&h, "Every company is already open."),
+        "{:?}",
+        texts(&h)
+    );
     // Opening an open company by other means shows its tab, never a second.
     let ctx = h.ctx.clone();
     let n = h.state_mut().open(&ctx, w.source("beta"));
@@ -772,7 +782,7 @@ fn the_open_tabs_and_each_ones_page_and_period_are_kept_and_come_back() {
     close_tab(&mut h, "Alpha Co");
     h.get_by_label("Open another company").click();
     h.run_steps(3);
-    h.get_by_label("alpha").click();
+    h.get_by_label("Alpha Co").click();
     h.run_steps(3);
     let last = h.state().views().len() - 1;
     assert!(matches!(
@@ -786,7 +796,7 @@ fn the_open_tabs_and_each_ones_page_and_period_are_kept_and_come_back() {
     // Closing the last tab keeps a list with nothing in it, and the next
     // start opens the data root's first.
     for _ in 0..3 {
-        let name = h.state().views()[0].title();
+        let name = h.state().tab_title(0).unwrap();
         close_tab(&mut h, &name);
     }
     assert!(h.state().views().is_empty());
@@ -827,7 +837,7 @@ fn closing_the_front_tab_shows_a_neighbour_and_the_last_leaves_an_empty_window()
     // The bar is still there, and "+" opens a company from the empty window.
     h.get_by_label("Open another company").click();
     h.run_steps(3);
-    h.get_by_label("beta").click();
+    h.get_by_label("Beta Co").click();
     loaded(&mut h);
     assert_eq!(titles(&h), ["Beta Co"]);
     assert!(!shows(&h, "No company is open"));
@@ -863,6 +873,181 @@ fn the_tab_in_front_is_marked_by_more_than_colour() {
     // A close control on each, named for its company.
     h.get_by_role_and_label(Role::Button, "Close Alpha Co");
     h.get_by_role_and_label(Role::Button, "Close Beta Co");
+}
+
+// ---- 9: the bar's place --------------------------------------------------------
+
+/// The fill of the bar: a rectangle from the window's corner, as wide as
+/// the window and as high as the bar.
+fn bar_rect(h: &Harness<'_, App>, size: egui::Vec2) -> Option<egui::Rect> {
+    fn walk(s: &egui::Shape, size: egui::Vec2, out: &mut Option<egui::Rect>) {
+        match s {
+            egui::Shape::Rect(r)
+                if r.rect.min.x.abs() < 0.5
+                    && r.rect.min.y.abs() < 0.5
+                    && (r.rect.height() - ledger_gui::tabs::BAR_H).abs() < 0.5
+                    && r.rect.width() >= size.x - 0.5 =>
+            {
+                *out = Some(r.rect)
+            }
+            egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, size, out)),
+            _ => {}
+        }
+    }
+    let mut found = None;
+    for c in &h.output().shapes {
+        walk(&c.shape, size, &mut found);
+    }
+    found
+}
+
+#[test]
+fn the_bar_spans_the_window_above_the_sidebar() {
+    let size = egui::vec2(1280.0, 600.0);
+    let w = World::new();
+    let h = shown(&w, &["Wanderland Labs LLC", "Fernhill Studio"], false, size);
+    let bar = bar_rect(&h, size).expect("a bar the window's width, at its top");
+    assert!(bar.max.x >= size.x - 0.5, "{bar:?}");
+    // Every tab, and its close control, is inside the bar...
+    for name in ["Wanderland Labs LLC", "Fernhill Studio"] {
+        let tab = h
+            .get_by_role_and_label(egui::accesskit::Role::Button, name)
+            .rect();
+        assert!(bar.contains_rect(tab), "{name}: {tab:?} is in {bar:?}");
+    }
+    // ...and the first is over the sidebar's column, whose links, header
+    // and status all lie below the bar.
+    let first = h
+        .get_by_role_and_label(egui::accesskit::Role::Button, "Wanderland Labs LLC")
+        .rect();
+    assert!(first.left() < 224.0, "the first tab is above the sidebar");
+    for link in ["Overview", "Journal"] {
+        let r = h
+            .query_all_by_role_and_label(egui::accesskit::Role::Button, link)
+            .map(|n| n.rect())
+            .min_by(|a, b| a.left().total_cmp(&b.left()))
+            .unwrap();
+        assert!(r.top() >= bar.bottom() - 0.5, "{link} {r:?} under {bar:?}");
+    }
+    // Nothing but the bar is drawn across the top strip of the sidebar's
+    // column: the sidebar's own panel starts where the bar ends.
+    let sidebar_top = h
+        .output()
+        .shapes
+        .iter()
+        .filter(|s| s.clip_rect.max.x <= 224.5 && s.clip_rect.min.y > 1.0)
+        .map(|s| s.clip_rect.min.y)
+        .fold(f32::MAX, f32::min);
+    assert!(
+        sidebar_top >= bar.bottom() - 0.5,
+        "the sidebar starts at {sidebar_top}, below the bar's {}",
+        bar.bottom()
+    );
+}
+
+#[test]
+fn the_plus_follows_the_last_tab_and_stays_whole_when_the_tabs_overflow() {
+    let size = egui::vec2(1100.0, 200.0);
+    let rect = |h: &Harness<'_, App>, label: &str| {
+        h.get_by_role_and_label(egui::accesskit::Role::Button, label)
+            .rect()
+    };
+    // Few tabs: the "+" is right after the last, not at the window's edge.
+    let w = World::new();
+    let h = shown(&w, &["Wanderland Labs LLC", "Fernhill Studio"], false, size);
+    let last = rect(&h, "Fernhill Studio");
+    let plus = rect(&h, "Open another company");
+    assert!(
+        plus.left() >= last.right() && plus.left() - last.right() < 16.0,
+        "the + at {plus:?} is not just after the last tab {last:?}"
+    );
+    assert!(plus.right() < size.x / 2.0, "the + sits at the far right");
+    // Many: the "+" is at the right edge, whole; the tabs scroll behind it.
+    let names: Vec<String> = (0..9).map(|i| format!("Company number {i}")).collect();
+    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    let w = World::new();
+    let mut h = shown(&w, &refs, false, size);
+    h.state_mut().activate(8);
+    h.run_steps(6);
+    let plus = rect(&h, "Open another company");
+    assert!(
+        plus.right() <= size.x && plus.right() > size.x - 24.0,
+        "the + at {plus:?} is not at the right edge"
+    );
+    assert!(
+        plus.left() >= 0.0 && plus.width() >= 20.0,
+        "{plus:?} is whole"
+    );
+    h.get_by_role_and_label(egui::accesskit::Role::Button, "Later tabs");
+    // The tab in front was scrolled into view, left of the "+".
+    let front = rect(&h, "Company number 8");
+    assert!(
+        front.right() <= plus.left(),
+        "{front:?} under the + {plus:?}"
+    );
+}
+
+// ---- 10: names remembered ---------------------------------------------------------
+
+#[test]
+fn a_name_is_remembered_and_shown_in_the_plus_list_and_on_a_loading_tab() {
+    let (w, _, _, _) = three();
+    let mut h = start_with_prefs(&w, &[("open_companies", "alpha,beta")]);
+    loaded(&mut h);
+    assert_eq!(h.state().remembered_name("beta"), Some("Beta Co"));
+    assert_eq!(h.state().remembered_name("gamma"), None);
+    // Beta closed: "+" offers it by name with its id beside, and gamma,
+    // never opened here, by its id alone.
+    close_tab(&mut h, "Beta Co");
+    h.get_by_label("Open another company").click();
+    h.run_steps(3);
+    assert!(shows(&h, "Open a company"), "{:?}", texts(&h));
+    assert!(shows(&h, "Beta Co") && texts(&h).contains(&"beta".to_string()));
+    assert!(texts(&h).contains(&"gamma".to_string()), "{:?}", texts(&h));
+    assert!(!shows(&h, "Gamma Co"), "gamma's name was never read");
+    h.get_by_label("Beta Co").click();
+    loaded(&mut h);
+    // Kept with the app's other state...
+    let mut kept = Prefs::default();
+    eframe::App::save(h.state_mut(), &mut kept);
+    assert_eq!(
+        kept.0.get("company.beta.name").map(String::as_str),
+        Some("Beta Co")
+    );
+    // ...and a window started from it titles a tab whose books are not
+    // loaded yet by name; a company with no name known by its id.
+    let ctx = egui::Context::default();
+    kept.0.remove("company.alpha.name");
+    kept.0.insert("open_companies".into(), "alpha,beta".into());
+    let root = w.root.clone();
+    let fallback = w.source("alpha");
+    let app = App::start_with(
+        &ctx,
+        &|k| kept.0.get(k).cloned(),
+        Start::Restore { root, fallback },
+    );
+    assert_eq!(app.tab_title(0).as_deref(), Some("alpha"), "no name known");
+    assert_eq!(
+        app.tab_title(1).as_deref(),
+        Some("Beta Co"),
+        "the name kept"
+    );
+}
+
+#[test]
+fn the_plus_list_says_so_when_every_company_is_open() {
+    let w = World::new();
+    w.company("alpha", "Alpha Co", 1_000_000, 100);
+    let mut h = start_with_prefs(&w, &[("open_companies", "alpha")]);
+    loaded(&mut h);
+    h.get_by_label("Open another company").click();
+    h.run_steps(3);
+    assert!(
+        shows(&h, "Every company is already open."),
+        "{:?}",
+        texts(&h)
+    );
+    assert!(!shows(&h, "Open a company"), "no heading over nothing");
 }
 
 // ---- 7: read-only, in a tab that is not in front -----------------------------
@@ -1200,5 +1385,34 @@ fn pictures() {
         close_tab(&mut h, "Beta Co");
         h.run_steps(4);
         save(&mut h, &format!("empty-state-{mode}"));
+        // Eight companies open: the tabs scroll, the "+" stays at the edge.
+        let names: Vec<String> = [
+            "Wanderland Labs LLC",
+            "Fernhill Studio",
+            "Northgate Holdings Incorporated",
+            "Oak & Ash Carpentry",
+            "Harbor Lane Books",
+            "Quill and Compass",
+            "Mossy Rock Farm",
+            "Lantern Works",
+        ]
+        .map(String::from)
+        .to_vec();
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let w = World::new();
+        let mut h = shown(&w, &refs, dark, egui::vec2(1100.0, 600.0));
+        h.state_mut().activate(6);
+        h.run_steps(6);
+        save(&mut h, &format!("eight-tabs-overflow-{mode}"));
+        // The smallest window the viewer allows, two tabs.
+        let w = World::new();
+        let mut h = shown(
+            &w,
+            &["Wanderland Labs LLC", "Fernhill Studio"],
+            dark,
+            egui::vec2(360.0, 400.0 + ledger_gui::tabs::BAR_H),
+        );
+        h.run_steps(4);
+        save(&mut h, &format!("smallest-window-two-tabs-{mode}"));
     }
 }

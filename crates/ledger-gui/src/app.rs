@@ -22,7 +22,8 @@
 //!   4. What is kept for next time: the open companies (`open_companies`,
 //!      the ids of their books, comma separated) and the one in front
 //!      (`active_company`); for each company its page, its report's
-//!      period, columns and comparison (`company.<id>.…`); and, as
+//!      period, columns and comparison and its name as last known
+//!      (`company.<id>.…`); and, as
 //!      before and under the same keys, the scheme and its filter
 //!      (`scheme`, `scheme_filter`, `dark`) and the dock (`dock_open`,
 //!      `dock_agent`, the front tab's).
@@ -35,7 +36,7 @@ use crate::company::CompanyView;
 use crate::data::Source;
 use crate::nav::Route;
 use crate::scheme_menu::SchemeMenu;
-use crate::tabs::{Tab, TabAction, TabBar};
+use crate::tabs::{Listed, Tab, TabAction, TabBar};
 use crate::theme::{self, pal};
 use egui::{Frame, RichText, Ui};
 use std::collections::HashMap;
@@ -73,6 +74,10 @@ pub struct App {
     /// What was kept for companies not open now (and for those that are,
     /// as they were last closed), by key.
     kept: HashMap<String, String>,
+    /// Each company's name as last known, by the id of its books: kept for
+    /// the tab's title before the books load and for the "+" list, which
+    /// doesn't read every company's journal for it.
+    names: HashMap<String, String>,
     /// The dock's preferences as they were kept, for a dock made while no
     /// tab has one.
     dock_prefs: (Option<String>, Option<String>),
@@ -223,6 +228,7 @@ impl App {
             root: None,
             today: None,
             kept: HashMap::new(),
+            names: HashMap::new(),
             dock_prefs: (None, None),
             title: TITLE.to_string(),
             welcome: None,
@@ -269,7 +275,7 @@ impl App {
     /// The window's title now.
     pub fn window_title(&self) -> String {
         match self.active_view() {
-            Some(v) => format!("{} · {TITLE}", v.title()),
+            Some(v) => format!("{} · {TITLE}", self.title_of(v)),
             None => TITLE.to_string(),
         }
     }
@@ -356,6 +362,9 @@ impl App {
             return;
         };
         for id in list_books(&root) {
+            if let Some(name) = get(&format!("company.{id}.name")) {
+                self.names.insert(id.clone(), name);
+            }
             for k in crate::company::KEPT_KEYS {
                 let key = format!("company.{id}.{k}");
                 if let Some(v) = get(&key) {
@@ -383,18 +392,53 @@ impl App {
         }
     }
 
-    /// The ids of the data root's companies that aren't open.
-    fn not_open(&self) -> impl Fn() -> Vec<String> + use<> {
+    /// The data root's companies that aren't open, with the names last
+    /// known (reading the ids is all it does).
+    fn not_open(&self) -> impl Fn() -> Vec<Listed> + use<> {
         let root = self.root.clone();
         let open: Vec<String> = self.views.iter().filter_map(CompanyView::book_id).collect();
+        let names = self.names.clone();
         move || {
             root.as_deref()
                 .map(list_books)
                 .unwrap_or_default()
                 .into_iter()
                 .filter(|id| !open.contains(id))
+                .map(|id| Listed {
+                    name: names.get(&id).cloned(),
+                    id,
+                })
                 .collect()
         }
+    }
+
+    /// Note the name of every company whose books are loaded.
+    fn learn_names(&mut self) {
+        for v in &self.views {
+            if let (Some(id), Some(name)) = (v.book_id(), v.name())
+                && self.names.get(&id) != Some(&name)
+            {
+                self.names.insert(id, name);
+            }
+        }
+    }
+
+    /// The name last known for the company with books `id` (tests).
+    pub fn remembered_name(&self, id: &str) -> Option<&str> {
+        self.names.get(id).map(String::as_str)
+    }
+
+    /// A view's tab title: the name its books carry, else the name last
+    /// known, else the id.
+    fn title_of(&self, v: &CompanyView) -> String {
+        v.name()
+            .or_else(|| self.names.get(&v.book_id()?).cloned())
+            .unwrap_or_else(|| v.title())
+    }
+
+    /// Tab `i`'s title as the bar shows it (tests).
+    pub fn tab_title(&self, i: usize) -> Option<String> {
+        self.views.get(i).map(|v| self.title_of(v))
     }
 
     /// Do what the tab bar was asked.
@@ -561,30 +605,30 @@ impl eframe::App for App {
         for (i, v) in self.views.iter_mut().enumerate() {
             v.pump(&ctx, i == self.active);
         }
+        self.learn_names();
         let tabs: Vec<Tab> = self
             .views
             .iter()
-            .map(|v| Tab {
-                title: v.title(),
-                detail: v.book_id().unwrap_or_else(|| v.title()),
+            .map(|v| {
+                let title = self.title_of(v);
+                Tab {
+                    detail: match v.book_id() {
+                        Some(id) if id != title => format!("{title}\n{id}"),
+                        _ => title.clone(),
+                    },
+                    title,
+                }
             })
             .collect();
         let shown = self.active();
         let others = self.not_open();
-        let mut action = None;
-        // The bar goes where the front view says (beside its sidebar, which
-        // keeps the window's whole height), or across the window when
-        // there is no view.
-        let mut bar = |ui: &mut Ui| {
-            action = self.tabs.show(ui, &tabs, shown, &others);
-        };
+        // The bar goes across the whole window, above everything of the
+        // company in front: a tab is the top level (D-78).
+        let action = self.tabs.show(ui, &tabs, shown, &others);
         let active = self.active;
         match self.views.get_mut(active) {
-            Some(v) => v.ui(ui, &mut self.schemes, &mut bar),
-            None => {
-                bar(ui);
-                self.empty(ui);
-            }
+            Some(v) => v.ui(ui, &mut self.schemes),
+            None => self.empty(ui),
         }
         if let Some(action) = action {
             self.act(&ctx, action);
@@ -633,6 +677,9 @@ impl eframe::App for App {
         // (their own, as they are now).
         for (k, v) in &self.kept {
             storage.set_string(k, v.clone());
+        }
+        for (id, name) in &self.names {
+            storage.set_string(&format!("company.{id}.name"), name.clone());
         }
         for v in &self.views {
             if let Some(id) = v.book_id() {

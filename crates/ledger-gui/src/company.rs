@@ -34,9 +34,7 @@ use crate::receipts::Receipts;
 use crate::scheme_menu::SchemeMenu;
 use crate::schemes;
 use crate::theme::{self, pal};
-use egui::{
-    Align, CornerRadius, Frame, Key, Layout, Margin, RichText, Sense, Stroke, Ui, UiBuilder, vec2,
-};
+use egui::{Align, CornerRadius, Frame, Key, Layout, Margin, RichText, Sense, Stroke, Ui, vec2};
 use egui_phosphor::regular as icon;
 use std::sync::Arc;
 
@@ -191,15 +189,19 @@ impl CompanyView {
             .flatten()
     }
 
+    /// The name the books carry, once they are loaded (and it isn't
+    /// blank).
+    pub fn name(&self) -> Option<String> {
+        self.books
+            .as_ref()
+            .map(|b| b.company_name().trim().to_string())
+            .filter(|n| !n.is_empty())
+    }
+
     /// The tab's title: the name the books carry, else the id of the
     /// books, else the folder's name.
     pub fn title(&self) -> String {
-        let named = self
-            .books
-            .as_ref()
-            .map(|b| b.company_name().trim().to_string())
-            .filter(|n| !n.is_empty());
-        named
+        self.name()
             .or_else(|| self.book_id())
             .or_else(|| {
                 let dir = self.data_dir.as_deref()?;
@@ -350,28 +352,19 @@ impl CompanyView {
     /// The window: the sidebar, the top bar, the dock and the page, with
     /// every id in them scoped to this view (INVARIANT 2).
     ///
-    /// `bar` draws the app's tab bar. It goes where the sidebar has already
-    /// taken its column and nothing else has been laid out: along the top
-    /// of the rest of the window, so the sidebar keeps all the height the
-    /// owner's window gives it (`tests/sidenav.rs`), and in a scope of its
-    /// own, so the bar's ids are the app's and not this view's.
-    pub fn ui(&mut self, ui: &mut Ui, schemes: &mut SchemeMenu, bar: &mut dyn FnMut(&mut Ui)) {
+    /// The app's tab bar is already across the top of `ui` (`tabs.rs`):
+    /// this window is what is below it, and the sidebar's height is the
+    /// window's less the bar's (`tests/sidenav.rs` adds the bar's height
+    /// to the windows it sizes).
+    pub fn ui(&mut self, ui: &mut Ui, schemes: &mut SchemeMenu) {
         let id = self.id;
-        ui.push_id(id, |ui| self.window(ui, schemes, bar));
+        ui.push_id(id, |ui| self.window(ui, schemes));
     }
 
-    fn window(&mut self, ui: &mut Ui, schemes: &mut SchemeMenu, bar: &mut dyn FnMut(&mut Ui)) {
+    fn window(&mut self, ui: &mut Ui, schemes: &mut SchemeMenu) {
         self.handle_keys(ui);
         let compact = ui.available_width() < COMPACT_BELOW;
         self.sidebar(ui, schemes, compact);
-        // No space between the bar and what follows it (the scope's
-        // advance would add the item spacing: a strip of bare window).
-        let spacing = std::mem::take(&mut ui.spacing_mut().item_spacing);
-        ui.scope_builder(
-            UiBuilder::new().id(egui::Id::new("company_tab_bar")),
-            |ui| bar(ui),
-        );
-        ui.spacing_mut().item_spacing = spacing;
         self.topbar(ui);
         self.draw_dock(ui);
         let p = pal(ui.ctx());

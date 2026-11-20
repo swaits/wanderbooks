@@ -98,6 +98,13 @@ The rule:
    closing line says it failed and its lines are not applied.
 5. Lines written before the books declared this feature have no closing
    lines and stand as they are: posted is forever.
+6. **D-89 (owner, 2026-11-20): books that have not declared the feature
+   take no writes.** They open and are read as ever; every write is
+   refused with the upgrade remedy until the owner gives the format
+   upgrade its go-ahead. So there is one way a write can happen, the one
+   that is proved. This is stricter than WB-format-3's "everything that
+   needs nothing new is written as ever" and replaces it for writes from
+   the release that carries this feature.
 
 It is a journal feature (a new line type and a new payload field), so it
 follows `served.md` 8.0.5 R-A and R-B and 8.0.6: an old-books fixture,

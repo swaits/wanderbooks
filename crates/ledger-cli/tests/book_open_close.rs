@@ -504,3 +504,53 @@ fn closing_and_opening_a_book_over_and_over_loses_and_duplicates_nothing() {
         "{closed_for:?}"
     );
 }
+
+/// A client's standalone event stream (the GET an MCP client keeps open
+/// for server messages) ends only with its session: a close must not wait
+/// on it as it waits on answers on their way out (it would sit out the
+/// whole grace for every connected assistant).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_close_doesnt_wait_for_a_clients_open_event_stream() {
+    let home = Arc::new(
+        tokio::task::spawn_blocking(|| Home::new("open-close-stream"))
+            .await
+            .unwrap(),
+    );
+    let server = {
+        let home = home.clone();
+        tokio::task::spawn_blocking(move || {
+            let server = Server::start(&home);
+            home.create(A, "USD");
+            server
+        })
+        .await
+        .unwrap()
+    };
+    let client = tokio::task::spawn_blocking({
+        let home = home.clone();
+        move || home.token(A)
+    })
+    .await
+    .unwrap();
+    let c = common::connect_with(&home, A, Some(client)).await.unwrap();
+    common::call(&c, "books.chart", json!({})).await.unwrap();
+    // Time for the client to open its stream.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let started = std::time::Instant::now();
+    let closed = {
+        let home = home.clone();
+        tokio::task::spawn_blocking(move || close_book(&home, A))
+            .await
+            .unwrap()
+    };
+    assert_eq!(closed, CloseOutcome::Closed);
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "the close waited {:?} on a client's open stream",
+        started.elapsed()
+    );
+    let _ = c.cancel().await;
+    tokio::task::spawn_blocking(move || assert!(server.close().success()))
+        .await
+        .unwrap();
+}

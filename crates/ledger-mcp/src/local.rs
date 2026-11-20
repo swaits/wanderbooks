@@ -2191,8 +2191,10 @@ async fn mcp(
         }
     }
     // The answer may still be on its way: it counts, for the server's close
-    // and for this book's, until its body ends.
-    let answering = _inside.answering();
+    // and for this book's, until its body ends. A standalone event stream
+    // (a GET) is no answer, and ends only with its session, after the close
+    // has waited for the answers.
+    let answering = (method != axum::http::Method::GET).then(|| _inside.answering());
     response.map(|body| {
         use http_body_util::BodyExt;
         axum::body::Body::new(body.map_frame(move |frame| {

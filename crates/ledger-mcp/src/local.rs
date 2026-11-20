@@ -82,7 +82,10 @@
 //!      that wasn't made. After that answer no call on that book runs until
 //!      it is opened again. Every other book keeps serving, and a call on
 //!      it is never held up by this one's close. A restore over an open
-//!      book lets go of it the same way (but for its last backup).
+//!      book lets go of it the same way (but for its last backup), its
+//!      door shut and the book listed closed from the start: a call that
+//!      comes while the restore runs is told the books aren't open (503,
+//!      INVARIANT 11), never that there are no such books.
 //!  11. A call for a book that exists but is closed is told apart from one
 //!      that does not exist, on the MCP, upload, download and export
 //!      routes: 503, `x-wanderbooks-refused: closed`, and the words `The
@@ -1556,17 +1559,19 @@ impl Books {
         // file gone), their sessions ended, their backups stopped and
         // waited for (none of theirs reaches a target after the backup is
         // read), their logs and files closed, their writer lock released.
+        // The door is shut first and the book listed closed (never taken
+        // out of the list: a call that comes while the restore runs is
+        // told the books aren't open, as in a close, never that there are
+        // no such books).
         let old = if replace {
-            self.held
-                .write()
-                .unwrap_or_else(|e| e.into_inner())
-                .remove(id.as_str())
+            self.held().get(id.as_str()).cloned()
         } else {
             None
         };
         if let Some(parts) = old.as_ref().and_then(Book::parts) {
             let rt = tokio::runtime::Handle::current();
             parts.gate.shut();
+            self.hold(&id, Book::Closed);
             self.release(&rt, &id, &parts, false);
         }
         match self.root.restore(&git, &source, &id, &expect_head, replace) {
@@ -1589,7 +1594,7 @@ impl Books {
             Err(e) => {
                 // The books it would have replaced, let go above, open
                 // again (only this restore runs, so nothing else holds them).
-                if replace && !self.held().contains_key(id.as_str()) {
+                if replace {
                     let book = self.open(&id);
                     self.hold(&id, book);
                 }

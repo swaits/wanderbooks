@@ -1592,26 +1592,41 @@ fn a_restore_over_an_open_book_waits_for_what_is_inside_it() {
             .unwrap()
         }
     });
-    // The books being replaced are no longer served as these.
+    // A call for the books being replaced is told they aren't open (503,
+    // the words, the closed header), as in a close; never that there are
+    // no such books (404), which they would be told if they were taken
+    // out of the list while the restore waits (INVARIANT 10).
+    let late_call = || {
+        let mut late = Wire::with_token(&home, A, Some(w.token().unwrap().to_string()));
+        late.send(&json!({"jsonrpc": "2.0", "id": 1, "method": "ping"}));
+        late.refused.clone().map(|r| (r.status, r.body))
+    };
     wait_for(
         "the replaced books are let go",
         Duration::from_secs(30),
-        || {
-            let mut late = Wire::with_token(&home, A, Some(w.token().unwrap().to_string()));
-            late.send(&json!({"jsonrpc": "2.0", "id": 1, "method": "ping"}));
-            late.refused
-                .as_ref()
-                .is_some_and(|r| r.status == 404 || r.status == 503)
+        || match late_call() {
+            Some((404, body)) => panic!("books being restored were `no such books`: {body}"),
+            Some((503, body)) => {
+                assert_eq!(body, closed_words(A));
+                true
+            }
+            _ => false,
         },
     );
     // The restore (a clone and a check of the backup, which take a second
     // or so) is not answered while the upload is half received: watched
     // for five seconds, in which a restore that doesn't wait would finish.
+    // Every call meanwhile gets the same answer.
     let watched = std::time::Instant::now() + Duration::from_secs(5);
     while std::time::Instant::now() < watched {
         assert!(
             !restoring.is_finished(),
             "the restore was answered with an upload half received"
+        );
+        assert_eq!(
+            late_call(),
+            Some((503, closed_words(A))),
+            "a call while the books were being restored"
         );
         std::thread::sleep(Duration::from_millis(20));
     }

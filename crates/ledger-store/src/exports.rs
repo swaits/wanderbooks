@@ -25,7 +25,9 @@
 //!      folder is made under): after it none is made, given or swept by
 //!      any holder of these exports from before, so a book let go is
 //!      never touched by a late request or a sweep, whoever has it open
-//!      by then.
+//!      by then. A fetch (`get`) reads under that lock: `close` waits for
+//!      one under way, so no byte of a closed book's folder is read for a
+//!      caller after `close` has returned.
 //! ```
 
 use crate::journal::sha256_hex;
@@ -211,7 +213,10 @@ impl Exports {
             return Err(ExportError::Unknown(id.chars().take(40).collect()));
         }
         let unknown = || ExportError::Unknown(id.to_string());
-        if *self.locked() {
+        // Read under the lock a close takes (INVARIANT 5): `close` waits
+        // for a fetch under way, and none begins after it.
+        let held = self.locked();
+        if *held {
             return Err(ExportError::Bad("the books aren't open".into()));
         }
         let record = std::fs::read(self.path(id, "json")).map_err(|_| unknown())?;
@@ -223,6 +228,7 @@ impl Exports {
             return Err(ExportError::NotYours);
         }
         let bytes = std::fs::read(self.path(id, "bin")).map_err(|_| unknown())?;
+        drop(held);
         if bytes.len() as u64 != export.size || sha256_hex(&bytes) != export.sha256 {
             return Err(ExportError::Damaged);
         }
@@ -300,6 +306,57 @@ mod tests {
         // A sweep long after everything lapsed removes nothing.
         x.sweep(NOW + 10 * EXPORT_TTL);
         assert_eq!(seen(), before);
+    }
+
+    /// INVARIANT 5: a fetch reads under the lock a close takes, so a close
+    /// waits for the fetch under way instead of returning while bytes of
+    /// the folder are still being read for a caller. The fetch is held
+    /// inside its read (the export's file is a named pipe nothing writes
+    /// to yet), and `close` must not return until it is let go.
+    #[cfg(unix)]
+    #[test]
+    fn a_close_waits_for_a_fetch_that_is_reading() {
+        let dir = tempfile::tempdir().unwrap();
+        let x = Exports::open(dir.path(), NOW).unwrap();
+        let e = x.put("t", "a.csv", "text/csv", b"x", NOW).unwrap();
+        let bin = x.path(&e.id, "bin");
+        std::fs::remove_file(&bin).unwrap();
+        let made = std::process::Command::new("mkfifo").arg(&bin).status();
+        assert!(made.unwrap().success());
+        let fetching = {
+            let (x, id) = (x.clone(), e.id.clone());
+            std::thread::spawn(move || x.get(&id, "t", NOW))
+        };
+        // The fetch holds the lock, blocked opening the pipe for reading
+        // (no writer yet): give it time to be there, then close.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let (done, closed) = std::sync::mpsc::channel();
+        let closing = {
+            let x = x.clone();
+            std::thread::spawn(move || {
+                x.close();
+                let _ = done.send(());
+            })
+        };
+        assert!(
+            closed
+                .recv_timeout(std::time::Duration::from_millis(500))
+                .is_err(),
+            "the close returned while a fetch was reading the folder"
+        );
+        // A writer that sends nothing lets the read end (an empty file,
+        // not the size kept: the fetch is refused).
+        drop(
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&bin)
+                .unwrap(),
+        );
+        assert!(fetching.join().unwrap().is_err());
+        closed
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the close returns once the fetch has ended");
+        closing.join().unwrap();
     }
 
     #[test]

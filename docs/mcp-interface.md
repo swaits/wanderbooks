@@ -394,7 +394,10 @@ didn't open, with why). Protocol version 1: the requests are new, the
   record, `books.audit`) before it repeats a write. A restore over an open
   book (`restore --replace`) lets go of the book in the same way (waits for
   what is inside the book's door, ends its sessions, stops its backups,
-  closes its logs) before it moves the book into `legacy/`.
+  closes its logs) before it moves the book into `legacy/`; the book is
+  listed closed from the moment the restore begins, so a call that comes
+  meanwhile is told the books aren't open (503, as in a close), never that
+  there are no such books (404).
 - `sessions` lists, for each open book, its live MCP sessions: the token's
   **name** (never the token, its text or its hash), the client's name and
   version from `initialize`, the agent's self-report (`books.start`'s

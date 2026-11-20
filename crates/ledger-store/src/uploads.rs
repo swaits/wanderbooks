@@ -29,11 +29,23 @@
 //!   5. A token has at most MAX_LIVE grants under way, so what one agent
 //!      can keep on the disk is bounded.
 //!   6. Uploads can be closed (`close`, under the lock every change to
-//!      the folder is made under): after it nothing is granted, received,
-//!      taken, swept, given back or forgotten, by any holder of these
-//!      uploads from before, so a book let go (closed, or replaced by a
-//!      restore) is never touched by a sweep, a late request or a claim
-//!      dropped after, whoever has the book open by then.
+//!      the folder is made under): after it nothing is granted, taken,
+//!      swept, given back or forgotten, by any holder of these uploads
+//!      from before, so a book let go (closed, or replaced by a restore)
+//!      is never touched by a sweep, a late request or a claim dropped
+//!      after, whoever has the book open by then. A file coming in
+//!      (`receive`) is the one change that spans time: each chunk is
+//!      written under that lock, and the rename that keeps the bytes is
+//!      made under it, so once `close` has returned no byte is written
+//!      and none is kept; what the request had written (its `.part`) is
+//!      removed by the request, when it next looks (its next chunk, or
+//!      its end), which is the only thing a request begun before the
+//!      close does to the folder after it, and the removal of a file
+//!      only that request made. A request that is still waiting for its
+//!      next bytes when the close returns is not woken by the type: a
+//!      caller that must not leave that part behind waits for the
+//!      request (the books server's gate does, and cuts one that never
+//!      finishes arriving).
 //! ```
 
 use crate::journal::sha256_hex;
@@ -461,6 +473,13 @@ impl Uploads {
                 break Ok(());
             }
             hasher.update(&buf[..n]);
+            // Each chunk is written under the lock a close takes
+            // (INVARIANT 6): once the uploads are closed no more bytes go
+            // into the part, which is removed below.
+            let held = self.locked();
+            if *held {
+                break Err(UploadError::Bad(CLOSED.into()));
+            }
             if let Err(e) = out.write_all(&buf[..n]) {
                 break Err(e.into());
             }
@@ -666,6 +685,95 @@ mod tests {
         // is put back, nor forgotten, in a folder that is no longer ours.
         drop(received);
         assert_eq!(seen(), held);
+    }
+
+    /// A body that hands out `chunks`, one per read, and tells the test
+    /// before each read (its number, from 1) so it can act at an exact
+    /// point of the transfer.
+    struct Feed<'a> {
+        chunks: std::collections::VecDeque<Vec<u8>>,
+        reads: usize,
+        before: Box<dyn FnMut(usize) + 'a>,
+    }
+
+    impl std::io::Read for Feed<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            self.reads += 1;
+            (self.before)(self.reads);
+            match self.chunks.pop_front() {
+                Some(c) => {
+                    buf[..c.len()].copy_from_slice(&c);
+                    Ok(c.len())
+                }
+                None => Ok(0),
+            }
+        }
+    }
+
+    fn names_in(dir: &Path) -> Vec<String> {
+        let mut names: Vec<_> = std::fs::read_dir(dir.join(UPLOADS_DIR))
+            .unwrap()
+            .map(|f| f.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// INVARIANT 6, per chunk: a close that comes while a file is coming
+    /// in stops the request at the chunk that follows it. Not one more
+    /// read is made, no byte is written after the close, and the part the
+    /// request had written is removed.
+    #[test]
+    fn a_close_in_the_middle_of_a_file_stops_it_at_the_next_chunk() {
+        let dir = tempfile::tempdir().unwrap();
+        let u = Uploads::open(dir.path(), NOW).unwrap();
+        let bytes: Vec<u8> = (0..3000u32).map(|n| (n % 251) as u8).collect();
+        let g = grant_for(&u, "tok_a", &bytes);
+        let mut feed = Feed {
+            chunks: bytes.chunks(1000).map(<[u8]>::to_vec).collect(),
+            reads: 0,
+            before: Box::new(|read| {
+                if read == 2 {
+                    u.close();
+                }
+            }),
+        };
+        let refused = u.receive(&g.id, "tok_a", &mut feed, NOW).unwrap_err();
+        assert!(refused.to_string().contains("aren't open"), "{refused}");
+        assert_eq!(feed.reads, 2, "the body was read after the close");
+        let left = names_in(dir.path());
+        assert!(
+            !left.iter().any(|n| n.ends_with(".part") || n.ends_with(".bin")),
+            "{left:?}"
+        );
+    }
+
+    /// INVARIANT 6, the last step: a close that comes after the last byte
+    /// and before the bytes are kept keeps nothing (the rename that makes
+    /// them the upload is under the lock a close takes).
+    #[test]
+    fn a_close_between_the_last_byte_and_the_rename_keeps_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let u = Uploads::open(dir.path(), NOW).unwrap();
+        let bytes = b"%PDF-1.4 a receipt".to_vec();
+        let g = grant_for(&u, "tok_a", &bytes);
+        let mut feed = Feed {
+            chunks: [bytes.clone()].into(),
+            reads: 0,
+            // The second read is the one that finds the end.
+            before: Box::new(|read| {
+                if read == 2 {
+                    u.close();
+                }
+            }),
+        };
+        let refused = u.receive(&g.id, "tok_a", &mut feed, NOW).unwrap_err();
+        assert!(refused.to_string().contains("aren't open"), "{refused}");
+        let left = names_in(dir.path());
+        assert!(
+            !left.iter().any(|n| n.ends_with(".part") || n.ends_with(".bin")),
+            "{left:?}"
+        );
     }
 
     #[test]

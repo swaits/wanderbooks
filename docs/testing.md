@@ -4382,8 +4382,35 @@ renderer, as the sidebar's do):
   (else by the id).
 - `the_plus_list_says_so_when_every_company_is_open`: "Every company is
   already open." and no heading.
-- `pictures` (ignored; `SHOT_DIR`): the whole window with each tab in front,
-  the "+" list and the empty window, for a person to look at.
+- `nothing_in_the_top_of_the_window_but_the_tab_shows_the_company_name`:
+  per theme, on the Overview, Cash and the Journal, no painted text or
+  widget in the tree below the bar and above 120 points names the company
+  (the tab and its close control are in the bar), and the status card
+  names the company in front once.
+- `the_status_card_shows_the_company_in_front_and_follows_the_tab`: the
+  card's heading is the tab in front's name and its badge, small, in that
+  company's hue (the other's is not on the card), and both change when
+  another tab is shown; the window's title is unchanged.
+- `the_rail_shows_the_badge_alone_with_the_name_on_hover`.
+- `a_hue_is_the_books_id_alone_on_the_tab_and_the_card_in_both_themes_and_after_a_restart`:
+  the hue a tab and a card draw is the one the id gives, light and dark,
+  the same after a restart and in another order of opening, and pinned
+  for three ids (a change recolours every company).
+- `the_overview_opens_with_its_summary_sentence_and_never_names_the_company`
+  and `the_overview_of_books_with_no_transactions_opens_the_same_way`: the
+  first text of the page is the sentence ("You have $8,765.44 in cash …",
+  or "No transactions yet. …"), set bigger than body text and smaller than
+  a page title, and no text on the page names the company (no sentence
+  there used the name).
+- In `theme.rs`: `every_badge_hue_reads_in_both_themes` computes, for each
+  of the eight hues in each theme, the letter's contrast on the badge
+  (4.5:1, WCAG AA) and the badge's on the surface, sidebar, page and hover
+  colours (3:1); `a_hue_is_a_function_of_the_book_id_alone` pins the hash
+  and that every hue is used.
+- `pictures` (ignored; `SHOT_DIR`): the whole window with one company, each
+  of two tabs in front, eight tabs, the "+" list, the empty window, the
+  rail with two companies, the smallest window and the Overview at its
+  top, light and dark, for a person to look at.
 
 Unit tests moved with the code they test: the sidebar's fit tests, now
 in `company.rs`; the scheme tests, in `scheme_menu.rs`. The tab bar runs
@@ -4404,6 +4431,19 @@ three tests that click a closed company in the "+" list by its id now click
 it by its name, which the list shows once the company has been open; the
 list's empty words are now "Every company is already open." The ten
 `tabs_*` snapshots were regenerated for the new bar.
+
+The company's name once, not three times (the owner's review of the bar):
+the sidebar's header (badge, name, "Books") is gone, and so is the
+Overview's heading, whose summary sentence is now the page's lead; the
+status card's new heading row carries the company instead, with its hue.
+That removed 28 points and the gap under the header from the top of the
+sidebar and added a row to the card, so the sidebar has more room at every
+height (at 1479x519 the links' viewport is 331 points, was 311, and the
+rows 23 high, were 22); no `sidenav.rs` assertion or window changed. The
+tall sidebar's shapes golden and pixel golden (`sidenav-1440x920`) were
+regenerated (the header gone and the links moved up, the card's heading
+row, the badge's hue), and the `tabs_*` snapshots again (hue, no
+Overview heading, the rail's badge); `tabs_empty_*` are as they were.
 
 **Not tested here:** the window title reaching the window system (the
 harness has none: `window_title()` is what is tested); a company opened

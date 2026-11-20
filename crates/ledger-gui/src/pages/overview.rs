@@ -20,7 +20,7 @@ use rust_decimal::Decimal;
 pub fn show(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
     page(ui, "overview", |ui| {
         let k = &b.kpis;
-        widgets::page_header(ui, b.company_name(), &headline(b));
+        widgets::page_lead(ui, &headline(b));
         kpis(ui, b, shell);
         let _ = k;
         // What needs doing gets the page's full width, under the numbers:

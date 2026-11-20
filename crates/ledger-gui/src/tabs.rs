@@ -8,8 +8,11 @@
 //! width.
 //!
 //! The bar spans the whole window, above the sidebar: a tab is the top
-//! level, and the sidebar (its company badge, its pages, its status) is
-//! the company in the tab's, which the layout shows. With no company open
+//! level, and the sidebar (its pages, its status card) is the company in
+//! the tab's, which the layout shows. The tab is the company's identity
+//! in the frame (badge and name); nothing else at the top of the window
+//! repeats it, and the status card at the foot of the sidebar names it
+//! again, in the same hue. With no company open
 //! it is the window's top all the same. The "+" follows the last tab, and
 //! stays at the right edge, whole, while the tabs scroll.
 //!
@@ -22,8 +25,8 @@
 //!         company is reachable exactly while it has a tab).
 //! INVARIANTS:
 //!   1. One tab per open company, in the order opened, showing the
-//!      company's badge (as the sidebar's header draws it, small) and
-//!      name (the name last known, else the id of its books, until it is
+//!      company's badge (its hue, from the id of its books: theme.rs
+//!      `hue_of`; the status card draws the same) and name (the name last known, else the id of its books, until it is
 //!      read). The bar is there with one company open, and with none.
 //!   2. The tab shown is marked by more than colour: a heavier name, a
 //!      bar in the accent colour along its top edge, and "selected" to
@@ -86,6 +89,15 @@ pub struct Tab {
     pub title: String,
     /// More about it, on hover.
     pub detail: String,
+    /// What its badge's hue is chosen from: the id of its books
+    /// ([`hue_of`]).
+    pub hue_key: String,
+}
+
+/// The badge hue of the company whose books have id `book_id`, light or
+/// dark: the one its tab and its status card both draw (theme.rs).
+pub fn hue_of(book_id: &str, dark: bool) -> egui::Color32 {
+    theme::hue_of(book_id, dark)
 }
 
 /// A company of the data root that is not open, as "+" lists it.
@@ -455,24 +467,24 @@ fn one_tab(
         } else if resp.hovered() || close.hovered() {
             painter.rect_filled(rect.shrink2(vec2(0.0, 2.0)), CornerRadius::same(8), p.hover);
         }
-        // The badge, as the sidebar's header draws it.
+        // The badge: the company's hue, as its status card draws it.
         let badge = egui::Rect::from_center_size(
             egui::pos2(rect.left() + PAD_L + BADGE / 2.0, rect.center().y + 1.0),
             vec2(BADGE, BADGE),
         );
-        painter.rect_filled(badge, CornerRadius::same(5), p.accent);
         let initial = tab
             .title
             .chars()
             .next()
             .map(|c| c.to_uppercase().next().unwrap_or(c))
             .unwrap_or('W');
-        painter.text(
-            badge.center(),
-            egui::Align2::CENTER_CENTER,
+        theme::paint_badge(
+            painter,
+            badge,
+            5,
             initial,
+            theme::badge_hue(ui.ctx(), &tab.hue_key),
             theme::bold(11.0),
-            crate::schemes::on(p.accent),
         );
         let font = if here {
             theme::semibold(13.0)

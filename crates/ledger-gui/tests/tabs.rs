@@ -34,6 +34,17 @@
 //!  10. A company's name is remembered when it is loaded: the "+" list
 //!      shows it (the id alone for a company never opened), and so does a
 //!      tab whose books are not loaded yet.
+//!  11. The tab is the company's identity in the frame: nothing else in
+//!      the top 120 points of the window shows its name, and the
+//!      Overview opens with its summary sentence, not a heading with the
+//!      name.
+//!  12. The status card at the foot of the sidebar names the company in
+//!      front, with its badge, and follows the tab; the rail shows the
+//!      badge alone.
+//!  13. A company's badge hue is a function of the id of its books alone
+//!      (so it is the same on its tab and its card, in both themes, after
+//!      a restart, in any order of opening), and every hue reads (the
+//!      contrast test is `theme::tests`, in the crate).
 //! ```
 
 use chrono::NaiveDate;
@@ -1348,8 +1359,329 @@ fn the_empty_window_and_the_plus_list() {
     }
 }
 
-/// Pictures of the whole window with two tabs, each in front once, the
-/// "+" list open and the empty window, for a person to look at
+// ---- 11-13: the company's name and hue --------------------------------------
+
+/// Every text the last frame painted, with where it starts.
+fn placed(h: &Harness<'_, App>) -> Vec<(egui::Pos2, String)> {
+    fn walk(s: &egui::Shape, out: &mut Vec<(egui::Pos2, String)>) {
+        match s {
+            egui::Shape::Text(t) => out.push((t.pos, t.galley.text().to_string())),
+            egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+            _ => {}
+        }
+    }
+    let mut all = Vec::new();
+    for c in &h.output().shapes {
+        walk(&c.shape, &mut all);
+    }
+    all
+}
+
+/// Every rectangle of exactly colour `color` the last frame painted.
+fn fills(h: &Harness<'_, App>, color: egui::Color32) -> Vec<egui::Rect> {
+    fn walk(s: &egui::Shape, color: egui::Color32, out: &mut Vec<egui::Rect>) {
+        match s {
+            egui::Shape::Rect(r) if r.fill == color => out.push(r.rect),
+            egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, color, out)),
+            _ => {}
+        }
+    }
+    let mut all = Vec::new();
+    for c in &h.output().shapes {
+        walk(&c.shape, color, &mut all);
+    }
+    all
+}
+
+/// The sidebar's column below the bar.
+fn in_sidebar(r: egui::Rect) -> bool {
+    r.max.x <= 224.5 && r.min.y >= ledger_gui::tabs::BAR_H
+}
+
+/// The hue ids of the books give: the light or dark one.
+fn hue(id: &str, dark: bool) -> egui::Color32 {
+    ledger_gui::tabs::hue_of(id, dark)
+}
+
+#[test]
+fn nothing_in_the_top_of_the_window_but_the_tab_shows_the_company_name() {
+    use ledger_gui::tabs::BAR_H;
+    for dark in [false, true] {
+        for route in [Route::Overview, Route::Cash, Route::Journal] {
+            let w = World::new();
+            let mut h = shown(
+                &w,
+                &["Wanderland Labs LLC", "Fernhill Studio"],
+                dark,
+                egui::vec2(1280.0, 700.0),
+            );
+            h.state_mut().goto(route.clone());
+            h.run_steps(4);
+            let tag = format!("{route:?}, dark {dark}");
+            for name in ["Wanderland Labs LLC", "Fernhill Studio"] {
+                // Painted text: in the top 120 points it is only the tab's.
+                for (at, text) in placed(&h) {
+                    if text.contains(name) && at.y < 120.0 {
+                        assert!(
+                            at.y < BAR_H,
+                            "{tag}: {name} is painted at {at:?} below the bar: {text:?}"
+                        );
+                    }
+                }
+                // The tree: only the tab and its close control, both in the bar.
+                for n in h.query_all_by_label_contains(name) {
+                    let r = n.rect();
+                    if r.top() < 120.0 {
+                        assert!(
+                            r.bottom() <= BAR_H + 0.5,
+                            "{tag}: a widget named {name} at {r:?} is under the bar"
+                        );
+                    }
+                }
+            }
+            // And the one in front is named once more, lower: the card.
+            let card = placed(&h)
+                .into_iter()
+                .filter(|(at, t)| at.x < 224.0 && at.y > 120.0 && t == "Wanderland Labs LLC")
+                .count();
+            assert_eq!(card, 1, "{tag}: the status card names the company");
+        }
+    }
+}
+
+#[test]
+fn the_status_card_shows_the_company_in_front_and_follows_the_tab() {
+    for dark in [false, true] {
+        let (w, _, _, _) = three();
+        let mode = if dark { "true" } else { "false" };
+        let mut h = start(
+            &w,
+            prefs(&[("open_companies", "alpha,beta"), ("dark", mode)]),
+            egui::vec2(1280.0, 900.0),
+        );
+        loaded(&mut h);
+        let card_names = |h: &Harness<'_, App>| -> Vec<String> {
+            placed(h)
+                .into_iter()
+                .filter(|(at, t)| at.x < 224.0 && at.y > 120.0 && t.ends_with(" Co"))
+                .map(|(_, t)| t)
+                .collect()
+        };
+        // The card's badge: its hue, a small square in the sidebar, near
+        // the foot (the tab's is in the bar).
+        let card_badge = |h: &Harness<'_, App>, id: &str| {
+            fills(h, hue(id, dark))
+                .into_iter()
+                .filter(|r| in_sidebar(*r) && r.min.y > 120.0)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(card_names(&h), ["Alpha Co"], "dark {dark}");
+        assert_eq!(
+            card_badge(&h, "alpha").len(),
+            1,
+            "alpha's badge on its card"
+        );
+        assert!(
+            card_badge(&h, "beta").is_empty(),
+            "beta's hue isn't on alpha's card"
+        );
+        // The badge is small, and carries the initial.
+        let r = card_badge(&h, "alpha")[0];
+        assert!(r.width() <= 20.0 && r.height() <= 20.0, "{r:?}");
+        assert!(
+            placed(&h)
+                .iter()
+                .any(|(at, t)| t == "A" && r.contains(*at + egui::vec2(4.0, 4.0))
+                    || t == "A" && r.expand(4.0).contains(*at)),
+            "the initial is on the badge"
+        );
+        show_tab(&mut h, "Beta Co");
+        assert_eq!(card_names(&h), ["Beta Co"], "dark {dark}");
+        assert_eq!(card_badge(&h, "beta").len(), 1, "beta's badge on its card");
+        assert!(
+            card_badge(&h, "alpha").is_empty(),
+            "alpha's hue left the card"
+        );
+        // The window's title still names the company.
+        assert_eq!(h.state().window_title(), "Beta Co · wanderbooks");
+    }
+}
+
+#[test]
+fn the_rail_shows_the_badge_alone_with_the_name_on_hover() {
+    let (w, _, _, _) = three();
+    let mut h = start(
+        &w,
+        prefs(&[("open_companies", "alpha,beta"), ("dark", "false")]),
+        egui::vec2(900.0, 700.0),
+    );
+    loaded(&mut h);
+    let badge: Vec<_> = fills(&h, hue("alpha", false))
+        .into_iter()
+        .filter(|r| in_sidebar(*r) && r.max.x <= 60.5)
+        .collect();
+    assert_eq!(badge.len(), 1, "alpha's badge in the rail");
+    assert!(
+        !placed(&h)
+            .iter()
+            .any(|(at, t)| at.x < 60.0 && at.y > 36.0 && t.contains("Alpha Co")),
+        "the rail has no room for the name"
+    );
+    h.hover_at(badge[0].center());
+    h.run_steps(30);
+    assert!(shows(&h, "Alpha Co"), "the name is on hover");
+}
+
+#[test]
+fn a_hue_is_the_books_id_alone_on_the_tab_and_the_card_in_both_themes_and_after_a_restart() {
+    let (w, _, _, _) = three();
+    for dark in [false, true] {
+        let mode = if dark { "true" } else { "false" };
+        let size = egui::vec2(1280.0, 900.0);
+        // Two starts, the tabs opened in different orders: a restart, and
+        // an order of opening, change nothing.
+        let mut seen = Vec::new();
+        for order in ["alpha,beta,gamma", "gamma,alpha,beta"] {
+            let mut h = start(
+                &w,
+                prefs(&[("open_companies", order), ("dark", mode)]),
+                size,
+            );
+            loaded(&mut h);
+            for id in ["alpha", "beta", "gamma"] {
+                let name = format!("{} Co", id[..1].to_uppercase() + &id[1..]);
+                show_tab(&mut h, &name);
+                let want = hue(id, dark);
+                let tab: Vec<_> = fills(&h, want)
+                    .into_iter()
+                    .filter(|r| r.max.y <= ledger_gui::tabs::BAR_H)
+                    .collect();
+                let card: Vec<_> = fills(&h, want)
+                    .into_iter()
+                    .filter(|r| in_sidebar(*r))
+                    .collect();
+                assert_eq!(tab.len(), 1, "{id} dark {dark}: its tab's badge in its hue");
+                assert_eq!(
+                    card.len(),
+                    1,
+                    "{id} dark {dark}: its card's badge in its hue"
+                );
+                seen.push((id, dark, want));
+            }
+        }
+        // The same in both starts.
+        let (first, second) = seen.split_at(3);
+        let mut a = first.to_vec();
+        let mut b = second.to_vec();
+        a.sort_by_key(|x| x.0);
+        b.sort_by_key(|x| x.0);
+        assert_eq!(a, b);
+    }
+    // Pinned, with the rule: it never changes without a decision, and
+    // is a function of the id alone (not the name, nor the machine).
+    assert_eq!(
+        hue("alpha", false),
+        egui::Color32::from_rgb(0xBE, 0x18, 0x5D)
+    );
+    assert_eq!(
+        hue("alpha", true),
+        egui::Color32::from_rgb(0xF4, 0x72, 0xB6)
+    );
+    assert_eq!(
+        hue("beta", false),
+        egui::Color32::from_rgb(0x47, 0x55, 0x69)
+    );
+    assert_eq!(
+        hue("gamma", false),
+        egui::Color32::from_rgb(0xB4, 0x53, 0x09)
+    );
+}
+
+#[test]
+fn the_overview_opens_with_its_summary_sentence_and_never_names_the_company() {
+    for dark in [false, true] {
+        let w = World::new();
+        let mut h = shown(&w, &["Alpha Co"], dark, egui::vec2(1280.0, 800.0));
+        h.run_steps(3);
+        // The page's first text: the first under the company's top bar
+        // (52 high, under the tab bar).
+        let page_top = ledger_gui::tabs::BAR_H + 52.0;
+        let mut page: Vec<(egui::Pos2, String)> = placed(&h)
+            .into_iter()
+            .filter(|(at, _)| at.x >= 224.0 && at.y >= page_top)
+            .collect();
+        page.sort_by(|a, b| a.0.y.total_cmp(&b.0.y).then(a.0.x.total_cmp(&b.0.x)));
+        let (_, first) = page.first().expect("the page has text");
+        assert!(
+            first.starts_with("You have $8,765.44 in cash and owe $0.00."),
+            "dark {dark}: the page opens with {first:?}"
+        );
+        // Nothing on the page says the company's name: no sentence there
+        // used it.
+        assert!(
+            page.iter().all(|(_, t)| !t.contains("Alpha Co")),
+            "dark {dark}: {:?}",
+            page.iter()
+                .filter(|(_, t)| t.contains("Alpha Co"))
+                .collect::<Vec<_>>()
+        );
+        // It reads as the page's opening line: bigger than body text,
+        // smaller than a page's title (26).
+        let lead = h
+            .output()
+            .shapes
+            .iter()
+            .find_map(|c| match &c.shape {
+                egui::Shape::Text(t) if t.galley.text().starts_with("You have") => {
+                    Some(t.galley.rows[0].height())
+                }
+                _ => None,
+            })
+            .expect("the lead");
+        let body = 14.0 * 1.2;
+        assert!(lead > body * 1.2 && lead < 26.0 * 1.2, "lead row {lead}");
+    }
+}
+
+#[test]
+fn the_overview_of_books_with_no_transactions_opens_the_same_way() {
+    let w = World::new();
+    let id = "empty-co";
+    let root = Root::find(Some(&w.root)).unwrap();
+    let mut s = root
+        .create_book(&BookId::parse(id).unwrap(), Currency::USD)
+        .unwrap();
+    s.add_account("1000", "Cash", AccountType::Asset, None, false)
+        .unwrap();
+    drop(s);
+    let source = w.source(id);
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1280.0, 800.0))
+        .build_eframe(move |cc| {
+            App::with_books(
+                &cc.egui_ctx,
+                data::load_once(&source).unwrap(),
+                false,
+                Route::Overview,
+            )
+        });
+    h.run_steps(4);
+    let page_top = ledger_gui::tabs::BAR_H + 52.0;
+    let mut page: Vec<_> = placed(&h)
+        .into_iter()
+        .filter(|(at, _)| at.x >= 224.0 && at.y >= page_top)
+        .collect();
+    page.sort_by(|a, b| a.0.y.total_cmp(&b.0.y));
+    assert!(
+        page[0].1.starts_with("No transactions yet."),
+        "opens with {:?}",
+        page[0].1
+    );
+}
+
+/// Pictures of the whole window: one company, two tabs each in front once,
+/// eight tabs, the "+" list open, the empty window, the rail, the
+/// smallest window and the Overview at its top, for a person to look at
 /// (`SHOT_DIR=… cargo test -p ledger-gui --test tabs -- --ignored pictures`).
 #[test]
 #[ignore]
@@ -1364,7 +1696,41 @@ fn pictures() {
     };
     for dark in [false, true] {
         let mode = if dark { "dark" } else { "light" };
+        // One company open.
         let (w, _, _, _) = three();
+        let mut h = start(
+            &w,
+            prefs(&[
+                ("open_companies", "alpha"),
+                ("dark", if dark { "true" } else { "false" }),
+            ]),
+            egui::vec2(1440.0, 920.0),
+        );
+        loaded(&mut h);
+        save(&mut h, &format!("one-company-{mode}"));
+        // The Overview scrolled down and back to its top.
+        h.hover_at(egui::pos2(900.0, 500.0));
+        for dy in [-400.0, 800.0] {
+            h.event(egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, dy),
+                phase: egui::TouchPhase::Move,
+                modifiers: egui::Modifiers::NONE,
+            });
+            h.run_steps(6);
+        }
+        save(&mut h, &format!("overview-scrolled-to-top-{mode}"));
+        // The sidebar collapsed to its rail, two companies open.
+        let mut h = start(
+            &w,
+            prefs(&[
+                ("open_companies", "alpha,beta"),
+                ("dark", if dark { "true" } else { "false" }),
+            ]),
+            egui::vec2(900.0, 700.0),
+        );
+        loaded(&mut h);
+        save(&mut h, &format!("rail-two-companies-{mode}"));
         let mut h = start(
             &w,
             prefs(&[

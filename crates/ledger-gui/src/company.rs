@@ -32,7 +32,6 @@ use crate::owner::Owner;
 use crate::pages;
 use crate::receipts::Receipts;
 use crate::scheme_menu::SchemeMenu;
-use crate::schemes;
 use crate::theme::{self, pal};
 use egui::{Align, CornerRadius, Frame, Key, Layout, Margin, RichText, Sense, Stroke, Ui, vec2};
 use egui_phosphor::regular as icon;
@@ -203,18 +202,49 @@ impl CompanyView {
     pub fn title(&self) -> String {
         self.name()
             .or_else(|| self.book_id())
-            .or_else(|| {
-                let dir = self.data_dir.as_deref()?;
-                // A demo's or a copy's folder is `books-data`: its parent
-                // names it.
-                let name = dir.file_name()?.to_str()?;
-                let parent = dir.parent().and_then(|p| p.file_name()?.to_str());
-                Some(match (name, parent) {
-                    ("books-data", Some(p)) => p.to_string(),
-                    _ => name.to_string(),
-                })
-            })
+            .or_else(|| self.folder_name())
             .unwrap_or_else(|| "Company".to_string())
+    }
+
+    /// The books' folder's name: a demo's or a copy's folder is
+    /// `books-data`, which its parent names.
+    fn folder_name(&self) -> Option<String> {
+        let dir = self.data_dir.as_deref()?;
+        let name = dir.file_name()?.to_str()?;
+        let parent = dir.parent().and_then(|p| p.file_name()?.to_str());
+        Some(match (name, parent) {
+            ("books-data", Some(p)) => p.to_string(),
+            _ => name.to_string(),
+        })
+    }
+
+    /// What this company's badge hue is chosen from: the id of its books
+    /// (theme.rs `hue_of`), else the name of their folder, which is that
+    /// id for books in a data root: a function of where the books are
+    /// kept and never of the name they carry, so renaming a company
+    /// leaves its colour.
+    pub fn hue_key(&self) -> String {
+        self.book_id()
+            .or_else(|| self.folder_name())
+            .unwrap_or_default()
+    }
+
+    /// The status card's heading: this company's badge and name.
+    fn card_head(&self, ctx: &egui::Context) -> CardHead {
+        CardHead {
+            initial: self.initial(),
+            title: self.title(),
+            hue: theme::badge_hue(ctx, &self.hue_key()),
+        }
+    }
+
+    /// The letter on this company's badge: its title's first, upper case.
+    fn initial(&self) -> char {
+        self.title()
+            .chars()
+            .next()
+            .map(|c| c.to_uppercase().next().unwrap_or(c))
+            .unwrap_or('W')
     }
 
     /// The books as last loaded (tests).
@@ -592,6 +622,7 @@ impl CompanyView {
         }
         let p = pal(ui.ctx());
         let books = self.books.clone();
+        let head = self.card_head(ui.ctx());
         egui::Panel::left("sidebar")
             .exact_size(224.0)
             .resizable(false)
@@ -601,37 +632,7 @@ impl CompanyView {
                     .inner_margin(Margin::symmetric(12, 16)),
             )
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    let (r, _) = ui.allocate_exact_size(vec2(28.0, 28.0), Sense::hover());
-                    ui.painter().rect_filled(r, CornerRadius::same(8), p.accent);
-                    let initial = books
-                        .as_ref()
-                        .and_then(|b| b.company_name().chars().next())
-                        .unwrap_or('W');
-                    ui.painter().text(
-                        r.center(),
-                        egui::Align2::CENTER_CENTER,
-                        initial,
-                        theme::bold(15.0),
-                        schemes::on(p.accent),
-                    );
-                    ui.vertical(|ui| {
-                        ui.spacing_mut().item_spacing.y = 0.0;
-                        let name = books
-                            .as_ref()
-                            .map(|b| b.company_name().to_string())
-                            .unwrap_or_else(|| "wanderbooks".into());
-                        ui.add(
-                            egui::Label::new(RichText::new(name).font(theme::semibold(13.5)))
-                                .truncate(),
-                        );
-                        ui.label(
-                            RichText::new("Books")
-                                .font(theme::regular(11.5))
-                                .color(p.muted),
-                        );
-                    });
-                });
+                top_slot(ui);
                 let current = self.nav.current.section();
                 let attention = books.as_ref().map(|b| b.attention.len()).unwrap_or(0);
                 // Short windows give way in steps (Fit): the status card
@@ -731,6 +732,7 @@ impl CompanyView {
                             ui.input(|i| i.time) - self.updated_at,
                             self.loader.is_some() || self.live_label,
                             fit.folded,
+                            &head,
                         );
                     }
                 });
@@ -742,6 +744,7 @@ impl CompanyView {
     fn rail(&mut self, ui: &mut Ui, schemes: &mut SchemeMenu) {
         let p = pal(ui.ctx());
         let books = self.books.clone();
+        let head = self.card_head(ui.ctx());
         egui::Panel::left("rail")
             .exact_size(RAIL_W)
             .resizable(false)
@@ -751,24 +754,7 @@ impl CompanyView {
                     .inner_margin(Margin::symmetric(10, 16)),
             )
             .show(ui, |ui| {
-                let name = books
-                    .as_ref()
-                    .map(|b| b.company_name().to_string())
-                    .unwrap_or_else(|| "wanderbooks".into());
-                let (r, _) =
-                    ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::hover());
-                let logo = egui::Rect::from_center_size(r.center(), vec2(28.0, 28.0));
-                ui.painter()
-                    .rect_filled(logo, CornerRadius::same(8), p.accent);
-                ui.painter().text(
-                    logo.center(),
-                    egui::Align2::CENTER_CENTER,
-                    name.chars().next().unwrap_or('W'),
-                    theme::bold(15.0),
-                    schemes::on(p.accent),
-                );
-                ui.interact(r, ui.id().with("logo"), Sense::hover())
-                    .on_hover_text(format!("{name} · Books"));
+                top_slot(ui);
                 let current = self.nav.current.section();
                 let attention = books.as_ref().map(|b| b.attention.len()).unwrap_or(0);
                 // As the sidebar's, with no card to fold.
@@ -873,6 +859,13 @@ impl CompanyView {
                             ));
                         }
                         resp.on_hover_text(tip);
+                        // The company, above its status (the footer is laid
+                        // out bottom up): its badge alone, its name on hover.
+                        ui.add_space(2.0);
+                        let (r, resp) =
+                            ui.allocate_exact_size(vec2(RAIL_BADGE, RAIL_BADGE), Sense::hover());
+                        head.paint(ui, r, 6);
+                        resp.on_hover_text(&head.title);
                     }
                 });
                 memo.measured(ui, "rail", fit.form(), footer.response.rect);
@@ -1158,8 +1151,8 @@ const RAIL_W: f32 = 60.0;
 /// The footer's height (the status box and the menus under the sidebar's
 /// links; the rail's equivalent) before it is first measured. After the
 /// first frame its drawn heights are used ([`FooterMemo`]).
-const SIDEBAR_FOOTER: f32 = 172.0;
-const RAIL_FOOTER: f32 = 84.0;
+const SIDEBAR_FOOTER: f32 = 192.0;
+const RAIL_FOOTER: f32 = 112.0;
 /// How much shorter the footer is tightened ([`tighten`]), before it is
 /// measured so.
 const SIDEBAR_TIGHTEN: f32 = 36.0;
@@ -1168,9 +1161,12 @@ const RAIL_TIGHTEN: f32 = 36.0;
 /// Space kept between the last link and the footer.
 const FOOTER_GAP: f32 = 8.0;
 
-/// Tightened: the space between links, and under the header.
+/// Tightened: the space between links, and under the top slot. The slot
+/// draws nothing (`top_slot`), and the panel's margin is the first link's
+/// room under the tab bar, so both gaps are nothing today.
 const GAP_MIN: f32 = 2.0;
-const HEAD_GAP_TIGHT: f32 = 8.0;
+const HEAD_GAP: f32 = 0.0;
+const HEAD_GAP_TIGHT: f32 = 0.0;
 
 /// A panel's links: how many, their height and spacing, the least height
 /// they tighten to, the gap above them, and whether its status card folds.
@@ -1197,7 +1193,7 @@ const SIDEBAR_ROWS: Rows = Rows {
     // 22, not 24, since Invoices & Bills made 13 links (2026-10-24): so
     // they still fit the owner's 1479x519 window unscrolled.
     row_min: 22.0,
-    head_gap: 18.0,
+    head_gap: HEAD_GAP,
     foldable: true,
 };
 
@@ -1208,7 +1204,7 @@ const RAIL_ROWS: Rows = Rows {
     // As low as the sidebar's: at 28 the rail scrolled in the owner's
     // window (review, 2026-10-22), and at 24 once there were 13 links.
     row_min: 22.0,
-    head_gap: 18.0,
+    head_gap: HEAD_GAP,
     foldable: false,
 };
 
@@ -1530,12 +1526,58 @@ fn footer_layout<R>(
     }
 }
 
+/// The top of the sidebar (and of the rail): where the assistant's
+/// connection state goes, in a later unit. It draws nothing today, so the
+/// links begin at the panel's top margin, under the tab bar. A block put
+/// here adds its own height and gap below it ([`HEAD_GAP`],
+/// [`HEAD_GAP_TIGHT`] are what the fit leaves under it).
+fn top_slot(_ui: &mut Ui) {}
+
+/// What the status card says of its company: the heading row's badge
+/// (its hue, its letter) and name.
+struct CardHead {
+    initial: char,
+    title: String,
+    hue: egui::Color32,
+}
+
+/// The status card's badge, and the rail's.
+const CARD_BADGE: f32 = 16.0;
+const RAIL_BADGE: f32 = 24.0;
+
+impl CardHead {
+    fn paint(&self, ui: &Ui, rect: egui::Rect, radius: u8) {
+        let font = theme::bold(if rect.width() > 20.0 { 13.0 } else { 10.0 });
+        theme::paint_badge(ui.painter(), rect, radius, self.initial, self.hue, font);
+    }
+
+    /// The card's heading row: the badge, small, and the name, cut with
+    /// an ellipsis to the card's width.
+    fn row(&self, ui: &mut Ui) -> egui::Response {
+        ui.horizontal(|ui| {
+            let (r, _) = ui.allocate_exact_size(vec2(CARD_BADGE, CARD_BADGE), Sense::hover());
+            self.paint(ui, r, 4);
+            ui.add(
+                egui::Label::new(RichText::new(&self.title).font(theme::semibold(12.5))).truncate(),
+            )
+        })
+        .inner
+    }
+}
+
 /// The status card: whether the books are live, their newest event, and
 /// the integrity checks. Folded (a short window), one line, the checks
 /// in its tooltip.
-fn live_status(ui: &mut Ui, b: &Books, since_update: f64, live: bool, folded: bool) {
+fn live_status(
+    ui: &mut Ui,
+    b: &Books,
+    since_update: f64,
+    live: bool,
+    folded: bool,
+    head: &CardHead,
+) {
     if folded {
-        return folded_status(ui, b, since_update, live);
+        return folded_status(ui, b, since_update, live, head);
     }
     let p = pal(ui.ctx());
     Frame::new()
@@ -1584,6 +1626,9 @@ fn live_status(ui: &mut Ui, b: &Books, since_update: f64, live: bool, folded: bo
                     });
                 }
             }
+            // The footer is laid out bottom up, so what is added last is
+            // the card's top: the heading, over what the card always said.
+            head.row(ui).on_hover_text(&head.title);
         });
 }
 
@@ -1593,7 +1638,7 @@ fn live_status(ui: &mut Ui, b: &Books, since_update: f64, live: bool, folded: bo
 /// of [`summaries`] that fits the card, so it is never cut off: a failed
 /// check's name outranks the event and the word "Live" (review,
 /// 2026-10-22: cut to "⊘ Datab…" it hid what failed).
-fn folded_status(ui: &mut Ui, b: &Books, since_update: f64, live: bool) {
+fn folded_status(ui: &mut Ui, b: &Books, since_update: f64, live: bool, head: &CardHead) {
     let p = pal(ui.ctx());
     let checks = checks(b);
     let failed: Vec<&str> = checks
@@ -1658,6 +1703,10 @@ fn folded_status(ui: &mut Ui, b: &Books, since_update: f64, live: bool) {
                         .color(color),
                 );
             });
+            // Bottom up, so last is the top: the heading. Its hover is the
+            // card's (below): the card is one target, whose tooltip begins
+            // with the name.
+            head.row(ui);
         });
     let resp = ui.interact(
         card.response.rect,
@@ -1665,6 +1714,7 @@ fn folded_status(ui: &mut Ui, b: &Books, since_update: f64, live: bool) {
         Sense::click(),
     );
     resp.on_hover_ui(|ui| {
+        ui.label(RichText::new(&head.title).font(theme::semibold(12.0)));
         if !(line.status && line.event) {
             ui.label(
                 RichText::new(format!("{status} {event}"))

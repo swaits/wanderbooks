@@ -122,8 +122,22 @@ The viewer is **one window with a tab per open company** (P15, D-78;
 the data root the companies are in) and a list of `CompanyView`s
 (`company.rs`), one per open company, with which is in front. The tab
 bar runs across the whole window, above the sidebar: a tab is the top
-level, and the sidebar (the company's badge, its pages, its status) is the
-company in the tab's. The bar's height (`tabs::BAR_H`) is taken from the
+level, and the sidebar (its pages, its status card) is the company in the
+tab's. The tab is the company's identity in the frame (its badge and
+name), and nothing else at the top of the window repeats it: the sidebar
+has no header, its first link sits under the bar (`top_slot` in
+`company.rs` is the empty place at the top of the sidebar and of the rail,
+where the assistant's connection state is drawn later), and the Overview
+opens with its summary sentence, not a heading with the name. The company
+is named once more, at the opposite corner: the status card at the foot of
+the sidebar begins with a heading row, the badge (small) and the name, cut
+with an ellipsis and whole on hover, over the lines it always had; the
+rail shows the badge alone, its name on hover. Each company has one badge
+hue of eight (`theme::BADGE_HUES`, light and dark), chosen by a stable
+hash of the id of its books (`theme::hue_index`, FNV-1a modulo eight: a
+function of the id alone, so a company keeps its colour on every machine
+and after a rename); its tab and its card draw the same one, and the
+active tab's accent line stays the theme's. The bar's height (`tabs::BAR_H`) is taken from the
 window, so the smallest window the viewer allows is the 400 points below
 the bar plus the bar. A tab is the company's badge and name, as wide as
 that between a least and a greatest width; the "+" follows the last tab

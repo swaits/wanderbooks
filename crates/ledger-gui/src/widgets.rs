@@ -61,6 +61,19 @@ pub fn page_header(ui: &mut Ui, title: &str, subtitle: &str) {
     ui.add_space(16.0);
 }
 
+/// A page that opens with a sentence instead of a title (the Overview:
+/// the company's name is the tab's, and the status card's, not the
+/// page's): the sentence at the theme's heading size and weight, the
+/// first thing on the page.
+pub fn page_lead(ui: &mut Ui, sentence: &str) {
+    let w = ui.available_width().min(860.0);
+    ui.allocate_ui(vec2(w, 0.0), |ui| {
+        ui.set_max_width(w);
+        ui.label(RichText::new(sentence).font(theme::semibold(20.0)));
+    });
+    ui.add_space(16.0);
+}
+
 /// A rounded tag.
 pub fn pill(ui: &mut Ui, text: &str, fg: Color32, bg: Color32) -> Response {
     Frame::new()

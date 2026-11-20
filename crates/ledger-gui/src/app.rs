@@ -617,6 +617,7 @@ impl eframe::App for App {
                         _ => title.clone(),
                     },
                     title,
+                    hue_key: v.hue_key(),
                 }
             })
             .collect();

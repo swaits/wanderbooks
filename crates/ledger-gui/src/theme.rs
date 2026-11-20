@@ -90,6 +90,106 @@ pub const DARK: Palette = Palette {
     ],
 };
 
+/// The company badges' hues, light and dark: one per company, chosen by
+/// [`hue_of`] from the id of its books. Each is dark enough (light) or
+/// bright enough (dark) that its letter (black or white, whichever reads
+/// better) has 4.5:1 on it and it has 3:1 on every surface a badge sits
+/// on, in the viewer's own two themes (the test below).
+pub const BADGE_HUES: [(Color32, Color32); 8] = [
+    // indigo
+    (
+        Color32::from_rgb(0x4F, 0x46, 0xE5),
+        Color32::from_rgb(0x8B, 0x93, 0xFA),
+    ),
+    // teal
+    (
+        Color32::from_rgb(0x0F, 0x76, 0x6E),
+        Color32::from_rgb(0x2D, 0xD4, 0xBF),
+    ),
+    // orange
+    (
+        Color32::from_rgb(0xB4, 0x53, 0x09),
+        Color32::from_rgb(0xFB, 0xBF, 0x24),
+    ),
+    // rose
+    (
+        Color32::from_rgb(0xBE, 0x18, 0x5D),
+        Color32::from_rgb(0xF4, 0x72, 0xB6),
+    ),
+    // blue
+    (
+        Color32::from_rgb(0x1D, 0x4E, 0xD8),
+        Color32::from_rgb(0x60, 0xA5, 0xFA),
+    ),
+    // green
+    (
+        Color32::from_rgb(0x15, 0x80, 0x3D),
+        Color32::from_rgb(0x4A, 0xDE, 0x80),
+    ),
+    // violet
+    (
+        Color32::from_rgb(0x7E, 0x22, 0xCE),
+        Color32::from_rgb(0xC0, 0x84, 0xFC),
+    ),
+    // slate
+    (
+        Color32::from_rgb(0x47, 0x55, 0x69),
+        Color32::from_rgb(0x94, 0xA3, 0xB8),
+    ),
+];
+
+/// Which hue a company has: FNV-1a over the bytes of the id of its books,
+/// modulo the number of hues. A function of the id alone (no seed, no
+/// machine, no order of opening), so a company keeps its hue for ever and
+/// on every machine; it is never changed without a new decision.
+pub fn hue_index(book_id: &str) -> usize {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in book_id.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x100_0000_01b3);
+    }
+    (h % BADGE_HUES.len() as u64) as usize
+}
+
+/// The badge hue of the company whose books have id `book_id`, in the
+/// light or dark table.
+pub fn hue_of(book_id: &str, dark: bool) -> Color32 {
+    let (light, night) = BADGE_HUES[hue_index(book_id)];
+    if dark { night } else { light }
+}
+
+/// Whether the palette in force is a dark one (its page is darker than
+/// its text).
+fn is_dark(p: &Palette) -> bool {
+    crate::schemes::luminance(p.bg) < crate::schemes::luminance(p.text)
+}
+
+/// The badge hue of a company, for the palette in force.
+pub fn badge_hue(ctx: &Context, book_id: &str) -> Color32 {
+    hue_of(book_id, is_dark(&pal(ctx)))
+}
+
+/// A company's badge: a rounded square in its hue with its initial in it
+/// (black or white, whichever reads), drawn by the tab and the status
+/// card alike.
+pub fn paint_badge(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    radius: u8,
+    initial: char,
+    hue: Color32,
+    font: FontId,
+) {
+    painter.rect_filled(rect, CornerRadius::same(radius), hue);
+    painter.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        initial,
+        font,
+        crate::schemes::on(hue),
+    );
+}
+
 /// Where the palette in force is kept, in the context's memory.
 fn palette_id() -> egui::Id {
     egui::Id::new("wanderbooks-palette")
@@ -316,6 +416,43 @@ pub fn apply_scheme(ctx: &Context, scheme: &crate::schemes::Scheme) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// WCAG AA for each badge hue in both themes: its letter 4.5:1 on
+    /// it, and 3:1 for the badge against every surface it is drawn on.
+    #[test]
+    fn every_badge_hue_reads_in_both_themes() {
+        use crate::schemes::{contrast, on};
+        for (name, p, pick) in [("light", &LIGHT, 0), ("dark", &DARK, 1)] {
+            for (i, hues) in BADGE_HUES.iter().enumerate() {
+                let hue = if pick == 0 { hues.0 } else { hues.1 };
+                let letter = contrast(on(hue), hue);
+                assert!(
+                    letter >= 4.5,
+                    "{name} hue {i} {hue:?}: letter {letter:.2}:1"
+                );
+                // The tab's (in front, behind, hovered) and the card's.
+                for (what, ground) in [
+                    ("surface", p.surface),
+                    ("sidebar", p.sidebar),
+                    ("page", p.bg),
+                    ("hover", p.hover),
+                ] {
+                    let r = contrast(hue, ground);
+                    assert!(r >= 3.0, "{name} hue {i} {hue:?} on {what}: {r:.2}:1");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_hue_is_a_function_of_the_book_id_alone() {
+        // Pinned: a change here recolours every company.
+        assert_eq!(hue_index("alpha"), hue_index("alpha"));
+        assert_eq!(hue_index(""), 0xcbf2_9ce4_8422_2325_u64 as usize % 8);
+        let all: std::collections::HashSet<usize> =
+            (0..200).map(|n| hue_index(&format!("books-{n}"))).collect();
+        assert_eq!(all.len(), BADGE_HUES.len(), "every hue is used");
+    }
 
     /// font_definitions: every family ends with the PDFs' Noto fallbacks,
     /// in their order, after its own face, the icons and the symbol fonts,

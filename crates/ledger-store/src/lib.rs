@@ -29,6 +29,7 @@ pub mod error;
 pub mod exports;
 pub mod form1099;
 pub mod format;
+pub mod git_locks;
 pub mod journal;
 pub mod lock;
 pub mod meta;

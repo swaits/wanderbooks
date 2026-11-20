@@ -132,9 +132,29 @@ fn the_viewer_says_update_for_newer_books_and_corrupt_for_damaged_ones() {
     assert!(!err.contains("newer"), "{err}");
 }
 
+/// The viewer's next error, within ten seconds. It never shows books it
+/// can't read: an update carrying books is a failure.
+fn next_error(loader: &Loader) -> String {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        match loader.wait(Duration::from_millis(200)) {
+            Some(Update::Error(e)) => return e,
+            Some(Update::Books(_)) => panic!("the viewer read a line it doesn't know"),
+            _ => {}
+        }
+    }
+    panic!("the viewer never said anything about the line it doesn't know");
+}
+
 /// Following: the viewer has the books open when a newer wanderbooks
 /// writes a line this one can't read. It says to update, and keeps the
 /// books it had.
+///
+/// The writer's two lines are two writes, and the viewer may look between
+/// them: with the newer line last, nothing can check it, and the viewer
+/// says "newer or damaged" (BS-format-1) until the line after it lands.
+/// Both are right, so this waits for the "update" and holds every message
+/// before it to the "newer or damaged" one.
 #[test]
 fn a_live_viewer_says_update_when_the_books_move_ahead_of_it() {
     let data = books("live");
@@ -147,19 +167,46 @@ fn a_live_viewer_says_update_when_the_books_move_ahead_of_it() {
     w.append("entry.evidence_inherited", json!({"entry_id": 1}))
         .unwrap();
     w.append("fx.rate_set", rate()).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let mut said = None;
-    while Instant::now() < deadline {
-        match loader.wait(Duration::from_millis(200)) {
-            Some(Update::Error(e)) => {
-                said = Some(e);
-                break;
-            }
-            Some(Update::Books(_)) => panic!("the viewer read a line it doesn't know"),
-            _ => {}
+    loop {
+        let said = next_error(&loader);
+        if said.starts_with("Journal line") {
+            says_newer_or_damaged(&said);
+        } else {
+            says_update(&said);
+            break;
         }
     }
-    says_update(&said.expect("the viewer never said to update"));
+}
+
+/// The viewer looks between the writer's two lines, as it can at any time:
+/// with the newer line last it says "newer or damaged"; when the next line
+/// lands it says "update", with no new look asked for.
+#[test]
+fn a_live_viewer_that_looks_between_the_two_lines_says_update_once_the_second_lands() {
+    let data = books("live-between");
+    let loader = Loader::spawn(source(&data), egui::Context::default());
+    match loader.wait(Duration::from_secs(10)) {
+        Some(Update::Books(_)) => {}
+        _ => panic!("no initial load"),
+    }
+    let mut w = JournalWriter::open(&data.join(JOURNAL_FILE)).unwrap();
+    w.append("entry.evidence_inherited", json!({"entry_id": 1}))
+        .unwrap();
+    // The viewer has looked and found the newer line last.
+    says_newer_or_damaged(&next_error(&loader));
+    // The line after it lands: the first line is now checked, and known
+    // newer. (Looks made before the second line is read may repeat the
+    // last-line message; none may be anything else.)
+    w.append("fx.rate_set", rate()).unwrap();
+    loop {
+        let said = next_error(&loader);
+        if said.starts_with("Journal line") {
+            says_newer_or_damaged(&said);
+        } else {
+            says_update(&said);
+            break;
+        }
+    }
 }
 
 /// A declared format this version reads opens like any books, and the

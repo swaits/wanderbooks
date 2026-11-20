@@ -457,7 +457,7 @@ fn a_background_tab_follows_its_journal_and_is_current_when_shown() {
     let mut h = start_with_prefs(&w, &[("open_companies", "alpha,beta")]);
     loaded(&mut h);
     assert_eq!(h.state().active(), Some(0));
-    let beta_seq = h.state().views()[1].books().unwrap().seq();
+    let beta_cash = h.state().views()[1].books().unwrap().kpis.cash;
 
     // Beta's journal changes while alpha is in front: 100.00 more cash.
     let mut s = Store::open(&b.data).unwrap();
@@ -470,8 +470,12 @@ fn a_background_tab_follows_its_journal_and_is_current_when_shown() {
         10_000,
     );
     drop(s);
+    // The entry is several journal lines, and the tab may read some of
+    // them first (its seq moves): wait for the one that posts it, whose
+    // 100.00 lands in cash.
+    let beta_cash_after = beta_cash + Decimal::new(10_000, 2);
     until(&mut h, "the background tab reads the new entry", |a| {
-        a.views()[1].books().unwrap().seq() > beta_seq
+        a.views()[1].books().unwrap().kpis.cash == beta_cash_after
     });
     assert_eq!(h.state().active(), Some(0), "nothing brought beta forward");
 

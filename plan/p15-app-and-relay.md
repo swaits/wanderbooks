@@ -47,6 +47,65 @@ Proposed by the lead (engineering choices the owner has not objected to):
 | D-84 | **The books server stays its own process, a child of the app.** The app takes the host's job (start the server from its own executable, close it by closing its input); it does not run the server on a thread. |
 | D-85 | **The relay keeps one small durable table**, name to the app's public key, and nothing else durable. The routing table lives in memory and is rebuilt as apps reconnect. |
 
+## 2a. Every write is one transaction, exactly once (D-88)
+
+The owner, 2026-11-20, on a write whose answer is lost and which is then
+retried: "Writes have to be TRANSACTIONAL ALWAYS! You can record a failed
+transaction." Decided: **D-88, every write through the tools is one
+transaction that happens exactly once.**
+
+What the code does today (read 2026-11-20 by a worker; file and line in
+`docs/delegation-log.md`'s entry of that day):
+
+- One journal line is all or nothing (appended and fsynced, then memory,
+  then SQLite). But a tool call may append several lines with nothing
+  joining them: an invoice writes its entry's events, `invoice.created`,
+  `receipt.attached` and `attachment.linked`; a settlement may add an
+  account, the entry, then one event per document; a draft with a party
+  is `entry.created` then `entry.party_set`. A crash between them leaves
+  part of a call in the books, and it replays as if whole.
+- Nothing identifies a call. The envelope is `{seq, ts, type, payload,
+  prev}` and is frozen (WB-format-1). The access log's request id is per
+  session, so a retry looks like a new call.
+- About 25 to 30 write tools make something new on every call (drafts,
+  lines, parties, payroll runs, payouts, statements, attestations), so a
+  retry after a lost answer records twice. Fifteen confirmed tools refuse
+  a repeat through the preview digest but cannot return what the first
+  call answered. The bridge already tells an agent that a cut-off call
+  "may have run", which is exactly this case.
+- What a write returns is not a function of the books afterwards
+  (balances before and after, today's outstanding, next steps), so the
+  original answer must be kept, not recomputed.
+
+The rule:
+
+1. **A call's lines commit together or not at all.** A call's events are
+   followed by one closing line naming the call, its first and last
+   sequence numbers, and its outcome. On opening the books, lines after
+   the last closing line that belong to no closed call are a call that
+   never finished: they are set aside as a torn tail is today, recorded,
+   and not applied. No state is ever built from half a call.
+2. **Every write call carries a request key**, required by the tool's
+   schema. A write without one is refused. The key and the answer that
+   was given are in the closing line, so replay rebuilds the table of
+   keys from the journal alone.
+3. **A repeat of a key** (same book, same token) with the same arguments
+   returns the original answer and writes nothing; with different
+   arguments it is refused as a misuse of the key. The access log records
+   it as a repeat.
+4. **A refused or failed write is on record** (the access log, as now),
+   and where a call got as far as writing lines before failing, its
+   closing line says it failed and its lines are not applied.
+5. Lines written before the books declared this feature have no closing
+   lines and stand as they are: posted is forever.
+
+It is a journal feature (a new line type and a new payload field), so it
+follows `served.md` 8.0.5 R-A and R-B and 8.0.6: an old-books fixture,
+the `is_its_own_feature` test, replay arms, the fuzz types, and a Lean
+law in bookspec for "a replay of any prefix that ends inside a call
+equals the replay of the prefix before that call". Unit **T1**, built
+before the remote door (B1); it does not wait for the relay.
+
 ## 3. The shape
 
 ```

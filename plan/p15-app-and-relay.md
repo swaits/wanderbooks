@@ -32,14 +32,20 @@ people this is for use chat products in a browser, not a terminal.
 | D-81 | **First release promises Claude and ChatGPT on the web**, with tested steps. Gemini, Grok and muse.ai get a generic path on the same address, labelled untested. |
 | D-82 | **Addresses are four words from a curated finance and accounting list** (`ledger-accrual-tally-mint`), never a word a customer would not want in an address. |
 
-Proposed by the lead, for the owner to confirm:
+Also decided by the owner on 2026-11-20:
+
+| Id | Decision |
+|---|---|
+| D-83 | **The app is its own sign-in server for web assistants** (OAuth 2.1), and a new assistant is approved in the app's window, by whoever is at the machine. No external identity provider, no passkeys, no account with us. (Q-6 closes for the desktop app; the hosted service of section 11 of `served.md` may still choose an external provider.) |
+| D-86 | **Web assistants get read and draft by default**; posting is a permission the owner turns on per connection in the app. |
+| D-87 | **Each app holds its own certificate** (kept after the owner weighed one wildcard at the relay; section 5 says why and what it does not promise). |
+
+Proposed by the lead (engineering choices the owner has not objected to):
 
 | Id | Proposal |
 |---|---|
-| D-83 | **The app is its own sign-in server for web assistants** (OAuth 2.1), and a new assistant is approved in the app's window, by whoever is at the machine. No external identity provider, no passkeys, no account with us. (Q-6 closes for the desktop app; the hosted service of section 11 of `served.md` may still choose an external provider.) |
 | D-84 | **The books server stays its own process, a child of the app.** The app takes the host's job (start the server from its own executable, close it by closing its input); it does not run the server on a thread. |
 | D-85 | **The relay keeps one small durable table**, name to the app's public key, and nothing else durable. The routing table lives in memory and is rebuilt as apps reconnect. |
-| D-86 | **Web assistants get read and draft by default**; posting is a permission the owner turns on per connection in the app. |
 
 ## 3. The shape
 
@@ -189,7 +195,7 @@ section 8):
 10. Read tools carry the read-only mark, so products ask before each
     write.
 
-Permissions (D-86, proposed): the scopes exist (`books:read`, `write`,
+Permissions (D-86): the scopes exist (`books:read`, `write`,
 `post`, `admin`, `auth.rs`). A web approval grants read and write
 (drafts) and not post or admin; the owner can raise it per connection.
 An assistant that also reads email can be steered by what it reads;

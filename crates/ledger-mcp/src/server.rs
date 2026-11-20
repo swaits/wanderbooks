@@ -74,6 +74,8 @@ pub struct BooksServer {
     exports: ledger_store::exports::Exports,
     /// The books' backups (backup.rs).
     backups: Arc<crate::backup::Backups>,
+    /// Who is connected, and what each is doing (sessions.rs).
+    board: Arc<crate::sessions::Board>,
     /// How these books are kept from agents (plan 3.8, P9a): what
     /// `books.start` reports.
     isolation: Isolation,
@@ -128,6 +130,8 @@ pub(crate) struct Served {
     pub(crate) uploads: ledger_store::uploads::Uploads,
     pub(crate) exports: ledger_store::exports::Exports,
     pub(crate) backups: Arc<crate::backup::Backups>,
+    /// Its live sessions' board (sessions.rs), read by the admin socket.
+    pub(crate) board: Arc<crate::sessions::Board>,
     pub(crate) isolation: Isolation,
 }
 
@@ -178,6 +182,7 @@ impl Served {
             uploads,
             exports,
             backups,
+            board: Arc::default(),
             isolation,
         })
     }
@@ -547,6 +552,7 @@ impl BooksServer {
             uploads: served.uploads.clone(),
             exports: served.exports.clone(),
             backups: served.backups.clone(),
+            board: served.board.clone(),
             isolation: served.isolation,
         }
     }
@@ -1744,7 +1750,7 @@ impl ServerHandler for BooksServer {
     ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
         use crate::access::{self, Call};
         use ledger_store::access::Outcome;
-        let mut call = Call::new(&self.access, &context, "tool", &request.name);
+        let mut call = Call::new(&self.access, &self.board, &context, "tool", &request.name);
         let outcome_of = |out: &Result<rmcp::model::CallToolResponse, rmcp::ErrorData>| match out {
             Ok(rmcp::model::CallToolResponse::Complete(r)) if r.is_error != Some(true) => {
                 Outcome::Ok
@@ -1944,6 +1950,23 @@ impl ServerHandler for BooksServer {
         })
     }
 
+    /// The client has said who it is: the session's board (sessions.rs)
+    /// knows it before the session's first call.
+    async fn on_initialized(&self, context: rmcp::service::NotificationContext<RoleServer>) {
+        if let (Some(sid), Some(info)) = (
+            crate::access::session_of(&context.extensions),
+            context.peer.peer_info(),
+        ) {
+            self.board.initialized(
+                &sid,
+                ledger_store::access::Client {
+                    name: info.client_info.name.clone(),
+                    version: info.client_info.version.clone(),
+                },
+            );
+        }
+    }
+
     fn get_info(&self) -> ServerConfig {
         // A client connecting after a settings change sees the change
         // (never waiting for the books here; a request holding them syncs
@@ -2011,7 +2034,7 @@ impl ServerHandler for BooksServer {
         use ledger_store::access::Outcome;
         // Reading a resource is reading the books: books:read, recorded
         // (access.rs).
-        let call = Call::new(&self.access, &context, "resource", &request.uri);
+        let call = Call::new(&self.access, &self.board, &context, "resource", &request.uri);
         let result = self.resource(request, &call).await;
         {
             let outcome = match &result {

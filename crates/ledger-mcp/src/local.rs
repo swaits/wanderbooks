@@ -1,5 +1,7 @@
-//! `wanderbooks server`: every book in the data root, served on local
-//! sockets (plan 3.1, 3.9). The host starts it; nothing else should.
+//! `wanderbooks server`: the books of the data root, served on local
+//! sockets (plan 3.1, 3.9), every one open at the start unless told
+//! otherwise, and any one opened or closed while it runs (plan/p15-app-and-relay.md 3.1).
+//! The host starts it; nothing else should.
 //!
 //! ```text
 //! GOAL: one process, the books' sole writer, serves every book in the
@@ -11,7 +13,10 @@
 //!         layout, run/books.lock), 3.9 (local channels, peer checks,
 //!         closing: "no new requests, the one in progress finishes, every
 //!         writer lock is released"), D-21 and D-23 (no service: the host
-//!         starts and stops this process).
+//!         starts and stops this process); plan/p15-app-and-relay.md 3.1
+//!         (open and close one book while the server runs; who is
+//!         connected), D-77 (the app is the host: a company is reachable
+//!         exactly while the app has it open), D-78 (one tab per company).
 //! INVARIANTS:
 //!   1. One server per root: it holds `run/server.lock` from before it
 //!      opens anything until it exits; a second server waits for the lock
@@ -20,10 +25,12 @@
 //!      replaced only under that lock.
 //!   2. Only this account: a connection to either socket whose peer is
 //!      another user ID is dropped before a byte is read.
-//!   3. Every book is opened and verified (rebuilding a drifted database)
-//!      before the server says it is ready; one that won't open is
-//!      reported with why, on its route and in the list, and the others
-//!      are served.
+//!   3. Every book chosen to be open (`--open`: all unless said) is opened
+//!      and verified (rebuilding a drifted database) before the server
+//!      says it is ready; one that won't open is reported with why, on its
+//!      route and in the list, and the others are served. The books not
+//!      chosen are closed (listed so), and open when asked (INVARIANT 10),
+//!      by the same checks.
 //!   4. Each book has one store, shared by every session: one writer.
 //!   5. The ready line (stdout, once) comes only after both sockets are
 //!      bound and every book has been tried.
@@ -57,6 +64,41 @@
 //!      excepted); bytes whose record can't be written aren't kept, and
 //!      the books stop. Lapsed uploads and exports are swept every
 //!      SWEEP_EVERY. Nothing comes in or goes out once the books stopped.
+//!  10. One book opens or closes while the server runs, by admin request,
+//!      one change at a time (create, adopt and restore among them). Open:
+//!      a closed (or failed) book of the root is opened and verified as at
+//!      the start. Close: from the moment it begins, a call on that book is
+//!      refused at its door, unrun, and not in its journal; a call already
+//!      running on it, on any route, finishes (nothing is killed, nothing
+//!      is half-done); the book's last backup is made as at the server's
+//!      close; its MCP sessions end; its store is let go, its writer lock
+//!      released, so another process could open it; and only then is
+//!      "closed" answered. After that answer no call on that book runs
+//!      until it is opened again. Every other book keeps serving, and a
+//!      call on it is never held up by this one's close.
+//!  11. A call for a book that exists but is closed is told apart from one
+//!      that does not exist, on the MCP, upload, download and export
+//!      routes: 503, `x-wanderbooks-refused: closed`, and the words `The
+//!      books "ID" aren't open: open them in Wanderbooks.` (the access log
+//!      of a closed book is not written: it is not open).
+//!  12. A book's live MCP sessions are known: for each, its token's NAME
+//!      (never the token), the client's name and version, the agent's
+//!      self-report, when it connected, its calls running now, and its last
+//!      call (sessions.rs); a session that ended is not listed, and a
+//!      book's sessions end with the book.
+//! SCENARIOS:
+//!   1. Two books open; one is closed while agents call both: the other
+//!      answers throughout, the closed one's calls are refused unrun
+//!      (never half-done), its journal holds exactly the calls that were
+//!      acknowledged; it is opened again and serves again.
+//!   2. The server starts with `--open none`: every book is listed closed,
+//!      a call to one says it isn't open, a call to a name that isn't a
+//!      book says there is no such book; one is opened by request.
+//!   3. A book is closed twice: the second answer is "was not open". A
+//!      name that is no book: "no such book".
+//!   4. A book is closed, then another process opens the store and writes
+//!      to it: the lock was released; the server, asked to open it, says
+//!      another program has it open, and opens once that one lets go.
 //! ```
 
 use crate::admin::{self, Request, Response};
@@ -116,6 +158,12 @@ const BACKUP_AT_CLOSE: Duration = Duration::from_secs(60);
 
 type Service = StreamableHttpService<BooksServer, LocalSessionManager>;
 
+/// What a call is told for a book that exists but is closed (INVARIANT
+/// 11): words an agent can relay to the person.
+fn closed_words(book: &str) -> String {
+    format!("The books \"{book}\" aren't open: open them in Wanderbooks.")
+}
+
 /// A book the server holds.
 #[derive(Clone)]
 enum Book {
@@ -141,17 +189,124 @@ enum Book {
         /// Its projection database's file, and other schemas' beside it,
         /// by name, as it opened (`wanderbooks doctor` says them).
         database: (String, Vec<String>),
+        /// Its door: every request on it enters here, and a close shuts it
+        /// and waits for those inside (INVARIANT 10).
+        gate: Arc<Gate>,
+        /// Ends its MCP sessions (a child of the server's own).
+        ended: CancellationToken,
+        /// Who is connected to it (sessions.rs, INVARIANT 12).
+        board: Arc<crate::sessions::Board>,
     },
     /// Not opened, with why (INVARIANT 3).
     Failed(String),
+    /// Not open, by choice: left closed at the start (`--open`), or closed
+    /// since (INVARIANT 10). Not a problem.
+    Closed,
 }
 
 impl Book {
     /// Why it isn't open, if it isn't.
     fn problem(&self) -> Option<String> {
         match self {
-            Book::Open { .. } => None,
+            Book::Open { .. } | Book::Closed => None,
             Book::Failed(why) => Some(why.clone()),
+        }
+    }
+}
+
+/// One book's door (INVARIANT 10): requests are counted as they enter, and
+/// once shut none enters. A close shuts it, then waits for the count to
+/// reach zero: every request that got in has finished, its record written.
+///
+/// Entering adds to the count before it looks at `shut`, and shutting sets
+/// `shut` before it looks at the count (both sequentially consistent), so
+/// a request either sees the door shut, or is counted where the close will
+/// wait for it: never neither.
+#[derive(Default)]
+pub(crate) struct Gate {
+    shut: std::sync::atomic::AtomicBool,
+    inside: AtomicUsize,
+    left: tokio::sync::Notify,
+}
+
+/// A request inside a book's door, counted until dropped.
+struct Inside(Arc<Gate>);
+
+impl Drop for Inside {
+    fn drop(&mut self) {
+        self.0.inside.fetch_sub(1, Ordering::SeqCst);
+        self.0.left.notify_waiters();
+    }
+}
+
+impl Gate {
+    /// Let a request in, if the door is open.
+    fn enter(self: &Arc<Self>) -> Option<Inside> {
+        self.inside.fetch_add(1, Ordering::SeqCst);
+        let inside = Inside(self.clone());
+        (!self.shut.load(Ordering::SeqCst)).then_some(inside)
+    }
+
+    /// Let no request in from now on.
+    fn shut(&self) {
+        self.shut.store(true, Ordering::SeqCst);
+    }
+
+    /// Wait until every request inside has left.
+    async fn emptied(&self) {
+        loop {
+            let left = self.left.notified();
+            if self.inside.load(Ordering::SeqCst) == 0 {
+                return;
+            }
+            left.await;
+        }
+    }
+}
+
+/// A session bound to the token that opened it (INVARIANT 8).
+struct Bound {
+    /// The token's id.
+    token: String,
+    /// The token's name (listed by `sessions`: never the token).
+    name: String,
+    /// The book it is a session of.
+    book: String,
+    /// When it connected (seconds since the epoch, UTC).
+    at: i64,
+}
+
+/// Which books are open at the server's start (`--open`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OpenAtStart {
+    /// Every book of the root (the default).
+    All,
+    /// Only these (none: an empty list).
+    Only(Vec<String>),
+}
+
+impl OpenAtStart {
+    /// `--open`'s value: `all`, `none`, or books' ids separated by commas.
+    pub fn parse(text: &str) -> Result<Self, String> {
+        match text.trim() {
+            "all" => Ok(Self::All),
+            "none" => Ok(Self::Only(Vec::new())),
+            list => list
+                .split(',')
+                .map(|id| {
+                    BookId::parse(id.trim())
+                        .map(|id| id.to_string())
+                        .map_err(|e| format!("--open takes all, none, or books' ids: {e}"))
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map(Self::Only),
+        }
+    }
+
+    fn wants(&self, id: &BookId) -> bool {
+        match self {
+            Self::All => true,
+            Self::Only(ids) => ids.iter().any(|i| i == id.as_str()),
         }
     }
 }
@@ -178,21 +333,47 @@ struct Books {
     principals: RwLock<Result<Principals, String>>,
     /// Which token opened each MCP session: a session is used only with
     /// the token that opened it (INVARIANT 8).
-    session_tokens: Mutex<BTreeMap<String, String>>,
+    session_tokens: Mutex<BTreeMap<String, Bound>>,
     /// How long the books stay unwritten before a backup is made
     /// (`--backup-quiet`, for tests; else BACKUP_QUIET).
     backup_quiet: Duration,
     /// How long after books are first seen open a drill is first looked
     /// for (`--drill-first`, for tests; else DRILL_FIRST).
     drill_first: Duration,
-    /// Held through a restore: one at a time.
-    restoring: Mutex<()>,
+    /// Held through every change to which books are open or exist (create,
+    /// adopt, restore, open, close): one at a time (INVARIANT 10).
+    lifecycle: Mutex<()>,
     /// How these books are kept from agents (plan 3.8, P9a): what
     /// `books.start` reports (`--isolation`).
     isolation: Isolation,
 }
 
 impl Books {
+    /// A server's books for `root`, none held yet.
+    fn new(
+        root: Root,
+        backup_quiet: Duration,
+        drill_first: Duration,
+        isolation: Isolation,
+    ) -> Self {
+        Self {
+            root,
+            held: RwLock::new(BTreeMap::new()),
+            sessions: CancellationToken::new(),
+            closing: CancellationToken::new(),
+            in_flight: AtomicUsize::new(0),
+            finished: tokio::sync::Notify::new(),
+            last_arrival: std::sync::atomic::AtomicU64::new(0),
+            started: Instant::now(),
+            principals: RwLock::new(Err(String::new())),
+            session_tokens: Mutex::new(BTreeMap::new()),
+            backup_quiet,
+            drill_first,
+            lifecycle: Mutex::new(()),
+            isolation,
+        }
+    }
+
     /// Take the root's path out of a message (INVARIANT 7).
     fn hide(&self, text: impl Into<String>) -> String {
         let mut text = text.into();
@@ -232,7 +413,7 @@ impl Books {
         self.session_tokens
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .retain(|_, owner| owner != token_id);
+            .retain(|_, bound| bound.token != token_id);
     }
 
     /// Read the principals from the root's `auth/`.
@@ -298,12 +479,13 @@ impl Books {
         let waiting = Arc::new(Mutex::new(store.journal_format().upgrade()));
         let database = (store.database_file(), store.other_databases());
         let served = Served::open_with(store, self.isolation).map_err(|e| self.hide(e))?;
+        let ended = self.sessions.child_token();
         let config = StreamableHttpServerConfig::default()
             .with_json_response(true)
             .with_legacy_session_mode(true)
             .with_max_request_body_bytes(MAX_BODY)
             .enforce_origin_validation()
-            .with_cancellation_token(self.sessions.child_token());
+            .with_cancellation_token(ended.clone());
         let parts = served.clone();
         // Every session's server is made the one way (server.rs Served).
         let service = StreamableHttpService::new(
@@ -317,9 +499,13 @@ impl Books {
             uploads,
             exports,
             backups,
+            board,
             ..
         } = served;
         Ok(Book::Open {
+            gate: Arc::default(),
+            ended,
+            board,
             service: Box::new(service),
             store: shared,
             access,
@@ -337,7 +523,7 @@ impl Books {
             .values()
             .filter_map(|b| match b {
                 Book::Open { store, .. } => Some(store.clone()),
-                Book::Failed(_) => None,
+                Book::Failed(_) | Book::Closed => None,
             })
             .collect()
     }
@@ -363,25 +549,23 @@ impl Books {
                     .map(|(id, book)| admin::BookStatus {
                         id: id.clone(),
                         open: matches!(book, Book::Open { .. }),
-                        problem: match book {
-                            Book::Open { .. } => None,
-                            Book::Failed(why) => Some(why.clone()),
-                        },
+                        closed: matches!(book, Book::Closed),
+                        problem: book.problem(),
                         format_upgrade: match book {
                             Book::Open { waiting, .. } => waiting
                                 .lock()
                                 .unwrap_or_else(|e| e.into_inner())
                                 .as_ref()
                                 .map(admin::FormatWaiting::from),
-                            Book::Failed(_) => None,
+                            Book::Failed(_) | Book::Closed => None,
                         },
                         database: match book {
                             Book::Open { database, .. } => Some(database.0.clone()),
-                            Book::Failed(_) => None,
+                            Book::Failed(_) | Book::Closed => None,
                         },
                         other_databases: match book {
                             Book::Open { database, .. } => database.1.clone(),
-                            Book::Failed(_) => Vec::new(),
+                            Book::Failed(_) | Book::Closed => Vec::new(),
                         },
                     })
                     .collect(),
@@ -472,6 +656,7 @@ impl Books {
                         "that isn't a currency: give its three-letter ISO code, such as USD".into(),
                     );
                 };
+                let _one = self.lifecycle.lock().unwrap_or_else(|e| e.into_inner());
                 if self.held().contains_key(id.as_str()) {
                     return refused(RootError::Exists(id.to_string()));
                 }
@@ -497,6 +682,9 @@ impl Books {
                 expect_head,
             } => self.restore(id, source, replace, confirmed, expect_head),
             Request::UpgradeFormat { id, passphrase } => self.upgrade_format(id, &passphrase),
+            Request::OpenBook { id } => self.open_one(id),
+            Request::CloseBook { id } => self.close_one(id),
+            Request::Sessions => self.sessions_listed(),
             Request::Extract { id, attachment_id } => {
                 let id = match BookId::parse(&id) {
                     Ok(id) => id,
@@ -507,6 +695,7 @@ impl Books {
                     Some(Book::Failed(why)) => {
                         return Response::Refused(format!("those books didn't open: {why}"));
                     }
+                    Some(Book::Closed) => return Response::Refused(self.not_open(&id)),
                     None => {
                         return Response::Refused(format!(
                             "there are no books called {:?}",
@@ -535,6 +724,7 @@ impl Books {
                     Some(Book::Failed(why)) => {
                         return Response::Refused(format!("those books didn't open: {why}"));
                     }
+                    Some(Book::Closed) => return Response::Refused(self.not_open(&id)),
                     None => {
                         return Response::Refused(format!(
                             "there are no books called {:?}",
@@ -575,6 +765,7 @@ impl Books {
                     Ok(id) => id,
                     Err(e) => return refused(e),
                 };
+                let _one = self.lifecycle.lock().unwrap_or_else(|e| e.into_inner());
                 if self.held().contains_key(id.as_str()) {
                     return refused(RootError::Exists(id.to_string()));
                 }
@@ -720,6 +911,7 @@ impl Books {
             Some(Book::Failed(why)) => {
                 return Response::Refused(format!("those books didn't open: {why}"));
             }
+            Some(Book::Closed) => return Response::Refused(self.not_open(&id)),
             None => {
                 return Response::Refused(format!(
                     "there are no books called {:?}: `wanderbooks books list` lists them",
@@ -770,6 +962,184 @@ impl Books {
         }
     }
 
+    /// Open the one book `id` (INVARIANT 10): a closed or failed book of
+    /// the root is opened and verified as at the start, and says so.
+    fn open_one(&self, id: String) -> Response {
+        let id = match BookId::parse(&id) {
+            Ok(id) => id,
+            Err(e) => return Response::Refused(self.hide(e.to_string())),
+        };
+        let said = |outcome| Response::OpenBook {
+            id: id.to_string(),
+            outcome,
+        };
+        let _one = self.lifecycle.lock().unwrap_or_else(|e| e.into_inner());
+        if self.closing.is_cancelled() {
+            return Response::Refused("the books are closing: nothing was done".into());
+        }
+        let is_open = self
+            .held()
+            .get(id.as_str())
+            .map(|b| matches!(b, Book::Open { .. }));
+        match is_open {
+            Some(true) => return said(admin::OpenOutcome::AlreadyOpen),
+            Some(false) => {}
+            // Not held: a book of the root this server didn't take up, or
+            // none at all.
+            None => match self.root.list_books() {
+                Ok(ids) if ids.iter().any(|i| i.as_str() == id.as_str()) => {}
+                Ok(_) => return said(admin::OpenOutcome::NoSuchBook),
+                Err(e) => return Response::Refused(self.hide(e.to_string())),
+            },
+        }
+        let book = self.open(&id);
+        let problem = book.problem();
+        self.hold(&id, book);
+        said(match problem {
+            None => admin::OpenOutcome::Opened,
+            Some(why) => admin::OpenOutcome::CouldNotOpen(why),
+        })
+    }
+
+    /// Close the one book `id` while the server runs (INVARIANT 10). In
+    /// this order: its door is shut and the book is listed closed, so a
+    /// call on it is refused from here on; the calls running on it finish,
+    /// on every route (SharedStore INVARIANT 3, and the gate); its MCP
+    /// sessions end; its last backup is made, as at the server's close;
+    /// and its store is let go, releasing its writer lock. Only then is it
+    /// answered closed. Other books are never waited on, nor refused.
+    fn close_one(&self, id: String) -> Response {
+        let id = match BookId::parse(&id) {
+            Ok(id) => id,
+            Err(e) => return Response::Refused(self.hide(e.to_string())),
+        };
+        let said = |outcome| Response::CloseBook {
+            id: id.to_string(),
+            outcome,
+        };
+        let _one = self.lifecycle.lock().unwrap_or_else(|e| e.into_inner());
+        if self.closing.is_cancelled() {
+            return Response::Refused("the books are closing: nothing was done".into());
+        }
+        let held = self.held().get(id.as_str()).cloned();
+        let (gate, store, backups, ended) = match held {
+            Some(Book::Open {
+                gate,
+                store,
+                backups,
+                ended,
+                ..
+            }) => (gate, store, backups, ended),
+            Some(Book::Failed(_) | Book::Closed) => {
+                return said(admin::CloseOutcome::WasNotOpen);
+            }
+            None => {
+                return match self.root.list_books() {
+                    Ok(ids) if ids.iter().any(|i| i.as_str() == id.as_str()) => {
+                        said(admin::CloseOutcome::WasNotOpen)
+                    }
+                    Ok(_) => said(admin::CloseOutcome::NoSuchBook),
+                    Err(e) => Response::Refused(self.hide(e.to_string())),
+                };
+            }
+        };
+        let rt = tokio::runtime::Handle::current();
+        // No new call gets in; the book is listed closed.
+        gate.shut();
+        self.hold(&id, Book::Closed);
+        // No tool starts, and every one that did start has finished.
+        rt.block_on(store.close());
+        // Every request inside the door has finished, its record written.
+        rt.block_on(gate.emptied());
+        // Its sessions end, and are forgotten.
+        self.end_sessions(&id, &ended);
+        // The last backup, as at the server's close; then nothing more of
+        // the backups' reaches the books, and the store is let go.
+        let _ = rt.block_on(tokio::time::timeout(BACKUP_AT_CLOSE, backups.run("close")));
+        let _paused = rt.block_on(backups.pause());
+        rt.block_on(store.let_go());
+        drop(_paused);
+        eprintln!("wanderbooks server: the books {id} were closed");
+        said(admin::CloseOutcome::Closed)
+    }
+
+    /// End the MCP sessions of the book `id` and forget their bindings.
+    fn end_sessions(&self, id: &BookId, ended: &CancellationToken) {
+        ended.cancel();
+        self.session_tokens
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|_, bound| bound.book != id.as_str());
+    }
+
+    /// Who is connected to each open book (INVARIANT 12).
+    fn sessions_listed(&self) -> Response {
+        let bound: Vec<(String, String, String, i64)> = self
+            .session_tokens
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .map(|(sid, b)| (sid.clone(), b.name.clone(), b.book.clone(), b.at))
+            .collect();
+        let open: Vec<(String, Arc<crate::sessions::Board>)> = self
+            .held()
+            .iter()
+            .filter_map(|(id, b)| match b {
+                Book::Open { board, .. } => Some((id.clone(), board.clone())),
+                Book::Failed(_) | Book::Closed => None,
+            })
+            .collect();
+        let when = |at: i64| {
+            chrono::DateTime::from_timestamp(at, 0)
+                .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+                .unwrap_or_default()
+        };
+        Response::Sessions(
+            open.into_iter()
+                .map(|(book, board)| {
+                    let mut mine: Vec<_> = bound.iter().filter(|(_, _, b, _)| *b == book).collect();
+                    mine.sort_by(|a, b| (a.3, &a.0).cmp(&(b.3, &b.0)));
+                    let live: Vec<String> = mine.iter().map(|(sid, ..)| sid.clone()).collect();
+                    let mut notes = board.snapshot(&live);
+                    let sessions = mine
+                        .into_iter()
+                        .map(|(sid, name, _, at)| {
+                            let note = notes.remove(sid).unwrap_or_default();
+                            admin::SessionInfo {
+                                token: name.clone(),
+                                client_name: note.client.as_ref().map(|c| c.name.clone()),
+                                client_version: note.client.as_ref().map(|c| c.version.clone()),
+                                agent: note.agent.map(|a| admin::SessionAgent {
+                                    model: a.model,
+                                    reasoning_effort: a.reasoning_effort,
+                                    harness: a.harness,
+                                }),
+                                connected_at: when(*at),
+                                running: u32::try_from(note.running).unwrap_or(u32::MAX),
+                                last: note.last.map(|l| admin::LastCall {
+                                    tool: l.subject,
+                                    outcome: match l.outcome {
+                                        Outcome::Ok => "ok".to_string(),
+                                        Outcome::Error => "error".to_string(),
+                                        Outcome::Refused(code) => format!("refused: {code}"),
+                                    },
+                                    at: when(l.at),
+                                }),
+                            }
+                        })
+                        .collect();
+                    admin::BookSessions { book, sessions }
+                })
+                .collect(),
+        )
+    }
+
+    /// What is said of a book that exists but isn't open, to an admin
+    /// request that needs it open.
+    fn not_open(&self, id: &BookId) -> String {
+        closed_words(id.as_str())
+    }
+
     /// Restore a backup (admin INVARIANT 4; ledger_store::root INVARIANT
     /// 7): a preview, or the books restored and opened. Books it replaces
     /// are let go first, and opened again if the restore fails.
@@ -794,7 +1164,7 @@ impl Books {
             Ok(id) => id,
             Err(e) => return said(e.to_string()),
         };
-        let _one = self.restoring.lock().unwrap_or_else(|e| e.into_inner());
+        let _one = self.lifecycle.lock().unwrap_or_else(|e| e.into_inner());
         let git = match ledger_store::backup::Git::find() {
             Ok(git) => git,
             Err(e) => return said(e.to_string()),
@@ -848,8 +1218,16 @@ impl Books {
         let rt = tokio::runtime::Handle::current();
         // Its requests end first (a books.back_up_now among them waits for
         // a run of the loop's), then its last run.
-        if let Some(Book::Open { store, .. }) = &old {
+        if let Some(Book::Open {
+            store,
+            gate,
+            ended,
+            ..
+        }) = &old
+        {
+            gate.shut();
             rt.block_on(store.let_go());
+            self.end_sessions(&id, ended);
         }
         let _paused = old_backups.as_ref().map(|b| rt.block_on(b.pause()));
         match self.root.restore(&git, &source, &id, &expect_head, replace) {
@@ -1073,7 +1451,7 @@ impl Drop for InFlight {
 }
 
 /// The MCP session header.
-const SESSION_HEADER: &str = "mcp-session-id";
+pub(crate) const SESSION_HEADER: &str = "mcp-session-id";
 
 /// The most sessions open at once (each bound to its token): past it a
 /// new session is refused until one ends, never a binding forgotten
@@ -1147,17 +1525,41 @@ async fn refused_at_door(
 /// The door to `book` (INVARIANT 8): the books held open, the server not
 /// closing, and a live token for those books; else the answer refusing
 /// the request (recorded in the books' access log, where there is one).
+/// A request let through is inside the book's door (INVARIANT 10) until
+/// the returned [`Inside`] is dropped: a close of the book waits for it,
+/// so it must live as long as the request touches the book.
 async fn door(
     books: &Arc<Books>,
     book: &str,
     asked: &Asked,
     headers: &axum::http::HeaderMap,
-) -> Result<(Book, Token), Box<axum::response::Response>> {
+) -> Result<(Book, Token, Inside), Box<axum::response::Response>> {
     use axum::http::StatusCode;
     use axum::response::IntoResponse;
     let closing = books.closing.is_cancelled();
     let found = books.held().get(book).cloned();
+    // Inside the book's door before anything of the book is touched, its
+    // access log included; a door that has shut (the book is closing, or
+    // closed) is the same refusal as a book listed closed.
+    let entered = match &found {
+        Some(Book::Open { gate, .. }) => Some(gate.enter()),
+        _ => None,
+    };
+    let (found, inside) = match entered {
+        Some(Some(inside)) => (found, Some(inside)),
+        Some(None) => (Some(Book::Closed), None),
+        None => (found, None),
+    };
     let held = match found {
+        Some(Book::Closed) if !closing => {
+            return Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                [(REFUSED_HEADER, "closed")],
+                closed_words(book),
+            )
+                .into_response()
+                .into());
+        }
         Some(Book::Failed(why)) if !closing => {
             return Err((
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -1188,6 +1590,9 @@ async fn door(
                 .into_response()
                 .into());
         }
+    };
+    let Some(inside) = inside else {
+        unreachable!("an open book was entered above")
     };
     let token = books.bearer(headers);
     let principal = |t: &Token| Principal {
@@ -1237,7 +1642,7 @@ async fn door(
         .await
         .into());
     }
-    Ok((held, token))
+    Ok((held, token, inside))
 }
 
 /// `PUT /b/{book}/u/{upload}`: the bytes of an upload begun with
@@ -1260,7 +1665,7 @@ async fn upload(
         action: "upload",
         subject: id.clone(),
     };
-    let (held, token) = match door(&books, &book, &asked, request.headers()).await {
+    let (held, token, inside) = match door(&books, &book, &asked, request.headers()).await {
         Ok(passed) => passed,
         Err(refused) => {
             // What was sent is read and dropped (up to the most an upload
@@ -1301,6 +1706,9 @@ async fn upload(
     let (uploads, access, stopped) = (uploads.clone(), access.clone(), store.is_stopped());
     let task = tokio::task::spawn_blocking(move || {
         let _counted = _counted;
+        // Inside the book's door until its bytes and record are done: a
+        // close of the book waits for them (INVARIANT 10).
+        let _inside = inside;
         // The books server stopped after an internal error: nothing more
         // comes in (SharedStore INVARIANT 2).
         let received = if stopped {
@@ -1437,7 +1845,7 @@ async fn fetch(
         action,
         subject: subject.clone(),
     };
-    let (held, token) = match door(&books, &book, &asked, request.headers()).await {
+    let (held, token, inside) = match door(&books, &book, &asked, request.headers()).await {
         Ok(passed) => passed,
         Err(refused) => return *refused,
     };
@@ -1455,6 +1863,9 @@ async fn fetch(
     let (access, store_for, exports) = (access.clone(), store.clone(), exports.clone());
     let task = tokio::task::spawn_blocking(move || {
         let _counted = _counted;
+        // Inside the book's door until the read and its record are done
+        // (INVARIANT 10).
+        let _inside = inside;
         use ledger_store::exports::ExportError;
         let not_found = |code, what: &str| {
             (
@@ -1621,15 +2032,18 @@ async fn mcp(
         .last_arrival
         .store(books.started.elapsed().as_millis() as u64, Ordering::SeqCst);
     let method = request.method().clone();
-    let (held, token) = match door(&books, &book, &Asked::connect(&method), request.headers()).await
-    {
-        Ok(passed) => passed,
-        Err(refused) => return *refused,
-    };
-    let Book::Open { service, .. } = &held else {
+    // Inside the book's door (INVARIANT 10) until the request is answered:
+    // a close of the book waits for it, and its tools are counted by the
+    // store (SharedStore INVARIANT 3).
+    let (held, token, _inside) =
+        match door(&books, &book, &Asked::connect(&method), request.headers()).await {
+            Ok(passed) => passed,
+            Err(refused) => return *refused,
+        };
+    let Book::Open { service, board, .. } = &held else {
         unreachable!("the door lets only open books through")
     };
-    let service = (**service).clone();
+    let (service, board) = ((**service).clone(), board.clone());
     let principal = |t: &Token| Principal {
         id: t.id.clone(),
         kind: "agent".into(),
@@ -1652,7 +2066,7 @@ async fn mcp(
         let elsewhere = session
             .as_ref()
             .and_then(|sid| bound.get(sid))
-            .is_some_and(|owner| *owner != token.id);
+            .is_some_and(|owner| owner.token != token.id);
         (elsewhere, session.is_none() && bound.len() >= MAX_SESSIONS)
     };
     // The cap is on opening sessions: a request opens one only if it is an
@@ -1690,7 +2104,7 @@ async fn mcp(
         )
         .await;
     }
-    let token_id = token.id.clone();
+    let (token_id, token_name) = (token.id.clone(), token.name.clone());
     request
         .extensions_mut()
         .insert(crate::access::Caller { token });
@@ -1711,7 +2125,15 @@ async fn mcp(
                 .get(SESSION_HEADER)
                 .and_then(|v| v.to_str().ok())
         {
-            bound.insert(sid.to_string(), token_id);
+            bound.insert(
+                sid.to_string(),
+                Bound {
+                    token: token_id,
+                    name: token_name,
+                    book: book.clone(),
+                    at: chrono::Utc::now().timestamp(),
+                },
+            );
         }
         let ended = method == axum::http::Method::DELETE && response.status().is_success();
         let gone = response.status() == StatusCode::NOT_FOUND;
@@ -1719,6 +2141,7 @@ async fn mcp(
             && let Some(sid) = &session
         {
             bound.remove(sid);
+            board.forget(sid);
         }
     }
     response.map(|body| {
@@ -1827,7 +2250,7 @@ pub fn tunnel_address(text: &str) -> Result<std::net::SocketAddr, String> {
 }
 
 fn print_usage(prog: &str) {
-    eprintln!("usage: {prog} [--root DIR] [--isolation LEVEL] [--http [ADDR]]");
+    eprintln!("usage: {prog} [--root DIR] [--isolation LEVEL] [--http [ADDR]] [--open BOOKS]");
     eprintln!("  The books server for the data root: started by the host, not by hand.");
     eprintln!("  It runs until its standard input ends, or SIGTERM, SIGINT or SIGHUP.");
     eprintln!("  --isolation same_user | enforced: what books.start says of how these books");
@@ -1835,6 +2258,8 @@ fn print_usage(prog: &str) {
     eprintln!("  --http [ADDR]: also serve the MCP door on loopback only (default");
     eprintln!("    127.0.0.1:7411), for a TLS proxy or a tunnel in front of it. Off unless");
     eprintln!("    given; any other address is refused.");
+    eprintln!("  --open all | none | ID[,ID...]: which books are open at the start (default");
+    eprintln!("    all). A book left closed opens when asked (`wanderbooks books open ID`).");
 }
 
 /// `wanderbooks server`: serve every book in the data root until told to
@@ -1848,6 +2273,7 @@ pub fn run(
     let mut drill_first = DRILL_FIRST;
     let mut isolation = Isolation::SameUser;
     let mut tunnel: Option<std::net::SocketAddr> = None;
+    let mut open_at_start = OpenAtStart::All;
     let mut args = args.into_iter().peekable();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -1870,6 +2296,12 @@ pub fn run(
                     _ => "127.0.0.1:7411".to_string(),
                 };
                 tunnel = Some(tunnel_address(&addr)?);
+            }
+            // Which books are open at the start (plan/p15-app-and-relay.md
+            // 3.1): the app opens a company as its tab opens.
+            "--open" => {
+                open_at_start =
+                    OpenAtStart::parse(&args.next().ok_or("--open needs all, none, or ids")?)?;
             }
             // How long the books stay unwritten before a backup (tests).
             "--backup-quiet" => {
@@ -1959,22 +2391,12 @@ pub fn run(
         ledger_store::winsec::set_owner_only(&lock_path)
             .map_err(|e| format!("can't make the server lock private: {}", e.kind()))?;
     }
-    let books = Arc::new(Books {
-        root: root.clone(),
-        held: RwLock::new(BTreeMap::new()),
-        sessions: CancellationToken::new(),
-        closing: CancellationToken::new(),
-        in_flight: AtomicUsize::new(0),
-        finished: tokio::sync::Notify::new(),
-        last_arrival: std::sync::atomic::AtomicU64::new(0),
-        started: std::time::Instant::now(),
-        principals: RwLock::new(Err(String::new())),
-        session_tokens: Mutex::new(BTreeMap::new()),
+    let books = Arc::new(Books::new(
+        root.clone(),
         backup_quiet,
         drill_first,
-        restoring: Mutex::new(()),
         isolation,
-    });
+    ));
     {
         let loaded = books.load_principals();
         if let Err(why) = &loaded {
@@ -1982,9 +2404,25 @@ pub fn run(
         }
         *books.principals.write().unwrap_or_else(|e| e.into_inner()) = loaded;
     }
-    // INVARIANT 3: every book tried before ready.
-    for id in root.list_books().map_err(|e| e.to_string())? {
-        let book = books.open(&id);
+    // INVARIANT 3: every book chosen to be open is tried before ready; the
+    // others are held closed.
+    let ids = root.list_books().map_err(|e| e.to_string())?;
+    if let OpenAtStart::Only(wanted) = &open_at_start
+        && let Some(unknown) = wanted
+            .iter()
+            .find(|w| !ids.iter().any(|i| i.as_str() == w.as_str()))
+    {
+        eprintln!(
+            "wanderbooks server: --open names books that don't exist: {unknown:?} (`wanderbooks books list` lists them)"
+        );
+        return Err(Box::new(crate::Exit(2)));
+    }
+    for id in ids {
+        let book = if open_at_start.wants(&id) {
+            books.open(&id)
+        } else {
+            Book::Closed
+        };
         books.hold(&id, book);
     }
     let served = if stops.close.is_cancelled() {
@@ -2080,7 +2518,7 @@ async fn serve(
                             Book::Open { uploads, exports, .. } => {
                                 Some((uploads.clone(), exports.clone()))
                             }
-                            Book::Failed(_) => None,
+                            Book::Failed(_) | Book::Closed => None,
                         })
                         .collect();
                     let now = chrono::Utc::now().timestamp();
@@ -2148,7 +2586,7 @@ async fn serve(
         .values()
         .filter_map(|b| match b {
             Book::Open { backups, .. } => Some(backups.clone()),
-            Book::Failed(_) => None,
+            Book::Failed(_) | Book::Closed => None,
         })
         .collect();
     for b in held {
@@ -2361,7 +2799,7 @@ async fn keep_backed_up(books: Arc<Books>, stop: CancellationToken) {
             .iter()
             .filter_map(|(id, b)| match b {
                 Book::Open { backups, .. } => Some((id.clone(), backups.clone())),
-                Book::Failed(_) => None,
+                Book::Failed(_) | Book::Closed => None,
             })
             .collect();
         seen.retain(|id, _| open.iter().any(|(o, _)| o == id));
@@ -2620,22 +3058,12 @@ mod tests {
     /// without its sockets: each test drives the handlers itself.
     fn books_in(home: &Path) -> Arc<Books> {
         let (root, _) = Root::setup(home, Some(&home.join("root")), None).unwrap();
-        let books = Arc::new(Books {
+        let books = Arc::new(Books::new(
             root,
-            held: RwLock::new(BTreeMap::new()),
-            sessions: CancellationToken::new(),
-            closing: CancellationToken::new(),
-            in_flight: AtomicUsize::new(0),
-            finished: tokio::sync::Notify::new(),
-            last_arrival: std::sync::atomic::AtomicU64::new(0),
-            started: Instant::now(),
-            principals: RwLock::new(Err(String::new())),
-            session_tokens: Mutex::new(BTreeMap::new()),
-            backup_quiet: BACKUP_QUIET,
-            drill_first: DRILL_FIRST,
-            restoring: Mutex::new(()),
-            isolation: Isolation::SameUser,
-        });
+            BACKUP_QUIET,
+            DRILL_FIRST,
+            Isolation::SameUser,
+        ));
         let loaded = books.load_principals();
         *books.principals.write().unwrap() = loaded;
         books
@@ -2665,6 +3093,16 @@ mod tests {
         }) {
             Response::TokenCreated { token, text } => (token.id, text.0),
             other => panic!("{other:?}"),
+        }
+    }
+
+    /// A session of `book` bound to the token `token`.
+    fn bound_to(token: &str, book: &str) -> Bound {
+        Bound {
+            token: token.into(),
+            name: "test".into(),
+            book: book.into(),
+            at: 0,
         }
     }
 
@@ -2948,7 +3386,7 @@ mod tests {
         {
             let mut bound = books.session_tokens.lock().unwrap();
             for (sid, owner) in [("s-beta", &beta), ("s-other", &other), ("s-agent", &agent)] {
-                bound.insert(sid.into(), owner.clone());
+                bound.insert(sid.into(), bound_to(owner, "acme"));
             }
         }
         token(&books, "acme", "agent");
@@ -3054,7 +3492,12 @@ mod tests {
             let (status, _, said) = answer(r).await;
             assert!((200..300).contains(&status), "{status}: {said}");
             assert_eq!(
-                books.session_tokens.lock().unwrap().get(&sid),
+                books
+                    .session_tokens
+                    .lock()
+                    .unwrap()
+                    .get(&sid)
+                    .map(|b| &b.token),
                 Some(&agent_id)
             );
         }
@@ -3085,7 +3528,7 @@ mod tests {
         {
             let mut bound = books.session_tokens.lock().unwrap();
             for n in 0..MAX_SESSIONS {
-                bound.insert(format!("s-{n}"), agent_id.clone());
+                bound.insert(format!("s-{n}"), bound_to(&agent_id, "acme"));
             }
         }
         let r = send_mcp(
@@ -3343,6 +3786,7 @@ mod tests {
         let store = match &books.held()["acme"] {
             Book::Open { store, .. } => store.clone(),
             Book::Failed(why) => panic!("{why}"),
+            Book::Closed => panic!("closed"),
         };
         let (d, s) = (dir.clone(), store.clone());
         let first = tokio::task::spawn_blocking(move || {
@@ -3427,5 +3871,336 @@ mod tests {
                     && record.contains(r#""ok":false"#)),
             "{record}"
         );
+    }
+
+    /// An admin request, on a thread of its own (an admin request blocks).
+    async fn ask(books: &Arc<Books>, request: Request) -> Response {
+        let books = books.clone();
+        tokio::task::spawn_blocking(move || books.admin(request))
+            .await
+            .unwrap()
+    }
+
+    fn closed(id: &str) -> Response {
+        Response::CloseBook {
+            id: id.into(),
+            outcome: admin::CloseOutcome::Closed,
+        }
+    }
+
+    fn opened(id: &str, outcome: admin::OpenOutcome) -> Response {
+        Response::OpenBook {
+            id: id.into(),
+            outcome,
+        }
+    }
+
+    /// Headers carrying `bearer`.
+    fn bearing(bearer: &str) -> axum::http::HeaderMap {
+        let mut h = axum::http::HeaderMap::new();
+        h.insert(
+            "authorization",
+            format!("Bearer {bearer}").parse().unwrap(),
+        );
+        h
+    }
+
+    /// What the door says of `book`, for a request bearing `bearer`: let
+    /// through (None), or its status, refusal code and words.
+    async fn at_the_door(
+        books: &Arc<Books>,
+        book: &str,
+        bearer: &str,
+    ) -> Option<(u16, Option<String>, String)> {
+        let asked = Asked::connect(&axum::http::Method::POST);
+        match door(books, book, &asked, &bearing(bearer)).await {
+            Ok(_) => None,
+            Err(r) => Some(answer(*r).await),
+        }
+    }
+
+    /// INVARIANT 10, 11: a closed book's calls are refused as "closed" (not
+    /// as a book that doesn't exist), with words an agent can relay; the
+    /// other book never notices; the book is listed closed, with no
+    /// problem; it opens again, and serves again.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_closed_book_is_refused_as_closed_and_the_other_still_serves() {
+        let home = tempfile::tempdir().unwrap();
+        let books = books_in(home.path());
+        create(&books, "acme");
+        create(&books, "beta");
+        let (_, acme) = token(&books, "acme", "agent");
+        let (_, beta) = token(&books, "beta", "agent");
+        assert_eq!(at_the_door(&books, "acme", &acme).await, None);
+
+        assert_eq!(ask(&books, Request::CloseBook { id: "acme".into() }).await, closed("acme"));
+        let (status, code, said) = at_the_door(&books, "acme", &acme).await.unwrap();
+        assert_eq!((status, code.as_deref()), (503, Some("closed")));
+        assert_eq!(said, "The books \"acme\" aren't open: open them in Wanderbooks.");
+        // Told apart from books that don't exist.
+        let (status, code, _) = at_the_door(&books, "nobody", &acme).await.unwrap();
+        assert_eq!((status, code.as_deref()), (404, Some("no-such-books")));
+        // The other book is untouched.
+        assert_eq!(at_the_door(&books, "beta", &beta).await, None);
+        let listed = books.held()["acme"].problem();
+        assert_eq!(listed, None, "closed is not a problem");
+        match ask(&books, Request::List).await {
+            Response::Books(list) => {
+                let a = list.iter().find(|b| b.id == "acme").unwrap();
+                assert!(!a.open && a.closed && a.problem.is_none(), "{a:?}");
+                let b = list.iter().find(|b| b.id == "beta").unwrap();
+                assert!(b.open && !b.closed, "{b:?}");
+            }
+            other => panic!("{other:?}"),
+        }
+
+        // Closed twice; and a name that is no book.
+        assert_eq!(
+            ask(&books, Request::CloseBook { id: "acme".into() }).await,
+            Response::CloseBook {
+                id: "acme".into(),
+                outcome: admin::CloseOutcome::WasNotOpen
+            }
+        );
+        assert_eq!(
+            ask(&books, Request::CloseBook { id: "nobody".into() }).await,
+            Response::CloseBook {
+                id: "nobody".into(),
+                outcome: admin::CloseOutcome::NoSuchBook
+            }
+        );
+
+        // Open: once; again; a name that is no book.
+        assert_eq!(
+            ask(&books, Request::OpenBook { id: "acme".into() }).await,
+            opened("acme", admin::OpenOutcome::Opened)
+        );
+        assert_eq!(
+            ask(&books, Request::OpenBook { id: "acme".into() }).await,
+            opened("acme", admin::OpenOutcome::AlreadyOpen)
+        );
+        assert_eq!(
+            ask(&books, Request::OpenBook { id: "nobody".into() }).await,
+            opened("nobody", admin::OpenOutcome::NoSuchBook)
+        );
+        assert_eq!(at_the_door(&books, "acme", &acme).await, None);
+    }
+
+    /// INVARIANT 10: a close lets go of the store, releasing its writer
+    /// lock, so another process could open the book; and while another
+    /// holds it, opening says so, as at the start.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_closed_book_can_be_opened_by_another_program_and_not_by_two() {
+        let home = tempfile::tempdir().unwrap();
+        let books = books_in(home.path());
+        create(&books, "acme");
+        let dir = books.root.book_dir(&BookId::parse("acme").unwrap());
+        // Held: the same program can't open the store a second time.
+        assert!(Store::open(&dir).is_err(), "the server holds the books");
+        assert_eq!(ask(&books, Request::CloseBook { id: "acme".into() }).await, closed("acme"));
+        // Let go: another opens, writes (an account), and holds it.
+        let other = Store::open(&dir).expect("the lock was released");
+        match ask(&books, Request::OpenBook { id: "acme".into() }).await {
+            Response::OpenBook {
+                outcome: admin::OpenOutcome::CouldNotOpen(why),
+                ..
+            } => assert!(why.contains("another program has these books open"), "{why}"),
+            other => panic!("{other:?}"),
+        }
+        match ask(&books, Request::List).await {
+            Response::Books(list) => {
+                let a = list.iter().find(|b| b.id == "acme").unwrap();
+                assert!(!a.open && !a.closed && a.problem.is_some(), "{a:?}");
+            }
+            other => panic!("{other:?}"),
+        }
+        // Closing a book that didn't open: it was not open.
+        assert_eq!(
+            ask(&books, Request::CloseBook { id: "acme".into() }).await,
+            Response::CloseBook {
+                id: "acme".into(),
+                outcome: admin::CloseOutcome::WasNotOpen
+            }
+        );
+        drop(other);
+        assert_eq!(
+            ask(&books, Request::OpenBook { id: "acme".into() }).await,
+            opened("acme", admin::OpenOutcome::Opened)
+        );
+    }
+
+    /// INVARIANT 10: a close answers only once the requests already inside
+    /// the book's door have left; a request arriving meanwhile is
+    /// refused at once (as closed), and another book is not held up.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_close_waits_for_the_requests_inside_and_refuses_the_next() {
+        let home = tempfile::tempdir().unwrap();
+        let books = books_in(home.path());
+        create(&books, "acme");
+        create(&books, "beta");
+        let (_, acme) = token(&books, "acme", "agent");
+        let (_, beta) = token(&books, "beta", "agent");
+        let gate = match books.held().get("acme") {
+            Some(Book::Open { gate, .. }) => gate.clone(),
+            _ => panic!("acme isn't open"),
+        };
+        let inside = gate.enter().expect("the door is open");
+        let closing = tokio::spawn({
+            let books = books.clone();
+            async move { ask(&books, Request::CloseBook { id: "acme".into() }).await }
+        });
+        // The door shuts as the close begins.
+        while gate.enter().is_some() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let (status, code, _) = at_the_door(&books, "acme", &acme).await.unwrap();
+        assert_eq!((status, code.as_deref()), (503, Some("closed")));
+        assert_eq!(at_the_door(&books, "beta", &beta).await, None);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!closing.is_finished(), "closed with a request still inside");
+        drop(inside);
+        assert_eq!(closing.await.unwrap(), closed("acme"));
+    }
+
+    /// INVARIANT 3, 10: books left closed at the start are listed closed
+    /// and open when asked; the option takes all, none, or ids.
+    #[test]
+    fn the_books_open_at_the_start_are_chosen_by_option() {
+        assert_eq!(OpenAtStart::parse("all"), Ok(OpenAtStart::All));
+        assert_eq!(OpenAtStart::parse("none"), Ok(OpenAtStart::Only(vec![])));
+        assert_eq!(
+            OpenAtStart::parse("acme, beta"),
+            Ok(OpenAtStart::Only(vec!["acme".into(), "beta".into()]))
+        );
+        assert!(OpenAtStart::parse("acme,../etc").is_err());
+        assert!(OpenAtStart::parse("").is_err());
+        let acme = BookId::parse("acme").unwrap();
+        assert!(OpenAtStart::All.wants(&acme));
+        assert!(!OpenAtStart::Only(vec![]).wants(&acme));
+        assert!(OpenAtStart::Only(vec!["acme".into()]).wants(&acme));
+    }
+
+    /// INVARIANT 12: the live sessions of each open book, as the server
+    /// knows them: the token's NAME, the client, the agent's report, the
+    /// calls, the last call; never the token; one that ended isn't listed;
+    /// and a book's sessions end with the book.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_sessions_request_says_who_is_connected_and_never_their_token() {
+        use axum::http::Method;
+        let home = tempfile::tempdir().unwrap();
+        let books = books_in(home.path());
+        create(&books, "acme");
+        create(&books, "beta");
+        let (_, agent) = token(&books, "acme", "agent");
+        let sessions_of = |r: Response, book: &str| match r {
+            Response::Sessions(all) => all
+                .into_iter()
+                .find(|b| b.book == book)
+                .unwrap_or_else(|| panic!("{book} isn't listed"))
+                .sessions,
+            other => panic!("{other:?}"),
+        };
+        assert!(sessions_of(ask(&books, Request::Sessions).await, "acme").is_empty());
+        let r = send_mcp(&books, mcp_request(Method::POST, &agent, None, initialize())).await;
+        let sid = r.headers()[SESSION_HEADER].to_str().unwrap().to_string();
+        let (status, _, said) = answer(r).await;
+        assert_eq!(status, 200, "{said}");
+        let r = send_mcp(
+            &books,
+            mcp_request(
+                Method::POST,
+                &agent,
+                Some(&sid),
+                serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+            ),
+        )
+        .await;
+        assert!(answer(r).await.0 < 300);
+        // Who the client is, from `initialize`, before it has made a call.
+        // (The notification is handled by the session's task, a moment
+        // after it was accepted.)
+        let mut early = sessions_of(ask(&books, Request::Sessions).await, "acme");
+        for _ in 0..100 {
+            if early.iter().all(|s| s.client_name.is_some()) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            early = sessions_of(ask(&books, Request::Sessions).await, "acme");
+        }
+        assert_eq!(early.len(), 1, "{early:?}");
+        assert_eq!(early[0].client_name.as_deref(), Some("test"), "{early:?}");
+        assert!(early[0].last.is_none() && early[0].agent.is_none());
+        for body in [
+            serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
+                "name": "books.start",
+                "arguments": {"agent": {"model": "m-1", "harness": "h-1"}}}}),
+        ] {
+            let r = send_mcp(&books, mcp_request(Method::POST, &agent, Some(&sid), body)).await;
+            let (status, _, said) = answer(r).await;
+            assert!((200..300).contains(&status), "{status}: {said}");
+        }
+        let listed = ask(&books, Request::Sessions).await;
+        let text = serde_json::to_string(&listed).unwrap();
+        assert!(!text.contains(&agent), "a token's text is never listed");
+        let sessions = sessions_of(listed, "acme");
+        assert_eq!(sessions.len(), 1, "{sessions:?}");
+        let s = &sessions[0];
+        assert_eq!(s.token, "agent");
+        assert_eq!(
+            (s.client_name.as_deref(), s.client_version.as_deref()),
+            (Some("test"), Some("0"))
+        );
+        let said = s.agent.as_ref().expect("the agent's self-report");
+        assert_eq!(
+            (said.model.as_deref(), said.harness.as_deref()),
+            (Some("m-1"), Some("h-1"))
+        );
+        assert_eq!(s.running, 0);
+        let last = s.last.as_ref().expect("a last call");
+        assert_eq!((last.tool.as_str(), last.outcome.as_str()), ("books.start", "ok"));
+        assert!(s.connected_at.ends_with('Z'), "{}", s.connected_at);
+        assert!(sessions_of(ask(&books, Request::Sessions).await, "beta").is_empty());
+
+        // Ended: not listed.
+        let r = send_mcp(
+            &books,
+            mcp_request(Method::DELETE, &agent, Some(&sid), serde_json::json!({})),
+        )
+        .await;
+        assert!(answer(r).await.0 < 300);
+        assert!(sessions_of(ask(&books, Request::Sessions).await, "acme").is_empty());
+
+        // Closed with the book: a session that was open is gone, and the
+        // reopened book has none.
+        let r = send_mcp(&books, mcp_request(Method::POST, &agent, None, initialize())).await;
+        let again = r.headers()[SESSION_HEADER].to_str().unwrap().to_string();
+        assert_eq!(answer(r).await.0, 200);
+        assert_eq!(bound(&books), [again.clone()]);
+        assert_eq!(ask(&books, Request::CloseBook { id: "acme".into() }).await, closed("acme"));
+        assert!(bound(&books).is_empty());
+        let list = Request::Sessions;
+        match ask(&books, list).await {
+            Response::Sessions(all) => {
+                assert!(all.iter().all(|b| b.book != "acme"), "closed books list none")
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(
+            ask(&books, Request::OpenBook { id: "acme".into() }).await,
+            opened("acme", admin::OpenOutcome::Opened)
+        );
+        assert!(sessions_of(ask(&books, Request::Sessions).await, "acme").is_empty());
+        // The old session id isn't one of the reopened book's.
+        let r = send_mcp(
+            &books,
+            mcp_request(
+                Method::POST,
+                &agent,
+                Some(&again),
+                serde_json::json!({"jsonrpc": "2.0", "id": 9, "method": "tools/list"}),
+            ),
+        )
+        .await;
+        assert_eq!(answer(r).await.0, 404);
     }
 }

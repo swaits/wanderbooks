@@ -354,6 +354,11 @@ impl Backups {
     /// says it is a new disk).
     pub async fn run_with(&self, why: &str, new_disk: bool) -> Result<Status, String> {
         let _one = self.running.lock().await;
+        // Books let go of (closed, or replaced by a restore) push nothing
+        // more, and leave no record of a run that never began.
+        if self.store.is_stopped() {
+            return Err(crate::server::STOPPED.to_string());
+        }
         if self.named().await.is_empty() {
             return Ok(self.status().await);
         }
@@ -558,6 +563,9 @@ impl Backups {
     /// Drill each target whose drill is due (INVARIANT 5), each recorded.
     pub async fn drill(&self) {
         let _one = self.running.lock().await;
+        if self.store.is_stopped() {
+            return;
+        }
         let records = self.records();
         let now = chrono::Utc::now();
         for n in self.named().await {

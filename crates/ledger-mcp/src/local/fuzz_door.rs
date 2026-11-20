@@ -28,22 +28,12 @@ impl FuzzDoor {
         let home = tempfile::tempdir().expect("a folder");
         let (root, _) =
             Root::setup(home.path(), Some(&home.path().join("root")), None).expect("a data root");
-        let books = Arc::new(Books {
+        let books = Arc::new(Books::new(
             root,
-            held: RwLock::new(BTreeMap::new()),
-            sessions: CancellationToken::new(),
-            closing: CancellationToken::new(),
-            in_flight: AtomicUsize::new(0),
-            finished: tokio::sync::Notify::new(),
-            last_arrival: std::sync::atomic::AtomicU64::new(0),
-            started: Instant::now(),
-            principals: RwLock::new(Err(String::new())),
-            session_tokens: Mutex::new(BTreeMap::new()),
-            backup_quiet: BACKUP_QUIET,
-            drill_first: DRILL_FIRST,
-            restoring: Mutex::new(()),
-            isolation: Isolation::SameUser,
-        });
+            BACKUP_QUIET,
+            DRILL_FIRST,
+            Isolation::SameUser,
+        ));
         let loaded = books.load_principals();
         *books.principals.write().unwrap() = loaded;
         match books.admin(Request::Create {

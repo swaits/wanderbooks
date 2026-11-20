@@ -218,6 +218,29 @@ GPL or AGPL code.
 4. With the app closed the relay can only refuse the connection: it has
    no certificate with which to show an error page.
 
+**Why a certificate per app, and what it does not promise.** The owner
+asked (2026-11-20) whether one wildcard certificate at the relay plus
+our own encryption to the app could replace a certificate per user. It
+cannot be end to end: the far end is the vendor's server, which speaks
+only HTTPS to a publicly trusted name, so a relay holding the
+certificate reads everything whatever runs behind it. The owner kept
+the certificate per app. Its limits, stated plainly:
+
+- We control the domain's DNS, so a relay service that was taken over
+  could obtain a certificate of its own for a user's name and intercept.
+  That is visible in the public certificate logs: the app watches them
+  for its own name and warns the owner of a certificate it did not ask
+  for. Detection, not prevention; Home Assistant Cloud and Tailscale
+  Funnel are the same.
+- The AI vendor reads the books either way.
+- A second free authority that speaks the same protocol is configured
+  as the fallback, so one authority's outage or limit does not stop new
+  users.
+
+Where both ends are ours (the app's line to the relay) there is no
+authority: the line is encrypted and authenticated with the app's own
+key, pinned in the relay's table (D-85).
+
 **Names.** Each app has a public name of four words (D-82) and asks for
 a wildcard certificate under it; the endpoint is a long random label
 beneath (`<secret>.<four-words>.wanderbooks.link`). The certificate logs

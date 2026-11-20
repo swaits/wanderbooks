@@ -189,12 +189,15 @@ pub struct LockNote {
     pub why: &'static str,
 }
 
+/// A watcher of a verification's phases ([`Git::with_phase_watch`]).
+pub type PhaseWatch = std::sync::Arc<dyn Fn(&str) + Send + Sync>;
+
 /// What a caller may watch of a git's work, and look at after it (tests,
 /// and the server's record of a backup).
 #[derive(Clone, Default)]
 struct Watch {
     /// Told the name of each phase of a verification as it begins.
-    phase: Option<std::sync::Arc<dyn Fn(&str) + Send + Sync>>,
+    phase: Option<PhaseWatch>,
     /// The lock files dealt with since the caller last took them.
     notes: std::sync::Arc<std::sync::Mutex<Vec<LockNote>>>,
 }
@@ -285,7 +288,7 @@ impl Git {
     /// that makes a drill slow: `watch` may wait, but must give up when
     /// the cancel flag is set).
     #[must_use]
-    pub fn with_phase_watch(mut self, watch: std::sync::Arc<dyn Fn(&str) + Send + Sync>) -> Self {
+    pub fn with_phase_watch(mut self, watch: PhaseWatch) -> Self {
         self.watch.phase = Some(watch);
         self
     }

@@ -1459,7 +1459,12 @@ fn a_slow_upload_that_finishes_within_the_grace_is_not_cut() {
 
 /// A call whose body is whole and that is running when the grace runs out
 /// is not cut: it ends, is answered and recorded as having run, and only
-/// then is the close answered.
+/// then is the close answered. What this proves is that the close waits for
+/// the call and does not kill it; that a body read to its end is never cut
+/// (the line of INVARIANT 15) is proved at its seat, by
+/// `local::tests::a_body_read_to_its_end_is_never_cut_and_one_not_yet_is`:
+/// this test passes even with a cut that marks every request inside (the
+/// call runs in the session's task, past the handler's own check for a cut).
 #[cfg(unix)]
 #[test]
 fn a_running_call_is_never_cut_when_the_grace_runs_out() {

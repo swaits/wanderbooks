@@ -4368,19 +4368,42 @@ renderer, as the sidebar's do):
   the "+" is whole in the bar.
 - `the_empty_window_and_the_plus_list`: pictures of the empty window and of
   the "+" list open, light and dark (`tabs_empty_*`, `tabs_plus_*`).
+- `the_bar_spans_the_window_above_the_sidebar`: on the laid-out rectangles,
+  the bar's fill is the window's width and `BAR_H` high at its top, every
+  tab is inside it, the first is over the sidebar's column, and the
+  sidebar's links and panel start below it.
+- `the_plus_follows_the_last_tab_and_stays_whole_when_the_tabs_overflow`:
+  with two tabs the "+" is just after the last; with nine it is at the right
+  edge, whole, with the step controls shown and the tab in front left of it.
+- `a_name_is_remembered_and_shown_in_the_plus_list_and_on_a_loading_tab`:
+  a closed company is listed by name with its id beside it, one never
+  opened by its id alone; the name is saved as `company.<id>.name`, and an
+  app started from it titles a tab whose books aren't loaded by that name
+  (else by the id).
+- `the_plus_list_says_so_when_every_company_is_open`: "Every company is
+  already open." and no heading.
 - `pictures` (ignored; `SHOT_DIR`): the whole window with each tab in front,
   the "+" list and the empty window, for a person to look at.
 
 Unit tests moved with the code they test: the sidebar's fit tests, now
-in `company.rs`; the scheme tests, in `scheme_menu.rs`. No other existing
-test was changed for the tabs, and no existing golden or snapshot image
-changed. The tab bar runs along the top of the window *beside* the
-sidebar, not above it, because above it the owner's window fails
-`sidenav.rs` (`at_1479x519_every_link_shows_unscrolled`, the rail's at
-519, the grid at 520 px): measured with bars of 36, 28 and 24 points, the
-links scroll at 519 in all three, the sidebar having no height to spare
-there. The sidebar golden (shapes, and pixels with `SIDENAV_PIXELS=1`) is
-unchanged for the same reason.
+in `company.rs`; the scheme tests, in `scheme_menu.rs`. The tab bar runs
+across the top of the window *above* the sidebar (D-78): a tab is the
+top level, and the layout shows that the sidebar belongs to the company in
+it. The bar takes `tabs::BAR_H` (36 points) of the window's height, which
+the sidebar had to spare nowhere at the owner's 519 points. So the four
+`sidenav.rs` tests that size a window for the sidebar add `BAR_H` to their
+window heights, through the constant the bar uses (`at_1479x519_…`,
+`the_rail_at_519_…`, the grid's heights in `grid`, and
+`a_tall_sidebar_is_unchanged` at 920), each with a comment, and no
+assertion in them changed; the viewer's smallest window is 400 points plus
+`BAR_H` (`lib.rs`). The last one's pixel golden is untouched: the sidebar
+below the bar, cropped from `BAR_H` down, is pixel for pixel the old
+image; its shapes hash was recomputed, because the shapes now sit `BAR_H`
+lower, and covers only the shapes clipped below the bar. In `tabs.rs`, the
+three tests that click a closed company in the "+" list by its id now click
+it by its name, which the list shows once the company has been open; the
+list's empty words are now "Every company is already open." The ten
+`tabs_*` snapshots were regenerated for the new bar.
 
 **Not tested here:** the window title reaching the window system (the
 harness has none: `window_title()` is what is tested); a company opened

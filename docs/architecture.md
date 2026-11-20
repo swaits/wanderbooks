@@ -121,9 +121,16 @@ The viewer is **one window with a tab per open company** (P15, D-78;
 (the color scheme and its menu, `scheme_menu.rs`; the tab bar, `tabs.rs`;
 the data root the companies are in) and a list of `CompanyView`s
 (`company.rs`), one per open company, with which is in front. The tab
-bar runs along the top of the window beside the sidebar, which keeps the
-window's whole height (the owner's 519-point window leaves it none to
-spare). A view owns
+bar runs across the whole window, above the sidebar: a tab is the top
+level, and the sidebar (the company's badge, its pages, its status) is the
+company in the tab's. The bar's height (`tabs::BAR_H`) is taken from the
+window, so the smallest window the viewer allows is the 400 points below
+the bar plus the bar. A tab is the company's badge and name, as wide as
+that between a least and a greatest width; the "+" follows the last tab
+and stays at the right edge, the tabs scrolling, when they overflow. The
+app remembers each company's name when its books load (`company.<id>.name`
+in its kept state), for a tab's title before the books load and for the
+"+" list, which never reads a journal for a name. A view owns
 everything that is one company's: its loader thread (its watcher and its
 viewer presence on the books), the books it last loaded, where it is
 (`Nav`), its page state, its receipts' workers, its export and owner menus,

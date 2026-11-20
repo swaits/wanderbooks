@@ -39,24 +39,63 @@ pub struct Loader {
     /// Set when this is dropped: the loader's thread then ends, letting go
     /// of the books (and the viewer's presence on them).
     gone: Arc<std::sync::atomic::AtomicBool>,
+    /// Wakes the thread at once when this is dropped, so it ends now and
+    /// not at its next look.
+    wake: Sender<()>,
+    /// Set by the thread as it ends.
+    ended: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// Says whether a loader's thread has ended, after the loader is gone.
+#[derive(Clone)]
+pub struct LoaderWatch(Arc<std::sync::atomic::AtomicBool>);
+
+impl LoaderWatch {
+    /// Whether the thread has ended: its watcher, its hold on the books
+    /// and its viewer presence are released.
+    pub fn ended(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+/// Sets the flag when the loader's thread ends, however it ends.
+struct Ends(Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for Ends {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 impl Drop for Loader {
     fn drop(&mut self) {
         self.gone.store(true, std::sync::atomic::Ordering::SeqCst);
+        let _ = self.wake.send(());
     }
 }
 
 impl Loader {
     pub fn spawn(source: Source, ctx: egui::Context) -> Loader {
         let (tx, rx) = channel();
+        let (wake, events) = channel();
         let gone = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let ended = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let stop = gone.clone();
+        let ends = Ends(ended.clone());
+        let wake_to_watcher = wake.clone();
         std::thread::Builder::new()
             .name("books-loader".into())
-            .spawn(move || run(source, ctx, tx, &stop))
+            .spawn(move || {
+                let _ends = ends;
+                run(source, ctx, tx, &stop, wake_to_watcher, events)
+            })
             .expect("spawn loader");
-        Loader { rx, gone }
+        Loader {
+            rx,
+            gone,
+            wake,
+            ended,
+        }
     }
 
     /// Every update since the last call, in order (books before the
@@ -68,6 +107,16 @@ impl Loader {
     /// Block until the first update (tests, headless).
     pub fn wait(&self, timeout: Duration) -> Option<Update> {
         self.rx.recv_timeout(timeout).ok()
+    }
+
+    /// Whether the thread has ended (it ends once this is dropped).
+    pub fn finished(&self) -> bool {
+        self.ended.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// A handle that outlives the loader and says when its thread ended.
+    pub fn watch(&self) -> LoaderWatch {
+        LoaderWatch(self.ended.clone())
     }
 }
 
@@ -123,6 +172,8 @@ fn run(
     ctx: egui::Context,
     tx: Sender<Update>,
     gone: &std::sync::atomic::AtomicBool,
+    ev_tx: Sender<()>,
+    ev_rx: Receiver<()>,
 ) {
     let gone = || gone.load(std::sync::atomic::Ordering::SeqCst);
     let send = |u: Update| {
@@ -180,7 +231,6 @@ fn run(
     };
     check_show(&send);
 
-    let (ev_tx, ev_rx) = channel();
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
         if res.is_ok() {
             let _ = ev_tx.send(());
@@ -224,6 +274,10 @@ fn run(
             Err(RecvTimeoutError::Disconnected) => {
                 std::thread::sleep(Duration::from_secs(3));
             }
+        }
+        // Dropped meanwhile (the wake-up is the drop): end now.
+        if gone() {
+            return;
         }
         let before = snap.journal_seq();
         let grew = match snap.refresh() {

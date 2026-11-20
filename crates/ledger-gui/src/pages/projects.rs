@@ -748,7 +748,9 @@ pub fn figures(
     fiscal: bool,
 ) -> std::sync::Arc<PageFigures> {
     type Stamp = (chrono::DateTime<chrono::Utc>, String, NaiveDate, bool);
-    let key = egui::Id::new(("project_figures", id));
+    // Of these books: another company's project of the same number has
+    // its own figures.
+    let key = egui::Id::new(("project_figures", &b.data_dir, id));
     let stamp: Stamp = (b.loaded_at, b.head.clone(), b.today, fiscal);
     if let Some((was, figs)) = ctx.data(|d| d.get_temp::<(Stamp, std::sync::Arc<PageFigures>)>(key))
         && was == stamp

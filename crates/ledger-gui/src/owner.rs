@@ -204,6 +204,11 @@ pub trait Owner: Send + Sync {
     }
 }
 
+/// The owner the program gave the viewer, for every company's view that
+/// isn't given one of its own. It is the program's (one per process, as
+/// the program is one), not a company's: each view takes a handle to it
+/// when it is made, and holds that (`CompanyView::with_owner` gives a view
+/// another).
 static OWNER: OnceLock<Arc<dyn Owner>> = OnceLock::new();
 
 /// Give the viewer its owner (once, at start; INVARIANT 4).
@@ -213,10 +218,6 @@ pub fn set_owner(owner: Arc<dyn Owner>) {
 
 /// The viewer's owner, if the program gave it one.
 pub fn current() -> Option<Arc<dyn Owner>> {
-    owner()
-}
-
-fn owner() -> Option<Arc<dyn Owner>> {
     OWNER.get().cloned()
 }
 
@@ -307,6 +308,9 @@ struct RestoreForm {
 /// The menu's state: a dialog, the job under way, and the last outcome.
 #[derive(Default)]
 pub struct OwnerMenu {
+    /// The view that owns it: its dialogs' ids are scoped by it, so two
+    /// views' dialogs never share egui state.
+    scope: Option<egui::Id>,
     /// The books last shown (by identity) and their id: found once for
     /// each load, not every frame.
     book: Option<(usize, Option<String>)>,
@@ -325,6 +329,14 @@ pub struct OwnerMenu {
 const UPDATE_LOOK: std::time::Duration = std::time::Duration::from_secs(5);
 
 impl OwnerMenu {
+    /// A menu whose ids belong to the view `scope`.
+    pub fn scoped(scope: egui::Id) -> Self {
+        Self {
+            scope: Some(scope),
+            ..Default::default()
+        }
+    }
+
     /// The id of the books shown, if they are books of a data root: found
     /// once for each load.
     fn book_of(&mut self, books: &Arc<Books>) -> Option<String> {
@@ -355,8 +367,8 @@ impl OwnerMenu {
     /// The standing notices above the page: an update waiting for the
     /// owner's accept, and a format upgrade the books wait for, whose
     /// go-ahead is asked for once each open (INVARIANT 5).
-    pub fn notice(&mut self, ui: &mut Ui, books: &Arc<Books>) {
-        let Some(owner) = owner() else {
+    pub fn notice(&mut self, ui: &mut Ui, owner: Option<Arc<dyn Owner>>, books: &Arc<Books>) {
+        let Some(owner) = owner else {
             return;
         };
         let Some(book) = self.book_of(books) else {
@@ -447,8 +459,14 @@ impl OwnerMenu {
     }
 
     /// The menu button and a note of the last outcome; its dialogs.
-    pub fn ui(&mut self, ui: &mut Ui, books: &Arc<Books>, compact: bool) {
-        let Some(owner) = owner() else {
+    pub fn ui(
+        &mut self,
+        ui: &mut Ui,
+        owner: Option<Arc<dyn Owner>>,
+        books: &Arc<Books>,
+        compact: bool,
+    ) {
+        let Some(owner) = owner else {
             return;
         };
         let Some(book) = self.book_of(books) else {
@@ -636,11 +654,18 @@ impl OwnerMenu {
                     }
                 }
                 if !close {
-                    upgrade_dialog(ctx, form, owner, book, &mut close);
+                    upgrade_dialog(
+                        ctx,
+                        self.scope.unwrap_or(egui::Id::NULL),
+                        form,
+                        owner,
+                        book,
+                        &mut close,
+                    );
                 }
             }
             Dialog::Close => {
-                egui::Modal::new(egui::Id::new("owner-close")).show(ctx, |ui| {
+                egui::Modal::new(self.scope.unwrap_or(egui::Id::NULL).with("owner-close")).show(ctx, |ui| {
                     ui.heading("Close the books?");
                     ui.label("Agents' sessions and everything else holding them let go. They open again when something holds them.");
                     ui.horizontal(|ui| {
@@ -656,30 +681,31 @@ impl OwnerMenu {
                 });
             }
             Dialog::NewBooks { id, currency } => {
-                egui::Modal::new(egui::Id::new("owner-new-books")).show(ctx, |ui| {
-                    ui.heading("New books");
-                    ui.label("Their id: lowercase letters, digits and hyphens.");
-                    ui.text_edit_singleline(id);
-                    ui.label("Their base currency (fixed for good):");
-                    ui.text_edit_singleline(currency);
-                    ui.horizontal(|ui| {
-                        let ready = !id.trim().is_empty() && !currency.trim().is_empty();
-                        if ui
-                            .add_enabled(ready, egui::Button::new("Make them"))
-                            .clicked()
-                        {
-                            let (o, i, c) = (owner.clone(), id.clone(), currency.clone());
-                            run = Some((
-                                "New books".into(),
-                                Box::new(move || o.new_books(&i, &c).map(|l| vec![l])),
-                            ));
-                            close = true;
-                        }
-                        if ui.button("Cancel").clicked() {
-                            close = true;
-                        }
+                egui::Modal::new(self.scope.unwrap_or(egui::Id::NULL).with("owner-new-books"))
+                    .show(ctx, |ui| {
+                        ui.heading("New books");
+                        ui.label("Their id: lowercase letters, digits and hyphens.");
+                        ui.text_edit_singleline(id);
+                        ui.label("Their base currency (fixed for good):");
+                        ui.text_edit_singleline(currency);
+                        ui.horizontal(|ui| {
+                            let ready = !id.trim().is_empty() && !currency.trim().is_empty();
+                            if ui
+                                .add_enabled(ready, egui::Button::new("Make them"))
+                                .clicked()
+                            {
+                                let (o, i, c) = (owner.clone(), id.clone(), currency.clone());
+                                run = Some((
+                                    "New books".into(),
+                                    Box::new(move || o.new_books(&i, &c).map(|l| vec![l])),
+                                ));
+                                close = true;
+                            }
+                            if ui.button("Cancel").clicked() {
+                                close = true;
+                            }
+                        });
                     });
-                });
             }
             Dialog::Restore(form) => {
                 if let Some((rx, asked)) = &form.planning
@@ -699,7 +725,7 @@ impl OwnerMenu {
                         _ => {}
                     }
                 }
-                egui::Modal::new(egui::Id::new("owner-restore")).show(ctx, |ui| {
+                egui::Modal::new(self.scope.unwrap_or(egui::Id::NULL).with("owner-restore")).show(ctx, |ui| {
                     ui.set_max_width(520.0);
                     ui.heading("Restore books");
                     ui.label("The backup: its repository's address, or its folder (the books' .git folder in your backup folder).");
@@ -794,13 +820,14 @@ impl OwnerMenu {
 /// passphrase, and the go-ahead or not now.
 fn upgrade_dialog(
     ctx: &egui::Context,
+    scope: egui::Id,
     form: &mut UpgradeForm,
     owner: &Arc<dyn Owner>,
     book: &str,
     close: &mut bool,
 ) {
     let p = crate::theme::pal(ctx);
-    egui::Modal::new(egui::Id::new("owner-upgrade")).show(ctx, |ui| {
+    egui::Modal::new(scope.with("owner-upgrade")).show(ctx, |ui| {
         ui.set_max_width(520.0);
         ui.heading("Upgrade these books' format?");
         ui.add_space(4.0);

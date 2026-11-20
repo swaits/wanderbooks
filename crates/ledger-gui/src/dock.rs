@@ -466,6 +466,15 @@ impl Default for Dock {
 }
 
 impl Dock {
+    /// A closed dock with `agent` chosen: another company's tab opening
+    /// beside one whose dock is in use.
+    pub fn closed_with(agent: Agent) -> Dock {
+        Dock {
+            agent,
+            ..Default::default()
+        }
+    }
+
     /// The dock as kept: the `agent` key and the `open` flag.
     pub fn restored(get: impl Fn(&str) -> Option<String>) -> Dock {
         Dock {

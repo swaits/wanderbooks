@@ -48,6 +48,17 @@
 //!      exactly as they are (journal, stored files, vault and keys), all
 //!      under the store's lock, so nothing is written in between; a backup
 //!      that can't be made or proven upgrades nothing. Both are records.
+//!  10. These backups can be shut (`shut`), once, for good: git is stopped
+//!      (every command running, with all it started) and none starts; the
+//!      call waits for every step that was under way to END (each step's
+//!      count rides in its own blocking task, so it is not lost when the
+//!      future that began it is dropped, as a close's 60 s bound drops
+//!      one), and for the run or drill holding the books' turn; then the
+//!      backup record is closed under its own lock. After `shut` returns,
+//!      this holder (a timer's, a request's, any clone from before) runs
+//!      nothing, spawns no process, and writes nothing, whatever the books
+//!      are doing: not in this process's later opening of the same books,
+//!      whose own backups are another object with another record handle.
 //! ```
 
 use crate::server::SharedStore;
@@ -56,7 +67,30 @@ use ledger_store::chain::ChainLog;
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+
+/// What a call is told when these backups were shut (INVARIANT 10).
+pub const SHUT: &str = "the books were closed: nothing was backed up";
+
+/// Blocking steps of the backups under way (INVARIANT 10).
+#[derive(Default)]
+struct Busy {
+    steps: AtomicUsize,
+    ended: tokio::sync::Notify,
+}
+
+/// One step under way, counted until it is dropped: it rides in the
+/// step's own blocking task, so it ends with the work, not with whatever
+/// was waiting for it.
+struct Step(Arc<Busy>);
+
+impl Drop for Step {
+    fn drop(&mut self) {
+        self.0.steps.fetch_sub(1, Ordering::SeqCst);
+        self.0.ended.notify_waiters();
+    }
+}
 
 /// The book's backup record, in its `ops/`.
 pub const LOG_FILE: &str = "backup.jsonl";
@@ -79,6 +113,10 @@ pub struct Backups {
     log: Mutex<ChainLog>,
     /// One run at a time.
     running: tokio::sync::Mutex<()>,
+    /// Set by `shut` (INVARIANT 10): git stops, nothing starts.
+    shut: Arc<AtomicBool>,
+    /// The blocking steps under way.
+    busy: Arc<Busy>,
 }
 
 /// What a format upgrade did ([`Backups::upgrade_format`]).
@@ -256,6 +294,8 @@ impl Backups {
             store,
             log: Mutex::new(log),
             running: tokio::sync::Mutex::new(()),
+            shut: Arc::default(),
+            busy: Arc::default(),
         };
         for fields in carried {
             me.record(fields);
@@ -284,9 +324,52 @@ impl Backups {
             *e = hide(e, &self.dir);
         }
         let mut log = self.log.lock().unwrap_or_else(|e| e.into_inner());
-        if let Err(e) = log.append(map) {
-            eprintln!("wanderbooks server: the books' backup record couldn't be written: {e}");
+        match log.append(map) {
+            Ok(_) | Err(ledger_store::chain::ChainError::Closed) => {}
+            Err(e) => {
+                eprintln!("wanderbooks server: the books' backup record couldn't be written: {e}");
+            }
         }
+    }
+
+    /// Whether these backups were shut (INVARIANT 10).
+    fn is_shut(&self) -> bool {
+        self.shut.load(Ordering::SeqCst)
+    }
+
+    /// A step begins: counted before the shut flag is looked at, and
+    /// `shut` sets the flag before it looks at the count, so a step either
+    /// sees them shut or is waited for, never neither (INVARIANT 10).
+    fn begin(&self) -> Result<Step, String> {
+        self.busy.steps.fetch_add(1, Ordering::SeqCst);
+        let step = Step(self.busy.clone());
+        if self.is_shut() {
+            return Err(SHUT.to_string());
+        }
+        Ok(step)
+    }
+
+    /// git, stopped by `shut`.
+    fn git(&self) -> Result<Git, BackupError> {
+        Ok(Git::find()?.with_cancel(self.shut.clone()))
+    }
+
+    /// Shut these backups for good (INVARIANT 10): git stopped, every step
+    /// ended, the record closed. Call it after the last backup the books
+    /// will have, and before the books' store is let go.
+    pub async fn shut(&self) {
+        self.shut.store(true, Ordering::SeqCst);
+        // The run or drill holding the books' turn ends (its git was just
+        // stopped), and none begins after.
+        let _turn = self.running.lock().await;
+        loop {
+            let ended = self.busy.ended.notified();
+            if self.busy.steps.load(Ordering::SeqCst) == 0 {
+                break;
+            }
+            ended.await;
+        }
+        self.log.lock().unwrap_or_else(|e| e.into_inner()).close();
     }
 
     fn records(&self) -> Vec<Map<String, Value>> {
@@ -328,12 +411,6 @@ impl Backups {
         }
     }
 
-    /// Wait for any run or drill to end, and start none while the guard
-    /// lives: books being replaced by a restore push nothing more.
-    pub async fn pause(&self) -> tokio::sync::MutexGuard<'_, ()> {
-        self.running.lock().await
-    }
-
     /// The books' head now.
     pub async fn head(&self) -> Option<(u64, String)> {
         let store = self.store.clone();
@@ -356,15 +433,21 @@ impl Backups {
         let _one = self.running.lock().await;
         // Books let go of (closed, or replaced by a restore) push nothing
         // more, and leave no record of a run that never began.
+        if self.is_shut() {
+            return Err(SHUT.to_string());
+        }
         if self.store.is_stopped() {
             return Err(crate::server::STOPPED.to_string());
         }
         if self.named().await.is_empty() {
             return Ok(self.status().await);
         }
+        let step = self.begin()?;
         let (store, dir, book) = (self.store.clone(), self.dir.clone(), self.book.clone());
+        let git = self.git();
         let made = tokio::task::spawn_blocking(move || {
-            let git = Git::find()?;
+            let _step = step;
+            let git = git?;
             // The stored files first, outside the lock: they never change.
             // Only a head start (a file being written can trip it): the
             // commit stages them all again.
@@ -405,10 +488,12 @@ impl Backups {
             }
             // Its repository is made only where it never took a backup.
             let may_create = new_disk || !held_before(&n.key, &records);
+            let step = self.begin()?;
+            let git = self.git();
             let (dir, book, t) = (self.dir.clone(), self.book.clone(), n.target.clone());
             let pushed = tokio::task::spawn_blocking(move || {
-                let git = Git::find()?;
-                backup::push(&git, &dir, &book, &t, may_create)
+                let _step = step;
+                backup::push(&git?, &dir, &book, &t, may_create)
             })
             .await
             .unwrap_or(Err(BackupError::Damaged("the push stopped".into())));
@@ -442,8 +527,15 @@ impl Backups {
     /// the targets take them at the next backup, the books having moved.
     pub async fn upgrade_format(&self) -> Result<Upgraded, String> {
         let _one = self.running.lock().await;
+        // Books let go of, between the request's start and now, upgrade
+        // nothing and leave no record (a failure written through this
+        // handle would land in the book's record after it was opened
+        // again): INVARIANT 10.
+        let step = self.begin()?;
         let (store, dir, book) = (self.store.clone(), self.dir.clone(), self.book.clone());
+        let cancel = self.shut.clone();
         let done = tokio::task::spawn_blocking(move || {
+            let _step = step;
             // Books that wait for nothing are left as they are: not even
             // their archive is made or staged (asked again under the lock
             // below; only an upgrade moves the format, one at a time).
@@ -459,7 +551,7 @@ impl Backups {
                 Err(why) => return Err(UpgradeFailed::stopped(why)),
             }
             // Stored files staged ahead, outside the lock (as a backup's).
-            let git = Git::find();
+            let git = Git::find().map(|g| g.with_cancel(cancel));
             if let Ok(git) = &git {
                 let _ = backup::stage_blobs(git, &dir);
             }
@@ -552,18 +644,21 @@ impl Backups {
 
     /// Whether a drill is due (INVARIANT 5).
     pub async fn drill_due(&self) -> bool {
+        // Through the store first: books let go name no target, and their
+        // record isn't read for a timer.
+        let named = self.named().await;
+        if named.is_empty() || self.is_shut() {
+            return false;
+        }
         let records = self.records();
         let now = chrono::Utc::now();
-        self.named()
-            .await
-            .iter()
-            .any(|n| drill_due(&n.key, &records, now))
+        named.iter().any(|n| drill_due(&n.key, &records, now))
     }
 
     /// Drill each target whose drill is due (INVARIANT 5), each recorded.
     pub async fn drill(&self) {
         let _one = self.running.lock().await;
-        if self.store.is_stopped() {
+        if self.is_shut() || self.store.is_stopped() {
             return;
         }
         let records = self.records();
@@ -572,11 +667,16 @@ impl Backups {
             if paused(&n.key, &records) || !drill_due(&n.key, &records, now) {
                 continue;
             }
+            let Ok(step) = self.begin() else {
+                return;
+            };
+            let git = self.git();
             let (dir, book, t) = (self.dir.clone(), self.book.clone(), n.target.clone());
             let drilled = tokio::task::spawn_blocking(move || {
+                let _step = step;
                 let scratch = ledger_store::ops::ops_dir(&dir).join(format!("drill-{}", t.kind()));
                 let _ = std::fs::remove_dir_all(&scratch);
-                let git = Git::find()?;
+                let git = git?;
                 backup::drill(
                     &git,
                     &t,

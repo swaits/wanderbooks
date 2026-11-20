@@ -713,6 +713,15 @@ pub fn books(
                 );
                 Ok(())
             }
+            admin::CloseOutcome::ClosedBackupIncomplete(why) => {
+                println!(
+                    "Closed the books \"{id}\": nothing is running on them, their sessions ended, and they are let go."
+                );
+                eprintln!(
+                    "warning: their last backup wasn't whole: {why}. What they hold since the last good backup isn't backed up."
+                );
+                Ok(())
+            }
             admin::CloseOutcome::WasNotOpen => {
                 println!("The books \"{id}\" weren't open.");
                 Ok(())

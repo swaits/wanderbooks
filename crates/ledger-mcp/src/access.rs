@@ -21,6 +21,14 @@
 //!   4. A record's head is the journal's head after the call's own last
 //!      write (taken under the store's lock as it lets go), whatever the
 //!      call answered; none for a call that wrote nothing.
+//!   5. A record is written only while the book is open: the log is closed
+//!      (ledger_store::access INVARIANT 4) when the book is let go, so a
+//!      refusal still being written when it was (its client gone, its
+//!      session ended) is refused, unwritten, and never lands in the log of
+//!      the book opened again. A refusal at the door is written by a task
+//!      that keeps the request's place inside the book's door (local.rs
+//!      INVARIANT 13). A call that ran is written inside its counted run,
+//!      before its answer goes: it is always on record.
 //! ```
 
 use ledger_store::access::{Access, AccessLog, Client, Outcome, Principal, digest};

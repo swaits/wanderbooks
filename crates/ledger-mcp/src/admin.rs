@@ -35,7 +35,11 @@
 //!      admin requests (plan/p15-app-and-relay.md 3.1; D-77, D-78): each
 //!      answers what happened in a word (opened, already open, closed,
 //!      was not open, no such book, could not open with why), and a book
-//!      that is closed is listed as closed, which is not a problem.
+//!      that is closed is listed as closed, which is not a problem. A
+//!      close is answered only when the books are let go and nothing of
+//!      this process's can write to them; its last backup (a bounded
+//!      step) that wasn't whole is said, in `closed_backup_incomplete`
+//!      with why, never as a plain `closed`.
 //!   9. `sessions` says, for each open book, who is connected: a token's
 //!      NAME (never its text, nor its hash), what the client and the agent
 //!      said of themselves, when it connected, how many of its calls are
@@ -367,6 +371,12 @@ pub enum CloseOutcome {
     /// It was open and is closed now: no call on it is running, its
     /// sessions ended, and another process could open it.
     Closed,
+    /// It was open and is closed as `Closed` says, but its last backup
+    /// wasn't whole (a target that couldn't be reached, git that failed, or
+    /// a backup stopped after its time): why, in words. The books on disk
+    /// are whole; what they hold since the last good backup is not backed
+    /// up.
+    ClosedBackupIncomplete(String),
     /// It was not open (closed already, or it never opened): nothing was
     /// done.
     WasNotOpen,

@@ -70,12 +70,18 @@
 //!      the start. Close: from the moment it begins, a call on that book is
 //!      refused at its door, unrun, and not in its journal; a call already
 //!      running on it, on any route, finishes (nothing is killed, nothing
-//!      is half-done); the book's last backup is made as at the server's
-//!      close; its MCP sessions end; its store is let go, its writer lock
-//!      released, so another process could open it; and only then is
-//!      "closed" answered. After that answer no call on that book runs
-//!      until it is opened again. Every other book keeps serving, and a
-//!      call on it is never held up by this one's close.
+//!      is half-done); the answers on their way out are sent, for the
+//!      answer grace at most; its MCP sessions end; its last backup is
+//!      made, for BACKUP_AT_CLOSE at most; and the book is let go
+//!      (INVARIANT 13), its writer lock released, so another process could
+//!      open it; and only then is a close answered. It is answered
+//!      `closed`, or `closed_backup_incomplete` with why when its last
+//!      backup wasn't whole (a target that failed, git that failed, a
+//!      backup stopped after its time): never a plain `closed` for a backup
+//!      that wasn't made. After that answer no call on that book runs until
+//!      it is opened again. Every other book keeps serving, and a call on
+//!      it is never held up by this one's close. A restore over an open
+//!      book lets go of it the same way (but for its last backup).
 //!  11. A call for a book that exists but is closed is told apart from one
 //!      that does not exist, on the MCP, upload, download and export
 //!      routes: 503, `x-wanderbooks-refused: closed`, and the words `The
@@ -86,6 +92,36 @@
 //!      self-report, when it connected, its calls running now, and its last
 //!      call (sessions.rs); a session that ended is not listed, and a
 //!      book's sessions end with the book.
+//!  13. After a close of a book is answered, this process holds nothing
+//!      that can write to that book's folder (journal, access log, ops
+//!      logs, stored files, upload parts, the backup's git repository) or
+//!      read it on a caller's behalf, until the book is opened again; and
+//!      a handle from before a close can never write after a reopen. Every
+//!      path that touches a book is either counted by its gate (a request
+//!      carries its place inside the door until its last write is done,
+//!      even if its client hangs up and its future is dropped; a timer's
+//!      sweep takes the place too), or checks, under the same lock as its
+//!      write, that the book is still open, and refuses if not: the
+//!      access log, the uploads, the exports and the backups (record,
+//!      git, drill, upgrade) are each closed under the lock their own
+//!      writes go in under, by the close, once the gate is empty; the
+//!      store is let go under its lock. A close waits for the backup's
+//!      work to END, not only for its future: a run past its bound is
+//!      stopped (git killed with all it started) and waited for, so the
+//!      close is never answered while a backup runs. The timers (the
+//!      sweep, the look for a backup due, the look for a drill due) work
+//!      on handles that are closed with the book, and so can't act on a
+//!      book that closed, or was opened again, since they looked.
+//!  14. A call whose answer isn't read within the answer grace is the same
+//!      case as a connection that dropped at any other moment: the close
+//!      ends the session after the grace, and a call that ran stays run.
+//!      Its access record, written before its answer goes, says it ran
+//!      (outcome and the journal head after it), so a client that
+//!      reconnects can find out whether to ask again. Nothing in the
+//!      journaled calls makes asking again safe (they carry no client key,
+//!      and none checks for a duplicate): a draft asked for twice is two
+//!      drafts. That is an open design point (plan/p15-app-and-relay.md),
+//!      not something the close hides.
 //! SCENARIOS:
 //!   1. Two books open; one is closed while agents call both: the other
 //!      answers throughout, the closed one's calls are refused unrun
@@ -99,6 +135,18 @@
 //!   4. A book is closed, then another process opens the store and writes
 //!      to it: the lock was released; the server, asked to open it, says
 //!      another program has it open, and opens once that one lets go.
+//!   5. A client asks for a large answer and never reads it, and a close
+//!      begins: the close waits the answer grace, ends the session and
+//!      answers closed; nothing is written to the book afterwards, and when
+//!      it is opened again its access log continues one whole chain.
+//!   6. A book with a slow backup is closed: not answered while the backup
+//!      runs; at its bound git is stopped and waited for, and the answer
+//!      says the last backup wasn't whole; nothing runs after.
+//!   7. A restore replaces an open book while an upload is half received:
+//!      the restore is not answered until the upload is, and no part file
+//!      is left in `legacy/`.
+//!   8. The timers run every few milliseconds on a book that is closed and
+//!      opened over and over: while it is closed not a file of it moves.
 //! ```
 
 use crate::admin::{self, Request, Response};
@@ -156,6 +204,34 @@ const DRILL_FIRST: Duration = Duration::from_secs(60);
 /// The most the last backup at a close may take.
 const BACKUP_AT_CLOSE: Duration = Duration::from_secs(60);
 
+/// The periods and bounds the server keeps, which tests shorten
+/// (`--timers`, `--close-backup`, `--answer-grace`).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Timers {
+    /// How often each book's lapsed uploads and exports are swept.
+    sweep_every: Duration,
+    /// How often the books are looked at for a backup due.
+    backup_look: Duration,
+    /// How often each book is looked at for a drill due.
+    drill_look: Duration,
+    /// The most the last backup at a book's close may take.
+    backup_at_close: Duration,
+    /// How long a close waits for answers on their way out.
+    answer_grace: Duration,
+}
+
+impl Default for Timers {
+    fn default() -> Self {
+        Self {
+            sweep_every: SWEEP_EVERY,
+            backup_look: BACKUP_LOOK,
+            drill_look: DRILL_LOOK,
+            backup_at_close: BACKUP_AT_CLOSE,
+            answer_grace: ANSWER_GRACE,
+        }
+    }
+}
+
 type Service = StreamableHttpService<BooksServer, LocalSessionManager>;
 
 /// What a call is told for a book that exists but is closed (INVARIANT
@@ -212,6 +288,43 @@ impl Book {
             Book::Failed(why) => Some(why.clone()),
         }
     }
+
+    /// What lets go of it, if it is open.
+    fn parts(&self) -> Option<Parts> {
+        match self {
+            Book::Open {
+                gate,
+                store,
+                access,
+                uploads,
+                exports,
+                backups,
+                ended,
+                ..
+            } => Some(Parts {
+                gate: gate.clone(),
+                store: store.clone(),
+                access: access.clone(),
+                uploads: uploads.clone(),
+                exports: exports.clone(),
+                backups: backups.clone(),
+                ended: ended.clone(),
+            }),
+            Book::Failed(_) | Book::Closed => None,
+        }
+    }
+}
+
+/// Everything of an open book that can reach its folder, held so it can
+/// be let go of together ([`Books::release`]).
+struct Parts {
+    gate: Arc<Gate>,
+    store: Arc<SharedStore>,
+    access: Arc<AccessLog>,
+    uploads: ledger_store::uploads::Uploads,
+    exports: ledger_store::exports::Exports,
+    backups: Arc<crate::backup::Backups>,
+    ended: CancellationToken,
 }
 
 /// One book's door (INVARIANT 10): requests are counted as they enter, and
@@ -384,6 +497,8 @@ struct Books {
     /// How these books are kept from agents (plan 3.8, P9a): what
     /// `books.start` reports (`--isolation`).
     isolation: Isolation,
+    /// The periods and bounds (tests shorten them).
+    timers: Timers,
 }
 
 impl Books {
@@ -409,7 +524,14 @@ impl Books {
             drill_first,
             lifecycle: Mutex::new(()),
             isolation,
+            timers: Timers::default(),
         }
+    }
+
+    /// These books, with these periods and bounds.
+    fn with_timers(mut self, timers: Timers) -> Self {
+        self.timers = timers;
+        self
     }
 
     /// Take the root's path out of a message (INVARIANT 7).
@@ -1060,17 +1182,9 @@ impl Books {
             return Response::Refused("the books are closing: nothing was done".into());
         }
         let held = self.held().get(id.as_str()).cloned();
-        let (gate, store, backups, ended) = match held {
-            Some(Book::Open {
-                gate,
-                store,
-                backups,
-                ended,
-                ..
-            }) => (gate, store, backups, ended),
-            Some(Book::Failed(_) | Book::Closed) => {
-                return said(admin::CloseOutcome::WasNotOpen);
-            }
+        let parts = match held.as_ref().and_then(Book::parts) {
+            Some(parts) => parts,
+            None if held.is_some() => return said(admin::CloseOutcome::WasNotOpen),
             None => {
                 return match self.root.list_books() {
                     Ok(ids) if ids.iter().any(|i| i.as_str() == id.as_str()) => {
@@ -1083,33 +1197,92 @@ impl Books {
         };
         let rt = tokio::runtime::Handle::current();
         // No new call gets in; the book is listed closed.
-        gate.shut();
+        parts.gate.shut();
         self.hold(&id, Book::Closed);
+        let backup = self.release(&rt, &id, &parts, true);
+        eprintln!("wanderbooks server: the books {id} were closed");
+        said(match backup {
+            None => admin::CloseOutcome::Closed,
+            Some(why) => admin::CloseOutcome::ClosedBackupIncomplete(why),
+        })
+    }
+
+    /// Let go of an open book whose door is shut (INVARIANT 10; a close
+    /// and a replacing restore are this): its calls finish, its sessions
+    /// end, its last backup is made (a close's), and then nothing of this
+    /// process's reaches its folder, however a holder of its handles from
+    /// before is used. Returns why the last backup wasn't whole, if it
+    /// wasn't (None: made, or no target to make it to).
+    ///
+    /// In this order, each step ending before the next begins:
+    ///  1. the store's tools finish, and its door empties (every request
+    ///     inside has finished, its record written);
+    ///  2. the answers on their way out are sent, for ANSWER_GRACE at most:
+    ///     a client that never reads its answer doesn't hold the book
+    ///     open (the call it was answering ran and is in the journal and
+    ///     the access log; the client may retry it: INVARIANT 10);
+    ///  3. its MCP sessions end;
+    ///  4. the last backup, for `backup_at_close` at most; the backups are
+    ///     then shut, which stops a run still going (git killed) and waits
+    ///     for it to end, so the answer never comes while it runs;
+    ///  5. the access log, uploads and exports close, each under the lock
+    ///     its own writes go in under, so a late writer is refused;
+    ///  6. the store is let go, its writer lock released.
+    fn release(
+        &self,
+        rt: &tokio::runtime::Handle,
+        id: &BookId,
+        parts: &Parts,
+        last_backup: bool,
+    ) -> Option<String> {
+        let Parts {
+            gate,
+            store,
+            access,
+            uploads,
+            exports,
+            backups,
+            ended,
+        } = parts;
         // No tool starts, and every one that did start has finished.
         rt.block_on(store.close());
-        // Every request inside the door has finished, its record written;
-        // and the answers on their way out are sent (for a while at most: a
-        // client that never reads its answer doesn't hold the book open,
-        // as at the server's close).
         rt.block_on(gate.emptied());
         if rt
-            .block_on(tokio::time::timeout(ANSWER_GRACE, gate.answered()))
+            .block_on(tokio::time::timeout(
+                self.timers.answer_grace,
+                gate.answered(),
+            ))
             .is_err()
         {
             eprintln!(
                 "wanderbooks server: a client didn't take its answer; closing the books {id} without it"
             );
         }
-        // Its sessions end, and are forgotten.
-        self.end_sessions(&id, &ended);
-        // The last backup, as at the server's close; then nothing more of
-        // the backups' reaches the books, and the store is let go.
-        let _ = rt.block_on(tokio::time::timeout(BACKUP_AT_CLOSE, backups.run("close")));
-        let _paused = rt.block_on(backups.pause());
+        self.end_sessions(id, ended);
+        let problem = last_backup
+            .then(|| {
+                let made = rt.block_on(tokio::time::timeout(
+                    self.timers.backup_at_close,
+                    backups.run("close"),
+                ));
+                match made {
+                    Ok(Ok(status)) => backup_incomplete(&status),
+                    Ok(Err(why)) => Some(why),
+                    Err(_) => Some(format!(
+                        "it took longer than {} seconds, and was stopped",
+                        self.timers.backup_at_close.as_secs().max(1)
+                    )),
+                }
+            })
+            .flatten();
+        // A run still going is stopped, and waited for: nothing of the
+        // backups runs once this returns.
+        rt.block_on(backups.shut());
+        access.close();
+        uploads.close();
+        exports.close();
         rt.block_on(store.let_go());
-        drop(_paused);
-        eprintln!("wanderbooks server: the books {id} were closed");
-        said(admin::CloseOutcome::Closed)
+        problem.map(|why| self.hide(why))
     }
 
     /// End the MCP sessions of the book `id` and forget their bindings.
@@ -1249,9 +1422,12 @@ impl Books {
                 id.as_str()
             ));
         }
-        // The books replaced are let go (their writer lock released),
-        // their backups idle until the restore is done: none of theirs
-        // reaches a target after the backup is read.
+        // The books replaced are let go as a close lets go of a book, but
+        // for its last backup (INVARIANT 10): their door shut, the calls
+        // inside finished (a download answered or refused, an upload's part
+        // file gone), their sessions ended, their backups stopped and
+        // waited for (none of theirs reaches a target after the backup is
+        // read), their logs and files closed, their writer lock released.
         let old = if replace {
             self.held
                 .write()
@@ -1260,22 +1436,11 @@ impl Books {
         } else {
             None
         };
-        let old_backups = match &old {
-            Some(Book::Open { backups, .. }) => Some(backups.clone()),
-            _ => None,
-        };
-        let rt = tokio::runtime::Handle::current();
-        // Its requests end first (a books.back_up_now among them waits for
-        // a run of the loop's), then its last run.
-        if let Some(Book::Open {
-            store, gate, ended, ..
-        }) = &old
-        {
-            gate.shut();
-            rt.block_on(store.let_go());
-            self.end_sessions(&id, ended);
+        if let Some(parts) = old.as_ref().and_then(Book::parts) {
+            let rt = tokio::runtime::Handle::current();
+            parts.gate.shut();
+            self.release(&rt, &id, &parts, false);
         }
-        let _paused = old_backups.as_ref().map(|b| rt.block_on(b.pause()));
         match self.root.restore(&git, &source, &id, &expect_head, replace) {
             Ok(r) => {
                 // Restored: kept whether or not it opens; its backups told
@@ -1524,8 +1689,16 @@ impl Asked {
 
 /// A request refused at the door: recorded in the book's access log
 /// (access.rs INVARIANT 3), then answered with `status` and `why`.
+///
+/// The record is written by a blocking task that carries the request's
+/// place inside the book's door (`inside`) until the record is on disk,
+/// even if the client hangs up and this future is dropped meanwhile: a
+/// close of the book waits for it (INVARIANT 10), so it never lands in the
+/// access log of a book that was let go, nor, once the book is opened again,
+/// against the new log's head.
 async fn refused_at_door(
     book: &Book,
+    inside: Inside,
     principal: Principal,
     asked: &Asked,
     code: &'static str,
@@ -1547,7 +1720,11 @@ async fn refused_at_door(
             head_after: None,
             agent: None,
         };
-        let written = tokio::task::spawn_blocking(move || access.record(&record)).await;
+        let written = tokio::task::spawn_blocking(move || {
+            let _inside = inside;
+            access.record(&record)
+        })
+        .await;
         if !matches!(written, Ok(Ok(_))) {
             store.stop();
             return (
@@ -1652,6 +1829,7 @@ async fn door(
             .map_or_else(|_| Principal::unknown(), principal);
         return Err(refused_at_door(
             &held,
+            inside,
             who,
             asked,
             crate::access::CLOSING,
@@ -1666,6 +1844,7 @@ async fn door(
         Err((code, why)) => {
             return Err(refused_at_door(
                 &held,
+                inside,
                 Principal::unknown(),
                 asked,
                 code,
@@ -1679,6 +1858,7 @@ async fn door(
     if token.book != book {
         return Err(refused_at_door(
             &held,
+            inside,
             principal(&token),
             asked,
             "wrong_books",
@@ -2081,7 +2261,7 @@ async fn mcp(
     // Inside the book's door (INVARIANT 10) until the request is answered:
     // a close of the book waits for it, and its tools are counted by the
     // store (SharedStore INVARIANT 3).
-    let (held, token, _inside) =
+    let (held, token, inside) =
         match door(&books, &book, &Asked::connect(&method), request.headers()).await {
             Ok(passed) => passed,
             Err(refused) => return *refused,
@@ -2131,6 +2311,7 @@ async fn mcp(
     if full {
         return refused_at_door(
             &held,
+            inside,
             principal(&token),
             &Asked::connect(&method),
             "too_many_sessions",
@@ -2142,6 +2323,7 @@ async fn mcp(
     if elsewhere {
         return refused_at_door(
             &held,
+            inside,
             principal(&token),
             &Asked::connect(&method),
             "session_token",
@@ -2194,7 +2376,7 @@ async fn mcp(
     // and for this book's, until its body ends. A standalone event stream
     // (a GET) is no answer, and ends only with its session, after the close
     // has waited for the answers.
-    let answering = (method != axum::http::Method::GET).then(|| _inside.answering());
+    let answering = (method != axum::http::Method::GET).then(|| inside.answering());
     response.map(|body| {
         use http_body_util::BodyExt;
         axum::body::Body::new(body.map_frame(move |frame| {
@@ -2322,6 +2504,7 @@ pub fn run(
     let mut root: Option<PathBuf> = None;
     let mut backup_quiet = BACKUP_QUIET;
     let mut drill_first = DRILL_FIRST;
+    let mut timers = Timers::default();
     let mut isolation = Isolation::SameUser;
     let mut tunnel: Option<std::net::SocketAddr> = None;
     let mut open_at_start = OpenAtStart::All;
@@ -2369,6 +2552,33 @@ pub fn run(
                     .and_then(|v| v.parse().ok())
                     .ok_or("--drill-first needs milliseconds")?;
                 drill_first = Duration::from_millis(ms);
+            }
+            // The periods of the sweep, the backup look and the drill look
+            // (tests: every timer at a few milliseconds).
+            "--timers" => {
+                let ms: u64 = args
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .ok_or("--timers needs milliseconds")?;
+                let every = Duration::from_millis(ms.max(1));
+                (timers.sweep_every, timers.backup_look, timers.drill_look) = (every, every, every);
+            }
+            // How long a book's last backup may take at its close (tests).
+            "--close-backup" => {
+                let ms: u64 = args
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .ok_or("--close-backup needs milliseconds")?;
+                timers.backup_at_close = Duration::from_millis(ms);
+            }
+            // How long a book's close waits for answers on their way out
+            // (tests).
+            "--answer-grace" => {
+                let ms: u64 = args
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .ok_or("--answer-grace needs milliseconds")?;
+                timers.answer_grace = Duration::from_millis(ms);
             }
             "--help" | "-h" => {
                 print_usage(prog);
@@ -2442,12 +2652,9 @@ pub fn run(
         ledger_store::winsec::set_owner_only(&lock_path)
             .map_err(|e| format!("can't make the server lock private: {}", e.kind()))?;
     }
-    let books = Arc::new(Books::new(
-        root.clone(),
-        backup_quiet,
-        drill_first,
-        isolation,
-    ));
+    let books = Arc::new(
+        Books::new(root.clone(), backup_quiet, drill_first, isolation).with_timers(timers),
+    );
     {
         let loaded = books.load_principals();
         if let Err(why) = &loaded {
@@ -2554,10 +2761,15 @@ async fn serve(
     let (backing, backup_stop) = (books.clone(), stop.clone());
     let backup_loop = tokio::spawn(async move { keep_backed_up(backing, backup_stop).await });
     // Every open book's lapsed uploads go within SWEEP_EVERY of lapsing,
-    // whatever else the server is doing (uploads.rs INVARIANT 3).
+    // whatever else the server is doing (uploads.rs INVARIANT 3). A sweep
+    // of a book is inside its door, as a request is (INVARIANT 10): a close
+    // waits for it, and a book whose door is shut isn't swept; the book's
+    // uploads and exports are closed as it is let go, so a sweep that
+    // took its handles earlier can't touch a book that closed or was
+    // opened again since.
     let (sweeping, sweep_stop) = (books.clone(), stop.clone());
     tokio::spawn(async move {
-        let mut tick = tokio::time::interval(SWEEP_EVERY);
+        let mut tick = tokio::time::interval(sweeping.timers.sweep_every);
         loop {
             tokio::select! {
                 () = sweep_stop.cancelled() => break,
@@ -2566,15 +2778,15 @@ async fn serve(
                         .held()
                         .values()
                         .filter_map(|b| match b {
-                            Book::Open { uploads, exports, .. } => {
-                                Some((uploads.clone(), exports.clone()))
-                            }
+                            Book::Open { uploads, exports, gate, .. } => gate
+                                .enter()
+                                .map(|inside| (uploads.clone(), exports.clone(), inside)),
                             Book::Failed(_) | Book::Closed => None,
                         })
                         .collect();
                     let now = chrono::Utc::now().timestamp();
                     let _ = tokio::task::spawn_blocking(move || {
-                        for (u, x) in &held {
+                        for (u, x, _inside) in &held {
                             u.sweep(now);
                             x.sweep(now);
                         }
@@ -2641,7 +2853,10 @@ async fn serve(
         })
         .collect();
     for b in held {
-        let _ = tokio::time::timeout(BACKUP_AT_CLOSE, b.run("close")).await;
+        let _ = tokio::time::timeout(books.timers.backup_at_close, b.run("close")).await;
+        // A run that didn't end in time is stopped, not left to outlive
+        // the server (git keeps its own process group): and waited for.
+        b.shut().await;
     }
     // Answers on their way out are sent, for a while: a client sending
     // a request it never finishes doesn't hold the books open.
@@ -2829,6 +3044,26 @@ fn every_target_held(status: &crate::backup::Status) -> bool {
         .all(|t| t.paused || t.last_error.is_none())
 }
 
+/// Why the last backup at a close wasn't whole, if it wasn't: a target
+/// that failed, or lacks the books' head (a target paused for books
+/// restored as a copy of others is no failure). None when there is
+/// nothing to say, or no target.
+fn backup_incomplete(status: &crate::backup::Status) -> Option<String> {
+    let lacking: Vec<String> = status
+        .targets
+        .iter()
+        .filter(|t| !t.paused)
+        .filter_map(|t| match (&t.last_error, t.through_seq) {
+            (Some(why), _) => Some(format!("{} failed: {why}", t.at)),
+            (None, through) if through != Some(status.head_seq) => {
+                Some(format!("{} doesn't hold the books' latest", t.at))
+            }
+            (None, _) => None,
+        })
+        .collect();
+    (!lacking.is_empty()).then(|| format!("the backup to {}", lacking.join("; ")))
+}
+
 /// Whether to look for a drill due now (then again DRILL_LOOK on).
 fn drill_look_due(seen: &Watch, now: Instant) -> bool {
     now >= seen.drill_next
@@ -2839,7 +3074,7 @@ fn drill_look_due(seen: &Watch, now: Instant) -> bool {
 /// Until `stop`.
 async fn keep_backed_up(books: Arc<Books>, stop: CancellationToken) {
     let mut seen: BTreeMap<String, Seen> = BTreeMap::new();
-    let mut tick = tokio::time::interval(BACKUP_LOOK);
+    let mut tick = tokio::time::interval(books.timers.backup_look);
     loop {
         tokio::select! {
             () = stop.cancelled() => return,
@@ -2899,7 +3134,7 @@ async fn keep_backed_up(books: Arc<Books>, stop: CancellationToken) {
             }
             // Drills (backup.rs INVARIANT 5).
             if drill_look_due(s, now) {
-                s.drill_next = now + DRILL_LOOK;
+                s.drill_next = now + books.timers.drill_look;
                 if backups.drill_due().await {
                     backups.drill().await;
                 }
@@ -4292,5 +4527,193 @@ mod tests {
         )
         .await;
         assert_eq!(answer(r).await.0, 404);
+    }
+
+    /// Everything in a folder, by relative path.
+    fn digest_of_tree(dir: &Path) -> BTreeMap<String, Vec<u8>> {
+        fn walk(base: &Path, at: &Path, out: &mut BTreeMap<String, Vec<u8>>) {
+            let Ok(entries) = std::fs::read_dir(at) else {
+                return;
+            };
+            for e in entries.flatten() {
+                let path = e.path();
+                if path.is_dir() {
+                    walk(base, &path, out);
+                } else if let Ok(bytes) = std::fs::read(&path) {
+                    out.insert(
+                        path.strip_prefix(base).unwrap().display().to_string(),
+                        bytes,
+                    );
+                }
+            }
+        }
+        let mut out = BTreeMap::new();
+        walk(dir, dir, &mut out);
+        out
+    }
+
+    /// A refusal's access record is written by a blocking task that keeps
+    /// the request's place inside the book's door: when the client hangs up
+    /// and the request's future is dropped while the record still waits for
+    /// a thread, a close still waits for it (INVARIANT 10). Before, the
+    /// place went with the future, and the record could land after the
+    /// close was answered, and after a reopening against the new log's head.
+    #[test]
+    fn a_refusal_being_recorded_keeps_its_place_when_its_client_hangs_up() {
+        let home = tempfile::tempdir().unwrap();
+        // One blocking thread, held: the record can only wait for it.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .max_blocking_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let books = books_in(home.path());
+        create(&books, "acme");
+        let (gate, access) = match books.held().get("acme") {
+            Some(Book::Open { gate, access, .. }) => (gate.clone(), access.clone()),
+            _ => panic!("acme is open"),
+        };
+        rt.block_on(async {
+            let (release, held) = std::sync::mpsc::channel::<()>();
+            let blocker = tokio::task::spawn_blocking(move || {
+                let _ = held.recv();
+            });
+            // A request with a token nobody knows: refused at the door; its
+            // future is dropped while the record waits for the thread.
+            let gone = tokio::time::timeout(
+                Duration::from_millis(100),
+                at_the_door(&books, "acme", "no such token"),
+            )
+            .await;
+            assert!(gone.is_err(), "the record was written with no thread free");
+            assert_eq!(
+                gate.inside.load(Ordering::SeqCst),
+                1,
+                "the request's place inside the door went with its future"
+            );
+            // A close begun now waits for it.
+            gate.shut();
+            let waiting = tokio::time::timeout(Duration::from_millis(100), gate.emptied()).await;
+            assert!(waiting.is_err(), "the door emptied with a record pending");
+            release.send(()).unwrap();
+            blocker.await.unwrap();
+            tokio::time::timeout(Duration::from_secs(10), gate.emptied())
+                .await
+                .expect("the door empties once the record is written");
+            assert_eq!(access.head().seq, 1, "the record was written");
+        });
+    }
+
+    /// Whatever of a book this process holds from before its close does
+    /// nothing after it, though the same book is open again (INVARIANT
+    /// 10): its access log, uploads, exports and backups write, sweep, run
+    /// and record nothing, so the reopened book's files, and the chain
+    /// of its logs, are only what the reopened book wrote.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn handles_from_before_a_close_do_nothing_after_the_book_is_open_again() {
+        let home = tempfile::tempdir().unwrap();
+        let books = books_in(home.path());
+        let dir = old_books(&books, "acme");
+        let auth = books.root.auth_dir().unwrap();
+        ledger_store::passphrase::set(&auth, PASS, None).unwrap();
+        let (access, uploads, exports, backups) = match books.held().get("acme") {
+            Some(Book::Open {
+                access,
+                uploads,
+                exports,
+                backups,
+                ..
+            }) => (
+                access.clone(),
+                uploads.clone(),
+                exports.clone(),
+                backups.clone(),
+            ),
+            _ => panic!("acme is open"),
+        };
+        assert_eq!(
+            ask(&books, Request::CloseBook { id: "acme".into() }).await,
+            closed("acme")
+        );
+        assert_eq!(
+            ask(&books, Request::OpenBook { id: "acme".into() }).await,
+            opened("acme", admin::OpenOutcome::Opened)
+        );
+        // The reopened book's own backups write records (its format
+        // upgrade is a backup and a record), moving the log's head on from
+        // where the old handle left it: an old handle that appended now
+        // would break the chain.
+        match upgrade(&books, "acme", PASS).await {
+            Response::FormatUpgraded(_) => {}
+            other => panic!("{other:?}"),
+        }
+        let before = digest_of_tree(&dir);
+        // Stray files a sweep would take, and a grant it would lapse.
+        let now = chrono::Utc::now().timestamp() + 10_000_000;
+        let stray = dir
+            .join(ledger_store::uploads::UPLOADS_DIR)
+            .join("stray.bin");
+        std::fs::write(&stray, b"x").unwrap();
+        let before = {
+            let mut b = before;
+            b.insert(
+                format!("{}/stray.bin", ledger_store::uploads::UPLOADS_DIR),
+                b"x".to_vec(),
+            );
+            b
+        };
+        // The late record of a refused call, a timer's sweep, an upload, an
+        // export, a run, a drill and an upgrade, all through old handles.
+        let late = Access {
+            principal: Principal::unknown(),
+            client: None,
+            request_id: None,
+            action: "connect".into(),
+            subject: "POST".into(),
+            args_digest: None,
+            result: Outcome::Refused("closing".into()),
+            head_after: None,
+            agent: None,
+        };
+        assert!(access.record(&late).is_err());
+        uploads.sweep(now);
+        exports.sweep(now);
+        assert!(
+            uploads
+                .grant(
+                    "t",
+                    &ledger_store::journal::sha256_hex(b"b"),
+                    1,
+                    "text/plain",
+                    "a.txt",
+                    "receipt",
+                    now
+                )
+                .is_err()
+        );
+        assert!(exports.put("t", "a.csv", "text/csv", b"x", now).is_err());
+        assert!(backups.run("write").await.is_err());
+        assert!(backups.run_with("asked", true).await.is_err());
+        backups.drill().await;
+        assert!(!backups.drill_due().await);
+        assert!(backups.upgrade_format().await.is_err());
+        assert_eq!(
+            digest_of_tree(&dir),
+            before,
+            "an old handle changed the reopened book's files"
+        );
+        // The reopened book's own logs are whole and take records.
+        ledger_store::access::read(&dir).expect("the access log is whole");
+        let new_backups = match books.held().get("acme") {
+            Some(Book::Open { backups, .. }) => backups.clone(),
+            _ => panic!("acme is open"),
+        };
+        assert!(!Arc::ptr_eq(&backups, &new_backups));
+        ledger_store::chain::read(
+            &ledger_store::ops::ops_dir(&dir).join(crate::backup::LOG_FILE),
+            "wanderbooks-backup-v1",
+        )
+        .expect("the backup record is whole");
+        let _ = std::fs::remove_file(stray);
     }
 }

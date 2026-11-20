@@ -355,18 +355,40 @@ didn't open, with why). Protocol version 1: the requests are new, the
   rebuilt, a format upgrade waited for as at the start). Answers `opened`,
   `already_open`, `no_such_book`, or `could_not_open` with why (the book
   stays listed, with that `problem`).
-- `close_book { id }` answers `closed`, `was_not_open` or `no_such_book`.
+- `close_book { id }` answers `closed`, `closed_backup_incomplete` (with
+  why), `was_not_open` or `no_such_book`.
   In this order: new calls on the book are refused (the door is shut and
   the book listed closed); the calls running on it finish, on every route
-  (nothing is killed, nothing is half-done); its MCP sessions end (an agent's next request on one
-  gets the "isn't open" words above, and after a reopening a 404 "Session
-  not found", which a client takes as "open a new one"); its last backup is
-  made, as at the server's close; its store is let go, releasing the
-  writer lock, so another process could open the book. Only then is
-  "closed" answered. Every other book keeps serving, and none of its
-  calls waits for this close. For every call, either it ran completely
-  and is in the journal, or it was refused unrun and nothing of it is; after
-  the answer, no call on that book runs until it is opened again.
+  (nothing is killed, nothing is half-done); the answers on their way out
+  are sent, for 10 seconds at most (a client that never reads its answer
+  doesn't hold the book open); its MCP sessions end (an agent's next
+  request on one gets the "isn't open" words above, and after a reopening
+  a 404 "Session not found", which a client takes as "open a new one"); its
+  last backup is made, as at the server's close, for 60 seconds at most:
+  a backup still running after that is stopped (git is killed with all it
+  started) and waited for to end; then nothing of the server's can write
+  to the book: its access log, uploads, exports and backups are closed
+  under the locks their writes go in under, so a handle held from before
+  can never write after a reopening; its store is let go, releasing the
+  writer lock, so another process could open the book. Only then is the
+  close answered: `closed`, or `closed_backup_incomplete` when the last
+  backup wasn't whole (a target failed, or the backup was stopped after
+  its time): the book is closed all the same, and what it holds since the
+  last good backup isn't backed up. Every other book keeps serving, and
+  none of its calls waits for this close. For every call, either it ran
+  completely and is in the journal, or it was refused unrun and nothing of
+  it is; after the answer, no call on that book runs until it is opened
+  again. **A call whose answer was never read** (the client was slow, or
+  gone, and the grace ran out) is the same case as a connection dropped at
+  any other moment: the call ran, and its access record, written before the
+  answer went, says so (outcome and head). Nothing in the journaled tools
+  makes asking again safe: they carry no client key and none checks for a
+  duplicate, so a draft asked for twice is two drafts. A client that
+  reconnects after a close should read the book's state (or the access
+  record, `books.audit`) before it repeats a write. A restore over an open
+  book (`restore --replace`) lets go of the book in the same way (waits for
+  what is inside the book's door, ends its sessions, stops its backups,
+  closes its logs) before it moves the book into `legacy/`.
 - `sessions` lists, for each open book, its live MCP sessions: the token's
   **name** (never the token, its text or its hash), the client's name and
   version from `initialize`, the agent's self-report (`books.start`'s

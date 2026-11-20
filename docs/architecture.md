@@ -37,7 +37,7 @@ the specification in `bookspec/` (which never depends on the engine).
 | `ledger-package` | the shared read-only view over `Store` or `Snapshot` (`PackageBooks`): the CPA package, the 1099 worksheet, the invoice document, Needs attention | `ledger-core`, `ledger-store`, `ledger-config`, `ledger-import`, `ledger-vault` |
 | `ledger-mcp` | the books server: the MCP tools (122), resources, the handbook, scopes, the door and the access log, backups' scheduling | all of the above |
 | `ledger-host` | the host and its leases, the agent bridge (`wanderbooks mcp`), tokens in 0600 files under the data root (D-63), the owner's commands, uploads and downloads, `update` and `rollback` (P11a), books homes and how to start an agent in one (P11b) | `ledger-store`, `ledger-mcp`, `ledger-config` |
-| `ledger-gui` | the viewer: read-only, live, egui; the Books menu hands work to the server; the agent dock and the first-run page (P11b) | `ledger-core`, `ledger-store`, `ledger-config`, `ledger-import`, `ledger-package`, `ledger-vault`, `ledger-host` |
+| `ledger-gui` | the viewer: read-only, live, egui, one window with a tab per open company (P15); the Books menu hands work to the server; the agent dock and the first-run page (P11b) | `ledger-core`, `ledger-store`, `ledger-config`, `ledger-import`, `ledger-package`, `ledger-vault`, `ledger-host` |
 | `ledger-cli` | `wanderbooks`, the one executable: every mode (`serve`, `server`, `host`, `mcp`, `gui`, `setup`, `books`, `token`, `connect`, `doctor`, `licenses`, …) and the over-the-wire test suites | everything |
 | `bookspec/checker`, `bookspec/runner` | the example schema and parser, the rule catalogue, the `Engine` trait; the per-rule runner | nothing of ours (the adapter in `ledger-core`'s tests depends on them) |
 
@@ -115,6 +115,31 @@ to the data directory. A loader thread watches the directory and applies
 appended journal lines; the UI renders an immutable view model rebuilt per
 change. Statements and series come from `ledger-core` (`reports`,
 `analysis`); the GUI only arranges them. See `plan/gui.md`.
+
+The viewer is **one window with a tab per open company** (P15, D-78;
+`plan/p15-app-and-relay.md` 3.2). `App` (`app.rs`) holds what is the app's
+(the color scheme and its menu, `scheme_menu.rs`; the tab bar, `tabs.rs`;
+the data root the companies are in) and a list of `CompanyView`s
+(`company.rs`), one per open company, with which is in front. The tab
+bar runs along the top of the window beside the sidebar, which keeps the
+window's whole height (the owner's 519-point window leaves it none to
+spare). A view owns
+everything that is one company's: its loader thread (its watcher and its
+viewer presence on the books), the books it last loaded, where it is
+(`Nav`), its page state, its receipts' workers, its export and owner menus,
+its palette, its dock (and so the agent process in it) and its handle to
+the `Owner`. Nothing is shared between views: every egui id a view makes is
+scoped by its own id (the app draws a view inside `push_id`), so egui's
+memory (scroll offsets, remembered widths) never carries from one tab into
+another; closing a tab drops its view and with it all of that. A view that
+is not in front still reads its loader every frame (so showing it later is
+current at once) and takes the agent's `books.show` for its own page only.
+`wanderbooks gui BOOK` opens that company as the only tab; with none named,
+the companies that were open when the window last closed come back, in
+their order, the same one in front, each with its page and its report's
+period (`app.rs` INVARIANT 4). The `Owner` the program installs
+(`owner::set_owner`) is the program's, one per process; each view takes a
+handle to it when it is made and a test can give a view another.
 
 Two things sit beside the read-only view, both through the `Owner` the
 program gives the viewer (never a write of the books by the viewer):

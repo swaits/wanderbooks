@@ -4290,6 +4290,113 @@ that make a group, the reversal skip, the `total > threshold` end),
 `audit::check_split` (`> unit`, not `>=`), `AttestationBar::parse`'s range
 (1..=64), `reconcilable::reconciliation_due` (`<=` through, `<` reconciled).
 
+## P15 A3a: a tab per company (2026-11-20, D-78)
+
+The viewer was a window on one company. It is now one window with a tab
+per open company (`app.rs`, `company.rs`, `tabs.rs`). The work here is
+the refactor and the tab bar; nothing starts or stops the books server and
+no File menu is added. The tests look for exactly the failure a refactor
+like this has: it compiles, the old tests pass, and two tabs share state.
+Everything runs on scratch data roots that `Root::setup` makes in a temp
+folder; no test touches an account's real books.
+
+`crates/ledger-gui/tests/tabs.rs` (the bar's pictures run where there is a
+renderer, as the sidebar's do):
+
+- `each_tab_shows_its_own_company_and_figures`: two companies, cash
+  8,765.44 and 24,222.23, open in two tabs; each shows its own cash on the
+  overview, its own rent (1,234.56 / 777.77) in the profit and loss and
+  in the rent account's register, and never the other's; the tab opens on
+  its overview, not on the page the other was on; the window's title names
+  the company in front.
+- `what_is_done_in_one_tab_changes_nothing_in_another`: in one tab a page,
+  a search, a report's period, columns and comparison are set; in the
+  other the page, the search and the period are as they were and every
+  text it paints is the same as before (and the other way round).
+- `a_scrolled_sidebar_in_one_tab_is_not_scrolled_in_another`: egui's own
+  memory. In a short window the sidebar's links scroll; one tab's is
+  scrolled a page on, the other's is at the top, and the first is still
+  scrolled when it comes back. Fails (checked) when the view is not
+  drawn inside `push_id`.
+- `no_two_views_have_the_same_id_or_key`.
+- `a_background_tab_follows_its_journal_and_is_current_when_shown`: an
+  entry posted to the company of the tab behind is read while another tab
+  is in front (nothing is brought forward); when shown, its cash is the
+  new one on the first frames, with no reload.
+- `books_show_moves_the_tab_it_is_aimed_at_and_only_that_one`: a show
+  request for the second company moves that tab to the journal; the tab in
+  front stays on its overview and in front.
+- `closing_a_tab_releases_its_lock_its_threads_and_its_agent` (Unix): the
+  second tab's owner is its own (`set_owner` on the view; no process
+  global), its dock runs a stand-in agent (`sh -c 'echo $$ > pid; exec
+  sleep 600'`); closing the tab with its close control, the company's
+  viewer lock (`ops::viewer_open`) is released, its loader's thread has
+  ended (`Loader::watch`), the agent's process is gone; the other tab's
+  lock and loader are held and running; the company opens again with a new
+  lock.
+- `plus_lists_only_the_companies_not_open_and_none_opens_twice`: "+" lists
+  `gamma` and neither open company; choosing it opens a third tab, in
+  front; the list then says every company is open; `App::open` and
+  `add_view` of an open company show its tab and add none.
+- `start_up_restores_the_open_tabs_their_order_and_the_one_in_front`:
+  `gamma,gone,alpha,gamma,not a book!,beta` kept with `alpha` in front
+  opens gamma, alpha, beta with alpha in front, no error; no record, or a
+  record of companies that are all gone, opens the data root's first; a
+  front company not among the open ones leaves the first in front; a
+  company named on the command line is the only tab.
+- `the_open_tabs_and_each_ones_page_and_period_are_kept_and_come_back`:
+  `save` writes `open_companies`, `active_company`, the old per-app keys
+  and each company's page, period, columns and comparison; a second start
+  from them restores all of it, each tab's own; a tab closed and opened
+  again comes back as it was left; with every tab closed the next start
+  opens the first company.
+- `closing_the_front_tab_shows_a_neighbour_and_the_last_leaves_an_empty_window`:
+  the tab after, else before; the last leaves "No company is open" and
+  "Open a company with the + at the top of the window.", the bar still
+  there, and "+" opens a company from it.
+- `the_tab_in_front_is_marked_by_more_than_colour`: the tab in front is
+  "selected" to assistive technology, the others are not; each has a close
+  control named for its company.
+- `every_tab_never_writes_into_its_books_in_front_or_not`: `read_only.rs`'s
+  guarantee on two demo companies made read-only on disk: one follows live
+  behind the other, then every page is rendered in it (as `read_only.rs`
+  does), then the tabs are shown in turn; afterwards every file holds the
+  same bytes, size and time in both.
+- `the_tab_bar_with_one_two_and_many_tabs`: pictures of the bar, light and
+  dark (`tests/snapshots/tabs_one_*`, `tabs_two_*`, `tabs_many_*`); with
+  ten tabs the bar scrolls, the tab in front is scrolled into view, and
+  the "+" is whole in the bar.
+- `the_empty_window_and_the_plus_list`: pictures of the empty window and of
+  the "+" list open, light and dark (`tabs_empty_*`, `tabs_plus_*`).
+- `pictures` (ignored; `SHOT_DIR`): the whole window with each tab in front,
+  the "+" list and the empty window, for a person to look at.
+
+Unit tests moved with the code they test: the sidebar's fit tests, now
+in `company.rs`; the scheme tests, in `scheme_menu.rs`. No other existing
+test was changed for the tabs, and no existing golden or snapshot image
+changed. The tab bar runs along the top of the window *beside* the
+sidebar, not above it, because above it the owner's window fails
+`sidenav.rs` (`at_1479x519_every_link_shows_unscrolled`, the rail's at
+519, the grid at 520 px): measured with bars of 36, 28 and 24 points, the
+links scroll at 519 in all three, the sidebar having no height to spare
+there. The sidebar golden (shapes, and pixels with `SIDENAV_PIXELS=1`) is
+unchanged for the same reason.
+
+**Not tested here:** the window title reaching the window system (the
+harness has none: `window_title()` is what is tested); a company opened
+from the viewer while its books are being created by the server (the
+loader's retry loop is `live.rs`'s); macOS and Windows.
+
+**For P12 (mutation targets):** `App::close`'s active-index arithmetic (the
+`i < active` and `active >= len` arms); `App::add_view`'s duplicate key
+test; `start_with`'s skip of a missing or repeated id and its choice of the
+front tab; `CompanyView::pump`'s `shown` flag (a background tab must still
+apply `Update::Books` and `Update::Show`); `Loader`'s drop wake-up and its
+`gone` check after waking; the `push_id` in `CompanyView::ui` (the sidebar
+test above kills its removal); `Dock::closed_with` (a new tab's dock opens
+closed); `route_from_key` and the period codes in `CompanyView::restore`
+(a start after the end is never restored).
+
 ## P12: the checklists
 
 The **For P12** paragraphs above (kept where they were written, with their

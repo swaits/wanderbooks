@@ -59,15 +59,38 @@
 //!      nothing, spawns no process, and writes nothing, whatever the books
 //!      are doing: not in this process's later opening of the same books,
 //!      whose own backups are another object with another record handle.
+//!  11. A close is not held by a step it doesn't wait for. When a close
+//!      begins (`hurry`, before its last backup), a drill, and a format
+//!      upgrade that has not yet appended its `journal.format_set` line,
+//!      stop at their next look (ledger_store::backup INVARIANT 6: between
+//!      git commands and phases, once per journal line, file or 64 KiB
+//!      chunk): a drill's scratch clone is removed and nothing is said of
+//!      its target (neither a pass nor a failure: it is due again when the
+//!      books next open); an upgrade is reported not done, the books
+//!      unchanged, and its backup (a commit it made on the way) recorded.
+//!      Once the `journal.format_set` line is appended the upgrade
+//!      finishes, which is quick (the line, the database's row). The last
+//!      backup of the close, and the stop `shut` makes of what is left of
+//!      it, are not hurried: only `shut` stops them. The close's whole
+//!      bound is the sum written in the books server's INVARIANT 10
+//!      (local.rs).
+//!  12. A lock file a stopped git left is dealt with by the step that
+//!      stopped it (ledger_store::backup INVARIANT 5) and recorded: a
+//!      record `lock_removed` (or `lock_left`, for one it must not touch)
+//!      with `repo` (`archive`, `folder` or `repository`), `lock` (a path
+//!      in that repository) and `why`; so are the locks found in the
+//!      archive when the books open (the store is open, and its lock is
+//!      ours). A close is not answered before these are recorded, the
+//!      backup record being closed after them.
 //! ```
 
 use crate::server::SharedStore;
-use ledger_store::backup::{self, BackupError, Git, Target};
+use ledger_store::backup::{self, BackupError, Git, LockNotes, Target};
 use ledger_store::chain::ChainLog;
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// What a call is told when these backups were shut (INVARIANT 10).
@@ -117,6 +140,20 @@ pub struct Backups {
     shut: Arc<AtomicBool>,
     /// The blocking steps under way.
     busy: Arc<Busy>,
+    /// Set when a close begins, before its last backup (INVARIANT 11): the
+    /// steps a close doesn't wait for (a drill, a format upgrade not yet
+    /// journaled) stop, and `shut` sets it too. A backup's own git is
+    /// stopped by `shut` alone, so the close's last backup can run.
+    hurry: Arc<AtomicBool>,
+    /// The lock files a stopped git left, as they were dealt with
+    /// (ledger_store::backup INVARIANT 5), until they are recorded.
+    locks: LockNotes,
+    /// A test knob (`--slow-steps`): how long a drill or a format upgrade
+    /// waits, in milliseconds, at each phase, giving up when hurried.
+    slow_ms: AtomicU64,
+    /// Phases that began their wait (the test knob), for a test to see
+    /// that a step is inside one.
+    paused: Arc<AtomicUsize>,
 }
 
 /// What a format upgrade did ([`Backups::upgrade_format`]).
@@ -296,9 +333,19 @@ impl Backups {
             running: tokio::sync::Mutex::new(()),
             shut: Arc::default(),
             busy: Arc::default(),
+            hurry: Arc::default(),
+            locks: LockNotes::default(),
+            slow_ms: AtomicU64::new(0),
+            paused: Arc::default(),
         };
         for fields in carried {
             me.record(fields);
+        }
+        // The store is open, so its lock is ours: no other wanderbooks
+        // process runs git on this archive, and none of this process's does
+        // yet, so a lock in it is a dead git's (store INVARIANT 5a).
+        for note in backup::clear_archive_locks(dir) {
+            me.record_lock(&note);
         }
         // Books just restored: whose they were (INVARIANTS 6, 7).
         let marker = ledger_store::ops::ops_dir(dir).join(ledger_store::root::RESTORED_FROM);
@@ -351,7 +398,73 @@ impl Backups {
 
     /// git, stopped by `shut`.
     fn git(&self) -> Result<Git, BackupError> {
-        Ok(Git::find()?.with_cancel(self.shut.clone()))
+        Ok(Git::find()?
+            .with_cancel(self.shut.clone())
+            .with_lock_notes(self.locks.clone()))
+    }
+
+    /// git for a step a close hurries (a drill, a format upgrade): stopped
+    /// as soon as the close begins (INVARIANT 11).
+    fn hurried_git(&self) -> Result<Git, BackupError> {
+        let git = Git::find()?
+            .with_cancel(self.hurry.clone())
+            .with_lock_notes(self.locks.clone());
+        let ms = self.slow_ms.load(Ordering::SeqCst);
+        if ms == 0 {
+            return Ok(git);
+        }
+        let (hurry, paused) = (self.hurry.clone(), self.paused.clone());
+        Ok(git.with_phase_watch(Arc::new(move |phase: &str| {
+            // From the second phase on (the first is the clone, before
+            // there is anything of the step's own to see).
+            if phase == "clone" {
+                return;
+            }
+            paused.fetch_add(1, Ordering::SeqCst);
+            let by = std::time::Instant::now() + std::time::Duration::from_millis(ms);
+            while std::time::Instant::now() < by && !hurry.load(Ordering::SeqCst) {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        })))
+    }
+
+    /// Make each phase of a drill or format upgrade wait `by` (a test
+    /// knob: a book large enough for these to take long).
+    pub(crate) fn slow_steps(&self, by: std::time::Duration) {
+        self.slow_ms.store(by.as_millis() as u64, Ordering::SeqCst);
+    }
+
+    /// How many waits of the test knob have begun.
+    #[cfg(test)]
+    pub(crate) fn pauses_begun(&self) -> usize {
+        self.paused.load(Ordering::SeqCst)
+    }
+
+    /// A close begins (INVARIANT 11): the steps it doesn't wait for stop at
+    /// their next look. The close's last backup, and what `shut` stops, are
+    /// not affected until `shut`.
+    pub fn hurry(&self) {
+        self.hurry.store(true, Ordering::SeqCst);
+    }
+
+    fn hurried(&self) -> bool {
+        self.hurry.load(Ordering::SeqCst)
+    }
+
+    /// A lock a stopped git left, as it was dealt with: a record of the
+    /// backup (INVARIANT 12).
+    fn record_lock(&self, note: &backup::LockNote) {
+        self.record(json!({
+            "kind": if note.removed { "lock_removed" } else { "lock_left" },
+            "repo": note.repo, "lock": note.lock, "why": note.why,
+        }));
+    }
+
+    /// Record the locks dealt with since the last look.
+    fn note_locks(&self) {
+        for note in self.locks.take() {
+            self.record_lock(&note);
+        }
     }
 
     /// Shut these backups for good (INVARIANT 10): git stopped, every step
@@ -359,6 +472,7 @@ impl Backups {
     /// will have, and before the books' store is let go.
     pub async fn shut(&self) {
         self.shut.store(true, Ordering::SeqCst);
+        self.hurry.store(true, Ordering::SeqCst);
         // The run or drill holding the books' turn ends (its git was just
         // stopped), and none begins after.
         let _turn = self.running.lock().await;
@@ -369,6 +483,7 @@ impl Backups {
             }
             ended.await;
         }
+        self.note_locks();
         self.log.lock().unwrap_or_else(|e| e.into_inner()).close();
     }
 
@@ -463,6 +578,7 @@ impl Backups {
         })
         .await
         .unwrap_or(Err(BackupError::Damaged("the backup stopped".into())));
+        self.note_locks();
         let (made, named, head) = match made {
             Ok(m) => m,
             Err(e) => {
@@ -497,6 +613,7 @@ impl Backups {
             })
             .await
             .unwrap_or(Err(BackupError::Damaged("the push stopped".into())));
+            self.note_locks();
             match pushed {
                 Ok(commit) => self.record(
                     json!({"kind": "push", "why": why, "target": n.target.kind(),
@@ -533,7 +650,8 @@ impl Backups {
         // again): INVARIANT 10.
         let step = self.begin()?;
         let (store, dir, book) = (self.store.clone(), self.dir.clone(), self.book.clone());
-        let cancel = self.shut.clone();
+        let git_for_upgrade = self.hurried_git();
+        let cancel = self.hurry.clone();
         let done = tokio::task::spawn_blocking(move || {
             let _step = step;
             // Books that wait for nothing are left as they are: not even
@@ -551,7 +669,7 @@ impl Backups {
                 Err(why) => return Err(UpgradeFailed::stopped(why)),
             }
             // Stored files staged ahead, outside the lock (as a backup's).
-            let git = Git::find().map(|g| g.with_cancel(cancel));
+            let git = git_for_upgrade;
             if let Ok(git) = &git {
                 let _ = backup::stage_blobs(git, &dir);
             }
@@ -580,6 +698,16 @@ impl Backups {
                         })
                         .map_err(|e| UpgradeFailed::proof(made.clone(), e))?;
                     let commit = proven.commit;
+                    // The last look for a close (INVARIANT 11): once the
+                    // `journal.format_set` line is appended the upgrade
+                    // finishes, which is quick; before it, it is stopped,
+                    // the books unchanged.
+                    if cancel.load(Ordering::SeqCst) {
+                        return Err(UpgradeFailed {
+                            made: made.clone(),
+                            why: "the books are closing: nothing was upgraded".into(),
+                        });
+                    }
                     let upgrade = match s.upgrade_format() {
                         Ok(upgrade) => upgrade,
                         // Journaled, and what follows the line failed (its
@@ -611,6 +739,7 @@ impl Backups {
         })
         .await
         .unwrap_or_else(|_| Err(UpgradeFailed::stopped("the upgrade stopped".into())));
+        self.note_locks();
         match done {
             Ok(u) => {
                 if let (Some(b), Some(up)) = (&u.backup, &u.upgrade) {
@@ -667,10 +796,13 @@ impl Backups {
             if paused(&n.key, &records) || !drill_due(&n.key, &records, now) {
                 continue;
             }
+            if self.hurried() {
+                return;
+            }
             let Ok(step) = self.begin() else {
                 return;
             };
-            let git = self.git();
+            let git = self.hurried_git();
             let (dir, book, t) = (self.dir.clone(), self.book.clone(), n.target.clone());
             let drilled = tokio::task::spawn_blocking(move || {
                 let _step = step;
@@ -687,7 +819,12 @@ impl Backups {
             })
             .await
             .unwrap_or(Err(BackupError::Damaged("the drill stopped".into())));
+            self.note_locks();
             match drilled {
+                // Stopped by a close (INVARIANT 11): neither a pass nor a
+                // failure, so nothing is said of the target; the drill is
+                // due again when the books next open.
+                Err(BackupError::Cancelled(_)) => {}
                 Ok(head) => {
                     self.record(json!({"kind": "drill", "target": n.target.kind(),
                     "at": n.at, "key": n.key, "ok": true, "head": {"seq": head.0, "hash": head.1}}))

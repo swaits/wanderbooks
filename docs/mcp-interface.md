@@ -370,9 +370,19 @@ didn't open, with why). Protocol version 1: the requests are new, the
   finishes; its MCP sessions end (an agent's next
   request on one gets the "isn't open" words above, and after a reopening
   a 404 "Session not found", which a client takes as "open a new one"); its
-  last backup is made, as at the server's close, for 60 seconds at most:
+  last backup is made, as at the server's close, for 60 seconds at most
+  (a drill, or a format upgrade not yet journaled, is stopped when the
+  close begins, at its next look, so it never takes the last backup's
+  turn; its scratch clone is removed and the books are unchanged):
   a backup still running after that is stopped (git is killed with all it
-  started) and waited for to end; then nothing of the server's can write
+  started, and any lock file it left, in the book's archive and in a
+  folder target on this computer, is removed and recorded in
+  `ops/backup.jsonl` as `lock_removed`; a lock that was there before the
+  push began is never touched, `lock_left`) and waited for to end;
+  the close is bounded by the sum written in the server's INVARIANT 10
+  (`local.rs`: running calls, the grace, the answers' grace, the stop of a
+  hurried step, the last backup's 60 s, the stop of what is left of it);
+  then nothing of the server's can write
   to the book: its access log, uploads, exports and backups are closed
   under the locks their writes go in under, so a handle held from before
   can never write after a reopening; its store is let go, releasing the
@@ -398,6 +408,13 @@ didn't open, with why). Protocol version 1: the requests are new, the
   listed closed from the moment the restore begins, so a call that comes
   meanwhile is told the books aren't open (503, as in a close), never that
   there are no such books (404).
+- **The server's own close** (its standard input ends, or SIGTERM) is the
+  same path for every open book at once: at its start every book's door
+  is shut and the cut (above) is set for 10 seconds from that moment; each
+  book is then released as `close_book` releases it. The server exits 0
+  once they are all closed (and the HTTP side has ended); a request that
+  arrives meanwhile is refused as closing (503) and not recorded, the
+  door being shut.
 - `sessions` lists, for each open book, its live MCP sessions: the token's
   **name** (never the token, its text or its hash), the client's name and
   version from `initialize`, the agent's self-report (`books.start`'s

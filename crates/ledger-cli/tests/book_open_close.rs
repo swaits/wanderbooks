@@ -778,6 +778,12 @@ mod raw {
             self.stream.write_all(rest).unwrap();
         }
 
+        /// A piece of the rest of a body; false once the server has closed
+        /// the connection (nothing more can be sent).
+        pub fn try_finish(&mut self, piece: &[u8]) -> bool {
+            self.stream.write_all(piece).is_ok()
+        }
+
         /// Everything the server sends until it closes the connection,
         /// which it must do within `within`.
         pub fn until_closed(&mut self, within: Duration) -> String {
@@ -1406,12 +1412,19 @@ fn a_stalled_mcp_body_cannot_hold_a_close_and_nothing_of_it_is_journaled() {
 }
 
 /// A slow upload that is still arriving, and finishes within the grace, is
-/// not cut: it is kept and answered, as without a close.
+/// not cut: it is kept and answered, as without a close. Driven by
+/// conditions, not by time: the grace (a minute) is far past anything the
+/// test does, and the rest of the bytes are sent only after the close has
+/// begun (the book is listed closed), so the one thing this proves is that
+/// the cut waits for the grace, never firing at the start of the close (it
+/// fails with the cut set to fire at once). Its mirror, that the cut does
+/// fire when the grace is out, is
+/// `an_upload_still_arriving_when_the_grace_runs_out_is_cut_however_active_it_is`.
 #[cfg(unix)]
 #[test]
 fn a_slow_upload_that_finishes_within_the_grace_is_not_cut() {
     let home = Home::new("close-slow-upload");
-    let server = Server::start_with(&home, &["--answer-grace", "2500", "--timers", "10"]);
+    let server = Server::start_with(&home, &["--answer-grace", "60000", "--timers", "10"]);
     home.create(A, "USD");
     let mut w = Wire::new(&home, A);
     w.initialize("uploader");
@@ -1885,4 +1898,535 @@ fn the_timers_never_touch_a_closed_book() {
     )
     .expect("the backup record is a whole chain");
     ledger_store::Store::open(&dir).expect("the journal replays");
+}
+
+/// The mirror of `a_slow_upload_that_finishes_within_the_grace_is_not_cut`:
+/// an upload whose client is not stalled at all, sending steadily, is cut
+/// the moment the grace has run out, because its body isn't whole then (the
+/// line is the body's end, INVARIANT 15). Driven by conditions: the client
+/// sends until the server closes the connection, and the body is far too
+/// large to be whole within the grace (the test fails if the upload is
+/// let finish: with the cut removed it is kept, answered 200, and the close
+/// answered ten seconds late).
+#[cfg(unix)]
+#[test]
+fn an_upload_still_arriving_when_the_grace_runs_out_is_cut_however_active_it_is() {
+    let home = Home::new("close-active-upload");
+    let server = Server::start_with(&home, &["--answer-grace", "600", "--timers", "10"]);
+    home.create(A, "USD");
+    let mut w = Wire::new(&home, A);
+    w.initialize("uploader");
+    let bytes: Vec<u8> = (0..3_000_000u32).map(|n| (n % 241) as u8).collect();
+    let (id, mut raw) = half_sent_upload(&home, &mut w, A, &bytes);
+    let closing = std::thread::spawn({
+        let admin = home.run().join("admin.sock");
+        move || ledger_mcp::admin::call(&admin, Request::CloseBook { id: A.into() }).unwrap()
+    });
+    wait_for("the book is listed closed", Duration::from_secs(30), || {
+        listed(&home, A).1
+    });
+    // Steady: 8 KB every 25 ms (about 320 KB/s: the rest takes ten seconds).
+    let begun = std::time::Instant::now();
+    let mut sent = bytes.len() / 2;
+    while sent < bytes.len() {
+        let piece = &bytes[sent..(sent + 8192).min(bytes.len())];
+        if !raw.try_finish(piece) {
+            break;
+        }
+        sent += piece.len();
+        std::thread::sleep(Duration::from_millis(25));
+        assert!(
+            begun.elapsed() < Duration::from_secs(8),
+            "an upload that was still arriving was never cut"
+        );
+    }
+    assert!(
+        sent < bytes.len(),
+        "the whole upload went in before the cut"
+    );
+    assert!(
+        begun.elapsed() >= Duration::from_millis(400),
+        "cut before the grace ran out ({:?})",
+        begun.elapsed()
+    );
+    let said = raw.until_closed(Duration::from_secs(10));
+    assert!(said.contains("cut_by_close"), "{said}");
+    match closing.join().unwrap() {
+        Response::CloseBook { outcome, .. } => assert_eq!(outcome, CloseOutcome::Closed),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(parts_under(&home.book_dir(A)), Vec::<String>::new());
+    assert!(
+        !tree_of(&home.book_dir(A))
+            .keys()
+            .any(|k| k.contains(&id) && k.ends_with(".bin")),
+        "bytes of a cut upload were kept"
+    );
+    assert_eq!(cut_records(&home, A, "upload").len(), 1);
+    assert!(server.close().success());
+}
+
+/// The server's own close is the book's close, all books together
+/// (local.rs INVARIANT 15): with an upload stalled half way on one book and
+/// an MCP call's body stalled half way on another, the server told to close
+/// (its standard input ends) cuts both one grace after the close began,
+/// exits 0 within a bound, leaves no part file, journals nothing of the
+/// call, and its records say `cut_by_close`.
+#[cfg(unix)]
+#[test]
+fn the_servers_own_close_cuts_stalled_requests_and_exits_zero_in_time() {
+    let home = Home::new("server-close-stalled");
+    let server = Server::start_with(&home, &["--answer-grace", "600", "--timers", "10"]);
+    home.create(A, "USD");
+    home.create(B, "USD");
+    let mut wa = Wire::new(&home, A);
+    wa.initialize("uploader");
+    let bytes: Vec<u8> = (0..200_000u32).map(|n| (n % 251) as u8).collect();
+    let (id, mut raw_upload) = half_sent_upload(&home, &mut wa, A, &bytes);
+    let mut wb = Wire::new(&home, B);
+    wb.initialize("caller");
+    draft(&mut wb, "before");
+    let mut raw_call = raw::Raw::connect(&home, B);
+    let body = json!({"jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": {
+        "name": "books.draft_entry",
+        "arguments": {"date": "2026-03-01", "description": "never finished"}}})
+    .to_string();
+    raw_call.start(
+        "POST",
+        "mcp",
+        &[
+            ("content-type", "application/json"),
+            ("accept", "application/json, text/event-stream"),
+            ("mcp-session-id", wb.session().unwrap()),
+            ("mcp-protocol-version", wb.version().unwrap()),
+        ],
+        body.as_bytes(),
+        body.len() / 2,
+    );
+    std::thread::sleep(Duration::from_millis(200));
+    let started = std::time::Instant::now();
+    let status = server.close();
+    let took = started.elapsed();
+    assert_eq!(status.code(), Some(0), "{status:?}");
+    assert!(
+        took >= Duration::from_millis(500),
+        "cut before the grace ran out ({took:?})"
+    );
+    // The bound: the grace (600 ms, the cut), the answers' grace (600 ms),
+    // and the linger and the HTTP side's end (3 s and 5 s at most).
+    assert!(took < Duration::from_secs(12), "{took:?}");
+    assert!(
+        raw_upload
+            .until_closed(Duration::from_secs(10))
+            .contains("cut_by_close")
+    );
+    assert!(
+        raw_call
+            .until_closed(Duration::from_secs(10))
+            .contains("cut_by_close")
+    );
+    assert_eq!(parts_under(&home.book_dir(A)), Vec::<String>::new());
+    assert!(
+        !tree_of(&home.book_dir(A))
+            .keys()
+            .any(|k| k.contains(&id) && k.ends_with(".bin")),
+        "bytes of a cut upload were kept"
+    );
+    assert_eq!(cut_records(&home, A, "upload").len(), 1);
+    assert_eq!(cut_records(&home, B, "connect").len(), 1);
+    assert!(
+        !files_of(&home, B)
+            .0
+            .iter()
+            .any(|l| l.payload["description"] == json!("never finished")),
+        "a call whose body never arrived was journaled"
+    );
+    // Every log is whole, and the books open again.
+    access_of(&home, A);
+    access_of(&home, B);
+    ledger_store::Store::open(&home.book_dir(A)).expect("the books open again");
+    ledger_store::Store::open(&home.book_dir(B)).expect("the books open again");
+}
+
+/// A timer that took a book's handles before the close and acts on them
+/// after it does nothing to the book (local.rs INVARIANT 13). The knob
+/// `--timer-hold` holds a timer between its taking the handles and its
+/// acting on them; the test closes the book meanwhile, plants what a sweep
+/// would take, lets the timer go on, and the tree of the closed book must
+/// not move. `held` names the timers held: the sweep, and the backup or the
+/// drill (the backup loop is one task: the drill is held only once the
+/// write is backed up).
+#[cfg(unix)]
+fn a_late_timer_does_nothing(name: &str, held_timers: &str) {
+    let home = Home::new(name);
+    let server = Server::start_with(
+        &home,
+        &[
+            "--timers",
+            "5",
+            "--timer-hold",
+            "--backup-quiet",
+            "0",
+            "--drill-first",
+            "0",
+            "--answer-grace",
+            "300",
+        ],
+    );
+    home.create(A, "USD");
+    let run = home.run();
+    let seen = || std::fs::read_to_string(run.join("timer-held")).unwrap_or_default();
+    let all_held = || {
+        held_timers
+            .split(',')
+            .all(|t| seen().lines().any(|l| l == t))
+    };
+    // From the start of the book's work: the timers hold what they take.
+    std::fs::write(run.join("timer-hold"), held_timers).unwrap();
+    let mut w = Wire::new(&home, A);
+    w.initialize("owner");
+    let disk = home.dir.path().join("disk");
+    std::fs::create_dir_all(&disk).unwrap();
+    set_backup_folder(&mut w, &disk);
+    w.end();
+    wait_for(
+        "the timers hold their handles",
+        Duration::from_secs(60),
+        all_held,
+    );
+    let dir = home.book_dir(A);
+    assert!(matches!(close_book(&home, A), CloseOutcome::Closed));
+    for folder in ["uploads", "exports"] {
+        std::fs::write(dir.join(folder).join("stray.bin"), b"x").unwrap();
+    }
+    let at_close = tree_of(&dir);
+    // The timers go on, with what they took before the close.
+    std::fs::remove_file(run.join("timer-hold")).unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    stands_still(&home, A, Duration::from_millis(500), "a late timer");
+    assert_eq!(moved(&at_close, &tree_of(&dir)), Vec::<String>::new());
+    assert!(dir.join("uploads").join("stray.bin").exists());
+    assert!(dir.join("exports").join("stray.bin").exists());
+    // Opened again, the timers work on it again.
+    assert_eq!(open_book(&home, A), OpenOutcome::Opened);
+    wait_for(
+        "the sweep takes the stray files",
+        Duration::from_secs(30),
+        || !dir.join("uploads").join("stray.bin").exists(),
+    );
+    assert!(server.close().success());
+    access_of(&home, A);
+    ledger_store::chain::read(
+        &dir.join("ops").join("backup.jsonl"),
+        "wanderbooks-backup-v1",
+    )
+    .expect("the backup record is a whole chain");
+}
+
+/// The sweep and the backup, each holding its handles across a close.
+#[cfg(unix)]
+#[test]
+fn a_backup_and_a_sweep_that_took_their_handles_before_a_close_do_nothing_after_it() {
+    a_late_timer_does_nothing("close-late-backup", "sweep,backup");
+}
+
+/// The sweep and the drill, each holding its handles across a close.
+#[cfg(unix)]
+#[test]
+fn a_drill_and_a_sweep_that_took_their_handles_before_a_close_do_nothing_after_it() {
+    a_late_timer_does_nothing("close-late-drill", "sweep,drill");
+}
+
+/// A close does not wait for a drill, however long the book makes it: the
+/// drill is stopped at its next look (a cancel flag), its scratch clone is
+/// removed, and the close is answered within its stated bound (local.rs
+/// INVARIANT 10: the grace for what hasn't arrived, the grace for the
+/// answers, the last backup's bound, the stop of a step, which for a
+/// folder target includes the lock settling time), with the last backup
+/// made. `--slow-steps` makes each phase of the drill wait a minute, as a
+/// book of a million events would make its replay; without the hurry the
+/// last backup waits behind the drill and the close says it wasn't whole.
+#[cfg(unix)]
+#[test]
+fn a_close_stops_a_slow_drill_instead_of_waiting_for_it() {
+    let home = Home::new("close-slow-drill");
+    let (grace, last_backup) = (500u64, 3000u64);
+    let server = Server::start_with(
+        &home,
+        &[
+            "--slow-steps",
+            "60000",
+            "--timers",
+            "20",
+            "--backup-quiet",
+            "0",
+            "--drill-first",
+            "0",
+            "--answer-grace",
+            &grace.to_string(),
+            "--close-backup",
+            &last_backup.to_string(),
+        ],
+    );
+    home.create(A, "USD");
+    let disk = home.dir.path().join("disk");
+    std::fs::create_dir_all(&disk).unwrap();
+    let mut w = Wire::new(&home, A);
+    w.initialize("owner");
+    set_backup_folder(&mut w, &disk);
+    draft(&mut w, "backed up first");
+    w.end();
+    // The write is backed up, then its first drill begins and sits in its
+    // wait: the clone is made, its scratch folder is there.
+    let scratch = home.book_dir(A).join("ops").join("drill-folder");
+    wait_for("a drill is under way", Duration::from_secs(60), || {
+        scratch.exists()
+    });
+    // A write the close's last backup has to make.
+    let mut w = Wire::new(&home, A);
+    w.initialize("owner");
+    draft(&mut w, "after the drill began");
+    w.end();
+    let started = std::time::Instant::now();
+    let outcome = close_book(&home, A);
+    let took = started.elapsed();
+    assert_eq!(
+        outcome,
+        CloseOutcome::Closed,
+        "the last backup waited behind the drill"
+    );
+    // The stated bound, as a sum of its parts: the grace, the answers'
+    // grace, the last backup's bound, and the stop of a step (git's kill
+    // and its group's end, 2 s; its pipes, 10 s; the lock settling, 1.5 s).
+    let bound = Duration::from_millis(2 * grace + last_backup) + Duration::from_millis(13_500);
+    assert!(took < bound, "{took:?} past the stated bound {bound:?}");
+    assert!(took < Duration::from_secs(8), "{took:?}: the drill ran on");
+    assert!(!scratch.exists(), "the stopped drill's clone was left");
+    // The last backup took the write.
+    let records = std::fs::read_to_string(home.book_dir(A).join("ops").join("backup.jsonl"))
+        .unwrap_or_default();
+    assert!(
+        records.matches("\"why\":\"close\"").count() >= 1,
+        "no backup at the close: {records}"
+    );
+    stands_still(
+        &home,
+        A,
+        Duration::from_millis(400),
+        "after the close was answered",
+    );
+    assert_eq!(open_book(&home, A), OpenOutcome::Opened);
+    assert!(server.close().success());
+    ledger_store::chain::read(
+        &home.book_dir(A).join("ops").join("backup.jsonl"),
+        "wanderbooks-backup-v1",
+    )
+    .expect("the backup record is a whole chain");
+}
+
+/// A stand-in `git` that is the real one with a hooks folder of its own
+/// (every `core.hooksPath=/dev/null` it is given, in its arguments and in
+/// the `--receive-pack` command of a push to a folder, names it instead),
+/// where a `reference-transaction` hook waits, while `slow-commit` (for the
+/// book's archive) or `slow-push` (for any other repository) exists in the
+/// shim folder, at the point where git holds its ref locks. `hooked` has a
+/// line per hook that waited. A real git, killed inside real work.
+#[cfg(unix)]
+fn slow_real_git(home: &Home) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = home.dir.path().join("slow-shim");
+    let hooks = dir.join("hooks");
+    std::fs::create_dir_all(&hooks).unwrap();
+    let real = ["/usr/bin/git", "/bin/git", "/usr/local/bin/git"]
+        .into_iter()
+        .find(|p| std::path::Path::new(p).is_file())
+        .expect("git is installed");
+    let hook = hooks.join("reference-transaction");
+    std::fs::write(
+        &hook,
+        "#!/bin/sh\ncat >/dev/null\n[ \"$1\" = prepared ] || exit 0\nd=\"$(dirname \"$0\")/..\"\ncase \"$GIT_DIR $PWD\" in *archive.git*) f=slow-commit ;; *) f=slow-push ;; esac\nif [ -e \"$d/$f\" ]; then\n  echo $$ >> \"$d/hooked\"\n  while [ -e \"$d/$f\" ]; do sleep 0.05; done\nfi\nexit 0\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let exe = dir.join("git");
+    std::fs::write(
+        &exe,
+        format!(
+            "#!/bin/sh\nn=$#\nwhile [ $n -gt 0 ]; do\n  a=\"$1\"; shift\n  case \"$a\" in\n    *core.hooksPath=/dev/null*) a=$(printf '%s' \"$a\" | sed 's|core.hooksPath=/dev/null|core.hooksPath={}|g') ;;\n  esac\n  set -- \"$@\" \"$a\"\n  n=$((n-1))\ndone\nexec {real} \"$@\"\n",
+            hooks.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    dir
+}
+
+/// Every `*.lock` file under a bare repository.
+#[cfg(unix)]
+fn locks_under(repo: &std::path::Path) -> Vec<String> {
+    tree_of(repo)
+        .into_keys()
+        .filter(|k| k.ends_with(".lock"))
+        .collect()
+}
+
+#[cfg(unix)]
+fn fsck_of(repo: &std::path::Path) {
+    let out = std::process::Command::new("git")
+        .arg(format!("--git-dir={}", repo.display()))
+        .args(["fsck", "--strict"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{} isn't whole: {}",
+        repo.display(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// A close that stops real git inside a commit, and inside a push to a
+/// folder, leaves no lock for anyone to remove: each is gone before the
+/// close is answered and noted in the backup's record, the book opened
+/// again at once backs up with no step by hand, and both repositories pass
+/// `git fsck` (ledger_store::backup INVARIANT 5).
+#[cfg(unix)]
+#[test]
+fn a_close_that_stops_git_in_a_commit_or_a_push_leaves_no_lock_and_the_next_backup_succeeds() {
+    let home = Home::new("close-git-locks");
+    let shim = slow_real_git(&home);
+    let server = server_with_shim(
+        &home,
+        &shim,
+        &[
+            "--close-backup",
+            "1500",
+            "--backup-quiet",
+            "3600000",
+            "--timers",
+            "20",
+        ],
+    );
+    home.create(A, "USD");
+    let disk = home.dir.path().join("disk");
+    std::fs::create_dir_all(&disk).unwrap();
+    let mut w = Wire::new(&home, A);
+    w.initialize("owner");
+    set_backup_folder(&mut w, &disk);
+    draft(&mut w, "to be backed up inside a commit");
+    w.end();
+    let archive = home.book_dir(A).join("archive.git");
+    let target = disk.join(format!("{A}.git"));
+    let record = || {
+        std::fs::read_to_string(home.book_dir(A).join("ops").join("backup.jsonl"))
+            .unwrap_or_default()
+    };
+    // 0. Inside the making of the archive itself (`git init`): a lock in
+    // a repository that isn't one yet stops every later `init`.
+    std::fs::write(shim.join("slow-commit"), b"").unwrap();
+    let outcome = close_book(&home, A);
+    assert!(
+        matches!(outcome, CloseOutcome::ClosedBackupIncomplete(_)),
+        "{outcome:?}"
+    );
+    assert!(
+        shim.join("hooked").exists(),
+        "git never reached its ref update"
+    );
+    assert_eq!(locks_under(&archive), Vec::<String>::new());
+    assert!(record().contains("HEAD.lock"), "{}", record());
+    std::fs::remove_file(shim.join("slow-commit")).unwrap();
+    std::fs::remove_file(shim.join("hooked")).unwrap();
+    assert_eq!(open_book(&home, A), OpenOutcome::Opened);
+    let mut w = Wire::new(&home, A);
+    w.initialize("owner");
+    draft(&mut w, "to be backed up inside a commit");
+    w.end();
+    match home.admin(Request::BackUpNow {
+        id: A.into(),
+        new_disk: false,
+    }) {
+        Response::BackedUp { targets, .. } => {
+            assert!(targets.iter().all(|t| t.problem.is_none()), "{targets:?}");
+        }
+        other => panic!("{other:?}"),
+    }
+    let mut w = Wire::new(&home, A);
+    w.initialize("owner");
+    draft(&mut w, "to be committed inside a commit");
+    w.end();
+    // 1. Inside the commit's ref update.
+    std::fs::write(shim.join("slow-commit"), b"").unwrap();
+    let outcome = close_book(&home, A);
+    assert!(
+        matches!(outcome, CloseOutcome::ClosedBackupIncomplete(_)),
+        "{outcome:?}"
+    );
+    assert!(
+        shim.join("hooked").exists(),
+        "git never reached its ref update"
+    );
+    assert_eq!(locks_under(&archive), Vec::<String>::new());
+    assert!(
+        record().contains("\"kind\":\"lock_removed\"") && record().contains("refs/heads/main.lock"),
+        "the removal wasn't recorded: {}",
+        record()
+    );
+    std::fs::remove_file(shim.join("slow-commit")).unwrap();
+    std::fs::remove_file(shim.join("hooked")).unwrap();
+    assert_eq!(open_book(&home, A), OpenOutcome::Opened);
+    let status = home.admin(Request::BackUpNow {
+        id: A.into(),
+        new_disk: false,
+    });
+    match &status {
+        Response::BackedUp { targets, .. } => {
+            assert!(targets.iter().all(|t| t.problem.is_none()), "{status:?}");
+        }
+        other => panic!("{other:?}"),
+    }
+    fsck_of(&archive);
+    fsck_of(&target);
+    // 2. Inside the push's ref update at the folder.
+    let mut w = Wire::new(&home, A);
+    w.initialize("owner");
+    draft(&mut w, "to be pushed inside a push");
+    w.end();
+    std::fs::write(shim.join("slow-push"), b"").unwrap();
+    let outcome = close_book(&home, A);
+    assert!(
+        matches!(outcome, CloseOutcome::ClosedBackupIncomplete(_)),
+        "{outcome:?}"
+    );
+    assert!(
+        shim.join("hooked").exists(),
+        "git never reached its ref update"
+    );
+    assert_eq!(locks_under(&target), Vec::<String>::new());
+    assert_eq!(locks_under(&archive), Vec::<String>::new());
+    assert!(
+        record().contains("\"repo\":\"folder\""),
+        "the folder's lock wasn't recorded: {}",
+        record()
+    );
+    std::fs::remove_file(shim.join("slow-push")).unwrap();
+    assert_eq!(open_book(&home, A), OpenOutcome::Opened);
+    let status = home.admin(Request::BackUpNow {
+        id: A.into(),
+        new_disk: false,
+    });
+    match &status {
+        Response::BackedUp { targets, .. } => {
+            assert!(targets.iter().all(|t| t.problem.is_none()), "{status:?}");
+        }
+        other => panic!("{other:?}"),
+    }
+    fsck_of(&archive);
+    fsck_of(&target);
+    ledger_store::chain::read(
+        &home.book_dir(A).join("ops").join("backup.jsonl"),
+        "wanderbooks-backup-v1",
+    )
+    .expect("the backup record is a whole chain");
+    assert!(server.close().success());
 }

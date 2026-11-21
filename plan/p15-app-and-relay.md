@@ -569,3 +569,58 @@ apps OAuth guide, xAI's connector and tunnelling pages. Field reports:
 anthropics/claude-ai-mcp #131, #228, #840, #1237; anthropics/claude-code
 #48557, #100527; homeassistant-ai/ha-mcp #1787; the Grok and Gemini
 issues named in the research of 2026-11-20.
+
+## 9. Backups without git (D-91, D-92; the owner, 2026-11-21)
+
+Decided: git leaves backups entirely (D-91). A backup is a plain folder
+the person picks (another disk, or a folder Dropbox, iCloud, OneDrive or
+Google Drive already syncs), plus one backup file on request. A backup
+can be protected with a passphrase, offered at set-up and off by default
+(D-92). Built before the first test users. The owner's words: "an
+average user doesn't want to hear anything about git at all".
+
+What stays exactly as it is: what a backup holds (the journal, the
+stored files, the vault, the keys, the access log; never the SQLite
+projection, which a restore rebuilds); when a backup runs (at open,
+after writes go quiet, before close, on request); the proof after it
+(the chain replays, every stored file re-hashes, the vault and its key
+are there, the head is the one recorded); the weekly drill; a format
+upgrade needing a proven local backup made under the store's lock; a
+restore previewing first, restoring only the head it previewed, and
+moving old books to `legacy/`, never deleting them; a destination more
+than 24 hours behind being flagged.
+
+The form (the lead's design; the unit may refine it and must say where):
+
+- A destination holds one folder per set of books, named for the books,
+  with a short plain-words read-me a person can open.
+- Nothing in it is ever deleted or rewritten. The journal and the access
+  log are kept as numbered segment files, one written per backup that
+  has new lines: immutable once written, so a syncing service never sees
+  a file change under it, and the same form serves sealed backups.
+  Stored files are added once, under their hash. The vault and keys,
+  which can change, are kept by content hash.
+- A backup is complete when its manifest is in place: a small file,
+  written last and atomically, naming the books' id, the sequence number
+  and head it reaches, the segments, and the vault and key files by
+  hash. A reader uses the newest manifest that proves whole; a run that
+  died leaves pieces no manifest names, which are harmless.
+- The journal is the history: an earlier state is a shorter prefix, and
+  each manifest marks one. No separate history is kept.
+- Before writing, the destination's newest manifest must be a point on
+  the live journal (same head at that sequence number). If not, the
+  destination holds other or diverged books: say so, write nothing.
+- The local copy that proves a format upgrade is the same form, in the
+  books' own folder, in place of the bare repository.
+- "Save a backup…" writes the same contents as one file; "Restore…"
+  takes a folder or that file.
+- With a passphrase: every piece is sealed (XChaCha20-Poly1305, as the
+  vault is; the key derived from the passphrase with a memory-hard
+  function); file names give away no more than counts and sizes; the
+  derived key is kept privately on this computer so backups stay
+  automatic; a restore on another computer asks for the passphrase; a
+  forgotten passphrase cannot be recovered, and the set-up says so.
+- Old backups made with git are left exactly where they are and never
+  touched. A person restoring from one clones it with git themselves and
+  uses the existing adopt of a plain folder; the docs say how. A books'
+  old `backup.git_remote` setting is reported as no longer used.

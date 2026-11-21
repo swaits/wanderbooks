@@ -1,15 +1,20 @@
-//! The books open while something holds them (plan 3.9, D-21, D-23).
+//! The books open while something holds them (plan 3.9, D-21, D-23; plan
+//! P15 3.1, D-77, D-84).
 //!
-//! Nothing runs in the background: the first holder (the app, an agent's
-//! bridge, `wanderbooks serve`, or a command that needs the books) starts
-//! the **host**, which starts the books server and holds it open while
-//! any lease on its socket lasts, and closes it 10 s after the last one
-//! ends. Each part is a mode of the one `wanderbooks` executable:
-//! [`host::run`] (`wanderbooks host`), [`bridge::run`] (`wanderbooks
-//! mcp`), and the owner's commands in [`commands`] (`serve`, `close`,
-//! `books`, `token`, `connect`, `doctor`, `passphrase`, and what the
-//! viewer's Books menu does). Agents' tokens are kept in files under the data root
-//! ([`tokens`]).
+//! On the desktop the app is the host: [`app_server`] starts the books
+//! server as the window's child and closes it by closing its input.
+//! Nothing else on the desktop starts a detached host. The headless
+//! `wanderbooks serve` keeps one, as before: its host starts the books
+//! server and holds it open while any lease on its socket lasts, and
+//! closes it 10 s after the last one ends. Each part is a mode of the one
+//! `wanderbooks` executable: [`host::run`] (`wanderbooks host`),
+//! [`bridge::run`] (`wanderbooks mcp`, a line to whatever runs, in words
+//! when nothing does), and the owner's commands in [`commands`] (`serve`,
+//! `close`, `books`, `token`, `connect`, `doctor`, `passphrase`, and what
+//! the viewer's Books menu does), which talk to the running app's (or
+//! host's) server, or with nothing running run a server of their own for
+//! the length of the work, or say "Start Wanderbooks first". Agents'
+//! tokens are kept in files under the data root ([`tokens`]).
 
 pub mod app_server;
 pub mod bridge;

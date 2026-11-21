@@ -61,8 +61,10 @@
 //!      one). With nothing running, every call is answered "Wanderbooks
 //!      isn't running: start Wanderbooks and open BOOK (on a computer
 //!      with no screen, run `wanderbooks serve`), then try again."
-//!      (`not_running_words`); with the app running but BOOK not open in
-//!      it, "Company BOOK isn't open: open it in Wanderbooks."
+//!      (`not_running_words`); with a server holding the books and no
+//!      socket yet (the app opening large companies), "Wanderbooks is
+//!      still opening its companies…: try again shortly."
+//!      (`opening_words`); with the app running but BOOK not open in it, "Company BOOK isn't open: open it in Wanderbooks."
 //!      (`not_open_words`, for the server's `closed` refusal at the
 //!      door). Neither is final: the call after the app starts, or the
 //!      company opens, goes through, in a session that was already
@@ -105,6 +107,15 @@ const MAYBE_RAN: &str = "the connection to the books server broke while this cal
 fn not_running_words(book: &str) -> String {
     format!(
         "Wanderbooks isn't running: start Wanderbooks and open {book} (on a computer with no screen, run `wanderbooks serve`), then try again."
+    )
+}
+
+/// What the agent is told when a server holds the books and is not
+/// answering yet: the app opening its companies (a large one takes a
+/// while), or finishing a last backup (INVARIANT 12).
+fn opening_words(book: &str) -> String {
+    format!(
+        "Wanderbooks is still opening its companies, or finishing the last backup of the last session: {book} can be reached in a moment. Try again shortly."
     )
 }
 
@@ -1091,7 +1102,7 @@ impl Bridge {
     async fn keep_in_app(self: Arc<Self>, run_dir: PathBuf) {
         let root = run_dir.parent().unwrap_or(&run_dir).to_path_buf();
         let account = crate::tokens::Account::new(&root, &self.book, &self.token_name);
-        let _ = self.token_file.set((account, run_dir));
+        let _ = self.token_file.set((account, run_dir.clone()));
         let mut epoch = 0u64;
         loop {
             if matches!(&*self.link.borrow(), Link::Opening) {
@@ -1101,8 +1112,14 @@ impl Bridge {
                         return;
                     }
                     Err(Owner::Unreachable) => {
-                        self.link
-                            .send_replace(Link::Refused(not_running_words(&self.book)));
+                        // A server holding the books with no socket yet is
+                        // opening (or finishing), not absent.
+                        let words = if crate::opener::server_lock_held(&run_dir) {
+                            opening_words(&self.book)
+                        } else {
+                            not_running_words(&self.book)
+                        };
+                        self.link.send_replace(Link::Refused(words));
                     }
                     Ok(()) => match self.open_session(epoch + 1).await {
                         Ok(up) => {
@@ -2688,6 +2705,26 @@ mod against_a_server {
             told(&mut rx, 3000).await.unwrap()["error"]["message"],
             not_running_words("acme")
         );
+        keeper.abort();
+    }
+
+    #[tokio::test]
+    async fn with_a_server_still_opening_the_answer_says_so_and_not_that_nothing_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        // A server holds the books and has bound no socket yet.
+        let lock = std::fs::File::create(dir.path().join(ledger_mcp::local::SERVER_LOCK)).unwrap();
+        lock.lock().unwrap();
+        let (b, mut rx) = app_bridge_at(&dir.path().join("mcp.sock"), knobs(3000, 3000));
+        let keeper = tokio::spawn(b.clone().keep_in_app(dir.path().to_path_buf()));
+        let call: Value = serde_json::from_str(CALL).unwrap();
+        b.waiting(&json!(7));
+        b.clone().request_on(call, json!(7), "tools/call").await;
+        let said = told(&mut rx, 3000).await.unwrap()["error"]["message"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(said, opening_words("acme"));
+        assert!(!said.contains("isn't running"));
         keeper.abort();
     }
 

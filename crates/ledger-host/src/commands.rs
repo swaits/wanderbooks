@@ -7,17 +7,27 @@
 //!
 //! ```text
 //! GOAL: from a terminal, or the viewer's menu, the owner holds the books
-//!       open, closes them, makes, adopts, backs up and restores books and
-//!       connects agents, without ever naming or touching the books'
-//!       private folder.
+//!       open (`serve`), closes them, makes, adopts, backs up and restores
+//!       books and connects agents, without ever naming or touching the
+//!       books' private folder, and without any command leaving a host or a
+//!       server running that nothing manages.
 //! SOURCE: plan/served.md 3.9 (a terminal running `wanderbooks serve`, and
-//!         any command that needs the server, holds a lease; "Close the
-//!         books" ends every lease), 3.1 (the CLI talks to admin.sock and
-//!         never reads the books), 5.5 (adopt; preview and confirmation at
-//!         the terminal).
+//!         any command that needs a host, holds a lease), 3.1 (the CLI
+//!         talks to admin.sock and never reads the books), 5.5 (adopt;
+//!         preview and confirmation at the terminal);
+//!         plan/p15-app-and-relay.md 3.1 (the app is the host; only `serve`
+//!         keeps a detached host), WB-app-5.
 //! INVARIANTS:
-//!   1. A command that needs the server holds a lease while it runs, and
-//!      lets go when it ends.
+//!   1. A command that needs the server finds what holds the books: a
+//!      host (it holds a lease while it runs, and lets go when it ends),
+//!      the app's server (no lease: the app decides when the books
+//!      close), or nothing. With nothing running it starts no host: a
+//!      command that only reads, or manages the books' files, runs a
+//!      server of its own for the length of the work and closes it
+//!      (waiting for its last backup); one that needs a company held open
+//!      says "Start Wanderbooks first" ([`Direct`], [`reach`]; WB-app-5).
+//!      A server of its own takes the locks the app's server takes, so
+//!      two programs never hold one set of books.
 //!   2. Nothing printed names the data root.
 //!   3. Adoption and restoring are previewed first and go ahead only on a
 //!      yes at the terminal, or --yes; a vault beside the books must be
@@ -31,8 +41,7 @@
 //!      makes the books' agent token only when there is no token file for
 //!      it, replacing the server's (no one could be using it: the bridge
 //!      reads its token from this file).
-//!   5. The viewer's hold lets go only when the owner closes the books;
-//!      books that stop, or won't open, are tried again.
+//!   5. (Retired with the viewer's lease: the app is the host.)
 //!   6. Books waiting for a format upgrade (plan 3.9, D-39): the owner's
 //!      commands that open the books (`serve`, `books`, `token`,
 //!      `connect`) ask for the go-ahead once each time they run, at a
@@ -40,7 +49,8 @@
 //!      the foreground: the question, then the owner passphrase, which only
 //!      the server checks); elsewhere they only say so, on stderr. Only a passphrase typed
 //!      at a terminal (or in the viewer) is sent, through the lease
-//!      socket's consent_format_upgrade; declining changes nothing.
+//!      socket's consent_format_upgrade (a host), or as the admin request
+//!      `UpgradeFormat` (no host); declining changes nothing.
 //! ```
 
 use crate::knobs::{FLAG, Knobs};
@@ -163,17 +173,17 @@ enum Direct {
 fn direct_for(request: &Request) -> Direct {
     match request {
         // Opening and closing a company in a running server mean nothing
-        // with none running; the sessions and the backfill are of a
-        // running server's.
-        Request::OpenBook { .. }
-        | Request::CloseBook { .. }
-        | Request::Sessions
-        | Request::Extract { .. } => Direct::No,
-        // Work on an open company.
-        Request::BackUpNow { id, .. } | Request::UpgradeFormat { id, .. } => {
-            Direct::With(vec![id.clone()])
-        }
-        // The rest read the list, or make and move files and tokens.
+        // with none running, and the sessions are of a running server's.
+        Request::OpenBook { .. } | Request::CloseBook { .. } | Request::Sessions => Direct::No,
+        // Work on one company, which the server opens (so the owner is
+        // told of a format upgrade it waits for, INVARIANT 6).
+        Request::BackUpNow { id, .. }
+        | Request::UpgradeFormat { id, .. }
+        | Request::Extract { id, .. } => Direct::With(vec![id.clone()]),
+        Request::TokenCreate { book, .. }
+        | Request::TokenCheck { book, .. }
+        | Request::TokenRevoke { book, .. } => Direct::With(vec![book.clone()]),
+        // The rest read the list, or make and move files.
         _ => Direct::With(Vec::new()),
     }
 }
@@ -303,12 +313,9 @@ fn with_server_as(
         let reached = reach(&mut opener, common, &direct).await?;
         let run_dir = reached.run_dir.clone();
         // The books are open: asked about a format upgrade first
-        // (INVARIANT 6). (A server of the command's own has only what
-        // the command named open: nothing waits there to be offered.)
-        if common.ask_upgrades
-            && reached.own.is_none()
-            && !ASKED_UPGRADES.swap(true, std::sync::atomic::Ordering::SeqCst)
-        {
+        // (INVARIANT 6). (A server of the command's own has only the
+        // company the command names open.)
+        if common.ask_upgrades && !ASKED_UPGRADES.swap(true, std::sync::atomic::Ordering::SeqCst) {
             let run = run_dir.clone();
             let _ = tokio::task::spawn_blocking(move || offer_upgrades(&run)).await;
         }

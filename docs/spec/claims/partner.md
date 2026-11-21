@@ -368,13 +368,18 @@ warning, and never the number.
 `Ledger::check_no_party_reason`; `ledger-mcp` `text_fields`,
 `books.import_bank_csv`, `books.import_chart_csv`; `ledger-import`
 `parse_bank_csv_masked`, `parse_chart_csv`; `ledger-store`
-`integrity_findings`. **Checked:** `ledger-core` `tests/free_text_tin.rs`
+`integrity_findings`, `Store::attach_receipt`, `Store::file_document`,
+`Store::unlink_receipt`, `Store::withdraw_attachment`, `Store::review_entry`.
+**Checked:** `ledger-core` `tests/free_text_tin.rs`
 (every grouping with every separator is found, nine digits alone, the
 allow-list passes, each command refuses, a replay never does);
 `ledger-mcp` the unit tests in `text_fields.rs` (every string a write tool
 takes is classed) and `a_call_with_a_tax_id_in_free_text_is_refused_unrun_and_writes_nothing`;
 `ledger-import` the unit tests in `bank_csv.rs` and `chart_csv.rs`;
-`ledger-store` `tests/audit.rs`.
+`ledger-store` `tests/audit.rs` (the store's own texts, and a journal line
+an earlier version took opens and is named by the audit); `ledger-cli`
+`tests/tin_in_text.rs` (through the real server: a refusal writes nothing,
+a reference is kept, a bank file is masked, a chart file is refused).
 
 ## B-35 A party's part of an entry, and a party's totals
 

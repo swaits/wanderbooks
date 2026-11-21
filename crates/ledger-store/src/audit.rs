@@ -372,6 +372,20 @@ pub struct Claim {
 }
 
 impl Claim {
+    /// The words a claim keeps (the note, the model's name) hold no tax id
+    /// (BS-partner-2): checked before anything is journaled.
+    fn check(&self) -> Result<(), StoreError> {
+        for (field, text) in [
+            ("the note", self.note.as_deref()),
+            ("the model", self.method.model.as_deref()),
+        ] {
+            if let Some(t) = text {
+                ledger_core::LedgerError::free_text(field, t)?;
+            }
+        }
+        Ok(())
+    }
+
     fn into_attestation(self, what: Attested) -> Attestation {
         Attestation {
             seq: 0,
@@ -731,6 +745,7 @@ impl Store {
         date: NaiveDate,
         claim: Claim,
     ) -> Result<Attestation, StoreError> {
+        claim.check()?;
         self.ensure_feature(crate::format::AUDITS)?;
         let entry = self
             .ledger
@@ -775,6 +790,7 @@ impl Store {
 
     /// Record that an entry was reviewed whole (`entry.reviewed`).
     pub fn review_entry(&mut self, entry_id: u64, claim: Claim) -> Result<Attestation, StoreError> {
+        claim.check()?;
         self.ensure_feature(crate::format::AUDITS)?;
         let entry = self
             .ledger
@@ -817,6 +833,7 @@ impl Store {
         period_id: u64,
         claim: Claim,
     ) -> Result<(Attestation, AuditRun), StoreError> {
+        claim.check()?;
         self.ensure_feature(crate::format::AUDITS)?;
         let run = self.run_for_period(period_id)?;
         let a = self.journal_attestation(

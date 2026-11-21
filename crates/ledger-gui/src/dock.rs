@@ -39,6 +39,8 @@
 //!      down, its child hung up on (SIGHUP) and reaped, its terminal
 //!      closed; one that has not gone [`AGENT_GRACE`] later is killed
 //!      (SIGKILL, that pid alone, which this dock started) and reaped.
+//!      On Windows the agent ends when its pty is dropped; no kill after
+//!      a grace (its pty type has no child handle).
 //!      The reaping is a thread of the tab's, so the tab can say when
 //!      nothing of its agent is left (`CompanyView::jobs_watch`).
 //!   9. The panel's height, and whether the dock is open by default, are
@@ -151,7 +153,8 @@ pub struct Session {
     exited: Arc<AtomicBool>,
     title: Arc<Mutex<String>>,
     /// The child's process id (this session started it).
-    pid: u32,
+    /// The child's pid, where it is known (Unix); Windows has none.
+    pid: Option<u32>,
     /// Waits for the event loop's thread to end and drops what it returns,
     /// the PTY with it (which hangs up on the child and reaps it).
     end: Option<Box<dyn FnOnce() + Send>>,
@@ -165,7 +168,7 @@ pub const AGENT_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// End a dropped session's child: wait for its hang-up to be answered,
 /// kill it if it is not within [`AGENT_GRACE`], and reap it (INVARIANT 8).
-fn reap(end: Box<dyn FnOnce() + Send>, pid: u32, ticket: Option<crate::jobs::Ticket>) {
+fn reap(end: Box<dyn FnOnce() + Send>, pid: Option<u32>, ticket: Option<crate::jobs::Ticket>) {
     let work = move || {
         let _ticket = ticket;
         let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
@@ -180,7 +183,9 @@ fn reap(end: Box<dyn FnOnce() + Send>, pid: u32, ticket: Option<crate::jobs::Tic
         let Ok(dropper) = dropper else {
             return;
         };
-        if done_rx.recv_timeout(AGENT_GRACE).is_err() {
+        if done_rx.recv_timeout(AGENT_GRACE).is_err()
+            && let Some(pid) = pid
+        {
             kill(pid);
         }
         let _ = dropper.join();
@@ -206,6 +211,9 @@ fn kill(pid: u32) {
     }
 }
 
+/// Windows: alacritty_terminal's ConPTY exposes no child handle or pid
+/// (only a exit watcher), so there is nothing to kill after a grace; the
+/// agent ends when its pty is dropped.
 #[cfg(not(unix))]
 fn kill(_pid: u32) {}
 
@@ -240,7 +248,10 @@ impl Session {
         };
         let ticket = jobs.ticket("dock agent", crate::jobs::Hold::Free);
         let pty = tty::new(&options, window, 0).map_err(|e| e.to_string())?;
-        let pid = pty.child().id();
+        #[cfg(unix)]
+        let pid = Some(pty.child().id());
+        #[cfg(not(unix))]
+        let pid = None;
         let exited = Arc::new(AtomicBool::new(false));
         let to_pty = Arc::new(Mutex::new(None));
         let size = Arc::new(Mutex::new(window));

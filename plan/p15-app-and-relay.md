@@ -411,6 +411,13 @@ day one, so every unit in this table is built before the first installer
 goes out. Order from here: A2 and T1 together, then A4, A5, B1, B2, B3,
 C1.
 
+Every new sign-in is asked in the window (the owner, 2026-11-21,
+D-90). The app can tell which product asks, not whose account, so an
+approval is never reused for a new sign-in: the secret address alone
+never opens the books. This replaces rule 6 of section 4 where it says
+an approval survives a product registering again; refresh within a
+sign-in is unchanged.
+
 ## 6a. Follow-ups, written down so they are not lost
 
 From the reviews of unit A1 (the server opens and closes one book),

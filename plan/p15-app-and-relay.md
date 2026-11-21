@@ -402,6 +402,12 @@ our hands. Every unit follows `AGENTS.md`: spec blocks cite a rule
 (`WB-…` product rules for all of this), tests come with the code, the
 gate runs once per batch.
 
+The first release to test users (the owner, 2026-11-21): it waits for
+the relay. Nothing is handed to a test user until web assistants work on
+day one, so every unit in this table is built before the first installer
+goes out. Order from here: A2 and T1 together, then A4, A5, B1, B2, B3,
+C1.
+
 ## 6a. Follow-ups, written down so they are not lost
 
 From the reviews of unit A1 (the server opens and closes one book),

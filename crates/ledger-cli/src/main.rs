@@ -96,6 +96,14 @@ impl ledger_gui::owner::Owner for ViewerOwner {
         self.server.start(open)
     }
 
+    fn serve_host_holds(&self) -> bool {
+        ledger_host::commands::a_host_holds(self.common.root.as_deref())
+    }
+
+    fn serve_close_host(&self) -> Result<String, String> {
+        ledger_host::commands::close_the_host(self.common.root.as_deref())
+    }
+
     fn serve_open(&self, book: &str) -> Result<Option<String>, String> {
         self.server.open_book(book)
     }

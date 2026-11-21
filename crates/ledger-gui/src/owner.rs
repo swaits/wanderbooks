@@ -229,6 +229,19 @@ pub trait Owner: Send + Sync {
     fn serve_start(&self, _open: &[String]) -> Result<(), String> {
         Ok(())
     }
+    /// Whether another program's host holds the books now (an earlier
+    /// build's, or `wanderbooks serve`'s): asked when the start was
+    /// refused, to offer the person a button that closes it
+    /// (`serve_close_host`) beside the line that says what to type.
+    fn serve_host_holds(&self) -> bool {
+        false
+    }
+    /// Ask that host to close the books and wait until it has (what
+    /// `wanderbooks close` does, for a person with no command line on
+    /// their path): `Ok` says what came of it, `Err` why not. Blocks.
+    fn serve_close_host(&self) -> Result<String, String> {
+        Err("not here".into())
+    }
     /// Open the company `book` in the server (a tab opened): `Ok(None)`
     /// when it is open now. Blocks.
     fn serve_open(&self, _book: &str) -> Result<Option<String>, String> {

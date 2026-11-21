@@ -686,6 +686,54 @@ pub fn close(
     }
 }
 
+/// Ask the host that holds the books (an earlier build's detached host,
+/// or `wanderbooks serve`'s) to close them, and wait until they are
+/// closed: what `wanderbooks close` does, for the app, whose person may
+/// have no command line (the lease protocol to such a host is the same
+/// as ever). `Ok` says what came of it, in words; `Err` says why not.
+/// Blocks, at most `CLOSE_WAIT` and a few seconds.
+pub fn close_the_host(root: Option<&Path>) -> Result<String, String> {
+    let found = ledger_store::root::Root::find(root).map_err(|e| e.to_string())?;
+    let run = found.run_dir().map_err(|e| e.to_string())?;
+    let asked = crate::opener::ask_once_within(&run, Ask::Intent(Intent::Close), HOST_WAIT)?;
+    match asked {
+        None => Ok("No program has the books open now.".into()),
+        Some(HostMsg::Done { .. }) => {
+            let deadline = std::time::Instant::now() + CLOSE_WAIT;
+            loop {
+                let asked = crate::opener::ask_once_within(&run, Ask::Leases, HOST_WAIT);
+                match closing(&asked, || crate::opener::server_lock_held(&run)) {
+                    Closing::Closed => return Ok("The other program let go of the books.".into()),
+                    Closing::Reopened => {
+                        return Err(
+                            "something opened the books again as the other program let go".into(),
+                        );
+                    }
+                    Closing::Going => {}
+                }
+                if past(deadline, std::time::Instant::now()) {
+                    return Err(
+                        "the other program is still closing the books (a request is finishing)"
+                            .into(),
+                    );
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+        Some(HostMsg::Refused(why)) => Err(why),
+        Some(other) => Err(format!("the books' host answered oddly: {other:?}")),
+    }
+}
+
+/// Whether a host holds the books of the root now (an earlier build's, or
+/// `wanderbooks serve`'s): the one case the app's refused start can offer
+/// to close for the person ([`close_the_host`]).
+pub fn a_host_holds(root: Option<&Path>) -> bool {
+    ledger_store::root::Root::find(root)
+        .and_then(|found| found.run_dir())
+        .is_ok_and(|run| crate::opener::host_lock_held(&run))
+}
+
 fn books_usage(prog: &str) {
     eprintln!("usage: {prog} list");
     eprintln!("       {prog} create ID [--currency CODE]");

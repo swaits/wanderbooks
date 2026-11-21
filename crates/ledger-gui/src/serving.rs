@@ -47,6 +47,11 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::mpsc::{Sender, channel};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
+/// What the person is told when the start was refused because a host
+/// holds the books, and what to do: the button closes it for them, and the
+/// command is there for a person who prefers a terminal.
+pub const HOST_HOLDS: &str = "Assistants can't reach your companies: another program has these books open (an earlier Wanderbooks, or `wanderbooks serve`). \"Close it\" makes it let go of them and starts the books here; or, in a terminal, `wanderbooks close` does the same.";
+
 /// Where the server's start stands (INVARIANT 3).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Gate {
@@ -82,6 +87,12 @@ struct State {
     report: Vec<String>,
     /// The person has seen the report and chose to close anyway.
     report_seen: bool,
+    /// The start was refused because a host holds the books (an earlier
+    /// build's, or `wanderbooks serve`'s): the notice has a button that
+    /// closes it (INVARIANT 3).
+    host_blocks: bool,
+    /// That button was pressed and the host is being asked to close.
+    host_closing: bool,
 }
 
 struct Inner {
@@ -207,7 +218,14 @@ impl Serving {
                         // A window asked to close meanwhile has no use for
                         // the word.
                         if *lock(&starting.closing) == Closing::Not {
-                            starting.note(format!("Assistants can't reach your companies: {why}"));
+                            let host = starting.owner.serve_host_holds();
+                            lock(&starting.state).host_blocks = host;
+                            if host {
+                                starting.note(HOST_HOLDS.into());
+                            } else {
+                                starting
+                                    .note(format!("Assistants can't reach your companies: {why}"));
+                            }
                         }
                         Gate::Down
                     }
@@ -274,6 +292,57 @@ impl Serving {
         self.inner
             .as_ref()
             .is_some_and(|i| *lock(&i.gate) == Gate::Up && *lock(&i.closing) == Closing::Not)
+    }
+
+    /// Whether the start was refused because a host holds the books, so
+    /// the notice offers to close it (INVARIANT 3): not while that is
+    /// being done.
+    pub fn host_blocks(&self) -> bool {
+        self.inner.as_ref().is_some_and(|i| {
+            let state = lock(&i.state);
+            *lock(&i.gate) == Gate::Down && state.host_blocks && !state.host_closing
+        })
+    }
+
+    /// Ask the host that holds the books to close them, and start the
+    /// server when it has (INVARIANT 3): on a thread of its own, the
+    /// answer a notice. False when nothing was started.
+    pub fn close_host(&self) -> bool {
+        let Some(inner) = self.inner.clone() else {
+            return false;
+        };
+        if !self.host_blocks() {
+            return false;
+        }
+        lock(&inner.state).host_closing = true;
+        let asking = inner.clone();
+        let started = std::thread::Builder::new()
+            .name("serving-close-host".into())
+            .spawn(move || {
+                let said = asking.owner.serve_close_host();
+                {
+                    let mut state = lock(&asking.state);
+                    state.host_closing = false;
+                    if said.is_ok() {
+                        state.host_blocks = false;
+                        // The old words are of a refusal that is over.
+                        state.notices.retain(|n| n != HOST_HOLDS);
+                    }
+                }
+                match said {
+                    Ok(_) => {
+                        Self::restart(&asking);
+                    }
+                    Err(why) => asking.note(format!(
+                        "Couldn't close it: {why}. In a terminal, `wanderbooks close` closes it."
+                    )),
+                }
+            })
+            .is_ok();
+        if !started {
+            lock(&inner.state).host_closing = false;
+        }
+        started
     }
 
     /// Whether the start failed and a `retry` would try again.

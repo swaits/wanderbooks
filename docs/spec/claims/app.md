@@ -49,7 +49,9 @@ or never started. A request for one company never waits for another's.
 `the_companies_the_window_restores_are_the_servers_to_open`,
 `a_close_that_was_not_whole_is_said_to_the_person`,
 `a_refused_start_is_said_and_nothing_is_asked_of_the_server`);
-`ledger-cli` `app_server.rs` (`opening_and_closing_a_company_drives_the_servers_book`).
+`ledger-cli` `app_server.rs` (`opening_and_closing_a_company_drives_the_servers_book`);
+`ledger-host` `app_server.rs` tests (`a_close_with_an_incomplete_backup_is_a_notice_never_a_plain_success`,
+`an_open_that_did_not_happen_says_why`).
 
 **WB-app-3 The bridge speaks to the running app and says so in words.**
 `wanderbooks mcp --book X` connects to the root's `run/mcp.sock`. For a
@@ -67,8 +69,9 @@ did: the bridge holds a lease and starts a host.
 *Checked:* `ledger-host` bridge tests (`with_the_app_not_running_every_call_is_answered_in_words`,
 `with_the_app_running_a_company_that_is_not_open_is_said_in_words`,
 `a_host_bridge_passes_the_servers_words_on_as_they_are`);
-`ledger-cli` `app_server.rs` (`the_bridge_says_the_app_isnt_running_then_works_once_it_is`,
-`the_bridge_says_a_company_isnt_open_until_its_tab_is`).
+`ledger-cli` `app_server.rs` (`the_bridge_says_the_app_isnt_running_then_works_once_it_is`: not
+running, then running with the company closed, then open, then closed
+again, then the window closed, in one session, with no host started).
 
 **WB-app-4 Closing the window is bounded and visible.** Asked to close, the
 window stays up and says it is closing the books (finishing what is
@@ -82,4 +85,6 @@ their companies.
 *Enforced:* `ledger_gui::app::App` (`guard_server_close`),
 `ledger_gui::serving::Serving::begin_stop`, `ledger_host::app_server::STOP_WAIT`.
 *Checked:* `ledger-gui` `tests/serving.rs` (`closing_the_window_stops_the_server_and_waits_for_it`,
-`a_server_that_will_not_exit_is_left_closing_and_the_window_closes`).
+`a_server_that_will_not_exit_is_left_closing_and_the_window_closes`,
+`a_server_that_exits_on_its_own_is_said_once`); `ledger-cli` `app_server.rs`
+(`a_stop_that_runs_out_of_time_leaves_the_server_closing_and_says_so`).

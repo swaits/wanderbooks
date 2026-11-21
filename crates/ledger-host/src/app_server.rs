@@ -295,15 +295,7 @@ impl AppServer {
     pub fn open_book(&self, id: &str) -> Result<Option<String>, String> {
         self.wait_ready(READY_WAIT)?;
         match self.ask(Request::OpenBook { id: id.into() })? {
-            Response::OpenBook { outcome, .. } => match outcome {
-                OpenOutcome::Opened | OpenOutcome::AlreadyOpen => Ok(None),
-                OpenOutcome::NoSuchBook => Err(format!(
-                    "there are no books called {id:?}, so assistants can't reach them"
-                )),
-                OpenOutcome::CouldNotOpen(why) => Err(format!(
-                    "{id} couldn't be opened for your assistants: {why}. You can still read it in this window."
-                )),
-            },
+            Response::OpenBook { outcome, .. } => open_words(id, outcome),
             Response::Refused(why) => Err(why),
             other => Err(format!("the books server answered oddly: {other:?}")),
         }
@@ -317,14 +309,7 @@ impl AppServer {
     pub fn close_book(&self, id: &str) -> Result<Option<String>, String> {
         self.wait_ready(READY_WAIT)?;
         match self.ask(Request::CloseBook { id: id.into() })? {
-            Response::CloseBook { outcome, .. } => match outcome {
-                CloseOutcome::Closed | CloseOutcome::WasNotOpen | CloseOutcome::NoSuchBook => {
-                    Ok(None)
-                }
-                CloseOutcome::ClosedBackupIncomplete(why) => Ok(Some(format!(
-                    "{id} is closed to your assistants, but its last backup wasn't whole: {why}. What it holds since the last good backup isn't backed up."
-                ))),
-            },
+            Response::CloseBook { outcome, .. } => Ok(close_words(id, outcome)),
             Response::Refused(why) => Err(why),
             other => Err(format!("the books server answered oddly: {other:?}")),
         }
@@ -368,6 +353,31 @@ impl AppServer {
     }
 }
 
+/// What opening the company `id` came to, for the person: `Ok(None)` when
+/// it is open, else why not (INVARIANT 6).
+fn open_words(id: &str, outcome: OpenOutcome) -> Result<Option<String>, String> {
+    match outcome {
+        OpenOutcome::Opened | OpenOutcome::AlreadyOpen => Ok(None),
+        OpenOutcome::NoSuchBook => Err(format!(
+            "there are no books called {id:?}, so assistants can't reach them"
+        )),
+        OpenOutcome::CouldNotOpen(why) => Err(format!(
+            "{id} couldn't be opened for your assistants: {why}. You can still read it in this window."
+        )),
+    }
+}
+
+/// What closing the company `id` came to: a notice when its last backup
+/// wasn't whole, never a plain success then (INVARIANT 6).
+fn close_words(id: &str, outcome: CloseOutcome) -> Option<String> {
+    match outcome {
+        CloseOutcome::Closed | CloseOutcome::WasNotOpen | CloseOutcome::NoSuchBook => None,
+        CloseOutcome::ClosedBackupIncomplete(why) => Some(format!(
+            "{id} is closed to your assistants, but its last backup wasn't whole: {why}. What it holds since the last good backup isn't backed up."
+        )),
+    }
+}
+
 /// `--open`'s value for these companies.
 fn open_argument(open: &[String]) -> String {
     if open.is_empty() {
@@ -386,6 +396,36 @@ mod tests {
         assert_eq!(open_argument(&[]), "none");
         assert_eq!(open_argument(&["acme".into()]), "acme");
         assert_eq!(open_argument(&["acme".into(), "beta".into()]), "acme,beta");
+    }
+
+    #[test]
+    fn a_close_with_an_incomplete_backup_is_a_notice_never_a_plain_success() {
+        assert_eq!(close_words("acme", CloseOutcome::Closed), None);
+        assert_eq!(close_words("acme", CloseOutcome::WasNotOpen), None);
+        let said = close_words(
+            "acme",
+            CloseOutcome::ClosedBackupIncomplete("the backup folder is gone".into()),
+        )
+        .expect("a notice");
+        assert!(
+            said.contains("acme")
+                && said.contains("last backup wasn't whole")
+                && said.contains("the backup folder is gone"),
+            "{said}"
+        );
+    }
+
+    #[test]
+    fn an_open_that_did_not_happen_says_why() {
+        assert_eq!(open_words("acme", OpenOutcome::Opened), Ok(None));
+        assert_eq!(open_words("acme", OpenOutcome::AlreadyOpen), Ok(None));
+        let refused = open_words("acme", OpenOutcome::CouldNotOpen("a damaged line".into()))
+            .expect_err("not opened");
+        assert!(
+            refused.contains("acme") && refused.contains("a damaged line"),
+            "{refused}"
+        );
+        assert!(open_words("acme", OpenOutcome::NoSuchBook).is_err());
     }
 
     #[test]

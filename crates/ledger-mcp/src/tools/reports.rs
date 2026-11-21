@@ -1145,8 +1145,19 @@ impl BooksServer {
     ///   4. Nothing is journaled but the decisions an override records (a
     ///      reason for exporting without an audit, a reason for exporting
     ///      with open drafts), and only once the package is certain to be
-    ///      made. Every refusal is decided first, so none can follow a
-    ///      decision. The decisions stay ahead of the build because the
+    ///      made. Every refusal that can be known from the books as they
+    ///      stand is decided first: the two named ones (the audit, the open
+    ///      drafts) and every one the build itself can make (a member's
+    ///      unknown capital account, a report that can't be built), by
+    ///      running the build once, read-only and in memory, before the
+    ///      decision is journaled (without the stored files and the vault,
+    ///      which a machine fails at, not the books). So a package refused
+    ///      for what the books say journals nothing, on every retry. What
+    ///      can still fail after a decision is journaled is only a failure
+    ///      of the machine (the disk reading a stored file, memory, the
+    ///      hand-over); the decision is then on record, with the reason in
+    ///      the access log, and a later export that succeeds records its
+    ///      own. The decisions stay ahead of the build because the
     ///      package describes the books it is made from, itself included:
     ///      its README and every report's footer carry the journal's event
     ///      count at the build (ledger_package::package, report_meta), which
@@ -1155,8 +1166,8 @@ impl BooksServer {
     ///      then, journaling nothing. From the journaling to the hand-over
     ///      nothing looks at the close's stop (the build is no longer
     ///      stoppable, local.rs INVARIANT 10), so a decision on record is a
-    ///      package handed over, unless the build or the hand-over itself
-    ///      fails, which a close cannot make it do.
+    ///      package handed over, unless the machine fails, which a close
+    ///      cannot make it do.
     /// ```
     #[tool(
         name = "books.export_cpa_package",
@@ -1272,11 +1283,43 @@ impl BooksServer {
                 projects: Vec::new(),
             });
         }
-        // Every refusal is behind us. The decisions go on record now, ahead
-        // of the build (the package counts them: INVARIANT 4), and the close
-        // is looked for once more, immediately before the first: past it the
-        // package is made whatever a close does, so no decision is on record
-        // for a package that was never made.
+        // Every refusal the build can make from the books as they stand is
+        // decided before a decision goes on record (INVARIANT 4): the build
+        // is run once, in memory, to see that it will succeed. It is
+        // read-only (ledger_package INVARIANT 5: it takes the books by
+        // shared reference and writes nowhere, and it leaves its result to
+        // be dropped), so it changes nothing. It leaves out what only the
+        // machine can fail at: the stored files (include_receipts false) and
+        // the vault (no TIN source: a TIN it can't give never fails a
+        // package, ledger_package INVARIANT 3). A close that begins during
+        // it stops it, before anything is journaled.
+        if !decisions.is_empty() {
+            let _stop = ledger_store::cancel::scope(self.store.hurry_flag());
+            ledger_package::build_package(
+                &*store,
+                &package_settings(&self.settings()),
+                &ledger_package::PackageRequest {
+                    as_of,
+                    prepared_on: today(),
+                    cash_accounts: &p.cash_accounts,
+                    financing_accounts: &p.financing_accounts,
+                    investing_accounts: &p.investing_accounts,
+                    include_receipts: false,
+                    tins: None,
+                },
+            )
+            .map_err(|e| {
+                if e == ledger_store::StoreError::Cancelled.to_string() {
+                    crate::server::stopped_by_close()
+                } else {
+                    e
+                }
+            })?;
+        }
+        // The decisions go on record now, ahead of the build (the package
+        // counts them: INVARIANT 4), and the close is looked for once more,
+        // immediately before the first: past it the package is made
+        // whatever a close does.
         let journaled = !decisions.is_empty();
         if journaled {
             if self.store.hurried() {

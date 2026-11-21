@@ -79,3 +79,6 @@ Columns: date | type (scout, run/verify, implement, refactor, debug, review) | p
 - 2026-11-21 | debug 2 | sonnet (high) | two mcp_journeys failures after T1 | accepted: test debt, plus 4 tools fixed that wrote before refusing; rerun after merge
 - 2026-11-21 | impl-multi 2 | sonnet (high) | A5 fix round (who holds the books is knowable, races, clean start, close-it button, thinned tests) | accepted on targeted tests after merge; two claim-file wordings fixed by the lead
 - 2026-11-21 | debug 3 | sonnet (high) | Mac lock test and the 106 s Windows close | accepted on diff size and Linux tests; Windows cause inferred, timings added; proof is GitHub's next run
+- 2026-11-21 | impl-multi 3 | sonnet (high) | P15 B3: the app's side of the relay | accepted after one review and one fix round; tests rerun after merge
+- 2026-11-21 | review 3 | opus (medium) | B3 security review | accepted: no high; 3 medium, 7 low
+- 2026-11-21 | impl-multi 2 | sonnet (high) | B3 fix round (12 items) | accepted; Buypass dropped from the directory hosts by the lead

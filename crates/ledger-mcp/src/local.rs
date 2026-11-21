@@ -82,7 +82,11 @@
 //!      the books stop. Lapsed uploads and exports are swept every
 //!      SWEEP_EVERY. Nothing comes in or goes out once the books stopped.
 //!  10. One book opens or closes while the server runs, by admin request,
-//!      one change at a time (create, adopt and restore among them). Open:
+//!      one change to a book at a time (create, adopt and restore among
+//!      them): each book has its own turn (`Books::lives`), so a change to
+//!      one book waits for no other book's, and a close of one book is
+//!      never held up by, nor holds up, an open, a restore, an adoption or a
+//!      create of another. Open:
 //!      a closed (or failed) book of the root is opened and verified as at
 //!      the start. Close: from the moment it begins, a call on that book is
 //!      refused at its door, unrun, and not in its journal; a request not
@@ -114,7 +118,8 @@
 //!          store backup INVARIANT 5; between targets the flag is looked at
 //!          too); `books.verify` (once per journal line replayed and per
 //!          stored file hashed); `books.export_cpa_package` (before it
-//!          builds, and once per stored file it reads); a drill; and a
+//!          builds, and once per stored file it reads, unless it has
+//!          journaled a decision: below); a drill; and a
 //!          format upgrade not yet journaled. A call stopped this way
 //!          answers its caller that it was stopped because the books are
 //!          closing, its access record says `refused: stopped_by_close`, and
@@ -132,37 +137,69 @@
 //!          one that arrives after that look still upgrades and records
 //!          success (safe: the books are in this version's format, proven
 //!          backed up first), and finishes (a line and a database row).
-//!        - on the admin socket, which hold the one lifecycle lock: restore
-//!          and its preview, adopt and its preview, create, and open. A
-//!          close of any book, and the server's close, stops them (a job
-//!          that starts while a close is under way is refused, and asked
-//!          again after it). Each is stopped, before its point of no return,
-//!          at its next look (a phase, a stored file, a journal line, a git
-//!          command): what it wrote is removed (a clone, a staging folder),
-//!          and the root is byte for byte as it was. The point of no return
-//!          of restore and adopt is the rename that puts the books in place;
-//!          after it they finish, which is a rename or two and the sync of
-//!          two folders (a restore over books moves them to `legacy/` and
-//!          renames the copy in, both within the root); then the book is
-//!          opened, which is itself stopped, left closed (its answer says
-//!          so). Create's is the making of its folder, after which it makes
-//!          one empty book. Open has none: it stops anywhere (the book is
-//!          left closed, intact).
+//!          And a third: `books.export_cpa_package` that is exporting with
+//!          a reason (without an audit, with open drafts) journals that
+//!          decision before it builds, because the package counts it (its
+//!          README and every footer carry the journal's event count at the
+//!          build). The close is looked for once, immediately before the first
+//!          decision is journaled (a stop then journals nothing); from there
+//!          to the hand-over nothing looks at it, so a decision on record is
+//!          a package handed over (tools/reports.rs INVARIANT 4). Its build
+//!          then runs to its end: it is one of the named exceptions below.
+//!        - on the admin socket: restore and its preview, adopt and its
+//!          preview, create, and open. A stop is scoped to what it concerns.
+//!          A close of the book X stops the work on X only: an open of X, and
+//!          a restore that replaces X (the stoppable calls on X, above, and
+//!          X's backups and drill, are stopped by the same close). A create,
+//!          an adoption and a restore that replaces nothing make a NEW book:
+//!          no close of any book is a close of that, and none stops them; nor
+//!          does it stop, fail, refuse or delay an open or a close of another
+//!          book, nor a job queued for its turn at making books (`books.lock`
+//!          in the root, one at a time across processes: a deliberate rule,
+//!          ledger_store::root INVARIANT 5, that a queued job leaves at once
+//!          when it is asked to stop). Only the server's own close stops
+//!          every job (`Books::stop_every_job`). A job for a book whose close
+//!          is under way waits for that book's turn, so for the close to end,
+//!          and is then asked as any other. Each is stopped, before its
+//!          point of no return, at its next look (a phase, a stored file, a
+//!          journal line, a git command): what it wrote is removed (a clone,
+//!          a staging folder, and the lock file an adoption made in the
+//!          source folder), and the root is byte for byte as it was. The
+//!          point of no return of restore and adopt is the rename that puts
+//!          the books in place; after it they finish, which is a rename or
+//!          two and the sync of two folders (a restore over books moves them
+//!          to `legacy/` and renames the copy in, both within the root); then
+//!          the book is opened, which is itself stopped by the server's close
+//!          (and, for a restore over X, by a close of X), left closed (its
+//!          answer says so). Create's is the making of its folder, after which
+//!          it makes one empty book. Open has none: it stops anywhere (the
+//!          book is left closed, intact).
 //!      Every other call does work bounded by the size of one request: its
 //!      arguments, one entry, one stored file (at most MAX_UPLOAD) read,
-//!      hashed or extracted, one report or export over the ledger that is
-//!      already in memory (local CPU, no wait on a client, a disk of
-//!      another's or the network). A call that is neither stoppable nor
-//!      bounded by one request's size is a defect to be listed here:
-//!      `books.import_bank_csv` is one (a file of up to MAX_UPLOAD is
-//!      rehearsed whole, then written row by row, each row journaled: long
-//!      for a very large file, and it isn't stopped by a close).
+//!      hashed or extracted (local CPU, no wait on a client, a disk of
+//!      another's or the network). Three calls are neither stoppable nor
+//!      bounded by one request's size, and they are the named exceptions to
+//!      the close's bound below, each with its worst case, which a close that
+//!      meets it waits for in full (nothing enforces a bound on them: that is
+//!      a defect to be closed, not a promise kept):
+//!        - `books.import_bank_csv`: a file of up to MAX_UPLOAD is rehearsed
+//!          whole, then written row by row, each row journaled, and a close
+//!          doesn't stop it. Worst case: a full import of the largest file
+//!          accepted.
+//!        - a report or export over the whole journal (`books.verify` apart,
+//!          which is stoppable): CPU on the ledger already in memory, with no
+//!          look at a stop. Worst case: one report over the whole book.
+//!        - `books.export_cpa_package` once it has journaled a decision (above).
+//!          Worst case: one build of the package over the whole book (every
+//!          stored file it holds read once).
 //!      The close is bounded, from its start, by the sum of these named
 //!      terms, each enforced by code, and nothing else:
 //!        a. T_calls: the longest ordinary call already running with its
 //!           whole body (bounded by one request, above; none is cut or
 //!           killed; nothing a client does lengthens it), or, for a
-//!           stoppable call, T_stop;
+//!           stoppable call, T_stop, or, for a call of the three named
+//!           exceptions above, its worst case (the bound is these terms,
+//!           with that term unbounded by code while one of them runs);
 //!        b. ANSWER_GRACE for the answers on their way out, counted from
 //!           when the door is empty (the cut of a body not yet whole is at
 //!           ANSWER_GRACE from the START of the close, inside (a): a
@@ -303,10 +340,24 @@
 //!      and the book is closed: the call is answered, git still stalled,
 //!      that it was stopped because the books are closing; its record says
 //!      `refused: stopped_by_close`; the close is answered `closed`.
-//!  14. A restore of a large backup is running (an admin job) when another
-//!      book is closed: the restore is stopped, answers that it was stopped
-//!      because the books are closing, and the root is byte for byte as it
-//!      was; asked again it goes through.
+//!  14. A restore of a large backup over `beta` is running (an admin job)
+//!      when `beta` is closed: the restore is stopped, answers that it was
+//!      stopped because the books are closing, and the root is byte for byte
+//!      as it was; asked again it goes through. The same restore, with
+//!      another book (`acme`) closed instead, is not stopped.
+//!  15. A restore over `beta`, a create of `epsilon` and an adoption of
+//!      `delta` are in flight (held inside a phase), and `acme`, whose close
+//!      is made slow, is closed and opened again over and over: all three
+//!      finish correctly, none is stopped, none is told of an error, an open
+//!      and a close of `cedar` during a close of `acme` are answered at once,
+//!      and the close of `acme` is not answered until its own backup is done.
+//!  16. The server is closed with a restore, an adoption, a create and an
+//!      open in flight: each is stopped, and the root is as it was.
+//!  17. An adoption of a folder that has no lock file is stopped, fails, or
+//!      panics: the folder is, name for name and byte for byte, as it was.
+//!  18. A package exported with a reason is held as it begins and the book is
+//!      closed: stopped, no decision journaled. Held right after its decision
+//!      is journaled and the book closed: the package is made.
 //! ```
 
 use crate::admin::{self, Request, Response};
@@ -762,16 +813,16 @@ struct Books {
     /// How long after books are first seen open a drill is first looked
     /// for (`--drill-first`, for tests; else DRILL_FIRST).
     drill_first: Duration,
-    /// Held through every change to which books are open or exist (create,
-    /// adopt, restore, open, close): one at a time (INVARIANT 10).
-    lifecycle: Mutex<()>,
-    /// Set while any close of a book is under way, and for good once the
-    /// server closes: the admin jobs that can run long (restore, create,
-    /// adopt, open) look at it and stop, before their point of no return,
-    /// leaving the books as they were (INVARIANT 10). `closers` counts the
-    /// closes under way; the flag is clear when none is.
-    job_stop: Arc<std::sync::atomic::AtomicBool>,
-    closers: Mutex<usize>,
+    /// What each book's changes share: the lock they are made under, and
+    /// the stop a close of that book raises (INVARIANT 10). One book's
+    /// changes wait for one book's; no change to one book waits for, stops
+    /// or fails a change to another.
+    lives: Mutex<BTreeMap<String, Arc<Life>>>,
+    /// Set for good when the server closes: the jobs that make a NEW book
+    /// (a create, an adoption, a restore that replaces nothing) look at it.
+    /// A close of one book never raises it: those jobs aren't work on that
+    /// book (INVARIANT 10).
+    server_stop: Arc<std::sync::atomic::AtomicBool>,
     /// How these books are kept from agents (plan 3.8, P9a): what
     /// `books.start` reports (`--isolation`).
     isolation: Isolation,
@@ -779,16 +830,36 @@ struct Books {
     timers: Timers,
 }
 
-/// A close of a book under way (`Books::closing_one`).
-struct CloseGuard<'a>(&'a Books);
+/// What the changes to ONE book share (`Books::lives`): the lock they are
+/// made under, one at a time, and the stop a close of that book raises for
+/// the jobs that work on it (INVARIANT 10).
+struct Life {
+    /// Held through every change to this book (open, close, a restore that
+    /// replaces it; a create or an adoption making it).
+    lock: Mutex<()>,
+    /// Set while a close of this book is under way, and for good once the
+    /// server closes: the admin jobs working on this book (an open, a
+    /// restore over it) look at it and stop, before their point of no
+    /// return, leaving the books as they were. `closers` counts the closes
+    /// under way; the flag is clear when none is (and the server isn't
+    /// closing). Set and cleared under `closers`.
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    closers: Mutex<usize>,
+}
 
-impl Drop for CloseGuard<'_> {
+/// A close of a book under way (`Books::closing_one`).
+struct CloseGuard {
+    life: Arc<Life>,
+    closing: CancellationToken,
+}
+
+impl Drop for CloseGuard {
     fn drop(&mut self) {
-        let mut closers = self.0.closers.lock().unwrap_or_else(|e| e.into_inner());
+        let mut closers = self.life.closers.lock().unwrap_or_else(|e| e.into_inner());
         *closers -= 1;
-        if *closers == 0 && !self.0.closing.is_cancelled() {
-            self.0
-                .job_stop
+        if *closers == 0 && !self.closing.is_cancelled() {
+            self.life
+                .stop
                 .store(false, std::sync::atomic::Ordering::SeqCst);
         }
     }
@@ -815,9 +886,8 @@ impl Books {
             session_tokens: Mutex::new(BTreeMap::new()),
             backup_quiet,
             drill_first,
-            lifecycle: Mutex::new(()),
-            job_stop: Arc::default(),
-            closers: Mutex::new(0),
+            lives: Mutex::new(BTreeMap::new()),
+            server_stop: Arc::default(),
             isolation,
             timers: Timers::default(),
         }
@@ -829,29 +899,74 @@ impl Books {
         self
     }
 
-    /// A close of a book begins: the admin jobs that can run long stop
-    /// (INVARIANT 10) until the returned guard is dropped.
-    fn closing_one(&self) -> CloseGuard<'_> {
-        let mut closers = self.closers.lock().unwrap_or_else(|e| e.into_inner());
+    /// What the changes to the book `id` share: made once, kept while
+    /// anything holds it. A book first met after the server began closing
+    /// is born stopped.
+    fn life(&self, id: &BookId) -> Arc<Life> {
+        let mut lives = self.lives.lock().unwrap_or_else(|e| e.into_inner());
+        // Forget the books nothing is changing or closing.
+        lives.retain(|_, life| Arc::strong_count(life) > 1);
+        lives
+            .entry(id.as_str().to_string())
+            .or_insert_with(|| {
+                Arc::new(Life {
+                    lock: Mutex::new(()),
+                    stop: Arc::new(std::sync::atomic::AtomicBool::new(
+                        self.closing.is_cancelled(),
+                    )),
+                    closers: Mutex::new(0),
+                })
+            })
+            .clone()
+    }
+
+    /// A close of the book `life` belongs to begins: the admin jobs working
+    /// on THAT book that can run long stop (INVARIANT 10) until the returned
+    /// guard is dropped. Nothing else is stopped.
+    fn closing_one(&self, life: &Arc<Life>) -> CloseGuard {
+        let mut closers = life.closers.lock().unwrap_or_else(|e| e.into_inner());
         *closers += 1;
-        self.job_stop
+        life.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        drop(closers);
+        CloseGuard {
+            life: life.clone(),
+            closing: self.closing.clone(),
+        }
+    }
+
+    /// The server closes: every stop is raised, for good (INVARIANT 10).
+    /// `closing` is cancelled first, so a book first met from now is born
+    /// stopped, and a close of one book ending now clears nothing.
+    fn stop_every_job(&self) {
+        self.server_stop
             .store(true, std::sync::atomic::Ordering::SeqCst);
-        CloseGuard(self)
+        let lives = self.lives.lock().unwrap_or_else(|e| e.into_inner());
+        for life in lives.values() {
+            // Under the lock a close's end clears the flag under.
+            let _closers = life.closers.lock().unwrap_or_else(|e| e.into_inner());
+            life.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
     }
 
     /// What an admin job that can run long is asked as it goes whether to
-    /// stop (ledger_store::root `JobStop`). With the test knob
-    /// `--timer-hold` a job is held inside a phase named `job:phase` (in
-    /// `run/timer-hold`) until the name is gone or a stop is asked.
-    fn job(&self, job: &'static str) -> ledger_store::root::JobStop {
-        let stop = ledger_store::root::JobStop::new(self.job_stop.clone());
+    /// stop (ledger_store::root `JobStop`): `flag` is the stop of the book
+    /// it works on, or the server's (`server_stop`) for a job that makes a
+    /// new book. With the test knob `--timer-hold` a job is held inside a
+    /// phase named `job:phase` (in `run/timer-hold`) until the name is gone
+    /// or a stop is asked.
+    fn job(
+        &self,
+        job: &'static str,
+        flag: &Arc<std::sync::atomic::AtomicBool>,
+    ) -> ledger_store::root::JobStop {
+        let stop = ledger_store::root::JobStop::new(flag.clone());
         if !self.timers.timer_hold {
             return stop;
         }
         let Ok(run) = self.root.run_dir() else {
             return stop;
         };
-        let flag = self.job_stop.clone();
+        let flag = flag.clone();
         stop.with_phase_watch(Arc::new(move |phase: &str| {
             let name = format!("{job}:{phase}");
             {
@@ -1219,16 +1334,20 @@ impl Books {
                         "that isn't a currency: give its three-letter ISO code, such as USD".into(),
                     );
                 };
-                let _one = self.lifecycle.lock().unwrap_or_else(|e| e.into_inner());
+                let life = self.life(&id);
+                let _one = life.lock.lock().unwrap_or_else(|e| e.into_inner());
                 if self.held().contains_key(id.as_str()) {
                     return refused(RootError::Exists(id.to_string()));
                 }
-                // Stopped by a close before its folder is made, it makes
-                // nothing; after that it makes one empty book (INVARIANT 10).
-                match self
-                    .root
-                    .create_book_stoppable(&id, currency, &self.job("create"))
-                {
+                // Stopped by the server's close before its folder is made, it
+                // makes nothing; after that it makes one empty book. A close
+                // of another book doesn't stop it: it is no work on that book
+                // (INVARIANT 10).
+                match self.root.create_book_stoppable(
+                    &id,
+                    currency,
+                    &self.job("create", &self.server_stop),
+                ) {
                     Ok(store) => {
                         // Made: kept whether or not it opens (INVARIANT 3).
                         let book = self.serve(store).unwrap_or_else(Book::Failed);
@@ -1333,11 +1452,16 @@ impl Books {
                     Ok(id) => id,
                     Err(e) => return refused(e),
                 };
-                let _one = self.lifecycle.lock().unwrap_or_else(|e| e.into_inner());
+                let life = self.life(&id);
+                let _one = life.lock.lock().unwrap_or_else(|e| e.into_inner());
                 if self.held().contains_key(id.as_str()) {
                     return refused(RootError::Exists(id.to_string()));
                 }
-                let stop = self.job("adopt");
+                // Making a new book: stopped by the server's close, never by
+                // a close of another book (INVARIANT 10). Once placed, it is
+                // opened, which a close of THIS book (asked of the id it is
+                // making) stops, as it stops an open.
+                let stop = self.job("adopt", &self.server_stop);
                 let found = match self.root.adopt_preview_stoppable(&source, &stop) {
                     Ok(found) => found,
                     Err(e) => return refused(e),
@@ -1545,7 +1669,10 @@ impl Books {
             id: id.to_string(),
             outcome,
         };
-        let _one = self.lifecycle.lock().unwrap_or_else(|e| e.into_inner());
+        // This book's turn only: an open of this book waits for a close or a
+        // restore of THIS book, never for any other book's (INVARIANT 10).
+        let life = self.life(&id);
+        let _one = life.lock.lock().unwrap_or_else(|e| e.into_inner());
         if self.closing.is_cancelled() {
             return Response::Refused("the books are closing: nothing was done".into());
         }
@@ -1564,8 +1691,9 @@ impl Books {
                 Err(e) => return Response::Refused(self.hide(e.to_string())),
             },
         }
-        // Stopped by a close (INVARIANT 10): the book stays as it was.
-        let stop = self.job("open");
+        // Stopped by a close of this book, or the server's (INVARIANT 10):
+        // the book stays as it was.
+        let stop = self.job("open", &life.stop);
         if stop.look("start") {
             return said(admin::OpenOutcome::CouldNotOpen(OPEN_STOPPED.into()));
         }
@@ -1598,10 +1726,27 @@ impl Books {
             id: id.to_string(),
             outcome,
         };
-        // From now the admin jobs that can run long stop (INVARIANT 10), so
-        // the lifecycle lock is not held for long by one of them.
-        let _closing = self.closing_one();
-        let _one = self.lifecycle.lock().unwrap_or_else(|e| e.into_inner());
+        // From now the admin jobs working on THIS book that can run long
+        // stop (INVARIANT 10), so this book's turn is not held for long by
+        // one of them; no other book's job is touched, and no other book's
+        // change is waited for.
+        let life = self.life(&id);
+        let closing = self.closing_one(&life);
+        let one = life.lock.lock().unwrap_or_else(|e| e.into_inner());
+        let answer = self.close_book_held(&id, said);
+        // The stop is lowered while the turn is still held: an open of this
+        // book that was waiting for it is not stopped by a close that is over.
+        drop(closing);
+        drop(one);
+        answer
+    }
+
+    /// [`Self::close_one`], the book's turn held.
+    fn close_book_held(
+        &self,
+        id: &BookId,
+        said: impl Fn(admin::CloseOutcome) -> Response,
+    ) -> Response {
         if self.closing.is_cancelled() {
             return Response::Refused("the books are closing: nothing was done".into());
         }
@@ -1622,8 +1767,8 @@ impl Books {
         let rt = tokio::runtime::Handle::current();
         // No new call gets in; the book is listed closed.
         parts.gate.shut();
-        self.hold(&id, Book::Closed);
-        let backup = rt.block_on(self.release(&id, &parts, true, Instant::now(), None));
+        self.hold(id, Book::Closed);
+        let backup = rt.block_on(self.release(id, &parts, true, Instant::now(), None));
         eprintln!("wanderbooks server: the books {id} were closed");
         said(match backup {
             None => admin::CloseOutcome::Closed,
@@ -1844,8 +1989,20 @@ impl Books {
             Ok(id) => id,
             Err(e) => return said(e.to_string()),
         };
-        let _one = self.lifecycle.lock().unwrap_or_else(|e| e.into_inner());
-        let stop = self.job("restore");
+        // This book's turn only (INVARIANT 10). What stops the restore: a
+        // close of THIS book, if it replaces it (that is work on this book);
+        // else only the server's close (a preview, or a restore making a new
+        // book, is no work on any book that is closing).
+        let life = self.life(&id);
+        let _one = life.lock.lock().unwrap_or_else(|e| e.into_inner());
+        let stop = self.job(
+            "restore",
+            if confirmed && replace {
+                &life.stop
+            } else {
+                &self.server_stop
+            },
+        );
         let git = match ledger_store::backup::Git::find() {
             Ok(git) => git,
             Err(e) => return said(e.to_string()),
@@ -3405,9 +3562,7 @@ async fn serve(
     // The admin jobs that can run long stop at their next look, before
     // their point of no return (INVARIANT 10): the wait below is for jobs
     // that are stopping, not for a restore to run its course.
-    books
-        .job_stop
-        .store(true, std::sync::atomic::Ordering::SeqCst);
+    books.stop_every_job();
     let begun = Instant::now();
     let cutters: Vec<_> = books
         .gates()
@@ -3435,8 +3590,9 @@ async fn serve(
     // for BACKUP_AT_CLOSE at most, and its logs, uploads, exports, backups
     // and store are closed. The books are let go together: one slow
     // backup doesn't hold the others' (each book's own bound is the same).
+    // (Every admin job has ended: `admin_jobs.wait()` above. No book's
+    // changes are in flight to be waited for.)
     let open: Vec<(BookId, Parts)> = {
-        let _one = books.lifecycle.lock().unwrap_or_else(|e| e.into_inner());
         let open: Vec<(BookId, Parts)> = books
             .held()
             .iter()

@@ -382,7 +382,10 @@ fn agent(
 /// replayed and checked: every acknowledged draft is in its book's journal
 /// exactly once, no refused call left anything, a closed book's journal
 /// and access log never moved between its close answer and its reopening,
-/// and no call on the other book was ever refused.
+/// and no call on the other book was ever refused. Meanwhile admin jobs on
+/// other books (a third book closed and opened over and over, new books made)
+/// are all done and none is ever stopped, refused or told of an error by the
+/// closings (local.rs INVARIANT 10).
 #[test]
 fn closing_and_opening_a_book_over_and_over_loses_and_duplicates_nothing() {
     const CYCLES: usize = 12;
@@ -405,6 +408,7 @@ fn closing_and_opening_a_book_over_and_over_loses_and_duplicates_nothing() {
     );
     home.create(A, "USD");
     home.create(B, "USD");
+    home.create("cedar", "USD");
     let disk = home.dir.path().join("disk");
     std::fs::create_dir_all(&disk).unwrap();
     {
@@ -414,6 +418,46 @@ fn closing_and_opening_a_book_over_and_over_loses_and_duplicates_nothing() {
         w.end();
     }
     let stop = Arc::new(AtomicBool::new(false));
+    // Admin jobs on other books, while the hammered one is closed and opened:
+    // a third book closed and opened over and over, and new books made. Every
+    // one is done as asked; what isn't is said here.
+    let spared = Arc::new(Mutex::new((0usize, Vec::<String>::new())));
+    let maker = {
+        let (home, stop, spared) = (home.clone(), stop.clone(), spared.clone());
+        std::thread::spawn(move || {
+            let mut made = 0;
+            while !stop.load(Ordering::SeqCst) {
+                let mut said = Vec::new();
+                if made < 8 {
+                    made += 1;
+                    match home.admin(Request::Create {
+                        id: format!("made-{made}"),
+                        currency: "USD".into(),
+                    }) {
+                        Response::Created { problem: None, .. } => {}
+                        other => said.push(format!("create: {other:?}")),
+                    }
+                }
+                match home.admin(Request::CloseBook { id: "cedar".into() }) {
+                    Response::CloseBook {
+                        outcome: CloseOutcome::Closed,
+                        ..
+                    } => {}
+                    other => said.push(format!("close: {other:?}")),
+                }
+                match home.admin(Request::OpenBook { id: "cedar".into() }) {
+                    Response::OpenBook {
+                        outcome: OpenOutcome::Opened,
+                        ..
+                    } => {}
+                    other => said.push(format!("open: {other:?}")),
+                }
+                let mut spared = spared.lock().unwrap();
+                spared.0 += 1;
+                spared.1.extend(said);
+            }
+        })
+    };
     let done = Arc::new(Mutex::new(Vec::new()));
     let reads = Arc::new([AtomicUsize::new(0), AtomicUsize::new(0)]);
     let mut agents = Vec::new();
@@ -487,6 +531,16 @@ fn closing_and_opening_a_book_over_and_over_loses_and_duplicates_nothing() {
     stop.store(true, Ordering::SeqCst);
     for a in agents.into_iter().chain(refusers) {
         a.join().unwrap();
+    }
+    maker.join().unwrap();
+    {
+        let spared = spared.lock().unwrap();
+        assert!(spared.0 > 0, "no admin job ran on the other books");
+        assert_eq!(
+            spared.1,
+            Vec::<String>::new(),
+            "a close of {A} stopped or refused a job on another book"
+        );
     }
     assert!(server.close().success());
     // Every log is a whole chain after all those closings.
@@ -2790,6 +2844,140 @@ fn a_close_stops_a_running_verification_and_a_running_package_and_says_so() {
     assert!(server.close().success());
 }
 
+/// How many decisions the journal of `id` holds.
+#[cfg(unix)]
+fn decisions_of(home: &Home, id: &str) -> usize {
+    files_of(home, id)
+        .0
+        .iter()
+        .filter(|l| l.line_type == "decision.recorded")
+        .count()
+}
+
+/// A package that goes with a decision (a reason to export with drafts open
+/// or without an audit) is journaled ahead of its build, because the package
+/// counts the decision (its README and every footer carry the journal's
+/// event count at the build), so the decision may be on record only for a
+/// package that is made: a close that begins before the decision is journaled
+/// stops the package, and nothing is journaled; one that begins after it
+/// doesn't stop it, and the package is handed over whole (tools/reports.rs
+/// `export_cpa_package` INVARIANT 4, local.rs INVARIANT 10). The first call is
+/// held as it begins and the second right after its decision is journaled, by
+/// the server's test knob (`--timer-hold`), which the close's start releases.
+#[cfg(unix)]
+#[test]
+fn a_close_never_leaves_a_decision_on_record_for_a_package_that_was_not_made() {
+    let home = Home::new("close-package-decision");
+    let server = Server::start_with(
+        &home,
+        &[
+            "--timer-hold",
+            "--timers",
+            "20",
+            "--backup-quiet",
+            "3600000",
+        ],
+    );
+    home.create(A, "USD");
+    let run = home.run();
+    let args = json!({
+        "cash_accounts": ["1000"],
+        "allow_open_drafts": {"reason": "the CPA wants it before the receipt comes"}
+    });
+    let seen = |name: &str| {
+        std::fs::read_to_string(run.join("timer-held"))
+            .unwrap_or_default()
+            .lines()
+            .any(|l| l == name)
+    };
+    let mut w = Wire::new(&home, A);
+    w.initialize("owner");
+    let r = w.call(
+        "books.add_account",
+        json!({"code": "1000", "name": "Bank", "account_type": "asset"}),
+    );
+    assert_eq!(r["result"]["isError"], json!(false), "{r}");
+    draft(&mut w, "still open");
+    // 1. The close begins before the decision is journaled.
+    let at_start = "call:books.export_cpa_package";
+    std::fs::write(run.join("timer-hold"), at_start).unwrap();
+    let mut package = call_unanswered(&home, &w, 7, "books.export_cpa_package", args.clone());
+    wait_for("the package is held", Duration::from_secs(60), || {
+        seen(at_start)
+    });
+    let started = std::time::Instant::now();
+    assert_eq!(decisions_of(&home, A), 0);
+    let closing = admin_in_thread(&home, Request::CloseBook { id: A.into() });
+    let (status, said) = package.answer();
+    assert_eq!(status, 200, "{said}");
+    assert!(
+        said.contains("stopped because the books are closing"),
+        "{said}"
+    );
+    assert_eq!(
+        finished("the close", closing),
+        Response::CloseBook {
+            id: A.into(),
+            outcome: CloseOutcome::Closed
+        }
+    );
+    assert!(started.elapsed() < NEVER_LONGER);
+    assert_eq!(
+        decisions_of(&home, A),
+        0,
+        "a decision is on record for a package that was stopped"
+    );
+    let stopped = access_of(&home, A)
+        .into_iter()
+        .find(|r| r.access.subject == "books.export_cpa_package")
+        .expect("the call is on record");
+    assert_eq!(
+        stopped.access.result,
+        ledger_store::access::Outcome::Refused("stopped_by_close".into())
+    );
+    // 2. The close begins after it: the package is made all the same.
+    std::fs::remove_file(run.join("timer-hold")).unwrap();
+    assert_eq!(open_book(&home, A), OpenOutcome::Opened);
+    let after = "call:books.export_cpa_package:journaled";
+    std::fs::write(run.join("timer-hold"), after).unwrap();
+    let mut w = Wire::new(&home, A);
+    w.initialize("owner");
+    let mut package = call_unanswered(&home, &w, 8, "books.export_cpa_package", args);
+    wait_for(
+        "the package is held after its decision",
+        Duration::from_secs(60),
+        || seen(after),
+    );
+    assert_eq!(
+        decisions_of(&home, A),
+        1,
+        "the decision isn't journaled yet"
+    );
+    let closing = admin_in_thread(&home, Request::CloseBook { id: A.into() });
+    let (status, said) = package.answer();
+    assert_eq!(status, 200, "{said}");
+    assert!(
+        !said.contains("stopped because the books are closing") && said.contains("download"),
+        "a package with its decision journaled was stopped by a close: {said}"
+    );
+    assert_eq!(
+        finished("the close", closing),
+        Response::CloseBook {
+            id: A.into(),
+            outcome: CloseOutcome::Closed
+        }
+    );
+    assert_eq!(decisions_of(&home, A), 1);
+    let made = access_of(&home, A)
+        .into_iter()
+        .rev()
+        .find(|r| r.access.subject == "books.export_cpa_package")
+        .expect("the call is on record");
+    assert_eq!(made.access.result, ledger_store::access::Outcome::Ok);
+    std::fs::remove_file(run.join("timer-hold")).unwrap();
+    assert!(server.close().success());
+}
+
 /// The files of `books/` byte for byte (the staging and scratch folders
 /// among them), but for the books in `live`: those the server has open and
 /// works on by itself (its timers write their archives and logs).
@@ -2801,88 +2989,255 @@ fn root_without(home: &Home, live: &[&str]) -> BTreeMap<String, (u64, String)> {
         .collect()
 }
 
-/// A job on the admin socket (restore, adopt, create, open) that is running
-/// when a close of another book begins is stopped by it, before its point of
-/// no return: it answers that it was stopped because the books are closing,
-/// what it wrote is removed, and the root is byte for byte as it was (the
-/// job's staging or scratch folder is there while it is held, and gone after;
-/// asked again with no close, it goes through). Each job is held inside a
-/// phase by the server's test knob (`--timer-hold`, `job:phase`), which the
-/// close's start releases; the stop is then at the job's next look.
+/// The jobs on the admin socket that can run long (restore, adopt, create,
+/// open), each held inside a phase by the server's test knob (`--timer-hold`,
+/// `job:phase`) until the name is gone or a stop is asked. Returns, for each,
+/// the request, the held name, what it says it didn't do, and whether it
+/// leaves a folder of its own in `books/` while it is held.
+#[cfg(unix)]
+struct Jobs {
+    /// The backup a restore reads (`acme`'s).
+    repo: PathBuf,
+    restore_head: (u64, String),
+    adopt_head: (u64, String),
+    data: PathBuf,
+    toml: String,
+    /// Keeps the adoption's source alive.
+    _old: tempfile::TempDir,
+}
+
+#[cfg(unix)]
+impl Jobs {
+    /// Books `A` (backed up to a folder) and `cedar` (closed) exist; the
+    /// previews of a restore of that backup and of an adoption are taken.
+    fn new(home: &Home) -> Self {
+        home.create(A, "USD");
+        home.create(CEDAR, "USD");
+        assert!(matches!(close_book(home, CEDAR), CloseOutcome::Closed));
+        let mut w = Wire::new(home, A);
+        w.initialize("owner");
+        let repo = backed_up_to_folder(home, &mut w, A);
+        w.end();
+        let old = tempfile::Builder::new()
+            .prefix("wb-close-old-")
+            .tempdir()
+            .unwrap();
+        let data = old.path().join("books-data");
+        drop(ledger_store::Store::create(&data, ledger_core::Currency::USD).unwrap());
+        let toml = "[company]\nname = \"Acme Widgets LLC\"\n".to_string();
+        let restore_head = match home.admin(Request::Restore {
+            id: "gamma".into(),
+            source: repo.display().to_string(),
+            replace: false,
+            confirmed: false,
+            expect_head: None,
+        }) {
+            Response::RestorePreview(p) => p.head,
+            other => panic!("{other:?}"),
+        };
+        let mut jobs = Self {
+            repo,
+            restore_head,
+            adopt_head: (0, String::new()),
+            data,
+            toml,
+            _old: old,
+        };
+        jobs.adopt_head = match home.admin(jobs.adopt(false)) {
+            Response::Preview(p) => p.source_head,
+            other => panic!("{other:?}"),
+        };
+        jobs
+    }
+
+    fn adopt(&self, confirmed: bool) -> Request {
+        Request::Adopt {
+            id: "delta".into(),
+            source: self.data.clone(),
+            settings_toml: Some(self.toml.clone()),
+            config_json: None,
+            vault_dir: None,
+            vault_key: None,
+            confirmed,
+            expect_head: confirmed.then(|| self.adopt_head.clone()),
+            skip_unknown: true,
+        }
+    }
+
+    /// A restore of the backup as books `id`, over the books that exist
+    /// when `replace`.
+    fn restore(&self, id: &str, replace: bool) -> Request {
+        Request::Restore {
+            id: id.into(),
+            source: self.repo.display().to_string(),
+            replace,
+            confirmed: true,
+            expect_head: Some(self.restore_head.clone()),
+        }
+    }
+}
+
+#[cfg(unix)]
+const CEDAR: &str = "cedar";
+
+/// How many times the server has said it holds `name` (`run/timer-held`).
+#[cfg(unix)]
+fn times_held(run: &std::path::Path, name: &str) -> usize {
+    std::fs::read_to_string(run.join("timer-held"))
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| *l == name)
+        .count()
+}
+
+/// A job started on its own thread, and waited for until the server holds it
+/// inside the phase `name`; the thread that will have its answer.
+#[cfg(unix)]
+fn job_held_in(
+    home: &Home,
+    name: &str,
+    job: &Request,
+    hold: &str,
+) -> std::thread::JoinHandle<Response> {
+    let run = home.run();
+    std::fs::write(run.join("timer-hold"), hold).unwrap();
+    let seen = times_held(&run, name);
+    let running = std::thread::spawn({
+        let admin = run.join("admin.sock");
+        let job = job.clone();
+        move || ledger_mcp::admin::call(&admin, job).unwrap()
+    });
+    wait_for(
+        &format!("{name} is held inside the job"),
+        Duration::from_secs(300),
+        || times_held(&run, name) > seen || running.is_finished(),
+    );
+    if running.is_finished() {
+        panic!(
+            "{name}: the job ended before it was held: {:?}",
+            running.join()
+        );
+    }
+    running
+}
+
+/// A job on the admin socket (restore, adopt, create, open) is stopped by a
+/// close only when the close is of the book the job works on, or is the
+/// server's own (local.rs INVARIANT 10). Stopped, it answers that it was
+/// stopped because the books are closing, what it wrote is removed, and the
+/// root is byte for byte as it was (the job's staging or scratch folder is
+/// there while it is held, and gone after; asked again with no close, it
+/// goes through). Each job is held inside a phase by the server's test knob
+/// (`--timer-hold`, `job:phase`), which the stop releases; the stop is then at
+/// the job's next look.
+///
+/// A restore over a book, and the opening of a book, are work on that book: a
+/// close of it stops them. A create, an adoption and a restore that replaces
+/// nothing make a NEW book, which no close of a book is the close of: only the
+/// server's stops them (the other test below, of closes that stop nothing).
 #[cfg(unix)]
 #[test]
-fn a_close_stops_a_running_restore_adopt_create_and_open_leaving_the_root_as_it_was() {
-    const C: &str = "cedar";
-    let home = Home::new("close-stops-jobs");
-    let server = Server::start_with(
-        &home,
-        &[
-            "--timer-hold",
-            "--timers",
-            "20",
-            "--backup-quiet",
-            "3600000",
-            "--answer-grace",
-            "300",
-        ],
-    );
-    home.create(A, "USD");
-    home.create(C, "USD");
-    assert!(matches!(close_book(&home, C), CloseOutcome::Closed));
-    let mut w = Wire::new(&home, A);
-    w.initialize("owner");
-    let repo = backed_up_to_folder(&home, &mut w, A);
-    w.end();
-    let old = tempfile::Builder::new()
-        .prefix("wb-close-old-")
-        .tempdir()
-        .unwrap();
-    let data = old.path().join("books-data");
-    drop(ledger_store::Store::create(&data, ledger_core::Currency::USD).unwrap());
-    let toml = "[company]\nname = \"Acme Widgets LLC\"\n".to_string();
+fn a_close_stops_the_restore_and_the_open_of_its_own_book_leaving_the_root_as_it_was() {
+    let home = Home::new("close-stops-own-jobs");
+    let server = Server::start_with(&home, &JOB_ARGS);
+    let jobs = Jobs::new(&home);
     let run = home.run();
-    let restore_head = match home.admin(Request::Restore {
-        id: "gamma".into(),
-        source: repo.display().to_string(),
-        replace: false,
-        confirmed: false,
-        expect_head: None,
-    }) {
-        Response::RestorePreview(p) => p.head,
-        other => panic!("{other:?}"),
-    };
-    let adopt = |confirmed: bool, head: Option<(u64, String)>| Request::Adopt {
-        id: "delta".into(),
-        source: data.clone(),
-        settings_toml: Some(toml.clone()),
-        config_json: None,
-        vault_dir: None,
-        vault_key: None,
-        confirmed,
-        expect_head: head,
-        skip_unknown: true,
-    };
-    let adopt_head = match home.admin(adopt(false, None)) {
-        Response::Preview(p) => p.source_head,
-        other => panic!("{other:?}"),
-    };
-    let restore = || Request::Restore {
-        id: "gamma".into(),
-        source: repo.display().to_string(),
-        replace: false,
-        confirmed: true,
-        expect_head: Some(restore_head.clone()),
-    };
-    // (the held name, the job, what it says it didn't do, whether it leaves
-    // a folder of its own in `books/` while it is held)
-    let jobs: Vec<(&str, Request, &str, bool)> = vec![
-        ("restore:copy", restore(), "nothing was restored", true),
+    // (the held name, the job, what it says it didn't do, the book whose
+    // close stops it, whether it leaves a folder of its own in `books/`)
+    let table: Vec<(&str, Request, &str, &str, bool)> = vec![
         (
-            "adopt:open",
-            adopt(true, Some(adopt_head)),
-            "nothing was adopted",
+            "restore:copy",
+            jobs.restore(A, true),
+            "nothing was restored",
+            A,
             true,
         ),
+        (
+            "open:start",
+            Request::OpenBook { id: CEDAR.into() },
+            "not opened",
+            CEDAR,
+            false,
+        ),
+    ];
+    // The books open and live while a job is held: not compared (the job's
+    // own book, not yet there, is).
+    let live = [A, CEDAR];
+    for (name, job, said, closes, leaves_a_folder) in table {
+        let before = root_without(&home, &live);
+        let legacy_before = tree_of(&home.root().join("legacy"));
+        let running = job_held_in(&home, name, &job, name);
+        if leaves_a_folder {
+            assert_ne!(
+                root_without(&home, &live),
+                before,
+                "{name}: the job wrote nothing while held"
+            );
+        }
+        let started = std::time::Instant::now();
+        // The close of the book the job works on: it stops the job (it
+        // waits for the job's turn otherwise), and the test lifts nothing.
+        let closed = close_book(&home, closes);
+        assert_eq!(closed, CloseOutcome::WasNotOpen, "{name}");
+        assert!(started.elapsed() < NEVER_LONGER, "{name}");
+        let answer = running.join().unwrap();
+        let text = format!("{answer:?}");
+        assert!(
+            text.contains("stopped because the books are closing") && text.contains(said),
+            "{name}: {text}"
+        );
+        std::fs::remove_file(run.join("timer-hold")).unwrap();
+        assert_eq!(
+            moved(&before, &root_without(&home, &live)),
+            Vec::<String>::new(),
+            "{name}: the root isn't as it was"
+        );
+        assert_eq!(
+            tree_of(&home.root().join("legacy")),
+            legacy_before,
+            "{name}"
+        );
+        // Asked again, with nothing closing, it goes through.
+        if closes == A {
+            assert_eq!(open_book(&home, A), OpenOutcome::Opened, "{name}");
+        }
+        match (name, home.admin(job)) {
+            ("restore:copy", Response::Restored(_)) | ("open:start", Response::OpenBook { .. }) => {
+            }
+            (name, other) => panic!("{name}, asked again: {other:?}"),
+        }
+    }
+    for id in [A, CEDAR] {
+        assert_eq!(listed(&home, id), (true, false, None), "{id}");
+    }
+    assert!(server.close().success());
+}
+
+/// The server's own close stops every job on the admin socket, as a close of
+/// one book stops the work on that book: each held inside its phase, the
+/// server is closed, and each answers that it was stopped because the books
+/// are closing, with the root byte for byte as it was, and the server
+/// exits 0.
+#[cfg(unix)]
+#[test]
+fn the_servers_close_stops_every_running_admin_job_leaving_the_root_as_it_was() {
+    let home = Home::new("server-close-stops-jobs");
+    let mut server = Server::start_with(&home, &JOB_ARGS);
+    let jobs = Jobs::new(&home);
+    let table: Vec<(&str, Request, &str, bool)> = vec![
+        (
+            "restore:copy",
+            jobs.restore("gamma", false),
+            "nothing was restored",
+            true,
+        ),
+        (
+            "restore:copy",
+            jobs.restore(A, true),
+            "nothing was restored",
+            true,
+        ),
+        ("adopt:open", jobs.adopt(true), "nothing was adopted", true),
         (
             "create:start",
             Request::Create {
@@ -2894,42 +3249,18 @@ fn a_close_stops_a_running_restore_adopt_create_and_open_leaving_the_root_as_it_
         ),
         (
             "open:start",
-            Request::OpenBook { id: C.into() },
+            Request::OpenBook { id: CEDAR.into() },
             "not opened",
             false,
         ),
     ];
-    let count = |name: &str| {
-        std::fs::read_to_string(run.join("timer-held"))
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| *l == name)
-            .count()
-    };
-    // The books open and live while a job is held: not compared (the job's
-    // own book, not yet there, is).
-    let mut live = vec![A];
-    for (name, job, said, leaves_a_folder) in jobs {
+    // The books a server has open when it is closed write to their folders as
+    // they are let go: `acme`, and `gamma` once the first job is asked again.
+    let live = [A, "gamma"];
+    for (n, (name, job, said, leaves_a_folder)) in table.into_iter().enumerate() {
         let before = root_without(&home, &live);
         let legacy_before = tree_of(&home.root().join("legacy"));
-        std::fs::write(run.join("timer-hold"), name).unwrap();
-        let seen = count(name);
-        let running = std::thread::spawn({
-            let admin = home.run().join("admin.sock");
-            let job = job.clone();
-            move || ledger_mcp::admin::call(&admin, job).unwrap()
-        });
-        wait_for(
-            &format!("{name} is held inside the job"),
-            Duration::from_secs(300),
-            || count(name) > seen || running.is_finished(),
-        );
-        if running.is_finished() {
-            panic!(
-                "{name}: the job ended before it was held: {:?}",
-                running.join()
-            );
-        }
+        let running = job_held_in(&home, name, &job, name);
         if leaves_a_folder {
             assert_ne!(
                 root_without(&home, &live),
@@ -2938,21 +3269,17 @@ fn a_close_stops_a_running_restore_adopt_create_and_open_leaving_the_root_as_it_
             );
         }
         let started = std::time::Instant::now();
-        // The close of another book: it stops the job (it waits for the
-        // job's lock otherwise), and the test lifts nothing.
-        let closed = close_book(&home, A);
-        assert_eq!(closed, CloseOutcome::Closed, "{name}");
+        // Nothing lifts the hold but the server's close.
+        assert!(server.close().success(), "{name}");
         assert!(started.elapsed() < NEVER_LONGER, "{name}");
-        let answer = running.join().unwrap();
-        let text = format!("{answer:?}");
+        let text = format!("{:?}", running.join().unwrap());
         assert!(
             text.contains("stopped because the books are closing") && text.contains(said),
             "{name}: {text}"
         );
-        std::fs::remove_file(run.join("timer-hold")).unwrap();
-        let after = root_without(&home, &live);
+        std::fs::remove_file(home.run().join("timer-hold")).unwrap();
         assert_eq!(
-            moved(&before, &after),
+            moved(&before, &root_without(&home, &live)),
             Vec::<String>::new(),
             "{name}: the root isn't as it was"
         );
@@ -2961,27 +3288,216 @@ fn a_close_stops_a_running_restore_adopt_create_and_open_leaving_the_root_as_it_
             legacy_before,
             "{name}"
         );
-        assert_eq!(open_book(&home, A), OpenOutcome::Opened, "{name}");
-        // Asked again, with nothing closing, it goes through.
-        match (name, home.admin(job)) {
-            ("restore:copy", Response::Restored(_))
-            | ("adopt:open", Response::Adopted(_))
-            | ("create:start", Response::Created { .. })
-            | ("open:start", Response::OpenBook { .. }) => {}
-            (name, other) => panic!("{name}, asked again: {other:?}"),
+        server = job_server_again(&home);
+        // Asked again, with nothing closing, it goes through (the first time
+        // on this server only: the others would change what comes next).
+        if n == 0 {
+            match home.admin(job) {
+                Response::Restored(_) => {}
+                other => panic!("{name}, asked again: {other:?}"),
+            }
+            // Only `acme` is opened again: `cedar` is closed, as the open
+            // job after this needs it.
+            assert_eq!(listed(&home, CEDAR), (false, true, None));
         }
-        live.push(match name {
-            "restore:copy" => "gamma",
-            "adopt:open" => "delta",
-            "create:start" => "epsilon",
-            _ => C,
-        });
-    }
-    assert_eq!(listed(&home, C), (true, false, None));
-    for id in ["gamma", "delta", "epsilon"] {
-        assert_eq!(listed(&home, id), (true, false, None), "{id}");
     }
     assert!(server.close().success());
+}
+
+/// An admin request made on its own thread.
+#[cfg(unix)]
+fn admin_in_thread(home: &Home, request: Request) -> std::thread::JoinHandle<Response> {
+    let admin = home.run().join("admin.sock");
+    std::thread::spawn(move || ledger_mcp::admin::call(&admin, request).unwrap())
+}
+
+/// Wait for a thread to finish, failing (never hanging) if it doesn't.
+#[cfg(unix)]
+fn finished<T>(what: &str, thread: std::thread::JoinHandle<T>) -> T {
+    wait_for(what, Duration::from_secs(120), || thread.is_finished());
+    thread.join().unwrap()
+}
+
+/// Closing and opening one book never stops, fails, refuses or delays
+/// another book's work (local.rs INVARIANT 10, the first rule of the unit),
+/// the work on the admin socket included. A restore over `beta`, a create of
+/// `epsilon` and an adoption of `delta` are each held in flight (inside a
+/// phase, by the server's test knob; they make books one at a time, so the
+/// second and third wait for their turn, not yet held, until the one before
+/// is let go), and `acme` is closed and opened again while each is: its
+/// close is made slow (its backup's git stalls), and during it another book
+/// (`cedar`) is opened and closed and answers at once, while the close of
+/// `acme` is still not answered. All three jobs finish correctly, none
+/// stopped, none told of any error.
+#[cfg(unix)]
+#[test]
+fn closing_and_opening_one_book_never_stops_waits_for_or_refuses_another_books_jobs() {
+    let home = Home::new("close-spares-other-jobs");
+    let shim = shim_git(&home);
+    let mut args = JOB_ARGS.to_vec();
+    args.extend(["--close-backup", "120000"]);
+    let server = server_with_shim(&home, &shim, &args);
+    let jobs = Jobs::new(&home);
+    home.create(B, "USD");
+    let run = home.run();
+    let stalled = || {
+        std::fs::read_to_string(shim.join("stalled"))
+            .unwrap_or_default()
+            .lines()
+            .count()
+    };
+    // One close and reopening of `acme`, while the jobs are held.
+    let cycle = |why: &str| {
+        let before = stalled();
+        std::fs::write(shim.join("stall"), b"").unwrap();
+        let closing = admin_in_thread(&home, Request::CloseBook { id: A.into() });
+        wait_for(
+            &format!("{why}: the close of {A} is in its backup"),
+            Duration::from_secs(120),
+            || stalled() > before || closing.is_finished(),
+        );
+        assert!(
+            !closing.is_finished(),
+            "{why}: the close of {A} was answered with its backup stalled"
+        );
+        // Another book is opened, and closed, while this close is not
+        // answered: neither waits for it, nor is refused.
+        let opening = admin_in_thread(&home, Request::OpenBook { id: CEDAR.into() });
+        assert_eq!(
+            finished(
+                &format!("{why}: an open of {CEDAR} during the close of {A}"),
+                opening
+            ),
+            Response::OpenBook {
+                id: CEDAR.into(),
+                outcome: OpenOutcome::Opened
+            },
+            "{why}"
+        );
+        assert!(!closing.is_finished(), "{why}: the close was answered");
+        let shutting = admin_in_thread(&home, Request::CloseBook { id: CEDAR.into() });
+        assert_eq!(
+            finished(
+                &format!("{why}: a close of {CEDAR} during the close of {A}"),
+                shutting
+            ),
+            Response::CloseBook {
+                id: CEDAR.into(),
+                outcome: CloseOutcome::Closed
+            },
+            "{why}"
+        );
+        assert!(!closing.is_finished(), "{why}: the close was answered");
+        std::fs::remove_file(shim.join("stall")).unwrap();
+        assert_eq!(
+            finished(&format!("{why}: the close of {A}"), closing),
+            Response::CloseBook {
+                id: A.into(),
+                outcome: CloseOutcome::Closed
+            },
+            "{why}"
+        );
+        assert_eq!(open_book(&home, A), OpenOutcome::Opened, "{why}");
+    };
+    let hold = |names: &[&str]| std::fs::write(run.join("timer-hold"), names.join(",")).unwrap();
+    // The restore holds the turn; the other two are asked, and wait for it.
+    let restore = jobs.restore(B, true);
+    let restoring = job_held_in(
+        &home,
+        "restore:copy",
+        &restore,
+        "restore:copy,create:start,adopt:open",
+    );
+    let create = Request::Create {
+        id: "epsilon".into(),
+        currency: "USD".into(),
+    };
+    // (The server says every phase it passes, held or not: the books made
+    // so far have passed `create:start`.)
+    let seen = |name: &str| times_held(&run, name);
+    let base = [
+        ("create:start", seen("create:start")),
+        ("adopt:open", seen("adopt:open")),
+    ];
+    let taken = |name: &str| {
+        seen(name)
+            > base
+                .iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, c)| *c)
+                .unwrap()
+    };
+    let queued = [
+        ("create:start", admin_in_thread(&home, create)),
+        ("adopt:open", admin_in_thread(&home, jobs.adopt(true))),
+    ];
+    for n in 0..2 {
+        cycle(&format!("restore over {B}, round {n}"));
+        assert!(!restoring.is_finished(), "the restore was stopped or ended");
+        assert!(
+            queued.iter().all(|(_, q)| !q.is_finished()),
+            "a queued job was stopped or ended"
+        );
+    }
+    assert!(
+        !taken("create:start") && !taken("adopt:open"),
+        "a job took the turn from the restore"
+    );
+    // The restore is let go; it finishes.
+    hold(&["create:start", "adopt:open"]);
+    match finished("the restore over beta", restoring) {
+        Response::Restored(r) => assert!(r.problem.is_none(), "{r:?}"),
+        other => panic!("the restore: {other:?}"),
+    }
+    // Then each of the others takes the turn in its time, and is held.
+    let mut waiting: Vec<(&str, std::thread::JoinHandle<Response>)> = queued.into_iter().collect();
+    while !waiting.is_empty() {
+        wait_for(
+            "a queued job has its turn",
+            Duration::from_secs(300),
+            || waiting.iter().any(|(n, _)| taken(n)),
+        );
+        let at = waiting.iter().position(|(n, _)| taken(n)).unwrap();
+        let (name, job) = waiting.remove(at);
+        assert!(!job.is_finished(), "{name} ended while it was held");
+        cycle(name);
+        assert!(!job.is_finished(), "{name} was stopped or ended");
+        let names: Vec<&str> = waiting.iter().map(|(n, _)| *n).collect();
+        hold(&names);
+        match (name, finished(name, job)) {
+            ("create:start", Response::Created { problem, .. }) => {
+                assert!(problem.is_none(), "{problem:?}");
+            }
+            ("adopt:open", Response::Adopted(a)) => assert!(a.problem.is_none(), "{a:?}"),
+            (name, other) => panic!("{name}: {other:?}"),
+        }
+    }
+    for id in [A, B, "epsilon", "delta"] {
+        assert_eq!(listed(&home, id), (true, false, None), "{id}");
+    }
+    assert_eq!(listed(&home, CEDAR), (false, true, None));
+    assert!(server.close().success());
+}
+
+/// The arguments of the servers the job tests start.
+#[cfg(unix)]
+const JOB_ARGS: [&str; 7] = [
+    "--timer-hold",
+    "--timers",
+    "20",
+    "--backup-quiet",
+    "3600000",
+    "--answer-grace",
+    "300",
+];
+
+/// A server again, on books made by an earlier one: only `acme` open, as it
+/// was left (the other books of the root are closed).
+#[cfg(unix)]
+fn job_server_again(home: &Home) -> Server {
+    let mut args = JOB_ARGS.to_vec();
+    args.extend(["--open", A]);
+    Server::start_with(home, &args)
 }
 
 /// A git that can't end on SIGTERM (its group frozen here, so the signal

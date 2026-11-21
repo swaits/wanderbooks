@@ -398,20 +398,41 @@ didn't open, with why). Protocol version 1: the requests are new, the
   a commit it had made stands), `books.verify` (once per journal line and
   per stored file; a heal of a drifted database is begun only if no stop
   was asked before it, then finishes), `books.export_cpa_package` (once per
-  stored file), a drill, and a format upgrade not yet at its final look (a
+  stored file, unless it has journaled a decision, below), a drill, and a
+  format upgrade not yet at its final look (a
   stop is honoured up to that look; one that arrives after it still
-  upgrades and records success). On the admin socket, restore (and its
-  preview), adopt (and its preview), create and open are stopped by a close
-  of any book, and by the server's own: before their point of no return
-  (the rename that puts the books in place; create's making of its folder)
-  they remove what they wrote and leave the root byte for byte as it was
-  and answer that they were stopped because the books are closing; after
-  it they finish (a rename or two and two directory syncs), and the book
-  is then opened unless that, too, is stopped (it is left closed, and the
-  answer says so). Every other call does work bounded by the size of one
-  request and is waited for; `books.import_bank_csv` is the one known
-  exception (a file of up to 25 MiB is rehearsed whole and then written row
-  by row, each row journaled: long for a very large file, and not stopped);
+  upgrades and records success). A stop is scoped to what it concerns. On
+  the admin socket, a close of the book X stops the work on X only: an open
+  of X, and a restore that replaces X. A create, an adoption and a restore
+  that replaces nothing make a new book, which no close of a book is the
+  close of: a close of one book never stops, fails, refuses or delays them,
+  nor an open or a close of another book (each book has its own turn; books
+  are made, adopted and restored one at a time, and a job queued for its
+  turn leaves at once when asked to stop). The server's own close stops
+  every job. A stopped job, before its point of no return (the rename that
+  puts the books in place; create's making of its folder), removes what it
+  wrote (an adoption also removes the lock file it made in the source
+  folder, so the original is left as it was) and leaves the root byte for
+  byte as it was, and answers that it was stopped because the books are
+  closing; after it the job finishes (a rename or two and two directory
+  syncs), and the book is then opened unless that, too, is stopped (it is
+  left closed, and the answer says so). `books.export_cpa_package` with a
+  reason to export (without an audit, with open drafts) journals that
+  decision before it builds, because the package counts it (its README and
+  every footer carry the journal's event count at the build): a close is
+  looked for once, immediately before the first decision is journaled, and
+  a stop then journals nothing; after it the package is made whatever a
+  close does, so no decision is on record for a package that was never
+  made (every refusal is decided before any decision is journaled). Every
+  other call does work bounded by the size of one request and is waited
+  for. Three are the named exceptions to the close's bound, each waited for
+  in full if a close meets it: `books.import_bank_csv` (a file of up to
+  25 MiB is rehearsed whole and then written row by row, each row
+  journaled; worst case, a full import of the largest file accepted),
+  a report or export over the whole journal (CPU on the ledger in memory,
+  not stopped; worst case, one report over the whole book), and a package
+  after its decision is journaled (worst case, one build over the whole
+  book). Otherwise
   the close is bounded by the sum written in the server's INVARIANT 10
   (`local.rs`: running calls, the grace, the answers' grace, the stop of a
   hurried step, the last backup's 60 s, the stop of what is left of it);

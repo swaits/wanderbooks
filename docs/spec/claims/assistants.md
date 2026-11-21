@@ -88,11 +88,41 @@ when it connected and last acted, and "Revoke", asked once, which calls what
 `wanderbooks token revoke` calls (the server ends the key and the sessions on
 it; its copy in the token file is removed). The window writes no books. The
 web half of the page (the switch, the address, the steps for Claude and
-ChatGPT) is plan unit B3's; `connect::State::web_section` is its place, and
-the "Claude desktop app" row (a one-click extension) is unit C1's.
+ChatGPT) is plan unit B3's, and the "Claude desktop app" row (a one-click
+extension) is unit C1's. What unit B1 puts in `connect::State::web_section` is
+the question to the person when a web assistant asks to connect (WB-remote-5):
+a card that says who is asking, where it is sent back to, the address it asked
+from and what it will be able to do (read and draft; posting only if ticked),
+with "Allow" and "Don't allow", over any page of the company
+(`connect::State::web_prompt`) and on the Connect page; and, for each web
+connection allowed, what it may do, with "Let it post entries" and "Stop
+letting it post". Revoke is the same row of "Who can reach these books".
 *Enforced:* `ledger_gui::connect::State::show`, `ledger_host::commands`
 (`bridge_serve_args`, `command_line`, `ensure_key`, `forget_token_file`),
 `ledger_host::app_server::AppServer::revoke_token`.
 *Checked:* `ledger-gui` `tests/assistants.rs`
 (`the_top_bar_state_opens_the_connect_page_which_lists_and_revokes`,
 `the_connect_buttons_do_what_connect_does`).
+
+**WB-assist-5** The company's name and "call books.start first" stand in the first tools' own descriptions too.
+
+```text
+GOAL: a product that keeps only the first 512 characters of the server's
+      instructions, or drops them, still tells its model which company this is
+      and where to begin.
+SOURCE: plan/p15-app-and-relay.md 3.4 (ChatGPT uses only the first 512
+        characters; claude.ai is reported to drop them, unverified since).
+INVARIANTS:
+  1. The first 512 characters of the instructions stand alone and name the
+     company, books.start and books.handbook.
+  2. The descriptions of books.start and of the tools a model reaches for
+     first begin with the company and "call books.start first in every
+     session", for local and remote callers alike; the lead is at most 160
+     characters.
+SCENARIOS:
+  1. A list of tools names the company in each of the first tools and in
+     no other.
+```
+
+*Enforced:* `first_tools_lead`, `connect_text`, `list_tools` (the server's `BooksServer`).
+*Checked:* `ledger-mcp` unit test `the_company_and_the_entry_point_are_in_the_first_tools_too`.

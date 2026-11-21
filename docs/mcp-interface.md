@@ -477,6 +477,70 @@ didn't open, with why). Protocol version 1: the requests are new, the
   that ended is not listed; nothing is kept across a server restart.
   `wanderbooks doctor` prints these lines under "Assistants connected".
 
+### The remote door (plan/p15-app-and-relay.md section 4, unit B1; WB-remote-1 to 10)
+
+Web assistants (Claude and ChatGPT on the web; Gemini, Grok and muse.ai best
+effort) call connectors from their vendor's cloud over HTTPS. The books server
+has a second HTTP listener for them, on **127.0.0.1 only and off until the app
+asks** (the relay, unit B2, and the app's line to it with its certificate, unit
+B3, put it on the internet). The admin socket's requests (owner only) are its
+whole control:
+
+- `remote_start { public_url, port? }` turns it on as the **one public address**
+  (`https://name`, no path: the issuer), on a free loopback port unless one is
+  given, and answers where it listens; the same address again is a no-op, another
+  restarts it. `remote_stop` turns it off (it also stops when the server closes).
+  `remote_allow { book, allowed }` offers a company or withdraws it;
+  `remote_status` says all of it.
+- `remote_pending` lists the assistants waiting to be allowed (the product by
+  where it is sent back to, that address, the caller's address, the company,
+  whether posting was asked, the time left); `remote_decide { id, approve, post }`
+  is the person's answer. `remote_approvals { book? }` lists the connections
+  allowed; `remote_set_post { approval, post }` raises or lowers one;
+  `remote_make_key { book, name, post }` makes a key for a product that takes only
+  a key, and `remote_make_client { name, redirect_uris }` a client id and secret
+  to type into one: each secret is shown once, in the answer, never again.
+
+**Every connection begins with the relay's PROXY protocol version 2 header**
+(the exact form `crates/relay` writes: TCP over IPv4 or IPv6, no extensions); the
+address in it is the caller's, and is what the access record (`from`) and the
+limits use. Anything else is dropped before a byte of HTTP is read; no
+`X-Forwarded-For` is ever read. A request whose `Host` is not the public
+address's host is 421; one with another `Origin` is 403.
+
+Routes (all for the public address only):
+
+| Route | What |
+|---|---|
+| `/.well-known/oauth-protected-resource` (root, `…/b/{book}/mcp` appended, or `/b/{book}/mcp/…` before it) | RFC 9728 metadata for a company's address (the root's only while one company is offered) |
+| `/.well-known/oauth-authorization-server`, `/.well-known/openid-configuration` (and the same with a path either side) | RFC 8414 metadata; every address in it is the issuer's |
+| `POST /register` | dynamic registration (RFC 7591): 1 to 20 redirect addresses, 201 |
+| `GET /authorize` | parks the request (never approves) and answers a page that says to look at Wanderbooks; 302 straight back only for a product the person already allowed for that company |
+| `GET /authorize/wait/{id}` | the page's own look: the same page while waiting, then a 302 with `code` (or `error=access_denied`), once |
+| `POST /token` | `authorization_code` (PKCE S256, `resource` checked) and `refresh_token` (rotated; one used twice ends its family); a client secret as Basic or in the body |
+| `/b/{book}/mcp` | the company's MCP, stateless, plain JSON, for a good token only: 401 with `WWW-Authenticate: Bearer resource_metadata="…"` otherwise, `initialize` included |
+
+A client is one of: a client ID metadata document (an https `client_id`, fetched
+only when every address of its host is public, no redirect, at most 64 KiB, five
+seconds); a dynamic registration; or a client id and secret the app made. The
+redirect address must equal a registered one exactly. Access tokens last ten
+minutes and are kept in memory; refresh tokens last sixty days since last use and
+are kept (hashed) in `auth/remote.json`, 0600, so a refresh after the app was
+closed for days still works. Nothing is kept as text but a hash.
+
+**An approval** is the owner's decision about a product, a company and its
+permissions: one token of the books' principals (named `web-…`, listed by
+`token_list` and revoked by id like any, which ends every token and refresh token
+made under it) plus a record naming the product, so a product that registers
+again is not asked again. A web approval grants `books:read` and `books:write`
+(drafts); `books:post` only when the person turns it on; `books:admin` never. A
+stranger's unsigned request is a 401 and is counted, not written to the access
+record; a good token's refusal is recorded with the caller's address. Calls go
+through the same server as local ones (`call_tool`): a write needs its
+`request_key`, a repeat returns the first answer. Nothing bans an address; what
+a request creates is bounded (2000 clients, 20 waiting requests, 5 per address,
+600 calls a minute per approval, and so on).
+
 ## Server instructions
 
 The MCP `initialize` response carries an `instructions` string, the
@@ -517,6 +581,16 @@ line breaks become spaces, Unicode format characters such as bidi
 overrides and zero-width spaces are dropped), cut to 56 characters.
 `instructions_budget` (the longest rule, every parties setting) and
 `the_company_name_is_one_plain_line` check it.
+
+Some products keep only the first 512 characters of the instructions
+(ChatGPT) and one is reported to drop them (claude.ai, unverified since), so
+**the company and the entry point also begin the description of the tools a
+model reaches for first** (`books.start`, `books.handbook`, `books.chart`,
+`books.show`, `books.digest`, `books.search_entries`, `books.draft_entry`,
+`books.post_entry`): "For the books of Acme: call books.start first in every
+session." (at most 160 characters, added by `list_tools` to the tool's own text
+of at most 700), for local and remote callers alike.
+`the_company_and_the_entry_point_are_in_the_first_tools_too` pins both.
 
 The long guidance is the **handbook**, compiled in from
 `ledger-mcp/handbook/*.md`, with the receipt rule in force rendered in:

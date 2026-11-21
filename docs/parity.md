@@ -255,8 +255,22 @@ Three new rows, none above changed status, and the floor stands.
 |---|---|---|---|
 | Books home: a visible folder per book, `<Documents>/Wanderbooks/<id>`, holding `AGENTS.md`, `CLAUDE.md`, `.mcp.json` and `.claude/settings.json` and nothing of the books | A QBO/Xero company has no counterpart; the point is the agent's workplace (D-27) | partial | `books_home_holds_no_books_data`, `a_books_home_made_again_keeps_what_a_person_kept` (`crates/ledger-host/tests/books_home.rs`); `partial` until the macOS home is tried |
 | Agent dock: Claude Code or Codex in a terminal along the bottom of the viewer, started in the books home; never required | QBO's assistant panel is a cross-check only | partial | `dock_runs_the_chosen_agent`, `agent_missing_offers_the_installer` (`crates/ledger-gui/tests/dock.rs`); Linux checked; macOS by the CI run; Windows not offered (ConPTY unchecked) |
-| Assistants in the window: each company's state (none, connected, working) as a shape and a word, "Ask your assistant" where a button that edits would be, the Connect page (a row per local tool, the keys with who is on each, Revoke), and a warning before closing the window or a tab with an assistant connected (plan P15 3.3, D-79) | QBO's "Accountant" invitations and Xero's "Advisor" access are a cross-check only | partial | WB-assist-1 to WB-assist-4; `crates/ledger-gui/tests/assistants.rs`; local assistants only: the web half is plan units B1 and B3, the Claude desktop extension C1 |
+| Assistants in the window: each company's state (none, connected, working) as a shape and a word, "Ask your assistant" where a button that edits would be, the Connect page (a row per local tool, the keys with who is on each, Revoke), and a warning before closing the window or a tab with an assistant connected (plan P15 3.3, D-79) | QBO's "Accountant" invitations and Xero's "Advisor" access are a cross-check only | partial | WB-assist-1 to WB-assist-4; `crates/ledger-gui/tests/assistants.rs`; local assistants, and (unit B1) the question to the person when a web assistant asks and what each web connection may do; the web switch, address and steps are unit B3's, the Claude desktop extension C1 |
 | First run with no terminal: the viewer sets up the private folder, the owner passphrase, the first books and an agent | QBO's "set up your company" flow | partial | `first_run_onboards_with_no_terminal` (`crates/ledger-gui/tests/welcome.rs`); the AppImage's whole path is the EM's to try on a clean machine |
+
+## P15 B1: the remote door (2026-11-21, D-83, D-86)
+
+One new row below; none above changed status, so the floor stands. A second
+HTTP door in the books server, on 127.0.0.1 and off until the app asks, is the
+sign-in server web assistants knock on (WB-remote-1 to WB-remote-10,
+`docs/mcp-interface.md` "The remote door"); the window asks the person when a
+web assistant wants to connect. It is `partial`: the door is not on the
+internet until the relay's client and certificates (unit B3) exist, and no
+product's own sign-in has been tried against it yet.
+
+| Area | Counterpart (a cross-check, not the spec) | Status | Notes |
+|---|---|---|---|
+| Web assistants reach a company over HTTPS and sign in with OAuth 2.1, approved by the person in the app's window; read and draft by default, posting per connection | QBO's and Xero's "connected apps" consent screens are a cross-check only | partial | WB-remote-1 to WB-remote-10, WB-assist-5; `ledger-mcp` unit tests in `src/local/remote/` (`tests.rs`, `proxy.rs`, `cimd.rs`, `pages.rs`), `ledger-gui` `tests/assistants.rs`; open: reached through the relay (B3), tried with Claude and ChatGPT on the web, uploads and downloads over this door |
 
 ## P15 T1: every write is one transaction, exactly once (2026-11-21, D-88, D-89)
 

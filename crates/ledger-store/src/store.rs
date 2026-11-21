@@ -483,7 +483,7 @@ pub struct Store {
     /// The exclusive lock on [`LOCK_FILE`], held while the store is open:
     /// one writer at a time. Released when dropped, or when the process
     /// exits, even after a crash.
-    _lock: std::fs::File,
+    _lock: crate::lock::WriterLock,
     data_dir: PathBuf,
     db_path: PathBuf,
     journal: JournalWriter,
@@ -582,7 +582,7 @@ impl Store {
         Self::write_meta(&conn, "base_currency", base_currency.code())?;
         Self::write_meta(&conn, "last_applied_seq", "0")?;
         let mut store = Self {
-            _lock: lock,
+            _lock: crate::lock::WriterLock::new(lock, data_dir.join(LOCK_FILE)),
             data_dir: data_dir.to_path_buf(),
             db_path,
             journal: JournalWriter::open(&journal_path)?,
@@ -724,7 +724,7 @@ impl Store {
             Self::write_meta(&conn, "last_applied_seq", "0")?;
         }
         let mut store = Self {
-            _lock: lock,
+            _lock: crate::lock::WriterLock::new(lock, data_dir.join(LOCK_FILE)),
             data_dir: data_dir.to_path_buf(),
             db_path,
             journal,

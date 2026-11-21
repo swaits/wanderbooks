@@ -896,6 +896,164 @@ fn hostile_tool_arguments_never_stop_the_server() {
     reopens(m, &p, "every tool");
 }
 
+/// The journal's bytes, frame lines in: what "a refusal wrote nothing"
+/// is compared on, so a stray `call.begun` or `call.closed` is seen.
+fn journal_raw(p: &Places) -> Vec<u8> {
+    std::fs::read(p.books.join("journal.jsonl")).unwrap_or_default()
+}
+
+/// The line types a journal gained, in order, and nothing of their
+/// payloads (the guard names what was written, never what it held).
+fn gained_types(before: &[u8], after: &[u8]) -> Vec<String> {
+    let rest = after.strip_prefix(before).unwrap_or(after);
+    String::from_utf8_lossy(rest)
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .map(|v| v["type"].as_str().unwrap_or("?").to_string())
+        .collect()
+}
+
+/// `v` with its `which`th string (counting in order) carrying a made-up
+/// full tax id (a 9xx area number: no one is issued one), so a refusal
+/// for a text that names one has something to leave out; the number of
+/// strings `v` holds is added to `seen`.
+fn with_tin_in_string(v: &Value, which: usize, seen: &mut usize) -> Value {
+    match v {
+        Value::String(s) => {
+            *seen += 1;
+            if *seen - 1 == which {
+                Value::String(format!("{s} 987-65-4321"))
+            } else {
+                v.clone()
+            }
+        }
+        Value::Array(a) => Value::Array(
+            a.iter()
+                .map(|x| with_tin_in_string(x, which, seen))
+                .collect(),
+        ),
+        Value::Object(o) => Value::Object(
+            o.iter()
+                .map(|(k, x)| (k.clone(), with_tin_in_string(x, which, seen)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+/// A refusal is decided before anything is written (D-88: a failed
+/// transaction is on the record, for a call that failed part way, not for
+/// a call that could have been refused up front): whatever a tool answers
+/// with an error to hostile arguments, the journal is byte for byte what
+/// it was before the call. Over every tool, at a small number of cases
+/// (`MCP_REFUSAL_CASES`, default 100), and again with a made-up tax id in
+/// each string of the arguments in turn: no journal line holds one
+/// (BS-partner-2).
+#[test]
+fn a_refused_call_leaves_the_journal_byte_for_byte_as_it_was() {
+    let p = places("refusals");
+    let mut m = Mcp::start(&p);
+    fixture(&mut m, &p);
+    let list = m.rpc("tools/list", json!({}));
+    let tools: Vec<(String, Value)> = list["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| {
+            (
+                t["name"].as_str().unwrap().to_string(),
+                t["inputSchema"].clone(),
+            )
+        })
+        .collect();
+    let per_tool: Vec<BoxedStrategy<(String, Value)>> = tools
+        .iter()
+        .map(|(name, schema)| {
+            let name = name.clone();
+            args_for(schema, &p)
+                .prop_map(move |a| (name.clone(), a))
+                .boxed()
+        })
+        .collect();
+    let call = proptest::strategy::Union::new(per_tool);
+    let cases = std::env::var("MCP_REFUSAL_CASES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(100);
+    let mut runner = TestRunner::new(Config {
+        cases,
+        failure_persistence: None,
+        max_shrink_iters: 0,
+        ..Config::default()
+    });
+    let m = std::cell::RefCell::new(m);
+    // Every refusal that wrote: (tool, the line types it left).
+    let found = std::cell::RefCell::new(Vec::<(String, Vec<String>)>::new());
+    let refused = std::cell::Cell::new(0u32);
+    let tried = |m: &mut Mcp, tool: &str, args: Value| {
+        let before = journal_raw(&p);
+        let r = m.rpc("tools/call", json!({"name": tool, "arguments": args}));
+        let after = journal_raw(&p);
+        let no = r.get("error").is_some() || r["result"]["isError"] == json!(true);
+        if no {
+            refused.set(refused.get() + 1);
+            if before != after {
+                found
+                    .borrow_mut()
+                    .push((tool.to_string(), gained_types(&before, &after)));
+            }
+        }
+        // A refusal leaves no trace of a tax id it was given: not in a
+        // line it wrote, not in the error a failed call's closing line
+        // keeps (BS-partner-2). (What a call that succeeded keeps is the
+        // tool's own text rules, not this guard's.)
+        let gained = after.strip_prefix(before.as_slice()).unwrap_or(&after);
+        let tin = no && String::from_utf8_lossy(gained).contains("987-65-4321");
+        (no, tin)
+    };
+    runner
+        .run(&call, |(tool, args)| {
+            let mut m = m.borrow_mut();
+            let (_, tin) = tried(&mut m, &tool, args);
+            prop_assert!(!tin, "{} journaled a tax id", tool);
+            Ok(())
+        })
+        .unwrap();
+    // Every tool a couple of times, each time with a tax id put in one
+    // string of its arguments in turn: the refusals that name a text.
+    let mut m = m.into_inner();
+    let mut det = TestRunner::deterministic();
+    for (tool, schema) in &tools {
+        for _ in 0..2 {
+            let args = args_for(schema, &p).new_tree(&mut det).unwrap().current();
+            let (_, tin) = tried(&mut m, tool, args.clone());
+            assert!(!tin, "{tool} journaled a tax id");
+            let mut strings = 0;
+            with_tin_in_string(&args, usize::MAX, &mut strings);
+            for which in 0..strings.min(6) {
+                let given = with_tin_in_string(&args, which, &mut 0);
+                let (_, tin) = tried(&mut m, tool, given);
+                assert!(!tin, "{tool} journaled a tax id it was given");
+            }
+        }
+    }
+    let found = found.into_inner();
+    assert!(
+        refused.get() >= 100,
+        "the guard saw too few refusals: {}",
+        refused.get()
+    );
+    let mut by_tool = std::collections::BTreeMap::<String, Vec<String>>::new();
+    for (tool, types) in found {
+        by_tool.entry(tool).or_default().push(types.join(","));
+    }
+    assert!(
+        by_tool.is_empty(),
+        "refusals that wrote to the journal (tool: line types left): {by_tool:#?}"
+    );
+    reopens(m, &p, "every refusal");
+}
+
 /// INVARIANT 4: whatever the calls journaled, the books open again. A
 /// hostile call a command accepts but replay refuses would leave books
 /// that never reopen (BS-entry-4): the server is restarted on them and

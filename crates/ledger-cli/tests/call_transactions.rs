@@ -302,6 +302,8 @@ fn types(books: &Books) -> Vec<String> {
 /// corrupt page would.
 #[test]
 fn a_call_that_wrote_lines_and_then_failed_leaves_the_books_and_its_key_as_they_were() {
+    // The fault is put there on purpose: this call fails part way.
+    common::expect_failed_calls();
     let books = Books::new("calls-failed-lines");
     let mut w = books.session("test");
     let before = types(&books);
@@ -675,6 +677,8 @@ fn set_tin(key: &str, tin: &str) -> Value {
 /// neither, and once the call can run again it is the new one that is kept.
 #[test]
 fn a_set_tin_that_fails_leaves_the_vault_as_it_was() {
+    // The fault is put there on purpose: this call fails part way.
+    common::expect_failed_calls();
     let books = Books::new("calls-vault-fail");
     let mut w = books.session("test");
     let party = answer_of(&w.call(

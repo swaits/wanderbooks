@@ -712,6 +712,46 @@ pub struct Books {
     pub currency: String,
 }
 
+std::thread_local! {
+    /// Whether this test means to leave a failed call in its books.
+    static FAILED_CALLS_EXPECTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// This test makes a call fail part way on purpose (an injected fault):
+/// its books may end holding a `call.closed` with the outcome `failed`.
+/// No other test's may: see [`Books`]'s drop.
+#[allow(dead_code)]
+pub fn expect_failed_calls() {
+    FAILED_CALLS_EXPECTED.with(|e| e.set(true));
+}
+
+/// A refusal is decided before anything is written (D-88): a failed call
+/// on the record is for one that failed part way, which only a fault
+/// injected on purpose does. So when a test's books are dropped, none
+/// holds a failed call unless the test said it would
+/// ([`expect_failed_calls`]); a tool that writes a line and then refuses
+/// fails every test that makes it refuse, not only a test written for it.
+impl Drop for Books {
+    fn drop(&mut self) {
+        if std::thread::panicking() || FAILED_CALLS_EXPECTED.with(std::cell::Cell::get) {
+            return;
+        }
+        let journal = self.journal_raw();
+        let failed: Vec<String> = String::from_utf8_lossy(&journal)
+            .lines()
+            .filter(|l| {
+                l.contains(r#""type":"call.closed""#) && l.contains(r#""outcome":"failed""#)
+            })
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .map(|v| format!("{} (journal line {})", v["payload"]["tool"], v["seq"]))
+            .collect();
+        assert!(
+            failed.is_empty(),
+            "a call failed after it began writing, and its failure is on the books' record; a refusal must be decided before anything is written: {failed:?}"
+        );
+    }
+}
+
 impl Books {
     /// New books in a new home, kept in USD, with no settings set.
     pub fn new(tag: &str) -> Self {

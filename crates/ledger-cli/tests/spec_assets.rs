@@ -1295,6 +1295,31 @@ fn a_reversed_run_is_not_posted() {
     assert_eq!(dec(&a, "book_value").as_deref(), Some("1200"));
 }
 
+/// A bill of sale named twice is refused before the disposal is written:
+/// the second link would be refused after the first, and a refusal is
+/// decided before anything is written (D-88), so the journal is byte for
+/// byte what it was and the asset is still held.
+#[test]
+fn disposing_with_a_receipt_named_twice_is_refused_before_anything_is_written() {
+    let mut m = books("disposed-twice");
+    m.post(
+        "2026-01-01",
+        &[("1000", "debit", "9000.00"), ("3000", "credit", "9000.00")],
+    );
+    let (id, sold) = m.register_ok(json!({}));
+    let doc = m.file_bill_of_sale();
+    let before = m.journal_raw();
+    let why = m.refuse(
+        "books.dispose_asset",
+        json!({"tag": sold, "date": "2026-03-31", "proceeds": "100.00",
+               "proceeds_account": "1000", "gain_loss_account": "7100",
+               "confirmed": true, "receipt_attachment_ids": [doc, doc]}),
+    );
+    assert!(why.contains("twice"), "{why}");
+    assert!(m.journal_raw() == before, "a refusal wrote to the journal");
+    assert_eq!(m.asset(id)["status"], "active");
+}
+
 /// A disposed asset is not held: every figure 0.00 once it left the books.
 #[test]
 fn a_disposed_asset_has_left_the_books() {

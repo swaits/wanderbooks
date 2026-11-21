@@ -1778,6 +1778,9 @@ impl BooksServer {
             .map(|r| resolve_party(&store, r))
             .transpose()?;
         // Every check before anything is journaled.
+        if let Some(r) = no_party {
+            ledger_core::Ledger::check_no_party_reason(r).map_err(bad)?;
+        }
         store
             .ledger()
             .template_lines(&p.template_id, amount, &p.accounts)

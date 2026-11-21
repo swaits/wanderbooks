@@ -4765,6 +4765,25 @@ impl Store {
         })
     }
 
+    /// Whether filing `bytes` and linking them to `link_to` would be
+    /// refused for a link the file already has: bytes already filed are one
+    /// file, so a link the existing attachment holds is refused
+    /// (`AlreadyLinked`). Asked before the filing writes its first line, so
+    /// a call that is refused for it has written nothing (a refusal is
+    /// decided before anything is written, D-88).
+    pub fn check_filing_links(&self, bytes: &[u8], link_to: &[Subject]) -> Result<(), StoreError> {
+        let Some(existing) = self.live_attachment_with_sha(&sha256_hex(bytes))? else {
+            return Ok(());
+        };
+        let held = self.attachment_links(existing.id)?;
+        for sub in link_to {
+            if held.contains(sub) {
+                return Err(StoreError::AlreadyLinked(existing.id, sub.describe()));
+            }
+        }
+        Ok(())
+    }
+
     /// File a document under a category (`formation`, `legal`, `tax`,
     /// `accounting`, `other`).
     pub fn file_document(

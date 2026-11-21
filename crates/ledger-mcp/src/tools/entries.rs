@@ -207,6 +207,9 @@ impl BooksServer {
             .as_deref()
             .map(|ps| parse_shares(&store, ps))
             .transpose()?;
+        if let Some(r) = no_party {
+            ledger_core::Ledger::check_no_party_reason(r).map_err(|e| e.to_string())?;
+        }
         if no_party.is_some() && (party.is_some() || vendor.is_some() || shares.is_some()) {
             return Err(
                 "no_party_reason is for an entry with no counterparty: pass it without party, parties, or vendor".into(),

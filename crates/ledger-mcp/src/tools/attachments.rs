@@ -112,6 +112,11 @@ impl BooksServer {
         let (file_name, mime_type) = named(p.file_name, p.mime_type, &file)?;
         let (bytes, claim) = (file.bytes, file.claim);
         self.refuse_tin_file(&store, &bytes, &mime_type, &file_name)?;
+        // Bytes already filed are one file: a link it has is refused now,
+        // before the filing writes anything.
+        store
+            .check_filing_links(&bytes, &link_to)
+            .map_err(|e| e.to_string())?;
         let (attachment_id, sha256, deduplicated) = store
             .attach_receipt(
                 p.entry_id,
@@ -170,6 +175,11 @@ impl BooksServer {
         let (file_name, mime_type) = named(p.file_name, p.mime_type, &file)?;
         let (bytes, claim) = (file.bytes, file.claim);
         self.refuse_tin_file(&store, &bytes, &mime_type, &file_name)?;
+        // Bytes already filed are one file: a link it has is refused now,
+        // before the filing writes anything.
+        store
+            .check_filing_links(&bytes, &link_to)
+            .map_err(|e| e.to_string())?;
         let (attachment_id, sha256, deduplicated) = store
             .file_document(
                 &p.category,

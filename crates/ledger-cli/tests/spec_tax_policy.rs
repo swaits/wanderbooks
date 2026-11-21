@@ -241,7 +241,11 @@ fn require_tax_category_refuses_defect_8() {
         json!({"code": "6160", "name": "Hosting", "account_type": "expense", "tax_category": "other_deductions"}),
     );
     assert!(out.get("warnings").is_none(), "{out}");
-    assert_eq!(m.events(), before + 2, "account.added and account.tax_set");
+    assert_eq!(
+        m.events(),
+        before + 4,
+        "call.begun, account.added, account.tax_set, call.closed"
+    );
     // A header is exempt.
     add(
         &mut m,

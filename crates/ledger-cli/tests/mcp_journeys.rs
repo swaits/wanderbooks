@@ -805,20 +805,10 @@ fn tin_bearing_files_are_refused_when_given_back_to_be_filed() {
             );
         }
     }
-    // (Each upload begun is a call, with its closing line: those only.)
-    let calls_only = |j: Vec<u8>| -> Vec<String> {
-        String::from_utf8(j)
-            .unwrap()
-            .lines()
-            .filter(|l| !l.contains(r#""type":"call.closed""#))
-            .map(str::to_string)
-            .collect()
-    };
-    assert_eq!(
-        calls_only(books.journal()),
-        calls_only(journal),
-        "a refusal stored something"
-    );
+    // Raw bytes, frame lines included: an upload slot writes no line, and a
+    // refusal is decided before anything is written, so no frame (begun or
+    // closed, with its error text) stands for any of these calls.
+    assert_eq!(books.journal_raw(), journal, "a refusal stored something");
     // Without TINs, the 1099 worksheet is an ordinary file: it may be
     // filed like any other.
     let plain = mcp.call("books.vendor_1099", json!({"year": 2026, "csv": true}));
@@ -2986,6 +2976,7 @@ fn rename_account_end_to_end_defect_15() {
     post_pair(&mut mcp, "2025-11-20", "6150", "1000", "29.00");
     let verified = mcp.call("books.verify", json!({"blobs": false}));
     let events = verified["events"].as_u64().unwrap();
+    let journal_before = books.journal_raw();
     for (name, says) in [
         ("", "must not be empty"),
         (" Software ", "already named"),
@@ -2998,11 +2989,17 @@ fn rename_account_end_to_end_defect_15() {
         );
         assert!(err.contains(says), "{name:?}: {err}");
     }
-    // (The first verify is a call too: its own closing line is the one
-    // line the second counts more; the refusals wrote none.)
+    // A verify that finds nothing to heal writes no line, so it has no
+    // frame (WB-format-8); and the refusals, decided before anything is
+    // written, left the journal byte for byte as it was.
+    assert_eq!(
+        books.journal_raw(),
+        journal_before,
+        "refusals write nothing"
+    );
     assert_eq!(
         mcp.call("books.verify", json!({"blobs": false}))["events"],
-        json!(events + 1),
+        json!(events),
         "refusals write nothing"
     );
     let out = mcp.call(
@@ -3022,9 +3019,8 @@ fn rename_account_end_to_end_defect_15() {
     assert_eq!(after["status"], "ok");
     // New books declare account_renamed (with the rest of this version's
     // format) as they are created: the rename journals only itself, in
-    // its frame (begun, the rename, closed), after the two verifies'
-    // closing lines.
-    assert_eq!(after["events"], json!(events + 1 + 1 + 3), "the rename");
+    // its frame (begun, the rename, closed); the verifies wrote nothing.
+    assert_eq!(after["events"], json!(events + 3), "the rename");
     let chart = mcp.call("books.chart", json!({}));
     let acct = chart["accounts"]
         .as_array()

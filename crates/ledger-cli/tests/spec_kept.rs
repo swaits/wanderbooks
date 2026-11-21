@@ -314,6 +314,38 @@ fn templates_draft_through_the_server() {
     assert_eq!(d["lines"][1]["account"], "1000");
 }
 
+/// A reason that names a full tax id is refused (BS-partner-2) before the
+/// draft's first line is written: the journal is byte for byte what it was
+/// (D-88), and the error says nothing of the number.
+#[test]
+fn a_template_draft_with_a_tax_id_in_its_reason_is_refused_before_it_is_written() {
+    let books = Books::new("kept-template-tin");
+    let mut m = Mcp::spawn(&books);
+    init(&mut m);
+    chart(&mut m);
+    m.call(
+        "books.set_convention",
+        json!({"id": "bank-expense", "kind": "posting_template",
+               "title": "Expense paid from the bank", "body_md": "Dr the expense / Cr 1000.",
+               "structured": {"lines": [
+                   {"account": "6000", "side": "debit", "share": "1"},
+                   {"account": "1000", "side": "credit", "share": "1"}]},
+               "decided_by": "A"}),
+    );
+    let before = books.journal_raw();
+    let e = m.call_err(
+        "books.draft_from_template",
+        json!({"template_id": "bank-expense", "date": "2026-10-02", "amount": "12.00",
+               "no_party_reason": "own account, tax id 987-65-4321"}),
+    );
+    assert!(!e.contains("987-65-4321"), "{e}");
+    assert_eq!(
+        books.journal_raw(),
+        before,
+        "a refusal wrote to the journal"
+    );
+}
+
 /// books.start stays at most 8 KB whatever the books hold, and says what
 /// it left out.
 #[test]

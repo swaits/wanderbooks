@@ -71,3 +71,8 @@ Columns: date | type (scout, run/verify, implement, refactor, debug, review) | p
 - 2026-11-21 | impl-multi 3 | sonnet (high) | T1 fix round (gated readers, vault staged, answer cap, HMAC args) | accepted on targeted tests after merge
 - 2026-11-21 | impl 3 | sonnet (high) | Lean law 47 in bookspec (a call counts whole or not at all, exactly once) | accepted: statement read, no sorry; merged and pushed to bookspec
 - 2026-11-21 | edit 2 | sonnet (medium) | bookspec pin to 5127b5b, law 47 cited | accepted on its checks
+- 2026-11-21 | impl-multi 3 | sonnet (high) | P15 B1: the remote door and sign-in | accepted after one review and one fix round
+- 2026-11-21 | review 3 | opus (medium) | B1 security review | accepted: 1 high (approval reuse let a stranger in), 5 medium
+- 2026-11-21 | impl-multi 3 | sonnet (high) | B1 fix round (D-90 no reuse, matching code, atomic refresh, limits) | accepted: its 44 tests rerun after merge
+- 2026-11-21 | impl-multi 2 | sonnet (high) | P15 A5: retire the detached host | in fix round after review
+- 2026-11-21 | review 3 | sonnet (high) | A5 review | accepted: no double holder; 2 medium, thinned tests

@@ -28,6 +28,7 @@ mod start;
 pub mod tokens;
 #[cfg(unix)]
 pub mod update;
+pub mod web;
 
 /// How a mode stops when it can't go on: the reason is already printed,
 /// and the number is the process's exit code.

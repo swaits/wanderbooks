@@ -34,6 +34,7 @@ struct Server {
     orders: Vec<Order>,
     ari_gets: u32,
     refuse_orders: bool,
+    certs: HashMap<usize, String>,
 }
 
 struct Order {
@@ -150,7 +151,11 @@ impl FakeAcme {
                 if let Some(r) = replaces {
                     order["replaces"] = r.into();
                 }
-                with_nonce(json(201, vec![("location", format!("{BASE}/order/{id}"))], order))
+                with_nonce(json(
+                    201,
+                    vec![("location", format!("{BASE}/order/{id}"))],
+                    order,
+                ))
             }
             ("POST", p) if p.starts_with("/authz/") => {
                 let id: usize = p[7..].parse().unwrap();
@@ -180,8 +185,7 @@ impl FakeAcme {
                         B64.encode(Sha256::digest(ka.as_bytes())),
                     )
                 };
-                let seen =
-                    support::dns_txt(self.dns, &format!("_acme-challenge.{ident}.")).await;
+                let seen = support::dns_txt(self.dns, &format!("_acme-challenge.{ident}.")).await;
                 let ok = seen.contains(&expected);
                 self.state.lock().unwrap().orders[id - 1].authz_valid = ok;
                 with_nonce(json(
@@ -222,7 +226,8 @@ impl FakeAcme {
                 let cert = params.signed_by(&self.ca).unwrap();
                 let mut s = self.state.lock().unwrap();
                 s.orders[id - 1].done = true;
-                CERTS.lock().unwrap().insert(id, format!("{}{}", cert.pem(), self.ca.pem()));
+                s.certs
+                    .insert(id, format!("{}{}", cert.pem(), self.ca.pem()));
                 let o = &s.orders[id - 1];
                 with_nonce(json(
                     200,
@@ -239,7 +244,7 @@ impl FakeAcme {
             }
             ("POST", p) if p.starts_with("/cert/") => {
                 let id: usize = p[6..].parse().unwrap();
-                let pem = CERTS.lock().unwrap()[&id].clone();
+                let pem = self.state.lock().unwrap().certs[&id].clone();
                 with_nonce((
                     200,
                     vec![("content-type", "application/pem-certificate-chain".into())],
@@ -260,13 +265,14 @@ impl FakeAcme {
                     serde_json::json!({"suggestedWindow":{"start":at(self.window.0),"end":at(self.window.1)}}),
                 )
             }
-            _ => json(404, vec![], serde_json::json!({"type":"urn:ietf:params:acme:error:malformed","detail":"no such path"})),
+            _ => json(
+                404,
+                vec![],
+                serde_json::json!({"type":"urn:ietf:params:acme:error:malformed","detail":"no such path"}),
+            ),
         }
     }
 }
-
-static CERTS: std::sync::LazyLock<Mutex<HashMap<usize, String>>> =
-    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
 struct Http(Arc<FakeAcme>);
 
@@ -278,7 +284,11 @@ impl HttpClient for Http {
         let fake = self.0.clone();
         Box::pin(async move {
             let (parts, body) = req.into_parts();
-            let bytes = body.collect().await.map_err(|e| Error::Other(e.into()))?.to_bytes();
+            let bytes = body
+                .collect()
+                .await
+                .map_err(|e| Error::Other(e.into()))?
+                .to_bytes();
             let path = parts.uri.path().to_owned();
             assert_eq!(parts.uri.host(), Some("acme.test"));
             let (status, headers, out) = fake.handle(parts.method.as_str(), &path, &bytes).await;
@@ -301,7 +311,11 @@ impl DnsProof for Proof {
     fn publish<'a>(&'a self, value: &'a str) -> BoxFuture<'a, Result<(), String>> {
         Box::pin(async move {
             let r = self.0.publish_txt(value).await.map_err(|e| e.to_string())?;
-            if r.ok { Ok(()) } else { Err(r.error.unwrap_or_default()) }
+            if r.ok {
+                Ok(())
+            } else {
+                Err(r.error.unwrap_or_default())
+            }
         })
     }
     fn clear(&self) -> BoxFuture<'_, ()> {
@@ -384,11 +398,13 @@ async fn an_order_goes_through_account_proof_finalize_and_download() {
         .unwrap();
     let der = leaf_der(&issued.chain_pem).unwrap();
     let (nb, na, names) = inspect(&der).unwrap();
-    assert_eq!(names, [ident.clone()]);
+    assert_eq!(names, std::slice::from_ref(&ident));
     assert!(nb < certs::now() && na > certs::now());
     assert!(issued.key_pem.contains("PRIVATE KEY"));
     // The certificate and key go together (the store checks it).
-    assert!(certs::StoredCert::new("ledger-accrual-tally-mint", "fake", &issued, &ident, None).is_ok());
+    assert!(
+        certs::StoredCert::new("ledger-accrual-tally-mint", "fake", &issued, &ident, None).is_ok()
+    );
 
     // The account is kept in a private file, with no contact in it.
     let file = r.dir.path().join("acme/fake.json");
@@ -396,13 +412,22 @@ async fn an_order_goes_through_account_proof_finalize_and_download() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
-    let st = r.acme.state.lock().unwrap();
-    assert_eq!(st.new_accounts.len(), 1);
-    assert!(st.new_accounts[0]["contact"].as_array().is_none_or(|c| c.is_empty()));
-    assert_eq!(st.new_accounts[0]["termsOfServiceAgreed"], true);
-    drop(st);
+    {
+        let st = r.acme.state.lock().unwrap();
+
+        assert_eq!(st.new_accounts.len(), 1);
+        assert!(
+            st.new_accounts[0]["contact"]
+                .as_array()
+                .is_none_or(|c| c.is_empty())
+        );
+        assert_eq!(st.new_accounts[0]["termsOfServiceAgreed"], true);
+    }
     // The relay holds no proof once the order is done.
     let left = support::dns_txt(
         r.env.relay.dns_udp_addr(),
@@ -441,7 +466,10 @@ async fn a_renewal_reuses_the_account_names_what_it_replaces_and_reads_the_windo
         .await
         .unwrap();
     assert_ne!(first.chain_pem, second.chain_pem);
-    assert_ne!(*first.key_pem, *second.key_pem, "a fresh key for each certificate");
+    assert_ne!(
+        *first.key_pem, *second.key_pem,
+        "a fresh key for each certificate"
+    );
     {
         let st = r.acme.state.lock().unwrap();
         assert_eq!(st.new_accounts.len(), 1, "the account was reused");
@@ -455,7 +483,10 @@ async fn a_renewal_reuses_the_account_names_what_it_replaces_and_reads_the_windo
         .await
         .expect("the authority offers a window");
     let now = certs::now();
-    assert!((now + 590..=now + 610).contains(&s) && (now + 890..=now + 910).contains(&e), "{s} {e} {now}");
+    assert!(
+        (now + 590..=now + 610).contains(&s) && (now + 890..=now + 910).contains(&e),
+        "{s} {e} {now}"
+    );
     assert_eq!(r.acme.state.lock().unwrap().ari_gets, 1);
 }
 

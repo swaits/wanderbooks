@@ -15,10 +15,11 @@ path = "src/main.rs"
 default = ["gui"]
 # The viewer. Off in the server-only build for another machine (plan
 # D-22, P9), so a headless machine carries no window libraries.
-gui = ["dep:ledger-gui"]
+gui = ["dep:ledger-gui", "dep:ledger-link"]
 
 [dependencies]
 ledger-host = { path = "../ledger-host" }
+ledger-link = { path = "../ledger-link", optional = true }
 ledger-mcp = { path = "../ledger-mcp" }
 ledger-store = { path = "../ledger-store" }
 ledger-gui = { path = "../ledger-gui", optional = true }
@@ -36,7 +37,21 @@ reqwest = "0.13"
 rusqlite = { version = "0.41", features = ["bundled", "fallible_uint"] }
 rust_decimal = "1"
 rmcp = { version = "3", features = ["client", "transport-streamable-http-client-reqwest"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "net", "io-util"] }
+# The web link end to end (tests/web_link.rs): an in-process relay and
+# certificate authority, and a web caller that speaks HTTP/1.1 and HTTP/2.
+relay = { path = "../relay" }
+ledger-link = { path = "../ledger-link" }
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+hyper = { version = "1", features = ["client", "http2"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+bytes = "1"
+futures = "0.3"
+zeroize = "1"
+time = "0.3"
 ledger-config = { path = "../ledger-config" }
 ledger-core = { path = "../ledger-core" }
 ledger-package = { path = "../ledger-package" }

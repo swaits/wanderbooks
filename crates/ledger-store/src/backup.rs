@@ -116,8 +116,16 @@
 //!      running is killed. A stopped drill or proof removes its scratch
 //!      clone (the one removal that is not itself stopped: it is as long
 //!      as the clone is big). The longest between two looks is one git
-//!      command's stop (SIGTERM and up to TERM_GRACE, then a kill, GROUP_GONE_WAIT,
-//!      and up to 10 s for its pipes), one journal line, one file, or one 64 KiB chunk.
+//!      command's stop (SIGTERM and up to TERM_GRACE, then a kill, GROUP_GONE_WAIT),
+//!      one journal line, one file, or one 64 KiB chunk.
+//!   7. What a git said is in hand as soon as it has ended and everything
+//!      it wrote has been read (drain.rs): to the end of its pipes, or, when
+//!      another process still holds a pipe open (Windows: a copy taken by a
+//!      process started at the same moment), to the point where the pipe
+//!      holds nothing; never for a fixed wait on a pipe that has no end
+//!      (10 s at most, as the last resort). With `WANDERBOOKS_GIT_TIMINGS`
+//!      set to a file, each command appends a line to it: how long it ran,
+//!      how long its pipes took to close, and how each ended.
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -510,45 +518,22 @@ impl Git {
             use std::os::unix::process::CommandExt;
             c.process_group(0);
         }
+        let asked = Instant::now();
+        let running = Running::begin();
         let mut child = crate::lock::spawn(&mut c).map_err(|e| match e.kind() {
             std::io::ErrorKind::NotFound => BackupError::NoGit,
             kind => BackupError::Io(kind),
         })?;
         let started = Instant::now();
+        let spawn_took = started.duration_since(asked);
         // Milliseconds since `started` when git last said anything.
         let heard = std::sync::Arc::new(AtomicU64::new(0));
-        let drain = |pipe: Option<Box<dyn std::io::Read + Send>>, cap: usize| {
-            let (tx, rx) = std::sync::mpsc::channel();
-            let heard = heard.clone();
-            std::thread::spawn(move || {
-                let mut bytes = Vec::new();
-                if let Some(mut p) = pipe {
-                    let mut buf = [0u8; 8192];
-                    while let Ok(n) = p.read(&mut buf) {
-                        if n == 0 {
-                            break;
-                        }
-                        heard.store(started.elapsed().as_millis() as u64, Ordering::Relaxed);
-                        // Bounded: a git that says this much is kept only
-                        // in part, its last part (where its errors are).
-                        bytes.extend_from_slice(&buf[..n]);
-                        if bytes.len() > cap.saturating_mul(2) {
-                            bytes.drain(..bytes.len() - cap);
-                        }
-                    }
-                }
-                if bytes.len() > cap {
-                    bytes.drain(..bytes.len() - cap);
-                }
-                let _ = tx.send(bytes);
-            });
-            rx
-        };
-        use std::io::Read;
         // What it answers is kept whole (a listing of every file); what it
         // says of itself, in part.
-        let stdout = drain(child.stdout.take().map(|p| Box::new(p) as _), usize::MAX);
-        let stderr = drain(child.stderr.take().map(|p| Box::new(p) as _), OUTPUT_MAX);
+        let stdout =
+            crate::drain::Drain::start(child.stdout.take(), usize::MAX, started, heard.clone());
+        let stderr =
+            crate::drain::Drain::start(child.stderr.take(), OUTPUT_MAX, started, heard.clone());
         // Once git has ended normally, what it started is stopped (Unix:
         // its group; Windows has no group to signal, and nothing is looked
         // for: a process spawned per git call would cost more than the
@@ -572,19 +557,40 @@ impl Git {
                 .saturating_sub(Duration::from_millis(heard.load(Ordering::Relaxed)));
             if self.cancelled() {
                 killed.set(self.stop(&mut child));
+                git_stopped(what, "cancelled", running.0, started.elapsed());
                 return Err(BackupError::Cancelled(what.to_string()));
             }
             if quiet_for > self.quiet {
                 killed.set(self.stop(&mut child));
+                git_stopped(what, "quiet", running.0, started.elapsed());
                 return Err(BackupError::TimedOut(what.to_string()));
             }
             std::thread::sleep(Duration::from_millis(20));
         };
-        // What it started may still hold its pipes: not waited for long.
+        let ran = started.elapsed();
+        // What it started may still hold its pipes: not waited for. Once
+        // git has ended, what it wrote is in its pipes already; it is read
+        // to the pipes' end, or, when something else still holds them open
+        // (a copy a process started at the same moment took, on Windows),
+        // until nothing is left in them (drain.rs), never for the 10 s
+        // limit that stays only as the last resort.
         kill_leftovers(child.id());
-        let wait = Duration::from_secs(10);
-        let stdout = stdout.recv_timeout(wait).unwrap_or_default();
-        let stderr = stderr.recv_timeout(wait).unwrap_or_default();
+        let ended = Instant::now();
+        let [(stdout, out_how), (stderr, err_how)] =
+            crate::drain::finish([&stdout, &stderr], ended, Duration::from_secs(10));
+        git_timing(&GitTiming {
+            what,
+            first: args.first().map(|a| a.to_string_lossy().into_owned()),
+            exit: status
+                .code()
+                .map_or_else(|| "signal".to_string(), |c| c.to_string()),
+            running: running.0,
+            spawn_took,
+            ran,
+            pipes_took: ended.elapsed(),
+            out: (out_how, stdout.len()),
+            err: (err_how, stderr.len()),
+        });
         if status.success() {
             Ok(String::from_utf8_lossy(&stdout).trim().to_string())
         } else {
@@ -636,17 +642,109 @@ impl Git {
         }
         #[cfg(windows)]
         {
-            let _ = std::process::Command::new("taskkill")
-                .args(["/T", "/F", "/PID", &child.id().to_string()])
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
+            let _ = crate::lock::spawn(
+                std::process::Command::new("taskkill")
+                    .args(["/T", "/F", "/PID", &child.id().to_string()])
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null()),
+            )
+            .and_then(|mut k| k.wait());
             let _ = child.kill();
             let _ = child.wait();
             Killed::Gone
         }
     }
+}
+
+/// Git commands of this process running now, for [`git_timing`].
+static RUNNING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// One running git command, counted from the moment it is asked for; `.0`
+/// is how many (itself included) there were then.
+struct Running(usize);
+
+impl Running {
+    fn begin() -> Running {
+        Running(RUNNING.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1)
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        RUNNING.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// What one git command did (see [`git_timing`]).
+struct GitTiming<'a> {
+    what: &'a str,
+    first: Option<String>,
+    exit: String,
+    running: usize,
+    spawn_took: Duration,
+    ran: Duration,
+    pipes_took: Duration,
+    out: (crate::drain::Closed, usize),
+    err: (crate::drain::Closed, usize),
+}
+
+/// The file `WANDERBOOKS_GIT_TIMINGS` names, if it is set: every git
+/// command of this process appends a line to it as it ends (a diagnostic
+/// for the tests that run the server on a machine nobody can look at: how
+/// long each command ran, and how long its pipes took to close after it
+/// ended). Never set by the program itself.
+fn timings_file() -> Option<&'static Path> {
+    static FILE: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    FILE.get_or_init(|| {
+        std::env::var_os("WANDERBOOKS_GIT_TIMINGS")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+    })
+    .as_deref()
+}
+
+fn timings_line(line: &str) {
+    use std::io::Write;
+    static BEGAN: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    let Some(file) = timings_file() else {
+        return;
+    };
+    let at = BEGAN.get_or_init(Instant::now).elapsed().as_millis();
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(file)
+    {
+        let _ = writeln!(f, "+{at}ms {line}");
+    }
+}
+
+fn git_timing(t: &GitTiming<'_>) {
+    if timings_file().is_none() {
+        return;
+    }
+    timings_line(&format!(
+        "git {} {} exit={} running={} spawn={}ms ran={}ms pipes={}ms stdout={}:{}B stderr={}:{}B",
+        t.what,
+        t.first.as_deref().unwrap_or(""),
+        t.exit,
+        t.running,
+        t.spawn_took.as_millis(),
+        t.ran.as_millis(),
+        t.pipes_took.as_millis(),
+        t.out.0.word(),
+        t.out.1,
+        t.err.0.word(),
+        t.err.1,
+    ));
+}
+
+fn git_stopped(what: &str, why: &str, running: usize, ran: Duration) {
+    timings_line(&format!(
+        "git {what} stopped={why} running={running} ran={}ms",
+        ran.as_millis()
+    ));
 }
 
 /// The most kept of what a git says of itself.

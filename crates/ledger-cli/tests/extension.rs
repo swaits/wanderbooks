@@ -6,8 +6,10 @@
 //! ```text
 //! GOAL: a package the Claude desktop app can install, naming this
 //!       program's bridge for one company, with nothing secret in it.
-//! SOURCE: WB-pkg-5; github.com/anthropics/mcpb (MANIFEST.md, the 0.3
-//!         schema); ledger-host extension.rs.
+//! SOURCE: WB-pkg-5; Anthropic's MCP Bundle manifest specification
+//!         (the manifest page and the version 0.3 JSON schema of its
+//!         mcpb repository on GitHub); the writer's own spec block in
+//!         the host crate.
 //! INVARIANTS:
 //!   1. The package is a zip whose root holds `manifest.json`; every file
 //!      the manifest names (`icon`, `server.entry_point`) is in the zip.

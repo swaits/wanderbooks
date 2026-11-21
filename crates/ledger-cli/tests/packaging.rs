@@ -683,3 +683,27 @@ fn only_a_person_runs_the_workflow_that_publishes_the_repositories() {
         "it refuses a draft"
     );
 }
+
+/// WB-pkg-4: on Linux git is a dependency of every package, so the package
+/// manager fetches it; nothing carries a git of its own.
+#[test]
+fn the_linux_packages_depend_on_git_and_none_carries_one() {
+    let packager = read("deploy/packaging/packager.toml");
+    assert_eq!(
+        packager.matches("\"git\"").count(),
+        2,
+        "the deb and the pacman package depend on git"
+    );
+    assert!(read("crates/ledger-cli/Cargo.toml").contains("requires = { git = \"*\" }"));
+    assert!(read("deploy/packaging/aur/PKGBUILD").contains("'git'"));
+    for file in [
+        "deploy/packaging/windows/wanderbooks.nsi",
+        "deploy/packaging/macos/build-macos.sh",
+    ] {
+        let text = read(file).to_lowercase();
+        assert!(
+            !text.contains("mingit") && !text.contains("git.exe"),
+            "{file} bundles a git"
+        );
+    }
+}

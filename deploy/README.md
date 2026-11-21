@@ -6,6 +6,9 @@ account can read, and agents reach them through the server with a token.
 Locally the books are `same_user (advisory)` — hidden from the agent, not
 locked against it; here they are behind an account and a machine boundary.
 
+This is the recipe for a machine with no window. To install the app on a
+computer you sit at (Windows, macOS, Linux), see `docs/install.md`.
+
 Nothing here needs the owner's books: every step works on a copy.
 
 The pieces:

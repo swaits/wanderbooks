@@ -12,11 +12,11 @@
 //!       desktop's Settings > Extensions > Advanced settings > Install
 //!       Extension, and Claude can keep that company's books, with no
 //!       command typed and no file edited.
-//! SOURCE: WB-pkg-5; Anthropic's MCPB manifest specification, version
-//!         0.3 (github.com/anthropics/mcpb, MANIFEST.md and
-//!         schemas/mcpb-manifest-v0.3.schema.json, read 2026-11-21) and
-//!         Claude's help article "Getting started with Local MCP servers
-//!         on Claude Desktop" (the install steps).
+//! SOURCE: WB-pkg-5; Anthropic's MCP Bundle manifest specification,
+//!         version 0.3 (the manifest page and the version 0.3 JSON
+//!         schema of Anthropic's mcpb repository on GitHub, read
+//!         2026-11-21) and Claude's help article "Getting started with
+//!         Local MCP servers on Claude Desktop" (the install steps).
 //! INVARIANTS:
 //!   1. The manifest holds only fields the specification defines, with
 //!      `manifest_version` "0.3", a `server` of type `binary` whose

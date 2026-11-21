@@ -24,7 +24,9 @@ section = "utils"
 # A deb marks itself package-managed: `wanderbooks update` refuses on it
 # and says to use apt (plan 3.9).
 desktop-template = "deploy/packaging/wanderbooks.desktop"
-depends = ["libc6", "libgcc-s1"]
+# git: the backups run the system's git (WB-pkg-4); the package manager
+# fetches it, so a Linux person never sees the missing-git words.
+depends = ["libc6", "libgcc-s1", "git"]
 
 [deb.files]
 "deploy/packaging/install-method-deb" = "usr/share/wanderbooks/install-method"
@@ -40,7 +42,7 @@ depends = ["libc6", "libgcc-s1"]
 "LICENSE-APACHE" = "usr/share/doc/wanderbooks/LICENSE-APACHE"
 
 [pacman]
-depends = ["gcc-libs", "glibc"]
+depends = ["gcc-libs", "glibc", "git"]
 
 [pacman.files]
 "deploy/packaging/install-method-aur" = "usr/share/wanderbooks/install-method"

@@ -487,7 +487,15 @@ fn closing_and_opening_a_book_over_and_over_loses_and_duplicates_nothing() {
     for cycle in 0..CYCLES {
         std::thread::sleep(Duration::from_millis(150 + (cycle as u64 * 37) % 100));
         let beta_before = done.lock().unwrap().iter().filter(|d| d.book == B).count();
-        assert_eq!(close_book(&home, A), CloseOutcome::Closed, "cycle {cycle}");
+        let began = std::time::Instant::now();
+        let closed = close_book(&home, A);
+        let took = began.elapsed();
+        eprintln!("cycle {cycle}: the close took {took:?}");
+        assert_eq!(
+            closed,
+            CloseOutcome::Closed,
+            "cycle {cycle}, after {took:?}"
+        );
         // Answered closed: from here nothing runs on the book until it is
         // opened, so its files stand still (and, the writer lock being
         // released, another program could open it).
@@ -823,9 +831,7 @@ mod raw {
             let mut extra = extra.to_vec();
             extra.push(("expect", "100-continue"));
             self.start(method, path, &extra, body, 0);
-            self.stream
-                .set_read_timeout(Some(Duration::from_secs(120)))
-                .unwrap();
+            self.bound_reads(Duration::from_secs(120));
             let mut seen = Vec::new();
             let mut byte = [0u8; 1];
             while !seen.ends_with(b"\r\n\r\n") {
@@ -871,10 +877,24 @@ mod raw {
             self.stream.write_all(piece).is_ok()
         }
 
+        /// Bound how long a read of this connection may wait. macOS refuses
+        /// (EINVAL) to set an option on a socket whose peer has already
+        /// closed it, which is what the server's cutting a connection is:
+        /// such a socket can't block a read (it gives what was sent, then
+        /// the end), so that refusal, and only that, is passed over.
+        fn bound_reads(&self, within: Duration) {
+            assert!(!within.is_zero(), "a read bound of no time");
+            match self.stream.set_read_timeout(Some(within)) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::InvalidInput => {}
+                Err(e) => panic!("no bound on a read of the connection: {e}"),
+            }
+        }
+
         /// Everything the server sends until it closes the connection,
         /// which it must do within `within`.
         pub fn until_closed(&mut self, within: Duration) -> String {
-            self.stream.set_read_timeout(Some(within)).unwrap();
+            self.bound_reads(within);
             let mut seen = std::mem::take(&mut self.taken);
             let mut buf = [0u8; 4096];
             loop {
@@ -884,7 +904,9 @@ mod raw {
                     Err(e)
                         if matches!(
                             e.kind(),
-                            std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::BrokenPipe
+                            std::io::ErrorKind::ConnectionReset
+                                | std::io::ErrorKind::BrokenPipe
+                                | std::io::ErrorKind::NotConnected
                         ) =>
                     {
                         break;
@@ -934,9 +956,7 @@ mod raw {
 
         /// The response's status line and headers (the body is left).
         pub fn head(&mut self) -> (u16, String) {
-            self.stream
-                .set_read_timeout(Some(Duration::from_secs(60)))
-                .unwrap();
+            self.bound_reads(Duration::from_secs(60));
             let mut seen = std::mem::take(&mut self.taken);
             let mut byte = [0u8; 1];
             while !seen.ends_with(b"\r\n\r\n") {
@@ -2270,11 +2290,16 @@ fn a_late_timer_does_nothing(name: &str, held_timers: &str) {
     std::fs::create_dir_all(&disk).unwrap();
     set_backup_folder(&mut w, &disk);
     w.end();
-    wait_for(
-        "the timers hold their handles",
-        Duration::from_secs(60),
-        all_held,
-    );
+    // (Not `wait_for`: a failure says which of the timers never held.)
+    let by = std::time::Instant::now() + Duration::from_secs(60);
+    while !all_held() {
+        assert!(
+            std::time::Instant::now() < by,
+            "never: the timers hold their handles; wanted `{held_timers}`, held so far {:?}",
+            seen().lines().collect::<Vec<_>>()
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
     let dir = home.book_dir(A);
     assert!(matches!(close_book(&home, A), CloseOutcome::Closed));
     for folder in ["uploads", "exports"] {
@@ -2412,7 +2437,11 @@ fn a_close_stops_a_slow_drill_instead_of_waiting_for_it() {
 /// where a `reference-transaction` hook waits, while `slow-commit` (for the
 /// book's archive) or `slow-push` (for any other repository) exists in the
 /// shim folder, at the point where git holds its ref locks. `hooked` has a
-/// line per hook that waited. A real git, killed inside real work.
+/// line per hook that waited. A real git, killed inside real work. While
+/// `deaf` exists in the shim folder when a git begins, that git (and all it
+/// starts) has SIGTERM blocked, a mask every child inherits: the signal stays
+/// pending and only the kill ends it (a stopped process is not enough:
+/// macOS acts on a SIGTERM sent to one, where Linux holds it).
 #[cfg(unix)]
 fn slow_real_git(home: &Home) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
@@ -2434,8 +2463,9 @@ fn slow_real_git(home: &Home) -> PathBuf {
     std::fs::write(
         &exe,
         format!(
-            "#!/bin/sh\nn=$#\nwhile [ $n -gt 0 ]; do\n  a=\"$1\"; shift\n  case \"$a\" in\n    *core.hooksPath=/dev/null*) a=$(printf '%s' \"$a\" | sed 's|core.hooksPath=/dev/null|core.hooksPath={}|g') ;;\n  esac\n  set -- \"$@\" \"$a\"\n  n=$((n-1))\ndone\nexec {real} \"$@\"\n",
-            hooks.display()
+            "#!/bin/sh\nn=$#\nwhile [ $n -gt 0 ]; do\n  a=\"$1\"; shift\n  case \"$a\" in\n    *core.hooksPath=/dev/null*) a=$(printf '%s' \"$a\" | sed 's|core.hooksPath=/dev/null|core.hooksPath={}|g') ;;\n  esac\n  set -- \"$@\" \"$a\"\n  n=$((n-1))\ndone\nif [ -e '{dir}/deaf' ]; then exec perl -MPOSIX -e 'sigprocmask(SIG_BLOCK, POSIX::SigSet->new(SIGTERM)) or die; exec @ARGV or die' {real} \"$@\"; fi\nexec {real} \"$@\"\n",
+            hooks.display(),
+            dir = dir.display(),
         ),
     )
     .unwrap();
@@ -2641,10 +2671,10 @@ fn call_unanswered(home: &Home, w: &Wire, id: u64, tool: &str, args: Value) -> r
     raw
 }
 
-/// Hold every process of the group `pid` leads still (SIGSTOP): a SIGTERM
-/// sent to it then stays pending, git can't end on it, and only the kill
-/// after the grace ends it (how a git that can't end on SIGTERM, holding
-/// its locks, is made on purpose).
+/// Hold every process of the group `pid` leads still (SIGSTOP), so that none
+/// goes on while the stop is being asked for. That git can't end on SIGTERM,
+/// holding its locks, is made on purpose by the shim's `deaf` file, not by
+/// this: macOS acts on a SIGTERM sent to a stopped process.
 #[cfg(unix)]
 fn freeze_group_of(pid: u32) {
     let out = std::process::Command::new("ps")
@@ -3558,6 +3588,7 @@ fn a_lock_a_kill_leaves_in_the_backup_folder_is_reported_and_never_removed_by_th
     // named.
     let another = target.join("refs").join("heads").join("another.lock");
     std::fs::write(&another, b"").unwrap();
+    std::fs::write(shim.join("deaf"), b"").unwrap();
     std::fs::write(shim.join("slow-push"), b"").unwrap();
     let closing = std::thread::spawn({
         let admin = home.run().join("admin.sock");

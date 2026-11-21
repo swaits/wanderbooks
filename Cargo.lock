@@ -1651,6 +1651,9 @@ name = "deranged"
 version = "0.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7cd812cc2bc1d69d4764bd80df88b4317eaef9e773c75226407d9bc0876b211c"
+dependencies = [
+ "serde_core",
+]
 
 [[package]]
 name = "deunicode"
@@ -3215,6 +3218,8 @@ dependencies = [
  "hyper",
  "hyper-util",
  "rustls",
+ "rustls-native-certs",
+ "rustls-platform-verifier",
  "tokio",
  "tokio-rustls",
  "tower-service",
@@ -3611,6 +3616,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "instant-acme"
+version = "0.8.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9f05ad37c421b962354c358d347d4a6130151df9407978372d3ad7f0c8f71a64"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "bytes",
+ "http",
+ "http-body",
+ "http-body-util",
+ "httpdate",
+ "hyper",
+ "hyper-rustls",
+ "hyper-util",
+ "rcgen",
+ "ring",
+ "rustls",
+ "rustls-pki-types",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "time",
+ "tokio",
+ "x509-parser",
+]
+
+[[package]]
 name = "ipnet"
 version = "2.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3973,13 +4006,19 @@ name = "ledger-cli"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "bytes",
  "chrono",
+ "futures",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "jsonschema",
  "ledger-config",
  "ledger-core",
  "ledger-gui",
  "ledger-host",
  "ledger-import",
+ "ledger-link",
  "ledger-mcp",
  "ledger-package",
  "ledger-store",
@@ -3987,14 +4026,20 @@ dependencies = [
  "libc",
  "minisign",
  "proptest",
+ "rcgen",
+ "relay",
  "reqwest",
  "rmcp",
  "rusqlite",
  "rust_decimal",
+ "rustls",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
+ "time",
  "tokio",
+ "tokio-rustls",
+ "zeroize",
  "zip",
 ]
 
@@ -4052,6 +4097,7 @@ dependencies = [
  "ledger-config",
  "ledger-core",
  "ledger-import",
+ "ledger-link",
  "ledger-package",
  "ledger-store",
  "ledger-vault",
@@ -4072,6 +4118,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "ledger-core",
+ "ledger-link",
  "ledger-mcp",
  "ledger-store",
  "libc",
@@ -4109,6 +4156,37 @@ dependencies = [
  "typst-layout",
  "typst-pdf",
  "zip",
+]
+
+[[package]]
+name = "ledger-link"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "bytes",
+ "futures",
+ "hickory-proto",
+ "http",
+ "http-body-util",
+ "instant-acme",
+ "ledger-store",
+ "rcgen",
+ "relay",
+ "ring",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.21",
+ "time",
+ "tokio",
+ "tokio-rustls",
+ "tokio-util",
+ "webpki-root-certs",
+ "x509-parser",
+ "zeroize",
 ]
 
 [[package]]

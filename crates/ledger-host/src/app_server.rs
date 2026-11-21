@@ -467,7 +467,7 @@ impl AppServer {
     /// is not ready, a host or another server holds them (a command racing
     /// the app's start, or `serve`'s), this one has lost the race and the
     /// caller is to join what runs (commands.rs `reach`). Seen for as long
-    /// as [`BEATEN_AFTER`], so the moment between this server taking the
+    /// as `BEATEN_AFTER`, so the moment between this server taking the
     /// lock and saying so is not taken for losing.
     pub fn wait_ready_unless_beaten(&self, within: Duration) -> Result<Waited, String> {
         let deadline = Instant::now() + within;

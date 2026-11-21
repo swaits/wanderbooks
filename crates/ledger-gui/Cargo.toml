@@ -50,6 +50,7 @@ chrono = "0.4"
 egui_kittest = { version = "0.36", features = ["wgpu", "snapshot", "eframe"] }
 proptest = "1"
 tempfile = "3"
+ledger-link = { path = "../ledger-link" }
 zip = "9.0.1"
 
 [lints]

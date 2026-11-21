@@ -228,6 +228,11 @@ impl CompanyView {
         self.assist = status;
     }
 
+    /// Open the Connect page (the first run does, once: app.rs).
+    pub fn open_connect(&mut self) {
+        self.nav.go(Route::Connect);
+    }
+
     /// What this view was last given of its assistants (tests).
     pub fn assist(&self) -> &crate::connections::Status {
         &self.assist

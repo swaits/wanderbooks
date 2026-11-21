@@ -88,7 +88,7 @@ when it connected and last acted, and "Revoke", asked once, which calls what
 `wanderbooks token revoke` calls (the server ends the key and the sessions on
 it; its copy in the token file is removed). The window writes no books. The
 web half of the page (the switch, the address, the steps for Claude and
-ChatGPT) is plan unit B3's, and the "Claude desktop app" row (a one-click
+ChatGPT) is WB-assist-6's (plan unit B3), and the "Claude desktop app" row (a one-click
 extension) is unit C1's. What unit B1 puts in `connect::State::web_section` is
 the question to the person when a web assistant asks to connect (WB-remote-5):
 a card that says who is asking, where it is sent back to, the address it asked
@@ -126,3 +126,32 @@ SCENARIOS:
 
 *Enforced:* `first_tools_lead`, `connect_text`, `list_tools` (the server's `BooksServer`).
 *Checked:* `ledger-mcp` unit test `the_company_and_the_entry_point_are_in_the_first_tools_too`.
+
+**WB-assist-6 The Connect page's web half turns web assistants on and says, in
+plain words, how far it has got and what to do.** Under "On the web" the page
+has a switch "Allow web assistants" for the company, off by default; off, it
+says nothing on this computer can be reached from the internet, and that
+turning it on again gives the same address if one was kept. On, it tells the
+progress in three lines (getting an address, getting a certificate, connected)
+with a spinner on the one under way, then the address an assistant is given
+for this company with a Copy button, and the steps. The steps for Claude on the
+web are three, the ones the plan stands behind (Settings, then Connectors; Add
+custom connector, paste the address; sign in, and match the code in this
+window before choosing Allow). For ChatGPT, and for any other assistant, the
+page says "we haven't tested this yet" and gives no steps: the plan records
+that OpenAI's two pages disagree, and a step nobody tried is not written. A
+problem is in words: one that mends itself (no internet, the relay down or
+busy, a certificate not yet got) says the window and the assistants on this
+computer are not affected and that it keeps trying; one that needs the person
+(a wrong clock, a lost address) says what to do. "Get a new address" asks
+first: the old address stops working at once and every assistant connected
+through it has to be connected again. The switch is the owner's: the page
+only asks it. The word "MCP" is nowhere on the page.
+*Enforced:* `ledger_gui::connect::State::web_section`, `claude_steps`,
+`web_progress`, `web_state`.
+*Checked:* `ledger-gui` `tests/web_connect.rs`
+(`the_switch_is_off_by_default_and_an_owner_without_web_assistants_has_none`,
+`turning_it_on_shows_progress_then_the_address_the_steps_and_what_was_not_tried`,
+`the_progress_steps_are_in_order`,
+`what_goes_wrong_is_in_words_and_says_what_is_not_affected`,
+`off_and_a_new_address_go_through_the_owner_and_a_new_one_is_asked_twice`).

@@ -11,6 +11,7 @@ description = "wanderbooks: the books open while something holds them (the host,
 ledger-core = { path = "../ledger-core" }
 ledger-mcp = { path = "../ledger-mcp" }
 ledger-store = { path = "../ledger-store" }
+ledger-link = { path = "../ledger-link" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "io-std", "sync", "net", "signal", "time", "process"] }

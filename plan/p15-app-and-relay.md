@@ -367,8 +367,19 @@ app's certificate code knows that protocol and nothing about any one
 authority. At each issuance it asks the relay service for the list to
 try, in order: for each authority its directory address, whether it
 needs an account binding, and if so a binding credential the relay
-service obtained for this app. Changing or adding an authority is a
-change to that list on our server, with no new release of the app. What
+service obtained for this app. Choosing among the authorities the app
+knows, and their order, is a change to that list on our server, with no
+new release of the app. **Adding a brand-new authority needs a release**
+(B3 review, 2026-11-21): the app sends requests only to directory hosts
+compiled into it (Let's Encrypt production and staging, Google Trust
+Services, ZeroSSL, SSL.com: `DIRECTORY_HOSTS` in
+`crates/ledger-link/src/acme.rs`, each host from the authority's own
+documentation), because a relay that could name any host in the list
+could make every app send requests to a server of its choice. For the
+same reason the app believes a certificate only if it chains to the
+public roots it ships, for its own wildcard, and lives no longer than
+100 days; the relay's list can choose among authorities but cannot make
+the app trust a new one. What
 differs between authorities beyond the protocol (renewal information,
 lifetimes, limits) sits behind one small trait. The tests issue from a
 local test authority configured two ways, one with an account binding
@@ -381,6 +392,17 @@ beneath (`<secret>.<four-words>.wanderbooks.link`). The certificate logs
 then show only the wildcard. The words are for recognition; the secret
 label stops listing and guessing; the sign-in is the lock. One name per
 installation; each company is a path under it.
+
+**What the label does not hide, and who can read what** (B3 review,
+2026-11-21). The secret label is in the caller's TLS hello (the server
+name) and in the DNS queries that find the address, so the relay, the
+vendor's resolvers and the network path all see it. It is not a secret
+from them; it stops listing and guessing, and the sign-in is the lock.
+The relay cannot read the traffic (its certificate is not there to read
+it with). The assistant's own company (Anthropic, OpenAI and the like)
+reads what it is sent, which is what the person lets that assistant read.
+The Connect page says these two things and not "nobody can read what
+passes through".
 
 **State (D-85).** Durable: name, public key, created, blocked. In
 memory: name to open line. Transient: proof records, minutes each.
@@ -470,7 +492,36 @@ From the review of unit B2 (the relay service):
 - The 100,000-line soak has not been run; 20,000 is the largest.
 - Unit B3's duties: ping at least every 60 s (a line silent for 180 s is
   dropped); a secret label of 25 or more random base36 characters; a
-  yamux stream limit at least the relay's.
+  yamux stream limit at least the relay's. Done in `crates/ledger-link`
+  (ping every 30 s, a 32-character label, 64 streams).
+
+From unit B3 (the app's side of the relay), left out on purpose:
+
+- Certificate transparency watching is not built. Section 5 says the app
+  watches the public certificate logs for its own name and warns of a
+  certificate it did not ask for; it names no log service, API or timing,
+  and the unit's brief left it for later if the plan left it open. It needs
+  a log monitor choice (crt.sh and the like are third-party services the
+  app would call with the app's name), so it waits for the owner's word.
+  Until it is built, a relay that misuses its DNS control to get a
+  certificate for a user's name would not be detected.
+- The steps for ChatGPT, Gemini, Grok and muse.ai are not written: the plan
+  has none it stands behind (section 7: OpenAI's two pages disagree), so
+  the page says "we haven't tested this yet". The steps for Claude on the
+  web are the ones in `plan/served.md` (Settings, Connectors, Add custom
+  connector, paste, sign in); nobody has tried them on the live product.
+- "Other assistant": a key made on the spot for products that take only a
+  key (section 3.3 and `remote_make_key`) is not reached from the page yet.
+- The line has no way to learn that the books server's door is gone while
+  the window is still open (the server exited): callers are turned away,
+  and the window's own notice says the server is down.
+- ACME against a real authority, and a real relay, are untried: the tests
+  run the real `instant-acme` client against an authority written in the
+  test, and the link against the relay crate in-process.
+- Several companies share one address; a new address ends the sign-ins of
+  all of them (one issuer), and the approvals listed under "Who can reach
+  these books" for the old address stay listed until revoked.
+- A first run for the window with no server asks nothing and opens nothing.
 
 From the review of unit A2 (the app starts and stops the server), left
 for unit A5 or later:

@@ -63,7 +63,7 @@ check-shard shard:
 # the workspace, since K-U12. None leaves the list, and `kernel-only`
 # fails when a folder under crates/ is not in it, so a new crate joins it
 # on the day it is added.
-kernel_only_crates := "ledger-core ledger-cli ledger-host ledger-reader ledger-vault ledger-store ledger-config ledger-import ledger-package ledger-mcp ledger-gui relay"
+kernel_only_crates := "ledger-core ledger-cli ledger-host ledger-reader ledger-vault ledger-store ledger-config ledger-import ledger-package ledger-mcp ledger-gui relay ledger-link"
 
 # Money arithmetic lives in the kernel and nowhere else (AGENTS.md, bar
 # item 1). The compiler is asked (scripts/raw-decimal-arith.sh): a raw

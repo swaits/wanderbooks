@@ -1,0 +1,52 @@
+[package]
+name = "ledger-link"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "wanderbooks: the app's side of the relay (plan P15 B3): its own name and key, the one outbound line, its own TLS and certificate, and the renewals."
+
+[dependencies]
+# The relay crate's `proto`, `names`, `mux` and `client` modules are the
+# app's side of the protocol too; one definition of the wire, never a copy.
+relay = { path = "../relay" }
+futures = "0.3"
+# The certificate authority's protocol (RFC 8555) and ARI (RFC 9773). No
+# default features: `ring` is the crypto the rest of the tree uses (the
+# default, aws-lc-rs, needs a C toolchain at build time).
+instant-acme = { version = "0.8", default-features = false, features = ["ring", "hyper-rustls", "time", "x509-parser"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "sync", "net", "time"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+tokio-util = "0.7"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+base64 = "0.22"
+ring = "0.17"
+x509-parser = "0.18"
+zeroize = "1"
+http = "1"
+webpki-root-certs = "1"
+
+# Owner-only DACLs for the key and certificate files (the helper the token
+# files use).
+[target.'cfg(windows)'.dependencies]
+ledger-store = { path = "../ledger-store" }
+
+[dev-dependencies]
+tempfile = "3"
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem", "x509-parser"] }
+hickory-proto = { version = "0.26", default-features = false, features = ["std"] }
+tokio = { version = "1", features = ["test-util"] }
+http-body-util = "0.1"
+bytes = "1"
+async-trait = "0.1"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+sha2 = "0.10"
+time = "0.3"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+
+[lints]
+workspace = true

@@ -76,13 +76,22 @@ struct ViewerOwner {
     /// 3.1): started with the window, closed with it. All of what is done
     /// with it is `AppHost`'s, which the tests drive.
     server: ledger_host::app_server::AppHost,
+    /// Web assistants: the switch per company, the address and the line to
+    /// the relay (ledger-host web.rs), in this window's process: the line
+    /// ends with the window.
+    web: ledger_host::web::WebAssistants,
 }
 
 #[cfg(feature = "gui")]
 impl ViewerOwner {
     fn new(common: ledger_host::commands::Common) -> Self {
         let server = ledger_host::app_server::AppHost::new(common.root.clone());
-        Self { common, server }
+        let web = ledger_host::web::WebAssistants::new(common.root.clone());
+        Self {
+            common,
+            server,
+            web,
+        }
     }
 }
 
@@ -93,7 +102,11 @@ impl ledger_gui::owner::Owner for ViewerOwner {
     }
 
     fn serve_start(&self, open: &[String]) -> Result<(), String> {
-        self.server.start(open)
+        self.server.start(open)?;
+        // What was on when the window closed is on again, for the
+        // companies that are open.
+        self.web.restore(&self.server, open);
+        Ok(())
     }
 
     fn serve_host_holds(&self) -> bool {
@@ -105,7 +118,9 @@ impl ledger_gui::owner::Owner for ViewerOwner {
     }
 
     fn serve_open(&self, book: &str) -> Result<Option<String>, String> {
-        self.server.open_book(book)
+        let opened = self.server.open_book(book)?;
+        self.web.restore(&self.server, &[book.to_string()]);
+        Ok(opened)
     }
 
     fn serve_close(&self, book: &str) -> Result<Option<String>, String> {
@@ -117,6 +132,8 @@ impl ledger_gui::owner::Owner for ViewerOwner {
     }
 
     fn serve_stop(&self) -> Result<Option<String>, String> {
+        // The line closes first: nothing arrives for books that are closing.
+        self.web.shutdown();
         self.server.stop(ledger_host::app_server::STOP_WAIT)
     }
 
@@ -205,6 +222,39 @@ impl ledger_gui::owner::Owner for ViewerOwner {
 
     fn web_set_post(&self, approval: &str, post: bool) -> Result<String, String> {
         self.server.web_set_post(approval, post)
+    }
+
+    fn web_state(&self, book: &str) -> Option<ledger_gui::owner::WebConnect> {
+        use ledger_gui::owner::WebStep;
+        let s = self.web.state(book);
+        Some(ledger_gui::owner::WebConnect {
+            on: s.on,
+            step: match s.step {
+                ledger_link::Step::Off => WebStep::Off,
+                ledger_link::Step::GettingAddress => WebStep::GettingAddress,
+                ledger_link::Step::Connecting => WebStep::Connecting,
+                ledger_link::Step::GettingCertificate => WebStep::GettingCertificate,
+                ledger_link::Step::Connected => WebStep::Connected,
+            },
+            address: s.address,
+            connector: s.connector,
+            words: s.words,
+            problem: s.problem,
+            needs_person: s.needs_person,
+            kept: s.kept,
+        })
+    }
+
+    fn web_turn_on(&self, book: &str) -> Result<String, String> {
+        self.web.turn_on(&self.server, book)
+    }
+
+    fn web_turn_off(&self, book: &str) -> Result<String, String> {
+        self.web.turn_off(&self.server, book)
+    }
+
+    fn web_new_address(&self, _book: &str) -> Result<String, String> {
+        self.web.new_address(&self.server)
     }
 
     fn serve_revoke(&self, book: &str, name: &str, id: &str) -> Result<String, String> {

@@ -14,7 +14,8 @@
 //!         sentence; Connect is a page per company: on this computer, a row
 //!         per tool, and the connections with Revoke); D-77 (bookkeeping is
 //!         through an assistant, the window reads); WB-assist-1,
-//!         WB-assist-3, WB-assist-4.
+//!         WB-assist-3, WB-assist-4, WB-assist-6 (the web half), WB-app-6
+//!         (the first run).
 //! INVARIANTS:
 //!   1. One place per fact: a tab carries the state as a shape (the same
 //!      three shapes everywhere: plugs apart, plugs together, a turning
@@ -43,8 +44,9 @@
 //!   6. Nothing here blocks the frame: every request of the server runs
 //!      off the UI thread; what is shown while it is not known is "not
 //!      known", never a guess.
-//!   7. The web half of the page (the switch, the address, the steps for
-//!      Claude and ChatGPT) is unit B3's. Unit B1's part of it is here: a
+//!   7. The web half of the page (the switch, the progress, the address and
+//!      the steps) is WB-assist-6's (`State::web_switch`, `web_progress`,
+//!      `claude_steps`). Unit B1's part of it is here: a
 //!      web assistant that asks to connect is shown to the person, in
 //!      words, as a card that says who is asking, where it is sent back
 //!      to, the address it asked from and what it will be able to do, with
@@ -418,6 +420,10 @@ pub struct State {
     /// The waiting web assistants the person has ticked "let it post
     /// entries too" for.
     post_asked: std::collections::BTreeSet<String>,
+    /// "Get a new address" was clicked once: the second click does it.
+    new_address_asked: bool,
+    /// The address was just copied (the time, for the word "Copied").
+    copied_at: Option<f64>,
 }
 
 /// The two lines an assistant set up by hand needs.
@@ -458,16 +464,27 @@ impl State {
         &mut self,
         ui: &mut Ui,
         status: &Status,
+        book: &str,
         owner: &Option<Arc<dyn Owner>>,
         jobs: &crate::jobs::Spawner,
     ) {
-        if status.web_pending.is_empty() && status.web_approvals.is_empty() {
+        let web = owner.as_ref().and_then(|o| o.web_state(book));
+        if web.is_none() && status.web_pending.is_empty() && status.web_approvals.is_empty() {
             return;
         }
         let p = pal(ui.ctx());
         ui.add_space(24.0);
-        section(ui, "Assistants on the web");
+        section(ui, "On the web");
         let mut want: Want = None;
+        if let Some(web) = &web {
+            if let Some(w) = self.web_switch(ui, status, book, web, owner) {
+                want = Some(w);
+            }
+            ui.add_space(10.0);
+        }
+        if !(status.web_pending.is_empty() && status.web_approvals.is_empty()) {
+            section(ui, "Assistants on the web");
+        }
         let (shown, more) = newest_waiting(&status.web_pending);
         for request in shown {
             if let Some(w) = self.pending_card(ui, status, request, owner) {
@@ -819,7 +836,7 @@ impl State {
                     ),
                 };
             }
-            self.web_section(ui, status, &owner, jobs);
+            self.web_section(ui, status, book, &owner, jobs);
             ui.add_space(24.0);
             self.connections(ui, status, book, &owner, jobs);
         });
@@ -1218,5 +1235,319 @@ fn connection_row(
                 .font(theme::regular(12.5))
                 .color(p.text),
         );
+    }
+}
+
+// ---- the web half of the page (plan P15 unit B3) ------------------------------
+
+/// The exact steps for Claude on the web, for the address `connector`.
+/// Only what the plan can stand behind (plan/served.md 3 and the Connect
+/// card there: Settings, Connectors, Add custom connector, paste the
+/// address, sign in); the sign-in is this window's (D-83, D-90).
+pub fn claude_steps() -> [&'static str; 3] {
+    [
+        "In Claude on the web, open Settings, then Connectors.",
+        "Choose \u{201c}Add custom connector\u{201d} and paste the address above.",
+        "Claude opens a sign-in page that shows a code. Come back to this window, check that the code is the same, and choose Allow.",
+    ]
+}
+
+/// What the page says for ChatGPT: no steps are given, because none were
+/// tried (plan 7: "ChatGPT Plus and write tools: OpenAI's two pages
+/// disagree").
+pub const CHATGPT_NOTE: &str = "We haven't tested this yet, so there are no steps to give. If you add the address above to ChatGPT as a connector, the sign-in comes to this window the same way.";
+
+/// What the page says for any other assistant.
+pub const OTHER_NOTE: &str = "Other assistants (Gemini, Grok, muse.ai and the like): we haven't tested these yet. The same address may work; the sign-in comes to this window the same way.";
+
+/// Words for the steps of turning web assistants on: what is done, what is
+/// being done, what waits. `current` is the one in progress (none once it
+/// is connected).
+pub fn web_progress(step: crate::owner::WebStep) -> [(&'static str, Progress); 3] {
+    use crate::owner::WebStep as S;
+    let first = match step {
+        S::Off | S::GettingAddress | S::Connecting => Progress::Now,
+        _ => Progress::Done,
+    };
+    let second = match step {
+        S::GettingCertificate => Progress::Now,
+        S::Connected => Progress::Done,
+        _ => Progress::Waiting,
+    };
+    let third = match step {
+        S::Connected => Progress::Done,
+        _ => Progress::Waiting,
+    };
+    [
+        ("Getting an address", first),
+        ("Getting a certificate", second),
+        ("Connected", third),
+    ]
+}
+
+/// Where one of the steps stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Progress {
+    /// Done.
+    Done,
+    /// Being done now.
+    Now,
+    /// Not started.
+    Waiting,
+}
+
+/// A switch: a pill that is on or off, with its label, as one control.
+/// The label is its accessible name, so it is found as "Allow web
+/// assistants".
+fn switch(ui: &mut Ui, on: bool, enabled: bool, label: &str) -> egui::Response {
+    let p = pal(ui.ctx());
+    let size = vec2(40.0, 22.0);
+    let (rect, resp) = ui.allocate_exact_size(
+        size,
+        if enabled {
+            Sense::click()
+        } else {
+            Sense::hover()
+        },
+    );
+    if ui.is_rect_visible(rect) {
+        let t = ui.ctx().animate_bool(resp.id, on);
+        let fill = if on { p.accent } else { p.border };
+        ui.painter().rect_filled(
+            rect,
+            CornerRadius::same(11),
+            fill.gamma_multiply(if enabled { 1.0 } else { 0.5 }),
+        );
+        let r = rect.height() / 2.0 - 3.0;
+        let x = egui::lerp((rect.left() + r + 3.0)..=(rect.right() - r - 3.0), t);
+        ui.painter()
+            .circle_filled(egui::pos2(x, rect.center().y), r, p.surface);
+    }
+    let name = label.to_string();
+    resp.widget_info(move || {
+        egui::WidgetInfo::selected(egui::WidgetType::Checkbox, enabled, on, name.clone())
+    });
+    resp
+}
+
+impl State {
+    /// The switch, the progress, the address with Copy and the steps
+    /// (plan 3.3). What the person asks for, if anything.
+    fn web_switch(
+        &mut self,
+        ui: &mut Ui,
+        status: &Status,
+        book: &str,
+        web: &crate::owner::WebConnect,
+        owner: &Option<Arc<dyn Owner>>,
+    ) -> Want {
+        let p = pal(ui.ctx());
+        let mut want: Want = None;
+        let can = owner.is_some() && self.job.is_none();
+        ui.horizontal(|ui| {
+            let resp = switch(ui, web.on, can, "Allow web assistants");
+            ui.label(RichText::new("Allow web assistants").font(theme::semibold(14.0)));
+            if resp.clicked()
+                && let Some(o) = owner.clone()
+            {
+                let b = book.to_string();
+                self.new_address_asked = false;
+                want = Some(if web.on {
+                    (
+                        "Turning web assistants off".to_string(),
+                        "Turning web assistants off".to_string(),
+                        Box::new(move || o.web_turn_off(&b)) as Box<dyn FnOnce() -> Outcome + Send>,
+                    )
+                } else {
+                    (
+                        "Turning web assistants on".to_string(),
+                        "Turning web assistants on".to_string(),
+                        Box::new(move || o.web_turn_on(&b)) as Box<dyn FnOnce() -> Outcome + Send>,
+                    )
+                });
+            }
+        });
+        ui.label(
+            RichText::new(format!(
+                "Claude and ChatGPT on the web can only reach {} if you give them an address on the internet. Turn this on to get one. The relay that carries the connection can't read it. The assistant's maker (for example Anthropic or OpenAI) sees what you let that assistant read. An assistant on the web still has to be allowed here, by you, each time it connects.",
+                status.company
+            ))
+            .font(theme::regular(13.0))
+            .color(p.muted),
+        );
+        if !web.on {
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(if web.kept {
+                    "Off. Nothing on this computer can be reached from the internet. Turning it on again gives the same address as before."
+                } else {
+                    "Off. Nothing on this computer can be reached from the internet."
+                })
+                .font(theme::regular(13.0))
+                .color(p.muted),
+            );
+            return want;
+        }
+        ui.add_space(8.0);
+        // Progress, in words: the three steps while it is being made, or
+        // when one of them is the trouble; once it works, one line.
+        if web.step == crate::owner::WebStep::Connected && web.problem.is_none() {
+            ui.horizontal(|ui| {
+                let (rect, _) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
+                ui.painter().circle_filled(rect.center(), 5.0, p.positive);
+                ui.label(RichText::new("Connected").font(theme::regular(13.5)));
+            });
+        } else {
+            for (words, progress) in web_progress(web.step) {
+                ui.horizontal(|ui| match progress {
+                    Progress::Done => {
+                        ui.label(RichText::new(icon::CHECK_CIRCLE).color(p.accent));
+                        ui.label(RichText::new(words).font(theme::regular(13.5)));
+                    }
+                    Progress::Now if web.problem.is_some() => {
+                        ui.label(RichText::new(icon::WARNING).color(p.warning));
+                        ui.label(RichText::new(words).font(theme::regular(13.5)));
+                    }
+                    Progress::Now => {
+                        ui.spinner();
+                        ui.label(
+                            RichText::new(format!("{words}\u{2026}")).font(theme::regular(13.5)),
+                        );
+                    }
+                    Progress::Waiting => {
+                        ui.label(RichText::new(icon::CIRCLE).color(p.muted));
+                        ui.label(
+                            RichText::new(words)
+                                .font(theme::regular(13.5))
+                                .color(p.muted),
+                        );
+                    }
+                });
+            }
+        }
+        if web.step != crate::owner::WebStep::Connected || web.problem.is_some() {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(500));
+        }
+        if let Some(problem) = &web.problem {
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(problem)
+                    .font(theme::regular(13.0))
+                    .color(p.warning),
+            );
+            if !web.needs_person {
+                ui.label(
+                    RichText::new(
+                        "Your assistants on this computer, and this window, are not affected.",
+                    )
+                    .font(theme::regular(12.5))
+                    .color(p.muted),
+                );
+            }
+        }
+        // The address is shown once it works (or while the page says why it
+        // does not): not before, so nobody pastes one that cannot answer yet.
+        if let Some(connector) = web
+            .connector
+            .as_ref()
+            .filter(|_| web.step == crate::owner::WebStep::Connected || web.problem.is_some())
+        {
+            ui.add_space(10.0);
+            ui.label(RichText::new("The address to give an assistant").font(theme::semibold(13.5)));
+            ui.horizontal(|ui| {
+                Frame::new()
+                    .fill(p.surface)
+                    .stroke(Stroke::new(1.0, p.border))
+                    .corner_radius(CornerRadius::same(6))
+                    .inner_margin(Margin::symmetric(8, 5))
+                    .show(ui, |ui| {
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(connector).font(egui::FontId::monospace(12.5)),
+                            )
+                            .selectable(true),
+                        );
+                    });
+                let copy = ui.button(format!("{}  Copy", icon::COPY));
+                if copy.clicked() {
+                    ui.ctx().copy_text(connector.clone());
+                    self.copied_at = Some(ui.input(|i| i.time));
+                }
+                copy.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Copy the address")
+                });
+                if let Some(at) = self.copied_at {
+                    if ui.input(|i| i.time) - at < 3.0 {
+                        ui.label(
+                            RichText::new("Copied")
+                                .font(theme::regular(12.5))
+                                .color(p.muted),
+                        );
+                        ui.ctx()
+                            .request_repaint_after(std::time::Duration::from_millis(500));
+                    } else {
+                        self.copied_at = None;
+                    }
+                }
+            });
+            ui.label(
+                RichText::new("Keep this address to yourself: anyone who has it can ask to connect (you would still be asked first).")
+                    .font(theme::regular(12.5))
+                    .color(p.muted),
+            );
+            ui.add_space(10.0);
+            ui.label(RichText::new("Claude on the web").font(theme::semibold(13.5)));
+            for (i, step) in claude_steps().iter().enumerate() {
+                ui.label(RichText::new(format!("{}. {step}", i + 1)).font(theme::regular(13.0)));
+            }
+            ui.add_space(8.0);
+            ui.label(RichText::new("ChatGPT").font(theme::semibold(13.5)));
+            ui.label(
+                RichText::new(CHATGPT_NOTE)
+                    .font(theme::regular(13.0))
+                    .color(p.muted),
+            );
+            ui.add_space(8.0);
+            ui.label(RichText::new("Another assistant").font(theme::semibold(13.5)));
+            ui.label(
+                RichText::new(OTHER_NOTE)
+                    .font(theme::regular(13.0))
+                    .color(p.muted),
+            );
+        }
+        // A new address, behind a confirmation.
+        ui.add_space(12.0);
+        if self.new_address_asked {
+            ui.label(
+                RichText::new("The old address stops working at once. Every assistant connected through it has to be connected again with the new one.")
+                    .font(theme::regular(13.0))
+                    .color(p.warning),
+            );
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(can, egui::Button::new("Get a new address"))
+                    .clicked()
+                    && let Some(o) = owner.clone()
+                {
+                    let b = book.to_string();
+                    self.new_address_asked = false;
+                    want = Some((
+                        "Getting a new address".to_string(),
+                        "Getting a new address".to_string(),
+                        Box::new(move || o.web_new_address(&b)),
+                    ));
+                }
+                if ui.button("Keep the old one").clicked() {
+                    self.new_address_asked = false;
+                }
+            });
+        } else if ui
+            .add_enabled(can, egui::Button::new("Get a new address\u{2026}"))
+            .clicked()
+        {
+            self.new_address_asked = true;
+        }
+        want
     }
 }

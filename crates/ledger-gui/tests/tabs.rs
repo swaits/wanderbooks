@@ -89,10 +89,12 @@ struct Co {
 
 impl World {
     fn new() -> World {
-        let dir = tempfile::Builder::new()
-            .prefix("wb-gui-tabs-")
-            .tempdir()
-            .unwrap();
+        World::named("wb-gui-tabs-")
+    }
+
+    /// A world whose temporary folder's name starts with `prefix`.
+    fn named(prefix: &str) -> World {
+        let dir = tempfile::Builder::new().prefix(prefix).tempdir().unwrap();
         let home = dir.path().join("home");
         std::fs::create_dir_all(&home).unwrap();
         let root = dir.path().join("root");
@@ -1298,11 +1300,101 @@ fn every_tab_never_writes_into_its_books_in_front_or_not() {
 
 // ---- 8: how the bar looks ----------------------------------------------------
 
-/// Pixels compared where there is a renderer; tolerant of antialiasing
-/// (as the sidebar's are: sidenav.rs).
+/// A shape in words, without where its glyphs happen to lie in egui's font
+/// atlas: that depends on which text this process laid out first (other
+/// tests, in other threads), and no picture shows it. Positions, colours,
+/// the text and each glyph's place are all here.
+fn describe(shape: &egui::epaint::Shape) -> String {
+    use egui::epaint::Shape;
+    match shape {
+        Shape::Text(t) => {
+            let mut out = format!(
+                "Text pos={:?} under={:?} fallback={:?} over={:?} opacity={:?} angle={:?} text={:?}",
+                t.pos,
+                t.underline,
+                t.fallback_color,
+                t.override_text_color,
+                t.opacity_factor,
+                t.angle,
+                t.galley.job.text,
+            );
+            for placed in &t.galley.rows {
+                out.push_str(&format!(" row@{:?} size={:?}", placed.pos, placed.row.size));
+                for g in &placed.row.glyphs {
+                    out.push_str(&format!(" {}@{:?}+{:?}", g.chr, g.pos, g.advance_width));
+                }
+                for v in &placed.row.visuals.mesh.vertices {
+                    out.push_str(&format!(" v{:?}{:?}", v.pos, v.color));
+                }
+            }
+            out
+        }
+        Shape::Vec(v) => v.iter().map(describe).collect::<Vec<_>>().join(" | "),
+        Shape::Mesh(m) => {
+            let mut out = String::from("Mesh");
+            for v in &m.vertices {
+                out.push_str(&format!(" v{:?}{:?}", v.pos, v.color));
+            }
+            out
+        }
+        other => format!("{other:?}"),
+    }
+}
+
+/// The shapes the window paints where it can be seen: those whose clip
+/// reaches into the window. (The page under a short bar is laid out far
+/// below it and holds the time now, "Nov 21 2026 04:26 UTC", which no
+/// picture shows: it is clipped away.)
+fn shown_shapes(h: &Harness<'_, App>) -> Vec<String> {
+    let screen = h.ctx.content_rect();
+    h.output()
+        .shapes
+        .iter()
+        .filter(|s| s.clip_rect.intersects(screen))
+        .map(|s| format!("{:?} {}", s.clip_rect, describe(&s.shape)))
+        .collect()
+}
+
+/// A hash of every shape the window paints where it can be seen (FNV-1a
+/// over their debug form): the same shapes paint the same pixels, on any
+/// renderer. What the picture shows (colours, text and where each lies) is
+/// in them; how a renderer rasterizes their edges is not.
+fn shapes_of(h: &Harness<'_, App>) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for shape in shown_shapes(h) {
+        for b in shape.bytes() {
+            hash ^= b as u64;
+            hash = hash.wrapping_mul(0x100_0000_01b3);
+        }
+    }
+    hash
+}
+
+/// The look of the window, compared as sidenav.rs compares its sidebar's:
+/// the shapes painted are the check everywhere
+/// (`tests/snapshots/<name>.shapes`; `TABS_BLESS=1` writes them), for
+/// another renderer rasterizes the same shapes differently (CI's software
+/// one differs from a GPU in antialiasing, by thousands of faint pixels
+/// and some dozens of strong ones along glyph edges). The pixels
+/// (`tests/snapshots/<name>.png`, tolerant of antialiasing) are compared
+/// as well on the machine that made them and any with its renderer:
+/// `TABS_PIXELS=1`.
 fn picture(h: &mut Harness<'_, App>, name: &str) {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots");
+    let file = dir.join(format!("{name}.shapes"));
+    let shapes = format!("{:016x}", shapes_of(h));
+    if std::env::var("TABS_BLESS").is_ok() {
+        std::fs::write(&file, format!("{shapes}\n")).unwrap();
+    } else {
+        let want = std::fs::read_to_string(&file)
+            .unwrap_or_else(|e| panic!("{}: {e} (TABS_BLESS=1 writes it)", file.display()));
+        assert_eq!(shapes, want.trim(), "the shapes of {name} changed");
+    }
+    if std::env::var("TABS_PIXELS").is_err() {
+        return;
+    }
     if h.render().is_err() {
-        eprintln!("no renderer: {name} not compared");
+        eprintln!("no renderer: {name} pixels not compared");
         return;
     }
     let options = egui_kittest::SnapshotOptions::new()
@@ -1387,6 +1479,41 @@ fn the_tab_bar_with_one_two_and_many_tabs() {
             .get_by_role_and_label(Role::Button, "Open another company")
             .rect();
         assert!(bar.contains_rect(plus), "the + is whole in the bar");
+    }
+}
+
+/// What the window shows depends on the books and the theme alone: not on
+/// the name of the temporary folder they sit in, the clock, or the
+/// machine. The same companies made in two worlds whose folders are named
+/// unlike paint the same shapes and the same pixels (where there is a
+/// renderer), with the badge hue chosen from the id of the books.
+#[test]
+fn the_bar_is_the_same_from_differently_named_folders() {
+    let names = ["Wanderland Labs LLC", "Fernhill Studio"];
+    let mut seen: Vec<(u64, Option<Vec<u8>>, Vec<String>)> = Vec::new();
+    for (prefix, dark) in [
+        ("a-", false),
+        ("zzzz-a-much-longer-name-", false),
+        ("a-", true),
+        ("zzzz-a-much-longer-name-", true),
+    ] {
+        let w = World::named(prefix);
+        let mut h = shown(&w, &names, dark, BAR_SIZE);
+        let keys: Vec<String> = (0..names.len())
+            .map(|i| h.state().views()[i].hue_key())
+            .collect();
+        let pixels = h.render().ok().map(|img| img.into_raw());
+        seen.push((shapes_of(&h), pixels, keys));
+    }
+    for pair in [(0, 1), (2, 3)] {
+        let (a, b) = (&seen[pair.0], &seen[pair.1]);
+        assert_eq!(a.2, ["co-0", "co-1"], "a company's hue key is its book id");
+        assert_eq!(
+            a.2, b.2,
+            "the hue key is the book id, not the folder's name"
+        );
+        assert_eq!(a.0, b.0, "the shapes differ with the folder's name");
+        assert!(a.1 == b.1, "the pixels differ with the folder's name");
     }
 }
 

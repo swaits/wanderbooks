@@ -104,6 +104,7 @@ const FOOTERS: [Footer; 9] = [
 /// menu), about 560 events and 110 stored receipts. Removed when dropped.
 struct Fixture {
     _dir: tempfile::TempDir,
+    _plain_dir: tempfile::TempDir,
     root: PathBuf,
     plain: PathBuf,
 }
@@ -153,15 +154,19 @@ impl Fixture {
         std::fs::create_dir_all(&root).unwrap();
         fill(&root);
         // The same books outside the root: no Books menu.
-        let plain = tempfile::Builder::new()
+        // Outside a data root a company's badge hue is chosen from its
+        // folder's name (company.rs `hue_key`), so that folder has a fixed
+        // name here, never the temporary folder's random one: the same
+        // picture on every machine and every run.
+        let plain_dir = tempfile::Builder::new()
             .prefix("wb-gui-sidenav-plain-")
             .tempdir()
-            .unwrap()
-            .keep();
-        let plain_book = plain.join("books-data");
+            .unwrap();
+        let plain_book = plain_dir.path().join("wanderland-copy").join("books-data");
         copy_dir(&root, &plain_book);
         Fixture {
             _dir: dir,
+            _plain_dir: plain_dir,
             root,
             plain: plain_book,
         }

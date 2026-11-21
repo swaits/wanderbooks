@@ -76,3 +76,4 @@ Columns: date | type (scout, run/verify, implement, refactor, debug, review) | p
 - 2026-11-21 | impl-multi 3 | sonnet (high) | B1 fix round (D-90 no reuse, matching code, atomic refresh, limits) | accepted: its 44 tests rerun after merge
 - 2026-11-21 | impl-multi 2 | sonnet (high) | P15 A5: retire the detached host | in fix round after review
 - 2026-11-21 | review 3 | sonnet (high) | A5 review | accepted: no double holder; 2 medium, thinned tests
+- 2026-11-21 | debug 2 | sonnet (high) | two mcp_journeys failures after T1 | accepted: test debt, plus 4 tools fixed that wrote before refusing; rerun after merge

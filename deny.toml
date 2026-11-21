@@ -31,6 +31,12 @@ ignore = [
     # Since 2026-11-09.
     { id = "RUSTSEC-2026-0194", reason = "typst's citationberg only; no outside XML reaches it" },
     { id = "RUSTSEC-2026-0195", reason = "typst's citationberg only; no outside XML reaches it" },
+    # chrono 0.4.45, RUSTSEC-2026-0543: an "unmaintained" notice, not a
+    # vulnerability, and the advisory offers no upgrade. chrono is a
+    # declared dependency of ledger-core, so the "workspace" rule above
+    # catches it. Replacing chrono with jiff (already a dependency) is a
+    # follow-up for the owner to decide. Since 2026-11-21.
+    { id = "RUSTSEC-2026-0543", reason = "unmaintained notice only, not a vulnerability; no upgrade offered; chrono to jiff is the owner's call" },
 ]
 
 [licenses]

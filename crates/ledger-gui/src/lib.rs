@@ -8,6 +8,8 @@ pub mod attention;
 pub mod books;
 pub mod charts;
 pub mod company;
+pub mod connect;
+pub mod connections;
 pub mod data;
 pub mod demo;
 pub mod dock;
@@ -182,7 +184,7 @@ pub fn book_in_root(root: Option<&std::path::Path>, book: Option<&str>) -> Resul
             id
         }
         None => books.into_iter().next().ok_or_else(|| {
-            "there are no books yet: your agent makes them (`wanderbooks books create`)."
+            "there are no books yet: your assistant makes them (`wanderbooks books create`)."
                 .to_string()
         })?,
     };

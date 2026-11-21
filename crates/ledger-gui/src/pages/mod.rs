@@ -72,6 +72,9 @@ pub fn show(ui: &mut Ui, b: &Books, route: &Route, shell: &mut Shell<'_>) {
         Route::Documents => documents::show(ui, b, None, shell),
         Route::Document(id) => documents::show(ui, b, Some(*id), shell),
         Route::Company => company::show(ui, b, shell),
+        // Drawn by the company's view, which holds the page's state
+        // (connect.rs).
+        Route::Connect => {}
         Route::Journal => journal::show(ui, b, None, shell),
         Route::JournalEvent(seq) => journal::show(ui, b, Some(*seq), shell),
     }

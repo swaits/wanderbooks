@@ -57,7 +57,7 @@ pub fn show(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
 fn headline(b: &Books) -> String {
     let k = &b.kpis;
     let Some(first) = k.first_entry else {
-        return "No transactions yet. Once your agent records some, this page fills in on its own."
+        return "No transactions yet. Once your assistant records some, this page fills in on its own."
             .into();
     };
     let mut s = format!(

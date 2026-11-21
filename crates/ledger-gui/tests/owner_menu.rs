@@ -181,11 +181,15 @@ fn the_books_menu_hands_each_action_to_the_owner_and_writes_nothing() {
     assert_eq!(f.asked.lock().unwrap()[start], "back up acme");
     assert!(h.query_by_label_contains("is its disk connected").is_some());
 
-    // Connect Claude Code.
+    // Connect an assistant…: opens the Connect page, asks the owner nothing
+    // (the page's own buttons carry the connecting: tests/assistants.rs).
     open_menu(&mut h);
-    h.get_by_label_contains("Connect Claude Code").click();
-    settle(&mut h, &f, start + 2);
-    assert_eq!(f.asked.lock().unwrap()[start + 1], "connect Claude acme");
+    h.get_by_label_contains("Connect an assistant…").click();
+    h.run_steps(4);
+    assert_eq!(h.state().route(), &Route::Connect);
+    assert_eq!(f.asked.lock().unwrap().len(), start + 1);
+    assert!(h.query_by_label_contains("Connect Claude Code").is_some());
+    assert!(h.query_by_label_contains("Connect Codex").is_some());
 
     // New books: asked for, then made.
     let page_fields = h
@@ -205,8 +209,8 @@ fn the_books_menu_hands_each_action_to_the_owner_and_writes_nothing() {
         .type_text("beta");
     h.run_steps(2);
     h.get_by_label("Make them").click();
-    settle(&mut h, &f, start + 3);
-    assert_eq!(f.asked.lock().unwrap()[start + 2], "new beta USD");
+    settle(&mut h, &f, start + 2);
+    assert_eq!(f.asked.lock().unwrap()[start + 1], "new beta USD");
 
     // Restore: previewed (the backup checked), then done for that plan.
     open_menu(&mut h);
@@ -227,9 +231,9 @@ fn the_books_menu_hands_each_action_to_the_owner_and_writes_nothing() {
         "not before it is checked"
     );
     h.get_by_label("Check it").click();
-    settle(&mut h, &f, start + 4);
+    settle(&mut h, &f, start + 3);
     assert_eq!(
-        f.asked.lock().unwrap()[start + 3],
+        f.asked.lock().unwrap()[start + 2],
         "plan /media/disk/acme.git None false"
     );
     assert!(
@@ -237,9 +241,9 @@ fn the_books_menu_hands_each_action_to_the_owner_and_writes_nothing() {
             .is_some()
     );
     h.get_by_label("Restore it").click();
-    settle(&mut h, &f, start + 5);
+    settle(&mut h, &f, start + 4);
     assert_eq!(
-        f.asked.lock().unwrap()[start + 4],
+        f.asked.lock().unwrap()[start + 3],
         "restore /media/disk/acme.git acme 7"
     );
 
@@ -249,13 +253,13 @@ fn the_books_menu_hands_each_action_to_the_owner_and_writes_nothing() {
     h.run_steps(3);
     h.get_by_label("Cancel").click();
     h.run_steps(3);
-    assert_eq!(f.asked.lock().unwrap().len(), start + 5);
+    assert_eq!(f.asked.lock().unwrap().len(), start + 4);
     open_menu(&mut h);
     h.get_by_label_contains("Close the books").click();
     h.run_steps(3);
     h.get_by_label("Close the books").click();
-    settle(&mut h, &f, start + 6);
-    assert_eq!(f.asked.lock().unwrap()[start + 5], "close");
+    settle(&mut h, &f, start + 5);
+    assert_eq!(f.asked.lock().unwrap()[start + 4], "close");
 
     // The viewer wrote nothing of the books.
     drop(h);

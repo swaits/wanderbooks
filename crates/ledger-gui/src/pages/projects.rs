@@ -122,14 +122,14 @@ pub fn show_list(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
     let p = pal(ui.ctx());
     page(ui, "projects", |ui| {
         let all = listed(b);
-        widgets::page_header(ui, "Projects", &summary(&all));
+        widgets::page_header_ask(ui, "Projects", &summary(&all), "add a project");
         if all.is_empty() {
             widgets::card(ui, |ui| {
                 widgets::empty(
                     ui,
                     icon::BRIEFCASE,
                     "No projects yet",
-                    "The agent adds them (books.add_project). Tag lines with a project to see what it earns and costs.",
+                    "Your assistant adds them. Tag lines with a project to see what it earns and costs.",
                 )
             });
             return;

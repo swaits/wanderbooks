@@ -64,13 +64,14 @@ fn list(ui: &mut Ui, b: &Books, selected: Option<u64>, shell: &mut Shell<'_>) {
     let p = pal(ui.ctx());
     page(ui, "transactions", |ui| {
         let total = b.entries.len();
-        widgets::page_header(
+        widgets::page_header_ask(
             ui,
             "Transactions",
             &format!(
                 "{} recorded, newest first. Click one to see its lines, its receipt, and its history.",
                 fmt::count(total, "entry", "entries")
             ),
+            "record a new transaction",
         );
         let st = &mut shell.state.transactions;
         let narrow = ui.available_width() < 720.0;

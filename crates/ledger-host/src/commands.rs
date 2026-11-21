@@ -1402,6 +1402,259 @@ pub fn connect(
     }
 }
 
+/// This program's own executable followed by `words`, then `--root` when
+/// the data root was named and the knobs this run was given: what an
+/// assistant, or a person at a terminal, runs to reach these books. The one
+/// place it is made.
+fn program_args(common: &Common, words: &[&str]) -> Result<Vec<std::ffi::OsString>, String> {
+    // A translocated macOS app's path (P11a step 6) is not a place to point
+    // an agent: the copy goes away with the app.
+    let exe = crate::start::this_executable()?;
+    if let Some(why) = crate::start::translocation_refusal(&exe) {
+        return Err(why.to_string());
+    }
+    let mut args: Vec<std::ffi::OsString> = vec![exe.into_os_string()];
+    args.extend(words.iter().map(std::ffi::OsString::from));
+    if common.root.is_some() {
+        let found =
+            ledger_store::root::Root::find(common.root.as_deref()).map_err(|e| e.to_string())?;
+        args.push("--root".into());
+        args.push(found.path().as_os_str().to_os_string());
+    }
+    args.extend(common.knobs.args().into_iter().map(Into::into));
+    Ok(args)
+}
+
+/// The command an assistant runs to reach the books `book`: this program
+/// and `mcp --book <book>`. `connect_agent` registers it, and the window's
+/// Connect page shows it for an assistant that has no `connect` of its own.
+pub fn bridge_serve_args(common: &Common, book: &str) -> Result<Vec<std::ffi::OsString>, String> {
+    let book = ledger_store::root::BookId::parse(book)
+        .map_err(|e| e.to_string())?
+        .to_string();
+    program_args(common, &["mcp", "--book", &book])
+}
+
+/// Whether `c` may stand in a shell word unquoted, in a POSIX shell.
+fn unix_plain(c: char) -> bool {
+    c.is_ascii_alphanumeric() || "_@%+=:,./-".contains(c)
+}
+
+/// `part` as one word of a POSIX shell line (sh, bash, zsh, fish): left as
+/// it is when every character is plain, else in single quotes, in which
+/// nothing is special but `'` itself, written `'\''`.
+pub fn quote_unix(part: &str) -> String {
+    if !part.is_empty() && part.chars().all(unix_plain) {
+        return part.to_string();
+    }
+    format!("'{}'", part.replace('\'', "'\\''"))
+}
+
+/// `part` as one word of a Windows line: left as it is when every
+/// character is plain (the same in PowerShell and in cmd.exe), else in
+/// PowerShell's single quotes (a `'`, and the curly quotes PowerShell
+/// reads as one, doubled). Single quotes mean nothing to cmd.exe, so a
+/// part that needs them and holds a character cmd.exe acts on (`&`, `|`,
+/// `<`, `>`, `^`, `%`, `"`, `!`, or a control character) is refused:
+/// pasted into cmd.exe it could run something else. Returns the word and
+/// whether it was quoted.
+pub fn quote_windows(part: &str) -> Result<(String, bool), String> {
+    let plain = |c: char| c.is_ascii_alphanumeric() || "_@+:./\\-".contains(c);
+    if !part.is_empty() && part.chars().all(plain) {
+        return Ok((part.to_string(), false));
+    }
+    if let Some(bad) = part
+        .chars()
+        .find(|c| c.is_control() || "&|<>^%\"!".contains(*c))
+    {
+        return Err(format!(
+            "a folder or file name on the way to the program holds the character {bad:?}, which cannot be written in a line that is safe to paste into both PowerShell and cmd.exe: move the program to a folder without it"
+        ));
+    }
+    let doubled: String = part
+        .chars()
+        .flat_map(|c| {
+            let twice = matches!(c, '\'' | '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}');
+            std::iter::repeat_n(c, if twice { 2 } else { 1 })
+        })
+        .collect();
+    Ok((format!("'{doubled}'"), true))
+}
+
+/// `parts` as one line to paste in a terminal: for a POSIX shell, or (with
+/// `windows`) for PowerShell (plain parts only: cmd.exe too). A line with
+/// a quoted program in PowerShell starts with `&`, which cmd.exe does not
+/// take: such a line is for PowerShell alone (it fails in cmd.exe, it
+/// never runs another program, see `quote_windows`).
+pub fn shell_line(parts: &[String], windows: bool) -> Result<String, String> {
+    if !windows {
+        return Ok(parts
+            .iter()
+            .map(|p| quote_unix(p))
+            .collect::<Vec<_>>()
+            .join(" "));
+    }
+    let mut words = Vec::new();
+    for (i, p) in parts.iter().enumerate() {
+        let (word, quoted) = quote_windows(p)?;
+        words.push(if i == 0 && quoted {
+            format!("& {word}")
+        } else {
+            word
+        });
+    }
+    Ok(words.join(" "))
+}
+
+/// This program run with `words`, as a line to paste in a terminal, quoted
+/// so that it runs as it reads (`shell_line`). A part that is not valid
+/// text is an error, never a guess.
+pub fn command_line(common: &Common, words: &[&str]) -> Result<String, String> {
+    let parts = program_args(common, words)?
+        .into_iter()
+        .map(|a| {
+            a.into_string().map_err(|_| {
+                "a folder or file name on the way to the program is not valid text, so no command can be shown for it"
+                    .to_string()
+            })
+        })
+        .collect::<Result<Vec<String>, String>>()?;
+    shell_line(&parts, cfg!(windows))
+}
+
+/// Why a key that lives on the server cannot be handed out from this
+/// computer: said in words (INVARIANT 7: nothing is replaced).
+fn key_in_use(book: &str, name: &str, why: KeyState) -> String {
+    match why {
+        KeyState::CopyMissing => format!(
+            "A key called “{name}” for {book} already exists, but its copy is not on this computer, so it cannot be handed to an assistant from here. It may be in use by an assistant now, so nothing was changed. To start over, revoke it under “Who can reach these books” and make the key again."
+        ),
+        _ => format!(
+            "A key called “{name}” for {book} already exists, but the copy on this computer is not its text any more (it was made again elsewhere). Nothing was changed. To start over, revoke it under “Who can reach these books” and make the key again."
+        ),
+    }
+}
+
+/// How the default key of a company stands.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum KeyState {
+    /// No live key of that name.
+    Absent,
+    /// A live key, and this computer holds its text.
+    Kept,
+    /// A live key, and this computer holds no copy.
+    CopyMissing,
+    /// A live key, and the copy here is not its text.
+    CopyStale,
+}
+
+/// Ask the server whether the key `account` names is live, and whether
+/// the copy in the token file is its text.
+fn key_state(
+    common: &Common,
+    keeper: &crate::tokens::Keeper,
+    account: &crate::tokens::Account,
+    book: &str,
+) -> Result<KeyState, String> {
+    let copy = keeper.get(account)?;
+    let sha256 = copy
+        .as_deref()
+        .map(|t| ledger_store::journal::sha256_hex(t.as_bytes()))
+        .unwrap_or_default();
+    let request = Request::TokenCheck {
+        book: book.to_string(),
+        name: crate::tokens::DEFAULT_NAME.to_string(),
+        sha256,
+    };
+    match with_server(common, request)? {
+        Response::TokenChecked { live: None, .. } => Ok(KeyState::Absent),
+        Response::TokenChecked { matches: true, .. } => Ok(KeyState::Kept),
+        Response::TokenChecked { .. } if copy.is_none() => Ok(KeyState::CopyMissing),
+        Response::TokenChecked { .. } => Ok(KeyState::CopyStale),
+        Response::Refused(why) => Err(why),
+        other => Err(format!("the books server answered oddly: {other:?}")),
+    }
+}
+
+/// The default key of the books `book` exists, with `scopes`, and its copy
+/// is in the token file (made now if there is none): what the window's
+/// "Make the key" does. `Ok(true)` when it was made now, `Ok(false)` when
+/// it was there already. It never replaces a key (INVARIANT 7): a live key
+/// whose copy is missing here may be in use by an assistant, so that is an
+/// `Err` that says what to do, and nothing changes.
+pub fn ensure_key(
+    common: &Common,
+    book: &str,
+    scopes: &[ledger_store::auth::Scope],
+) -> Result<bool, String> {
+    let book = ledger_store::root::BookId::parse(book)
+        .map_err(|e| e.to_string())?
+        .to_string();
+    let found =
+        ledger_store::root::Root::find(common.root.as_deref()).map_err(|e| e.to_string())?;
+    let run = found.run_dir().map_err(|e| e.to_string())?;
+    let account = crate::tokens::Account::new(found.path(), &book, crate::tokens::DEFAULT_NAME);
+    let keeper = crate::tokens::keeper(&run);
+    let name = crate::tokens::DEFAULT_NAME;
+    match key_state(common, &keeper, &account, &book)? {
+        KeyState::Kept => return Ok(false),
+        KeyState::Absent => {}
+        other => return Err(key_in_use(&book, name, other)),
+    }
+    let scopes: Vec<String> = scopes.iter().map(|s| s.as_str().to_string()).collect();
+    match make_token(common, &book, name, scopes, false) {
+        Ok(_) => Ok(true),
+        Err(why) => match key_state(common, &keeper, &account, &book) {
+            // Another window made it between the question and the make:
+            // theirs stands, and this one made nothing.
+            Ok(KeyState::Kept) => Ok(false),
+            Ok(KeyState::Absent) | Err(_) => Err(why),
+            Ok(other) => Err(key_in_use(&book, name, other)),
+        },
+    }
+}
+
+/// What `connect` does first: the default key's copy is in the token file,
+/// or the key is made again with every scope (replacing a live key whose
+/// copy is missing: the owner asked to connect an agent here).
+fn ensure_agent_key(common: &Common, book: &str) -> Result<bool, String> {
+    let book = ledger_store::root::BookId::parse(book)
+        .map_err(|e| e.to_string())?
+        .to_string();
+    let found =
+        ledger_store::root::Root::find(common.root.as_deref()).map_err(|e| e.to_string())?;
+    let run = found.run_dir().map_err(|e| e.to_string())?;
+    let account = crate::tokens::Account::new(found.path(), &book, crate::tokens::DEFAULT_NAME);
+    if crate::tokens::keeper(&run).get(&account)?.is_some() {
+        return Ok(false);
+    }
+    let scopes = ledger_store::auth::Scope::ALL
+        .iter()
+        .map(|s| s.as_str().to_string())
+        .collect();
+    make_token(common, &book, crate::tokens::DEFAULT_NAME, scopes, true)?;
+    Ok(true)
+}
+
+/// Where the token file copy of the token `name` of `book` is kept
+/// (`run_dir` is the root's `run/` folder).
+pub fn token_file_path(run_dir: &Path, book: &str, name: &str) -> PathBuf {
+    let root = run_dir.parent().unwrap_or(run_dir).to_path_buf();
+    let account = crate::tokens::Account::new(&root, book, name);
+    crate::tokens::keeper(run_dir).file(&account)
+}
+
+/// A revoked token's copy in the token file goes with it (what `token
+/// revoke` does after the server has ended the token). `run_dir` is the
+/// root's `run/` folder.
+pub fn forget_token_file(run_dir: &Path, book: &str, name: &str) -> Result<(), String> {
+    let root = run_dir.parent().unwrap_or(run_dir).to_path_buf();
+    let account = crate::tokens::Account::new(&root, book, name);
+    crate::tokens::keeper(run_dir)
+        .delete(&account)
+        .map_err(|e| e.to_string())
+}
+
 /// Let the agent `agent` ("claude" or "codex") reach the books `book`:
 /// their token kept in its token file (made if none is), and `wanderbooks
 /// mcp --book <book>` added to the agent's own list as
@@ -1420,41 +1673,16 @@ pub fn connect_agent(common: &Common, agent: &str, book: &str) -> Result<Vec<Str
             "{label} isn't installed here (no `{cli}` on the PATH, nor where its installer puts it)"
         )
     })?;
-    // A translocated macOS app's path (P11a step 6) is not a place to point
-    // an agent: the copy goes away with the app.
-    let exe = crate::start::this_executable()?;
-    if let Some(why) = crate::start::translocation_refusal(&exe) {
-        return Err(why.to_string());
-    }
+    let serve = bridge_serve_args(common, &book)?;
     let mut lines = Vec::new();
     // The token: kept in its file, or made now.
-    let found =
-        ledger_store::root::Root::find(common.root.as_deref()).map_err(|e| e.to_string())?;
-    let run = found.run_dir().map_err(|e| e.to_string())?;
-    let account = crate::tokens::Account::new(found.path(), &book, crate::tokens::DEFAULT_NAME);
-    if crate::tokens::keeper(&run).get(&account)?.is_none() {
-        let scopes = ledger_store::auth::Scope::ALL
-            .iter()
-            .map(|s| s.as_str().to_string())
-            .collect();
-        make_token(common, &book, crate::tokens::DEFAULT_NAME, scopes, true)?;
+    if ensure_agent_key(common, &book)? {
         lines.push(format!(
             "Made the agent token of the books {book}, kept in a token file in the data root."
         ));
     }
     // The agent's own list: the books' entry made anew.
     let name = format!("wanderbooks-{book}");
-    let mut serve: Vec<std::ffi::OsString> = vec![
-        exe.into_os_string(),
-        "mcp".into(),
-        "--book".into(),
-        book.clone().into(),
-    ];
-    if common.root.is_some() {
-        serve.push("--root".into());
-        serve.push(found.path().as_os_str().to_os_string());
-    }
-    serve.extend(common.knobs.args().into_iter().map(Into::into));
     let scope: &[&str] = if agent == "claude" {
         &["--scope", "user"]
     } else {
@@ -2809,9 +3037,7 @@ pub fn token(
             let (answer, run_dir) = with_server_in(&common, request).map_err(fail)?;
             match answer {
                 Response::TokenRevoked(t) => {
-                    let root = run_dir.parent().unwrap_or(&run_dir).to_path_buf();
-                    let account = crate::tokens::Account::new(&root, &book, &name);
-                    let forgot = crate::tokens::keeper(&run_dir).delete(&account);
+                    let forgot = forget_token_file(&run_dir, &book, &name);
                     println!("Revoked the token {:?} for the books {}.", t.name, t.book);
                     if let Err(why) = forgot {
                         eprintln!(

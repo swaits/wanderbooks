@@ -85,6 +85,9 @@ pub enum Route {
     Documents,
     Document(u64),
     Company,
+    /// The company's assistants: who is connected, and how to connect one
+    /// (connect.rs). Drawn by the company's view, which holds its state.
+    Connect,
     Journal,
     JournalEvent(u64),
 }
@@ -106,7 +109,7 @@ impl Route {
                 Section::Invoices
             }
             Route::Documents | Route::Document(_) => Section::Documents,
-            Route::Company => Section::Company,
+            Route::Company | Route::Connect => Section::Company,
             Route::Journal | Route::JournalEvent(_) => Section::Journal,
         }
     }

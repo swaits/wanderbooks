@@ -240,7 +240,7 @@ impl Job {
                 let mut notes = Vec::new();
                 if !p.tin_gaps.is_empty() {
                     notes.push(format!(
-                        "{} TIN(s) aren't in it (the README says which): ask your agent to collect them.",
+                        "{} TIN(s) aren't in it (the README says which): ask your assistant to collect them.",
                         p.tin_gaps.len()
                     ));
                 }
@@ -279,7 +279,7 @@ impl Job {
                     .filter(|l| l.may_file() && l.tin.is_none())
                     .count();
                 let note = (gaps > 0).then(|| {
-                    format!("{gaps} payee(s) a 1099 is or may be due for have no TIN in it: ask your agent to collect them.")
+                    format!("{gaps} payee(s) a 1099 is or may be due for have no TIN in it: ask your assistant to collect them.")
                 });
                 Ok((path, note))
             }

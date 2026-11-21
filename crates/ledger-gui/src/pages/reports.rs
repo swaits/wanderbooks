@@ -1112,7 +1112,7 @@ fn tax(b: &Books, s: NaiveDate, e: NaiveDate) -> Table {
 /// note saying why, never a guess.
 fn cant_compute(mut t: Table, why: &ledger_core::LedgerError) -> Table {
     t.note(format!(
-        "This report can't be computed: {why}. Ask the bookkeeper to find the record behind it."
+        "This report can't be computed: {why}. Ask your assistant to find the record behind it."
     ));
     t
 }

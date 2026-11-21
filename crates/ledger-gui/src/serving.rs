@@ -256,6 +256,26 @@ impl Serving {
             .is_some_and(|i| *lock(&i.gate) == Gate::Starting)
     }
 
+    /// Whether the server has exited on its own (cheap: asked every frame).
+    pub fn has_exited(&self) -> bool {
+        self.inner
+            .as_ref()
+            .is_some_and(|i| i.owner.serve_exited().is_some())
+    }
+
+    /// The owner that hosts the server, to ask it who is connected (A4).
+    pub fn owner(&self) -> Option<Arc<dyn Owner>> {
+        self.inner.as_ref().map(|i| i.owner.clone())
+    }
+
+    /// Whether the server is up and not closing: it can be asked who is
+    /// connected (A4).
+    pub fn is_up(&self) -> bool {
+        self.inner
+            .as_ref()
+            .is_some_and(|i| *lock(&i.gate) == Gate::Up && *lock(&i.closing) == Closing::Not)
+    }
+
     /// Whether the start failed and a `retry` would try again.
     pub fn is_down(&self) -> bool {
         self.inner

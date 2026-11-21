@@ -557,6 +557,7 @@ pub fn describe(b: &Books, r: &Route) -> String {
         Route::Project(id) => b.project_label(*id),
         Route::Reconciliation(id) => b.subject_label(ledger_store::Subject::Reconciliation(*id)),
         Route::JournalEvent(seq) => format!("Event {seq}"),
+        Route::Connect => "Assistants".to_string(),
         _ => String::new(),
     }
 }

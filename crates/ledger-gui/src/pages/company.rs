@@ -158,10 +158,11 @@ pub fn show(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
     let mut kept_go: Option<Route> = None;
     page(ui, "company", |ui| {
         let c = &b.settings.company;
-        widgets::page_header(
+        widgets::page_header_ask(
             ui,
             &c.name,
             "The company's profile and the standing parts of its books.",
+            "change a company setting",
         );
         columns(ui, 980.0, &[1.0, 1.0], |i, ui| match i {
             0 => {
@@ -175,7 +176,7 @@ pub fn show(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                         if c.profile.iter().all(|(k, _)| k == "base_currency") {
                             ui.label(
                                 RichText::new(
-                                    "No company facts set yet: the agent records them as you give them.",
+                                    "No company facts set yet: your assistant records them as you give them.",
                                 )
                                 .color(p.muted),
                             );
@@ -200,7 +201,7 @@ pub fn show(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                         }
                         ui.label(
                             RichText::new(
-                                "Kept in the books: the agent changes settings, with who decided and when.",
+                                "Kept in the books: your assistant changes settings, with who decided and when.",
                             )
                             .font(theme::regular(12.0))
                             .color(p.muted),

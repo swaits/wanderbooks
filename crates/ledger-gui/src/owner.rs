@@ -8,8 +8,8 @@
 //! GOAL: the owner backs up, restores, starts new books, closes the books
 //!       and connects an agent from the viewer, without a terminal.
 //! SOURCE: plan P2 ("Viewer menu (D-19)": "Back up now", "Restore…",
-//!         "New books…", "Close the books", "Connect Claude Code" and
-//!         "Connect Codex"; "Nothing in the viewer writes a book"); D-32
+//!         "New books…", "Close the books" and "Connect an assistant…"; the
+//!         page it opens carries the two connect buttons; "Nothing in the viewer writes a book"); D-32
 //!         (no confinement: the viewer asks the server itself, as the
 //!         command line does); plan 3.9 and D-39 (the format upgrade: the
 //!         go-ahead asked at every open until given, with the owner
@@ -153,6 +153,65 @@ pub struct UpdateWaiting {
     pub staged_at: String,
 }
 
+/// A call an assistant made last, as the server says it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LastCall {
+    /// The tool (or the resource's address).
+    pub tool: String,
+    /// "ok", "error", or "refused: CODE".
+    pub outcome: String,
+    /// When it finished (UTC, RFC 3339).
+    pub at: String,
+}
+
+/// One assistant connected to a company, from the server's sessions
+/// request (plan P15 3.1): what it said of itself (asserted, never
+/// checked) and what it is doing. Never a token's text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Assistant {
+    /// The company it is connected to (the id of its books).
+    pub book: String,
+    /// The NAME of the token it opened its session with.
+    pub token: String,
+    /// The program's name, as it said at the start.
+    pub client_name: Option<String>,
+    /// Its version.
+    pub client_version: Option<String>,
+    /// The model it said it is, if it did.
+    pub model: Option<String>,
+    /// When it connected (UTC, RFC 3339).
+    pub connected_at: String,
+    /// Calls of it running now.
+    pub running: u32,
+    /// The last call it made, if it has made one.
+    pub last: Option<LastCall>,
+}
+
+/// A token, as listed: who may connect to a company (never its text).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TokenRow {
+    /// Its id: what a revoke names, so a row of a key since replaced
+    /// cannot end the new one.
+    pub id: String,
+    /// The company it opens.
+    pub book: String,
+    /// Its name.
+    pub name: String,
+    /// What it may do (books:read, books:write, books:post, books:admin).
+    pub scopes: Vec<String>,
+    /// When it was made (UTC).
+    pub created: String,
+}
+
+/// Who is connected and who may connect, across the open companies.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Roster {
+    /// Every live session.
+    pub assistants: Vec<Assistant>,
+    /// Every live token.
+    pub tokens: Vec<TokenRow>,
+}
+
 /// The owner's actions, done by the program the viewer runs in (ledger-cli
 /// over the books server and the agents' own commands). Each blocks: the
 /// menu calls it off the UI thread.
@@ -198,6 +257,34 @@ pub trait Owner: Send + Sync {
     /// on every frame.
     fn serve_exited(&self) -> Option<String> {
         None
+    }
+    /// Who is connected to the open companies, and which tokens are live:
+    /// two quick requests to the server, an `Err` (in words) when it is
+    /// starting, gone or does not answer in a few seconds. Blocks, for that
+    /// long at most: the window asks off its UI thread.
+    fn serve_roster(&self) -> Result<Roster, String> {
+        Ok(Roster::default())
+    }
+    /// End the token `name`, whose id is `id`, of the company `book` (what
+    /// `wanderbooks token revoke` does, for that one key): `Ok` says what
+    /// was done, in words; a key already replaced or revoked is an `Err`
+    /// that says so. Blocks.
+    fn serve_revoke(&self, _book: &str, _name: &str, _id: &str) -> Result<String, String> {
+        Err("not here".into())
+    }
+    /// This program run with `words`, as a line to type in a terminal (the
+    /// program's own path, the words, the data root if one was named): what
+    /// the Connect page shows for an assistant it has no button for.
+    fn command_line(&self, _words: &[&str]) -> Result<String, String> {
+        Err("not here".into())
+    }
+    /// The key an assistant needs to reach the company `book` exists (made
+    /// now if it did not), able to read, draft and post but not to see the
+    /// access record: `Ok(true)` when it was made now. It never replaces a
+    /// key: one that exists with no copy here is an `Err` that says so.
+    /// Blocks.
+    fn make_key(&self, _book: &str) -> Result<bool, String> {
+        Err("not here".into())
     }
     /// Close the books: everything holding them lets go.
     fn close_books(&self) -> Result<String, String>;
@@ -629,25 +716,13 @@ impl OwnerMenu {
                         };
                     }
                     ui.separator();
-                    for agent in [Agent::Claude, Agent::Codex] {
-                        if ui
-                            .button(format!("{} Connect {}", icon::PLUGS_CONNECTED, agent.label()))
-                            .on_hover_text(format!(
-                                "Let {} reach these books (it keeps their token in a file in the data root)",
-                                agent.label()
-                            ))
-                            .clicked()
-                        {
-                            let (o, b) = (owner.clone(), book.clone());
-                            start = Some((
-                                format!("Connect {}", agent.label()),
-                                Effect::Changes(match agent {
-                                    Agent::Claude => "Connecting Claude Code to these books",
-                                    Agent::Codex => "Connecting Codex to these books",
-                                }),
-                                Box::new(move || o.connect(agent, &b)),
-                            ));
-                        }
+                    if ui
+                        .button(format!("{} Connect an assistant…", icon::PLUGS_CONNECTED))
+                        .on_hover_text("Open the page that connects Claude Code, Codex or another assistant to these books")
+                        .clicked()
+                    {
+                        crate::connect::open_page(ui.ctx());
+                        ui.close();
                     }
                     if let Some(upgrade) = &books.format_upgrade {
                         ui.separator();
@@ -688,7 +763,7 @@ impl OwnerMenu {
                     ui.separator();
                     if ui
                         .button(format!("{} Close the books", icon::POWER))
-                        .on_hover_text("Close the books now: agents' sessions and every other holder let go")
+                        .on_hover_text("Close the books now: assistants' sessions and every other holder let go")
                         .clicked()
                     {
                         self.dialog = Dialog::Close;
@@ -782,7 +857,7 @@ impl OwnerMenu {
             Dialog::Close => {
                 egui::Modal::new(self.scope.unwrap_or(egui::Id::NULL).with("owner-close")).show(ctx, |ui| {
                     ui.heading("Close the books?");
-                    ui.label("Agents' sessions and everything else holding them let go. They open again when something holds them.");
+                    ui.label("Assistants' sessions and everything else holding them let go. They open again when something holds them.");
                     ui.horizontal(|ui| {
                         if ui.button("Close the books").clicked() {
                             let o = owner.clone();

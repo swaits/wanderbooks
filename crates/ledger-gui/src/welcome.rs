@@ -161,7 +161,7 @@ impl Welcome {
                 ui.label(RichText::new("Welcome to wanderbooks").font(crate::theme::bold(28.0)));
                 ui.label(
                     RichText::new(
-                        "Your company's books, kept by an agent and checked by you. A few short steps; nothing here needs a terminal.",
+                        "Your company's books, kept by an assistant and checked by you. A few short steps; nothing here needs a terminal.",
                     )
                     .color(p.muted),
                 );
@@ -241,7 +241,7 @@ impl Welcome {
                 if st.root {
                     ui.label(RichText::new("Made. Only your account can open it.").color(p.muted));
                 } else {
-                    ui.label("Wanderbooks keeps your books in a folder that only your account can open. Your agent reaches them through the app, never by looking in the folder.");
+                    ui.label("Wanderbooks keeps your books in a folder that only your account can open. Your assistant reaches them through the app, never by looking in the folder.");
                     if ui
                         .add_enabled(!busy, egui::Button::new("Set it up"))
                         .clicked()
@@ -334,7 +334,7 @@ impl Welcome {
                     );
                     return;
                 }
-                ui.label("A short name for the books: lowercase letters, digits and hyphens (your company's name, say). You can name the company itself afterwards, with your agent.");
+                ui.label("A short name for the books: lowercase letters, digits and hyphens (your company's name, say). You can name the company itself afterwards, with your assistant.");
                 ui.add_enabled(
                     !busy,
                     egui::TextEdit::singleline(&mut self.id)
@@ -370,11 +370,11 @@ impl Welcome {
         Self::card(
             ui,
             4,
-            "An agent to keep them",
+            "An assistant to keep them",
             agents.iter().any(|(_, r)| r.is_ok()),
             step4_active,
             |ui| {
-                ui.label("An agent (Claude Code or Codex) records your transactions, checks receipts and answers questions, through the books' own tools. This connects it; the app also has a panel along the bottom of its window that runs it for you. You never need either: any agent you run yourself can reach the same books.");
+                ui.label("An assistant (Claude Code or Codex) records your transactions, checks receipts and answers questions. This connects it; the app also has a panel along the bottom of its window that runs it for you. You never need either: any assistant you run yourself can reach the same books.");
                 for (agent, result) in &agents {
                     match result {
                         Ok(lines) => {
@@ -415,7 +415,7 @@ impl Welcome {
                         }
                     }
                     if ui
-                        .add_enabled(!busy, egui::Button::new("I'll use my own agent"))
+                        .add_enabled(!busy, egui::Button::new("I'll use my own assistant"))
                         .clicked()
                     {
                         self.agent_later = true;

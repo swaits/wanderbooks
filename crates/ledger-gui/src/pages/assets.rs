@@ -81,7 +81,7 @@ pub fn notices(b: &Books, r: &AssetRegister) -> Vec<Notice> {
             out.push(Notice {
                 problem: true,
                 text: format!(
-                    "Depreciation not yet posted through {}: {} — ask the bookkeeper to run depreciation{}.",
+                    "Depreciation not yet posted through {}: {} — ask your assistant to run depreciation{}.",
                     fmt::date(due.through),
                     fmt::dollars(due_amount),
                     if due.periods.is_empty() {
@@ -108,7 +108,7 @@ pub fn notices(b: &Books, r: &AssetRegister) -> Vec<Notice> {
         out.push(Notice {
             problem: true,
             text: format!(
-                "The books carry {} more accumulated depreciation than the schedules through {} — ask the bookkeeper to check the depreciation entries.",
+                "The books carry {} more accumulated depreciation than the schedules through {} — ask your assistant to check the depreciation entries.",
                 fmt::dollars(neg(unposted)),
                 fmt::date(r.as_of)
             ),
@@ -119,7 +119,7 @@ pub fn notices(b: &Books, r: &AssetRegister) -> Vec<Notice> {
         out.push(Notice {
             problem: true,
             text: format!(
-                "{} in the asset cost accounts isn't in the register — ask the bookkeeper to register it with books.register_asset.",
+                "{} in the asset cost accounts isn't in the register — ask your assistant to register it.",
                 fmt::dollars(unregistered)
             ),
         });
@@ -127,7 +127,7 @@ pub fn notices(b: &Books, r: &AssetRegister) -> Vec<Notice> {
         out.push(Notice {
             problem: true,
             text: format!(
-                "{} of registered cost isn't in the books' asset cost accounts — ask the bookkeeper to check the purchase entries.",
+                "{} of registered cost isn't in the books' asset cost accounts — ask your assistant to check the purchase entries.",
                 fmt::dollars(neg(unregistered))
             ),
         });
@@ -137,7 +137,7 @@ pub fn notices(b: &Books, r: &AssetRegister) -> Vec<Notice> {
         out.push(Notice {
             problem: true,
             text: format!(
-                "{} of accumulated depreciation in the books isn't from any asset's depreciation runs — ask the bookkeeper to find the entries behind it.",
+                "{} of accumulated depreciation in the books isn't from any asset's depreciation runs — ask your assistant to find the entries behind it.",
                 fmt::dollars(unattributed)
             ),
         });
@@ -160,12 +160,11 @@ pub fn notices(b: &Books, r: &AssetRegister) -> Vec<Notice> {
     out
 }
 
-/// "Tax basis not recorded for 2 assets — ask the bookkeeper to record it
-/// (books.set_asset_tax_basis).", or `None` when every asset held has one.
+/// "Tax basis not recorded for 2 assets — ask your assistant to record it", or `None` when every asset held has one.
 pub fn missing_tax_notice(missing: usize) -> Option<String> {
     (missing > 0).then(|| {
         format!(
-            "Tax basis not recorded for {} — ask the bookkeeper to record {} (books.set_asset_tax_basis): bought by the company, contributed by a member from business use, or contributed from personal use.",
+            "Tax basis not recorded for {} — ask your assistant to record {}: bought by the company, contributed by a member from business use, or contributed from personal use.",
             fmt::count(missing, "asset", "assets"),
             if missing == 1 { "it" } else { "each" }
         )
@@ -499,10 +498,11 @@ fn date_controls(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) -> NaiveDate {
 pub fn show_register(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
     let p = pal(ui.ctx());
     page(ui, "assets", |ui| {
-        widgets::page_header(
+        widgets::page_header_ask(
             ui,
             "Fixed assets",
             "Everything the company owns as a fixed asset: its label, what it cost, how much has been depreciated, and what it's worth on the books, reconciled to the general ledger.",
+            "add a fixed asset",
         );
         if b.ledger.registered_assets().next().is_none() {
             widgets::card(ui, |ui| {
@@ -510,7 +510,7 @@ pub fn show_register(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                     ui,
                     icon::PACKAGE,
                     "No fixed assets",
-                    "Equipment the company capitalizes appears here once the bookkeeper registers it (books.register_asset).",
+                    "Equipment the company capitalizes appears here once your assistant registers it.",
                 )
             });
             return;
@@ -525,7 +525,7 @@ pub fn show_register(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                         ui,
                         icon::PACKAGE,
                         "The register can't be computed",
-                        &format!("{e}. Ask the bookkeeper to find the record behind it."),
+                        &format!("{e}. Ask your assistant to find the record behind it."),
                     )
                 });
                 return;
@@ -1024,7 +1024,7 @@ pub fn show_asset(ui: &mut Ui, b: &Books, id: AssetId, shell: &mut Shell<'_>) {
             }
             None => {
                 widgets::pill(ui, "No tag yet", p.warning, p.warning_soft)
-                    .on_hover_text("Ask the bookkeeper to label it (books.label_asset).");
+                    .on_hover_text("Ask your assistant to label it.");
             }
         }
         ui.label(RichText::new(&a.description).font(theme::bold(22.0)));
@@ -1200,7 +1200,7 @@ pub fn show_asset(ui: &mut Ui, b: &Books, id: AssetId, shell: &mut Shell<'_>) {
                 &Notice {
                     problem: true,
                     text: format!(
-                        "{} of depreciation for finished months isn't posted — ask the bookkeeper to run depreciation.",
+                        "{} of depreciation for finished months isn't posted — ask your assistant to run depreciation.",
                         fmt::dollars(due)
                     ),
                 },
@@ -1447,7 +1447,7 @@ fn tax_card(ui: &mut Ui, a: &Asset) {
                 ui.add(
                     egui::Label::new(
                         RichText::new(
-                            "Ask the bookkeeper to record it (books.set_asset_tax_basis): was it bought by the company, contributed by a member from business use, or converted from personal use? For a contribution, book cost is the fair market value at contribution; tax depreciation starts from the depreciable basis — the CPA's.",
+                            "Ask your assistant to record it: was it bought by the company, contributed by a member from business use, or converted from personal use? For a contribution, book cost is the fair market value at contribution; tax depreciation starts from the depreciable basis — the CPA's.",
                         )
                         .font(theme::regular(12.5))
                         .color(p.muted),

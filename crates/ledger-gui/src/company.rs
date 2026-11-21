@@ -129,6 +129,11 @@ pub struct CompanyView {
     /// The identity of the books as last loaded (None while there is no
     /// journal line to take it from).
     loaded_identity: Option<String>,
+    /// What the window knows of this company's assistants, given by the app
+    /// each frame (connections.rs): the state, who is connected, the keys.
+    assist: crate::connections::Status,
+    /// The Connect page's own state (connect.rs).
+    connect: crate::connect::State,
 }
 
 impl Drop for CompanyView {
@@ -175,6 +180,8 @@ impl CompanyView {
             jobs,
             identity: None,
             loaded_identity: None,
+            assist: crate::connections::Status::off(""),
+            connect: Default::default(),
         }
     }
 
@@ -213,6 +220,28 @@ impl CompanyView {
     pub fn with_dock(mut self, dock: crate::dock::Dock) -> Self {
         self.dock = dock;
         self
+    }
+
+    /// What the window knows of this company's assistants, as of this
+    /// frame (the app gives it before it draws the view).
+    pub fn set_assist(&mut self, status: crate::connections::Status) {
+        self.assist = status;
+    }
+
+    /// What this view was last given of its assistants (tests).
+    pub fn assist(&self) -> &crate::connections::Status {
+        &self.assist
+    }
+
+    /// The Connect page's state (tests).
+    pub fn connect_state(&self) -> &crate::connect::State {
+        &self.connect
+    }
+
+    /// A revoke on the Connect page just ended: who is connected must be
+    /// read again (taken once).
+    pub fn take_roster_refresh(&mut self) -> bool {
+        self.connect.take_refresh()
     }
 
     /// What tells this company's view apart from another's.
@@ -505,16 +534,45 @@ impl CompanyView {
                 // Books waiting for a format upgrade: said above every page
                 // until it is done (owner.rs INVARIANT 5).
                 self.owner_menu.notice(ui, self.owner.clone(), &books);
-                let mut shell = Shell {
-                    receipts: &mut self.receipts,
-                    state: &mut self.state,
-                    go: None,
-                    since_update,
-                };
                 let route = self.nav.current.clone();
-                pages::show(ui, &books, &route, &mut shell);
-                if let Some(to) = shell.go.take() {
-                    self.nav.go(to);
+                // What "Ask your assistant" on a page is about.
+                crate::connect::set_context(
+                    ui.ctx(),
+                    crate::connect::AskContext {
+                        company: self.assist.company.clone(),
+                        serves: self.assist.serves,
+                        link: self.assist.link,
+                    },
+                );
+                if route == Route::Connect {
+                    // The Connect page keeps its own state (connect.rs).
+                    match self.book_id() {
+                        Some(book) => {
+                            let spawner = self.jobs.spawner();
+                            self.connect.show(
+                                ui,
+                                &self.assist,
+                                &book,
+                                self.owner.clone(),
+                                &spawner,
+                            );
+                        }
+                        None => self.nav.go(Route::Company),
+                    }
+                } else {
+                    let mut shell = Shell {
+                        receipts: &mut self.receipts,
+                        state: &mut self.state,
+                        go: None,
+                        since_update,
+                    };
+                    pages::show(ui, &books, &route, &mut shell);
+                    if let Some(to) = shell.go.take() {
+                        self.nav.go(to);
+                    }
+                }
+                if crate::connect::take_go(ui.ctx()) {
+                    self.nav.go(Route::Connect);
                 }
                 if let Some(to) = self.palette.show(ui.ctx(), &books) {
                     self.nav.go(to);
@@ -1026,6 +1084,22 @@ impl CompanyView {
                                     .font(theme::regular(12.5))
                                     .color(p.muted),
                             );
+                        }
+                        // The assistants: its shape and words, then what it
+                        // last did while there is room (connect.rs).
+                        let room = if width >= 1100.0 {
+                            Some(crate::connect::Room::Full)
+                        } else if width >= 780.0 {
+                            Some(crate::connect::Room::Word)
+                        } else if width >= 520.0 {
+                            Some(crate::connect::Room::Icon)
+                        } else {
+                            None
+                        };
+                        if let Some(room) = room
+                            && crate::connect::chip(ui, &self.assist, room)
+                        {
+                            self.nav.go(Route::Connect);
                         }
                         ui.add_space(8.0);
                         ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
@@ -1681,11 +1755,10 @@ fn footer_layout<R>(
     }
 }
 
-/// The top of the sidebar (and of the rail): where the assistant's
-/// connection state goes, in a later unit. It draws nothing today, so the
-/// links begin at the panel's top margin, under the tab bar. A block put
-/// here adds its own height and gap below it ([`HEAD_GAP`],
-/// [`HEAD_GAP_TIGHT`] are what the fit leaves under it).
+/// The top of the sidebar (and of the rail). It stays empty, on purpose: the
+/// links must all fit at 1479x519 (`tests/sidenav.rs`), so nothing is added
+/// above them. The assistant state is in the top bar instead, where it costs
+/// no height (`topbar`, `connect::chip`).
 fn top_slot(_ui: &mut Ui) {}
 
 /// What the status card says of its company: the heading row's badge

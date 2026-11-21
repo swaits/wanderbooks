@@ -54,6 +54,9 @@ use std::path::{Path, PathBuf};
 #[path = "audit.rs"]
 pub mod audit;
 
+#[path = "calls.rs"]
+pub mod calls;
+
 /// File names inside the data directory.
 pub const JOURNAL_FILE: &str = "journal.jsonl";
 
@@ -493,6 +496,16 @@ pub struct Store {
     base_currency: Currency,
     /// The journal format in force (the format gate's record).
     format: JournalFormat,
+    /// The call open now, if any (calls.rs): every line journaled while it
+    /// is open belongs to it.
+    call: Option<calls::ActiveCall>,
+    /// The keys of every call that committed (calls.rs).
+    keys: calls::Keys,
+    /// The books' id (calls::books_id_of), if they have one.
+    books_id: Option<String>,
+    /// A call could not be finished: no write is taken until the books
+    /// are opened again (calls.rs, close_call).
+    dangling: bool,
 }
 
 /// One filing of bytes into the blob store and journal.
@@ -591,11 +604,20 @@ impl Store {
             ledger: Ledger::new(base_currency),
             base_currency,
             format: JournalFormat::default(),
+            call: None,
+            keys: calls::Keys::default(),
+            books_id: None,
+            dangling: false,
         };
-        let line = store.journal.append(
-            "store.created",
-            json!({ "base_currency": base_currency.code() }),
-        )?;
+        // Books that take calls are born with their id; older books are
+        // given one at their format upgrade (declare_journal_format).
+        let mut created = json!({ "base_currency": base_currency.code() });
+        if format.has_feature(crate::format::CALL_TRANSACTIONS) {
+            let id = calls::new_books_id()?;
+            created["books_id"] = json!(id);
+            store.books_id = Some(id);
+        }
+        let line = store.journal.append("store.created", created)?;
         apply_line_to_sqlite(&store.conn, &line)?;
         if *format != JournalFormat::default() {
             let features: Vec<&str> = format.features.iter().map(String::as_str).collect();
@@ -667,11 +689,16 @@ impl Store {
         // Every complete line replayed, in memory, before anything on disk
         // changes (SCENARIO 3): a line the books can't apply refuses the
         // open with the journal and the database as they were.
+        // Through the call gate (calls.rs): only the lines of calls that
+        // committed, and every line outside a call, build the books.
+        let (released, gate) = calls::gate_all(&lines)?;
         let mut ledger = Ledger::new(base_currency);
-        for line in &lines {
+        for &i in &released {
             crate::cancel::check()?;
-            replay_line_into_ledger(&mut ledger, line, base_currency)?;
+            replay_line_into_ledger(&mut ledger, &lines[i], base_currency)?;
         }
+        let keys = calls::Keys::from_lines(&lines)?;
+        let books_id = calls::books_id_of(&lines);
         // Only then is an append cut off mid-line (never acknowledged) set
         // aside, and journaled below.
         let torn = if complete < raw.len() {
@@ -691,6 +718,8 @@ impl Store {
             Some("failed integrity_check".to_string())
         } else if let Some(other) = schema_of(&db_path).filter(|v| *v != schema) {
             Some(format!("holds schema {other}, not this version's {schema}"))
+        } else if Self::db_applied_seq(&db_path).is_some_and(|n| gate.is_uncommitted(n)) {
+            Some("holds lines of a call that never committed".to_string())
         } else {
             match Self::db_currency(&db_path) {
                 Some(c) if c == base_currency => None,
@@ -733,8 +762,23 @@ impl Store {
             ledger,
             base_currency,
             format,
+            call: None,
+            keys,
+            books_id,
+            dangling: false,
         };
-        store.catch_up(&lines)?;
+        store.catch_up(&lines, &released)?;
+        // A call that never closed (calls.rs, SCENARIO 1): on the record
+        // before anything else is written, so the next call's lines are
+        // never inside its frame.
+        if let Some(u) = gate.unfinished() {
+            store.close_unfinished(&u)?;
+            eprintln!(
+                "wanderbooks: the last call to the books ({}) never finished; none of its {} lines count, and it is closed as unfinished in the journal",
+                u.id.tool,
+                u.last_seq - u.first_seq
+            );
+        }
         if let Some(t) = torn {
             // On the record, so the repair is part of the audit trail.
             let line = store.append_journal(
@@ -753,6 +797,20 @@ impl Store {
             );
         }
         Ok(store)
+    }
+
+    /// The last journal line an existing database says it applied.
+    fn db_applied_seq(db_path: &Path) -> Option<u64> {
+        let conn = Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .ok()?;
+        let seq: String = conn
+            .query_row(
+                "SELECT value FROM meta WHERE key='last_applied_seq'",
+                [],
+                |r| r.get(0),
+            )
+            .ok()?;
+        seq.parse().ok()
     }
 
     /// The base currency an existing database records, if it can say.
@@ -832,7 +890,7 @@ impl Store {
     /// Catch the projection up: apply to SQLite every line past
     /// `last_applied_seq` (the ledger is already the replay of every line,
     /// done in memory by [`Store::open`] before anything changed).
-    fn catch_up(&mut self, lines: &[JournalLine]) -> Result<(), StoreError> {
+    fn catch_up(&mut self, lines: &[JournalLine], released: &[usize]) -> Result<(), StoreError> {
         let last_applied: u64 = self
             .conn
             .query_row(
@@ -845,7 +903,13 @@ impl Store {
             .unwrap_or(0);
         // The ledger is already their replay (Store::open): only the
         // projection is caught up here.
-        for line in lines.iter().filter(|l| l.seq > last_applied) {
+        // Only the lines that count (calls.rs): a call that didn't commit
+        // never reaches the projection.
+        for line in released
+            .iter()
+            .map(|&i| &lines[i])
+            .filter(|l| l.seq > last_applied)
+        {
             crate::cancel::check()?;
             apply_line_to_sqlite(&self.conn, line)?;
         }
@@ -927,9 +991,23 @@ impl Store {
         format: u32,
         features: &[&str],
     ) -> Result<(), StoreError> {
-        let payload = self.format.declaration(format, features)?;
+        let mut payload = self.format.declaration(format, features)?;
+        // Older books get their id with the declaration that gives them
+        // call_transactions (calls.rs; plan 6a): new books had one at
+        // creation.
+        let new_id =
+            if self.books_id.is_none() && features.contains(&crate::format::CALL_TRANSACTIONS) {
+                let id = calls::new_books_id()?;
+                payload["books_id"] = json!(id);
+                Some(id)
+            } else {
+                None
+            };
         let line = self.append_journal(crate::format::FORMAT_SET, payload)?;
         self.format = crate::format::declared(&line)?;
+        if new_id.is_some() {
+            self.books_id = new_id;
+        }
         apply_line_to_sqlite(&self.conn, &line)?;
         Ok(())
     }
@@ -1327,6 +1405,8 @@ impl Store {
         line_type: &str,
         payload: Value,
     ) -> Result<JournalLine, StoreError> {
+        // The first line of a call opens its frame (calls.rs).
+        self.begin_frame()?;
         let line = self.journal.append(line_type, payload)?;
         // The command that posts the entry runs after its line is
         // journaled: tell the ledger which line that is (plan P4).
@@ -6273,10 +6353,11 @@ impl Store {
     /// ```
     pub fn verify(&self) -> Result<(), StoreError> {
         let lines = read_and_verify_journal(self.journal.path())?;
+        let (released, _) = calls::gate_all(&lines)?;
         let mut replayed = Ledger::new(self.base_currency);
-        for line in &lines {
+        for &i in &released {
             crate::cancel::check()?;
-            replay_line_into_ledger(&mut replayed, line, self.base_currency)?;
+            replay_line_into_ledger(&mut replayed, &lines[i], self.base_currency)?;
         }
         crate::cancel::check()?;
         let a = reports::snapshot(&replayed).map_err(StoreError::Ledger)?;
@@ -6474,14 +6555,15 @@ impl Store {
         Self::write_meta(&self.conn, "base_currency", self.base_currency.code())?;
         Self::write_meta(&self.conn, "last_applied_seq", "0")?;
         let lines = read_and_verify_journal(self.journal.path())?;
-        for line in &lines {
+        let (released, _) = calls::gate_all(&lines)?;
+        for &i in &released {
             crate::cancel::check()?;
-            apply_line_to_sqlite(&self.conn, line)?;
+            apply_line_to_sqlite(&self.conn, &lines[i])?;
         }
         self.ledger = Ledger::new(self.base_currency);
-        for line in &lines {
+        for &i in &released {
             crate::cancel::check()?;
-            replay_line_into_ledger(&mut self.ledger, line, self.base_currency)?;
+            replay_line_into_ledger(&mut self.ledger, &lines[i], self.base_currency)?;
         }
         Ok(())
     }
@@ -7348,6 +7430,10 @@ fn replay_line(
                 ));
             }
         }
+        // A call's frame (calls.rs): the gate decides which lines inside
+        // it reach here; the frame itself changes nothing.
+        "call.begun" => {}
+        "call.closed" => {}
         "account.added" => {
             let want = get_u64(p, "id")?;
             let account_type: AccountType = serde_json::from_value(p["account_type"].clone())?;
@@ -8394,6 +8480,10 @@ fn apply_line_rows(conn: &Connection, line: &JournalLine) -> Result<(), StoreErr
     let p = &line.payload;
     match line.line_type.as_str() {
         "store.created" | "journal.tail_repaired" | "journal.format_set" => {}
+        // A call's frame (calls.rs): the replay gate decides which lines
+        // inside it count; the frame itself changes nothing.
+        "call.begun" => {}
+        "call.closed" => {}
         "account.added" => {
             conn.execute(
                 "INSERT INTO accounts(id, code, name, type, parent, placeholder, currency) VALUES (?,?,?,?,?,?,?)",
@@ -9388,8 +9478,10 @@ fn file_name_of(path: &Path) -> String {
 pub(crate) fn fresh_projection(lines: &[JournalLine]) -> Result<Connection, StoreError> {
     let conn = Connection::open_in_memory()?;
     Store::migrate(&conn)?;
-    for line in lines {
-        apply_line_to_sqlite(&conn, line)?;
+    // Only the lines that count (calls.rs).
+    let (released, _) = calls::gate_all(lines)?;
+    for &i in &released {
+        apply_line_to_sqlite(&conn, &lines[i])?;
     }
     Ok(conn)
 }

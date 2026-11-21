@@ -68,6 +68,7 @@ pub const KNOWN_FEATURES: &[&str] = &[
     DRAFTS_V2,
     SOURCE_REVISIONS,
     AUDITS,
+    CALL_TRANSACTIONS,
 ];
 
 /// Feature: `period.closed` closes to members with `"rounding":
@@ -256,6 +257,17 @@ pub const SOURCE_REVISIONS: &str = "source_revisions";
 /// (BS-format-1, BS-ledger-13).
 pub const AUDITS: &str = "audits";
 
+/// Feature: `call_transactions` (plan P15 2a, D-88, D-89): every write a
+/// tool makes is one transaction. A call's lines are framed by
+/// `call.begun` and `call.closed`; the lines between them count only when
+/// the closing line says `ok`, and a call that never closed, or closed
+/// `failed`, builds no state. An older version doesn't know the two line
+/// types and would refuse them as unknown, but a version that skipped
+/// them would replay every line of a half-done or failed call as if it
+/// were whole; it stops at the declaration instead (BS-format-1). The
+/// books also take no tool write until they declare it (D-89).
+pub const CALL_TRANSACTIONS: &str = "call_transactions";
+
 /// The line type that declares the journal format.
 pub const FORMAT_SET: &str = "journal.format_set";
 
@@ -284,6 +296,8 @@ pub const EVENT_TYPES: &[&str] = &[
     "audit.run",
     "bill.created",
     "bill.paid",
+    "call.begun",
+    "call.closed",
     "class.added",
     "convention.retired",
     "convention.set",
@@ -1099,6 +1113,48 @@ mod tests {
         ));
         let up = older.upgrade().expect("waits for it");
         assert_eq!(up.adds(), vec!["the journal feature audits"]);
+    }
+
+    /// The version before D-88 (every feature but `call_transactions`)
+    /// stops at the declaration as newer: it would refuse a call's frame
+    /// as an unknown type, or, skipping the frame, replay every line of a
+    /// call that failed or never closed as if it were whole. Books that
+    /// declared every earlier feature still wait for it, and take no tool
+    /// write until they have it (D-89).
+    #[test]
+    fn call_transactions_is_its_own_feature() {
+        assert!(KNOWN_FEATURES.contains(&CALL_TRANSACTIONS));
+        let before: Vec<&str> = KNOWN_FEATURES
+            .iter()
+            .copied()
+            .filter(|f| *f != CALL_TRANSACTIONS)
+            .collect();
+        let l = line(
+            FORMAT_SET,
+            json!({"format": 2, "features": [AUDITS, CALL_TRANSACTIONS]}),
+        );
+        match declared_knowing(&l, &before) {
+            Err(StoreError::NewerJournal { need, .. }) => {
+                assert_eq!(need, "journal features call_transactions")
+            }
+            other => panic!("expected NewerJournal, got {other:?}"),
+        }
+        let older = JournalFormat {
+            format: 2,
+            features: before.iter().map(|f| f.to_string()).collect(),
+        };
+        let refused = older.require_feature(CALL_TRANSACTIONS);
+        assert!(matches!(
+            refused,
+            Err(StoreError::FormatUpgradePending { .. })
+        ));
+        // The refusal tells the owner what is true of these books: no
+        // write at all, not "everything else works".
+        let words = refused.unwrap_err().to_string();
+        assert!(words.contains("nothing can be written"), "{words}");
+        assert!(words.contains("wanderbooks books upgrade"), "{words}");
+        let up = older.upgrade().expect("waits for it");
+        assert_eq!(up.adds(), vec!["the journal feature call_transactions"]);
     }
 
     /// The version before K-U5 (every feature but `schedule_minor_unit`)

@@ -211,7 +211,11 @@ fn a_change_needing_the_new_format_waits_for_the_upgrade() {
     let after = lines(&dir);
     assert_eq!(after.len(), n + 1, "one line");
     assert_eq!(after[n]["type"], FORMAT_SET);
-    assert_eq!(after[n]["payload"], this_versions_declaration());
+    // The declaration also gives older books their id (calls.rs, plan 6a).
+    let mut declared = after[n]["payload"].clone();
+    let books_id = declared.as_object_mut().unwrap().remove("books_id");
+    assert_eq!(books_id.and_then(|v| v.as_str().map(str::len)), Some(32));
+    assert_eq!(declared, this_versions_declaration());
     assert!(journal(&dir).starts_with(&mid), "nothing before it changed");
     assert_eq!(
         ledger_core::reports::snapshot(s.ledger()).unwrap(),

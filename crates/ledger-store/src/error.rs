@@ -106,6 +106,11 @@ pub enum StoreError {
         need: String,
     },
 
+    /// A call (plan P15 2a) was begun or closed when it can't be: one is
+    /// already open, none is, or an earlier call could not be finished.
+    #[error("{0}")]
+    CallRefused(String),
+
     /// Replay produced different ids than the journal recorded.
     #[error("replay mismatch: {0}")]
     ReplayMismatch(String),
@@ -185,13 +190,22 @@ pub const FORMAT_UPGRADE_PENDING: &str = "format_upgrade_pending";
 /// that nothing was changed, that only the owner can give the go-ahead
 /// (and where), and that the rest still works.
 fn format_upgrade_text(need: &str) -> String {
+    // D-89: books that haven't declared call_transactions take no writes
+    // at all, so for them the old promise ("everything that needs nothing
+    // new works") is not made.
+    let until = if need == format!("the journal feature {}", crate::format::CALL_TRANSACTIONS) {
+        "Until then these books can be read as ever, but nothing can be written to them: \
+         every write is one transaction that happens exactly once, and books written by an \
+         older version can't keep that until they are upgraded"
+    } else {
+        "Until then everything that needs nothing new works as before"
+    };
     format!(
         "{FORMAT_UPGRADE_PENDING}: this needs {need}, and these books are still in the journal \
          format an older version of wanderbooks wrote: they are waiting for the owner's \
          go-ahead to upgrade to this version's format. Nothing was changed. Only the owner can \
          give it, with the owner passphrase: in the app (it asks when it opens the books) or \
-         with `wanderbooks books upgrade ID` at a terminal; no tool can. Until then everything \
-         that needs nothing new works as before"
+         with `wanderbooks books upgrade ID` at a terminal; no tool can. {until}"
     )
 }
 

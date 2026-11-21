@@ -1098,6 +1098,18 @@ pub fn describe(b: &Books, line: &JournalLine) -> Option<Event> {
             format!("Recurring: {}", s(p, "description")),
             Some(Route::Company),
         ),
+        // A call's frame (ledger-store calls.rs): the call's own lines are
+        // listed between them.
+        "call.begun" => ev(
+            icon::FILE_TEXT,
+            format!("Call begun: {}", s(p, "tool")),
+            None,
+        ),
+        "call.closed" => ev(
+            icon::FILE_TEXT,
+            format!("Call closed ({}): {}", s(p, "outcome"), s(p, "tool")),
+            None,
+        ),
         "journal.tail_repaired" => ev(
             icon::WARNING,
             format!("Cut-off journal line set aside ({} bytes)", p["bytes"]),

@@ -204,6 +204,15 @@ pub fn describe(line: &JournalLine) -> String {
     if let Some(d) = p.get("date").and_then(Value::as_str) {
         parts.push(d.to_string());
     }
+    // A call's frame: which tool, and how it ended; never the key, the
+    // arguments or the answer.
+    if ty.starts_with("call.") {
+        for k in ["tool", "outcome"] {
+            if let Some(t) = p.get(k).and_then(Value::as_str) {
+                parts.push(quote(t));
+            }
+        }
+    }
     // Settings: which keys, never their values.
     if ty == "settings.set"
         && let Some(changes) = p.get("changes").and_then(Value::as_array)

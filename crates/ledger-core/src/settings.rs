@@ -714,9 +714,31 @@ pub fn decimal(s: &str) -> Option<Decimal> {
 /// nine digits standing alone (no digit right before or after), bare or
 /// printed the way an SSN (3-2-4) or an EIN (2-7) is, the groups joined by
 /// a hyphen or any other dash, a dot, or a space (or a dash with spaces
-/// around it); full-width digits count as digits.
+/// around it), whatever Unicode form the dash, dot, space or digit takes
+/// (full-width, Arabic-Indic, no-break space, en space, ...).
+///
+/// ```text
+/// GOAL: the one test free text meets before it is kept: it refuses what
+///       looks like a tax id and nothing else.
+/// SOURCE: BS-partner-2 (no full TIN in the books); wanderbooks' CHOICE on
+///         it (the owner, 2026-11-21: shapes on free text, strict on party
+///         fields, masking on bank imports), docs/spec/claims/partner.md.
+/// INVARIANTS:
+///   1. Nine digits standing alone, an SSN's 3-2-4 and an EIN's 2-7 are
+///      found, with any dash, dot or space (Unicode forms too) between
+///      the groups.
+///   2. An invoice number (`2026-11-0042`), a phone number, an order
+///      number, a reference of ten digits or more, an amount with comma
+///      groups and a date are not found.
+///   3. During a replay ([`crate::parties::replaying`]) the Unicode forms
+///      are not read, so a line an earlier version took still replays
+///      (BS-entry-4).
+/// SCENARIOS:
+///   1. IF a memo says `paid 000-00-0000`: SHOULD be found.
+///   2. IF it says `inv 2026-11-0042`: SHOULD NOT be.
+/// ```
 pub fn holds_printed_tin(text: &str) -> bool {
-    printed_tin(text, false)
+    !printed_tin_spans(text, false).1.is_empty()
 }
 
 /// [`holds_printed_tin`] for a web address: the printed SSN (3-2-4) and
@@ -725,34 +747,99 @@ pub fn holds_printed_tin(text: &str) -> bool {
 /// id in a path or query (an app store listing's `id284882215`), not a
 /// TIN someone wrote down (BS-partner-2).
 pub fn holds_printed_tin_in_link(text: &str) -> bool {
-    printed_tin(text, true)
+    !printed_tin_spans(text, true).1.is_empty()
 }
 
-/// [`holds_printed_tin`], with a link's bare runs let through when `link`.
-fn printed_tin(text: &str, link: bool) -> bool {
-    // Full-width digits read as the digits they are.
-    let c: Vec<char> = text
-        .chars()
-        .map(|ch| match ch {
-            '\u{ff10}'..='\u{ff19}' => char::from_digit(ch as u32 - 0xff10, 10).unwrap_or(ch),
-            _ => ch,
-        })
-        .collect();
-    let digit = |i: usize| c.get(i).is_some_and(char::is_ascii_digit);
-    let dash = |ch: char| matches!(ch, '-' | '\u{2010}'..='\u{2015}' | '\u{2212}' | '.');
+/// `text` with every number [`holds_printed_tin`] finds masked down to its
+/// last four digits: every other digit becomes `•`, the separators stay
+/// (`•••-••-0000`), the form the books show a TIN in everywhere else. For
+/// text that is not typed by a person and must be kept (a bank's
+/// description of a transaction), never for a refusal's words.
+pub fn mask_printed_tins(text: &str) -> std::borrow::Cow<'_, str> {
+    let (mut chars, spans) = printed_tin_spans(text, false);
+    if spans.is_empty() {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    for (from, to) in spans {
+        let digits: Vec<usize> = (from..to).filter(|&i| chars[i].is_numeric()).collect();
+        let keep = digits.len().saturating_sub(4);
+        for &i in &digits[..keep] {
+            chars[i] = '\u{2022}';
+        }
+    }
+    std::borrow::Cow::Owned(chars.into_iter().collect())
+}
+
+/// How many numbers [`holds_printed_tin`] finds in `text`.
+pub fn count_printed_tins(text: &str) -> usize {
+    printed_tin_spans(text, false).1.len()
+}
+
+/// A character that stands for a digit: ASCII, full-width, or any other
+/// script's numeral (outside a replay, which reads ASCII and full-width
+/// only).
+fn digit_like(ch: char, extended: bool) -> bool {
+    ch.is_ascii_digit()
+        || matches!(ch, '\u{ff10}'..='\u{ff19}')
+        || (extended && ch.is_numeric())
+}
+
+/// A space between a TIN's groups: the plain one, and outside a replay
+/// the tab and every Unicode space separator.
+fn tin_space(ch: char, extended: bool) -> bool {
+    ch == ' '
+        || (extended
+            && matches!(
+                ch,
+                '\t' | '\u{a0}'
+                    | '\u{1680}'
+                    | '\u{2000}'..='\u{200a}'
+                    | '\u{202f}'
+                    | '\u{205f}'
+                    | '\u{3000}'
+            ))
+}
+
+/// A dash or dot between a TIN's groups: the hyphen, the dashes U+2010 to
+/// U+2015, the minus sign and the dot, and outside a replay every other
+/// Unicode dash and dot form.
+fn tin_dash(ch: char, extended: bool) -> bool {
+    matches!(ch, '-' | '\u{2010}'..='\u{2015}' | '\u{2212}' | '.')
+        || (extended
+            && matches!(
+                ch,
+                '\u{58a}'
+                    | '\u{1806}'
+                    | '\u{2024}'
+                    | '\u{2043}'
+                    | '\u{2e3a}'
+                    | '\u{2e3b}'
+                    | '\u{fe58}'
+                    | '\u{fe63}'
+                    | '\u{ff0d}'
+                    | '\u{ff0e}'
+            ))
+}
+
+/// The characters of `text` and the runs ([from, to) in characters) of it
+/// that read as a full TIN, non-overlapping, left to right.
+fn printed_tin_spans(text: &str, link: bool) -> (Vec<char>, Vec<(usize, usize)>) {
+    let extended = !crate::parties::is_replaying();
+    let c: Vec<char> = text.chars().collect();
+    let digit = |i: usize| c.get(i).is_some_and(|&ch| digit_like(ch, extended));
     // A joiner at `i`: a dash, dot or space, or a dash with spaces around
     // it; returns where the next group starts.
     let joiner = |i: usize| -> Option<usize> {
         let mut j = i;
-        while c.get(j) == Some(&' ') {
+        while c.get(j).is_some_and(|&ch| tin_space(ch, extended)) {
             j += 1;
         }
         let mut dashes = 0;
-        while c.get(j).copied().is_some_and(dash) {
+        while c.get(j).is_some_and(|&ch| tin_dash(ch, extended)) {
             j += 1;
             dashes += 1;
         }
-        while c.get(j) == Some(&' ') {
+        while c.get(j).is_some_and(|&ch| tin_space(ch, extended)) {
             j += 1;
         }
         let spaces = j - i - dashes;
@@ -777,23 +864,59 @@ fn printed_tin(text: &str, link: bool) -> bool {
         i.and_then(|i| c.get(i))
             .is_some_and(|ch| ch.is_alphabetic() || matches!(ch, '/' | '=' | '?' | '&' | '#'))
     };
-    (0..c.len()).any(|at| {
-        (at == 0 || !digit(at - 1))
-            && [&[9][..], &[3, 2, 4][..], &[2, 7][..]].iter().any(|g| {
-                groups_at(at, g).is_some_and(|end| {
+    let mut spans = Vec::new();
+    let mut at = 0;
+    while at < c.len() {
+        if at > 0 && digit(at - 1) {
+            at += 1;
+            continue;
+        }
+        let found = [&[9][..], &[3, 2, 4][..], &[2, 7][..]]
+            .iter()
+            .find_map(|g| {
+                groups_at(at, g).filter(|&end| {
                     !digit(end)
                         && !(link
                             && g.len() == 1
                             && (url_joined(at.checked_sub(1)) || url_joined(Some(end))))
                 })
-            })
-    })
+            });
+        match found {
+            Some(end) => {
+                spans.push((at, end));
+                at = end;
+            }
+            None => at += 1,
+        }
+    }
+    (c, spans)
+}
+
+/// What a refusal says of a field that looks like it holds a tax id
+/// (BS-partner-2): which field, why, where a tax id goes instead. Never
+/// the number.
+pub fn tin_refusal(field: &str) -> String {
+    format!(
+        "{field} looks like it holds a tax id (a full SSN or EIN: nine digits, bare or written 3-2-4 or 2-7), so nothing was changed. Tax ids are stored only with books.set_tin or a W-9 (books.set_w9), never in a name, note or description; to mention a number, write only its last four digits"
+    )
+}
+
+/// Free text (a memo, a note, a reason, a description, a name) that may be
+/// kept: it must not look like a tax id ([`holds_printed_tin`]). Returns
+/// why not, in [`tin_refusal`]'s words. Never refuses during a replay
+/// ([`crate::parties::replaying`]): the journal holds what it holds, and
+/// books an earlier version wrote open (BS-entry-4).
+pub fn check_free_text(field: &str, text: &str) -> Result<(), String> {
+    if !crate::parties::is_replaying() && holds_printed_tin(text) {
+        return Err(tin_refusal(field));
+    }
+    Ok(())
 }
 
 fn no_tin(what: &str, s: &str) -> Result<(), String> {
     if holds_printed_tin(s) {
         return Err(format!(
-            "{what} holds a number that reads as a full SSN or EIN (nine digits, bare or printed 3-2-4 or 2-7): a full TIN goes only into the vault (books.set_tin), the company's EIN into company.ein and its D-U-N-S number into company.duns; for any other nine-digit number, write its last four"
+            "{what} holds a number that reads as a full SSN or EIN (nine digits, bare or printed 3-2-4 or 2-7): a full TIN goes only into the vault (books.set_tin or a W-9, books.set_w9), the company's EIN into company.ein and its D-U-N-S number into company.duns; for any other nine-digit number, write its last four"
         ));
     }
     Ok(())

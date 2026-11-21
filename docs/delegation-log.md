@@ -69,3 +69,5 @@ Columns: date | type (scout, run/verify, implement, refactor, debug, review) | p
 - 2026-11-21 | review 3 | opus (medium) | T1 review | accepted: 1 high (ungated readers), 3 medium
 - 2026-11-21 | impl-multi 3 | sonnet (high) | P15 T1: every write is one transaction, exactly once | accepted after one review and one fix round
 - 2026-11-21 | impl-multi 3 | sonnet (high) | T1 fix round (gated readers, vault staged, answer cap, HMAC args) | accepted on targeted tests after merge
+- 2026-11-21 | impl 3 | sonnet (high) | Lean law 47 in bookspec (a call counts whole or not at all, exactly once) | accepted: statement read, no sorry; merged and pushed to bookspec
+- 2026-11-21 | edit 2 | sonnet (medium) | bookspec pin to 5127b5b, law 47 cited | accepted on its checks

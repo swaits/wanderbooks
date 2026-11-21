@@ -935,6 +935,49 @@ rule.
       both rules, a pre-feature schedule's replay after the upgrade, an
       unknown rounding is newer, and a daily schedule carrying no flag.
 
+### A write is one transaction, exactly once (P15 T1, D-88, D-89)
+
+A tool call that writes is framed in the journal by `call.begun` and a
+`call.closed` line (`crates/ledger-store/src/calls.rs`); only a frame closed
+`ok` counts. The law is written once, in bookspec's `lean/Bookspec/Calls.lean`
+(law 47 in `spec/laws.md`, pinned at 5127b5b); wanderbooks' product rules
+WB-format-8, WB-format-9 and WB-format-10 are what it proves, since bookspec
+has no rule of its own for the journal.
+
+47. **A write is one transaction, exactly once.** The steps that count are
+    those outside any frame and those of a frame closed `ok`, in order; a
+    frame closed `failed` or `unfinished`, and a frame with no close, count
+    for nothing. So a journal with such a frame replays as the journal
+    without it, and a replay of any prefix that ends inside a frame equals
+    the replay of the prefix before its begin. A frame closed `ok` is its
+    steps run in order from where the lines before it left the books. If
+    every counted step is legal where it is applied, the replayed books are
+    reachable and the invariant holds; a call is a run of legal steps
+    (`Steps`), so it needs no step of its own. The key table, from (token,
+    key) to the call that committed, is built from the journal alone: a
+    repeat of a key in it adds nothing to the journal and changes no
+    replay, a failed or unfinished call leaves its key out of the table, and
+    no call commits twice.
+    - Lean `Calls.prefix_law` (and `prefix_law_lines`, on the flat lines of a
+      file), `Calls.replay_drop_frame`, `Calls.replay_ok_frame`,
+      `Calls.replay_reachable`, `Calls.replay_inv`, `Calls.call_is_a_move`,
+      `Calls.call_preserves_inv`, `Calls.exactly_once`,
+      `Calls.submit_repeat`, `Calls.replay_submit_repeat`,
+      `Calls.keyTable_failed_absent`, `Calls.keyTable_submit_failed`; the
+      line reader `Calls.parse` is proved the inverse of `flatten`
+      (`parse_flatten`, `flatten_parse`), so a law about frames is a law
+      about lines
+    - *Modelled:* a call's identity (token, key), its steps, its outcome, and
+      `CallGate`'s state machine as `Calls.parse`.
+    - *Not modelled:* the close line's `first_seq` and `last_seq`, its tool,
+      its argument digest and its answer (on-disk consistency checks and
+      what a repeat is answered with; none changes which steps count), and
+      the session-memory table for calls that wrote no line (a call with no
+      line leaves no frame, and a repeat of it runs again and writes
+      nothing, so nothing is done twice).
+    - tests `crates/ledger-store/tests/calls.rs` (the frames, the replay of
+      every prefix, the key table after a restart)
+
 ## What the proofs found
 
 The engine already had 190+ tests, property tests, mutation testing,

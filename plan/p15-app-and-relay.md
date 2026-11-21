@@ -77,6 +77,9 @@ What the code does today (read 2026-11-20 by a worker; file and line in
   (balances before and after, today's outstanding, next steps), so the
   original answer must be kept, not recomputed.
 
+Landed 2026-11-21: the law is bookspec law 47 (`lean/Bookspec/Calls.lean`),
+pinned at bookspec rev 5127b5b9b110a8d459a5f33a78e6986344df651e.
+
 The rule:
 
 1. **A call's lines commit together or not at all.** A call's events are

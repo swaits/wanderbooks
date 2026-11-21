@@ -256,6 +256,7 @@ line types (`call_transactions`, WB-format-2) and nothing else. Calls take
 turns: the server runs one write call at a time, so a call's lines are one
 run in the journal. `books.import_bank_csv` is one transaction like every
 other write (plan P15 6a).
+*Proved:* Lean `Calls.prefix_law`, `Calls.replay_drop_frame`, `Calls.replay_ok_frame`, `Calls.call_preserves_inv` (bookspec law 47, `docs/verification.md` law 47): the lines of a call count only when it closed ok, a replay of a prefix inside a call is the replay before its begin, and a call is a run of legal steps.
 
 **Every reader of the journal applies the frame rule, because ids are reused
 after a failed call.** A failed call's entry, account, party and document ids
@@ -320,6 +321,7 @@ transaction; an error text that holds one is kept masked (BS-partner-2: no
 journal line holds one).
 *Enforced:* ledger-mcp `calls::is_write_call`, `calls::key_problem`, `calls::begin`, `calls::close`, `calls::add_key_to_schema`, `Store::recorded_call`, `Keys`, `Replay`, `args_mac`, `Store::args_mac`, `hmac_sha256_hex`, `ANSWER_CAP`, `SESSION_KEYS_MAX`.
 *Checked:* `ledger-cli` `tests/call_transactions.rs` (`a_repeat_of_a_key_returns_the_first_answer_and_writes_nothing`, `the_same_key_for_another_request_is_refused_in_words`, `a_write_without_a_usable_key_is_not_run`, `every_tool_that_can_write_asks_for_a_key_and_no_other_does`, `the_same_key_under_two_tokens_is_two_calls`, `a_repeat_arriving_while_its_original_runs_gets_its_answer_and_changes_nothing`, `a_repeat_of_a_call_whose_answer_was_too_long_is_told_it_was_done`, `a_call_that_wrote_nothing_leaves_no_line_and_is_answered_again_only_within_the_session`, `a_key_reused_for_another_tax_id_is_refused_not_repeated`); `ledger-store` `tests/calls.rs` (`a_call_is_framed_and_its_answer_kept_by_key`, `the_sessions_key_table_is_bounded_in_count_and_in_bytes`, `a_long_answer_is_kept_as_its_hash_and_a_repeat_is_told_in_words_what_was_done`) and the unit tests `hmac_sha256_matches_rfc_4231` and `args_mac_tells_tax_ids_apart_and_holds_none` in `calls.rs`.
+*Proved:* Lean `Calls.exactly_once`, `Calls.submit_repeat`, `Calls.replay_submit_repeat` (bookspec law 47, `docs/verification.md` law 47): a repeat of a key whose call committed adds nothing to the journal, changes no replay, and no call commits twice.
 
 **WB-format-10 A failed write is on the record, and builds nothing.** A call
 that answers with an error, is stopped by a close, or fails any other way
@@ -344,6 +346,7 @@ the store heals from the journal where it can, and where it cannot says so
 it again), stops taking writes, and is rebuilt at the next open.
 *Enforced:* `Store::close_call`, `StoreError::CallCommitted`, ledger-mcp `calls::answered_ok`, `calls::close`, `calls::recover_vault`, `calls::put_tin`, `calls::purge_records`, `calls::settle_vault`, `ledger_vault::stage_tin`, `ledger_vault::stage_w9`, `ledger_vault::stage_purge`, `ledger_vault::settle`, `ledger_vault::pending_tags`.
 *Checked:* `ledger-store` `tests/calls.rs` (`a_failed_call_is_on_the_record_and_builds_nothing`, `a_call_that_wrote_nothing_leaves_no_line_and_is_remembered_for_the_session`, `a_closing_line_on_disk_but_sqlite_failing_is_a_call_that_counts`); `ledger-vault` `tests/vault.rs` (`a_staged_record_is_read_by_no_one_until_its_call_commits`, `a_call_that_did_not_commit_leaves_the_old_record_whole`, `a_purge_is_final_only_when_its_call_commits`); `ledger-cli` `tests/call_transactions.rs` (`a_failed_write_leaves_the_books_and_its_key_as_they_were`, `a_call_that_wrote_lines_and_then_failed_leaves_the_books_and_its_key_as_they_were`, `a_crash_with_the_ok_close_on_disk_but_sqlite_not_committed_leaves_the_call_done_once`, `a_set_tin_that_fails_leaves_the_vault_as_it_was`, `a_crash_between_the_commit_and_the_vault_settling_is_finished_at_the_next_start`).
+*Proved:* Lean `Calls.replay_drop_frame`, `Calls.keyTable_failed_absent`, `Calls.keyTable_submit_failed` (bookspec law 47, `docs/verification.md` law 47): a failed call counts for nothing and leaves its key out of the table.
 
 **WB-format-11 Books that have not declared `call_transactions` take no
 write.** (The owner, 2026-11-20, D-89.) This replaces WB-format-3's "everything

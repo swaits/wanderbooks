@@ -23,11 +23,26 @@
 //!      proof, and removed when it ends; the table holds one entry per
 //!      connected app and no more than `max_lines`.
 //!   5. Every connection is counted against a global limit and a
-//!      per-address limit before any work is done for it, and a hello
-//!      that is not complete in `hello_timeout` is closed.
+//!      per-address and per-network limit (an IPv4 address and /24, an
+//!      IPv6 /64 and /48; a mapped IPv4 address is its IPv4 address)
+//!      before any work is done for it, and a hello that is not complete
+//!      in `hello_timeout` is closed. When the pool of unfinished hellos
+//!      is full, an address that held a proven line lately may still use
+//!      a small reserve, so lines can reconnect through a flood.
 //!   6. Per app: at most `streams_per_app` caller streams and
 //!      `control_streams_per_app` control streams, each with its own
 //!      timeouts; nothing queues without a bound.
+//!   7. A line handshake holds a place for its address and its network
+//!      from the moment the router sees the relay's own host name until
+//!      the verdict, so one address cannot hold the pool of handshakes.
+//!   8. A name that is not the caller's, unclaimed, or blocked, to a
+//!      caller who has not shown its key, is refused with one answer.
+//!   9. A blocked name's live line is closed: at its next publish, and
+//!      within `block_check_ms` in any case.
+//!  10. Claiming a name costs the registry's safety ceiling and the
+//!      per-prefix claim limits; the certificate authority's weekly
+//!      budget is charged when a name first publishes a proof record,
+//!      under per-prefix limits of its own.
 //! SCENARIOS:
 //!   1. An assistant connects with the app's name as server name; the app
 //!      sees the caller's address, then the assistant's ClientHello, and
@@ -38,6 +53,10 @@
 //!      closed at the hello timeout.
 //!   4. A client holding the right key but a recorded old proof is
 //!      refused.
+//!   5. An unclaimed name, a name held by another key and a blocked name
+//!      get the same refusal when the key is not the name's.
+//!   6. The operator blocks a name whose line is up: the line is closed
+//!      and does not come back.
 //! ```
 
 use std::collections::HashMap;
@@ -61,7 +80,7 @@ use crate::authorities::AuthorityList;
 use crate::config::Config;
 use crate::dns::{DnsService, TcpLimits};
 use crate::front::{Activity, Front};
-use crate::gate::IpGate;
+use crate::gate::{IpGate, IpPermit, KnownAddrs, PrefixLimit};
 use crate::hello::{self, HelloError};
 use crate::mux::{self, Mux, MuxLimits};
 use crate::names::{HostKind, Name, Zone};
@@ -69,7 +88,7 @@ use crate::proto::{
     self, Caller, Challenge, EXPORTER_LABEL, Hello, Refusal, Request, Response, VERSION, Verdict,
     read_frame, write_frame,
 };
-use crate::registry::{Claimed, Registry};
+use crate::registry::{Charged, Claimed, Registry};
 use crate::splice::{self, SpliceLimits};
 use crate::txt::{PublishError, TxtStore};
 
@@ -100,6 +119,10 @@ pub struct Metrics {
     pub refused_other: AtomicU64,
     /// Names claimed for the first time.
     pub claims: AtomicU64,
+    /// Names charged to the certificate budget (first publishes).
+    pub cert_charges: AtomicU64,
+    /// Lines closed because their name was blocked.
+    pub blocked_closed: AtomicU64,
     /// Control requests served.
     pub control: AtomicU64,
     /// Lines up now.
@@ -195,50 +218,23 @@ impl LineMap {
         }
     }
 
+    /// Close the line of `name`, if one is up. True when there was one.
+    fn close_name(&self, name: &Name) -> bool {
+        match self.get(name) {
+            Some(h) => {
+                h.mux.close();
+                true
+            }
+            None => false,
+        }
+    }
+
     fn close_all(&self) {
         for s in &self.shards {
             for h in Self::lock(s).values() {
                 h.mux.close();
             }
         }
-    }
-}
-
-/// Per-address claim limit: a fixed table of (window start, count).
-struct ClaimIps {
-    slots: Mutex<Vec<(Instant, u32)>>,
-    mask: usize,
-    state: RandomState,
-    limit: u32,
-    window: Duration,
-}
-
-impl ClaimIps {
-    fn new(slots: usize, limit: u32, window: Duration) -> Self {
-        let n = slots.max(2).next_power_of_two();
-        ClaimIps {
-            slots: Mutex::new(vec![(Instant::now(), 0); n]),
-            mask: n - 1,
-            state: RandomState::new(),
-            limit,
-            window,
-        }
-    }
-
-    fn allow(&self, ip: std::net::IpAddr, now: Instant) -> bool {
-        // Truncating the hash to a slot index is the point.
-        let slot = (self.state.hash_one(ip) as usize) & self.mask;
-        let mut slots = self.slots.lock().unwrap_or_else(|p| p.into_inner());
-        let (start, count) = &mut slots[slot];
-        if now.saturating_duration_since(*start) >= self.window {
-            *start = now;
-            *count = 0;
-        }
-        if *count >= self.limit {
-            return false;
-        }
-        *count += 1;
-        true
     }
 }
 
@@ -260,10 +256,53 @@ pub struct Shared {
     pub metrics: Metrics,
     conn_permits: Arc<Semaphore>,
     hello_permits: Arc<Semaphore>,
+    hello_reserve: Arc<Semaphore>,
     handshake_permits: Arc<Semaphore>,
     conn_gate: Arc<IpGate>,
     pending_gate: Arc<IpGate>,
-    claim_ips: ClaimIps,
+    pending_net: Arc<IpGate>,
+    handshake_gate: Arc<IpGate>,
+    handshake_net: Arc<IpGate>,
+    known: KnownAddrs,
+    claim_ips: PrefixLimit,
+    cert_ips: PrefixLimit,
+}
+
+/// Everything a connection holds from accept until its hello is read.
+struct Admission {
+    conn: OwnedSemaphorePermit,
+    conn_ip: IpPermit,
+    pending_ip: IpPermit,
+    pending_net: IpPermit,
+    hello: OwnedSemaphorePermit,
+}
+
+impl Shared {
+    /// Count a new connection from `ip` against every limit, or say no.
+    fn admit(&self, ip: std::net::IpAddr) -> Option<Admission> {
+        let conn = Arc::clone(&self.conn_permits).try_acquire_owned().ok()?;
+        let conn_ip = self.conn_gate.acquire(ip)?;
+        let pending_ip = self.pending_gate.acquire(ip)?;
+        let pending_net = self.pending_net.acquire(ip)?;
+        // The server name is not known until the hello is read, so the
+        // reserve is for who is calling: an address that held a proven
+        // line lately. It cannot be made by an address that never proved a
+        // name.
+        let hello = match Arc::clone(&self.hello_permits).try_acquire_owned() {
+            Ok(p) => p,
+            Err(_) if self.known.contains(ip, Instant::now()) => {
+                Arc::clone(&self.hello_reserve).try_acquire_owned().ok()?
+            }
+            Err(_) => return None,
+        };
+        Some(Admission {
+            conn,
+            conn_ip,
+            pending_ip,
+            pending_net,
+            hello,
+        })
+    }
 }
 
 /// A TLS fatal alert, `unrecognized_name`: the same for every refusal.
@@ -300,19 +339,18 @@ async fn read_hello(tcp: &mut TcpStream) -> Result<(Vec<u8>, String), HelloError
     Ok((rec, host))
 }
 
-async fn handle(
-    ctx: Arc<Shared>,
-    mut tcp: TcpStream,
-    peer: SocketAddr,
-    conn: OwnedSemaphorePermit,
-    conn_ip: crate::gate::IpPermit,
-    pending_ip: crate::gate::IpPermit,
-    hello_permit: OwnedSemaphorePermit,
-) {
+async fn handle(ctx: Arc<Shared>, mut tcp: TcpStream, peer: SocketAddr, admission: Admission) {
+    let Admission {
+        conn,
+        conn_ip,
+        pending_ip,
+        pending_net,
+        hello,
+    } = admission;
     let _held = (conn, conn_ip);
     let _ = tcp.set_nodelay(true);
     let first = timeout(ctx.cfg.limits.hello_timeout(), read_hello(&mut tcp)).await;
-    drop((pending_ip, hello_permit));
+    drop((pending_ip, pending_net, hello));
     let (record, host) = match first {
         Err(_) => {
             Metrics::bump(&ctx.metrics.hello_timeouts);
@@ -384,6 +422,7 @@ async fn route(
             buffer: l.copy_buffer,
             idle: l.stream_idle(),
             stall: l.write_stall(),
+            min_rate: l.min_stream_bytes_per_sec,
             max_age: l.stream_max_age(),
         },
     )
@@ -394,29 +433,44 @@ type LineTls = tokio_rustls::server::TlsStream<Front<TcpStream>>;
 
 async fn serve_line(ctx: Arc<Shared>, tcp: TcpStream, record: Vec<u8>, peer: SocketAddr) {
     let l = &ctx.cfg.limits;
-    let Ok(handshake_permit) = Arc::clone(&ctx.handshake_permits).try_acquire_owned() else {
+    let ip = peer.ip().to_canonical();
+    // The pool of handshakes, and this address's and network's share of
+    // it, held until the verdict: the hello's own permit is long gone, so
+    // without these one address could fill the pool by finishing a hello
+    // and stalling, over and over.
+    let (Ok(pool), Some(per_ip), Some(per_net)) = (
+        Arc::clone(&ctx.handshake_permits).try_acquire_owned(),
+        ctx.handshake_gate.acquire(ip),
+        ctx.handshake_net.acquire(ip),
+    ) else {
         Metrics::bump(&ctx.metrics.shed);
         return;
     };
+    let handshaking = (pool, per_ip, per_net);
     Metrics::bump(&ctx.metrics.line_attempts);
     let activity = Activity::new();
     let front = Front::new(record, tcp, Some(Arc::clone(&activity)));
-    let up = timeout(l.handshake_timeout(), handshake(&ctx, front, peer)).await;
-    drop(handshake_permit);
+    let up = timeout(l.handshake_timeout(), handshake(&ctx, front, ip)).await;
+    drop(handshaking);
     let Ok(Ok((tls, name))) = up else { return };
+    ctx.known.mark(ip, Instant::now());
+    // A control request that finds the name blocked ends the line by this.
+    let kick = CancellationToken::new();
 
     let streams = Arc::new(Semaphore::new(l.streams_per_app as usize));
     let control = Arc::new(Semaphore::new(l.control_streams_per_app as usize));
     let limits = MuxLimits {
-        // The permits, and sixteen over: a stream the app has closed may
+        // The permits, and a few over: a stream the app has closed may
         // still be counted on its side for a moment after our permit is
         // back, and yamux ends a line that is asked for a stream over its
-        // count.
-        max_streams: (l.streams_per_app + l.control_streams_per_app + 16) as usize,
+        // count. Every stream may hold a 256 KiB receive window, so the
+        // few are few.
+        max_streams: (l.streams_per_app + l.control_streams_per_app + STREAM_SLACK) as usize,
         idle: l.line_idle(),
     };
     let ctx2 = Arc::clone(&ctx);
-    let (mux, task) = mux::spawn(
+    let kick2 = kick.clone();
+    let (mux, mut task) = mux::spawn(
         tls.compat(),
         yamux::Mode::Server,
         limits,
@@ -424,8 +478,9 @@ async fn serve_line(ctx: Arc<Shared>, tcp: TcpStream, record: Vec<u8>, peer: Soc
         move |stream| {
             if let Ok(permit) = Arc::clone(&control).try_acquire_owned() {
                 let ctx = Arc::clone(&ctx2);
+                let kick = kick2.clone();
                 tokio::spawn(async move {
-                    serve_control(ctx, name, stream).await;
+                    serve_control(ctx, name, ip, kick, stream).await;
                     drop(permit);
                 });
             }
@@ -443,16 +498,26 @@ async fn serve_line(ctx: Arc<Shared>, tcp: TcpStream, record: Vec<u8>, peer: Soc
         return;
     }
     ctx.metrics.lines_up.fetch_add(1, Ordering::Relaxed);
-    let _ = task.await;
+    tokio::select! {
+        _ = &mut task => {}
+        () = kick.cancelled() => {
+            mux.close();
+            let _ = task.await;
+        }
+    }
     ctx.lines.remove_if(&name, id);
     ctx.metrics.lines_up.fetch_sub(1, Ordering::Relaxed);
 }
+
+/// Streams over the permits that a line may count at once. Each can hold
+/// a 256 KiB receive window; see `mux`.
+const STREAM_SLACK: u32 = 4;
 
 /// TLS, the challenge, the proof, the verdict.
 async fn handshake(
     ctx: &Arc<Shared>,
     front: Front<TcpStream>,
-    peer: SocketAddr,
+    ip: std::net::IpAddr,
 ) -> Result<(LineTls, Name), ()> {
     let mut tls = ctx.acceptor.accept(front).await.map_err(|_| ())?;
     let mut exporter = [0u8; 32];
@@ -471,7 +536,7 @@ async fn handshake(
     .await
     .map_err(|_| ())?;
     let hello: Hello = read_frame(&mut tls).await.map_err(|_| ())?;
-    let (verdict, name) = decide(ctx, &hello, &exporter, &nonce, peer.ip()).await;
+    let (verdict, name) = decide(ctx, &hello, &exporter, &nonce, ip).await;
     write_frame(&mut tls, &verdict).await.map_err(|_| ())?;
     match name {
         Some(n) if verdict.ok => Ok((tls, n)),
@@ -529,10 +594,9 @@ async fn decide(
             return refused(Refusal::Busy);
         }
         Ok(Some(e)) => {
-            if e.blocked {
-                Metrics::bump(&ctx.metrics.refused_other);
-                return refused(Refusal::Blocked);
-            }
+            // The key first: only the holder of the name's key is told it
+            // is blocked. Anyone else gets what a wrong key gets, whether
+            // the name is blocked or not.
             if e.public_key != key {
                 Metrics::bump(&ctx.metrics.refused_proof);
                 return refused(if hello.claim {
@@ -541,11 +605,17 @@ async fn decide(
                     Refusal::BadProof
                 });
             }
+            if e.blocked {
+                Metrics::bump(&ctx.metrics.refused_other);
+                return refused(Refusal::Blocked);
+            }
         }
         Ok(None) => {
             if !hello.claim {
-                Metrics::bump(&ctx.metrics.refused_other);
-                return refused(Refusal::UnknownName);
+                // The same answer as a wrong key: a caller with a key of
+                // its own cannot ask which names exist.
+                Metrics::bump(&ctx.metrics.refused_proof);
+                return refused(Refusal::BadProof);
             }
             if !ctx.claim_ips.allow(ip, Instant::now()) {
                 Metrics::bump(&ctx.metrics.refused_other);
@@ -592,7 +662,13 @@ async fn decide(
 }
 
 /// One request from an app on its own line. The name is the line's.
-async fn serve_control(ctx: Arc<Shared>, name: Name, mut stream: mux::Stream) {
+async fn serve_control(
+    ctx: Arc<Shared>,
+    name: Name,
+    ip: std::net::IpAddr,
+    kick: CancellationToken,
+    mut stream: mux::Stream,
+) {
     let _ = timeout(ctx.cfg.limits.control_timeout(), async {
         let request: Request = read_frame(&mut stream).await.ok()?;
         Metrics::bump(&ctx.metrics.control);
@@ -601,22 +677,7 @@ async fn serve_control(ctx: Arc<Shared>, name: Name, mut stream: mux::Stream) {
                 ok: true,
                 ..Response::default()
             },
-            Request::PublishTxt { value } => match ctx.txt.publish(name, &value, Instant::now()) {
-                Ok(()) => Response {
-                    ok: true,
-                    ..Response::default()
-                },
-                Err(PublishError::BadValue) => Response {
-                    ok: false,
-                    error: Some("bad_value".into()),
-                    ..Response::default()
-                },
-                Err(PublishError::Limit) => Response {
-                    ok: false,
-                    error: Some("limit".into()),
-                    ..Response::default()
-                },
-            },
+            Request::PublishTxt { value } => publish(&ctx, name, ip, &kick, &value).await,
             Request::ClearTxt => {
                 ctx.txt.clear(&name);
                 Response {
@@ -637,6 +698,67 @@ async fn serve_control(ctx: Arc<Shared>, name: Name, mut stream: mux::Stream) {
     .await;
 }
 
+fn failure(why: &str) -> Response {
+    Response {
+        ok: false,
+        error: Some(why.into()),
+        ..Response::default()
+    }
+}
+
+/// Publish a proof record for the line's own name.
+///
+/// The name is asked of the registry on every publish: a blocked name's
+/// line is closed here at its next publish, and by the sweep in any case.
+/// The first publish of a name is the one that costs the certificate
+/// authority's weekly budget, under the same per-prefix limits as a claim.
+async fn publish(
+    ctx: &Arc<Shared>,
+    name: Name,
+    ip: std::net::IpAddr,
+    kick: &CancellationToken,
+    value: &str,
+) -> Response {
+    if !crate::txt::is_proof_value(value) {
+        return failure("bad_value");
+    }
+    let l = &ctx.cfg.limits;
+    let entry = match ctx.registry.lookup(&name).await {
+        Ok(Some(e)) if !e.blocked => e,
+        Ok(_) => {
+            // Blocked (or gone): the line ends.
+            Metrics::bump(&ctx.metrics.blocked_closed);
+            kick.cancel();
+            return failure("blocked");
+        }
+        Err(_) => return failure("busy"),
+    };
+    if !entry.published {
+        if !ctx.cert_ips.allow(ip, Instant::now()) {
+            return failure("limit");
+        }
+        match ctx
+            .registry
+            .charge_publish(&name, l.cert_window(), l.cert_publishes_per_window)
+            .await
+        {
+            Ok(Charged::New) => Metrics::bump(&ctx.metrics.cert_charges),
+            Ok(Charged::Already) => {}
+            Ok(Charged::LimitReached) => return failure("limit"),
+            Ok(Charged::NoSuchName) => return failure("bad_value"),
+            Err(_) => return failure("busy"),
+        }
+    }
+    match ctx.txt.publish(name, value, Instant::now()) {
+        Ok(()) => Response {
+            ok: true,
+            ..Response::default()
+        },
+        Err(PublishError::BadValue) => failure("bad_value"),
+        Err(PublishError::Limit) => failure("limit"),
+    }
+}
+
 async fn accept_loop(ctx: Arc<Shared>, listener: TcpListener, cancel: CancellationToken) {
     loop {
         let (tcp, peer) = tokio::select! {
@@ -650,26 +772,15 @@ async fn accept_loop(ctx: Arc<Shared>, listener: TcpListener, cancel: Cancellati
                 }
             },
         };
-        let ip = peer.ip();
-        let (Ok(conn), Some(conn_ip), Some(pending_ip), Ok(hello)) = (
-            Arc::clone(&ctx.conn_permits).try_acquire_owned(),
-            ctx.conn_gate.acquire(ip),
-            ctx.pending_gate.acquire(ip),
-            Arc::clone(&ctx.hello_permits).try_acquire_owned(),
-        ) else {
+        // An IPv4 caller on a dual-stack listener is `::ffff:a.b.c.d`:
+        // made canonical, it is its IPv4 address in every table.
+        let ip = peer.ip().to_canonical();
+        let Some(admission) = ctx.admit(ip) else {
             Metrics::bump(&ctx.metrics.shed);
             continue; // closed by drop, before any work
         };
         Metrics::bump(&ctx.metrics.accepted);
-        tokio::spawn(handle(
-            Arc::clone(&ctx),
-            tcp,
-            peer,
-            conn,
-            conn_ip,
-            pending_ip,
-            hello,
-        ));
+        tokio::spawn(handle(Arc::clone(&ctx), tcp, peer, admission));
     }
 }
 
@@ -700,32 +811,68 @@ impl Relay {
             l.txt_per_name,
             l.txt_publishes_per_hour,
         ));
+        let authorities = Arc::new(authorities);
         let dns = Arc::new(
-            DnsService::new(zone.clone(), &cfg, Arc::clone(&txt)).map_err(io::Error::other)?,
+            DnsService::new(
+                zone.clone(),
+                &cfg,
+                Arc::clone(&txt),
+                Arc::clone(&authorities),
+            )
+            .map_err(io::Error::other)?,
         );
         let router_listener = TcpListener::bind(cfg.router_addr).await?;
         let router = router_listener.local_addr()?;
-        let udp = UdpSocket::bind(cfg.dns_addr).await?;
-        let dns_udp = udp.local_addr()?;
-        // TCP DNS on the same port number when it was asked for 0.
-        let tcp_addr = SocketAddr::new(cfg.dns_addr.ip(), dns_udp.port());
-        let dns_tcp_listener = TcpListener::bind(tcp_addr).await?;
-        let dns_tcp = dns_tcp_listener.local_addr()?;
+        // TCP DNS on the same port number when it was asked for 0: a UDP
+        // port that is free is not always free for TCP, so ask again.
+        let mut attempt = 0;
+        let (udp, dns_udp, dns_tcp_listener, dns_tcp) = loop {
+            attempt += 1;
+            let udp = UdpSocket::bind(cfg.dns_addr).await?;
+            let dns_udp = udp.local_addr()?;
+            let tcp_addr = SocketAddr::new(cfg.dns_addr.ip(), dns_udp.port());
+            match TcpListener::bind(tcp_addr).await {
+                Ok(l) => {
+                    let dns_tcp = l.local_addr()?;
+                    break (udp, dns_udp, l, dns_tcp);
+                }
+                Err(e) if cfg.dns_addr.port() == 0 && attempt < 16 => {
+                    let _ = e;
+                }
+                Err(e) => return Err(e),
+            }
+        };
 
         let shared = Arc::new(Shared {
             zone,
             lines: LineMap::new(l.max_lines),
             registry,
             txt: Arc::clone(&txt),
-            authorities: Arc::new(authorities),
+            authorities,
             acceptor: TlsAcceptor::from(tls),
             metrics: Metrics::default(),
             conn_permits: Arc::new(Semaphore::new(l.max_connections)),
             hello_permits: Arc::new(Semaphore::new(l.max_pending_hellos)),
+            hello_reserve: Arc::new(Semaphore::new(l.hello_reserve)),
             handshake_permits: Arc::new(Semaphore::new(l.max_handshakes)),
             conn_gate: IpGate::new(l.ip_slots, l.max_connections_per_ip),
             pending_gate: IpGate::new(l.ip_slots, l.max_pending_per_ip),
-            claim_ips: ClaimIps::new(4096, l.claims_per_ip, l.claim_ip_window()),
+            pending_net: IpGate::net(l.ip_slots, l.max_pending_per_net),
+            handshake_gate: IpGate::new(l.ip_slots, l.max_handshakes_per_ip),
+            handshake_net: IpGate::net(l.ip_slots, l.max_handshakes_per_net),
+            known: KnownAddrs::new(l.known_bits, l.known_period()),
+            claim_ips: PrefixLimit::new(
+                l.ip_slots,
+                l.claims_per_ip,
+                l.claims_per_net,
+                l.claim_ip_window(),
+            ),
+            cert_ips: PrefixLimit::new(
+                l.ip_slots,
+                l.cert_publishes_per_ip,
+                l.cert_publishes_per_net,
+                l.cert_window(),
+            ),
             cfg,
         });
         let cancel = CancellationToken::new();
@@ -739,6 +886,7 @@ impl Relay {
                 Arc::new(udp),
                 Arc::clone(&dns),
                 l.dns_qps_per_ip,
+                l.dns_qps_global,
                 l.ip_slots,
                 cancel.clone(),
             )),
@@ -765,6 +913,27 @@ impl Relay {
                     _ = tick.tick() => {
                         sweep_shared.txt.sweep(Instant::now());
                         let _ = sweep_shared.authorities.reload();
+                    }
+                }
+            }
+        }));
+        // The operator blocks from another process, into the registry file;
+        // this is what makes a block reach a line that is already up.
+        let (block_shared, block_cancel) = (Arc::clone(&shared), cancel.clone());
+        tasks.push(tokio::spawn(async move {
+            let mut tick = tokio::time::interval(block_shared.cfg.limits.block_check());
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tokio::select! {
+                    () = block_cancel.cancelled() => return,
+                    _ = tick.tick() => {
+                        if let Ok(names) = block_shared.registry.blocked_names().await {
+                            for n in names {
+                                if block_shared.lines.close_name(&n) {
+                                    Metrics::bump(&block_shared.metrics.blocked_closed);
+                                }
+                            }
+                        }
                     }
                 }
             }

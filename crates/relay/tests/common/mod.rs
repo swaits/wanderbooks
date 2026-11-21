@@ -76,9 +76,18 @@ pub struct Env {
 
 pub fn quick_limits() -> Limits {
     Limits {
-        // The tests claim many names from one address.
+        // The tests claim many names, and make many lines, from one
+        // address: every per-address limit is out of the way unless a test
+        // is about it.
         claims_per_window: 10_000,
         claims_per_ip: 10_000,
+        claims_per_net: 10_000,
+        cert_publishes_per_window: 10_000,
+        cert_publishes_per_ip: 10_000,
+        cert_publishes_per_net: 10_000,
+        max_handshakes_per_ip: 10_000,
+        max_handshakes_per_net: 10_000,
+        max_pending_per_net: 10_000,
         ..Limits::default()
     }
 }

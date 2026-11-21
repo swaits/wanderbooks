@@ -74,7 +74,7 @@ pub struct Incoming {
 #[derive(Debug, Clone, Copy)]
 pub struct LineOptions {
     /// Streams at once on the line. At least the relay's `streams_per_app`
-    /// plus `control_streams_per_app` plus 16, or the relay's opens are
+    /// plus `control_streams_per_app` plus 4, or the relay's opens are
     /// refused.
     pub max_streams: usize,
     /// How long a caller stream may take to send its address header.

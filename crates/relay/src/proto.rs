@@ -84,11 +84,16 @@ pub struct Hello {
 pub enum Refusal {
     /// The name is already held by another key.
     Taken,
-    /// A reconnect for a name nobody has claimed.
+    /// Reserved. A reconnect for a name nobody has claimed is answered
+    /// [`Refusal::BadProof`], the same as a wrong key and a block, so a
+    /// caller without the key learns nothing about which names exist.
     UnknownName,
-    /// The proof did not verify, or the key is not the name's.
+    /// The proof did not verify, or the key is not the name's, or there is
+    /// no such name, or the name is blocked and this is not its key: one
+    /// answer for all of them.
     BadProof,
-    /// The name is blocked by the operator.
+    /// The name is blocked by the operator, said only to the holder of its
+    /// key.
     Blocked,
     /// The relay is busy; try again later.
     Busy,
@@ -140,8 +145,19 @@ pub struct Authority {
     pub directory: String,
     /// True when the authority requires an external account binding.
     pub needs_binding: bool,
-    /// The binding credential for this app, when one is needed.
+    /// True when the app can use this authority now: it needs no binding,
+    /// or the relay has one for this app. An authority that needs a
+    /// binding the relay has none for is listed (so the app can say what
+    /// it is waiting for) and is not usable yet.
+    #[serde(default = "yes")]
+    pub usable: bool,
+    /// The binding credential for this app, when one is needed and the
+    /// relay has one for it.
     pub binding: Option<Binding>,
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// An external account binding credential (RFC 8555 section 7.3.4).

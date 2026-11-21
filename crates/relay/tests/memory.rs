@@ -13,7 +13,7 @@
 //! ```text
 //! ulimit -n 65536
 //! TMPDIR=/dev/shm RELAY_IDLE_LINES=20000 cargo test --release \
-//!     -p wanderbooks-relay --test memory idle_line_memory -- --ignored --nocapture
+//!     -p relay --test memory idle_line_memory -- --ignored --nocapture
 //! ```
 //!
 //! `TMPDIR=/dev/shm` keeps the registry off the disk: every claim of a
@@ -21,6 +21,10 @@
 //! them take minutes on a disk. Measured 2026-11-21 on this machine,
 //! release build: 20 000 lines, 15.2 KiB of the relay's resident memory
 //! per idle line, and 15.3 KiB after two rounds of churn (flat).
+//! Measured again 2026-11-21 after the stream limits and per-prefix
+//! limits of the security fix round: 15.4 KiB per idle line, 15.6 KiB
+//! after two rounds of churn (an idle line holds no stream, so the
+//! smaller stream limits do not move this figure).
 //!
 //! Linux only (it reads /proc).
 #![allow(missing_docs)]
@@ -130,11 +134,15 @@ async fn idle_line_memory() {
         max_connections_per_ip: 1_000_000,
         max_pending_per_ip: 10_000,
         max_pending_hellos: 10_000,
+        max_pending_per_net: 10_000,
         max_handshakes: 1024,
+        max_handshakes_per_ip: 1024,
+        max_handshakes_per_net: 1024,
         max_lines: n + 10,
         line_idle_ms: 3_600_000,
         claims_per_window: u32::try_from(n + 10).unwrap(),
         claims_per_ip: u32::try_from(n + 10).unwrap(),
+        claims_per_net: u32::try_from(n + 10).unwrap(),
         ..quick_limits()
     })
     .await;

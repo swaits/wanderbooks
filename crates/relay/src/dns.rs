@@ -1,12 +1,16 @@
 //! The domain's authoritative DNS server.
 //!
 //! The relay answers for `wanderbooks.link` itself, over UDP and TCP.
-//! It answers two questions and refuses the rest:
+//! It answers three questions and refuses the rest:
 //!
 //! - any name under the domain is at the relay's address (A, AAAA), the
 //!   name servers at their own;
 //! - `TXT _acme-challenge.<four-words>.<domain>` is the proof value that
-//!   app just handed in, held in memory for minutes.
+//!   app just handed in, held in memory for minutes;
+//! - `CAA` at the apex (which a certificate authority finds by climbing
+//!   from any name below it, RFC 8659) permits the listed authorities to
+//!   issue, by the DNS-01 method only (RFC 8657), derived from the
+//!   authority list so swapping one is a data change.
 //!
 //! Nothing is stored per user: the answers are made, not looked up, so a
 //! catch-all that stops covering names under a label of its own (RFC 4592)
@@ -32,7 +36,15 @@
 //!   5. The server holds no per-query state: the UDP loop answers inline
 //!      from fixed tables, and TCP is capped in connections, in queries
 //!      per connection and in time.
-//!   6. Per address, UDP queries are rate limited from a fixed table.
+//!   6. Per address (an IPv4 address, an IPv6 /64; a mapped IPv4 address
+//!      is its IPv4 address), UDP queries are rate limited from a fixed
+//!      table; one over its rate is answered "truncated" with no data,
+//!      which sends a real resolver to TCP and sends a spoofed source
+//!      nothing larger than its query. All UDP answers together are
+//!      limited by a global rate; past it, silence.
+//!   7. The CAA answer at the apex lists exactly the authority list's
+//!      issuer domains, each with `validationmethods=dns-01`; with no
+//!      authority listed there is no CAA record.
 //! SCENARIOS:
 //!   1. A for `x.<secret>.<name>.<domain>` is the relay's address, with
 //!      and without a TXT record published for that name.
@@ -40,7 +52,10 @@
 //!      returns nothing after the value expires.
 //!   3. A for `example.com` is REFUSED; ANY is answered with no data.
 //!   4. A hundred queries in a burst from one address: the excess is
-//!      dropped.
+//!      answered truncated, not dropped.
+//!   5. CAA for the apex is `issue "letsencrypt.org;
+//!      validationmethods=dns-01"` for a list of one authority, and follows
+//!      the list when it is edited.
 //! ```
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -48,6 +63,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use hickory_proto::op::{Edns, Message, MessageType, OpCode, ResponseCode};
+use hickory_proto::rr::rdata::caa::{CAA, KeyValue};
 use hickory_proto::rr::rdata::{A, AAAA, NS, SOA, TXT};
 use hickory_proto::rr::{DNSClass, Name as DnsName, RData, Record, RecordType};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -55,8 +71,9 @@ use tokio::net::{TcpListener, UdpSocket};
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
+use crate::authorities::AuthorityList;
 use crate::config::Config;
-use crate::gate::{IpGate, RateTable};
+use crate::gate::{IpGate, RateTable, TokenBucket};
 use crate::names::{Name, Zone};
 use crate::txt::TxtStore;
 
@@ -77,11 +94,18 @@ pub struct DnsService {
     v6: Vec<Ipv6Addr>,
     nameservers: Vec<(String, DnsName, Vec<IpAddr>)>,
     txt: Arc<TxtStore>,
+    authorities: Arc<AuthorityList>,
 }
 
 impl DnsService {
-    /// A service for the configured domain.
-    pub fn new(zone: Zone, cfg: &Config, txt: Arc<TxtStore>) -> Result<Self, String> {
+    /// A service for the configured domain. `authorities` is the list the
+    /// zone's CAA record is made from, read at each query.
+    pub fn new(
+        zone: Zone,
+        cfg: &Config,
+        txt: Arc<TxtStore>,
+        authorities: Arc<AuthorityList>,
+    ) -> Result<Self, String> {
         let domain =
             DnsName::from_ascii(format!("{}.", zone.domain())).map_err(|e| e.to_string())?;
         let mut nameservers = Vec::new();
@@ -107,7 +131,54 @@ impl DnsService {
             v6: cfg.address_v6.clone(),
             nameservers,
             txt,
+            authorities,
         })
+    }
+
+    /// The CAA record set of the apex: one `issue` per listed authority,
+    /// DNS-01 only (RFC 8657).
+    fn caa(&self) -> Vec<Record> {
+        self.authorities
+            .caa_issuers()
+            .iter()
+            .filter_map(|issuer| {
+                let issuer = DnsName::from_ascii(issuer).ok()?;
+                let data = CAA::new_issue(
+                    false,
+                    Some(issuer),
+                    vec![KeyValue::new("validationmethods", "dns-01")],
+                );
+                Some(Record::from_rdata(
+                    self.domain.clone(),
+                    TTL_ADDR,
+                    RData::CAA(data),
+                ))
+            })
+            .collect()
+    }
+
+    /// The answer to give a sender over its rate: the question, the
+    /// truncation bit, and nothing else, so a real resolver retries over
+    /// TCP and a spoofed source is sent no more than it sent. `None` for
+    /// anything that is not a plain query.
+    pub fn truncated(&self, wire: &[u8]) -> Option<Vec<u8>> {
+        if wire.len() > QUERY_MAX {
+            return None;
+        }
+        let query = Message::from_vec(wire).ok()?;
+        if query.metadata.message_type == MessageType::Response
+            || query.metadata.op_code != OpCode::Query
+        {
+            return None;
+        }
+        let [q] = query.queries.as_slice() else {
+            return None;
+        };
+        let mut resp = Message::response(query.metadata.id, OpCode::Query);
+        resp.metadata.truncation = true;
+        resp.metadata.recursion_desired = query.metadata.recursion_desired;
+        resp.queries.push(q.clone());
+        resp.to_vec().ok()
     }
 
     fn soa(&self) -> Record {
@@ -231,6 +302,7 @@ impl DnsService {
                     }
                 }
             }
+            RecordType::CAA if apex => resp.answers = self.caa(),
             RecordType::TXT => {
                 if let ["_acme-challenge", name] = labels.as_slice()
                     && let Ok(name) = Name::parse(&name.to_ascii_lowercase())
@@ -270,21 +342,35 @@ impl DnsService {
 }
 
 /// Serve UDP until cancelled. Answers are made inline, with no task per
-/// query, and a sender over its rate gets no answer.
+/// query. Past `global_qps` in all a query gets no answer; a sender over
+/// its own rate gets the truncated answer, which a real resolver follows
+/// over TCP.
 pub async fn serve_udp(
     socket: Arc<UdpSocket>,
     svc: Arc<DnsService>,
     qps: u32,
+    global_qps: u32,
     slots: usize,
     cancel: CancellationToken,
 ) {
     let mut rate = RateTable::new(slots, qps, qps.saturating_mul(2).max(1));
+    let mut global = TokenBucket::new(
+        global_qps,
+        global_qps.saturating_mul(2).max(1),
+        Instant::now(),
+    );
     let mut buf = vec![0u8; QUERY_MAX + 1];
     loop {
         let (n, from) = tokio::select! {
             () = cancel.cancelled() => return,
             r = socket.recv_from(&mut buf) => match r {
                 Ok(x) => x,
+                // On Windows a UDP socket reports an ICMP "port unreachable"
+                // for an earlier answer as a reset on the next receive. It
+                // is about one peer's packet, not about the socket: go on at
+                // once, as a sleep here would let such packets throttle
+                // everyone.
+                Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => continue,
                 Err(_) => {
                     tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                     continue;
@@ -292,7 +378,13 @@ pub async fn serve_udp(
             },
         };
         let now = Instant::now();
+        if !global.allow(now) {
+            continue;
+        }
         if !rate.allow(from.ip(), now) {
+            if let Some(out) = svc.truncated(&buf[..n]) {
+                let _ = socket.try_send_to(&out, from);
+            }
             continue;
         }
         if let Some(out) = svc.answer(&buf[..n], true, now) {
@@ -412,7 +504,14 @@ mod tests {
         };
         let txt = Arc::new(TxtStore::new(Duration::from_secs(60), 100, 4, 100));
         let zone = Zone::new(&cfg.domain, &cfg.relay_host);
-        (DnsService::new(zone, &cfg, Arc::clone(&txt)).unwrap(), txt)
+        let list = AuthorityList::from_toml(
+            "[[authority]]\nid='letsencrypt'\ndirectory='https://acme-v02.api.letsencrypt.org/directory'\ncaa_domain='letsencrypt.org'\n",
+        )
+        .unwrap();
+        (
+            DnsService::new(zone, &cfg, Arc::clone(&txt), Arc::new(list)).unwrap(),
+            txt,
+        )
     }
 
     fn ask(svc: &DnsService, name: &str, ty: RecordType, udp: bool) -> Message {
@@ -619,5 +718,92 @@ mod tests {
         let bytes = m.to_vec().unwrap();
         assert!(bytes.len() <= 512);
         assert!(!m.metadata.truncation);
+    }
+
+    #[test]
+    fn caa_at_the_apex_permits_the_listed_authorities_by_dns_01_only() {
+        let (svc, _) = svc();
+        let m = ask(&svc, "wanderbooks.link.", RecordType::CAA, true);
+        assert_eq!(m.metadata.response_code, ResponseCode::NoError);
+        let shown: Vec<String> = m.answers.iter().map(|r| r.data.to_string()).collect();
+        assert_eq!(
+            shown,
+            [r#"0 issue "letsencrypt.org; validationmethods=dns-01""#]
+        );
+        // Nothing below the apex has a CAA of its own: a certificate
+        // authority climbs to this one.
+        let below = ask(&svc, APP, RecordType::CAA, true);
+        assert!(below.answers.is_empty());
+        assert_eq!(below.authorities.len(), 1);
+    }
+
+    #[test]
+    fn caa_is_made_from_the_list_and_follows_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.toml");
+        let one = "[[authority]]\nid='a'\ndirectory='https://x/d'\ncaa_domain='ca-one.example'\n";
+        std::fs::write(&path, one).unwrap();
+        let list = Arc::new(AuthorityList::from_file(path.clone()).unwrap());
+        let cfg = Config::default();
+        let txt = Arc::new(TxtStore::new(Duration::from_secs(60), 10, 4, 100));
+        let svc = DnsService::new(
+            Zone::new(&cfg.domain, &cfg.relay_host),
+            &cfg,
+            txt,
+            Arc::clone(&list),
+        )
+        .unwrap();
+        let caa = |svc: &DnsService| -> Vec<String> {
+            ask(svc, "wanderbooks.link.", RecordType::CAA, true)
+                .answers
+                .iter()
+                .map(|r| r.data.to_string())
+                .collect()
+        };
+        assert_eq!(
+            caa(&svc),
+            [r#"0 issue "ca-one.example; validationmethods=dns-01""#]
+        );
+        let two = format!(
+            "{one}[[authority]]\nid='b'\ndirectory='https://y/d'\ncaa_domain='ca-two.example'\n"
+        );
+        std::fs::write(&path, two).unwrap();
+        assert!(list.reload().unwrap());
+        assert_eq!(caa(&svc).len(), 2);
+        // No authority listed: no CAA record, which restricts nobody.
+        let none = DnsService::new(
+            Zone::new(&cfg.domain, &cfg.relay_host),
+            &cfg,
+            Arc::new(TxtStore::new(Duration::from_secs(60), 10, 4, 100)),
+            Arc::new(AuthorityList::empty()),
+        )
+        .unwrap();
+        assert!(caa(&none).is_empty());
+    }
+
+    #[test]
+    fn the_truncated_answer_is_the_question_with_the_tc_bit_and_nothing_more() {
+        let (svc, _) = svc();
+        let mut q = Message::query();
+        q.metadata.id = 0x4242;
+        q.queries.push(Query::query(
+            DnsName::from_ascii(APP).unwrap(),
+            RecordType::A,
+        ));
+        let wire = q.to_vec().unwrap();
+        let out = svc.truncated(&wire).expect("a truncated answer");
+        assert!(out.len() <= wire.len() + 12, "no bigger than the query");
+        let m = Message::from_vec(&out).unwrap();
+        assert!(m.metadata.truncation);
+        assert_eq!(m.metadata.id, 0x4242);
+        assert_eq!(m.metadata.message_type, MessageType::Response);
+        assert!(m.answers.is_empty() && m.authorities.is_empty() && m.additionals.is_empty());
+        assert_eq!(m.queries.len(), 1);
+        // Garbage, a response and a non-query are not answered at all.
+        assert!(svc.truncated(b"x").is_none());
+        assert!(svc.truncated(&vec![0u8; QUERY_MAX + 1]).is_none());
+        let mut resp = Message::response(7, OpCode::Query);
+        resp.queries.push(q.queries[0].clone());
+        assert!(svc.truncated(&resp.to_vec().unwrap()).is_none());
     }
 }

@@ -61,6 +61,10 @@ async fn main() -> ExitCode {
         Ok(t) => t,
         Err(e) => return fail(&e),
     };
+    // No per-app binding source is installed: an authority that needs an
+    // external account binding is listed, served without one and marked
+    // not usable until a deployment supplies a `BindingSource`. The list
+    // file never carries a binding secret (it is refused at load).
     let authorities = match &cfg.authorities_path {
         Some(p) => match AuthorityList::from_file(p.clone()) {
             Ok(l) => l,

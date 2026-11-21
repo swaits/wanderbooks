@@ -18,7 +18,13 @@
 //!      side, is ended (that is yamux's rule), so the relay keeps its
 //!      own per-line permits below the limit.
 //!   2. Each stream's receive window is 256 KiB and a line's windows sum
-//!      to at most 256 KiB times `max_streams`: no window grows.
+//!      to at most 256 KiB times `max_streams`: no window grows. The size
+//!      is yamux's own constant (the specification's initial credit; the
+//!      0.14 crate offers no way to start a stream with less), so what a
+//!      line can be made to hold, by an app whose own caller reads slowly,
+//!      is set by how many streams it may have, which is why the relay's
+//!      stream limits are small. The splice's minimum rate bounds how long
+//!      a stream can stay full.
 //!   3. A line from which nothing was read for `idle` is closed.
 //!   4. Dropping every handle, or `close`, ends the driver.
 //! SCENARIOS:
@@ -79,10 +85,12 @@ pub struct MuxLimits {
 fn yamux_config(max_streams: usize) -> Config {
     let mut cfg = Config::default();
     cfg.set_max_num_streams(max_streams);
-    // 256 KiB is yamux's initial window per stream. Capping the sum at
-    // 256 KiB times the stream limit stops the auto-tuning from growing
-    // any window: this is the most a line can ever hold in receive
-    // buffers.
+    // 256 KiB is yamux's initial window per stream, and the crate fixes
+    // it (`DEFAULT_CREDIT`; the connection's cap must be at least that
+    // times the stream limit, or it panics). Capping the sum at exactly
+    // that stops the auto-tuning from growing any window: this is the
+    // most a line can ever hold in receive buffers, and the only lever
+    // left on it is `max_streams`.
     cfg.set_max_connection_receive_window(Some(max_streams * yamux::DEFAULT_CREDIT as usize));
     cfg
 }

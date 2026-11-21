@@ -194,9 +194,10 @@ async fn a_name_cannot_be_claimed_twice_and_a_wrong_key_is_refused() {
         refusal(env.connect(n(NAME), &b, false).await),
         Refusal::BadProof
     );
+    // A name nobody has claimed is refused as a wrong key is.
     assert_eq!(
         refusal(env.connect(n(OTHER), &a, false).await),
-        Refusal::UnknownName
+        Refusal::BadProof
     );
     // The owner still gets back in, without claiming again.
     let again = env.connect(n(NAME), &a, false).await.unwrap();
@@ -314,7 +315,8 @@ async fn blocked_names_and_the_limit_on_new_names() {
     let limits = Limits {
         claims_per_window: 2,
         claims_per_ip: 100,
-        ..Limits::default()
+        claims_per_net: 100,
+        ..quick_limits()
     };
     let env = start(limits).await;
     let (k1, _) = AppKey::generate();
@@ -350,7 +352,7 @@ async fn one_address_cannot_claim_many_names() {
     let limits = Limits {
         claims_per_window: 1000,
         claims_per_ip: 2,
-        ..Limits::default()
+        ..quick_limits()
     };
     let env = start(limits).await;
     let mut outcomes = Vec::new();
@@ -497,7 +499,7 @@ async fn publishing_needs_a_proven_line() {
     drop(s);
     // And a refused hello gives no line to publish on.
     let r = env.connect(n(NAME), &key, false).await;
-    assert!(matches!(r, Err(ClientError::Refused(Refusal::UnknownName))));
+    assert!(matches!(r, Err(ClientError::Refused(Refusal::BadProof))));
     let dns_addr = env.relay.dns_udp_addr();
     let q = format!("_acme-challenge.{NAME}.{DOMAIN}.");
     assert!(txt_values(&dns(dns_addr, &q, RecordType::TXT).await).is_empty());
@@ -510,24 +512,39 @@ const LIST: &str = r#"
 [[authority]]
 id = "letsencrypt"
 directory = "http://127.0.0.1:14000/dir"
+caa_domain = "letsencrypt.org"
 
 [[authority]]
 id = "zerossl"
 directory = "http://127.0.0.1:14001/dir"
+caa_domain = "sectigo.com"
 needs_binding = true
-binding_kid = "kid-1"
-binding_hmac_key = "a2V5"
 "#;
 
-/// WB-relay-5 scenario: the list is served in its order, with bindings,
-/// and an edit to the file changes what the next request gets, with no
-/// change to the app.
+/// A per-app binding source, standing in for an authority's own API.
+struct PerApp(&'static str);
+
+impl relay::authorities::BindingSource for PerApp {
+    fn binding_for(&self, id: &str, name: &relay::names::Name) -> Option<proto::Binding> {
+        Some(proto::Binding {
+            kid: format!("{}-{id}-{name}", self.0),
+            hmac_key: "a2V5".into(),
+        })
+    }
+}
+
+/// WB-relay-5 scenario: the list is served in its order, a binding comes
+/// only from a per-app source (never from the file), the zone's CAA record
+/// follows the list, and an edit to the file changes what the next request
+/// gets, with no change to the app.
 #[tokio::test]
 async fn the_authority_list_is_served_and_follows_the_file() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("authorities.toml");
     std::fs::write(&path, LIST).unwrap();
-    let list = relay::authorities::AuthorityList::from_file(path.clone()).unwrap();
+    let list = relay::authorities::AuthorityList::from_file(path.clone())
+        .unwrap()
+        .with_binding_source(std::sync::Arc::new(PerApp("one")));
     let env = start_with(quick_limits(), list).await;
     let (key, _) = AppKey::generate();
     let line = env.connect(n(NAME), &key, true).await.unwrap();
@@ -535,30 +552,43 @@ async fn the_authority_list_is_served_and_follows_the_file() {
     let got = line.authorities().await.unwrap();
     let ids: Vec<_> = got.iter().map(|a| a.id.as_str()).collect();
     assert_eq!(ids, ["letsencrypt", "zerossl"]);
-    assert!(!got[0].needs_binding && got[0].binding.is_none());
-    assert!(got[1].needs_binding);
+    assert!(!got[0].needs_binding && got[0].binding.is_none() && got[0].usable);
+    assert!(got[1].needs_binding && got[1].usable);
     assert_eq!(
         got[1].binding.as_ref().map(|b| b.kid.as_str()),
-        Some("kid-1")
+        Some(format!("one-zerossl-{NAME}").as_str())
     );
     assert_eq!(got[0].directory, "http://127.0.0.1:14000/dir");
+
+    // The zone's CAA record is made from the same list.
+    let caa =
+        |m: &Message| -> Vec<String> { m.answers.iter().map(|r| r.data.to_string()).collect() };
+    let apex = format!("{DOMAIN}.");
+    assert_eq!(
+        caa(&dns(env.relay.dns_udp_addr(), &apex, RecordType::CAA).await),
+        [
+            r#"0 issue "letsencrypt.org; validationmethods=dns-01""#,
+            r#"0 issue "sectigo.com; validationmethods=dns-01""#
+        ]
+    );
 
     // Swap the authorities: ZeroSSL first, a third added.
     let swapped = r#"
 [[authority]]
 id = "zerossl"
 directory = "http://127.0.0.1:14001/dir"
+caa_domain = "sectigo.com"
 needs_binding = true
-binding_kid = "kid-2"
-binding_hmac_key = "a2V5"
 
 [[authority]]
 id = "gts"
 directory = "http://127.0.0.1:14002/dir"
+caa_domain = "pki.goog"
 
 [[authority]]
 id = "letsencrypt"
 directory = "http://127.0.0.1:14000/dir"
+caa_domain = "letsencrypt.org"
 "#;
     std::fs::write(&path, swapped).unwrap();
     // The relay rereads on its half-minute tick; here, call it.
@@ -567,10 +597,32 @@ directory = "http://127.0.0.1:14000/dir"
     let ids: Vec<_> = got.iter().map(|a| a.id.as_str()).collect();
     assert_eq!(ids, ["zerossl", "gts", "letsencrypt"]);
     assert_eq!(
-        got[0].binding.as_ref().map(|b| b.kid.as_str()),
-        Some("kid-2")
+        caa(&dns(env.relay.dns_udp_addr(), &apex, RecordType::CAA).await).len(),
+        3
     );
     env.relay.shutdown().await;
+}
+
+/// WB-relay-5: with no per-app binding source an authority that needs a
+/// binding is listed, served without one, and marked not usable; and a
+/// list file that carries a binding secret is not loaded at all.
+#[tokio::test]
+async fn no_shared_binding_secret_is_ever_served() {
+    let list = relay::authorities::AuthorityList::from_toml(LIST).unwrap();
+    let env = start_with(quick_limits(), list).await;
+    let (key, _) = AppKey::generate();
+    let line = env.connect(n(NAME), &key, true).await.unwrap();
+    let got = line.authorities().await.unwrap();
+    assert_eq!(got.len(), 2);
+    assert!(got[1].needs_binding && got[1].binding.is_none() && !got[1].usable);
+    assert!(got[0].usable);
+    env.relay.shutdown().await;
+
+    let with_secret = format!("{LIST}binding_kid = 'kid'\nbinding_hmac_key = 'a2V5'\n");
+    let err = relay::authorities::AuthorityList::from_toml(&with_secret)
+        .err()
+        .expect("refused at load");
+    assert!(err.to_string().contains("binding secret"), "{err}");
 }
 
 // ------------------------------------------------------------------ bounds
@@ -822,15 +874,8 @@ async fn a_slow_reader_back_pressures_and_is_cut_off_at_the_stall_limit() {
     env.relay.shutdown().await;
 }
 
-/// WB-relay-7: DNS over UDP is rate limited per address from a fixed table.
-#[tokio::test]
-async fn dns_over_udp_is_rate_limited_per_address() {
-    let env = start(Limits {
-        dns_qps_per_ip: 5,
-        ..quick_limits()
-    })
-    .await;
-    let addr = env.relay.dns_udp_addr();
+/// Send `count` identical queries and collect every reply.
+async fn dns_flood(addr: std::net::SocketAddr, count: usize) -> Vec<Message> {
     let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let mut q = Message::query();
     q.queries.push(Query::query(
@@ -838,18 +883,66 @@ async fn dns_over_udp_is_rate_limited_per_address() {
         RecordType::A,
     ));
     let wire = q.to_vec().unwrap();
-    for _ in 0..200 {
+    for _ in 0..count {
         sock.send_to(&wire, addr).await.unwrap();
     }
     tokio::time::sleep(Duration::from_millis(500)).await;
-    let mut answered = 0;
+    let mut replies = Vec::new();
     let mut buf = [0u8; 2048];
-    while let Ok(Ok(_)) =
+    while let Ok(Ok((n, _))) =
         tokio::time::timeout(Duration::from_millis(100), sock.recv_from(&mut buf)).await
     {
-        answered += 1;
+        replies.push(Message::from_vec(&buf[..n]).unwrap());
     }
+    replies
+}
+
+/// WB-relay-7: DNS over UDP is rate limited per address from a fixed
+/// table, and a sender over its rate is answered "truncated" (a real
+/// resolver then asks over TCP), not left without an answer.
+#[tokio::test]
+async fn dns_over_udp_over_the_rate_is_answered_truncated() {
+    let env = start(Limits {
+        dns_qps_per_ip: 5,
+        ..quick_limits()
+    })
+    .await;
+    let replies = dns_flood(env.relay.dns_udp_addr(), 200).await;
+    let answered = replies.iter().filter(|m| !m.answers.is_empty()).count();
+    let truncated = replies.iter().filter(|m| m.metadata.truncation).count();
     assert!((5..=30).contains(&answered), "{answered} of 200 answered");
+    assert_eq!(
+        answered + truncated,
+        replies.len(),
+        "every reply is one or the other"
+    );
+    assert!(truncated >= 150, "{truncated} truncated replies of 200");
+    assert!(
+        replies
+            .iter()
+            .filter(|m| m.metadata.truncation)
+            .all(|m| m.answers.is_empty() && m.queries.len() == 1)
+    );
+    env.relay.shutdown().await;
+}
+
+/// WB-relay-7: all UDP answers together are limited; past the ceiling a
+/// query gets nothing at all (the truncated reply is for one noisy sender,
+/// not a way to be reflected off at any rate).
+#[tokio::test]
+async fn dns_over_udp_has_a_global_ceiling() {
+    let env = start(Limits {
+        dns_qps_per_ip: 10_000,
+        dns_qps_global: 10,
+        ..quick_limits()
+    })
+    .await;
+    let replies = dns_flood(env.relay.dns_udp_addr(), 300).await;
+    assert!(
+        (10..=60).contains(&replies.len()),
+        "{} of 300 queries were answered past a ceiling of 10 a second",
+        replies.len()
+    );
     env.relay.shutdown().await;
 }
 
@@ -877,6 +970,326 @@ async fn dns_over_tcp_is_capped_and_times_out() {
         .expect("closed at the timeout");
     assert!(matches!(r, Ok(0) | Err(_)));
     drop(b);
+    env.relay.shutdown().await;
+}
+
+fn refusal_of(r: Result<client::Line, ClientError>) -> Refusal {
+    match r {
+        Err(ClientError::Refused(why)) => why,
+        Err(other) => panic!("not a refusal: {other}"),
+        Ok(_) => panic!("the line came up"),
+    }
+}
+
+/// WB-relay-7: one address cannot fill the pool of line handshakes by
+/// finishing the hello and stalling, over and over. The hello's own
+/// per-address place is given back after the hello; the handshake has a
+/// per-address place of its own, held to the verdict.
+#[tokio::test]
+async fn one_address_cannot_hold_the_pool_of_line_handshakes() {
+    let env = start(Limits {
+        max_handshakes_per_ip: 2,
+        handshake_timeout_ms: 20_000,
+        ..quick_limits()
+    })
+    .await;
+    // Two handshakes that get the challenge and then say nothing.
+    let mut stalled = Vec::new();
+    for _ in 0..2 {
+        let mut s = client::tls_connect(env.router(), env.line_tls(), RELAY_HOST)
+            .await
+            .unwrap();
+        let _ch: Challenge = read_frame(&mut s).await.unwrap();
+        stalled.push(s);
+    }
+    // The pool (1 024) is nearly empty, but this address has its two.
+    assert!(
+        client::tls_connect(env.router(), env.line_tls(), RELAY_HOST)
+            .await
+            .is_err(),
+        "a third handshake from one address was taken"
+    );
+    let (key, _) = AppKey::generate();
+    assert!(env.connect(n(NAME), &key, true).await.is_err());
+    assert_eq!(count(&env.relay.shared().metrics.shed), 2);
+    // A place freed is reusable: the owner gets in.
+    drop(stalled.pop());
+    let mut up = false;
+    for _ in 0..80 {
+        if env.connect(n(NAME), &key, true).await.is_ok() {
+            up = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(up, "the place was never given back");
+    drop(stalled);
+    env.relay.shutdown().await;
+}
+
+/// WB-relay-7: the same, per network: an IPv4 /24 (here, loopback's) or an
+/// IPv6 /48 holds only so many unfinished hellos, however its addresses
+/// are spread.
+#[tokio::test]
+async fn one_network_cannot_hold_many_unfinished_hellos() {
+    let env = start(Limits {
+        max_pending_per_ip: 100,
+        max_pending_per_net: 2,
+        hello_timeout_ms: 20_000,
+        ..quick_limits()
+    })
+    .await;
+    let _a = TcpStream::connect(env.router()).await.unwrap();
+    let _b = TcpStream::connect(env.router()).await.unwrap();
+    eventually("two pending", || {
+        count(&env.relay.shared().metrics.accepted) == 2
+    })
+    .await;
+    let mut c = TcpStream::connect(env.router()).await.unwrap();
+    let mut buf = [0u8; 4];
+    let r = tokio::time::timeout(Duration::from_secs(2), c.read(&mut buf))
+        .await
+        .expect("closed at once, not at the timeout");
+    assert!(matches!(r, Ok(0) | Err(_)));
+    assert_eq!(count(&env.relay.shared().metrics.shed), 1);
+    env.relay.shutdown().await;
+}
+
+/// WB-relay-7: with the pool of unfinished hellos full, an address that
+/// held a proven line lately still gets through, from a small reserve; a
+/// stranger does not. (The server name is not known before the hello is
+/// read, so the reserve is for who is calling.)
+#[tokio::test]
+async fn a_known_line_address_still_gets_a_hello_place_when_the_pool_is_full() {
+    let limits = Limits {
+        max_pending_hellos: 2,
+        hello_reserve: 2,
+        hello_timeout_ms: 20_000,
+        ..quick_limits()
+    };
+    // A stranger: the pool is two, and there is no reserve for it.
+    let env = start(limits.clone()).await;
+    let _a = TcpStream::connect(env.router()).await.unwrap();
+    let _b = TcpStream::connect(env.router()).await.unwrap();
+    eventually("the pool is full", || {
+        count(&env.relay.shared().metrics.accepted) == 2
+    })
+    .await;
+    let mut c = TcpStream::connect(env.router()).await.unwrap();
+    let mut buf = [0u8; 4];
+    let r = tokio::time::timeout(Duration::from_secs(2), c.read(&mut buf))
+        .await
+        .expect("closed at once");
+    assert!(matches!(r, Ok(0) | Err(_)));
+    assert_eq!(count(&env.relay.shared().metrics.shed), 1);
+    assert!(
+        env.connect(relay::names::Name::random(), &AppKey::generate().0, true)
+            .await
+            .is_err(),
+        "a stranger used the reserve"
+    );
+    env.relay.shutdown().await;
+
+    // A known address: it held a line before the flood.
+    let env = start(limits).await;
+    let (key, _) = AppKey::generate();
+    let line = env.connect(n(NAME), &key, true).await.unwrap();
+    line.close().await;
+    let _a = TcpStream::connect(env.router()).await.unwrap();
+    let _b = TcpStream::connect(env.router()).await.unwrap();
+    eventually("the pool is full", || {
+        count(&env.relay.shared().metrics.accepted) == 3
+    })
+    .await;
+    let again = env.connect(n(NAME), &key, false).await;
+    assert!(
+        again.is_ok(),
+        "the owner could not reconnect through the flood"
+    );
+    // The reserve is small too: two more silent peers use it up.
+    let _c = TcpStream::connect(env.router()).await.unwrap();
+    let _d = TcpStream::connect(env.router()).await.unwrap();
+    eventually("the reserve is used", || {
+        count(&env.relay.shared().metrics.accepted) == 6
+    })
+    .await;
+    let mut e = TcpStream::connect(env.router()).await.unwrap();
+    let r = tokio::time::timeout(Duration::from_secs(2), e.read(&mut buf))
+        .await
+        .expect("closed at once");
+    assert!(matches!(r, Ok(0) | Err(_)));
+    env.relay.shutdown().await;
+}
+
+/// WB-relay-4 / WB-relay-5: claiming a name does not spend the certificate
+/// authority's weekly budget; a name's first publish does, once, and a
+/// renewal is free.
+#[tokio::test]
+async fn the_certificate_budget_is_spent_at_first_publish_not_at_claim() {
+    let env = start(Limits {
+        cert_publishes_per_window: 2,
+        ..quick_limits()
+    })
+    .await;
+    let mut lines = Vec::new();
+    for _ in 0..4 {
+        let (k, _) = AppKey::generate();
+        lines.push(
+            env.connect(relay::names::Name::random(), &k, true)
+                .await
+                .expect("claims are not limited by the certificate budget"),
+        );
+    }
+    assert_eq!(count(&env.relay.shared().metrics.claims), 4);
+    assert!(lines[0].publish_txt(PROOF_A).await.unwrap().ok);
+    assert!(lines[1].publish_txt(PROOF_A).await.unwrap().ok);
+    let third = lines[2].publish_txt(PROOF_A).await.unwrap();
+    assert!(
+        !third.ok && third.error.as_deref() == Some("limit"),
+        "{third:?}"
+    );
+    // A renewal for a name that has been charged is not a new name.
+    assert!(lines[0].publish_txt(PROOF_B).await.unwrap().ok);
+    assert!(lines[1].publish_txt(PROOF_B).await.unwrap().ok);
+    assert_eq!(count(&env.relay.shared().metrics.cert_charges), 2);
+    env.relay.shutdown().await;
+}
+
+/// The same first publishes are limited per address: one address cannot
+/// spend the budget on names of its own however it came by them.
+#[tokio::test]
+async fn first_publishes_are_limited_per_address() {
+    let env = start(Limits {
+        cert_publishes_per_ip: 1,
+        ..quick_limits()
+    })
+    .await;
+    let (ka, _) = AppKey::generate();
+    let (kb, _) = AppKey::generate();
+    let a = env.connect(n(NAME), &ka, true).await.unwrap();
+    let b = env.connect(n(OTHER), &kb, true).await.unwrap();
+    assert!(a.publish_txt(PROOF_A).await.unwrap().ok);
+    let r = b.publish_txt(PROOF_A).await.unwrap();
+    assert!(!r.ok && r.error.as_deref() == Some("limit"), "{r:?}");
+    assert!(
+        a.publish_txt(PROOF_B).await.unwrap().ok,
+        "a renewal is free"
+    );
+    env.relay.shutdown().await;
+}
+
+/// WB-relay-4: blocking a name closes its live line, within the check
+/// interval, and the line does not come back.
+#[tokio::test]
+async fn blocking_a_name_closes_its_live_line() {
+    let env = start(Limits {
+        block_check_ms: 200,
+        ..quick_limits()
+    })
+    .await;
+    let (key, _) = AppKey::generate();
+    let (other_key, _) = AppKey::generate();
+    let app = env.app(n(NAME), &key, true).await;
+    let bystander = env.connect(n(OTHER), &other_key, true).await.unwrap();
+    assert!(env.assistant(&host_of(&n(NAME))).await.is_ok());
+    assert_eq!(env.relay.shared().lines.len(), 2);
+
+    assert!(
+        env.relay
+            .shared()
+            .registry
+            .set_blocked(&n(NAME), true)
+            .await
+            .unwrap()
+    );
+    eventually("the blocked line is closed", || app.line.is_closed()).await;
+    eventually("and gone from the table", || {
+        env.relay.shared().lines.get(&n(NAME)).is_none()
+    })
+    .await;
+    assert!(env.assistant(&host_of(&n(NAME))).await.is_err());
+    assert_eq!(
+        refusal_of(env.connect(n(NAME), &key, false).await),
+        Refusal::Blocked
+    );
+    // Only that name's line went.
+    assert!(!bystander.is_closed());
+    assert!(count(&env.relay.shared().metrics.blocked_closed) >= 1);
+    env.relay.shutdown().await;
+}
+
+/// WB-relay-4: the next publish of a blocked name closes its line, without
+/// waiting for the sweep (here set an hour apart), and publishes nothing.
+#[tokio::test]
+async fn a_blocked_name_cannot_publish_and_its_line_is_closed() {
+    let env = start(Limits {
+        block_check_ms: 3_600_000,
+        ..quick_limits()
+    })
+    .await;
+    let (key, _) = AppKey::generate();
+    let line = env.connect(n(NAME), &key, true).await.unwrap();
+    assert!(line.publish_txt(PROOF_A).await.unwrap().ok);
+    env.relay
+        .shared()
+        .registry
+        .set_blocked(&n(NAME), true)
+        .await
+        .unwrap();
+    // The sweep is an hour away; the line is still up.
+    assert!(!line.is_closed());
+    let r = line.publish_txt(PROOF_B).await;
+    assert!(
+        !matches!(&r, Ok(r) if r.ok),
+        "a blocked name published: {r:?}"
+    );
+    eventually("the line is closed", || line.is_closed()).await;
+    let q = format!("_acme-challenge.{NAME}.{DOMAIN}.");
+    let values = txt_values(&dns(env.relay.dns_udp_addr(), &q, RecordType::TXT).await);
+    assert!(!values.contains(&PROOF_B.to_string()), "{values:?}");
+    env.relay.shutdown().await;
+}
+
+/// WB-relay-2: a caller who has not shown the name's key cannot tell a
+/// name nobody has claimed from one held by another key, or a blocked one.
+#[tokio::test]
+async fn a_stranger_cannot_tell_which_names_exist_or_are_blocked() {
+    let env = start(quick_limits()).await;
+    let (owner, _) = AppKey::generate();
+    let (owner2, _) = AppKey::generate();
+    let (stranger, _) = AppKey::generate();
+    let blocked = n("ledger-accrual-tally-audit");
+    env.connect(n(NAME), &owner, true).await.unwrap();
+    env.connect(blocked, &owner2, true).await.unwrap();
+    env.relay
+        .shared()
+        .registry
+        .set_blocked(&blocked, true)
+        .await
+        .unwrap();
+    let unclaimed = n(OTHER);
+    // Reconnecting: held, blocked and unclaimed all answer the same.
+    for name in [n(NAME), blocked, unclaimed] {
+        assert_eq!(
+            refusal_of(env.connect(name, &stranger, false).await),
+            Refusal::BadProof,
+            "{name}"
+        );
+    }
+    // Claiming: held and blocked answer alike (a claim has to learn if the
+    // name is free, and a blocked name is not).
+    for name in [n(NAME), blocked] {
+        assert_eq!(
+            refusal_of(env.connect(name, &stranger, true).await),
+            Refusal::Taken,
+            "{name}"
+        );
+    }
+    // The holder of the key is told the truth.
+    assert_eq!(
+        refusal_of(env.connect(blocked, &owner2, false).await),
+        Refusal::Blocked
+    );
     env.relay.shutdown().await;
 }
 

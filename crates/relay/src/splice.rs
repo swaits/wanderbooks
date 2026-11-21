@@ -14,8 +14,11 @@
 //! SOURCE: WB-relay-1 (the router and its splice), WB-relay-7 (bounds).
 //! INVARIANTS:
 //!   1. At most `buffer` bytes are held per direction.
-//!   2. A write that makes no progress for `stall` ends the connection:
-//!      a slow reader is closed, never buffered for.
+//!   2. A write of `n` bytes that is not finished within `stall` plus `n`
+//!      over `min_rate` bytes a second ends the connection: a reader
+//!      slower than that floor is closed, never buffered for. (A reader
+//!      that takes one byte just inside every stall would otherwise hold
+//!      the stream, and the receive window behind it, for hours.)
 //!   3. A connection with no byte either way for `idle`, or alive for
 //!      `max_age`, is closed.
 //!   4. A close in one direction (EOF) is passed on as a close of the
@@ -24,7 +27,9 @@
 //! SCENARIOS:
 //!   1. Bytes written at either end arrive at the other, in order, and a
 //!      close at one end reaches the other.
-//!   2. A peer that never reads: the splice ends after `stall`.
+//!   2. A peer that never reads: the splice ends after `stall`. A peer that
+//!      reads, but under `min_rate`, ends it too; one that keeps the pace
+//!      does not, however long the transfer.
 //!   3. A peer that says nothing: the splice ends after `idle`.
 //! ```
 
@@ -42,8 +47,11 @@ pub struct SpliceLimits {
     pub buffer: usize,
     /// No byte either way for this long ends it.
     pub idle: Duration,
-    /// A write stuck this long ends it.
+    /// The grace on every write: a write has at least this long.
     pub stall: Duration,
+    /// The slowest a reader may take bytes, per second: a write of `n`
+    /// bytes has `stall` plus `n / min_rate` to finish.
+    pub min_rate: u32,
     /// Its longest life.
     pub max_age: Duration,
 }
@@ -86,11 +94,18 @@ impl Stamp {
     }
 }
 
+/// How long a write of `n` bytes may take: the grace plus the floor rate.
+fn write_deadline(stall: Duration, min_rate: u32, n: usize) -> Duration {
+    let secs = n as f64 / f64::from(min_rate.max(1));
+    stall.saturating_add(Duration::from_secs_f64(secs.min(86_400.0)))
+}
+
 async fn pump<R, W>(
     from: &mut R,
     to: &mut W,
     buffer: usize,
     stall: Duration,
+    min_rate: u32,
     last: &Stamp,
 ) -> Result<(), End>
 where
@@ -110,7 +125,7 @@ where
             return Ok(());
         }
         last.touch();
-        match timeout(stall, async {
+        match timeout(write_deadline(stall, min_rate, n), async {
             to.write_all(&buf[..n]).await?;
             to.flush().await
         })
@@ -136,8 +151,22 @@ where
         // The first failure ends both; a clean close in one direction
         // lets the other carry on.
         match tokio::try_join!(
-            pump(&mut ar, &mut bw, limits.buffer, limits.stall, &last),
-            pump(&mut br, &mut aw, limits.buffer, limits.stall, &last),
+            pump(
+                &mut ar,
+                &mut bw,
+                limits.buffer,
+                limits.stall,
+                limits.min_rate,
+                &last
+            ),
+            pump(
+                &mut br,
+                &mut aw,
+                limits.buffer,
+                limits.stall,
+                limits.min_rate,
+                &last
+            ),
         ) {
             Ok(((), ())) => End::Done,
             Err(e) => e,
@@ -168,6 +197,7 @@ mod tests {
             buffer: 1024,
             idle: Duration::from_secs(30),
             stall: Duration::from_secs(30),
+            min_rate: 1024,
             max_age: Duration::from_secs(60),
         }
     }
@@ -263,5 +293,56 @@ mod tests {
             let _ = left.write_all(b"x").await;
         }
         assert_eq!(task.await.unwrap(), End::MaxAge);
+    }
+
+    /// A reader that takes a little, often enough that no single wait is
+    /// long, but under the floor rate: cut. The old rule (a stall timer on
+    /// each write, here 30 s) would have let it hold the stream for hours.
+    #[tokio::test(start_paused = true)]
+    async fn a_reader_under_the_floor_rate_is_cut_and_one_at_the_floor_is_not() {
+        for (per_tick, expect_cut) in [(32usize, true), (512usize, false)] {
+            let (mut left, a) = tokio::io::duplex(1024);
+            let (mut right, b) = tokio::io::duplex(1024);
+            let l = SpliceLimits {
+                buffer: 1024,
+                // 2 s of grace and 1 KiB/s: a 1 KiB write has 3 s.
+                stall: Duration::from_secs(2),
+                min_rate: 1024,
+                idle: Duration::from_secs(3600),
+                max_age: Duration::from_secs(7200),
+            };
+            let task = tokio::spawn(splice(a, b, l));
+            let feed = tokio::spawn(async move {
+                let chunk = vec![5u8; 4096];
+                let _ = left.write_all(&chunk).await;
+                let _ = left.shutdown().await;
+                left
+            });
+            // The reader takes `per_tick` bytes every 250 ms: 128 B/s or 2 KiB/s.
+            let drain = tokio::spawn(async move {
+                let mut got = 0usize;
+                let mut buf = vec![0u8; per_tick];
+                loop {
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                    match right.read(&mut buf).await {
+                        Ok(0) | Err(_) => return got,
+                        Ok(n) => got += n,
+                    }
+                }
+            });
+            let end = task.await.unwrap();
+            let _ = feed.await;
+            let got = drain.await.unwrap();
+            if expect_cut {
+                assert_eq!(end, End::Stalled, "128 B/s is under the 1 KiB/s floor");
+                assert!(
+                    got < 4096,
+                    "{got} bytes got through a reader under the floor"
+                );
+            } else {
+                assert_ne!(end, End::Stalled, "2 KiB/s keeps the pace");
+                assert_eq!(got, 4096);
+            }
+        }
     }
 }

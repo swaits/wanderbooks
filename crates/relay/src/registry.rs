@@ -1,9 +1,12 @@
 //! The registry: the one small durable table (D-85).
 //!
-//! It holds, per name, the app's public key, when the name was claimed
-//! and whether the operator has blocked it. Nothing else about an app is
-//! kept anywhere: not an address, not a label, not a log of connections.
-//! A claim, and the limit on new names, are one transaction.
+//! It holds, per name, the app's public key, when the name was claimed,
+//! whether the operator has blocked it, and when it first published a
+//! proof record (the one moment a name costs the certificate authority's
+//! weekly budget). Nothing else about an app is kept anywhere: not an
+//! address, not a label, not a log of connections. A claim, and the limit
+//! on new names, are one transaction; so is a first publish and the
+//! certificate budget.
 //!
 //! SQLite is driven from one thread of its own, through a bounded queue,
 //! so a slow disk makes the relay say "busy" and never makes it hold more.
@@ -21,11 +24,18 @@
 //!      the rows' own creation times, so a restart does not reset it.
 //!   4. The queue to the database thread is bounded: past it a request
 //!      is refused as busy, not held.
+//!   5. A name is charged to the certificate budget once, the first time
+//!      it publishes; at most `max` names are charged in any `window`,
+//!      counted from the rows' own charge times, so a restart does not
+//!      reset it, and a name already charged is never charged again.
 //! SCENARIOS:
 //!   1. Two claims of one name with different keys: one wins, the other
 //!      sees `Exists`.
 //!   2. A claim, a restart (reopen), a lookup: the key is still there.
 //!   3. The window limit counts rows made before a reopen.
+//!   4. Three names first publish under a budget of two: the third is
+//!      refused, the first renews without a charge, and a reopen keeps
+//!      the count.
 //! ```
 
 use std::path::Path;
@@ -43,6 +53,22 @@ pub struct Entry {
     pub public_key: [u8; 32],
     /// True when the operator has blocked the name.
     pub blocked: bool,
+    /// True when the name has been charged to the certificate budget: it
+    /// has published a proof record before.
+    pub published: bool,
+}
+
+/// How a first publish ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Charged {
+    /// The name had been charged before: a renewal, free.
+    Already,
+    /// This publish charged the budget.
+    New,
+    /// The budget for the window is spent.
+    LimitReached,
+    /// No such name.
+    NoSuchName,
 }
 
 /// How a claim ended.
@@ -84,6 +110,14 @@ enum Cmd {
     },
     SetBlocked(String, bool, Reply<bool>),
     Count(Reply<u64>),
+    Charge {
+        name: String,
+        now: i64,
+        window_secs: i64,
+        max: u32,
+        reply: Reply<Charged>,
+    },
+    Blocked(Reply<Vec<String>>),
 }
 
 /// A handle to the registry. Clones share one database thread.
@@ -115,9 +149,28 @@ impl Registry {
                  name       TEXT PRIMARY KEY,
                  public_key BLOB NOT NULL CHECK (length(public_key) = 32),
                  created    INTEGER NOT NULL,
-                 blocked    INTEGER NOT NULL DEFAULT 0
+                 blocked    INTEGER NOT NULL DEFAULT 0,
+                 first_publish INTEGER
              ) WITHOUT ROWID;
              CREATE INDEX IF NOT EXISTS apps_created ON apps (created);",
+        )
+        .map_err(db)?;
+        // A file made before the column existed gets it, empty: its names
+        // have not been charged, which is the generous way to be wrong.
+        let has: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM pragma_table_info('apps') WHERE name = 'first_publish'",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(db)?;
+        if has == 0 {
+            conn.execute_batch("ALTER TABLE apps ADD COLUMN first_publish INTEGER")
+                .map_err(db)?;
+        }
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS apps_first_publish ON apps (first_publish);
+             CREATE INDEX IF NOT EXISTS apps_blocked ON apps (blocked) WHERE blocked = 1;",
         )
         .map_err(db)?;
         let (tx, mut rx) = mpsc::channel::<Cmd>(queue.max(1));
@@ -176,27 +229,54 @@ impl Registry {
     pub async fn count(&self) -> Result<u64, RegistryError> {
         self.ask(Cmd::Count).await
     }
+
+    /// Charge `name` to the certificate budget if it has not been: the
+    /// first time a name publishes a proof record. At most `max` names are
+    /// charged in any `window`. A name already charged is `Already`, and
+    /// costs nothing.
+    pub async fn charge_publish(
+        &self,
+        name: &Name,
+        window: std::time::Duration,
+        max: u32,
+    ) -> Result<Charged, RegistryError> {
+        self.ask(|reply| Cmd::Charge {
+            name: name.to_string(),
+            now: unix_now(),
+            window_secs: i64::try_from(window.as_secs()).unwrap_or(i64::MAX),
+            max,
+            reply,
+        })
+        .await
+    }
+
+    /// The names the operator has blocked (at most 100 000 are returned).
+    pub async fn blocked_names(&self) -> Result<Vec<Name>, RegistryError> {
+        let names = self.ask(Cmd::Blocked).await?;
+        Ok(names.iter().filter_map(|n| Name::parse(n).ok()).collect())
+    }
 }
 
-fn entry_of(key: Vec<u8>, blocked: i64) -> Option<Entry> {
+fn entry_of(key: Vec<u8>, blocked: i64, first_publish: Option<i64>) -> Option<Entry> {
     Some(Entry {
         public_key: key.try_into().ok()?,
         blocked: blocked != 0,
+        published: first_publish.is_some(),
     })
 }
 
 fn lookup(conn: &Connection, name: &str) -> Result<Option<Entry>, RegistryError> {
-    let row: Option<(Vec<u8>, i64)> = conn
+    let row: Option<(Vec<u8>, i64, Option<i64>)> = conn
         .query_row(
-            "SELECT public_key, blocked FROM apps WHERE name = ?1",
+            "SELECT public_key, blocked, first_publish FROM apps WHERE name = ?1",
             params![name],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .optional()
         .map_err(db)?;
     match row {
         None => Ok(None),
-        Some((key, blocked)) => entry_of(key, blocked)
+        Some((key, blocked, first)) => entry_of(key, blocked, first)
             .map(Some)
             .ok_or_else(|| RegistryError::Db("a stored key is not 32 bytes".into())),
     }
@@ -233,6 +313,71 @@ fn serve(conn: &Connection, cmd: Cmd) {
             reply,
         } => {
             let _ = reply.send(claim(conn, &name, key, now, window_secs, max_new));
+        }
+        Cmd::Charge {
+            name,
+            now,
+            window_secs,
+            max,
+            reply,
+        } => {
+            let _ = reply.send(charge(conn, &name, now, window_secs, max));
+        }
+        Cmd::Blocked(reply) => {
+            let r = (|| {
+                let mut st = conn
+                    .prepare("SELECT name FROM apps WHERE blocked = 1 LIMIT 100000")
+                    .map_err(db)?;
+                st.query_map([], |r| r.get::<_, String>(0))
+                    .map_err(db)?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(db)
+            })();
+            let _ = reply.send(r);
+        }
+    }
+}
+
+fn charge(
+    conn: &Connection,
+    name: &str,
+    now: i64,
+    window_secs: i64,
+    max: u32,
+) -> Result<Charged, RegistryError> {
+    conn.execute_batch("BEGIN IMMEDIATE").map_err(db)?;
+    let result = (|| {
+        let Some(e) = lookup(conn, name)? else {
+            return Ok(Charged::NoSuchName);
+        };
+        if e.published {
+            return Ok(Charged::Already);
+        }
+        let recent: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM apps WHERE first_publish > ?1",
+                params![now.saturating_sub(window_secs)],
+                |r| r.get(0),
+            )
+            .map_err(db)?;
+        if recent >= i64::from(max) {
+            return Ok(Charged::LimitReached);
+        }
+        conn.execute(
+            "UPDATE apps SET first_publish = ?2 WHERE name = ?1",
+            params![name, now],
+        )
+        .map_err(db)?;
+        Ok(Charged::New)
+    })();
+    match result {
+        Ok(c) => {
+            conn.execute_batch("COMMIT").map_err(db)?;
+            Ok(c)
+        }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(e)
         }
     }
 }
@@ -302,6 +447,7 @@ mod tests {
         let held = Entry {
             public_key: [1; 32],
             blocked: false,
+            published: false,
         };
         assert_eq!(
             reg.claim(&n, [2; 32], DAY, 10).await.unwrap(),
@@ -391,5 +537,97 @@ mod tests {
         reg.claim(&n, [1; 32], DAY, 10).await.unwrap();
         assert!(reg.set_blocked(&n, true).await.unwrap());
         assert!(reg.lookup(&n).await.unwrap().unwrap().blocked);
+    }
+
+    #[tokio::test]
+    async fn the_certificate_budget_charges_a_name_once_and_survives_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("r.db");
+        let week = Duration::from_secs(7 * 86_400);
+        let names = [
+            name("ledger-accrual-tally-mint"),
+            name("ledger-accrual-tally-vault"),
+            name("ledger-accrual-tally-audit"),
+        ];
+        {
+            let reg = Registry::open(&path, 16).unwrap();
+            // Claiming costs the certificate budget nothing: all three claim.
+            for (i, n) in names.iter().enumerate() {
+                let key = [u8::try_from(i).unwrap(); 32];
+                assert_eq!(reg.claim(n, key, DAY, 100).await.unwrap(), Claimed::New);
+            }
+            assert_eq!(
+                reg.charge_publish(&names[0], week, 2).await.unwrap(),
+                Charged::New
+            );
+            assert_eq!(
+                reg.charge_publish(&names[1], week, 2).await.unwrap(),
+                Charged::New
+            );
+            assert_eq!(
+                reg.charge_publish(&names[2], week, 2).await.unwrap(),
+                Charged::LimitReached
+            );
+            // A renewal is free, even with the budget spent.
+            assert_eq!(
+                reg.charge_publish(&names[0], week, 2).await.unwrap(),
+                Charged::Already
+            );
+        }
+        let reg = Registry::open(&path, 16).unwrap();
+        assert_eq!(
+            reg.charge_publish(&names[2], week, 2).await.unwrap(),
+            Charged::LimitReached,
+            "the count outlives the restart"
+        );
+        assert!(reg.lookup(&names[0]).await.unwrap().unwrap().published);
+        assert!(!reg.lookup(&names[2]).await.unwrap().unwrap().published);
+        assert_eq!(
+            reg.charge_publish(&name("ledger-accrual-tally-seal"), week, 2)
+                .await
+                .unwrap(),
+            Charged::NoSuchName
+        );
+        // Once the window has passed the budget is free again.
+        assert_eq!(
+            reg.charge_publish(&names[2], Duration::from_secs(0), 2)
+                .await
+                .unwrap(),
+            Charged::New
+        );
+    }
+
+    #[tokio::test]
+    async fn the_blocked_names_are_listed_and_a_file_without_the_column_is_upgraded() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("r.db");
+        {
+            // The table as the first release made it.
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE apps (name TEXT PRIMARY KEY,
+                    public_key BLOB NOT NULL CHECK (length(public_key) = 32),
+                    created INTEGER NOT NULL, blocked INTEGER NOT NULL DEFAULT 0) WITHOUT ROWID;
+                 INSERT INTO apps VALUES ('ledger-accrual-tally-mint', zeroblob(32), 1, 1);",
+            )
+            .unwrap();
+        }
+        let reg = Registry::open(&path, 16).unwrap();
+        let e = reg
+            .lookup(&name("ledger-accrual-tally-mint"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(e.blocked && !e.published);
+        assert_eq!(
+            reg.blocked_names().await.unwrap(),
+            [name("ledger-accrual-tally-mint")]
+        );
+        assert!(
+            reg.set_blocked(&name("ledger-accrual-tally-mint"), false)
+                .await
+                .unwrap()
+        );
+        assert!(reg.blocked_names().await.unwrap().is_empty());
     }
 }

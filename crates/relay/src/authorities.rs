@@ -7,18 +7,32 @@
 //! or ZeroSSL, or adding one, is an edit to the list the relay reads, with
 //! no release of the app.
 //!
+//! The list names each authority's directory address and the domain it
+//! uses in a CAA record (its "issuer domain name", which its own
+//! documentation gives). The relay's DNS answers CAA for the zone from the
+//! same list, naming each listed authority and the DNS-01 method only, so
+//! swapping an authority is an edit to this one file.
+//!
 //! ```toml
 //! [[authority]]
 //! id = "letsencrypt"
 //! directory = "https://acme-v02.api.letsencrypt.org/directory"
+//! caa_domain = "letsencrypt.org"
 //!
 //! [[authority]]
 //! id = "zerossl"
 //! directory = "https://acme.zerossl.com/v2/DV90"
+//! caa_domain = "sectigo.com"
 //! needs_binding = true
-//! binding_kid = "…"
-//! binding_hmac_key = "…"
 //! ```
+//!
+//! The file never holds a binding credential: an account-binding secret
+//! (RFC 8555 section 7.3.4) is one an authority issues for one account,
+//! and serving a shared one to every app would hand every holder of a name
+//! the operator's account. A file with `binding_kid` or `binding_hmac_key`
+//! is refused. A binding comes from a [`BindingSource`], per app; with none
+//! installed an authority that needs one is still listed, marked not
+//! usable, and served without one.
 //!
 //! ```text
 //! GOAL: the authority an app asks is chosen by the relay's list at the
@@ -29,17 +43,23 @@
 //! INVARIANTS:
 //!   1. The list is served in the order written, with each authority's
 //!      directory address and whether it needs a binding.
-//!   2. An authority that needs a binding is served only with one: a
-//!      list that names one without a credential is refused when read,
-//!      and the previous list stays in force.
+//!   2. No binding secret is ever served from the file: a file that
+//!      carries one is refused (a new file leaves the old list in force),
+//!      and a binding is served only when a per-app [`BindingSource`]
+//!      gives one; an authority that needs one and has none is served
+//!      without a binding and marked not usable.
 //!   3. A bad file never replaces a good list.
 //!   4. The list is bounded: at most 16 authorities.
+//!   5. The CAA issuer set is the list's `caa_domain`s, in order, and
+//!      follows the file.
 //! SCENARIOS:
-//!   1. Two authorities, the first plain and the second with a binding,
-//!      are served in that order, the second with its credential.
+//!   1. Two authorities, the first plain and the second needing a binding,
+//!      are served in that order; the second has a binding only from a
+//!      source, and is marked not usable without one.
 //!   2. The file is edited to put the second first: the next read serves
 //!      that order.
 //!   3. The file is edited to garbage: the old list is still served.
+//!   4. A file with a binding secret in it is refused in words.
 //! ```
 
 use std::path::PathBuf;
@@ -65,8 +85,10 @@ struct File {
 struct Entry {
     id: String,
     directory: String,
+    caa_domain: String,
     #[serde(default)]
     needs_binding: bool,
+    // Never accepted: read only to be refused in words.
     binding_kid: Option<String>,
     binding_hmac_key: Option<String>,
 }
@@ -85,9 +107,9 @@ pub enum ListError {
     Invalid(String),
 }
 
-/// Where an app's binding credential comes from. The static list gives
-/// every app the credential written in the file; a deployment that
-/// obtains one per app from the authority's API implements this instead.
+/// Where an app's binding credential comes from: one per app, obtained
+/// from the authority's own API by a deployment that implements this. The
+/// list file never carries one.
 pub trait BindingSource: Send + Sync {
     /// The credential for this app at this authority, if one is needed.
     fn binding_for(&self, authority_id: &str, name: &Name) -> Option<Binding>;
@@ -98,7 +120,7 @@ struct Listed {
     id: String,
     directory: String,
     needs_binding: bool,
-    binding: Option<Binding>,
+    caa_domain: String,
 }
 
 /// The list the relay serves.
@@ -113,6 +135,21 @@ fn is_loopback_http(url: &str) -> bool {
     ["http://127.0.0.1", "http://localhost", "http://[::1]"]
         .iter()
         .any(|p| url.starts_with(p))
+}
+
+/// A domain name fit for a CAA `issue` value: lower-case letters, digits
+/// and hyphens in labels of 1 to 63, at least two labels, 253 at most. No
+/// `;` or space, so no parameter can be smuggled into the record.
+fn is_caa_domain(d: &str) -> bool {
+    d.len() <= 253
+        && d.split('.').count() >= 2
+        && d.split('.').all(|l| {
+            (1..=63).contains(&l.len())
+                && !l.starts_with('-')
+                && !l.ends_with('-')
+                && l.bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        })
 }
 
 fn parse(text: &str) -> Result<Vec<Listed>, ListError> {
@@ -136,19 +173,19 @@ fn parse(text: &str) -> Result<Vec<Listed>, ListError> {
                 e.id
             )));
         }
-        let binding = match (e.binding_kid, e.binding_hmac_key) {
-            (Some(kid), Some(hmac_key)) => Some(Binding { kid, hmac_key }),
-            (None, None) => None,
-            _ => {
-                return Err(ListError::Invalid(format!(
-                    "{}: a binding needs both its kid and its key",
-                    e.id
-                )));
-            }
-        };
-        if e.needs_binding && binding.is_none() {
+        if e.binding_kid.is_some() || e.binding_hmac_key.is_some() {
             return Err(ListError::Invalid(format!(
-                "{} needs a binding and has none",
+                "{}: the list must not carry a binding secret (binding_kid, \
+                 binding_hmac_key): a shared credential would be served to every app. \
+                 Mark the authority needs_binding = true and give the relay a per-app \
+                 binding source instead",
+                e.id
+            )));
+        }
+        if !is_caa_domain(&e.caa_domain) {
+            return Err(ListError::Invalid(format!(
+                "{}: caa_domain must be the authority's issuer domain name, \
+                 such as letsencrypt.org",
                 e.id
             )));
         }
@@ -156,7 +193,7 @@ fn parse(text: &str) -> Result<Vec<Listed>, ListError> {
             id: e.id,
             directory: e.directory,
             needs_binding: e.needs_binding,
-            binding,
+            caa_domain: e.caa_domain,
         });
     }
     Ok(out)
@@ -196,7 +233,8 @@ impl AuthorityList {
         }
     }
 
-    /// Take bindings from `source` instead of the file's.
+    /// Take bindings from `source`, per app. Without one no authority that
+    /// needs a binding is usable.
     pub fn with_binding_source(mut self, source: Arc<dyn BindingSource>) -> Self {
         self.bindings = Some(source);
         self
@@ -225,20 +263,36 @@ impl AuthorityList {
     pub fn for_app(&self, name: &Name) -> Vec<Authority> {
         let list = Arc::clone(&self.current.read().unwrap_or_else(|p| p.into_inner()));
         list.iter()
-            .map(|a| Authority {
-                id: a.id.clone(),
-                directory: a.directory.clone(),
-                needs_binding: a.needs_binding,
-                binding: if a.needs_binding {
+            .map(|a| {
+                let binding = if a.needs_binding {
                     self.bindings
                         .as_ref()
                         .and_then(|b| b.binding_for(&a.id, name))
-                        .or_else(|| a.binding.clone())
                 } else {
                     None
-                },
+                };
+                Authority {
+                    id: a.id.clone(),
+                    directory: a.directory.clone(),
+                    needs_binding: a.needs_binding,
+                    usable: !a.needs_binding || binding.is_some(),
+                    binding,
+                }
             })
             .collect()
+    }
+
+    /// The CAA issuer domains of the listed authorities, in order, each
+    /// once: what the zone's CAA record permits to issue.
+    pub fn caa_issuers(&self) -> Vec<String> {
+        let list = Arc::clone(&self.current.read().unwrap_or_else(|p| p.into_inner()));
+        let mut out: Vec<String> = Vec::new();
+        for a in list.iter() {
+            if !out.contains(&a.caa_domain) {
+                out.push(a.caa_domain.clone());
+            }
+        }
+        out
     }
 }
 
@@ -250,51 +304,92 @@ mod tests {
 [[authority]]
 id = "letsencrypt"
 directory = "https://acme-v02.api.letsencrypt.org/directory"
+caa_domain = "letsencrypt.org"
 
 [[authority]]
 id = "zerossl"
 directory = "https://acme.zerossl.com/v2/DV90"
+caa_domain = "sectigo.com"
 needs_binding = true
-binding_kid = "kid-1"
-binding_hmac_key = "a2V5"
 "#;
 
     fn name() -> Name {
         Name::parse("ledger-accrual-tally-mint").unwrap()
     }
 
+    struct PerApp;
+    impl BindingSource for PerApp {
+        fn binding_for(&self, id: &str, name: &Name) -> Option<Binding> {
+            Some(Binding {
+                kid: format!("{id}-{name}"),
+                hmac_key: "x".into(),
+            })
+        }
+    }
+
     #[test]
-    fn the_list_is_served_in_order_with_its_binding() {
+    fn the_list_is_served_in_order_and_a_binding_comes_only_from_a_source() {
         let l = AuthorityList::from_toml(TWO).unwrap();
         let got = l.for_app(&name());
         assert_eq!(got.len(), 2);
         assert_eq!(got[0].id, "letsencrypt");
-        assert!(!got[0].needs_binding && got[0].binding.is_none());
+        assert!(!got[0].needs_binding && got[0].binding.is_none() && got[0].usable);
         assert_eq!(got[1].id, "zerossl");
-        assert!(got[1].needs_binding);
+        // No source: listed, needs one, served without, and not usable yet.
+        assert!(got[1].needs_binding && got[1].binding.is_none() && !got[1].usable);
+        let l = l.with_binding_source(Arc::new(PerApp));
+        let got = l.for_app(&name());
+        assert!(got[1].usable);
         assert_eq!(
             got[1].binding,
             Some(Binding {
-                kid: "kid-1".into(),
-                hmac_key: "a2V5".into()
+                kid: "zerossl-ledger-accrual-tally-mint".into(),
+                hmac_key: "x".into()
             })
         );
+        assert!(got[0].binding.is_none());
+    }
+
+    #[test]
+    fn a_list_file_that_carries_a_binding_secret_is_refused_in_words() {
+        for secret in [
+            "binding_kid = 'k'\nbinding_hmac_key = 'a2V5'\n",
+            "binding_kid = 'k'\n",
+            "binding_hmac_key = 'a2V5'\n",
+        ] {
+            let text = format!(
+                "[[authority]]\nid='z'\ndirectory='https://x/d'\ncaa_domain='x.example'\nneeds_binding=true\n{secret}"
+            );
+            let err = AuthorityList::from_toml(&text).err().expect("refused");
+            let said = err.to_string();
+            assert!(
+                said.contains("binding secret") && said.contains("per-app binding source"),
+                "{said}"
+            );
+        }
     }
 
     #[test]
     fn a_bad_list_is_refused() {
         for bad in [
             "",
-            "[[authority]]\nid='a'\ndirectory='http://example.com/dir'\n",
-            "[[authority]]\nid='a'\ndirectory='https://x/d'\nneeds_binding=true\n",
-            "[[authority]]\nid='a'\ndirectory='https://x/d'\nbinding_kid='k'\n",
-            "[[authority]]\nid='a'\ndirectory='https://x/d'\n[[authority]]\nid='a'\ndirectory='https://y/d'\n",
-            "[[authority]]\nid='a'\ndirectory='https://x/d'\nsurprise=1\n",
+            "[[authority]]\nid='a'\ndirectory='http://example.com/dir'\ncaa_domain='x.example'\n",
+            // no caa_domain, and a caa_domain that is not a plain domain name
+            "[[authority]]\nid='a'\ndirectory='https://x/d'\n",
+            "[[authority]]\nid='a'\ndirectory='https://x/d'\ncaa_domain='x.example; accounturi=y'\n",
+            "[[authority]]\nid='a'\ndirectory='https://x/d'\ncaa_domain='Example.COM'\n",
+            "[[authority]]\nid='a'\ndirectory='https://x/d'\ncaa_domain='localhost'\n",
+            "[[authority]]\nid='a'\ndirectory='https://x/d'\ncaa_domain='x.example'\n[[authority]]\nid='a'\ndirectory='https://y/d'\ncaa_domain='y.example'\n",
+            "[[authority]]\nid='a'\ndirectory='https://x/d'\ncaa_domain='x.example'\nsurprise=1\n",
         ] {
             assert!(AuthorityList::from_toml(bad).is_err(), "{bad:?}");
         }
         let many: String = (0..17)
-            .map(|i| format!("[[authority]]\nid='a{i}'\ndirectory='https://x/d'\n"))
+            .map(|i| {
+                format!(
+                    "[[authority]]\nid='a{i}'\ndirectory='https://x/d'\ncaa_domain='x.example'\n"
+                )
+            })
             .collect();
         assert!(AuthorityList::from_toml(&many).is_err());
     }
@@ -306,37 +401,43 @@ binding_hmac_key = "a2V5"
         std::fs::write(&path, TWO).unwrap();
         let l = AuthorityList::from_file(path.clone()).unwrap();
         assert_eq!(l.for_app(&name())[0].id, "letsencrypt");
-        let flipped = "[[authority]]\nid='zerossl'\ndirectory='https://acme.zerossl.com/v2/DV90'\nneeds_binding=true\nbinding_kid='k'\nbinding_hmac_key='a2V5'\n[[authority]]\nid='letsencrypt'\ndirectory='https://acme-v02.api.letsencrypt.org/directory'\n";
+        assert_eq!(l.caa_issuers(), ["letsencrypt.org", "sectigo.com"]);
+        let flipped = "[[authority]]\nid='zerossl'\ndirectory='https://acme.zerossl.com/v2/DV90'\ncaa_domain='sectigo.com'\nneeds_binding=true\n[[authority]]\nid='letsencrypt'\ndirectory='https://acme-v02.api.letsencrypt.org/directory'\ncaa_domain='letsencrypt.org'\n";
         std::fs::write(&path, flipped).unwrap();
         // Same-second edits may not move the mtime: force it to look new.
         *l.seen.lock().unwrap() = None;
         assert!(l.reload().unwrap());
         assert_eq!(l.for_app(&name())[0].id, "zerossl");
+        assert_eq!(l.caa_issuers(), ["sectigo.com", "letsencrypt.org"]);
         std::fs::write(&path, "not toml {{{").unwrap();
+        *l.seen.lock().unwrap() = None;
+        assert!(l.reload().is_err());
+        assert_eq!(l.for_app(&name())[0].id, "zerossl", "the good list stands");
+        // A file that gains a binding secret is a bad file too.
+        let secret = format!("{flipped}binding_kid='k'\nbinding_hmac_key='a2V5'\n");
+        std::fs::write(&path, secret).unwrap();
         *l.seen.lock().unwrap() = None;
         assert!(l.reload().is_err());
         assert_eq!(l.for_app(&name())[0].id, "zerossl", "the good list stands");
     }
 
     #[test]
-    fn a_binding_source_overrides_the_file() {
-        struct PerApp;
-        impl BindingSource for PerApp {
-            fn binding_for(&self, id: &str, name: &Name) -> Option<Binding> {
-                Some(Binding {
-                    kid: format!("{id}-{name}"),
-                    hmac_key: "x".into(),
-                })
-            }
-        }
+    fn a_binding_source_is_asked_only_for_authorities_that_need_one() {
         let l = AuthorityList::from_toml(TWO)
             .unwrap()
             .with_binding_source(Arc::new(PerApp));
         let got = l.for_app(&name());
+        assert!(got[0].binding.is_none(), "letsencrypt needs none");
+        assert!(got[1].binding.is_some());
+    }
+
+    #[test]
+    fn two_authorities_with_one_issuer_name_it_once() {
+        let text = "[[authority]]\nid='a'\ndirectory='https://x/d'\ncaa_domain='x.example'\n[[authority]]\nid='b'\ndirectory='https://y/d'\ncaa_domain='x.example'\n";
         assert_eq!(
-            got[1].binding.as_ref().unwrap().kid,
-            "zerossl-ledger-accrual-tally-mint"
+            AuthorityList::from_toml(text).unwrap().caa_issuers(),
+            ["x.example"]
         );
-        assert!(got[0].binding.is_none());
+        assert!(AuthorityList::empty().caa_issuers().is_empty());
     }
 }

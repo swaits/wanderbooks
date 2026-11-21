@@ -130,16 +130,21 @@ has no header, its first link sits under the bar (`top_slot` in
 where the assistant's connection state is drawn later), and the Overview
 opens with its summary sentence, not a heading with the name. The company
 is named once more, at the opposite corner: the status card at the foot of
-the sidebar begins with a heading row, the badge (small) and the name, cut
-with an ellipsis and whole on hover, over the lines it always had; the
-rail shows the badge alone, its name on hover. Each company has one badge
+the sidebar begins with a heading row: the badge (small) and the name, cut
+with an ellipsis and whole on hover, and at the right the live dot and
+"Live" (or "Snapshot"). The journal chain line, the card's last, ends with
+"· event N"; there is no row of its own for the state. Folded (a short
+window) the card is the heading alone, "● Live · event N" (and the seal
+when the name keeps room), or, when a check failed, the heading over one
+line naming it. The rail shows the badge with the live dot on its corner
+(a warning there when a check failed), the name, state, event and checks on
+hover. Each company has one badge
 hue of eight (`theme::BADGE_HUES`, light and dark), chosen by a stable
 hash of the id of its books (`theme::hue_index`, FNV-1a modulo eight: a
 function of the id alone, so a company keeps its colour on every machine
 and after a rename); its tab and its card draw the same one, and the
 active tab's accent line stays the theme's. The bar's height (`tabs::BAR_H`) is taken from the
-window, so the smallest window the viewer allows is the 400 points below
-the bar plus the bar. A tab is the company's badge and name, as wide as
+window; the viewer's smallest window is 400 points high, as before the bar. A tab is the company's badge and name, as wide as
 that between a least and a greatest width; the "+" follows the last tab
 and stays at the right edge, the tabs scrolling, when they overflow. The
 app remembers each company's name when its books load (`company.<root>.<id>.name`

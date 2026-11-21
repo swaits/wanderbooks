@@ -902,28 +902,33 @@ impl CompanyView {
                         let live = self.loader.is_some() || self.live_label;
                         let checks = checks(b);
                         let ok = checks.iter().all(|c| c.0);
-                        let (r, resp) = ui.allocate_exact_size(
-                            vec2(32.0, ui.spacing().interact_size.y + 4.0),
-                            Sense::hover(),
-                        );
+                        // The company's badge, its live dot on the badge's
+                        // corner (a warning there when a check failed); its
+                        // name, state, event and checks on hover.
+                        let (r, resp) =
+                            ui.allocate_exact_size(vec2(RAIL_BADGE, RAIL_BADGE), Sense::hover());
+                        head.paint(ui, r, 6);
+                        let corner = r.right_bottom() - vec2(1.0, 1.0);
+                        ui.painter().circle_filled(corner, 6.0, p.sidebar);
                         if ok {
                             let pulse = (ui.input(|i| i.time) - self.updated_at < 2.0) as u8 as f32;
                             ui.painter().circle_filled(
-                                r.center(),
+                                corner,
                                 4.0 + pulse,
                                 if live { p.positive } else { p.faint },
                             );
                         } else {
                             ui.painter().text(
-                                r.center(),
+                                corner,
                                 egui::Align2::CENTER_CENTER,
                                 icon::WARNING_CIRCLE,
-                                egui::FontId::proportional(18.0),
+                                egui::FontId::proportional(13.0),
                                 p.negative,
                             );
                         }
                         let mut tip = format!(
-                            "{} · event {}",
+                            "{}\n{} · event {}",
+                            head.title,
                             if live { "Live" } else { "Snapshot" },
                             b.seq()
                         );
@@ -938,13 +943,6 @@ impl CompanyView {
                             ));
                         }
                         resp.on_hover_text(tip);
-                        // The company, above its status (the footer is laid
-                        // out bottom up): its badge alone, its name on hover.
-                        ui.add_space(2.0);
-                        let (r, resp) =
-                            ui.allocate_exact_size(vec2(RAIL_BADGE, RAIL_BADGE), Sense::hover());
-                        head.paint(ui, r, 6);
-                        resp.on_hover_text(&head.title);
                     }
                 });
                 memo.measured(ui, "rail", fit.form(), footer.response.rect);
@@ -1709,18 +1707,108 @@ impl CardHead {
     }
 
     /// The card's heading row: the badge, small, and the name, cut with
-    /// an ellipsis to the card's width.
-    fn row(&self, ui: &mut Ui) -> egui::Response {
-        ui.horizontal(|ui| {
-            let (r, _) = ui.allocate_exact_size(vec2(CARD_BADGE, CARD_BADGE), Sense::hover());
-            self.paint(ui, r, 4);
-            ui.add(
-                egui::Label::new(RichText::new(&self.title).font(theme::semibold(12.5))).truncate(),
-            )
-        })
-        .inner
+    /// an ellipsis to the room the live mark leaves, and at the right
+    /// that mark: the dot and "Live" (or "Snapshot"), pulsing for two
+    /// seconds after an update. `after` is what the folded card, which
+    /// has no line of its own, adds after the word: its event and the
+    /// seal; the fullest that leaves the name [`NAME_MIN`] is drawn, and
+    /// what was drawn comes back with the name's response.
+    fn row(&self, ui: &mut Ui, since_update: f64, live: bool, after: Option<&After>) -> Drawn {
+        let p = pal(ui.ctx());
+        let status = if live { "Live" } else { "Snapshot" };
+        let font = theme::semibold(12.0);
+        let small = theme::regular(11.5);
+        let gap = ui.spacing().item_spacing.x;
+        let w = |ui: &Ui, text: &str, font: &egui::FontId| {
+            ui.fonts_mut(|f| {
+                f.layout_no_wrap(text.to_string(), font.clone(), p.text)
+                    .size()
+                    .x
+            })
+        };
+        let word = w(ui, status, &font);
+        let avail = ui.available_width() - CARD_BADGE - 2.0 * gap;
+        // The fullest mark that leaves the name its least room.
+        let (event, seal) = match after {
+            None => (None, None),
+            Some(a) => {
+                let tail = |ev: bool, seal: bool| {
+                    let mut x = 0.0;
+                    if ev {
+                        x += MARK_GAP + w(ui, &a.event, &small);
+                    }
+                    if let (true, Some(sl)) = (seal, a.seal) {
+                        x += MARK_GAP + w(ui, sl, &small);
+                    }
+                    x
+                };
+                let (ev, seal) = [(true, true), (true, false), (false, true), (false, false)]
+                    .into_iter()
+                    .find(|&(ev, sl)| avail - 8.0 - MARK_GAP - word - tail(ev, sl) >= NAME_MIN)
+                    .unwrap_or((false, false));
+                (ev.then_some(a.event.as_str()), a.seal.filter(|_| seal))
+            }
+        };
+        let mark_w = 8.0
+            + MARK_GAP
+            + word
+            + event.map_or(0.0, |e| MARK_GAP + w(ui, e, &small))
+            + seal.map_or(0.0, |s| MARK_GAP + w(ui, s, &small));
+        let room = (avail - mark_w).max(0.0);
+        let name = ui
+            .horizontal(|ui| {
+                let (r, _) = ui.allocate_exact_size(vec2(CARD_BADGE, CARD_BADGE), Sense::hover());
+                self.paint(ui, r, 4);
+                let name = ui
+                    .allocate_ui_with_layout(
+                        vec2(room, CARD_BADGE),
+                        Layout::left_to_right(Align::Center),
+                        |ui| {
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(&self.title).font(theme::semibold(12.5)),
+                                )
+                                .truncate(),
+                            )
+                        },
+                    )
+                    .inner;
+                ui.spacing_mut().item_spacing.x = MARK_GAP;
+                let (r, _) = ui.allocate_exact_size(vec2(8.0, 8.0), Sense::hover());
+                let pulse = (since_update < 2.0) as u8 as f32;
+                let color = if live { p.positive } else { p.faint };
+                ui.painter().circle_filled(r.center(), 4.0 + pulse, color);
+                ui.label(RichText::new(status).font(font));
+                for t in event.into_iter().chain(seal) {
+                    ui.label(RichText::new(t).font(small.clone()).color(p.muted));
+                }
+                name
+            })
+            .inner;
+        Drawn {
+            name,
+            event: event.is_some(),
+        }
     }
 }
+
+/// The folded card's words after "Live" in its heading.
+struct After {
+    event: String,
+    seal: Option<&'static str>,
+}
+
+/// What [`CardHead::row`] drew after the live word.
+struct Drawn {
+    name: egui::Response,
+    event: bool,
+}
+
+/// The least room the card's heading leaves the name before the folded
+/// card's event, then its seal, are left to the tooltip.
+const NAME_MIN: f32 = 10.0;
+/// The space between the live mark's parts.
+const MARK_GAP: f32 = 4.0;
 
 /// The status card: whether the books are live, their newest event, and
 /// the integrity checks. Folded (a short window), one line, the checks
@@ -1744,22 +1832,13 @@ fn live_status(
         .inner_margin(Margin::same(10))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                let (r, _) = ui.allocate_exact_size(vec2(8.0, 8.0), Sense::hover());
-                let pulse = (since_update < 2.0) as u8 as f32;
-                let color = if live { p.positive } else { p.faint };
-                ui.painter().circle_filled(r.center(), 4.0 + pulse, color);
-                ui.label(
-                    RichText::new(if live { "Live" } else { "Snapshot" })
-                        .font(theme::semibold(12.0)),
-                );
-                ui.label(
-                    RichText::new(format!("· event {}", b.seq()))
-                        .font(theme::regular(12.0))
-                        .color(p.muted),
-                );
-            });
-            for (ok, text, tip) in checks(b) {
+            // The event ends the card's last line, the journal chain's.
+            for (i, (ok, text, tip)) in checks(b).into_iter().enumerate() {
+                let text = if i == 0 {
+                    format!("{text} · event {}", b.seq())
+                } else {
+                    text
+                };
                 let (glyph, color) = if ok {
                     (icon::SEAL_CHECK, p.muted)
                 } else {
@@ -1772,7 +1851,7 @@ fn live_status(
                             .color(color),
                     )
                     .on_hover_text(tip);
-                if text == "Journal chain verified" {
+                if i == 0 {
                     r.context_menu(|ui| {
                         crate::widgets::copy_item(ui, "Copy journal head", &b.head);
                         crate::widgets::copy_item(
@@ -1785,16 +1864,19 @@ fn live_status(
             }
             // The footer is laid out bottom up, so what is added last is
             // the card's top: the heading, over what the card always said.
-            head.row(ui).on_hover_text(&head.title);
+            head.row(ui, since_update, live, None)
+                .name
+                .on_hover_text(&head.title);
         });
 }
 
-/// The status card folded to its summary line ("● Live · event 559 ·
-/// ✓ verified", or the check that failed), the three checks on hover
-/// and the card's copy menu on a right click. The line is the fullest
-/// of [`summaries`] that fits the card, so it is never cut off: a failed
-/// check's name outranks the event and the word "Live" (review,
-/// 2026-10-22: cut to "⊘ Datab…" it hid what failed).
+/// The status card folded. Every check passing, it is its heading alone:
+/// the badge, the name, and at the right "● Live · event 559 ✓", the
+/// event and the seal given up (to the tooltip) only for the name's
+/// least room. A check failed, a line under the heading names it, the
+/// event at its end ([`summaries`]). The three checks are on hover and
+/// the card's copy menu on a right click. A failed check's name outranks
+/// the event (review, 2026-10-22: cut to "⊘ Datab…" it hid what failed).
 fn folded_status(ui: &mut Ui, b: &Books, since_update: f64, live: bool, head: &CardHead) {
     let p = pal(ui.ctx());
     let checks = checks(b);
@@ -1809,28 +1891,26 @@ fn folded_status(ui: &mut Ui, b: &Books, since_update: f64, live: bool, head: &C
     let room = ui.available_width() - 2.0 * 10.0 - 2.0;
     let gap = 5.0;
     let width = |s: &Summary| {
-        let w = |text: &str, font: egui::FontId| {
-            ui.fonts_mut(|f| f.layout_no_wrap(text.to_string(), font, p.text).size().x)
+        let w = |text: &str| {
+            ui.fonts_mut(|f| {
+                f.layout_no_wrap(text.to_string(), theme::regular(12.0), p.text)
+                    .size()
+                    .x
+            })
         };
-        let mut x = 8.0 + gap + w(s.verdict(), theme::regular(12.0));
-        if s.status {
-            x += gap + w(status, theme::semibold(12.0));
-        }
+        let mut x = w(s.verdict());
         if s.event {
-            x += gap + w(&event, theme::regular(12.0));
+            x += gap + w(&event);
         }
         x
     };
     let all = summaries(&failed);
-    let line = all
-        .iter()
-        .find(|s| width(s) <= room)
-        .unwrap_or_else(|| all.last().expect("a summary"));
-    let color = if failed.is_empty() {
-        p.muted
-    } else {
-        p.negative
-    };
+    let line = (!failed.is_empty()).then(|| {
+        all.iter()
+            .find(|s| width(s) <= room)
+            .unwrap_or_else(|| all.last().expect("a summary"))
+    });
+    let mut event_shown = false;
     let card = Frame::new()
         .fill(p.surface)
         .stroke(Stroke::new(1.0, p.border))
@@ -1838,32 +1918,40 @@ fn folded_status(ui: &mut Ui, b: &Books, since_update: f64, live: bool, head: &C
         .inner_margin(Margin::same(10))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = gap;
-                let (r, _) = ui.allocate_exact_size(vec2(8.0, 8.0), Sense::hover());
-                let pulse = (since_update < 2.0) as u8 as f32;
-                let dot = if live { p.positive } else { p.faint };
-                ui.painter().circle_filled(r.center(), 4.0 + pulse, dot);
-                if line.status {
-                    ui.label(RichText::new(status).font(theme::semibold(12.0)));
-                }
-                if line.event {
-                    ui.label(
-                        RichText::new(&event)
-                            .font(theme::regular(12.0))
-                            .color(p.muted),
-                    );
-                }
-                ui.label(
-                    RichText::new(line.verdict())
-                        .font(theme::regular(12.0))
-                        .color(color),
-                );
-            });
+            if let Some(line) = line {
+                // As tall as the card's other lines (a label's row), not a
+                // button's.
+                ui.scope(|ui| {
+                    ui.spacing_mut().interact_size.y = 0.0;
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = gap;
+                        ui.label(
+                            RichText::new(line.verdict())
+                                .font(theme::regular(12.0))
+                                .color(p.negative),
+                        );
+                        if line.event {
+                            ui.label(
+                                RichText::new(&event)
+                                    .font(theme::regular(12.0))
+                                    .color(p.muted),
+                            );
+                        }
+                    });
+                });
+                event_shown = line.event;
+            }
             // Bottom up, so last is the top: the heading. Its hover is the
             // card's (below): the card is one target, whose tooltip begins
             // with the name.
-            head.row(ui);
+            // The heading carries the event when the line does not (and
+            // the seal when there is no line: the line's words say it).
+            let after = After {
+                event: event.clone(),
+                seal: line.is_none().then_some(icon::SEAL_CHECK),
+            };
+            let drawn = head.row(ui, since_update, live, (!event_shown).then_some(&after));
+            event_shown |= drawn.event;
         });
     let resp = ui.interact(
         card.response.rect,
@@ -1872,7 +1960,7 @@ fn folded_status(ui: &mut Ui, b: &Books, since_update: f64, live: bool, head: &C
     );
     resp.on_hover_ui(|ui| {
         ui.label(RichText::new(&head.title).font(theme::semibold(12.0)));
-        if !(line.status && line.event) {
+        if !event_shown {
             ui.label(
                 RichText::new(format!("{status} {event}"))
                     .font(theme::regular(11.5))
@@ -1898,70 +1986,42 @@ fn folded_status(ui: &mut Ui, b: &Books, since_update: f64, live: bool, head: &C
     });
 }
 
-/// One way to say the folded card's line: whether it names the status
-/// ("Live") and the event, and its verdict.
+/// One way to say the folded card's failure line: whether it carries the
+/// event, and its verdict.
 #[derive(Clone, Debug, PartialEq)]
 struct Summary {
-    status: bool,
     event: bool,
     verdict: String,
 }
 
 impl Summary {
-    /// The verdict as drawn: right after the dot it needs no "·".
     fn verdict(&self) -> &str {
-        if self.status {
-            &self.verdict
-        } else {
-            self.verdict.trim_start_matches("· ")
-        }
+        &self.verdict
     }
 }
 
-/// The folded card's lines, fullest first, given the checks that
-/// `failed`. All passing, the event outranks the word "verified" (the
-/// seal says it). A failure is named before anything else is kept: the
-/// event goes first, then "Live" (the dot's colour says it), and only
-/// then is the name shortened to a count. Whatever the line leaves out
-/// its tooltip says.
+/// The folded card's failure lines, fullest first, given the checks that
+/// `failed`. A failure is named before anything else is kept: the event
+/// goes first, and only then is the name shortened to a count. Whatever
+/// the line leaves out its tooltip says. "Live" is never left out: it is
+/// the heading's.
 fn summaries(failed: &[&str]) -> Vec<Summary> {
-    let s = |status, event, verdict: String| Summary {
-        status,
-        event,
-        verdict,
+    let s = |event, verdict: String| Summary { event, verdict };
+    let named = format!("{} {}", icon::WARNING_CIRCLE, failed.join(", "));
+    let counted = match failed.len() {
+        1 => format!("{} check failed", icon::WARNING_CIRCLE),
+        n => format!("{} {n} checks failed", icon::WARNING_CIRCLE),
     };
-    match failed {
-        [] => {
-            let full = format!("· {} verified", icon::SEAL_CHECK);
-            let seal = format!("· {}", icon::SEAL_CHECK);
-            vec![
-                s(true, true, full.clone()),
-                s(true, true, seal.clone()),
-                s(true, false, full),
-                s(true, false, seal.clone()),
-                s(false, false, seal),
-            ]
-        }
-        names => {
-            let named = format!("· {} {}", icon::WARNING_CIRCLE, names.join(", "));
-            let counted = match names.len() {
-                1 => format!("· {} check failed", icon::WARNING_CIRCLE),
-                n => format!("· {} {n} checks failed", icon::WARNING_CIRCLE),
-            };
-            let short = match names.len() {
-                1 => format!("· {} failed", icon::WARNING_CIRCLE),
-                n => format!("· {} {n} failed", icon::WARNING_CIRCLE),
-            };
-            vec![
-                s(true, true, named.clone()),
-                s(true, false, named.clone()),
-                s(false, false, named),
-                s(true, false, counted.clone()),
-                s(false, false, counted),
-                s(false, false, short),
-            ]
-        }
-    }
+    let short = match failed.len() {
+        1 => format!("{} failed", icon::WARNING_CIRCLE),
+        n => format!("{} {n} failed", icon::WARNING_CIRCLE),
+    };
+    vec![
+        s(true, named.clone()),
+        s(false, named),
+        s(false, counted),
+        s(false, short),
+    ]
 }
 
 /// The integrity checks the sidebar shows: (ok, label, explanation).
@@ -2077,7 +2137,7 @@ mod tests {
     fn a_folded_card_names_a_failure_before_keeping_anything_else() {
         let lines = summaries(&["Database differs"]);
         // Every line says it failed; the name goes only after the event
-        // and the word "Live" have.
+        // has.
         assert!(
             lines
                 .iter()
@@ -2087,23 +2147,9 @@ mod tests {
             .iter()
             .take_while(|l| l.verdict.contains("Database differs"))
             .count();
-        assert_eq!(named, 3);
-        assert!(!lines[named - 1].status && !lines[named - 1].event);
+        assert_eq!(named, 2);
+        assert!(lines[0].event && !lines[named - 1].event);
         assert!(lines[named..].iter().all(|l| l.verdict.contains("failed")));
-        // Passing, the line is never a failure's and keeps its seal.
-        let ok = summaries(&[]);
-        assert!(
-            ok.iter().all(|l| l.verdict.contains(icon::SEAL_CHECK)
-                && !l.verdict.contains(icon::WARNING_CIRCLE))
-        );
-        assert_eq!(
-            ok[0],
-            Summary {
-                status: true,
-                event: true,
-                verdict: format!("· {} verified", icon::SEAL_CHECK),
-            }
-        );
         assert!(
             summaries(&["a", "b"])
                 .last()

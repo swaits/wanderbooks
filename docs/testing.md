@@ -4417,16 +4417,10 @@ in `company.rs`; the scheme tests, in `scheme_menu.rs`. The tab bar runs
 across the top of the window *above* the sidebar (D-78): a tab is the
 top level, and the layout shows that the sidebar belongs to the company in
 it. The bar takes `tabs::BAR_H` (36 points) of the window's height, which
-the sidebar had to spare nowhere at the owner's 519 points. So the four
-`sidenav.rs` tests that size a window for the sidebar add `BAR_H` to their
-window heights, through the constant the bar uses (`at_1479x519_…`,
-`the_rail_at_519_…`, the grid's heights in `grid`, and
-`a_tall_sidebar_is_unchanged` at 920), each with a comment, and no
-assertion in them changed; the viewer's smallest window is 400 points plus
-`BAR_H` (`lib.rs`). The last one's pixel golden is untouched: the sidebar
-below the bar, cropped from `BAR_H` down, is pixel for pixel the old
-image; its shapes hash was recomputed, because the shapes now sit `BAR_H`
-lower, and covers only the shapes clipped below the bar. In `tabs.rs`, the
+the sidebar had to spare nowhere at the owner's 519 points. The status
+card gave the height back (see "The sidebar tests' window sizes are
+restored" below); the golden's crop and shapes hash cover only what is below
+the bar. In `tabs.rs`, the
 three tests that click a closed company in the "+" list by its id now click
 it by its name, which the list shows once the company has been open; the
 list's empty words are now "Every company is already open." The ten
@@ -4544,18 +4538,17 @@ shown to fail: `preferences_written_before_the_keys_had_a_root_are_read_and_not_
 `books_outside_any_data_root_are_kept_under_their_folder`, whose second
 folder is also told apart by its books' identity.
 
-**The sidebar tests' window sizes were not restored.** With the `+ BAR_H`
-taken off the four `sidenav.rs` sites the sidebar has 36 points less than
-the owner's 519 gave it before the bar, and three of the four fail at the
-original size: `at_1479x519_every_link_shows_unscrolled` (the links scroll;
-the window must be 534 high for them not to, 15 points short),
-`the_rail_at_519_shows_every_link_unscrolled` (the rail must be 530, 11
-short) and the grid test at 520 px (`no_link_is_ever_under_the_footer_at_scale_1`:
-the same 15 points); `a_tall_sidebar_is_unchanged` fails its shapes hash,
-which the shorter sidebar changes, as expected. The tests were left as they
-are, the minimum window height (`lib.rs`) and the goldens untouched, and
-the 15 (sidebar) and 11 (rail) points are the owner's to decide: take them
-from the sidebar's rows or keep the bar's 36 points in the window sizes.
+**The sidebar tests' window sizes are restored.** The status card gave back
+the bar's height by one row: its heading carries the live dot and word
+("Live", "Snapshot") and the old last row is gone, the event moving to the
+end of the journal chain line (folded: after the live word in the heading,
+or at the end of the failure line). The four `sidenav.rs` tests are at their
+original sizes (1479x519, the rail at 519, the grid at 520 px, the tall
+sidebar at 1440x920) with every assertion unchanged, and the minimum window
+height is 400 again. The failing-check folded line is a label's row high,
+like the card's other lines, not a button's; nothing else was tightened.
+`the_folded_card_shows_its_checks_on_hover` and the two card tests in
+`tabs.rs` assert where the live word and the event sit in each state.
 
 ## P12: the checklists
 

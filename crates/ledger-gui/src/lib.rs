@@ -141,9 +141,8 @@ pub fn run(
             .with_app_id("wanderbooks")
             .with_inner_size([1440.0, 920.0])
             // Small on purpose: tiling window managers hand out small slots
-            // regardless, and every screen lays itself out to fit. The
-            // height is the window's below the tab bar (tabs::BAR_H).
-            .with_min_inner_size([360.0, 400.0 + tabs::BAR_H]),
+            // regardless, and every screen lays itself out to fit.
+            .with_min_inner_size([360.0, 400.0]),
         // The platform's place for app settings, never the books' folder
         // (prefs.rs).
         persistence_path: prefs::prepare(),

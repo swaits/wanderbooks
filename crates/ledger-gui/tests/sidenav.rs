@@ -373,8 +373,7 @@ fn grid(scale: f32) {
         for side in [Pane::Sidebar, Pane::Rail] {
             let mut h = f.harness(footer, Route::Projects, side.width(), 920.0, scale);
             for px in (300..=920).step_by(20) {
-                // The tab bar takes BAR_H points of the window; D-78.
-                let pt = px as f32 / scale + BAR_H;
+                let pt = px as f32 / scale;
                 h.set_size(vec2(side.width(), pt));
                 h.run_steps(4);
                 let tag = format!("{footer:?} {side:?} {px}px @{scale}");
@@ -415,8 +414,7 @@ fn no_link_is_ever_under_the_footer_at_scale_2() {
 fn at_1479x519_every_link_shows_unscrolled() {
     let f = Fixture::new();
     for footer in FOOTERS {
-        // The tab bar takes BAR_H points of the window; D-78.
-        let mut h = f.harness(footer, Route::Projects, 1479.0, 519.0 + BAR_H, 1.0);
+        let mut h = f.harness(footer, Route::Projects, 1479.0, 519.0, 1.0);
         let (view, _, scrolls) = drawn(&h, Pane::Sidebar);
         assert!(!scrolls, "{footer:?}: the links scroll");
         for s in Section::ALL {
@@ -445,16 +443,19 @@ fn at_1479x519_every_link_shows_unscrolled() {
     }
 }
 
-/// Folded, the card is one line that fits the card whole (never cut to
-/// "Datab…"), naming the check that failed; hovered, it shows the three
-/// checks.
+/// Folded, the card is its heading alone, "Live · event N" at its right,
+/// the seal after it, when every check passes; when one failed, a line
+/// under the heading names it, whole (never cut to "Datab…"), the event
+/// at its end. Either way it says Live or Snapshot and the event, and
+/// hovered it shows the three checks.
 #[test]
 fn the_folded_card_shows_its_checks_on_hover() {
     let f = Fixture::new();
-    for (footer, verdict, checks) in [
+    for (footer, verdict, word, checks) in [
         (
             Footer::Owners,
-            "verified",
+            "event 6",
+            "Live",
             [
                 "Journal chain verified",
                 "Database matches journal",
@@ -463,8 +464,7 @@ fn the_folded_card_shows_its_checks_on_hover() {
         ),
         (
             Footer::Snapshot,
-            // Its line is "Snapshot · event 555 · (seal)": no room for
-            // "verified", which the seal says.
+            "event 6",
             "Snapshot",
             [
                 "Journal chain verified",
@@ -475,6 +475,7 @@ fn the_folded_card_shows_its_checks_on_hover() {
         (
             Footer::Differs,
             "Database differs",
+            "Live",
             [
                 "Journal chain verified",
                 "Database differs",
@@ -484,6 +485,7 @@ fn the_folded_card_shows_its_checks_on_hover() {
         (
             Footer::Unreadable,
             "Database unreadable",
+            "Live",
             [
                 "Journal chain verified",
                 "Database unreadable",
@@ -493,6 +495,7 @@ fn the_folded_card_shows_its_checks_on_hover() {
         (
             Footer::Damaged,
             "2 files damaged",
+            "Live",
             [
                 "Journal chain verified",
                 "Database matches journal",
@@ -517,10 +520,28 @@ fn the_folded_card_shows_its_checks_on_hover() {
             );
             let (_, footer_rect, _) = drawn(&h, Pane::Sidebar);
             let line = h.get_by_label_contains(verdict);
-            let card = line.rect();
+            let card = h.get_by_label_contains(word).rect();
+            // The live word is in the heading, above the line when there
+            // is one; the event is on the line, or after the word.
+            assert!(line.rect().bottom() <= footer_rect.bottom(), "{tag}");
+            if verdict.starts_with("event") {
+                assert!(
+                    (line.rect().center().y - card.center().y).abs() < 4.0,
+                    "{tag}: the event is after the live word"
+                );
+            } else {
+                assert!(
+                    line.rect().top() > card.bottom() - 4.0,
+                    "{tag}: a line under the heading"
+                );
+                assert!(
+                    h.query_all_by_label_contains("event ").count() >= 1,
+                    "{tag}: the failure line ends with the event"
+                );
+            }
             // Every piece of the line lies inside the card's margins: a
             // piece cut off or running out would reach past them.
-            for piece in ["Live", "Snapshot", "event 5", verdict] {
+            for piece in [word, "event ", verdict] {
                 for n in h.query_all_by_label_contains(piece) {
                     let r = n.rect();
                     if r.left() < Pane::Sidebar.panel() && r.top() >= footer_rect.top() {
@@ -549,8 +570,7 @@ fn the_rail_at_519_shows_every_link_unscrolled() {
     let f = Fixture::new();
     for footer in FOOTERS {
         for route in [Route::Projects, Route::Overview, Route::Journal] {
-            // The tab bar takes BAR_H points of the window; D-78.
-            let h = f.harness(footer, route.clone(), 900.0, 519.0 + BAR_H, 1.0);
+            let h = f.harness(footer, route.clone(), 900.0, 519.0, 1.0);
             let tag = format!("{footer:?} {route:?}");
             let (view, _, scrolls) = drawn(&h, Pane::Rail);
             assert!(!scrolls, "{tag}: the rail's links scroll");
@@ -642,9 +662,7 @@ fn going_somewhere_scrolls_its_link_into_view() {
 #[test]
 fn a_tall_sidebar_is_unchanged() {
     let f = Fixture::new();
-    // The tab bar takes BAR_H points of the window, and the sidebar is
-    // what is below it; D-78.
-    let mut h = f.harness(Footer::Owners, Route::Overview, 1440.0, 920.0 + BAR_H, 1.0);
+    let mut h = f.harness(Footer::Owners, Route::Overview, 1440.0, 920.0, 1.0);
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/goldens");
     let shapes = sidebar_shapes(&h);
     let bless = std::env::var("SIDENAV_BLESS").is_ok();
@@ -763,7 +781,7 @@ fn sidenav_screenshots() {
     }
     // The folded card's tooltip.
     let mut h = f.harness(Footer::Owners, Route::Projects, 1479.0, 519.0, 1.0);
-    if let Some(n) = h.query_by_label_contains("event 5") {
+    if let Some(n) = h.query_by_label_contains("event ") {
         let c = n.rect().center();
         h.hover_at(c);
         h.run_steps(30);

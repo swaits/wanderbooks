@@ -1536,6 +1536,35 @@ fn the_status_card_shows_the_company_in_front_and_follows_the_tab() {
                 .collect::<Vec<_>>()
         };
         assert_eq!(card_names(&h), ["Alpha Co"], "dark {dark}");
+        // The heading carries the live word, at the name's row; the event
+        // ends the journal chain line, the card's last, and no row of its
+        // own is left.
+        let card_texts = |h: &Harness<'_, App>| -> Vec<(egui::Pos2, String)> {
+            placed(h)
+                .into_iter()
+                .filter(|(at, _)| at.x < 224.0 && at.y > 120.0)
+                .collect()
+        };
+        let texts_now = card_texts(&h);
+        let name_y = texts_now.iter().find(|(_, t)| t == "Alpha Co").unwrap().0.y;
+        let live = texts_now
+            .iter()
+            .find(|(_, t)| t == "Live" || t == "Snapshot")
+            .expect("the live word is on the card");
+        assert!(
+            (live.0.y - name_y).abs() < 6.0,
+            "the live word is in the heading"
+        );
+        assert!(
+            texts_now
+                .iter()
+                .any(|(_, t)| t.contains("Journal chain verified") && t.contains("· event ")),
+            "the event ends the journal chain line"
+        );
+        assert!(
+            !texts_now.iter().any(|(_, t)| t.starts_with("· event")),
+            "no row of its own for the event"
+        );
         assert_eq!(
             card_badge(&h, "alpha").len(),
             1,
@@ -1590,6 +1619,15 @@ fn the_rail_shows_the_badge_alone_with_the_name_on_hover() {
     h.hover_at(badge[0].center());
     h.run_steps(30);
     assert!(shows(&h, "Alpha Co"), "the name is on hover");
+    assert!(shows(&h, "· event "), "the event is on hover");
+    assert!(
+        shows(&h, "Live") || shows(&h, "Snapshot"),
+        "the state is on hover"
+    );
+    assert!(
+        shows(&h, "Journal chain verified"),
+        "the checks are on hover"
+    );
 }
 
 #[test]

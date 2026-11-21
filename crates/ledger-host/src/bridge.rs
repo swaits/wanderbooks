@@ -1005,6 +1005,17 @@ impl Bridge {
                     return;
                 }
             };
+            // The host this bridge held went, and the app started in its
+            // place: its lease is on a server with no host, which never
+            // ends, so it would never see the app go. The bridge becomes
+            // the line to whatever runs, as a fresh one is, and says the
+            // same words when the app closes (INVARIANT 12).
+            if lease.is_hostless() {
+                drop(lease);
+                self.app.store(true, std::sync::atomic::Ordering::SeqCst);
+                self.link.send_replace(Link::Opening);
+                return self.keep_in_app(run_dir).await;
+            }
             // Until this lease ends: whenever the server is ready and no
             // session is up, open one. The lease is always heard, even
             // while a session is being opened or a try waits (INVARIANT 1).

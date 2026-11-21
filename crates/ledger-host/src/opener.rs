@@ -166,6 +166,13 @@ struct HostLink {
 }
 
 impl Lease {
+    /// Whether this lease is on the app's server with no host behind it
+    /// (INVARIANT 6): it never ends, so a holder that has one follows
+    /// what runs by looking, as a bridge with no host does.
+    pub fn is_hostless(&self) -> bool {
+        self.link.is_none()
+    }
+
     /// The host's next word: `Ready`, or `Ending` with why; `None` when
     /// the host is gone without a word.
     pub async fn next(&mut self) -> Option<HostMsg> {

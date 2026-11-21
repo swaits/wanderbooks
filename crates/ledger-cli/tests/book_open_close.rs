@@ -3735,8 +3735,13 @@ fn a_lock_a_kill_leaves_in_the_backup_folder_is_reported_and_never_removed_by_th
         }
         other => panic!("{other:?}"),
     }
-    assert!(lock.exists(), "a later backup removed it");
-    std::fs::remove_file(&lock).unwrap();
+    assert!(
+        left.iter().all(|f| f.exists()),
+        "a later backup removed one of {left:?}"
+    );
+    for file in &left {
+        std::fs::remove_file(file).unwrap();
+    }
     match home.admin(Request::BackUpNow {
         id: A.into(),
         new_disk: false,

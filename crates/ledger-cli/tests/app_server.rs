@@ -293,8 +293,12 @@ fn with_nothing_running_a_command_runs_its_own_server_or_says_to_start_wanderboo
     let token = command(&["token", "create", "--book", BOOK]);
     assert!(token.status.success(), "{token:?}");
     let backed = command(&["books", "back-up", BOOK]);
+    // The command's own server did the work, and said the true thing: no
+    // backup is set up in these books (a backup that is made is
+    // `books_are_backed_up_now_from_the_command_line`, open_while_held.rs).
+    assert_eq!(backed.status.code(), Some(1), "{backed:?}");
     assert!(
-        backed.status.success() || String::from_utf8_lossy(&backed.stderr).contains("backup"),
+        String::from_utf8_lossy(&backed.stderr).contains("No backups are set up"),
         "{backed:?}"
     );
     assert!(!server_lock_held(&run), "the command's server was left");

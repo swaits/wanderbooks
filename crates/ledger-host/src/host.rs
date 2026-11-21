@@ -83,7 +83,7 @@ pub const EXIT_ANOTHER_HOST: i32 = 3;
 
 /// File options for what the host makes: mode 0600 on Unix; on Windows
 /// the file takes the owner-only DACL its folder carries (P11c).
-fn private_options() -> std::fs::OpenOptions {
+pub(crate) fn private_options() -> std::fs::OpenOptions {
     #[allow(unused_mut)]
     let mut options = std::fs::OpenOptions::new();
     #[cfg(unix)]
@@ -182,7 +182,7 @@ fn take_host_lock_within(run: &Path, wait: Duration) -> Result<Option<std::fs::F
 }
 
 /// Move a log larger than LOG_LIMIT aside, then open it for appending.
-fn open_log(path: &Path) -> std::io::Result<std::fs::File> {
+pub(crate) fn open_log(path: &Path) -> std::io::Result<std::fs::File> {
     open_log_within(path, LOG_LIMIT)
 }
 
@@ -195,7 +195,7 @@ fn open_log_within(path: &Path, limit: u64) -> std::io::Result<std::fs::File> {
 }
 
 /// The executable the server is started from (INVARIANT 3).
-fn children_executable() -> PathBuf {
+pub(crate) fn children_executable() -> PathBuf {
     if cfg!(target_os = "linux") {
         PathBuf::from("/proc/self/exe")
     } else {

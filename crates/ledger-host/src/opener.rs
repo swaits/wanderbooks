@@ -28,6 +28,12 @@
 //!   5. A holder that has held before, turned away because the owner
 //!      closed the books, stays closed (HoldError::ClosedByOwner); a new
 //!      holder waits for a new host.
+//!   6. A root the desktop app has served (app_server.rs INVARIANT 7)
+//!      with the app's own server running and no host: a command's or
+//!      the viewer's hold is a lease on that server with no host behind
+//!      it (ready at once, never ended: the app decides when the books
+//!      close), no host is started beside it, and `wanderbooks serve`
+//!      is told the app has the books.
 //! ```
 
 use crate::knobs::Knobs;
@@ -109,6 +115,15 @@ pub struct Opener {
 pub struct Lease {
     /// Its number.
     pub id: u64,
+    /// The host's connection; none for the lease on the app's own server
+    /// (INVARIANT 6).
+    link: Option<HostLink>,
+    /// Whether `Ready` was said yet, for a lease with no host.
+    told_ready: bool,
+}
+
+/// A lease's connection to the host.
+struct HostLink {
     lines: tokio::io::Lines<tokio::io::BufReader<tokio::io::Take<ledger_mcp::ipc::ConnectedRead>>>,
     _write: ledger_mcp::ipc::ConnectedWrite,
 }
@@ -117,8 +132,17 @@ impl Lease {
     /// The host's next word: `Ready`, or `Ending` with why; `None` when
     /// the host is gone without a word.
     pub async fn next(&mut self) -> Option<HostMsg> {
+        let Some(link) = self.link.as_mut() else {
+            // The app's own server: ready now, and no host to say more
+            // (INVARIANT 6).
+            if !self.told_ready {
+                self.told_ready = true;
+                return Some(HostMsg::Ready);
+            }
+            return std::future::pending().await;
+        };
         loop {
-            match self.lines.next_line().await {
+            match link.lines.next_line().await {
                 Ok(Some(line)) => match serde_json::from_str::<HostMsg>(&line) {
                     Ok(msg) => return Some(msg),
                     Err(_) => continue,
@@ -206,6 +230,22 @@ impl Opener {
     pub async fn hold(&mut self) -> Result<Lease, HoldError> {
         let mut started: Option<Instant> = None;
         loop {
+            // The app has the books: its own server serves them, and no
+            // host is started beside it (INVARIANT 6).
+            if crate::app_server::the_apps_server_runs(&self.run) {
+                if self.kind == Kind::Serve {
+                    return Err(HoldError::Failed(
+                        "Wanderbooks (the app) has these books open: close it first, or use it"
+                            .into(),
+                    ));
+                }
+                self.has_held = true;
+                return Ok(Lease {
+                    id: 0,
+                    link: None,
+                    told_ready: false,
+                });
+            }
             wait_for_restart(&self.run).await;
             let endpoint = ledger_mcp::ipc::Endpoint::new(&self.run, lease::LEASE_SOCKET)
                 .map_err(|e| format!("can't reach the books' host: {e}"))?;
@@ -308,8 +348,11 @@ impl Opener {
         Ok(match first {
             HostMsg::Held { lease } => Asked::Held(Lease {
                 id: lease,
-                lines,
-                _write: write,
+                link: Some(HostLink {
+                    lines,
+                    _write: write,
+                }),
+                told_ready: false,
             }),
             HostMsg::Ending {
                 reason: Reason::ServerFailed,

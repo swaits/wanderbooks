@@ -33,6 +33,11 @@
 //!   6. The Connect page opens by itself once, when the window's server
 //!      says no assistant was ever connected, and never again; with any
 //!      key, session, approval or waiting request it does not open.
+//!   7. Once it is connected, the three progress steps are one line,
+//!      "Connected"; they are shown while connecting and when one is the
+//!      trouble. The page does not say that nobody can read the traffic:
+//!      the relay cannot, the assistant's own company reads what it is
+//!      sent.
 //! SCENARIOS:
 //!   1. See the tests below; `web_screenshots` (SHOT_DIR) draws each state
 //!      light and dark.
@@ -372,6 +377,9 @@ fn turning_it_on_shows_progress_then_the_address_the_steps_and_what_was_not_trie
     owner.set(on(WebStep::Connected));
     h.run_steps(4);
     assert!(has(&h, "Connected"));
+    // Once it works the three steps are one line: "Connected".
+    assert!(!has(&h, "Getting an address"));
+    assert!(!has(&h, "Getting a certificate"));
     assert!(has(&h, CONNECTOR));
     for (i, step) in claude_steps().iter().enumerate() {
         assert!(has(&h, &format!("{}. {step}", i + 1)), "{step}");
@@ -387,6 +395,52 @@ fn turning_it_on_shows_progress_then_the_address_the_steps_and_what_was_not_trie
     assert_eq!(copied(&h), [CONNECTOR]);
     h.run_steps(2);
     assert!(has(&h, "Copied"));
+}
+
+/// The three steps are shown while connecting, and when a step is the
+/// trouble even though the address works; a clean connection is one line.
+#[test]
+fn the_steps_collapse_to_one_line_when_connected_and_return_with_a_trouble() {
+    let w = World::new(&[("alpha", "Wanderland Labs")]);
+    let owner = Web::new(Some(on(WebStep::Connected)));
+    let mut h = connect_page(&w, &owner, false);
+    h.run_steps(4);
+    assert!(has(&h, "Connected"));
+    assert!(!has(&h, "Getting an address"));
+    assert!(!has(&h, "Getting a certificate"));
+    // The certificate could not be renewed: the steps are back, with the
+    // trouble.
+    owner.set(WebConnect {
+        problem: Some("The certificate could not be renewed yet.".into()),
+        ..on(WebStep::Connected)
+    });
+    h.run_steps(4);
+    assert!(has(&h, "Getting an address"));
+    assert!(has(&h, "Getting a certificate"));
+    assert!(has(&h, "The certificate could not be renewed yet."));
+    // Connecting again shows them as well.
+    owner.set(on(WebStep::Connecting));
+    h.run_steps(4);
+    assert!(has(&h, "Getting an address"));
+}
+
+/// The words of the switch are true about who can read what (plan 5): the
+/// relay cannot; the assistant's own company reads what it is sent.
+#[test]
+fn the_page_says_who_can_read_what_and_not_that_nobody_can() {
+    let w = World::new(&[("alpha", "Wanderland Labs")]);
+    let owner = Web::new(Some(off()));
+    let mut h = connect_page(&w, &owner, false);
+    h.run_steps(3);
+    let all = texts(&h);
+    assert!(!all.contains("nobody can read"));
+    assert!(all.contains("The relay that carries the connection can't read it."));
+    assert!(all.contains(
+        "The assistant's maker (for example Anthropic or OpenAI) sees what you let that assistant read."
+    ));
+    assert!(all.contains(
+        "An assistant on the web still has to be allowed here, by you, each time it connects."
+    ));
 }
 
 /// The progress words are one function: what is done, what is under way,

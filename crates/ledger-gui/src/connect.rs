@@ -1369,7 +1369,7 @@ impl State {
         });
         ui.label(
             RichText::new(format!(
-                "Claude and ChatGPT on the web can only reach {} if you give them an address on the internet. Turn this on to get one. Wanderbooks keeps it private to you, and nobody can read what passes through. An assistant on the web still has to be allowed here, by you, each time it connects.",
+                "Claude and ChatGPT on the web can only reach {} if you give them an address on the internet. Turn this on to get one. The relay that carries the connection can't read it. The assistant's maker (for example Anthropic or OpenAI) sees what you let that assistant read. An assistant on the web still has to be allowed here, by you, each time it connects.",
                 status.company
             ))
             .font(theme::regular(13.0))
@@ -1389,30 +1389,41 @@ impl State {
             return want;
         }
         ui.add_space(8.0);
-        // Progress, in words.
-        for (words, progress) in web_progress(web.step) {
-            ui.horizontal(|ui| match progress {
-                Progress::Done => {
-                    ui.label(RichText::new(icon::CHECK_CIRCLE).color(p.accent));
-                    ui.label(RichText::new(words).font(theme::regular(13.5)));
-                }
-                Progress::Now if web.problem.is_some() => {
-                    ui.label(RichText::new(icon::WARNING).color(p.warning));
-                    ui.label(RichText::new(words).font(theme::regular(13.5)));
-                }
-                Progress::Now => {
-                    ui.spinner();
-                    ui.label(RichText::new(format!("{words}\u{2026}")).font(theme::regular(13.5)));
-                }
-                Progress::Waiting => {
-                    ui.label(RichText::new(icon::CIRCLE).color(p.muted));
-                    ui.label(
-                        RichText::new(words)
-                            .font(theme::regular(13.5))
-                            .color(p.muted),
-                    );
-                }
+        // Progress, in words: the three steps while it is being made, or
+        // when one of them is the trouble; once it works, one line.
+        if web.step == crate::owner::WebStep::Connected && web.problem.is_none() {
+            ui.horizontal(|ui| {
+                let (rect, _) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
+                ui.painter().circle_filled(rect.center(), 5.0, p.positive);
+                ui.label(RichText::new("Connected").font(theme::regular(13.5)));
             });
+        } else {
+            for (words, progress) in web_progress(web.step) {
+                ui.horizontal(|ui| match progress {
+                    Progress::Done => {
+                        ui.label(RichText::new(icon::CHECK_CIRCLE).color(p.accent));
+                        ui.label(RichText::new(words).font(theme::regular(13.5)));
+                    }
+                    Progress::Now if web.problem.is_some() => {
+                        ui.label(RichText::new(icon::WARNING).color(p.warning));
+                        ui.label(RichText::new(words).font(theme::regular(13.5)));
+                    }
+                    Progress::Now => {
+                        ui.spinner();
+                        ui.label(
+                            RichText::new(format!("{words}\u{2026}")).font(theme::regular(13.5)),
+                        );
+                    }
+                    Progress::Waiting => {
+                        ui.label(RichText::new(icon::CIRCLE).color(p.muted));
+                        ui.label(
+                            RichText::new(words)
+                                .font(theme::regular(13.5))
+                                .color(p.muted),
+                        );
+                    }
+                });
+            }
         }
         if web.step != crate::owner::WebStep::Connected || web.problem.is_some() {
             ui.ctx()

@@ -24,6 +24,11 @@
 //!      next tab opens or the person asks (`retry`); the owner has
 //!      stopped the server that failed, so no second one runs beside it.
 //!      A server still starting is waited for, in view (`is_starting`).
+//!      A start refused because a host holds the books (an earlier
+//!      build's, or `wanderbooks serve`'s) says what the button will do
+//!      and what to type instead, and offers the button (`host_blocks`,
+//!      `close_host`): it asks the host to close the books and starts
+//!      the server when it has; a close that fails says why.
 //!   4. A company the window opened at the start is not opened again; a
 //!      company whose open failed, at the start (the server's list says
 //!      it isn't open: `serve_not_open`) or later, is a notice, and is

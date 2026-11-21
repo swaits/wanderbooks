@@ -27,7 +27,15 @@
 //!      (waiting for its last backup); one that needs a company held open
 //!      says "Start Wanderbooks first" ([`Direct`], [`reach`]; WB-app-5).
 //!      A server of its own takes the locks the app's server takes, so
-//!      two programs never hold one set of books.
+//!      two programs never hold one set of books. What it finds is read,
+//!      not guessed (opener.rs INVARIANT 6a): only a server the app
+//!      started is the app's; another command's server, or a closing one,
+//!      is waited for, in words, inside one `open_wait`. A program that
+//!      takes the books between its look and its own server's start (the
+//!      app, `serve`, another command) is joined: its server lets go of
+//!      the start and it looks again. Its own server is started clean (a
+//!      host's environment, `/` for its folder), and closes the invoker's
+//!      descriptors at its start.
 //!   2. Nothing printed names the data root.
 //!   3. Adoption and restoring are previewed first and go ahead only on a
 //!      yes at the terminal, or --yes; a vault beside the books must be

@@ -71,7 +71,15 @@
 //!      running. A root a host holds (`wanderbooks serve`, the headless
 //!      host) behaves as in 1 to 11: the bridge holds a lease on it; and
 //!      when that host goes and nothing takes its place, the bridge
-//!      becomes the line above, in words, instead of starting another.
+//!      becomes the line above, in words, instead of starting another;
+//!      and when the app takes its place (its lease would be one with no
+//!      host behind it, which never ends: `Lease::is_hostless`) it
+//!      becomes the line above too, and says the same words when the app
+//!      is closed. What holds the books is read before a session is
+//!      tried (opener.rs INVARIANT 6a): a command's server, for the
+//!      length of its work, is told as "A wanderbooks command has the
+//!      books for a moment" (`command_words`), and a server that is
+//!      closing as the opening words, not as the app.
 //! ```
 
 use crate::knobs::{FLAG, Knobs};

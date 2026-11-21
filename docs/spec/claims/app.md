@@ -31,7 +31,8 @@ closes the child's input and waits for it, so none is left running that
 nothing manages. Nothing marks a root as the app's: an earlier build wrote a permanent
 `run/app-hosted` file, which means nothing now and is removed at the next
 start of the app's server; a root that has one works as one that does not.
-Whose the books are is read from what runs (WB-app-5). The server is in a
+Whose the books are is read from what runs, and from what the server says of
+itself (WB-app-5). The server is in a
 process group of its own on Unix, so a Ctrl+C at the terminal the window
 was started from reaches the window alone and never closes the books under
 an open window; on Windows it breaks away from the job a launcher runs the
@@ -63,7 +64,11 @@ words and is never swallowed: a close that says its last backup was not
 whole, a company that would not open for assistants, a server that stopped
 or never started. A request for one company never waits for another's. A start that failed
 (another program had the books) is tried again by the next tab that opens,
-or by the "Try again" button beside its notice; a server still starting is
+or by the "Try again" button beside its notice; when it was a host that held
+the books (an earlier build's, or `wanderbooks serve`'s) the notice says what
+will happen and carries a "Close it" button that asks that host to close the
+books (the lease protocol an older host speaks) and starts the server when it
+has, with the command to type (`wanderbooks close`) as the fallback; a server still starting is
 said to be starting. A company the window wanted open that the server does
 not have open when it says ready (it failed to open) is a notice for that
 company. The format upgrade of a company, asked in the window, is an admin
@@ -72,7 +77,9 @@ request to this same server (`UpgradeFormat`), since there is no host.
 `take_notices`), `ledger_gui::app::App::open` and `App::close`,
 `ledger_host::app_server::AppServer::open_book` and `close_book`,
 `AppHost::not_open` and `AppHost::upgrade_format`, `Serving::retry`.
-*Checked:* `ledger-gui` `tests/serving.rs` (`a_tab_opening_asks_the_server_to_open_that_company`,
+*Checked:* `ledger-gui` `tests/host_holds.rs` (the button; `the_notice_in_the_window_has_the_button_and_it_goes_when_the_server_starts`);
+`open_while_held.rs` (`the_app_can_ask_a_host_that_holds_the_books_to_close_them`);
+`ledger-gui` `tests/serving.rs` (`a_tab_opening_asks_the_server_to_open_that_company`,
 `a_tab_closing_asks_the_server_to_close_that_company`,
 `the_companies_the_window_restores_are_the_servers_to_open`,
 `a_close_that_was_not_whole_is_said_to_the_person`,
@@ -101,7 +108,11 @@ Wanderbooks." None is final: the call after the app starts, or the company
 is opened, goes through, in a session already running. A root a host holds
 (`wanderbooks serve`) is served as it was: the bridge holds a lease on the
 host; and when that host goes and nothing takes its place the bridge says
-the words above instead of starting another.
+the words above instead of starting another; when the app takes its place,
+the bridge becomes the line to the app, as a bridge that began without a host
+is, and says the same words when the app is closed. A command's own server, for
+the length of its work, is said to be that: "A wanderbooks command has the books
+for a moment: X can be reached in a moment. Try again shortly."
 *Enforced:* `ledger_host::bridge` (`serves_the_app`, `keep_in_app`, `keep`,
 `not_running_words`, `opening_words`, `not_open_words`), INVARIANT 12;
 `ledger_host::opener::Opener::hold` (INVARIANTS 6, 7).
@@ -141,18 +152,33 @@ their companies.
 **WB-app-5 A command finds what runs, never starts a host, and does its
 work or says to start Wanderbooks.** Every `wanderbooks …` command that
 needs the books, and the window's own menu work, finds what holds the root:
-a host (`wanderbooks serve`: it takes a lease, as before), the app's server
-(no host holds the root, a server holds `run/server.lock`, and its admin
-socket answers: it asks that server and leaves it running), or nothing. A
-server that holds the lock and has no admin socket yet is opening its
-companies or finishing a backup: the command says so ("Wanderbooks is still
+a host (`wanderbooks serve`: it takes a lease, as before), the app's server,
+or nothing. What holds the root is read, never guessed: a server started with
+`--started-by app|host|command` writes `run/server.info` beside its lock (who
+started it, its pid, whether it has begun to close), as soon as the lock is its,
+and removes it as it lets go; a server that says nothing (an earlier build's) is
+taken for the app's. Only a server the app started, not closing, whose admin
+socket answers, is "the app": a command asks it and leaves it running. A server
+a command started (for the length of its work), and any server that is closing
+(the app's, or the orphan of a `serve` host that was killed), is waited for by a
+command or `serve`, in words ("Another wanderbooks command has the books open for
+a moment: waiting for it to finish…", "Wanderbooks is closing the books (a last
+backup is being made): waiting for it to finish…"), inside the same `open_wait`,
+and then they go on; at the end of it they say what they still wait for.
+`close` and `doctor` say the true thing for each (never "the app" for what is
+not), and a bridge says a command's server has the books for a moment. A command
+that finds nothing runs its own server; if another program takes the books
+between its look and its server's start, it lets its start go and joins what now
+runs, inside the same one wait. A server that holds the lock and has no admin
+socket yet is opening its companies or finishing a backup: the command says so ("Wanderbooks is still
 opening (or closing) the books: waiting for it…") and waits, for as long as
 its own wait lasts (`open_wait`, 120 s), then says it is still opening and
 to try again; it never fails with a connection error and never starts a
 second server beside it. With nothing running, no command starts a host.
 One that only reads, or manages the books' files and tokens, runs a books
-server of its own, the one the app starts, for the length of the work and
-closes it (waiting for its last backup, 90 s at most, and saying so if it
+server of its own, the one the app starts, started clean as a host's is (the
+host's environment, `/` for its folder, no descriptor of the invoker's), for the
+length of the work and closes it (waiting for its last backup, 90 s at most, and saying so if it
 is still finishing); it takes the same `run/server.lock` and `run/books.lock`
 the app's server takes, so two programs never hold one set of books, and a
 start is refused in words when another has them. One that needs a company
@@ -165,7 +191,7 @@ replaced program and its daily look for an update.
 
 | Command | The app (or `serve`) running | Nothing running |
 |---|---|---|
-| `books list` | the server's list, open or closed | the folder's companies, "not open", no lock taken (nothing is read of them) |
+| `books list` | the server's list, open or closed | the folder's companies, "not open", no lock taken; what each journal declares is read (nothing written, the chain not verified) to say which wait for a format upgrade |
 | `books create`, `adopt`, `restore` | the server does it | its own server, no company open, closed after |
 | `books put-aside` | works on the folder itself, as it always has: it never asked a server, and moves only copies outside the root into `legacy/` after reading the company's journal head; it takes no lock | the same |
 | `books back-up ID`, `books upgrade ID`, `books extract ID N` | the server does it (the upgrade as an admin request when there is no host) | its own server with ID open, closed after |
@@ -182,9 +208,11 @@ replaced program and its daily look for an update.
 There is no "Close the books" in the app: closing a company's tab closes
 the company (WB-app-2) and closing the window closes them all (WB-app-4).
 *Enforced:* `ledger_host::opener::Opener::hold` (`HoldError::NotRunning`,
-`admin_answers`), `ledger_host::commands` (`direct_for`, `reach`,
-`Reached::release`, `listed_while_closed`, `upgrade_by_admin`, `doctor`,
-`close`).
+`what_holds`, `Holder`, `admin_answers`), ledger-mcp `local::run`
+(`--started-by`, `run/server.info`, INVARIANT 16), `ledger_host::app_server`
+(`AppServer::start_for_command`, `wait_ready_unless_beaten`),
+`ledger_host::commands` (`direct_for`, `reach`, `Reached::release`,
+`listed_while_closed`, `upgrade_by_admin`, `doctor`, `close`).
 *Checked:* `ledger-cli` `app_server.rs`
 (`a_command_with_the_app_running_goes_to_its_server_and_leaves_it_running`,
 `with_nothing_running_a_command_runs_its_own_server_or_says_to_start_wanderbooks`,
@@ -195,4 +223,15 @@ the company (WB-app-2) and closing the window closes them all (WB-app-4).
 `a_command_ends_at_its_deadline_during_a_restart`,
 `the_viewers_new_books_are_made_by_the_server`);
 `format_upgrade.rs` (`format_upgrade_waits_for_consent`: a command's own
-server shows the upgrade its company waits for).
+server shows the upgrade its company waits for;
+`a_list_with_nothing_running_says_which_books_wait_for_an_upgrade`);
+`open_while_held.rs` (`serve_waits_in_words_for_a_server_that_is_closing_and_then_holds_the_books`,
+`a_command_and_the_words_of_close_and_doctor_know_a_server_is_closing`,
+`a_command_waits_for_another_commands_server_and_does_not_attach_to_it`,
+`a_serve_waits_for_a_commands_server_and_then_holds_the_books`,
+`a_server_says_what_started_it_and_when_it_closes`,
+`a_commands_own_server_holds_the_books_while_it_works_and_others_are_refused`,
+`a_commands_own_server_holds_none_of_the_invokers_environment_or_pipes`,
+`a_command_racing_the_apps_start_joins_the_app`,
+`two_commands_at_once_with_nothing_running_both_do_their_work`,
+`a_bridge_that_held_a_host_follows_the_app_that_takes_its_place`).

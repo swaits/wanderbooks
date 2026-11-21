@@ -41,11 +41,14 @@
 //!      request, waiting for the server to be ready first; a close that
 //!      says its last backup was not whole is returned as a notice, never
 //!      as a plain success.
-//!   7. Nothing marks a root as the app's. Whether the app (or another
-//!      server) has a root is read from what is running: no host holds
-//!      `run/host.lock`, a server holds `run/server.lock`, and its admin
-//!      socket answers ([`the_apps_server_runs`]). An earlier build wrote
-//!      a permanent file `run/app-hosted`; it means nothing now and is
+//!   7. Nothing marks a root as the app's. What holds a root is read from
+//!      what runs: no host holds `run/host.lock`, a server holds
+//!      `run/server.lock`, and the server says what started it and
+//!      whether it is closing (`run/server.info`, ledger-mcp local.rs
+//!      INVARIANT 16; [`crate::opener::what_holds`]). Only a server the
+//!      app started, not closing, with its admin socket answering, is the
+//!      app's ([`the_apps_server_runs`]). An earlier build wrote a
+//!      permanent file `run/app-hosted`; it means nothing now and is
 //!      removed at the next start of the app's server ([`RETIRED_MARKER`]).
 //!      With the app closed, the agents' bridge says "Wanderbooks isn't
 //!      running" (bridge.rs INVARIANT 12) whether or not the root was ever
@@ -75,6 +78,19 @@
 //!      request `wanderbooks token revoke` makes, and its copy in the
 //!      token file goes with it ([`AppHost::revoke_token`]). Neither ever
 //!      holds a token's text.
+//! 13. A command's own server ([`AppServer::start_for_command`]) is the
+//!      same server, started as `--started-by command`, and clean: the
+//!      host's environment only (start.rs `clean_environment`), the root
+//!      as an absolute path, `/` as its folder (the root's `run/` on
+//!      Windows), and every server closes the descriptors above 2 at its
+//!      start whoever started it, so one that outlives its command holds
+//!      none of the invoker's pipes. The app's own child keeps its
+//!      environment: it is the window's child, closes with the window and
+//!      needs the person's session (ssh agent, git configuration) for its
+//!      backups. A command's server that does not get ready because
+//!      another program holds the books (one that started after the
+//!      command's look) has lost: [`AppServer::wait_ready_unless_beaten`]
+//!      says so, and the command stops it and joins what runs.
 //! ```
 
 use crate::host::{SERVER_LOG, children_executable, open_log};

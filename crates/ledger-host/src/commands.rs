@@ -55,7 +55,7 @@
 
 use crate::knobs::{FLAG, Knobs};
 use crate::lease::{Ask, HostMsg, Intent, Kind, Reason};
-use crate::opener::{HoldError, Lease, Opener};
+use crate::opener::{HoldError, Holder, Lease, Opener};
 use ledger_mcp::admin::{self, Request, Response};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -116,12 +116,20 @@ fn exit(code: i32) -> Box<dyn std::error::Error> {
 
 /// Hold the books and wait until they are open (INVARIANT 1).
 async fn open(opener: &mut Opener) -> Result<Lease, HoldError> {
-    let deadline = tokio::time::Instant::now() + opener.knobs().open_wait;
+    // One bounded wait for the whole command: the deadline a caller set
+    // (`reach`), else `open_wait` from now. The opener's own waits for
+    // another program's server (WB-app-5) end at it with their own words;
+    // the timeout here is a moment later, for what has none.
+    let deadline = opener
+        .deadline()
+        .unwrap_or_else(|| tokio::time::Instant::now() + opener.knobs().open_wait);
+    opener.wait_until(deadline);
+    let grace = Duration::from_millis(500);
     let too_long = || -> HoldError {
         "the books didn't open in time (Wanderbooks may still be opening a large company: try again in a moment): run `wanderbooks doctor` to see why".into()
     };
     loop {
-        let mut lease = tokio::time::timeout_at(deadline, opener.hold())
+        let mut lease = tokio::time::timeout_at(deadline + grace, opener.hold())
             .await
             .map_err(|_| too_long())??;
         loop {
@@ -254,33 +262,78 @@ impl Reached {
 
 /// Hold the books for a command, or, with nothing running and the work
 /// one `direct` allows, run a server of its own (WB-app-5).
+///
+/// Whatever is found is joined: a host, the app's server, and, once its
+/// work is done, a command's server or a closing one is waited for. A
+/// program that takes the books between the look and the command's own
+/// server taking them (the app starting, `serve`, another command) is
+/// joined too: the command's server has not got them, it lets go of its
+/// start and looks again. One wait covers all of it, `open_wait`, said in
+/// words (`Opener::hold` says what it waits for).
 async fn reach(opener: &mut Opener, common: &Common, direct: &Direct) -> Result<Reached, String> {
     let run_dir = opener.run_dir().to_path_buf();
-    match open(opener).await {
-        Ok(lease) => Ok(Reached {
-            run_dir,
-            lease: Some(lease),
-            own: None,
-        }),
-        Err(HoldError::NotRunning) => {
-            let Direct::With(books) = direct else {
-                return Err(crate::opener::START_WANDERBOOKS.to_string());
+    let deadline = tokio::time::Instant::now() + opener.knobs().open_wait;
+    opener.wait_until(deadline);
+    let mut said = false;
+    loop {
+        match open(opener).await {
+            Ok(lease) => {
+                return Ok(Reached {
+                    run_dir,
+                    lease: Some(lease),
+                    own: None,
+                });
+            }
+            Err(HoldError::NotRunning) => {}
+            Err(e) => return Err(hold_words(e)),
+        }
+        let Direct::With(books) = direct else {
+            return Err(crate::opener::START_WANDERBOOKS.to_string());
+        };
+        let (root, books, knobs) = (common.root.clone(), books.clone(), common.knobs);
+        let started = tokio::task::spawn_blocking(move || {
+            let server = match crate::app_server::AppServer::start_for_command(
+                root.as_deref(),
+                &books,
+                &knobs,
+            ) {
+                Ok(server) => server,
+                // Another program took the books since the look.
+                Err(why) if why == crate::app_server::ANOTHER_HAS_THEM => {
+                    return Ok(None);
+                }
+                Err(why) => return Err(why),
             };
-            let (root, books) = (common.root.clone(), books.clone());
-            let own = tokio::task::spawn_blocking(move || {
-                let server = crate::app_server::AppServer::start(root.as_deref(), &books)?;
-                server.wait_ready(crate::app_server::READY_WAIT)?;
-                Ok::<_, String>(server)
-            })
-            .await
-            .map_err(|e| e.to_string())??;
-            Ok(Reached {
+            match server.wait_ready_unless_beaten(crate::app_server::READY_WAIT)? {
+                crate::app_server::Waited::Ready => Ok(Some(server)),
+                // Another program took them first: this one's start is let
+                // go of (it has not opened anything), and what runs is
+                // looked at again.
+                crate::app_server::Waited::Beaten => {
+                    server.stop(Duration::from_secs(10));
+                    Ok(None)
+                }
+            }
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        if let Some(own) = started {
+            return Ok(Reached {
                 run_dir,
                 lease: None,
                 own: Some(std::sync::Arc::new(own)),
-            })
+            });
         }
-        Err(e) => Err(hold_words(e)),
+        if tokio::time::Instant::now() >= deadline {
+            return Err(format!(
+                "Other programs kept the books for {} s while this command waited: try again in a moment (`wanderbooks doctor` says what has them).",
+                opener.knobs().open_wait.as_secs()
+            ));
+        }
+        if !std::mem::replace(&mut said, true) {
+            eprintln!("Another program started the books just now: waiting for it…");
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
 
@@ -357,6 +410,23 @@ fn closing(
 /// Whether `deadline` has passed at `now`.
 fn past(deadline: std::time::Instant, now: std::time::Instant) -> bool {
     now > deadline
+}
+
+/// What is said of a server that is not the app's, in the words of its
+/// own state (`close`, `doctor`): never "the app" for what is not.
+fn held_words(holder: Holder) -> &'static str {
+    match holder {
+        Holder::Command => {
+            "A wanderbooks command has the books open for a moment: they close when its work is done."
+        }
+        Holder::Closing => "The books are closing: a books server is finishing its last backups.",
+        Holder::Opening => {
+            "Wanderbooks is opening the books (or finishing the last backup of the last session): its server isn't answering yet."
+        }
+        Holder::Host | Holder::App | Holder::Nothing => {
+            "The books are held: `wanderbooks doctor` says by what."
+        }
+    }
 }
 
 /// What `doctor` says of books no host holds.
@@ -569,16 +639,18 @@ pub fn close(
             exit(1)
         })?;
     match asked {
-        None if crate::app_server::the_apps_server_runs(&run) => {
-            println!("{APP_HAS_THEM}.");
-            Ok(())
-        }
-        None if crate::opener::server_lock_held(&run) => {
-            println!("The books are closing: a books server is finishing its last call.");
-            Ok(())
-        }
+        // No host: what holds the books is read (WB-app-5), so what is
+        // said of it is true.
         None => {
-            println!("The books are already closed.");
+            match crate::opener::what_holds(&run) {
+                Ok(Holder::App) => println!("{APP_HAS_THEM}."),
+                Ok(Holder::Nothing) => println!("The books are already closed."),
+                Ok(other) => println!("{}", held_words(other)),
+                Err(why) => {
+                    eprintln!("error: {why}");
+                    return Err(exit(1));
+                }
+            }
             Ok(())
         }
         Some(HostMsg::Done { .. }) => {
@@ -2995,14 +3067,15 @@ pub fn doctor(
     match crate::opener::ask_once_within(&run, Ask::Leases, DOCTOR_WAIT) {
         // No host: the app's server (or another that runs without one),
         // one still opening or finishing, or nothing (WB-app-3).
-        Ok(None) if crate::app_server::the_apps_server_runs(&run) => {
-            println!("The books are open: Wanderbooks (the app) has them.");
-            admin_report(&run);
-        }
-        Ok(None) if crate::opener::server_lock_held(&run) => println!(
-            "Wanderbooks is opening the books (or finishing the last backup of the last session): its server isn't answering yet."
-        ),
-        Ok(None) => println!("{}", no_host(false)),
+        Ok(None) => match crate::opener::what_holds(&run) {
+            Ok(Holder::App) => {
+                println!("The books are open: Wanderbooks (the app) has them.");
+                admin_report(&run);
+            }
+            Ok(Holder::Nothing) => println!("{}", no_host(false)),
+            Ok(other) => println!("{}", held_words(other)),
+            Err(why) => println!("The books server can't be asked: {why}"),
+        },
         Ok(Some(HostMsg::Leases { ready, leases })) => {
             if ready {
                 println!("The books are open.");

@@ -119,6 +119,15 @@ fn opening_words(book: &str) -> String {
     )
 }
 
+/// What the agent is told when a command of the owner's has the books for
+/// a moment (a server of its own, for the length of its work): the app is
+/// not running, and it is not that either.
+fn command_words(book: &str) -> String {
+    format!(
+        "A wanderbooks command has the books for a moment: {book} can be reached in a moment. Try again shortly."
+    )
+}
+
 /// What the agent is told when the app runs but the company is not open
 /// in it (INVARIANT 12).
 fn not_open_words(book: &str) -> String {
@@ -1106,7 +1115,19 @@ impl Bridge {
         let mut epoch = 0u64;
         loop {
             if matches!(&*self.link.borrow(), Link::Opening) {
-                match self.socket_is_ours() {
+                // What holds the books is read before a session is tried
+                // (opener.rs INVARIANT 6a): a command's server, or one
+                // that is closing, is not the app, whatever its socket
+                // answers.
+                let held =
+                    crate::opener::what_holds(&run_dir).unwrap_or(crate::opener::Holder::Nothing);
+                let owner_check = match held {
+                    crate::opener::Holder::Command | crate::opener::Holder::Closing => {
+                        Err(Owner::Unreachable)
+                    }
+                    _ => self.socket_is_ours(),
+                };
+                match owner_check {
                     Err(Owner::Other(why)) => {
                         self.link.send_replace(Link::Failed(why));
                         return;
@@ -1114,10 +1135,12 @@ impl Bridge {
                     Err(Owner::Unreachable) => {
                         // A server holding the books with no socket yet is
                         // opening (or finishing), not absent.
-                        let words = if crate::opener::server_lock_held(&run_dir) {
-                            opening_words(&self.book)
-                        } else {
-                            not_running_words(&self.book)
+                        let words = match held {
+                            crate::opener::Holder::Command => command_words(&self.book),
+                            _ if crate::opener::server_lock_held(&run_dir) => {
+                                opening_words(&self.book)
+                            }
+                            _ => not_running_words(&self.book),
                         };
                         self.link.send_replace(Link::Refused(words));
                     }

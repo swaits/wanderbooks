@@ -80,6 +80,7 @@
 use crate::host::{SERVER_LOG, children_executable, open_log};
 use crate::opener::{host_lock_held, server_lock_held};
 use ledger_mcp::admin::{self, CloseOutcome, OpenOutcome, Request, Response};
+pub use ledger_mcp::local::StartedBy;
 use ledger_store::root::Root;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
@@ -101,6 +102,19 @@ pub const READY_WAIT: Duration = Duration::from_secs(300);
 /// last backup of a company is allowed 60 s (local.rs `BACKUP_AT_CLOSE`),
 /// and running calls finish first.
 pub const STOP_WAIT: Duration = Duration::from_secs(90);
+
+/// How long another program holding the books, while this server has not
+/// taken them, is seen before this one is taken to have lost the race.
+const BEATEN_AFTER: Duration = Duration::from_millis(300);
+
+/// What [`AppServer::wait_ready_unless_beaten`] came to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Waited {
+    /// The server is ready.
+    Ready,
+    /// Another program took the books first.
+    Beaten,
+}
 
 /// What a refused start says (INVARIANT 1).
 pub const ANOTHER_HAS_THEM: &str = "Another program has these books open: another Wanderbooks window, `wanderbooks serve`, or a books server that is still finishing its last backup. Close it (`wanderbooks close` closes the books) or wait a moment, then start Wanderbooks again.";
@@ -217,7 +231,7 @@ pub struct AppServer {
 /// now: no host holds the root, a server does, and its admin socket
 /// answers (INVARIANT 7).
 pub fn the_apps_server_runs(run: &Path) -> bool {
-    !host_lock_held(run) && server_lock_held(run) && crate::opener::admin_answers(run) == Ok(true)
+    crate::opener::what_holds(run) == Ok(crate::opener::Holder::App)
 }
 
 impl AppServer {
@@ -229,12 +243,57 @@ impl AppServer {
         Self::start_in(&children_executable(), root, open, |_| {})
     }
 
+    /// The server of a command that does its own work with nothing else
+    /// running (commands.rs `reach`): the same server, started clean as a
+    /// host starts it (INVARIANT 13), saying it is a command's.
+    pub fn start_for_command(
+        root: Option<&Path>,
+        open: &[String],
+        knobs: &crate::knobs::Knobs,
+    ) -> Result<Self, String> {
+        let d = crate::knobs::Knobs::default();
+        Self::start_as(
+            &children_executable(),
+            root,
+            open,
+            StartedBy::Command,
+            |command| {
+                // The timings a test shortened, as the host passes them on.
+                for (flag, now, default) in [
+                    ("--backup-quiet", knobs.backup_quiet, d.backup_quiet),
+                    ("--drill-first", knobs.drill_first, d.drill_first),
+                    ("--start-delay", knobs.server_delay, d.server_delay),
+                ] {
+                    if now != default {
+                        command.arg(flag).arg(now.as_millis().to_string());
+                    }
+                }
+                if knobs.timer_hold {
+                    command.arg("--timer-hold");
+                }
+            },
+        )
+    }
+
     /// [`AppServer::start`] from the program `exe`, `configure` having the
     /// last word on its command (tests give it an environment of its own).
     pub fn start_in(
         exe: &Path,
         root: Option<&Path>,
         open: &[String],
+        configure: impl FnOnce(&mut Command),
+    ) -> Result<Self, String> {
+        Self::start_as(exe, root, open, StartedBy::App, configure)
+    }
+
+    /// [`AppServer::start_in`] for a server started `by` the app or a
+    /// command, which it says of itself (`--started-by`, INVARIANT 13).
+    /// A command's is started clean (INVARIANT 13).
+    pub fn start_as(
+        exe: &Path,
+        root: Option<&Path>,
+        open: &[String],
+        by: StartedBy,
         configure: impl FnOnce(&mut Command),
     ) -> Result<Self, String> {
         let found = Root::find(root).map_err(|e| e.to_string())?;
@@ -259,7 +318,20 @@ impl AppServer {
             command.process_group(0);
         }
         command.arg("server");
-        if let Some(root) = root {
+        command.arg("--started-by").arg(by.flag());
+        if by == StartedBy::Command {
+            // Nothing of the invoker's reaches a server that may outlive
+            // the command (INVARIANT 13): the host's environment, and a
+            // folder of its own to stand in (the root's absolute path
+            // goes on, as the host's does). Its descriptors are closed by
+            // the server itself at its start.
+            command.arg("--root").arg(found.path());
+            crate::start::clean_environment(&mut command)?;
+            #[cfg(unix)]
+            command.current_dir("/");
+            #[cfg(windows)]
+            command.current_dir(&run);
+        } else if let Some(root) = root {
             command.arg("--root").arg(root);
         }
         command.arg("--open").arg(open_argument(open));
@@ -362,6 +434,50 @@ impl AppServer {
                 .unwrap_or_else(|e| e.into_inner())
                 .0;
         }
+    }
+
+    /// Wait for the server to be ready, up to `within`, but not for
+    /// another program that took the books first: if, while this server
+    /// is not ready, a host or another server holds them (a command racing
+    /// the app's start, or `serve`'s), this one has lost the race and the
+    /// caller is to join what runs (commands.rs `reach`). Seen for as long
+    /// as [`BEATEN_AFTER`], so the moment between this server taking the
+    /// lock and saying so is not taken for losing.
+    pub fn wait_ready_unless_beaten(&self, within: Duration) -> Result<Waited, String> {
+        let deadline = Instant::now() + within;
+        let mut beaten_since: Option<Instant> = None;
+        loop {
+            let slice = Duration::from_millis(50).min(
+                deadline
+                    .checked_duration_since(Instant::now())
+                    .unwrap_or_default(),
+            );
+            match self.wait_ready(slice) {
+                Ok(()) => return Ok(Waited::Ready),
+                Err(why) if self.exited().is_some() => return Err(why),
+                Err(why) => {
+                    if Instant::now() >= deadline {
+                        return Err(why);
+                    }
+                }
+            }
+            if self.another_holds() {
+                let since = *beaten_since.get_or_insert_with(Instant::now);
+                if since.elapsed() >= BEATEN_AFTER {
+                    return Ok(Waited::Beaten);
+                }
+            } else {
+                beaten_since = None;
+            }
+        }
+    }
+
+    /// Whether a host, or a server that is not this one, holds the books.
+    fn another_holds(&self) -> bool {
+        host_lock_held(&self.run)
+            || (server_lock_held(&self.run)
+                && ledger_mcp::local::read_server_info(&self.run)
+                    .is_none_or(|info| info.pid != self.pid))
     }
 
     /// Whether the server has said it is ready (and is still there).

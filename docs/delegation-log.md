@@ -84,3 +84,4 @@ Columns: date | type (scout, run/verify, implement, refactor, debug, review) | p
 - 2026-11-21 | impl-multi 2 | sonnet (high) | B3 fix round (12 items) | accepted; Buypass dropped from the directory hosts by the lead
 - 2026-11-21 | debug 2 | sonnet (high) | failures from GitHub's run on 8a6d731c3 (doc links, wording tests, marker writes, git close test, fuzz key, a sum in remote) | accepted on its tests and a compile after merge; macOS items unproven
 - 2026-11-21 | debug 2 | sonnet (medium) | the working-state picture differs on Windows | accepted on its tests; proof is GitHub's next Windows run
+- 2026-11-21 | impl-multi 3 | sonnet (high) | P15 C1: packages for Windows, macOS, Linux; the Claude desktop extension; the release workflow | accepted on its Linux tests after merge; nothing run on Windows or macOS; no separate review (the release workflow's first run is the test)

@@ -13,6 +13,9 @@ use egui_phosphor::regular as icon;
 
 #[derive(Default)]
 pub struct Palette {
+    /// The view that owns it: its modal's id is scoped by it, so two
+    /// views' palettes never share egui state.
+    scope: Option<egui::Id>,
     open: bool,
     query: String,
     selected: usize,
@@ -29,6 +32,13 @@ pub struct Item {
 }
 
 impl Palette {
+    /// A palette whose ids belong to the view `scope`.
+    pub fn scoped(scope: egui::Id) -> Self {
+        Self {
+            scope: Some(scope),
+            ..Default::default()
+        }
+    }
     pub fn open(&mut self) {
         self.open = true;
         self.query.clear();
@@ -66,7 +76,7 @@ impl Palette {
             self.open = false;
             return Some(it.route.clone());
         }
-        let modal = egui::Modal::new(egui::Id::new("palette"))
+        let modal = egui::Modal::new(self.scope.unwrap_or(egui::Id::NULL).with("palette"))
             .frame(
                 egui::Frame::new()
                     .fill(p.surface)

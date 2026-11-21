@@ -24,6 +24,7 @@ use ledger_core::{AccountType, Currency, Money, Side};
 use ledger_gui::books::Books;
 use ledger_gui::nav::{Route, Section};
 use ledger_gui::owner::{Agent, Owner, RestorePlan};
+use ledger_gui::tabs::BAR_H;
 use ledger_gui::{App, Source, data};
 use ledger_store::{DiskCheck, Store};
 use rust_decimal::Decimal;
@@ -442,16 +443,19 @@ fn at_1479x519_every_link_shows_unscrolled() {
     }
 }
 
-/// Folded, the card is one line that fits the card whole (never cut to
-/// "Datab…"), naming the check that failed; hovered, it shows the three
-/// checks.
+/// Folded, the card is its heading alone, "Live · event N" at its right,
+/// the seal after it, when every check passes; when one failed, a line
+/// under the heading names it, whole (never cut to "Datab…"), the event
+/// at its end. Either way it says Live or Snapshot and the event, and
+/// hovered it shows the three checks.
 #[test]
 fn the_folded_card_shows_its_checks_on_hover() {
     let f = Fixture::new();
-    for (footer, verdict, checks) in [
+    for (footer, verdict, word, checks) in [
         (
             Footer::Owners,
-            "verified",
+            "event 6",
+            "Live",
             [
                 "Journal chain verified",
                 "Database matches journal",
@@ -460,8 +464,7 @@ fn the_folded_card_shows_its_checks_on_hover() {
         ),
         (
             Footer::Snapshot,
-            // Its line is "Snapshot · event 555 · (seal)": no room for
-            // "verified", which the seal says.
+            "event 6",
             "Snapshot",
             [
                 "Journal chain verified",
@@ -472,6 +475,7 @@ fn the_folded_card_shows_its_checks_on_hover() {
         (
             Footer::Differs,
             "Database differs",
+            "Live",
             [
                 "Journal chain verified",
                 "Database differs",
@@ -481,6 +485,7 @@ fn the_folded_card_shows_its_checks_on_hover() {
         (
             Footer::Unreadable,
             "Database unreadable",
+            "Live",
             [
                 "Journal chain verified",
                 "Database unreadable",
@@ -490,6 +495,7 @@ fn the_folded_card_shows_its_checks_on_hover() {
         (
             Footer::Damaged,
             "2 files damaged",
+            "Live",
             [
                 "Journal chain verified",
                 "Database matches journal",
@@ -514,10 +520,28 @@ fn the_folded_card_shows_its_checks_on_hover() {
             );
             let (_, footer_rect, _) = drawn(&h, Pane::Sidebar);
             let line = h.get_by_label_contains(verdict);
-            let card = line.rect();
+            let card = h.get_by_label_contains(word).rect();
+            // The live word is in the heading, above the line when there
+            // is one; the event is on the line, or after the word.
+            assert!(line.rect().bottom() <= footer_rect.bottom(), "{tag}");
+            if verdict.starts_with("event") {
+                assert!(
+                    (line.rect().center().y - card.center().y).abs() < 4.0,
+                    "{tag}: the event is after the live word"
+                );
+            } else {
+                assert!(
+                    line.rect().top() > card.bottom() - 4.0,
+                    "{tag}: a line under the heading"
+                );
+                assert!(
+                    h.query_all_by_label_contains("event ").count() >= 1,
+                    "{tag}: the failure line ends with the event"
+                );
+            }
             // Every piece of the line lies inside the card's margins: a
             // piece cut off or running out would reach past them.
-            for piece in ["Live", "Snapshot", "event 5", verdict] {
+            for piece in [word, "event ", verdict] {
                 for n in h.query_all_by_label_contains(piece) {
                     let r = n.rect();
                     if r.left() < Pane::Sidebar.panel() && r.top() >= footer_rect.top() {
@@ -664,7 +688,9 @@ fn a_tall_sidebar_is_unchanged() {
     let png = dir.join("sidenav-1440x920.png");
     match h.render() {
         Ok(img) => {
-            let side = image::imageops::crop_imm(&img, 0, 0, 224, img.height()).to_image();
+            let side =
+                image::imageops::crop_imm(&img, 0, BAR_H as u32, 224, img.height() - BAR_H as u32)
+                    .to_image();
             if bless {
                 side.save(&png).unwrap();
             } else {
@@ -687,7 +713,8 @@ fn a_tall_sidebar_is_unchanged() {
 fn sidebar_shapes(h: &Harness<'_, App>) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for s in &h.output().shapes {
-        if s.clip_rect.max.x <= 224.5 {
+        // Below the tab bar (D-78): the shapes that are the sidebar's.
+        if s.clip_rect.max.x <= 224.5 && s.clip_rect.min.y >= BAR_H - 0.5 {
             for b in format!("{:?}", s.shape).bytes() {
                 hash ^= b as u64;
                 hash = hash.wrapping_mul(0x100_0000_01b3);
@@ -754,7 +781,7 @@ fn sidenav_screenshots() {
     }
     // The folded card's tooltip.
     let mut h = f.harness(Footer::Owners, Route::Projects, 1479.0, 519.0, 1.0);
-    if let Some(n) = h.query_by_label_contains("event 5") {
+    if let Some(n) = h.query_by_label_contains("event ") {
         let c = n.rect().center();
         h.hover_at(c);
         h.run_steps(30);

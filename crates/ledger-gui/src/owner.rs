@@ -29,6 +29,17 @@
 //!      owner's `upgrade_format` (the server checks it; nothing here
 //!      does). "Not now" changes nothing; a refusal (a wrong passphrase)
 //!      is said in the dialog, which stays.
+//!   6. An action that changes or replaces the books, their format or
+//!      what the owner holds (restore, the format upgrade, new books,
+//!      connect, close the books, check for updates, update) is never
+//!      abandoned: while one runs, its tab's close control is off, with
+//!      the words of what is running ("Restoring these books: wait for it
+//!      to finish"), and the window's close is held (app.rs); its result
+//!      is shown in that tab when it ends. A read-only one (back up now,
+//!      the restore's check of a backup) is stopped with the tab: it does
+//!      not start once the tab has closed, and what it sends after is
+//!      dropped (a request the books server already has it finishes: the
+//!      viewer only reads its answer).
 //! ```
 
 use crate::books::Books;
@@ -204,6 +215,11 @@ pub trait Owner: Send + Sync {
     }
 }
 
+/// The owner the program gave the viewer, for every company's view that
+/// isn't given one of its own. It is the program's (one per process, as
+/// the program is one), not a company's: each view takes a handle to it
+/// when it is made, and holds that (`CompanyView::with_owner` gives a view
+/// another).
 static OWNER: OnceLock<Arc<dyn Owner>> = OnceLock::new();
 
 /// Give the viewer its owner (once, at start; INVARIANT 4).
@@ -213,10 +229,6 @@ pub fn set_owner(owner: Arc<dyn Owner>) {
 
 /// The viewer's owner, if the program gave it one.
 pub fn current() -> Option<Arc<dyn Owner>> {
-    owner()
-}
-
-fn owner() -> Option<Arc<dyn Owner>> {
     OWNER.get().cloned()
 }
 
@@ -229,6 +241,31 @@ pub fn book_id(books: &Books) -> Option<String> {
 }
 
 type Outcome = Result<Vec<String>, String>;
+
+/// What a job does to the books (INVARIANT 6).
+#[derive(Clone, Copy)]
+enum Effect {
+    /// It only reads: stopped with its tab.
+    Reads,
+    /// It changes something and is never abandoned; the words say what is
+    /// running ("Restoring these books").
+    Changes(&'static str),
+}
+
+impl Effect {
+    fn hold(self) -> crate::jobs::Hold {
+        match self {
+            Effect::Reads => crate::jobs::Hold::Free,
+            Effect::Changes(what) => {
+                crate::jobs::Hold::Keep(format!("{what}: wait for it to finish"))
+            }
+        }
+    }
+}
+
+/// A job to run off the UI thread: what it is called, what it does to the
+/// books, and the work.
+type Start = (String, Effect, Box<dyn FnOnce() -> Outcome + Send>);
 
 /// A dialog open over the viewer.
 #[derive(Default)]
@@ -307,6 +344,9 @@ struct RestoreForm {
 /// The menu's state: a dialog, the job under way, and the last outcome.
 #[derive(Default)]
 pub struct OwnerMenu {
+    /// The view that owns it: its dialogs' ids are scoped by it, so two
+    /// views' dialogs never share egui state.
+    scope: Option<egui::Id>,
     /// The books last shown (by identity) and their id: found once for
     /// each load, not every frame.
     book: Option<(usize, Option<String>)>,
@@ -319,12 +359,24 @@ pub struct OwnerMenu {
     /// The update waiting, as last read, and when (re-read every few
     /// seconds and after any job).
     update: Option<(std::time::Instant, Option<UpdateWaiting>)>,
+    /// The tab's threads: every job is one of them (INVARIANT 6).
+    jobs: crate::jobs::Spawner,
 }
 
 /// How long a reading of the waiting update is kept.
 const UPDATE_LOOK: std::time::Duration = std::time::Duration::from_secs(5);
 
 impl OwnerMenu {
+    /// A menu whose ids belong to the view `scope`, and whose jobs are
+    /// threads of that view (`jobs`).
+    pub fn scoped(scope: egui::Id, jobs: crate::jobs::Spawner) -> Self {
+        Self {
+            scope: Some(scope),
+            jobs,
+            ..Default::default()
+        }
+    }
+
     /// The id of the books shown, if they are books of a data root: found
     /// once for each load.
     fn book_of(&mut self, books: &Arc<Books>) -> Option<String> {
@@ -355,8 +407,8 @@ impl OwnerMenu {
     /// The standing notices above the page: an update waiting for the
     /// owner's accept, and a format upgrade the books wait for, whose
     /// go-ahead is asked for once each open (INVARIANT 5).
-    pub fn notice(&mut self, ui: &mut Ui, books: &Arc<Books>) {
-        let Some(owner) = owner() else {
+    pub fn notice(&mut self, ui: &mut Ui, owner: Option<Arc<dyn Owner>>, books: &Arc<Books>) {
+        let Some(owner) = owner else {
             return;
         };
         let Some(book) = self.book_of(books) else {
@@ -399,7 +451,14 @@ impl OwnerMenu {
                     });
                 });
             if let Some(work) = start {
-                self.start(ui.ctx(), "Update".into(), work);
+                self.start(
+                    ui.ctx(),
+                    (
+                        "Update".into(),
+                        Effect::Changes("Updating wanderbooks"),
+                        work,
+                    ),
+                );
             }
         }
         let Some(upgrade) = books.format_upgrade.clone() else {
@@ -447,8 +506,14 @@ impl OwnerMenu {
     }
 
     /// The menu button and a note of the last outcome; its dialogs.
-    pub fn ui(&mut self, ui: &mut Ui, books: &Arc<Books>, compact: bool) {
-        let Some(owner) = owner() else {
+    pub fn ui(
+        &mut self,
+        ui: &mut Ui,
+        owner: Option<Arc<dyn Owner>>,
+        books: &Arc<Books>,
+        compact: bool,
+    ) {
+        let Some(owner) = owner else {
             return;
         };
         let Some(book) = self.book_of(books) else {
@@ -482,7 +547,7 @@ impl OwnerMenu {
         }
         let busy = self.job.is_some();
         let waiting = self.update_waiting(ui.ctx(), &owner);
-        let mut start: Option<(String, Box<dyn FnOnce() -> Outcome + Send>)> = None;
+        let mut start: Option<Start> = None;
         let response = ui
             .add_enabled_ui(!busy, |ui| {
                 egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
@@ -493,7 +558,11 @@ impl OwnerMenu {
                         .clicked()
                     {
                         let (o, b) = (owner.clone(), book.clone());
-                        start = Some(("Back up now".into(), Box::new(move || o.back_up_now(&b))));
+                        start = Some((
+                            "Back up now".into(),
+                            Effect::Reads,
+                            Box::new(move || o.back_up_now(&b)),
+                        ));
                     }
                     if ui
                         .button(format!("{} Restore…", icon::CLOCK_COUNTER_CLOCKWISE))
@@ -525,6 +594,10 @@ impl OwnerMenu {
                             let (o, b) = (owner.clone(), book.clone());
                             start = Some((
                                 format!("Connect {}", agent.label()),
+                                Effect::Changes(match agent {
+                                    Agent::Claude => "Connecting Claude Code to these books",
+                                    Agent::Codex => "Connecting Codex to these books",
+                                }),
                                 Box::new(move || o.connect(agent, &b)),
                             ));
                         }
@@ -546,7 +619,11 @@ impl OwnerMenu {
                         .clicked()
                     {
                         let o = owner.clone();
-                        start = Some(("Check for updates".into(), Box::new(move || o.check_for_updates())));
+                        start = Some((
+                            "Check for updates".into(),
+                            Effect::Changes("Checking for updates"),
+                            Box::new(move || o.check_for_updates()),
+                        ));
                     }
                     if let Some(u) = &waiting
                         && ui
@@ -555,7 +632,11 @@ impl OwnerMenu {
                             .clicked()
                     {
                         let o = owner.clone();
-                        start = Some(("Update".into(), Box::new(move || o.apply_update())));
+                        start = Some((
+                            "Update".into(),
+                            Effect::Changes("Updating wanderbooks"),
+                            Box::new(move || o.apply_update()),
+                        ));
                     }
                     ui.separator();
                     if ui
@@ -568,8 +649,8 @@ impl OwnerMenu {
                 })
             })
             .inner;
-        if let Some((what, work)) = start {
-            self.start(ui.ctx(), what, work);
+        if let Some(start) = start {
+            self.start(ui.ctx(), start);
         }
         self.dialogs(ui.ctx(), &owner, &book);
         let said = if self.job.is_some() {
@@ -591,18 +672,21 @@ impl OwnerMenu {
         }
     }
 
-    fn start(
-        &mut self,
-        ctx: &egui::Context,
-        what: String,
-        work: Box<dyn FnOnce() -> Outcome + Send>,
-    ) {
+    fn start(&mut self, ctx: &egui::Context, (what, effect, work): Start) {
         let (tx, rx) = channel();
         let ctx = ctx.clone();
-        std::thread::spawn(move || {
+        let started = self.jobs.spawn(&what.clone(), effect.hold(), move |stop| {
+            // A read-only job of a tab that has closed is not begun.
+            if matches!(effect, Effect::Reads) && stop.requested() {
+                return;
+            }
             let _ = tx.send(work());
             ctx.request_repaint();
         });
+        if !started {
+            self.done = Some((what, Err("the system gave no thread for it".into())));
+            return;
+        }
         self.job = Some((what, rx));
         self.done = None;
     }
@@ -610,7 +694,8 @@ impl OwnerMenu {
     /// The open dialog, if any, for the books `book`.
     fn dialogs(&mut self, ctx: &egui::Context, owner: &Arc<dyn Owner>, book: &str) {
         let mut close = false;
-        let mut run: Option<(String, Box<dyn FnOnce() -> Outcome + Send>)> = None;
+        let mut run: Option<Start> = None;
+        let jobs = self.jobs.clone();
         match &mut self.dialog {
             Dialog::None => {}
             Dialog::Upgrade(form) => {
@@ -636,17 +721,29 @@ impl OwnerMenu {
                     }
                 }
                 if !close {
-                    upgrade_dialog(ctx, form, owner, book, &mut close);
+                    upgrade_dialog(
+                        ctx,
+                        self.scope.unwrap_or(egui::Id::NULL),
+                        form,
+                        owner,
+                        book,
+                        &jobs,
+                        &mut close,
+                    );
                 }
             }
             Dialog::Close => {
-                egui::Modal::new(egui::Id::new("owner-close")).show(ctx, |ui| {
+                egui::Modal::new(self.scope.unwrap_or(egui::Id::NULL).with("owner-close")).show(ctx, |ui| {
                     ui.heading("Close the books?");
                     ui.label("Agents' sessions and everything else holding them let go. They open again when something holds them.");
                     ui.horizontal(|ui| {
                         if ui.button("Close the books").clicked() {
                             let o = owner.clone();
-                            run = Some(("Close the books".into(), Box::new(move || o.close_books().map(|l| vec![l]))));
+                            run = Some((
+                                "Close the books".into(),
+                                Effect::Changes("Closing the books"),
+                                Box::new(move || o.close_books().map(|l| vec![l])),
+                            ));
                             close = true;
                         }
                         if ui.button("Cancel").clicked() {
@@ -656,30 +753,32 @@ impl OwnerMenu {
                 });
             }
             Dialog::NewBooks { id, currency } => {
-                egui::Modal::new(egui::Id::new("owner-new-books")).show(ctx, |ui| {
-                    ui.heading("New books");
-                    ui.label("Their id: lowercase letters, digits and hyphens.");
-                    ui.text_edit_singleline(id);
-                    ui.label("Their base currency (fixed for good):");
-                    ui.text_edit_singleline(currency);
-                    ui.horizontal(|ui| {
-                        let ready = !id.trim().is_empty() && !currency.trim().is_empty();
-                        if ui
-                            .add_enabled(ready, egui::Button::new("Make them"))
-                            .clicked()
-                        {
-                            let (o, i, c) = (owner.clone(), id.clone(), currency.clone());
-                            run = Some((
-                                "New books".into(),
-                                Box::new(move || o.new_books(&i, &c).map(|l| vec![l])),
-                            ));
-                            close = true;
-                        }
-                        if ui.button("Cancel").clicked() {
-                            close = true;
-                        }
+                egui::Modal::new(self.scope.unwrap_or(egui::Id::NULL).with("owner-new-books"))
+                    .show(ctx, |ui| {
+                        ui.heading("New books");
+                        ui.label("Their id: lowercase letters, digits and hyphens.");
+                        ui.text_edit_singleline(id);
+                        ui.label("Their base currency (fixed for good):");
+                        ui.text_edit_singleline(currency);
+                        ui.horizontal(|ui| {
+                            let ready = !id.trim().is_empty() && !currency.trim().is_empty();
+                            if ui
+                                .add_enabled(ready, egui::Button::new("Make them"))
+                                .clicked()
+                            {
+                                let (o, i, c) = (owner.clone(), id.clone(), currency.clone());
+                                run = Some((
+                                    "New books".into(),
+                                    Effect::Changes("Making new books"),
+                                    Box::new(move || o.new_books(&i, &c).map(|l| vec![l])),
+                                ));
+                                close = true;
+                            }
+                            if ui.button("Cancel").clicked() {
+                                close = true;
+                            }
+                        });
                     });
-                });
             }
             Dialog::Restore(form) => {
                 if let Some((rx, asked)) = &form.planning
@@ -699,7 +798,7 @@ impl OwnerMenu {
                         _ => {}
                     }
                 }
-                egui::Modal::new(egui::Id::new("owner-restore")).show(ctx, |ui| {
+                egui::Modal::new(self.scope.unwrap_or(egui::Id::NULL).with("owner-restore")).show(ctx, |ui| {
                     ui.set_max_width(520.0);
                     ui.heading("Restore books");
                     ui.label("The backup: its repository's address, or its folder (the books' .git folder in your backup folder).");
@@ -754,13 +853,27 @@ impl OwnerMenu {
                                     let (o, s, r) = (owner.clone(), form.source.clone(), form.replace);
                                     let id = Some(form.id.trim().to_string()).filter(|i| !i.is_empty());
                                     let ctx = ui.ctx().clone();
-                                    std::thread::spawn(move || {
-                                        let _ = tx.send(o.plan_restore(&s, id, r));
-                                        ctx.request_repaint();
-                                    });
-                                    let asked = (form.source.clone(), form.id.clone(), form.replace);
-                                    form.planning = Some((rx, asked));
-                                    form.problem = None;
+                                    // Only reads the backup: stopped with its tab.
+                                    let started = jobs.spawn(
+                                        "restore check",
+                                        crate::jobs::Hold::Free,
+                                        move |stop| {
+                                            if stop.requested() {
+                                                return;
+                                            }
+                                            let _ = tx.send(o.plan_restore(&s, id, r));
+                                            ctx.request_repaint();
+                                        },
+                                    );
+                                    if started {
+                                        let asked =
+                                            (form.source.clone(), form.id.clone(), form.replace);
+                                        form.planning = Some((rx, asked));
+                                        form.problem = None;
+                                    } else {
+                                        form.problem =
+                                            Some("the system gave no thread for it".into());
+                                    }
                                 }
                                 if planning {
                                     ui.label("Checking the backup…");
@@ -769,7 +882,11 @@ impl OwnerMenu {
                             Some(plan) => {
                                 if ui.button("Restore it").clicked() {
                                     let (o, plan) = (owner.clone(), plan.clone());
-                                    run = Some(("Restore".into(), Box::new(move || o.restore(&plan))));
+                                    run = Some((
+                                        "Restore".into(),
+                                        Effect::Changes("Restoring these books"),
+                                        Box::new(move || o.restore(&plan)),
+                                    ));
                                     close = true;
                                 }
                             }
@@ -784,8 +901,8 @@ impl OwnerMenu {
         if close {
             self.dialog = Dialog::None;
         }
-        if let Some((what, work)) = run {
-            self.start(ctx, what, work);
+        if let Some(run) = run {
+            self.start(ctx, run);
         }
     }
 }
@@ -794,13 +911,15 @@ impl OwnerMenu {
 /// passphrase, and the go-ahead or not now.
 fn upgrade_dialog(
     ctx: &egui::Context,
+    scope: egui::Id,
     form: &mut UpgradeForm,
     owner: &Arc<dyn Owner>,
     book: &str,
+    jobs: &crate::jobs::Spawner,
     close: &mut bool,
 ) {
     let p = crate::theme::pal(ctx);
-    egui::Modal::new(egui::Id::new("owner-upgrade")).show(ctx, |ui| {
+    egui::Modal::new(scope.with("owner-upgrade")).show(ctx, |ui| {
         ui.set_max_width(520.0);
         ui.heading("Upgrade these books' format?");
         ui.add_space(4.0);
@@ -837,15 +956,26 @@ fn upgrade_dialog(
                 let (o, b) = (owner.clone(), book.to_string());
                 let (tx, rx) = channel();
                 let ctx = ui.ctx().clone();
-                std::thread::spawn(move || {
-                    // The window is woken however this ends (a panic
-                    // too), once the answer, or its absence, can be seen.
-                    let _wake = Wake(ctx);
-                    let (tx, passphrase) = (tx, passphrase);
-                    let _ = tx.send(o.upgrade_format(&b, &passphrase));
-                });
-                form.working = Some(rx);
-                form.problem = None;
+                // Changes the books' format: never abandoned (INVARIANT 6).
+                let started = jobs.spawn(
+                    "format upgrade",
+                    crate::jobs::Hold::Keep(
+                        "Upgrading these books' format: wait for it to finish".into(),
+                    ),
+                    move |_| {
+                        // The window is woken however this ends (a panic
+                        // too), once the answer, or its absence, can be seen.
+                        let _wake = Wake(ctx);
+                        let (tx, passphrase) = (tx, passphrase);
+                        let _ = tx.send(o.upgrade_format(&b, &passphrase));
+                    },
+                );
+                if started {
+                    form.working = Some(rx);
+                    form.problem = None;
+                } else {
+                    form.problem = Some("the system gave no thread for it".into());
+                }
             }
             if ui
                 .add_enabled(!working, egui::Button::new("Not now"))

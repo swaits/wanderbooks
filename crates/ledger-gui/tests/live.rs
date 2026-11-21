@@ -173,3 +173,86 @@ fn a_setting_changed_while_it_runs_is_followed() {
         }
     }
 }
+
+/// A loader whose books can't be read is told to go (its tab closed): it
+/// tries no further load, however long it was to wait before the next, and
+/// it ends at once (the registry says when).
+#[test]
+fn a_loader_whose_books_cant_be_read_tries_no_more_once_it_is_dropped() {
+    let dir = std::env::temp_dir().join(format!("ledger-gui-live-gone-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let _cleanup = TestDir(dir.clone());
+    std::fs::create_dir_all(&dir).unwrap();
+    // Books that are not there: every try fails.
+    let data = dir.join("not-there");
+    let jobs = ledger_gui::jobs::Jobs::new();
+    let loader = Loader::spawn_in(
+        Source {
+            data_dir: data,
+            today: NaiveDate::from_ymd_opt(2026, 10, 12),
+        },
+        egui::Context::default(),
+        &jobs.spawner(),
+    );
+    let watch = loader.watch();
+    match loader.wait(Duration::from_secs(30)) {
+        Some(Update::Error(_)) => {}
+        _ => panic!("the books that aren't there didn't say so"),
+    }
+    // Dropped while it waits for its next try: waited for until it does.
+    let end = Instant::now() + Duration::from_secs(30);
+    while !watch.waiting() {
+        assert!(Instant::now() < end, "it never waited to try again");
+        std::thread::yield_now();
+    }
+    let tried = watch.load_attempts();
+    assert_eq!(tried, 1);
+    drop(loader);
+    assert!(
+        jobs.watch().wait_ended(Duration::from_secs(60)),
+        "the loader's thread runs on: {:?}",
+        jobs.running()
+    );
+    assert!(watch.ended());
+    assert_eq!(
+        watch.load_attempts(),
+        tried,
+        "a dropped loader tried to load the books again"
+    );
+}
+
+/// The viewer's presence is let go when the loader is dropped, not when its
+/// thread gets to end: nothing waits on the thread.
+#[test]
+fn a_dropped_loader_lets_go_of_its_presence_at_once() {
+    let dir = std::env::temp_dir().join(format!("ledger-gui-live-presence-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let _cleanup = TestDir(dir.clone());
+    let data = dir.join("books-data");
+    drop(Store::create(&data, Currency::USD).unwrap());
+    ledger_store::ops::prepare(&data).unwrap();
+    let loader = Loader::spawn(
+        Source {
+            data_dir: data.clone(),
+            today: NaiveDate::from_ymd_opt(2026, 10, 12),
+        },
+        egui::Context::default(),
+    );
+    assert!(matches!(
+        loader.wait(Duration::from_secs(30)),
+        Some(Update::Books(_))
+    ));
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !ledger_store::ops::viewer_open(&data) {
+        assert!(
+            Instant::now() < deadline,
+            "the viewer never held its presence"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    drop(loader);
+    assert!(
+        !ledger_store::ops::viewer_open(&data),
+        "a dropped loader still holds the books' presence"
+    );
+}

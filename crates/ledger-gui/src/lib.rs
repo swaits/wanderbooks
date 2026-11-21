@@ -7,11 +7,13 @@ pub mod app;
 pub mod attention;
 pub mod books;
 pub mod charts;
+pub mod company;
 pub mod data;
 pub mod demo;
 pub mod dock;
 pub mod export;
 pub mod fmt;
+pub mod jobs;
 pub mod menu;
 pub mod nav;
 pub mod owner;
@@ -19,14 +21,17 @@ pub mod pages;
 pub mod palette;
 mod prefs;
 mod receipts;
+mod scheme_menu;
 mod schemes;
+pub mod tabs;
 #[cfg(test)]
 mod test_support;
 mod theme;
 pub mod welcome;
 mod widgets;
 
-pub use app::App;
+pub use app::{App, Start};
+pub use company::CompanyView;
 pub use data::Source;
 
 use std::path::PathBuf;
@@ -52,10 +57,12 @@ impl std::error::Error for Exit {}
 /// window closes. An unknown argument returns [`Exit`] (code 2).
 ///
 /// `ledger-gui [--root PATH] [--book ID] [--today YYYY-MM-DD] [--demo]`:
-/// a book of the data root (plan 3.6), the only books it opens (D-44):
+/// books of the data root (plan 3.6), the only books it opens (D-44):
 /// `--root`, else the root `wanderbooks setup` made, never the current
-/// directory or a settings file; `--book` names one, else the root's only
-/// one (or the first, by id). With no books yet, and an owner to set them
+/// directory or a settings file; `--book` names one, which is then the
+/// only tab; else the companies that were open when the window last
+/// closed, each in a tab, in their order (the root's first, by id, if
+/// none of them is there any more). With no books yet, and an owner to set them
 /// up (`wanderbooks gui`), it opens the first-run page (welcome.rs) instead
 /// of ending. `--demo` builds a demo company in a temp directory and opens
 /// that.
@@ -100,11 +107,21 @@ pub fn run(
     }
     // The books to show, or a first run (no books yet, and the program gave
     // the viewer an owner to set them up: plan P11b), or the reason not.
+    // A company named (`--book`, the demo) is the only tab; otherwise the
+    // companies that were open last time come back (app.rs INVARIANT 3),
+    // the data root's first if none does.
     let mut first_run = None;
-    let data_dir = match data_dir {
-        Some(d) => Some(d),
+    let start = match data_dir {
+        Some(d) => Some(Start::Only(Source { data_dir: d, today })),
         None => match book_in_root(root.as_deref(), book.as_deref()) {
-            Ok(d) => Some(d),
+            Ok(d) if book.is_some() => Some(Start::Only(Source { data_dir: d, today })),
+            Ok(d) => match ledger_store::root::Root::find(root.as_deref()) {
+                Ok(r) => Some(Start::Restore {
+                    root: r.path().to_path_buf(),
+                    fallback: Source { data_dir: d, today },
+                }),
+                Err(_) => Some(Start::Only(Source { data_dir: d, today })),
+            },
             Err(why) => match owner::current() {
                 // Named books that aren't there are a mistake, not a first run.
                 Some(owner) if book.is_none() => {
@@ -135,8 +152,8 @@ pub fn run(
         "wanderbooks",
         options,
         Box::new(move |cc| {
-            Ok(Box::new(match (data_dir, first_run) {
-                (Some(data_dir), _) => App::new(cc, Source { data_dir, today }),
+            Ok(Box::new(match (start, first_run) {
+                (Some(start), _) => App::start(cc, start),
                 (None, state) => App::first_run(cc, root, today, state.unwrap_or_default()),
             }))
         }),

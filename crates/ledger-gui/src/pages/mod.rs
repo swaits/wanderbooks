@@ -166,7 +166,9 @@ pub fn split<T: ?Sized>(
         ui.allocate_rect(rect, egui::Sense::hover());
         return;
     }
-    let key = egui::Id::new(("split", id));
+    // Scoped by the page's ui, which is its company's: another company's
+    // tab keeps its own width.
+    let key = ui.id().with(("split", id));
     let mut detail_w: f32 = ui
         .ctx()
         .data_mut(|d| d.get_persisted(key))

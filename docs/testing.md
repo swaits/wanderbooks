@@ -4376,6 +4376,278 @@ a client trickling an upload on purpose).
 before it touches the book, and the gate's riding in the upload and
 download tasks.
 
+## P15 A3a: a tab per company (2026-11-20, D-78)
+
+The viewer was a window on one company. It is now one window with a tab
+per open company (`app.rs`, `company.rs`, `tabs.rs`). The work here is
+the refactor and the tab bar; nothing starts or stops the books server and
+no File menu is added. The tests look for exactly the failure a refactor
+like this has: it compiles, the old tests pass, and two tabs share state.
+Everything runs on scratch data roots that `Root::setup` makes in a temp
+folder; no test touches an account's real books.
+
+`crates/ledger-gui/tests/tabs.rs` (the bar's pictures run where there is a
+renderer, as the sidebar's do):
+
+- `each_tab_shows_its_own_company_and_figures`: two companies, cash
+  8,765.44 and 24,222.23, open in two tabs; each shows its own cash on the
+  overview, its own rent (1,234.56 / 777.77) in the profit and loss and
+  in the rent account's register, and never the other's; the tab opens on
+  its overview, not on the page the other was on; the window's title names
+  the company in front.
+- `what_is_done_in_one_tab_changes_nothing_in_another`: in one tab a page,
+  a search, a report's period, columns and comparison are set; in the
+  other the page, the search and the period are as they were and every
+  text it paints is the same as before (and the other way round).
+- `a_scrolled_sidebar_in_one_tab_is_not_scrolled_in_another`: egui's own
+  memory. In a short window the sidebar's links scroll; one tab's is
+  scrolled a page on, the other's is at the top, and the first is still
+  scrolled when it comes back. Fails (checked) when the view is not
+  drawn inside `push_id`.
+- `no_two_views_have_the_same_id_or_key`.
+- `a_background_tab_follows_its_journal_and_is_current_when_shown`: an
+  entry posted to the company of the tab behind is read while another tab
+  is in front (nothing is brought forward); when shown, its cash is the
+  new one on the first frames, with no reload.
+- `books_show_moves_the_tab_it_is_aimed_at_and_only_that_one`: a show
+  request for the second company moves that tab to the journal; the tab in
+  front stays on its overview and in front.
+- `closing_a_tab_releases_its_lock_its_threads_and_its_agent` (Unix): the
+  second tab's owner is its own (`set_owner` on the view; no process
+  global), its dock runs a stand-in agent (`sh -c 'echo $$ > pid; exec
+  sleep 600'`); closing the tab with its close control, the company's
+  viewer lock (`ops::viewer_open`) is released, its loader's thread has
+  ended (`Loader::watch`), the agent's process is gone; the other tab's
+  lock and loader are held and running; the company opens again with a new
+  lock.
+- `plus_lists_only_the_companies_not_open_and_none_opens_twice`: "+" lists
+  `gamma` and neither open company; choosing it opens a third tab, in
+  front; the list then says every company is open; `App::open` and
+  `add_view` of an open company show its tab and add none.
+- `start_up_restores_the_open_tabs_their_order_and_the_one_in_front`:
+  `gamma,gone,alpha,gamma,not a book!,beta` kept with `alpha` in front
+  opens gamma, alpha, beta with alpha in front, no error; no record, or a
+  record of companies that are all gone, opens the data root's first; a
+  front company not among the open ones leaves the first in front; a
+  company named on the command line is the only tab.
+- `the_open_tabs_and_each_ones_page_and_period_are_kept_and_come_back`:
+  `save` writes `open_companies`, `active_company`, the old per-app keys
+  and each company's page, period, columns and comparison; a second start
+  from them restores all of it, each tab's own; a tab closed and opened
+  again comes back as it was left; with every tab closed the next start
+  opens the first company.
+- `closing_the_front_tab_shows_a_neighbour_and_the_last_leaves_an_empty_window`:
+  the tab after, else before; the last leaves "No company is open" and
+  "Open a company with the + at the top of the window.", the bar still
+  there, and "+" opens a company from it.
+- `the_tab_in_front_is_marked_by_more_than_colour`: the tab in front is
+  "selected" to assistive technology, the others are not; each has a close
+  control named for its company.
+- `every_tab_never_writes_into_its_books_in_front_or_not`: `read_only.rs`'s
+  guarantee on two demo companies made read-only on disk: one follows live
+  behind the other, then every page is rendered in it (as `read_only.rs`
+  does), then the tabs are shown in turn; afterwards every file holds the
+  same bytes, size and time in both.
+- `the_tab_bar_with_one_two_and_many_tabs`: pictures of the bar, light and
+  dark (`tests/snapshots/tabs_one_*`, `tabs_two_*`, `tabs_many_*`); with
+  ten tabs the bar scrolls, the tab in front is scrolled into view, and
+  the "+" is whole in the bar.
+- `the_empty_window_and_the_plus_list`: pictures of the empty window and of
+  the "+" list open, light and dark (`tabs_empty_*`, `tabs_plus_*`).
+- `the_bar_spans_the_window_above_the_sidebar`: on the laid-out rectangles,
+  the bar's fill is the window's width and `BAR_H` high at its top, every
+  tab is inside it, the first is over the sidebar's column, and the
+  sidebar's links and panel start below it.
+- `the_plus_follows_the_last_tab_and_stays_whole_when_the_tabs_overflow`:
+  with two tabs the "+" is just after the last; with nine it is at the right
+  edge, whole, with the step controls shown and the tab in front left of it.
+- `a_name_is_remembered_and_shown_in_the_plus_list_and_on_a_loading_tab`:
+  a closed company is listed by name with its id beside it, one never
+  opened by its id alone; the name is saved as `company.<id>.name`, and an
+  app started from it titles a tab whose books aren't loaded by that name
+  (else by the id).
+- `the_plus_list_says_so_when_every_company_is_open`: "Every company is
+  already open." and no heading.
+- `nothing_in_the_top_of_the_window_but_the_tab_shows_the_company_name`:
+  per theme, on the Overview, Cash and the Journal, no painted text or
+  widget in the tree below the bar and above 120 points names the company
+  (the tab and its close control are in the bar), and the status card
+  names the company in front once.
+- `the_status_card_shows_the_company_in_front_and_follows_the_tab`: the
+  card's heading is the tab in front's name and its badge, small, in that
+  company's hue (the other's is not on the card), and both change when
+  another tab is shown; the window's title is unchanged.
+- `the_rail_shows_the_badge_alone_with_the_name_on_hover`.
+- `a_hue_is_the_books_id_alone_on_the_tab_and_the_card_in_both_themes_and_after_a_restart`:
+  the hue a tab and a card draw is the one the id gives, light and dark,
+  the same after a restart and in another order of opening, and pinned
+  for three ids (a change recolours every company).
+- `the_overview_opens_with_its_summary_sentence_and_never_names_the_company`
+  and `the_overview_of_books_with_no_transactions_opens_the_same_way`: the
+  first text of the page is the sentence ("You have $8,765.44 in cash …",
+  or "No transactions yet. …"), set bigger than body text and smaller than
+  a page title, and no text on the page names the company (no sentence
+  there used the name).
+- In `theme.rs`: `every_badge_hue_reads_in_both_themes` computes, for each
+  of the eight hues in each theme, the letter's contrast on the badge
+  (4.5:1, WCAG AA) and the badge's on the surface, sidebar, page and hover
+  colours (3:1); `a_hue_is_a_function_of_the_book_id_alone` pins the hash
+  and that every hue is used.
+- `pictures` (ignored; `SHOT_DIR`): the whole window with one company, each
+  of two tabs in front, eight tabs, the "+" list, the empty window, the
+  rail with two companies, the smallest window and the Overview at its
+  top, light and dark, for a person to look at.
+
+Unit tests moved with the code they test: the sidebar's fit tests, now
+in `company.rs`; the scheme tests, in `scheme_menu.rs`. The tab bar runs
+across the top of the window *above* the sidebar (D-78): a tab is the
+top level, and the layout shows that the sidebar belongs to the company in
+it. The bar takes `tabs::BAR_H` (36 points) of the window's height, which
+the sidebar had to spare nowhere at the owner's 519 points. The status
+card gave the height back (see "The sidebar tests' window sizes are
+restored" below); the golden's crop and shapes hash cover only what is below
+the bar. In `tabs.rs`, the
+three tests that click a closed company in the "+" list by its id now click
+it by its name, which the list shows once the company has been open; the
+list's empty words are now "Every company is already open." The ten
+`tabs_*` snapshots were regenerated for the new bar.
+
+The company's name once, not three times (the owner's review of the bar):
+the sidebar's header (badge, name, "Books") is gone, and so is the
+Overview's heading, whose summary sentence is now the page's lead; the
+status card's new heading row carries the company instead, with its hue.
+That removed 28 points and the gap under the header from the top of the
+sidebar and added a row to the card, so the sidebar has more room at every
+height (at 1479x519 the links' viewport is 331 points, was 311, and the
+rows 23 high, were 22); no `sidenav.rs` assertion or window changed. The
+tall sidebar's shapes golden and pixel golden (`sidenav-1440x920`) were
+regenerated (the header gone and the links moved up, the card's heading
+row, the badge's hue), and the `tabs_*` snapshots again (hue, no
+Overview heading, the rail's badge); `tabs_empty_*` are as they were.
+
+**Not tested here:** the window title reaching the window system (the
+harness has none: `window_title()` is what is tested); a company opened
+from the viewer while its books are being created by the server (the
+loader's retry loop is `live.rs`'s); macOS and Windows.
+
+**For P12 (mutation targets):** `App::close`'s active-index arithmetic (the
+`i < active` and `active >= len` arms); `App::add_view`'s duplicate key
+test; `start_with`'s skip of a missing or repeated id and its choice of the
+front tab; `CompanyView::pump`'s `shown` flag (a background tab must still
+apply `Update::Books` and `Update::Show`); `Loader`'s drop wake-up and its
+`gone` check after waking; the `push_id` in `CompanyView::ui` (the sidebar
+test above kills its removal); `Dock::closed_with` (a new tab's dock opens
+closed); `route_from_key` and the period codes in `CompanyView::restore`
+(a start after the end is never restored).
+
+## P15 A3a, the review's faults: threads, kept state, the dock (2026-11-20)
+
+An independent review of the tab work confirmed the viewer writes nothing
+and no figure crosses tabs, and found six faults. Each is fixed and each
+fix has a test that was seen to fail with the fix switched off (the
+mutation column says what was switched off).
+
+1. **Jobs outlived their tab** (`jobs.rs`, `menu.rs`, `owner.rs`,
+   `dock.rs`, `receipts.rs`, `data.rs`). Every thread a tab starts is one
+   of a per-view registry that the view's drop tells to stop and that says,
+   on a condition, when the last has ended.
+2. **Kept state was filed under the id alone** (`app.rs`, `company.rs`).
+   It is filed under the data root's hash and the id, with the books'
+   identity (the SHA-256 of the journal's first line).
+3. **A named start erased the remembered tabs** (`app.rs`).
+4. **The dock's height** is the app's one layout, said and tested; every
+   other id egui keys by a raw name was found and ruled on.
+5. **Prompt release on close** (`data.rs`, `receipts.rs`).
+6. **The sidebar tests' window sizes**: see below.
+
+`crates/ledger-gui/tests/tabs.rs` (sections 14 to 17), `format_upgrade.rs`,
+`exports.rs`, `live.rs` and unit tests in `jobs.rs` and `receipts.rs`:
+
+- `closing_a_tab_releases_its_lock_its_threads_and_its_agent` (changed): the
+  tab's registry counts the loader, the receipts' and thumbnails' workers
+  and the dock's agent; after the close the test waits on the registry
+  (`Watch::wait_ended`, its limit a failure guard, 120 s, never what the
+  test relies on) and then asserts the viewer lock is free, the loader's
+  thread has ended and the agent's process is gone. It no longer polls.
+- `a_restore_under_way_holds_its_tab_and_the_window_open`,
+  `an_upgrade_under_way_holds_its_tab_and_the_window_open`
+  (`format_upgrade.rs`): the owner's call is held in the test; while it
+  runs the tab's close control is disabled to assistive technology, a
+  click and `App::close` leave the tab, the window's close request is
+  cancelled and the dialog names the company and what runs and offers only
+  to wait; with nothing running the same request goes through; when the
+  call ends the dialog goes and the result is in the tab.
+- `a_backup_only_reads_so_its_tab_closes_and_its_thread_ends`: a read-only
+  owner job holds nothing, its tab closes, its thread ends when the
+  owner's call does.
+- `an_export_is_stopped_when_its_tab_closes` (the job is told) and
+  `a_stopped_export_leaves_no_file_whenever_it_is_told` (`exports.rs`: a
+  signal given after 0, 1, 2 and 3 looks, each leaving no file, the fifth
+  look none, which saves).
+- `a_tab_closed_while_its_agent_is_starting_leaves_no_child_and_no_thread`
+  and `a_tab_closed_with_its_agent_running_ends_the_child_even_if_it_ignores_the_hangup`
+  (Unix): the start is one of the tab's threads and its answer, arriving
+  after the close, starts nothing; an agent that ignores the hang-up is
+  killed after `AGENT_GRACE` and reaped, and the registry says so.
+- `another_data_root_with_a_company_of_the_same_id_inherits_nothing`,
+  `books_made_again_under_an_id_start_fresh_and_a_restart_of_the_same_books_does_not`,
+  `books_outside_any_data_root_are_kept_under_their_folder`,
+  `preferences_written_before_the_keys_had_a_root_are_read_and_not_used`:
+  the kept-state keys. (A set of books' identity says when it was made to
+  the second, so a test that makes other books under an id waits for the
+  clock's next second first.)
+- `a_start_with_a_named_company_never_writes_the_list_of_open_companies`.
+- `the_docks_height_and_layout_are_the_apps_one_for_every_tab`,
+  `no_panel_but_the_apps_own_is_keyed_by_an_id_every_tab_shares`,
+  `the_color_scheme_is_the_windows_one_for_every_tab`: what the tabs share
+  on purpose, and that nothing else is.
+- `live.rs`: `a_loader_whose_books_cant_be_read_tries_no_more_once_it_is_dropped`
+  (counts `Snapshot::load` tries), `a_dropped_loader_lets_go_of_its_presence_at_once`
+  (no waiting for the thread).
+- `receipts.rs`: `a_thumbnail_is_not_written_for_a_tab_that_has_closed`.
+- `jobs.rs`: the registry itself (a count lives until the thread ends,
+  also on a panic; a kept job is what a tab is held for).
+
+**Each fix was switched off to see its test fail** (a temporary
+`WB_MUT=<name>` switch at each fix, removed again): the held owner jobs (two
+switches: the hold, and the cancel of the window's close; the tab's off
+control and `App::close`'s guard each), the stop signal, the thumbnail
+write, the export's checks, the dock start's registration, the kill of an
+agent that ignores its hang-up, the dock's raw panel id (scoped, the test
+fails), the viewer presence's release in `Loader::drop`, the loader's gone
+check and wake before a retry, the books' identity check, the root in the
+key, the named start's write of the list, the panel ids of the sidebar,
+and the receipts' workers' registration: each of the tests above that
+covers it failed, and passed with the fix in. Not switchable and so not
+shown to fail: `preferences_written_before_the_keys_had_a_root_are_read_and_not_used`
+(it passes before and after: no migration is the rule) and
+`books_outside_any_data_root_are_kept_under_their_folder`, whose second
+folder is also told apart by its books' identity.
+
+**The sidebar tests' window sizes are restored.** The status card gave back
+the bar's height: its heading carries the live dot and word ("Live",
+"Snapshot") at the card's right edge, the heading row is its badge's 16 high
+(not a button's) and the card's vertical padding is 8. The event is not
+printed in the card: it is the heading's hover ("name", "Live · event N",
+the checks) and the live word's accessible label. The three check lines are
+as they were before, with no event. The four `sidenav.rs` tests are at their
+original sizes (1479x519, the rail at 519, the grid at 520 px, the tall
+sidebar at 1440x920) with every assertion unchanged; at 1479x519 the links
+have 6 px to spare in the common footers and 2 px in the failing-check ones
+(where the rows tighten). The minimum window height is 400.
+`the_status_card_never_wraps_in_any_state` (in `company.rs`) lays the card
+out in each state (live, snapshot, each check passing, warning and failing,
+folded and not) with a very long name and event 1,234,567 at the sidebar's
+width (224, fixed, not resizable) and 200, and asserts every text is one row,
+none runs out of the card, and the card's height is its rows plus its
+padding. In `tabs.rs` the status-card test now asserts the live word sits at
+the right of the name's row, no card text contains "event", and the
+live word's label is "Live · event N" (it asserted the visible
+"· event N" on the journal chain line); the rail test also asserts the name
+leads the hover. In `sidenav.rs`, `the_folded_card_shows_its_checks_on_hover`
+and the `"event "` locators still find the event, now through the live
+word's label, unchanged.
+
 ## P12: the checklists
 
 The **For P12** paragraphs above (kept where they were written, with their

@@ -37,7 +37,7 @@ the specification in `bookspec/` (which never depends on the engine).
 | `ledger-package` | the shared read-only view over `Store` or `Snapshot` (`PackageBooks`): the CPA package, the 1099 worksheet, the invoice document, Needs attention | `ledger-core`, `ledger-store`, `ledger-config`, `ledger-import`, `ledger-vault` |
 | `ledger-mcp` | the books server: the MCP tools (122), resources, the handbook, scopes, the door and the access log, backups' scheduling | all of the above |
 | `ledger-host` | the host and its leases, the agent bridge (`wanderbooks mcp`), tokens in 0600 files under the data root (D-63), the owner's commands, uploads and downloads, `update` and `rollback` (P11a), books homes and how to start an agent in one (P11b) | `ledger-store`, `ledger-mcp`, `ledger-config` |
-| `ledger-gui` | the viewer: read-only, live, egui; the Books menu hands work to the server; the agent dock and the first-run page (P11b) | `ledger-core`, `ledger-store`, `ledger-config`, `ledger-import`, `ledger-package`, `ledger-vault`, `ledger-host` |
+| `ledger-gui` | the viewer: read-only, live, egui, one window with a tab per open company (P15); the Books menu hands work to the server; the agent dock and the first-run page (P11b) | `ledger-core`, `ledger-store`, `ledger-config`, `ledger-import`, `ledger-package`, `ledger-vault`, `ledger-host` |
 | `ledger-cli` | `wanderbooks`, the one executable: every mode (`serve`, `server`, `host`, `mcp`, `gui`, `setup`, `books`, `token`, `connect`, `doctor`, `licenses`, …) and the over-the-wire test suites | everything |
 | `bookspec/checker`, `bookspec/runner` | the example schema and parser, the rule catalogue, the `Engine` trait; the per-rule runner | nothing of ours (the adapter in `ledger-core`'s tests depends on them) |
 
@@ -115,6 +115,88 @@ to the data directory. A loader thread watches the directory and applies
 appended journal lines; the UI renders an immutable view model rebuilt per
 change. Statements and series come from `ledger-core` (`reports`,
 `analysis`); the GUI only arranges them. See `plan/gui.md`.
+
+The viewer is **one window with a tab per open company** (P15, D-78;
+`plan/p15-app-and-relay.md` 3.2). `App` (`app.rs`) holds what is the app's
+(the color scheme and its menu, `scheme_menu.rs`; the tab bar, `tabs.rs`;
+the data root the companies are in) and a list of `CompanyView`s
+(`company.rs`), one per open company, with which is in front. The tab
+bar runs across the whole window, above the sidebar: a tab is the top
+level, and the sidebar (its pages, its status card) is the company in the
+tab's. The tab is the company's identity in the frame (its badge and
+name), and nothing else at the top of the window repeats it: the sidebar
+has no header, its first link sits under the bar (`top_slot` in
+`company.rs` is the empty place at the top of the sidebar and of the rail,
+where the assistant's connection state is drawn later), and the Overview
+opens with its summary sentence, not a heading with the name. The company
+is named once more, at the opposite corner: the status card at the foot of
+the sidebar begins with a heading row: the badge (small) and the name, cut
+with an ellipsis, and at the card's right edge the live dot and "Live" (or
+"Snapshot"); the name elides before the live word is ever clipped. The
+heading's hover reads, a fact a line: the company's full name, "Live ·
+event N", then the checks; the live word's accessible label is "Live ·
+event N". The event is printed nowhere else in the card, and no text in it
+wraps: every line is one row and elides (`the_status_card_never_wraps_in_any_state`).
+The journal chain line is just "Journal chain verified". Folded (a short
+window) the card is the heading alone, or, when a check failed, the heading
+over one line naming it. The rail shows the badge with the live dot on its
+corner (a warning there when a check failed), the name, state, event and
+checks on hover. Each company has one badge
+hue of eight (`theme::BADGE_HUES`, light and dark), chosen by a stable
+hash of the id of its books (`theme::hue_index`, FNV-1a modulo eight: a
+function of the id alone, so a company keeps its colour on every machine
+and after a rename); its tab and its card draw the same one, and the
+active tab's accent line stays the theme's. The bar's height (`tabs::BAR_H`) is taken from the
+window; the viewer's smallest window is 400 points high, as before the bar. A tab is the company's badge and name, as wide as
+that between a least and a greatest width; the "+" follows the last tab
+and stays at the right edge, the tabs scrolling, when they overflow. The
+app remembers each company's name when its books load (`company.<root>.<id>.name`
+in its kept state, `<root>` being a hash of the data root's canonical path),
+for a tab's title before the books load and for the
+"+" list, which never reads a journal for a name. A view owns
+everything that is one company's: its loader thread (its watcher and its
+viewer presence on the books), the books it last loaded, where it is
+(`Nav`), its page state, its receipts' workers, its export and owner menus,
+its palette, its dock (and so the agent process in it) and its handle to
+the `Owner`. Nothing is shared between views: every egui id a view makes is
+scoped by its own id (the app draws a view inside `push_id`), so egui's
+memory (scroll offsets, remembered widths) never carries from one tab into
+another (a panel's id is not scoped by `push_id`, so the view's panels are
+given ids made from its own; what the tabs share on purpose is the app's and
+says so: the assistant dock's panel, whose height is one layout in every
+tab, the tab bar, and the color scheme's palette); closing a tab drops its
+view and with it all of that.
+
+Every thread a view starts is counted in one registry of the view
+(`jobs.rs`): its loader, its receipts' workers, an export, an owner's job,
+the dock's start and the thread that reaps the dock's agent. Dropping the
+view tells them all to stop, and the registry says when the last has ended
+(`CompanyView::jobs_watch`). What each does on being told: the loader ends
+(and the viewer's presence on the books is let go in the drop itself, not
+when a refresh in flight is over), the receipts' workers end and write no
+thumbnail, an export stops at its phase boundaries and saves nothing, a
+read-only owner job (a backup, the check of a backup to restore) is not
+begun or has its answer dropped, the dock's agent is hung up on and, if it
+has not gone within two seconds, killed and reaped. One kind of job is never
+abandoned: an owner's job that changes something (restore, the format
+upgrade, new books, connect, close the books, update). While one runs, its
+tab's close control is off and says what is running, and the window's close
+is cancelled with a dialog that offers only to wait (`app.rs` INVARIANT 7;
+`owner.rs` INVARIANT 6). A view that
+is not in front still reads its loader every frame (so showing it later is
+current at once) and takes the agent's `books.show` for its own page only.
+`wanderbooks gui BOOK` opens that company as the only tab; with none named,
+the companies that were open when the window last closed come back, in
+their order, the same one in front, each with its page and its report's
+period (`app.rs` INVARIANT 4). What is kept is filed under the data root
+(a hash of its canonical path) and the company's id, with the books'
+identity (the SHA-256 of the journal's first line) once they load: another
+root's company of the same id, or the same id made again as other books,
+inherits nothing, and a stored state whose identity is not the loaded
+books' is discarded. A start that names a company never writes the list of
+open companies, so one such start doesn't replace a set of tabs. The `Owner` the program installs
+(`owner::set_owner`) is the program's, one per process; each view takes a
+handle to it when it is made and a test can give a view another.
 
 Two things sit beside the read-only view, both through the `Owner` the
 program gives the viewer (never a write of the books by the viewer):

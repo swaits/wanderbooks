@@ -482,7 +482,7 @@ fn update_project_checks_every_field_before_writing() {
         ),
         (
             json!({"project": "Harbor", "notes": "SSN 123-45-6789"}),
-            "TIN",
+            "tax id",
         ),
         (
             json!({"project": "Nowhere", "status": "paused"}),

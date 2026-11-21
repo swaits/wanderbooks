@@ -416,7 +416,7 @@ fn tin_separator(c: char) -> bool {
 /// right-to-left marks and the other directional formatting characters,
 /// the word joiner, the byte-order mark, the variation selectors, the tags
 /// and the fillers. None is ASCII.
-fn tin_invisible(c: char) -> bool {
+pub(crate) fn tin_invisible(c: char) -> bool {
     matches!(
         c,
         '\u{AD}'
@@ -717,6 +717,34 @@ pub fn check_text(field: &str, text: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Check a free text field: no tax id's shape (a nine-digit number standing
+/// alone, an SSN's 3-2-4, an EIN's 2-7: [`crate::settings::check_free_text`]),
+/// at most 500 characters, no control characters except newline. For a
+/// memo, a note or a reason; a party's own fields keep the strict
+/// [`check_text`] (BS-partner-2; the owner's choice, 2026-11-21).
+pub fn check_note(field: &str, text: &str) -> Result<(), String> {
+    crate::settings::check_free_text(field, text)?;
+    check_note_form(field, text)
+}
+
+/// [`check_note`] for a reference (a payment's or a send's reference, a
+/// file's location): only the grouped shapes are refused, a bare nine
+/// digits is allowed ([`crate::settings::check_reference_text`]).
+pub fn check_reference_note(field: &str, text: &str) -> Result<(), String> {
+    crate::settings::check_reference_text(field, text)?;
+    check_note_form(field, text)
+}
+
+fn check_note_form(field: &str, text: &str) -> Result<(), String> {
+    if text.chars().count() > 500 {
+        return Err(format!("{field} is at most 500 characters"));
+    }
+    if text.chars().any(|c| c.is_control() && c != '\n') {
+        return Err(format!("{field} can't contain control characters"));
+    }
+    Ok(())
+}
+
 /// Check an email address: one line of party text ([`check_text`], which
 /// refuses a full TIN) in a plain address shape, one `@` and no spaces. Not
 /// an RFC grammar test: the books only print it, they never send (A-4).
@@ -746,12 +774,14 @@ impl W9Facts {
             ("entity_type", Some(self.entity_type.as_str())),
             ("exempt_payee_code", self.exempt_payee_code.as_deref()),
             ("fatca_code", self.fatca_code.as_deref()),
-            ("kept_at", Some(self.kept_at.as_str())),
         ] {
             if let Some(t) = t {
                 check_text(f, t)?;
             }
         }
+        // Where the paper is kept is a reference (a binder, a portal, a
+        // file name): a bare nine digits is allowed (WB-partner-15).
+        check_reference_note("kept_at", &self.kept_at)?;
         if let Some(h) = &self.vault_record
             && (h.len() != 64 || !h.chars().all(|c| c.is_ascii_hexdigit()))
         {
@@ -770,7 +800,7 @@ impl W4Facts {
         if self.kept_at.trim().is_empty() {
             return Err("say where the W-4 itself is kept".into());
         }
-        check_text("kept_at", &self.kept_at)
+        check_reference_note("kept_at", &self.kept_at)
     }
 }
 

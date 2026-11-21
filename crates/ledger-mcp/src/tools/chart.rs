@@ -371,7 +371,7 @@ impl BooksServer {
     #[tool(
         name = "books.import_chart_csv",
         title = "Import a chart of accounts",
-        description = "Import a chart of accounts from CSV (header: code,name,type,parent_code,tax_category; the last is optional), as upload_id: upload it with books.begin_upload purpose import and `wanderbooks upload` (a file never passes through you). Types: asset, liability, equity, revenue, expense. Parents must come before children. Fails on the first bad row; nothing is half-imported. A revenue or expense row without a tax_category is listed in warnings, or, under policy.require_tax_category = refuse, refuses the file.",
+        description = "Import a chart of accounts from CSV (header: code,name,type,parent_code,tax_category; the last is optional), as upload_id: upload it with books.begin_upload purpose import and `wanderbooks upload` (a file never passes through you). Types: asset, liability, equity, revenue, expense. Parents must come before children. Fails on the first bad row, a cell that looks like a tax id included (it names the row and column); nothing is half-imported. A revenue or expense row without a tax_category is listed in warnings, or, under policy.require_tax_category = refuse, refuses the file.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,

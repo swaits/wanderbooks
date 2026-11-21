@@ -709,7 +709,7 @@ impl BooksServer {
     #[tool(
         name = "books.import_bank_csv",
         title = "Import a bank CSV as drafts",
-        description = "Import a bank or card CSV (Date, Description, Amount; or Date, Description, money out, money in) as one DRAFT entry per transaction, all or none: the bank account on one side, a categorized offset on the other. Give the CSV as upload_id (books.begin_upload purpose import; a file never passes through you). Ambiguous slash dates need date_order. Review with books.digest, then post. Also file the export (books.file_document category import_source) and pass source_attachment_id. Details in books.handbook section files-in-out.",
+        description = "Import a bank or card CSV (Date, Description, Amount; or Date, Description, money out, money in) as one DRAFT entry per transaction, all or none: the bank account on one side, a categorized offset on the other. Give the CSV as upload_id (books.begin_upload purpose import; a file never passes through you). Ambiguous slash dates need date_order. A description holding a number that reads as a tax id is kept masked to its last four digits (masked_count, masked). Review with books.digest, then post. Also file the export (books.file_document category import_source) and pass source_attachment_id. Details in books.handbook section files-in-out.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -732,7 +732,14 @@ impl BooksServer {
             }
         };
         let (csv, claim) = self.csv_given(&p.upload_id)?;
-        let txns = ledger_import::parse_bank_csv_with(&csv, order).map_err(|e| e.to_string())?;
+        // A description a bank wrote is not typed by a person: a number in
+        // it that reads as a tax id is kept masked to its last four digits
+        // and named in the answer, never a reason to refuse the file.
+        let ledger_import::MaskedBankImport {
+            transactions: txns,
+            masked,
+            as_written,
+        } = ledger_import::parse_bank_csv_masked(&csv, order).map_err(|e| e.to_string())?;
         let mut store = self.lock()?;
         let bank = store
             .ledger()
@@ -788,8 +795,10 @@ impl BooksServer {
         // can't become a draft (a date in a closed period, say) refuses the
         // file instead of leaving the ones before it behind.
         let mut scratch = store.ledger().clone();
-        for txn in &txns {
-            let (offset_id, _) = offset_for(&txn.description);
+        for (txn, written) in txns.iter().zip(&as_written) {
+            // A rule reads the bank's own words, a nine-digit reference
+            // in them included; what is kept is the masked text.
+            let (offset_id, _) = offset_for(written);
             let amount = Money::new(txn.amount.abs(), base);
             let (bank_side, offset_side) = if txn.amount > Decimal::ZERO {
                 (Side::Debit, Side::Credit)
@@ -806,8 +815,8 @@ impl BooksServer {
         // Rehearsed whole: the upload is used up as the writing begins.
         files::filed(claim);
         let mut imported = Vec::new();
-        for txn in txns {
-            let (offset_id, offset_code) = offset_for(&txn.description);
+        for (txn, written) in txns.into_iter().zip(&as_written) {
+            let (offset_id, offset_code) = offset_for(written);
             let amount = Money::new(txn.amount.abs(), store.ledger().base_currency());
             let entry_id = store
                 .create_entry(txn.date, &format!("Bank import — {}", txn.description))
@@ -838,11 +847,34 @@ impl BooksServer {
                 .map_err(|e| e.to_string())?;
         }
         let count = imported.len();
+        let masked_count: usize = masked
+            .iter()
+            .fold(0, |n: usize, m| n.saturating_add(m.numbers));
+        let masked_note = (masked_count > 0).then(|| {
+            let lines: Vec<String> = masked.iter().map(|m| m.line.to_string()).collect();
+            format!(
+                "{masked_count} value{} in the Description column read as a tax id (nine digits standing alone, or an SSN's or an EIN's shape) and {} kept masked to the last four digits, on line{} {}. A bank's description is not typed by a person and often carries a nine-digit reference, so the file was not refused; a tax id is stored only with books.set_tin or a W-9 (books.set_w9)",
+                if masked_count == 1 { "" } else { "s" },
+                if masked_count == 1 { "was" } else { "were" },
+                if lines.len() == 1 { "" } else { "s" },
+                lines.join(", ")
+            )
+        });
         Ok(Json(ImportBankCsvOut {
             imported,
             count,
             source_attachment_id: p.source_attachment_id,
             source_linked: link_source,
+            masked_count,
+            masked: masked
+                .into_iter()
+                .map(|m| MaskedCellOut {
+                    row: m.line,
+                    column: m.column.to_string(),
+                    numbers: m.numbers,
+                })
+                .collect(),
+            masked_note,
         }))
     }
 }

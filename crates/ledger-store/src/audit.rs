@@ -120,6 +120,11 @@ pub const CODES: &[ledger_core::audit::CodeRow] = &[
         predicate: "two filed attachments, neither withdrawn, hold the same bytes",
     },
     ledger_core::audit::CodeRow {
+        code: "tax_id_in_journal",
+        severity: Severity::Warning,
+        predicate: "a journal line's text field holds a number that looks like a tax id (nine digits standing alone, an SSN's 3-2-4 or an EIN's 2-7)",
+    },
+    ledger_core::audit::CodeRow {
         code: "backup_stale",
         severity: Severity::Warning,
         predicate: "a backup target has not reached the books' head within a day",
@@ -141,6 +146,84 @@ fn found(code: &'static str, subject: Subject, message: String) -> Finding {
         severity,
         subject,
         message,
+    }
+}
+
+/// How the audit reads one journal field for a tax id.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum TextClass {
+    /// Free words: nine digits standing alone, an SSN's 3-2-4 or an EIN's
+    /// 2-7 are found.
+    Free,
+    /// A reference (a tag, a serial, an invoice number, a file name, an
+    /// account code): only the grouped shapes are found, a bare nine digits
+    /// being a legitimate number there (WB-partner-15).
+    Reference,
+}
+
+/// The journal fields that hold words someone wrote (never an id, a digest
+/// or an amount) and how each is read: what [`Store::integrity_findings`]
+/// reads for a tax id.
+const TEXT_KEYS: &[(&str, TextClass)] = &[
+    ("description", TextClass::Free),
+    ("memo", TextClass::Free),
+    ("note", TextClass::Free),
+    ("notes", TextClass::Free),
+    ("reason", TextClass::Free),
+    ("name", TextClass::Free),
+    ("label", TextClass::Reference),
+    ("title", TextClass::Free),
+    ("citation", TextClass::Free),
+    ("decided_by", TextClass::Free),
+    ("detail", TextClass::Free),
+    ("detail_md", TextClass::Free),
+    ("resolution", TextClass::Free),
+    ("decision_md", TextClass::Free),
+    ("body_md", TextClass::Free),
+    ("subject", TextClass::Free),
+    ("reference", TextClass::Reference),
+    ("customer_ref", TextClass::Reference),
+    ("vendor_ref", TextClass::Reference),
+    ("duplicate_reason", TextClass::Free),
+    ("no_party_reason", TextClass::Free),
+    ("payee", TextClass::Free),
+    ("source", TextClass::Free),
+    ("reimbursable_to", TextClass::Free),
+    ("file_name", TextClass::Reference),
+    ("serial", TextClass::Reference),
+    ("tag", TextClass::Reference),
+    ("code", TextClass::Reference),
+    ("employee_name", TextClass::Free),
+    ("display_name", TextClass::Free),
+    ("address", TextClass::Free),
+    ("contact", TextClass::Free),
+    ("kept_at", TextClass::Reference),
+    ("approver", TextClass::Free),
+];
+
+/// Every text field of `v` named by [`TEXT_KEYS`], as (its key, how it is
+/// read, its text), at any depth; a list of texts under such a key counts
+/// each.
+fn text_fields_in(v: &Value, out: &mut Vec<(String, TextClass, String)>) {
+    match v {
+        Value::Object(m) => {
+            for (k, x) in m {
+                if let Some((_, class)) = TEXT_KEYS.iter().find(|(key, _)| *key == k.as_str()) {
+                    match x {
+                        Value::String(s) => out.push((k.clone(), *class, s.clone())),
+                        Value::Array(a) => out.extend(
+                            a.iter()
+                                .filter_map(Value::as_str)
+                                .map(|s| (k.clone(), *class, s.to_string())),
+                        ),
+                        _ => {}
+                    }
+                }
+                text_fields_in(x, out);
+            }
+        }
+        Value::Array(a) => a.iter().for_each(|x| text_fields_in(x, out)),
+        _ => {}
     }
 }
 
@@ -304,6 +387,20 @@ pub struct Claim {
 }
 
 impl Claim {
+    /// The words a claim keeps (the note, the model's name) hold no tax id
+    /// (BS-partner-2): checked before anything is journaled.
+    fn check(&self) -> Result<(), StoreError> {
+        for (field, text) in [
+            ("the note", self.note.as_deref()),
+            ("the model", self.method.model.as_deref()),
+        ] {
+            if let Some(t) = text {
+                ledger_core::LedgerError::free_text(field, t)?;
+            }
+        }
+        Ok(())
+    }
+
     fn into_attestation(self, what: Attested) -> Attestation {
         Attestation {
             seq: 0,
@@ -435,6 +532,51 @@ impl Store {
                 Subject::Named(sha.chars().take(12).collect()),
                 format!("attachments {ids} hold the same bytes ({sha})"),
             ));
+        }
+        out.extend(self.tax_id_findings());
+        out
+    }
+
+    /// The journal lines whose text fields hold what looks like a tax id
+    /// (BS-partner-2): a line an earlier version took, or one a caller
+    /// other than the tools wrote. The books open and replay as they are
+    /// and the journal is never rewritten; the audit says where each one
+    /// is, by line and field, and never what the number is.
+    fn tax_id_findings(&self) -> Vec<Finding> {
+        let rows: Vec<(u64, String, String)> = self
+            .conn
+            .prepare("SELECT seq, type, payload FROM events ORDER BY seq")
+            .and_then(|mut s| {
+                s.query_map([], |r| {
+                    Ok((r.get::<_, i64>(0)? as u64, r.get(1)?, r.get(2)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()
+            })
+            .unwrap_or_default();
+        let mut out = Vec::new();
+        for (seq, kind, payload) in rows {
+            let Ok(v) = serde_json::from_str::<Value>(&payload) else {
+                continue;
+            };
+            let mut fields = Vec::new();
+            text_fields_in(&v, &mut fields);
+            for (field, class, text) in fields {
+                let looks = match class {
+                    TextClass::Free => ledger_core::settings::holds_printed_tin(&text),
+                    TextClass::Reference => {
+                        ledger_core::settings::holds_printed_tin_in_reference(&text)
+                    }
+                };
+                if looks {
+                    out.push(found(
+                        "tax_id_in_journal",
+                        Subject::Named(format!("journal line {seq}")),
+                        format!(
+                            "journal line {seq} ({kind}) holds, in its `{field}`, a number that looks like a tax id. The journal is never rewritten and the books open as they are: correct what it describes going forward (reverse the entry and enter it again without the number), and keep the tax id only in the vault (books.set_tin or a W-9, books.set_w9)"
+                        ),
+                    ));
+                }
+            }
         }
         out
     }
@@ -624,6 +766,7 @@ impl Store {
         date: NaiveDate,
         claim: Claim,
     ) -> Result<Attestation, StoreError> {
+        claim.check()?;
         self.ensure_feature(crate::format::AUDITS)?;
         let entry = self
             .ledger
@@ -668,6 +811,7 @@ impl Store {
 
     /// Record that an entry was reviewed whole (`entry.reviewed`).
     pub fn review_entry(&mut self, entry_id: u64, claim: Claim) -> Result<Attestation, StoreError> {
+        claim.check()?;
         self.ensure_feature(crate::format::AUDITS)?;
         let entry = self
             .ledger
@@ -710,6 +854,7 @@ impl Store {
         period_id: u64,
         claim: Claim,
     ) -> Result<(Attestation, AuditRun), StoreError> {
+        claim.check()?;
         self.ensure_feature(crate::format::AUDITS)?;
         let run = self.run_for_period(period_id)?;
         let a = self.journal_attestation(

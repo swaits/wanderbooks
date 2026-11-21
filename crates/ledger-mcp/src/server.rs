@@ -1588,6 +1588,8 @@ mod next_steps;
 mod projects;
 #[path = "tools/prompts.rs"]
 mod prompts;
+#[path = "text_fields.rs"]
+mod text_fields;
 pub use kept::SettingKeyOut;
 
 // The tool groups: one file each (plan/served.md 8.2 U0a). A unit adds a
@@ -1934,6 +1936,15 @@ impl ServerHandler for BooksServer {
             }
             calls::key_problem(request_key.as_ref())
                 .map(|why| (calls::MISSING_KEY, Ok(tool_error(why))))
+        })
+        // A string that looks like a tax id isn't run, whatever it was for:
+        // the vault is where one goes (text_fields.rs INVARIANT 5).
+        .or_else(|| {
+            if !calls::writes(&request.name) {
+                return None;
+            }
+            text_fields::refusal(&request.name, request.arguments.as_ref())
+                .map(|why| (access::TIN_IN_TEXT, Ok(tool_error(why))))
         });
         if let Some((code, answer)) = refusal {
             call.digested(refused_digest(request.arguments.clone()).await);

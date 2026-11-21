@@ -399,24 +399,32 @@ pub const MAX_REFERENCE_CHARS: usize = 200;
 
 impl PaymentDetails {
     /// The payment entry's description: `base`, then the reference when
-    /// there is one (`base (ref R)`).
+    /// there is one (`base (ref R)`), with a run of nine digits in it masked
+    /// to its last four: the reference is kept whole in the payment's own
+    /// record, and an entry's description is free text, which holds no
+    /// number that reads as a tax id (WB-partner-15).
     pub fn description(&self, base: &str) -> String {
         match self.reference.as_deref().map(str::trim) {
-            Some(r) if !r.is_empty() => format!("{base} (ref {r})"),
+            Some(r) if !r.is_empty() => {
+                format!("{base} (ref {})", crate::settings::mask_printed_tins(r))
+            }
             _ => base.to_string(),
         }
     }
 
     /// Refuse a reference that isn't one line of at most
-    /// [`MAX_REFERENCE_CHARS`] characters. A blank one is none. (A bank
-    /// trace number is fifteen digits, so no nine-digit scan here.)
+    /// [`MAX_REFERENCE_CHARS`] characters, or one that looks like a tax id's
+    /// printed SSN or EIN (a bare nine digits is a check or confirmation
+    /// number: a reference's reading, WB-partner-15; not in a replay,
+    /// BS-entry-4). A blank one is none.
     pub fn check(&self) -> Result<(), LedgerError> {
-        if let Some(r) = &self.reference
-            && (r.contains(['\n', '\r']) || r.chars().count() > MAX_REFERENCE_CHARS)
-        {
-            return Err(LedgerError::InvalidPayment(format!(
-                "a payment's reference is one line of at most {MAX_REFERENCE_CHARS} characters"
-            )));
+        if let Some(r) = &self.reference {
+            if r.contains(['\n', '\r']) || r.chars().count() > MAX_REFERENCE_CHARS {
+                return Err(LedgerError::InvalidPayment(format!(
+                    "a payment's reference is one line of at most {MAX_REFERENCE_CHARS} characters"
+                )));
+            }
+            LedgerError::reference_text("the payment reference", r)?;
         }
         Ok(())
     }
@@ -1253,6 +1261,65 @@ impl Bill {
     }
 }
 
+/// A new document's free text may not look like a tax id (BS-partner-2):
+/// the customer's or the vendor's own reference, the memo, and why a
+/// repeated vendor invoice number is entered anyway. For new documents;
+/// replay restores them as journaled (BS-entry-4).
+pub fn check_document_text(
+    reference: Option<&str>,
+    memo: Option<&str>,
+    duplicate_reason: Option<&str>,
+) -> Result<(), LedgerError> {
+    for (field, text) in [
+        ("the memo", memo),
+        ("the duplicate reason", duplicate_reason),
+    ] {
+        if let Some(t) = text {
+            LedgerError::free_text(field, t)?;
+        }
+    }
+    if let Some(t) = reference {
+        LedgerError::reference_text("the reference", t)?;
+    }
+    Ok(())
+}
+
+/// The party details a new invoice prints: the customer's (a party's
+/// fields: strict, no run of nine digits, [`crate::parties::check_text`])
+/// and the seller's (the company's own, free text: no tax id's shape).
+pub fn check_snapshots(
+    bill_to: Option<&PartySnapshot>,
+    seller: Option<&PartySnapshot>,
+) -> Result<(), LedgerError> {
+    let fields = |s: &'_ PartySnapshot| -> [(&'static str, Option<String>); 8] {
+        [
+            ("the bill-to name", Some(s.name.clone())),
+            ("the bill-to address", s.address.clone()),
+            ("the bill-to email", s.email.clone()),
+            ("the bill-to phone", s.phone.clone()),
+            ("the bill-to contact", s.contact.clone()),
+            ("the billing address", s.billing_address.clone()),
+            ("the shipping address", s.shipping_address.clone()),
+            ("the billing email", s.billing_email.clone()),
+        ]
+    };
+    if let Some(s) = bill_to {
+        for (field, text) in fields(s) {
+            if let Some(t) = text {
+                crate::parties::check_text(field, &t).map_err(LedgerError::InvalidParty)?;
+            }
+        }
+    }
+    if let Some(s) = seller {
+        for (field, text) in fields(s) {
+            if let Some(t) = text {
+                LedgerError::free_text(&field.replace("bill-to", "seller"), &t)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Validate document lines: at least one, all positive amounts, each in a
 /// journal line's range, and a quantity and unit price that multiply to
 /// the amount exactly (plan P4b S4.1). For new documents; replay restores
@@ -1262,6 +1329,7 @@ pub fn validate_lines(lines: &[DocumentLine]) -> Result<(), LedgerError> {
         return Err(LedgerError::EmptyDocumentLines);
     }
     for line in lines {
+        LedgerError::free_text("a line's description", &line.description)?;
         if line.amount <= Decimal::ZERO {
             return Err(LedgerError::InvalidDocumentLineAmount(line.amount));
         }

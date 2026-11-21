@@ -1368,6 +1368,29 @@ pub struct ImportBankCsvOut {
     /// True when this call linked it to the account (false when it already
     /// was, or none was given).
     pub source_linked: bool,
+    /// How many descriptions held a number that reads as a tax id (nine
+    /// digits standing alone, an SSN's or an EIN's shape) and were kept
+    /// masked to its last four digits: a bank's description is not typed by
+    /// a person and often carries a nine-digit reference, so the file is
+    /// not refused for one (BS-partner-2).
+    pub masked_count: usize,
+    /// Which descriptions were masked, by the file's line.
+    pub masked: Vec<MaskedCellOut>,
+    /// What masking did, in words; present when `masked_count` is above
+    /// zero.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub masked_note: Option<String>,
+}
+
+/// One description of a bank file that was kept masked.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct MaskedCellOut {
+    /// The file's line (the first line is 1).
+    pub row: u64,
+    /// The column: "Description".
+    pub column: String,
+    /// How many numbers in the cell were masked.
+    pub numbers: usize,
 }
 
 /// Parameters for `books.import_chart_csv`. No other argument is taken: a

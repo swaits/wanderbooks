@@ -127,10 +127,11 @@ pub struct Instrument {
     pub account: AccountId,
 }
 
-/// Check a label: one line, at most `MAX_TEXT` characters, no full TIN
-/// (INVARIANT 1, all but uniqueness). Returns it trimmed.
+/// Check a label: one line, at most `MAX_TEXT` characters, no printed SSN or
+/// EIN (INVARIANT 1, all but uniqueness; a label is a reference, so a bare
+/// nine digits is allowed, WB-partner-15). Returns it trimmed.
 pub fn check_label(label: &str) -> Result<String, String> {
-    crate::settings::line_text("label", label, crate::settings::MAX_TEXT)
+    crate::settings::reference_line_text("label", label, crate::settings::MAX_TEXT)
 }
 
 /// Check a last four (INVARIANT 2).

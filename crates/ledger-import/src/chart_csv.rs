@@ -49,6 +49,10 @@ pub enum ChartCsvError {
         /// "code" or "name".
         field: &'static str,
     },
+    /// A cell that looks like it holds a tax id: the words name the row
+    /// and column and never the number (BS-partner-2).
+    #[error("{0}")]
+    LooksLikeTin(String),
     /// Malformed CSV.
     #[error("csv error: {0}")]
     Csv(String),
@@ -70,6 +74,10 @@ pub enum ChartCsvError {
 ///      (BadType), and a non-blank code and name (Blank, with its row).
 ///   3. A blank parent or tax category is None; blank lines are skipped;
 ///      an empty file is no rows.
+///   4. A cell that looks like a tax id (a name with any run of nine
+///      digits, any other cell with an SSN's or EIN's shape or nine
+///      digits alone) refuses the file, naming its row (the file's line)
+///      and column and never the number (LooksLikeTin; BS-partner-2).
 /// ```
 pub fn parse_chart_csv(text: &str) -> Result<Vec<ChartRow>, ChartCsvError> {
     let mut reader = csv::ReaderBuilder::new()
@@ -107,6 +115,32 @@ pub fn parse_chart_csv(text: &str) -> Result<Vec<ChartRow>, ChartCsvError> {
                     row: idx + 1,
                     field,
                 });
+            }
+        }
+        // A chart is typed by a person, so a number that reads as a tax id
+        // in any cell is refused, naming the row and the column; the name
+        // is read as strictly as an account name is (any run of nine
+        // digits).
+        let line = crate::line_of(text, &record, idx + 1);
+        let columns = ["code", "name", "type", "parent_code", "tax_category"];
+        for (n, value) in fields.iter().enumerate() {
+            let looks = if n == 1 {
+                ledger_core::parties::has_full_tin(value)
+            } else if n == 0 || n == 3 {
+                // An account code (and its parent's) is a reference: a
+                // bare nine digits is a code, only the printed shapes
+                // read as a tax id (WB-partner-15).
+                ledger_core::settings::holds_printed_tin_in_reference(value)
+            } else {
+                ledger_core::settings::holds_printed_tin(value)
+            };
+            if looks {
+                return Err(ChartCsvError::LooksLikeTin(
+                    ledger_core::settings::tin_refusal(&format!(
+                        "the {} cell of row {line}",
+                        columns[n]
+                    )),
+                ));
             }
         }
         let account_type = fields[2].to_lowercase();
@@ -148,6 +182,30 @@ mod tests {
         assert_eq!(rows[2].account_type, "revenue");
     }
 
+    /// An account code is a reference: a bare nine digits is a code, a
+    /// printed SSN or EIN is refused, naming its row and column.
+    #[test]
+    fn a_code_may_be_nine_digits_but_not_a_printed_tax_id() {
+        let ok =
+            "code,name,type,parent_code\n123456789,Cash,asset,\n123456790,Bank,asset,123456789\n";
+        assert_eq!(parse_chart_csv(ok).unwrap().len(), 2);
+        for csv in [
+            "code,name,type,parent_code\n000-00-0000,Cash,asset,\n",
+            "code,name,type,parent_code\n1000,Cash,asset,\n1001,Bank,asset,00-0000000\n",
+        ] {
+            assert!(
+                matches!(parse_chart_csv(csv), Err(ChartCsvError::LooksLikeTin(_))),
+                "{csv}"
+            );
+        }
+        // A name is a party-style field: any run of nine digits.
+        let name = "code,name,type,parent_code\n1000,Acct 123456789,asset,\n";
+        assert!(matches!(
+            parse_chart_csv(name),
+            Err(ChartCsvError::LooksLikeTin(_))
+        ));
+    }
+
     #[test]
     fn parses_optional_tax_category_column() {
         let csv = "code,name,type,parent_code,tax_category\n4000,Sales,revenue,,gross_receipts\n1000,Cash,asset,,\n";
@@ -169,6 +227,35 @@ mod tests {
             parse_chart_csv(csv),
             Err(ChartCsvError::BadType(_))
         ));
+    }
+
+    /// INVARIANT 4: a cell that looks like a tax id refuses the file, naming
+    /// its row and column and never the number; a ten-digit code goes through
+    /// (a name is read strictly, as an account name is).
+    #[test]
+    fn a_tax_id_in_a_cell_is_refused_with_its_row_and_column() {
+        let header = "code,name,type,parent_code\n";
+        let why = |rows: &str| match parse_chart_csv(&format!("{header}{rows}")) {
+            Err(ChartCsvError::LooksLikeTin(why)) => why,
+            other => panic!("expected a refusal, got {other:?}"),
+        };
+        let w = why("1000,Cash,asset,\n1010,Payroll 000-00-0000,asset,1000\n");
+        assert!(
+            w.starts_with("the name cell of row 3 looks like it holds a tax id"),
+            "{w}"
+        );
+        assert!(w.contains("books.set_tin") && w.contains("W-9"), "{w}");
+        assert!(!w.contains("0000"), "never the number: {w}");
+        // A name is read strictly, as an account name is: any nine digits.
+        assert!(why("1000,Card 1234 56789,asset,\n").contains("name cell of row 2"));
+        // Another column is read by its shape.
+        assert!(why("000-00-0000,Cash,asset,\n").contains("code cell of row 2"));
+        assert!(why("1000,Cash,asset,00-0000000\n").contains("parent_code cell of row 2"));
+        // A blank line counts as a line of the file.
+        assert!(why("1000,Cash,asset,\n\n1010,Bad 000000000,asset,\n").contains("row 4"));
+        // What is no tax id goes through.
+        let ok = parse_chart_csv(&format!("{header}1234567890,Loan 2026,liability,\n"));
+        assert_eq!(ok.unwrap().len(), 1);
     }
 
     /// Found by fuzz_import_csv (2026-10-13): a row with a blank code or

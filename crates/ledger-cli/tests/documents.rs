@@ -677,7 +677,7 @@ fn update_party_sets_and_clears_the_contact_block() {
             json!({"party": party.to_string(), "phone": "123-45-6789"}),
         )
         .unwrap_err();
-    assert!(why.contains("taxpayer"), "{why}");
+    assert!(why.contains("tax id"), "{why}");
     let why = m
         .try_call(
             "books.update_party",

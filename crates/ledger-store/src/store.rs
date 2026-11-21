@@ -1350,16 +1350,19 @@ impl Store {
     ) -> Result<EntryId, StoreError> {
         let (default_description, lines) =
             self.ledger.template_lines(template_id, amount, slots)?;
-        let description = description
-            .map(str::to_string)
-            .or(default_description)
-            .unwrap_or_else(|| {
+        // The caller's words are checked as they come; a description the
+        // template or its convention's title gives is stored text, masked
+        // where an older version let it hold a tax id's shape.
+        let description = description.map(str::to_string).unwrap_or_else(|| {
+            let stored = default_description.unwrap_or_else(|| {
                 self.ledger
                     .conventions()
                     .convention(template_id)
                     .map(|c| c.title.clone())
                     .unwrap_or_default()
             });
+            ledger_core::settings::mask_printed_tins(&stored).into_owned()
+        });
         self.rehearse(|l| {
             let e = l.try_create_entry(date, &description)?;
             for (account, side, amount) in &lines {
@@ -1801,6 +1804,7 @@ impl Store {
         // Every refusal before the journal: a journaled reversal the engine
         // then refuses could never be replayed, and the books would not open.
         self.check_reverse_entry(entry, date)?;
+        LedgerError::free_text("the reversal's description", description)?;
         let new_id = self.ledger.next_entry_id();
         let flipped: Vec<Value> = orig.lines().iter().map(flip_line_json).collect();
         // Reversals journal a single entry.reversed line (no separate
@@ -2458,7 +2462,13 @@ impl Store {
             });
         }
         let amount = due.amount;
-        let description = format!("Depreciation — {} — {period}", asset.description);
+        // Composed from the asset's own words, which the books may hold
+        // from before free text was read for a tax id's shape: a number
+        // that reads as one is masked, never refused (WB-partner-15).
+        let description = format!(
+            "Depreciation — {} — {period}",
+            ledger_core::settings::mask_printed_tins(&asset.description)
+        );
         let money = Money::new(amount, self.base_currency);
         // Every refusal before the first journaled line: the entry on a
         // copy (and that it is the period's run, no more and no less:
@@ -2884,7 +2894,8 @@ impl Store {
             (
                 format!(
                     "Depreciation — {} — {} (final)",
-                    asset.description, preview.period
+                    ledger_core::settings::mask_printed_tins(&asset.description),
+                    preview.period
                 ),
                 vec![
                     (
@@ -2901,7 +2912,11 @@ impl Store {
             )
         });
         let disposal = (
-            format!("Disposal — {} — {}", asset.description, date),
+            format!(
+                "Disposal — {} — {}",
+                ledger_core::settings::mask_printed_tins(&asset.description),
+                date
+            ),
             Self::disposal_lines(
                 &asset,
                 &preview,
@@ -3585,8 +3600,14 @@ impl Store {
             entry_id,
             "invoice entry diverged from journal"
         );
+        // The copy's name is composed from the invoice's number (a prefix
+        // the books' settings give, then digits): a number that reads as a
+        // tax id's printed shape is masked, never refused (WB-partner-15).
         let file_name = match &fields.number {
-            Some(n) => format!("{n}.pdf"),
+            Some(n) => format!(
+                "{}.pdf",
+                ledger_core::settings::mask_printed_tins_in_reference(n)
+            ),
             None => format!("Invoice {live}.pdf"),
         };
         // The entry's and the invoice's lines apply first: they were
@@ -4172,6 +4193,20 @@ impl Store {
                 ));
             }
         }
+        // The file's words, as `Self::attach_receipt` reads them, before
+        // the write-off's entry is journaled (a refusal after it would
+        // leave the entry without its evidence).
+        if let WriteOffEvidence::File {
+            file_name,
+            description,
+            ..
+        } = evidence
+        {
+            LedgerError::reference_text("the file name", file_name)?;
+            if let Some(d) = description {
+                LedgerError::free_text("the description", d)?;
+            }
+        }
         if let WriteOffEvidence::File { bytes, .. } = evidence
             && let Some(existing) = self.live_attachment_with_sha(&sha256_hex(bytes))?
         {
@@ -4754,6 +4789,10 @@ impl Store {
         bytes: &[u8],
         description: Option<&str>,
     ) -> Result<(u64, String, bool), StoreError> {
+        LedgerError::reference_text("the file name", file_name)?;
+        if let Some(d) = description {
+            LedgerError::free_text("the description", d)?;
+        }
         self.attach(AttachRequest {
             line_type: "receipt.attached",
             category: "receipts",
@@ -4794,6 +4833,10 @@ impl Store {
         bytes: &[u8],
         description: Option<&str>,
     ) -> Result<(u64, String, bool), StoreError> {
+        LedgerError::reference_text("the file name", file_name)?;
+        if let Some(d) = description {
+            LedgerError::free_text("the description", d)?;
+        }
         self.attach(AttachRequest {
             line_type: "document.filed",
             category,
@@ -5691,6 +5734,7 @@ impl Store {
         if reason.is_empty() {
             return Err(StoreError::ReasonRequired);
         }
+        LedgerError::free_text("the reason", reason)?;
         let (entry_id, withdrawn) = self.attachment_state(attachment_id)?;
         if withdrawn {
             return Err(StoreError::AttachmentWithdrawn(attachment_id));
@@ -5759,6 +5803,7 @@ impl Store {
         if reason.is_empty() {
             return Err(StoreError::ReasonRequired);
         }
+        LedgerError::free_text("the reason", reason)?;
         self.check_linkable(attachment_id)?;
         if let Some(sub) = self.attachment_links(attachment_id)?.first() {
             return Err(StoreError::AlreadyLinked(attachment_id, sub.describe()));
@@ -5935,6 +5980,7 @@ impl Store {
         if reason.is_empty() {
             return Err(StoreError::ReasonRequired);
         }
+        LedgerError::free_text("the reason", reason)?;
         self.attachment_state(attachment_id)?;
         let linked = self
             .conn
@@ -6064,6 +6110,7 @@ impl Store {
         if reason.is_empty() {
             return Err(StoreError::ReasonRequired);
         }
+        LedgerError::free_text("the reason", reason)?;
         if self.statement(attachment_id)?.is_none() {
             return Err(StoreError::InvalidStatement(format!(
                 "attachment {attachment_id} records no statement"
@@ -6214,6 +6261,7 @@ impl Store {
         if reason.is_empty() {
             return Err(StoreError::ReasonRequired);
         }
+        LedgerError::free_text("the reason", reason)?;
         let r = self
             .reconciliations(None)?
             .into_iter()
@@ -6813,9 +6861,11 @@ impl Store {
             .conn
             .prepare("SELECT asset_id, tag FROM asset_tags_log ORDER BY seq")?;
         let tags = tstmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+        // History is read, not asked for: a tag or a serial number the books
+        // hold reads back whatever shape it has (BS-entry-4; WB-partner-15).
         for t in tags {
             let (id, tag) = t?;
-            ledger.set_asset_tag(id as u64, &tag)?;
+            ledger_core::parties::replaying(|| ledger.set_asset_tag(id as u64, &tag))?;
         }
         let mut sstmt = self
             .conn
@@ -6823,7 +6873,7 @@ impl Store {
         let serials = sstmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
         for row in serials {
             let (id, serial) = row?;
-            ledger.set_asset_serial(id as u64, Some(&serial))?;
+            ledger_core::parties::replaying(|| ledger.set_asset_serial(id as u64, Some(&serial)))?;
         }
         // Basis records: a pre-P3 one (no value at contribution) as its
         // event replays, a newer one with its facts.

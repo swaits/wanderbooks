@@ -763,6 +763,42 @@ What the books keep of a call, and what a repeat is told:
   counts, the books server stopped to protect the books, and sending the call
   again with the same key answers what it answered and changes nothing.
 
+**No tax id in a tool's text** (BS-partner-2, WB-partner-15). Before a write
+tool runs (a preview included), every string in its arguments is checked once,
+from one table of every string each write tool takes (`text_fields.rs`; 423
+strings in 78 tools; 109 free text, 18 reference, 27 party field, 2 for the
+vault, the rest exempt): *free text* (memos, notes, reasons, descriptions,
+names of classes, projects and periods, a receipt's description and
+annotations, a discount's reason, a decision's or an item's words) is refused
+when it looks like a tax id (nine digits standing alone, an SSN's 3-2-4 or an
+EIN's 2-7 grouping, joined by any dash or space, or by a dot between all of
+an SSN's groups; a line break is a space and zero-width characters are not
+counted); a *reference field*, an identifier by nature (an asset's `tag` and
+`serial`, a bill's `vendor_ref`, an invoice's `customer_ref`, the `reference`
+of `pay_bill`, `receive_payment` and `mark_sent`, an account's `code`, a
+`file_name`, an instrument's `label`, where a W-9 or W-4 is `kept_at`), is
+refused only for the printed 3-2-4 and 2-7 shapes and may hold a bare nine
+digits, a serial or a check number (the owner's choice of 2026-11-21 as the
+lead decided it within it); a *party's own field*
+(a party's or a customer's or vendor's name, the bill-to details, a
+recipient, an account name) when it holds any run of nine digits; a string
+that is a lookup key, an id, an amount, a date, a word from a fixed
+vocabulary, the last four digits, a bank pattern or a link is exempt, and
+`set_tin` and `set_w9` take their `tin` (the vault's input) unread. A
+setting's value or a convention's structured body is read by the engine's own
+checks (`company.ein` and the `ach` and `wire` routing lines are the only
+exceptions). An invoice number, a phone number, a reference of ten digits or
+more, an amount, a decimal (`47.6062095`) and a date, even followed by a
+reference (`2026-11-21 0001234`), are no tax id. The refusal is in words, names
+the table's own field ("the name of books.add_class looks like it holds a tax
+id ..."; a key the caller chose is never quoted, it is "an unrecognised field
+of" the tool), says
+tax ids are stored only with `books.set_tin` or a W-9 (`books.set_w9`), never
+repeats the number, writes nothing, and is recorded as refused `tin_in_text`.
+The same text meets the same check in the engine, so no other caller can
+journal one; books that already hold such a line open as ever, and
+`books.audit` names the line and the field (`tax_id_in_journal`).
+
 Books an older version wrote take no write at all until the owner gives the
 format upgrade its go-ahead (D-89, WB-format-11): every write is refused,
 before it runs, with `format_upgrade_pending` and the words "nothing can be
@@ -1602,7 +1638,8 @@ statement 8).
 
 **Rules the engine enforces** (each refusal changes nothing, the journal
 byte for byte): no party field holds a full TIN (a run of nine digits,
-single spaces or hyphens allowed between them); a W-9's TIN is its last
+single spaces or hyphens allowed between them; free text such as a memo or a
+note is read by a tax id's shapes only: "No tax id in a tool's text"); a W-9's TIN is its last
 four digits only; W-9 facts need a 1099 role (contractor or landlord), W-4
 facts the employee role; names are unique among parties not archived;
 texts are at most 500 characters, no control characters.
@@ -2325,7 +2362,8 @@ posting.
 - `books.import_bank_csv { upload_id, bank_account_code,
   default_offset_code, rules?, date_order?, source_attachment_id? }` →
   `{ imported: [{ entry_id, date, description, amount, offset_account }],
-  count, source_attachment_id, source_linked }`: one draft per
+  count, source_attachment_id, source_linked, masked_count, masked: [{ row,
+  column, numbers }], masked_note? }`: one draft per
   transaction, all or none, from the QuickBooks bank-upload layout
   (`Date,Description,Amount`, payments negative, or
   `Date,Description,<money out>,<money in>`). `rules` maps description
@@ -2333,11 +2371,23 @@ posting.
   else `default_offset_code`. `source_attachment_id` (the export as filed, category
   `import_source`) is checked before any draft and linked to the bank
   account (`source_linked`; false when it was already), never to the
-  drafts: a bank export is not a receipt.
+  drafts: a bank export is not a receipt. A bank's description is not typed
+  by a person and often carries a nine-digit reference, so the file is not
+  refused for one: a number in a description that reads as a tax id (nine
+  digits standing alone, an SSN's or an EIN's shape) is kept masked to its
+  last four digits (`•••-••-1234`), `masked_count` says how many values were
+  masked, `masked` on which lines of the file (`row`, `column`
+  "Description"), and `masked_note` says so in words (WB-partner-15). A rule
+  matches the description as the bank wrote it, so a pattern keyed on a
+  nine-digit reference still matches; the draft keeps the masked text.
 - `books.import_chart_csv { upload_id }` → `{ created,
   count, warnings? }`: creates accounts from
   `code,name,type,parent_code[,tax_category]` CSV. All-or-nothing; the
-  name and tax category rules are `books.add_account`'s.
+  name and tax category rules are `books.add_account`'s. A chart is typed by
+  a person: a cell that looks like a tax id (a name with any run of nine
+  digits, another cell with a tax id's shape; a code may be nine digits, it
+  is a reference) refuses the whole file,
+  naming its row (the file's line) and column, never the number.
 - Each takes the CSV only as an upload (`books.begin_upload` purpose
   `import`; UTF-8; D-46). The CSV itself is not filed: file
   it with `books.file_document` (category `import_source`) for
@@ -3069,7 +3119,10 @@ and the attestations wait for the books' format upgrade, refused with
   depreciation, the asset register, each posted entry against the receipt
   policy, open drafts, tax categories, 1099 decisions and the settings;
   then the journal's chain, the database against a replay, the stored
-  files, the access log, duplicate files and the backups. The same books
+  files, the access log, duplicate files, a journal line whose text field
+  looks like a tax id (`tax_id_in_journal`, a warning naming the line and
+  the field, never the number; the journal is not rewritten) and the
+  backups. The same books
   (the figure head), day, scope and programme return the run that exists
   (`already_run`) and file and journal nothing. "The same books" means no
   entry, document, close, settings or role change since: an audit, an

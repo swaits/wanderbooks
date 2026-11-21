@@ -301,6 +301,77 @@ fn stale_head_period_attestation_refused() {
     s.verify().unwrap();
 }
 
+/// BS-partner-2 (WB-partner-15): the store's own texts (a file's name and
+/// description, the reasons for unlinking, withdrawing and voiding, an
+/// attestation's note, an entry's description) meet the one free-text check
+/// before anything is journaled, whoever calls.
+#[test]
+fn the_store_refuses_text_that_looks_like_a_tax_id_and_journals_nothing() {
+    use ledger_core::LedgerError;
+    let dir = test_dir("tin-text");
+    let (mut s, fx) = books(&dir, None);
+    let tin = "000-00-0000";
+    let refused = |r: Result<(), StoreError>, what: &str| match r {
+        Err(StoreError::Ledger(LedgerError::FreeTextHoldsTin(why))) => {
+            assert!(!why.contains("0000"), "{what}: never the number: {why}");
+        }
+        other => panic!("{what}: expected a refusal for the tax id, got {other:?}"),
+    };
+    let (att, _, _) = s
+        .attach_receipt(Some(fx.entry), "r.txt", "text/plain", b"paper 40.00", None)
+        .unwrap();
+    let head = s.head();
+    refused(
+        s.attach_receipt(
+            None,
+            "s.txt",
+            "text/plain",
+            b"other",
+            Some(&format!("paid {tin}")),
+        )
+        .map(drop),
+        "a description",
+    );
+    refused(
+        s.attach_receipt(None, &format!("w9 {tin}.txt"), "text/plain", b"other", None)
+            .map(drop),
+        "a file name",
+    );
+    refused(
+        s.file_document(
+            "tax",
+            "t.txt",
+            "text/plain",
+            b"doc",
+            Some(&format!("ein {tin}")),
+        )
+        .map(drop),
+        "a document's description",
+    );
+    refused(
+        s.unlink_receipt(att, &format!("dup {tin}")).map(drop),
+        "an unlink reason",
+    );
+    refused(
+        s.withdraw_attachment(att, &format!("dup {tin}")),
+        "a withdraw reason",
+    );
+    refused(
+        s.create_entry(d(2, 1), &format!("x {tin}")).map(drop),
+        "an entry description",
+    );
+    refused(
+        s.reverse_entry(fx.entry, d(2, 1), &format!("x {tin}"))
+            .map(drop),
+        "a reversal",
+    );
+    let mut c = claim("high");
+    c.note = Some(format!("see {tin}"));
+    refused(s.review_entry(fx.entry, c).map(drop), "an attestation note");
+    assert_eq!(s.head(), head, "a refusal journals nothing");
+    s.verify().unwrap();
+}
+
 /// The integrity table: each code seeded alone.
 #[test]
 fn integrity_detects_each_seeded_defect() {
@@ -361,6 +432,43 @@ fn integrity_detects_each_seeded_defect() {
                 }
                 drop(w);
                 Store::open(&dir).unwrap().integrity_findings()
+            }
+            "tax_id_in_journal" => {
+                // A line an earlier version took: its description holds an
+                // SSN's shape. The books open on it all the same, and the
+                // audit says where it is, never what.
+                let next = s.ledger().next_entry_id();
+                drop(s);
+                let mut w = JournalWriter::open(&dir.join(JOURNAL_FILE)).unwrap();
+                w.append(
+                    "entry.created",
+                    json!({"id": next, "date": "2026-03-01", "description": "paid 000-00-0000 in cash"}),
+                )
+                .unwrap();
+                drop(w);
+                let s = Store::open(&dir).expect("books holding such a line still open");
+                s.verify().expect("and still verify");
+                let found = s.integrity_findings();
+                let f = found
+                    .iter()
+                    .find(|f| f.code == "tax_id_in_journal")
+                    .expect("found");
+                assert!(f.message.contains("`description`"), "{}", f.message);
+                assert!(
+                    f.message.contains(&format!(
+                        "journal line {}",
+                        f.subject.describe().rsplit(' ').next().unwrap()
+                    )),
+                    "{}",
+                    f.message
+                );
+                assert!(
+                    !f.message.contains("0000"),
+                    "never the number: {}",
+                    f.message
+                );
+                assert!(f.message.contains("books.set_tin"), "{}", f.message);
+                found
             }
             "access_log_damaged" => {
                 std::fs::write(

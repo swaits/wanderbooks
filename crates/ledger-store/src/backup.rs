@@ -156,12 +156,48 @@ pub const TERM_GRACE: Duration = Duration::from_secs(5);
 /// younger one is left, and the next backup tries again.
 pub const ARCHIVE_STALE: Duration = Duration::from_secs(600);
 
+/// How to get git on this system, in plain words (P15 C1, WB-pkg-4). The
+/// program does not carry a git of its own: git is a separate program under
+/// the GPL, and shipping one is the owner's decision (`docs/install.md`).
+/// Until a person installs it, backups are off and the books work as ever.
+pub fn how_to_get_git() -> &'static str {
+    if cfg!(windows) {
+        "Install Git for Windows from https://git-scm.com/download/win (or, in a terminal, run: winget install --id Git.Git -e), then try again."
+    } else if cfg!(target_os = "macos") {
+        "Open Terminal and run: xcode-select --install (a window asks to install Apple's command line tools, which include git; or run: brew install git), then try again."
+    } else {
+        "Install git with your system's package manager (for example: sudo apt install git, or sudo dnf install git, or sudo pacman -S git), then try again."
+    }
+}
+
+/// Where Apple's developer tools keep a real git on a Mac: the command
+/// line tools' folder and Xcode's.
+const MAC_DEVELOPER_DIRS: [&str; 2] = [
+    "/Library/Developer/CommandLineTools",
+    "/Applications/Xcode.app/Contents/Developer",
+];
+
+/// Whether `exe` is the stub macOS ships at `/usr/bin/git`: with no
+/// developer tools installed (none of `developer_dirs` holds a
+/// `usr/bin/git`) it is not git but a program that opens Apple's installer
+/// dialog and fails, so it is not a git to run (a backup would otherwise
+/// pop that dialog and report a failure with a stranger's words).
+fn macos_git_stub(exe: &Path, developer_dirs: &[&Path]) -> bool {
+    exe == Path::new("/usr/bin/git")
+        && !developer_dirs
+            .iter()
+            .any(|dir| dir.join("usr/bin/git").is_file())
+}
+
 /// Why a backup couldn't be made, pushed or trusted. Never names a path of
 /// the data root (INVARIANT 4).
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum BackupError {
     /// git isn't installed.
-    #[error("git isn't installed: backups need it (install git, then try again)")]
+    #[error(
+        "git isn't installed, so backups are off until it is. {}",
+        how_to_get_git()
+    )]
     NoGit,
     /// A git command failed; what it said, in whole lines (paths in it are
     /// the caller's to hide, INVARIANT 4).
@@ -247,6 +283,17 @@ impl std::fmt::Debug for Watch {
     }
 }
 
+/// Git for Windows' per-user install (no administrator needed): under the
+/// account's local application data.
+fn per_user_git_dirs() -> Vec<PathBuf> {
+    if cfg!(windows)
+        && let Some(local) = std::env::var_os("LOCALAPPDATA")
+    {
+        return vec![Path::new(&local).join(r"Programs\Git\cmd")];
+    }
+    Vec::new()
+}
+
 /// The git program, found once.
 #[derive(Debug, Clone)]
 pub struct Git {
@@ -285,9 +332,14 @@ impl Git {
                 .collect::<Vec<_>>()
                 .iter(),
             )
+            .chain(per_user_git_dirs().iter())
             .filter(|d| d.is_absolute())
             .map(|d| d.join(if cfg!(windows) { "git.exe" } else { "git" }))
-            .find(|p| p.is_file())
+            .find(|p| {
+                p.is_file()
+                    && !(cfg!(target_os = "macos")
+                        && macos_git_stub(p, &MAC_DEVELOPER_DIRS.map(Path::new)))
+            })
             .map(|exe| Git {
                 exe,
                 quiet: GIT_TIMEOUT,
@@ -1842,6 +1894,46 @@ mod tests {
 
     fn usd(s: &str) -> Money {
         Money::new(s.parse().unwrap(), Currency::USD)
+    }
+
+    /// WB-pkg-4: with no git a backup says how to get one, in words for
+    /// this system, and names no path of the data root.
+    #[test]
+    fn a_missing_git_says_how_to_get_it() {
+        let said = BackupError::NoGit.to_string();
+        assert!(said.contains("git isn't installed"), "{said}");
+        assert!(said.contains("backups are off until it is"), "{said}");
+        assert!(said.ends_with(how_to_get_git()), "{said}");
+        let how = how_to_get_git();
+        if cfg!(windows) {
+            assert!(
+                how.contains("git-scm.com") && how.contains("winget"),
+                "{how}"
+            );
+        } else if cfg!(target_os = "macos") {
+            assert!(how.contains("xcode-select --install"), "{how}");
+        } else {
+            assert!(how.contains("package manager"), "{how}");
+        }
+        assert!(how.ends_with("try again."), "{how}");
+    }
+
+    /// macOS's `/usr/bin/git` is a stub until the developer tools are
+    /// installed: it is no git, and nothing else is taken for one.
+    #[test]
+    fn the_mac_stub_is_not_a_git_until_the_developer_tools_are_there() {
+        let dir = tempfile::tempdir().unwrap();
+        let tools = dir.path().join("CommandLineTools");
+        let stub = Path::new("/usr/bin/git");
+        assert!(macos_git_stub(stub, &[tools.as_path()]), "no tools yet");
+        std::fs::create_dir_all(tools.join("usr/bin")).unwrap();
+        std::fs::write(tools.join("usr/bin/git"), b"").unwrap();
+        assert!(!macos_git_stub(stub, &[tools.as_path()]), "tools installed");
+        // Any other git is never the stub.
+        assert!(!macos_git_stub(
+            Path::new("/opt/homebrew/bin/git"),
+            &[dir.path()]
+        ));
     }
 
     /// A book with a few entries and a stored file.

@@ -3646,3 +3646,104 @@ fn a_lock_a_kill_leaves_in_the_backup_folder_is_reported_and_never_removed_by_th
     fsck_of(&target);
     assert!(server.close().success());
 }
+
+/// Whether `thread` finished within `within`, never hanging the test.
+#[cfg(unix)]
+fn finishes_within<T>(thread: &std::thread::JoinHandle<T>, within: Duration) -> bool {
+    let by = std::time::Instant::now() + within;
+    while !thread.is_finished() {
+        if std::time::Instant::now() >= by {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    true
+}
+
+/// A restore PREVIEW changes nothing, so it holds no book's turn: a close of
+/// the book it is about is answered while the preview is still running (held
+/// inside its fetch by the test knob, which only the test lifts), and the
+/// preview then finishes and answers as it would have (local.rs INVARIANT
+/// 10: a close never waits behind a preview, however long its clone or its
+/// queue for `books.lock`).
+#[cfg(unix)]
+#[test]
+fn a_close_is_answered_while_a_restore_preview_of_its_book_is_still_running() {
+    let home = Home::new("close-not-held-by-preview");
+    let server = Server::start_with(&home, &JOB_ARGS);
+    let jobs = Jobs::new(&home);
+    let preview = Request::Restore {
+        id: A.into(),
+        source: jobs.repo.display().to_string(),
+        replace: false,
+        confirmed: false,
+        expect_head: None,
+    };
+    let previewing = job_held_in(&home, "restore:fetch", &preview, "restore:fetch");
+    let closing = admin_in_thread(&home, Request::CloseBook { id: A.to_string() });
+    let answered = finishes_within(&closing, Duration::from_secs(20));
+    // Lifted before anything is asserted, so a failure never hangs.
+    std::fs::remove_file(home.run().join("timer-hold")).unwrap();
+    assert!(answered, "the close waited for the preview of its own book");
+    match closing.join().unwrap() {
+        Response::CloseBook {
+            outcome: CloseOutcome::Closed,
+            ..
+        } => {}
+        other => panic!("{other:?}"),
+    }
+    match previewing.join().unwrap() {
+        Response::RestorePreview(p) => assert!(p.exists, "{p:?}"),
+        other => panic!("{other:?}"),
+    }
+    assert!(server.close().success());
+}
+
+/// A close of an id stops an adoption that is making that id, before its
+/// point of no return: the adoption (held in its opening of the copy by the
+/// test knob, which only the stop lifts) answers that it was stopped and
+/// that nothing was adopted, the root is as it was, and the close, which
+/// waited for the adoption's turn, is answered at once after: there is no
+/// such book (local.rs INVARIANT 10).
+#[cfg(unix)]
+#[test]
+fn a_close_of_an_id_stops_the_adoption_that_is_making_it() {
+    let home = Home::new("close-stops-adoption-of-its-id");
+    let server = Server::start_with(&home, &JOB_ARGS);
+    let jobs = Jobs::new(&home);
+    let live = [A, CEDAR];
+    let before = root_without(&home, &live);
+    let adopting = job_held_in(&home, "adopt:open", &jobs.adopt(true), "adopt:open");
+    let closing = admin_in_thread(
+        &home,
+        Request::CloseBook {
+            id: "delta".to_string(),
+        },
+    );
+    let answered = finishes_within(&closing, Duration::from_secs(20));
+    // Lifted before anything is asserted, so a failure never hangs.
+    std::fs::remove_file(home.run().join("timer-hold")).unwrap();
+    assert!(
+        answered,
+        "the close of an id waited for the adoption making it"
+    );
+    let text = format!("{:?}", adopting.join().unwrap());
+    assert!(
+        text.contains("stopped because the books are closing")
+            && text.contains("nothing was adopted"),
+        "{text}"
+    );
+    match closing.join().unwrap() {
+        Response::CloseBook {
+            outcome: CloseOutcome::NoSuchBook,
+            ..
+        } => {}
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(
+        moved(&before, &root_without(&home, &live)),
+        Vec::<String>::new(),
+        "the root isn't as it was"
+    );
+    assert!(server.close().success());
+}

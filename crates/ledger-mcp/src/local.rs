@@ -148,19 +148,26 @@
 //!          then runs to its end: it is one of the named exceptions below.
 //!        - on the admin socket: restore and its preview, adopt and its
 //!          preview, create, and open. A stop is scoped to what it concerns.
-//!          A close of the book X stops the work on X only: an open of X, and
-//!          a restore that replaces X (the stoppable calls on X, above, and
-//!          X's backups and drill, are stopped by the same close). A create,
-//!          an adoption and a restore that replaces nothing make a NEW book:
-//!          no close of any book is a close of that, and none stops them; nor
-//!          does it stop, fail, refuse or delay an open or a close of another
-//!          book, nor a job queued for its turn at making books (`books.lock`
-//!          in the root, one at a time across processes: a deliberate rule,
-//!          ledger_store::root INVARIANT 5, that a queued job leaves at once
-//!          when it is asked to stop). Only the server's own close stops
-//!          every job (`Books::stop_every_job`). A job for a book whose close
-//!          is under way waits for that book's turn, so for the close to end,
-//!          and is then asked as any other. Each is stopped, before its
+//!          A job that changes books holds the turn of the id it works on
+//!          (an open, a close, a create, an adoption, a restore: one at a
+//!          time per id), and listens to the stop of THAT id, which a close
+//!          of the id raises before it waits for the turn, and to the
+//!          server's (the id's stop is raised by the server's close too):
+//!          so a close of X stops an open of X, an adoption or a create
+//!          making X, and a restore of X (over it, or making it), before
+//!          their point of no return, and never waits behind one. A
+//!          PREVIEW (of a restore, of an adoption) changes nothing, and
+//!          holds no book's turn at all: a close never waits for one,
+//!          however long its clone or its queue for `books.lock`; only the
+//!          server's close stops it. No close of any other book stops, fails,
+//!          refuses or delays an open, a close or a job of X, nor a job
+//!          queued for its turn at making books (`books.lock` in the root,
+//!          one at a time across processes: a deliberate rule, ledger_store::
+//!          root INVARIANT 5, that a queued job leaves at once when it is
+//!          asked to stop). Only the server's own close stops every job
+//!          (`Books::stop_every_job`). A job for a book whose close is under
+//!          way waits for that book's turn, so for the close to end, and is
+//!          then asked as any other. Each is stopped, before its
 //!          point of no return, at its next look (a phase, a stored file, a
 //!          journal line, a git command): what it wrote is removed (a clone,
 //!          a staging folder, and the lock file an adoption made in the
@@ -170,8 +177,8 @@
 //!          two and the sync of two folders (a restore over books moves them
 //!          to `legacy/` and renames the copy in, both within the root); then
 //!          the book is opened, which is itself stopped by the server's close
-//!          (and, for a restore over X, by a close of X), left closed (its
-//!          answer says so). Create's is the making of its folder, after which
+//!          and by a close of its id (the same stop the job held), left closed
+//!          (its answer says so). Create's is the making of its folder, after which
 //!          it makes one empty book. Open has none: it stops anywhere (the
 //!          book is left closed, intact).
 //!      Every other call does work bounded by the size of one request: its
@@ -1339,14 +1346,14 @@ impl Books {
                 if self.held().contains_key(id.as_str()) {
                     return refused(RootError::Exists(id.to_string()));
                 }
-                // Stopped by the server's close before its folder is made, it
-                // makes nothing; after that it makes one empty book. A close
-                // of another book doesn't stop it: it is no work on that book
-                // (INVARIANT 10).
+                // Stopped by the server's close, or by a close of this id
+                // (which waits for the turn held here), before its folder is
+                // made, it makes nothing; after that it makes one empty book.
+                // A close of another book doesn't stop it (INVARIANT 10).
                 match self.root.create_book_stoppable(
                     &id,
                     currency,
-                    &self.job("create", &self.server_stop),
+                    &self.job("create", &life.stop),
                 ) {
                     Ok(store) => {
                         // Made: kept whether or not it opens (INVARIANT 3).
@@ -1453,15 +1460,25 @@ impl Books {
                     Err(e) => return refused(e),
                 };
                 let life = self.life(&id);
-                let _one = life.lock.lock().unwrap_or_else(|e| e.into_inner());
+                // A preview changes nothing, so it takes no book's turn: a
+                // close of this id never waits behind it (INVARIANT 10). An
+                // adoption takes the turn, and with it the stop of THIS id
+                // (and the server's): a close of the id, which waits for the
+                // turn, stops the adoption before its point of no return, and
+                // stops the opening that follows its placing, as it stops an
+                // open. A close of another book stops nothing of it.
+                let _one = confirmed.then(|| life.lock.lock().unwrap_or_else(|e| e.into_inner()));
                 if self.held().contains_key(id.as_str()) {
                     return refused(RootError::Exists(id.to_string()));
                 }
-                // Making a new book: stopped by the server's close, never by
-                // a close of another book (INVARIANT 10). Once placed, it is
-                // opened, which a close of THIS book (asked of the id it is
-                // making) stops, as it stops an open.
-                let stop = self.job("adopt", &self.server_stop);
+                let stop = self.job(
+                    "adopt",
+                    if confirmed {
+                        &life.stop
+                    } else {
+                        &self.server_stop
+                    },
+                );
                 let found = match self.root.adopt_preview_stoppable(&source, &stop) {
                     Ok(found) => found,
                     Err(e) => return refused(e),
@@ -1989,28 +2006,16 @@ impl Books {
             Ok(id) => id,
             Err(e) => return said(e.to_string()),
         };
-        // This book's turn only (INVARIANT 10). What stops the restore: a
-        // close of THIS book, if it replaces it (that is work on this book);
-        // else only the server's close (a preview, or a restore making a new
-        // book, is no work on any book that is closing).
-        let life = self.life(&id);
-        let _one = life.lock.lock().unwrap_or_else(|e| e.into_inner());
-        let stop = self.job(
-            "restore",
-            if confirmed && replace {
-                &life.stop
-            } else {
-                &self.server_stop
-            },
-        );
         let git = match ledger_store::backup::Git::find() {
             Ok(git) => git,
             Err(e) => return said(e.to_string()),
         };
         // A preview only reports (whether books of that id exist among
-        // what it says): the restore itself is refused over books, or
-        // replacing none.
+        // what it says), so it changes nothing and takes no book's turn: a
+        // close of this id never waits behind its clone and its queue for
+        // the books lock (INVARIANT 10). Only the server's close stops it.
         if !confirmed {
+            let stop = self.job("restore", &self.server_stop);
             return match self
                 .root
                 .restore_preview_stoppable(&git, &source, &id, &stop)
@@ -2025,6 +2030,13 @@ impl Books {
                 Err(e) => said(e.to_string()),
             };
         }
+        // A restore takes this book's turn only (INVARIANT 10), and with it
+        // the stop of THIS id (and the server's): a close of the id, which
+        // waits for the turn, stops the restore before its point of no
+        // return, whether it replaces the books or makes new ones.
+        let life = self.life(&id);
+        let _one = life.lock.lock().unwrap_or_else(|e| e.into_inner());
+        let stop = self.job("restore", &life.stop);
         let Some(expect_head) = expect_head else {
             return said("a restore is confirmed against the preview's head: preview first".into());
         };

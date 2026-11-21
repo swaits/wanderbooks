@@ -83,3 +83,4 @@ Columns: date | type (scout, run/verify, implement, refactor, debug, review) | p
 - 2026-11-21 | review 3 | opus (medium) | B3 security review | accepted: no high; 3 medium, 7 low
 - 2026-11-21 | impl-multi 2 | sonnet (high) | B3 fix round (12 items) | accepted; Buypass dropped from the directory hosts by the lead
 - 2026-11-21 | debug 2 | sonnet (high) | failures from GitHub's run on 8a6d731c3 (doc links, wording tests, marker writes, git close test, fuzz key, a sum in remote) | accepted on its tests and a compile after merge; macOS items unproven
+- 2026-11-21 | debug 2 | sonnet (medium) | the working-state picture differs on Windows | accepted on its tests; proof is GitHub's next Windows run

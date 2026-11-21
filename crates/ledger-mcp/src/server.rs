@@ -74,6 +74,8 @@ pub struct BooksServer {
     exports: ledger_store::exports::Exports,
     /// The books' backups (backup.rs).
     backups: Arc<crate::backup::Backups>,
+    /// Who is connected, and what each is doing (sessions.rs).
+    board: Arc<crate::sessions::Board>,
     /// How these books are kept from agents (plan 3.8, P9a): what
     /// `books.start` reports.
     isolation: Isolation,
@@ -128,6 +130,8 @@ pub(crate) struct Served {
     pub(crate) uploads: ledger_store::uploads::Uploads,
     pub(crate) exports: ledger_store::exports::Exports,
     pub(crate) backups: Arc<crate::backup::Backups>,
+    /// Its live sessions' board (sessions.rs), read by the admin socket.
+    pub(crate) board: Arc<crate::sessions::Board>,
     pub(crate) isolation: Isolation,
 }
 
@@ -178,6 +182,7 @@ impl Served {
             uploads,
             exports,
             backups,
+            board: Arc::default(),
             isolation,
         })
     }
@@ -208,6 +213,11 @@ pub struct SharedStore {
     stopped: std::sync::atomic::AtomicBool,
     /// Closing: no new request runs (INVARIANT 3).
     closing: std::sync::atomic::AtomicBool,
+    /// A close of these books has begun (`hurry`): a call that can run
+    /// long (a verification, a backup asked for, a package of every stored
+    /// file) stops at its next look, answering that it was stopped. Shared
+    /// with the books' backups (backup.rs), whose git it stops.
+    hurry: Arc<std::sync::atomic::AtomicBool>,
     /// Requests running (from before their blocking task to its end).
     running: std::sync::atomic::AtomicUsize,
     /// Woken whenever one ends.
@@ -305,6 +315,7 @@ impl SharedStore {
             store: tokio::sync::Mutex::new(Some(store)),
             stopped: std::sync::atomic::AtomicBool::new(false),
             closing: std::sync::atomic::AtomicBool::new(false),
+            hurry: Arc::default(),
             running: std::sync::atomic::AtomicUsize::new(0),
             ended: tokio::sync::Notify::new(),
         })
@@ -327,6 +338,23 @@ impl SharedStore {
 
     fn closing(&self) -> bool {
         self.closing.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// A close of these books begins: every call and job that can run long
+    /// stops at its next look (local.rs INVARIANT 10).
+    pub fn hurry(&self) {
+        self.hurry.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Whether a close of these books has begun.
+    pub fn hurried(&self) -> bool {
+        self.hurry.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// The stop flag itself, for what looks at it from another thread or
+    /// hands it to git (ledger_store `cancel`, `Git::with_cancel`).
+    pub fn hurry_flag(&self) -> Arc<std::sync::atomic::AtomicBool> {
+        self.hurry.clone()
     }
 
     fn stopped(&self) -> bool {
@@ -352,6 +380,18 @@ impl SharedStore {
 
 /// What every request gets after an internal error (SharedStore
 /// INVARIANT 2).
+/// What a call that a close stopped is told (local.rs INVARIANT 10): it
+/// was stopped, because the books are closing, and nothing it was doing
+/// is recorded as done.
+pub(crate) const STOPPED_BY_CLOSE_WORDS: &str = "this call was stopped because the books are closing: nothing it was doing is recorded as done. Open the books again, then ask again";
+
+/// The words of a call a close stopped, and the mark that its access record
+/// says so (`refused: stopped_by_close`): returned as the call's error.
+pub(crate) fn stopped_by_close() -> String {
+    STOPPED_BY_CLOSE.with(|s| s.set(true));
+    STOPPED_BY_CLOSE_WORDS.to_string()
+}
+
 pub(crate) const STOPPED: &str = "the books server stopped taking requests after an internal error, to protect the books: ask the human to restart the books server (the books are checked again when it starts)";
 
 /// The store, locked for one stretch of synchronous work. Not `Send`, so
@@ -547,6 +587,7 @@ impl BooksServer {
             uploads: served.uploads.clone(),
             exports: served.exports.clone(),
             backups: served.backups.clone(),
+            board: served.board.clone(),
             isolation: served.isolation,
         }
     }
@@ -1379,6 +1420,9 @@ thread_local! {
     /// The journal's head after the last write made by the request
     /// running on this thread (StoreGuard's drop), for its access record.
     static WROTE: std::cell::RefCell<Option<(u64, String)>> = const { std::cell::RefCell::new(None) };
+    /// Whether the request running on this thread was stopped by a close
+    /// (`stopped_by_close`), for its access record.
+    static STOPPED_BY_CLOSE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Who the request running on this thread is, as `books.start` shows
     /// it: `{principal, kind, scopes, client_id}`. The token's own facts
     /// and the client's name; set at the start of the request.
@@ -1744,7 +1788,7 @@ impl ServerHandler for BooksServer {
     ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
         use crate::access::{self, Call};
         use ledger_store::access::Outcome;
-        let mut call = Call::new(&self.access, &context, "tool", &request.name);
+        let mut call = Call::new(&self.access, &self.board, &context, "tool", &request.name);
         let outcome_of = |out: &Result<rmcp::model::CallToolResponse, rmcp::ErrorData>| match out {
             Ok(rmcp::model::CallToolResponse::Complete(r)) if r.is_error != Some(true) => {
                 Outcome::Ok
@@ -1837,6 +1881,7 @@ impl ServerHandler for BooksServer {
         let result = run_blocking(&self.store, move || {
             Box::pin(async move {
                 WROTE.with(|w| w.borrow_mut().take());
+                STOPPED_BY_CLOSE.with(|s| s.set(false));
                 ARGS.with(|a| *a.borrow_mut() = request.arguments.clone());
                 let caller = running_call
                     .caller()
@@ -1889,7 +1934,14 @@ impl ServerHandler for BooksServer {
                 let mut c = running_call;
                 c.digested(digest);
                 c.with_agent(AGENT_NOTE.with(|a| a.borrow_mut().take()));
-                let recorded = c.record_blocking(outcome_of(&out), wrote);
+                // A call a close stopped is on record as stopped, not as an
+                // answer it gave (local.rs INVARIANT 10).
+                let outcome = if STOPPED_BY_CLOSE.with(|s| s.replace(false)) {
+                    Outcome::Refused(access::STOPPED_BY_CLOSE.into())
+                } else {
+                    outcome_of(&out)
+                };
+                let recorded = c.record_blocking(outcome, wrote);
                 (out, recorded)
             })
         })
@@ -1942,6 +1994,23 @@ impl ServerHandler for BooksServer {
             ttl_ms: hints.then_some(0),
             cache_scope: hints.then_some(rmcp::model::CacheScope::Private),
         })
+    }
+
+    /// The client has said who it is: the session's board (sessions.rs)
+    /// knows it before the session's first call.
+    async fn on_initialized(&self, context: rmcp::service::NotificationContext<RoleServer>) {
+        if let (Some(sid), Some(info)) = (
+            crate::access::session_of(&context.extensions),
+            context.peer.peer_info(),
+        ) {
+            self.board.initialized(
+                &sid,
+                ledger_store::access::Client {
+                    name: info.client_info.name.clone(),
+                    version: info.client_info.version.clone(),
+                },
+            );
+        }
     }
 
     fn get_info(&self) -> ServerConfig {
@@ -2011,7 +2080,13 @@ impl ServerHandler for BooksServer {
         use ledger_store::access::Outcome;
         // Reading a resource is reading the books: books:read, recorded
         // (access.rs).
-        let call = Call::new(&self.access, &context, "resource", &request.uri);
+        let call = Call::new(
+            &self.access,
+            &self.board,
+            &context,
+            "resource",
+            &request.uri,
+        );
         let result = self.resource(request, &call).await;
         {
             let outcome = match &result {

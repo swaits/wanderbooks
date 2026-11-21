@@ -8,7 +8,8 @@
 //!       the data root itself: the server, its sole writer, does it.
 //! SOURCE: plan/served.md 3.1 (the CLI "talks to run/admin.sock ... it can
 //!         create or adopt books"), 5.5 (adoption), 3.9 (protocol versions
-//!         N and N-1).
+//!         N and N-1); plan/p15-app-and-relay.md 3.1 (open and close one
+//!         book at run time; who is connected), D-77, D-78.
 //! INVARIANTS:
 //!   1. One request per connection, one JSON line each way, at most
 //!      MAX_LINE bytes; anything else is refused with a plain reason.
@@ -30,6 +31,19 @@
 //!   7. A format upgrade is asked with the owner passphrase, which the
 //!      server checks before anything is done (plan 3.9, D-39); no answer
 //!      carries it, and Debug never shows it.
+//!   8. Opening and closing ONE book (`open_book`, `close_book`) are
+//!      admin requests (plan/p15-app-and-relay.md 3.1; D-77, D-78): each
+//!      answers what happened in a word (opened, already open, closed,
+//!      was not open, no such book, could not open with why), and a book
+//!      that is closed is listed as closed, which is not a problem. A
+//!      close is answered only when the books are let go and nothing of
+//!      this process's can write to them; its last backup (a bounded
+//!      step) that wasn't whole is said, in `closed_backup_incomplete`
+//!      with why, never as a plain `closed`.
+//!   9. `sessions` says, for each open book, who is connected: a token's
+//!      NAME (never its text, nor its hash), what the client and the agent
+//!      said of themselves, when it connected, how many of its calls are
+//!      running, and its last call. A session that ended is not listed.
 //! ```
 
 use serde::{Deserialize, Serialize};
@@ -174,6 +188,22 @@ pub enum Request {
         /// The attachment to read.
         attachment_id: u64,
     },
+    /// Open one book that is not open (INVARIANT 8): checked and verified
+    /// exactly as at the server's start.
+    OpenBook {
+        /// The books.
+        id: String,
+    },
+    /// Close one book while the server runs (INVARIANT 8): new calls on it
+    /// are refused from the moment this begins, the calls running on it
+    /// finish, its sessions end, and it is let go of as at the server's
+    /// close (a last backup, its writer lock released).
+    CloseBook {
+        /// The books.
+        id: String,
+    },
+    /// Who is connected to each open book (INVARIANT 9).
+    Sessions,
     /// End a token.
     TokenRevoke {
         /// Its books.
@@ -298,6 +328,11 @@ pub struct BookStatus {
     pub id: String,
     /// Whether it is open and served.
     pub open: bool,
+    /// Whether it was closed (at the server's start, or by `close_book`):
+    /// not open, and no problem. A book that failed to open is not closed:
+    /// it has a `problem`.
+    #[serde(default)]
+    pub closed: bool,
     /// Why it couldn't be opened, if it couldn't.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub problem: Option<String>,
@@ -312,6 +347,99 @@ pub struct BookStatus {
     /// versions that wrote them (never deleted).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub other_databases: Vec<String>,
+}
+
+/// What `open_book` came to.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OpenOutcome {
+    /// It was closed (or had failed to open) and is open now.
+    Opened,
+    /// It was open already: nothing was done.
+    AlreadyOpen,
+    /// There are no such books in the data root.
+    NoSuchBook,
+    /// It could not be opened, and why (it stays listed, with this
+    /// `problem`).
+    CouldNotOpen(String),
+}
+
+/// What `close_book` came to.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CloseOutcome {
+    /// It was open and is closed now: no call on it is running, its
+    /// sessions ended, and another process could open it.
+    Closed,
+    /// It was open and is closed as `Closed` says, but its last backup
+    /// wasn't whole (a target that couldn't be reached, git that failed, or
+    /// a backup stopped after its time): why, in words. The books on disk
+    /// are whole; what they hold since the last good backup is not backed
+    /// up.
+    ClosedBackupIncomplete(String),
+    /// It was not open (closed already, or it never opened): nothing was
+    /// done.
+    WasNotOpen,
+    /// There are no such books in the data root.
+    NoSuchBook,
+}
+
+/// What an agent said about itself (`books.start`'s `agent`): asserted,
+/// never checked.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionAgent {
+    /// The model's name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// The reasoning effort it ran at.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+    /// The program driving it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<String>,
+}
+
+/// A session's last call.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LastCall {
+    /// The tool (or the resource's address).
+    pub tool: String,
+    /// "ok", "error", or "refused: CODE".
+    pub outcome: String,
+    /// When it finished (UTC, RFC 3339).
+    pub at: String,
+}
+
+/// One live MCP session (INVARIANT 9).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionInfo {
+    /// The NAME of the token it was opened with: never the token.
+    pub token: String,
+    /// The client program's name, as it said at `initialize`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_name: Option<String>,
+    /// Its version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_version: Option<String>,
+    /// What the agent said about itself, if it has.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<SessionAgent>,
+    /// When it connected (UTC, RFC 3339).
+    pub connected_at: String,
+    /// Calls of it running now.
+    pub running: u32,
+    /// The last call it made, if it has made one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last: Option<LastCall>,
+}
+
+/// An open book's live sessions.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BookSessions {
+    /// The books.
+    pub book: String,
+    /// Its live sessions, the longest connected first.
+    pub sessions: Vec<SessionInfo>,
 }
 
 /// A setting an adoption would move in.
@@ -486,6 +614,22 @@ pub enum Response {
     },
     /// A format upgrade made (or none needed).
     FormatUpgraded(FormatUpgraded),
+    /// What `open_book` came to.
+    OpenBook {
+        /// The books.
+        id: String,
+        /// What happened.
+        outcome: OpenOutcome,
+    },
+    /// What `close_book` came to.
+    CloseBook {
+        /// The books.
+        id: String,
+        /// What happened.
+        outcome: CloseOutcome,
+    },
+    /// Who is connected, for each open book (INVARIANT 9).
+    Sessions(Vec<BookSessions>),
     /// An attachment's text read and journaled (plan P6 step 2).
     Extracted {
         /// The attachment.
@@ -536,7 +680,10 @@ pub fn call_within(
     let not_sent = |why: String| CallError::NotSent(why);
     // A list changes nothing: its only question is whether it answered.
     let look = match request {
-        Request::List | Request::TokenList | Request::TokenCheck { .. } => None,
+        Request::List | Request::TokenList | Request::TokenCheck { .. } | Request::Sessions => None,
+        Request::OpenBook { .. } | Request::CloseBook { .. } => {
+            Some("`wanderbooks books list` says whether the books are open")
+        }
         Request::Create { .. } | Request::Adopt { .. } | Request::Restore { .. } => {
             Some("`wanderbooks books list` shows the books there are")
         }
@@ -699,6 +846,7 @@ mod tests {
         for r in [
             Response::Books(vec![
                 BookStatus {
+                    closed: false,
                     id: "acme".into(),
                     open: false,
                     problem: Some("damaged".into()),
@@ -707,6 +855,7 @@ mod tests {
                     other_databases: Vec::new(),
                 },
                 BookStatus {
+                    closed: false,
                     id: "beta".into(),
                     open: true,
                     problem: None,

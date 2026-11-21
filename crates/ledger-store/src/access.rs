@@ -19,6 +19,12 @@
 //!      name and version, a request id, the tool or resource it named)
 //!      has any full TIN masked and is then cut to 64 characters.
 //!   3. Records go in one at a time, in the order they are made.
+//!   4. A log can be closed (`close`, under the lock every record goes in
+//!      under): a record whose append began before it is whole, one after
+//!      it is refused (`ChainError::Closed`), unwritten. So a record
+//!      still on its way when its book is let go (a refusal written late)
+//!      never reaches the file, nor, once the book is opened again, the
+//!      new log's chain.
 //! ```
 
 use crate::chain::{self, ChainError, ChainLog, Head};
@@ -220,6 +226,12 @@ impl AccessLog {
         log.append(fields).map(|(_, head)| head)
     }
 
+    /// Take no more records, ever (INVARIANT 4): waits for the record
+    /// being appended, if one is.
+    pub fn close(&self) {
+        self.log.lock().unwrap_or_else(|e| e.into_inner()).close();
+    }
+
     /// Where the log ends now.
     pub fn head(&self) -> Head {
         self.log
@@ -287,6 +299,30 @@ mod tests {
             head_after: None,
             agent: None,
         }
+    }
+
+    /// A closed log takes no more records (INVARIANT 4): a handle kept from
+    /// before a close can't append after the log is opened again, which
+    /// would break the new log's chain.
+    #[test]
+    fn a_closed_log_writes_nothing_and_a_reopened_one_stays_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = AccessLog::open(dir.path()).unwrap();
+        old.record(&access(1)).unwrap();
+        old.close();
+        let file = || std::fs::read(dir.path().join(ACCESS_FILE)).unwrap();
+        let at_close = file();
+        assert_eq!(old.record(&access(2)), Err(ChainError::Closed));
+        assert_eq!(file(), at_close, "a closed log wrote");
+        // The book is opened again: a new log, against its own head.
+        let new = AccessLog::open(dir.path()).unwrap();
+        new.record(&access(3)).unwrap();
+        // The old handle, used late, writes nothing.
+        assert_eq!(old.record(&access(4)), Err(ChainError::Closed));
+        new.record(&access(5)).unwrap();
+        let (back, head) = read(dir.path()).unwrap();
+        assert_eq!(back.len(), 3);
+        assert_eq!(head.seq, 3);
     }
 
     #[test]

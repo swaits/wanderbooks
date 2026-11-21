@@ -883,6 +883,72 @@ fn vendor_1099_tags_replay_and_project() {
     }
 }
 
+/// A stop asked before a heal begins leaves nothing behind (cancel INVARIANT
+/// 4, store.rs `heal_drift`): no `.mismatch` copy of the database and no
+/// rebuild, the database exactly as it was (still drifted), and the stop is
+/// the answer. Healed with no stop, the same drift heals.
+#[test]
+fn a_stop_before_a_heal_leaves_no_copy_and_no_rebuild() {
+    let dir = test_dir("heal-stopped");
+    let mut store = build_books(&dir);
+    let e = store
+        .ledger()
+        .posted_entries()
+        .next()
+        .map(|e| e.id())
+        .unwrap();
+    store
+        .attach_receipt(Some(e), "r.png", "image/png", b"receipt", None)
+        .unwrap();
+    drop(store);
+    let db = dir.join(ledger_store::db_file());
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute("UPDATE attachments SET entry_id = NULL", [])
+        .unwrap();
+    drop(conn);
+    let mut store = Store::open(&dir).unwrap();
+    let Err(StoreError::VerifyMismatch(why)) = store.verify() else {
+        panic!("the drift wasn't found");
+    };
+    let files = |dir: &std::path::Path| {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(|d| d.ok())
+            .map(|d| d.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    };
+    let (names, db_bytes) = (files(&dir), std::fs::read(&db).unwrap());
+    {
+        // The stop arrives after the drift was found, before the heal.
+        let _stop = ledger_store::cancel::scope(std::sync::Arc::new(
+            std::sync::atomic::AtomicBool::new(true),
+        ));
+        assert!(matches!(
+            store.heal_drift(why.clone()),
+            Err(StoreError::Cancelled)
+        ));
+    }
+    assert_eq!(files(&dir), names, "a stopped heal left a copy behind");
+    assert_eq!(
+        std::fs::read(&db).unwrap(),
+        db_bytes,
+        "a stopped heal rebuilt the database"
+    );
+    assert!(
+        matches!(store.verify(), Err(StoreError::VerifyMismatch(_))),
+        "still drifted: nothing was rebuilt"
+    );
+    // Not stopped, the same drift heals, keeping its copy.
+    let report = store.verify_and_heal().unwrap();
+    assert!(report.healed.is_some());
+    assert!(
+        files(&dir).iter().any(|n| n.contains(".mismatch.")),
+        "the divergent database is kept for forensics"
+    );
+}
+
 #[test]
 fn the_whole_projection_is_checked_and_healed() {
     let dir = test_dir("heal");

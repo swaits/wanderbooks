@@ -33,7 +33,14 @@ easily backupable, journable":
   ahead, the commit under the store's lock) and pushes it to the
   owner's private repository and backup folder, versioned and
   deduplicated, with full history (docs/mcp-interface.md, "Tools —
-  backups").
+  backups"). The program stops its git gently (SIGTERM first, so git
+  removes its own lock files, and a kill only after 5 seconds), and never
+  writes to or deletes from a backup folder, which is the owner's (shared,
+  perhaps, with another computer or a sync program): a lock git left
+  there after a kill is reported with its path, never removed. The book's
+  own archive (`archive.git`) is private to the program; there it removes
+  only the locks its own stopped git made, and locks older than ten
+  minutes found when the books open or a backup begins.
 - **Journable.** It literally is a journal: `{seq, ts, type, payload, prev}`.
   Greppable, diffable, replayable. The audit trail isn't a feature bolted
   on — it's the storage format.

@@ -474,10 +474,18 @@ fn books_usage(prog: &str) {
     eprintln!("       {prog} back-up ID [--new-disk]");
     eprintln!("       {prog} upgrade ID");
     eprintln!("       {prog} extract BOOK ATTACHMENT");
+    eprintln!("       {prog} open ID");
+    eprintln!("       {prog} close ID");
     eprintln!(
         "       {prog} put-aside ID DATA-DIR [--vault DIR --vault-key FILE] [PATH...] [--yes]"
     );
-    eprintln!("  list    the books, and whether each is open");
+    eprintln!("  list    the books, and whether each is open or closed");
+    eprintln!(
+        "  open    open one closed book while the server runs, checked as at its start (agents can reach it from then)"
+    );
+    eprintln!(
+        "  close   close one book while the server runs: its running calls finish, its sessions end, it is backed up and let go; the others keep serving"
+    );
     eprintln!("  create  start new, empty books (base currency USD unless given)");
     eprintln!("  adopt   copy existing books in, verified; the original is left as it was");
     eprintln!(
@@ -604,6 +612,18 @@ pub fn books(
             };
             return put_aside(&common, book, old, yes);
         }
+        ["open", book] => with_server(
+            &common,
+            Request::OpenBook {
+                id: (*book).to_string(),
+            },
+        ),
+        ["close", book] => with_server(
+            &common,
+            Request::CloseBook {
+                id: (*book).to_string(),
+            },
+        ),
         ["back-up", book] => {
             return match back_up_now(&common, book, new_disk) {
                 Ok(lines) => {
@@ -666,6 +686,53 @@ pub fn books(
             }
             Ok(())
         }
+        Ok(Response::OpenBook { id, outcome }) => match outcome {
+            admin::OpenOutcome::Opened => {
+                println!("Opened the books \"{id}\": agents can reach them now.");
+                Ok(())
+            }
+            admin::OpenOutcome::AlreadyOpen => {
+                println!("The books \"{id}\" are open already.");
+                Ok(())
+            }
+            admin::OpenOutcome::NoSuchBook => {
+                eprintln!(
+                    "error: there are no books called \"{id}\": `wanderbooks books list` lists them"
+                );
+                Err(exit(1))
+            }
+            admin::OpenOutcome::CouldNotOpen(why) => {
+                eprintln!("error: the books \"{id}\" couldn't be opened: {why}");
+                Err(exit(1))
+            }
+        },
+        Ok(Response::CloseBook { id, outcome }) => match outcome {
+            admin::CloseOutcome::Closed => {
+                println!(
+                    "Closed the books \"{id}\": nothing is running on them, their sessions ended, and they are let go."
+                );
+                Ok(())
+            }
+            admin::CloseOutcome::ClosedBackupIncomplete(why) => {
+                println!(
+                    "Closed the books \"{id}\": nothing is running on them, their sessions ended, and they are let go."
+                );
+                eprintln!(
+                    "warning: their last backup wasn't whole: {why}. What they hold since the last good backup isn't backed up."
+                );
+                Ok(())
+            }
+            admin::CloseOutcome::WasNotOpen => {
+                println!("The books \"{id}\" weren't open.");
+                Ok(())
+            }
+            admin::CloseOutcome::NoSuchBook => {
+                eprintln!(
+                    "error: there are no books called \"{id}\": `wanderbooks books list` lists them"
+                );
+                Err(exit(1))
+            }
+        },
         Ok(Response::Refused(why)) | Err(why) => {
             eprintln!("error: {why}");
             Err(exit(1))
@@ -679,6 +746,12 @@ pub fn books(
 
 /// One book, as `books list` and `doctor` show it.
 fn book_line(b: &admin::BookStatus) -> String {
+    if b.closed {
+        return format!(
+            "{}  closed (`wanderbooks books open {}` opens it)",
+            b.id, b.id
+        );
+    }
     match (&b.problem, &b.format_upgrade) {
         (Some(why), _) => format!("{}  didn't open: {why}", b.id),
         (None, Some(_)) => format!(
@@ -687,6 +760,54 @@ fn book_line(b: &admin::BookStatus) -> String {
         ),
         (None, None) => format!("{}  open", b.id),
     }
+}
+
+/// `doctor`'s lines for who is connected to each open book: the token's
+/// name, the client and agent as they said, when it connected, the calls
+/// running and the last call.
+fn session_lines(open: &[admin::BookSessions]) -> Vec<String> {
+    let mut lines = Vec::new();
+    if open.iter().all(|b| b.sessions.is_empty()) {
+        lines.push("Assistants connected: none.".to_string());
+        return lines;
+    }
+    lines.push("Assistants connected:".to_string());
+    for b in open {
+        if b.sessions.is_empty() {
+            lines.push(format!("  {}: none", b.book));
+            continue;
+        }
+        lines.push(format!("  {}:", b.book));
+        for s in &b.sessions {
+            let client = match (&s.client_name, &s.client_version) {
+                (Some(n), Some(v)) => format!("{n} {v}"),
+                (Some(n), None) => n.clone(),
+                _ => "a client that hasn't said who it is".to_string(),
+            };
+            let mut line = format!("    token {:?}, {client}", s.token);
+            if let Some(a) = &s.agent {
+                let said: Vec<&str> = [&a.model, &a.reasoning_effort, &a.harness]
+                    .into_iter()
+                    .filter_map(|v| v.as_deref())
+                    .collect();
+                if !said.is_empty() {
+                    line.push_str(&format!(" (says: {})", said.join(", ")));
+                }
+            }
+            line.push_str(&format!(", connected {}", s.connected_at));
+            line.push_str(&match s.running {
+                0 => ", no call running".to_string(),
+                1 => ", 1 call running".to_string(),
+                n => format!(", {n} calls running"),
+            });
+            match &s.last {
+                Some(l) => line.push_str(&format!(", last {} ({}) at {}", l.tool, l.outcome, l.at)),
+                None => line.push_str(", no call yet"),
+            }
+            lines.push(line);
+        }
+    }
+    lines
 }
 
 /// The projection database a book uses, and the other schemas' files
@@ -2499,6 +2620,18 @@ pub fn doctor(
                         Ok(admin::Response::Refused(why)) => println!("Agents' tokens: {why}"),
                         Ok(_) | Err(_) => {}
                     }
+                    // Who is connected to each open book, and what it is doing.
+                    match admin::call_within(&socket, Request::Sessions, Some(DOCTOR_WAIT)) {
+                        Ok(admin::Response::Sessions(open)) => {
+                            for line in session_lines(&open) {
+                                println!("{line}");
+                            }
+                        }
+                        Ok(admin::Response::Refused(why)) => {
+                            println!("Assistants connected: {why}")
+                        }
+                        Ok(_) | Err(_) => {}
+                    }
                 }
             } else {
                 println!("The books are opening (the books server isn't ready yet).");
@@ -3516,6 +3649,7 @@ mod tests {
             |problem: Option<&str>, waiting: Option<admin::FormatWaiting>| admin::BookStatus {
                 id: "acme".into(),
                 open: problem.is_none(),
+                closed: false,
                 problem: problem.map(str::to_string),
                 format_upgrade: waiting,
                 database: None,
@@ -3558,6 +3692,78 @@ mod tests {
         );
     }
 
+    /// `doctor` says who is connected to each open book: the token's name,
+    /// the client and what the agent said, when, the calls running, the
+    /// last call; and that none is when none is.
+    #[test]
+    fn doctor_says_who_is_connected() {
+        let none = [admin::BookSessions {
+            book: "acme".into(),
+            sessions: Vec::new(),
+        }];
+        assert_eq!(session_lines(&none), ["Assistants connected: none."]);
+        let open = [
+            admin::BookSessions {
+                book: "acme".into(),
+                sessions: vec![
+                    admin::SessionInfo {
+                        token: "agent".into(),
+                        client_name: Some("claude-code".into()),
+                        client_version: Some("2.1".into()),
+                        agent: Some(admin::SessionAgent {
+                            model: Some("m-1".into()),
+                            reasoning_effort: None,
+                            harness: Some("h-1".into()),
+                        }),
+                        connected_at: "2026-11-20T10:00:00Z".into(),
+                        running: 2,
+                        last: Some(admin::LastCall {
+                            tool: "books.chart".into(),
+                            outcome: "ok".into(),
+                            at: "2026-11-20T10:01:00Z".into(),
+                        }),
+                    },
+                    admin::SessionInfo {
+                        token: "web".into(),
+                        client_name: None,
+                        client_version: None,
+                        agent: None,
+                        connected_at: "2026-11-20T10:02:00Z".into(),
+                        running: 0,
+                        last: None,
+                    },
+                ],
+            },
+            admin::BookSessions {
+                book: "beta".into(),
+                sessions: Vec::new(),
+            },
+        ];
+        assert_eq!(
+            session_lines(&open),
+            [
+                "Assistants connected:",
+                "  acme:",
+                "    token \"agent\", claude-code 2.1 (says: m-1, h-1), connected 2026-11-20T10:00:00Z, 2 calls running, last books.chart (ok) at 2026-11-20T10:01:00Z",
+                "    token \"web\", a client that hasn't said who it is, connected 2026-11-20T10:02:00Z, no call running, no call yet",
+                "  beta: none",
+            ]
+        );
+        let closed = admin::BookStatus {
+            id: "acme".into(),
+            open: false,
+            closed: true,
+            problem: None,
+            format_upgrade: None,
+            database: None,
+            other_databases: Vec::new(),
+        };
+        assert_eq!(
+            book_line(&closed),
+            "acme  closed (`wanderbooks books open acme` opens it)"
+        );
+    }
+
     /// `doctor` names the database file a book uses, and any other
     /// schema's beside it as left alone; nothing for books that didn't
     /// open.
@@ -3566,6 +3772,7 @@ mod tests {
         let mut b = admin::BookStatus {
             id: "acme".into(),
             open: true,
+            closed: false,
             problem: None,
             format_upgrade: None,
             database: Some("wanderbooks.v13.db".into()),

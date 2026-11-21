@@ -266,6 +266,16 @@ fn cash_flow_csv(stmt: &ledger_core::CashFlowStatement) -> String {
     csv
 }
 
+/// A store error as a call's answer: one that is a close's stop is said so,
+/// and marks the call's access record (server.rs `stopped_by_close`).
+fn stoppable(e: ledger_store::StoreError) -> String {
+    if matches!(e, ledger_store::StoreError::Cancelled) {
+        crate::server::stopped_by_close()
+    } else {
+        e.to_string()
+    }
+}
+
 #[tool_router(router = reports_router, vis = "pub(super)")]
 impl BooksServer {
     #[tool(
@@ -707,10 +717,16 @@ impl BooksServer {
         )
     )]
     async fn verify(&self, params: Parameters<VerifyParams>) -> Result<Json<VerifyOut>, String> {
+        self.backups.hold("books.verify");
         let mut store = self.lock()?;
-        let report = store.verify_and_heal().map_err(|e| e.to_string())?;
+        // The replay and the hashing of every stored file are looked at
+        // once per journal line and per file: a close stops them
+        // (local.rs INVARIANT 10). Healing a drifted database is begun only
+        // if no stop was asked for before it, and then finishes.
+        let _stop = ledger_store::cancel::scope(self.store.hurry_flag());
+        let report = store.verify_and_heal().map_err(stoppable)?;
         let blobs = if params.0.blobs {
-            Some(store.verify_blobs().map_err(|e| e.to_string())?)
+            Some(store.verify_blobs().map_err(stoppable)?)
         } else {
             None
         };
@@ -1126,7 +1142,32 @@ impl BooksServer {
     ///   3. A locked vault or a missing TIN never fails the package: the
     ///      row says why (vault_tin), the README lists it, and so does
     ///      tin_gaps (members, and 1099 payees that are reportable).
-    ///   4. Read-only: nothing is journaled.
+    ///   4. Nothing is journaled but the decisions an override records (a
+    ///      reason for exporting without an audit, a reason for exporting
+    ///      with open drafts), and only once the package is certain to be
+    ///      made. Every refusal that can be known from the books as they
+    ///      stand is decided first: the two named ones (the audit, the open
+    ///      drafts) and every one the build itself can make (a member's
+    ///      unknown capital account, a report that can't be built), by
+    ///      running the build once, read-only and in memory, before the
+    ///      decision is journaled (without the stored files and the vault,
+    ///      which a machine fails at, not the books). So a package refused
+    ///      for what the books say journals nothing, on every retry. What
+    ///      can still fail after a decision is journaled is only a failure
+    ///      of the machine (the disk reading a stored file, memory, the
+    ///      hand-over); the decision is then on record, with the reason in
+    ///      the access log, and a later export that succeeds records its
+    ///      own. The decisions stay ahead of the build because the
+    ///      package describes the books it is made from, itself included:
+    ///      its README and every report's footer carry the journal's event
+    ///      count at the build (ledger_package::package, report_meta), which
+    ///      counts the decisions. A close that has begun is looked for once,
+    ///      immediately before the first decision is journaled: it refuses
+    ///      then, journaling nothing. From the journaling to the hand-over
+    ///      nothing looks at the close's stop (the build is no longer
+    ///      stoppable, local.rs INVARIANT 10), so a decision on record is a
+    ///      package handed over, unless the machine fails, which a close
+    ///      cannot make it do.
     /// ```
     #[tool(
         name = "books.export_cpa_package",
@@ -1144,7 +1185,11 @@ impl BooksServer {
     ) -> Result<Json<ExportCpaPackageOut>, String> {
         let p = params.0;
         let as_of = self.as_of(p.as_of.as_deref())?;
+        self.backups.hold("books.export_cpa_package");
         let mut store = self.lock()?;
+        // The decisions an override records, journaled below only once every
+        // refusal has been decided (INVARIANT 4).
+        let mut decisions: Vec<ledger_core::conventions::NewDecision> = Vec::new();
         // A package no counted audit stands behind is not final either
         // (plan P8, D-9): on books that declared `audits`, refused under
         // policy.cpa_package_requires_audit = refuse unless a reason is
@@ -1174,20 +1219,18 @@ impl BooksServer {
                 let by = CALLER
                     .with(|c| c.borrow().as_ref().map(|(_, name)| name.clone()))
                     .unwrap_or_else(|| ledger_store::auth::DEFAULT_NAME.to_string());
-                store
-                    .record_decision(&ledger_core::conventions::NewDecision {
-                        subject: format!("CPA package as of {as_of} without a counted audit"),
-                        decision_md: format!(
-                            "The CPA package as of {as_of} was exported without an audit at the books' current head attested at the bar. Reason: {reason}"
-                        ),
-                        decided_by: vec![by],
-                        decided_on: today(),
-                        evidence_attachment: None,
-                        supersedes: None,
-                        citation: None,
-                        projects: Vec::new(),
-                    })
-                    .map_err(|e| e.to_string())?;
+                decisions.push(ledger_core::conventions::NewDecision {
+                    subject: format!("CPA package as of {as_of} without a counted audit"),
+                    decision_md: format!(
+                        "The CPA package as of {as_of} was exported without an audit at the books' current head attested at the bar. Reason: {reason}"
+                    ),
+                    decided_by: vec![by],
+                    decided_on: today(),
+                    evidence_attachment: None,
+                    supersedes: None,
+                    citation: None,
+                    projects: Vec::new(),
+                });
             } else {
                 audit_warning = Some(format!(
                     "No counted audit stands behind this package: {why}."
@@ -1224,23 +1267,71 @@ impl BooksServer {
             let by = CALLER
                 .with(|c| c.borrow().as_ref().map(|(_, name)| name.clone()))
                 .unwrap_or_else(|| ledger_store::auth::DEFAULT_NAME.to_string());
-            store
-                .record_decision(&ledger_core::conventions::NewDecision {
-                    subject: format!("CPA package as of {as_of} with open drafts"),
-                    decision_md: format!(
-                        "The CPA package as of {as_of} was exported with {} draft(s) open: {}. Reason: {}",
-                        open_drafts.len(),
-                        named.join("; "),
-                        allow.reason.trim()
-                    ),
-                    decided_by: vec![by],
-                    decided_on: today(),
-                    evidence_attachment: None,
-                    supersedes: None,
-                    citation: None,
-                    projects: Vec::new(),
-                })
-                .map_err(|e| e.to_string())?;
+            decisions.push(ledger_core::conventions::NewDecision {
+                subject: format!("CPA package as of {as_of} with open drafts"),
+                decision_md: format!(
+                    "The CPA package as of {as_of} was exported with {} draft(s) open: {}. Reason: {}",
+                    open_drafts.len(),
+                    named.join("; "),
+                    allow.reason.trim()
+                ),
+                decided_by: vec![by],
+                decided_on: today(),
+                evidence_attachment: None,
+                supersedes: None,
+                citation: None,
+                projects: Vec::new(),
+            });
+        }
+        // Every refusal the build can make from the books as they stand is
+        // decided before a decision goes on record (INVARIANT 4): the build
+        // is run once, in memory, to see that it will succeed. It is
+        // read-only (ledger_package INVARIANT 5: it takes the books by
+        // shared reference and writes nowhere, and it leaves its result to
+        // be dropped), so it changes nothing. It leaves out what only the
+        // machine can fail at: the stored files (include_receipts false) and
+        // the vault (no TIN source: a TIN it can't give never fails a
+        // package, ledger_package INVARIANT 3). A close that begins during
+        // it stops it, before anything is journaled.
+        if !decisions.is_empty() {
+            let _stop = ledger_store::cancel::scope(self.store.hurry_flag());
+            ledger_package::build_package(
+                &*store,
+                &package_settings(&self.settings()),
+                &ledger_package::PackageRequest {
+                    as_of,
+                    prepared_on: today(),
+                    cash_accounts: &p.cash_accounts,
+                    financing_accounts: &p.financing_accounts,
+                    investing_accounts: &p.investing_accounts,
+                    include_receipts: false,
+                    tins: None,
+                },
+            )
+            .map_err(|e| {
+                if e == ledger_store::StoreError::Cancelled.to_string() {
+                    crate::server::stopped_by_close()
+                } else {
+                    e
+                }
+            })?;
+        }
+        // The decisions go on record now, ahead of the build (the package
+        // counts them: INVARIANT 4), and the close is looked for once more,
+        // immediately before the first: past it the package is made
+        // whatever a close does.
+        let journaled = !decisions.is_empty();
+        if journaled {
+            if self.store.hurried() {
+                return Err(crate::server::stopped_by_close());
+            }
+            for decision in &decisions {
+                store.record_decision(decision).map_err(|e| e.to_string())?;
+            }
+            // The test knob's seam (`--timer-hold`, `call:books.export_cpa_
+            // package:journaled`): a close that begins here must not stop
+            // the build.
+            self.backups.hold("books.export_cpa_package:journaled");
         }
         let book = book_name(&store);
         // The vault, opened once and never creating a key: locked, each
@@ -1251,7 +1342,13 @@ impl BooksServer {
             .as_ref()
             .map(|vault| move |id| vault_tin(ledger, vault, id));
         // Built from the books under the lock, written nowhere
-        // (ledger_package INVARIANT 1).
+        // (ledger_package INVARIANT 1). Every stored file it holds is read
+        // one at a time, and a close stops it between two (local.rs
+        // INVARIANT 10).
+        // Not once a decision is journaled for it (INVARIANT 4): then it runs
+        // to the hand-over, which local.rs INVARIANT 10 names as a call a
+        // close does not stop.
+        let _stop = (!journaled).then(|| ledger_store::cancel::scope(self.store.hurry_flag()));
         let package = ledger_package::build_package(
             &*store,
             &package_settings(&self.settings()),
@@ -1264,7 +1361,15 @@ impl BooksServer {
                 include_receipts: p.include_receipts,
                 tins: tins.as_ref().map(|f| f as ledger_package::TinSource<'_>),
             },
-        )?;
+        )
+        .map_err(|e| {
+            if e == ledger_store::StoreError::Cancelled.to_string() {
+                crate::server::stopped_by_close()
+            } else {
+                e
+            }
+        })?;
+        drop(_stop);
         let vault_dir = if p.include_tins {
             self.tin_record_dir(&store)?
         } else {

@@ -267,7 +267,10 @@ reach through the bridge.
 - **Served books** (`wanderbooks server`, started by the host; an agent
   connects with `wanderbooks mcp --book ID`, the bridge: stdio to the
   agent, the server's socket upstream): every book
-  in the data root, on a socket in the root's private `run/` folder that
+  in the data root that is open (all of them at the start, unless
+  `wanderbooks server --open none|ID[,ID…]` says otherwise; one is opened
+  or closed while the server runs, "Opening and closing one book" below),
+  on a socket in the root's private `run/` folder that
   only this account can connect to. Every request carries a bearer token
   live for that book (refused 401 without one, 403 with another book's).
   Refusals at the door, tool calls, uploads, downloads and exports are
@@ -275,6 +278,12 @@ reach through the bridge.
   book stops taking requests (an upload, download or export is then
   refused, 503).
   - `/b/{book}/mcp`: the book's MCP service. A request is at most 1 MiB.
+  - A book that exists but is **closed** is refused on every route below
+    and on this one: 503 with `x-wanderbooks-refused: closed` and the words
+    `The books "ID" aren't open: open them in Wanderbooks.` (the bridge
+    hands them to the agent as they are). A book that doesn't exist is 404
+    `no-such-books`; one that failed to open is 503 `not-open` with why.
+    Nothing of a closed book is written, its access log included.
   - `PUT /b/{book}/u/{upload}`: an upload's bytes (`books.begin_upload`),
     from the token that began it; what `wanderbooks upload --book B
     [--token NAME] UPLOAD FILE` sends. Streamed to the disk, kept only if
@@ -330,6 +339,143 @@ reach through the bridge.
     It is written to a
     hidden file and hard-linked in: never a partial file under the real
     name, never over another file.
+
+### Opening and closing one book (plan/p15-app-and-relay.md 3.1, D-77, D-78)
+
+The desktop app has one tab per company, and a company is reachable by
+agents exactly while its tab is open, so the books server opens and closes
+**one** book while it runs. These are requests on the admin socket (the
+command line sends them: `wanderbooks books open ID`, `wanderbooks books
+close ID`; `books list` and `doctor` show each book as open, closed, or
+didn't open, with why). Protocol version 1: the requests are new, the
+`closed` flag of a listed book defaults to false.
+
+- `open_book { id }` opens a closed (or failed) book of the data root with
+  exactly the checks of the server's start (verified, a drifted database
+  rebuilt, a format upgrade waited for as at the start). Answers `opened`,
+  `already_open`, `no_such_book`, or `could_not_open` with why (the book
+  stays listed, with that `problem`).
+- `close_book { id }` answers `closed`, `closed_backup_incomplete` (with
+  why), `was_not_open` or `no_such_book`.
+  In this order: new calls on the book are refused (the door is shut and
+  the book listed closed); the calls running on it finish, on every route
+  (an ordinary call: nothing is killed, nothing is half-done; the calls
+  that can run long are stopped instead, see below); the answers on their way out
+  are sent, for 10 seconds at most (a client that never reads its answer
+  doesn't hold the book open); a request whose body has not been read
+  to its end when that time runs out (counted from the start of the
+  close: an upload or a call that began and stopped sending) is cut: its
+  connection is closed, an upload's part file is removed, nothing of an
+  MCP call reached the journal, and the access log says `cut_by_close`;
+  a call whose body arrived whole and is running is never cut, it
+  finishes; its MCP sessions end (an agent's next
+  request on one gets the "isn't open" words above, and after a reopening
+  a 404 "Session not found", which a client takes as "open a new one"); its
+  last backup is made, as at the server's close, for 60 seconds at most
+  (a drill, or a format upgrade not yet journaled, is stopped when the
+  close begins, at its next look, so it never takes the last backup's
+  turn; its scratch clone is removed and the books are unchanged):
+  a backup still running after that is stopped (git is sent SIGTERM, which
+  makes it remove its own lock files, and killed with all it started only
+  if it hasn't ended after 5 seconds) and waited for to end. The program
+  never writes to or deletes from a backup folder (it is the owner's, and
+  may be shared with other computers or a sync program): a lock git left
+  there when it had to be killed is left in place, recorded in
+  `ops/backup.jsonl` as `lock_left` with its whole path, and the target's
+  backup is marked failed with words naming the file and saying to remove
+  it only when nothing else is using the backup folder (`books.backup`
+  and the close's answer say the same; the next backup that finds the
+  lock gone goes on). In the book's own archive (`archive.git`, private to
+  the program; running git by hand inside it is unsupported) it removes
+  only the locks its own stopped git made, and, at open and when a backup
+  begins, locks older than ten minutes, each recorded `lock_removed`;
+  **What a close stops, and what it waits for.** At its start a close
+  stops the calls and jobs that can do long I/O or loop over a book's
+  whole journal or files, each at its next look: `books.back_up_now` and
+  a backup a timer asked for (git is stopped; the call answers that it was
+  stopped because the books are closing, its access record says
+  `refused: stopped_by_close`, and nothing it was doing is recorded as done;
+  a commit it had made stands), `books.verify` (once per journal line and
+  per stored file; a heal of a drifted database is begun only if no stop
+  was asked before it, then finishes), `books.export_cpa_package` (once per
+  stored file, unless it has journaled a decision, below), a drill, and a
+  format upgrade not yet at its final look (a
+  stop is honoured up to that look; one that arrives after it still
+  upgrades and records success). A stop is scoped to what it concerns. On
+  the admin socket, a close of the book X stops the work on X only: an open
+  of X, and a restore that replaces X. A create, an adoption and a restore
+  that replaces nothing make a new book, which no close of a book is the
+  close of: a close of one book never stops, fails, refuses or delays them,
+  nor an open or a close of another book (each book has its own turn; books
+  are made, adopted and restored one at a time, and a job queued for its
+  turn leaves at once when asked to stop). The server's own close stops
+  every job. A stopped job, before its point of no return (the rename that
+  puts the books in place; create's making of its folder), removes what it
+  wrote (an adoption also removes the lock file it made in the source
+  folder, so the original is left as it was) and leaves the root byte for
+  byte as it was, and answers that it was stopped because the books are
+  closing; after it the job finishes (a rename or two and two directory
+  syncs), and the book is then opened unless that, too, is stopped (it is
+  left closed, and the answer says so). `books.export_cpa_package` with a
+  reason to export (without an audit, with open drafts) journals that
+  decision before it builds, because the package counts it (its README and
+  every footer carry the journal's event count at the build): a close is
+  looked for once, immediately before the first decision is journaled, and
+  a stop then journals nothing; after it the package is made whatever a
+  close does, so no decision is on record for a package that was never
+  made (every refusal is decided before any decision is journaled). Every
+  other call does work bounded by the size of one request and is waited
+  for. Three are the named exceptions to the close's bound, each waited for
+  in full if a close meets it: `books.import_bank_csv` (a file of up to
+  25 MiB is rehearsed whole and then written row by row, each row
+  journaled; worst case, a full import of the largest file accepted),
+  a report or export over the whole journal (CPU on the ledger in memory,
+  not stopped; worst case, one report over the whole book), and a package
+  after its decision is journaled (worst case, one build over the whole
+  book). Otherwise
+  the close is bounded by the sum written in the server's INVARIANT 10
+  (`local.rs`: running calls, the grace, the answers' grace, the stop of a
+  hurried step, the last backup's 60 s, the stop of what is left of it);
+  then nothing of the server's can write
+  to the book: its access log, uploads, exports and backups are closed
+  under the locks their writes go in under, so a handle held from before
+  can never write after a reopening; its store is let go, releasing the
+  writer lock, so another process could open the book. Only then is the
+  close answered: `closed`, or `closed_backup_incomplete` when the last
+  backup wasn't whole (a target failed, or the backup was stopped after
+  its time): the book is closed all the same, and what it holds since the
+  last good backup isn't backed up. Every other book keeps serving, and
+  none of its calls waits for this close. For every call, either it ran
+  completely and is in the journal, or it was refused unrun and nothing of
+  it is; after the answer, no call on that book runs until it is opened
+  again. **A call whose answer was never read** (the client was slow, or
+  gone, and the grace ran out) is the same case as a connection dropped at
+  any other moment: the call ran, and its access record, written before the
+  answer went, says so (outcome and head). Nothing in the journaled tools
+  makes asking again safe: they carry no client key and none checks for a
+  duplicate, so a draft asked for twice is two drafts. A client that
+  reconnects after a close should read the book's state (or the access
+  record, `books.audit`) before it repeats a write. A restore over an open
+  book (`restore --replace`) lets go of the book in the same way (waits for
+  what is inside the book's door, ends its sessions, stops its backups,
+  closes its logs) before it moves the book into `legacy/`; the book is
+  listed closed from the moment the restore begins, so a call that comes
+  meanwhile is told the books aren't open (503, as in a close), never that
+  there are no such books (404).
+- **The server's own close** (its standard input ends, or SIGTERM) is the
+  same path for every open book at once: at its start every book's door
+  is shut and the cut (above) is set for 10 seconds from that moment; each
+  book is then released as `close_book` releases it. The server exits 0
+  once they are all closed (and the HTTP side has ended); a request that
+  arrives meanwhile is refused as closing (503) and not recorded, the
+  door being shut.
+- `sessions` lists, for each open book, its live MCP sessions: the token's
+  **name** (never the token, its text or its hash), the client's name and
+  version from `initialize`, the agent's self-report (`books.start`'s
+  `agent`, if it made one), when it connected, how many of its calls are
+  running now, and its last tool with its outcome and time. A session
+  that ended is not listed; nothing is kept across a server restart.
+  `wanderbooks doctor` prints these lines under "Assistants connected".
 
 ## Server instructions
 

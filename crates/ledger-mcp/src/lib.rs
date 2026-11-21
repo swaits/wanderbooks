@@ -15,6 +15,7 @@ pub mod opening;
 mod policy;
 pub mod scopes;
 mod server;
+mod sessions;
 mod settings;
 mod tin_files;
 mod types;

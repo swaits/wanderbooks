@@ -111,11 +111,15 @@ impl BooksServer {
         &self,
         params: Parameters<BackUpNowParams>,
     ) -> Result<Json<BackupOut>, String> {
-        Ok(Json(
-            self.backups
-                .run_with("asked", params.0.new_disk)
-                .await?
-                .into(),
-        ))
+        // Stopped by a close (backup.rs INVARIANT 11): said so, and on
+        // record as stopped, not as an answer it gave.
+        match self.backups.run_with("asked", params.0.new_disk).await {
+            Ok(status) => Ok(Json(status.into())),
+            Err(why) if why.starts_with(crate::server::STOPPED_BY_CLOSE_WORDS) => {
+                crate::server::stopped_by_close();
+                Err(why)
+            }
+            Err(why) => Err(why),
+        }
     }
 }

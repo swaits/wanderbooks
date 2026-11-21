@@ -182,9 +182,25 @@ impl Server {
         Self::start_in(home, home.dir.path(), &[])
     }
 
+    /// [`Server::start`], with these arguments after the root (`--open`).
+    pub fn start_with(home: &Home, args: &[&str]) -> Self {
+        Self::spawn(home, home.dir.path(), &[], args)
+    }
+
+    /// [`Server::start`], with `env` beside the home's own and these
+    /// arguments after the root (a PATH with a stand-in git first, a
+    /// shortened timer).
+    pub fn start_full(home: &Home, env: &[(&str, &Path)], args: &[&str]) -> Self {
+        Self::spawn(home, home.dir.path(), env, args)
+    }
+
     /// [`Server::start`], in the folder `cwd`, with `env` beside the
     /// home's own (INVARIANT 1).
     pub fn start_in(home: &Home, cwd: &Path, env: &[(&str, &Path)]) -> Self {
+        Self::spawn(home, cwd, env, &[])
+    }
+
+    fn spawn(home: &Home, cwd: &Path, env: &[(&str, &Path)], args: &[&str]) -> Self {
         let log = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -195,6 +211,7 @@ impl Server {
             .arg("server")
             .arg("--root")
             .arg(home.root())
+            .args(args)
             .current_dir(cwd);
         clean_env(&mut command, home.dir.path());
         let mut child = command
@@ -340,6 +357,16 @@ impl Wire {
             status: 0,
             next_id: 1_000_000,
         }
+    }
+
+    /// The MCP session this wire opened (after `initialize`).
+    pub fn session(&self) -> Option<&str> {
+        self.session.as_deref()
+    }
+
+    /// The protocol version this session negotiated.
+    pub fn version(&self) -> Option<&str> {
+        self.version.as_deref()
     }
 
     /// The token this session sends.

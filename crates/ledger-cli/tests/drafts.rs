@@ -333,6 +333,40 @@ fn cpa_package_refuses_open_draft() {
     assert!(journal.contains("the CPA wants it before the receipt comes"));
 }
 
+/// A package the build will refuse is refused before any decision is
+/// journaled (tools/reports.rs INVARIANT 4): the books name a member whose
+/// capital account isn't in the chart, so the build can never succeed, and
+/// an override (the reason for an open draft) must not leave "was exported"
+/// on record, once or on a retry, with no package. The journal does not move.
+#[test]
+fn a_package_the_build_refuses_journals_no_decision_even_with_a_reason() {
+    let settings = format!(
+        "{SETTINGS}[[company.members]]\nname = \"Mo\"\nshare = \"100%\"\ncapital_account = \"3999\"\n"
+    );
+    let books = Books::with("p4-cpa-refused", "USD", Some(&settings));
+    let mut w = books.session("p4");
+    chart(&mut w);
+    draft(&mut w, "2026-03-10", "Open", "40.00");
+    let mut args = json!({"as_of": "2026-03-31", "cash_accounts": ["1000"]});
+    args["allow_open_drafts"] = json!({"reason": "the CPA wants it before the receipt comes"});
+    let before = books.journal().len();
+    for _ in 0..2 {
+        let why = answer_of(&w.call("books.export_cpa_package", args.clone()))
+            .expect_err("the build refuses an unknown capital account");
+        assert!(why.contains("unknown capital account 3999"), "{why}");
+        assert_eq!(
+            books.journal().len(),
+            before,
+            "a decision was journaled for a package that was refused"
+        );
+    }
+    assert!(
+        !String::from_utf8(books.journal())
+            .unwrap()
+            .contains("decision.recorded")
+    );
+}
+
 /// D-50: a confirm takes the preview it was shown; without it, or after a
 /// changed argument or a write by another session, it is refused with
 /// `stale_preview` before anything is written.

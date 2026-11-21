@@ -1454,6 +1454,7 @@ fn an_access_record_that_cant_be_written_stops_the_books_and_says_so() {
         let (server, _books) = unwritable("unrecorded-refusal");
         let call = crate::access::Call::new(
             &server.access,
+            &server.board,
             &context(&s.peer, Some(ALL)),
             "tool",
             "books.chart",

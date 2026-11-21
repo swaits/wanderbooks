@@ -28,6 +28,11 @@
 //!   4. Only an unfinished last line (no newline: an append cut short by
 //!      a crash, never acknowledged) is set aside: open cuts it away,
 //!      read reports it.
+//!   5. A log can be closed (`close`), and a closed log takes no more
+//!      appends, ever: a holder of it from before the book was let go can
+//!      never write after the book is opened again, when a new log is
+//!      opened on the file against its own head (an append from the old
+//!      handle would break the chain there).
 //! ```
 
 use crate::journal::{canonical_json, sha256_hex};
@@ -60,6 +65,8 @@ pub enum ChainError {
     Io(std::io::ErrorKind),
     /// An earlier append failed: the log must be reopened (INVARIANT 2).
     Broken,
+    /// The log was closed: its book was let go (INVARIANT 5).
+    Closed,
 }
 
 impl std::fmt::Display for ChainError {
@@ -68,6 +75,7 @@ impl std::fmt::Display for ChainError {
             ChainError::Damaged { line, why } => write!(f, "record {line} is damaged: {why}"),
             ChainError::Io(kind) => write!(f, "the disk refused: {kind}"),
             ChainError::Broken => f.write_str("an earlier record couldn't be written"),
+            ChainError::Closed => f.write_str("the log was closed: its books are not open"),
         }
     }
 }
@@ -168,6 +176,7 @@ pub struct ChainLog {
     file: File,
     head: Head,
     broken: bool,
+    closed: bool,
 }
 
 impl std::fmt::Debug for ChainLog {
@@ -175,6 +184,7 @@ impl std::fmt::Debug for ChainLog {
         f.debug_struct("ChainLog")
             .field("head", &self.head)
             .field("broken", &self.broken)
+            .field("closed", &self.closed)
             .finish_non_exhaustive()
     }
 }
@@ -224,6 +234,7 @@ impl ChainLog {
                 file,
                 head: read.head,
                 broken: false,
+                closed: false,
             },
             read.records,
         ))
@@ -232,6 +243,11 @@ impl ChainLog {
     /// Where the chain ends now.
     pub fn head(&self) -> &Head {
         &self.head
+    }
+
+    /// Take no more appends, ever (INVARIANT 5).
+    pub fn close(&mut self) {
+        self.closed = true;
     }
 
     /// The log's file.
@@ -243,6 +259,9 @@ impl ChainLog {
     /// and `hash` (which `fields` must not hold). Returns the record as
     /// written and the new head (INVARIANT 2).
     pub fn append(&mut self, fields: Map<String, Value>) -> Result<(Value, Head), ChainError> {
+        if self.closed {
+            return Err(ChainError::Closed);
+        }
         if self.broken {
             return Err(ChainError::Broken);
         }
@@ -600,6 +619,7 @@ mod tests {
                 hash: genesis(G),
             },
             broken: false,
+            closed: false,
         };
         assert!(matches!(log.append(fields(1)), Err(ChainError::Io(_))));
         assert_eq!(log.head().seq, 0, "the head didn't move");

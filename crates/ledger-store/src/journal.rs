@@ -317,6 +317,7 @@ fn verify_lines(
     let mut expected_prev = GENESIS_PREV.to_string();
     let mut raws = body.split(|&b| b == b'\n').enumerate().peekable();
     while let Some((i, raw)) = raws.next() {
+        crate::cancel::check()?;
         let read = read_line(raw).map_err(|e| {
             StoreError::JournalCorrupt(format!("seq {}: unparseable line: {e}", i + 1))
         })?;

@@ -21,6 +21,14 @@
 //!   4. A record's head is the journal's head after the call's own last
 //!      write (taken under the store's lock as it lets go), whatever the
 //!      call answered; none for a call that wrote nothing.
+//!   5. A record is written only while the book is open: the log is closed
+//!      (ledger_store::access INVARIANT 4) when the book is let go, so a
+//!      refusal still being written when it was (its client gone, its
+//!      session ended) is refused, unwritten, and never lands in the log of
+//!      the book opened again. A refusal at the door is written by a task
+//!      that keeps the request's place inside the book's door (local.rs
+//!      INVARIANT 13). A call that ran is written inside its counted run,
+//!      before its answer goes: it is always on record.
 //! ```
 
 use ledger_store::access::{Access, AccessLog, Client, Outcome, Principal, digest};
@@ -61,6 +69,17 @@ pub fn caller(context: &RequestContext<RoleServer>) -> Option<Caller> {
         .cloned()
 }
 
+/// The MCP session a request belongs to (its `mcp-session-id`), as the
+/// door left the request's parts in `extensions`; None for a request that
+/// came another way.
+pub(crate) fn session_of(extensions: &rmcp::model::Extensions) -> Option<String> {
+    extensions
+        .get::<axum::http::request::Parts>()
+        .and_then(|parts| parts.headers.get(crate::local::SESSION_HEADER))
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string)
+}
+
 /// The client program, as it named itself at `initialize`.
 fn client(context: &RequestContext<RoleServer>) -> Option<Client> {
     context.peer.peer_info().map(|info| Client {
@@ -87,6 +106,12 @@ pub(crate) struct Call {
     subject: String,
     args_digest: Option<String>,
     agent: Option<ledger_store::access::Agent>,
+    /// The book's board of live sessions, and the session this call is
+    /// in: it counts as running there until the call ends, and is what
+    /// the session last did once recorded (sessions.rs).
+    board: Arc<crate::sessions::Board>,
+    session: Option<String>,
+    _live: Option<Arc<crate::sessions::Live>>,
 }
 
 /// Why a call wasn't run, for its record and its answer.
@@ -95,8 +120,13 @@ pub(crate) const UNAUTHORIZED: &str = "unauthorized";
 pub(crate) const INSUFFICIENT_SCOPE: &str = "insufficient_scope";
 /// The books were closing.
 pub(crate) const CLOSING: &str = "closing";
+/// A close cut the request while its body was still arriving.
+pub(crate) const CUT: &str = "cut_by_close";
 /// The server had stopped.
 pub(crate) const STOPPED: &str = "stopped";
+/// A call that was running when a close began, stopped by it: it answered
+/// that it was stopped, and nothing it was doing is recorded as done.
+pub(crate) const STOPPED_BY_CLOSE: &str = "stopped_by_close";
 /// A file's bytes or text came as an argument (D-46).
 pub(crate) const INLINE_FILE: &str = "inline_file";
 
@@ -113,11 +143,16 @@ impl Call {
     /// close beginning meanwhile waits for it.
     pub(crate) fn new(
         log: &Arc<AccessLog>,
+        board: &Arc<crate::sessions::Board>,
         context: &RequestContext<RoleServer>,
         action: &'static str,
         subject: &str,
     ) -> Self {
+        let session = session_of(&context.extensions);
         Self {
+            board: board.clone(),
+            _live: session.as_deref().map(|sid| Arc::new(board.begin(sid))),
+            session,
             log: log.clone(),
             caller: caller(context),
             client: client(context),
@@ -187,7 +222,19 @@ impl Call {
             agent: self.agent.clone(),
         };
         match self.log.record(&access) {
-            Ok(_) => Ok(()),
+            Ok(_) => {
+                if let Some(sid) = &self.session {
+                    self.board.finished(
+                        sid,
+                        &access.subject,
+                        &access.result,
+                        access.client.as_ref(),
+                        access.agent.as_ref(),
+                        chrono::Utc::now().timestamp(),
+                    );
+                }
+                Ok(())
+            }
             Err(e) => {
                 eprintln!("wanderbooks server: an access record couldn't be written: {e}");
                 Err(())

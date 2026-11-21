@@ -261,7 +261,7 @@ fn depreciation_due_is_the_register_through_the_last_finished_month() {
         "{:?}",
         n[0].text
     );
-    assert!(n[0].text.contains("ask the bookkeeper to run depreciation"));
+    assert!(n[0].text.contains("ask your assistant to run depreciation"));
     let accruing = r.unposted_depreciation() - due.amount;
     assert!(accruing > Decimal::ZERO);
     assert!(n[1].text.contains(&fmt::dollars(accruing)));
@@ -541,7 +541,7 @@ fn basis_figures_are_ledger_cores() {
     assert_eq!(r.missing_basis, 1);
     let want = missing_tax_notice(1).unwrap();
     assert!(want.starts_with("Tax basis not recorded for 1 asset"));
-    assert!(want.contains("books.set_asset_tax_basis"));
+    assert!(want.contains("ask your assistant to record it"));
     assert!(notices(b, &r).iter().any(|n| n.problem && n.text == want));
     assert_eq!(missing_tax_notice(0), None);
     assert!(

@@ -50,7 +50,7 @@ pub fn show(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                     ui,
                     icon::BANK,
                     "No cash accounts found",
-                    "Name an asset account \"checking\", \"savings\", or \"cash\", or ask the agent to set the books' cash accounts.",
+                    "Name an asset account \"checking\", \"savings\", or \"cash\", or ask your assistant to set the books' cash accounts.",
                 )
             });
             return;

@@ -241,7 +241,7 @@ pub fn show_list(ui: &mut Ui, b: &Books, bills: bool, shell: &mut Shell<'_>) {
         widgets::page_header_ask(
             ui,
             "Invoices & Bills",
-            "What customers owe the company and what it owes vendors, each figure read from the ledger, tied to its account. The bookkeeper issues, records and voids them.",
+            "What customers owe the company and what it owes vendors, each figure read from the ledger, tied to its account. Your assistant issues, records and voids them.",
             if bills {
                 "enter a new bill"
             } else {
@@ -367,9 +367,9 @@ pub fn show_list(ui: &mut Ui, b: &Books, bills: bool, shell: &mut Shell<'_>) {
                     (
                         if bills { "No bills" } else { "No invoices" },
                         if bills {
-                            "A vendor's bill appears here once the bookkeeper records it (books.create_bill)."
+                            "A vendor's bill appears here once your assistant records it."
                         } else {
-                            "An invoice appears here once the bookkeeper issues it (books.create_invoice)."
+                            "An invoice appears here once your assistant creates it."
                         },
                     )
                 } else {

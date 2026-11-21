@@ -342,7 +342,7 @@ pub fn show_list(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                     ui,
                     icon::ADDRESS_BOOK,
                     "No parties yet",
-                    "Vendors, customers, contractors, and anyone else the company deals with appear here once the bookkeeper adds them.",
+                    "Vendors, customers, contractors, and anyone else the company deals with appear here once your assistant adds them.",
                 )
             });
             return;

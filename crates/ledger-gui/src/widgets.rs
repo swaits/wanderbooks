@@ -518,7 +518,7 @@ pub fn copy_prompt(ui: &mut Ui, prompt: &str) {
     let label = if recently {
         format!("{} Copied", egui_phosphor::regular::CHECK)
     } else {
-        format!("{} Ask the agent", egui_phosphor::regular::SPARKLE)
+        format!("{} Ask your assistant", egui_phosphor::regular::SPARKLE)
     };
     let r = ui
         .add(
@@ -532,7 +532,7 @@ pub fn copy_prompt(ui: &mut Ui, prompt: &str) {
             .corner_radius(CornerRadius::same(6)),
         )
         .on_hover_text(format!(
-            "Copies this prompt for your agent session:\n\n{prompt}"
+            "Copies this prompt for your assistant:\n\n{prompt}"
         ));
     if r.clicked() {
         ui.ctx().copy_text(prompt.to_string());

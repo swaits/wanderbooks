@@ -129,7 +129,7 @@ pub fn show_list(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                     ui,
                     icon::BRIEFCASE,
                     "No projects yet",
-                    "The agent adds them (books.add_project). Tag lines with a project to see what it earns and costs.",
+                    "Your assistant adds them. Tag lines with a project to see what it earns and costs.",
                 )
             });
             return;

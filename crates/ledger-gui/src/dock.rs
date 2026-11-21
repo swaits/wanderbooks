@@ -749,16 +749,16 @@ impl Dock {
             if ui
                 .add(egui::Button::new(RichText::new(chevron).size(14.0)).frame(false))
                 .on_hover_text(if self.open {
-                    "Collapse the agent dock"
+                    "Collapse the assistant panel"
                 } else {
-                    "Open the agent dock"
+                    "Open the assistant panel"
                 })
                 .clicked()
             {
                 self.open = !self.open;
             }
             ui.label(
-                RichText::new(format!("{} Agent", icon::TERMINAL_WINDOW))
+                RichText::new(format!("{} Assistant", icon::TERMINAL_WINDOW))
                     .font(crate::theme::semibold(12.5))
                     .color(p.text),
             );
@@ -787,7 +787,7 @@ impl Dock {
                     && !ended
                     && ui
                         .button(icon::ARROW_CLOCKWISE)
-                        .on_hover_text("Restart the agent")
+                        .on_hover_text("Restart the assistant")
                         .clicked()
                 {
                     restart = true;
@@ -800,7 +800,7 @@ impl Dock {
                 }
             } else {
                 ui.label(
-                    RichText::new("Optional: any agent can use these books")
+                    RichText::new("Optional: any assistant can use these books")
                         .size(12.0)
                         .color(p.faint),
                 );
@@ -816,7 +816,7 @@ impl Dock {
         match &mut self.state {
             State::Idle => {}
             State::Starting(_) => {
-                ui.label(RichText::new("Starting the agent…").color(p.muted));
+                ui.label(RichText::new("Starting the assistant…").color(p.muted));
             }
             State::Failed(why) => {
                 ui.add_space(6.0);
@@ -840,7 +840,7 @@ impl Dock {
                 ui.hyperlink_to(format!("{} instructions", i.label), &i.page);
                 ui.label(
                     RichText::new(
-                        "You never need this: any agent you run yourself reaches the same books.",
+                        "You never need this: any assistant you run yourself reaches the same books.",
                     )
                     .color(p.faint),
                 );

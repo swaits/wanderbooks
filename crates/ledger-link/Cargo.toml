@@ -36,13 +36,14 @@ ledger-store = { path = "../ledger-store" }
 
 [dev-dependencies]
 tempfile = "3"
-rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem", "x509-parser"] }
 hickory-proto = { version = "0.26", default-features = false, features = ["std"] }
 tokio = { version = "1", features = ["test-util"] }
 http = "1"
 http-body-util = "0.1"
 bytes = "1"
 async-trait = "0.1"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 sha2 = "0.10"
 time = "0.3"
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }

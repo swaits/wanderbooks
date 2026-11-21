@@ -153,6 +153,62 @@ pub struct UpdateWaiting {
     pub staged_at: String,
 }
 
+/// A call an assistant made last, as the server says it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LastCall {
+    /// The tool (or the resource's address).
+    pub tool: String,
+    /// "ok", "error", or "refused: CODE".
+    pub outcome: String,
+    /// When it finished (UTC, RFC 3339).
+    pub at: String,
+}
+
+/// One assistant connected to a company, from the server's sessions
+/// request (plan P15 3.1): what it said of itself (asserted, never
+/// checked) and what it is doing. Never a token's text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Assistant {
+    /// The company it is connected to (the id of its books).
+    pub book: String,
+    /// The NAME of the token it opened its session with.
+    pub token: String,
+    /// The program's name, as it said at the start.
+    pub client_name: Option<String>,
+    /// Its version.
+    pub client_version: Option<String>,
+    /// The model it said it is, if it did.
+    pub model: Option<String>,
+    /// When it connected (UTC, RFC 3339).
+    pub connected_at: String,
+    /// Calls of it running now.
+    pub running: u32,
+    /// The last call it made, if it has made one.
+    pub last: Option<LastCall>,
+}
+
+/// A token, as listed: who may connect to a company (never its text).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TokenRow {
+    /// The company it opens.
+    pub book: String,
+    /// Its name.
+    pub name: String,
+    /// What it may do (books:read, books:write, books:post, books:admin).
+    pub scopes: Vec<String>,
+    /// When it was made (UTC).
+    pub created: String,
+}
+
+/// Who is connected and who may connect, across the open companies.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Roster {
+    /// Every live session.
+    pub assistants: Vec<Assistant>,
+    /// Every live token.
+    pub tokens: Vec<TokenRow>,
+}
+
 /// The owner's actions, done by the program the viewer runs in (ledger-cli
 /// over the books server and the agents' own commands). Each blocks: the
 /// menu calls it off the UI thread.
@@ -198,6 +254,24 @@ pub trait Owner: Send + Sync {
     /// on every frame.
     fn serve_exited(&self) -> Option<String> {
         None
+    }
+    /// Who is connected to the open companies, and which tokens are live:
+    /// two quick requests to the server, an `Err` (in words) when it is
+    /// starting, gone or does not answer in a few seconds. Blocks, for that
+    /// long at most: the window asks off its UI thread.
+    fn serve_roster(&self) -> Result<Roster, String> {
+        Ok(Roster::default())
+    }
+    /// End the token `name` of the company `book` (what `wanderbooks token
+    /// revoke` does): `Ok` says what was done, in words. Blocks.
+    fn serve_revoke(&self, _book: &str, _name: &str) -> Result<String, String> {
+        Err("not here".into())
+    }
+    /// The command an assistant runs to reach the company `book`, as text
+    /// to type (the program and `mcp --book ID`, quoted for a terminal):
+    /// what the Connect page shows for an assistant it has no button for.
+    fn bridge_command(&self, _book: &str) -> Result<String, String> {
+        Err("not here".into())
     }
     /// Close the books: everything holding them lets go.
     fn close_books(&self) -> Result<String, String>;

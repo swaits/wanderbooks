@@ -116,6 +116,49 @@ impl ledger_gui::owner::Owner for ViewerOwner {
         self.server.exited()
     }
 
+    fn serve_roster(&self) -> Result<ledger_gui::owner::Roster, String> {
+        use ledger_gui::owner::{Assistant, LastCall, Roster, TokenRow};
+        let roster = self.server.roster(std::time::Duration::from_secs(3))?;
+        let mut assistants = Vec::new();
+        for book in roster.sessions {
+            for s in book.sessions {
+                assistants.push(Assistant {
+                    book: book.book.clone(),
+                    token: s.token,
+                    client_name: s.client_name,
+                    client_version: s.client_version,
+                    model: s.agent.and_then(|a| a.model),
+                    connected_at: s.connected_at,
+                    running: s.running,
+                    last: s.last.map(|l| LastCall {
+                        tool: l.tool,
+                        outcome: l.outcome,
+                        at: l.at,
+                    }),
+                });
+            }
+        }
+        let tokens = roster
+            .tokens
+            .into_iter()
+            .map(|t| TokenRow {
+                book: t.book,
+                name: t.name,
+                scopes: t.scopes,
+                created: t.created,
+            })
+            .collect();
+        Ok(Roster { assistants, tokens })
+    }
+
+    fn serve_revoke(&self, book: &str, name: &str) -> Result<String, String> {
+        self.server.revoke_token(book, name)
+    }
+
+    fn bridge_command(&self, book: &str) -> Result<String, String> {
+        ledger_host::commands::bridge_command_line(&self.common, book)
+    }
+
     fn close_books(&self) -> Result<String, String> {
         ledger_host::commands::close_books(&self.common)
     }

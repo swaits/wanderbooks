@@ -1402,6 +1402,66 @@ pub fn connect(
     }
 }
 
+/// The command an assistant runs to reach the books `book`: this program's
+/// own executable and `mcp --book <book>`, with `--root` when the data root
+/// was named and the knobs this run was given. The one place it is made:
+/// `connect_agent` registers it, and the window's Connect page shows it to
+/// be typed into an assistant that has no `connect` of its own.
+pub fn bridge_serve_args(common: &Common, book: &str) -> Result<Vec<std::ffi::OsString>, String> {
+    let book = ledger_store::root::BookId::parse(book)
+        .map_err(|e| e.to_string())?
+        .to_string();
+    // A translocated macOS app's path (P11a step 6) is not a place to point
+    // an agent: the copy goes away with the app.
+    let exe = crate::start::this_executable()?;
+    if let Some(why) = crate::start::translocation_refusal(&exe) {
+        return Err(why.to_string());
+    }
+    let mut serve: Vec<std::ffi::OsString> = vec![
+        exe.into_os_string(),
+        "mcp".into(),
+        "--book".into(),
+        book.into(),
+    ];
+    if common.root.is_some() {
+        let found =
+            ledger_store::root::Root::find(common.root.as_deref()).map_err(|e| e.to_string())?;
+        serve.push("--root".into());
+        serve.push(found.path().as_os_str().to_os_string());
+    }
+    serve.extend(common.knobs.args().into_iter().map(Into::into));
+    Ok(serve)
+}
+
+/// [`bridge_serve_args`] as text, for an assistant that is set up by hand:
+/// a part with a space in it is quoted for a terminal.
+pub fn bridge_command_line(common: &Common, book: &str) -> Result<String, String> {
+    let args = bridge_serve_args(common, book)?;
+    Ok(args
+        .iter()
+        .map(|a| {
+            let a = a.to_string_lossy();
+            if a.contains(char::is_whitespace) {
+                format!("\"{a}\"")
+            } else {
+                a.into_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" "))
+}
+
+/// A revoked token's copy in the token file goes with it (what `token
+/// revoke` does after the server has ended the token). `run_dir` is the
+/// root's `run/` folder.
+pub fn forget_token_file(run_dir: &Path, book: &str, name: &str) -> Result<(), String> {
+    let root = run_dir.parent().unwrap_or(run_dir).to_path_buf();
+    let account = crate::tokens::Account::new(&root, book, name);
+    crate::tokens::keeper(run_dir)
+        .delete(&account)
+        .map_err(|e| e.to_string())
+}
+
 /// Let the agent `agent` ("claude" or "codex") reach the books `book`:
 /// their token kept in its token file (made if none is), and `wanderbooks
 /// mcp --book <book>` added to the agent's own list as
@@ -1420,12 +1480,7 @@ pub fn connect_agent(common: &Common, agent: &str, book: &str) -> Result<Vec<Str
             "{label} isn't installed here (no `{cli}` on the PATH, nor where its installer puts it)"
         )
     })?;
-    // A translocated macOS app's path (P11a step 6) is not a place to point
-    // an agent: the copy goes away with the app.
-    let exe = crate::start::this_executable()?;
-    if let Some(why) = crate::start::translocation_refusal(&exe) {
-        return Err(why.to_string());
-    }
+    let serve = bridge_serve_args(common, &book)?;
     let mut lines = Vec::new();
     // The token: kept in its file, or made now.
     let found =
@@ -1444,17 +1499,6 @@ pub fn connect_agent(common: &Common, agent: &str, book: &str) -> Result<Vec<Str
     }
     // The agent's own list: the books' entry made anew.
     let name = format!("wanderbooks-{book}");
-    let mut serve: Vec<std::ffi::OsString> = vec![
-        exe.into_os_string(),
-        "mcp".into(),
-        "--book".into(),
-        book.clone().into(),
-    ];
-    if common.root.is_some() {
-        serve.push("--root".into());
-        serve.push(found.path().as_os_str().to_os_string());
-    }
-    serve.extend(common.knobs.args().into_iter().map(Into::into));
     let scope: &[&str] = if agent == "claude" {
         &["--scope", "user"]
     } else {
@@ -2809,9 +2853,7 @@ pub fn token(
             let (answer, run_dir) = with_server_in(&common, request).map_err(fail)?;
             match answer {
                 Response::TokenRevoked(t) => {
-                    let root = run_dir.parent().unwrap_or(&run_dir).to_path_buf();
-                    let account = crate::tokens::Account::new(&root, &book, &name);
-                    let forgot = crate::tokens::keeper(&run_dir).delete(&account);
+                    let forgot = forget_token_file(&run_dir, &book, &name);
                     println!("Revoked the token {:?} for the books {}.", t.name, t.book);
                     if let Err(why) = forgot {
                         eprintln!(

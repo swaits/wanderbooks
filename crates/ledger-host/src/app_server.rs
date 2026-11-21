@@ -62,6 +62,14 @@
 //!  11. After the server is ready, the companies the window wanted open
 //!      are checked against the server's list: one that is not open is
 //!      returned in words ([`AppHost::not_open`]).
+//!  12. Who is connected, and the tokens there are, are read with two
+//!      quick admin requests (`Sessions`, `TokenList`) that wait for
+//!      neither the server's start nor an answer for long
+//!      ([`AppHost::roster`]): a server that is starting, gone or slow
+//!      is an `Err` in words, never a wait; a token is revoked by the
+//!      request `wanderbooks token revoke` makes, and its copy in the
+//!      token file goes with it ([`AppHost::revoke_token`]). Neither ever
+//!      holds a token's text.
 //! ```
 
 use crate::host::{SERVER_LOG, children_executable, open_log, private_options};
@@ -134,6 +142,16 @@ pub enum Stopped {
     /// The server was told to close and has not exited within the wait;
     /// it goes on closing by itself (INVARIANT 4).
     StillClosing,
+}
+
+/// Who is connected and which tokens are live, as the server says
+/// (INVARIANT 12).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Roster {
+    /// For each open company, its live sessions.
+    pub sessions: Vec<admin::BookSessions>,
+    /// Every live token.
+    pub tokens: Vec<admin::TokenInfo>,
 }
 
 /// The books server, a child process of this one.
@@ -374,6 +392,58 @@ impl AppServer {
             Response::Books(books) => Ok(books),
             Response::Refused(why) => Err(why),
             other => Err(format!("the books server answered oddly: {other:?}")),
+        }
+    }
+
+    /// Who is connected to each open company, and every live token
+    /// (INVARIANT 12). It does not wait for the server to be ready: a
+    /// server still starting is an `Err`, and so is one that does not
+    /// answer within `wait`.
+    pub fn roster(&self, wait: Duration) -> Result<Roster, String> {
+        if !self.is_ready() {
+            return Err(match self.exited() {
+                Some(why) => why,
+                None => "the books server is still starting".into(),
+            });
+        }
+        let sessions = match self.ask(Request::Sessions, Some(wait))? {
+            Response::Sessions(open) => open,
+            Response::Refused(why) => return Err(why),
+            other => return Err(format!("the books server answered oddly: {other:?}")),
+        };
+        let tokens = match self.ask(Request::TokenList, Some(wait))? {
+            Response::Tokens(tokens) => tokens,
+            Response::Refused(why) => return Err(why),
+            other => return Err(format!("the books server answered oddly: {other:?}")),
+        };
+        Ok(Roster { sessions, tokens })
+    }
+
+    /// End the token `name` of the company `book`, as `wanderbooks token
+    /// revoke` does (INVARIANT 12): the server ends the token and the
+    /// sessions it opened, and the token file's copy is removed. `Ok` says
+    /// what was done, in words; a token file that could not be cleaned is
+    /// said, and the token is revoked all the same.
+    pub fn revoke_token(&self, book: &str, name: &str) -> Result<String, String> {
+        self.wait_ready(READY_WAIT)?;
+        let request = Request::TokenRevoke {
+            book: book.into(),
+            name: name.into(),
+            id: None,
+        };
+        match self.ask_raw(request, Some(Duration::from_secs(30))) {
+            Ok(Response::TokenRevoked(t)) => {
+                let said = format!("Ended {:?}'s access to {}.", t.name, t.book);
+                match crate::commands::forget_token_file(&self.run, book, name) {
+                    Ok(()) => Ok(said),
+                    Err(why) => Ok(format!(
+                        "{said} Its token file still holds its text ({why}); it opens nothing now."
+                    )),
+                }
+            }
+            Ok(Response::Refused(why)) => Err(why),
+            Ok(other) => Err(format!("the books server answered oddly: {other:?}")),
+            Err(e) => Err(e.to_string()),
         }
     }
 
@@ -619,6 +689,17 @@ impl AppHost {
                 Some((id.clone(), words))
             })
             .collect()
+    }
+
+    /// Who is connected, and which tokens are live (INVARIANT 12): quick,
+    /// for a server that is not running or not ready an `Err`.
+    pub fn roster(&self, wait: Duration) -> Result<Roster, String> {
+        self.running()?.roster(wait)
+    }
+
+    /// End a token (INVARIANT 12).
+    pub fn revoke_token(&self, book: &str, name: &str) -> Result<String, String> {
+        self.running()?.revoke_token(book, name)
     }
 
     /// The format upgrade of the company `id` (INVARIANT 10).

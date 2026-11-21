@@ -67,3 +67,5 @@ Columns: date | type (scout, run/verify, implement, refactor, debug, review) | p
 - 2026-11-21 | review 2 | sonnet (medium) | A4 keys and revoke | accepted: 4 medium
 - 2026-11-21 | impl 2 | sonnet (medium) | A4 keys fix round (never replace, scopes, revoke by id, quoting) | accepted on targeted tests
 - 2026-11-21 | review 3 | opus (medium) | T1 review | accepted: 1 high (ungated readers), 3 medium
+- 2026-11-21 | impl-multi 3 | sonnet (high) | P15 T1: every write is one transaction, exactly once | accepted after one review and one fix round
+- 2026-11-21 | impl-multi 3 | sonnet (high) | T1 fix round (gated readers, vault staged, answer cap, HMAC args) | accepted on targeted tests after merge

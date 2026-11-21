@@ -5418,8 +5418,14 @@ mod tests {
                 if path.is_dir() {
                     walk(base, &path, out);
                 } else if let Ok(bytes) = std::fs::read(&path) {
+                    // Keyed with `/` between parts on every system (the
+                    // test names files so), not the system's separator.
                     out.insert(
-                        path.strip_prefix(base).unwrap().display().to_string(),
+                        path.strip_prefix(base)
+                            .unwrap()
+                            .display()
+                            .to_string()
+                            .replace('\\', "/"),
                         bytes,
                     );
                 }

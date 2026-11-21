@@ -314,8 +314,9 @@ unsigned (macOS: ad hoc, so it runs, but Gatekeeper refuses a download).
 Connect page's button; it runs the installed program as `mcp --book <id>`.
 
 **Left out, on purpose:** an auto-installer; a Windows executable icon resource
-(the shortcut and the uninstaller entry carry the icon; the running window uses
-the system's default) and the window's own icon on Windows and Linux X11;
+(the shortcut and the uninstaller entry carry the icon, and the running window
+sets its own from the 512 px PNG; Explorer shows the `.exe` with the default
+icon);
 `wanderbooks.cmd`/PATH setup so a terminal waits for a command on Windows (a
 GUI-subsystem program returns the prompt at once); a macOS refusal for a program
 run from a mounted disk image (a path under `/Volumes` may be a real install on

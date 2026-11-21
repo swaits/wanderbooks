@@ -415,6 +415,10 @@ left out of its last round on purpose:
   in practice on Linux, wrong in principle.
 - The adopt's source-lock same-file check and the archive's lock removal
   lose their swap guard off Unix.
+- `run/books.lock` (`ledger-store/src/root.rs`) is a flock with the same
+  exposure the store's writer lock had: a child forked for another job
+  holds a copy until it execs. The writer lock was fixed on 2026-11-20
+  (`ledger-store/src/lock.rs`); this one was left.
 - `books.import_bank_csv` journals its rows one by one and cannot be
   stopped by a close; D-88's unit makes an import one transaction.
 - The scenario test for "closing A never delays B" shows B's jobs finish

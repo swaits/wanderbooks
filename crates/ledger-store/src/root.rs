@@ -29,7 +29,16 @@
 //!      file if the source never had one), and a new book appears in the
 //!      root only whole: every stored file re-hashed against its name,
 //!      every file the books name present, verified end to end, synced to
-//!      disk, and its head equal to the source's.
+//!      disk, and its head equal to the source's. The original is left as it
+//!      was: a lock file the adoption made in the source is removed again,
+//!      exactly that file and no other, on every way out but its success
+//!      (stopped by the books server's close, refused, or a panic); one the
+//!      source already had is never removed. A success leaves the one it
+//!      made, and says so (`source_lock_created`). Books are made, adopted
+//!      and restored one at a time across processes (`run/books.lock`), and
+//!      a job waiting for its turn looks at its stop every few milliseconds
+//!      and leaves at once when asked, so a close of the books is never held
+//!      up by a job that is only queued.
 //!   6. No error names the root or a path inside it: nothing an agent is
 //!      shown names the books' folder.
 //!   7. Restoring a backup (plan 3.7) is proven before use, as an adoption
@@ -816,8 +825,11 @@ impl Root {
     }
 
     /// Take the lock under which books are made: one at a time, across
-    /// processes.
-    fn books_lock(&self) -> Result<std::fs::File, RootError> {
+    /// processes. A job that has to wait for another's turn looks at `stop`
+    /// while it waits (every few milliseconds), and gives up with `Stopped`
+    /// if asked: a close of the books can't be held up by a job that is
+    /// only waiting its turn behind another.
+    fn books_lock(&self, stop: &JobStop, undone: &str) -> Result<std::fs::File, RootError> {
         let (run, _) = self.private_subdir(RUN_DIR, false)?;
         let path = run.join(BOOKS_LOCK);
         let file = std::fs::OpenOptions::new()
@@ -826,8 +838,22 @@ impl Root {
             .write(true)
             .open(&path)?;
         set_mode(&path, 0o600)?;
-        file.lock()?;
-        Ok(file)
+        loop {
+            match file.try_lock() {
+                Ok(()) => return Ok(file),
+                Err(std::fs::TryLockError::WouldBlock) => {
+                    // The flag alone: the phase watch is told of phases, not
+                    // of every turn of this wait.
+                    if stop.requested() {
+                        return Err(RootError::Stopped(format!(
+                            "stopped because the books are closing: nothing was {undone}"
+                        )));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                Err(std::fs::TryLockError::Error(e)) => return Err(e.into()),
+            }
+        }
     }
 
     /// Start new, empty books called `id` in `base_currency`. Refused if
@@ -855,7 +881,7 @@ impl Root {
         base_currency: Currency,
         stop: &JobStop,
     ) -> Result<Store, RootError> {
-        let _lock = self.books_lock()?;
+        let _lock = self.books_lock(stop, "created")?;
         let (books, _) = self.private_subdir(BOOKS_DIR, false)?;
         let dir = books.join(id.as_str());
         if std::fs::symlink_metadata(&dir).is_ok() {
@@ -921,7 +947,7 @@ impl Root {
         options: &AdoptOptions,
         stop: &JobStop,
     ) -> Result<AdoptReport, RootError> {
-        let _lock = self.books_lock()?;
+        let _lock = self.books_lock(stop, "adopted")?;
         let (books, _) = self.private_subdir(BOOKS_DIR, false)?;
         let dest = books.join(id.as_str());
         if std::fs::symlink_metadata(&dest).is_ok() {
@@ -943,7 +969,8 @@ impl Root {
         }
         // Step 1: the source's writer lock, held to the end, so nothing
         // writes it while it is copied.
-        let (_source_lock, source_lock_created) = lock_source(&source)?;
+        let mut source_lock = lock_source(&source)?;
+        let source_lock_created = source_lock.created();
         // Step 2: verify the chain and record the head. (The chain's check
         // looks at the stop once per journal line.)
         let scope = crate::cancel::scope(stop.flag());
@@ -1081,6 +1108,10 @@ impl Root {
             });
         if renamed.is_err() {
             let _ = std::fs::remove_dir_all(&staging);
+        } else {
+            // Adopted: a lock file made in the source stays and is reported
+            // (`source_lock_created`). Any other way out, it goes.
+            source_lock.keep();
         }
         renamed
     }
@@ -1185,7 +1216,7 @@ impl Root {
     ) -> Result<RestorePreview, RootError> {
         let _scope = crate::cancel::scope(stop.flag());
         (|| {
-            let _lock = self.books_lock()?;
+            let _lock = self.books_lock(stop, "restored")?;
             let (books, _) = self.private_subdir(BOOKS_DIR, false)?;
             let (scratch, v) = self.fetch_backup(git, source, &books, id, stop)?;
             let vault = scratch.join(VAULT_DIR);
@@ -1260,7 +1291,7 @@ impl Root {
         replace: bool,
         stop: &JobStop,
     ) -> Result<RestoreReport, RootError> {
-        let _lock = self.books_lock()?;
+        let _lock = self.books_lock(stop, "restored")?;
         let (books, _) = self.private_subdir(BOOKS_DIR, false)?;
         let dest = books.join(id.as_str());
         let exists = std::fs::symlink_metadata(&dest).is_ok();
@@ -1275,12 +1306,16 @@ impl Root {
         }
         // Books being replaced are moved only while nothing holds them.
         let _held = if exists {
-            Some(lock_source(&dest).map_err(|_| {
+            let mut held = lock_source(&dest).map_err(|_| {
                 RootError::Adopt(format!(
                     "the books called {:?} are open: close them first; nothing was restored",
                     id.as_str()
                 ))
-            })?)
+            })?;
+            // The root's own folder: its lock file is the books', whoever
+            // made it.
+            held.keep();
+            Some(held)
         } else {
             None
         };
@@ -1585,7 +1620,10 @@ impl Root {
             // Held for writing: nothing is moved from under it. A preview
             // only looks; the move holds the lock to the end.
             let _lock = if confirm {
-                Some(lock_source(source)?.0)
+                let mut lock = lock_source(source)?;
+                // The old copy is moved whole, lock file and all.
+                lock.keep();
+                Some(lock)
             } else {
                 if let Ok(lock) = std::fs::File::open(source.join(crate::store::LOCK_FILE))
                     && let Err(std::fs::TryLockError::WouldBlock) = lock.try_lock_shared()
@@ -2034,9 +2072,63 @@ pub struct AdoptReport {
 
 /// The source's writer lock: its lock file opened read-only (so a
 /// read-only source can be adopted and nothing in it changes), or, for
-/// books that never had one, created. Returns the lock and whether the
-/// file was made.
-fn lock_source(source: &Path) -> Result<(std::fs::File, bool), RootError> {
+/// books that never had one, created.
+///
+/// A lock file this made is the adoption's own, not the source's: unless
+/// the adoption succeeds (the caller says so with [`SourceLock::keep`]),
+/// it is removed when this is dropped, whatever way out the adoption took
+/// (stopped by a close, failed, or a panic): the original is left as it
+/// was. A lock file that was there already is never removed, nor is a
+/// file this didn't make: the path must still name the very file this
+/// holds, on systems that can tell.
+struct SourceLock {
+    file: Option<std::fs::File>,
+    path: PathBuf,
+    created: bool,
+    keep: bool,
+}
+
+impl SourceLock {
+    /// The source had no lock file, so taking its lock made one.
+    fn created(&self) -> bool {
+        self.created
+    }
+
+    /// The lock file stays, whatever this made: the adoption is done (and
+    /// reports it), or the folder is the root's own.
+    fn keep(&mut self) {
+        self.keep = true;
+    }
+}
+
+impl Drop for SourceLock {
+    fn drop(&mut self) {
+        if !self.created || self.keep {
+            return;
+        }
+        let Some(file) = self.file.take() else {
+            return;
+        };
+        // Still the file this made? (Never one another process put there.)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let same = match (file.metadata(), std::fs::symlink_metadata(&self.path)) {
+                (Ok(mine), Ok(there)) => mine.dev() == there.dev() && mine.ino() == there.ino(),
+                _ => false,
+            };
+            if !same {
+                return;
+            }
+        }
+        // Let go of the lock first (a file that is open can't be removed on
+        // every system), then remove exactly that file.
+        drop(file);
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+fn lock_source(source: &Path) -> Result<SourceLock, RootError> {
     let path = source.join(crate::store::LOCK_FILE);
     let (file, created) = match std::fs::File::open(&path) {
         Ok(file) => (file, false),
@@ -2045,7 +2137,15 @@ fn lock_source(source: &Path) -> Result<(std::fs::File, bool), RootError> {
         }
         Err(e) => return Err(e.into()),
     };
-    if !created {
+    // From here the guard owns the file this may have made, so a refusal
+    // below removes it too.
+    let held = SourceLock {
+        file: Some(file),
+        path,
+        created,
+        keep: false,
+    };
+    if !created && let Some(file) = &held.file {
         match file.try_lock() {
             Ok(()) => {}
             Err(std::fs::TryLockError::WouldBlock) => {
@@ -2058,7 +2158,7 @@ fn lock_source(source: &Path) -> Result<(std::fs::File, bool), RootError> {
             Err(std::fs::TryLockError::Error(e)) => return Err(e.into()),
         }
     }
-    Ok((file, created))
+    Ok(held)
 }
 
 /// The head of a verified journal: the last line's seq and the hash the

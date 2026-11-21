@@ -1876,3 +1876,201 @@ fn a_job_stopped_at_any_phase_before_its_point_of_no_return_leaves_the_root_as_i
         Some("place")
     );
 }
+
+/// A folder, name for name and byte for byte: every file and every folder
+/// in it, with its bytes and its mode.
+fn tree_exact(dir: &Path) -> Vec<(PathBuf, Option<Vec<u8>>, u32)> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).unwrap() {
+            let p = e.unwrap().path();
+            let is_dir = std::fs::symlink_metadata(&p).unwrap().is_dir();
+            out.push((
+                p.strip_prefix(dir).unwrap().to_path_buf(),
+                (!is_dir).then(|| std::fs::read(&p).unwrap()),
+                mode(&p),
+            ));
+            if is_dir {
+                stack.push(p);
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// An adoption makes the source's lock file when the source has none (INVARIANT
+/// 5), and the original is to be left as it was: so a lock file the adoption
+/// itself made is removed on every way out but its success (stopped by a close
+/// at any phase, refused, or a panic), exactly that file and nothing else; one
+/// the source already had is never removed, and a success leaves the one it
+/// made and says so.
+#[test]
+fn an_adoption_that_does_not_finish_leaves_no_lock_file_in_the_source() {
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+    let home = tmp("adopt-lock");
+    let (root, _) = Root::setup(home.path(), None, None).unwrap();
+    let old = tmp("adopt-lock-src");
+    drop(source_books(old.path(), true));
+    let lock = old.path().join(ledger_store::LOCK_FILE);
+    std::fs::remove_file(&lock).unwrap();
+    let before = tree_exact(old.path());
+    assert!(
+        before
+            .iter()
+            .all(|(n, ..)| n != Path::new(ledger_store::LOCK_FILE))
+    );
+    let options = AdoptOptions::default();
+    // Stopped at every phase, before the lock is taken and after.
+    for phase in [
+        "start", "journal", "copy", "file", "open", "verify", "place",
+    ] {
+        let (stop, _) = stopping_at(phase);
+        let e = refused(root.adopt_stoppable(old.path(), &id("adopted"), &options, &stop));
+        assert!(matches!(e, RootError::Stopped(_)), "{phase}: {e:?}");
+        assert_eq!(
+            tree_exact(old.path()),
+            before,
+            "the source after an adoption stopped at {phase}"
+        );
+    }
+    // Refused after the lock: the books changed since the preview.
+    let wrong = AdoptOptions {
+        expect_head: Some((999, "not the head".into())),
+        ..AdoptOptions::default()
+    };
+    let e = refused(root.adopt(old.path(), &id("adopted"), &wrong));
+    assert!(e.to_string().contains("changed since the preview"), "{e}");
+    assert_eq!(tree_exact(old.path()), before, "after a refusal");
+    // A panic, in the middle of the copy.
+    let flag = Arc::new(AtomicBool::new(false));
+    let stop = ledger_store::root::JobStop::new(flag).with_phase_watch(Arc::new(|p: &str| {
+        if p == "verify" {
+            panic!("a panic in the middle of an adoption");
+        }
+    }));
+    let gone = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        root.adopt_stoppable(old.path(), &id("adopted"), &options, &stop)
+            .map(|_| ())
+    }));
+    assert!(gone.is_err(), "the adoption panicked");
+    assert_eq!(tree_exact(old.path()), before, "after a panic");
+    assert!(root.list_books().unwrap().is_empty());
+    // The lock held while the adoption runs is gone with it: the source can
+    // be taken for writing at once.
+    drop(Store::open(old.path()).unwrap());
+    std::fs::remove_file(&lock).unwrap();
+    // Not removed when it isn't the file the adoption made: a lock file put
+    // there by someone else while the adoption ran (it was swapped at the
+    // last phase) stays.
+    let flag = Arc::new(AtomicBool::new(false));
+    let swap = lock.clone();
+    let stop = ledger_store::root::JobStop::new(flag).with_phase_watch(Arc::new(move |p: &str| {
+        if p == "verify" {
+            std::fs::remove_file(&swap).unwrap();
+            std::fs::write(&swap, b"someone else's").unwrap();
+            panic!("stopped after the swap");
+        }
+    }));
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        root.adopt_stoppable(old.path(), &id("adopted"), &options, &stop)
+            .map(|_| ())
+    }));
+    assert_eq!(
+        std::fs::read(&lock).unwrap(),
+        b"someone else's",
+        "a lock file the adoption did not make was removed"
+    );
+    std::fs::remove_file(&lock).unwrap();
+    assert_eq!(tree_exact(old.path()), before);
+    // A source that had its lock file keeps it, stopped or not: the folder
+    // is as it was, and the adoption reports it made none.
+    drop(Store::open(old.path()).unwrap());
+    let had = tree_exact(old.path());
+    assert!(
+        had.iter()
+            .any(|(n, ..)| n == Path::new(ledger_store::LOCK_FILE))
+    );
+    for phase in ["copy", "verify", "place"] {
+        let (stop, _) = stopping_at(phase);
+        let e = refused(root.adopt_stoppable(old.path(), &id("adopted"), &options, &stop));
+        assert!(matches!(e, RootError::Stopped(_)), "{phase}: {e:?}");
+        assert_eq!(tree_exact(old.path()), had, "a lock it had, at {phase}");
+    }
+    let report = root.adopt(old.path(), &id("adopted"), &options).unwrap();
+    assert!(!report.source_lock_created);
+    assert_eq!(tree_exact(old.path()), had);
+    // And a success of a source with none leaves the one it made, as before.
+    let fresh = tmp("adopt-lock-src2");
+    drop(source_books(fresh.path(), true));
+    std::fs::remove_file(fresh.path().join(ledger_store::LOCK_FILE)).unwrap();
+    let report = root.adopt(fresh.path(), &id("second"), &options).unwrap();
+    assert!(report.source_lock_created);
+    assert!(fresh.path().join(ledger_store::LOCK_FILE).is_file());
+}
+
+/// A job waiting for another's turn at making books (they are made one at a
+/// time, across processes) gives up when it is asked to stop, whatever the
+/// job holding the turn does: a close can't be held up by a job that is only
+/// queued. A job that isn't asked to stop waits its turn, and goes through
+/// when it comes.
+#[test]
+fn a_job_waiting_for_its_turn_stops_when_asked_and_otherwise_waits_for_it() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let home = tmp("turn");
+    let (root, _) = Root::setup(home.path(), None, None).unwrap();
+    // Another process's turn: the lock file is held.
+    let turn = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(root.path().join("run/books.lock"))
+        .unwrap();
+    turn.lock().unwrap();
+    let flag = Arc::new(AtomicBool::new(false));
+    let waiting = {
+        let flag = flag.clone();
+        let root = root.clone();
+        std::thread::spawn(move || {
+            root.create_book_stoppable(
+                &id("queued"),
+                Currency::USD,
+                &ledger_store::root::JobStop::new(flag),
+            )
+            .map(|_| ())
+        })
+    };
+    // Queued: it has not made its folder, nor stopped, while the turn is
+    // held and nothing asks it to.
+    let by = std::time::Instant::now() + std::time::Duration::from_millis(400);
+    while std::time::Instant::now() < by {
+        assert!(!waiting.is_finished(), "it didn't wait for its turn");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    flag.store(true, Ordering::SeqCst);
+    let by = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !waiting.is_finished() {
+        assert!(
+            std::time::Instant::now() < by,
+            "a job waiting for its turn didn't stop when asked"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let e = refused(waiting.join().unwrap());
+    assert!(matches!(e, RootError::Stopped(_)), "{e:?}");
+    assert!(e.to_string().contains("nothing was created"), "{e}");
+    assert!(!root.book_dir(&id("queued")).exists());
+    // Not asked: it waits, and goes through when the turn is let go.
+    let other = {
+        let root = root.clone();
+        std::thread::spawn(move || root.create_book(&id("patient"), Currency::USD).map(|_| ()))
+    };
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    assert!(!other.is_finished());
+    drop(turn);
+    other.join().unwrap().unwrap();
+    assert_eq!(root.list_books().unwrap(), vec![id("patient")]);
+}

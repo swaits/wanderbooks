@@ -713,32 +713,50 @@ pub fn decimal(s: &str) -> Option<Decimal> {
 /// Whether `text` holds a number that reads as a full TIN (INVARIANT 4):
 /// nine digits standing alone (no digit right before or after), bare or
 /// printed the way an SSN (3-2-4) or an EIN (2-7) is, the groups joined by
-/// a hyphen or any other dash, a dot, or a space (or a dash with spaces
-/// around it), whatever Unicode form the dash, dot, space or digit takes
-/// (full-width, Arabic-Indic, no-break space, en space, ...).
+/// a hyphen or any other dash, or a space (or a dash with spaces around
+/// it), whatever Unicode form the dash, space or digit takes (full-width,
+/// Arabic-Indic, no-break space, en space, a line break, ...), with
+/// zero-width and soft-hyphen characters not counted. A dot joins an SSN's
+/// groups only when it joins both (`000.00.0000`), never an EIN's, so a
+/// coordinate (`47.6062095`) is no tax id.
 ///
 /// ```text
 /// GOAL: the one test free text meets before it is kept: it refuses what
 ///       looks like a tax id and nothing else.
 /// SOURCE: BS-partner-2 (no full TIN in the books); wanderbooks' CHOICE on
 ///         it (the owner, 2026-11-21: shapes on free text, strict on party
-///         fields, masking on bank imports), WB-partner-15.
+///         fields, masking on bank imports; a reference field allows a
+///         bare nine digits, decided by the lead the same day within that
+///         choice), WB-partner-15.
 /// INVARIANTS:
 ///   1. Nine digits standing alone, an SSN's 3-2-4 and an EIN's 2-7 are
-///      found, with any dash, dot or space (Unicode forms too) between
-///      the groups.
+///      found, with any dash or space (Unicode forms and line breaks
+///      too) between the groups, and a dot between all of an SSN's.
 ///   2. An invoice number (`2026-11-0042`), a phone number, an order
 ///      number, a reference of ten digits or more, an amount with comma
-///      groups and a date are not found.
-///   3. During a replay ([`crate::parties::replaying`]) the Unicode forms
-///      are not read, so a line an earlier version took still replays
-///      (BS-entry-4).
+///      groups, a date, a date followed by a reference
+///      (`2026-11-21 0001234`) and a decimal (`47.6062095`) are not found.
+///   3. A group that starts or ends inside a longer run of digits and
+///      dashes (a digit and a dash before its first digit, or a dash and a
+///      digit after its last) is part of that run, not a tax id.
+///   4. During a replay ([`crate::parties::replaying`]) the Unicode forms,
+///      line breaks and invisible characters are not read, so a line an
+///      earlier version took still replays (BS-entry-4).
 /// SCENARIOS:
 ///   1. IF a memo says `paid 000-00-0000`: SHOULD be found.
 ///   2. IF it says `inv 2026-11-0042`: SHOULD NOT be.
+///   3. IF it says `at 47.6062095`: SHOULD NOT be.
 /// ```
 pub fn holds_printed_tin(text: &str) -> bool {
-    !printed_tin_spans(text, false).1.is_empty()
+    !printed_tin_spans(text, Reading::Free).1.is_empty()
+}
+
+/// [`holds_printed_tin`] for a reference (an asset tag, a serial number, an
+/// invoice or bill number, a payment reference, an account code, a file
+/// name): a bare run of nine digits is a legitimate number there, so only
+/// the printed SSN (3-2-4) and EIN (2-7) forms count (WB-partner-15).
+pub fn holds_printed_tin_in_reference(text: &str) -> bool {
+    !printed_tin_spans(text, Reading::Reference).1.is_empty()
 }
 
 /// [`holds_printed_tin`] for a web address: the printed SSN (3-2-4) and
@@ -747,16 +765,27 @@ pub fn holds_printed_tin(text: &str) -> bool {
 /// id in a path or query (an app store listing's `id284882215`), not a
 /// TIN someone wrote down (BS-partner-2).
 pub fn holds_printed_tin_in_link(text: &str) -> bool {
-    !printed_tin_spans(text, true).1.is_empty()
+    !printed_tin_spans(text, Reading::Link).1.is_empty()
 }
 
 /// `text` with every number [`holds_printed_tin`] finds masked down to its
 /// last four digits: every other digit becomes `•`, the separators stay
 /// (`•••-••-0000`), the form the books show a TIN in everywhere else. For
 /// text that is not typed by a person and must be kept (a bank's
-/// description of a transaction), never for a refusal's words.
+/// description of a transaction, a line the program composes from text the
+/// books already hold), never for a refusal's words.
 pub fn mask_printed_tins(text: &str) -> std::borrow::Cow<'_, str> {
-    let (mut chars, spans) = printed_tin_spans(text, false);
+    mask_spans(text, Reading::Free)
+}
+
+/// [`mask_printed_tins`] for a reference ([`holds_printed_tin_in_reference`]):
+/// a bare run of nine digits stays.
+pub fn mask_printed_tins_in_reference(text: &str) -> std::borrow::Cow<'_, str> {
+    mask_spans(text, Reading::Reference)
+}
+
+fn mask_spans(text: &str, reading: Reading) -> std::borrow::Cow<'_, str> {
+    let (mut chars, spans) = printed_tin_spans(text, reading);
     if spans.is_empty() {
         return std::borrow::Cow::Borrowed(text);
     }
@@ -772,7 +801,19 @@ pub fn mask_printed_tins(text: &str) -> std::borrow::Cow<'_, str> {
 
 /// How many numbers [`holds_printed_tin`] finds in `text`.
 pub fn count_printed_tins(text: &str) -> usize {
-    printed_tin_spans(text, false).1.len()
+    printed_tin_spans(text, Reading::Free).1.len()
+}
+
+/// What [`printed_tin_spans`] looks for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Reading {
+    /// Free text: nine digits alone, an SSN's 3-2-4, an EIN's 2-7.
+    Free,
+    /// A reference: the grouped shapes only.
+    Reference,
+    /// A web address: free text, but a bare nine digits joined to a letter
+    /// or URL punctuation is an id in a path.
+    Link,
 }
 
 /// A character that stands for a digit: ASCII, full-width, or any other
@@ -783,13 +824,20 @@ fn digit_like(ch: char, extended: bool) -> bool {
 }
 
 /// A space between a TIN's groups: the plain one, and outside a replay
-/// the tab and every Unicode space separator.
+/// the tab, a line break and every Unicode space separator.
 fn tin_space(ch: char, extended: bool) -> bool {
     ch == ' '
         || (extended
             && matches!(
                 ch,
-                '\t' | '\u{a0}' | '\u{1680}' | '\u{2000}'
+                '\t' | '\n'
+                    | '\r'
+                    | '\u{85}'
+                    | '\u{2028}'
+                    | '\u{2029}'
+                    | '\u{a0}'
+                    | '\u{1680}'
+                    | '\u{2000}'
                     ..='\u{200a}' | '\u{202f}' | '\u{205f}' | '\u{3000}'
             ))
 }
@@ -815,21 +863,39 @@ fn tin_dash(ch: char, extended: bool) -> bool {
             ))
 }
 
+/// The dots among [`tin_dash`]'s characters.
+fn tin_dot(ch: char) -> bool {
+    matches!(ch, '.' | '\u{2024}' | '\u{ff0e}')
+}
+
 /// The characters of `text` and the runs ([from, to) in characters) of it
 /// that read as a full TIN, non-overlapping, left to right.
-fn printed_tin_spans(text: &str, link: bool) -> (Vec<char>, Vec<(usize, usize)>) {
+fn printed_tin_spans(text: &str, reading: Reading) -> (Vec<char>, Vec<(usize, usize)>) {
     let extended = !crate::parties::is_replaying();
-    let c: Vec<char> = text.chars().collect();
+    let all: Vec<char> = text.chars().collect();
+    // What is read: outside a replay, the zero-width and soft-hyphen
+    // characters are not there (`1\u{200B}2` shows as `12`). `seen[i]` is
+    // where the i-th character read sits in `all`.
+    let seen: Vec<usize> = (0..all.len())
+        .filter(|&i| !(extended && crate::parties::tin_invisible(all[i])))
+        .collect();
+    let c: Vec<char> = seen.iter().map(|&i| all[i]).collect();
     let digit = |i: usize| c.get(i).is_some_and(|&ch| digit_like(ch, extended));
+    // A hyphen or other dash, the dot not counted.
+    let hyphen = |i: usize| {
+        c.get(i)
+            .is_some_and(|&ch| tin_dash(ch, extended) && !tin_dot(ch))
+    };
     // A joiner at `i`: a dash, dot or space, or a dash with spaces around
-    // it; returns where the next group starts.
-    let joiner = |i: usize| -> Option<usize> {
+    // it; returns where the next group starts, and whether it is a dot.
+    let joiner = |i: usize| -> Option<(usize, bool)> {
         let mut j = i;
         while c.get(j).is_some_and(|&ch| tin_space(ch, extended)) {
             j += 1;
         }
-        let mut dashes = 0;
+        let (mut dashes, mut dotted) = (0, false);
         while c.get(j).is_some_and(|&ch| tin_dash(ch, extended)) {
+            dotted |= tin_dot(c[j]);
             j += 1;
             dashes += 1;
         }
@@ -837,13 +903,16 @@ fn printed_tin_spans(text: &str, link: bool) -> (Vec<char>, Vec<(usize, usize)>)
             j += 1;
         }
         let spaces = j - i - dashes;
-        (j > i && dashes <= 1 && spaces <= 2).then_some(j)
+        (j > i && dashes <= 1 && spaces <= 2).then_some((j, dotted))
     };
-    let groups_at = |at: usize, groups: &[usize]| -> Option<usize> {
-        let mut i = at;
+    // Where `groups` of digits end from `at`, and how many joiners were dots.
+    let groups_at = |at: usize, groups: &[usize]| -> Option<(usize, usize)> {
+        let (mut i, mut dots) = (at, 0);
         for (n, g) in groups.iter().enumerate() {
             if n > 0 {
-                i = joiner(i)?;
+                let (next, dotted) = joiner(i)?;
+                i = next;
+                dots += usize::from(dotted);
             }
             for _ in 0..*g {
                 if !digit(i) {
@@ -852,11 +921,23 @@ fn printed_tin_spans(text: &str, link: bool) -> (Vec<char>, Vec<(usize, usize)>)
                 i += 1;
             }
         }
-        Some(i)
+        Some((i, dots))
     };
     let url_joined = |i: Option<usize>| {
         i.and_then(|i| c.get(i))
             .is_some_and(|ch| ch.is_alphabetic() || matches!(ch, '/' | '=' | '?' | '&' | '#'))
+    };
+    // The text before `at` ends in a digit and a dash: the group is the
+    // tail of a longer number (a date's day, a part number).
+    let digit_dash_before = |at: usize| at >= 2 && hyphen(at - 1) && digit(at - 2);
+    // The text from `end` is a dash and a digit: the group is the head of a
+    // longer number.
+    let dash_digit_after = |end: usize| hyphen(end) && digit(end + 1);
+    // A dot with a digit on each side: a decimal point.
+    let decimal_point = |i: usize| c.get(i) == Some(&'.') && i >= 1 && digit(i - 1) && digit(i + 1);
+    let shapes: &[&[usize]] = match reading {
+        Reading::Reference => &[&[3, 2, 4], &[2, 7]],
+        Reading::Free | Reading::Link => &[&[9], &[3, 2, 4], &[2, 7]],
     };
     let mut spans = Vec::new();
     let mut at = 0;
@@ -865,25 +946,36 @@ fn printed_tin_spans(text: &str, link: bool) -> (Vec<char>, Vec<(usize, usize)>)
             at += 1;
             continue;
         }
-        let found = [&[9][..], &[3, 2, 4][..], &[2, 7][..]]
-            .iter()
-            .find_map(|g| {
-                groups_at(at, g).filter(|&end| {
-                    !digit(end)
-                        && !(link
-                            && g.len() == 1
-                            && (url_joined(at.checked_sub(1)) || url_joined(Some(end))))
-                })
-            });
+        let found = shapes.iter().find_map(|g| {
+            let (end, dots) = groups_at(at, g)?;
+            if digit(end) {
+                return None;
+            }
+            match g.len() {
+                // Nine digits alone: not a number in a path (a link), not
+                // the digits of a decimal.
+                1 => {
+                    let in_a_path = reading == Reading::Link
+                        && (url_joined(at.checked_sub(1)) || url_joined(Some(end)));
+                    let in_a_decimal = (at >= 1 && decimal_point(at - 1)) || decimal_point(end);
+                    (!in_a_path && !in_a_decimal).then_some(end)
+                }
+                // An EIN: never joined by a dot.
+                2 => (dots == 0 && !digit_dash_before(at) && !dash_digit_after(end)).then_some(end),
+                // An SSN: dots at both joiners or at neither.
+                _ => ((dots == 0 || dots == 2) && !digit_dash_before(at) && !dash_digit_after(end))
+                    .then_some(end),
+            }
+        });
         match found {
             Some(end) => {
-                spans.push((at, end));
+                spans.push((seen[at], seen[end - 1] + 1));
                 at = end;
             }
             None => at += 1,
         }
     }
-    (c, spans)
+    (all, spans)
 }
 
 /// What a refusal says of a field that looks like it holds a tax id
@@ -907,6 +999,19 @@ pub fn check_free_text(field: &str, text: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// A reference (an asset tag, a serial number, an invoice or bill number, a
+/// payment reference, an account code, a file name, a label) that may be
+/// kept: it must not look like a tax id's *printed* shapes
+/// ([`holds_printed_tin_in_reference`]), a bare run of nine digits being a
+/// legitimate number there. Returns why not, in [`tin_refusal`]'s words.
+/// Never refuses during a replay (BS-entry-4).
+pub fn check_reference_text(field: &str, text: &str) -> Result<(), String> {
+    if !crate::parties::is_replaying() && holds_printed_tin_in_reference(text) {
+        return Err(tin_refusal(field));
+    }
+    Ok(())
+}
+
 fn no_tin(what: &str, s: &str) -> Result<(), String> {
     if holds_printed_tin(s) {
         return Err(format!(
@@ -921,6 +1026,19 @@ fn no_tin(what: &str, s: &str) -> Result<(), String> {
 pub fn line_text(what: &str, s: &str, max: usize) -> Result<String, String> {
     let t = bare_line_text(what, s, max)?;
     no_tin(what, &t)?;
+    Ok(t)
+}
+
+/// [`line_text`] for a reference (a label): one line, with only the printed
+/// SSN and EIN shapes refused, a bare nine digits allowed
+/// ([`holds_printed_tin_in_reference`]).
+pub fn reference_line_text(what: &str, s: &str, max: usize) -> Result<String, String> {
+    let t = bare_line_text(what, s, max)?;
+    if holds_printed_tin_in_reference(&t) {
+        return Err(format!(
+            "{what} holds a number that reads as a full SSN or EIN (printed 3-2-4 or 2-7): a full TIN goes only into the vault (books.set_tin or a W-9, books.set_w9); for any other number, write it without that grouping"
+        ));
+    }
     Ok(t)
 }
 
@@ -2207,8 +2325,6 @@ mod tests {
             "123-45-6789",
             "a 12-3456789.",
             "(123-45-6789)",
-            "1-123-45-6789",
-            "12-3456789-0",
             "123\u{2010}45\u{2010}6789",
             "123 45 6789",
             "SSN 123456789",
@@ -2222,6 +2338,12 @@ mod tests {
             "12-34567890",
             "1234567890",
             "14745117-0160",
+            // the tail or head of a longer run of digits and dashes
+            "1-123-45-6789",
+            "12-3456789-0",
+            // a decimal, a date and its reference
+            "47.6062095",
+            "2026-11-21 0001234",
             "801-555-0142",
             "2026-10-04",
             "100 Example Way, Midvale, UT 84047",

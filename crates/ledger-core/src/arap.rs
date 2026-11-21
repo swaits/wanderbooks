@@ -399,24 +399,32 @@ pub const MAX_REFERENCE_CHARS: usize = 200;
 
 impl PaymentDetails {
     /// The payment entry's description: `base`, then the reference when
-    /// there is one (`base (ref R)`).
+    /// there is one (`base (ref R)`), with a run of nine digits in it masked
+    /// to its last four: the reference is kept whole in the payment's own
+    /// record, and an entry's description is free text, which holds no
+    /// number that reads as a tax id (WB-partner-15).
     pub fn description(&self, base: &str) -> String {
         match self.reference.as_deref().map(str::trim) {
-            Some(r) if !r.is_empty() => format!("{base} (ref {r})"),
+            Some(r) if !r.is_empty() => {
+                format!("{base} (ref {})", crate::settings::mask_printed_tins(r))
+            }
             _ => base.to_string(),
         }
     }
 
     /// Refuse a reference that isn't one line of at most
-    /// [`MAX_REFERENCE_CHARS`] characters. A blank one is none. (A bank
-    /// trace number is fifteen digits, so no nine-digit scan here.)
+    /// [`MAX_REFERENCE_CHARS`] characters, or one that looks like a tax id's
+    /// printed SSN or EIN (a bare nine digits is a check or confirmation
+    /// number: a reference's reading, WB-partner-15; not in a replay,
+    /// BS-entry-4). A blank one is none.
     pub fn check(&self) -> Result<(), LedgerError> {
-        if let Some(r) = &self.reference
-            && (r.contains(['\n', '\r']) || r.chars().count() > MAX_REFERENCE_CHARS)
-        {
-            return Err(LedgerError::InvalidPayment(format!(
-                "a payment's reference is one line of at most {MAX_REFERENCE_CHARS} characters"
-            )));
+        if let Some(r) = &self.reference {
+            if r.contains(['\n', '\r']) || r.chars().count() > MAX_REFERENCE_CHARS {
+                return Err(LedgerError::InvalidPayment(format!(
+                    "a payment's reference is one line of at most {MAX_REFERENCE_CHARS} characters"
+                )));
+            }
+            LedgerError::reference_text("the payment reference", r)?;
         }
         Ok(())
     }
@@ -1263,13 +1271,15 @@ pub fn check_document_text(
     duplicate_reason: Option<&str>,
 ) -> Result<(), LedgerError> {
     for (field, text) in [
-        ("the reference", reference),
         ("the memo", memo),
         ("the duplicate reason", duplicate_reason),
     ] {
         if let Some(t) = text {
             LedgerError::free_text(field, t)?;
         }
+    }
+    if let Some(t) = reference {
+        LedgerError::reference_text("the reference", t)?;
     }
     Ok(())
 }

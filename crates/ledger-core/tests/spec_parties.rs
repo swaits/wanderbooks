@@ -444,9 +444,15 @@ fn w9_check_refuses_full_tin_in_any_text() {
     let mut f = w9("6789");
     f.entity_type = "LLC 12-3456789".to_string();
     assert!(f.check().is_err());
+    // Where the paper is kept is a reference, not a name or a detail: its
+    // printed shapes are refused, and a bare nine digits (a binder's or a
+    // file's number) is a number there (WB-partner-15).
+    let mut f = w9("6789");
+    f.kept_at = "drawer 123-45-6789".to_string();
+    assert!(f.check().is_err());
     let mut f = w9("6789");
     f.kept_at = "drawer 123456789".to_string();
-    assert!(f.check().is_err());
+    assert!(f.check().is_ok());
     let mut f = w9("6789");
     f.exempt_payee_code = Some("123-45-6789".to_string());
     assert!(f.check().is_err());

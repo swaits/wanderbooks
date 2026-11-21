@@ -1008,6 +1008,13 @@ impl LedgerError {
     pub fn free_text(field: &str, text: &str) -> Result<(), LedgerError> {
         crate::settings::check_free_text(field, text).map_err(LedgerError::FreeTextHoldsTin)
     }
+
+    /// [`Self::free_text`] for a reference (a tag, a serial, a payment's or
+    /// an invoice's reference, an account code, a file name): a bare nine
+    /// digits is allowed ([`crate::settings::check_reference_text`]).
+    pub fn reference_text(field: &str, text: &str) -> Result<(), LedgerError> {
+        crate::settings::check_reference_text(field, text).map_err(LedgerError::FreeTextHoldsTin)
+    }
 }
 
 /// The refusal [`LedgerError::TaxCategoryRequired`] gives: what to pass,

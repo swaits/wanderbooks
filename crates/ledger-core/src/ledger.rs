@@ -1024,7 +1024,7 @@ impl Ledger {
         if code.trim().is_empty() {
             return Err(LedgerError::EmptyAccountCode);
         }
-        LedgerError::free_text("the account code", code)?;
+        LedgerError::reference_text("the account code", code)?;
         let name = name.trim();
         if name.is_empty() {
             return Err(LedgerError::EmptyAccountName);
@@ -1295,7 +1295,7 @@ impl Ledger {
         if code.trim().is_empty() {
             return Err(LedgerError::EmptyAccountCode);
         }
-        LedgerError::free_text("the account code", code)?;
+        LedgerError::reference_text("the account code", code)?;
         if self.chart.find_by_code(code).is_some() {
             return Err(LedgerError::DuplicateAccountCode(code.to_string()));
         }
@@ -2773,7 +2773,7 @@ impl Ledger {
             tag: tag.to_string(),
             why,
         })?;
-        LedgerError::free_text("the asset tag", tag)?;
+        LedgerError::reference_text("the asset tag", tag)?;
         match self.asset_tags.get(&assets::tag_key(tag)) {
             Some(&holder) if Some(holder) != id => Err(LedgerError::AssetTagTaken {
                 tag: tag.to_string(),
@@ -2810,7 +2810,7 @@ impl Ledger {
         }
         if let Some(s) = serial {
             assets::check_serial(s).map_err(LedgerError::InvalidSerial)?;
-            LedgerError::free_text("the serial number", s)?;
+            LedgerError::reference_text("the serial number", s)?;
         }
         Ok(())
     }
@@ -6220,7 +6220,7 @@ impl Ledger {
             crate::parties::check_text("a recipient", to).map_err(LedgerError::InvalidSend)?;
         }
         if let Some(reference) = &sent.reference {
-            crate::parties::check_note("the reference", reference)
+            crate::parties::check_reference_note("the reference", reference)
                 .map_err(LedgerError::InvalidSend)?;
         }
         if let Some(note) = &sent.note {
@@ -6784,6 +6784,9 @@ impl Ledger {
                 return Err(LedgerError::InvalidDiscountReason(
                     arap::MAX_REFERENCE_CHARS,
                 ));
+            }
+            if let Some(reason) = &app.discount_reason {
+                LedgerError::free_text("the discount reason", reason)?;
             }
             if app.discount > Decimal::ZERO {
                 self.check_discount(app, kind, total, doc_date, params.date)?;

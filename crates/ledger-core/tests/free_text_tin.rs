@@ -11,11 +11,13 @@
 //! `00-0000000`; no real one appears here.
 
 use ledger_core::settings::{
-    check_free_text, count_printed_tins, holds_printed_tin, mask_printed_tins, tin_refusal,
+    check_free_text, check_reference_text, count_printed_tins, holds_printed_tin,
+    holds_printed_tin_in_reference, mask_printed_tins, mask_printed_tins_in_reference, tin_refusal,
 };
 use proptest::prelude::*;
 
-/// Every separator the detector reads between a TIN's groups.
+/// Every separator the detector reads between a TIN's groups, the dot
+/// aside (a dot joins only the three groups of an SSN, both: `DOTS`).
 const SEPARATORS: &[&str] = &[
     "-",
     "\u{2010}",
@@ -28,8 +30,6 @@ const SEPARATORS: &[&str] = &[
     "\u{fe58}",
     "\u{fe63}",
     "\u{ff0d}",
-    ".",
-    "\u{ff0e}",
     " ",
     "  ",
     "\t",
@@ -42,7 +42,13 @@ const SEPARATORS: &[&str] = &[
     " - ",
     " \u{2013} ",
     "\u{a0}\u{2014}\u{a0}",
+    // a line break reads as a space
+    "\n",
+    "\r\n",
 ];
+
+/// The dots: they join an SSN's groups when they join both of them.
+const DOTS: &[&str] = &[".", "\u{ff0e}", "\u{2024}"];
 
 /// Text around a number that has no digit at its edge.
 const CONTEXTS: &[(&str, &str)] = &[
@@ -71,6 +77,46 @@ proptest! {
     ) {
         let text = format!("{}{a}{}{b}{}{c}{}", CONTEXTS[ctx].0, SEPARATORS[s1], SEPARATORS[s2], CONTEXTS[ctx].1);
         prop_assert!(holds_printed_tin(&text), "{text:?}");
+    }
+
+    /// An SSN written with a dot at both joiners (`000.00.0000`) is found.
+    #[test]
+    fn a_dotted_ssn_is_found(
+        a in digits(3), b in digits(2), c in digits(4),
+        s1 in 0..DOTS.len(), s2 in 0..DOTS.len(), ctx in 0..CONTEXTS.len(),
+    ) {
+        let text = format!("{}{a}{}{b}{}{c}{}", CONTEXTS[ctx].0, DOTS[s1], DOTS[s2], CONTEXTS[ctx].1);
+        prop_assert!(holds_printed_tin(&text), "{text:?}");
+    }
+
+    /// A dot at one joiner only, or between an EIN's groups, is a decimal or
+    /// a version, not a tax id (a coordinate: `47.6062095`).
+    #[test]
+    fn a_dot_alone_is_not_a_joiner(
+        a in digits(3), b in digits(2), c in digits(4), e in digits(7),
+        dot in 0..DOTS.len(), sep in 0..SEPARATORS.len(), ctx in 0..CONTEXTS.len(),
+    ) {
+        let ein = format!("{}{}{}{e}{}", CONTEXTS[ctx].0, &a[..2], DOTS[dot], CONTEXTS[ctx].1);
+        prop_assert!(!holds_printed_tin(&ein), "{ein:?}");
+        let first = format!("{}{a}{}{b}{}{c}{}", CONTEXTS[ctx].0, DOTS[dot], SEPARATORS[sep], CONTEXTS[ctx].1);
+        prop_assert!(!holds_printed_tin(&first), "{first:?}");
+        let second = format!("{}{a}{}{b}{}{c}{}", CONTEXTS[ctx].0, SEPARATORS[sep], DOTS[dot], CONTEXTS[ctx].1);
+        prop_assert!(!holds_printed_tin(&second), "{second:?}");
+    }
+
+    /// A date followed by a seven-digit reference is a date and a
+    /// reference, whatever stands between them, and a decimal with seven
+    /// digits after its point is a number (`47.6062095`).
+    #[test]
+    fn a_date_then_a_reference_and_a_decimal_are_no_tax_id(
+        y in 1990u32..2100, m in 1u32..13, d in 1u32..29, r in digits(7),
+        whole in digits(2), sep in 0..4usize, ctx in 0..CONTEXTS.len(),
+    ) {
+        let between = [" ", "\t", "\n", "  "][sep];
+        let date = format!("{}{y}-{m:02}-{d:02}{between}{r}{}", CONTEXTS[ctx].0, CONTEXTS[ctx].1);
+        prop_assert!(!holds_printed_tin(&date), "{date:?}");
+        let decimal = format!("{}{whole}.{r}{}", CONTEXTS[ctx].0, CONTEXTS[ctx].1);
+        prop_assert!(!holds_printed_tin(&decimal), "{decimal:?}");
     }
 
     /// Every 2-7 grouping with any listed separator is found.
@@ -148,6 +194,18 @@ fn the_allow_list_passes() {
         "11/21/2026",
         "21.11.2026",
         "2026-11-21T10:30:00Z",
+        // decimals: a coordinate, a version, an amount
+        "47.6062095",
+        "at 47.6062095, -122.3321",
+        "17.2345678",
+        "v 12.3456789",
+        "$1234567.8901234",
+        // a date followed by, or inside, a longer number
+        "2026-11-21 0001234",
+        "on 2026-11-21 0001234 paid",
+        "2026-11-0001234",
+        "55-1234567-001",
+        "part 5-000-00-0000",
         // plain words
         "Office rent, November",
         "",
@@ -172,6 +230,21 @@ fn the_shapes_are_found() {
         "\u{660}\u{660}\u{660}-\u{660}\u{660}-\u{660}\u{660}\u{660}\u{660}",
         "pay 00-0000000 now",
         "SSN: 000.00.0000.",
+        // a line break between the groups reads as a space
+        "000\n00\n0000",
+        "000\r\n00\r\n0000",
+        "ein 00\n0000000",
+        "ein 00\r0000000",
+        // zero-width and soft-hyphen characters between digits are not there
+        "000\u{200b}-00-0000",
+        "0\u{200b}0\u{200c}0\u{200d}-0\u{2060}0-00\u{feff}00",
+        "00\u{ad}-0000000",
+        "00-000\u{ad}0\u{ad}000",
+        "0\u{200b}00000000",
+        "\u{200b}000000000\u{200b}",
+        // the text around a number
+        "words 000-00-0000 words",
+        "(00-0000000)",
     ] {
         assert!(holds_printed_tin(caught), "{caught:?} must be found");
         let why = check_free_text("the memo", caught).unwrap_err();
@@ -186,6 +259,106 @@ fn the_shapes_are_found() {
             "a refusal never repeats the number: {why}"
         );
     }
+}
+
+/// What the shapes do not take for a tax id: a dot is no joiner but between
+/// both groups of an SSN, and a group that is the tail or head of a longer
+/// run of digits and dashes belongs to that run.
+#[test]
+fn a_dot_and_a_longer_run_are_no_tax_id() {
+    for fine in [
+        "47.6062095",
+        "17.2345678",
+        "12.3456789",
+        "000.00 0000",
+        "000 00.0000",
+        "000.00-0000",
+        "000-00.0000",
+        "2026-11-21 0001234",
+        "2026-11-21\n0001234",
+        "12-3456789-0",
+        "1-123-45-6789",
+        "0000-00-0000000",
+        "123456789.5",
+        "0.123456789",
+    ] {
+        assert!(!holds_printed_tin(fine), "{fine:?} must pass");
+        assert!(check_free_text("memo", fine).is_ok(), "{fine:?} must pass");
+    }
+    // ... while the shapes, with words around them, are still found.
+    for caught in [
+        "2026-11-21 paid 00-0000000",
+        "on 2026-11-21: 000-00-0000",
+        "47.6062095 and then 00-0000000",
+        "ref 12-3456789.",
+        "123456789.",
+    ] {
+        assert!(holds_printed_tin(caught), "{caught:?} must be found");
+    }
+    // The line break and the invisible characters are read only outside a
+    // replay, as the Unicode forms are (BS-entry-4).
+    let broken = "000\n00\n0000";
+    assert!(holds_printed_tin(broken));
+    ledger_core::parties::replaying(|| {
+        assert!(!holds_printed_tin(broken));
+        assert!(!holds_printed_tin("0\u{200b}00000000"));
+    });
+}
+
+/// Letters between digits, and a number split across two fields, are an
+/// accident and not a way to hide one: the reading leaves them (WB-partner-15).
+#[test]
+fn letters_between_digits_are_left_alone() {
+    for fine in ["000a00b0000", "00-0000 000", "000-00x0000"] {
+        assert!(!holds_printed_tin(fine), "{fine:?}");
+    }
+}
+
+/// A reference's reading (an asset tag, a serial, an invoice or bill
+/// number, a payment reference, an account code, a file name): a bare nine
+/// digits is a number there; the printed shapes are still refused.
+#[test]
+fn a_reference_may_be_nine_digits_but_not_a_printed_tax_id() {
+    for fine in [
+        "123456789",
+        "SN 000000000",
+        "tag 000000000.",
+        "000000000",
+        "INV-2026-11-0042",
+        "1234567890",
+        "scan 000000000.pdf",
+    ] {
+        assert!(!holds_printed_tin_in_reference(fine), "{fine:?}");
+        assert!(check_reference_text("the tag", fine).is_ok(), "{fine:?}");
+        assert_eq!(
+            mask_printed_tins_in_reference(fine),
+            fine,
+            "a bare nine digits stays in a reference"
+        );
+    }
+    for caught in [
+        "000-00-0000",
+        "00-0000000",
+        "SN 000 00 0000",
+        "w9 00\u{2013}0000000.pdf",
+        "000.00.0000",
+        "000\n00\n0000",
+        "0\u{200b}0-0000000",
+    ] {
+        assert!(holds_printed_tin_in_reference(caught), "{caught:?}");
+        let why = check_reference_text("the tag", caught).unwrap_err();
+        assert!(
+            why.starts_with("the tag looks like it holds a tax id") && !why.contains("0000"),
+            "{why}"
+        );
+    }
+    // Free text says the same of the same bare run: refused.
+    assert!(holds_printed_tin("123456789"));
+    // A mask of a reference keeps its bare run and covers its shapes.
+    assert_eq!(
+        mask_printed_tins_in_reference("SN 123456789 / 000-00-0000"),
+        "SN 123456789 / \u{2022}\u{2022}\u{2022}-\u{2022}\u{2022}-0000"
+    );
 }
 
 /// Two numbers in one text are two finds, each masked to its last four.
@@ -324,16 +497,20 @@ mod engine {
             f.l.create_period(&format!("P {TIN}"), day(1), day(31)),
             "the period name",
         );
+        // An account code is a reference: its printed shape is refused, a
+        // bare nine digits is a code (WB-partner-15).
         holds_tin(
-            f.l.add_account(
-                &TIN.replace('-', ""),
-                "Odd",
-                AccountType::Asset,
-                None,
-                false,
-            ),
+            f.l.add_account(TIN, "Odd", AccountType::Asset, None, false),
             "the account code",
         );
+        let nine =
+            f.l.add_account("123456789", "Nine", AccountType::Asset, None, false);
+        assert!(nine.is_ok(), "{nine:?}");
+        holds_tin(
+            f.l.renumber_account(f.cash, "00-0000000"),
+            "the account code",
+        );
+        f.l.renumber_account(f.cash, "000000000").unwrap();
         f.l.create_period("2026-03", day(1), day(31)).unwrap();
     }
 
@@ -433,12 +610,31 @@ mod engine {
             bill(
                 &mut f.l,
                 BillFields {
-                    vendor_ref: Some("000000000".into()),
+                    vendor_ref: Some(TIN.into()),
                     ..Default::default()
                 },
             ),
             "the reference",
         );
+        // A bare nine digits is a vendor's invoice number, and a customer's
+        // purchase order: references.
+        bill(
+            &mut f.l,
+            BillFields {
+                vendor_ref: Some("000000000".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        inv(
+            &mut f.l,
+            vec![line("ok")],
+            InvoiceFields {
+                customer_ref: Some("PO 123456789".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         holds_tin(
             bill(
                 &mut f.l,
@@ -465,6 +661,169 @@ mod engine {
                 vendor_ref: Some("INV-2026-11-0042".into()),
                 ..Default::default()
             },
+        )
+        .unwrap();
+    }
+
+    /// A payment's reference is the engine's to check, as the tools check
+    /// it: a printed SSN or EIN is refused, a bare nine digits (a check or
+    /// a confirmation number) is kept, and the entry's description, which
+    /// is free text, shows it masked. A discount's reason is free text.
+    #[test]
+    fn payments_check_their_reference_and_discount_reason() {
+        use ledger_core::{Application, DocRef, PaymentDetails, SettleParams};
+        let mut f = fx();
+        let c = f.l.add_customer("Acme").unwrap();
+        let v = f.l.add_vendor("Beta").unwrap();
+        let invoice =
+            f.l.create_invoice_with(
+                c,
+                day(1),
+                day(31),
+                vec![line("work")],
+                InvoiceFields::default(),
+            )
+            .unwrap();
+        let bill =
+            f.l.create_bill_with(
+                v,
+                day(1),
+                day(31),
+                vec![line("parts")],
+                BillFields::default(),
+            )
+            .unwrap();
+        let pay = |l: &mut Ledger, reference: &str| {
+            l.receive_payment_with(
+                invoice,
+                day(5),
+                Decimal::from(1),
+                f.cash,
+                &PaymentDetails {
+                    instrument: None,
+                    reference: Some(reference.into()),
+                },
+            )
+        };
+        holds_tin(pay(&mut f.l, TIN), "the payment reference");
+        holds_tin(pay(&mut f.l, "check 00-0000000"), "the payment reference");
+        let before = f.l.clone();
+        holds_tin(
+            f.l.pay_bill_with(
+                bill,
+                day(5),
+                Decimal::from(1),
+                f.cash,
+                &PaymentDetails {
+                    instrument: None,
+                    reference: Some(format!("wire {TIN}")),
+                },
+            ),
+            "the payment reference",
+        );
+        assert_eq!(f.l, before, "a refusal changes nothing");
+        // A bare nine digits is a reference ...
+        let e = pay(&mut f.l, "123456789").unwrap();
+        // ... and the entry's description, free text, holds it masked.
+        assert_eq!(
+            f.l.get_entry(e).unwrap().description(),
+            "Payment on invoice 1 (ref \u{2022}\u{2022}\u{2022}\u{2022}\u{2022}6789)"
+        );
+        // A ten-digit trace number is kept as it is.
+        let e = pay(&mut f.l, "1234567890").unwrap();
+        assert_eq!(
+            f.l.get_entry(e).unwrap().description(),
+            "Payment on invoice 1 (ref 1234567890)"
+        );
+        // The discount reason of a settlement.
+        let settle = |l: &mut Ledger, why: &str| {
+            l.settle(SettleParams {
+                date: day(6),
+                description: "Payment".into(),
+                cash_account: f.cash,
+                party: c,
+                applications: vec![Application {
+                    doc: DocRef::Invoice(invoice),
+                    cash: Decimal::from(1),
+                    discount: Decimal::ZERO,
+                    discount_reason: Some(why.into()),
+                }],
+                fee: None,
+                instrument: None,
+                reference: None,
+            })
+        };
+        holds_tin(
+            settle(&mut f.l, &format!("early {TIN}")),
+            "the discount reason",
+        );
+        settle(&mut f.l, "paid within 10 days, ref 1234567890").unwrap();
+        // A replay reads none of it.
+        ledger_core::parties::replaying(|| {
+            let d = PaymentDetails {
+                instrument: None,
+                reference: Some(TIN.into()),
+            };
+            d.check().unwrap();
+        });
+    }
+
+    /// A project's fields are refused by the engine itself, whoever calls
+    /// (the tools' own check runs before it, and says it first).
+    #[test]
+    fn a_project_field_is_refused_by_the_engine() {
+        use ledger_core::classes::ProjectFacts;
+        let mut f = fx();
+        let id = f.l.add_class("Harbor").unwrap();
+        let facts = |notes: Option<&str>, description: Option<&str>, links: &[&str]| ProjectFacts {
+            notes: notes.map(Into::into),
+            description: description.map(Into::into),
+            links: links.iter().map(|l| (*l).to_string()).collect(),
+            ..Default::default()
+        };
+        let engine_refusal = |r: Result<(String, ProjectFacts), LedgerError>, field: &str| match r {
+            Err(LedgerError::InvalidProject(why)) => {
+                assert!(why.contains(field), "{why}");
+                assert!(why.contains("full SSN or EIN"), "{why}");
+                assert!(!why.contains("0000"), "never the number: {why}");
+            }
+            other => panic!("{field}: expected the engine's refusal, got {other:?}"),
+        };
+        engine_refusal(
+            f.l.check_set_project(id, "Harbor", &facts(Some(&format!("ssn {TIN}")), None, &[])),
+            "notes",
+        );
+        engine_refusal(
+            f.l.check_set_project(id, "Harbor", &facts(None, Some("ein 00-0000000"), &[])),
+            "description",
+        );
+        engine_refusal(
+            f.l.check_set_project(
+                id,
+                "Harbor",
+                &facts(None, None, &["https://x.test/000-00-0000"]),
+            ),
+            "link",
+        );
+        match f
+            .l
+            .set_project(id, &format!("Harbor {TIN}"), facts(None, None, &[]))
+        {
+            Err(LedgerError::InvalidProject(why)) => {
+                assert!(why.contains("full SSN or EIN"), "{why}");
+            }
+            other => panic!("the name: {other:?}"),
+        }
+        // A reference of ten digits, an invoice number and a store listing's
+        // id are no tax id.
+        f.l.set_project(
+            id,
+            "Harbor 2026-11-0042",
+            facts(
+                Some("ref 1234567890"),
+                Some("PO 2026-0042"),
+                &["https://apps.example.com/app/id284882215"],
+            ),
         )
         .unwrap();
     }
@@ -498,6 +857,10 @@ mod engine {
         );
         holds_tin(f.l.set_asset_tag(a, "T-000-00-0000"), "the asset tag");
         f.l.set_asset_serial(a, Some("C02XK1ABCDEF")).unwrap();
+        // A tag and a serial number are references: a bare nine digits
+        // is one.
+        f.l.set_asset_serial(a, Some("000000000")).unwrap();
+        f.l.set_asset_tag(a, "123456789").unwrap();
         let sched = |d: &str| NewSchedule {
             description: d.into(),
             kind: ScheduleKind::PrepaidExpense,

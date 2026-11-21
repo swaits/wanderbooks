@@ -154,7 +154,7 @@ work or says to start Wanderbooks.** Every `wanderbooks …` command that
 needs the books, and the window's own menu work, finds what holds the root:
 a host (`wanderbooks serve`: it takes a lease, as before), the app's server,
 or nothing. What holds the root is read, never guessed: a server started with
-`--started-by app|host|command` writes `run/server.info` beside its lock (who
+`--started-by app|host|command` writes run/server.info beside its lock (who
 started it, its pid, whether it has begun to close), as soon as the lock is its,
 and removes it as it lets go; a server that says nothing (an earlier build's) is
 taken for the app's. Only a server the app started, not closing, whose admin
@@ -209,7 +209,7 @@ There is no "Close the books" in the app: closing a company's tab closes
 the company (WB-app-2) and closing the window closes them all (WB-app-4).
 *Enforced:* `ledger_host::opener::Opener::hold` (`HoldError::NotRunning`,
 `what_holds`, `Holder`, `admin_answers`), ledger-mcp `local::run`
-(`--started-by`, `run/server.info`, INVARIANT 16), `ledger_host::app_server`
+(`--started-by`, run/server.info, INVARIANT 16), `ledger_host::app_server`
 (`AppServer::start_for_command`, `wait_ready_unless_beaten`),
 `ledger_host::commands` (`direct_for`, `reach`, `Reached::release`,
 `listed_while_closed`, `upgrade_by_admin`, `doctor`, `close`).
@@ -222,9 +222,9 @@ the company (WB-app-2) and closing the window closes them all (WB-app-4).
 `books_commands_hold_the_books_while_they_run`,
 `a_command_ends_at_its_deadline_during_a_restart`,
 `the_viewers_new_books_are_made_by_the_server`);
-`format_upgrade.rs` (`format_upgrade_waits_for_consent`: a command's own
+`ledger-cli` `tests/format_upgrade.rs` (`format_upgrade_waits_for_consent`: a command's own
 server shows the upgrade its company waits for;
-`a_list_with_nothing_running_says_which_books_wait_for_an_upgrade`);
+and its test that a list with nothing running says which books wait for an upgrade);
 `open_while_held.rs` (`serve_waits_in_words_for_a_server_that_is_closing_and_then_holds_the_books`,
 `a_command_and_the_words_of_close_and_doctor_know_a_server_is_closing`,
 `a_command_waits_for_another_commands_server_and_does_not_attach_to_it`,

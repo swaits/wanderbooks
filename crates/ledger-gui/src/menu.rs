@@ -17,6 +17,16 @@
 //!      missing TIN never stops the file: the package lists the gaps.
 //!   3. The file is saved as a new file in Downloads (export::save), never
 //!      over one, off the UI thread; what came of it is shown.
+//!   4. An export belongs to its tab: closing the tab, with no question,
+//!      tells the job to stop (jobs.rs). It checks at its phase
+//!      boundaries (before and after the books are read, after the file
+//!      is built, and just before it is saved) and stops there, saving
+//!      nothing: the save is one atomic write of a new file
+//!      (`ledger_store::saving`: written aside whole and linked in), so a
+//!      file is whole or is not there, and one that a stop reaches
+//!      too late to prevent (it came after the last check) is removed
+//!      again, being the job's own new file. What the builder
+//!      (`ledger_package`) does inside one call is not interrupted.
 //! ```
 
 use crate::books::Books;
@@ -35,9 +45,19 @@ pub type Done = Result<(PathBuf, Option<String>), String>;
 pub struct Menu {
     job: Option<(String, Receiver<Done>)>,
     done: Option<(String, Done)>,
+    /// The tab's threads: the job is one of them (INVARIANT 4).
+    jobs: crate::jobs::Spawner,
 }
 
 impl Menu {
+    /// A menu whose jobs are threads of a tab.
+    pub fn in_tab(jobs: crate::jobs::Spawner) -> Self {
+        Self {
+            jobs,
+            ..Default::default()
+        }
+    }
+
     /// The menu button, its items, and a note of the last job's outcome.
     pub fn ui(&mut self, ui: &mut Ui, books: &Arc<Books>, compact: bool) {
         let p = crate::theme::pal(ui.ctx());
@@ -117,13 +137,30 @@ impl Menu {
     }
 
     fn start(&mut self, ctx: &egui::Context, books: Arc<Books>, job: Job) {
-        let (tx, rx) = channel();
         let what = job.label();
+        self.start_with(ctx, what, Box::new(move |stop| job.run_until(&books, stop)));
+    }
+
+    /// Run `work` as an export job: off the UI thread, one of the tab's
+    /// threads, told to stop with the tab (INVARIANT 4).
+    pub fn start_with(
+        &mut self,
+        ctx: &egui::Context,
+        what: String,
+        work: Box<dyn FnOnce(&crate::jobs::Stop) -> Done + Send>,
+    ) {
+        let (tx, rx) = channel();
         let ctx = ctx.clone();
-        std::thread::spawn(move || {
-            let _ = tx.send(job.run(&books));
-            ctx.request_repaint();
-        });
+        let started = self
+            .jobs
+            .spawn("export", crate::jobs::Hold::Free, move |stop| {
+                let _ = tx.send(work(stop));
+                ctx.request_repaint();
+            });
+        if !started {
+            self.done = Some((what, Err("the system gave no thread for it".into())));
+            return;
+        }
         self.job = Some((what, rx));
         self.done = None;
     }
@@ -148,7 +185,20 @@ impl Job {
 
     /// Make the file and save it (INVARIANTS 1-3).
     pub fn run(self, books: &Books) -> Done {
+        self.run_until(books, &crate::jobs::Stop::never())
+    }
+
+    /// [`Self::run`], stopping at its phase boundaries when `stop` is
+    /// given, saving nothing (INVARIANT 4).
+    pub fn run_until(self, books: &Books, stop: &crate::jobs::Stop) -> Done {
+        let stopped = || -> Done { Err("stopped: its tab was closed".into()) };
+        if stop.requested() {
+            return stopped();
+        }
         let snap = ledger_store::Snapshot::load(&books.data_dir).map_err(|e| e.to_string())?;
+        if stop.requested() {
+            return stopped();
+        }
         let ledger = snap.ledger();
         // The settings the rest of the viewer shows, read as the server
         // reads them (data::settings).
@@ -176,8 +226,17 @@ impl Job {
                         tins: Some(&tin),
                     },
                 )?;
+                if stop.requested() {
+                    return stopped();
+                }
                 let (stem, ext) = crate::export::split_name(&p.file_name);
                 let path = crate::export::save(stem, ext, &p.zip)?;
+                if stop.requested() {
+                    // Reached too late to stop the write: the new file it
+                    // made is the job's own, and goes.
+                    let _ = std::fs::remove_file(&path);
+                    return stopped();
+                }
                 let mut notes = Vec::new();
                 if !p.tin_gaps.is_empty() {
                     notes.push(format!(
@@ -205,8 +264,15 @@ impl Job {
                 )?;
                 let csv = ledger_package::vendor_1099_csv(&w, true);
                 let name = ledger_package::vendor_1099_csv_name(year, true);
+                if stop.requested() {
+                    return stopped();
+                }
                 let (stem, ext) = crate::export::split_name(&name);
                 let path = crate::export::save(stem, ext, csv.as_bytes())?;
+                if stop.requested() {
+                    let _ = std::fs::remove_file(&path);
+                    return stopped();
+                }
                 let gaps = w
                     .lines
                     .iter()

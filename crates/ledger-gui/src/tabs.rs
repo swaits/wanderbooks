@@ -46,6 +46,10 @@
 //!      for a state mark (drawn by a later unit, nothing now).
 //!   6. This only says what was asked (show, close, open); the app does
 //!      it.
+//!   7. A tab whose company has a job under way that changes its books
+//!      (`Tab::held`) has its close control off: disabled to assistive
+//!      technology, drawn faint, no click and no middle click closes it,
+//!      and its hover text says what is running.
 //! ```
 
 use crate::theme::{self, pal};
@@ -92,6 +96,10 @@ pub struct Tab {
     /// What its badge's hue is chosen from: the id of its books
     /// ([`hue_of`]).
     pub hue_key: String,
+    /// Why the tab can't be closed now: a job that changes its books is
+    /// running ("Restoring these books: wait for it to finish"). Its close
+    /// control is off, and says so on hover.
+    pub held: Option<String>,
 }
 
 /// The badge hue of the company whose books have id `book_id`, light or
@@ -428,7 +436,7 @@ fn one_tab(
     close.widget_info(|| {
         egui::WidgetInfo::labeled(
             egui::WidgetType::Button,
-            true,
+            tab.held.is_none(),
             format!("Close {}", tab.title),
         )
     });
@@ -507,7 +515,7 @@ fn one_tab(
             galley,
             p.text,
         );
-        if close.hovered() {
+        if close.hovered() && tab.held.is_none() {
             painter.rect_filled(close_rect, CornerRadius::same(5), p.selected);
         }
         painter.text(
@@ -515,7 +523,9 @@ fn one_tab(
             egui::Align2::CENTER_CENTER,
             icon::X,
             egui::FontId::proportional(12.0),
-            if close.hovered() || here {
+            if tab.held.is_some() {
+                p.faint
+            } else if close.hovered() || here {
                 p.text
             } else {
                 p.muted
@@ -525,12 +535,15 @@ fn one_tab(
     let resp = resp.on_hover_text(&tab.detail);
     // The close control sits over the tab and is the one under the pointer
     // there: a click on it is its own, never the tab's.
-    if close
-        .on_hover_text(format!("Close {}", tab.title))
-        .clicked()
-        || resp.middle_clicked()
-    {
+    let close_tip = match &tab.held {
+        Some(why) => why.clone(),
+        None => format!("Close {}", tab.title),
+    };
+    let closes = close.on_hover_text(close_tip).clicked() || resp.middle_clicked();
+    if closes && tab.held.is_none() {
         *action = Some(TabAction::Close(i));
+    } else if closes {
+        // Held open: the click is the close control's, and does nothing.
     } else if resp.clicked() {
         *action = Some(TabAction::Show(i));
     }

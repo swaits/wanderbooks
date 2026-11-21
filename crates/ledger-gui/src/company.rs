@@ -16,17 +16,38 @@
 //!   2. Every egui id a view makes is scoped by the view's own id (the app
 //!      draws a view inside `push_id`), so egui's memory (scroll offsets,
 //!      collapsed headers, focus, remembered widths) never carries from
-//!      one company's tab into another's.
+//!      one company's tab into another's. A panel's id is not scoped by
+//!      `push_id` (egui keys a panel's size by the id it is given), so
+//!      the view's panels (sidebar, rail, top bar) are given ids made from
+//!      the view's own. What is not scoped is the app's, on purpose, and
+//!      says so: the assistant dock's panel (one height, one layout in
+//!      every tab: dock.rs INVARIANT 9), the tab bar's panel, the colour
+//!      scheme's palette (one scheme for the window), and the footer and
+//!      link rects published at fixed ids for the tests, which nothing
+//!      reads back (`tests/tabs.rs` says each).
 //!   3. A view that is not shown still follows its journal and takes the
 //!      agent's `books.show` (its own page moves, nothing else does), so
 //!      showing it later is current at once.
 //!   4. Dropping a view ends everything it started: its loader and its
-//!      watcher and viewer presence, its receipts' workers, and its
-//!      dock's agent process.
+//!      watcher and viewer presence, its receipts' workers, an export,
+//!      the dock's start and its agent's process. They are all counted in
+//!      one registry of the view (jobs.rs), which the drop tells to stop
+//!      and which says when the last has ended (`jobs_watch`); the
+//!      viewer's presence on the books is let go at the drop, not when a
+//!      refresh in flight is over. One exception, by decision: a job that
+//!      changes the books (an owner's restore or format upgrade, owner.rs
+//!      INVARIANT 6) is never abandoned: while one runs the view cannot
+//!      be closed (`closing_is_held`), nor the window (app.rs).
+//!   5. What the view keeps for next time is filed under the data root
+//!      and the books' id (`kept_scope`), with the books' identity (the
+//!      SHA-256 of the journal's first line, which no other books share)
+//!      once they load; a stored state whose identity is not the loaded
+//!      books' is another set of books' and is discarded (`check_identity`).
 //! ```
 
 use crate::books::Books;
 use crate::data::{Loader, Source, Update};
+use crate::jobs::Jobs;
 use crate::nav::{Nav, Route, Section};
 use crate::owner::Owner;
 use crate::pages;
@@ -98,6 +119,25 @@ pub struct CompanyView {
     /// Books arrived while the view wasn't shown: their receipts are
     /// prefetched when it is.
     prefetch_due: bool,
+    /// Every thread this view started (INVARIANT 4): the loader, the
+    /// receipts' workers, an export, an owner's job, the dock's start and
+    /// its agent's reaper. Told to stop when the view drops (`Drop`).
+    jobs: Jobs,
+    /// What identifies these books, taken from the books themselves once
+    /// they load, as it was kept (until then) or is now (INVARIANT 5).
+    identity: Option<String>,
+    /// The identity of the books as last loaded (None while there is no
+    /// journal line to take it from).
+    loaded_identity: Option<String>,
+}
+
+impl Drop for CompanyView {
+    /// The tab is closing: every thread it started is told to stop before
+    /// anything else of the view goes (an export that hasn't saved yet
+    /// saves nothing; a thumbnail not written is not written).
+    fn drop(&mut self) {
+        self.jobs.stop();
+    }
 }
 
 /// The key that tells a company's views apart: its books' folder, as the
@@ -112,6 +152,8 @@ pub(crate) fn key_of(data_dir: &std::path::Path) -> String {
 impl CompanyView {
     fn bare(key: String, data_dir: Option<std::path::PathBuf>, ctx: &egui::Context) -> Self {
         let id = egui::Id::new(("company", &key));
+        let jobs = Jobs::new();
+        let spawner = jobs.spawner();
         Self {
             key,
             id,
@@ -120,16 +162,19 @@ impl CompanyView {
             books: None,
             error: None,
             nav: Nav::new(Route::Overview),
-            receipts: Receipts::new(ctx),
+            receipts: Receipts::new(ctx, &spawner),
             state: PageState::default(),
             palette: crate::palette::Palette::scoped(id),
             updated_at: -1e9,
             live_label: false,
-            menu: Default::default(),
-            owner_menu: crate::owner::OwnerMenu::scoped(id),
+            menu: crate::menu::Menu::in_tab(spawner.clone()),
+            owner_menu: crate::owner::OwnerMenu::scoped(id, spawner),
             dock: Default::default(),
             owner: crate::owner::current(),
             prefetch_due: false,
+            jobs,
+            identity: None,
+            loaded_identity: None,
         }
     }
 
@@ -138,7 +183,7 @@ impl CompanyView {
     pub fn open(ctx: &egui::Context, source: Source) -> Self {
         let mut view = Self::bare(key_of(&source.data_dir), Some(source.data_dir.clone()), ctx);
         view.receipts.thumb_dir = crate::receipts::thumb_dir();
-        view.loader = Some(Loader::spawn(source, ctx.clone()));
+        view.loader = Some(Loader::spawn_in(source, ctx.clone(), &view.jobs.spawner()));
         view
     }
 
@@ -146,6 +191,7 @@ impl CompanyView {
     pub fn with_books(ctx: &egui::Context, books: Books, start: Route) -> Self {
         let mut view = Self::bare(key_of(&books.data_dir), Some(books.data_dir.clone()), ctx);
         view.receipts.prefetch(&books);
+        view.loaded_identity = identity_of(&books);
         view.books = Some(Arc::new(books));
         view.nav = Nav::new(start);
         view
@@ -274,6 +320,38 @@ impl CompanyView {
         self.loader.as_ref().map(Loader::watch)
     }
 
+    /// A handle that says when every thread this view started has ended,
+    /// which outlives the view: its loader, its receipts' workers, its
+    /// exports and owner's jobs, the dock's start and its agent's reaper
+    /// (INVARIANT 4; tests).
+    pub fn jobs_watch(&self) -> crate::jobs::Watch {
+        self.jobs.watch()
+    }
+
+    /// What this view's threads hold its tab open for, if a job that
+    /// changes the books runs (INVARIANT 4): the words the tab's close
+    /// control shows.
+    pub fn closing_is_held(&self) -> Option<String> {
+        self.jobs.holding()
+    }
+
+    /// Tell this view's threads to stop, as its close does; the signal a
+    /// thread of it was given (tests).
+    pub fn stop_signal(&self) -> crate::jobs::Stop {
+        self.jobs.spawner().stop_signal()
+    }
+
+    /// Start `work` as this view's export job would be started (tests: a
+    /// job whose steps the test controls).
+    pub fn start_export_for_tests(
+        &mut self,
+        ctx: &egui::Context,
+        what: &str,
+        work: Box<dyn FnOnce(&crate::jobs::Stop) -> crate::menu::Done + Send>,
+    ) {
+        self.menu.start_with(ctx, what.to_string(), work);
+    }
+
     /// The agent dock (tests).
     pub fn dock_mut(&mut self) -> &mut crate::dock::Dock {
         &mut self.dock
@@ -348,6 +426,7 @@ impl CompanyView {
                     } else {
                         self.prefetch_due = true;
                     }
+                    self.loaded_identity = identity_of(&b);
                     self.books = Some(b);
                     self.error = None;
                 }
@@ -375,7 +454,7 @@ impl CompanyView {
             return;
         };
         if let Some(book) = crate::owner::book_id(&books) {
-            self.dock.show(ui, &owner, &book);
+            self.dock.show(ui, &owner, &book, &self.jobs.spawner());
         }
     }
 
@@ -623,7 +702,7 @@ impl CompanyView {
         let p = pal(ui.ctx());
         let books = self.books.clone();
         let head = self.card_head(ui.ctx());
-        egui::Panel::left("sidebar")
+        egui::Panel::left(ui.id().with("sidebar"))
             .exact_size(224.0)
             .resizable(false)
             .frame(
@@ -745,7 +824,7 @@ impl CompanyView {
         let p = pal(ui.ctx());
         let books = self.books.clone();
         let head = self.card_head(ui.ctx());
-        egui::Panel::left("rail")
+        egui::Panel::left(ui.id().with("rail"))
             .exact_size(RAIL_W)
             .resizable(false)
             .frame(
@@ -877,7 +956,7 @@ impl CompanyView {
     /// nothing ever overlaps.
     fn topbar(&mut self, ui: &mut Ui) {
         let p = pal(ui.ctx());
-        egui::Panel::top("topbar")
+        egui::Panel::top(ui.id().with("topbar"))
             .exact_size(52.0)
             .frame(
                 Frame::new()
@@ -1000,10 +1079,84 @@ impl CompanyView {
     }
 }
 
-/// The keys a view keeps its things under (after `company.<id>.`).
-pub(crate) const KEPT_KEYS: [&str; 4] = ["page", "range", "columns", "compare"];
+/// The keys a view keeps its things under (after `company.<scope>.`; the
+/// company's name is kept by the app beside them, under `name`).
+pub(crate) const KEPT_KEYS: [&str; 5] = ["page", "range", "columns", "compare", "identity"];
+
+/// A short, stable name for a place on disk: FNV-1a (64 bits) of its
+/// canonical path's bytes, in twelve hex digits. Stable across runs and
+/// versions (it is a key in a file); not a secret.
+pub fn path_hash(path: &std::path::Path) -> String {
+    let real = ledger_store::root::canonical(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in real.as_os_str().as_encoded_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{:012x}", h & 0xffff_ffff_ffff)
+}
+
+/// What a company's kept things are filed under: for books in a data
+/// root, the root (a hash of its canonical path) and the books' id,
+/// `<root hash>.<id>`; for books in a folder outside any root, that
+/// folder (`dir.<hash of its canonical path>`). Two roots' companies of
+/// one id are two companies.
+pub fn kept_scope_of(data_dir: &std::path::Path) -> String {
+    match (
+        ledger_store::root::root_of_book_dir(data_dir),
+        data_dir.file_name().and_then(|n| n.to_str()),
+    ) {
+        (Some(root), Some(id)) => format!("{}.{id}", path_hash(root)),
+        _ => format!("dir.{}", path_hash(data_dir)),
+    }
+}
+
+/// What identifies a set of books, from the books themselves: the SHA-256
+/// of the journal's first line (its canonical bytes: the very value the
+/// second line's `prev` repeats). Every set of books has its own first
+/// line (its timestamp, its first event); books made again under an old
+/// id, or restored over it from another set, do not share it. None until
+/// the journal has a line.
+pub fn identity_of(books: &Books) -> Option<String> {
+    books
+        .journal
+        .first()
+        .map(|l| ledger_store::journal::sha256_hex(l.to_canonical().as_bytes()))
+}
 
 impl CompanyView {
+    /// What this company's kept things are filed under ([`kept_scope_of`]),
+    /// when its books are read from a folder.
+    pub fn kept_scope(&self) -> Option<String> {
+        self.data_dir.as_deref().map(kept_scope_of)
+    }
+
+    /// The books' identity as kept, or as last loaded ([`identity_of`]).
+    pub fn identity(&self) -> Option<&str> {
+        self.identity.as_deref()
+    }
+
+    /// Compare the identity kept with the loaded books' (INVARIANT 5).
+    /// First load with nothing kept: the books' identity is taken and
+    /// nothing changes. Kept, and the same: nothing changes. Kept, and
+    /// not the same: these are other books than the kept state was of
+    /// (made again under the id, or restored over it), so the state kept
+    /// is dropped, this view starts as for new books, and true is
+    /// returned: the caller drops what else it kept for them (their
+    /// name).
+    pub fn check_identity(&mut self) -> bool {
+        let Some(now) = self.loaded_identity.clone() else {
+            return false;
+        };
+        let changed = self.identity.as_ref().is_some_and(|kept| *kept != now);
+        if changed {
+            self.nav = Nav::new(Route::Overview);
+            self.state.reports = Default::default();
+        }
+        self.identity = Some(now);
+        changed
+    }
+
     /// What a person expects to come back to: the page and the report's
     /// period, columns and comparison. (A detail page comes back as its
     /// list: the entry or the party may not be there any more.)
@@ -1043,12 +1196,16 @@ impl CompanyView {
             }
             .to_string(),
         );
+        if let Some(identity) = &self.identity {
+            set("identity", identity.clone());
+        }
     }
 
     /// Take back what [`Self::keep`] kept (`get` reads a key; what isn't
     /// there, or isn't understood, is left as it is).
     pub fn restore(&mut self, get: &dyn Fn(&str) -> Option<String>) {
         use crate::pages::reports::{Columns, Compare, Range};
+        self.identity = get("identity");
         if let Some(route) = get("page").and_then(|k| route_from_key(&k)) {
             self.nav = Nav::new(route);
         }

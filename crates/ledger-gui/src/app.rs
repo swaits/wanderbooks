@@ -19,15 +19,37 @@
 //!      otherwise the companies open when the app last closed, in their
 //!      order, the same one in front; a company that is gone is skipped
 //!      without a word, and when none remains the data root's first opens.
-//!   4. What is kept for next time: the open companies (`open_companies`,
+//!      A session started with a company named never writes the list of
+//!      open companies, whatever it opens or closes: a plain start's list
+//!      is not replaced by a one-tab session's. (Each company's own page
+//!      and period are kept in both.)
+//!   4. What is kept for next time is kept for a company of a data root,
+//!      by the root and the id: the open companies (`open_companies.<R>`,
 //!      the ids of their books, comma separated) and the one in front
-//!      (`active_company`); for each company its page, its report's
-//!      period, columns and comparison and its name as last known
-//!      (`company.<id>.…`); and, as
-//!      before and under the same keys, the scheme and its filter
-//!      (`scheme`, `scheme_filter`, `dark`) and the dock (`dock_open`,
-//!      `dock_agent`, the front tab's).
+//!      (`active_company.<R>`), `R` being a hash of the root's canonical
+//!      path (`company::path_hash`); for each company its page, its
+//!      report's period, columns and comparison, its name as last known
+//!      and the identity of its books (`company.<R>.<id>.…`; books in a
+//!      folder outside any root: `company.dir.<hash of the folder>.…`);
+//!      and, under their own keys, the scheme and its filter (`scheme`,
+//!      `scheme_filter`, `dark`) and the dock's preferences (`dock_open`,
+//!      `dock_agent`, the front tab's: the app's). Another root holding a
+//!      company of the same id, or the same id made again, is not this
+//!      company: a stored state is used only for the books it was kept
+//!      for, which each company's identity says once it loads
+//!      (company.rs INVARIANT 5): a stored identity that is not the
+//!      loaded books' discards the stored state and the remembered name,
+//!      and they are kept anew for these books. Files written before the
+//!      keys carried a root (`open_companies`, `company.<id>.…`) are
+//!      read without error and not used.
 //!   5. The window's title names the company in front.
+//!   7. While a job that changes the books runs in any tab (an owner's
+//!      restore or format upgrade: owner.rs INVARIANT 6), the window is
+//!      not closed and that tab's close control is off, saying what is
+//!      running; a request to close the window is cancelled and a dialog
+//!      says what is running and offers only to wait; it goes when the
+//!      job ends, and its result is shown in the tab. A read-only job
+//!      (an export, a backup) is stopped with its tab, with no question.
 //!   6. The viewer stays read-only: a tab not in front reads what a tab
 //!      in front reads, and writes nothing either.
 //! ```
@@ -43,11 +65,33 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 pub use crate::company::{COMPACT_BELOW, PageState, Shell};
+use crate::company::{kept_scope_of, path_hash};
 
 /// Where the viewer keeps the companies that were open (the ids of their
-/// books, comma separated), and the one in front.
+/// books, comma separated), and the one in front: under these names, then
+/// the data root (`open_key`, `active_key`; INVARIANT 4).
 pub const OPEN_KEY: &str = "open_companies";
 pub const ACTIVE_KEY: &str = "active_company";
+
+/// The key the open companies of the data root at `root` are kept under.
+pub fn open_key(root: &std::path::Path) -> String {
+    format!("{OPEN_KEY}.{}", path_hash(root))
+}
+
+/// The key the company in front, of the data root at `root`, is kept under.
+pub fn active_key(root: &std::path::Path) -> String {
+    format!("{ACTIVE_KEY}.{}", path_hash(root))
+}
+
+/// The key `thing` ("page", "range", "columns", "compare", "identity",
+/// "name") of the company whose books are in `data_dir` is kept under.
+pub fn company_key(data_dir: &std::path::Path, thing: &str) -> String {
+    stored(&kept_scope_of(data_dir), thing)
+}
+
+fn stored(scope: &str, thing: &str) -> String {
+    format!("company.{scope}.{thing}")
+}
 
 /// How the app starts.
 pub enum Start {
@@ -88,6 +132,12 @@ pub struct App {
     /// What a first run opens its books with: the data root named, and
     /// "today".
     first_run_source: (Option<PathBuf>, Option<chrono::NaiveDate>),
+    /// The window was asked to close while a job that changes the books
+    /// ran, and the dialog that says so is up (INVARIANT 7).
+    close_dialog: bool,
+    /// Whether the list of open companies is written when the app saves
+    /// (INVARIANT 3: not after a start that named a company).
+    writes_open_list: bool,
 }
 
 /// What a window is called when no company is in front.
@@ -116,9 +166,11 @@ impl App {
         match start {
             Start::Only(source) => {
                 app.today = source.today;
+                app.writes_open_list = false;
                 app.root = ledger_store::root::root_of_book_dir(&source.data_dir)
                     .map(std::path::Path::to_path_buf);
                 app.remember_all(get);
+                app.remember_scope(get, &kept_scope_of(&source.data_dir));
                 app.open(ctx, source);
             }
             Start::Restore { root, fallback } => {
@@ -126,7 +178,7 @@ impl App {
                 app.root = Some(root.clone());
                 app.remember_all(get);
                 let there = list_books(&root);
-                let wanted: Vec<String> = get(OPEN_KEY)
+                let wanted: Vec<String> = get(&open_key(&root))
                     .map(|v| v.split(',').map(str::to_string).collect())
                     .unwrap_or_default();
                 let mut opened = Vec::new();
@@ -152,7 +204,7 @@ impl App {
                     app.open(ctx, fallback);
                 } else {
                     // The one in front last time, else the first.
-                    app.active = get(ACTIVE_KEY)
+                    app.active = get(&active_key(&root))
                         .and_then(|front| opened.iter().position(|id| *id == front))
                         .unwrap_or(0);
                     // The dock left open was the front tab's.
@@ -233,6 +285,8 @@ impl App {
             title: TITLE.to_string(),
             welcome: None,
             first_run_source: (None, None),
+            close_dialog: false,
+            writes_open_list: true,
         }
     }
 
@@ -272,6 +326,54 @@ impl App {
         }
     }
 
+    /// The jobs that change the books, running now in any tab, as the
+    /// window is held open for them: each tab's name and what runs there
+    /// (INVARIANT 7).
+    pub fn holding(&self) -> Vec<(String, String)> {
+        self.views
+            .iter()
+            .filter_map(|v| Some((self.title_of(v), v.closing_is_held()?)))
+            .collect()
+    }
+
+    /// Whether the dialog that says the window is held open is up (tests).
+    pub fn close_dialog_is_up(&self) -> bool {
+        self.close_dialog
+    }
+
+    /// A request to close the window while a job that changes the books
+    /// runs is cancelled and the dialog that says why is put up; the
+    /// dialog goes when the job ends (INVARIANT 7).
+    fn guard_close(&mut self, ctx: &egui::Context) {
+        let held = self.holding();
+        if held.is_empty() {
+            self.close_dialog = false;
+            return;
+        }
+        if ctx.input(|i| i.viewport().close_requested()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.close_dialog = true;
+        }
+        if !self.close_dialog {
+            return;
+        }
+        egui::Modal::new(egui::Id::new("wanderbooks-close-held")).show(ctx, |ui| {
+            ui.set_max_width(460.0);
+            ui.heading("The books are being changed");
+            ui.add_space(4.0);
+            ui.label(
+                "The window stays open until this is done, so that nothing is cut off half way:",
+            );
+            for (company, what) in &held {
+                ui.label(format!("{company}: {what}"));
+            }
+            ui.add_space(6.0);
+            if ui.button("Wait for it to finish").clicked() {
+                self.close_dialog = false;
+            }
+        });
+    }
+
     /// The window's title now.
     pub fn window_title(&self) -> String {
         match self.active_view() {
@@ -293,8 +395,8 @@ impl App {
         // What was kept for it (last run's, or from when it was closed
         // earlier in this one) comes back.
         let mut view = view;
-        if let Some(id) = view.book_id() {
-            view.restore(&|k| self.kept.get(&format!("company.{id}.{k}")).cloned());
+        if let Some(scope) = view.kept_scope() {
+            view.restore(&|k| self.kept.get(&stored(&scope, k)).cloned());
         }
         self.views.push(view);
         self.active = at;
@@ -320,14 +422,20 @@ impl App {
 
     /// Close tab `i`: its view is dropped (INVARIANT 2). The tab after it,
     /// else the one before, comes to the front when it was the front one.
+    /// A tab with a job that changes the books under way is not closed
+    /// (INVARIANT 7).
     pub fn close(&mut self, i: usize) {
         if i >= self.views.len() {
             return;
         }
+        // A job that changes the books is never abandoned: its tab stays.
+        if self.views[i].closing_is_held().is_some() {
+            return;
+        }
         let view = self.views.remove(i);
-        if let Some(id) = view.book_id() {
+        if let Some(scope) = view.kept_scope() {
             view.keep(&mut |k, v| {
-                self.kept.insert(format!("company.{id}.{k}"), v);
+                self.kept.insert(stored(&scope, k), v);
             });
         }
         drop(view);
@@ -361,15 +469,22 @@ impl App {
         let Some(root) = self.root.clone() else {
             return;
         };
+        let root_hash = path_hash(&root);
         for id in list_books(&root) {
-            if let Some(name) = get(&format!("company.{id}.name")) {
+            if let Some(name) = get(&stored(&format!("{root_hash}.{id}"), "name")) {
                 self.names.insert(id.clone(), name);
             }
-            for k in crate::company::KEPT_KEYS {
-                let key = format!("company.{id}.{k}");
-                if let Some(v) = get(&key) {
-                    self.kept.insert(key, v);
-                }
+            self.remember_scope(get, &format!("{root_hash}.{id}"));
+        }
+    }
+
+    /// What was kept under `scope` (a company's), for the view that opens
+    /// for it.
+    fn remember_scope(&mut self, get: &dyn Fn(&str) -> Option<String>, scope: &str) {
+        for k in crate::company::KEPT_KEYS {
+            let key = stored(scope, k);
+            if let Some(v) = get(&key) {
+                self.kept.insert(key, v);
             }
         }
     }
@@ -409,6 +524,28 @@ impl App {
                     id,
                 })
                 .collect()
+        }
+    }
+
+    /// Books that are not the books a company's kept state was kept for
+    /// (their identity differs: made again under the id, or restored over
+    /// it): the kept state and the remembered name are dropped, to be
+    /// kept anew for these books (company.rs INVARIANT 5).
+    fn check_identities(&mut self) {
+        let mut stale = Vec::new();
+        for v in &mut self.views {
+            if v.check_identity() {
+                stale.push((v.kept_scope(), v.book_id()));
+            }
+        }
+        for (scope, id) in stale {
+            if let Some(scope) = scope {
+                let prefix = format!("company.{scope}.");
+                self.kept.retain(|k, _| !k.starts_with(&prefix));
+            }
+            if let Some(id) = id {
+                self.names.remove(&id);
+            }
         }
     }
 
@@ -581,6 +718,21 @@ fn list_books(root: &std::path::Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
+impl Drop for App {
+    /// The window is closing: every tab's threads are told to stop and
+    /// waited for, so a dock's agent that ignored its hang-up is killed and
+    /// reaped before the process ends and not left to outlive it. Bounded:
+    /// the agent's grace and a little more.
+    fn drop(&mut self) {
+        let watches: Vec<_> = self.views.iter().map(CompanyView::jobs_watch).collect();
+        self.views.clear();
+        let limit = crate::dock::AGENT_GRACE + std::time::Duration::from_secs(3);
+        for w in watches {
+            w.wait_ended(limit);
+        }
+    }
+}
+
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         // A first run: the page that sets the books up, until there are some.
@@ -605,6 +757,8 @@ impl eframe::App for App {
         for (i, v) in self.views.iter_mut().enumerate() {
             v.pump(&ctx, i == self.active);
         }
+        self.guard_close(&ctx);
+        self.check_identities();
         self.learn_names();
         let tabs: Vec<Tab> = self
             .views
@@ -612,6 +766,7 @@ impl eframe::App for App {
             .map(|v| {
                 let title = self.title_of(v);
                 Tab {
+                    held: v.closing_is_held(),
                     detail: match v.book_id() {
                         Some(id) if id != title => format!("{title}\n{id}"),
                         _ => title.clone(),
@@ -657,34 +812,42 @@ impl eframe::App for App {
                 }
             }
         }
-        // The companies open, in order, and the one in front.
-        let open: Vec<(String, usize)> = self
-            .views
-            .iter()
-            .enumerate()
-            .filter_map(|(i, v)| Some((v.book_id()?, i)))
-            .collect();
-        storage.set_string(
-            OPEN_KEY,
-            open.iter()
-                .map(|(id, _)| id.as_str())
-                .collect::<Vec<_>>()
-                .join(","),
-        );
-        if let Some((id, _)) = open.iter().find(|(_, i)| *i == self.active) {
-            storage.set_string(ACTIVE_KEY, id.clone());
+        // The companies open, in order, and the one in front: not after a
+        // start that named a company (INVARIANT 3).
+        if self.writes_open_list
+            && let Some(root) = self.root.clone()
+        {
+            let open: Vec<(String, usize)> = self
+                .views
+                .iter()
+                .enumerate()
+                .filter_map(|(i, v)| Some((v.book_id()?, i)))
+                .collect();
+            storage.set_string(
+                &open_key(&root),
+                open.iter()
+                    .map(|(id, _)| id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(","),
+            );
+            if let Some((id, _)) = open.iter().find(|(_, i)| *i == self.active) {
+                storage.set_string(&active_key(&root), id.clone());
+            }
         }
         // What was kept for the companies closed, then for those open
         // (their own, as they are now).
         for (k, v) in &self.kept {
             storage.set_string(k, v.clone());
         }
-        for (id, name) in &self.names {
-            storage.set_string(&format!("company.{id}.name"), name.clone());
+        if let Some(root) = &self.root {
+            let root_hash = path_hash(root);
+            for (id, name) in &self.names {
+                storage.set_string(&stored(&format!("{root_hash}.{id}"), "name"), name.clone());
+            }
         }
         for v in &self.views {
-            if let Some(id) = v.book_id() {
-                v.keep(&mut |k, val| storage.set_string(&format!("company.{id}.{k}"), val));
+            if let Some(scope) = v.kept_scope() {
+                v.keep(&mut |k, val| storage.set_string(&stored(&scope, k), val));
             }
         }
     }

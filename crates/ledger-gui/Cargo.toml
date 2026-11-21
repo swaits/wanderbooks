@@ -40,6 +40,11 @@ zeroize = "1"
 # The dock: a terminal emulator over a PTY (ConPTY on Windows), P11b
 alacritty_terminal = "0.26"
 
+[target.'cfg(unix)'.dependencies]
+# The dock ends a dropped session's child that ignores the hang-up (dock.rs
+# INVARIANT 8): a SIGKILL to the pid this crate's own PTY started.
+libc = "0.2"
+
 [dev-dependencies]
 chrono = "0.4"
 egui_kittest = { version = "0.36", features = ["wgpu", "snapshot", "eframe"] }

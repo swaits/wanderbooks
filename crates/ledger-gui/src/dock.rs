@@ -30,6 +30,23 @@
 //!   7. Offered only where it has been checked to work (Linux and macOS):
 //!      a ConPTY agent on Windows must pass the four checks (it starts,
 //!      `/login` works, resize redraws, Ctrl-C reaches it) before it is.
+//!   8. The agent belongs to its tab. The start (finding the agent and
+//!      making its books home, off the UI thread) is one of the tab's
+//!      threads (jobs.rs) and is told to stop with it; the child process
+//!      is started only by a tab that is shown, on the UI thread, once
+//!      the start's answer is in, so a tab closed mid-start starts none.
+//!      A session dropped (its tab closed, the agent restarted) is shut
+//!      down, its child hung up on (SIGHUP) and reaped, its terminal
+//!      closed; one that has not gone [`AGENT_GRACE`] later is killed
+//!      (SIGKILL, that pid alone, which this dock started) and reaped.
+//!      The reaping is a thread of the tab's, so the tab can say when
+//!      nothing of its agent is left (`CompanyView::jobs_watch`).
+//!   9. The panel's height, and whether the dock is open by default, are
+//!      the app's, not a tab's: one layout for the assistant dock in
+//!      every tab. egui keys a panel's size by its id as given, `push_id`
+//!      scoping notwithstanding, so the panel's raw ids ("dock-open",
+//!      "dock-closed") are the one place the tabs share; that is the
+//!      rule, said and tested (`tests/tabs.rs`).
 //! ```
 
 use crate::owner::{Agent, AgentStart, Installer, Owner};
@@ -133,7 +150,64 @@ pub struct Session {
     cells: Cells,
     exited: Arc<AtomicBool>,
     title: Arc<Mutex<String>>,
+    /// The child's process id (this session started it).
+    pid: u32,
+    /// Waits for the event loop's thread to end and drops what it returns,
+    /// the PTY with it (which hangs up on the child and reaps it).
+    end: Option<Box<dyn FnOnce() + Send>>,
+    /// The session's count in its tab's threads, until it is reaped.
+    ticket: Option<crate::jobs::Ticket>,
 }
+
+/// How long a dropped session's child has to end after the hang-up before
+/// it is killed (INVARIANT 8).
+pub const AGENT_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// End a dropped session's child: wait for its hang-up to be answered,
+/// kill it if it is not within [`AGENT_GRACE`], and reap it (INVARIANT 8).
+fn reap(end: Box<dyn FnOnce() + Send>, pid: u32, ticket: Option<crate::jobs::Ticket>) {
+    let work = move || {
+        let _ticket = ticket;
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+        // The hang-up and the wait for the child are the PTY's drop: it
+        // blocks for as long as the child does not end.
+        let dropper = std::thread::Builder::new()
+            .name("dock-pty-drop".into())
+            .spawn(move || {
+                end();
+                let _ = done_tx.send(());
+            });
+        let Ok(dropper) = dropper else {
+            return;
+        };
+        if done_rx.recv_timeout(AGENT_GRACE).is_err() {
+            kill(pid);
+        }
+        let _ = dropper.join();
+    };
+    // Without a thread to do it on, it is not done at all (the process is
+    // ending, or the system is out of threads): the PTY's own drop at
+    // thread end still hangs up.
+    let _ = std::thread::Builder::new()
+        .name("dock-reaper".into())
+        .spawn(work);
+}
+
+/// SIGKILL the child this dock started and has hung up on.
+#[cfg(unix)]
+fn kill(pid: u32) {
+    if let Ok(pid) = libc::pid_t::try_from(pid) {
+        // SAFETY: a plain signal to the pid of a child this process
+        // started and has not yet reaped (its PTY's drop is still
+        // waiting for it).
+        unsafe {
+            libc::kill(pid, libc::SIGKILL);
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn kill(_pid: u32) {}
 
 impl Session {
     /// Run `program args` in `dir` with `env` added, on a terminal of `cells`;
@@ -145,6 +219,7 @@ impl Session {
         env: &[(String, String)],
         cells: Cells,
         wake: Arc<dyn Fn() + Send + Sync>,
+        jobs: &crate::jobs::Spawner,
     ) -> Result<Session, String> {
         let window = WindowSize {
             num_lines: cells.rows,
@@ -163,7 +238,9 @@ impl Session {
             #[cfg(windows)]
             escape_args: true,
         };
+        let ticket = jobs.ticket("dock agent", crate::jobs::Hold::Free);
         let pty = tty::new(&options, window, 0).map_err(|e| e.to_string())?;
+        let pid = pty.child().id();
         let exited = Arc::new(AtomicBool::new(false));
         let to_pty = Arc::new(Mutex::new(None));
         let size = Arc::new(Mutex::new(window));
@@ -184,8 +261,9 @@ impl Session {
             EventLoop::new(term.clone(), proxy, pty, true, false).map_err(|e| e.to_string())?;
         let sender = event_loop.channel();
         *to_pty.lock().unwrap_or_else(|e| e.into_inner()) = Some(sender.clone());
-        // Its thread ends on Shutdown, and its terminal's child with it.
-        drop(event_loop.spawn());
+        // Its thread ends on Shutdown, and its terminal's child with it
+        // (its drop, reaped by `reap`).
+        let handle = event_loop.spawn();
         Ok(Session {
             term,
             to_pty: sender,
@@ -193,6 +271,9 @@ impl Session {
             cells,
             exited,
             title,
+            pid,
+            end: Some(Box::new(move || drop(handle.join()))),
+            ticket: Some(ticket),
         })
     }
 
@@ -254,6 +335,9 @@ impl Session {
 impl Drop for Session {
     fn drop(&mut self) {
         let _ = self.to_pty.send(Msg::Shutdown);
+        if let Some(end) = self.end.take() {
+            reap(end, self.pid, self.ticket.take());
+        }
     }
 }
 
@@ -522,19 +606,43 @@ impl Dock {
 
     /// Start (or restart) the agent for `book`: found and its books home
     /// made off the UI thread, then run.
-    fn start(&mut self, ctx: &egui::Context, owner: &Arc<dyn Owner>, book: &str) {
+    fn start(
+        &mut self,
+        ctx: &egui::Context,
+        owner: &Arc<dyn Owner>,
+        book: &str,
+        jobs: &crate::jobs::Spawner,
+    ) {
         let (tx, rx) = channel();
         let (o, agent, b, ctx) = (owner.clone(), self.agent, book.to_string(), ctx.clone());
-        std::thread::spawn(move || {
-            let _ = tx.send(o.agent_start(agent, &b));
+        let started = jobs.spawn("agent start", crate::jobs::Hold::Free, move |stop| {
+            if stop.requested() {
+                return;
+            }
+            let answer = o.agent_start(agent, &b);
+            // Its tab closed meanwhile: the answer is nobody's.
+            if stop.requested() {
+                return;
+            }
+            let _ = tx.send(answer);
             ctx.request_repaint();
         });
-        self.state = State::Starting(rx);
+        self.state = if started {
+            State::Starting(rx)
+        } else {
+            State::Failed("the system gave no thread to start it".into())
+        };
         self.book = Some(book.to_string());
     }
 
     /// The panel along the bottom of the window, for `book`'s agent.
-    pub fn show(&mut self, ui: &mut Ui, owner: &Arc<dyn Owner>, book: &str) {
+    pub fn show(
+        &mut self,
+        ui: &mut Ui,
+        owner: &Arc<dyn Owner>,
+        book: &str,
+        jobs: &crate::jobs::Spawner,
+    ) {
         let p = crate::theme::pal(ui.ctx());
         // Another book is shown: its own agent, not the last one's.
         if self.book.as_deref().is_some_and(|b| b != book) {
@@ -565,6 +673,7 @@ impl Dock {
                             rows: 24,
                         },
                         wake,
+                        jobs,
                     ) {
                         Ok(s) => {
                             self.focused = true;
@@ -578,7 +687,7 @@ impl Dock {
             };
         }
         if self.open && matches!(self.state, State::Idle) {
-            self.start(ui.ctx(), owner, book);
+            self.start(ui.ctx(), owner, book, jobs);
         }
         let header = 34.0;
         let panel = // Its own id open and closed: a size is remembered for each.
@@ -600,7 +709,7 @@ impl Dock {
             if self.open {
                 ui.set_min_height(ui.available_height());
             }
-            self.header(ui, owner, book);
+            self.header(ui, owner, book, jobs);
             if !self.open {
                 return;
             }
@@ -609,7 +718,13 @@ impl Dock {
         });
     }
 
-    fn header(&mut self, ui: &mut Ui, owner: &Arc<dyn Owner>, book: &str) {
+    fn header(
+        &mut self,
+        ui: &mut Ui,
+        owner: &Arc<dyn Owner>,
+        book: &str,
+        jobs: &crate::jobs::Spawner,
+    ) {
         let p = crate::theme::pal(ui.ctx());
         let mut restart = false;
         ui.horizontal(|ui| {
@@ -682,7 +797,7 @@ impl Dock {
         });
         if restart {
             self.state = State::Idle;
-            self.start(ui.ctx(), owner, book);
+            self.start(ui.ctx(), owner, book, jobs);
         }
     }
 

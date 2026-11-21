@@ -3973,6 +3973,7 @@ dependencies = [
  "ledger-package",
  "ledger-store",
  "ledger-vault",
+ "libc",
  "notify",
  "proptest",
  "rust_decimal",

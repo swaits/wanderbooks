@@ -13,6 +13,7 @@ pub mod demo;
 pub mod dock;
 pub mod export;
 pub mod fmt;
+pub mod jobs;
 pub mod menu;
 pub mod nav;
 pub mod owner;

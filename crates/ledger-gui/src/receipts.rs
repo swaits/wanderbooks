@@ -112,11 +112,14 @@ pub struct Receipts {
 }
 
 impl Receipts {
-    pub fn new(ctx: &Context) -> Self {
+    /// Receipts whose workers are threads of a tab: counted in `spawner`
+    /// until they have ended, which they do when this is dropped (their
+    /// queues' senders go) or the tab says stop (jobs.rs).
+    pub fn new(ctx: &Context, spawner: &crate::jobs::Spawner) -> Self {
         let (done_tx, done) = channel();
         let workers = std::thread::available_parallelism().map_or(2, |n| n.get().clamp(2, 4));
-        let jobs = workers_for(ctx, &done_tx, "receipt-render", workers);
-        let thumb_jobs = workers_for(ctx, &done_tx, "thumb-render", 2);
+        let jobs = workers_for(ctx, spawner, &done_tx, "receipt-render", workers);
+        let thumb_jobs = workers_for(ctx, spawner, &done_tx, "thumb-render", 2);
         Self {
             cache: HashMap::new(),
             thumbs: HashMap::new(),
@@ -246,16 +249,23 @@ impl Receipts {
 
 /// Workers taking jobs from one queue, sending what they render to
 /// `done`; the queue's sender.
-fn workers_for(ctx: &Context, done_tx: &Sender<Done>, name: &str, n: usize) -> Sender<Job> {
+fn workers_for(
+    ctx: &Context,
+    spawner: &crate::jobs::Spawner,
+    done_tx: &Sender<Done>,
+    name: &str,
+    n: usize,
+) -> Sender<Job> {
     let (jobs, job_rx) = channel::<Job>();
     let job_rx = std::sync::Arc::new(std::sync::Mutex::new(job_rx));
     for i in 0..n {
         let ctx = ctx.clone();
         let job_rx = job_rx.clone();
         let done_tx = done_tx.clone();
-        std::thread::Builder::new()
-            .name(format!("{name}-{i}"))
-            .spawn(move || {
+        spawner.spawn(
+            &format!("{name}-{i}"),
+            crate::jobs::Hold::Free,
+            move |stop| {
                 loop {
                     let job = match job_rx.lock() {
                         Ok(rx) => rx.recv(),
@@ -264,13 +274,17 @@ fn workers_for(ctx: &Context, done_tx: &Sender<Done>, name: &str, n: usize) -> S
                     let Ok(job) = job else {
                         return;
                     };
+                    // The tab is gone: what is still queued isn't rendered.
+                    if stop.requested() {
+                        return;
+                    }
                     // A file that crashes its renderer is that file's
                     // error, not the end of the worker (and every file
                     // queued after it).
                     let result =
                         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             match &job.thumb {
-                                Some(dir) => render_thumb(&job, dir.as_deref()),
+                                Some(dir) => render_thumb(&job, dir.as_deref(), stop),
                                 None => render(&job),
                             }
                         }))
@@ -283,8 +297,8 @@ fn workers_for(ctx: &Context, done_tx: &Sender<Done>, name: &str, n: usize) -> S
                     });
                     ctx.request_repaint();
                 }
-            })
-            .expect("spawn renderer");
+            },
+        );
     }
     jobs
 }
@@ -297,7 +311,11 @@ fn workers_for(ctx: &Context, done_tx: &Sender<Done>, name: &str, n: usize) -> S
 /// A text file's thumbnail is the start of its text, kept nowhere: it is
 /// cheaper to read than a picture. A thumbnail that can't be kept is
 /// still shown.
-fn render_thumb(job: &Job, dir: Option<&std::path::Path>) -> Result<Rendered, String> {
+fn render_thumb(
+    job: &Job,
+    dir: Option<&std::path::Path>,
+    stop: &crate::jobs::Stop,
+) -> Result<Rendered, String> {
     let bytes = BlobStore::open_read_only(&job.root)
         .get(&job.sha)
         .map_err(|e| e.to_string())?;
@@ -348,7 +366,9 @@ fn render_thumb(job: &Job, dir: Option<&std::path::Path>) -> Result<Rendered, St
         img
     };
     let img = img.crop_imm(0, 0, img.width(), img.height().min(THUMB_MAX_H));
-    if let Some(path) = &kept {
+    // A thumbnail for a tab that has closed is not written: the cache is
+    // shared by every tab and every viewer, and nobody asked for this one.
+    if let Some(path) = kept.as_ref().filter(|_| !stop.requested()) {
         let mut png = Vec::new();
         if img
             .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
@@ -502,4 +522,52 @@ fn fit_side(img: ColorImage, max: usize) -> ColorImage {
 fn to_color_image(img: image::RgbaImage) -> ColorImage {
     let size = [img.width() as usize, img.height() as usize];
     ColorImage::from_rgba_unmultiplied(size, img.as_raw())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::jobs::Stop;
+
+    /// A picture in a blob store, and a thumbnail job for it.
+    fn picture_job(blobs: &std::path::Path, cache: &std::path::Path) -> Job {
+        let mut png = Vec::new();
+        image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            40,
+            30,
+            image::Rgba([200, 30, 30, 255]),
+        ))
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .unwrap();
+        let (sha, _) = BlobStore::open(blobs).unwrap().put(&png).unwrap();
+        Job {
+            sha,
+            mime: "image/png".into(),
+            root: blobs.to_path_buf(),
+            thumb: Some(Some(cache.to_path_buf())),
+            generation: 0,
+        }
+    }
+
+    /// A thumbnail is kept in the cache for a tab that is open, and not
+    /// written for one that has closed (the cache is shared by every tab
+    /// and every viewer).
+    #[test]
+    fn a_thumbnail_is_not_written_for_a_tab_that_has_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("cache");
+        let job = picture_job(&dir.path().join("blobs"), &cache);
+        let named = cache.join(format!("{}.png", job.sha));
+
+        // Closed: it is still drawn (the render is whole) but never kept.
+        let gone = render_thumb(&job, Some(&cache), &Stop::given());
+        assert!(matches!(gone, Ok(Rendered::Pages(_))));
+        assert!(!named.exists(), "a closed tab wrote into the shared cache");
+        assert!(!cache.exists(), "a closed tab made the shared cache folder");
+
+        // Open: kept, as before.
+        let open = render_thumb(&job, Some(&cache), &Stop::never());
+        assert!(matches!(open, Ok(Rendered::Pages(_))));
+        assert!(named.is_file(), "an open tab's thumbnail is kept");
+    }
 }

@@ -8,7 +8,7 @@
 
 use chrono::NaiveDate;
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{NodeT, Queryable};
 use ledger_core::Currency;
 use ledger_gui::App;
 use ledger_gui::books::Books;
@@ -23,6 +23,55 @@ use std::sync::{Arc, Mutex, OnceLock};
 const PASS: &str = "correct horse battery";
 /// The passphrase on which the fake owner's worker dies, answering nothing.
 const DIES: &str = "the worker dies on this one";
+/// The passphrase on which the fake owner's upgrade waits for the test to
+/// let it go.
+const HOLDS: &str = "the upgrade waits on this one";
+
+/// A latch: opened once, it stays open.
+struct Latch {
+    open: Mutex<bool>,
+    changed: std::sync::Condvar,
+}
+
+impl Latch {
+    const fn new() -> Latch {
+        Latch {
+            open: Mutex::new(false),
+            changed: std::sync::Condvar::new(),
+        }
+    }
+
+    fn open(&self) {
+        *self.open.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        self.changed.notify_all();
+    }
+
+    fn is_open(&self) -> bool {
+        *self.open.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Wait for it to open (the limit is a failure guard).
+    fn wait(&self) -> bool {
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        let mut open = self.open.lock().unwrap_or_else(|e| e.into_inner());
+        while !*open {
+            let Some(left) = end.checked_duration_since(std::time::Instant::now()) else {
+                return false;
+            };
+            open = self
+                .changed
+                .wait_timeout(open, left)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+        true
+    }
+}
+
+/// Said by the owner when the held upgrade has begun; opened by the test
+/// to let it end.
+static HELD_BEGUN: Latch = Latch::new();
+static HELD_LET_GO: Latch = Latch::new();
 
 /// An owner that says what it was asked, and takes only PASS.
 #[derive(Default)]
@@ -55,6 +104,11 @@ impl Owner for Fake {
         Err("not in these tests".into())
     }
     fn upgrade_format(&self, book: &str, passphrase: &str) -> Result<Vec<String>, String> {
+        if passphrase == HOLDS {
+            HELD_BEGUN.open();
+            assert!(HELD_LET_GO.wait(), "the test never let the upgrade go");
+            return Ok(vec![format!("Upgraded the books \"{book}\".")]);
+        }
         // Slow enough to be seen at work.
         std::thread::sleep(std::time::Duration::from_millis(300));
         // A worker that dies on the way: no answer comes back.
@@ -393,4 +447,93 @@ fn screenshots() {
     h.get_by_label("Upgrade").click();
     settle(&mut h, &f, n + 1);
     shot(&mut h, "upgrade-done");
+}
+
+/// owner.rs INVARIANT 6: the upgrade changes the books' format, so it is
+/// never abandoned: while it runs its tab's close control is off, saying
+/// so, and the window's close is cancelled with a dialog that offers only
+/// to wait; when it ends the dialog goes and the result shows in the tab.
+#[test]
+fn an_upgrade_under_way_holds_its_tab_and_the_window_open() {
+    let _alone = alone();
+    let _ = fake();
+    let (_dir, _book, b) = books(true, true);
+    let mut h = harness(b);
+    // Nothing runs: the window's close goes through.
+    assert!(!close_is_cancelled(&mut h));
+    type_passphrase(&mut h, HOLDS);
+    h.get_by_label("Upgrade").click();
+    for _ in 0..600 {
+        h.run_steps(2);
+        if HELD_BEGUN.is_open() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(HELD_BEGUN.is_open(), "the owner was never asked");
+    h.run_steps(3);
+    let words = "Upgrading these books' format: wait for it to finish";
+    assert_eq!(
+        h.state().holding(),
+        [("Unnamed company".to_string(), words.to_string())]
+    );
+    assert!(
+        h.get_by_role_and_label(egui::accesskit::Role::Button, "Close Unnamed company")
+            .accesskit_node()
+            .is_disabled(),
+        "the tab can be closed while its books' format is being upgraded"
+    );
+    assert!(
+        close_is_cancelled(&mut h),
+        "the window's close went through"
+    );
+    h.run_steps(3);
+    assert!(h.state().close_dialog_is_up());
+    assert!(
+        h.query_by_label_contains("The books are being changed")
+            .is_some()
+    );
+    assert!(
+        h.query_by_label_contains(&format!("Unnamed company: {words}"))
+            .is_some()
+    );
+    HELD_LET_GO.open();
+    for _ in 0..600 {
+        h.run_steps(2);
+        if h.state().holding().is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    h.run_steps(6);
+    assert!(h.state().holding().is_empty());
+    assert!(!h.state().close_dialog_is_up());
+    assert!(
+        h.query_by_label_contains("The books are being changed")
+            .is_none()
+    );
+    assert!(
+        h.query_by_label_contains("Format upgrade: Upgraded the books")
+            .is_some(),
+        "the result isn't shown in the tab"
+    );
+}
+
+/// Whether the window's close, asked for now, was cancelled by the app.
+fn close_is_cancelled(h: &mut Harness<'static, App>) -> bool {
+    h.input_mut()
+        .viewports
+        .entry(egui::ViewportId::ROOT)
+        .or_default()
+        .events
+        .push(egui::ViewportEvent::Close);
+    h.run_steps(1);
+    h.output()
+        .viewport_output
+        .get(&egui::ViewportId::ROOT)
+        .is_some_and(|v| {
+            v.commands
+                .iter()
+                .any(|c| matches!(c, egui::ViewportCommand::CancelClose))
+        })
 }

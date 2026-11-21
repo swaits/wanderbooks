@@ -144,6 +144,45 @@ impl World {
         co
     }
 
+    /// The key the open companies are kept under for this world's root.
+    fn open_key(&self) -> String {
+        ledger_gui::app::open_key(&self.root)
+    }
+
+    fn active_key(&self) -> String {
+        ledger_gui::app::active_key(&self.root)
+    }
+
+    /// The key `thing` of company `id` of this world is kept under.
+    fn kept_key(&self, id: &str, thing: &str) -> String {
+        ledger_gui::app::company_key(&self.root.join("books").join(id), thing)
+    }
+
+    /// Preferences written with the plain names tests give them
+    /// (`open_companies`, `active_company`, `company.<id>.<thing>`), filed
+    /// as the app files them: under this world's root (app.rs INVARIANT 4).
+    fn filed(&self, plain: Prefs) -> Prefs {
+        Prefs(
+            plain
+                .0
+                .into_iter()
+                .map(|(k, v)| {
+                    let key = match k.as_str() {
+                        "open_companies" => self.open_key(),
+                        "active_company" => self.active_key(),
+                        _ => match k.strip_prefix("company.").and_then(|r| r.split_once('.')) {
+                            // Plain: `company.<id>.<thing>`; one already
+                            // filed has a root before its id.
+                            Some((id, thing)) if !thing.contains('.') => self.kept_key(id, thing),
+                            _ => k,
+                        },
+                    };
+                    (key, v)
+                })
+                .collect(),
+        )
+    }
+
     fn source(&self, id: &str) -> Source {
         Source {
             data_dir: self
@@ -195,6 +234,11 @@ fn prefs(pairs: &[(&str, &str)]) -> Prefs {
 /// The app as it starts from `kept`, over `world`'s data root, its first
 /// company the fallback.
 fn start(world: &World, kept: Prefs, size: egui::Vec2) -> Harness<'static, App> {
+    start_as_is(world, world.filed(kept), size)
+}
+
+/// [`start`] with the preferences exactly as given (filed or not).
+fn start_as_is(world: &World, kept: Prefs, size: egui::Vec2) -> Harness<'static, App> {
     let root = world.root.clone();
     let fallback = world.source("alpha");
     let mut h = Harness::builder().with_size(size).build_eframe(move |cc| {
@@ -623,18 +667,34 @@ fn closing_a_tab_releases_its_lock_its_threads_and_its_agent() {
     assert!(alive(pid), "the agent runs");
     assert_eq!(*owner.asked.lock().unwrap(), ["beta"], "beta's own owner");
 
-    // Closed: its viewer lock is released, its loader's thread ends, its
-    // agent's process is gone; alpha's are as they were.
+    // Every thread of beta's tab is one of its registry's: the loader, the
+    // receipts' workers, the dock's agent (jobs.rs).
+    let beta_threads = h.state().views()[1].jobs_watch();
+    let running = beta_threads.running();
+    for name in [
+        "books-loader",
+        "receipt-render-0",
+        "thumb-render-0",
+        "dock agent",
+    ] {
+        assert!(
+            running.iter().any(|n| n == name),
+            "{name} isn't counted among beta's threads: {running:?}"
+        );
+    }
+
+    // Closed: every thread of the tab ends (waited for on that condition;
+    // the limit is only a failure guard), and with them its viewer lock is
+    // released, its loader's thread has ended, its agent's process is gone;
+    // alpha's are as they were.
     close_tab(&mut h, "Beta Co");
     assert_eq!(titles(&h), ["Alpha Co"]);
     assert_eq!(h.state().active(), Some(0));
-    let end = Instant::now() + Duration::from_secs(20);
-    while (ledger_store::ops::viewer_open(&b.data) || !beta_loader.ended() || alive(pid))
-        && Instant::now() < end
-    {
-        h.run_steps(1);
-        std::thread::sleep(Duration::from_millis(25));
-    }
+    assert!(
+        beta_threads.wait_ended(Duration::from_secs(120)),
+        "a closed tab's threads run on: {:?}",
+        beta_threads.running()
+    );
     assert!(
         !ledger_store::ops::viewer_open(&b.data),
         "a closed tab still holds its books' viewer lock"
@@ -758,8 +818,8 @@ fn the_open_tabs_and_each_ones_page_and_period_are_kept_and_come_back() {
     h.run_steps(2);
     let mut kept = Prefs::default();
     eframe::App::save(h.state_mut(), &mut kept);
-    assert_eq!(kept.0["open_companies"], "alpha,beta,gamma");
-    assert_eq!(kept.0["active_company"], "gamma");
+    assert_eq!(kept.0[&w.open_key()], "alpha,beta,gamma");
+    assert_eq!(kept.0[&w.active_key()], "gamma");
     // The per-app keys are as they always were.
     for key in ["scheme", "scheme_filter", "dark", "dock_open", "dock_agent"] {
         assert!(
@@ -806,8 +866,8 @@ fn the_open_tabs_and_each_ones_page_and_period_are_kept_and_come_back() {
     ));
     let mut again = Prefs::default();
     eframe::App::save(h.state_mut(), &mut again);
-    assert_eq!(again.0["open_companies"], "beta,gamma,alpha");
-    assert_eq!(again.0["active_company"], "alpha");
+    assert_eq!(again.0[&w.open_key()], "beta,gamma,alpha");
+    assert_eq!(again.0[&w.active_key()], "alpha");
     // Closing the last tab keeps a list with nothing in it, and the next
     // start opens the data root's first.
     for _ in 0..3 {
@@ -817,7 +877,7 @@ fn the_open_tabs_and_each_ones_page_and_period_are_kept_and_come_back() {
     assert!(h.state().views().is_empty());
     let mut none = Prefs::default();
     eframe::App::save(h.state_mut(), &mut none);
-    assert_eq!(none.0["open_companies"], "");
+    assert_eq!(none.0[&w.open_key()], "");
     drop(h);
     let h = start(&w, none, egui::vec2(1280.0, 800.0));
     assert_eq!(h.state().views().len(), 1);
@@ -1026,14 +1086,14 @@ fn a_name_is_remembered_and_shown_in_the_plus_list_and_on_a_loading_tab() {
     let mut kept = Prefs::default();
     eframe::App::save(h.state_mut(), &mut kept);
     assert_eq!(
-        kept.0.get("company.beta.name").map(String::as_str),
+        kept.0.get(&w.kept_key("beta", "name")).map(String::as_str),
         Some("Beta Co")
     );
     // ...and a window started from it titles a tab whose books are not
     // loaded yet by name; a company with no name known by its id.
     let ctx = egui::Context::default();
-    kept.0.remove("company.alpha.name");
-    kept.0.insert("open_companies".into(), "alpha,beta".into());
+    kept.0.remove(&w.kept_key("alpha", "name"));
+    kept.0.insert(w.open_key(), "alpha,beta".into());
     let root = w.root.clone();
     let fallback = w.source("alpha");
     let app = App::start_with(
@@ -1785,4 +1845,788 @@ fn pictures() {
         h.run_steps(4);
         save(&mut h, &format!("smallest-window-two-tabs-{mode}"));
     }
+}
+
+// ---- 14: threads, held jobs and the window's close ---------------------------
+
+/// A latch: opened once, it stays open; waiters block until then.
+#[derive(Default)]
+struct Latch {
+    open: Mutex<bool>,
+    changed: std::sync::Condvar,
+}
+
+impl Latch {
+    fn open(&self) {
+        *self.open.lock().unwrap() = true;
+        self.changed.notify_all();
+    }
+
+    fn is_open(&self) -> bool {
+        *self.open.lock().unwrap()
+    }
+
+    /// Wait for it to open; the limit is a failure guard, never what the
+    /// test relies on.
+    fn wait(&self) -> bool {
+        let end = Instant::now() + Duration::from_secs(120);
+        let mut open = self.open.lock().unwrap();
+        while !*open {
+            let Some(left) = end.checked_duration_since(Instant::now()) else {
+                return false;
+            };
+            open = self.changed.wait_timeout(open, left).unwrap().0;
+        }
+        true
+    }
+}
+
+/// An owner whose changing calls (restore, close the books), its backup
+/// and its agent's start each say they were entered and then wait to be
+/// let go: the test decides when they end.
+struct Gated {
+    entered: Latch,
+    release: Latch,
+    start: Mutex<Option<AgentStart>>,
+}
+
+impl Gated {
+    fn new() -> Arc<Gated> {
+        Arc::new(Gated {
+            entered: Latch::default(),
+            release: Latch::default(),
+            start: Mutex::new(None),
+        })
+    }
+
+    fn block(&self) {
+        self.entered.open();
+        assert!(self.release.wait(), "the test never let the call go");
+    }
+}
+
+impl Owner for Gated {
+    fn close_books(&self) -> Result<String, String> {
+        self.block();
+        Ok("The books are closing.".into())
+    }
+    fn new_books(&self, _: &str, _: &str) -> Result<String, String> {
+        Err("not here".into())
+    }
+    fn back_up_now(&self, _: &str) -> Result<Vec<String>, String> {
+        self.block();
+        Ok(vec!["Backed up.".into()])
+    }
+    fn plan_restore(
+        &self,
+        source: &str,
+        id: Option<String>,
+        replace: bool,
+    ) -> Result<RestorePlan, String> {
+        Ok(RestorePlan {
+            source: source.to_string(),
+            id: id.unwrap_or_else(|| "alpha".into()),
+            replace,
+            head: (7, "ab".repeat(32)),
+            lines: vec!["The backup is whole: through event 7.".into()],
+        })
+    }
+    fn restore(&self, plan: &RestorePlan) -> Result<Vec<String>, String> {
+        self.block();
+        Ok(vec![format!("Restored as \"{}\".", plan.id)])
+    }
+    fn connect(&self, _: Agent, _: &str) -> Result<Vec<String>, String> {
+        Err("not here".into())
+    }
+    fn upgrade_format(&self, _: &str, _: &str) -> Result<Vec<String>, String> {
+        Err("not here".into())
+    }
+    fn agent_start(&self, _: Agent, _: &str) -> Result<AgentStart, String> {
+        self.block();
+        self.start
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| "no agent set".to_string())
+    }
+}
+
+/// Whether the window's close, asked for now, was cancelled by the app.
+fn window_close_is_cancelled(h: &mut Harness<'static, App>) -> bool {
+    h.input_mut()
+        .viewports
+        .entry(egui::ViewportId::ROOT)
+        .or_default()
+        .events
+        .push(egui::ViewportEvent::Close);
+    h.run_steps(1);
+    h.output()
+        .viewport_output
+        .get(&egui::ViewportId::ROOT)
+        .is_some_and(|v| {
+            v.commands
+                .iter()
+                .any(|c| matches!(c, egui::ViewportCommand::CancelClose))
+        })
+}
+
+/// Whether the close control of the tab named `name` is disabled for
+/// assistive technology.
+fn close_is_off(h: &Harness<'_, App>, name: &str) -> bool {
+    h.get_by_role_and_label(Role::Button, &format!("Close {name}"))
+        .accesskit_node()
+        .is_disabled()
+}
+
+/// Through the front tab's Books menu to a restore that has been checked
+/// and is asked for: `Restore it` clicked.
+fn ask_for_a_restore(h: &mut Harness<'static, App>) {
+    let page_fields = h.query_all_by_role(Role::TextInput).count();
+    h.get_by_label_contains(" Books").click();
+    h.run_steps(3);
+    h.get_by_label_contains("Restore…").click();
+    h.run_steps(3);
+    h.get_all_by_role(Role::TextInput)
+        .nth(page_fields)
+        .unwrap()
+        .focus();
+    h.run_steps(2);
+    h.get_all_by_role(Role::TextInput)
+        .nth(page_fields)
+        .unwrap()
+        .type_text("/media/disk/alpha.git");
+    h.run_steps(2);
+    h.get_by_label("Check it").click();
+    let end = Instant::now() + Duration::from_secs(60);
+    while h.query_by_label("Restore it").is_none() {
+        assert!(Instant::now() < end, "the backup was never checked");
+        h.run_steps(2);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    h.run_steps(3);
+    h.get_by_label("Restore it").click();
+    h.run_steps(2);
+}
+
+#[test]
+fn a_restore_under_way_holds_its_tab_and_the_window_open() {
+    let (w, _, _, _) = three();
+    let owner = Gated::new();
+    let mut h = start_with_prefs(&w, &[("open_companies", "alpha,beta")]);
+    loaded(&mut h);
+    h.state_mut()
+        .view_mut(0)
+        .unwrap()
+        .set_owner(owner.clone() as Arc<dyn Owner>);
+    // Nothing runs: the tab closes freely, the window's close goes through.
+    assert!(!close_is_off(&h, "Alpha Co"));
+    assert!(
+        !window_close_is_cancelled(&mut h),
+        "nothing holds the window"
+    );
+    assert!(h.state().holding().is_empty());
+
+    ask_for_a_restore(&mut h);
+    until(&mut h, "the owner is asked to restore", |_| {
+        owner.entered.is_open()
+    });
+    h.run_steps(3);
+    let words = "Restoring these books: wait for it to finish".to_string();
+    assert_eq!(
+        h.state().holding(),
+        [("Alpha Co".to_string(), words.clone())]
+    );
+    // The tab: its close control is off, and a click on it closes nothing.
+    assert!(close_is_off(&h, "Alpha Co"));
+    assert!(!close_is_off(&h, "Beta Co"), "beta's own is not held");
+    close_tab(&mut h, "Alpha Co");
+    assert_eq!(titles(&h), ["Alpha Co", "Beta Co"], "alpha stayed");
+    h.state_mut().close(0);
+    assert_eq!(
+        titles(&h),
+        ["Alpha Co", "Beta Co"],
+        "not even asked in code"
+    );
+    // The window: the close is cancelled and the dialog says why, and
+    // offers only to wait.
+    assert!(
+        window_close_is_cancelled(&mut h),
+        "the window's close went through with a restore running"
+    );
+    h.run_steps(3);
+    assert!(h.state().close_dialog_is_up());
+    assert!(shows(&h, "The books are being changed"), "{:?}", texts(&h));
+    assert!(shows(&h, &format!("Alpha Co: {words}")), "{:?}", texts(&h));
+    assert!(h.query_by_label("Wait for it to finish").is_some());
+
+    // Let go: the dialog goes, the result is shown in that tab, and the
+    // tab closes as any other.
+    owner.release.open();
+    until(&mut h, "the restore ends", |a| a.holding().is_empty());
+    h.run_steps(4);
+    assert!(!h.state().close_dialog_is_up());
+    assert!(!shows(&h, "The books are being changed"));
+    assert!(
+        shows(&h, "Restore: Restored as"),
+        "its result isn't in the tab: {:?}",
+        texts(&h)
+    );
+    assert!(!close_is_off(&h, "Alpha Co"));
+    close_tab(&mut h, "Alpha Co");
+    assert_eq!(titles(&h), ["Beta Co"]);
+}
+
+#[test]
+fn a_backup_only_reads_so_its_tab_closes_and_its_thread_ends() {
+    let (w, _, _, _) = three();
+    let owner = Gated::new();
+    let mut h = start_with_prefs(&w, &[("open_companies", "alpha,beta")]);
+    loaded(&mut h);
+    h.state_mut()
+        .view_mut(0)
+        .unwrap()
+        .set_owner(owner.clone() as Arc<dyn Owner>);
+    h.run_steps(3);
+    h.get_by_label_contains(" Books").click();
+    h.run_steps(3);
+    h.get_by_label_contains("Back up now").click();
+    until(&mut h, "the owner is asked to back up", |_| {
+        owner.entered.is_open()
+    });
+    let watch = h.state().views()[0].jobs_watch();
+    assert!(
+        watch.running().iter().any(|n| n == "Back up now"),
+        "the backup isn't one of the tab's threads: {:?}",
+        watch.running()
+    );
+    // It changes nothing of the books: nothing holds the tab or the window.
+    assert!(h.state().holding().is_empty());
+    assert!(!close_is_off(&h, "Alpha Co"));
+    close_tab(&mut h, "Alpha Co");
+    assert_eq!(titles(&h), ["Beta Co"]);
+    // Its thread ends when the owner's call does, and says nothing.
+    owner.release.open();
+    assert!(
+        watch.wait_ended(Duration::from_secs(60)),
+        "{:?}",
+        watch.running()
+    );
+}
+
+#[test]
+fn an_export_is_stopped_when_its_tab_closes() {
+    let (w, _, _, _) = three();
+    let mut h = start_with_prefs(&w, &[("open_companies", "alpha,beta")]);
+    loaded(&mut h);
+    // A job that waits to be told, then says whether it was told to stop.
+    let go = Arc::new(Latch::default());
+    let told = Arc::new(Mutex::new(None::<bool>));
+    let (go2, told2) = (go.clone(), told.clone());
+    let ctx = h.ctx.clone();
+    h.state_mut().view_mut(1).unwrap().start_export_for_tests(
+        &ctx,
+        "A file",
+        Box::new(move |stop| {
+            assert!(go2.wait());
+            *told2.lock().unwrap() = Some(stop.requested());
+            Err("stopped".into())
+        }),
+    );
+    let watch = h.state().views()[1].jobs_watch();
+    assert!(watch.running().iter().any(|n| n == "export"));
+    // Closing the tab asks nothing: it stops the job.
+    assert!(h.state().holding().is_empty());
+    close_tab(&mut h, "Beta Co");
+    go.open();
+    assert!(
+        watch.wait_ended(Duration::from_secs(60)),
+        "{:?}",
+        watch.running()
+    );
+    assert_eq!(*told.lock().unwrap(), Some(true), "the export wasn't told");
+}
+
+// ---- 14b: the dock's agent and its tab ---------------------------------------
+
+#[cfg(unix)]
+fn agent_script(pidfile: &Path, body: &str) -> AgentStart {
+    AgentStart::Ready {
+        label: "Claude Code".into(),
+        program: PathBuf::from("/bin/sh"),
+        args: vec![
+            "-c".into(),
+            format!(
+                "{body} echo $$ > '{}'; {}",
+                pidfile.display(),
+                "while true; do sleep 1; done"
+            ),
+        ],
+        dir: pidfile.parent().unwrap().to_path_buf(),
+        env: vec![("TERM".into(), "xterm-256color".into())],
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_tab_closed_while_its_agent_is_starting_leaves_no_child_and_no_thread() {
+    let (w, _, _, _) = three();
+    let work = tempfile::tempdir().unwrap();
+    let pidfile = work.path().join("agent.pid");
+    let owner = Gated::new();
+    *owner.start.lock().unwrap() = Some(agent_script(&pidfile, ""));
+    let mut h = start_with_prefs(&w, &[("open_companies", "alpha,beta")]);
+    loaded(&mut h);
+    h.state_mut()
+        .view_mut(1)
+        .unwrap()
+        .set_owner(owner.clone() as Arc<dyn Owner>);
+    show_tab(&mut h, "Beta Co");
+    h.state_mut().dock_mut().open = true;
+    // Starting: the owner is looking for the agent and holds its answer.
+    until(&mut h, "the owner is asked to start the agent", |_| {
+        owner.entered.is_open()
+    });
+    let watch = h.state().views()[1].jobs_watch();
+    assert!(
+        watch.running().iter().any(|n| n == "agent start"),
+        "the start isn't one of the tab's threads: {:?}",
+        watch.running()
+    );
+    close_tab(&mut h, "Beta Co");
+    // The answer comes after the tab is gone.
+    owner.release.open();
+    assert!(
+        watch.wait_ended(Duration::from_secs(60)),
+        "{:?}",
+        watch.running()
+    );
+    h.run_steps(6);
+    assert!(
+        !pidfile.exists(),
+        "a child was started for a tab that had closed"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_tab_closed_with_its_agent_running_ends_the_child_even_if_it_ignores_the_hangup() {
+    let (w, _, _, _) = three();
+    let work = tempfile::tempdir().unwrap();
+    let pidfile = work.path().join("agent.pid");
+    let owner = Gated::new();
+    owner.release.open();
+    // An agent that ignores the hang-up a closed terminal sends.
+    *owner.start.lock().unwrap() = Some(agent_script(&pidfile, "trap '' HUP;"));
+    let mut h = start_with_prefs(&w, &[("open_companies", "alpha,beta")]);
+    loaded(&mut h);
+    h.state_mut()
+        .view_mut(1)
+        .unwrap()
+        .set_owner(owner.clone() as Arc<dyn Owner>);
+    show_tab(&mut h, "Beta Co");
+    h.state_mut().dock_mut().open = true;
+    let pid = {
+        let end = Instant::now() + Duration::from_secs(60);
+        loop {
+            h.run_steps(2);
+            if let Ok(text) = std::fs::read_to_string(&pidfile)
+                && let Ok(pid) = text.trim().parse::<u32>()
+            {
+                break pid;
+            }
+            assert!(Instant::now() < end, "the agent never started");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    assert!(alive(pid));
+    let watch = h.state().views()[1].jobs_watch();
+    assert!(
+        watch.running().iter().any(|n| n == "dock agent"),
+        "{:?}",
+        watch.running()
+    );
+    close_tab(&mut h, "Beta Co");
+    // Every thread of the tab, the one that reaps its agent included, ends;
+    // and with them the child, hung up on, killed and reaped.
+    assert!(
+        watch.wait_ended(Duration::from_secs(120)),
+        "{:?}",
+        watch.running()
+    );
+    assert!(!alive(pid), "a closed tab's agent survived it");
+}
+
+// ---- 15: what is kept belongs to the books it was kept for -------------------
+
+/// Wait for the clock's next second. A set of books' identity is the hash
+/// of its journal's first line, which says when the books were made to the
+/// second: books made again in the same second as the old would have the
+/// old ones' identity, so a test that makes other books under an id waits
+/// for the clock first (a condition, not a guess at a duration).
+fn next_second() {
+    let now = chrono::Utc::now().timestamp();
+    while chrono::Utc::now().timestamp() == now {
+        std::thread::yield_now();
+    }
+}
+
+/// Save the app's preferences into `into`.
+fn saved(h: &mut Harness<'static, App>, mut into: Prefs) -> Prefs {
+    eframe::App::save(h.state_mut(), &mut into);
+    into
+}
+
+#[test]
+fn another_data_root_with_a_company_of_the_same_id_inherits_nothing() {
+    // Root A: alpha and beta, open, alpha on a report in a custom period.
+    let a = World::new();
+    a.company("alpha", "Alpha One", 1_000_000, 100);
+    a.company("beta", "Beta One", 500_000, 100);
+    let mut h = start_with_prefs(&a, &[("open_companies", "alpha,beta")]);
+    loaded(&mut h);
+    {
+        use ledger_gui::pages::reports::Range;
+        let v = h.state_mut().view_mut(0).unwrap();
+        v.goto(Route::Reports(ReportKind::BalanceSheet));
+        v.state_mut().reports.range = Range::Custom(d(2026, 1, 1), d(2026, 6, 30));
+    }
+    h.run_steps(2);
+    let kept = saved(&mut h, Prefs::default());
+    drop(h);
+
+    // Root B: another alpha (other books under the same id), and a beta.
+    next_second();
+    let b = World::new();
+    b.company("alpha", "Alpha Two", 2_000_000, 100);
+    b.company("beta", "Beta Two", 700_000, 100);
+    // Before anything loads: B's alpha is not named for A's, and A's list
+    // of open companies is not B's.
+    let ctx = egui::Context::default();
+    let app = App::start_with(
+        &ctx,
+        &|k| kept.0.get(k).cloned(),
+        Start::Restore {
+            root: b.root.clone(),
+            fallback: b.source("alpha"),
+        },
+    );
+    assert_eq!(app.views().len(), 1, "opened from another root's list");
+    assert_eq!(app.tab_title(0).as_deref(), Some("alpha"), "A's name kept");
+    assert_eq!(app.remembered_name("alpha"), None);
+    drop(app);
+    // Loaded: its own page and period, its own name.
+    let mut h = start_as_is(&b, kept.clone(), egui::vec2(1280.0, 800.0));
+    loaded(&mut h);
+    assert_eq!(titles(&h), ["Alpha Two"]);
+    assert!(matches!(h.state().views()[0].route(), Route::Overview));
+    assert_eq!(
+        h.state().views()[0].state().reports.range,
+        ledger_gui::pages::reports::Range::YearToDate
+    );
+    // And A's, kept in the same file, are still A's.
+    let both = saved(&mut h, kept.clone());
+    assert_eq!(both.0[&a.open_key()], "alpha,beta");
+    assert_eq!(both.0[&a.kept_key("alpha", "name")], "Alpha One");
+    assert_eq!(both.0[&b.kept_key("alpha", "name")], "Alpha Two");
+    assert_ne!(a.kept_key("alpha", "page"), b.kept_key("alpha", "page"));
+}
+
+#[test]
+fn books_made_again_under_an_id_start_fresh_and_a_restart_of_the_same_books_does_not() {
+    let w = World::new();
+    w.company("alpha", "Alpha One", 1_000_000, 100);
+    w.company("beta", "Beta One", 500_000, 100);
+    let mut h = start_with_prefs(&w, &[("open_companies", "alpha,beta")]);
+    loaded(&mut h);
+    {
+        use ledger_gui::pages::reports::Range;
+        let v = h.state_mut().view_mut(0).unwrap();
+        v.goto(Route::Reports(ReportKind::BalanceSheet));
+        v.state_mut().reports.range = Range::Custom(d(2026, 1, 1), d(2026, 6, 30));
+    }
+    h.run_steps(2);
+    let kept = saved(&mut h, Prefs::default());
+    let identity = kept.0[&w.kept_key("alpha", "identity")].clone();
+    assert_eq!(identity.len(), 64, "the journal's first line's SHA-256");
+    drop(h);
+
+    // The same books, restarted: the state comes back, the identity is the
+    // same.
+    let mut h = start_as_is(&w, kept.clone(), egui::vec2(1280.0, 800.0));
+    loaded(&mut h);
+    assert!(matches!(
+        h.state().views()[0].route(),
+        Route::Reports(ReportKind::BalanceSheet)
+    ));
+    let again = saved(&mut h, kept.clone());
+    assert_eq!(again.0[&w.kept_key("alpha", "identity")], identity);
+    drop(h);
+
+    // Alpha deleted and made again, as other books.
+    std::fs::remove_dir_all(w.root.join("books").join("alpha")).unwrap();
+    next_second();
+    w.company("alpha", "Alpha Two", 2_000_000, 100);
+    let mut h = start_as_is(&w, kept.clone(), egui::vec2(1280.0, 800.0));
+    loaded(&mut h);
+    assert_eq!(titles(&h), ["Alpha Two", "Beta One"]);
+    assert!(
+        matches!(h.state().views()[0].route(), Route::Overview),
+        "the old books' page was kept for the new books"
+    );
+    assert_eq!(
+        h.state().views()[0].state().reports.range,
+        ledger_gui::pages::reports::Range::YearToDate,
+        "the old books' period was kept for the new books"
+    );
+    assert_eq!(h.state().remembered_name("alpha"), Some("Alpha Two"));
+    // Beta, untouched, kept its own.
+    assert_eq!(h.state().remembered_name("beta"), Some("Beta One"));
+    let fresh = saved(&mut h, kept.clone());
+    assert_ne!(fresh.0[&w.kept_key("alpha", "identity")], identity);
+    assert_eq!(fresh.0[&w.kept_key("alpha", "name")], "Alpha Two");
+    assert_eq!(fresh.0[&w.kept_key("alpha", "page")], "overview");
+}
+
+#[test]
+fn books_outside_any_data_root_are_kept_under_their_folder() {
+    let make = |tag: &str| {
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("wb-gui-folder-{tag}-"))
+            .tempdir()
+            .unwrap();
+        let book = dir.path().join("books-data");
+        let mut s = Store::create(&book, Currency::USD).unwrap();
+        s.add_account("1000", "Cash", AccountType::Asset, None, false)
+            .unwrap();
+        drop(s);
+        (dir, book)
+    };
+    let open = |book: &Path, kept: Prefs| {
+        let src = Source {
+            data_dir: book.to_path_buf(),
+            today: Some(today()),
+        };
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(1280.0, 800.0))
+            .build_eframe(move |cc| {
+                App::start_with(&cc.egui_ctx, &|k| kept.0.get(k).cloned(), Start::Only(src))
+            });
+        loaded(&mut h);
+        h
+    };
+    let (_one, one) = make("one");
+    let mut h = open(&one, Prefs::default());
+    h.state_mut()
+        .view_mut(0)
+        .unwrap()
+        .goto(Route::Reports(ReportKind::CashFlow));
+    let kept = saved(&mut h, Prefs::default());
+    let key = ledger_gui::app::company_key(&one, "page");
+    assert!(key.starts_with("company.dir."), "{key}");
+    assert_eq!(kept.0[&key], "reports:cash-flow");
+    drop(h);
+    // The same folder comes back to its page...
+    let h = open(&one, kept.clone());
+    assert!(matches!(
+        h.state().views()[0].route(),
+        Route::Reports(ReportKind::CashFlow)
+    ));
+    drop(h);
+    // ...another folder, though it is also `books-data`, does not.
+    let (_two, two) = make("two");
+    let h = open(&two, kept);
+    assert!(matches!(h.state().views()[0].route(), Route::Overview));
+}
+
+#[test]
+fn preferences_written_before_the_keys_had_a_root_are_read_and_not_used() {
+    let (w, _, _, _) = three();
+    let old = prefs(&[
+        ("open_companies", "beta,gamma"),
+        ("active_company", "gamma"),
+        ("company.beta.page", "transactions"),
+        ("company.beta.name", "Old Beta"),
+        ("company.alpha.page", "accounts"),
+        ("scheme", "Wanderland/Light"),
+    ]);
+    let mut h = start_as_is(&w, old, egui::vec2(1280.0, 800.0));
+    loaded(&mut h);
+    // The data root's first, alone, on its overview: nothing was matched.
+    assert_eq!(titles(&h), ["Alpha Co"]);
+    assert!(matches!(h.state().views()[0].route(), Route::Overview));
+    assert_eq!(h.state().remembered_name("beta"), None);
+}
+
+// ---- 16: a start that names a company leaves the open list alone -------------
+
+#[test]
+fn a_start_with_a_named_company_never_writes_the_list_of_open_companies() {
+    let (w, _, _, _) = three();
+    let mut h = start_with_prefs(&w, &[("open_companies", "alpha,beta,gamma")]);
+    loaded(&mut h);
+    h.state_mut().activate(2);
+    h.run_steps(2);
+    let kept = saved(&mut h, Prefs::default());
+    let (list, front) = (
+        kept.0[&w.open_key()].clone(),
+        kept.0[&w.active_key()].clone(),
+    );
+    assert_eq!(list, "alpha,beta,gamma");
+    drop(h);
+
+    // `wanderbooks gui beta`: one tab; another opened and beta closed.
+    let src = w.source("beta");
+    let from = kept.clone();
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1280.0, 800.0))
+        .build_eframe(move |cc| {
+            App::start_with(&cc.egui_ctx, &|k| from.0.get(k).cloned(), Start::Only(src))
+        });
+    loaded(&mut h);
+    assert_eq!(titles(&h), ["Beta Co"]);
+    h.state_mut().view_mut(0).unwrap().goto(Route::Transactions);
+    let ctx = h.ctx.clone();
+    h.state_mut().open(&ctx, w.source("alpha"));
+    loaded(&mut h);
+    close_tab(&mut h, "Beta Co");
+    assert_eq!(titles(&h), ["Alpha Co"]);
+    let after = saved(&mut h, kept.clone());
+    // The list and the front tab are the plain start's, as they were.
+    assert_eq!(after.0[&w.open_key()], list);
+    assert_eq!(after.0[&w.active_key()], front);
+    // Each company's own page is still kept.
+    assert_eq!(after.0[&w.kept_key("beta", "page")], "transactions");
+    assert_eq!(after.0[&w.kept_key("alpha", "page")], "overview");
+}
+
+// ---- 17: what the tabs share on purpose --------------------------------------
+
+#[cfg(unix)]
+#[test]
+fn the_docks_height_and_layout_are_the_apps_one_for_every_tab() {
+    let (w, _, _, _) = three();
+    let owner = Gated::new();
+    owner.release.open();
+    let mut h = start_with_prefs(&w, &[("open_companies", "alpha,beta")]);
+    loaded(&mut h);
+    for i in 0..2 {
+        h.state_mut()
+            .view_mut(i)
+            .unwrap()
+            .set_owner(owner.clone() as Arc<dyn Owner>);
+        h.state_mut().view_mut(i).unwrap().dock_mut().open = true;
+    }
+    h.run_steps(4);
+    let top = |h: &Harness<'_, App>| h.get_by_label_contains(" Agent").rect().top();
+    let before = top(&h);
+    // Resized in alpha: dragged up by a hundred points.
+    let x = h.get_by_label_contains(" Agent").rect().left() + 300.0;
+    let panel_top = egui::containers::panel::PanelState::load(&h.ctx, egui::Id::new("dock-open"))
+        .expect("the dock's panel")
+        .outer_rect
+        .top();
+    let edge = egui::pos2(x, panel_top);
+    let to = egui::pos2(x, panel_top - 100.0);
+    h.hover_at(edge);
+    h.run_steps(2);
+    h.drag_at(edge);
+    h.run_steps(2);
+    h.hover_at(to);
+    h.run_steps(3);
+    h.drop_at(to);
+    h.run_steps(4);
+    let grown = top(&h);
+    assert!(
+        grown < before - 50.0,
+        "the dock didn't grow: header at {before} then {grown}"
+    );
+    // Beta's dock has the same height: one layout for the assistant dock
+    // everywhere.
+    show_tab(&mut h, "Beta Co");
+    h.run_steps(3);
+    assert!(
+        (top(&h) - grown).abs() < 0.5,
+        "beta's dock is {} from the top, alpha's {grown}",
+        top(&h)
+    );
+    // And so it is in the egui memory: the panel is the app's, its id the
+    // raw one, the one id of a panel that is not scoped by its tab.
+    use egui::containers::panel::PanelState;
+    let ctx = h.ctx.clone();
+    assert!(PanelState::load(&ctx, egui::Id::new("dock-open")).is_some());
+}
+
+#[test]
+fn no_panel_but_the_apps_own_is_keyed_by_an_id_every_tab_shares() {
+    use egui::containers::panel::PanelState;
+    let (w, _, _, _) = three();
+    let mut h = start_with_prefs(&w, &[("open_companies", "alpha,beta")]);
+    loaded(&mut h);
+    let ctx = h.ctx.clone();
+    let raw = |name: &str| PanelState::load(&ctx, egui::Id::new(name));
+    // Drawn in both tabs, and in the narrow window's rail too.
+    for name in ["Alpha Co", "Beta Co"] {
+        show_tab(&mut h, name);
+        h.run_steps(3);
+    }
+    h.set_size(egui::vec2(800.0, 800.0));
+    h.run_steps(4);
+    // A company's panels (the sidebar, the rail, the top bar) are keyed by
+    // ids made from its own, never by a name every tab shares.
+    for shared in ["sidebar", "rail", "topbar"] {
+        assert!(
+            raw(shared).is_none(),
+            "a company's {shared} panel is keyed by an id every tab shares"
+        );
+    }
+    // The ones that are the app's, and say so: the tab bar's.
+    assert!(raw("company_tabs").is_some());
+}
+
+#[test]
+fn the_color_scheme_is_the_windows_one_for_every_tab() {
+    let (w, _, _, _) = three();
+    let mut h = start_with_prefs(&w, &[("open_companies", "alpha,beta")]);
+    loaded(&mut h);
+    // The sidebar's own fill: the largest rectangle in its column below the
+    // bar.
+    let sidebar = |h: &Harness<'_, App>| -> egui::Color32 {
+        fn walk(s: &egui::Shape, out: &mut Vec<(f32, egui::Color32)>) {
+            match s {
+                egui::Shape::Rect(r) if in_sidebar(r.rect) && r.fill.a() > 0 => {
+                    out.push((r.rect.area(), r.fill))
+                }
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                _ => {}
+            }
+        }
+        let mut all = Vec::new();
+        for c in &h.output().shapes {
+            walk(&c.shape, &mut all);
+        }
+        all.into_iter()
+            .max_by(|a, b| a.0.total_cmp(&b.0))
+            .expect("the sidebar's fill")
+            .1
+    };
+    let ctx = h.ctx.clone();
+    let key = h.state().scheme_key();
+    let other = if key.ends_with("/Dark") {
+        "Wanderbooks/Light"
+    } else {
+        "Wanderbooks/Dark"
+    };
+    let was = sidebar(&h);
+    h.state_mut().set_scheme(&ctx, other);
+    h.run_steps(3);
+    let in_alpha = sidebar(&h);
+    assert_ne!(in_alpha, was, "the scheme didn't change what is drawn");
+    show_tab(&mut h, "Beta Co");
+    h.run_steps(3);
+    assert_eq!(
+        sidebar(&h),
+        in_alpha,
+        "beta wears another scheme than alpha"
+    );
+    assert_eq!(h.state().scheme_key(), other);
 }

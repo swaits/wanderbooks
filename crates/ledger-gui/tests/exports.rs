@@ -554,3 +554,42 @@ fn the_menus_worksheet_says_which_payees_lack_a_tin() {
         "{note}"
     );
 }
+
+/// menu.rs INVARIANT 4: an export whose tab has closed is told to stop and
+/// saves nothing, at any of its phase boundaries: told before it starts,
+/// after the books are read, after the file is built, or too late to stop
+/// the write (the file it just made is removed). Told at none, it saves.
+#[test]
+fn a_stopped_export_leaves_no_file_whenever_it_is_told() {
+    use ledger_gui::jobs::Stop;
+    downloads();
+    let f = root_book();
+    let b = load(&f.book);
+    // A year of its own (the other tests save 2026's): no other test's file has its name.
+    let mine = || -> Vec<String> {
+        saved_files()
+            .into_iter()
+            .filter(|n| n.contains("2025"))
+            .collect()
+    };
+    let mut told = 0;
+    for looks in 0..20 {
+        match Job::Worksheet(2025).run_until(&b, &Stop::given_after(looks)) {
+            Err(why) => {
+                assert!(why.starts_with("stopped"), "{why}");
+                assert_eq!(
+                    mine(),
+                    Vec::<String>::new(),
+                    "told after {looks} looks, the export left a file"
+                );
+                told += 1;
+            }
+            Ok((path, _)) => {
+                assert_eq!(mine().len(), 1, "told too late: it saves");
+                std::fs::remove_file(path).unwrap();
+                break;
+            }
+        }
+    }
+    assert!(told >= 4, "its boundaries: only {told} told it to stop");
+}

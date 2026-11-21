@@ -499,10 +499,11 @@ fn date_controls(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) -> NaiveDate {
 pub fn show_register(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
     let p = pal(ui.ctx());
     page(ui, "assets", |ui| {
-        widgets::page_header(
+        widgets::page_header_ask(
             ui,
             "Fixed assets",
             "Everything the company owns as a fixed asset: its label, what it cost, how much has been depreciated, and what it's worth on the books, reconciled to the general ledger.",
+            "add a fixed asset",
         );
         if b.ledger.registered_assets().next().is_none() {
             widgets::card(ui, |ui| {

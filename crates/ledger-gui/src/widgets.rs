@@ -61,6 +61,47 @@ pub fn page_header(ui: &mut Ui, title: &str, subtitle: &str) {
     ui.add_space(16.0);
 }
 
+/// [`page_header`] with "Ask your assistant" at the right of the title,
+/// where a button that changes the books would be: it copies a sentence
+/// about `what` (a phrase that finishes "please ...": "create a new
+/// invoice") to paste into the assistant (connect.rs INVARIANT 3). In a
+/// window that runs no books server it is [`page_header`].
+pub fn page_header_ask(ui: &mut Ui, title: &str, subtitle: &str, what: &str) {
+    if !crate::connect::asking_is_offered(ui.ctx()) {
+        return page_header(ui, title, subtitle);
+    }
+    let narrow = ui.available_width() < 560.0;
+    if narrow {
+        ui.label(RichText::new(title).font(theme::bold(26.0)));
+        ui.add_space(4.0);
+        crate::connect::ask_button(ui, what);
+        crate::connect::ask_feedback(ui);
+        ui.add_space(4.0);
+    } else {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(title).font(theme::bold(26.0)));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                crate::connect::ask_button(ui, what);
+            });
+        });
+        crate::connect::ask_feedback(ui);
+    }
+    let p = pal(ui.ctx());
+    if !subtitle.is_empty() {
+        ui.add_space(2.0);
+        let w = ui.available_width().min(860.0);
+        ui.allocate_ui(vec2(w, 0.0), |ui| {
+            ui.set_max_width(w);
+            ui.label(
+                RichText::new(subtitle)
+                    .font(theme::regular(15.0))
+                    .color(p.muted),
+            );
+        });
+    }
+    ui.add_space(16.0);
+}
+
 /// A page that opens with a sentence instead of a title (the Overview:
 /// the company's name is the tab's, and the status card's, not the
 /// page's): the sentence at the theme's heading size and weight, the

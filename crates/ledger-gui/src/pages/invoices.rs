@@ -238,10 +238,15 @@ fn status_text(st: &DocState, date: NaiveDate, today: NaiveDate) -> String {
 pub fn show_list(ui: &mut Ui, b: &Books, bills: bool, shell: &mut Shell<'_>) {
     let p = pal(ui.ctx());
     page(ui, "invoices", |ui| {
-        widgets::page_header(
+        widgets::page_header_ask(
             ui,
             "Invoices & Bills",
             "What customers owe the company and what it owes vendors, each figure read from the ledger, tied to its account. The bookkeeper issues, records and voids them.",
+            if bills {
+                "enter a new bill"
+            } else {
+                "create a new invoice"
+            },
         );
         let mut side = bills;
         if widgets::segmented(

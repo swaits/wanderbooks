@@ -56,10 +56,11 @@ impl RegisterRange {
 pub fn show_chart(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
     let p = pal(ui.ctx());
     page(ui, "accounts", |ui| {
-        widgets::page_header(
+        widgets::page_header_ask(
             ui,
             "Accounts",
             "Every account in the chart with today's balance. Click one for its register.",
+            "add an account to the chart",
         );
         ui.checkbox(
             &mut shell.state.accounts.show_empty,

@@ -46,13 +46,14 @@ fn grid(ui: &mut Ui, b: &Books, selected: Option<u64>, shell: &mut Shell<'_>) {
             .iter()
             .filter(|a| a.withdrawn_at.is_none())
             .count();
-        widgets::page_header(
+        widgets::page_header_ask(
             ui,
             "Documents",
             &format!(
                 "{} on file: receipts that prove entries, and the company's records. Bytes are content-addressed and verified on every read.",
                 fmt::count(current, "document", "documents")
             ),
+            "attach a receipt or document",
         );
         let mut cats: Vec<String> = b.attachments.iter().map(|a| a.category.clone()).collect();
         cats.sort();

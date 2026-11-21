@@ -158,10 +158,11 @@ pub fn show(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
     let mut kept_go: Option<Route> = None;
     page(ui, "company", |ui| {
         let c = &b.settings.company;
-        widgets::page_header(
+        widgets::page_header_ask(
             ui,
             &c.name,
             "The company's profile and the standing parts of its books.",
+            "change a company setting",
         );
         columns(ui, 980.0, &[1.0, 1.0], |i, ui| match i {
             0 => {

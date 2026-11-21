@@ -330,10 +330,11 @@ pub(crate) fn chip(ui: &mut Ui, text: &str, on: bool) -> bool {
 pub fn show_list(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
     let p = pal(ui.ctx());
     page(ui, "parties", |ui| {
-        widgets::page_header(
+        widgets::page_header_ask(
             ui,
             "Parties",
             "Everyone the company deals with — vendors, contractors, customers, platforms, agencies — and what the company paid each and received from each. Click one for everything the books hold about them.",
+            "add a customer or vendor",
         );
         if b.ledger.parties().next().is_none() {
             widgets::card(ui, |ui| {

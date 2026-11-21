@@ -8,6 +8,8 @@ pub mod attention;
 pub mod books;
 pub mod charts;
 pub mod company;
+pub mod connect;
+pub mod connections;
 pub mod data;
 pub mod demo;
 pub mod dock;

@@ -43,7 +43,9 @@
 //!      cut, whole in its hover text), then the strip scrolls, with a
 //!      step control at each end; the tab shown is scrolled into view
 //!      when it changes. Each tab leaves room left of its close control
-//!      for a state mark (drawn by a later unit, nothing now).
+//!      for the assistant state mark (`Tab::link`, connect.rs: plugs
+//!      apart, plugs together, a turning arc, so it reads without colour;
+//!      its words are in the tab's hover).
 //!   6. This only says what was asked (show, close, open); the app does
 //!      it.
 //!   7. A tab whose company has a job under way that changes its books
@@ -70,8 +72,8 @@ const CLOSE: f32 = 20.0;
 /// The badge's size, and its gap to the name.
 const BADGE: f32 = 18.0;
 const GAP: f32 = 8.0;
-/// Room left of the close control for the connection state, which a later
-/// unit draws there.
+/// Room left of the close control for the connection state mark
+/// (`Tab::link`).
 const STATE_W: f32 = 14.0;
 /// The room round a tab's content: left and right.
 const PAD_L: f32 = 10.0;
@@ -100,6 +102,10 @@ pub struct Tab {
     /// running ("Restoring these books: wait for it to finish"). Its close
     /// control is off, and says so on hover.
     pub held: Option<String>,
+    /// Whether an assistant is connected to the company, and whether it
+    /// is working: drawn as a shape left of the close control, with its
+    /// words in the tab's hover (nothing for `Link::Unknown`).
+    pub link: crate::connections::Link,
 }
 
 /// The badge hue of the company whose books have id `book_id`, light or
@@ -516,6 +522,12 @@ fn one_tab(
             egui::pos2(text_x, rect.center().y - galley.size().y / 2.0 + 1.0),
             galley,
             p.text,
+        );
+        crate::connect::paint_mark(
+            ui,
+            egui::pos2(close_rect.left() - STATE_W / 2.0 - 2.0, rect.center().y),
+            14.0,
+            tab.link,
         );
         if close.hovered() && tab.held.is_none() {
             painter.rect_filled(close_rect, CornerRadius::same(5), p.selected);

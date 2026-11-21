@@ -58,9 +58,10 @@
 //!      companies restored at the start are opened with the server, a
 //!      company opened later when its tab opens, and closed when its tab
 //!      closes. What fails, and a server that stops on its own, is a
-//!      notice under the tab bar, in words, until dismissed. Where the
-//!      session list and the connection states will go (A4) is
-//!      `Self::connection_slot`.
+//!      notice under the tab bar, in words, until dismissed. Who is
+//!      connected to each company is asked of the server off the UI thread
+//!      and fed to each view every frame (`Self::status_of`, connections.rs;
+//!      WB-assist-1).
 //!   9. Asked to close, a window with a server stays up, saying it is
 //!      closing the books, until the server has exited or its bounded
 //!      close has run out (and then says what is left); a close is never
@@ -70,9 +71,20 @@
 //!      it, with a "Close anyway" button; closing again is not that.
 //!      A server still starting is said under the tab bar, and one whose
 //!      start failed has a "Try again" button there (WB-app-2).
+//!  10. Closing the window, or a tab, while an assistant is connected to
+//!      what would close warns first, in words, and closes only when the
+//!      person says so (WB-assist-2, D-79). One dialog is up at a time:
+//!      a job that holds the window (7) has its own dialog first and no
+//!      warning is raised meanwhile; the warning comes before the server's
+//!      close (9) and goes before it begins, so "Closing your books" and
+//!      the close report are never up with it; a close the person
+//!      confirmed goes straight to (9) and is not warned again. Who is
+//!      connected is read off the UI thread and never waited for; a server
+//!      that does not answer is not a reason to hold a close.
 //! ```
 
 use crate::company::CompanyView;
+use crate::connections::{Connections, Link, Status};
 use crate::data::Source;
 use crate::nav::Route;
 use crate::scheme_menu::SchemeMenu;
@@ -165,7 +177,34 @@ pub struct App {
     serving: Serving,
     /// What the server work has said that the person has not dismissed.
     notices: Vec<String>,
+    /// Who is connected to each company, asked of the server off the UI
+    /// thread (connections.rs).
+    connections: Connections,
+    /// The warning about assistants that is up, if any: one at a time
+    /// (INVARIANT 10).
+    warn: Warn,
+    /// The person confirmed a close of the window that assistants were
+    /// told of: the next close request goes through to the server's close.
+    assistants_ok: bool,
+    /// "Now" for "10 seconds ago", fixed (tests, screenshots) or not.
+    fixed_now: Option<chrono::DateTime<chrono::Utc>>,
 }
+
+/// The warning about assistants that is up (INVARIANT 10).
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Warn {
+    /// None.
+    Off,
+    /// Closing the tab of the company with this key was asked.
+    Tab(String),
+    /// Closing the window was asked.
+    Window,
+}
+
+/// How long an answer of the server about who is connected is believed for
+/// the warning before a close: longer than for the state, so a server slow
+/// for a moment does not make an assistant that was connected seem gone.
+const WARN_AGE: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// What a window is called when no company is in front.
 const TITLE: &str = "wanderbooks";
@@ -338,6 +377,10 @@ impl App {
             closing_window: false,
             serving: Serving::off(),
             notices: Vec::new(),
+            connections: Connections::new(),
+            warn: Warn::Off,
+            assistants_ok: false,
+            fixed_now: None,
         }
     }
 
@@ -555,9 +598,215 @@ impl App {
         &self.serving
     }
 
-    /// Where the connection states and the list of who is connected will
-    /// be shown (plan 3.3, unit A4); nothing is drawn yet.
-    fn connection_slot(&mut self, _ui: &mut Ui) {}
+    /// "Now", for "10 seconds ago".
+    fn now(&self) -> chrono::DateTime<chrono::Utc> {
+        self.fixed_now.unwrap_or_else(chrono::Utc::now)
+    }
+
+    /// Fix "now" (tests and screenshots).
+    pub fn set_now(&mut self, now: chrono::DateTime<chrono::Utc>) {
+        self.fixed_now = Some(now);
+    }
+
+    /// Who is connected, as the window asks the server (tests).
+    pub fn connections(&self) -> &Connections {
+        &self.connections
+    }
+
+    /// What is known of the assistants of the company in `v`, believing an
+    /// answer no older than `age`.
+    fn status_within(&self, age: std::time::Duration, v: &CompanyView) -> Status {
+        self.connections.status_within(
+            age,
+            self.serving.is_on(),
+            self.serving.is_down() || self.serving.has_exited(),
+            v.book_id().as_deref(),
+            &self.title_of(v),
+            self.now(),
+        )
+    }
+
+    /// What is known of the assistants of the company in `v` (WB-assist-1).
+    fn status_of(&self, v: &CompanyView) -> Status {
+        self.status_within(crate::connections::STALE, v)
+    }
+
+    /// Ask the server who is connected, now and then, while it is up; the
+    /// answer is read next frame (never waited for).
+    fn drive_connections(&mut self, ctx: &egui::Context) {
+        let mut refresh = false;
+        for v in &mut self.views {
+            refresh |= v.take_roster_refresh();
+        }
+        if refresh {
+            self.connections.forget();
+        }
+        if !self.serving.is_up() {
+            return;
+        }
+        if let Some(owner) = self.serving.owner() {
+            self.connections.poll(ctx, &owner, refresh);
+        }
+    }
+
+    /// The assistants connected to the company in `v` that the window may
+    /// warn of: the server's last answer within [`WARN_AGE`]. Only while a
+    /// server is up.
+    fn connected_to(&self, v: &CompanyView) -> Status {
+        let mut s = self.status_within(WARN_AGE, v);
+        if !self.serving.is_up() {
+            s.assistants.clear();
+            s.link = Link::Unknown;
+        }
+        s
+    }
+
+    /// Whether an assistant is connected to a company.
+    fn has_assistant(s: &Status) -> bool {
+        matches!(s.link, Link::Connected | Link::Working)
+    }
+
+    /// Whether a warning about assistants is up (tests).
+    pub fn assistant_warning_is_up(&self) -> bool {
+        self.warn != Warn::Off
+    }
+
+    /// Whether the warning up is about closing the window, not a tab
+    /// (tests).
+    pub fn window_warning_is_up(&self) -> bool {
+        self.warn == Warn::Window
+    }
+
+    /// Closing the tab `i` was asked (the tab's control, a middle click):
+    /// warned first when an assistant is connected to it (INVARIANT 10),
+    /// else closed. A tab with a job that changes the books is not closed
+    /// (INVARIANT 7).
+    pub fn ask_close(&mut self, i: usize) {
+        let Some(v) = self.views.get(i) else { return };
+        if v.closing_is_held().is_some() {
+            return;
+        }
+        if Self::has_assistant(&self.connected_to(v)) {
+            self.warn = Warn::Tab(v.key().to_string());
+            return;
+        }
+        self.close(i);
+    }
+
+    /// The warnings about assistants (INVARIANT 10): true while the
+    /// window's own close is being held by one, so the server's close does
+    /// not begin.
+    fn guard_assistants(&mut self, ctx: &egui::Context) -> bool {
+        let asked = ctx.input(|i| i.viewport().close_requested());
+        // A job that holds the window has its dialog (INVARIANT 7), and a
+        // close that has begun is the server's (9): nothing is raised
+        // then.
+        if asked && self.holding().is_empty() && !self.serving.is_closing() {
+            if self.assistants_ok {
+                // Confirmed: it goes through, to the close of the books.
+                self.assistants_ok = false;
+            } else if self
+                .views
+                .iter()
+                .any(|v| Self::has_assistant(&self.connected_to(v)))
+            {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                self.warn = Warn::Window;
+            }
+        }
+        match self.warn.clone() {
+            Warn::Off => false,
+            Warn::Tab(key) => {
+                let Some(i) = self.views.iter().position(|v| v.key() == key) else {
+                    self.warn = Warn::Off;
+                    return false;
+                };
+                let status = self.connected_to(&self.views[i]);
+                if !Self::has_assistant(&status) {
+                    // They are gone: nothing is left to warn of.
+                    self.warn = Warn::Off;
+                    self.close(i);
+                    return false;
+                }
+                let (mut close, mut keep) = (false, false);
+                let response = egui::Modal::new(egui::Id::new("wanderbooks-close-tab-assistants"))
+                    .show(ctx, |ui| {
+                        ui.set_max_width(460.0);
+                        ui.heading(format!("Close {}?", status.company));
+                        ui.add_space(4.0);
+                        ui.label(format!("{}.", status.word()));
+                        ui.label(
+                            "Closing the company ends the connection: the assistant can no longer reach these books until you open the company again. What it is in the middle of finishes first.",
+                        );
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            if ui.button("Close the company").clicked() {
+                                close = true;
+                            }
+                            if ui.button("Keep it open").clicked() {
+                                keep = true;
+                            }
+                        });
+                    });
+                if close {
+                    self.warn = Warn::Off;
+                    self.close(i);
+                } else if keep || response.should_close() {
+                    self.warn = Warn::Off;
+                }
+                false
+            }
+            Warn::Window => {
+                let connected: Vec<Status> = self
+                    .views
+                    .iter()
+                    .map(|v| self.connected_to(v))
+                    .filter(Self::has_assistant)
+                    .collect();
+                if connected.is_empty() {
+                    // They are gone: the person asked to close, so it does.
+                    self.warn = Warn::Off;
+                    self.assistants_ok = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    return false;
+                }
+                let (mut close, mut keep) = (false, false);
+                let response = egui::Modal::new(egui::Id::new("wanderbooks-close-assistants"))
+                    .show(ctx, |ui| {
+                        ui.set_max_width(480.0);
+                        ui.heading("Assistants are connected");
+                        ui.add_space(4.0);
+                        for s in &connected {
+                            ui.label(format!("{}: {}", s.company, s.word()));
+                        }
+                        ui.add_space(4.0);
+                        ui.label(
+                            "Closing Wanderbooks ends their connection. What an assistant is in the middle of finishes first, and nothing is cut off half way. They can carry on once Wanderbooks is open again.",
+                        );
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            if ui.button("Close Wanderbooks").clicked() {
+                                close = true;
+                            }
+                            if ui.button("Keep it open").clicked() {
+                                keep = true;
+                            }
+                        });
+                    });
+                if close {
+                    self.warn = Warn::Off;
+                    self.assistants_ok = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    false
+                } else {
+                    if keep || response.should_close() {
+                        self.warn = Warn::Off;
+                    }
+                    self.warn == Warn::Window
+                }
+            }
+        }
+    }
 
     /// The window's title now.
     pub fn window_title(&self) -> String {
@@ -782,7 +1031,7 @@ impl App {
     fn act(&mut self, ctx: &egui::Context, action: TabAction) {
         match action {
             TabAction::Show(i) => self.activate(i),
-            TabAction::Close(i) => self.close(i),
+            TabAction::Close(i) => self.ask_close(i),
             TabAction::Open(id) => {
                 let Some(root) = self.root.clone() else {
                     return;
@@ -958,22 +1207,38 @@ impl eframe::App for App {
             v.pump(&ctx, i == self.active);
         }
         self.guard_close(&ctx);
-        self.guard_server_close(&ctx);
+        if !self.guard_assistants(&ctx) {
+            self.guard_server_close(&ctx);
+        }
         self.check_identities();
         self.learn_names();
+        // Who is connected to each company: asked of the server off this
+        // thread, read here (WB-assist-1), and given to each view.
+        self.drive_connections(&ctx);
+        let statuses: Vec<Status> = self.views.iter().map(|v| self.status_of(v)).collect();
+        for (v, s) in self.views.iter_mut().zip(&statuses) {
+            v.set_assist(s.clone());
+        }
         let tabs: Vec<Tab> = self
             .views
             .iter()
-            .map(|v| {
+            .zip(&statuses)
+            .map(|(v, status)| {
                 let title = self.title_of(v);
+                let mut detail = match v.book_id() {
+                    Some(id) if id != title => format!("{title}\n{id}"),
+                    _ => title.clone(),
+                };
+                if status.serves && status.link != Link::Unknown {
+                    detail.push('\n');
+                    detail.push_str(&status.hover());
+                }
                 Tab {
                     held: v.closing_is_held(),
-                    detail: match v.book_id() {
-                        Some(id) if id != title => format!("{title}\n{id}"),
-                        _ => title.clone(),
-                    },
+                    detail,
                     title,
                     hue_key: v.hue_key(),
+                    link: status.link,
                 }
             })
             .collect();
@@ -983,7 +1248,6 @@ impl eframe::App for App {
         // company in front: a tab is the top level (D-78).
         let action = self.tabs.show(ui, &tabs, shown, &others);
         self.show_notices(ui);
-        self.connection_slot(ui);
         let active = self.active;
         match self.views.get_mut(active) {
             Some(v) => v.ui(ui, &mut self.schemes),

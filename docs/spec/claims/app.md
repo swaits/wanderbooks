@@ -37,7 +37,7 @@ a host they start themselves (`wanderbooks serve`) holds the root and the
 bridge uses it as always (WB-app-3). Deleting the marker by hand gives the
 root back to the on-demand host.
 *Enforced:* `ledger_host::app_server::AppServer` (`start_in`, `stop`, its
-`Drop`), `AppHost::start` and `AppHost::stop`, `ANOTHER_HAS_THEM`; the server's own close, ledger-mcp
+drop), `AppHost::start` and `AppHost::stop`, `ANOTHER_HAS_THEM`; the server's own close, ledger-mcp
 `local::run` (INVARIANT 6).
 *Checked:* `ledger-cli` `app_server.rs` (`the_server_is_a_child_that_closes_when_its_input_does`,
 `a_window_that_dies_leaves_no_server_and_no_half_closed_book`,

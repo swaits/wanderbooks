@@ -217,7 +217,7 @@ fn parse_rows(
         if amount.is_zero() {
             continue; // zero-amount rows carry no money
         }
-        let line = record.position().map_or(idx as u64 + 1, |p| p.line());
+        let line = crate::line_of(text, &record, idx + 1);
         rows.push((line, fields[0].to_string(), fields[1].to_string(), amount));
     }
     let order = date_order(rows.iter().map(|r| r.1.as_str()), order)?;
@@ -349,6 +349,57 @@ mod tests {
         let csv = "01/15/2026,Store,\"($1,234.56)\"\n";
         let txns = parse_bank_csv(csv).unwrap();
         assert_eq!(txns[0].amount, Decimal::new(-123456, 2));
+    }
+
+    /// parse_bank_csv_masked SCENARIOS 1 and 2, INVARIANTS 1 and 2: a bank's
+    /// reference is masked to its last four and named by line; a long
+    /// reference stays; amounts and dates are unchanged.
+    #[test]
+    fn a_tax_id_shape_in_a_description_is_masked_and_named() {
+        let csv = "Date,Description,Amount\n\
+                   2026-01-02,ACH 000-00-0000 payroll,-12.50\n\
+                   2026-01-03,CHECK 1234567890,-3.25\n\
+                   \n\
+                   2026-01-04,\"WIRE 000000000, REF 00-0000000\",40.00\n";
+        let got = parse_bank_csv_masked(csv, None).unwrap();
+        let plain = parse_bank_csv_with(csv, None).unwrap();
+        assert_eq!(got.transactions.len(), 3);
+        assert_eq!(
+            got.transactions[0].description,
+            "ACH \u{2022}\u{2022}\u{2022}-\u{2022}\u{2022}-0000 payroll"
+        );
+        assert_eq!(got.transactions[1].description, "CHECK 1234567890");
+        assert_eq!(
+            got.transactions[2].description,
+            "WIRE \u{2022}\u{2022}\u{2022}\u{2022}\u{2022}0000, REF \u{2022}\u{2022}-\u{2022}\u{2022}\u{2022}0000"
+        );
+        for (m, p) in got.transactions.iter().zip(&plain) {
+            assert_eq!((m.date, m.amount), (p.date, p.amount));
+        }
+        // The file's lines, the blank one counted: 2, and 5.
+        assert_eq!(
+            got.masked,
+            vec![
+                MaskedCell {
+                    line: 2,
+                    column: "Description",
+                    numbers: 1
+                },
+                MaskedCell {
+                    line: 5,
+                    column: "Description",
+                    numbers: 2
+                },
+            ]
+        );
+        assert!(
+            got.transactions
+                .iter()
+                .all(|t| { !ledger_core::settings::holds_printed_tin(&t.description) })
+        );
+        // A file with none masks none.
+        let clean = parse_bank_csv_masked("2026-01-02,Rent,-1.00\n", None).unwrap();
+        assert!(clean.masked.is_empty());
     }
 
     #[test]

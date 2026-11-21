@@ -121,7 +121,7 @@ pub fn parse_chart_csv(text: &str) -> Result<Vec<ChartRow>, ChartCsvError> {
         // in any cell is refused, naming the row and the column; the name
         // is read as strictly as an account name is (any run of nine
         // digits).
-        let line = record.position().map_or(idx as u64 + 1, |p| p.line());
+        let line = crate::line_of(text, &record, idx + 1);
         let columns = ["code", "name", "type", "parent_code", "tax_category"];
         for (n, value) in fields.iter().enumerate() {
             let looks = if n == 1 {
@@ -198,6 +198,37 @@ mod tests {
             parse_chart_csv(csv),
             Err(ChartCsvError::BadType(_))
         ));
+    }
+
+    /// INVARIANT 4: a cell that looks like a tax id refuses the file, naming
+    /// its row and column and never the number; a ten-digit code goes through
+    /// (a name is read strictly, as an account name is).
+    #[test]
+    fn a_tax_id_in_a_cell_is_refused_with_its_row_and_column() {
+        let header = "code,name,type,parent_code\n";
+        let why = |rows: &str| match parse_chart_csv(&format!("{header}{rows}")) {
+            Err(ChartCsvError::LooksLikeTin(why)) => why,
+            other => panic!("expected a refusal, got {other:?}"),
+        };
+        let w = why("1000,Cash,asset,\n1010,Payroll 000-00-0000,asset,1000\n");
+        assert!(
+            w.starts_with("the name cell of row 3 looks like it holds a tax id"),
+            "{w}"
+        );
+        assert!(w.contains("books.set_tin") && w.contains("W-9"), "{w}");
+        assert!(!w.contains("0000"), "never the number: {w}");
+        // A name is read strictly, as an account name is: any nine digits.
+        assert!(why("1000,Card 1234 56789,asset,\n").contains("name cell of row 2"));
+        // Another column is read by its shape.
+        assert!(why("000-00-0000,Cash,asset,\n").contains("code cell of row 2"));
+        assert!(why("1000,Cash,asset,00-0000000\n").contains("parent_code cell of row 2"));
+        // A blank line counts as a line of the file.
+        assert!(why("1000,Cash,asset,\n\n1010,Bad 000000000,asset,\n").contains("row 4"));
+        // What is no tax id goes through.
+        let ok = parse_chart_csv(&format!(
+            "{header}1234567890,Loan 2026,liability,\n"
+        ));
+        assert_eq!(ok.unwrap().len(), 1);
     }
 
     /// Found by fuzz_import_csv (2026-10-13): a row with a blank code or

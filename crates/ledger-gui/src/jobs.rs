@@ -7,9 +7,10 @@
 //!       when every one of them has ended; and a job that must not be cut
 //!       off (an owner's change to the books) holds the tab and the window
 //!       open until it is done.
-//! SOURCE: plan/p15-app-and-relay.md 3.2 (closing a tab ends what the tab
-//!         started); WB-GUI-2 (the viewer never abandons a change to the
-//!         books).
+//! SOURCE: plan/p15-app-and-relay.md 3.2 (D-78: a tab per open company,
+//!         and what the tab started ends with it); CONVENTION (a change
+//!         an owner has begun on the books is never cut off half-way: the
+//!         tab and the window wait for it).
 //! INVARIANTS:
 //!   1. Every thread started through a [`Spawner`] is counted from before
 //!      it starts until it has ended, however it ends (a panic too): the

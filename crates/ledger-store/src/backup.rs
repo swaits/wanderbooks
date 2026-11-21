@@ -337,7 +337,7 @@ impl Git {
     }
 
     /// This git, sharing `sink` for the lock files it deals with
-    /// (INVARIANT 5), which the caller takes with [`take_lock_notes`]:
+    /// (INVARIANT 5), which the caller takes with [`Self::take_lock_notes`]:
     /// every git made from the same sink reports into it.
     #[must_use]
     pub fn with_lock_notes(mut self, sink: LockNotes) -> Self {

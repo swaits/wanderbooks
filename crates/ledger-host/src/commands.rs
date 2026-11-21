@@ -1893,7 +1893,7 @@ pub fn ensure_key(
 /// What `connect` does first: the default key's copy is in the token file,
 /// or the key is made again with every scope (replacing a live key whose
 /// copy is missing: the owner asked to connect an agent here).
-fn ensure_agent_key(common: &Common, book: &str) -> Result<bool, String> {
+pub(crate) fn ensure_agent_key(common: &Common, book: &str) -> Result<bool, String> {
     let book = ledger_store::root::BookId::parse(book)
         .map_err(|e| e.to_string())?
         .to_string();

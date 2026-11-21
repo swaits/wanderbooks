@@ -282,6 +282,18 @@ impl ledger_gui::owner::Owner for ViewerOwner {
         )
     }
 
+    fn claude_desktop_extension(
+        &self,
+        book: &str,
+        company: &str,
+    ) -> Result<ledger_gui::owner::ExtensionMade, String> {
+        let made = ledger_host::extension::claude_desktop_extension(&self.common, book, company)?;
+        Ok(ledger_gui::owner::ExtensionMade {
+            file: made.path.display().to_string(),
+            folder: made.folder.display().to_string(),
+        })
+    }
+
     fn new_books(&self, id: &str, currency: &str) -> Result<String, String> {
         ledger_host::commands::new_books_and_home(&self.common, id, currency)
     }
@@ -690,8 +702,7 @@ fn is_bare_launch(words: &[String], stdin_is_terminal: bool) -> bool {
 }
 
 fn main() {
-    #[cfg(unix)]
-    ledger_host::update::set_program_version(env!("CARGO_PKG_VERSION"));
+    ledger_host::set_program_version(env!("CARGO_PKG_VERSION"));
     // A file's path may be any name the system takes: the file commands
     // get the words as given. Everything else is text.
     let given: Vec<std::ffi::OsString> = env::args_os().skip(1).collect();

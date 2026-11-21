@@ -90,22 +90,7 @@ const STAGED: &str = "staged";
 const FEED_FILE: &str = "feed";
 const CHECKED: &str = "checked";
 
-/// The version of the program being run, set by its `main` (this crate's
-/// own is the fallback: the packages rewrite only the program's).
-static PROGRAM_VERSION: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
-
-/// Say which version this program is.
-pub fn set_program_version(version: &'static str) {
-    let _ = PROGRAM_VERSION.set(version);
-}
-
-/// This program's version.
-pub fn program_version() -> &'static str {
-    PROGRAM_VERSION
-        .get()
-        .copied()
-        .unwrap_or(env!("CARGO_PKG_VERSION"))
-}
+pub use crate::{program_version, set_program_version};
 
 const MAX_MANIFEST: usize = 1 << 20;
 const MAX_PROGRAM: u64 = 1 << 30;

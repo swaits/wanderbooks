@@ -247,6 +247,17 @@ impl Owner for Fake {
         self.note(format!("connect {} {book}", agent.key()));
         Ok(vec![format!("{} reaches the books.", agent.label())])
     }
+    fn claude_desktop_extension(
+        &self,
+        book: &str,
+        company: &str,
+    ) -> Result<ledger_gui::owner::ExtensionMade, String> {
+        self.note(format!("extension {book} {company}"));
+        Ok(ledger_gui::owner::ExtensionMade {
+            file: "/docs/Wanderbooks/Extensions/wanderbooks-alpha.mcpb".into(),
+            folder: "/docs/Wanderbooks/Extensions".into(),
+        })
+    }
     fn new_books(&self, _: &str, _: &str) -> Result<String, String> {
         Err("not here".into())
     }
@@ -728,6 +739,50 @@ fn the_connect_buttons_do_what_connect_does() {
     wait_for("the key was made", || {
         owner.said().contains(&"key alpha".to_string())
     });
+    drop(h);
+}
+
+/// WB-pkg-5: the "Claude desktop app" row makes the extension for this
+/// company through the owner, then says in words what to do with the file.
+#[test]
+fn the_claude_desktop_row_makes_the_extension_and_says_what_to_do_next() {
+    let w = World::new(&[("alpha", "Wanderland Labs")]);
+    let owner = Fake::new();
+    owner.answer(roster(vec![], vec![]));
+    let mut h = start(&w, &["alpha"], &owner);
+    refresh(&mut h);
+    h.state_mut().goto(Route::Connect);
+    h.run_steps(3);
+    assert!(h.query_by_label_contains("Claude desktop app").is_some());
+    assert!(
+        h.query_by_label_contains("Show the file").is_none(),
+        "nothing is made yet"
+    );
+    h.get_by_role_and_label(Role::Button, "Make the Claude extension")
+        .click();
+    h.run_steps(2);
+    wait_for("the extension was made", || {
+        owner
+            .said()
+            .contains(&"extension alpha Wanderland Labs".to_string())
+    });
+    until(&mut h, "it said what came of it", |a| {
+        a.views()[0].connect_state().said().is_some()
+    });
+    h.run_steps(2);
+    for words in [
+        "wanderbooks-alpha.mcpb",
+        "Settings",
+        "Extensions",
+        "Install Extension",
+        "Keep Wanderbooks open",
+    ] {
+        assert!(
+            h.query_by_label_contains(words).is_some(),
+            "{words} is said on the page"
+        );
+    }
+    assert!(h.query_by_label_contains("Show the file").is_some());
     drop(h);
 }
 

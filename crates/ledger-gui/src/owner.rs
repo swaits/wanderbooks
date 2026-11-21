@@ -412,6 +412,16 @@ pub trait Owner: Send + Sync {
     fn command_line(&self, _words: &[&str]) -> Result<String, String> {
         Err("not here".into())
     }
+    /// The Claude desktop extension for the company `book` (shown as
+    /// `company`): the one-click package written where a person can open it,
+    /// the key made first if there was none. Blocks.
+    fn claude_desktop_extension(
+        &self,
+        _book: &str,
+        _company: &str,
+    ) -> Result<ExtensionMade, String> {
+        Err("not here".into())
+    }
     /// The key an assistant needs to reach the company `book` exists (made
     /// now if it did not), able to read, draft and post but not to see the
     /// access record: `Ok(true)` when it was made now. It never replaces a
@@ -474,6 +484,15 @@ pub trait Owner: Send + Sync {
     fn agent_start(&self, _agent: Agent, _book: &str) -> Result<AgentStart, String> {
         Err("not here".into())
     }
+}
+
+/// The Claude desktop extension the Connect page made (WB-pkg-5).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExtensionMade {
+    /// The package file, in full.
+    pub file: String,
+    /// The folder it is in.
+    pub folder: String,
 }
 
 /// The owner the program gave the viewer, for every company's view that

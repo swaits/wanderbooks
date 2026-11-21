@@ -309,6 +309,8 @@ impl Agent {
     }
 
     fn send(&mut self, message: Value) {
+        // A tool call carries the request key every write needs (D-88).
+        let message = common::with_request_key(&message.to_string());
         let stdin = self.run.child.stdin.as_mut().unwrap();
         writeln!(stdin, "{message}").unwrap();
         stdin.flush().unwrap();
@@ -483,12 +485,19 @@ fn format_upgrade_waits_for_consent() {
     assert!(refused.contains("format_upgrade_pending"), "{refused}");
     assert!(refused.contains("no tool can"), "{refused}");
     assert_eq!(journal(&dir), before, "a refusal journals nothing");
-    // What needs nothing new is made.
-    a.call(
-        "books.add_account",
-        json!({"code": "6000", "name": "Supplies", "account_type": "expense"}),
-    )
-    .unwrap();
+    // Nothing is written, whatever it is (D-89): a write that needs
+    // nothing new is refused the same, with the same remedy; reads work.
+    let refused = a
+        .call(
+            "books.add_account",
+            json!({"code": "6000", "name": "Supplies", "account_type": "expense"}),
+        )
+        .unwrap_err();
+    assert!(refused.starts_with("format_upgrade_pending"), "{refused}");
+    assert!(refused.contains("nothing can be written"), "{refused}");
+    assert!(refused.contains("wanderbooks books upgrade"), "{refused}");
+    assert_eq!(journal(&dir), before, "a refusal journals nothing");
+    a.call("books.chart", json!({})).unwrap();
     let tools = a.request("tools/list", json!({}), 30);
     let names: Vec<&str> = tools["result"]["tools"]
         .as_array()
@@ -614,11 +623,11 @@ fn format_upgrade_waits_for_consent() {
     assert_eq!(format_lines(&dir), 1);
 }
 
-/// plan P4b S4.4 (R-A step 4, 8.0.6 item 3): on books that haven't
-/// declared `documents_v2`, an invoice carrying a new field (terms) is
-/// refused with the upgrade remedy and journals nothing, while one
-/// carrying none posts as before; after the owner's go-ahead the same call
-/// is made, and takes the first number.
+/// plan P4b S4.4 (R-A step 4, 8.0.6 item 3), under D-89: on books that
+/// haven't declared the journal's call transactions, no write is taken, an
+/// invoice carrying a new field (terms) no more than any other, and it
+/// journals nothing; after the owner's go-ahead the same call is made, and
+/// takes the first number.
 #[test]
 fn documents_v2_refused_until_consent() {
     let home = Home::new("documents-v2");
@@ -632,31 +641,25 @@ fn documents_v2_refused_until_consent() {
         .unwrap();
     assert!(out.status.success(), "{out:?}");
     let mut a = Agent::start(&home, "acme");
-    let customer = a
-        .call("books.add_customer", json!({"name": "Harbor Coffee"}))
-        .unwrap()["id"]
-        .clone();
     let line = json!([{"description": "Design", "amount": "500.00"}]);
-    let with_terms = json!({"customer": customer.to_string(), "date": "2026-02-10",
+    let with_terms = json!({"customer": "1", "date": "2026-02-10",
                             "terms": "Net 30", "lines": line, "confirmed": true});
     let before = journal(&dir);
-    let refused = a
-        .call("books.create_invoice", with_terms.clone())
-        .unwrap_err();
-    assert!(refused.starts_with("format_upgrade_pending"), "{refused}");
-    assert!(refused.contains("documents_v2"), "{refused}");
+    // (An invoice's preview, which writes nothing, is made as ever; its
+    // post is the write that waits: it is asked for after the go-ahead.)
+    for (tool, args) in [
+        ("books.add_customer", json!({"name": "Harbor Coffee"})),
+        (
+            "books.draft_entry",
+            json!({"date": "2026-02-10", "description": "Waiting",
+                   "no_party_reason": "test"}),
+        ),
+    ] {
+        let refused = a.call(tool, args).unwrap_err();
+        assert!(refused.starts_with("format_upgrade_pending"), "{refused}");
+        assert!(refused.contains("nothing can be written"), "{refused}");
+    }
     assert_eq!(journal(&dir), before, "a refusal journals nothing");
-    // A document carrying none of the new fields posts as before, and
-    // files its copy; it takes no number (an older version reads it).
-    let plain = a
-        .call(
-            "books.create_invoice",
-            json!({"customer": customer.to_string(), "date": "2026-02-10", "due_date": "2026-03-12",
-                   "lines": line, "confirmed": true}),
-        )
-        .unwrap();
-    assert!(plain.get("number").is_none(), "{plain}");
-    assert_eq!(plain["total"], "500.00");
 
     // The go-ahead.
     let mut words = home.words("books");
@@ -664,6 +667,12 @@ fn documents_v2_refused_until_consent() {
     let (code, shown) = home.at_terminal(&words, &[PASS]);
     assert_eq!(code, 0, "{shown}");
     assert_eq!(format_lines(&dir), 1, "the format moved once");
+    let customer = a
+        .call("books.add_customer", json!({"name": "Harbor Coffee"}))
+        .unwrap()["id"]
+        .clone();
+    let mut with_terms = with_terms;
+    with_terms["customer"] = json!(customer.to_string());
     let made = a.call("books.create_invoice", with_terms).unwrap();
     assert_eq!(made["number"], "INV-0001", "{made}");
     assert_eq!(made["terms"], "Net 30", "{made}");
@@ -700,15 +709,17 @@ fn copy_private(from: &Path, to: &Path) {
 /// ```text
 /// INVARIANTS:
 ///   1. Before consent: the books open and are served, waiting; P2's
-///      database is never written; what P2 can read is written, and every
-///      write P2 would refuse or misread is refused, journaling nothing
-///      (a setting key, a tax category, a depreciation catch-up, a members
-///      close counted from the count's start, an invoice's or bill's line
-///      naming its project).
+///      database is never written; they are read as ever and take no
+///      write at all (D-89, WB-format-11: every write is one transaction,
+///      and books written before that can't keep it), every one refused
+///      with the upgrade remedy, journaling nothing.
 ///   2. The consent backup holds the books exactly as they were, keys and
 ///      vault too; the upgrade is one line after P2's, byte for byte.
-///   3. After it: the same figures, and every refused write is made; the
-///      books verify; P2's database is still byte for byte.
+///   3. After it: the same figures, and every write is made, those P2
+///      would have refused or misread among them (a setting key, a tax
+///      category, a depreciation catch-up, a members close counted from
+///      the count's start, an invoice's or bill's line naming its
+///      project); the books verify; P2's database is still byte for byte.
 /// ```
 #[test]
 fn books_p2_served_cut_over_whole() {
@@ -729,11 +740,9 @@ fn books_p2_served_cut_over_whole() {
     let mut a = Agent::start(&home, "acme");
     let start = a.call("books.start", json!({})).unwrap();
     assert_eq!(start["format_upgrade"]["format"], 2, "{start}");
-    let verified = a.call("books.verify", json!({})).unwrap();
-    assert_eq!(verified["status"], "ok", "{verified}");
-    assert_eq!(verified["events"], 470);
-    assert_eq!(verified["database"], ledger_store::db_file());
-    assert_eq!(verified["other_databases"], json!(["wanderbooks.db"]));
+    // (books.verify can rebuild the projection: a write, so it waits for
+    // the go-ahead like every other, and is asked after it, below.)
+    assert_eq!(journal(&dir).iter().filter(|b| **b == b'\n').count(), 470);
     let figures = |a: &mut Agent| {
         [
             a.call("books.trial_balance", json!({"as_of": "2025-12-31"})),
@@ -747,7 +756,68 @@ fn books_p2_served_cut_over_whole() {
     };
     let before = figures(&mut a);
 
-    // INVARIANT 1: what P2 reads is written; the rest waits.
+    // INVARIANT 1 (D-89): the books take no write before the go-ahead,
+    // whatever the write, and journal nothing for the refusal.
+    let waiting = journal(&dir);
+    for (tool, args) in [
+        (
+            "books.add_account",
+            json!({"code": "6600", "name": "Travel", "account_type": "expense"}),
+        ),
+        (
+            "books.create_period",
+            json!({"name": "2025-Q2", "start": "2025-04-01", "end": "2025-06-30"}),
+        ),
+        ("books.add_project", json!({"name": "Lighthouse"})),
+        ("books.add_customer", json!({"name": "Ridgeway Co"})),
+        (
+            "books.draft_entry",
+            json!({"date": "2026-02-12", "description": "Waiting for the go-ahead",
+                   "no_party_reason": "test"}),
+        ),
+        (
+            "books.raise_item",
+            json!({"title": "Ask the CPA", "decided_by": "Avery Quill"}),
+        ),
+    ] {
+        let e = a.call(tool, args).unwrap_err();
+        assert!(e.starts_with("format_upgrade_pending"), "{tool}: {e}");
+        assert!(e.contains("nothing can be written"), "{tool}: {e}");
+    }
+    assert_eq!(journal(&dir), waiting, "a refusal journals nothing");
+    assert!(journal(&dir).starts_with(&p2_journal));
+    // The books are read as ever.
+    assert_eq!(figures(&mut a), before);
+
+    // INVARIANT 2: the go-ahead.
+    let mut words = home.words("books");
+    words.extend(["upgrade".into(), "acme".into()]);
+    let (code, shown) = home.at_terminal(&words, &[PASS]);
+    assert_eq!(code, 0, "{shown}");
+    let after = journal(&dir);
+    assert!(after.starts_with(&waiting));
+    assert_eq!(
+        format_lines(&dir),
+        2,
+        "P2's declaration, then the upgrade's"
+    );
+    let backup = archive_git(&dir, &["rev-parse", "HEAD"]);
+    assert_eq!(
+        archive_git(&dir, &["show", &format!("{}:journal.jsonl", backup.trim())]).as_bytes(),
+        waiting.as_slice(),
+        "the backup holds the books as they were"
+    );
+    for kept in ["keys/legacy.key", "vault/tin-1.bin", "vault/tin-3.bin"] {
+        let out = Command::new("git")
+            .arg(format!("--git-dir={}", dir.join("archive.git").display()))
+            .args(["show", &format!("{}:{kept}", backup.trim())])
+            .output()
+            .unwrap();
+        assert_eq!(out.stdout, std::fs::read(dir.join(kept)).unwrap(), "{kept}");
+    }
+    assert_eq!(figures(&mut a), before, "the upgrade moves no figure");
+
+    // INVARIANT 3: every write is taken now: first what P2 could read.
     a.call(
         "books.add_account",
         json!({"code": "6600", "name": "Travel", "account_type": "expense"}),
@@ -822,7 +892,6 @@ fn books_p2_served_cut_over_whole() {
         )
         .unwrap()["id"]
         .clone();
-    let waiting = journal(&dir);
     let refused: Vec<(&str, Value)> = vec![
         // A source correction (source_revisions, P5): an older version
         // refuses the type.
@@ -921,53 +990,20 @@ fn books_p2_served_cut_over_whole() {
             json!({"entry_id": 1, "method": {"reasoning_effort": "high"}}),
         ),
     ];
-    for (tool, args) in &refused {
-        let e = a.call(tool, args.clone()).unwrap_err();
-        assert!(e.starts_with("format_upgrade_pending"), "{tool}: {e}");
-    }
-    assert_eq!(journal(&dir), waiting, "a refusal journals nothing");
-    assert!(journal(&dir).starts_with(&p2_journal));
-    assert_eq!(
-        std::fs::read(dir.join(ledger_store::LEGACY_DB_FILE)).unwrap(),
-        p2_db,
-        "P2's database is never written"
-    );
-
-    // INVARIANT 2: the go-ahead.
-    let mut words = home.words("books");
-    words.extend(["upgrade".into(), "acme".into()]);
-    let (code, shown) = home.at_terminal(&words, &[PASS]);
-    assert_eq!(code, 0, "{shown}");
-    let after = journal(&dir);
-    assert!(after.starts_with(&waiting));
-    assert_eq!(
-        format_lines(&dir),
-        2,
-        "P2's declaration, then the upgrade's"
-    );
-    let backup = archive_git(&dir, &["rev-parse", "HEAD"]);
-    assert_eq!(
-        archive_git(&dir, &["show", &format!("{}:journal.jsonl", backup.trim())]).as_bytes(),
-        waiting.as_slice(),
-        "the backup holds the books as they were"
-    );
-    for kept in ["keys/legacy.key", "vault/tin-1.bin", "vault/tin-3.bin"] {
-        let out = Command::new("git")
-            .arg(format!("--git-dir={}", dir.join("archive.git").display()))
-            .args(["show", &format!("{}:{kept}", backup.trim())])
-            .output()
-            .unwrap();
-        assert_eq!(out.stdout, std::fs::read(dir.join(kept)).unwrap(), "{kept}");
-    }
-
-    // INVARIANT 3.
-    assert_eq!(figures(&mut a), before, "the upgrade moves no figure");
+    // The writes P2 would have refused or misread, made now.
     for (tool, args) in refused {
         a.call(tool, args.clone())
             .unwrap_or_else(|e| panic!("{tool} after the upgrade: {e}"));
     }
     let verified = a.call("books.verify", json!({})).unwrap();
     assert_eq!(verified["status"], "ok", "{verified}");
+    // It counts the lines there were when it ran: the call's own closing
+    // line comes after its answer.
+    let events = verified["events"].as_u64().unwrap();
+    let on_disk = journal(&dir).iter().filter(|b| **b == b'\n').count() as u64;
+    assert!(events > 470 && events < on_disk, "{events} of {on_disk}");
+    assert_eq!(verified["database"], ledger_store::db_file());
+    assert_eq!(verified["other_databases"], json!(["wanderbooks.db"]));
     assert_eq!(
         std::fs::read(dir.join(ledger_store::LEGACY_DB_FILE)).unwrap(),
         p2_db,

@@ -4769,8 +4769,12 @@ mod tests {
         assert_eq!(added.len(), 1, "one line");
         assert_eq!(added[0]["type"], "journal.format_set");
         let c = ledger_store::format::current();
+        // The declaration also gives older books their id (plan P15 6a).
+        let mut declared = added[0]["payload"].clone();
+        let books_id = declared.as_object_mut().unwrap().remove("books_id");
+        assert_eq!(books_id.and_then(|v| v.as_str().map(str::len)), Some(32));
         assert_eq!(
-            added[0]["payload"],
+            declared,
             serde_json::json!({"format": c.format, "features": c.features})
         );
         assert_eq!(done.head.0, backup.head.0 + 1);

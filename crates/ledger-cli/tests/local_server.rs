@@ -623,7 +623,8 @@ async fn raw_upload(http: &reqwest::Client, session: &str, bytes: &[u8], name: &
     let begin = json!({"jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": {
         "name": "books.begin_upload", "arguments": {
             "sha256": ledger_store::journal::sha256_hex(bytes), "size": bytes.len(),
-            "mime_type": "application/pdf", "file_name": name, "purpose": "document"}}});
+            "mime_type": "application/pdf", "file_name": name, "purpose": "document",
+            "request_key": common::fresh_request_key()}}});
     let r = http
         .post("http://localhost/b/acme/mcp")
         .header("content-type", "application/json")
@@ -681,7 +682,8 @@ async fn a_call_whose_client_hung_up_finishes_before_the_close() {
     let upload = raw_upload(&http, &session, &bytes, "big.pdf").await;
     let call = json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
         "name": "books.file_document", "arguments": {
-            "category": "formation", "upload_id": upload}}});
+            "category": "formation", "upload_id": upload,
+            "request_key": common::fresh_request_key()}}});
     let response = http
         .post("http://localhost/b/acme/mcp")
         .header("content-type", "application/json")

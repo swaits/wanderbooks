@@ -611,6 +611,34 @@ with generated URIs, checks after each call that the server still
 serves, restarts it after them to check the books reopen, and drives
 every tool over every book in ledger-store's `tests/fixtures/old-books`.
 
+## Writes: one transaction, one request key (plan P15 2a, D-88)
+
+Every tool that can change the books (no `readOnlyHint`; 83 of the 140: the
+three that read what is sealed and put it in a file, `books.vendor_1099`,
+`books.get_w9` and `books.export_cpa_package`, are annotated so but write
+nothing and may answer with a full TIN, so they are read like any read)
+takes one more argument than its own, `request_key`, and its schema says it
+is required: 8 to 128 characters of plain text the agent makes up, new for
+each different action and never reused for another. The agent sends the same
+call again with the same key when its answer is lost; the books do not do it
+twice, and answer what they answered the first time (a repeat is recorded in
+the access log as `repeat`, and writes nothing, even after the books were
+closed and opened). The same key with other arguments, or another tool, is
+refused in words and changes nothing. A key is the token's own. A write
+without a usable key is refused in words before it runs. A preview (a tool
+with `confirmed`, called without `confirmed: true`) writes nothing and needs
+no key. A failed write changes nothing and leaves its key free: the corrected
+call may use it; where the call got as far as writing journal lines, the
+journal says it failed (`call.closed`, outcome `failed`) and none of them
+count. Every write call is one transaction: its lines commit together with
+its closing line or not at all, and after a crash a call without its closing
+line is not treated as done (WB-format-8 to WB-format-10).
+
+Books an older version wrote take no write at all until the owner gives the
+format upgrade its go-ahead (D-89, WB-format-11): every write is refused,
+before it runs, with `format_upgrade_pending` and the words "nothing can be
+written"; every read works as ever. No tool can give the go-ahead.
+
 ## Tool design principles
 
 - **Narrow tools, explicit arguments.** No "do what I mean" tools. The agent

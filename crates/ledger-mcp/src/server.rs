@@ -222,6 +222,11 @@ pub struct SharedStore {
     running: std::sync::atomic::AtomicUsize,
     /// Woken whenever one ends.
     ended: tokio::sync::Notify,
+    /// The write turn (calls.rs INVARIANT 2): held for a write call's
+    /// whole run, from its key being looked up to its closing line, and
+    /// for the owner's format upgrade, so a call's lines are one run in
+    /// the journal.
+    writes: tokio::sync::Mutex<()>,
     /// The books' base currency, fixed at their creation: read without
     /// the lock (the connect text names it).
     currency: Currency,
@@ -238,6 +243,13 @@ impl SharedStore {
         let store = self.store.blocking_lock();
         let store = store.as_ref().ok_or(STOPPED)?;
         Ok(f(store))
+    }
+
+    /// Wait for the write turn (calls.rs INVARIANT 2). Blocking, on a
+    /// blocking thread, as the store's lock is; unlike it, the turn is
+    /// held across a call's awaits, so its guard is `Send`.
+    pub(crate) fn write_turn(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.writes.blocking_lock()
     }
 
     /// Run `f` on the store under its lock, writing: the owner's format
@@ -257,6 +269,8 @@ impl SharedStore {
         if self.closing() {
             return Err("the books are closing".into());
         }
+        // Not inside a tool's call: its lines are a run of their own.
+        let _turn = self.write_turn();
         let mut store = self.store.blocking_lock();
         if self.stopped() {
             return Err(STOPPED.to_string());
@@ -318,6 +332,7 @@ impl SharedStore {
             hurry: Arc::default(),
             running: std::sync::atomic::AtomicUsize::new(0),
             ended: tokio::sync::Notify::new(),
+            writes: tokio::sync::Mutex::new(()),
         })
     }
 
@@ -1514,6 +1529,8 @@ enum ShownDates {
 mod access_tools;
 #[path = "tools/backup.rs"]
 mod backup_tools;
+#[path = "calls.rs"]
+mod calls;
 #[path = "tools/files.rs"]
 mod files;
 #[path = "guards.rs"]
@@ -1783,11 +1800,17 @@ impl BooksServer {
 impl ServerHandler for BooksServer {
     async fn call_tool(
         &self,
-        request: rmcp::model::CallToolRequestParams,
+        mut request: rmcp::model::CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
         use crate::access::{self, Call};
         use ledger_store::access::Outcome;
+        // The request key is the call's own, not the tool's: out of the
+        // arguments here, so no tool, preview digest or record sees it as
+        // an argument (calls.rs INVARIANT 1). A call writes when its tool
+        // can change the books and it is not a preview.
+        let request_key = calls::take_key(&mut request.arguments);
+        let writing = calls::is_write_call(&request.name, request.arguments.as_ref());
         let mut call = Call::new(&self.access, &self.board, &context, "tool", &request.name);
         let outcome_of = |out: &Result<rmcp::model::CallToolResponse, rmcp::ErrorData>| match out {
             Ok(rmcp::model::CallToolResponse::Complete(r)) if r.is_error != Some(true) => {
@@ -1861,7 +1884,16 @@ impl ServerHandler for BooksServer {
                     Err(rmcp::ErrorData::invalid_params(why, None)),
                 )
             }),
-        };
+        }
+        // A write without a usable request key isn't run (calls.rs
+        // INVARIANT 1).
+        .or_else(|| {
+            if !writing {
+                return None;
+            }
+            calls::key_problem(request_key.as_ref())
+                .map(|why| (calls::MISSING_KEY, Ok(tool_error(why))))
+        });
         if let Some((code, answer)) = refusal {
             call.digested(refused_digest(request.arguments.clone()).await);
             return self.refuse(&call, code, answer).await;
@@ -1900,6 +1932,46 @@ impl ServerHandler for BooksServer {
                 });
                 // Counted as running by now (run_blocking): hashed here.
                 let digest = Call::digest_of(request.arguments.as_ref());
+                // A write call is one transaction (calls.rs): it takes its
+                // turn among writes, and is opened, or answered from its
+                // key, before the tool runs.
+                let call_id =
+                    request_key
+                        .as_ref()
+                        .filter(|_| writing)
+                        .map(|k| ledger_store::calls::CallId {
+                            token: running_call
+                                .caller()
+                                .map(|c| c.token.id.clone())
+                                .unwrap_or_default(),
+                            tool: tool_name.clone(),
+                            key: calls::key_text(k),
+                            args: digest.clone().unwrap_or_default(),
+                        });
+                let _turn = call_id.as_ref().map(|_| server.store.write_turn());
+                let early = match &call_id {
+                    None => None,
+                    Some(id) => match calls::begin(&server, id.clone()) {
+                        Ok(calls::Begun::Run) => None,
+                        Ok(calls::Begun::Answer(answer, code)) => Some((answer, code)),
+                        Err(why) => Some((Box::new(tool_error(why)), access::STOPPED)),
+                    },
+                };
+                if let Some((answer, code)) = early {
+                    // Not run: refused (with the guards a refusal carries),
+                    // or answered again from the books as it was first
+                    // answered.
+                    let answer = if code == calls::REPEAT {
+                        Ok(*answer)
+                    } else {
+                        next_steps::apply(&server, &tool_name, envelope_args.as_ref(), Ok(*answer))
+                    };
+                    YOU.with(|y| y.borrow_mut().take());
+                    let mut c = running_call;
+                    c.digested(digest);
+                    let recorded = c.record_blocking(Outcome::Refused(code.into()), None);
+                    return (answer, recorded);
+                }
                 let tcc =
                     rmcp::handler::server::tool::ToolCallContext::new(&server, request, context);
                 let router = Self::tool_router();
@@ -1927,7 +1999,26 @@ impl ServerHandler for BooksServer {
                     }
                 };
                 // The result envelope (next_steps.rs INVARIANT 1).
-                let out = next_steps::apply(&server, &tool_name, envelope_args.as_ref(), out);
+                let mut out = next_steps::apply(&server, &tool_name, envelope_args.as_ref(), out);
+                let stopped = STOPPED_BY_CLOSE.with(|s| s.replace(false));
+                // The call is over: its closing line, holding the answer
+                // the caller is given, commits it (or, for a call that
+                // failed or was stopped, rolls it back). Only then does it
+                // count as done (calls.rs INVARIANT 4).
+                let mut wrote = wrote;
+                if call_id.is_some() {
+                    let ok = calls::answered_ok(&out, stopped);
+                    if let Err(why) = calls::close(&server, &out, ok) {
+                        eprintln!("wanderbooks: a call could not be closed: {why}");
+                        server.store.stop();
+                        out = Ok(tool_error(calls::NOT_CLOSED.to_string()));
+                    }
+                    // The closing line is this call's last write.
+                    wrote = WROTE
+                        .with(|w| w.borrow_mut().take())
+                        .map(|(seq, hash)| ledger_store::chain::Head { seq, hash })
+                        .or(wrote);
+                }
                 // Who asked is the request's alone: a later request on this
                 // thread (a resource read) must not see it.
                 YOU.with(|y| y.borrow_mut().take());
@@ -1936,7 +2027,7 @@ impl ServerHandler for BooksServer {
                 c.with_agent(AGENT_NOTE.with(|a| a.borrow_mut().take()));
                 // A call a close stopped is on record as stopped, not as an
                 // answer it gave (local.rs INVARIANT 10).
-                let outcome = if STOPPED_BY_CLOSE.with(|s| s.replace(false)) {
+                let outcome = if stopped {
                     Outcome::Refused(access::STOPPED_BY_CLOSE.into())
                 } else {
                     outcome_of(&out)
@@ -1977,6 +2068,9 @@ impl ServerHandler for BooksServer {
         context: RequestContext<RoleServer>,
     ) -> Result<rmcp::model::ListToolsResult, rmcp::ErrorData> {
         let mut tools = Self::tool_router().list_all();
+        // Every tool that can change the books takes a request key
+        // (calls.rs INVARIANT 1).
+        tools.iter_mut().for_each(calls::add_key_to_schema);
         // A token is shown what it can call (scopes.rs); the list then
         // differs by caller, so it may be cached only for this one.
         let scopes = crate::access::caller(&context)

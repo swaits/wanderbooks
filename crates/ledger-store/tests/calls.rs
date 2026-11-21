@@ -154,8 +154,10 @@ fn a_failed_call_is_on_the_record_and_builds_nothing() {
     s.verify().unwrap();
 }
 
+type Step = Box<dyn Fn(&mut Store)>;
+
 /// A call of every kind of step, by how far it got.
-fn steps() -> Vec<Box<dyn Fn(&mut Store)>> {
+fn steps() -> Vec<Step> {
     vec![
         Box::new(|s| {
             s.create_entry(d(2026, 1, 5), "One").unwrap();
@@ -413,4 +415,20 @@ fn a_call_cannot_begin_inside_another_or_after_a_failed_close() {
         s.close_call(CallEnd::Done("{}")),
         Err(StoreError::CallRefused(_))
     ));
+}
+
+#[test]
+fn a_call_that_rebuilds_the_projection_still_commits() {
+    // books.verify heals a drifted projection by rebuilding it, and is a
+    // call like any other: its transaction moves to the new database.
+    let tmp = tempfile::tempdir().unwrap();
+    let mut s = books(tmp.path());
+    s.begin_call(id("key-heal-0001")).unwrap();
+    s.rebuild().unwrap();
+    s.close_call(CallEnd::Done("{}")).unwrap();
+    s.verify().unwrap();
+    assert!(s.recorded_call("token-1", "key-heal-0001").is_some());
+    drop(s);
+    let s = Store::open(tmp.path()).unwrap();
+    s.verify().unwrap();
 }

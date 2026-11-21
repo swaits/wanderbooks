@@ -78,7 +78,13 @@ fn books_toml(dir: &Path, company: &str, books_extra: &str) -> PathBuf {
 
 impl Mcp {
     fn start(dir: &TestDir, toml: &Path) -> Self {
-        let wire = dir.start(Some(&std::fs::read_to_string(toml).unwrap()));
+        Self::start_settings(dir, Some(&std::fs::read_to_string(toml).unwrap()))
+    }
+
+    /// [`Mcp::start`] with these settings, or none (books that take no
+    /// write, D-89, can't be given any).
+    fn start_settings(dir: &TestDir, settings: Option<&str>) -> Self {
+        let wire = dir.start(settings);
         let mut mcp = Self {
             books_dir: None,
             wire,
@@ -108,8 +114,11 @@ impl Mcp {
         mcp
     }
 
+    /// The journal, without the frames of tool calls (D-88).
     fn journal(&self) -> Vec<u8> {
-        std::fs::read(self.data.join("journal.jsonl")).unwrap_or_default()
+        common::without_call_lines(
+            &std::fs::read(self.data.join("journal.jsonl")).unwrap_or_default(),
+        )
     }
 
     /// The journal's line types, in order.
@@ -312,6 +321,12 @@ fn books_in(name: &str, p2: bool) -> Mcp {
          [[company.members]]\nname = \"Tobin Harlow\"\nshare = \"50%\"\ncapital_account = \"3000\"\n\
          [[company.members]]\nname = \"Morgan Ellis\"\nshare = \"50%\"\ncapital_account = \"3001\"\n",
     );
+    if p2 {
+        // Books that take no write (D-89): no settings, no chart.
+        let mut m = Mcp::start_settings(&dir, None);
+        m.books_dir = Some(dir);
+        return m;
+    }
     let mut m = Mcp::start(&dir, &toml);
     m.accounts(CHART);
     m.add_party("Tobin Harlow", &["member"]);
@@ -336,6 +351,10 @@ impl Mcp {
             .unwrap()
             .expect("P2's books wait for the upgrade");
         let mut m = Mcp::start(&dir, &dir.join("wanderbooks.toml"));
+        m.accounts(CHART);
+        m.add_party("Tobin Harlow", &["member"]);
+        m.add_party("Morgan Ellis", &["member"]);
+        m.add_party("Harbor Bank", &["financial_institution"]);
         m.books_dir = Some(dir);
         m
     }
@@ -616,10 +635,8 @@ fn update_party_asks_for_the_creditor_feature_before_its_first_line() {
         json!({"party": "Harbor Bank", "notes": "the card's issuer", "creditor_of": ["2050"]});
     let mut m = books_in("feature-first", true);
     let why = m.refuse("books.update_party", change.clone());
-    assert!(
-        why.starts_with("format_upgrade_pending:") && why.contains("party_creditors"),
-        "{why}"
-    );
+    assert!(why.starts_with("format_upgrade_pending:"), "{why}");
+    assert!(why.contains("nothing can be written"), "{why}");
     assert_eq!(m.count("party.updated"), 0, "nothing half done");
     for mut m in [m.upgraded(), books("feature-first-new")] {
         let start = m.journal_types().len();

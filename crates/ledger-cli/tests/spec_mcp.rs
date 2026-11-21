@@ -224,8 +224,11 @@ impl Mcp {
         mcp
     }
 
+    /// The journal, without the frames of tool calls (D-88).
     fn journal(&self) -> Vec<u8> {
-        std::fs::read(self.data.join("journal.jsonl")).unwrap_or_default()
+        common::without_call_lines(
+            &std::fs::read(self.data.join("journal.jsonl")).unwrap_or_default(),
+        )
     }
 
     /// What a read-only tool must leave as it was: every file of the books

@@ -248,7 +248,13 @@ async fn call(c: &Client, tool: &str, mut args: Value) -> Result<Value, String> 
 }
 
 async fn call_once(c: &Client, tool: &str, args: Value) -> Result<Value, String> {
-    let args = args.as_object().cloned().unwrap_or_default();
+    let mut args = args.as_object().cloned().unwrap_or_default();
+    // The key every write call carries (D-88).
+    static NEXT_KEY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    args.entry("request_key").or_insert_with(|| {
+        let n = NEXT_KEY.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        json!(format!("backups-key-{}-{n}", std::process::id()))
+    });
     let r = tokio::time::timeout(
         Duration::from_secs(60),
         c.call_tool(CallToolRequestParams::new(tool.to_string()).with_arguments(args)),

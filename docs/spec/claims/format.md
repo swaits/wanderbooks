@@ -258,7 +258,9 @@ restart).
 
 **WB-format-9 Every write call carries a request key, and a repeat of it
 writes nothing.** Every tool that can change the books (no `readOnlyHint`;
-86 of the 140) takes a required `request_key`, 8 to 128 characters of plain
+83 of the 140: the three that only read what is sealed, `books.vendor_1099`,
+`books.get_w9` and `books.export_cpa_package`, write nothing and may answer with
+a full TIN, so they are reads) takes a required `request_key`, 8 to 128 characters of plain
 text, which the agent makes up, new for each action. A write without a usable
 key is refused in words before it runs; a preview (a confirmed tool called
 without `confirmed: true`) writes nothing and needs none. The key is taken out
@@ -270,7 +272,8 @@ misuse of the key, and nothing is changed. A key is the token's own: two
 tokens with one key are two keys. The key table is rebuilt at every open from
 the `ok` closing lines alone. A repeat that arrives while its original is
 still running waits for it (calls take turns) and gets its answer. An answer
-that holds a full TIN is kept masked, so its repeat returns it masked
+is kept as given: no tool answer holds a full TIN, and the three tools that
+can are no transaction; an error text that holds one is kept masked
 (BS-partner-2: no journal line holds one).
 *Enforced:* ledger-mcp `calls::is_write_call`, `calls::key_problem`, `calls::begin`, `calls::close`, `calls::add_key_to_schema`, `Store::recorded_call`, `Keys`.
 *Checked:* `ledger-cli` `tests/call_transactions.rs` (`a_repeat_of_a_key_returns_the_first_answer_and_writes_nothing`, `the_same_key_for_another_request_is_refused_in_words`, `a_write_without_a_usable_key_is_not_run`, `every_tool_that_can_write_asks_for_a_key_and_no_other_does`); `ledger-store` `tests/calls.rs` (`a_call_is_framed_and_its_answer_kept_by_key`).

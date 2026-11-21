@@ -110,8 +110,11 @@ impl Mcp {
         mcp
     }
 
+    /// The journal, without the frames of tool calls (D-88).
     fn journal(&self) -> Vec<u8> {
-        std::fs::read(self.data.join("journal.jsonl")).unwrap_or_default()
+        common::without_call_lines(
+            &std::fs::read(self.data.join("journal.jsonl")).unwrap_or_default(),
+        )
     }
 
     /// The journal's line types, in order.

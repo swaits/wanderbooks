@@ -77,7 +77,13 @@ fn books_toml(dir: &Path, company: &str, books_extra: &str) -> PathBuf {
 
 impl Mcp {
     fn start(dir: &TestDir, toml: &Path) -> Self {
-        let wire = dir.start(Some(&std::fs::read_to_string(toml).unwrap()));
+        Self::start_settings(dir, Some(&std::fs::read_to_string(toml).unwrap()))
+    }
+
+    /// [`Mcp::start`] with these settings, or none (books that take no
+    /// write, D-89, can't be given any).
+    fn start_settings(dir: &TestDir, settings: Option<&str>) -> Self {
+        let wire = dir.start(settings);
         let mut mcp = Self {
             books_dir: None,
             wire,
@@ -107,8 +113,11 @@ impl Mcp {
         mcp
     }
 
+    /// The journal, without the frames of tool calls (D-88).
     fn journal(&self) -> Vec<u8> {
-        std::fs::read(self.data.join("journal.jsonl")).unwrap_or_default()
+        common::without_call_lines(
+            &std::fs::read(self.data.join("journal.jsonl")).unwrap_or_default(),
+        )
     }
 
     /// The journal's line types, in order.
@@ -253,6 +262,7 @@ fn books(name: &str) -> Mcp {
 /// for their format upgrade.
 fn books_in(name: &str, p2: bool) -> Mcp {
     let dir = test_dir(name);
+    let toml = books_toml(&dir, "Spec Co", "");
     if p2 {
         ledger_store::Store::create_in_format(
             &dir.books_data(),
@@ -263,8 +273,11 @@ fn books_in(name: &str, p2: bool) -> Mcp {
             },
         )
         .unwrap();
+        // Books that take no write (D-89): no settings, no chart.
+        let mut m = Mcp::start_settings(&dir, None);
+        m.books_dir = Some(dir);
+        return m;
     }
-    let toml = books_toml(&dir, "Spec Co", "");
     let mut m = Mcp::start(&dir, &toml);
     m.accounts(CHART);
     m.books_dir = Some(dir);
@@ -914,17 +927,16 @@ fn show_project_sends_its_target() {
     );
 }
 
+/// Books an older version wrote take no write at all (D-89): not a
+/// project, not a link to one, nothing, and the refusal journals nothing.
+/// (The feature `projects` itself waiting is the store's:
+/// `ledger-store` `tests/projects.rs`.)
 #[test]
 fn project_writes_wait_for_the_format_upgrade() {
     let mut m = books_in("upgrade", true);
-    // A name alone: a plain class, accepted.
-    m.ok("books.add_project", json!({"name": "Harbor"}));
-    let a = match m.doc(b"%PDF c", json!([])) {
-        Out::Ok(v) => v["attachment_id"].as_u64().unwrap(),
-        o => panic!("{o:?}"),
-    };
     let head = m.journal();
     for (tool, args) in [
+        ("books.add_project", json!({"name": "Harbor"})),
         (
             "books.add_project",
             json!({"name": "Dock", "kind": "client"}),
@@ -935,7 +947,7 @@ fn project_writes_wait_for_the_format_upgrade() {
         ),
         (
             "books.link_attachment",
-            json!({"attachment_id": a, "subject": {"kind": "project", "id": "Harbor"}}),
+            json!({"attachment_id": 1, "subject": {"kind": "project", "id": "Harbor"}}),
         ),
         (
             "books.record_decision",
@@ -944,15 +956,9 @@ fn project_writes_wait_for_the_format_upgrade() {
         ),
     ] {
         let why = m.refuse(tool, args);
-        assert!(
-            why.starts_with("format_upgrade_pending:") && why.contains("projects"),
-            "{tool}: {why}"
-        );
+        assert!(why.starts_with("format_upgrade_pending:"), "{tool}: {why}");
+        assert!(why.contains("nothing can be written"), "{tool}: {why}");
     }
-    // Filing with a link to a project is refused before the file is filed.
-    let out = m.doc(b"%PDF d", json!([{"kind": "project", "id": "Harbor"}]));
-    assert!(out.refused());
-    assert!(out.err_text().contains("projects"), "{out:?}");
     assert_eq!(m.journal(), head, "nothing journaled");
 }
 

@@ -6565,6 +6565,13 @@ impl Store {
             crate::cancel::check()?;
             replay_line_into_ledger(&mut self.ledger, &lines[i], self.base_currency)?;
         }
+        // A call open now (the verification that heals is itself a call)
+        // keeps its projection transaction, on the new connection
+        // (calls.rs). It has written no line a rebuild would lose: it
+        // reads and rebuilds, nothing more.
+        if self.call.is_some() {
+            self.conn.execute_batch("SAVEPOINT call_tx")?;
+        }
         Ok(())
     }
 

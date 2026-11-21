@@ -234,6 +234,12 @@ pub fn asking_is_offered(ctx: &egui::Context) -> bool {
         .is_some_and(|c| c.serves)
 }
 
+/// Ask the window to open the Connect page (the Books menu's "Connect an
+/// assistant…"; the same as clicking the link under "Ask your assistant").
+pub fn open_page(ctx: &egui::Context) {
+    ctx.data_mut(|d| d.insert_temp(go_key(), true));
+}
+
 /// Whether "Connect an assistant" was clicked on a page this frame.
 pub fn take_go(ctx: &egui::Context) -> bool {
     ctx.data_mut(|d| d.remove_temp::<bool>(go_key()))
@@ -257,7 +263,6 @@ pub fn ask_button(ui: &mut Ui, what: &str) {
         return;
     }
     let p = pal(ui.ctx());
-    let id = ui.id().with("ask-your-assistant");
     let button = egui::Button::new(
         RichText::new(format!("{}  Ask your assistant", icon::CHAT_CENTERED_TEXT))
             .font(theme::semibold(13.0))
@@ -273,66 +278,81 @@ pub fn ask_button(ui: &mut Ui, what: &str) {
     if resp.clicked() {
         ui.ctx().copy_text(sentence(&c.company, what));
         let now = ui.input(|i| i.time);
-        ui.ctx().data_mut(|d| d.insert_temp(id, now));
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(ask_said_key(), (what.to_string(), now, resp.rect)));
     }
     resp.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Ask your assistant")
     });
-    let said_at: Option<f64> = ui.ctx().data(|d| d.get_temp(id));
-    let now = ui.input(|i| i.time);
-    if let Some(at) = said_at
-        && now - at < 8.0
-    {
-        ui.ctx()
-            .request_repaint_after(std::time::Duration::from_millis(500));
-        ui.ctx()
-            .data_mut(|d| d.insert_temp(ask_said_key(), (what.to_string(), at)));
-    }
 }
 
 fn ask_said_key() -> egui::Id {
     egui::Id::new("wanderbooks-ask-said")
 }
 
-/// The line under a page's title that follows a click on "Ask your
-/// assistant": what was copied, and, with no assistant connected, where to
-/// connect one. Drawn by the page header; nothing while it has not been
-/// clicked.
+/// What follows a click on "Ask your assistant": a small popover under the
+/// button (so nothing on the page moves) saying what was copied and, with
+/// no assistant connected, where to connect one. It goes away after a few
+/// seconds, or on the next click anywhere else. Drawn by the page header;
+/// nothing while the button has not been clicked.
 pub fn ask_feedback(ui: &mut Ui) {
-    let Some(c) = ui.ctx().data(|d| d.get_temp::<AskContext>(ask_key())) else {
+    let ctx = ui.ctx().clone();
+    let Some(c) = ctx.data(|d| d.get_temp::<AskContext>(ask_key())) else {
         return;
     };
-    let said: Option<(String, f64)> = ui.ctx().data(|d| d.get_temp(ask_said_key()));
+    let said: Option<(String, f64, egui::Rect)> = ctx.data(|d| d.get_temp(ask_said_key()));
     let now = ui.input(|i| i.time);
-    let Some((what, at)) = said else { return };
+    let Some((what, at, button)) = said else {
+        return;
+    };
+    let forget = || ctx.data_mut(|d| d.remove::<(String, f64, egui::Rect)>(ask_said_key()));
     if now - at >= 8.0 {
-        ui.ctx()
-            .data_mut(|d| d.remove_temp::<(String, f64)>(ask_said_key()));
+        forget();
         return;
     }
-    let p = pal(ui.ctx());
-    ui.add_space(6.0);
-    ui.label(
-        RichText::new(format!(
-            "{} Copied: “{}” Paste it into your assistant.",
-            icon::CHECK,
-            sentence(&c.company, &what)
-        ))
-        .font(theme::regular(13.0))
-        .color(p.muted),
-    );
-    if c.link == Link::None {
-        ui.horizontal(|ui| {
-            ui.label(
-                RichText::new("No assistant is connected yet.")
-                    .font(theme::regular(13.0))
-                    .color(p.warning),
-            );
-            if ui.link("Connect an assistant").clicked() {
-                ui.ctx().data_mut(|d| d.insert_temp(go_key(), true));
-            }
+    let p = pal(&ctx);
+    let shown = egui::Area::new(egui::Id::new("wanderbooks-ask-popover"))
+        .order(egui::Order::Foreground)
+        .pivot(egui::Align2::RIGHT_TOP)
+        .fixed_pos(button.right_bottom() + vec2(0.0, 6.0))
+        .constrain(true)
+        .show(&ctx, |ui| {
+            Frame::popup(ui.style())
+                .fill(p.surface)
+                .stroke(Stroke::new(1.0, p.border))
+                .show(ui, |ui| {
+                    ui.set_max_width(380.0);
+                    ui.label(
+                        RichText::new(format!(
+                            "{} Copied: “{}” Paste it into your assistant.",
+                            icon::CHECK,
+                            sentence(&c.company, &what)
+                        ))
+                        .font(theme::regular(13.0))
+                        .color(p.muted),
+                    );
+                    if c.link == Link::None {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(
+                                RichText::new("No assistant is connected yet.")
+                                    .font(theme::regular(13.0))
+                                    .color(p.warning),
+                            );
+                            if ui.link("Connect an assistant").clicked() {
+                                ui.ctx().data_mut(|d| d.insert_temp(go_key(), true));
+                            }
+                        });
+                    }
+                });
         });
+    // A click anywhere else puts it away; so does the click on its link.
+    let rect = shown.response.rect;
+    let (pressed, at_pos) = ctx.input(|i| (i.pointer.any_pressed(), i.pointer.interact_pos()));
+    let outside = at_pos.is_some_and(|pos| !rect.contains(pos) && !button.contains(pos));
+    if pressed && outside {
+        forget();
     }
+    ctx.request_repaint_after(std::time::Duration::from_millis(500));
 }
 
 // ---- the Connect page -------------------------------------------------------
@@ -341,45 +361,25 @@ pub fn ask_feedback(ui: &mut Ui) {
 struct Tool {
     /// Its name.
     name: &'static str,
-    /// The agent the owner can connect with one button, if it can.
-    agent: Option<crate::owner::Agent>,
-    /// The words that add it to the tool by hand (before the command), if
-    /// the repository documents them; None says: give the program and its
-    /// arguments (INVARIANT 4).
-    add_by_hand: Option<&'static str>,
+    /// The agent the owner can connect with one button.
+    agent: crate::owner::Agent,
+    /// The words that add it to the tool by hand (before the command), as
+    /// the tool's own documentation gives them.
+    add_by_hand: &'static str,
 }
 
-/// The tools of "On this computer", in the order of plan 3.3.
-const TOOLS: [Tool; 6] = [
+/// The tools of "On this computer" that have a button of their own; every
+/// other assistant shares the "Another assistant" card.
+const TOOLS: [Tool; 2] = [
     Tool {
         name: "Claude Code",
-        agent: Some(crate::owner::Agent::Claude),
-        add_by_hand: Some("claude mcp add --scope user"),
+        agent: crate::owner::Agent::Claude,
+        add_by_hand: "claude mcp add --scope user",
     },
     Tool {
         name: "Codex",
-        agent: Some(crate::owner::Agent::Codex),
-        add_by_hand: Some("codex mcp add"),
-    },
-    Tool {
-        name: "Gemini CLI",
-        agent: None,
-        add_by_hand: None,
-    },
-    Tool {
-        name: "Grok Build",
-        agent: None,
-        add_by_hand: None,
-    },
-    Tool {
-        name: "Muse Code",
-        agent: None,
-        add_by_hand: None,
-    },
-    Tool {
-        name: "Cursor",
-        agent: None,
-        add_by_hand: None,
+        agent: crate::owner::Agent::Codex,
+        add_by_hand: "codex mcp add",
     },
 ];
 
@@ -527,9 +527,7 @@ impl State {
                     want = Some(w);
                 }
             }
-            if TOOLS.iter().any(|t| t.agent.is_none()) {
-                key_row(ui, status, book, &owner, busy, &mut want);
-            }
+            another_row(ui, status, book, &owner, &commands, busy, &mut want);
             if let Some((what, keep, work)) = want {
                 self.start(ui, jobs, what, &keep, work);
             }
@@ -665,7 +663,7 @@ fn tool_row(
                     );
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if let (Some(agent), Some(owner)) = (tool.agent, owner)
+                    if let (agent, Some(owner)) = (tool.agent, owner)
                         && ui
                             .add_enabled(!busy, egui::Button::new(format!("Connect {}", tool.name)))
                             .on_hover_text(format!(
@@ -708,96 +706,113 @@ fn tool_row(
 fn by_hand(ui: &mut Ui, tool: &Tool, book: &str, bridge: &str) {
     let p = pal(ui.ctx());
     let name = format!("wanderbooks-{book}");
-    match tool.add_by_hand {
-        Some(add) => {
-            let line = format!("{add} {name} -- {bridge}");
-            egui::CollapsingHeader::new(
-                RichText::new("Or do it yourself, in a terminal")
-                    .font(theme::regular(12.5))
-                    .color(p.muted),
-            )
-            .id_salt(("by-hand", tool.name))
-            .show(ui, |ui| {
-                ui.label(
-                    RichText::new("Run this once:")
-                        .font(theme::regular(12.5))
-                        .color(p.muted),
-                );
-                command_box(ui, &line);
-                ui.label(
-                    RichText::new(format!(
-                        "Then restart {}. It reaches the books as “{name}”.",
-                        tool.name
-                    ))
-                    .font(theme::regular(12.5))
-                    .color(p.muted),
-                );
-            });
-        }
-        None => {
-            ui.label(
-                RichText::new(format!(
-                    "In {}, add a local tool (a program it runs on this computer) named “{name}”, with this command:",
-                    tool.name
-                ))
-                .font(theme::regular(13.0))
-                .color(p.text),
-            );
-            command_box(ui, bridge);
-            ui.label(
-                RichText::new(format!(
-                    "Then restart {}. If it asks for the program and its arguments separately, the program is the first word and the rest are its arguments. We haven't tested {} yet.",
-                    tool.name, tool.name
-                ))
+    let line = format!("{} {name} -- {bridge}", tool.add_by_hand);
+    egui::CollapsingHeader::new(
+        RichText::new("Or do it yourself, in a terminal")
+            .font(theme::regular(12.5))
+            .color(p.muted),
+    )
+    .id_salt(("by-hand", tool.name))
+    .show(ui, |ui| {
+        ui.label(
+            RichText::new("Run this once:")
                 .font(theme::regular(12.5))
                 .color(p.muted),
-            );
-        }
-    }
+        );
+        command_box(ui, &line);
+        ui.label(
+            RichText::new(format!(
+                "Then restart {}. It reaches the books as “{name}”.",
+                tool.name
+            ))
+            .font(theme::regular(12.5))
+            .color(p.muted),
+        );
+    });
 }
 
-/// The step the tools without a button share: the key they read, made once.
-fn key_row(
+/// The one card for every other assistant: the command, the key it reads
+/// (made once), and the names we have not tried.
+fn another_row(
     ui: &mut Ui,
     status: &Status,
     book: &str,
     owner: &Option<Arc<dyn Owner>>,
+    commands: &Option<Result<Commands, String>>,
     busy: bool,
     want: &mut Want,
 ) {
     let p = pal(ui.ctx());
-    ui.add_space(2.0);
-    ui.label(
-        RichText::new(format!(
-            "For the others, make {}'s key first (once):",
-            status.company
-        ))
-        .font(theme::regular(13.0))
-        .color(p.muted),
-    );
-    if let Some(owner) = owner
-        && ui
-            .add_enabled(!busy, egui::Button::new("Make the key"))
-            .on_hover_text(
-                "Makes the key these books give an assistant, and keeps it on this computer",
-            )
-            .clicked()
-    {
-        let (o, b) = (owner.clone(), book.to_string());
-        *want = Some((
-            "Make the key".to_string(),
-            "Making the key".to_string(),
-            Box::new(move || {
-                o.make_key(&b).map(|made| {
-                    if made {
-                        "made, and kept on this computer.".to_string()
-                    } else {
-                        "it was already made.".to_string()
-                    }
-                })
-            }),
-        ));
-    }
+    let name = format!("wanderbooks-{book}");
+    Frame::new()
+        .fill(p.surface)
+        .stroke(Stroke::new(1.0, p.border))
+        .corner_radius(CornerRadius::same(8))
+        .inner_margin(Margin::symmetric(12, 10))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(RichText::new("Another assistant").font(theme::semibold(14.5)));
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(format!(
+                    "Any assistant that can run a local tool (a program it runs on this computer) works. Add one named “{name}”, with this command:"
+                ))
+                .font(theme::regular(13.0))
+                .color(p.text),
+            );
+            match commands {
+                Some(Ok(c)) => command_box(ui, &c.bridge),
+                Some(Err(why)) => {
+                    ui.label(
+                        RichText::new(format!("The command could not be worked out: {why}"))
+                            .font(theme::regular(12.5))
+                            .color(p.warning),
+                    );
+                }
+                None => {}
+            }
+            ui.add_space(2.0);
+            ui.label(
+                RichText::new(format!(
+                    "It reads {}'s key, made once:",
+                    status.company
+                ))
+                .font(theme::regular(13.0))
+                .color(p.muted),
+            );
+            if let Some(owner) = owner
+                && ui
+                    .add_enabled(!busy, egui::Button::new("Make the key"))
+                    .on_hover_text(
+                        "Makes the key these books give an assistant, and keeps it on this computer",
+                    )
+                    .clicked()
+            {
+                let (o, b) = (owner.clone(), book.to_string());
+                *want = Some((
+                    "Make the key".to_string(),
+                    "Making the key".to_string(),
+                    Box::new(move || {
+                        o.make_key(&b).map(|made| {
+                            if made {
+                                "made, and kept on this computer.".to_string()
+                            } else {
+                                "it was already made.".to_string()
+                            }
+                        })
+                    }),
+                ));
+            }
+            ui.add_space(2.0);
+            ui.label(
+                RichText::new(
+                    "Then restart it. We haven't tested Gemini CLI, Grok Build, Muse Code or Cursor yet.",
+                )
+                .font(theme::regular(12.5))
+                .color(p.muted),
+            );
+        });
+    ui.add_space(6.0);
 }
 
 /// Text in a box, with a Copy button.

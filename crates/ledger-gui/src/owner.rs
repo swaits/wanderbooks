@@ -8,8 +8,8 @@
 //! GOAL: the owner backs up, restores, starts new books, closes the books
 //!       and connects an agent from the viewer, without a terminal.
 //! SOURCE: plan P2 ("Viewer menu (D-19)": "Back up now", "Restore…",
-//!         "New books…", "Close the books", "Connect Claude Code" and
-//!         "Connect Codex"; "Nothing in the viewer writes a book"); D-32
+//!         "New books…", "Close the books" and "Connect an assistant…"; the
+//!         page it opens carries the two connect buttons; "Nothing in the viewer writes a book"); D-32
 //!         (no confinement: the viewer asks the server itself, as the
 //!         command line does); plan 3.9 and D-39 (the format upgrade: the
 //!         go-ahead asked at every open until given, with the owner
@@ -709,25 +709,13 @@ impl OwnerMenu {
                         };
                     }
                     ui.separator();
-                    for agent in [Agent::Claude, Agent::Codex] {
-                        if ui
-                            .button(format!("{} Connect {}", icon::PLUGS_CONNECTED, agent.label()))
-                            .on_hover_text(format!(
-                                "Let {} reach these books (it keeps their token in a file in the data root)",
-                                agent.label()
-                            ))
-                            .clicked()
-                        {
-                            let (o, b) = (owner.clone(), book.clone());
-                            start = Some((
-                                format!("Connect {}", agent.label()),
-                                Effect::Changes(match agent {
-                                    Agent::Claude => "Connecting Claude Code to these books",
-                                    Agent::Codex => "Connecting Codex to these books",
-                                }),
-                                Box::new(move || o.connect(agent, &b)),
-                            ));
-                        }
+                    if ui
+                        .button(format!("{} Connect an assistant…", icon::PLUGS_CONNECTED))
+                        .on_hover_text("Open the page that connects Claude Code, Codex or another assistant to these books")
+                        .clicked()
+                    {
+                        crate::connect::open_page(ui.ctx());
+                        ui.close();
                     }
                     if let Some(upgrade) = &books.format_upgrade {
                         ui.separator();
@@ -768,7 +756,7 @@ impl OwnerMenu {
                     ui.separator();
                     if ui
                         .button(format!("{} Close the books", icon::POWER))
-                        .on_hover_text("Close the books now: agents' sessions and every other holder let go")
+                        .on_hover_text("Close the books now: assistants' sessions and every other holder let go")
                         .clicked()
                     {
                         self.dialog = Dialog::Close;
@@ -862,7 +850,7 @@ impl OwnerMenu {
             Dialog::Close => {
                 egui::Modal::new(self.scope.unwrap_or(egui::Id::NULL).with("owner-close")).show(ctx, |ui| {
                     ui.heading("Close the books?");
-                    ui.label("Agents' sessions and everything else holding them let go. They open again when something holds them.");
+                    ui.label("Assistants' sessions and everything else holding them let go. They open again when something holds them.");
                     ui.horizontal(|ui| {
                         if ui.button("Close the books").clicked() {
                             let o = owner.clone();

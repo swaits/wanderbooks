@@ -487,6 +487,7 @@ fn ask_your_assistant_copies_one_ready_sentence() {
     refresh(&mut h);
     h.state_mut().goto(Route::Transactions);
     h.run_steps(3);
+    let below = h.get_by_label_contains("recorded, newest first").rect();
     h.get_by_role_and_label(Role::Button, "Ask your assistant")
         .click();
     h.step();
@@ -495,6 +496,11 @@ fn ask_your_assistant_copies_one_ready_sentence() {
         ["In my Wanderbooks books for Wanderland Labs, please record a new transaction."]
     );
     h.run_steps(2);
+    assert_eq!(
+        h.get_by_label_contains("recorded, newest first").rect(),
+        below,
+        "the feedback is a popover: the page does not move"
+    );
     // With none connected it says so, and where to connect one.
     assert!(
         h.query_by_label_contains("No assistant is connected yet.")
@@ -568,14 +574,7 @@ fn the_top_bar_state_opens_the_connect_page_which_lists_and_revokes() {
     h.run_steps(3);
     assert_eq!(h.state().route(), &Route::Connect);
     // A row per tool, and the keys with who is on each.
-    for tool in [
-        "Claude Code",
-        "Codex",
-        "Gemini CLI",
-        "Grok Build",
-        "Muse Code",
-        "Cursor",
-    ] {
+    for tool in ["Claude Code", "Codex", "Another assistant"] {
         assert!(
             h.query_all_by_label(tool).next().is_some(),
             "a row for {tool}"
@@ -597,8 +596,8 @@ fn the_top_bar_state_opens_the_connect_page_which_lists_and_revokes() {
     assert_eq!(
         h.query_all_by_label("/opt/wanderbooks mcp --book alpha")
             .count(),
-        4,
-        "the program and its arguments, for each tool that has no button"
+        1,
+        "the program and its arguments, once, on the card for any other assistant"
     );
     h.get_all_by_label("Or do it yourself, in a terminal")
         .next()
@@ -671,6 +670,16 @@ fn the_connect_buttons_do_what_connect_does() {
         h.query_by_label_contains("Codex reaches the books.")
             .is_some()
     );
+    until(&mut h, "the page is idle", |a| {
+        !a.views()[0].connect_state().busy()
+    });
+    h.run_steps(2);
+    h.get_by_role_and_label(Role::Button, "Connect Claude Code")
+        .click();
+    h.run_steps(2);
+    wait_for("connect ran for Claude Code", || {
+        owner.said().contains(&"connect claude alpha".to_string())
+    });
     h.get_by_role_and_label(Role::Button, "Make the key")
         .click();
     h.run_steps(2);
@@ -1016,5 +1025,10 @@ fn pictures() {
         // A short window, as the owner's laptop has.
         let (_w2, mut small) = three_states(dark, 0, egui::vec2(1479.0, 519.0));
         save(&mut small, &format!("8-short-window-{mode}"));
+        // The Connect page tall enough to show "Another assistant".
+        let (_w3, mut tall) = three_states(dark, 1, egui::vec2(1440.0, 1300.0));
+        tall.state_mut().goto(Route::Connect);
+        tall.run_steps(4);
+        save(&mut tall, &format!("9-connect-another-{mode}"));
     }
 }

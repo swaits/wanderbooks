@@ -63,14 +63,14 @@ pub enum Link {
 
 impl Link {
     /// The shape that stands for the state: a different silhouette for
-    /// each, so it reads without colour (plugs apart, plugs together, a
-    /// spinning arc).
+    /// each, so it reads without colour (plugs apart, plugs together; the
+    /// spinning arc of Working is drawn, so it has no glyph).
     pub fn glyph(self) -> Option<&'static str> {
         match self {
             Link::Unknown => None,
             Link::None => Some(icon::PLUGS),
             Link::Connected => Some(icon::PLUGS_CONNECTED),
-            Link::Working => Some(icon::CIRCLE_NOTCH),
+            Link::Working => None,
         }
     }
 }

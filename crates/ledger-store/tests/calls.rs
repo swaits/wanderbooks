@@ -702,3 +702,94 @@ fn a_call_whose_begin_line_the_projection_refuses_still_closes_its_frame() {
     drop(s);
     Store::open(tmp.path()).unwrap().verify().unwrap();
 }
+
+/// 8.0.6: books the version before this feature wrote (the fixture
+/// `old-books/p15_t1_before`, written by main 7058fbd2 through its Store
+/// API, with its expected.json) open as ever and report the same figures:
+/// every line of theirs is outside a frame, so every line counts; they
+/// take no call until the owner's upgrade (D-89); an upgrade then gives
+/// them a books id and leaves every figure where it was.
+#[test]
+fn books_the_version_before_call_transactions_wrote_open_and_report_the_same_figures() {
+    let fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/old-books/p15_t1_before");
+    let tmp = tempfile::tempdir().unwrap();
+    for e in std::fs::read_dir(&fixture).unwrap() {
+        let e = e.unwrap();
+        if e.file_name() == "expected.json" {
+            continue;
+        }
+        let to = tmp.path().join(e.file_name());
+        if e.file_type().unwrap().is_dir() {
+            copy_dir(&e.path(), &to);
+        } else {
+            std::fs::copy(e.path(), to).unwrap();
+        }
+    }
+    let expected: Value =
+        serde_json::from_str(&std::fs::read_to_string(fixture.join("expected.json")).unwrap())
+            .unwrap();
+    let lines = lines_of(tmp.path());
+    assert!(lines.iter().all(|l| !l.line_type.starts_with("call.")));
+    let mut s = Store::open(tmp.path()).unwrap();
+    s.verify().unwrap();
+    // Every line counts, and the figures are the old version's.
+    let standing = ledger_store::calls::standings(&lines).unwrap();
+    assert!(standing.iter().all(|s| s.counts()));
+    assert_eq!(
+        ledger_store::calls::committed(&lines).unwrap().len(),
+        lines.len()
+    );
+    let snapshot =
+        serde_json::to_value(ledger_core::reports::snapshot(s.ledger()).unwrap()).unwrap();
+    assert_eq!(snapshot, expected["snapshot"]["Ok"]);
+    assert_eq!(
+        serde_json::to_value(s.ledger().invoices()).unwrap(),
+        expected["invoices"]
+    );
+    assert_eq!(
+        serde_json::to_value(s.ledger().bills()).unwrap(),
+        expected["bills"]
+    );
+    // They take no call yet, and say what the owner does.
+    assert!(!s.takes_calls());
+    let refused = s.begin_call(id("key-old-books-1")).unwrap_err();
+    assert!(
+        matches!(refused, StoreError::FormatUpgradePending { .. }),
+        "{refused:?}"
+    );
+    assert_eq!(
+        lines_of(tmp.path()).len(),
+        lines.len(),
+        "refusing wrote nothing"
+    );
+    // The owner's upgrade: books keep every figure and are given an id.
+    drop(s);
+    let mut s = Store::open(tmp.path()).unwrap();
+    s.upgrade_format().unwrap().expect("waited for an upgrade");
+    assert!(s.takes_calls());
+    assert!(s.books_id().is_some());
+    let after = serde_json::to_value(ledger_core::reports::snapshot(s.ledger()).unwrap()).unwrap();
+    assert_eq!(after, expected["snapshot"]["Ok"]);
+    s.begin_call(id("key-old-books-2")).unwrap();
+    // January is closed in these books: the first framed call is a March one.
+    let e = s.create_entry(d(2026, 3, 1), "A first framed call").unwrap();
+    let bank = s.ledger().chart().find_by_code("1000").unwrap().id;
+    let capital = s.ledger().chart().find_by_code("3000").unwrap().id;
+    s.add_line(e, bank, Side::Debit, money(10)).unwrap();
+    s.add_line(e, capital, Side::Credit, money(10)).unwrap();
+    s.close_call(CallEnd::Done("{}")).unwrap();
+    s.verify().unwrap();
+}
+
+fn copy_dir(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for e in std::fs::read_dir(from).unwrap() {
+        let e = e.unwrap();
+        if e.file_type().unwrap().is_dir() {
+            copy_dir(&e.path(), &to.join(e.file_name()));
+        } else {
+            std::fs::copy(e.path(), to.join(e.file_name())).unwrap();
+        }
+    }
+}

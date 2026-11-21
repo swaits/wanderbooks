@@ -2316,11 +2316,70 @@ fn books_written_under_older_rules_still_open() {
                "method": method, "audit_run_id": 1}),
     )
     .unwrap();
+    // P15 T1's new shape (`call_transactions`), hand-written as this
+    // version writes it: a call's lines between `call.begun` and
+    // `call.closed`. They count only when the closing line says `ok`. An
+    // ok call (a note on the party), a call that failed (whose party id
+    // is handed out again by the standalone line after it), a call that
+    // never finished, and an ok call whose answer was too long to keep.
+    let frame = |w: &mut JournalWriter, outcome: &str, lines: &[(&str, serde_json::Value)]| {
+        let id = json!({"tool": "books.update_party", "token": "t-1",
+                        "key": format!("key-frame-{outcome}"), "args": "ab".repeat(32)});
+        let begun = w.append("call.begun", id.clone()).unwrap().seq;
+        let mut last = begun;
+        for (ty, payload) in lines {
+            last = w.append(ty, payload.clone()).unwrap().seq;
+        }
+        let mut closed = id;
+        closed["outcome"] = json!(outcome);
+        closed["first_seq"] = json!(begun);
+        closed["last_seq"] = json!(last);
+        match outcome {
+            "ok" => closed["answer"] = json!(r#"{"party_id":1}"#),
+            "long" => {
+                closed["outcome"] = json!("ok");
+                closed["answer_sha256"] = json!("cd".repeat(32));
+                closed["answer_bytes"] = json!(9000);
+            }
+            "failed" => closed["error"] = json!("the call failed after its lines"),
+            _ => closed["error"] = json!("the call never finished"),
+        }
+        w.append("call.closed", closed).unwrap();
+    };
+    let note = |text: &str| {
+        (
+            "party.updated",
+            json!({"id": 1, "change": {"field": "notes", "value": text}}),
+        )
+    };
+    frame(&mut w, "ok", &[note("counted")]);
+    frame(
+        &mut w,
+        "failed",
+        &[
+            ("party.added", json!({"id": 4, "name": "Dead", "roles": []})),
+            note("not counted: failed"),
+        ],
+    );
+    // The id the failed call had is handed out again.
+    w.append("party.added", json!({"id": 4, "name": "Real", "roles": []}))
+        .unwrap();
+    frame(&mut w, "unfinished", &[note("not counted: unfinished")]);
+    frame(&mut w, "long", &[note("counted, long answer")]);
     drop(w);
     // Opening rebuilds from the journal; it must accept all of it.
     let _ = std::fs::remove_file(dir.join(ledger_store::db_file()));
     let store = Store::open(&dir).expect("older books still open");
     store.verify().unwrap();
+    // Only the lines of calls that closed ok are the books': the last note
+    // is the long-answer call's, the failed call's party never was, and
+    // the id it had is the standalone party's.
+    assert_eq!(
+        store.ledger().get_party(1).unwrap().notes.as_deref(),
+        Some("counted, long answer")
+    );
+    assert_eq!(store.ledger().get_party(4).unwrap().name, "Real");
+    assert!(store.ledger().get_party(5).is_none());
     assert_eq!(store.journal_format().format, 1);
     assert_eq!(store.ledger().chart().len(), 9);
     assert_eq!(store.ledger().list_periods().len(), 2);

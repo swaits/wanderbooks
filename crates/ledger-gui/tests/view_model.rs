@@ -986,3 +986,117 @@ fn the_viewer_holds_a_numbered_invoice_as_the_store_does() {
     assert_eq!(shown.terms.as_ref().unwrap().describe(), "2/10 net 30");
     assert_eq!(shown.lines[0].quantity, Some(Decimal::new(3, 0)));
 }
+
+/// A call that failed after writing lines, followed by a call that takes
+/// the ids it handed out again (nothing it wrote counted): the viewer's
+/// books, the package feed that attention reads, and the history all say
+/// the dead lines are not facts, and nothing of the dead call is pinned on
+/// what took its ids (WB-format-12).
+#[test]
+fn a_failed_calls_lines_are_not_facts_when_its_ids_are_used_again() {
+    use ledger_store::calls::{CallEnd, CallId, Standing};
+    let (d, mut s) = store_at("failed-call");
+    let today = NaiveDate::from_ymd_opt(2026, 5, 20).unwrap();
+    let cash = s
+        .add_account("1000", "Checking", AccountType::Asset, None, false)
+        .unwrap();
+    let cap = s
+        .add_account("3000", "Capital", AccountType::Equity, None, false)
+        .unwrap();
+    let id = |key: &str, tool: &str| CallId {
+        token: "t".into(),
+        tool: tool.into(),
+        key: key.into(),
+        args: "a".repeat(64),
+    };
+    let lines = |amount: i64| {
+        vec![DocumentLine {
+            description: "x".into(),
+            amount: Decimal::new(amount, 2),
+            class_id: None,
+            account: None,
+            quantity: None,
+            unit_price: None,
+        }]
+    };
+    let before = s.journal_seq();
+    // A failed books.create_bill: a vendor, a bill, an entry (id 1).
+    s.begin_call(id("key-dead-0001", "books.create_bill"))
+        .unwrap();
+    let dead_vendor = s.add_vendor("Dead Vendor").unwrap();
+    s.create_bill(dead_vendor, today, today + Days::new(30), lines(5_000))
+        .unwrap();
+    s.close_call(CallEnd::Failed("the call failed after its lines"))
+        .unwrap();
+    let dead_end = s.journal_seq();
+    assert!(dead_end > before + 3);
+    // A manual entry, which takes entry id 1 again, and a vendor, which
+    // takes party id 1 again.
+    let e = s.create_entry(today, "Opening deposit").unwrap();
+    assert_eq!(e, 1, "the failed call's entry id is handed out again");
+    let m = Money::new(Decimal::new(100_000, 2), Currency::USD);
+    s.add_line(e, cash, Side::Debit, m).unwrap();
+    s.add_line(e, cap, Side::Credit, m).unwrap();
+    s.post_entry(e).unwrap();
+    let live_vendor = s.add_vendor("Real Vendor").unwrap();
+    assert_eq!(live_vendor, dead_vendor);
+    drop(s);
+    let source = Source {
+        data_dir: d.join("books-data"),
+        today: Some(today),
+    };
+    let b = data::load_once(&source).unwrap();
+    // The entry is a manual one: not a "Bill", which is what the dead
+    // bill.created line (for entry 1) would have made of it.
+    let entry = b.entry(e).unwrap();
+    assert_eq!(entry.origin, "Journal entry");
+    assert!(
+        entry
+            .events
+            .iter()
+            .all(|&i| !(before + 1..=dead_end).contains(&b.journal[i].seq)),
+        "an entry's events include a dead line"
+    );
+    // No fact the viewer derives holds a dead line: the committed journal
+    // has none of them, and none of the frame.
+    assert!(
+        b.journal
+            .iter()
+            .all(|l| !(before + 1..=dead_end).contains(&l.seq) && !l.line_type.starts_with("call."))
+    );
+    // The party that took the id again has none of the dead vendor's events.
+    let party = &b.parties[&live_vendor];
+    assert!(
+        party
+            .events
+            .iter()
+            .all(|&i| !(before + 1..=dead_end).contains(&b.journal[i].seq))
+    );
+    // The package feed attention reads is the same committed journal.
+    let snap = ledger_store::Snapshot::load(&d.join("books-data")).unwrap();
+    let fed = ledger_package::PackageBooks::journal(&snap).unwrap();
+    assert_eq!(fed.len(), b.journal.len());
+    assert!(
+        fed.iter()
+            .all(|l| !(before + 1..=dead_end).contains(&l.seq))
+    );
+    let store = Store::open(&d.join("books-data")).unwrap();
+    let fed = ledger_package::PackageBooks::journal(&store).unwrap();
+    assert_eq!(fed.len(), b.journal.len());
+    // The viewer's seq is the journal's head, frame lines counted.
+    assert_eq!(b.seq(), b.history.len() as u64);
+    // History shows every line, and says of the dead ones in words that
+    // they did not count; the viewer never names a dead line by the live
+    // entry that took its id.
+    let dead: Vec<_> = b
+        .history
+        .iter()
+        .filter(|(_, st)| *st == Standing::Failed)
+        .collect();
+    assert!(dead.len() >= 3);
+    for (line, st) in dead {
+        let ev = ledger_gui::pages::journal::event_for(&b, line, *st);
+        assert!(ev.text.contains("not counted"), "{}", ev.text);
+        assert!(ev.route.is_none());
+    }
+}

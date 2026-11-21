@@ -257,9 +257,26 @@ impl Snapshot {
     }
 
     /// Every journal line read so far, in order: the complete history,
-    /// with timestamps and hashes.
+    /// with timestamps and hashes, the lines of calls that failed or never
+    /// finished among them. For showing history only: a reader that
+    /// derives a fact reads [`Snapshot::committed_journal`] (calls.rs
+    /// INVARIANT 7), and labels each line here with
+    /// [`Snapshot::journal_standings`].
     pub fn journal(&self) -> &[JournalLine] {
         &self.lines
+    }
+
+    /// The standing of each line of [`Snapshot::journal`], in the same
+    /// order (calls.rs [`crate::calls::standings`]).
+    pub fn journal_standings(&self) -> Result<Vec<crate::calls::Standing>, StoreError> {
+        crate::calls::standings(&self.lines)
+    }
+
+    /// The committed journal: the lines that are facts of the books, the
+    /// frame lines left out ([`crate::calls::committed`]). What every
+    /// reader that derives facts from the journal reads.
+    pub fn committed_journal(&self) -> Result<Vec<JournalLine>, StoreError> {
+        crate::calls::committed(&self.lines)
     }
 
     /// Sequence number of the last journal line read.

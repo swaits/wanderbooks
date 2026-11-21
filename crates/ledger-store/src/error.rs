@@ -111,6 +111,12 @@ pub enum StoreError {
     #[error("{0}")]
     CallRefused(String),
 
+    /// A call's closing line is on disk, so the call committed and counts,
+    /// but the store could not bring its working copy up to it: the store
+    /// takes nothing more until the books are opened again, which does.
+    #[error("{0}")]
+    CallCommitted(String),
+
     /// Replay produced different ids than the journal recorded.
     #[error("replay mismatch: {0}")]
     ReplayMismatch(String),

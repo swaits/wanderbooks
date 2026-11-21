@@ -1270,6 +1270,24 @@ pub fn describe(b: &Books, line: &JournalLine) -> Option<Event> {
     }
 }
 
+/// A journal line's event for the journal page: the sentence the books
+/// give it when it counts; for a line of a call that did not count, its
+/// plain description from the journal's own words and the note that it did
+/// not count, never a sentence built from the books' present state (ids
+/// are handed out again after a failed call, so "Posted #42" would name
+/// whatever took 42 next), and no link.
+pub fn event_for(b: &Books, line: &JournalLine, standing: ledger_store::calls::Standing) -> Event {
+    match standing.note() {
+        None => describe_any(b, line),
+        Some(note) => Event {
+            icon: icon::WARNING,
+            text: format!("{} ({note})", ledger_store::describe::describe(line)),
+            route: None,
+            also: None,
+        },
+    }
+}
+
 /// Like [`describe`], but every event gets a sentence.
 pub fn describe_any(b: &Books, line: &JournalLine) -> Event {
     if let Some(e) = describe(b, line) {
@@ -1342,7 +1360,7 @@ pub fn describe_any(b: &Books, line: &JournalLine) -> Event {
 
 pub fn show(ui: &mut Ui, b: &Books, selected: Option<u64>, shell: &mut Shell<'_>) {
     if let Some(seq) = selected
-        && let Some(line) = b.journal.get(seq.saturating_sub(1) as usize)
+        && let Some((line, standing)) = b.history.get(seq.saturating_sub(1) as usize)
     {
         super::split(
             ui,
@@ -1350,7 +1368,7 @@ pub fn show(ui: &mut Ui, b: &Books, selected: Option<u64>, shell: &mut Shell<'_>
             480.0,
             shell,
             |ui, shell| list(ui, b, selected, shell),
-            |ui, shell| detail(ui, b, line, shell),
+            |ui, shell| detail(ui, b, line, *standing, shell),
         );
     } else {
         list(ui, b, None, shell);
@@ -1365,7 +1383,7 @@ fn list(ui: &mut Ui, b: &Books, selected: Option<u64>, shell: &mut Shell<'_>) {
             "Journal",
             &format!(
                 "Every change to the books, in order: {} events, each hash-chained to the one before. Nothing is ever edited or deleted; corrections are new events.",
-                b.journal.len()
+                b.history.len()
             ),
         );
         let st = &mut shell.state.journal;
@@ -1381,11 +1399,11 @@ fn list(ui: &mut Ui, b: &Books, selected: Option<u64>, shell: &mut Shell<'_>) {
         let q = st.query.to_lowercase();
         let hide = st.hide_steps;
         let rows: Vec<(&JournalLine, Event)> = b
-            .journal
+            .history
             .iter()
             .rev()
-            .filter(|l| !(hide && describe(b, l).is_none()))
-            .map(|l| (l, describe_any(b, l)))
+            .filter(|(l, st)| !(hide && st.counts() && describe(b, l).is_none()))
+            .map(|(l, st)| (l, event_for(b, l, *st)))
             .filter(|(l, e)| {
                 q.is_empty() || e.text.to_lowercase().contains(&q) || l.line_type.contains(&q)
             })
@@ -1461,9 +1479,15 @@ fn list(ui: &mut Ui, b: &Books, selected: Option<u64>, shell: &mut Shell<'_>) {
     });
 }
 
-fn detail(ui: &mut Ui, b: &Books, line: &JournalLine, shell: &mut Shell<'_>) {
+fn detail(
+    ui: &mut Ui,
+    b: &Books,
+    line: &JournalLine,
+    standing: ledger_store::calls::Standing,
+    shell: &mut Shell<'_>,
+) {
     let p = pal(ui.ctx());
-    let ev = describe_any(b, line);
+    let ev = event_for(b, line, standing);
     egui::ScrollArea::vertical()
         .id_salt("event_detail")
         .show(ui, |ui| {
@@ -1485,6 +1509,9 @@ fn detail(ui: &mut Ui, b: &Books, line: &JournalLine, shell: &mut Shell<'_>) {
                     ui.add(egui::Label::new(RichText::new(v).font(theme::regular(12.5))).wrap());
                 });
             };
+            if let Some(note) = standing.note() {
+                fact(ui, "Counts", note);
+            }
             fact(ui, "Type", &line.line_type);
             fact(ui, "Recorded", &fmt::timestamp(&line.ts));
             fact(ui, "Previous", &line.prev);

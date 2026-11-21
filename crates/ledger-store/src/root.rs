@@ -987,7 +987,11 @@ impl Root {
                 head.0
             )));
         }
-        let keeps_settings = lines.iter().any(|l| l.line_type == "settings.set");
+        // Facts of the books only: a failed call's settings line never counted
+        // (calls.rs INVARIANT 7).
+        let keeps_settings = crate::calls::committed(&lines)?
+            .iter()
+            .any(|l| l.line_type == "settings.set");
         if !keeps_settings && options.settings.is_none() {
             return Err(RootError::Adopt(
                 "these books keep no settings of their own yet: give their settings file \
@@ -1497,7 +1501,9 @@ impl Root {
             Ok(SourcePreview {
                 head: head_of(&lines),
                 currency: crate::store::journal_currency(&lines)?,
-                keeps_settings: lines.iter().any(|l| l.line_type == "settings.set"),
+                keeps_settings: crate::calls::committed(&lines)?
+                    .iter()
+                    .any(|l| l.line_type == "settings.set"),
             })
         })()
         .map_err(|e| self.hide(e))
@@ -2288,6 +2294,19 @@ fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), RootError> {
     file.write_all(bytes)?;
     file.sync_all()?;
     Ok(())
+}
+
+/// Write a new file, mode 0600 set explicitly, synced, as `io::Result`
+/// (the call key, calls.rs): an existing file is `AlreadyExists`.
+pub(crate) fn write_new_private_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    set_mode(path, 0o600)?;
+    file.write_all(bytes)?;
+    file.sync_all()
 }
 
 /// Make a folder's entries durable (Unix; NTFS journals its own).

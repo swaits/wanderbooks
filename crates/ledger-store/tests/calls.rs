@@ -12,7 +12,10 @@
 
 use chrono::NaiveDate;
 use ledger_core::{AccountType, Currency, Ledger, Money, Side};
-use ledger_store::calls::{CallEnd, CallId, CallOutcome, begun_of, closed_of};
+use ledger_store::calls::{
+    ANSWER_CAP, CallEnd, CallId, CallOutcome, Recorded, Replay, SESSION_KEYS_MAX, Standing,
+    begun_of, closed_of,
+};
 use ledger_store::{JOURNAL_FILE, JournalFormat, Snapshot, Store, StoreError};
 use rust_decimal::Decimal;
 use serde_json::Value;
@@ -32,6 +35,18 @@ fn id(key: &str) -> CallId {
         tool: "books.draft_entry".into(),
         key: key.into(),
         args: "a".repeat(64),
+    }
+}
+
+/// What the store kept of a call, if anything.
+fn kept(s: &Store, token: &str, key: &str) -> Option<Recorded> {
+    s.recorded_call(token, key).unwrap()
+}
+
+fn answer_of(r: &Recorded) -> &str {
+    match &r.replay {
+        Replay::Answer(a) => a,
+        other => panic!("kept no whole answer: {other:?}"),
     }
 }
 
@@ -85,39 +100,188 @@ fn a_call_is_framed_and_its_answer_kept_by_key() {
     assert_eq!(closed.first_seq, Some(lines[before].seq));
     assert_eq!(closed.last_seq, Some(lines.last().unwrap().seq - 1));
     assert_eq!(closed.answer.as_deref(), Some(r#"{"entry_id":1}"#));
-    let kept = s.recorded_call("token-1", "key-aaaa-1").unwrap();
-    assert_eq!(kept.answer, r#"{"entry_id":1}"#);
-    assert_eq!(kept.args, "a".repeat(64));
+    let was = kept(&s, "token-1", "key-aaaa-1").unwrap();
+    assert_eq!(answer_of(&was), r#"{"entry_id":1}"#);
+    assert_eq!(was.args, "a".repeat(64));
     // Scoped to the token: another token has not used this key.
-    assert!(s.recorded_call("token-2", "key-aaaa-1").is_none());
+    assert!(kept(&s, "token-2", "key-aaaa-1").is_none());
     s.verify().unwrap();
     // A restart rebuilds the table from the journal alone.
     drop(s);
     let s = Store::open(tmp.path()).unwrap();
     assert_eq!(
-        s.recorded_call("token-1", "key-aaaa-1").unwrap().answer,
+        answer_of(&kept(&s, "token-1", "key-aaaa-1").unwrap()),
         r#"{"entry_id":1}"#
     );
     s.verify().unwrap();
 }
 
 #[test]
-fn a_call_that_wrote_nothing_is_only_a_closing_line() {
+fn a_call_that_wrote_nothing_leaves_no_line_and_is_remembered_for_the_session() {
     let tmp = tempfile::tempdir().unwrap();
     let mut s = books(tmp.path());
     let before = lines_of(tmp.path()).len();
     s.begin_call(id("key-aaaa-2")).unwrap();
     s.close_call(CallEnd::Done(r#"{"ok":true}"#)).unwrap();
-    let lines = lines_of(tmp.path());
-    assert_eq!(lines.len(), before + 1);
-    let closed = closed_of(&lines[before]).unwrap();
-    assert_eq!((closed.first_seq, closed.last_seq), (None, None));
-    assert!(s.recorded_call("token-1", "key-aaaa-2").is_some());
-    // A failed call that wrote nothing leaves no line at all.
+    // No line at all: a call that wrote nothing has nothing to frame.
+    assert_eq!(lines_of(tmp.path()).len(), before);
+    // But a repeat within the session is answered as the first was.
+    assert_eq!(
+        answer_of(&kept(&s, "token-1", "key-aaaa-2").unwrap()),
+        r#"{"ok":true}"#
+    );
+    // A failed call that wrote nothing leaves no line either, and frees its key.
     s.begin_call(id("key-aaaa-3")).unwrap();
     s.close_call(CallEnd::Failed("refused")).unwrap();
-    assert_eq!(lines_of(tmp.path()).len(), before + 1);
-    assert!(s.recorded_call("token-1", "key-aaaa-3").is_none());
+    assert_eq!(lines_of(tmp.path()).len(), before);
+    assert!(kept(&s, "token-1", "key-aaaa-3").is_none());
+    // After a restart the key is forgotten: the repeat runs again, which is
+    // harmless because the first wrote nothing.
+    drop(s);
+    let s = Store::open(tmp.path()).unwrap();
+    assert!(kept(&s, "token-1", "key-aaaa-2").is_none());
+    assert_eq!(lines_of(tmp.path()).len(), before);
+}
+
+#[test]
+fn the_sessions_key_table_is_bounded_in_count_and_in_bytes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut s = books(tmp.path());
+    for n in 0..SESSION_KEYS_MAX + 20 {
+        s.begin_call(id(&format!("key-bound-{n:05}"))).unwrap();
+        s.close_call(CallEnd::Done(r#"{"ok":true}"#)).unwrap();
+    }
+    let (_, (held, bytes)) = s.call_table();
+    assert_eq!(held, SESSION_KEYS_MAX);
+    assert!(bytes <= SESSION_KEYS_MAX * 16);
+    // The oldest went first.
+    assert!(kept(&s, "token-1", "key-bound-00000").is_none());
+    assert!(
+        kept(
+            &s,
+            "token-1",
+            &format!("key-bound-{:05}", SESSION_KEYS_MAX + 19)
+        )
+        .is_some()
+    );
+    // An answer above the cap is not kept for a call that wrote nothing.
+    s.begin_call(id("key-big-0001")).unwrap();
+    s.close_call(CallEnd::Done(&"x".repeat(ANSWER_CAP + 1)))
+        .unwrap();
+    assert!(kept(&s, "token-1", "key-big-0001").is_none());
+}
+
+#[test]
+fn a_long_answer_is_kept_as_its_hash_and_a_repeat_is_told_in_words_what_was_done() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut s = books(tmp.path());
+    let long = format!(r#"{{"text":"{}"}}"#, "y".repeat(ANSWER_CAP));
+    s.begin_call(id("key-long-0001")).unwrap();
+    draft(&mut s, "Big answer");
+    s.close_call(CallEnd::Done(&long)).unwrap();
+    let lines = lines_of(tmp.path());
+    let last = lines.last().unwrap();
+    // The line is bounded: no answer text, its hash and length instead.
+    assert!(last.payload.get("answer").is_none());
+    let closed = closed_of(last).unwrap();
+    assert_eq!(closed.answer_bytes, Some(long.len() as u64));
+    assert_eq!(closed.answer_sha256.as_deref().map(str::len), Some(64));
+    assert!(serde_json::to_string(&last.payload).unwrap().len() < ANSWER_CAP);
+    let expect = |s: &Store| match kept(s, "token-1", "key-long-0001").unwrap().replay {
+        Replay::Summary {
+            first_seq,
+            last_seq,
+            closed_seq,
+            answer_sha256,
+            answer_bytes,
+        } => {
+            assert_eq!(first_seq, closed.first_seq.unwrap());
+            assert_eq!(last_seq, closed.last_seq.unwrap());
+            assert_eq!(closed_seq, last.seq);
+            assert_eq!(Some(answer_sha256), closed.answer_sha256.clone());
+            assert_eq!(answer_bytes, long.len() as u64);
+        }
+        other => panic!("expected a summary: {other:?}"),
+    };
+    expect(&s);
+    // After a restart the same.
+    drop(s);
+    let s = Store::open(tmp.path()).unwrap();
+    expect(&s);
+    s.verify().unwrap();
+    // A whole answer at the cap is kept whole.
+    let mut s = s;
+    let at_cap = "z".repeat(ANSWER_CAP);
+    s.begin_call(id("key-long-0002")).unwrap();
+    draft(&mut s, "At the cap");
+    s.close_call(CallEnd::Done(&at_cap)).unwrap();
+    assert_eq!(
+        answer_of(&kept(&s, "token-1", "key-long-0002").unwrap()),
+        at_cap
+    );
+}
+
+#[test]
+fn the_committed_journal_leaves_out_the_lines_of_a_call_that_failed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut s = books(tmp.path());
+    // A failed call that wrote a draft: it took entry id 1 ...
+    s.begin_call(id("key-fail-0001")).unwrap();
+    draft(&mut s, "Dead");
+    s.close_call(CallEnd::Failed("it failed")).unwrap();
+    // ... which a later call hands out again.
+    s.begin_call(id("key-fail-0002")).unwrap();
+    draft(&mut s, "Alive");
+    s.close_call(CallEnd::Done("{}")).unwrap();
+    drop(s);
+    let lines = lines_of(tmp.path());
+    let standing = ledger_store::calls::standings(&lines).unwrap();
+    let of = |ty: &str, n: usize| {
+        lines
+            .iter()
+            .zip(&standing)
+            .filter(|(l, _)| l.line_type == ty)
+            .nth(n)
+            .map(|(_, s)| *s)
+            .unwrap()
+    };
+    assert_eq!(of("entry.created", 0), Standing::Failed);
+    assert_eq!(of("entry.created", 1), Standing::Counts);
+    assert_eq!(of("call.begun", 0), Standing::Frame);
+    let committed = ledger_store::calls::committed(&lines).unwrap();
+    // Both calls reused the same entry id; only the second's lines count.
+    let created: Vec<_> = committed
+        .iter()
+        .filter(|l| l.line_type == "entry.created")
+        .map(|l| l.payload["description"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(created, ["Alive"]);
+    assert!(committed.iter().all(|l| !l.line_type.starts_with("call.")));
+    // The history lists every line, and says of the dead ones that they did not count.
+    let h = Store::open(tmp.path())
+        .unwrap()
+        .journal_history(&ledger_store::describe::HistoryFilter {
+            limit: 200,
+            ..Default::default()
+        })
+        .unwrap();
+    let dead: Vec<_> = h
+        .lines
+        .iter()
+        .filter(|d| d.standing == Standing::Failed)
+        .collect();
+    assert_eq!(dead.len(), 3);
+    assert!(dead.iter().all(|d| d.summary.contains("not counted")));
+    assert!(
+        h.lines
+            .iter()
+            .filter(|d| d.standing == Standing::Counts)
+            .all(|d| !d.summary.contains("not counted"))
+    );
+    // A snapshot reads the same.
+    let snap = Snapshot::load(tmp.path()).unwrap();
+    assert_eq!(snap.committed_journal().unwrap().len(), committed.len());
+    assert!(snap.journal().len() > committed.len());
 }
 
 #[test]
@@ -140,7 +304,7 @@ fn a_failed_call_is_on_the_record_and_builds_nothing() {
     assert_eq!(closed.error.as_deref(), Some("it went wrong"));
     assert!(lines.iter().any(|l| l.line_type == "entry.created"));
     // A failed key is free again: nothing happened under it.
-    assert!(s.recorded_call("token-1", "key-aaaa-4").is_none());
+    assert!(kept(&s, "token-1", "key-aaaa-4").is_none());
     // Books go on: the next call's ids do not collide with the failed one's.
     s.begin_call(id("key-aaaa-5")).unwrap();
     draft(&mut s, "Whole");
@@ -194,7 +358,7 @@ fn a_crash_at_each_point_of_a_call_leaves_the_whole_call_or_none_of_it() {
         let reopened = Store::open(tmp.path()).unwrap();
         same_books(reopened.ledger(), &committed);
         reopened.verify().unwrap();
-        assert!(reopened.recorded_call("token-1", "key-crash-01").is_none());
+        assert!(kept(&reopened, "token-1", "key-crash-01").is_none());
         let types = types_of(tmp.path());
         if k == 0 {
             // It had written nothing: there is nothing to close.
@@ -427,7 +591,7 @@ fn a_call_that_rebuilds_the_projection_still_commits() {
     s.rebuild().unwrap();
     s.close_call(CallEnd::Done("{}")).unwrap();
     s.verify().unwrap();
-    assert!(s.recorded_call("token-1", "key-heal-0001").is_some());
+    assert!(kept(&s, "token-1", "key-heal-0001").is_some());
     drop(s);
     let s = Store::open(tmp.path()).unwrap();
     s.verify().unwrap();

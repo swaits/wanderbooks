@@ -9,7 +9,7 @@
 //! INVARIANTS:
 //!   1. Every method only reads.
 //!   2. A Store and a Snapshot of the same journal answer every method
-//!      alike: the same ledger, settings, journal, journal seq,
+//!      alike: the same ledger, settings, committed journal, journal seq,
 //!      attachments (withdrawn ones included), bytes, statements, and
 //!      reconciliations, and the same entry links once the filing entry
 //!      is added (a store lists it in `links_of`; a snapshot only lists
@@ -39,8 +39,12 @@ pub trait PackageBooks {
     /// package reflects.
     fn journal_seq(&self) -> u64;
 
-    /// Every journal line, in order: what an entry's origin and its events
-    /// are read from.
+    /// The committed journal, in order: what an entry's origin and its
+    /// events are read from. Only the lines that are facts of the books
+    /// (ledger_store::calls::committed): the lines of a call that failed or
+    /// never finished are not here, because ids are handed out again after
+    /// a failed call and a reader that took them would pin dead lines on
+    /// whatever takes the id next (WB-format-12).
     fn journal(&self) -> Result<Vec<JournalLine>, StoreError>;
 
     /// Every attachment (receipts and documents), withdrawn ones
@@ -83,9 +87,10 @@ impl PackageBooks for Store {
     }
 
     fn journal(&self) -> Result<Vec<JournalLine>, StoreError> {
-        ledger_store::journal::read_and_verify_journal(
+        let lines = ledger_store::journal::read_and_verify_journal(
             &Store::data_dir(self).join(ledger_store::JOURNAL_FILE),
-        )
+        )?;
+        ledger_store::calls::committed(&lines)
     }
 
     fn all_attachments(&self) -> Result<Vec<Attachment>, StoreError> {
@@ -134,7 +139,7 @@ impl PackageBooks for Snapshot {
     }
 
     fn journal(&self) -> Result<Vec<JournalLine>, StoreError> {
-        Ok(Snapshot::journal(self).to_vec())
+        Snapshot::committed_journal(self)
     }
 
     fn all_attachments(&self) -> Result<Vec<Attachment>, StoreError> {

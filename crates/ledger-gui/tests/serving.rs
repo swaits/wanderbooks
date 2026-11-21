@@ -173,9 +173,6 @@ impl Owner for Fake {
     fn serve_exited(&self) -> Option<String> {
         self.exited.lock().unwrap().clone()
     }
-    fn close_books(&self) -> Result<String, String> {
-        Err("not here".into())
-    }
     fn new_books(&self, _: &str, _: &str) -> Result<String, String> {
         Err("not here".into())
     }
@@ -461,9 +458,6 @@ fn a_window_with_no_server_asks_nothing_of_any() {
     // An owner that does not host a server: the default.
     struct Plain;
     impl Owner for Plain {
-        fn close_books(&self) -> Result<String, String> {
-            Err("not here".into())
-        }
         fn new_books(&self, _: &str, _: &str) -> Result<String, String> {
             Err("not here".into())
         }

@@ -170,10 +170,6 @@ impl ledger_gui::owner::Owner for ViewerOwner {
         )
     }
 
-    fn close_books(&self) -> Result<String, String> {
-        ledger_host::commands::close_books(&self.common)
-    }
-
     fn new_books(&self, id: &str, currency: &str) -> Result<String, String> {
         ledger_host::commands::new_books_and_home(&self.common, id, currency)
     }

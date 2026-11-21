@@ -207,9 +207,6 @@ impl Owner for Fake {
         self.note(format!("connect {} {book}", agent.key()));
         Ok(vec![format!("{} reaches the books.", agent.label())])
     }
-    fn close_books(&self) -> Result<String, String> {
-        Err("not here".into())
-    }
     fn new_books(&self, _: &str, _: &str) -> Result<String, String> {
         Err("not here".into())
     }

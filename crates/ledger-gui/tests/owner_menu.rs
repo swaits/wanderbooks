@@ -33,10 +33,6 @@ impl Fake {
 }
 
 impl Owner for Fake {
-    fn close_books(&self) -> Result<String, String> {
-        self.said("close".into());
-        Ok("The books are closing.".into())
-    }
     fn new_books(&self, id: &str, currency: &str) -> Result<String, String> {
         self.said(format!("new {id} {currency}"));
         Ok(format!("Made new books \"{id}\" ({currency})."))
@@ -247,19 +243,11 @@ fn the_books_menu_hands_each_action_to_the_owner_and_writes_nothing() {
         "restore /media/disk/acme.git acme 7"
     );
 
-    // Close the books: asked first; cancelled, nothing; then done.
+    // There is no "Close the books": a company's tab, or the window, closes
+    // the books (WB-app-2, WB-app-4).
     open_menu(&mut h);
-    h.get_by_label_contains("Close the books").click();
-    h.run_steps(3);
-    h.get_by_label("Cancel").click();
-    h.run_steps(3);
-    assert_eq!(f.asked.lock().unwrap().len(), start + 4);
-    open_menu(&mut h);
-    h.get_by_label_contains("Close the books").click();
-    h.run_steps(3);
-    h.get_by_label("Close the books").click();
-    settle(&mut h, &f, start + 5);
-    assert_eq!(f.asked.lock().unwrap()[start + 4], "close");
+    assert!(h.query_by_label_contains("Close the books").is_none());
+    h.run_steps(2);
 
     // The viewer wrote nothing of the books.
     drop(h);
@@ -409,7 +397,4 @@ fn screenshots() {
     settle(&mut h, &f, n + 1);
     shot(&mut h, "restore-plan");
     h.get_by_label("Cancel").click();
-    open_menu(&mut h);
-    h.get_by_label_contains("Close the books").click();
-    shot(&mut h, "close");
 }

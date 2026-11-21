@@ -35,9 +35,6 @@ impl Fake {
 }
 
 impl Owner for Fake {
-    fn close_books(&self) -> Result<String, String> {
-        Err("not here".into())
-    }
     fn new_books(&self, id: &str, currency: &str) -> Result<String, String> {
         self.said(format!("new {id} {currency}"));
         let (_, root) = self.root_path();

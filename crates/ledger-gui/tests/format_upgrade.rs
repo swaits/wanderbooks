@@ -80,9 +80,6 @@ struct Fake {
 }
 
 impl Owner for Fake {
-    fn close_books(&self) -> Result<String, String> {
-        Err("not in these tests".into())
-    }
     fn new_books(&self, _id: &str, _currency: &str) -> Result<String, String> {
         Err("not in these tests".into())
     }

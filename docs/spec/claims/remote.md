@@ -33,9 +33,16 @@ INVARIANTS:
   1. The door listens only after a RemoteStart admin request, on 127.0.0.1;
      it stops on RemoteStop and when the server closes. It serves a company
      only while that company is offered (RemoteAllow) and open.
-  2. Every connection begins with the relay's exact header (a version 2
-     PROXY header for TCP over IPv4 or IPv6); anything else, a cut header,
-     or silence for five seconds is dropped before a byte of HTTP is read.
+  2. Every connection begins with this start's secret, then the relay's exact
+     header (a version 2 PROXY header for TCP over IPv4 or IPv6); anything
+     else, a cut header, or silence for five seconds is dropped before a
+     byte of HTTP is read. The secret is 64 lowercase hex characters made
+     for each start of the door, given to the app over the owner-only admin
+     socket (`proxy_secret` of the remote status, shown nowhere else and
+     never in a log) and compared in constant time: so only the app's relay
+     line can state a caller's address, not another process on this
+     computer that finds the port. What the app (unit B3) writes first on
+     every connection is exactly those 64 characters, then the header.
   3. The address in the header is what the access record and the limits use;
      no HTTP header (X-Forwarded-For and its kind) is read for it; a second
      header sent inside the caller's own bytes is HTTP text, refused as such.
@@ -43,14 +50,14 @@ INVARIANTS:
 SCENARIOS:
   1. A call through the door is recorded with the address in the header, not
      with the one a caller's forwarding headers claim.
-  2. A connection with no header, or with a header inside a request, gets
-     nothing.
+  2. A connection with no secret, a wrong one, no header, or a header inside
+     a request, gets nothing.
   3. The door is off before it is asked, and refuses connections after it is
      stopped.
 ```
 
-*Enforced:* `read_header`, `accept_loop`, `start_door`, `stop_door`, `Asked` (the server's `local` module).
-*Checked:* `ledger-mcp` unit tests `the_relays_header_reads_back_its_source`, `anything_but_the_exact_form_is_refused`, `the_recorded_address_is_the_relays_and_a_forged_one_changes_nothing`, `the_door_is_off_until_asked_and_stops_when_told`.
+*Enforced:* `read_secret`, `new_secret`, `read_header`, `accept_loop`, `start_door`, `stop_door`, `Asked` (the server's `local` module).
+*Checked:* `ledger-mcp` unit tests `the_relays_header_reads_back_its_source`, `a_connection_must_begin_with_this_starts_secret`, `a_connection_without_the_secret_is_dropped_before_anything_is_read`, `anything_but_the_exact_form_is_refused`, `the_recorded_address_is_the_relays_and_a_forged_one_changes_nothing`, `the_door_is_off_until_asked_and_stops_when_told`.
 
 **WB-remote-2** There is one public address, and every address the door says is built from it.
 
@@ -62,7 +69,9 @@ SOURCE: RFC 9728 and RFC 8414 (the metadata documents and where they are
         breakage in another project came of building these from the request).
 INVARIANTS:
   1. The issuer is the address given to RemoteStart (https, a host, no path)
-     and no other; a request for another Host is refused (421).
+     and no other; a request for another Host is refused (421). The host is
+     the `Host` header's; under HTTP/2, which has none, it is the request
+     address's authority, and the same check is made on it.
   2. The protected-resource document is served at the root, after the
      well-known name with the resource's path appended, and before it; the
      authorization server's at its two well-known names, with a path
@@ -74,8 +83,8 @@ SCENARIOS:
   2. The public address changes: what was made under the old one stops.
 ```
 
-*Enforced:* `start_door`, `server_document`, `resource_document`, `Remote::authenticate`.
-*Checked:* `ledger-mcp` unit tests `the_metadata_is_the_pinned_address_at_every_place_products_look`, `an_expired_token_and_a_token_for_another_issuer_are_refused`.
+*Enforced:* `start_door`, `front`, `server_document`, `resource_document`, `Remote::authenticate`.
+*Checked:* `ledger-mcp` unit tests `the_metadata_is_the_pinned_address_at_every_place_products_look`, `an_expired_token_and_a_token_for_another_issuer_are_refused`, `the_host_is_read_from_the_authority_when_there_is_no_host_header`.
 
 **WB-remote-3** An unsigned request is a 401 that says where to sign in, `initialize` included, and is never written to the books' record.
 
@@ -112,13 +121,20 @@ SOURCE: RFC 7591 (dynamic registration), the IETF draft for OAuth client ID
         rules 2 and 3.
 INVARIANTS:
   1. A client is a client ID metadata document (an https address, fetched
-     only if every address its host has is public, with no redirect, at most
+     only if every address its host has is public, with no redirect, no
+     proxy from the environment, over the address that was checked, at most
      64 KiB, within five seconds, its client_id the address it came from),
-     a dynamic registration, or a client id and secret the app made.
+     a dynamic registration, or a client id and secret the app made. The
+     private forms inside IPv6 are refused too: IPv4-mapped, IPv4-compatible
+     (::/96), NAT64 and 6to4 (2002::/16). A document is fetched only when a
+     sign-in begins, never from the token endpoint; one we hold that is past
+     its time is used as it stands when the fetch budget is spent.
   2. A redirect address is https, a loopback http address, or an app's own
-     scheme, with no fragment or userinfo; a client may carry up to twenty;
-     the one asked for must equal one registered exactly. A mismatch is a
-     page, never a redirect.
+     scheme, with no fragment or userinfo, at most 512 bytes; a client may
+     carry up to twenty, at most 4 KiB together; the one asked for must
+     equal one registered exactly. A mismatch is a page, never a redirect;
+     and for a client nobody ever approved every error of a sign-in is a
+     page too, never a redirect to the address it registered.
   3. PKCE with S256 is required, and its verifier is checked in constant
      time; `resource` must be one company's address under the issuer (or
      absent where one company is on offer); a code is single-use, lives
@@ -131,65 +147,105 @@ SCENARIOS:
      verifier and a reused code are each refused.
 ```
 
-*Enforced:* `Remote::register`, `Remote::resolve_client`, `Remote::authorize`, `Remote::token`, `parse` (client documents), `is_public`, `valid_redirect`.
-*Checked:* `ledger-mcp` unit tests `a_registered_client_signs_in_and_reads_the_books`, `a_client_metadata_document_signs_in`, `a_typed_client_id_and_secret_signs_in`, `a_redirect_that_is_not_registered_is_never_redirected_to`, `pkce_the_resource_and_the_verifier_are_required`, `only_public_addresses_are_fetched`, `a_document_must_be_what_it_says_it_is`.
+*Enforced:* `Remote::register`, `Remote::resolve_client`, `Remote::authorize`, `Remote::token`, `parse` (client documents), `is_public`, `valid_redirect`, `redirects_fit`.
+*Checked:* `ledger-mcp` unit tests `a_registered_client_signs_in_and_reads_the_books`, `a_client_metadata_document_signs_in`, `a_typed_client_id_and_secret_signs_in`, `a_redirect_that_is_not_registered_is_never_redirected_to`, `pkce_the_resource_and_the_verifier_are_required`, `only_public_addresses_are_fetched`, `a_document_must_be_what_it_says_it_is`, `nothing_is_ever_fetched_from_the_token_endpoint`, `a_stale_client_document_is_used_when_the_fetch_budget_is_spent`, `a_redirect_is_at_most_512_bytes_and_a_clients_together_a_few_kib`.
 
-**WB-remote-5** No assistant connects without the person, in the app's window.
+**WB-remote-5** No assistant connects without the person, in the app's window, and every sign-in is asked.
 
 ```text
-GOAL: nothing a stranger sends over the internet can approve a connection.
-SOURCE: D-83 in plan/p15-app-and-relay.md (a new assistant is approved in
-        the app's window, by whoever is at the machine).
+GOAL: nothing a stranger sends over the internet can approve a connection,
+      and the secret address alone never opens the books.
+SOURCE: D-83 and D-90 in plan/p15-app-and-relay.md (a new assistant is
+        approved in the app's window, by whoever is at the machine; every
+        new sign-in is asked, an approval is never reused).
 INVARIANTS:
   1. /authorize never approves: it parks the request for five minutes and
      answers a page that says to look at Wanderbooks (no form, no button,
      no script, every outside word escaped) and looks again by itself.
+     Every sign-in is parked, always (D-90): the app can tell which
+     product asks (the redirect host is public), not whose account, so an
+     earlier approval of the "same product" counts for nothing.
   2. Only an admin request (the owner-only admin socket) turns a waiting
      request into a code, by an id that is not the browser's: the page's own
      id only reads the outcome, once (302 with the code, or with
-     access_denied after a refusal or a timeout).
-  3. The window is told who is asking: the product by where it is sent
-     back to (never by what it calls itself), that address, the caller's
-     address, the company, whether posting was asked for.
-  4. Waiting requests are bounded in all and per address.
+     access_denied after a refusal or a timeout, or temporarily_unavailable
+     if a newer request made it give way).
+  3. The window is told who is asking in neutral words: where it will be
+     sent back to first ("An assistant that will be sent back to
+     claude.ai"), then what it calls itself in quotes (cleaned of
+     invisible and direction-changing characters, at most forty
+     characters), the caller's address, the company, whether posting was
+     asked for. No request is called a known or trusted product on the
+     strength of its redirect host: a host is public. The warning ("doesn't
+     know this address") is kept for hosts that are not a known vendor's.
+  4. Each waiting request has its own six-digit code (two groups of three),
+     never the same as another waiting one's, shown on the browser's page
+     and on the window's card; the card says to allow only if the browser
+     shows the same code. Requests are never merged.
+  5. Waiting requests are bounded: twenty, five per address (an IPv6 /64 is
+     one address). A new request is not turned away: an address at its limit
+     gives up its oldest waiting request, and a full table the oldest of the
+     address with the most waiting. The window draws the newest three and
+     counts the rest.
 SCENARIOS:
   1. The person allows: the browser is sent back with a code.
   2. The person refuses, or no one answers: the browser is sent back with
      access_denied, and nothing was made.
   3. A guess of the browser's id decides nothing.
+  4. A stranger registers a client with the callback of a product the person
+     approved before, asks to sign in, and reads the 302: there is none; it
+     is a page, and no code exists until an Allow.
+  5. Eight requests from one address: five wait, the oldest three are told
+     so; a full table still takes a real person's request.
 ```
 
-*Enforced:* `Remote::authorize`, `Remote::wait`, `Remote::decide`, `Remote::pending_list`, `waiting` and `problem` (the page), `ledger_gui::connect::State::web_prompt`, `ledger_host::app_server::AppServer::web_decide`.
-*Checked:* `ledger-mcp` unit tests `the_window_is_told_who_asks_and_the_page_only_says_to_look`, `a_refusal_and_a_timeout_send_the_browser_back_denied_and_make_nothing`, `waiting_requests_are_bounded_per_address_and_in_all`, `a_strangers_words_never_become_markup`; `ledger-gui` `tests/assistants.rs` (`a_web_assistant_asking_is_put_to_the_person_over_any_page_in_plain_words`, `refusing_and_allowing_with_posting_are_their_own_answers`, `a_request_that_ran_out_goes_away_and_posting_is_turned_on_and_off_on_the_connect_page`).
+*Enforced:* `Remote::authorize`, `Remote::wait`, `Remote::decide`, `Remote::pending_list`, `Remote::make_pending_room`, `match_code`, `is_vendor_host`, `waiting` and `problem` (the page), `ledger_gui::connect::State::web_prompt`, `newest_waiting`, `ledger_host::app_server::AppServer::web_decide`.
+*Checked:* `ledger-mcp` unit tests `a_stranger_who_knows_the_product_gets_no_code_without_an_allow`, `the_window_is_told_who_asks_and_the_page_only_says_to_look`, `a_refusal_and_a_timeout_send_the_browser_back_denied_and_make_nothing`, `waiting_requests_give_way_and_never_fill_the_window_against_a_real_one`, `a_name_is_shown_without_invisible_or_direction_changing_characters_and_short`, `a_strangers_words_never_become_markup`; `ledger-gui` `tests/assistants.rs` (`a_web_assistant_asking_is_put_to_the_person_over_any_page_in_plain_words`, `waiting_requests_each_show_their_own_code_and_only_a_few_are_drawn`, `refusing_and_allowing_with_posting_are_their_own_answers`, `a_request_that_ran_out_goes_away_and_posting_is_turned_on_and_off_on_the_connect_page`).
 
-**WB-remote-6** An approval is the owner's decision about a product, a company and what it may do, and it survives a product registering again.
+**WB-remote-6** Every Allow is a new approval with exactly what was ticked; a revoke ends it at once and for good.
 
 ```text
-GOAL: Claude and Grok register anew on most sign-ins; the person is not
-      asked again, and revoking ends everything made under the approval.
-SOURCE: plan/p15-app-and-relay.md section 4, rule 6; RFC 9700 (refresh token
-        rotation and reuse); D-86.
+GOAL: the person's yes is for one sign-in; revoking ends everything made
+      under the approval, and nothing brings it back.
+SOURCE: plan/p15-app-and-relay.md section 4, rule 6 as D-90 changed it; RFC
+        9700 (refresh token rotation and reuse); D-86.
 INVARIANTS:
   1. An approval is one token of the books' principals (so "Who can reach
      these books" lists it, and revoking it by id ends it) plus a record
-     naming the product (by its known redirect hosts, or its document
-     address, or its name and redirects) and the company.
-  2. A sign-in from the same product for the same company, while its
-     principals' token is live and it was used within sixty days, is sent
-     back with a code at once; for another company it is a new question.
-  3. An access token lives ten minutes and is memory only; a refresh token
-     lives sixty days since last use, is kept (hashed) across restarts, is
-     rotated at every use, and one used twice ends its whole family.
-  4. A revoked connection's access token is a 401 at once, and its refresh
-     token is invalid_grant; a new sign-in asks the person again.
+     naming the connection and the company. Every Allow makes a new
+     approval with a new id and a new token, with exactly the permissions
+     ticked then: nothing is carried over from an older approval of the
+     same product, with posting or without; an older one stays as it is,
+     to be revoked or kept on its own. Refresh within a sign-in is
+     unchanged (an access token and its refresh token belong to one
+     approval).
+  2. An access token lives ten minutes and is memory only; a refresh token
+     lives sixty days since last use, is kept (hashed) across restarts in a
+     file only the owner can read (mode 0600; on Windows `set_owner_only`,
+     the helper the token files use), is rotated at every use, and one used twice ends its whole family. The
+     check that a refresh token is unused and its marking as used are one
+     hold of the lock, with the minting of what replaces it: two refreshes
+     at once, one wins and the other is a reuse that ends the family.
+  3. A revoked connection's access token is a 401 at once, and its refresh
+     token is invalid_grant: revoking (or making its token over by name)
+     removes the approval, its refresh tokens, access tokens and codes under
+     the lock at that moment, never when a list is next read. A later Allow
+     of the same product is a new approval; none of the old tokens return.
+  4. Raising or lowering posting swaps the connection's token in one step
+     under the door's lock: no call lands between the old token's going and
+     the new one's being named, the check that the connection is live and
+     the replacement are one hold of the principals (a revoke that came
+     first is not undone), and a revoke naming the token just replaced is
+     for the one that replaced it.
 SCENARIOS:
-  1. A second registration of Claude is signed in without a question.
+  1. A second sign-in of Claude is a new question and a new approval.
   2. A refresh after ten days, and after a restart, still works.
-  3. Revoke in the list ends access and refresh.
+  3. Revoke in the list ends access and refresh, and a new Allow does not
+     revive them.
 ```
 
-*Enforced:* `Remote::decide`, `Remote::issue`, `Remote::refresh`, `Remote::authenticate`, `Remote::save`.
-*Checked:* `ledger-mcp` unit tests `an_approval_survives_a_product_registering_again`, `a_code_used_twice_ends_what_it_made_and_so_does_a_refresh_token`, `revoking_the_connection_ends_the_access_token_and_the_refresh_token`, `refresh_tokens_survive_a_restart_and_only_their_hashes_are_kept`.
+*Enforced:* `Remote::decide`, `Remote::make_approval`, `Remote::token_gone`, `Remote::set_post`, `Remote::successor_of`, `replace_token_if_live`, `Remote::mint`, `Remote::refresh`, `Remote::authenticate`, `Remote::save`.
+*Checked:* `ledger-mcp` unit tests `an_allow_is_a_new_approval_with_exactly_the_permissions_ticked`, `revoke_then_allow_again_does_not_bring_the_old_tokens_back`, `raising_posting_is_one_step_and_a_revoke_during_it_wins`, `two_refreshes_at_once_never_both_succeed`, `a_code_used_twice_ends_what_it_made_and_so_does_a_refresh_token`, `revoking_the_connection_ends_the_access_token_and_the_refresh_token`, `refresh_tokens_survive_a_restart_and_only_their_hashes_are_kept`.
 
 **WB-remote-7** A failure to sign in never bans an address; what a request creates is bounded.
 
@@ -200,22 +256,35 @@ SOURCE: plan/p15-app-and-relay.md section 4, rule 7 (the vendors' addresses
         are shared; rate-limit per approval instead).
 INVARIANTS:
   1. Registered clients (2000 in all, thirty an hour from one address,
-     600 an hour in all), waiting requests (twenty, five per address), codes,
-     access tokens, refresh tokens, approvals, families, fetches of client
-     documents and the limiter's own table are all bounded.
-  2. A registration nobody used for a sign-in goes after an hour; the oldest
-     unused goes first when the table is full; none unused and full is a
-     refusal.
+     600 an hour in all), waiting requests (twenty, five per address, which
+     give way rather than turn a new one away), codes, access tokens,
+     refresh tokens, approvals, families, fetches of client documents (30 a
+     minute, 6 from one address) and the limiter's own table are all
+     bounded. An address is an IPv4 address, an IPv6 caller's /64, and an
+     IPv4-mapped address is the IPv4 one. When the table of per-address
+     limits is full (10,000) the entries that began longest ago go; a
+     connection's own limit (calls, token requests by client) is never
+     evicted. The token endpoint is limited by address (300 a minute) and,
+     once the client is known, by client (120 a minute).
+  2. A registration is held in memory only: it reaches `remote.json` when
+     the person allows a sign-in of it, and never for a stranger's
+     registration. A redirect address is at most 512 bytes and a client's
+     together at most 4 KiB. A registration nobody used for a sign-in goes
+     after an hour; the oldest unused goes first when the table is full;
+     none unused and full is a refusal. A revoked key frees its place among
+     the fifty.
   3. Nothing bans an address; a refusal says to wait. An approval's own
-     calls are limited to 600 a minute.
+     calls are limited to 600 a minute, asked before the company is, and a
+     call refused for rate or for another company's books is counted, never
+     written to the books' record.
 SCENARIOS:
   1. Thirty-one registrations from one address: the thirty-first waits;
      another address is not shut out.
   2. Unused registrations expire.
 ```
 
-*Enforced:* `Remote::allow`, `Remote::make_room`, `Remote::sweep`.
-*Checked:* `ledger-mcp` unit tests `registration_is_bounded_and_unused_registrations_expire`, `waiting_requests_are_bounded_per_address_and_in_all`.
+*Enforced:* `Remote::allow`, `Remote::allow_address`, `address_key`, `Caller`, `Remote::make_room`, `Remote::sweep`, `Remote::make_key`, `Remote::count_refused`, `Remote::snapshot`.
+*Checked:* `ledger-mcp` unit tests `registration_is_bounded_and_unused_registrations_expire`, `limits_count_an_ipv6_64_as_one_caller_and_a_mapped_address_as_its_ipv4`, `a_full_limiter_table_evicts_addresses_never_a_connections_own_limit`, `a_registration_nobody_allowed_never_reaches_the_disk`, `a_revoked_key_frees_its_place`, `refused_calls_are_counted_not_written_and_the_limit_comes_before_the_company`.
 
 **WB-remote-8** A token for one company never reaches another, and a company not offered is not there.
 
@@ -225,8 +294,8 @@ SOURCE: D-78 in plan/p15-app-and-relay.md (a connection names its company and
         is never redirected to another).
 INVARIANTS:
   1. An access token carries the company of its approval; at another
-     company's path it is a 403, recorded as that token's refusal with the
-     caller's address.
+     company's path it is a 403, counted and not written (a token holder
+     can't fill the books' record with refusals), after the call limit.
   2. A company that is not offered (or not open) answers 404 on its path and
      has no metadata.
   3. A code and a refresh token carry their company and never make a token
@@ -250,7 +319,8 @@ INVARIANTS:
      the token says.
   2. The owner raises or lowers posting per approval (RemoteSetPost): the
      token that carries it is replaced by one with the new scopes in one
-     principals record, and the same access tokens carry on.
+     principals record, as one step (WB-remote-6), and the same access
+     tokens carry on.
   3. A key made for an assistant that takes only a key (RemoteMakeKey) is a
      principals token the door accepts, shown once, with the same scopes;
      no other principals token is accepted here.

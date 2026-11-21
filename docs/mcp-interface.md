@@ -488,23 +488,32 @@ whole control:
 
 - `remote_start { public_url, port? }` turns it on as the **one public address**
   (`https://name`, no path: the issuer), on a free loopback port unless one is
-  given, and answers where it listens; the same address again is a no-op, another
-  restarts it. `remote_stop` turns it off (it also stops when the server closes).
+  given, and answers where it listens and this start's `proxy_secret` (64 lowercase
+  hex characters, for the app only, never printed in a log); the same address
+  again is a no-op that answers the same secret, another restarts it with a new
+  one. `remote_stop` turns it off (it also stops when the server closes).
   `remote_allow { book, allowed }` offers a company or withdraws it;
   `remote_status` says all of it.
-- `remote_pending` lists the assistants waiting to be allowed (the product by
-  where it is sent back to, that address, the caller's address, the company,
-  whether posting was asked, the time left); `remote_decide { id, approve, post }`
-  is the person's answer. `remote_approvals { book? }` lists the connections
+- `remote_pending` lists the assistants waiting to be allowed (what each calls
+  itself, cleaned and short; the address it is sent back to; whether that host is
+  a known vendor's; its six-digit code, which its browser page shows too; the
+  caller's address; the company; whether posting was asked; the time left);
+  `remote_decide { id, approve, post }` is the person's answer, and every Allow
+  makes a new approval with exactly the permissions given. `remote_approvals { book? }` lists the connections
   allowed; `remote_set_post { approval, post }` raises or lowers one;
   `remote_make_key { book, name, post }` makes a key for a product that takes only
   a key, and `remote_make_client { name, redirect_uris }` a client id and secret
   to type into one: each secret is shown once, in the answer, never again.
 
-**Every connection begins with the relay's PROXY protocol version 2 header**
-(the exact form `crates/relay` writes: TCP over IPv4 or IPv6, no extensions); the
-address in it is the caller's, and is what the access record (`from`) and the
-limits use. Anything else is dropped before a byte of HTTP is read; no
+**Every connection begins with this start's secret, then the relay's PROXY
+protocol version 2 header** (the exact form `crates/relay` writes: TCP over IPv4
+or IPv6, no extensions). The secret is the 64 characters of `proxy_secret` from
+`remote_start` or `remote_status`, written as they are, as the very first 64
+bytes, before anything; only the app, which is told it over the owner-only admin
+socket, can say a caller's address, not another process on this computer that
+finds the port. The address in the header is the caller's, and is what the access
+record (`from`) and the limits use (an IPv6 caller is counted by its /64). Anything
+else, a wrong secret included, is dropped before a byte of HTTP is read; no
 `X-Forwarded-For` is ever read. A request whose `Host` is not the public
 address's host is 421; one with another `Origin` is 403.
 
@@ -515,31 +524,39 @@ Routes (all for the public address only):
 | `/.well-known/oauth-protected-resource` (root, `…/b/{book}/mcp` appended, or `/b/{book}/mcp/…` before it) | RFC 9728 metadata for a company's address (the root's only while one company is offered) |
 | `/.well-known/oauth-authorization-server`, `/.well-known/openid-configuration` (and the same with a path either side) | RFC 8414 metadata; every address in it is the issuer's |
 | `POST /register` | dynamic registration (RFC 7591): 1 to 20 redirect addresses, 201 |
-| `GET /authorize` | parks the request (never approves) and answers a page that says to look at Wanderbooks; 302 straight back only for a product the person already allowed for that company |
+| `GET /authorize` | always parks the request (never approves, and never because the product was allowed before: D-90) and answers a page with the request's code that says to look at Wanderbooks; an error is a page for a client nobody approved, a 302 for one the person has |
 | `GET /authorize/wait/{id}` | the page's own look: the same page while waiting, then a 302 with `code` (or `error=access_denied`), once |
 | `POST /token` | `authorization_code` (PKCE S256, `resource` checked) and `refresh_token` (rotated; one used twice ends its family); a client secret as Basic or in the body |
 | `/b/{book}/mcp` | the company's MCP, stateless, plain JSON, for a good token only: 401 with `WWW-Authenticate: Bearer resource_metadata="…"` otherwise, `initialize` included |
 
 A client is one of: a client ID metadata document (an https `client_id`, fetched
-only when every address of its host is public, no redirect, at most 64 KiB, five
-seconds); a dynamic registration; or a client id and secret the app made. The
-redirect address must equal a registered one exactly. Access tokens last ten
+only when every address of its host is public, no redirect, no proxy, at most 64
+KiB, five seconds, and only when a sign-in begins, never at `/token`); a dynamic
+registration; or a client id and secret the app made. The redirect address must
+equal a registered one exactly (at most 512 bytes each, 4 KiB together). A
+registration is held in memory and reaches the file only when the person allows a
+sign-in of it. Access tokens last ten
 minutes and are kept in memory; refresh tokens last sixty days since last use and
 are kept (hashed) in `auth/remote.json`, 0600, so a refresh after the app was
 closed for days still works. Nothing is kept as text but a hash.
 
-**An approval** is the owner's decision about a product, a company and its
+**An approval** is the owner's decision about one sign-in, a company and its
 permissions: one token of the books' principals (named `web-…`, listed by
 `token_list` and revoked by id like any, which ends every token and refresh token
-made under it) plus a record naming the product, so a product that registers
-again is not asked again. A web approval grants `books:read` and `books:write`
+made under it at that moment) plus a record naming the connection. It is never
+reused (D-90): every new sign-in, of a product registering again or not, is asked
+in the window, with a short code to match with the browser's page, and an Allow
+makes a new approval with exactly the permissions ticked then. The window says
+where an assistant will be sent back to, never that it is a known product. A web approval grants `books:read` and `books:write`
 (drafts); `books:post` only when the person turns it on; `books:admin` never. A
 stranger's unsigned request is a 401 and is counted, not written to the access
-record; a good token's refusal is recorded with the caller's address. Calls go
+record, and a good token's refusal for rate or for another company's books is
+counted, not written (its other refusals are recorded with the caller's address). Calls go
 through the same server as local ones (`call_tool`): a write needs its
 `request_key`, a repeat returns the first answer. Nothing bans an address; what
-a request creates is bounded (2000 clients, 20 waiting requests, 5 per address,
-600 calls a minute per approval, and so on).
+a request creates is bounded (2000 clients, 20 waiting requests and 5 per address,
+which give way to a newer one rather than turn it away, 600 calls a minute per
+approval, and so on).
 
 ## Server instructions
 

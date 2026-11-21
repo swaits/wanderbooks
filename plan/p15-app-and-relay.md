@@ -246,16 +246,30 @@ section 8):
 5. No per-session memory on the remote door, and plain JSON replies,
    never a stream (both cured failures behind tunnels). The local door
    keeps its sessions.
-6. An approval belongs to the owner's decision (this product, this
-   company, these permissions), not to a registration: Claude and Grok
-   register anew on most sign-ins, and the approval must survive that.
-   Access tokens are short; refresh tokens are long and sliding; a
-   refresh after the app was closed for days still works.
+6. Every new sign-in is asked in the window (D-90): an approval belongs to
+   one sign-in, never to a product, and is never reused. The app can tell
+   which product asks (the redirect host is public), not whose account, so
+   a stranger with the secret address who registers a client with
+   claude.ai's callback must not be handed a code because Claude was
+   approved before. Every Allow makes a new approval with exactly the
+   permissions ticked; revoking ends its tokens at once. Each waiting
+   request has a short code shown on the browser's page and on the card,
+   to be matched, and the window says where the assistant is sent back to
+   in neutral words, never that it is a known product. Access tokens are
+   short; refresh tokens are long and sliding, and refresh within a
+   sign-in is unchanged: a refresh after the app was closed for days still
+   works. (Claude and Grok register anew on most sign-ins, so they are
+   asked each time; that is the price of the secret address not being
+   enough.)
 7. Never ban an address for failed sign-ins: the vendors' addresses are
    shared. Rate-limit per approval instead.
 8. The relay passes the real caller's address to the app, and the app
    never treats a relayed request as local (Home Assistant's advisory
-   GHSA-wx3j-3v2j-rf45).
+   GHSA-wx3j-3v2j-rf45). The door gives a per-start secret to the app over
+   the admin socket (`proxy_secret`, in the answer of `remote_start`), and
+   refuses any connection that does not begin with it (the 64 characters,
+   as given, before the PROXY header), so only the app's relay line can
+   state a caller's address. Unit B3 writes exactly that first.
 9. A key for products that take only a key: made in the app, named,
    revocable, shown once, with the same permissions model.
 10. Read tools carry the read-only mark, so products ask before each

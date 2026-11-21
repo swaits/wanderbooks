@@ -129,9 +129,11 @@
 //!          is recorded as made); a stopped verification changed nothing.
 //!          Two points of no return: `books.verify` heals a drifted database
 //!          by rebuilding it from the journal, begun only if no stop was
-//!          asked before it, and then run to its end (stopped half way it
-//!          would leave the live ledger part replayed; it is one pass over
-//!          the journal, and only after a drift); and a format upgrade: a
+//!          asked before it (the look comes before the database is copied
+//!          aside, so a stopped heal leaves no `.mismatch` copy and no
+//!          rebuild), and then run to its end (stopped half way it would
+//!          leave the live ledger part replayed; it is the fourth named
+//!          exception below, and only after a drift); and a format upgrade: a
 //!          stop is honoured up to its final look (made once the archive is
 //!          proven, just before the `journal.format_set` line is appended);
 //!          one that arrives after that look still upgrades and records
@@ -179,16 +181,20 @@
 //!          the book is opened, which is itself stopped by the server's close
 //!          and by a close of its id (the same stop the job held), left closed
 //!          (its answer says so). Create's is the making of its folder, after which
-//!          it makes one empty book. Open has none: it stops anywhere (the
-//!          book is left closed, intact).
+//!          it makes one empty book. Open stops at every look of its
+//!          verification (the book is left closed, intact), but for one
+//!          place: once it has begun to heal a drifted database it finishes
+//!          the heal (the fourth named exception below); a stop asked before
+//!          the heal begins leaves no copy of the database either.
 //!      Every other call does work bounded by the size of one request: its
 //!      arguments, one entry, one stored file (at most MAX_UPLOAD) read,
 //!      hashed or extracted (local CPU, no wait on a client, a disk of
-//!      another's or the network). Three calls are neither stoppable nor
-//!      bounded by one request's size, and they are the named exceptions to
-//!      the close's bound below, each with its worst case, which a close that
-//!      meets it waits for in full (nothing enforces a bound on them: that is
-//!      a defect to be closed, not a promise kept):
+//!      another's or the network). Three calls, and one step inside two
+//!      stoppable ones, are neither stoppable nor bounded by one request's
+//!      size, and they are the named exceptions to the close's bound below,
+//!      each with its worst case, which a close that meets it waits for in
+//!      full (nothing enforces a bound on them: that is a defect to be
+//!      closed, not a promise kept):
 //!        - `books.import_bank_csv`: a file of up to MAX_UPLOAD is rehearsed
 //!          whole, then written row by row, each row journaled, and a close
 //!          doesn't stop it. Worst case: a full import of the largest file
@@ -199,12 +205,21 @@
 //!        - `books.export_cpa_package` once it has journaled a decision (above).
 //!          Worst case: one build of the package over the whole book (every
 //!          stored file it holds read once).
+//!        - the heal of a drifted database, once begun, in `books.verify` and
+//!          in an open (ledger_store `verify_and_heal`, cancel INVARIANT 4):
+//!          the rebuild and its verification are shielded from the stop, and
+//!          met only after a drift. Worst case: the copy of the database,
+//!          and about six passes over the journal (three by the rebuild:
+//!          read and chain-checked, applied to the database, replayed;
+//!          three by the verification: read and chain-checked, replayed,
+//!          applied to a fresh projection), and each stored file read and
+//!          hashed once.
 //!      The close is bounded, from its start, by the sum of these named
 //!      terms, each enforced by code, and nothing else:
 //!        a. T_calls: the longest ordinary call already running with its
 //!           whole body (bounded by one request, above; none is cut or
 //!           killed; nothing a client does lengthens it), or, for a
-//!           stoppable call, T_stop, or, for a call of the three named
+//!           stoppable call, T_stop, or, for a call or step of the four named
 //!           exceptions above, its worst case (the bound is these terms,
 //!           with that term unbounded by code while one of them runs);
 //!        b. ANSWER_GRACE for the answers on their way out, counted from

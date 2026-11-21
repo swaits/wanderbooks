@@ -6375,31 +6375,15 @@ impl Store {
     ///      healed: none.
     ///   2. IF the projection or ledger diverged (VerifyMismatch): SHOULD copy
     ///      the database aside, rebuild from the journal, verify again, and
-    ///      report why it healed.
+    ///      report why it healed. A stop asked before the copy leaves no
+    ///      copy and no rebuild; from the copy on none is looked at.
     ///   3. IF the journal itself fails: SHOULD refuse
     ///      - NEVER touch the journal.
     /// ```
     pub fn verify_and_heal(&mut self) -> Result<VerifyReport, StoreError> {
         let healed = match self.verify() {
             Ok(()) => None,
-            Err(StoreError::VerifyMismatch(why)) => {
-                let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
-                let keep = self.db_path.with_extension(format!("mismatch.{stamp}"));
-                std::fs::copy(&self.db_path, &keep)?;
-                eprintln!(
-                    "wanderbooks: {why}; kept the old database as {} beside it and rebuilt from the journal",
-                    keep.file_name().unwrap_or_default().to_string_lossy()
-                );
-                // A stop is looked at before the rebuild begins, never in it
-                // (cancel INVARIANT 4): half-rebuilt, the live ledger would
-                // be part replayed.
-                crate::cancel::check()?;
-                crate::cancel::shielded(|| -> Result<(), StoreError> {
-                    self.rebuild()?;
-                    self.verify()
-                })?;
-                Some(why)
-            }
+            Err(StoreError::VerifyMismatch(why)) => Some(self.heal_drift(why)?),
             Err(e) => return Err(e),
         };
         let lines = read_and_verify_journal(self.journal.path())?;
@@ -6413,6 +6397,37 @@ impl Store {
             database: self.database_file(),
             other_databases: self.other_databases(),
         })
+    }
+
+    /// The healing of a drifted projection (`verify_and_heal`), `why` being
+    /// what verification found. A stop is looked at FIRST, before the
+    /// database is copied aside or anything is touched: a stopped heal
+    /// leaves no `.mismatch` copy and no rebuild (cancel INVARIANT 4). From
+    /// the copy on, nothing looks at a stop: the rebuild and its second
+    /// verification are shielded, because stopped part way the live ledger
+    /// would be left part replayed. Their cost is the copy of the database
+    /// and about six passes over the journal (the rebuild reads and
+    /// chain-checks it, applies it to the database and replays it into the
+    /// ledger; the verification reads and chain-checks it, replays it and
+    /// applies it to a fresh projection), and each stored file read and
+    /// hashed once by the verification: a named term of the books server's
+    /// close bound (ledger-mcp local.rs INVARIANT 10), met only after a
+    /// drift.
+    #[doc(hidden)]
+    pub fn heal_drift(&mut self, why: String) -> Result<String, StoreError> {
+        crate::cancel::check()?;
+        let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+        let keep = self.db_path.with_extension(format!("mismatch.{stamp}"));
+        std::fs::copy(&self.db_path, &keep)?;
+        eprintln!(
+            "wanderbooks: {why}; kept the old database as {} beside it and rebuilt from the journal",
+            keep.file_name().unwrap_or_default().to_string_lossy()
+        );
+        crate::cancel::shielded(|| -> Result<(), StoreError> {
+            self.rebuild()?;
+            self.verify()
+        })?;
+        Ok(why)
     }
 
     /// The SHA-256 of every stored file the books name (receipts and

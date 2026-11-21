@@ -26,6 +26,8 @@
 //!      stop is looked at before it begins, never inside it. The database's
 //!      rebuild from the journal (`verify_and_heal`, healing a drift) is
 //!      one: stopped part way it would leave the live ledger part replayed.
+//!      The look comes before ANYTHING is done for the heal (the database
+//!      copied aside included), so a stopped heal leaves nothing behind.
 //! ```
 
 use crate::error::StoreError;

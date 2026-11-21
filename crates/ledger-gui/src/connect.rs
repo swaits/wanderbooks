@@ -442,7 +442,9 @@ impl State {
         if let Some((what, rx)) = &self.job
             && let Ok(result) = rx.try_recv()
         {
-            if what.starts_with("Revoke") && result.is_ok() {
+            // Whatever came of it (a key already gone, a file left behind),
+            // the list is read again.
+            if what.starts_with("Revoke") {
                 self.refresh = true;
             }
             self.done = Some((what.clone(), result));
@@ -587,7 +589,7 @@ impl State {
             );
             return;
         }
-        let mut revoke: Option<String> = None;
+        let mut revoke: Option<(String, String)> = None;
         for row in &rows {
             Frame::new()
                 .fill(p.surface)
@@ -608,7 +610,7 @@ impl State {
                 });
             ui.add_space(6.0);
         }
-        if let (Some(name), Some(owner)) = (revoke, owner.clone()) {
+        if let (Some((name, id)), Some(owner)) = (revoke, owner.clone()) {
             self.confirm = None;
             let b = book.to_string();
             self.start(
@@ -616,7 +618,7 @@ impl State {
                 jobs,
                 format!("Revoke {name}"),
                 "Ending an assistant's access",
-                Box::new(move || owner.serve_revoke(&b, &name)),
+                Box::new(move || owner.serve_revoke(&b, &name, &id)),
             );
         }
     }
@@ -795,7 +797,7 @@ fn another_row(
                     Box::new(move || {
                         o.make_key(&b).map(|made| {
                             if made {
-                                "made, and kept on this computer.".to_string()
+                                "made, and kept on this computer. It can read the books, draft entries and post them; it cannot see the access record.".to_string()
                             } else {
                                 "it was already made.".to_string()
                             }
@@ -851,7 +853,7 @@ fn connection_row(
     row: &Connection<'_>,
     status: &Status,
     confirm: &mut Option<String>,
-    revoke: &mut Option<String>,
+    revoke: &mut Option<(String, String)>,
     busy: bool,
     can_revoke: bool,
 ) {
@@ -887,12 +889,12 @@ fn connection_row(
             if !can_revoke {
                 return;
             }
-            if confirm.as_deref() == Some(t.name.as_str()) {
+            if confirm.as_deref() == Some(t.id.as_str()) {
                 if ui
                     .add_enabled(!busy, egui::Button::new("Yes, revoke"))
                     .clicked()
                 {
-                    *revoke = Some(t.name.clone());
+                    *revoke = Some((t.name.clone(), t.id.clone()));
                 }
                 if ui.button("Keep it").clicked() {
                     *confirm = None;
@@ -902,11 +904,14 @@ fn connection_row(
                 .on_hover_text("Ends this key: the assistant using it is cut off and cannot reach these books again")
                 .clicked()
             {
-                *confirm = Some(t.name.clone());
+                *confirm = Some(t.id.clone());
             }
         });
     });
-    if confirm.as_deref() == Some(row.name.as_str()) {
+    if row
+        .token
+        .is_some_and(|t| confirm.as_deref() == Some(t.id.as_str()))
+    {
         ui.label(
             RichText::new(format!(
                 "Revoke the key “{}”? Anything using it is cut off now; {}'s books are not changed.",

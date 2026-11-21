@@ -187,7 +187,7 @@ impl Owner for Fake {
             .clone()
             .unwrap_or_else(|| Ok(Roster::default()))
     }
-    fn serve_revoke(&self, book: &str, name: &str) -> Result<String, String> {
+    fn serve_revoke(&self, book: &str, name: &str, _id: &str) -> Result<String, String> {
         self.note(format!("revoke {book} {name}"));
         if let Some(Ok(r)) = self.roster.lock().unwrap().as_mut() {
             r.tokens.retain(|t| !(t.book == book && t.name == name));
@@ -246,6 +246,7 @@ fn session(book: &str, token: &str, program: &str, running: u32, last: Option<&s
 
 fn token(book: &str, name: &str) -> TokenRow {
     TokenRow {
+        id: format!("tok_{book}_{name}"),
         book: book.into(),
         name: name.into(),
         scopes: ["books:read", "books:write", "books:post"]

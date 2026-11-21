@@ -419,29 +419,50 @@ impl AppServer {
         Ok(Roster { sessions, tokens })
     }
 
-    /// End the token `name` of the company `book`, as `wanderbooks token
-    /// revoke` does (INVARIANT 12): the server ends the token and the
-    /// sessions it opened, and the token file's copy is removed. `Ok` says
-    /// what was done, in words; a token file that could not be cleaned is
-    /// said, and the token is revoked all the same.
-    pub fn revoke_token(&self, book: &str, name: &str) -> Result<String, String> {
+    /// End the key `id`, named `name`, of the company `book`, as
+    /// `wanderbooks token revoke` does (INVARIANT 12): the server ends that
+    /// key and the sessions it opened, and the token file's copy is
+    /// removed. It goes by the key's id, never its name alone: a row that
+    /// shows a key since replaced must not end the new one. `Ok` says what
+    /// was done, in words. When the key is ended but the token file's copy
+    /// cannot be deleted, that is an `Err` that says so (the key is dead; a
+    /// file holding its text remains at that path), never its text.
+    pub fn revoke_token(&self, book: &str, name: &str, id: &str) -> Result<String, String> {
         self.wait_ready(READY_WAIT)?;
         let request = Request::TokenRevoke {
             book: book.into(),
             name: name.into(),
-            id: None,
+            id: Some(id.into()),
         };
         match self.ask_raw(request, Some(Duration::from_secs(30))) {
             Ok(Response::TokenRevoked(t)) => {
                 let said = format!("Ended {:?}'s access to {}.", t.name, t.book);
                 match crate::commands::forget_token_file(&self.run, book, name) {
                     Ok(()) => Ok(said),
-                    Err(why) => Ok(format!(
-                        "{said} Its token file still holds its text ({why}); it opens nothing now."
-                    )),
+                    Err(why) => {
+                        let at = crate::commands::token_file_path(&self.run, book, name);
+                        Err(format!(
+                            "{said} The key is dead and opens nothing now. But the copy of its text kept on this computer could not be deleted ({why}); a file with its text remains at {}. Delete that file yourself.",
+                            at.display()
+                        ))
+                    }
                 }
             }
-            Ok(Response::Refused(why)) => Err(why),
+            Ok(Response::Refused(why)) => {
+                // Refused because that key is gone (replaced or revoked
+                // since the row was read), or for another reason.
+                let gone = matches!(
+                    self.ask_raw(Request::TokenList, Some(Duration::from_secs(10))),
+                    Ok(Response::Tokens(list)) if !list.iter().any(|t| t.id == id)
+                );
+                Err(if gone {
+                    format!(
+                        "This key was already replaced or revoked, so nothing was ended. The list now shows the keys of {book} as they stand."
+                    )
+                } else {
+                    why
+                })
+            }
             Ok(other) => Err(format!("the books server answered oddly: {other:?}")),
             Err(e) => Err(e.to_string()),
         }
@@ -697,9 +718,9 @@ impl AppHost {
         self.running()?.roster(wait)
     }
 
-    /// End a token (INVARIANT 12).
-    pub fn revoke_token(&self, book: &str, name: &str) -> Result<String, String> {
-        self.running()?.revoke_token(book, name)
+    /// End the key `id` (INVARIANT 12).
+    pub fn revoke_token(&self, book: &str, name: &str, id: &str) -> Result<String, String> {
+        self.running()?.revoke_token(book, name, id)
     }
 
     /// The format upgrade of the company `id` (INVARIANT 10).

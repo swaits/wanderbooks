@@ -190,6 +190,9 @@ pub struct Assistant {
 /// A token, as listed: who may connect to a company (never its text).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TokenRow {
+    /// Its id: what a revoke names, so a row of a key since replaced
+    /// cannot end the new one.
+    pub id: String,
     /// The company it opens.
     pub book: String,
     /// Its name.
@@ -262,9 +265,11 @@ pub trait Owner: Send + Sync {
     fn serve_roster(&self) -> Result<Roster, String> {
         Ok(Roster::default())
     }
-    /// End the token `name` of the company `book` (what `wanderbooks token
-    /// revoke` does): `Ok` says what was done, in words. Blocks.
-    fn serve_revoke(&self, _book: &str, _name: &str) -> Result<String, String> {
+    /// End the token `name`, whose id is `id`, of the company `book` (what
+    /// `wanderbooks token revoke` does, for that one key): `Ok` says what
+    /// was done, in words; a key already replaced or revoked is an `Err`
+    /// that says so. Blocks.
+    fn serve_revoke(&self, _book: &str, _name: &str, _id: &str) -> Result<String, String> {
         Err("not here".into())
     }
     /// This program run with `words`, as a line to type in a terminal (the
@@ -274,8 +279,10 @@ pub trait Owner: Send + Sync {
         Err("not here".into())
     }
     /// The key an assistant needs to reach the company `book` exists (made
-    /// now if it did not): `Ok(true)` when it was made now. What `connect`
-    /// does first, for an assistant set up by hand. Blocks.
+    /// now if it did not), able to read, draft and post but not to see the
+    /// access record: `Ok(true)` when it was made now. It never replaces a
+    /// key: one that exists with no copy here is an `Err` that says so.
+    /// Blocks.
     fn make_key(&self, _book: &str) -> Result<bool, String> {
         Err("not here".into())
     }

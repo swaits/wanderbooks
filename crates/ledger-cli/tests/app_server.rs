@@ -766,7 +766,13 @@ fn the_roster_lists_a_connected_key_and_revoking_it_ends_its_use() {
     assert_eq!(keeper.get(&account).unwrap().as_deref(), Some(&*token));
 
     // Revoked: said in words, and no longer usable.
-    let said = server.revoke_token(BOOK, "agent").unwrap();
+    let id = roster
+        .tokens
+        .iter()
+        .find(|t| t.book == BOOK && t.name == "agent")
+        .map(|t| t.id.clone())
+        .unwrap();
+    let said = server.revoke_token(BOOK, "agent", &id).unwrap();
     assert!(said.contains("access"), "{said}");
     // (a) the roster no longer lists the key, nor a session on it,
     let after = server.roster(Duration::from_secs(30)).unwrap();
@@ -787,6 +793,181 @@ fn the_roster_lists_a_connected_key_and_revoking_it_ends_its_use() {
     // (c) and the token file's copy is gone.
     assert_eq!(keeper.get(&account).unwrap(), None);
     // Asking again for a key that is gone says so, and breaks nothing.
-    assert!(server.revoke_token(BOOK, "agent").is_err());
+    assert!(server.revoke_token(BOOK, "agent", &id).is_err());
+    assert_eq!(server.stop(Duration::from_secs(60)), Stopped::Closed);
+}
+
+/// The host's own `Common` on `home`'s root: what the window's owner holds.
+fn common_on(home: &Home) -> ledger_host::commands::Common {
+    ledger_host::commands::Common {
+        root: Some(home.root()),
+        ..Default::default()
+    }
+}
+
+/// The id of the live key `agent` of `BOOK`, by the roster.
+fn key_id(server: &AppServer) -> Option<String> {
+    server
+        .roster(Duration::from_secs(30))
+        .unwrap()
+        .tokens
+        .iter()
+        .find(|t| t.book == BOOK && t.name == "agent")
+        .map(|t| t.id.clone())
+}
+
+/// The scopes of the live key `agent` of `BOOK`, by the roster.
+fn key_scopes(server: &AppServer) -> Vec<String> {
+    server
+        .roster(Duration::from_secs(30))
+        .unwrap()
+        .tokens
+        .iter()
+        .find(|t| t.book == BOOK && t.name == "agent")
+        .map(|t| t.scopes.clone())
+        .unwrap()
+}
+
+/// "Make the key" (the Connect page) makes the key once, with read, write
+/// and post and no admin; a second click, or a click with the copy here
+/// gone, replaces nothing and says why in words; a revoke of a row whose
+/// key was since replaced ends nothing.
+#[test]
+fn make_the_key_never_replaces_a_key_and_a_stale_revoke_ends_nothing() {
+    use ledger_store::auth::Scope;
+    let scopes = [Scope::Read, Scope::Write, Scope::Post];
+    let home = Home::new("app-make-key");
+    let run = home.run();
+    let server = start(&home, &[]);
+    server.wait_ready(Duration::from_secs(60)).unwrap();
+    home.create(BOOK, "USD");
+    assert_eq!(server.open_book(BOOK), Ok(None));
+    let common = common_on(&home);
+    let account = ledger_host::tokens::Account::new(&home.root(), BOOK, "agent");
+    let keeper = ledger_host::tokens::keeper(&run);
+
+    // Made once, and kept; read, write and post, not admin.
+    assert_eq!(
+        ledger_host::commands::ensure_key(&common, BOOK, &scopes),
+        Ok(true)
+    );
+    let first = key_id(&server).expect("the key was made");
+    let text = keeper.get(&account).unwrap().expect("its copy is kept");
+    assert_eq!(
+        key_scopes(&server),
+        ["books:read", "books:write", "books:post"]
+    );
+
+    // A second click: nothing is made, nothing replaced.
+    assert_eq!(
+        ledger_host::commands::ensure_key(&common, BOOK, &scopes),
+        Ok(false)
+    );
+    assert_eq!(key_id(&server).as_deref(), Some(first.as_str()));
+    assert_eq!(keeper.get(&account).unwrap().as_deref(), Some(&*text));
+
+    // The key works for ordinary bookkeeping and is refused an admin call.
+    let mut bridge = Bridge::start(&home);
+    assert!(bridge.initialize().get("error").is_none());
+    let read = bridge.start_call();
+    assert!(
+        read.get("error").is_none() && read["result"]["isError"] != json!(true),
+        "{read}"
+    );
+    let admin = bridge.ask(
+        "tools/call",
+        json!({"name": "books.access_log", "arguments": {}}),
+    );
+    let refused = admin.get("error").is_some() || admin["result"]["isError"] == json!(true);
+    assert!(refused, "an admin call must be refused: {admin}");
+    assert!(
+        admin.to_string().contains("books:admin"),
+        "it is refused for want of admin: {admin}"
+    );
+
+    // The copy here goes missing while the key lives (an assistant may be
+    // using it): said in words, and nothing is replaced.
+    keeper.delete(&account).unwrap();
+    let said = ledger_host::commands::ensure_key(&common, BOOK, &scopes).unwrap_err();
+    assert!(
+        said.contains("already exists") && said.contains("revoke it"),
+        "{said}"
+    );
+    assert!(!said.contains(&*text), "never the key's text");
+    assert_eq!(key_id(&server).as_deref(), Some(first.as_str()));
+    assert_eq!(keeper.get(&account).unwrap(), None, "no copy was made");
+    // The assistant already using the key is not cut off.
+    let still = bridge.start_call();
+    assert!(still.get("error").is_none(), "{still}");
+
+    // The same when the copy here is not the live key's text.
+    keeper.set(&account, "wb_not_the_key").unwrap();
+    let said = ledger_host::commands::ensure_key(&common, BOOK, &scopes).unwrap_err();
+    assert!(said.contains("not its text any more"), "{said}");
+    assert_eq!(key_id(&server).as_deref(), Some(first.as_str()));
+
+    // The key is made again elsewhere (a row of the old one is on screen):
+    // revoking the old row's id ends nothing, and says why.
+    let newer_text = home.token_with(BOOK, "agent", &["read", "write", "post"]);
+    keeper.set(&account, &newer_text).unwrap();
+    let newer = key_id(&server).unwrap();
+    assert_ne!(newer, first);
+    let said = server.revoke_token(BOOK, "agent", &first).unwrap_err();
+    assert!(said.contains("already replaced or revoked"), "{said}");
+    assert_eq!(key_id(&server).as_deref(), Some(newer.as_str()));
+    assert_eq!(
+        keeper.get(&account).unwrap().as_deref(),
+        Some(newer_text.as_str()),
+        "the newer key's copy stays"
+    );
+    // Its own id ends it.
+    assert!(server.revoke_token(BOOK, "agent", &newer).is_ok());
+    assert_eq!(key_id(&server), None);
+    assert_eq!(keeper.get(&account).unwrap(), None);
+    drop(bridge);
+    assert_eq!(server.stop(Duration::from_secs(60)), Stopped::Closed);
+}
+
+/// A key ended whose token file copy cannot be deleted is not reported as
+/// done: the words say the key is dead and where the file is, and never
+/// hold the file's text.
+#[cfg(unix)]
+#[test]
+fn a_revoke_that_leaves_the_token_file_says_so() {
+    use std::os::unix::fs::PermissionsExt;
+    // SAFETY: geteuid has no preconditions.
+    if unsafe { libc::geteuid() } == 0 {
+        return; // root deletes in a read-only folder: nothing to show
+    }
+    let home = Home::new("app-revoke-left");
+    let run = home.run();
+    let server = start(&home, &[]);
+    server.wait_ready(Duration::from_secs(60)).unwrap();
+    home.create(BOOK, "USD");
+    assert_eq!(server.open_book(BOOK), Ok(None));
+    let token = home.token_with(BOOK, "agent", &["read"]);
+    let account = ledger_host::tokens::Account::new(&home.root(), BOOK, "agent");
+    let keeper = ledger_host::tokens::keeper(&run);
+    keeper.set(&account, &token).unwrap();
+    let id = key_id(&server).unwrap();
+    let folder = run.join("tokens");
+    std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let result = server.revoke_token(BOOK, "agent", &id);
+    std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let said = result.unwrap_err();
+    assert!(said.contains("key is dead"), "{said}");
+    assert!(said.contains("a file with its text remains at"), "{said}");
+    assert!(
+        said.contains(
+            &ledger_host::commands::token_file_path(&run, BOOK, "agent")
+                .display()
+                .to_string()
+        ),
+        "{said}"
+    );
+    assert!(!said.contains(&*token), "never the file's text");
+    // The key is dead all the same.
+    assert_eq!(key_id(&server), None);
+    assert_eq!(keeper.get(&account).unwrap().as_deref(), Some(&*token));
     assert_eq!(server.stop(Duration::from_secs(60)), Stopped::Closed);
 }

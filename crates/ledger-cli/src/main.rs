@@ -142,6 +142,7 @@ impl ledger_gui::owner::Owner for ViewerOwner {
             .tokens
             .into_iter()
             .map(|t| TokenRow {
+                id: t.id,
                 book: t.book,
                 name: t.name,
                 scopes: t.scopes,
@@ -151,8 +152,8 @@ impl ledger_gui::owner::Owner for ViewerOwner {
         Ok(Roster { assistants, tokens })
     }
 
-    fn serve_revoke(&self, book: &str, name: &str) -> Result<String, String> {
-        self.server.revoke_token(book, name)
+    fn serve_revoke(&self, book: &str, name: &str, id: &str) -> Result<String, String> {
+        self.server.revoke_token(book, name, id)
     }
 
     fn command_line(&self, words: &[&str]) -> Result<String, String> {
@@ -160,7 +161,13 @@ impl ledger_gui::owner::Owner for ViewerOwner {
     }
 
     fn make_key(&self, book: &str) -> Result<bool, String> {
-        ledger_host::commands::ensure_key(&self.common, book)
+        use ledger_store::auth::Scope;
+        // What a page-made key may do: read, draft and post; never admin.
+        ledger_host::commands::ensure_key(
+            &self.common,
+            book,
+            &[Scope::Read, Scope::Write, Scope::Post],
+        )
     }
 
     fn close_books(&self) -> Result<String, String> {

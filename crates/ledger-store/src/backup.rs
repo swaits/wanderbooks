@@ -2561,6 +2561,10 @@ mod tests {
     /// `hooks/slow` exists, at the point where git holds its ref locks (and
     /// a commit its index lock): how a real git is made slow enough to be
     /// killed inside the work. `hooks/hooked` has a line per hook that waited.
+    /// While `hooks/deaf` exists when a git begins, that git (and all it
+    /// starts) has SIGTERM blocked, as a mask every child inherits: the
+    /// signal stays pending, git's handler never runs, and only the kill
+    /// ends it ([`deaf`]).
     fn slow_git(dir: &Path, real: &Git) -> (Git, PathBuf) {
         use std::os::unix::fs::PermissionsExt;
         let hooks = dir.join("slow-hooks");
@@ -2585,8 +2589,10 @@ mod tests {
         std::fs::write(
             &wrapper,
             format!(
-                "#!/bin/sh\nn=$#\nwhile [ $n -gt 0 ]; do\n  a=\"$1\"; shift\n  case \"$a\" in\n    *core.hooksPath=/dev/null*) a=$(printf '%s' \"$a\" | sed 's|core.hooksPath=/dev/null|core.hooksPath={}|g') ;;\n  esac\n  set -- \"$@\" \"$a\"\n  n=$((n-1))\ndone\nexec '{}' \"$@\"\n",
+                "#!/bin/sh\nn=$#\nwhile [ $n -gt 0 ]; do\n  a=\"$1\"; shift\n  case \"$a\" in\n    *core.hooksPath=/dev/null*) a=$(printf '%s' \"$a\" | sed 's|core.hooksPath=/dev/null|core.hooksPath={}|g') ;;\n  esac\n  set -- \"$@\" \"$a\"\n  n=$((n-1))\ndone\nif [ -e '{}/deaf' ]; then exec perl -MPOSIX -e 'sigprocmask(SIG_BLOCK, POSIX::SigSet->new(SIGTERM)) or die; exec @ARGV or die' '{}' \"$@\"; fi\nexec '{}' \"$@\"\n",
                 hooks.display(),
+                hooks.display(),
+                real.exe.display(),
                 real.exe.display()
             ),
         )
@@ -2635,10 +2641,19 @@ mod tests {
             .collect()
     }
 
-    /// Hold every process of the group `pid` leads still (SIGSTOP): a
-    /// SIGTERM sent to it then stays pending, git can't run its handler,
-    /// and only the kill after the grace ends it. This is how a git that
-    /// can't end on SIGTERM, with the locks it holds, is made on purpose.
+    /// Make the gits `slow_git` starts from now on unable to end on
+    /// SIGTERM (a blocked signal stays pending on every system). A stopped
+    /// process is not enough: macOS acts on a SIGTERM sent to a process
+    /// that was stopped (the git ended inside its grace, and removed its
+    /// own locks), where Linux holds the signal until it is continued.
+    fn deaf(hooks: &Path) {
+        std::fs::write(hooks.join("deaf"), b"").unwrap();
+    }
+
+    /// Hold every process of the group `pid` leads still (SIGSTOP), so that
+    /// none goes on while the stop is being asked for. A git that can't end
+    /// on SIGTERM, with the locks it holds, is made on purpose by [`deaf`];
+    /// this only keeps it from finishing meanwhile.
     fn freeze_group_of(pid: u32) {
         let out = std::process::Command::new("ps")
             .args(["-o", "pgid=", "-p", &pid.to_string()])
@@ -2738,6 +2753,7 @@ mod tests {
         s.add_account("6000", "Supplies", AccountType::Expense, None, false)
             .unwrap();
         let archive = b.join(ARCHIVE_DIR);
+        deaf(&hooks);
         std::fs::write(hooks.join("slow"), b"").unwrap();
         let running = {
             let (git, b, head) = (cancelled.clone(), b.clone(), s.head());
@@ -2917,6 +2933,7 @@ mod tests {
             .clone()
             .with_cancel(flag.clone())
             .with_term_grace(grace);
+        deaf(&hooks);
         std::fs::write(hooks.join("slow"), b"").unwrap();
         let running = {
             let (git, b, target) = (cancelled.clone(), b.clone(), target.clone());
@@ -3015,6 +3032,9 @@ mod tests {
                 .clone()
                 .with_cancel(flag.clone())
                 .with_term_grace(Duration::from_millis(if frozen { 400 } else { 120_000 }));
+            if frozen {
+                deaf(&hooks);
+            }
             std::fs::write(hooks.join("slow-pack"), b"").unwrap();
             let running = {
                 let (git, b, target) = (cancelled.clone(), b.clone(), target.clone());

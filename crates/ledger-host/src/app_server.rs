@@ -44,7 +44,24 @@
 //!   7. Starting writes `run/app-hosted`, a file with nothing in it: the
 //!      root is this app's from then on, and the agents' bridge says
 //!      "Wanderbooks isn't running" for it, instead of starting a host
-//!      (bridge.rs INVARIANT 12).
+//!      (bridge.rs INVARIANT 12). The marker is never removed: a root the
+//!      app has served is the app's for good.
+//!   8. A server the window started is either managed by the window or
+//!      stopped, never neither ([`AppHost`]): one that is alive and not
+//!      yet ready is waited for, not given up on; a start that fails, or
+//!      a window closed before the start has stored the server, closes
+//!      that server's input and waits for it, bounded.
+//!   9. The window's close closes each open company first, by an admin
+//!      request, so a closing backup that was not whole is returned in
+//!      words, and a server that exits badly is returned in words too
+//!      ([`AppHost::stop`]): a close is never silent about either. What
+//!      the server does for the headless path is not changed.
+//!  10. The format upgrade of a company, under the app, goes to the
+//!      server as an admin request (`UpgradeFormat`), the way the host
+//!      hands it on; there is no host and no lease socket to ask.
+//!  11. After the server is ready, the companies the window wanted open
+//!      are checked against the server's list: one that is not open is
+//!      returned in words ([`AppHost::not_open`]).
 //! ```
 
 use crate::host::{SERVER_LOG, children_executable, open_log, private_options};
@@ -81,8 +98,8 @@ enum Phase {
     Starting,
     /// Ready: its sockets are bound and the companies tried.
     Ready,
-    /// Gone, and how (in words).
-    Exited(String),
+    /// Gone: how (in words), and whether it was a clean exit.
+    Exited(String, bool),
 }
 
 struct Shared {
@@ -99,7 +116,7 @@ impl Shared {
         let mut phase = self.phase();
         // Exited is final; Ready only follows Starting.
         match (&*phase, &to) {
-            (Phase::Exited(_), _) | (Phase::Ready, Phase::Starting) => {}
+            (Phase::Exited(..), _) | (Phase::Ready, Phase::Starting) => {}
             _ => *phase = to,
         }
         self.changed.notify_all();
@@ -107,10 +124,13 @@ impl Shared {
 }
 
 /// What [`AppServer::stop`] came to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Stopped {
-    /// The server has exited: every company is closed and let go.
+    /// The server has exited cleanly: every company is closed and let go.
     Closed,
+    /// The server has exited, and not cleanly (a nonzero status, or a
+    /// signal): how, in words. Its books may not have been closed whole.
+    Failed(String),
     /// The server was told to close and has not exited within the wait;
     /// it goes on closing by itself (INVARIANT 4).
     StillClosing,
@@ -224,11 +244,14 @@ impl AppServer {
             std::thread::Builder::new()
                 .name("app-server-exit".into())
                 .spawn(move || {
-                    let said = match child.wait() {
-                        Ok(status) => format!("the books server stopped ({status})"),
-                        Err(e) => format!("the books server stopped ({})", e.kind()),
+                    let (said, clean) = match child.wait() {
+                        Ok(status) => (
+                            format!("the books server stopped ({status})"),
+                            status.success(),
+                        ),
+                        Err(e) => (format!("the books server stopped ({})", e.kind()), false),
                     };
-                    shared.set(Phase::Exited(said));
+                    shared.set(Phase::Exited(said, clean));
                 })
                 .map_err(|e| format!("can't watch the books server: {e}"))?;
         }
@@ -253,7 +276,7 @@ impl AppServer {
     /// Why the server is gone, if it is (INVARIANT 5).
     pub fn exited(&self) -> Option<String> {
         match &*self.shared.phase() {
-            Phase::Exited(why) => Some(why.clone()),
+            Phase::Exited(why, _) => Some(why.clone()),
             _ => None,
         }
     }
@@ -266,7 +289,7 @@ impl AppServer {
         loop {
             match &*phase {
                 Phase::Ready => return Ok(()),
-                Phase::Exited(why) => {
+                Phase::Exited(why, _) => {
                     return Err(format!(
                         "{why}: its log is {} in the books' run folder",
                         SERVER_LOG
@@ -289,12 +312,32 @@ impl AppServer {
         }
     }
 
+    /// Whether the server has said it is ready (and is still there).
+    pub fn is_ready(&self) -> bool {
+        matches!(&*self.shared.phase(), Phase::Ready)
+    }
+
+    /// Wait for the server to be ready for as long as it lives: a server
+    /// still opening companies, or waiting for another server to finish
+    /// (local.rs INVARIANT 1), is waited for and not given up on; `Err`
+    /// only when it has exited (INVARIANT 8). `slice` is how long each
+    /// wait runs before the server is looked at again.
+    pub fn wait_started(&self, slice: Duration) -> Result<(), String> {
+        loop {
+            match self.wait_ready(slice) {
+                Ok(()) => return Ok(()),
+                Err(_) if self.exited().is_none() => {}
+                Err(why) => return Err(why),
+            }
+        }
+    }
+
     /// Open the company `id` in the server, so assistants can reach it
     /// (INVARIANT 6): `Ok(None)` when it is open now, `Err` with why not.
     /// It waits for the server to be ready, and for the open.
     pub fn open_book(&self, id: &str) -> Result<Option<String>, String> {
         self.wait_ready(READY_WAIT)?;
-        match self.ask(Request::OpenBook { id: id.into() })? {
+        match self.ask(Request::OpenBook { id: id.into() }, None)? {
             Response::OpenBook { outcome, .. } => open_words(id, outcome),
             Response::Refused(why) => Err(why),
             other => Err(format!("the books server answered oddly: {other:?}")),
@@ -307,21 +350,75 @@ impl AppServer {
     /// when it is closed but its last backup wasn't whole; `Err` when the
     /// request itself failed (the company may still be open).
     pub fn close_book(&self, id: &str) -> Result<Option<String>, String> {
+        self.close_book_within(id, None)
+    }
+
+    /// [`AppServer::close_book`], waiting at most `wait` for the answer.
+    pub fn close_book_within(
+        &self,
+        id: &str,
+        wait: Option<Duration>,
+    ) -> Result<Option<String>, String> {
         self.wait_ready(READY_WAIT)?;
-        match self.ask(Request::CloseBook { id: id.into() })? {
+        match self.ask(Request::CloseBook { id: id.into() }, wait)? {
             Response::CloseBook { outcome, .. } => Ok(close_words(id, outcome)),
             Response::Refused(why) => Err(why),
             other => Err(format!("the books server answered oddly: {other:?}")),
         }
     }
 
-    /// One admin request, answered or why not in words.
-    fn ask(&self, request: Request) -> Result<Response, String> {
-        if let Some(why) = self.exited() {
-            return Err(why);
+    /// The books the server holds, and whether each is open (INVARIANT 9).
+    pub fn books(&self, wait: Option<Duration>) -> Result<Vec<admin::BookStatus>, String> {
+        self.wait_ready(READY_WAIT)?;
+        match self.ask(Request::List, wait)? {
+            Response::Books(books) => Ok(books),
+            Response::Refused(why) => Err(why),
+            other => Err(format!("the books server answered oddly: {other:?}")),
         }
-        admin::call(&self.run.join(ledger_mcp::local::ADMIN_SOCKET), request)
-            .map_err(|e| e.to_string())
+    }
+
+    /// The owner's go-ahead for the format upgrade of the company `id`,
+    /// with the owner passphrase they typed, sent to the server as the
+    /// host sends it (INVARIANT 10): what came of it, a line each; or why
+    /// not, which says whether it may have been done all the same.
+    pub fn upgrade_format(&self, id: &str, passphrase: &str) -> Result<Vec<String>, String> {
+        self.wait_ready(READY_WAIT)
+            .map_err(|why| format!("not upgraded: {why}"))?;
+        let request = Request::UpgradeFormat {
+            id: id.into(),
+            passphrase: admin::Passphrase(passphrase.into()),
+        };
+        match self.ask_raw(request, None) {
+            Ok(Response::FormatUpgraded(u)) => Ok(crate::commands::upgraded_lines(&u)),
+            Ok(Response::Refused(why)) => Err(format!("not upgraded: {why}")),
+            Ok(_) => Err(
+                "the books server answered oddly, so it may or may not have been done: `wanderbooks books list` says whether the books still wait for it"
+                    .into(),
+            ),
+            Err(admin::CallError::NotSent(why)) => Err(format!("not upgraded: {why}")),
+            Err(admin::CallError::Unknown(why)) => Err(why),
+        }
+    }
+
+    /// One admin request, answered or why not in words.
+    fn ask(&self, request: Request, wait: Option<Duration>) -> Result<Response, String> {
+        self.ask_raw(request, wait).map_err(|e| e.to_string())
+    }
+
+    /// One admin request, as the admin socket answers it.
+    fn ask_raw(
+        &self,
+        request: Request,
+        wait: Option<Duration>,
+    ) -> Result<Response, admin::CallError> {
+        if let Some(why) = self.exited() {
+            return Err(admin::CallError::NotSent(why));
+        }
+        admin::call_within(
+            &self.run.join(ledger_mcp::local::ADMIN_SOCKET),
+            request,
+            wait,
+        )
     }
 
     /// Close the server's input: it begins to close the books and exits
@@ -337,8 +434,12 @@ impl AppServer {
         let deadline = Instant::now() + within;
         let mut phase = self.shared.phase();
         loop {
-            if matches!(&*phase, Phase::Exited(_)) {
-                return Stopped::Closed;
+            if let Phase::Exited(how, clean) = &*phase {
+                return if *clean {
+                    Stopped::Closed
+                } else {
+                    Stopped::Failed(how.clone())
+                };
             }
             let Some(left) = deadline.checked_duration_since(Instant::now()) else {
                 return Stopped::StillClosing;
@@ -350,6 +451,250 @@ impl AppServer {
                 .unwrap_or_else(|e| e.into_inner())
                 .0;
         }
+    }
+}
+
+/// How long a server whose start has failed is waited for to close
+/// (INVARIANT 8): it exits as soon as its input ends if it was waiting
+/// or opening, and makes a last backup of what it had open.
+pub const FAILED_START_STOP_WAIT: Duration = Duration::from_secs(30);
+
+/// What it says when the server is still closing after a stop ran out of
+/// time (INVARIANT 4).
+pub const STILL_CLOSING: &str = "The books are still closing in the background (most likely a last backup): Wanderbooks finishes it on its own. Start it again once it has.";
+
+type Starter = Box<dyn Fn(&[String]) -> Result<AppServer, String> + Send + Sync>;
+
+/// What the window does with its books server, whole: start it, open and
+/// close its companies, ask which are open, hand it the format upgrade,
+/// stop it. The program's owner (`ViewerOwner` in ledger-cli) only
+/// forwards to this, so what the tests drive is what the window runs.
+pub struct AppHost {
+    starter: Starter,
+    slice: Duration,
+    server: Mutex<Option<Arc<AppServer>>>,
+    /// The window has asked to close (INVARIANT 8): no server is started
+    /// after it, and one stored just before it is stopped.
+    stopped: std::sync::atomic::AtomicBool,
+}
+
+impl AppHost {
+    /// A host that starts the data root's server (`root`, else this
+    /// account's) from this program's own executable.
+    pub fn new(root: Option<PathBuf>) -> Self {
+        Self::with_starter(READY_WAIT, move |open| {
+            AppServer::start(root.as_deref(), open)
+        })
+    }
+
+    /// A host that starts its server with `starter` (tests give it
+    /// another program and an environment of its own); `slice` is how
+    /// long a wait for the ready line runs before the server is looked
+    /// at again.
+    pub fn with_starter(
+        slice: Duration,
+        starter: impl Fn(&[String]) -> Result<AppServer, String> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            starter: Box::new(starter),
+            slice,
+            server: Mutex::new(None),
+            stopped: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    fn slot(&self) -> std::sync::MutexGuard<'_, Option<Arc<AppServer>>> {
+        self.server.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn closing(&self) -> bool {
+        self.stopped.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// The running server, or why there is none.
+    pub fn running(&self) -> Result<Arc<AppServer>, String> {
+        self.slot()
+            .clone()
+            .ok_or_else(|| "the books server isn't running".to_string())
+    }
+
+    /// Start the server with the companies `open` open and return when it
+    /// is ready, or why it will not be (INVARIANT 8). Blocks. Called again
+    /// after a start that failed, it starts a new server; called while one
+    /// runs it waits for that one.
+    pub fn start(&self, open: &[String]) -> Result<(), String> {
+        if self.closing() {
+            return Err("Wanderbooks is closing".into());
+        }
+        let alive = self.slot().clone().filter(|s| s.exited().is_none());
+        let server = match alive {
+            Some(server) => server,
+            None => {
+                let server = Arc::new((self.starter)(open)?);
+                let mut slot = self.slot();
+                // The window may have asked to close since the check
+                // above: it looks at the slot after setting the flag, so
+                // one of the two sees the other.
+                if self.closing() {
+                    drop(slot);
+                    server.stop(FAILED_START_STOP_WAIT);
+                    return Err("Wanderbooks is closing".into());
+                }
+                *slot = Some(server.clone());
+                server
+            }
+        };
+        match server.wait_started(self.slice) {
+            Ok(()) => Ok(()),
+            Err(why) => {
+                // Managed or stopped, never neither: this server is let
+                // go of, and its input closed.
+                {
+                    let mut slot = self.slot();
+                    if slot.as_ref().is_some_and(|s| Arc::ptr_eq(s, &server)) {
+                        *slot = None;
+                    }
+                }
+                Err(match server.stop(FAILED_START_STOP_WAIT) {
+                    Stopped::StillClosing => {
+                        format!("{why}; it is still closing in the background")
+                    }
+                    _ => why,
+                })
+            }
+        }
+    }
+
+    /// Open the company `id` in the server (a tab opened).
+    pub fn open_book(&self, id: &str) -> Result<Option<String>, String> {
+        self.running()?.open_book(id)
+    }
+
+    /// Close the company `id` in the server (a tab closed).
+    pub fn close_book(&self, id: &str) -> Result<Option<String>, String> {
+        self.running()?.close_book(id)
+    }
+
+    /// Why the server is gone, if it exited on its own.
+    pub fn exited(&self) -> Option<String> {
+        self.slot().as_ref()?.exited()
+    }
+
+    /// For each of the companies `wanted` that the server does not have
+    /// open (INVARIANT 11): its id, and why in words. Nothing is said for
+    /// a server that isn't running.
+    pub fn not_open(&self, wanted: &[String]) -> Vec<(String, String)> {
+        let Ok(server) = self.running() else {
+            return Vec::new();
+        };
+        let books = match server.books(Some(Duration::from_secs(30))) {
+            Ok(books) => books,
+            Err(why) => {
+                return wanted
+                    .iter()
+                    .map(|id| {
+                        (
+                            id.clone(),
+                            format!("can't tell whether {id} is open for your assistants: {why}"),
+                        )
+                    })
+                    .collect();
+            }
+        };
+        wanted
+            .iter()
+            .filter_map(|id| {
+                let held = books.iter().find(|b| &b.id == id);
+                let not_open = match held {
+                    Some(b) if b.open => return None,
+                    Some(b) => b
+                        .problem
+                        .clone()
+                        .unwrap_or_else(|| "it isn't open in the books server".into()),
+                    None => "the books server doesn't have it".into(),
+                };
+                let words = open_words(id, OpenOutcome::CouldNotOpen(not_open))
+                    .err()
+                    .unwrap_or_default();
+                Some((id.clone(), words))
+            })
+            .collect()
+    }
+
+    /// The format upgrade of the company `id` (INVARIANT 10).
+    pub fn upgrade_format(&self, id: &str, passphrase: &str) -> Result<Vec<String>, String> {
+        match self.running() {
+            Ok(server) => server.upgrade_format(id, passphrase),
+            Err(_) => Err(
+                "not upgraded: the books server isn't running, so nothing was done. Assistants can't reach your companies either: try again from the notice at the top of the window, or restart Wanderbooks"
+                    .into(),
+            ),
+        }
+    }
+
+    /// Close the window's books (INVARIANT 9): each open company is closed
+    /// first, so its closing backup is reported if it was not whole; then
+    /// the server's input is closed and its exit waited for, the whole
+    /// taking about `within`. `Ok(None)` when all went whole; else the
+    /// words, a line each (the companies whose backup was incomplete, a
+    /// server that exited badly or is still closing). Never kills.
+    pub fn stop(&self, within: Duration) -> Result<Option<String>, String> {
+        self.stopped
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let Some(server) = self.slot().take() else {
+            return Ok(None);
+        };
+        let begun = Instant::now();
+        let mut said: Vec<String> = Vec::new();
+        if server.is_ready() && server.exited().is_none() {
+            match server.books(Some(within)) {
+                Ok(books) => {
+                    let open: Vec<String> =
+                        books.into_iter().filter(|b| b.open).map(|b| b.id).collect();
+                    // Each company's last backup runs on its own: none
+                    // waits for another's.
+                    let notices: Vec<Option<String>> = std::thread::scope(|scope| {
+                        let handles: Vec<_> = open
+                            .iter()
+                            .map(|id| {
+                                let server = &server;
+                                scope.spawn(move || {
+                                    match server.close_book_within(id, Some(within)) {
+                                        Ok(notice) => notice,
+                                        Err(why) => {
+                                            Some(format!("{id} could not be closed cleanly: {why}"))
+                                        }
+                                    }
+                                })
+                            })
+                            .collect();
+                        handles
+                            .into_iter()
+                            .map(|h| h.join().unwrap_or(None))
+                            .collect()
+                    });
+                    said.extend(notices.into_iter().flatten());
+                }
+                Err(why) => said.push(format!(
+                    "Couldn't check that each company closed whole: {why}"
+                )),
+            }
+        }
+        let left = within
+            .saturating_sub(begun.elapsed())
+            .max(Duration::from_secs(5));
+        match server.stop(left) {
+            Stopped::Closed => {}
+            Stopped::Failed(how) => said.push(format!(
+                "The books server ended badly ({how}). Its log is {SERVER_LOG} in the books' run folder; `wanderbooks doctor` says whether the books are whole."
+            )),
+            Stopped::StillClosing => said.push(STILL_CLOSING.into()),
+        }
+        Ok(if said.is_empty() {
+            None
+        } else {
+            Some(said.join("\n"))
+        })
     }
 }
 
@@ -438,9 +783,9 @@ mod tests {
         assert_eq!(*shared.phase(), Phase::Ready);
         shared.set(Phase::Starting);
         assert_eq!(*shared.phase(), Phase::Ready, "ready doesn't go back");
-        shared.set(Phase::Exited("gone".into()));
+        shared.set(Phase::Exited("gone".into(), true));
         shared.set(Phase::Ready);
-        assert_eq!(*shared.phase(), Phase::Exited("gone".into()));
+        assert_eq!(*shared.phase(), Phase::Exited("gone".into(), true));
     }
 
     #[test]

@@ -33,12 +33,22 @@
 //!      isn't open" with it running and the company not, and neither once
 //!      both are so, in a session that was already running; it starts no
 //!      host.
+//!   8. What the window runs with its server is `AppHost` (the program's
+//!      `ViewerOwner` only forwards to it): a server that is alive and
+//!      late is waited for and stays managed; one that never became ready
+//!      is stopped when the window stops, and a window stopped before the
+//!      child was stored stops it; the window's stop says, in words, each
+//!      company whose closing backup was incomplete and a server that
+//!      exited badly; the format upgrade reaches the server; a company
+//!      that is not open is told.
 //! ```
 
 mod common;
 
 use common::{BOOK, Home, Server, clean_env};
-use ledger_host::app_server::{ANOTHER_HAS_THEM, APP_MARKER, AppServer, Stopped, app_hosted};
+use ledger_host::app_server::{
+    ANOTHER_HAS_THEM, APP_MARKER, AppHost, AppServer, Stopped, app_hosted,
+};
 use ledger_host::opener::{host_lock_held, server_lock_held};
 use ledger_mcp::admin::{Request, Response};
 use serde_json::{Value, json};
@@ -423,4 +433,284 @@ fn the_bridge_says_the_app_isnt_running_then_works_once_it_is() {
     // The window closes: said again, in the same session.
     assert_eq!(server.stop(Duration::from_secs(60)), Stopped::Closed);
     assert_eq!(error_of(&bridge.start_call()), not_running);
+}
+
+/// The window's host, starting the real server of this program on
+/// `home`'s root alone, looking at it every `slice` while it starts.
+fn host_of(home: &Home, slice: Duration) -> AppHost {
+    let dir = home.dir.path().to_path_buf();
+    let root = home.root();
+    AppHost::with_starter(slice, move |open| {
+        let dir = dir.clone();
+        AppServer::start_in(exe(), Some(&root), open, move |c: &mut Command| {
+            clean_env(c, &dir);
+            c.env("XDG_CONFIG_HOME", dir.join(".config"));
+        })
+    })
+}
+
+/// An executable shell script `body` in `dir`.
+#[cfg(unix)]
+fn script(dir: &Path, name: &str, body: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.join(name);
+    std::fs::write(&path, body).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+/// A host whose "server" is `program`, which is not a books server.
+#[cfg(unix)]
+fn host_of_program(
+    program: std::path::PathBuf,
+    home: &Home,
+    started: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+) -> AppHost {
+    let root = home.root();
+    AppHost::with_starter(Duration::from_millis(100), move |open| {
+        started.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        AppServer::start_in(&program, Some(&root), open, |_| {})
+    })
+}
+
+#[cfg(unix)]
+fn alive(pid: u32) -> bool {
+    // SAFETY: signal 0 only asks whether the process exists; the pid is a
+    // child this test started.
+    unsafe { libc::kill(pid as i32, 0) == 0 }
+}
+
+/// A server that is alive but never ready, and a window that stops: no
+/// server is left running that nothing manages (finding: a failed or
+/// late start).
+#[cfg(unix)]
+#[test]
+fn a_server_that_never_gets_ready_is_stopped_with_the_window_and_not_left_behind() {
+    let home = Home::new("host-never-ready");
+    let never = script(
+        home.dir.path(),
+        "never-ready",
+        "#!/bin/sh\ncat >/dev/null\nexit 0\n",
+    );
+    let started = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let host = std::sync::Arc::new(host_of_program(never, &home, started));
+    let starting = std::thread::spawn({
+        let host = host.clone();
+        move || host.start(&[])
+    });
+    until("the server was started", || host.running().is_ok());
+    let pid = host.running().unwrap().pid();
+    // Waited for, not given up on: well past several looks at it.
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(!starting.is_finished(), "a live server is waited for");
+    assert!(alive(pid));
+    // The window closes: the server's input closes, it exits, the start
+    // ends, and nothing runs.
+    assert_eq!(host.stop(Duration::from_secs(30)), Ok(None));
+    let came = starting.join().unwrap();
+    assert!(came.is_err(), "{came:?}");
+    until("the server's process is gone", || !alive(pid));
+}
+
+/// The window closes after the child was spawned and before the start
+/// stored it (finding: the window closed before the start thread stored
+/// the child): the start stops it itself.
+#[cfg(unix)]
+#[test]
+fn a_window_closed_before_the_child_was_stored_stops_the_child() {
+    let home = Home::new("host-closed-early");
+    let never = script(
+        home.dir.path(),
+        "never-ready",
+        "#!/bin/sh\ncat >/dev/null\nexit 0\n",
+    );
+    let pids = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let me: std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<AppHost>>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(None));
+    let root = home.root();
+    let host = std::sync::Arc::new(AppHost::with_starter(Duration::from_millis(100), {
+        let (pids, me) = (pids.clone(), me.clone());
+        move |open| {
+            let server = AppServer::start_in(&never, Some(&root), open, |_| {})?;
+            pids.lock().unwrap().push(server.pid());
+            // The window is closed right here: after the spawn, before
+            // the host has the child.
+            let host = me.lock().unwrap().clone().unwrap();
+            assert_eq!(host.stop(Duration::from_secs(5)), Ok(None));
+            Ok(server)
+        }
+    }));
+    *me.lock().unwrap() = Some(host.clone());
+    let came = host.start(&[]);
+    assert!(came.is_err(), "{came:?}");
+    let pid = pids.lock().unwrap()[0];
+    until("the child is gone", || !alive(pid));
+    // And no start after the window has closed spawns anything.
+    let before = pids.lock().unwrap().len();
+    assert!(host.start(&[]).is_err());
+    assert_eq!(pids.lock().unwrap().len(), before);
+}
+
+/// A server that is alive but late (still waiting on another's lock, or
+/// opening a big company) is waited for, and then managed like any.
+#[cfg(unix)]
+#[test]
+fn a_late_server_is_waited_for_and_stays_the_windows_to_manage() {
+    let home = Home::new("host-late");
+    let late = script(
+        home.dir.path(),
+        "late",
+        &format!("#!/bin/sh\nsleep 1\nexec \"{}\" \"$@\"\n", exe().display()),
+    );
+    let dir = home.dir.path().to_path_buf();
+    let root = home.root();
+    let host = AppHost::with_starter(Duration::from_millis(150), move |open| {
+        let dir = dir.clone();
+        AppServer::start_in(&late, Some(&root), open, move |c: &mut Command| {
+            clean_env(c, &dir);
+            c.env("XDG_CONFIG_HOME", dir.join(".config"));
+        })
+    });
+    let begun = Instant::now();
+    host.start(&[]).expect("started, late");
+    assert!(
+        begun.elapsed() >= Duration::from_millis(900),
+        "{:?}",
+        begun.elapsed()
+    );
+    // Managed: a tab's company opens and closes in it.
+    home.create(BOOK, "USD");
+    assert_eq!(host.close_book(BOOK), Ok(None));
+    assert_eq!(host.open_book(BOOK), Ok(None));
+    assert_eq!(host.stop(Duration::from_secs(60)), Ok(None));
+}
+
+#[test]
+fn a_whole_close_says_nothing_and_a_second_stop_is_quiet() {
+    let home = Home::new("host-whole");
+    let host = host_of(&home, Duration::from_secs(60));
+    host.start(&[]).unwrap();
+    home.create(BOOK, "USD");
+    assert_eq!(host.stop(Duration::from_secs(60)), Ok(None));
+    assert_eq!(host.stop(Duration::from_secs(60)), Ok(None));
+    assert!(!server_lock_held(&home.run()));
+}
+
+/// A server that exits badly is said, in words (finding: the window's
+/// close hides a failed exit).
+#[cfg(unix)]
+#[test]
+fn a_server_that_exits_badly_is_said_when_the_window_closes() {
+    let home = Home::new("host-bad-exit");
+    let bad = script(
+        home.dir.path(),
+        "bad-exit",
+        &format!(
+            "#!/bin/sh\necho {}\ncat >/dev/null\nexit 3\n",
+            ledger_mcp::local::READY
+        ),
+    );
+    let started = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let host = host_of_program(bad, &home, started);
+    host.start(&[]).unwrap();
+    let said = host.stop(Duration::from_secs(30)).unwrap().expect("a word");
+    assert!(
+        said.contains("ended badly") && said.contains("exit status: 3"),
+        "{said}"
+    );
+}
+
+/// A company whose last backup is not whole at the window's close is
+/// named, in words, with the reason (finding: the window's close hides an
+/// incomplete last backup).
+#[test]
+fn a_closing_backup_that_was_not_whole_is_said_when_the_window_closes() {
+    let home = Home::new("host-backup");
+    let host = host_of(&home, Duration::from_secs(60));
+    host.start(&[]).unwrap();
+    home.create(BOOK, "USD");
+    // A backup folder that becomes a file: the backup cannot be made.
+    let disk = home.dir.path().join("disk");
+    std::fs::create_dir_all(&disk).unwrap();
+    let mut w = common::Wire::new(&home, BOOK);
+    w.initialize("owner");
+    let set = w.call(
+        "books.set_setting",
+        json!({"changes": [{"key": "backup.folder", "value": disk.display().to_string()}],
+               "decided_by": "Test Owner", "note": "Backups."}),
+    );
+    assert_eq!(set["result"]["isError"], json!(false), "{set}");
+    let drafted = w.call(
+        "books.draft_entry",
+        json!({"date": "2026-03-01", "description": "moves the head"}),
+    );
+    assert_eq!(drafted["result"]["isError"], json!(false), "{drafted}");
+    w.end();
+    std::fs::remove_dir_all(&disk).unwrap();
+    std::fs::write(&disk, b"not a folder").unwrap();
+    let said = host
+        .stop(Duration::from_secs(60))
+        .unwrap()
+        .expect("the incomplete backup is said");
+    assert!(
+        said.contains(BOOK) && said.contains("last backup wasn't whole"),
+        "{said}"
+    );
+    assert!(
+        !said.contains(&home.dir.path().display().to_string()),
+        "names the home: {said}"
+    );
+}
+
+#[test]
+fn a_company_the_server_does_not_have_open_is_told() {
+    let home = Home::new("host-not-open");
+    let host = host_of(&home, Duration::from_secs(60));
+    host.start(&[]).unwrap();
+    home.create(BOOK, "USD");
+    assert_eq!(host.not_open(&[BOOK.to_string()]), vec![]);
+    // Closed in the server: it is not open for assistants.
+    assert_eq!(host.close_book(BOOK), Ok(None));
+    let told = host.not_open(&[BOOK.to_string(), "nope".to_string()]);
+    assert_eq!(told.len(), 2, "{told:?}");
+    assert_eq!(told[0].0, BOOK);
+    assert!(
+        told[0].1.contains("couldn't be opened for your assistants"),
+        "{told:?}"
+    );
+    assert_eq!(told[1].0, "nope");
+    assert!(told[1].1.contains("doesn't have it"), "{told:?}");
+    // Nothing is said about a server that isn't there.
+    assert_eq!(host.stop(Duration::from_secs(60)), Ok(None));
+    assert_eq!(host.not_open(&[BOOK.to_string()]), vec![]);
+}
+
+/// The format upgrade, asked under the app: it goes to the window's own
+/// server and is answered by it, not by a host lease that does not exist
+/// (finding: "Upgrade format" is broken under the app).
+#[test]
+fn the_format_upgrade_goes_to_the_windows_own_server() {
+    let home = Home::new("host-upgrade");
+    let host = host_of(&home, Duration::from_secs(60));
+    // No server yet: said before anything is done, in words.
+    let early = host.upgrade_format(BOOK, "a passphrase").unwrap_err();
+    assert!(
+        early.contains("isn't running") && early.contains("nothing was done"),
+        "{early}"
+    );
+    host.start(&[]).unwrap();
+    home.create(BOOK, "USD");
+    // The server answers (a refusal of this passphrase, or books already
+    // in this format): never the lease-socket's "host gave no answer".
+    match host.upgrade_format(BOOK, "not the owner passphrase") {
+        Ok(lines) => assert!(!lines.is_empty()),
+        Err(why) => {
+            assert!(why.starts_with("not upgraded: "), "{why}");
+            assert!(!why.contains("host gave no answer"), "{why}");
+        }
+    }
+    // A company that isn't there is refused by the server, in its words.
+    let refused = host.upgrade_format("nope", "x").unwrap_err();
+    assert!(refused.starts_with("not upgraded: "), "{refused}");
+    assert_eq!(host.stop(Duration::from_secs(60)), Ok(None));
 }

@@ -5902,11 +5902,7 @@ impl Ledger {
         }
         arap::validate_lines(&lines)?;
         arap::validate_due_date(date, due_date)?;
-        arap::check_document_text(
-            fields.customer_ref.as_deref(),
-            fields.memo.as_deref(),
-            None,
-        )?;
+        arap::check_document_text(fields.customer_ref.as_deref(), fields.memo.as_deref(), None)?;
         arap::check_snapshots(fields.bill_to.as_ref(), fields.seller.as_ref())?;
         if let Some(number) = &fields.number
             && self

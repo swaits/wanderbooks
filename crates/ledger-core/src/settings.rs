@@ -779,9 +779,7 @@ pub fn count_printed_tins(text: &str) -> usize {
 /// script's numeral (outside a replay, which reads ASCII and full-width
 /// only).
 fn digit_like(ch: char, extended: bool) -> bool {
-    ch.is_ascii_digit()
-        || matches!(ch, '\u{ff10}'..='\u{ff19}')
-        || (extended && ch.is_numeric())
+    ch.is_ascii_digit() || matches!(ch, '\u{ff10}'..='\u{ff19}') || (extended && ch.is_numeric())
 }
 
 /// A space between a TIN's groups: the plain one, and outside a replay
@@ -791,12 +789,8 @@ fn tin_space(ch: char, extended: bool) -> bool {
         || (extended
             && matches!(
                 ch,
-                '\t' | '\u{a0}'
-                    | '\u{1680}'
-                    | '\u{2000}'..='\u{200a}'
-                    | '\u{202f}'
-                    | '\u{205f}'
-                    | '\u{3000}'
+                '\t' | '\u{a0}' | '\u{1680}' | '\u{2000}'
+                    ..='\u{200a}' | '\u{202f}' | '\u{205f}' | '\u{3000}'
             ))
 }
 

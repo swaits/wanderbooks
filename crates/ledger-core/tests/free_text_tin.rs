@@ -175,10 +175,16 @@ fn the_shapes_are_found() {
     ] {
         assert!(holds_printed_tin(caught), "{caught:?} must be found");
         let why = check_free_text("the memo", caught).unwrap_err();
-        assert!(why.starts_with("the memo looks like it holds a tax id"), "{why}");
+        assert!(
+            why.starts_with("the memo looks like it holds a tax id"),
+            "{why}"
+        );
         assert!(why.contains("books.set_tin"), "{why}");
         assert!(why.contains("W-9"), "{why}");
-        assert!(!why.contains("0000"), "a refusal never repeats the number: {why}");
+        assert!(
+            !why.contains("0000"),
+            "a refusal never repeats the number: {why}"
+        );
     }
 }
 
@@ -203,4 +209,372 @@ fn the_refusal_names_the_field_and_never_a_number() {
     let why = tin_refusal("books.add_class name");
     assert!(why.starts_with("books.add_class name looks like it holds a tax id"));
     assert!(why.contains("books.set_tin") && why.contains("books.set_w9"));
+}
+
+// ---------------------------------------------------------------------
+// The engine: a caller other than the MCP layer meets the same check.
+// ---------------------------------------------------------------------
+
+mod engine {
+    use chrono::NaiveDate;
+    use ledger_core::arap::{BillFields, DocumentLine, InvoiceFields, PartySnapshot};
+    use ledger_core::schedules::{
+        Frequency, NewRecurring, NewSchedule, ScheduleConvention, ScheduleKind,
+    };
+    use ledger_core::{
+        AccountId, AccountType, Currency, Ledger, LedgerError, Money, NewAsset, Side,
+    };
+    use rust_decimal::Decimal;
+    use std::str::FromStr;
+
+    const TIN: &str = "000-00-0000";
+
+    fn day(d: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(2026, 3, d).unwrap()
+    }
+
+    fn usd(s: &str) -> Money {
+        Money::new(Decimal::from_str(s).unwrap(), Currency::USD)
+    }
+
+    struct Fx {
+        l: Ledger,
+        cash: AccountId,
+        revenue: AccountId,
+        expense: AccountId,
+        asset: AccountId,
+        accum: AccountId,
+        liability: AccountId,
+    }
+
+    fn fx() -> Fx {
+        let mut l = Ledger::new(Currency::USD);
+        let mut add = |code: &str, name: &str, t: AccountType| {
+            l.add_account(code, name, t, None, false).unwrap()
+        };
+        let cash = add("1000", "Cash", AccountType::Asset);
+        let asset = add("1500", "Equipment", AccountType::Asset);
+        let accum = add("1590", "Accumulated depreciation", AccountType::Asset);
+        let liability = add("2500", "Deferred", AccountType::Liability);
+        let revenue = add("4000", "Sales", AccountType::Revenue);
+        let expense = add("6000", "Supplies", AccountType::Expense);
+        Fx {
+            l,
+            cash,
+            revenue,
+            expense,
+            asset,
+            accum,
+            liability,
+        }
+    }
+
+    fn line(desc: &str) -> DocumentLine {
+        DocumentLine {
+            description: desc.into(),
+            amount: Decimal::from(10),
+            class_id: None,
+            account: None,
+            quantity: None,
+            unit_price: None,
+        }
+    }
+
+    fn holds_tin(r: Result<impl std::fmt::Debug, LedgerError>, field: &str) {
+        match r {
+            Err(LedgerError::FreeTextHoldsTin(why)) => {
+                assert!(
+                    why.starts_with(&format!("{field} looks like it holds a tax id")),
+                    "{why}"
+                );
+                assert!(
+                    why.contains("books.set_tin") && why.contains("W-9"),
+                    "{why}"
+                );
+                assert!(!why.contains("0000"), "never the number: {why}");
+            }
+            other => panic!("{field}: expected FreeTextHoldsTin, got {other:?}"),
+        }
+    }
+
+    /// An entry's description, a reversal's, a write-off's and a void's
+    /// reason, a period's name, an account's code.
+    #[test]
+    fn entries_periods_and_codes() {
+        let mut f = fx();
+        holds_tin(
+            f.l.try_create_entry(day(1), &format!("paid {TIN}")),
+            "the entry description",
+        );
+        // Nothing was made: the next entry is still the first.
+        let e =
+            f.l.try_create_entry(day(1), "inv 2026-11-0042, ref 1234567890")
+                .unwrap();
+        f.l.add_line(e, f.cash, Side::Debit, usd("5.00")).unwrap();
+        f.l.add_line(e, f.revenue, Side::Credit, usd("5.00"))
+            .unwrap();
+        f.l.post_entry(e).unwrap();
+        let before = f.l.clone();
+        holds_tin(
+            f.l.reverse_entry(e, day(2), &format!("oops {TIN}")),
+            "the reversal's description",
+        );
+        assert_eq!(f.l, before, "a refusal changes nothing");
+        holds_tin(
+            f.l.create_period(&format!("P {TIN}"), day(1), day(31)),
+            "the period name",
+        );
+        holds_tin(
+            f.l.add_account(
+                &TIN.replace('-', ""),
+                "Odd",
+                AccountType::Asset,
+                None,
+                false,
+            ),
+            "the account code",
+        );
+        f.l.create_period("2026-03", day(1), day(31)).unwrap();
+    }
+
+    /// A document's memo, references, duplicate reason, lines and the
+    /// customer's printed details.
+    #[test]
+    fn documents() {
+        let mut f = fx();
+        let c = f.l.add_customer("Acme").unwrap();
+        let v = f.l.add_vendor("Beta").unwrap();
+        let inv = |l: &mut Ledger, lines: Vec<DocumentLine>, fields: InvoiceFields| {
+            l.create_invoice_with(c, day(1), day(31), lines, fields)
+        };
+        holds_tin(
+            inv(
+                &mut f.l,
+                vec![line(&format!("work {TIN}"))],
+                InvoiceFields::default(),
+            ),
+            "a line's description",
+        );
+        holds_tin(
+            inv(
+                &mut f.l,
+                vec![line("ok")],
+                InvoiceFields {
+                    memo: Some(format!("see {TIN}")),
+                    ..Default::default()
+                },
+            ),
+            "the memo",
+        );
+        holds_tin(
+            inv(
+                &mut f.l,
+                vec![line("ok")],
+                InvoiceFields {
+                    customer_ref: Some("PO 00-0000000".into()),
+                    ..Default::default()
+                },
+            ),
+            "the reference",
+        );
+        let snap = |name: &str| PartySnapshot {
+            name: name.into(),
+            address: None,
+            email: None,
+            phone: None,
+            contact: None,
+            billing_address: None,
+            shipping_address: None,
+            billing_email: None,
+        };
+        // The customer's printed details are a party's: any nine digits.
+        let strict = inv(
+            &mut f.l,
+            vec![line("ok")],
+            InvoiceFields {
+                bill_to: Some(snap("Acme 1234 56789")),
+                ..Default::default()
+            },
+        );
+        assert!(
+            matches!(strict, Err(LedgerError::InvalidParty(_))),
+            "{strict:?}"
+        );
+        // The company's own details are free text: its shapes only.
+        holds_tin(
+            inv(
+                &mut f.l,
+                vec![line("ok")],
+                InvoiceFields {
+                    seller: Some(snap(&format!("Us {TIN}"))),
+                    ..Default::default()
+                },
+            ),
+            "the seller name",
+        );
+        // Neither a 10-digit PO nor a ZIP+4 in the company's address is a tax id.
+        let mut us = snap("Us");
+        us.address = Some("1 Main St, Midvale UT 84047-1234".into());
+        inv(
+            &mut f.l,
+            vec![line("ok")],
+            InvoiceFields {
+                customer_ref: Some("1234567890".into()),
+                memo: Some("2026-11-0042".into()),
+                seller: Some(us),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let bill = |l: &mut Ledger, fields: BillFields| {
+            l.create_bill_with(v, day(1), day(31), vec![line("ok")], fields)
+        };
+        holds_tin(
+            bill(
+                &mut f.l,
+                BillFields {
+                    vendor_ref: Some("000000000".into()),
+                    ..Default::default()
+                },
+            ),
+            "the reference",
+        );
+        holds_tin(
+            bill(
+                &mut f.l,
+                BillFields {
+                    memo: Some(TIN.into()),
+                    ..Default::default()
+                },
+            ),
+            "the memo",
+        );
+        holds_tin(
+            bill(
+                &mut f.l,
+                BillFields {
+                    duplicate_reason: Some(format!("again {TIN}")),
+                    ..Default::default()
+                },
+            ),
+            "the duplicate reason",
+        );
+        bill(
+            &mut f.l,
+            BillFields {
+                vendor_ref: Some("INV-2026-11-0042".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    }
+
+    /// Assets, schedules, recurring entries and payroll names.
+    #[test]
+    fn assets_schedules_and_payroll() {
+        let mut f = fx();
+        let new = |d: &str| NewAsset {
+            description: d.into(),
+            in_service_date: day(1),
+            cost: usd("1200.00"),
+            salvage_value: usd("0"),
+            useful_life_months: 12,
+            cost_account: f.asset,
+            accum_depr_account: f.accum,
+            expense_account: f.expense,
+        };
+        holds_tin(
+            f.l.register_asset(new(&format!("van {TIN}"))),
+            "the asset description",
+        );
+        let a = f.l.register_asset(new("van 1234567890")).unwrap();
+        holds_tin(
+            f.l.set_asset_serial(a, Some("SN 00-0000000")),
+            "the serial number",
+        );
+        holds_tin(
+            f.l.set_asset_description(a, "000000000"),
+            "the asset description",
+        );
+        holds_tin(f.l.set_asset_tag(a, "T-000-00-0000"), "the asset tag");
+        f.l.set_asset_serial(a, Some("C02XK1ABCDEF")).unwrap();
+        let sched = |d: &str| NewSchedule {
+            description: d.into(),
+            kind: ScheduleKind::PrepaidExpense,
+            total: usd("1200.00"),
+            start: day(1),
+            months: 12,
+            balance_account: f.asset,
+            pl_account: f.expense,
+            convention: ScheduleConvention::Daily,
+        };
+        holds_tin(
+            f.l.register_schedule(sched(&format!("rent {TIN}"))),
+            "the schedule's description",
+        );
+        let _ = f.liability;
+        let rec = |d: &str| NewRecurring {
+            description: d.into(),
+            lines: vec![
+                (f.expense, Side::Debit, usd("5.00")),
+                (f.cash, Side::Credit, usd("5.00")),
+            ],
+            frequency: Frequency::Monthly,
+            start: day(1),
+            end: None,
+        };
+        holds_tin(
+            f.l.register_recurring(rec(&format!("fee {TIN}"))),
+            "the recurring entry's description",
+        );
+        f.l.register_recurring(rec("fee 2026-11-0042")).unwrap();
+    }
+
+    /// A draft's note, a discard's reason and a no-party reason: free
+    /// text now, no longer the strict nine-digit reading.
+    #[test]
+    fn notes_and_reasons_use_the_shapes() {
+        let mut f = fx();
+        let e = f.l.try_create_entry(day(1), "x").unwrap();
+        let wait = |n: &str| ledger_core::DraftState::AwaitingEvidence { note: n.into() };
+        assert!(
+            f.l.set_draft_state(e, wait(&format!("waiting {TIN}")))
+                .is_err()
+        );
+        f.l.set_draft_state(e, wait("waiting on ref 1234567890, inv 2026-11-0042"))
+            .unwrap();
+        assert!(Ledger::check_no_party_reason(&format!("own account {TIN}")).is_err());
+        Ledger::check_no_party_reason("own account 1234567890").unwrap();
+        assert!(f.l.discard_draft(e, &format!("dup {TIN}")).is_err());
+        f.l.discard_draft(e, "entered twice, ref 1234567890")
+            .unwrap();
+    }
+
+    /// BS-entry-4: a journal line an earlier version took replays, whatever
+    /// it holds; the books open on it. (A replay is the only way such a
+    /// line is ever applied: every command refuses it.)
+    #[test]
+    fn a_journaled_line_replays_whatever_it_holds() {
+        let mut f = fx();
+        let e = f.l.create_entry(day(1), &format!("paid {TIN}"));
+        f.l.add_line(e, f.cash, Side::Debit, usd("5.00")).unwrap();
+        f.l.add_line(e, f.revenue, Side::Credit, usd("5.00"))
+            .unwrap();
+        f.l.post_entry(e).unwrap();
+        let r =
+            f.l.replay_reverse_entry(e, day(2), &format!("undo {TIN}"))
+                .unwrap();
+        assert_eq!(f.l.get_entry(r).unwrap().description(), format!("undo {TIN}"));
+        let ann = ledger_core::Annotation {
+            attachment_id: 1,
+            fields: ledger_core::AnnotationFields {
+                payee: Some(format!("Pat {TIN}")),
+                ..Default::default()
+            },
+            note: Some(format!("see {TIN}")),
+        };
+        f.l.replay_annotate_attachment(ann.clone()).unwrap();
+        // The same annotation as a command is refused.
+        holds_tin(f.l.annotate_attachment(ann), "the payee");
+    }
 }

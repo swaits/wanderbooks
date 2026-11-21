@@ -1,0 +1,55 @@
+# Add a PUBLISHED release's .deb and .rpm to the apt and dnf repositories on
+# the gh-pages branch (plan P11a step 3, D-26; GitHub Pages serves them). By
+# hand only, after the release was tried and published: the release workflow
+# never touches these repositories (plan P15 unit C1). Unsigned until the
+# owner's release key signs the indexes (Q-4).
+name: publish-repos
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "The published release's tag, e.g. v0.1.0"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  repos:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Repository tools
+        run: sudo apt-get update && sudo apt-get install -y apt-utils createrepo-c
+      - name: The release's .deb and .rpm (it must be published, not a draft)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          draft=$(gh release view "$TAG" --json isDraft --jq .isDraft)
+          [ "$draft" = false ] || { echo "$TAG is a draft: publish the release first" >&2; exit 1; }
+          mkdir assets
+          gh release download "$TAG" --dir assets --pattern '*.deb' --pattern '*.rpm'
+          ls -l assets
+      - name: Add them to the apt and dnf repositories (gh-pages)
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          git fetch origin gh-pages || true
+          if git rev-parse --verify origin/gh-pages >/dev/null 2>&1; then
+            git worktree add repo origin/gh-pages
+          else
+            git worktree add --detach repo && git -C repo checkout --orphan gh-pages && git -C repo rm -rfq . || true
+          fi
+          mkdir -p repo/apt/pool repo/dnf
+          cp assets/*.deb repo/apt/pool/
+          cp assets/*.rpm repo/dnf/
+          deploy/packaging/repo-indexes.sh apt repo/apt
+          deploy/packaging/repo-indexes.sh dnf repo/dnf
+          cd repo || exit 1
+          git config user.name "wanderbooks release"
+          git config user.email "release@wanderbooks.ai"
+          git add -A
+          git commit -m "wanderbooks $TAG"
+          git push origin HEAD:gh-pages

@@ -568,3 +568,121 @@ fn no_package_runs_a_script_that_could_touch_the_books() {
         assert!(!rpm.contains(key), "{key} in Cargo.toml");
     }
 }
+
+// ---- the release workflow -------------------------------------------------------
+
+/// WB-pkg-7: the release builds all three packages, ends in a DRAFT with the
+/// SHA-256 sums, runs only on a version tag or by hand, and publishes
+/// nothing by itself.
+#[test]
+fn the_release_workflow_makes_a_draft_of_all_three_packages_and_publishes_nothing() {
+    let text = read(".github/workflows/release.yml");
+    let lines = code(&text);
+    let has = |needle: &str| lines.iter().any(|l| l.contains(needle));
+
+    // Triggers: a tag or by hand; never an ordinary push or a pull request.
+    let on = lines
+        .iter()
+        .position(|l| *l == "on:")
+        .expect("an `on:` block");
+    let jobs = lines.iter().position(|l| *l == "jobs:").expect("jobs");
+    let triggers: Vec<&&str> = lines[on + 1..jobs].iter().collect();
+    assert!(
+        triggers.iter().any(|l| l.starts_with("tags:")),
+        "{triggers:?}"
+    );
+    assert!(triggers.iter().any(|l| l.starts_with("workflow_dispatch:")));
+    assert!(
+        !triggers
+            .iter()
+            .any(|l| l.starts_with("pull_request") || l.starts_with("schedule"))
+    );
+    let push = triggers
+        .iter()
+        .position(|l| l.starts_with("push:"))
+        .unwrap();
+    assert!(
+        triggers[push + 1].starts_with("tags:"),
+        "a push trigger without tags"
+    );
+
+    // All three systems, each tested on its own system before packaging.
+    for runner in ["ubuntu-24.04", "windows-latest", "macos-latest"] {
+        assert!(has(&format!("runs-on: {runner}")), "{runner}");
+    }
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|l| l.contains("cargo test --workspace --no-fail-fast"))
+            .count(),
+        3,
+        "each system runs the workspace's tests"
+    );
+    // The three packages, the sums, the licences and the update note.
+    for needle in [
+        "just package-linux",
+        "build-windows.sh",
+        "build-macos.sh",
+        "sha256sum",
+        "SHA256SUMS.txt",
+        "THIRD-PARTY-NOTICES.txt",
+        "LICENSE-MIT",
+        "LICENSE-APACHE",
+        "latest.json",
+        "scripts/notices.sh --check",
+    ] {
+        assert!(has(needle), "{needle} is not in the release workflow");
+    }
+    // A draft, never published, never a published release touched.
+    assert!(has("gh release create"));
+    assert!(has("--draft"));
+    for never in [
+        "--draft=false",
+        "gh release edit",
+        "gh-pages",
+        "prerelease=false",
+        "make_latest",
+    ] {
+        assert!(!has(never), "{never} would publish");
+    }
+    assert!(has("never changes a published release"));
+    // Secrets are read by name from the secrets store, never written here.
+    for secret in [
+        "WINDOWS_CERTIFICATE_PFX_BASE64",
+        "APPLE_CERTIFICATE_P12_BASE64",
+        "APPLE_SIGNING_IDENTITY",
+        "APPLE_APP_SPECIFIC_PASSWORD",
+    ] {
+        assert!(has(&format!("${{{{ secrets.{secret} }}}}")), "{secret}");
+    }
+    // Signing steps say so when they are skipped.
+    assert!(has("macOS signing skipped"));
+    assert!(read("deploy/packaging/windows/sign-windows.ps1").contains("Windows signing skipped"));
+    assert!(read("deploy/packaging/macos/build-macos.sh").contains("macOS notarization skipped"));
+    // The Windows job installs and uninstalls the installer, and checks the
+    // books' folder survives.
+    assert!(has("THE UNINSTALLER REMOVED THE BOOKS' FOLDER"));
+    assert!(has("subsystem -ne 2"));
+}
+
+#[test]
+fn only_a_person_runs_the_workflow_that_publishes_the_repositories() {
+    let text = read(".github/workflows/publish-repos.yml");
+    let lines = code(&text);
+    let on = lines.iter().position(|l| *l == "on:").unwrap();
+    let jobs = lines.iter().position(|l| *l == "jobs:").unwrap();
+    assert_eq!(
+        lines[on + 1..jobs]
+            .iter()
+            .filter(|l| l.ends_with(':') && !l.starts_with("tag"))
+            .count(),
+        2 + 1,
+        "workflow_dispatch and its inputs, nothing else: {:?}",
+        &lines[on + 1..jobs]
+    );
+    assert!(lines.iter().any(|l| l.starts_with("workflow_dispatch:")));
+    assert!(
+        lines.iter().any(|l| l.contains("isDraft")),
+        "it refuses a draft"
+    );
+}

@@ -1,29 +1,67 @@
-# Releases (plan P11a, D-24, D-26): on a version tag, build the Linux
-# packages on the oldest system they claim (ubuntu-24.04, glibc 2.39; a
-# program linked on a newer one does not start on an older one), attach
-# them to the GitHub release, and add them to the apt and dnf repositories
-# on the gh-pages branch (GitHub Pages serves them). Unsigned: step 5 of
-# the unit (the release key, Q-4) signs the manifest and the indexes. The
-# macOS job builds the .dmg UNSIGNED (no Developer ID, no notarization:
-# step 5); the Windows job is unit P11c. The release holds no key today.
-# To see the artifacts without a tag: Actions > release > Run workflow,
-# pick the branch; each job uploads its files as a run artifact.
+# The release (plan P15 unit C1; WB-pkg-7): packages for Linux, Windows and
+# macOS, built from one version, tested on their own system, and attached with
+# their SHA-256 sums to a DRAFT GitHub release. Nothing here publishes: the
+# release stays a draft until the owner has tried the packages and presses
+# Publish, and nothing here touches the apt or dnf repositories (that is
+# publish-repos.yml, by hand, from a published release).
+#
+# Runs on a version tag (v0.1.0: the tag must equal the program's version) or
+# by hand (Actions > release > Run workflow, on a branch: a draft for
+# v<version> is made, nothing is tagged). It never runs on an ordinary push:
+# the tests below take hours (the same ones the portable workflows run).
+#
+# Unsigned by default. With the owner's secrets it signs; without them each
+# signing step says so in the run's notices and the package is unsigned:
+#   Windows: WINDOWS_CERTIFICATE_PFX_BASE64, WINDOWS_CERTIFICATE_PASSWORD
+#   macOS:   APPLE_CERTIFICATE_P12_BASE64, APPLE_CERTIFICATE_PASSWORD,
+#            APPLE_SIGNING_IDENTITY, and to notarize APPLE_ID, APPLE_TEAM_ID,
+#            APPLE_APP_SPECIFIC_PASSWORD
+# (docs/install.md, "Signing", says how each is made.)
 name: release
 
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      run_tests:
+        description: "Run each system's whole test suite before packaging (hours). Turn off only when this commit's tests already passed."
+        type: boolean
+        default: true
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # Same disk discipline as check.yml: no incremental caches.
+  CARGO_INCREMENTAL: "0"
 
 jobs:
-  linux:
+  version:
+    name: The version (one source)
     runs-on: ubuntu-24.04
-    # Same disk discipline as check.yml: no incremental caches.
-    env:
-      CARGO_INCREMENTAL: "0"
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read the version from crates/ledger-cli/Cargo.toml and check the tag against it
+        id: version
+        run: |
+          own=$(sh deploy/packaging/version.sh)
+          if [ "${GITHUB_REF_TYPE}" = tag ] && [ "${GITHUB_REF_NAME#v}" != "$own" ]; then
+            echo "the tag $GITHUB_REF_NAME is not the program's version $own (crates/ledger-cli/Cargo.toml)" >&2
+            exit 1
+          fi
+          echo "version=$own" >> "$GITHUB_OUTPUT"
+
+  linux:
+    name: Linux (AppImage, .deb, .rpm, pacman)
+    needs: version
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - name: Room for the build (the image ships toolchains we never use)
@@ -34,90 +72,257 @@ jobs:
       - uses: jdx/mise-action@v2
         with:
           # Only what packaging needs, not the proof and fuzz tools.
-          install_args: "rust just cargo:cargo-packager cargo:cargo-generate-rpm"
+          install_args: "rust just cargo:cargo-packager cargo:cargo-generate-rpm cargo:cargo-about"
       - name: GUI build dependencies
-        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libgtk-3-dev apt-utils createrepo-c
-      - name: The tag is the program's version
-        id: version
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libgtk-3-dev
+      - name: THIRD-PARTY-NOTICES.txt is up to date with what the program links
+        run: scripts/notices.sh --check
+      - name: Tests (the workspace's whole suite on Linux)
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.run_tests }}
+        run: cargo test --workspace --no-fail-fast
+      - name: Build the release program and the four packages (on the oldest system they claim, glibc 2.39)
+        run: just package-linux ${{ needs.version.outputs.version }}
+      - name: Check each package holds the program, the entry, the icon and the licences
         run: |
-          own=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/ledger-cli/Cargo.toml | head -n1)
-          tag="${GITHUB_REF_NAME#v}"
-          if [ "${GITHUB_REF_TYPE}" = tag ] && [ "$tag" != "$own" ]; then
-            echo "tag $GITHUB_REF_NAME is not version $own" >&2
-            exit 1
-          fi
-          echo "version=$own" >> "$GITHUB_OUTPUT"
-      - name: Build the packages
-        run: just package-linux ${{ steps.version.outputs.version }}
-      - name: Attach them to the release
-        if: github.ref_type == 'tag'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          v=${{ steps.version.outputs.version }}
-          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes "wanderbooks $v"
-          gh release upload "$GITHUB_REF_NAME" --clobber target/packages/$v/*.AppImage target/packages/$v/*.deb target/packages/$v/*.rpm target/packages/$v/*.tar.gz
-      - name: Add them to the apt and dnf repositories (gh-pages)
-        if: github.ref_type == 'tag'
-        run: |
-          v=${{ steps.version.outputs.version }}
-          git fetch origin gh-pages || true
-          if git rev-parse --verify origin/gh-pages >/dev/null 2>&1; then
-            git worktree add repo origin/gh-pages
+          v=${{ needs.version.outputs.version }}
+          cd target/packages/$v || exit 1
+          ls -l
+          for need in *.AppImage *.deb *.rpm *.tar.gz; do
+            test -s "$need" || { echo "no $need was built" >&2; exit 1; }
+          done
+          mkdir deb && (cd deb && ar x ../*.deb && tar -xf data.tar.* && ls -R . | head -50)
+          for f in usr/bin/wanderbooks usr/share/applications/wanderbooks.desktop \
+                   usr/share/icons/hicolor/512x512/apps/wanderbooks.png \
+                   usr/share/doc/wanderbooks/LICENSE-MIT usr/share/doc/wanderbooks/LICENSE-APACHE \
+                   usr/share/doc/wanderbooks/THIRD-PARTY-NOTICES.txt; do
+            test -e "deb/$f" || { echo "the .deb lacks $f" >&2; exit 1; }
+          done
+          rpm -qlp *.rpm > rpm.list 2>/dev/null || true
+          if [ -s rpm.list ]; then
+            for f in /usr/bin/wanderbooks /usr/share/applications/wanderbooks.desktop \
+                     /usr/share/doc/wanderbooks/LICENSE-MIT /usr/share/doc/wanderbooks/LICENSE-APACHE \
+                     /usr/share/doc/wanderbooks/THIRD-PARTY-NOTICES.txt; do
+              grep -qx "$f" rpm.list || { echo "the .rpm lacks $f" >&2; exit 1; }
+            done
           else
-            git worktree add --detach repo && git -C repo checkout --orphan gh-pages && git -C repo rm -rfq . || true
+            echo "::notice title=rpm not listed::rpm is not on this runner; the .rpm's files were not listed"
           fi
-          mkdir -p repo/apt/pool repo/dnf
-          cp target/packages/$v/*.deb repo/apt/pool/
-          cp target/packages/$v/*.rpm repo/dnf/
-          deploy/packaging/repo-indexes.sh apt repo/apt
-          deploy/packaging/repo-indexes.sh dnf repo/dnf
-          cd repo
-          git config user.name "wanderbooks release"
-          git config user.email "release@wanderbooks.ai"
-          git add -A
-          git commit -m "wanderbooks $v"
-          git push origin HEAD:gh-pages
-      - name: Keep them with the run (a dispatch has no release)
+          rm -rf deb rpm.list
+      - name: Keep the packages with the run
         uses: actions/upload-artifact@v4
         with:
           name: linux-packages
-          path: target/packages/${{ steps.version.outputs.version }}/
+          path: |
+            target/packages/${{ needs.version.outputs.version }}/*.AppImage
+            target/packages/${{ needs.version.outputs.version }}/*.deb
+            target/packages/${{ needs.version.outputs.version }}/*.rpm
+            target/packages/${{ needs.version.outputs.version }}/*.tar.gz
+            target/packages/${{ needs.version.outputs.version }}/PKGBUILD
+          if-no-files-found: error
 
-  macos:
-    # UNSIGNED: a .dmg that Gatekeeper refuses until step 5 signs and
-    # notarizes it. Apple silicon (macos-latest); an Intel build is not
-    # made yet.
-    runs-on: macos-latest
+  windows:
+    name: Windows (per-user installer)
+    needs: version
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
     env:
-      CARGO_INCREMENTAL: "0"
+      WINDOWS_CERTIFICATE_PFX_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_PFX_BASE64 }}
+      WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@v4
-      - uses: jdx/mise-action@v2
-        with:
-          install_args: "rust just cargo:cargo-packager"
-      - name: The tag is the program's version
-        id: version
+      - name: Rust (the version mise.toml pins)
+        run: rustup toolchain install 1.99 --profile minimal && rustup default 1.99
+      - name: Tests (the same ones the portable-windows workflow runs)
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.run_tests }}
         run: |
-          own=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/ledger-cli/Cargo.toml | head -n1)
-          tag="${GITHUB_REF_NAME#v}"
-          if [ "${GITHUB_REF_TYPE}" = tag ] && [ "$tag" != "$own" ]; then
-            echo "tag $GITHUB_REF_NAME is not version $own" >&2
-            exit 1
+          cargo build --workspace --all-targets
+          cargo test --workspace --no-fail-fast
+      - name: Build the release program
+        run: cargo build --release -p ledger-cli
+      - name: Check the program is a Windows GUI program (no console window) and still prints in a terminal
+        shell: pwsh
+        run: |
+          $exe = "target\release\wanderbooks.exe"
+          $bytes = [IO.File]::ReadAllBytes($exe)
+          $pe = [BitConverter]::ToInt32($bytes, 0x3C)
+          $subsystem = [BitConverter]::ToUInt16($bytes, $pe + 24 + 68)
+          if ($subsystem -ne 2) { throw "wanderbooks.exe has Windows subsystem $subsystem, not 2 (GUI): the app would open a console window" }
+          Write-Host "subsystem $subsystem (GUI)"
+          $said = (& $exe --help 2>&1 | Out-String)
+          if ($said -notmatch "usage") { throw "wanderbooks.exe --help printed no usage through a pipe: $said" }
+      - name: Sign the program (only when the certificate secrets exist; says so when not)
+        shell: pwsh
+        run: deploy\packaging\windows\sign-windows.ps1 target\release\wanderbooks.exe
+      - name: NSIS (the installer's compiler; free)
+        shell: pwsh
+        run: |
+          if (-not (Get-Command makensis -ErrorAction SilentlyContinue) -and -not (Test-Path "${env:ProgramFiles(x86)}\NSIS\makensis.exe")) {
+            choco install nsis -y --no-progress
+          }
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\NSIS\makensis.exe") -and -not (Get-Command makensis -ErrorAction SilentlyContinue)) { throw "NSIS did not install" }
+      - name: Build the installer
+        run: deploy/packaging/windows/build-windows.sh ${{ needs.version.outputs.version }}
+      - name: Sign the installer (only when the certificate secrets exist; says so when not)
+        shell: pwsh
+        run: deploy\packaging\windows\sign-windows.ps1 (Get-ChildItem target\packages\${{ needs.version.outputs.version }}\*-setup.exe)
+      - name: Install it silently, check what it put where, then uninstall it and check the books are still there
+        shell: pwsh
+        run: |
+          $v = "${{ needs.version.outputs.version }}"
+          $setup = (Get-ChildItem "target\packages\$v\Wanderbooks-$v-windows-x64-setup.exe").FullName
+          $dir = Join-Path $env:LOCALAPPDATA "Programs\Wanderbooks"
+          $data = Join-Path $env:LOCALAPPDATA "wanderbooks"
+          New-Item -ItemType Directory -Force $data | Out-Null
+          Set-Content (Join-Path $data "sentinel.txt") "the person's books"
+          $p = Start-Process $setup -ArgumentList "/S" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "the installer exited $($p.ExitCode)" }
+          foreach ($f in "wanderbooks.exe", "wanderbooks.ico", "LICENSE-MIT", "LICENSE-APACHE", "THIRD-PARTY-NOTICES.txt", "Uninstall Wanderbooks.exe") {
+            if (-not (Test-Path (Join-Path $dir $f))) { throw "the installer did not put $f in $dir" }
+          }
+          $lnk = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Wanderbooks.lnk"
+          if (-not (Test-Path $lnk)) { throw "no Start Menu entry at $lnk" }
+          $shell = New-Object -ComObject WScript.Shell
+          $target = $shell.CreateShortcut($lnk).TargetPath
+          if ($target -ne (Join-Path $dir "wanderbooks.exe")) { throw "the Start Menu entry points at $target" }
+          $key = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Wanderbooks"
+          $entry = Get-ItemProperty $key
+          if ($entry.DisplayName -ne "Wanderbooks" -or $entry.DisplayVersion -ne $v) { throw "the Settings > Apps entry is wrong: $($entry | Out-String)" }
+          # Installing a newer one over it keeps the same path (the bridge's).
+          $p = Start-Process $setup -ArgumentList "/S" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "installing over itself exited $($p.ExitCode)" }
+          if (-not (Test-Path (Join-Path $dir "wanderbooks.exe"))) { throw "the program is gone after installing over it" }
+          # Uninstall (in place, so this waits for it).
+          $p = Start-Process (Join-Path $dir "Uninstall Wanderbooks.exe") -ArgumentList "/S", "_?=$dir" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "the uninstaller exited $($p.ExitCode)" }
+          if (Test-Path (Join-Path $dir "wanderbooks.exe")) { throw "the uninstaller left the program" }
+          if (Test-Path $lnk) { throw "the uninstaller left the Start Menu entry" }
+          if (Test-Path $key) { throw "the uninstaller left its Settings > Apps entry" }
+          if (-not (Test-Path (Join-Path $data "sentinel.txt"))) { throw "THE UNINSTALLER REMOVED THE BOOKS' FOLDER" }
+          Write-Host "installed, installed over itself, uninstalled; the books' folder was left alone"
+      - name: Keep the installer with the run
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: target/packages/${{ needs.version.outputs.version }}/Wanderbooks-*-windows-x64-setup.exe
+          if-no-files-found: error
+
+  macos:
+    name: macOS (universal .app in a .dmg)
+    needs: version
+    runs-on: macos-latest
+    env:
+      # A Unix socket path holds 104 bytes on macOS, and the runner's default
+      # temp folder is longer than the tests' homes can afford (the same
+      # reason as in portable-macos.yml).
+      TMPDIR: /tmp
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
+      APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust (the version mise.toml pins), for both Macs
+        run: |
+          rustup toolchain install 1.99 --profile minimal && rustup default 1.99
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - name: Tests (the same ones the portable-macos workflow runs)
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.run_tests }}
+        run: |
+          cargo build --workspace --all-targets
+          cargo test --workspace --no-fail-fast
+      - name: Build the release program for Apple silicon
+        run: cargo build --release -p ledger-cli --target aarch64-apple-darwin
+      - name: Build the release program for Intel
+        run: cargo build --release -p ledger-cli --target x86_64-apple-darwin
+      - name: Put the Developer ID certificate in a temporary keychain (only when the secrets exist)
+        run: |
+          if [ -n "$APPLE_CERTIFICATE_P12_BASE64" ] && [ -n "$APPLE_CERTIFICATE_PASSWORD" ] && [ -n "$APPLE_SIGNING_IDENTITY" ]; then
+            deploy/packaging/macos/import-certificate.sh
+          else
+            echo "::notice title=macOS signing skipped::no APPLE_CERTIFICATE_P12_BASE64, APPLE_CERTIFICATE_PASSWORD and APPLE_SIGNING_IDENTITY secrets: the app is signed ad hoc and macOS Gatekeeper will refuse a download of it"
           fi
-          echo "version=$own" >> "$GITHUB_OUTPUT"
-      - name: Build the unsigned .dmg
-        run: just package-macos ${{ steps.version.outputs.version }}
-      - name: Attach it to the release
-        if: github.ref_type == 'tag'
+      - name: Build, sign, notarize (each only when its secrets exist) and staple the .dmg
+        env:
+          WB_SIGN_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          WB_NOTARY_APPLE_ID: ${{ secrets.APPLE_ID }}
+          WB_NOTARY_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          WB_NOTARY_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: deploy/packaging/macos/build-macos.sh ${{ needs.version.outputs.version }}
+      - name: Check the .dmg holds a universal, hardened, well-formed app (opened, not run)
+        run: |
+          v=${{ needs.version.outputs.version }}
+          dmg=$(ls target/packages/$v/Wanderbooks-$v-macos-universal.dmg)
+          mnt=$(mktemp -d /tmp/wbdmg.XXXXXX)
+          hdiutil attach "$dmg" -mountpoint "$mnt" -nobrowse -readonly
+          trap 'hdiutil detach "$mnt" -quiet || true' EXIT
+          app="$mnt/Wanderbooks.app"
+          test -d "$app" || { echo "no Wanderbooks.app in the .dmg" >&2; exit 1; }
+          test -L "$mnt/Applications" || { echo "no Applications shortcut in the .dmg" >&2; exit 1; }
+          lipo -archs "$app/Contents/MacOS/wanderbooks"
+          lipo -archs "$app/Contents/MacOS/wanderbooks" | grep -q arm64
+          lipo -archs "$app/Contents/MacOS/wanderbooks" | grep -q x86_64
+          plutil -lint "$app/Contents/Info.plist"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")" = ai.wanderbooks.app
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" = "$v"
+          test -f "$app/Contents/Resources/wanderbooks.icns"
+          for f in LICENSE-MIT LICENSE-APACHE THIRD-PARTY-NOTICES.txt; do test -f "$app/Contents/Resources/$f"; done
+          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign -dv --verbose=4 "$app" 2>&1 | grep -E "flags=|Authority|Signature|TeamIdentifier" || true
+      - name: Keep the .dmg with the run
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: target/packages/${{ needs.version.outputs.version }}/Wanderbooks-*-macos-universal.dmg
+          if-no-files-found: error
+
+  draft-release:
+    name: A draft release with the packages and their SHA-256 sums
+    needs: [version, linux, windows, macos]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch the three platforms' packages
+        uses: actions/download-artifact@v4
+        with:
+          path: dist-parts
+      - name: Gather the files, the licences, the update note and the SHA-256 sums
+        run: |
+          v=${{ needs.version.outputs.version }}
+          mkdir dist
+          find dist-parts -type f -exec cp {} dist/ \;
+          cp LICENSE-MIT LICENSE-APACHE THIRD-PARTY-NOTICES.txt dist/
+          # The note the app's daily look reads (crates/ledger-host/src/newer.rs):
+          # a version number and nothing else it uses.
+          printf '{"version":"%s"}\n' "$v" > dist/latest.json
+          (cd dist && sha256sum -- * > SHA256SUMS.txt && cat SHA256SUMS.txt)
+          ls -l dist
+      - name: Make or refresh the DRAFT release (a published release is never touched)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          v=${{ steps.version.outputs.version }}
-          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes "wanderbooks $v"
-          gh release upload "$GITHUB_REF_NAME" --clobber target/packages/$v/*.dmg
-      - name: Keep it with the run (a dispatch has no release)
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos-dmg-unsigned
-          path: target/packages/${{ steps.version.outputs.version }}/*.dmg
+          v=${{ needs.version.outputs.version }}
+          tag="v$v"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            draft=$(gh release view "$tag" --json isDraft --jq .isDraft)
+            if [ "$draft" != true ]; then
+              echo "$tag is already published: this workflow never changes a published release" >&2
+              exit 1
+            fi
+            gh release upload "$tag" --clobber dist/*
+          else
+            gh release create "$tag" --draft --target "$GITHUB_SHA" \
+              --title "Wanderbooks $v" \
+              --notes "Wanderbooks $v. Unsigned builds warn on first run: see docs/install.md. Check the SHA-256 sums in SHA256SUMS.txt." \
+              dist/*
+          fi
+          echo "A draft release $tag holds the packages. Try them, then publish it by hand."

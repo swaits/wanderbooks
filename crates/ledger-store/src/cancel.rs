@@ -22,6 +22,10 @@
 //!   3. A stop is an error (`StoreError::Cancelled`), never a partial
 //!      success: what a stopped verification had made is the caller's to
 //!      remove (the books it was opened on are a scratch folder's).
+//!   4. A step that can't be left half-made is shielded (`shielded`): the
+//!      stop is looked at before it begins, never inside it. The database's
+//!      rebuild from the journal (`verify_and_heal`, healing a drift) is
+//!      one: stopped part way it would leave the live ledger part replayed.
 //! ```
 
 use crate::error::StoreError;
@@ -47,6 +51,16 @@ impl Drop for Scope {
 #[must_use]
 pub fn scope(flag: Arc<AtomicBool>) -> Scope {
     Scope(FLAG.with(|f| f.borrow_mut().replace(flag)))
+}
+
+/// Run `f` with no stop in force on this thread (the request in force
+/// before comes back after): for the one step that can't be left half-made,
+/// such as rebuilding the database from the journal, which would leave the
+/// live ledger part replayed.
+pub fn shielded<R>(f: impl FnOnce() -> R) -> R {
+    let outer = FLAG.with(|flag| flag.borrow_mut().take());
+    let _restore = Scope(outer);
+    f()
 }
 
 /// Whether a stop was asked for.

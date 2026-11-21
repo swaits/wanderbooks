@@ -266,6 +266,16 @@ fn cash_flow_csv(stmt: &ledger_core::CashFlowStatement) -> String {
     csv
 }
 
+/// A store error as a call's answer: one that is a close's stop is said so,
+/// and marks the call's access record (server.rs `stopped_by_close`).
+fn stoppable(e: ledger_store::StoreError) -> String {
+    if matches!(e, ledger_store::StoreError::Cancelled) {
+        crate::server::stopped_by_close()
+    } else {
+        e.to_string()
+    }
+}
+
 #[tool_router(router = reports_router, vis = "pub(super)")]
 impl BooksServer {
     #[tool(
@@ -707,10 +717,16 @@ impl BooksServer {
         )
     )]
     async fn verify(&self, params: Parameters<VerifyParams>) -> Result<Json<VerifyOut>, String> {
+        self.backups.hold("books.verify");
         let mut store = self.lock()?;
-        let report = store.verify_and_heal().map_err(|e| e.to_string())?;
+        // The replay and the hashing of every stored file are looked at
+        // once per journal line and per file: a close stops them
+        // (local.rs INVARIANT 10). Healing a drifted database is begun only
+        // if no stop was asked for before it, and then finishes.
+        let _stop = ledger_store::cancel::scope(self.store.hurry_flag());
+        let report = store.verify_and_heal().map_err(stoppable)?;
         let blobs = if params.0.blobs {
-            Some(store.verify_blobs().map_err(|e| e.to_string())?)
+            Some(store.verify_blobs().map_err(stoppable)?)
         } else {
             None
         };
@@ -1144,6 +1160,7 @@ impl BooksServer {
     ) -> Result<Json<ExportCpaPackageOut>, String> {
         let p = params.0;
         let as_of = self.as_of(p.as_of.as_deref())?;
+        self.backups.hold("books.export_cpa_package");
         let mut store = self.lock()?;
         // A package no counted audit stands behind is not final either
         // (plan P8, D-9): on books that declared `audits`, refused under
@@ -1251,7 +1268,10 @@ impl BooksServer {
             .as_ref()
             .map(|vault| move |id| vault_tin(ledger, vault, id));
         // Built from the books under the lock, written nowhere
-        // (ledger_package INVARIANT 1).
+        // (ledger_package INVARIANT 1). Every stored file it holds is read
+        // one at a time, and a close stops it between two (local.rs
+        // INVARIANT 10).
+        let _stop = ledger_store::cancel::scope(self.store.hurry_flag());
         let package = ledger_package::build_package(
             &*store,
             &package_settings(&self.settings()),
@@ -1264,7 +1284,15 @@ impl BooksServer {
                 include_receipts: p.include_receipts,
                 tins: tins.as_ref().map(|f| f as ledger_package::TinSource<'_>),
             },
-        )?;
+        )
+        .map_err(|e| {
+            if e == ledger_store::StoreError::Cancelled.to_string() {
+                crate::server::stopped_by_close()
+            } else {
+                e
+            }
+        })?;
+        drop(_stop);
         let vault_dir = if p.include_tins {
             self.tin_record_dir(&store)?
         } else {

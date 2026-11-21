@@ -55,7 +55,7 @@
 //!      stopped gently: SIGTERM to its whole process group first (git
 //!      removes the lock files it holds when it is sent one, and a push's
 //!      receiving end the objects it had not yet kept), up to TERM_GRACE
-//!      (3 s: git's handler takes milliseconds, so the grace is only for a
+//!      (5 s: git's handler takes milliseconds, so the grace is only for a
 //!      machine too loaded to schedule it) for the group to end, and only
 //!      then SIGKILL. So a lock left behind is the rare case, and there is
 //!      nothing to clean up in the usual one. (Windows has no signal to
@@ -138,9 +138,11 @@ pub const BACKED_UP: [&str; 5] = [
 pub const GIT_TIMEOUT: Duration = Duration::from_secs(300);
 /// How long a git that is to be stopped is given, after SIGTERM, to end
 /// (and so remove its own lock files) before its whole process group is
-/// killed (INVARIANT 5). Git's handler takes milliseconds; this is for a
-/// machine so loaded that the handler is slow to be scheduled.
-pub const TERM_GRACE: Duration = Duration::from_secs(3);
+/// killed (INVARIANT 5). Git's handler takes milliseconds; the grace is for
+/// a machine so loaded that the handler is slow to be scheduled. It is
+/// generous on purpose: a lock left in the owner's folder costs the owner a
+/// step by hand, while a longer grace costs only a git that ignores SIGTERM.
+pub const TERM_GRACE: Duration = Duration::from_secs(5);
 /// How old a lock in the book's own archive must be, at open and when a
 /// backup begins, before it is taken for a dead git's (INVARIANT 5a): a
 /// younger one is left, and the next backup tries again.
@@ -749,7 +751,10 @@ impl Watched {
 
     fn open(&self) -> std::io::Result<crate::git_locks::RepoDir> {
         if self.is_archive() {
-            match (self.dir.parent(), self.dir.file_name().and_then(|n| n.to_str())) {
+            match (
+                self.dir.parent(),
+                self.dir.file_name().and_then(|n| n.to_str()),
+            ) {
                 (Some(book), Some(name)) => crate::git_locks::RepoDir::open_in(book, name),
                 _ => Err(std::io::ErrorKind::InvalidInput.into()),
             }
@@ -2937,7 +2942,10 @@ mod tests {
             assert!(Path::new(path).exists(), "{path}");
         }
         let words = said.to_string();
-        assert!(words.contains("nothing else is using the backup folder"), "{words}");
+        assert!(
+            words.contains("nothing else is using the backup folder"),
+            "{words}"
+        );
         assert!(!words.contains("another.lock"), "{words}");
         // Left where it was, and the one before our push untouched.
         assert!(lock.exists(), "a file in the owner's folder was deleted");
@@ -2946,15 +2954,17 @@ mod tests {
         assert!(
             notes.iter().all(|n| n.repo == "folder"
                 && !n.removed
-                && n.path.as_deref()
-                    == Some(repo.join(&n.lock).display().to_string().as_str())),
+                && n.path.as_deref() == Some(repo.join(&n.lock).display().to_string().as_str())),
             "{notes:?}"
         );
         assert!(
             notes.iter().any(|n| n.lock == "refs/heads/main.lock"),
             "{notes:?}"
         );
-        assert!(!notes.iter().any(|n| n.lock.contains("another")), "{notes:?}");
+        assert!(
+            !notes.iter().any(|n| n.lock.contains("another")),
+            "{notes:?}"
+        );
         // Still there, a later push fails by git's own words, and the file
         // stays.
         std::fs::remove_file(hooks.join("slow")).unwrap();

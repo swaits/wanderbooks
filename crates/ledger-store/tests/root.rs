@@ -1734,3 +1734,145 @@ fn a_registry_rewritten_or_a_vault_given_unchecked_is_refused() {
     }
     assert!(p.vault.is_dir() && p.key.is_file());
 }
+
+/// A stop that is asked at `phase` (and the phases a job has asked, in
+/// order): the job's own look at its phases, raised from the watcher.
+fn stopping_at(
+    phase: &'static str,
+) -> (
+    ledger_store::root::JobStop,
+    std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    let flag = Arc::new(AtomicBool::new(false));
+    let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+    let stop = ledger_store::root::JobStop::new(flag.clone()).with_phase_watch({
+        let (flag, seen) = (flag.clone(), seen.clone());
+        Arc::new(move |p: &str| {
+            seen.lock().unwrap().push(p.to_string());
+            if p == phase {
+                flag.store(true, Ordering::SeqCst);
+            }
+        })
+    });
+    (stop, seen)
+}
+
+/// What a job leaves of the root, byte for byte.
+fn root_files(root: &Root) -> Vec<(PathBuf, Vec<u8>)> {
+    let mut out = snapshot_files(&root.path().join("books"));
+    if root.path().join("legacy").exists() {
+        out.extend(snapshot_files(&root.path().join("legacy")));
+    }
+    out
+}
+
+/// A job that changes which books the root holds (create, adopt, restore) is
+/// asked at each of its phases whether it must stop (the books server's
+/// close), and stopped at any of them leaves the root byte for byte as it
+/// was: the staging and scratch folders are gone, books it would have
+/// replaced untouched, `legacy/` as it was. The last phase it asks is the
+/// look before its point of no return (the renames that put the books in
+/// place): nothing is asked after, so a stop that comes then is not heeded
+/// and the job finishes.
+#[test]
+fn a_job_stopped_at_any_phase_before_its_point_of_no_return_leaves_the_root_as_it_was() {
+    use ledger_store::root::JobStop;
+    let home = tmp("job-stop");
+    let (root, _) = Root::setup(home.path(), None, None).unwrap();
+    // create
+    let before = root_files(&root);
+    let (stop, seen) = stopping_at("start");
+    let e = refused(
+        root.create_book_stoppable(&id("new"), Currency::USD, &stop)
+            .map(|_| ()),
+    );
+    assert!(matches!(e, RootError::Stopped(_)), "{e:?}");
+    assert!(e.to_string().contains("nothing was created"), "{e}");
+    assert_eq!(root_files(&root), before);
+    assert!(root.list_books().unwrap().is_empty());
+    assert!(!root.book_dir(&id("new")).exists(), "its folder was made");
+    assert_eq!(*seen.lock().unwrap(), ["start"]);
+    // adopt
+    let old = tmp("job-stop-old");
+    drop(source_books(old.path(), true));
+    let options = AdoptOptions::default();
+    let phases = [
+        "start", "journal", "copy", "file", "open", "verify", "place",
+    ];
+    for phase in phases {
+        let before = root_files(&root);
+        let (stop, seen) = stopping_at(phase);
+        let e = refused(root.adopt_stoppable(old.path(), &id("adopted"), &options, &stop));
+        assert!(matches!(e, RootError::Stopped(_)), "{phase}: {e:?}");
+        assert!(
+            e.to_string().contains("nothing was adopted"),
+            "{phase}: {e}"
+        );
+        assert_eq!(root_files(&root), before, "adopt stopped at {phase}");
+        assert!(root.list_books().unwrap().is_empty(), "{phase}");
+        assert_eq!(seen.lock().unwrap().last().map(String::as_str), Some(phase));
+    }
+    // Never stopped: every phase is asked, in this order, `place` the last.
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stop = JobStop::new(flag).with_phase_watch({
+        let seen = seen.clone();
+        std::sync::Arc::new(move |p: &str| seen.lock().unwrap().push(p.to_string()))
+    });
+    root.adopt_stoppable(old.path(), &id("adopted"), &options, &stop)
+        .unwrap();
+    let asked = seen.lock().unwrap().clone();
+    let mut distinct = asked.clone();
+    distinct.dedup();
+    assert_eq!(distinct, phases, "{asked:?}");
+    assert_eq!(asked.last().map(String::as_str), Some("place"), "{asked:?}");
+    // restore, over books that exist: they stay as they are.
+    let dir = root.book_dir(&id("adopted"));
+    let store = Store::open(&dir).unwrap();
+    let source = backed_up(home.path(), &dir, &store).expect("git is installed");
+    drop(store);
+    let git = ledger_store::backup::Git::find().unwrap();
+    let preview = root.restore_preview(&git, &source, &id("adopted")).unwrap();
+    let phases = ["start", "fetch", "copy", "file", "open", "verify", "place"];
+    for phase in phases {
+        let before = root_files(&root);
+        let (stop, seen) = stopping_at(phase);
+        let e = refused(root.restore_stoppable(
+            &git,
+            &source,
+            &id("adopted"),
+            &preview.head,
+            true,
+            &stop,
+        ));
+        assert!(matches!(e, RootError::Stopped(_)), "{phase}: {e:?}");
+        assert!(
+            e.to_string().contains("nothing was restored"),
+            "{phase}: {e}"
+        );
+        assert_eq!(root_files(&root), before, "restore stopped at {phase}");
+        assert_eq!(seen.lock().unwrap().last().map(String::as_str), Some(phase));
+    }
+    // The preview too: stopped, nothing left of its clone.
+    let before = root_files(&root);
+    let (stop, _) = stopping_at("fetch");
+    let e = refused(root.restore_preview_stoppable(&git, &source, &id("adopted"), &stop));
+    assert!(matches!(e, RootError::Stopped(_)), "{e:?}");
+    assert_eq!(root_files(&root), before);
+    // Never stopped, a restore asks `place` last and goes through.
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let stop = JobStop::new(std::sync::Arc::default()).with_phase_watch({
+        let seen = seen.clone();
+        std::sync::Arc::new(move |p: &str| seen.lock().unwrap().push(p.to_string()))
+    });
+    let r = root
+        .restore_stoppable(&git, &source, &id("adopted"), &preview.head, true, &stop)
+        .unwrap();
+    assert!(r.replaced.is_some());
+    assert_eq!(
+        seen.lock().unwrap().last().map(String::as_str),
+        Some("place")
+    );
+}

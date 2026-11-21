@@ -116,6 +116,10 @@ pub enum RootError {
     /// Adopting was refused, with why.
     #[error("{0}")]
     Adopt(String),
+    /// A job was stopped because the books are closing, before its point of
+    /// no return ([`JobStop`]): nothing it did is left.
+    #[error("{0}")]
+    Stopped(String),
     /// The store refused (its message with the root's path taken out).
     #[error("{0}")]
     Store(String, #[source] StoreError),
@@ -143,6 +147,87 @@ impl From<StoreError> for RootError {
 impl From<std::io::Error> for RootError {
     fn from(e: std::io::Error) -> Self {
         Self::Io(format!("io error: {e}"), e)
+    }
+}
+
+/// What a job that changes which books the root holds (create, adopt,
+/// restore) is asked, as it goes, whether it must stop (the books server's
+/// close): looked at as each phase begins and once per stored file copied;
+/// a job stops, removes what it made, and leaves the books exactly as they
+/// were. Each job has a point of no return (the rename that puts its books
+/// in place), after which nothing is asked and the job finishes: a few
+/// renames and directory syncs, so short and bounded.
+#[derive(Clone)]
+pub struct JobStop {
+    flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    phase: Option<JobPhaseWatch>,
+}
+
+/// What is told the name of each phase of a job as it begins
+/// ([`JobStop::with_phase_watch`]).
+pub type JobPhaseWatch = std::sync::Arc<dyn Fn(&str) + Send + Sync>;
+
+impl JobStop {
+    /// Stop when `flag` is set.
+    pub fn new(flag: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Self {
+        Self { flag, phase: None }
+    }
+
+    /// Never asked to stop (a command run on its own, not in the server).
+    pub fn never() -> Self {
+        Self::new(std::sync::Arc::default())
+    }
+
+    /// Told the name of each phase as it begins, before the stop is looked
+    /// at (a seam for tests, and the server's test knob that holds a job
+    /// inside a phase: it may wait, but must give up when the flag is set).
+    #[must_use]
+    pub fn with_phase_watch(mut self, watch: JobPhaseWatch) -> Self {
+        self.phase = Some(watch);
+        self
+    }
+
+    /// The flag: what git and the store's loops are handed to look at.
+    pub fn flag(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        self.flag.clone()
+    }
+
+    /// Whether a stop was asked for.
+    pub fn requested(&self) -> bool {
+        self.flag.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// A phase begins, for a caller that decides for itself what to do about
+    /// a stop: whether one was asked for (the phase watch is told first).
+    pub fn look(&self, phase: &str) -> bool {
+        if let Some(watch) = &self.phase {
+            watch(phase);
+        }
+        self.requested()
+    }
+
+    /// A phase begins: Ok, or `Stopped` (naming what was not done).
+    fn at(&self, phase: &str, undone: &str) -> Result<(), RootError> {
+        if let Some(watch) = &self.phase {
+            watch(phase);
+        }
+        if self.requested() {
+            Err(RootError::Stopped(format!(
+                "stopped because the books are closing: nothing was {undone}"
+            )))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// A stop that reached the store's own loops or git, said as a job's.
+    fn said(&self, e: RootError, undone: &str) -> RootError {
+        match e {
+            RootError::Store(_, StoreError::Cancelled) => RootError::Stopped(format!(
+                "stopped because the books are closing: nothing was {undone}"
+            )),
+            other => other,
+        }
     }
 }
 
@@ -748,17 +833,35 @@ impl Root {
     /// Start new, empty books called `id` in `base_currency`. Refused if
     /// books of that id exist. Returns the open store.
     pub fn create_book(&self, id: &BookId, base_currency: Currency) -> Result<Store, RootError> {
-        self.create_book_inner(id, base_currency)
+        self.create_book_stoppable(id, base_currency, &JobStop::never())
+    }
+
+    /// [`Self::create_book`], stopped if `stop` asks before its folder is
+    /// made (its point of no return); after that it makes one empty book,
+    /// the same few files and syncs whatever else is in the root.
+    pub fn create_book_stoppable(
+        &self,
+        id: &BookId,
+        base_currency: Currency,
+        stop: &JobStop,
+    ) -> Result<Store, RootError> {
+        self.create_book_inner(id, base_currency, stop)
             .map_err(|e| self.hide(e))
     }
 
-    fn create_book_inner(&self, id: &BookId, base_currency: Currency) -> Result<Store, RootError> {
+    fn create_book_inner(
+        &self,
+        id: &BookId,
+        base_currency: Currency,
+        stop: &JobStop,
+    ) -> Result<Store, RootError> {
         let _lock = self.books_lock()?;
         let (books, _) = self.private_subdir(BOOKS_DIR, false)?;
         let dir = books.join(id.as_str());
         if std::fs::symlink_metadata(&dir).is_ok() {
             return Err(RootError::Exists(id.to_string()));
         }
+        stop.at("start", "created")?;
         make_private_dir(&dir)?;
         match Store::create(&dir, base_currency) {
             Ok(store) => {
@@ -793,7 +896,21 @@ impl Root {
         id: &BookId,
         options: &AdoptOptions,
     ) -> Result<AdoptReport, RootError> {
-        self.adopt_inner(source, id, options)
+        self.adopt_stoppable(source, id, options, &JobStop::never())
+    }
+
+    /// [`Self::adopt`], stopped if `stop` asks at any phase before the
+    /// rename that puts the books in place (its point of no return): the
+    /// staging folder is removed and the root is as it was. After the
+    /// rename it finishes, which is a directory sync.
+    pub fn adopt_stoppable(
+        &self,
+        source: &Path,
+        id: &BookId,
+        options: &AdoptOptions,
+        stop: &JobStop,
+    ) -> Result<AdoptReport, RootError> {
+        self.adopt_inner(source, id, options, stop)
             .map_err(|e| self.hide(e))
     }
 
@@ -802,6 +919,7 @@ impl Root {
         source: &Path,
         id: &BookId,
         options: &AdoptOptions,
+        stop: &JobStop,
     ) -> Result<AdoptReport, RootError> {
         let _lock = self.books_lock()?;
         let (books, _) = self.private_subdir(BOOKS_DIR, false)?;
@@ -809,6 +927,7 @@ impl Root {
         if std::fs::symlink_metadata(&dest).is_ok() {
             return Err(RootError::Exists(id.to_string()));
         }
+        stop.at("start", "adopted")?;
         let source = self.adoptable(source)?;
         for (what, path) in [
             ("vault folder", &options.vault_dir),
@@ -825,8 +944,12 @@ impl Root {
         // Step 1: the source's writer lock, held to the end, so nothing
         // writes it while it is copied.
         let (_source_lock, source_lock_created) = lock_source(&source)?;
-        // Step 2: verify the chain and record the head.
-        let (raw, lines) = read_source_journal(&source)?;
+        // Step 2: verify the chain and record the head. (The chain's check
+        // looks at the stop once per journal line.)
+        let scope = crate::cancel::scope(stop.flag());
+        let (raw, lines) = read_source_journal(&source).map_err(|e| stop.said(e, "adopted"))?;
+        drop(scope);
+        stop.at("journal", "adopted")?;
         let head = head_of(&lines);
         if let Some(expected) = &options.expect_head
             && *expected != head
@@ -859,11 +982,19 @@ impl Root {
         }
         let staging = books.join(format!("{STAGING_PREFIX}{id}-{}", std::process::id()));
         make_private_dir(&staging)?;
+        // The store's own loops (opening, verifying) look at the stop too.
+        let scope = crate::cancel::scope(stop.flag());
         let built = (|| -> Result<AdoptReport, RootError> {
+            stop.at("copy", "adopted")?;
             // Step 3: the journal as read, then every stored file.
             write_private_file(&staging.join(JOURNAL_FILE), &raw)?;
             let blob_dir = crate::store::BLOBS_DIR;
-            let copied = copy_blobs(&source.join(blob_dir), &staging.join(blob_dir))?;
+            let copied = copy_blobs(
+                &source.join(blob_dir),
+                &staging.join(blob_dir),
+                stop,
+                "adopted",
+            )?;
             // Step 5: the vault's records and the v1 key.
             let vault_files = match &options.vault_dir {
                 Some(dir) => copy_flat_private(dir, &staging.join(VAULT_DIR))?,
@@ -879,6 +1010,7 @@ impl Root {
                 }
                 None => false,
             };
+            stop.at("open", "adopted")?;
             let mut store = Store::open(&staging)?;
             if store.head() != head {
                 return Err(RootError::Adopt(format!(
@@ -899,6 +1031,7 @@ impl Root {
                         .join(", ")
                 )));
             }
+            stop.at("verify", "adopted")?;
             store.verify_and_heal()?;
             let blobs_verified = store.verify_blobs()?;
             // The copy is new books of this version, in its journal format
@@ -936,11 +1069,16 @@ impl Root {
                 format_upgraded,
             })
         })();
-        let renamed = built.and_then(|report| {
-            std::fs::rename(&staging, &dest)?;
-            sync_dir(&books)?;
-            Ok(report)
-        });
+        drop(scope);
+        let renamed = built
+            .map_err(|e| stop.said(e, "adopted"))
+            .and_then(|report| {
+                // The last look: from the rename on, the job finishes.
+                stop.at("place", "adopted")?;
+                std::fs::rename(&staging, &dest)?;
+                sync_dir(&books)?;
+                Ok(report)
+            });
         if renamed.is_err() {
             let _ = std::fs::remove_dir_all(&staging);
         }
@@ -991,7 +1129,11 @@ impl Root {
         source: &str,
         books: &Path,
         id: &BookId,
+        stop: &JobStop,
     ) -> Result<(PathBuf, crate::backup::Verified), RootError> {
+        stop.at("fetch", "restored")?;
+        // git, and the verification's own phases and loops, look at the stop.
+        let git = git.clone().with_cancel(stop.flag());
         // Anything left from one that never finished goes first: none is
         // in progress (each holds the books lock).
         for entry in std::fs::read_dir(books)? {
@@ -1005,13 +1147,18 @@ impl Root {
             }
         }
         let scratch = books.join(format!("{RESTORE_PREFIX}{id}-{}", std::process::id()));
-        match crate::backup::verify(git, source, &scratch) {
+        match crate::backup::verify(&git, source, &scratch) {
             Ok(v) => Ok((scratch, v)),
             Err(e) => {
+                // What the verification wrote goes with it (a stop leaves the
+                // root as it was).
                 let _ = std::fs::remove_dir_all(&scratch);
-                Err(RootError::Adopt(format!(
-                    "that backup can't be restored: {e}"
-                )))
+                Err(match e {
+                    crate::backup::BackupError::Cancelled(_) => RootError::Stopped(
+                        "stopped because the books are closing: nothing was restored".into(),
+                    ),
+                    e => RootError::Adopt(format!("that backup can't be restored: {e}")),
+                })
             }
         }
     }
@@ -1024,10 +1171,23 @@ impl Root {
         source: &str,
         id: &BookId,
     ) -> Result<RestorePreview, RootError> {
+        self.restore_preview_stoppable(git, source, id, &JobStop::never())
+    }
+
+    /// [`Self::restore_preview`], stopped if `stop` asks: the clone is
+    /// removed and nothing is left.
+    pub fn restore_preview_stoppable(
+        &self,
+        git: &crate::backup::Git,
+        source: &str,
+        id: &BookId,
+        stop: &JobStop,
+    ) -> Result<RestorePreview, RootError> {
+        let _scope = crate::cancel::scope(stop.flag());
         (|| {
             let _lock = self.books_lock()?;
             let (books, _) = self.private_subdir(BOOKS_DIR, false)?;
-            let (scratch, v) = self.fetch_backup(git, source, &books, id)?;
+            let (scratch, v) = self.fetch_backup(git, source, &books, id, stop)?;
             let vault = scratch.join(VAULT_DIR);
             let vault_files = if vault.is_dir() {
                 std::fs::read_dir(&vault)
@@ -1063,7 +1223,24 @@ impl Root {
         expect_head: &(u64, String),
         replace: bool,
     ) -> Result<RestoreReport, RootError> {
-        self.restore_inner(git, source, id, expect_head, replace)
+        self.restore_stoppable(git, source, id, expect_head, replace, &JobStop::never())
+    }
+
+    /// [`Self::restore`], stopped if `stop` asks at any phase before the
+    /// renames that put the books in place (its point of no return): the
+    /// clone and the staging folder are removed and the root is as it was,
+    /// books that were to be replaced untouched. From the first rename on it
+    /// finishes: two renames and two directory syncs.
+    pub fn restore_stoppable(
+        &self,
+        git: &crate::backup::Git,
+        source: &str,
+        id: &BookId,
+        expect_head: &(u64, String),
+        replace: bool,
+        stop: &JobStop,
+    ) -> Result<RestoreReport, RootError> {
+        self.restore_inner(git, source, id, expect_head, replace, stop)
             .map_err(|e| match e {
                 // The copy's checks are the adoption's: said as a restore.
                 RootError::Adopt(text) => {
@@ -1081,6 +1258,7 @@ impl Root {
         id: &BookId,
         expect_head: &(u64, String),
         replace: bool,
+        stop: &JobStop,
     ) -> Result<RestoreReport, RootError> {
         let _lock = self.books_lock()?;
         let (books, _) = self.private_subdir(BOOKS_DIR, false)?;
@@ -1106,9 +1284,12 @@ impl Root {
         } else {
             None
         };
-        let (scratch, v) = self.fetch_backup(git, source, &books, id)?;
+        stop.at("start", "restored")?;
+        let _scope = crate::cancel::scope(stop.flag());
+        let (scratch, v) = self.fetch_backup(git, source, &books, id, stop)?;
         let staging = books.join(format!("{RESTORE_PREFIX}{id}-{}-book", std::process::id()));
         let built = (|| -> Result<RestoreReport, RootError> {
+            stop.at("copy", "restored")?;
             if v.head != *expect_head {
                 return Err(RootError::Adopt(format!(
                     "that backup isn't the one previewed (it is now at event {}): nothing was restored; preview it again",
@@ -1124,7 +1305,12 @@ impl Root {
             make_private_dir(&staging)?;
             write_private_file(&staging.join(JOURNAL_FILE), &raw)?;
             let blob_dir = crate::store::BLOBS_DIR;
-            let copied = copy_blobs(&scratch.join(blob_dir), &staging.join(blob_dir))?;
+            let copied = copy_blobs(
+                &scratch.join(blob_dir),
+                &staging.join(blob_dir),
+                stop,
+                "restored",
+            )?;
             let vault_files = if scratch.join(VAULT_DIR).is_dir() {
                 copy_flat_private(&scratch.join(VAULT_DIR), &staging.join(VAULT_DIR))?
             } else {
@@ -1151,6 +1337,7 @@ impl Root {
                 &crate::ops::ops_dir(&staging).join(RESTORED_FROM),
                 v.book.as_deref().unwrap_or("").as_bytes(),
             )?;
+            stop.at("open", "restored")?;
             let mut store = Store::open(&staging)?;
             if store.head() != v.head {
                 return Err(RootError::Adopt(format!(
@@ -1165,6 +1352,7 @@ impl Root {
                     "the backup lacks stored files its books name: nothing was restored".into(),
                 ));
             }
+            stop.at("verify", "restored")?;
             store.verify_and_heal()?;
             let blobs_verified = store.verify_blobs()?;
             let head = store.head();
@@ -1180,38 +1368,42 @@ impl Root {
             })
         })();
         let _ = std::fs::remove_dir_all(&scratch);
-        let placed = built.and_then(|mut report| {
-            if exists {
-                let (legacy, _) = self.private_subdir(LEGACY_DIR, false)?;
-                let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
-                let mut name = format!("{id}-{stamp}");
-                let mut n = 1;
-                while std::fs::symlink_metadata(legacy.join(&name)).is_ok() {
-                    n += 1;
-                    name = format!("{id}-{stamp}-{n}");
-                }
-                std::fs::rename(&dest, legacy.join(&name))?;
-                if let Err(e) = std::fs::rename(&staging, &dest) {
-                    // The books it would replace go back where they were.
-                    if std::fs::rename(legacy.join(&name), &dest).is_err() {
-                        return Err(RootError::Adopt(format!(
-                            "the backup couldn't be put in place ({}), and the books it would \
-                             replace are in the legacy folder as {name}: nothing was restored",
-                            e.kind()
-                        )));
+        let placed = built
+            .map_err(|e| stop.said(e, "restored"))
+            .and_then(|mut report| {
+                // The last look: from the first rename on, the job finishes.
+                stop.at("place", "restored")?;
+                if exists {
+                    let (legacy, _) = self.private_subdir(LEGACY_DIR, false)?;
+                    let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+                    let mut name = format!("{id}-{stamp}");
+                    let mut n = 1;
+                    while std::fs::symlink_metadata(legacy.join(&name)).is_ok() {
+                        n += 1;
+                        name = format!("{id}-{stamp}-{n}");
                     }
-                    return Err(e.into());
+                    std::fs::rename(&dest, legacy.join(&name))?;
+                    if let Err(e) = std::fs::rename(&staging, &dest) {
+                        // The books it would replace go back where they were.
+                        if std::fs::rename(legacy.join(&name), &dest).is_err() {
+                            return Err(RootError::Adopt(format!(
+                                "the backup couldn't be put in place ({}), and the books it would \
+                             replace are in the legacy folder as {name}: nothing was restored",
+                                e.kind()
+                            )));
+                        }
+                        return Err(e.into());
+                    }
+                    // In place: a folder that won't sync now is said no more
+                    // than any later write's would be.
+                    let _ = sync_dir(&legacy);
+                    report.replaced = Some(name);
+                } else {
+                    std::fs::rename(&staging, &dest)?;
                 }
-                // In place: a folder that won't sync now is said no more
-                // than any later write's would be.
-                let _ = sync_dir(&legacy);
-                report.replaced = Some(name);
-            } else {
-                std::fs::rename(&staging, &dest)?;
-            }
-            let _ = sync_dir(&books);
-            Ok(report)
-        });
+                let _ = sync_dir(&books);
+                Ok(report)
+            });
         if placed.is_err() {
             let _ = std::fs::remove_dir_all(&staging);
         }
@@ -1242,7 +1434,19 @@ impl Root {
     /// checks [`Self::adopt`] makes, writing nothing (not even a lock
     /// file). The adoption itself reads it all again under the lock.
     pub fn adopt_preview(&self, source: &Path) -> Result<SourcePreview, RootError> {
+        self.adopt_preview_stoppable(source, &JobStop::never())
+    }
+
+    /// [`Self::adopt_preview`], stopped if `stop` asks (the read of the
+    /// source's journal looks once per line).
+    pub fn adopt_preview_stoppable(
+        &self,
+        source: &Path,
+        stop: &JobStop,
+    ) -> Result<SourcePreview, RootError> {
+        let _scope = crate::cancel::scope(stop.flag());
         (|| {
+            stop.at("preview", "read")?;
             let source = self.adoptable(source)?;
             // Held for writing now: adoption would be refused, so is this.
             if let Ok(lock) = std::fs::File::open(source.join(crate::store::LOCK_FILE))
@@ -1254,7 +1458,7 @@ impl Root {
                         .into(),
                 )));
             }
-            let (_, lines) = read_source_journal(&source)?;
+            let (_, lines) = read_source_journal(&source).map_err(|e| stop.said(e, "read"))?;
             Ok(SourcePreview {
                 head: head_of(&lines),
                 currency: crate::store::journal_currency(&lines)?,
@@ -2183,7 +2387,12 @@ struct CopiedBlobs {
 /// its name; an unfinished write (`<sha>.tmp`, a put that never finished)
 /// is left behind and counted; anything else (a link, a stray file) is
 /// refused. Folders 0700, files 0600, every folder synced.
-fn copy_blobs(from: &Path, to: &Path) -> Result<CopiedBlobs, RootError> {
+fn copy_blobs(
+    from: &Path,
+    to: &Path,
+    stop: &JobStop,
+    undone: &str,
+) -> Result<CopiedBlobs, RootError> {
     use sha2::{Digest, Sha256};
     let mut copied = CopiedBlobs {
         shas: BTreeSet::new(),
@@ -2251,6 +2460,8 @@ fn copy_blobs(from: &Path, to: &Path) -> Result<CopiedBlobs, RootError> {
                     }
                     return Err(stray(&f.path()));
                 }
+                // Once per stored file (one read, one hash, one write).
+                stop.at("file", undone)?;
                 let bytes = std::fs::read(f.path())?;
                 if hex::encode(Sha256::digest(&bytes)) != name.to_lowercase() {
                     return Err(RootError::Adopt(format!(

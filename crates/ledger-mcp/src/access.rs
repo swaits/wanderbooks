@@ -124,6 +124,9 @@ pub(crate) const CLOSING: &str = "closing";
 pub(crate) const CUT: &str = "cut_by_close";
 /// The server had stopped.
 pub(crate) const STOPPED: &str = "stopped";
+/// A call that was running when a close began, stopped by it: it answered
+/// that it was stopped, and nothing it was doing is recorded as done.
+pub(crate) const STOPPED_BY_CLOSE: &str = "stopped_by_close";
 /// A file's bytes or text came as an argument (D-46).
 pub(crate) const INLINE_FILE: &str = "inline_file";
 

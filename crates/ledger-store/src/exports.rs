@@ -327,17 +327,41 @@ mod tests {
             let (x, id) = (x.clone(), e.id.clone());
             std::thread::spawn(move || x.get(&id, "t", NOW))
         };
-        // The fetch holds the lock, blocked opening the pipe for reading
-        // (no writer yet): give it time to be there, then close.
-        std::thread::sleep(std::time::Duration::from_millis(300));
+        // The fetch holds the lock, blocked opening the pipe for reading (no
+        // writer yet). A writer can be opened without blocking only once a
+        // reader has the pipe open, so that is the condition waited for (the
+        // writer, kept, is the one that lets the read end later).
+        use std::os::unix::fs::OpenOptionsExt;
+        let by = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        let writer = loop {
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(&bin)
+            {
+                Ok(w) => break w,
+                Err(_) => {
+                    assert!(
+                        std::time::Instant::now() < by,
+                        "the fetch never reached the pipe"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            }
+        };
+        let (begun, started) = std::sync::mpsc::channel();
         let (done, closed) = std::sync::mpsc::channel();
         let closing = {
             let x = x.clone();
             std::thread::spawn(move || {
+                let _ = begun.send(());
                 x.close();
                 let _ = done.send(());
             })
         };
+        started.recv().unwrap();
+        // A negative window: it can only fail if the close returned, never
+        // because the machine was slow.
         assert!(
             closed
                 .recv_timeout(std::time::Duration::from_millis(500))
@@ -346,7 +370,7 @@ mod tests {
         );
         // A writer that sends nothing lets the read end (an empty file,
         // not the size kept: the fetch is refused).
-        drop(std::fs::OpenOptions::new().write(true).open(&bin).unwrap());
+        drop(writer);
         assert!(fetching.join().unwrap().is_err());
         closed
             .recv_timeout(std::time::Duration::from_secs(5))

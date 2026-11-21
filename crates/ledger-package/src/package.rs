@@ -126,6 +126,8 @@ pub fn build_package<B: PackageBooks + ?Sized>(
     req: &PackageRequest<'_>,
 ) -> Result<Package, String> {
     use ledger_import::{XlsxReport, report, report_to_xlsx, statement_pdf};
+    // A stop asked for before any of the work (the books server's close).
+    ledger_store::cancel::check().map_err(|e| e.to_string())?;
     let company = settings.company;
     let (as_of, today) = (req.as_of, req.prepared_on);
     let meta = report_meta(company, req.prepared_on, books.journal_seq());
@@ -490,6 +492,10 @@ pub fn build_package<B: PackageBooks + ?Sized>(
         };
         let mut index = String::from("entry_id,date,description,amount,file,sha256\n");
         for a in books.all_attachments().map_err(|e| e.to_string())? {
+            // A stop asked for (the books server's close) is looked at once
+            // per stored file read: a package of many files isn't held to
+            // its end by it (ledger_store::cancel).
+            ledger_store::cancel::check().map_err(|e| e.to_string())?;
             if a.withdrawn_at.is_some() {
                 continue;
             }

@@ -376,9 +376,7 @@ mod imp {
         pub fn regular(&self, rel: &str) -> Option<Option<SystemTime>> {
             let path = self.at(rel).ok()?;
             let meta = std::fs::symlink_metadata(path).ok()?;
-            meta.file_type()
-                .is_file()
-                .then(|| meta.modified().ok())
+            meta.file_type().is_file().then(|| meta.modified().ok())
         }
 
         pub fn refs(&self, out: &mut Vec<Found>, depth: usize) {
@@ -414,9 +412,7 @@ mod imp {
                 return Ok(false);
             };
             match std::fs::symlink_metadata(&path) {
-                Ok(meta) if meta.file_type().is_file() => {
-                    std::fs::remove_file(path).map(|()| true)
-                }
+                Ok(meta) if meta.file_type().is_file() => std::fs::remove_file(path).map(|()| true),
                 _ => Ok(false),
             }
         }
@@ -548,10 +544,7 @@ mod tests {
             b"theirs",
             "the link's target was touched"
         );
-        assert_eq!(
-            std::fs::read(outside.join("HEAD.lock")).unwrap(),
-            b"theirs"
-        );
+        assert_eq!(std::fs::read(outside.join("HEAD.lock")).unwrap(), b"theirs");
         // And a repository that is a link when the handle is opened is
         // refused, with the archive's own `open_in` too.
         assert!(RepoDir::open(&second).is_err());

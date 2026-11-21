@@ -359,7 +359,8 @@ didn't open, with why). Protocol version 1: the requests are new, the
   why), `was_not_open` or `no_such_book`.
   In this order: new calls on the book are refused (the door is shut and
   the book listed closed); the calls running on it finish, on every route
-  (nothing is killed, nothing is half-done); the answers on their way out
+  (an ordinary call: nothing is killed, nothing is half-done; the calls
+  that can run long are stopped instead, see below); the answers on their way out
   are sent, for 10 seconds at most (a client that never reads its answer
   doesn't hold the book open); a request whose body has not been read
   to its end when that time runs out (counted from the start of the
@@ -374,11 +375,43 @@ didn't open, with why). Protocol version 1: the requests are new, the
   (a drill, or a format upgrade not yet journaled, is stopped when the
   close begins, at its next look, so it never takes the last backup's
   turn; its scratch clone is removed and the books are unchanged):
-  a backup still running after that is stopped (git is killed with all it
-  started, and any lock file it left, in the book's archive and in a
-  folder target on this computer, is removed and recorded in
-  `ops/backup.jsonl` as `lock_removed`; a lock that was there before the
-  push began is never touched, `lock_left`) and waited for to end;
+  a backup still running after that is stopped (git is sent SIGTERM, which
+  makes it remove its own lock files, and killed with all it started only
+  if it hasn't ended after 5 seconds) and waited for to end. The program
+  never writes to or deletes from a backup folder (it is the owner's, and
+  may be shared with other computers or a sync program): a lock git left
+  there when it had to be killed is left in place, recorded in
+  `ops/backup.jsonl` as `lock_left` with its whole path, and the target's
+  backup is marked failed with words naming the file and saying to remove
+  it only when nothing else is using the backup folder (`books.backup`
+  and the close's answer say the same; the next backup that finds the
+  lock gone goes on). In the book's own archive (`archive.git`, private to
+  the program; running git by hand inside it is unsupported) it removes
+  only the locks its own stopped git made, and, at open and when a backup
+  begins, locks older than ten minutes, each recorded `lock_removed`;
+  **What a close stops, and what it waits for.** At its start a close
+  stops the calls and jobs that can do long I/O or loop over a book's
+  whole journal or files, each at its next look: `books.back_up_now` and
+  a backup a timer asked for (git is stopped; the call answers that it was
+  stopped because the books are closing, its access record says
+  `refused: stopped_by_close`, and nothing it was doing is recorded as done;
+  a commit it had made stands), `books.verify` (once per journal line and
+  per stored file; a heal of a drifted database is begun only if no stop
+  was asked before it, then finishes), `books.export_cpa_package` (once per
+  stored file), a drill, and a format upgrade not yet at its final look (a
+  stop is honoured up to that look; one that arrives after it still
+  upgrades and records success). On the admin socket, restore (and its
+  preview), adopt (and its preview), create and open are stopped by a close
+  of any book, and by the server's own: before their point of no return
+  (the rename that puts the books in place; create's making of its folder)
+  they remove what they wrote and leave the root byte for byte as it was
+  and answer that they were stopped because the books are closing; after
+  it they finish (a rename or two and two directory syncs), and the book
+  is then opened unless that, too, is stopped (it is left closed, and the
+  answer says so). Every other call does work bounded by the size of one
+  request and is waited for; `books.import_bank_csv` is the one known
+  exception (a file of up to 25 MiB is rehearsed whole and then written row
+  by row, each row journaled: long for a very large file, and not stopped);
   the close is bounded by the sum written in the server's INVARIANT 10
   (`local.rs`: running calls, the grace, the answers' grace, the stop of a
   hurried step, the last backup's 60 s, the stop of what is left of it);

@@ -6390,8 +6390,14 @@ impl Store {
                     "wanderbooks: {why}; kept the old database as {} beside it and rebuilt from the journal",
                     keep.file_name().unwrap_or_default().to_string_lossy()
                 );
-                self.rebuild()?;
-                self.verify()?;
+                // A stop is looked at before the rebuild begins, never in it
+                // (cancel INVARIANT 4): half-rebuilt, the live ledger would
+                // be part replayed.
+                crate::cancel::check()?;
+                crate::cancel::shielded(|| -> Result<(), StoreError> {
+                    self.rebuild()?;
+                    self.verify()
+                })?;
                 Some(why)
             }
             Err(e) => return Err(e),

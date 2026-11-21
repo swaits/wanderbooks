@@ -42,9 +42,24 @@
 //!   8. An MCP request reaches a book only with a bearer token that is
 //!      live for that book (auth/principals.jsonl; refused 401 without
 //!      one, 403 with another book's), and a session only with the token
-//!      that opened it (403). A request refused at the door is recorded
-//!      in that book's access log; the token rides with the request to
-//!      the book's tools, which check its scopes (access.rs). A session is
+//!      that opened it (403). A request that has entered an open book's
+//!      door and is then refused (no token, another book's, a revoked
+//!      one, the server closing), and a request cut by a close (INVARIANT
+//!      15), are recorded in that book's access log. A request for a book
+//!      that is listed closed or failed, or that doesn't exist, and one
+//!      that loses the race at the door (the door shut by a close of the
+//!      book, a restore over it, or the server's close, between the lookup
+//!      and the entry), is refused before it is dispatched and is NOT
+//!      recorded: a closed book's log isn't written (it isn't open), and a
+//!      shut door belongs to a close that is waiting for the log. None of
+//!      these ran, and an unrecorded refusal can never be a call that
+//!      ran: the only way to a book's tools is through its door; a request
+//!      is counted inside it before anything of the book is touched, and
+//!      a call that ran is recorded before its answer goes (INVARIANT 14;
+//!      if it can't be, the server stops taking requests); a request
+//!      refused outside the door never reached the tools. The token rides
+//!      with the request to the book's tools, which check its scopes
+//!      (access.rs). A session is
 //!      bound to its token when opened, and forgotten when it ends, is
 //!      found gone, or its token is revoked or replaced; past MAX_SESSIONS
 //!      bindings a new session is refused (an initialize), never a binding
@@ -57,8 +72,10 @@
 //!      request: an upload only from the token that began it, a download
 //!      only with books:read, an export only to the token it was made for
 //!      (whose tool passed its own scope check; no other is asked). Each,
-//!      refused at the door or not, is recorded in the book's access log
-//!      as `upload`, `download` or `export` with its id, and the
+//!      once inside the door, ran or was refused there, is recorded in the
+//!      book's access log as `upload`, `download` or `export` with its id
+//!      (one refused outside the door is not recorded, and did not run:
+//!      INVARIANT 8), and the
 //!      bytes (kept, or read) and their record are one task that runs to
 //!      its end if the client hangs up (a process killed in that task
 //!      excepted); bytes whose record can't be written aren't kept, and
@@ -70,44 +87,97 @@
 //!      the start. Close: from the moment it begins, a call on that book is
 //!      refused at its door, unrun, and not in its journal; a request not
 //!      yet whole when the grace runs out is cut (INVARIANT 15); a call
-//!      already running on it, on any route, finishes (nothing is killed, nothing
-//!      is half-done); the answers on their way out are sent, for the
-//!      answer grace at most; its MCP sessions end; its last backup is
-//!      made, for BACKUP_AT_CLOSE at most; and the book is let go
-//!      (INVARIANT 13), its writer lock released, so another process could
-//!      open it; and only then is a close answered. It is answered
-//!      `closed`, or `closed_backup_incomplete` with why when its last
-//!      backup wasn't whole (a target that failed, git that failed, a
-//!      backup stopped after its time): never a plain `closed` for a backup
-//!      that wasn't made. After that answer no call on that book runs until
-//!      it is opened again. Every other book keeps serving, and a call on
-//!      it is never held up by this one's close. A restore over an open
-//!      book lets go of it the same way (but for its last backup), its
-//!      door shut and the book listed closed from the start: a call that
-//!      comes while the restore runs is told the books aren't open (503,
-//!      INVARIANT 11), never that there are no such books.
-//!      The close is bounded, from its start, by the sum of these named,
-//!      finite parts and nothing else:
-//!        a. T_calls: the longest of the calls already running with their
-//!           whole body (none is cut or killed; each is local work on the
-//!           book, and nothing a client does lengthens it);
+//!      already running on it, on any route, either finishes (an ordinary
+//!      call: nothing is killed, nothing is half-done) or, if it is one of
+//!      the stoppable calls below, is stopped at its next look; the answers
+//!      on their way out are sent, for the answer grace at most; its MCP
+//!      sessions end; its last backup is made, for BACKUP_AT_CLOSE at most;
+//!      and the book is let go (INVARIANT 13), its writer lock released, so
+//!      another process could open it; and only then is a close answered.
+//!      It is answered `closed`, or `closed_backup_incomplete` with why when
+//!      its last backup wasn't whole (a target that failed, git that
+//!      failed, a backup stopped after its time): never a plain `closed`
+//!      for a backup that wasn't made. After that answer no call on that
+//!      book runs until it is opened again. Every other book keeps serving,
+//!      and a call on it is never held up by this one's close. A restore
+//!      over an open book lets go of it the same way (but for its last
+//!      backup), its door shut and the book listed closed from the start: a
+//!      call that comes while the restore runs is told the books aren't
+//!      open (503, INVARIANT 11), never that there are no such books.
+//!
+//!      What can run long, and what stops it. A close calls `hurry` at its
+//!      start, before it waits for anything. The calls and jobs that can do
+//!      long I/O or loop over a book's whole journal or files are exactly
+//!      these, and each is stoppable:
+//!        - on the book: `books.back_up_now`, and a backup a timer asked for
+//!          (git is sent SIGTERM and killed only after TERM_GRACE: ledger_
+//!          store backup INVARIANT 5; between targets the flag is looked at
+//!          too); `books.verify` (once per journal line replayed and per
+//!          stored file hashed); `books.export_cpa_package` (before it
+//!          builds, and once per stored file it reads); a drill; and a
+//!          format upgrade not yet journaled. A call stopped this way
+//!          answers its caller that it was stopped because the books are
+//!          closing, its access record says `refused: stopped_by_close`, and
+//!          nothing it was doing is recorded as done: a stopped backup
+//!          records `stopped` and no push or commit outcome for the step it
+//!          didn't finish (a commit made before it stands in the archive, and
+//!          is recorded as made); a stopped verification changed nothing.
+//!          Two points of no return: `books.verify` heals a drifted database
+//!          by rebuilding it from the journal, begun only if no stop was
+//!          asked before it, and then run to its end (stopped half way it
+//!          would leave the live ledger part replayed; it is one pass over
+//!          the journal, and only after a drift); and a format upgrade: a
+//!          stop is honoured up to its final look (made once the archive is
+//!          proven, just before the `journal.format_set` line is appended);
+//!          one that arrives after that look still upgrades and records
+//!          success (safe: the books are in this version's format, proven
+//!          backed up first), and finishes (a line and a database row).
+//!        - on the admin socket, which hold the one lifecycle lock: restore
+//!          and its preview, adopt and its preview, create, and open. A
+//!          close of any book, and the server's close, stops them (a job
+//!          that starts while a close is under way is refused, and asked
+//!          again after it). Each is stopped, before its point of no return,
+//!          at its next look (a phase, a stored file, a journal line, a git
+//!          command): what it wrote is removed (a clone, a staging folder),
+//!          and the root is byte for byte as it was. The point of no return
+//!          of restore and adopt is the rename that puts the books in place;
+//!          after it they finish, which is a rename or two and the sync of
+//!          two folders (a restore over books moves them to `legacy/` and
+//!          renames the copy in, both within the root); then the book is
+//!          opened, which is itself stopped, left closed (its answer says
+//!          so). Create's is the making of its folder, after which it makes
+//!          one empty book. Open has none: it stops anywhere (the book is
+//!          left closed, intact).
+//!      Every other call does work bounded by the size of one request: its
+//!      arguments, one entry, one stored file (at most MAX_UPLOAD) read,
+//!      hashed or extracted, one report or export over the ledger that is
+//!      already in memory (local CPU, no wait on a client, a disk of
+//!      another's or the network). A call that is neither stoppable nor
+//!      bounded by one request's size is a defect to be listed here:
+//!      `books.import_bank_csv` is one (a file of up to MAX_UPLOAD is
+//!      rehearsed whole, then written row by row, each row journaled: long
+//!      for a very large file, and it isn't stopped by a close).
+//!      The close is bounded, from its start, by the sum of these named
+//!      terms, each enforced by code, and nothing else:
+//!        a. T_calls: the longest ordinary call already running with its
+//!           whole body (bounded by one request, above; none is cut or
+//!           killed; nothing a client does lengthens it), or, for a
+//!           stoppable call, T_stop;
 //!        b. ANSWER_GRACE for the answers on their way out, counted from
 //!           when the door is empty (the cut of a body not yet whole is at
 //!           ANSWER_GRACE from the START of the close, inside (a): a
 //!           stalled client adds nothing);
-//!        c. T_stop for each step the close doesn't wait for, a drill or a
-//!           format upgrade not yet journaled, which are hurried at the
-//!           start (`Backups::hurry`) and stop at their next look: one git
-//!           kill (GROUP_GONE_WAIT, 2 s, and its pipes, 10 s at most, and
-//!           for a target on this computer LOCK_SETTLE, 1.5 s), or one
-//!           journal line, one file or one 64 KiB chunk, and the removal
-//!           of the step's scratch clone (as long as the clone is big);
-//!           a format upgrade whose `journal.format_set` line has been
-//!           appended is not stopped, it finishes (a line and a database
-//!           row: part of (a));
+//!        c. T_stop: the longest between two looks of what is stopped, one
+//!           of: a git command's stop (SIGTERM and up to TERM_GRACE, 5 s;
+//!           then a kill and GROUP_GONE_WAIT, 2 s, and its pipes, 10 s at
+//!           most), one journal line, one stored file, one 64 KiB chunk, one
+//!           phase of a job; and the removal of what a stopped job or drill
+//!           wrote (its scratch clone or staging folder: a local deletion of
+//!           the job's own output, as long as that is large, waiting on no
+//!           one);
 //!        d. BACKUP_AT_CLOSE for the last backup;
 //!        e. T_stop again for what is left of that backup at its bound
-//!           (`Backups::shut`: git killed, every step awaited);
+//!           (`Backups::shut`: git stopped, every step awaited);
 //!        f. closing the logs and letting go of the store (instant).
 //!      A drill (or a format upgrade) that took the backups' turn never
 //!      costs the last backup its time.
@@ -218,12 +288,25 @@
 //!      made, and the close is answered within INVARIANT 10's bound. A
 //!      format upgrade not yet journaled is stopped the same way, the books
 //!      unchanged.
-//!  11. A backup's git is killed inside a commit or a push: the locks it
-//!      left are removed before the close is answered, each recorded; the
-//!      book opened again backs up at once.
+//!  11. A backup's git is stopped inside a commit or a push: it is sent
+//!      SIGTERM and removes its own locks (nothing is left, nothing is
+//!      recorded), the book opened again backs up at once. A git that can't
+//!      end on SIGTERM and has to be killed after TERM_GRACE leaves locks
+//!      that this process removes from the book's own archive only, and
+//!      leaves in the owner's backup folder, recorded with their whole path
+//!      and said in the close's answer and in the backup's status, until the
+//!      owner removes them.
 //!  12. The server is closed (standard input ends) with an upload stalled
 //!      on one book and a call's body stalled on another: both are cut one
 //!      grace after the close began, the server exits 0 within its bound.
+//!  13. A backup asked for (`books.back_up_now`) is running, git stalled,
+//!      and the book is closed: the call is answered, git still stalled,
+//!      that it was stopped because the books are closing; its record says
+//!      `refused: stopped_by_close`; the close is answered `closed`.
+//!  14. A restore of a large backup is running (an admin job) when another
+//!      book is closed: the restore is stopped, answers that it was stopped
+//!      because the books are closing, and the root is byte for byte as it
+//!      was; asked again it goes through.
 //! ```
 
 use crate::admin::{self, Request, Response};
@@ -244,6 +327,12 @@ use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
+/// What a restore or adoption that a close stopped after its point of no
+/// return says of the books it put in place (INVARIANT 10).
+const STOPPED_AFTER_PLACED: &str = "they are in place, but were not opened: the books server is closing. Open them when it runs again";
+/// Why a book's opening was stopped (by a close, INVARIANT 10): the book is
+/// intact and stays closed.
+const OPEN_STOPPED: &str = "stopped because the books are closing: they were not opened";
 /// The server's MCP socket, in the root's `run/`.
 pub const MCP_SOCKET: &str = "mcp.sock";
 /// The server's admin socket, in the root's `run/`.
@@ -676,11 +765,33 @@ struct Books {
     /// Held through every change to which books are open or exist (create,
     /// adopt, restore, open, close): one at a time (INVARIANT 10).
     lifecycle: Mutex<()>,
+    /// Set while any close of a book is under way, and for good once the
+    /// server closes: the admin jobs that can run long (restore, create,
+    /// adopt, open) look at it and stop, before their point of no return,
+    /// leaving the books as they were (INVARIANT 10). `closers` counts the
+    /// closes under way; the flag is clear when none is.
+    job_stop: Arc<std::sync::atomic::AtomicBool>,
+    closers: Mutex<usize>,
     /// How these books are kept from agents (plan 3.8, P9a): what
     /// `books.start` reports (`--isolation`).
     isolation: Isolation,
     /// The periods and bounds (tests shorten them).
     timers: Timers,
+}
+
+/// A close of a book under way (`Books::closing_one`).
+struct CloseGuard<'a>(&'a Books);
+
+impl Drop for CloseGuard<'_> {
+    fn drop(&mut self) {
+        let mut closers = self.0.closers.lock().unwrap_or_else(|e| e.into_inner());
+        *closers -= 1;
+        if *closers == 0 && !self.0.closing.is_cancelled() {
+            self.0
+                .job_stop
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
 }
 
 impl Books {
@@ -705,6 +816,8 @@ impl Books {
             backup_quiet,
             drill_first,
             lifecycle: Mutex::new(()),
+            job_stop: Arc::default(),
+            closers: Mutex::new(0),
             isolation,
             timers: Timers::default(),
         }
@@ -714,6 +827,51 @@ impl Books {
     fn with_timers(mut self, timers: Timers) -> Self {
         self.timers = timers;
         self
+    }
+
+    /// A close of a book begins: the admin jobs that can run long stop
+    /// (INVARIANT 10) until the returned guard is dropped.
+    fn closing_one(&self) -> CloseGuard<'_> {
+        let mut closers = self.closers.lock().unwrap_or_else(|e| e.into_inner());
+        *closers += 1;
+        self.job_stop
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        CloseGuard(self)
+    }
+
+    /// What an admin job that can run long is asked as it goes whether to
+    /// stop (ledger_store::root `JobStop`). With the test knob
+    /// `--timer-hold` a job is held inside a phase named `job:phase` (in
+    /// `run/timer-hold`) until the name is gone or a stop is asked.
+    fn job(&self, job: &'static str) -> ledger_store::root::JobStop {
+        let stop = ledger_store::root::JobStop::new(self.job_stop.clone());
+        if !self.timers.timer_hold {
+            return stop;
+        }
+        let Ok(run) = self.root.run_dir() else {
+            return stop;
+        };
+        let flag = self.job_stop.clone();
+        stop.with_phase_watch(Arc::new(move |phase: &str| {
+            let name = format!("{job}:{phase}");
+            {
+                use std::io::Write;
+                if let Ok(mut said) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(run.join("timer-held"))
+                {
+                    let _ = writeln!(said, "{name}");
+                }
+            }
+            let held = || {
+                std::fs::read_to_string(run.join("timer-hold"))
+                    .is_ok_and(|names| names.split(',').any(|n| n.trim() == name))
+            };
+            while held() && !flag.load(std::sync::atomic::Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }))
     }
 
     /// The test knob `--timer-hold`: `timer` has taken the handles of a
@@ -823,6 +981,18 @@ impl Books {
         }
     }
 
+    /// [`Self::open`] for an admin job that can be stopped: the store's
+    /// replay and verification look at the stop, and a book whose opening
+    /// was stopped is closed, not failed (it is intact: it opens when asked).
+    fn open_stoppable(&self, id: &BookId, stop: &ledger_store::root::JobStop) -> Book {
+        let _scope = ledger_store::cancel::scope(stop.flag());
+        let book = self.open(id);
+        match &book {
+            Book::Failed(why) if why == OPEN_STOPPED => Book::Closed,
+            _ => book,
+        }
+    }
+
     /// Open the book `id` from disk: served, or failed with why.
     fn open(&self, id: &BookId) -> Book {
         let opened = match Store::open(&self.root.book_dir(id)) {
@@ -830,6 +1000,7 @@ impl Books {
             Err(ledger_store::StoreError::Locked(_)) => {
                 Err("another program has these books open".to_string())
             }
+            Err(ledger_store::StoreError::Cancelled) => Err(OPEN_STOPPED.to_string()),
             Err(e) => Err(self.hide(e.to_string())),
         };
         opened.unwrap_or_else(|why| {
@@ -840,9 +1011,10 @@ impl Books {
 
     /// Verify an open store and build its service (INVARIANTS 3, 4).
     fn serve(&self, mut store: Store) -> Result<Book, String> {
-        let report = store
-            .verify_and_heal()
-            .map_err(|e| format!("they don't verify: {}", self.hide(e.to_string())))?;
+        let report = store.verify_and_heal().map_err(|e| match e {
+            ledger_store::StoreError::Cancelled => OPEN_STOPPED.to_string(),
+            e => format!("they don't verify: {}", self.hide(e.to_string())),
+        })?;
         if let Some(why) = &report.healed {
             eprintln!(
                 "wanderbooks server: rebuilt a database from its journal ({})",
@@ -876,6 +1048,34 @@ impl Books {
             ..
         } = served;
         backups.slow_steps(self.timers.slow_steps);
+        // The test knob `--timer-hold`: a call a close can stop is held as
+        // it begins, named `call:<tool>` in `run/timer-hold`, until the
+        // name is gone or the close begins.
+        if self.timers.timer_hold
+            && let Ok(run) = self.root.run_dir()
+        {
+            let flag = shared.hurry_flag();
+            backups.set_hold(Arc::new(move |call: &str| {
+                let name = format!("call:{call}");
+                {
+                    use std::io::Write;
+                    if let Ok(mut said) = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(run.join("timer-held"))
+                    {
+                        let _ = writeln!(said, "{name}");
+                    }
+                }
+                let held = || {
+                    std::fs::read_to_string(run.join("timer-hold"))
+                        .is_ok_and(|names| names.split(',').any(|n| n.trim() == name))
+                };
+                while held() && !flag.load(std::sync::atomic::Ordering::SeqCst) {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }));
+        }
         Ok(Book::Open {
             gate: Arc::default(),
             ended,
@@ -1023,7 +1223,12 @@ impl Books {
                 if self.held().contains_key(id.as_str()) {
                     return refused(RootError::Exists(id.to_string()));
                 }
-                match self.root.create_book(&id, currency) {
+                // Stopped by a close before its folder is made, it makes
+                // nothing; after that it makes one empty book (INVARIANT 10).
+                match self
+                    .root
+                    .create_book_stoppable(&id, currency, &self.job("create"))
+                {
                     Ok(store) => {
                         // Made: kept whether or not it opens (INVARIANT 3).
                         let book = self.serve(store).unwrap_or_else(Book::Failed);
@@ -1132,7 +1337,8 @@ impl Books {
                 if self.held().contains_key(id.as_str()) {
                     return refused(RootError::Exists(id.to_string()));
                 }
-                let found = match self.root.adopt_preview(&source) {
+                let stop = self.job("adopt");
+                let found = match self.root.adopt_preview_stoppable(&source, &stop) {
                     Ok(found) => found,
                     Err(e) => return refused(e),
                 };
@@ -1225,11 +1431,14 @@ impl Books {
                     vault_key,
                     expect_head,
                 };
-                match self.root.adopt(&source, &id, &options) {
+                match self.root.adopt_stoppable(&source, &id, &options, &stop) {
                     Ok(r) => {
-                        // Adopted: kept whether or not it opens.
-                        let book = self.open(&id);
-                        let problem = book.problem();
+                        // Adopted: kept whether or not it opens (not opened,
+                        // if a close began: it is in place all the same).
+                        let book = self.open_stoppable(&id, &stop);
+                        let problem = book.problem().or_else(|| {
+                            matches!(book, Book::Closed).then(|| STOPPED_AFTER_PLACED.to_string())
+                        });
                         self.hold(&id, book);
                         Response::Adopted(admin::Adopted {
                             id: r.id.to_string(),
@@ -1355,7 +1564,16 @@ impl Books {
                 Err(e) => return Response::Refused(self.hide(e.to_string())),
             },
         }
-        let book = self.open(&id);
+        // Stopped by a close (INVARIANT 10): the book stays as it was.
+        let stop = self.job("open");
+        if stop.look("start") {
+            return said(admin::OpenOutcome::CouldNotOpen(OPEN_STOPPED.into()));
+        }
+        let book = self.open_stoppable(&id, &stop);
+        if matches!(book, Book::Closed) {
+            self.hold(&id, book);
+            return said(admin::OpenOutcome::CouldNotOpen(OPEN_STOPPED.into()));
+        }
         let problem = book.problem();
         self.hold(&id, book);
         said(match problem {
@@ -1380,6 +1598,9 @@ impl Books {
             id: id.to_string(),
             outcome,
         };
+        // From now the admin jobs that can run long stop (INVARIANT 10), so
+        // the lifecycle lock is not held for long by one of them.
+        let _closing = self.closing_one();
         let _one = self.lifecycle.lock().unwrap_or_else(|e| e.into_inner());
         if self.closing.is_cancelled() {
             return Response::Refused("the books are closing: nothing was done".into());
@@ -1498,11 +1719,19 @@ impl Books {
         };
         // A run still going is stopped, and waited for: nothing of the
         // backups runs once this returns.
-        backups.shut().await;
+        let left = backups.shut().await;
         access.close();
         uploads.close();
         exports.close();
         store.let_go().await;
+        // A git stopped at its bound that left locks in the owner's folder:
+        // said with the file, as the standing says it (ledger_store backup
+        // INVARIANT 5b), not only that the backup took too long.
+        let problem = match (problem, left.is_empty()) {
+            (problem, true) => problem,
+            (None, false) => Some(left.join("; ")),
+            (Some(why), false) => Some(format!("{why}; {}", left.join("; "))),
+        };
         problem.map(|why| self.hide(why))
     }
 
@@ -1616,6 +1845,7 @@ impl Books {
             Err(e) => return said(e.to_string()),
         };
         let _one = self.lifecycle.lock().unwrap_or_else(|e| e.into_inner());
+        let stop = self.job("restore");
         let git = match ledger_store::backup::Git::find() {
             Ok(git) => git,
             Err(e) => return said(e.to_string()),
@@ -1624,7 +1854,10 @@ impl Books {
         // what it says): the restore itself is refused over books, or
         // replacing none.
         if !confirmed {
-            return match self.root.restore_preview(&git, &source, &id) {
+            return match self
+                .root
+                .restore_preview_stoppable(&git, &source, &id, &stop)
+            {
                 Ok(p) => Response::RestorePreview(admin::RestorePreview {
                     head: p.head,
                     blobs: p.blobs,
@@ -1638,6 +1871,10 @@ impl Books {
         let Some(expect_head) = expect_head else {
             return said("a restore is confirmed against the preview's head: preview first".into());
         };
+        // Stopped by a close before anything is let go (INVARIANT 10).
+        if stop.look("begin") {
+            return said("stopped because the books are closing: nothing was restored".into());
+        }
         let held = self.held().contains_key(id.as_str());
         if replace && !held {
             return said(format!(
@@ -1672,12 +1909,19 @@ impl Books {
             self.hold(&id, Book::Closed);
             rt.block_on(self.release(&id, &parts, false, Instant::now(), None));
         }
-        match self.root.restore(&git, &source, &id, &expect_head, replace) {
+        match self
+            .root
+            .restore_stoppable(&git, &source, &id, &expect_head, replace, &stop)
+        {
             Ok(r) => {
                 // Restored: kept whether or not it opens; its backups told
-                // whose books these were (backup.rs INVARIANTS 6, 7).
-                let book = self.open(&id);
-                let problem = book.problem();
+                // whose books these were (backup.rs INVARIANTS 6, 7). Past its
+                // point of no return a stop doesn't undo it: the books are
+                // in place, and not opened if the server is closing.
+                let book = self.open_stoppable(&id, &stop);
+                let problem = book.problem().or_else(|| {
+                    matches!(book, Book::Closed).then(|| STOPPED_AFTER_PLACED.to_string())
+                });
                 self.hold(&id, book);
                 Response::Restored(admin::Restored {
                     id: r.id.to_string(),
@@ -1693,7 +1937,7 @@ impl Books {
                 // The books it would have replaced, let go above, open
                 // again (only this restore runs, so nothing else holds them).
                 if replace {
-                    let book = self.open(&id);
+                    let book = self.open_stoppable(&id, &stop);
                     self.hold(&id, book);
                 }
                 said(e.to_string())
@@ -3158,6 +3402,12 @@ async fn serve(
     // a stalled client may not do is hold the close, whatever else the
     // close is waiting for (an admin job, a slow backup of another book).
     books.closing.cancel();
+    // The admin jobs that can run long stop at their next look, before
+    // their point of no return (INVARIANT 10): the wait below is for jobs
+    // that are stopping, not for a restore to run its course.
+    books
+        .job_stop
+        .store(true, std::sync::atomic::Ordering::SeqCst);
     let begun = Instant::now();
     let cutters: Vec<_> = books
         .gates()
@@ -4806,6 +5056,8 @@ mod tests {
         let (status, code, _) = at_the_door(&books, "acme", &acme).await.unwrap();
         assert_eq!((status, code.as_deref()), (503, Some("closed")));
         assert_eq!(at_the_door(&books, "beta", &beta).await, None);
+        // A negative window: it can only fail if the close was answered,
+        // never because the machine was slow.
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert!(!closing.is_finished(), "closed with a request still inside");
         drop(inside);

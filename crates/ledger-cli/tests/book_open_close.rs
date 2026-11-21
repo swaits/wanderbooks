@@ -752,6 +752,39 @@ mod raw {
             self.stream.write_all(&body[..sent]).unwrap();
         }
 
+        /// [`Raw::start`] for a request that sends its body only once the
+        /// server has asked for it (`Expect: 100-continue`): the server asks
+        /// when its handler first reads the body, which it does inside the
+        /// book's door. So once this returns the request is known to be
+        /// inside, with `sent` bytes of its body written: a condition, not a
+        /// guess at how long the server takes to read a head.
+        pub fn start_inside(
+            &mut self,
+            method: &str,
+            path: &str,
+            extra: &[(&str, &str)],
+            body: &[u8],
+            sent: usize,
+        ) {
+            let mut extra = extra.to_vec();
+            extra.push(("expect", "100-continue"));
+            self.start(method, path, &extra, body, 0);
+            self.stream
+                .set_read_timeout(Some(Duration::from_secs(120)))
+                .unwrap();
+            let mut seen = Vec::new();
+            let mut byte = [0u8; 1];
+            while !seen.ends_with(b"\r\n\r\n") {
+                self.stream
+                    .read_exact(&mut byte)
+                    .expect("the server never asked for the body");
+                seen.push(byte[0]);
+            }
+            let said = String::from_utf8_lossy(&seen).to_string();
+            assert!(said.starts_with("HTTP/1.1 100"), "{said}");
+            self.stream.write_all(&body[..sent]).unwrap();
+        }
+
         /// Wait until the server has sent something on this connection
         /// (one byte is taken, and kept for [`Raw::head`]).
         pub fn wait_for_bytes(&mut self) {
@@ -806,6 +839,43 @@ mod raw {
                 }
             }
             String::from_utf8_lossy(&seen).to_string()
+        }
+
+        /// The whole response: its status, and its body (as long as its
+        /// `content-length` says).
+        pub fn answer(&mut self) -> (u16, String) {
+            let (status, head) = self.head();
+            let lower = head.to_ascii_lowercase();
+            let mut body = Vec::new();
+            if lower.contains("transfer-encoding: chunked") {
+                // Chunks, each a hex size line, its bytes and a line end.
+                loop {
+                    let mut size = String::new();
+                    let mut byte = [0u8; 1];
+                    while !size.ends_with("\r\n") {
+                        self.stream.read_exact(&mut byte).unwrap();
+                        size.push(byte[0] as char);
+                    }
+                    let n = usize::from_str_radix(size.trim(), 16).unwrap();
+                    let mut chunk = vec![0u8; n + 2];
+                    self.stream.read_exact(&mut chunk).unwrap();
+                    if n == 0 {
+                        break;
+                    }
+                    body.extend_from_slice(&chunk[..n]);
+                }
+            } else {
+                let length: usize = lower
+                    .lines()
+                    .find_map(|l| {
+                        l.strip_prefix("content-length:")
+                            .map(|v| v.trim().parse().unwrap())
+                    })
+                    .unwrap_or(0);
+                body = vec![0u8; length];
+                self.stream.read_exact(&mut body).unwrap();
+            }
+            (status, String::from_utf8_lossy(&body).to_string())
         }
 
         /// The response's status line and headers (the body is left).
@@ -1191,11 +1261,30 @@ fn a_close_whose_backup_fails_says_so_and_leaves_nothing_running() {
     // The same book, backed up fine, is answered plainly.
     assert_eq!(open_book(&home, A), OpenOutcome::Opened);
     std::fs::create_dir(&unplugged).unwrap();
+    // The backup the opening makes (it may still be under way, and would be
+    // stopped by the close) is waited for: a backup asked for takes its turn
+    // after it.
+    match home.admin(Request::BackUpNow {
+        id: A.into(),
+        new_disk: false,
+    }) {
+        Response::BackedUp { targets, .. } => {
+            assert!(targets.iter().all(|t| t.problem.is_none()), "{targets:?}");
+        }
+        other => panic!("{other:?}"),
+    }
     let mut w = Wire::new(&home, A);
     w.initialize("owner");
     draft(&mut w, "backed up");
     w.end();
-    assert_eq!(close_book(&home, A), CloseOutcome::Closed);
+    let outcome = close_book(&home, A);
+    assert_eq!(
+        outcome,
+        CloseOutcome::Closed,
+        "{}",
+        std::fs::read_to_string(home.book_dir(A).join("ops").join("backup.jsonl"))
+            .unwrap_or_default()
+    );
     assert!(server.close().success());
 }
 
@@ -1256,6 +1345,8 @@ fn an_upload_in_flight_finishes_before_the_close_is_answered() {
     wait_for("the book is listed closed", Duration::from_secs(30), || {
         listed(&home, A).1
     });
+    // A negative window: it can only fail if the close was answered, never
+    // because the machine was slow.
     std::thread::sleep(Duration::from_millis(300));
     assert!(
         !closing.is_finished(),
@@ -1372,7 +1463,7 @@ fn a_stalled_mcp_body_cannot_hold_a_close_and_nothing_of_it_is_journaled() {
         "name": "books.draft_entry",
         "arguments": {"date": "2026-03-01", "description": "never finished"}}})
     .to_string();
-    raw.start(
+    raw.start_inside(
         "POST",
         "mcp",
         &[
@@ -1384,7 +1475,6 @@ fn a_stalled_mcp_body_cannot_hold_a_close_and_nothing_of_it_is_journaled() {
         body.as_bytes(),
         body.len() / 2,
     );
-    std::thread::sleep(Duration::from_millis(200));
     let started = std::time::Instant::now();
     assert_eq!(close_book(&home, A), CloseOutcome::Closed);
     let took = started.elapsed();
@@ -1459,42 +1549,43 @@ fn a_slow_upload_that_finishes_within_the_grace_is_not_cut() {
 
 /// A call whose body is whole and that is running when the grace runs out
 /// is not cut: it ends, is answered and recorded as having run, and only
-/// then is the close answered. What this proves is that the close waits for
-/// the call and does not kill it; that a body read to its end is never cut
-/// (the line of INVARIANT 15) is proved at its seat, by
+/// then is the close answered. The call is an ordinary one (`books.attach_
+/// receipt`, which reads its upload: bounded by one request, so a close waits
+/// for it instead of stopping it), held inside its read of the file, which
+/// is a named pipe nothing writes to yet. What this proves is that the close
+/// waits for such a call and does not kill it; that a body read to its end
+/// is never cut (the line of INVARIANT 15) is proved at its seat, by
 /// `local::tests::a_body_read_to_its_end_is_never_cut_and_one_not_yet_is`:
 /// this test passes even with a cut that marks every request inside (the
 /// call runs in the session's task, past the handler's own check for a cut).
+/// (A backup asked for is no longer this call: it is stoppable, and a close
+/// stops it: `a_close_stops_a_running_backup_call_and_says_so`.)
 #[cfg(unix)]
 #[test]
 fn a_running_call_is_never_cut_when_the_grace_runs_out() {
+    use std::os::unix::fs::OpenOptionsExt;
     let home = Home::new("close-running-call");
-    let shim = shim_git(&home);
-    let server = server_with_shim(
-        &home,
-        &shim,
-        &[
-            "--answer-grace",
-            "400",
-            "--close-backup",
-            "500",
-            "--backup-quiet",
-            "3600000",
-            "--timers",
-            "20",
-        ],
-    );
+    let server = Server::start_with(&home, &["--answer-grace", "400", "--timers", "20"]);
     home.create(A, "USD");
-    let disk = home.dir.path().join("disk");
-    std::fs::create_dir_all(&disk).unwrap();
     let mut w = Wire::new(&home, A);
     w.initialize("owner");
-    set_backup_folder(&mut w, &disk);
-    draft(&mut w, "moves the head");
-    std::fs::write(shim.join("stall"), b"").unwrap();
+    let bytes = b"%PDF-1.4 a receipt, read by a call that is held".to_vec();
+    let up = w.upload(&bytes, "r.pdf", "application/pdf", "receipt");
+    // The call takes its file (renaming it to `.taken`) and reads it: make
+    // what it reads a named pipe, so it waits there for a writer.
+    let uploads = home.book_dir(A).join("uploads");
+    let bin = uploads.join(format!("{up}.bin"));
+    std::fs::remove_file(&bin).unwrap();
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(&bin)
+            .status()
+            .unwrap()
+            .success()
+    );
     let mut raw = raw::Raw::connect(&home, A);
     let body = json!({"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {
-        "name": "books.back_up_now", "arguments": {}}})
+        "name": "books.attach_receipt", "arguments": {"upload_id": up}}})
     .to_string();
     raw.start(
         "POST",
@@ -1508,31 +1599,56 @@ fn a_running_call_is_never_cut_when_the_grace_runs_out() {
         body.as_bytes(),
         body.len(),
     );
-    wait_for("the call reached git", Duration::from_secs(30), || {
-        shim.join("stalled").exists()
-    });
+    // Inside its read: a writer can open the pipe without blocking only
+    // once a reader has it open. (The writer is kept, to feed it later.)
+    let taken = uploads.join(format!("{up}.taken"));
+    let mut feed = None;
+    wait_for(
+        "the call is reading its file",
+        Duration::from_secs(60),
+        || match std::fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&taken)
+        {
+            Ok(f) => {
+                feed = Some(f);
+                true
+            }
+            Err(_) => false,
+        },
+    );
     let closing = std::thread::spawn({
         let admin = home.run().join("admin.sock");
         move || ledger_mcp::admin::call(&admin, Request::CloseBook { id: A.into() }).unwrap()
     });
-    // Well past the grace: the call is still running, and not cut.
+    wait_for("the book is listed closed", Duration::from_secs(30), || {
+        listed(&home, A).1
+    });
+    // A negative window well past the grace (400 ms): the call is still
+    // running, and not cut. It can only fail if the close was answered, never
+    // because the machine was slow.
     std::thread::sleep(Duration::from_millis(1200));
     assert!(
         !closing.is_finished(),
         "the close didn't wait for a running call"
     );
-    std::fs::remove_file(shim.join("stall")).unwrap();
-    let (status, head) = raw.head();
-    assert_eq!(status, 200, "{head}");
+    {
+        use std::io::Write;
+        let mut feed = feed.take().unwrap();
+        feed.write_all(&bytes).unwrap();
+    }
+    let (status, said) = raw.answer();
+    assert_eq!(status, 200, "{said}");
     let _ = closing.join().unwrap();
-    assert!(cut_records(&home, A, "books.back_up_now").is_empty());
+    assert!(cut_records(&home, A, "books.attach_receipt").is_empty());
     assert!(cut_records(&home, A, "connect").is_empty());
     assert!(
         access_of(&home, A)
             .iter()
-            .any(|r| r.access.subject == "books.back_up_now"
+            .any(|r| r.access.subject == "books.attach_receipt"
                 && r.access.result == ledger_store::access::Outcome::Ok),
-        "the call that ran is on record as having run"
+        "the call that ran is on record as having run: {said}"
     );
     drop(raw);
     assert!(server.close().success());
@@ -1674,6 +1790,7 @@ fn a_restore_over_an_open_book_waits_for_what_is_inside_it() {
         "{records:?}"
     );
     let at_answer = tree_of(&legacy);
+    // A negative window (it can only fail if something moved).
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(moved(&at_answer, &tree_of(&legacy)), Vec::<String>::new());
     assert!(server.close().success());
@@ -1996,7 +2113,7 @@ fn the_servers_own_close_cuts_stalled_requests_and_exits_zero_in_time() {
         "name": "books.draft_entry",
         "arguments": {"date": "2026-03-01", "description": "never finished"}}})
     .to_string();
-    raw_call.start(
+    raw_call.start_inside(
         "POST",
         "mcp",
         &[
@@ -2008,7 +2125,6 @@ fn the_servers_own_close_cuts_stalled_requests_and_exits_zero_in_time() {
         body.as_bytes(),
         body.len() / 2,
     );
-    std::thread::sleep(Duration::from_millis(200));
     let started = std::time::Instant::now();
     let status = server.close();
     let took = started.elapsed();
@@ -2107,8 +2223,9 @@ fn a_late_timer_does_nothing(name: &str, held_timers: &str) {
     let at_close = tree_of(&dir);
     // The timers go on, with what they took before the close.
     std::fs::remove_file(run.join("timer-hold")).unwrap();
-    std::thread::sleep(Duration::from_millis(300));
-    stands_still(&home, A, Duration::from_millis(500), "a late timer");
+    // (A window in which nothing may move, begun at the release: no wait
+    // before it for the timers to get going, which proved nothing.)
+    stands_still(&home, A, Duration::from_millis(800), "a late timer");
     assert_eq!(moved(&at_close, &tree_of(&dir)), Vec::<String>::new());
     assert!(dir.join("uploads").join("stray.bin").exists());
     assert!(dir.join("exports").join("stray.bin").exists());
@@ -2291,10 +2408,11 @@ fn fsck_of(repo: &std::path::Path) {
 }
 
 /// A close that stops real git inside a commit, and inside a push to a
-/// folder, leaves no lock for anyone to remove: each is gone before the
-/// close is answered and noted in the backup's record, the book opened
-/// again at once backs up with no step by hand, and both repositories pass
-/// `git fsck` (ledger_store::backup INVARIANT 5).
+/// folder, leaves no lock for anyone to remove: git is sent SIGTERM and
+/// removes its own locks, so there is nothing for the server to clean up
+/// (the backup's record holds no `lock_removed` or `lock_left`), the book
+/// opened again at once backs up with no step by hand, and both
+/// repositories pass `git fsck` (ledger_store::backup INVARIANT 5).
 #[cfg(unix)]
 #[test]
 fn a_close_that_stops_git_in_a_commit_or_a_push_leaves_no_lock_and_the_next_backup_succeeds() {
@@ -2339,7 +2457,11 @@ fn a_close_that_stops_git_in_a_commit_or_a_push_leaves_no_lock_and_the_next_back
         "git never reached its ref update"
     );
     assert_eq!(locks_under(&archive), Vec::<String>::new());
-    assert!(record().contains("HEAD.lock"), "{}", record());
+    assert!(
+        !record().contains("lock_removed") && !record().contains("lock_left"),
+        "git removed its own locks: nothing was cleaned up here: {}",
+        record()
+    );
     std::fs::remove_file(shim.join("slow-commit")).unwrap();
     std::fs::remove_file(shim.join("hooked")).unwrap();
     assert_eq!(open_book(&home, A), OpenOutcome::Opened);
@@ -2373,8 +2495,8 @@ fn a_close_that_stops_git_in_a_commit_or_a_push_leaves_no_lock_and_the_next_back
     );
     assert_eq!(locks_under(&archive), Vec::<String>::new());
     assert!(
-        record().contains("\"kind\":\"lock_removed\"") && record().contains("refs/heads/main.lock"),
-        "the removal wasn't recorded: {}",
+        !record().contains("lock_removed") && !record().contains("lock_left"),
+        "git removed its own locks: nothing was cleaned up here: {}",
         record()
     );
     std::fs::remove_file(shim.join("slow-commit")).unwrap();
@@ -2410,8 +2532,8 @@ fn a_close_that_stops_git_in_a_commit_or_a_push_leaves_no_lock_and_the_next_back
     assert_eq!(locks_under(&target), Vec::<String>::new());
     assert_eq!(locks_under(&archive), Vec::<String>::new());
     assert!(
-        record().contains("\"repo\":\"folder\""),
-        "the folder's lock wasn't recorded: {}",
+        !record().contains("lock_removed") && !record().contains("lock_left"),
+        "git removed its own locks: nothing was cleaned up here: {}",
         record()
     );
     std::fs::remove_file(shim.join("slow-push")).unwrap();
@@ -2433,5 +2555,578 @@ fn a_close_that_stops_git_in_a_commit_or_a_push_leaves_no_lock_and_the_next_back
         "wanderbooks-backup-v1",
     )
     .expect("the backup record is a whole chain");
+    assert!(server.close().success());
+}
+
+/// A tool call sent on `w`'s session, its whole body written and its answer
+/// not yet read: the connection it went out on.
+#[cfg(unix)]
+fn call_unanswered(home: &Home, w: &Wire, id: u64, tool: &str, args: Value) -> raw::Raw {
+    let mut raw = raw::Raw::connect(home, A);
+    let body = json!({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {
+        "name": tool, "arguments": args}})
+    .to_string();
+    raw.start(
+        "POST",
+        "mcp",
+        &[
+            ("content-type", "application/json"),
+            ("accept", "application/json, text/event-stream"),
+            ("mcp-session-id", w.session().unwrap()),
+            ("mcp-protocol-version", w.version().unwrap()),
+        ],
+        body.as_bytes(),
+        body.len(),
+    );
+    raw
+}
+
+/// Hold every process of the group `pid` leads still (SIGSTOP): a SIGTERM
+/// sent to it then stays pending, git can't end on it, and only the kill
+/// after the grace ends it (how a git that can't end on SIGTERM, holding
+/// its locks, is made on purpose).
+#[cfg(unix)]
+fn freeze_group_of(pid: u32) {
+    let out = std::process::Command::new("ps")
+        .args(["-o", "pgid=", "-p", &pid.to_string()])
+        .output()
+        .unwrap();
+    let group: i32 = String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse()
+        .expect("ps names the group");
+    // SAFETY: stopping the group of a git this test's server started.
+    assert_eq!(unsafe { libc::kill(-group, libc::SIGSTOP) }, 0);
+}
+
+/// The most a close may take in these tests where what it stops would
+/// otherwise run for ever (a stall that is never lifted): a guard against a
+/// hang, not a measure of speed. That the close ends at all, with the stall
+/// still in place, is what proves it stopped the call or job.
+#[cfg(unix)]
+const NEVER_LONGER: Duration = Duration::from_secs(120);
+
+/// The backup record of `id`, whole.
+#[cfg(unix)]
+fn backup_record_of(home: &Home, id: &str) -> Vec<serde_json::Map<String, Value>> {
+    ledger_store::chain::read(
+        &ledger_store::ops::ops_dir(&home.book_dir(id)).join("backup.jsonl"),
+        "wanderbooks-backup-v1",
+    )
+    .expect("the backup record is a whole chain")
+    .records
+}
+
+/// A backup call that is running (git stalled) when a close begins is
+/// STOPPED by it, not waited for: the call is answered, while git is still
+/// stalled, that it was stopped because the books are closing; its access
+/// record says `refused: stopped_by_close`; the backup records `stopped`
+/// and no result of the run's own (nothing it was doing is recorded as
+/// done); git and all it started are gone; and the close's own last
+/// backup is made as always (local.rs INVARIANT 10).
+#[cfg(unix)]
+#[test]
+fn a_close_stops_a_running_backup_call_and_says_so() {
+    let home = Home::new("close-stops-backup-call");
+    let shim = shim_git(&home);
+    let server = server_with_shim(
+        &home,
+        &shim,
+        &[
+            "--close-backup",
+            "20000",
+            "--backup-quiet",
+            "3600000",
+            "--timers",
+            "20",
+        ],
+    );
+    home.create(A, "USD");
+    let disk = home.dir.path().join("disk");
+    std::fs::create_dir_all(&disk).unwrap();
+    let mut w = Wire::new(&home, A);
+    w.initialize("owner");
+    set_backup_folder(&mut w, &disk);
+    draft(&mut w, "moves the head");
+    std::fs::write(shim.join("stall"), b"").unwrap();
+    let mut call = call_unanswered(&home, &w, 4, "books.back_up_now", json!({}));
+    wait_for("the call reached git", Duration::from_secs(60), || {
+        shim.join("stalled").exists()
+    });
+    let started = std::time::Instant::now();
+    let closing = std::thread::spawn({
+        let admin = home.run().join("admin.sock");
+        move || ledger_mcp::admin::call(&admin, Request::CloseBook { id: A.into() }).unwrap()
+    });
+    // Answered with git still stalled: stopped by the close, not let go.
+    let (status, said) = call.answer();
+    assert_eq!(status, 200, "{said}");
+    assert!(
+        said.contains("stopped because the books are closing")
+            && said.contains("nothing it was doing is recorded as done"),
+        "{said}"
+    );
+    assert!(shim.join("stall").exists(), "the stall was lifted first");
+    // Lifted now, so the close's own last backup can run.
+    std::fs::remove_file(shim.join("stall")).unwrap();
+    match closing.join().unwrap() {
+        Response::CloseBook { outcome, .. } => assert_eq!(outcome, CloseOutcome::Closed),
+        other => panic!("{other:?}"),
+    }
+    assert!(started.elapsed() < NEVER_LONGER);
+    let stalled: Vec<u32> = std::fs::read_to_string(shim.join("stalled"))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| l.trim().parse().ok())
+        .collect();
+    for pid in &stalled {
+        assert!(!alive(*pid), "git {pid} still runs");
+    }
+    let records = access_of(&home, A);
+    let mine = records
+        .iter()
+        .find(|r| r.access.subject == "books.back_up_now")
+        .expect("the call is on record");
+    assert_eq!(
+        mine.access.result,
+        ledger_store::access::Outcome::Refused("stopped_by_close".into())
+    );
+    assert!(mine.access.head_after.is_none());
+    let record = backup_record_of(&home, A);
+    assert!(
+        record
+            .iter()
+            .any(|r| r.get("kind") == Some(&json!("stopped"))
+                && r.get("why") == Some(&json!("asked"))),
+        "{record:?}"
+    );
+    assert!(
+        !record
+            .iter()
+            .any(|r| r.get("why") == Some(&json!("asked"))
+                && r.get("kind") != Some(&json!("stopped"))),
+        "the stopped run recorded a result of its own: {record:?}"
+    );
+    assert!(server.close().success());
+}
+
+/// A verification and a package that are running when a close begins are
+/// stopped by it, each answering that it was stopped because the books are
+/// closing, each on record as `refused: stopped_by_close`, and the journal
+/// untouched. Each is held as it begins by the server's test knob
+/// (`--timer-hold`: `call:books.verify`, `call:books.export_cpa_package`),
+/// which the close's start releases; the stop is then at the call's first
+/// look.
+#[cfg(unix)]
+#[test]
+fn a_close_stops_a_running_verification_and_a_running_package_and_says_so() {
+    let home = Home::new("close-stops-verify-package");
+    let server = Server::start_with(
+        &home,
+        &[
+            "--timer-hold",
+            "--timers",
+            "20",
+            "--backup-quiet",
+            "3600000",
+        ],
+    );
+    home.create(A, "USD");
+    let run = home.run();
+    let mut w = Wire::new(&home, A);
+    w.initialize("owner");
+    let mut other = Wire::new(&home, A);
+    other.initialize("packager");
+    let held = ["call:books.verify", "call:books.export_cpa_package"];
+    std::fs::write(run.join("timer-hold"), held.join(",")).unwrap();
+    let mut verify = call_unanswered(&home, &w, 4, "books.verify", json!({}));
+    let mut package = call_unanswered(
+        &home,
+        &other,
+        5,
+        "books.export_cpa_package",
+        json!({"cash_accounts": ["1000"]}),
+    );
+    let seen = || std::fs::read_to_string(run.join("timer-held")).unwrap_or_default();
+    wait_for("both calls are held", Duration::from_secs(60), || {
+        held.iter().all(|h| seen().lines().any(|l| l == *h))
+    });
+    let before = files_of(&home, A);
+    let started = std::time::Instant::now();
+    // The hold is never lifted by the test: the close does it (it is the
+    // close that releases the calls, which then stop at their first look).
+    let closing = std::thread::spawn({
+        let admin = home.run().join("admin.sock");
+        move || ledger_mcp::admin::call(&admin, Request::CloseBook { id: A.into() }).unwrap()
+    });
+    for (what, call) in [("verify", &mut verify), ("package", &mut package)] {
+        let (status, said) = call.answer();
+        assert_eq!(status, 200, "{what}: {said}");
+        assert!(
+            said.contains("stopped because the books are closing"),
+            "{what}: {said}"
+        );
+    }
+    match closing.join().unwrap() {
+        Response::CloseBook { outcome, .. } => assert_eq!(outcome, CloseOutcome::Closed),
+        other => panic!("{other:?}"),
+    }
+    assert!(started.elapsed() < NEVER_LONGER);
+    assert_eq!(files_of(&home, A).0.len(), before.0.len());
+    let records = access_of(&home, A);
+    for tool in ["books.verify", "books.export_cpa_package"] {
+        let mine = records
+            .iter()
+            .find(|r| r.access.subject == tool)
+            .unwrap_or_else(|| panic!("{tool} isn't on record"));
+        assert_eq!(
+            mine.access.result,
+            ledger_store::access::Outcome::Refused("stopped_by_close".into()),
+            "{tool}"
+        );
+        assert!(mine.access.head_after.is_none(), "{tool}");
+    }
+    std::fs::remove_file(run.join("timer-hold")).unwrap();
+    assert!(server.close().success());
+}
+
+/// The files of `books/` byte for byte (the staging and scratch folders
+/// among them), but for the books in `live`: those the server has open and
+/// works on by itself (its timers write their archives and logs).
+#[cfg(unix)]
+fn root_without(home: &Home, live: &[&str]) -> BTreeMap<String, (u64, String)> {
+    tree_of(&home.root().join("books"))
+        .into_iter()
+        .filter(|(k, _)| !live.iter().any(|b| k.starts_with(&format!("{b}/"))))
+        .collect()
+}
+
+/// A job on the admin socket (restore, adopt, create, open) that is running
+/// when a close of another book begins is stopped by it, before its point of
+/// no return: it answers that it was stopped because the books are closing,
+/// what it wrote is removed, and the root is byte for byte as it was (the
+/// job's staging or scratch folder is there while it is held, and gone after;
+/// asked again with no close, it goes through). Each job is held inside a
+/// phase by the server's test knob (`--timer-hold`, `job:phase`), which the
+/// close's start releases; the stop is then at the job's next look.
+#[cfg(unix)]
+#[test]
+fn a_close_stops_a_running_restore_adopt_create_and_open_leaving_the_root_as_it_was() {
+    const C: &str = "cedar";
+    let home = Home::new("close-stops-jobs");
+    let server = Server::start_with(
+        &home,
+        &[
+            "--timer-hold",
+            "--timers",
+            "20",
+            "--backup-quiet",
+            "3600000",
+            "--answer-grace",
+            "300",
+        ],
+    );
+    home.create(A, "USD");
+    home.create(C, "USD");
+    assert!(matches!(close_book(&home, C), CloseOutcome::Closed));
+    let mut w = Wire::new(&home, A);
+    w.initialize("owner");
+    let repo = backed_up_to_folder(&home, &mut w, A);
+    w.end();
+    let old = tempfile::Builder::new()
+        .prefix("wb-close-old-")
+        .tempdir()
+        .unwrap();
+    let data = old.path().join("books-data");
+    drop(ledger_store::Store::create(&data, ledger_core::Currency::USD).unwrap());
+    let toml = "[company]\nname = \"Acme Widgets LLC\"\n".to_string();
+    let run = home.run();
+    let restore_head = match home.admin(Request::Restore {
+        id: "gamma".into(),
+        source: repo.display().to_string(),
+        replace: false,
+        confirmed: false,
+        expect_head: None,
+    }) {
+        Response::RestorePreview(p) => p.head,
+        other => panic!("{other:?}"),
+    };
+    let adopt = |confirmed: bool, head: Option<(u64, String)>| Request::Adopt {
+        id: "delta".into(),
+        source: data.clone(),
+        settings_toml: Some(toml.clone()),
+        config_json: None,
+        vault_dir: None,
+        vault_key: None,
+        confirmed,
+        expect_head: head,
+        skip_unknown: true,
+    };
+    let adopt_head = match home.admin(adopt(false, None)) {
+        Response::Preview(p) => p.source_head,
+        other => panic!("{other:?}"),
+    };
+    let restore = || Request::Restore {
+        id: "gamma".into(),
+        source: repo.display().to_string(),
+        replace: false,
+        confirmed: true,
+        expect_head: Some(restore_head.clone()),
+    };
+    // (the held name, the job, what it says it didn't do, whether it leaves
+    // a folder of its own in `books/` while it is held)
+    let jobs: Vec<(&str, Request, &str, bool)> = vec![
+        ("restore:copy", restore(), "nothing was restored", true),
+        (
+            "adopt:open",
+            adopt(true, Some(adopt_head)),
+            "nothing was adopted",
+            true,
+        ),
+        (
+            "create:start",
+            Request::Create {
+                id: "epsilon".into(),
+                currency: "USD".into(),
+            },
+            "nothing was created",
+            false,
+        ),
+        (
+            "open:start",
+            Request::OpenBook { id: C.into() },
+            "not opened",
+            false,
+        ),
+    ];
+    let count = |name: &str| {
+        std::fs::read_to_string(run.join("timer-held"))
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| *l == name)
+            .count()
+    };
+    // The books open and live while a job is held: not compared (the job's
+    // own book, not yet there, is).
+    let mut live = vec![A];
+    for (name, job, said, leaves_a_folder) in jobs {
+        let before = root_without(&home, &live);
+        let legacy_before = tree_of(&home.root().join("legacy"));
+        std::fs::write(run.join("timer-hold"), name).unwrap();
+        let seen = count(name);
+        let running = std::thread::spawn({
+            let admin = home.run().join("admin.sock");
+            let job = job.clone();
+            move || ledger_mcp::admin::call(&admin, job).unwrap()
+        });
+        wait_for(
+            &format!("{name} is held inside the job"),
+            Duration::from_secs(300),
+            || count(name) > seen || running.is_finished(),
+        );
+        if running.is_finished() {
+            panic!(
+                "{name}: the job ended before it was held: {:?}",
+                running.join()
+            );
+        }
+        if leaves_a_folder {
+            assert_ne!(
+                root_without(&home, &live),
+                before,
+                "{name}: the job wrote nothing while held"
+            );
+        }
+        let started = std::time::Instant::now();
+        // The close of another book: it stops the job (it waits for the
+        // job's lock otherwise), and the test lifts nothing.
+        let closed = close_book(&home, A);
+        assert_eq!(closed, CloseOutcome::Closed, "{name}");
+        assert!(started.elapsed() < NEVER_LONGER, "{name}");
+        let answer = running.join().unwrap();
+        let text = format!("{answer:?}");
+        assert!(
+            text.contains("stopped because the books are closing") && text.contains(said),
+            "{name}: {text}"
+        );
+        std::fs::remove_file(run.join("timer-hold")).unwrap();
+        let after = root_without(&home, &live);
+        assert_eq!(
+            moved(&before, &after),
+            Vec::<String>::new(),
+            "{name}: the root isn't as it was"
+        );
+        assert_eq!(
+            tree_of(&home.root().join("legacy")),
+            legacy_before,
+            "{name}"
+        );
+        assert_eq!(open_book(&home, A), OpenOutcome::Opened, "{name}");
+        // Asked again, with nothing closing, it goes through.
+        match (name, home.admin(job)) {
+            ("restore:copy", Response::Restored(_))
+            | ("adopt:open", Response::Adopted(_))
+            | ("create:start", Response::Created { .. })
+            | ("open:start", Response::OpenBook { .. }) => {}
+            (name, other) => panic!("{name}, asked again: {other:?}"),
+        }
+        live.push(match name {
+            "restore:copy" => "gamma",
+            "adopt:open" => "delta",
+            "create:start" => "epsilon",
+            _ => C,
+        });
+    }
+    assert_eq!(listed(&home, C), (true, false, None));
+    for id in ["gamma", "delta", "epsilon"] {
+        assert_eq!(listed(&home, id), (true, false, None), "{id}");
+    }
+    assert!(server.close().success());
+}
+
+/// A git that can't end on SIGTERM (its group frozen here, so the signal
+/// stays pending) is killed once the grace has run out, and the lock it
+/// leaves in a backup FOLDER is the owner's: the server never removes it. It
+/// is recorded with its whole path, the target's backup is marked failed with
+/// words naming the file and saying when it may be removed, the close says
+/// its last backup wasn't whole, and the status (`books.backup`) says the
+/// same after the book is opened again. The next backup, meeting the lock,
+/// fails by git's own words and leaves the file; once the owner removes it
+/// the backup goes on, and both repositories pass `git fsck`.
+#[cfg(unix)]
+#[test]
+fn a_lock_a_kill_leaves_in_the_backup_folder_is_reported_and_never_removed_by_the_server() {
+    let home = Home::new("close-lock-left");
+    let shim = slow_real_git(&home);
+    // A bound long enough that the test freezes git before the close's own
+    // bound runs out: the freeze is made on the condition that git is
+    // inside the push, not on a guess at how long that takes.
+    let server = server_with_shim(
+        &home,
+        &shim,
+        &[
+            "--close-backup",
+            "8000",
+            "--backup-quiet",
+            "3600000",
+            "--timers",
+            "20",
+        ],
+    );
+    home.create(A, "USD");
+    let disk = home.dir.path().join("disk");
+    std::fs::create_dir_all(&disk).unwrap();
+    let mut w = Wire::new(&home, A);
+    w.initialize("owner");
+    set_backup_folder(&mut w, &disk);
+    draft(&mut w, "the first backup");
+    match home.admin(Request::BackUpNow {
+        id: A.into(),
+        new_disk: false,
+    }) {
+        Response::BackedUp { targets, .. } => {
+            assert!(targets.iter().all(|t| t.problem.is_none()), "{targets:?}");
+        }
+        other => panic!("{other:?}"),
+    }
+    draft(&mut w, "to be pushed inside a push");
+    let target = disk.join(format!("{A}.git"));
+    let lock = target.join("refs").join("heads").join("main.lock");
+    // Another writer's lock, there before our push: never touched, never
+    // named.
+    let another = target.join("refs").join("heads").join("another.lock");
+    std::fs::write(&another, b"").unwrap();
+    std::fs::write(shim.join("slow-push"), b"").unwrap();
+    let closing = std::thread::spawn({
+        let admin = home.run().join("admin.sock");
+        move || ledger_mcp::admin::call(&admin, Request::CloseBook { id: A.into() }).unwrap()
+    });
+    wait_for("git is inside the push", Duration::from_secs(60), || {
+        shim.join("hooked").exists() && lock.exists()
+    });
+    let hooked: u32 = std::fs::read_to_string(shim.join("hooked"))
+        .unwrap()
+        .lines()
+        .next()
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    freeze_group_of(hooked);
+    let outcome = match closing.join().unwrap() {
+        Response::CloseBook { outcome, .. } => outcome,
+        other => panic!("{other:?}"),
+    };
+    let why = match outcome {
+        CloseOutcome::ClosedBackupIncomplete(why) => why,
+        other => panic!("a backup that left a lock was answered as {other:?}"),
+    };
+    let lock_text = lock.display().to_string();
+    assert!(why.contains(&lock_text), "{why}");
+    assert!(
+        why.contains("nothing else is using the backup folder"),
+        "{why}"
+    );
+    assert!(!why.contains("another.lock"), "{why}");
+    assert!(!why.contains(&home.root().display().to_string()), "{why}");
+    // Left where it was: the server deleted nothing in the owner's folder.
+    assert!(lock.exists(), "a file in the owner's folder was deleted");
+    assert!(another.exists());
+    let record = backup_record_of(&home, A);
+    assert!(
+        record
+            .iter()
+            .any(|r| r.get("kind") == Some(&json!("lock_left"))
+                && r.get("repo") == Some(&json!("folder"))
+                && r.get("path") == Some(&json!(lock_text))),
+        "{record:?}"
+    );
+    assert!(
+        !record
+            .iter()
+            .any(|r| r.get("kind") == Some(&json!("lock_removed"))
+                && r.get("repo") == Some(&json!("folder"))),
+        "{record:?}"
+    );
+    // Opened again, the status says it, in words that name the file.
+    std::fs::remove_file(shim.join("slow-push")).unwrap();
+    assert_eq!(open_book(&home, A), OpenOutcome::Opened);
+    let mut w = Wire::new(&home, A);
+    w.initialize("owner");
+    let status = w.call("books.backup", json!({}));
+    let shown = status["result"]["structuredContent"]["targets"][0]["last_error"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the status names no failure: {status}"))
+        .to_string();
+    assert!(shown.contains(&lock_text), "{shown}");
+    assert!(
+        shown.contains("nothing else is using the backup folder"),
+        "{shown}"
+    );
+    // With the lock still there the next backup fails (git's own words) and
+    // the file stays; once the owner removes it, it goes on.
+    match home.admin(Request::BackUpNow {
+        id: A.into(),
+        new_disk: false,
+    }) {
+        Response::BackedUp { targets, .. } => {
+            assert!(targets.iter().any(|t| t.problem.is_some()), "{targets:?}");
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(lock.exists(), "a later backup removed it");
+    std::fs::remove_file(&lock).unwrap();
+    match home.admin(Request::BackUpNow {
+        id: A.into(),
+        new_disk: false,
+    }) {
+        Response::BackedUp { targets, .. } => {
+            assert!(targets.iter().all(|t| t.problem.is_none()), "{targets:?}");
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(another.exists());
+    fsck_of(&home.book_dir(A).join("archive.git"));
+    fsck_of(&target);
     assert!(server.close().success());
 }

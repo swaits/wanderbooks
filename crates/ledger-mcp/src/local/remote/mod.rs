@@ -520,7 +520,11 @@ pub(super) fn valid_redirect(text: &str) -> Option<reqwest::Url> {
 /// than the table keeps (a registration is held in memory, and in the file
 /// once the person has allowed it).
 pub(super) fn redirects_fit(redirects: &[String]) -> bool {
-    redirects.iter().map(String::len).sum::<usize>() <= MAX_REDIRECTS_TOTAL
+    // A fold, not `Iterator::sum`: kernel-only keeps `sum` for the kernel.
+    redirects
+        .iter()
+        .fold(0usize, |total, r| total.saturating_add(r.len()))
+        <= MAX_REDIRECTS_TOTAL
 }
 
 /// What a redirect address shows the person: its host, or its scheme.

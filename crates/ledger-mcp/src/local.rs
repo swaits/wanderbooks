@@ -992,6 +992,23 @@ impl Drop for CloseGuard {
     }
 }
 
+/// The test knob `--timer-hold`: say in `run/timer-held` that `name` is
+/// held, as one line. The line, its newline included, goes out in one
+/// `write` on a file opened for append: `writeln!` on a `File` is a write
+/// for the name and another for the newline, so two writers (the sweep and
+/// the backup, on a loaded machine) could interleave and leave "backupsweep"
+/// and an empty line where each was to say its own name.
+fn say_held(run: &std::path::Path, name: &str) {
+    use std::io::Write;
+    if let Ok(mut said) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(run.join("timer-held"))
+    {
+        let _ = said.write_all(format!("{name}\n").as_bytes());
+    }
+}
+
 impl Books {
     /// A server's books for `root`, none held yet.
     fn new(
@@ -1097,16 +1114,7 @@ impl Books {
         let flag = flag.clone();
         stop.with_phase_watch(Arc::new(move |phase: &str| {
             let name = format!("{job}:{phase}");
-            {
-                use std::io::Write;
-                if let Ok(mut said) = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(run.join("timer-held"))
-                {
-                    let _ = writeln!(said, "{name}");
-                }
-            }
+            say_held(&run, &name);
             let held = || {
                 std::fs::read_to_string(run.join("timer-hold"))
                     .is_ok_and(|names| names.split(',').any(|n| n.trim() == name))
@@ -1128,16 +1136,7 @@ impl Books {
         let Ok(run) = self.root.run_dir() else {
             return;
         };
-        {
-            use std::io::Write;
-            if let Ok(mut said) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(run.join("timer-held"))
-            {
-                let _ = writeln!(said, "{timer}");
-            }
-        }
+        say_held(&run, timer);
         // Held while the file names this timer (a list, comma-separated).
         let held = || {
             std::fs::read_to_string(run.join("timer-hold"))
@@ -1315,16 +1314,7 @@ impl Books {
             let flag = shared.hurry_flag();
             backups.set_hold(Arc::new(move |call: &str| {
                 let name = format!("call:{call}");
-                {
-                    use std::io::Write;
-                    if let Ok(mut said) = std::fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(run.join("timer-held"))
-                    {
-                        let _ = writeln!(said, "{name}");
-                    }
-                }
+                say_held(&run, &name);
                 let held = || {
                     std::fs::read_to_string(run.join("timer-hold"))
                         .is_ok_and(|names| names.split(',').any(|n| n.trim() == name))

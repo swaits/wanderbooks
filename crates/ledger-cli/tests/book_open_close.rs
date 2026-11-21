@@ -1209,10 +1209,17 @@ fn shim_git(home: &Home) -> PathBuf {
 /// Whether process `pid` is still there.
 #[cfg(unix)]
 fn alive(pid: u32) -> bool {
-    std::path::Path::new(&format!("/proc/{pid}")).exists()
-        && std::fs::read_to_string(format!("/proc/{pid}/stat"))
-            .map(|s| !s.contains(") Z "))
-            .unwrap_or(false)
+    // `ps` on Linux and macOS alike (there is no /proc on macOS, where a
+    // test of "is it gone" would pass whatever the server had done): its
+    // state is empty for a process that isn't there, and starts with Z for
+    // one that has ended and is not yet reaped.
+    let out = std::process::Command::new("ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .output()
+        .expect("ps runs");
+    let state = String::from_utf8_lossy(&out.stdout);
+    let state = state.trim();
+    !state.is_empty() && !state.starts_with('Z')
 }
 
 /// The server, with the stand-in git first on its PATH.
@@ -2556,12 +2563,18 @@ fn fsck_of(repo: &std::path::Path) {
 fn a_close_that_stops_git_in_a_commit_or_a_push_leaves_no_lock_and_the_next_backup_succeeds() {
     let home = Home::new("close-git-locks");
     let shim = slow_real_git(&home);
+    // The close's bound lapses with git held inside its ref update, and
+    // what the test proves needs git to have got there first: the bound is
+    // long enough for the slowest machine to run every git before the
+    // update (a push, on a macOS runner, comes after a dozen of them and
+    // took longer than 1.5 s), as in the test of a lock a kill leaves. The
+    // hook holds git until the bound ends it, so each close takes the bound.
     let server = server_with_shim(
         &home,
         &shim,
         &[
             "--close-backup",
-            "1500",
+            "8000",
             "--backup-quiet",
             "3600000",
             "--timers",
@@ -2592,7 +2605,7 @@ fn a_close_that_stops_git_in_a_commit_or_a_push_leaves_no_lock_and_the_next_back
     );
     assert!(
         shim.join("hooked").exists(),
-        "git never reached its ref update"
+        "git never reached its ref update before the close's bound ran out: {outcome:?}"
     );
     assert_eq!(locks_under(&archive), Vec::<String>::new());
     assert!(
@@ -2629,7 +2642,7 @@ fn a_close_that_stops_git_in_a_commit_or_a_push_leaves_no_lock_and_the_next_back
     );
     assert!(
         shim.join("hooked").exists(),
-        "git never reached its ref update"
+        "git never reached its ref update before the close's bound ran out: {outcome:?}"
     );
     assert_eq!(locks_under(&archive), Vec::<String>::new());
     assert!(
@@ -2665,7 +2678,7 @@ fn a_close_that_stops_git_in_a_commit_or_a_push_leaves_no_lock_and_the_next_back
     );
     assert!(
         shim.join("hooked").exists(),
-        "git never reached its ref update"
+        "git never reached its ref update before the close's bound ran out: {outcome:?}"
     );
     assert_eq!(locks_under(&target), Vec::<String>::new());
     assert_eq!(locks_under(&archive), Vec::<String>::new());

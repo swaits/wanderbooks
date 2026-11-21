@@ -23,7 +23,7 @@
 //!
 //! The lines between a begin and its close count only if the close says
 //! `ok`: that is how a reader tells a complete call from an incomplete
-//! one, and the one rule every reader applies ([`CallGate`], [`standings`],
+//! one, and the one rule every reader applies (`CallGate`, [`standings`],
 //! [`committed`]). Ids are handed out again after a failed call (nothing
 //! it wrote counted), so a reader that takes the journal raw would pin the
 //! dead lines of a failed call on whatever takes the id next: every reader

@@ -148,7 +148,13 @@ fuzz_target!(|r: Request| {
                     .into_bytes()
             }
             Body::Call { tool, arguments } => {
-                let args = serde_json::from_str::<serde_json::Value>(arguments).unwrap_or_default();
+                let mut args = serde_json::from_str::<serde_json::Value>(arguments).unwrap_or_default();
+                // Every write needs a request key (D-88): without one the
+                // fuzzer would only ever meet the refusal, never the tool.
+                // This door's request count is unique for its book.
+                if let Some(a) = args.as_object_mut() {
+                    a.entry("request_key").or_insert_with(|| format!("fuzz-key-{n:08}").into());
+                }
                 serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                     "params": {"name": TOOLS[*tool as usize % TOOLS.len()], "arguments": args}})
                 .to_string()

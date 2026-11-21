@@ -241,7 +241,7 @@ fn books_that_keep_their_settings_say_where_facts_come_from() {
     let h = company(&dir);
     assert!(shows(
         &h,
-        "No company facts set yet: the agent records them as you give them."
+        "No company facts set yet: your assistant records them as you give them."
     ));
     drop(h);
     let mut s = Store::open(&dir.0.join("books-data")).unwrap();

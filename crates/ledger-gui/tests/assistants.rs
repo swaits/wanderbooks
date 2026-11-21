@@ -1080,12 +1080,13 @@ fn pictures() {
 
 // ---- 7: a web assistant asks to connect (plan P15 D-83, unit B1) --------------
 
-fn asking(id: &str, name: &str, recognised: bool) -> WebRequest {
+fn asking(id: &str, name: &str, known_host: bool) -> WebRequest {
     WebRequest {
         id: id.into(),
         book: "alpha".into(),
         client_name: name.into(),
-        recognised,
+        known_host,
+        code: format!("482 {}", 100 + id.len()),
         redirect: "https://claude.ai/api/mcp/auth_callback".into(),
         redirect_host: "claude.ai".into(),
         from: "203.0.113.9".into(),
@@ -1108,23 +1109,38 @@ fn a_web_assistant_asking_is_put_to_the_person_over_any_page_in_plain_words() {
     let owner = Fake::new();
     with_pending(
         &owner,
-        vec![asking("p_1", "Claude on the web", true)],
+        vec![asking("p_1", "Claude", true)],
         vec![],
     );
     let mut h = start(&w, &["alpha"], &owner);
     refresh(&mut h);
     // On the company's own page, not the Connect page.
     assert_ne!(h.state().route(), &Route::Connect);
+    // Where it is sent back to first, in neutral words: a host says nothing
+    // of who asks, so nothing is called a known product, and the one
+    // address of a vendor is not warned about, nor praised.
     assert!(
-        h.query_by_label_contains("Claude on the web wants to connect to Wanderland Labs. Allow?")
+        h.query_by_label_contains(
+            "An assistant that will be sent back to claude.ai wants to connect to Wanderland Labs. Allow?"
+        )
+        .is_some()
+    );
+    assert!(h.query_by_label_contains("Claude on the web").is_none());
+    assert!(h.query_by_label_contains("doesn't know this address").is_none());
+    // What it calls itself, after the address, as its own word.
+    assert!(h.query_by_label_contains("It calls itself").is_some());
+    // The code to match with the one the browser's page shows.
+    assert!(h.query_by_label_contains("Code 482 103").is_some());
+    assert!(
+        h.query_by_label_contains("Allow only if the page in your browser shows this same code")
             .is_some()
     );
     // Who, where it goes, from where: in words, nothing about OAuth.
     assert!(
-        h.query_by_label_contains("sent back to claude.ai")
+        h.query_all_by_label_contains("The request came from the internet address 203.0.113.9")
+            .next()
             .is_some()
     );
-    assert!(h.query_by_label_contains("203.0.113.9").is_some());
     assert!(
         h.query_by_label_contains("can't post entries unless you tick")
             .is_some()
@@ -1162,11 +1178,8 @@ fn refusing_and_allowing_with_posting_are_their_own_answers() {
     );
     let mut h = start(&w, &["alpha"], &owner);
     refresh(&mut h);
-    // A product that is not recognised is said not to be.
-    assert!(
-        h.query_by_label_contains("doesn't recognise this assistant")
-            .is_some()
-    );
+    // An address that isn't a known vendor's keeps its warning.
+    assert!(h.query_by_label_contains("doesn't know this address").is_some());
     h.get_by_role_and_label(Role::Button, "Don't allow").click();
     h.run_steps(2);
     wait_for("the refusal was given", || {
@@ -1179,7 +1192,7 @@ fn refusing_and_allowing_with_posting_are_their_own_answers() {
     // Another asks; this time posting is ticked, then allowed.
     with_pending(
         &owner,
-        vec![asking("p_8", "Claude on the web", true)],
+        vec![asking("p_8", "Claude", true)],
         vec![],
     );
     refresh(&mut h);
@@ -1196,12 +1209,49 @@ fn refusing_and_allowing_with_posting_are_their_own_answers() {
 }
 
 #[test]
+fn waiting_requests_each_show_their_own_code_and_only_a_few_are_drawn() {
+    let w = World::new(&[("alpha", "Wanderland Labs")]);
+    let owner = Fake::new();
+    let mut all = Vec::new();
+    for (i, id) in ["p_a", "p_b", "p_c", "p_d", "p_e"].iter().enumerate() {
+        let mut r = asking(id, "Claude", true);
+        // Never merged: each has its own code.
+        r.code = format!("{}{}{} 6{}{}", i, i, i, i, i);
+        // The later the id, the newer it is (more time left).
+        r.expires_in_secs = 100 + 10 * i as u64;
+        all.push(r);
+    }
+    with_pending(&owner, all, vec![]);
+    let mut h = start(&w, &["alpha"], &owner);
+    refresh(&mut h);
+    // The newest three, each with its own code; the rest are counted.
+    for shown in ["444 644", "333 633", "222 622"] {
+        assert!(
+            h.query_by_label_contains(&format!("Code {shown}")).is_some(),
+            "{shown}"
+        );
+    }
+    for hidden in ["111 611", "000 600"] {
+        assert!(
+            h.query_by_label_contains(&format!("Code {hidden}")).is_none(),
+            "{hidden}"
+        );
+    }
+    assert_eq!(
+        h.query_all_by_label_contains("wants to connect").count(),
+        3
+    );
+    assert!(h.query_by_label_contains("2 more are waiting").is_some());
+    drop(h);
+}
+
+#[test]
 fn a_request_that_ran_out_goes_away_and_posting_is_turned_on_and_off_on_the_connect_page() {
     let w = World::new(&[("alpha", "Wanderland Labs")]);
     let owner = Fake::new();
     with_pending(
         &owner,
-        vec![asking("p_2", "Claude on the web", true)],
+        vec![asking("p_2", "Claude", true)],
         vec![],
     );
     let mut h = start(&w, &["alpha"], &owner);

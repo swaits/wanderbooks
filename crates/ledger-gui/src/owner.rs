@@ -213,11 +213,15 @@ pub struct WebRequest {
     pub id: String,
     /// The company it asks to reach.
     pub book: String,
-    /// The product recognised by where it is sent back to ("Claude on
-    /// the web"), else what it calls itself.
+    /// What it calls itself: its own word, cleaned and short, possibly
+    /// empty. Never a product's name made from where it is sent back to.
     pub client_name: String,
-    /// Whether the product is one Wanderbooks recognises.
-    pub recognised: bool,
+    /// Whether the address it is sent back to is one of the vendors' known
+    /// hosts. Only the warning depends on it; nothing is shown as known or
+    /// trusted for it.
+    pub known_host: bool,
+    /// The short code to match with the one its browser page shows.
+    pub code: String,
     /// The address it is sent back to, in full.
     pub redirect: String,
     /// That address's host.

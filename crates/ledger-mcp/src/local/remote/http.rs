@@ -32,7 +32,7 @@
 //!   2. `OPTIONS` on a sign-in route answers a browser's preflight.
 //! ```
 
-use super::{Authorize, Denied, Door, OauthError, proxy};
+use super::{Authorize, Caller, Denied, Door, OauthError, proxy};
 use crate::admin::RemoteInfo;
 use crate::local::{Books, REFUSED_HEADER};
 use axum::extract::{Extension, Path, Query, State};
@@ -356,7 +356,7 @@ async fn register(
     };
     match books
         .remote
-        .register(&books, &meta, &peer.0.ip().to_string())
+        .register(&books, &meta, &Caller::new(peer.0.ip()))
         .await
     {
         Ok(out) => cors(json(201, &out)),
@@ -377,7 +377,7 @@ async fn authorize(
     answer(
         books
             .remote
-            .authorize(&books, &door, &q, &peer.0.ip().to_string())
+            .authorize(&books, &door, &q, &Caller::new(peer.0.ip()))
             .await,
     )
 }
@@ -390,7 +390,7 @@ async fn wait(
     if let Err(r) = front(&books, &headers) {
         return *r;
     }
-    answer(books.remote.wait(&wait))
+    answer(books.remote.wait(&books, &wait))
 }
 
 async fn token(
@@ -454,7 +454,7 @@ async fn token(
         });
     match books
         .remote
-        .token(&books, &door, &form, basic, &peer.0.ip().to_string())
+        .token(&books, &door, &form, basic, &Caller::new(peer.0.ip()))
         .await
     {
         Ok(out) => cors(json(200, &out)),

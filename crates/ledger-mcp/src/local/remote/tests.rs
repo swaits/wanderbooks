@@ -17,11 +17,12 @@ const ISSUER: &str = "https://ledger-accrual-tally-mint.wanderbooks.link";
 const CLAUDE_CB: &str = "https://claude.ai/api/mcp/auth_callback";
 const CALLER: &str = "203.0.113.9";
 
+#[derive(Clone)]
 struct H {
     books: Arc<Books>,
     addr: SocketAddr,
     clock: Arc<AtomicI64>,
-    _home: tempfile::TempDir,
+    _home: Arc<tempfile::TempDir>,
 }
 
 async fn admin(books: &Arc<Books>, request: Request) -> Response {
@@ -65,7 +66,7 @@ async fn harness() -> H {
         books,
         addr: "127.0.0.1:1".parse().unwrap(),
         clock,
-        _home: home,
+        _home: Arc::new(home),
     };
     h.start(ISSUER).await;
     h
@@ -423,6 +424,21 @@ async fn claude(h: &H, book: &str) -> (String, String, String) {
     )
 }
 
+/// The words of a page, without markup.
+fn waiting_text(page: &Resp) -> String {
+    let mut out = String::new();
+    let mut in_tag = false;
+    for c in page.body.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            c if !in_tag => out.push(c),
+            _ => {}
+        }
+    }
+    out
+}
+
 fn tool_text(r: &Resp) -> String {
     assert_eq!(r.status, 200, "{}", r.body);
     r.json()["result"]["content"][0]["text"]
@@ -588,9 +604,15 @@ async fn the_window_is_told_who_asks_and_the_page_only_says_to_look() {
     let waiting = pending(&h).await;
     assert_eq!(waiting.len(), 1);
     let p = &waiting[0];
-    // The product is named by where it is sent back, not by what it says.
-    assert_eq!(p.client_name, "Claude on the web");
-    assert_eq!(p.product.as_deref(), Some("Claude on the web"));
+    // What is known is its own word, cleaned (markup is just letters here),
+    // and where it is sent back: never a product's name made from the host.
+    assert_eq!(p.client_name, "Claude <b>web</b>");
+    assert!(p.known_host);
+    assert!(!page.body.contains("Claude on the web"));
+    assert!(!waiting_text(&page).contains("Claude on the web"));
+    // The code the card shows is the code the browser's page shows.
+    assert!(page.body.contains(&p.code), "{}", page.body);
+    assert_eq!(p.code.len(), 7);
     assert_eq!(p.redirect, CLAUDE_CB);
     assert_eq!(p.redirect_host, "claude.ai");
     assert_eq!(p.from, CALLER);
@@ -683,7 +705,7 @@ async fn the_default_is_read_and_draft_and_the_person_raises_it_to_post() {
     };
     assert_eq!(approvals.len(), 1);
     assert!(!approvals[0].may_post);
-    assert_eq!(approvals[0].label, "Claude on the web");
+    assert!(approvals[0].label.contains("claude.ai"), "{}", approvals[0].label);
     // The same connection is a row of "Who can reach these books".
     let listed = match admin(&h.books, Request::TokenList).await {
         Response::Tokens(t) => t,
@@ -796,38 +818,248 @@ async fn revoking_the_connection_ends_the_access_token_and_the_refresh_token() {
     assert_eq!(pending(&h).await.len(), 1);
 }
 
+/// The approvals the window lists for `book`.
+async fn approvals_of(h: &H, book: &str) -> Vec<crate::admin::ApprovalInfo> {
+    match admin(
+        &h.books,
+        Request::RemoteApprovals {
+            book: Some(book.into()),
+        },
+    )
+    .await
+    {
+        Response::RemoteApprovals(a) => a,
+        other => panic!("{other:?}"),
+    }
+}
+
+/// The four steps a stranger who knows only public facts takes (D-90): the
+/// address, a registration with a callback of the product the person
+/// approved before, an authorize, and a read of the 302's `Location`. It
+/// gets no code: nothing is approved but by an Allow in the window.
 #[tokio::test(flavor = "multi_thread")]
-async fn an_approval_survives_a_product_registering_again() {
+async fn a_stranger_who_knows_the_product_gets_no_code_without_an_allow() {
     let h = harness().await;
+    // The person approved Claude on the web before.
     let (_, _, _) = claude(&h, "acme").await;
-    // Claude registers anew: a new client id, the same product.
-    let c = register(&h, "Claude", &[CLAUDE_CB]).await;
-    let id = c["client_id"].as_str().unwrap();
+    // 1 and 2: the stranger registers a client with Claude's own callback.
+    let c = http_from(
+        &h,
+        "198.51.100.200",
+        "POST",
+        "/register",
+        &[("Content-Type", "application/json")],
+        &json!({"client_name": "Claude", "redirect_uris": [CLAUDE_CB]}).to_string(),
+    )
+    .await;
+    assert_eq!(c.status, 201, "{}", c.body);
+    let id = c.json()["client_id"].as_str().unwrap().to_string();
     let (verifier, challenge) = pkce(9);
-    let back = http(
+    // 3: it asks to sign in.
+    let asked = http_from(
         &h,
+        "198.51.100.200",
         "GET",
-        &authorize_path(id, CLAUDE_CB, &challenge, "acme", &[]),
+        &authorize_path(&id, CLAUDE_CB, &challenge, "acme", &[]),
         &[],
         "",
     )
     .await;
-    // No question to the person: the browser is sent straight back.
-    let params = location_params(&back);
-    assert!(pending(&h).await.is_empty());
-    let t = exchange(&h, id, &params["code"], &verifier, CLAUDE_CB).await;
-    assert_eq!(t.status, 200, "{}", t.body);
-    // The same product for another company is a new question.
-    let page = http(
-        &h,
-        "GET",
-        &authorize_path(id, CLAUDE_CB, &challenge, "beta", &[]),
-        &[],
-        "",
-    )
-    .await;
-    assert_eq!(page.status, 200);
+    // 4: there is no 302 with a code to read: it is a page that says to look
+    // at the window, and the request is parked for the person.
+    assert_eq!(asked.status, 200, "{}", asked.body);
+    assert!(asked.header("location").is_none());
+    assert!(!asked.body.contains("code="));
     assert_eq!(pending(&h).await.len(), 1);
+    // Nothing it can send to the token endpoint gives it anything: it holds
+    // no code (a guess, a made-up one, or the pending ids).
+    for guess in ["wbcode_guess", &wait_path(&asked), "p_guess"] {
+        let r = exchange(&h, &id, guess, &verifier, CLAUDE_CB).await;
+        assert_eq!(r.status, 400, "{}", r.body);
+        assert_eq!(r.json()["error"], "invalid_grant");
+    }
+    // The person refuses it: the stranger's browser is told no, with no code.
+    let waiting = pending(&h).await;
+    assert!(matches!(
+        decide(&h, &waiting[0].id, false, false).await,
+        Response::RemoteDecided { approval: None, .. }
+    ));
+    let back = http_from(
+        &h,
+        "198.51.100.200",
+        "GET",
+        &wait_path(&asked),
+        &[],
+        "",
+    )
+    .await;
+    let params = location_params(&back);
+    assert_eq!(params["error"], "access_denied");
+    assert!(!params.contains_key("code"));
+}
+
+/// An Allow makes a new connection with exactly what was ticked: nothing
+/// is carried over from an older approval of the same product, with or
+/// without posting (D-90).
+#[tokio::test(flavor = "multi_thread")]
+async fn an_allow_is_a_new_approval_with_exactly_the_permissions_ticked() {
+    let h = harness().await;
+    let c = register(&h, "Claude", &[CLAUDE_CB]).await;
+    let id = c["client_id"].as_str().unwrap().to_string();
+    // First: with posting ticked.
+    let (code, verifier) = sign_in(&h, &id, CLAUDE_CB, "acme", 1, true).await;
+    let first = exchange(&h, &id, &code, &verifier, CLAUDE_CB).await.json();
+    let first_access = first["access_token"].as_str().unwrap().to_string();
+    let listed = approvals_of(&h, "acme").await;
+    assert_eq!(listed.len(), 1);
+    assert!(listed[0].may_post);
+    let first_approval = listed[0].id.clone();
+    let first_token = listed[0].token_id.clone();
+    // The same product signs in again with posting not ticked: a new
+    // question, a new approval, and no posting; the old one is untouched.
+    let (code, verifier) = sign_in(&h, &id, CLAUDE_CB, "acme", 2, false).await;
+    let second = exchange(&h, &id, &code, &verifier, CLAUDE_CB).await.json();
+    let second_access = second["access_token"].as_str().unwrap().to_string();
+    let listed = approvals_of(&h, "acme").await;
+    assert_eq!(listed.len(), 2, "{listed:?}");
+    let new = listed.iter().find(|a| a.id != first_approval).unwrap();
+    assert!(!new.may_post, "nothing carried over from the first");
+    assert!(listed.iter().find(|a| a.id == first_approval).unwrap().may_post);
+    assert_ne!(new.token_id, first_token);
+    let post = call(
+        3,
+        "books.post_entry",
+        json!({"entry_id": 1, "confirmed": true, "request_key": "post-key-0002"}),
+    );
+    let refused = mcp(&h, Some(&second_access), "acme", post.clone()).await;
+    assert!(tool_text(&refused).contains("books:post"), "{}", refused.body);
+    let allowed = mcp(&h, Some(&first_access), "acme", post).await;
+    assert!(!tool_text(&allowed).contains("needs books:post"));
+    // And the other way: not ticked first, ticked second.
+    let (code, verifier) = sign_in(&h, &id, CLAUDE_CB, "acme", 3, true).await;
+    let third = exchange(&h, &id, &code, &verifier, CLAUDE_CB).await.json();
+    let listed = approvals_of(&h, "acme").await;
+    assert_eq!(listed.len(), 3);
+    assert_eq!(listed.iter().filter(|a| a.may_post).count(), 2);
+    assert!(third["scope"].as_str().unwrap().contains("books:post"));
+    assert!(!second["scope"].as_str().unwrap().contains("books:post"));
+}
+
+/// A revoked connection stays revoked: a later Allow of the same product
+/// makes a new one, and none of the old tokens comes back, not at once and
+/// not when the list is next read (D-90).
+#[tokio::test(flavor = "multi_thread")]
+async fn revoke_then_allow_again_does_not_bring_the_old_tokens_back() {
+    let h = harness().await;
+    let (client, access, refresh_token) = claude(&h, "acme").await;
+    let old = approvals_of(&h, "acme").await;
+    assert_eq!(old.len(), 1);
+    let t = match admin(&h.books, Request::TokenList).await {
+        Response::Tokens(t) => t[0].clone(),
+        other => panic!("{other:?}"),
+    };
+    assert!(matches!(
+        admin(
+            &h.books,
+            Request::TokenRevoke {
+                book: "acme".into(),
+                name: t.name.clone(),
+                id: Some(t.id.clone())
+            }
+        )
+        .await,
+        Response::TokenRevoked(_)
+    ));
+    // At once, without the list being read: the records are gone.
+    {
+        let inner = h.books.remote.inner();
+        assert!(inner.approvals.is_empty());
+        assert!(inner.refresh.is_empty());
+        assert!(inner.access.is_empty());
+    }
+    // A new Allow of the same product, the same token name freed.
+    let (code, verifier) = sign_in(&h, &client, CLAUDE_CB, "acme", 4, false).await;
+    let fresh = exchange(&h, &client, &code, &verifier, CLAUDE_CB).await;
+    assert_eq!(fresh.status, 200, "{}", fresh.body);
+    let now = approvals_of(&h, "acme").await;
+    assert_eq!(now.len(), 1);
+    assert_ne!(now[0].id, old[0].id);
+    assert_ne!(now[0].token_id, old[0].token_id);
+    // The old tokens stay dead.
+    assert_eq!(
+        mcp(&h, Some(&access), "acme", initialize()).await.status,
+        401
+    );
+    assert_eq!(refresh(&h, &client, &refresh_token).await.status, 400);
+    // The new one works.
+    let new_access = fresh.json()["access_token"].as_str().unwrap().to_string();
+    assert_eq!(
+        mcp(&h, Some(&new_access), "acme", initialize()).await.status,
+        200
+    );
+}
+
+/// Raising and lowering posting swaps the connection's token in one step:
+/// a call that arrives while it is going on is never refused or signed out,
+/// and a revoke that names the token just replaced still wins.
+#[tokio::test(flavor = "multi_thread")]
+async fn raising_posting_is_one_step_and_a_revoke_during_it_wins() {
+    let h = harness().await;
+    let (client, access, refresh_token) = claude(&h, "acme").await;
+    let approval = approvals_of(&h, "acme").await[0].clone();
+    let calls = {
+        let h = h.clone();
+        let access = access.clone();
+        tokio::spawn(async move {
+            let mut statuses = Vec::new();
+            for _ in 0..60 {
+                statuses.push(mcp(&h, Some(&access), "acme", initialize()).await.status);
+            }
+            statuses
+        })
+    };
+    for n in 0..30 {
+        let raised = admin(
+            &h.books,
+            Request::RemoteSetPost {
+                approval: approval.id.clone(),
+                post: n % 2 == 0,
+            },
+        )
+        .await;
+        assert!(matches!(raised, Response::RemoteApprovals(_)), "{raised:?}");
+    }
+    let statuses = calls.await.unwrap();
+    assert!(statuses.iter().all(|s| *s == 200), "{statuses:?}");
+    // The token the window listed before the last swap is stale; a revoke
+    // naming it is for the one that replaced it.
+    let stale = {
+        let inner = h.books.remote.inner();
+        inner.swapped.keys().next().cloned().unwrap()
+    };
+    let live = approvals_of(&h, "acme").await[0].clone();
+    let listed = match admin(&h.books, Request::TokenList).await {
+        Response::Tokens(t) => t,
+        other => panic!("{other:?}"),
+    };
+    let name = listed[0].name.clone();
+    assert_ne!(stale, live.token_id);
+    let revoked = admin(
+        &h.books,
+        Request::TokenRevoke {
+            book: "acme".into(),
+            name,
+            id: Some(stale),
+        },
+    )
+    .await;
+    assert!(matches!(revoked, Response::TokenRevoked(_)), "{revoked:?}");
+    assert_eq!(
+        mcp(&h, Some(&access), "acme", initialize()).await.status,
+        401
+    );
+    assert_eq!(refresh(&h, &client, &refresh_token).await.status, 400);
+    assert!(approvals_of(&h, "acme").await.is_empty());
 }
 
 // ---- every refusal ------------------------------------------------------------
@@ -881,7 +1113,6 @@ async fn pkce_the_resource_and_the_verifier_are_required() {
     let id = c["client_id"].as_str().unwrap().to_string();
     let challenge = pkce(11).1;
     let base = |extra: &[(&str, &str)]| authorize_path(&id, CLAUDE_CB, &challenge, "acme", extra);
-    // No challenge, and the plain method: sent back with invalid_request.
     let no_pkce = format!(
         "/authorize?{}",
         form(&[
@@ -891,24 +1122,12 @@ async fn pkce_the_resource_and_the_verifier_are_required() {
             ("state", "s")
         ])
     );
-    assert_eq!(
-        location_params(&http(&h, "GET", &no_pkce, &[], "").await)["error"],
-        "invalid_request"
-    );
     let plain = base(&[("code_challenge_method", "plain")]).replace("S256", "plain");
-    assert_eq!(
-        location_params(&http(&h, "GET", &plain, &[], "").await)["error"],
-        "invalid_request"
-    );
     // A resource that is another company's address elsewhere, or none at all
     // where two are on offer.
     let other = authorize_path(&id, CLAUDE_CB, &challenge, "acme", &[]).replace(
         &form(&[("resource", &format!("{ISSUER}/b/acme/mcp"))]),
         &form(&[("resource", "https://other.example/b/acme/mcp")]),
-    );
-    assert_eq!(
-        location_params(&http(&h, "GET", &other, &[], "").await)["error"],
-        "invalid_target"
     );
     let none = format!(
         "/authorize?{}",
@@ -920,13 +1139,32 @@ async fn pkce_the_resource_and_the_verifier_are_required() {
             ("code_challenge_method", "S256")
         ])
     );
-    assert_eq!(
-        location_params(&http(&h, "GET", &none, &[], "").await)["error"],
-        "invalid_target"
-    );
+    // A client nobody ever approved is anyone's: every one of these is an
+    // error page, not a redirect to the address it registered (no open
+    // redirect through registration).
+    for bad in [&no_pkce, &plain, &other, &none] {
+        let r = http(&h, "GET", bad, &[], "").await;
+        assert_eq!(r.status, 400, "{}", r.body);
+        assert!(r.header("location").is_none(), "{bad}");
+    }
+    assert!(pending(&h).await.is_empty());
+    // Once the person has approved it, the specification's own way: sent
+    // back to its registered address with the error.
+    let (code, verifier) = sign_in(&h, &id, CLAUDE_CB, "acme", 12, false).await;
+    let expect = [
+        (&no_pkce, "invalid_request"),
+        (&plain, "invalid_request"),
+        (&other, "invalid_target"),
+        (&none, "invalid_target"),
+    ];
+    for (path, error) in expect {
+        assert_eq!(
+            location_params(&http(&h, "GET", path, &[], "").await)["error"],
+            error
+        );
+    }
     assert!(pending(&h).await.is_empty());
     // A wrong verifier does not give a token, and spends the code.
-    let (code, verifier) = sign_in(&h, &id, CLAUDE_CB, "acme", 12, false).await;
     let wrong = exchange(
         &h,
         &id,
@@ -939,19 +1177,7 @@ async fn pkce_the_resource_and_the_verifier_are_required() {
     let spent = exchange(&h, &id, &code, &verifier, CLAUDE_CB).await;
     assert_eq!(spent.json()["error"], "invalid_grant");
     // A token request naming another address as its resource is refused.
-    let (code, verifier) = {
-        // A second approval for the same product is instant now.
-        let (v, ch) = pkce(13);
-        let back = http(
-            &h,
-            "GET",
-            &authorize_path(&id, CLAUDE_CB, &ch, "acme", &[]),
-            &[],
-            "",
-        )
-        .await;
-        (location_params(&back)["code"].clone(), v)
-    };
+    let (code, verifier) = sign_in(&h, &id, CLAUDE_CB, "acme", 13, false).await;
     let r = http(
         &h,
         "POST",
@@ -996,18 +1222,7 @@ async fn a_code_used_twice_ends_what_it_made_and_so_does_a_refresh_token() {
     );
 
     // Refresh tokens rotate; the old one used again ends the family.
-    let (code, verifier) = {
-        let (v, ch) = pkce(15);
-        let back = http(
-            &h,
-            "GET",
-            &authorize_path(&id, CLAUDE_CB, &ch, "acme", &[]),
-            &[],
-            "",
-        )
-        .await;
-        (location_params(&back)["code"].clone(), v)
-    };
+    let (code, verifier) = sign_in(&h, &id, CLAUDE_CB, "acme", 15, false).await;
     let t = exchange(&h, &id, &code, &verifier, CLAUDE_CB).await.json();
     let r1 = t["refresh_token"].as_str().unwrap().to_string();
     let second = refresh(&h, &id, &r1).await;
@@ -1025,18 +1240,7 @@ async fn a_code_used_twice_ends_what_it_made_and_so_does_a_refresh_token() {
     // Another client's refresh token is not good for this one.
     let other = register(&h, "Other", &["https://other.example/cb"]).await;
     let other_id = other["client_id"].as_str().unwrap();
-    let (code, verifier) = {
-        let (v, ch) = pkce(16);
-        let back = http(
-            &h,
-            "GET",
-            &authorize_path(&id, CLAUDE_CB, &ch, "acme", &[]),
-            &[],
-            "",
-        )
-        .await;
-        (location_params(&back)["code"].clone(), v)
-    };
+    let (code, verifier) = sign_in(&h, &id, CLAUDE_CB, "acme", 16, false).await;
     let t = exchange(&h, &id, &code, &verifier, CLAUDE_CB).await.json();
     assert_eq!(
         refresh(&h, other_id, t["refresh_token"].as_str().unwrap())
@@ -1270,14 +1474,20 @@ async fn the_recorded_address_is_the_relays_and_a_forged_one_changes_nothing() {
     )
     .await;
     assert!(out.is_empty(), "{}", String::from_utf8_lossy(&out));
-    // A refusal at the door of a token holder carries the address too.
+    // A token holder's call for another company is refused, counted, and
+    // not written: it could otherwise fill the disk one call at a time.
+    let before = h.books.remote.refused();
     let r = mcp_from(&h, "192.0.2.50", Some(&access), "beta", initialize()).await;
     assert_eq!(r.status, 403);
+    assert_eq!(h.books.remote.refused(), before + 1);
     let dir = h.books.root.book_dir(&BookId::parse("beta").unwrap());
-    let (records, _) = ledger_store::access::read(&dir).unwrap();
+    let written = ledger_store::access::read(&dir)
+        .map(|(records, _)| records.len())
+        .unwrap_or(0);
     assert_eq!(
-        records.last().unwrap().access.from.as_deref(),
-        Some("192.0.2.50")
+        written,
+        0,
+        "a refusal for another company is counted, never written"
     );
 }
 
@@ -1412,6 +1622,7 @@ async fn registration_is_bounded_and_unused_registrations_expire() {
                     created: i as i64,
                     last_seen: 0,
                     used: false,
+                    approved: false,
                     fetched: 0,
                 },
             );
@@ -1428,69 +1639,134 @@ async fn registration_is_bounded_and_unused_registrations_expire() {
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn waiting_requests_are_bounded_per_address_and_in_all() {
-    let h = harness().await;
-    let c = register(&h, "Spam", &["https://spam.example/cb"]).await;
-    let id = c["client_id"].as_str().unwrap().to_string();
-    for i in 0..MAX_PENDING_PER_ADDRESS {
-        let page = http(
-            &h,
-            "GET",
-            &authorize_path(
-                &id,
-                "https://spam.example/cb",
-                &pkce(100 + i as u32).1,
-                "acme",
-                &[],
-            ),
-            &[],
-            "",
-        )
-        .await;
-        assert_eq!(page.status, 200);
-    }
-    let page = http(
-        &h,
+/// One sign-in request from `from` (a bare address; an IPv6 one in square
+/// brackets): the page it got.
+async fn ask(h: &H, from: &str, client: &str, redirect: &str, n: u32) -> Resp {
+    http_from(
+        h,
+        from,
         "GET",
-        &authorize_path(&id, "https://spam.example/cb", &pkce(200).1, "acme", &[]),
+        &authorize_path(client, redirect, &pkce(n).1, "acme", &[]),
         &[],
         "",
     )
-    .await;
-    assert_eq!(page.status, 429);
-    assert_eq!(pending(&h).await.len(), MAX_PENDING_PER_ADDRESS);
-    // Other addresses still get in, up to the whole table.
-    let mut got = MAX_PENDING_PER_ADDRESS;
-    for n in 0..10u8 {
-        let from = format!("198.51.100.{}", n + 10);
-        for i in 0..MAX_PENDING_PER_ADDRESS {
-            let page = http_from(
-                &h,
-                &from,
-                "GET",
-                &authorize_path(
-                    &id,
-                    "https://spam.example/cb",
-                    &pkce(300 + i as u32).1,
-                    "acme",
-                    &[],
-                ),
-                &[],
-                "",
-            )
-            .await;
-            if page.status == 200 {
-                got += 1;
-            } else {
-                assert_eq!(page.status, 429);
-            }
+    .await
+}
+
+fn waiting_from(h: &H) -> BTreeMap<String, usize> {
+    let mut by = BTreeMap::new();
+    for p in h.books.remote.pending_list() {
+        *by.entry(p.from).or_insert(0) += 1;
+    }
+    by
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn waiting_requests_give_way_and_never_fill_the_window_against_a_real_one() {
+    let h = harness().await;
+    let cb = "https://spam.example/cb";
+    let c = register(&h, "Spam", &[cb]).await;
+    let id = c["client_id"].as_str().unwrap().to_string();
+    // One address asks eight times: it is never turned away, but its oldest
+    // give way, and only five wait.
+    let mut waits = Vec::new();
+    for i in 0..8 {
+        let page = ask(&h, "198.51.100.9", &id, cb, 100 + i).await;
+        assert_eq!(page.status, 200, "{}", page.body);
+        waits.push(wait_path(&page));
+    }
+    assert_eq!(waiting_from(&h)["198.51.100.9"], MAX_PENDING_PER_ADDRESS);
+    // The three that gave way were sent back told so, not left hanging.
+    for gone in &waits[..3] {
+        let params = location_params(&http(&h, "GET", gone, &[], "").await);
+        assert_eq!(params["error"], "temporarily_unavailable");
+    }
+    // The newest are the ones still waiting.
+    let still = http(&h, "GET", &waits[7], &[], "").await;
+    assert_eq!(still.status, 200);
+    // Three more addresses fill the whole table (4 x 5 = 20) ...
+    for n in 0..3u8 {
+        let from = format!("198.51.100.{}", n + 20);
+        for i in 0..MAX_PENDING_PER_ADDRESS as u32 {
+            assert_eq!(ask(&h, &from, &id, cb, 200 + i).await.status, 200);
         }
     }
-    assert_eq!(got, MAX_PENDING);
+    assert_eq!(h.books.remote.pending_list().len(), MAX_PENDING);
+    // ... and a person who is not any of them still gets in: the oldest
+    // waiting request of the address with the most waiting gives way.
+    let real = ask(&h, "203.0.113.77", &id, cb, 300).await;
+    assert_eq!(real.status, 200, "{}", real.body);
+    let by = waiting_from(&h);
+    assert_eq!(h.books.remote.pending_list().len(), MAX_PENDING);
+    assert_eq!(by["203.0.113.77"], 1);
+    assert_eq!(by["198.51.100.9"], MAX_PENDING_PER_ADDRESS - 1);
+    // Each card has its own code, and no two waiting are alike.
+    let list = h.books.remote.pending_list();
+    let codes: BTreeSet<&String> = list.iter().map(|p| &p.code).collect();
+    assert_eq!(codes.len(), list.len());
+    assert!(list.iter().all(|p| p.code.len() == 7 && p.code.chars().nth(3) == Some(' ')));
     // They expire unanswered.
     h.advance(PENDING_TTL + 1);
     assert!(pending(&h).await.is_empty());
+}
+
+/// An IPv6 caller is counted by its /64, and an IPv4-mapped IPv6 address
+/// is the IPv4 one: neither is a way round a limit.
+#[tokio::test(flavor = "multi_thread")]
+async fn limits_count_an_ipv6_64_as_one_caller_and_a_mapped_address_as_its_ipv4() {
+    assert_eq!(
+        address_key("2001:db8:1:2::1".parse().unwrap()),
+        address_key("2001:db8:1:2:ffff:ffff:ffff:ffff".parse().unwrap())
+    );
+    assert_ne!(
+        address_key("2001:db8:1:2::1".parse().unwrap()),
+        address_key("2001:db8:1:3::1".parse().unwrap())
+    );
+    assert_eq!(
+        address_key("::ffff:203.0.113.9".parse().unwrap()),
+        address_key("203.0.113.9".parse().unwrap())
+    );
+    assert_eq!(
+        Caller::new("::ffff:203.0.113.9".parse().unwrap()).shown,
+        "203.0.113.9"
+    );
+    // End to end: registrations from many addresses of one /64 share its
+    // limit.
+    let h = harness().await;
+    for i in 0..REGISTER_PER_ADDRESS {
+        let from = format!("[2001:db8:1:2:{:x}::1]", i + 1);
+        let r = http_from(
+            &h,
+            &from,
+            "POST",
+            "/register",
+            &[("Content-Type", "application/json")],
+            &json!({"redirect_uris": ["https://x.example/cb"]}).to_string(),
+        )
+        .await;
+        assert_eq!(r.status, 201, "{i}");
+    }
+    let over = http_from(
+        &h,
+        "[2001:db8:1:2:ffff::1]",
+        "POST",
+        "/register",
+        &[("Content-Type", "application/json")],
+        &json!({"redirect_uris": ["https://x.example/cb"]}).to_string(),
+    )
+    .await;
+    assert_eq!(over.status, 429);
+    // Another /64 is not shut out for it.
+    let other = http_from(
+        &h,
+        "[2001:db8:1:9::1]",
+        "POST",
+        "/register",
+        &[("Content-Type", "application/json")],
+        &json!({"redirect_uris": ["https://x.example/cb"]}).to_string(),
+    )
+    .await;
+    assert_eq!(other.status, 201);
 }
 
 // ---- the doors ------------------------------------------------------------------------
@@ -1702,7 +1978,13 @@ async fn refresh_tokens_survive_a_restart_and_only_their_hashes_are_kept() {
         ("refresh_token".to_string(), refresh_token.clone()),
     ]);
     let out = again
-        .token(&h.books, &door, &form, None, "203.0.113.9")
+        .token(
+            &h.books,
+            &door,
+            &form,
+            None,
+            &Caller::new("203.0.113.9".parse().unwrap()),
+        )
         .await
         .unwrap_or_else(|e| panic!("{}", e.description));
     assert!(out["access_token"].as_str().unwrap().starts_with("wba_"));

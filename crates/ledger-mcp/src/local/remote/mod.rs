@@ -116,7 +116,7 @@ use ledger_store::root::BookId;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -142,10 +142,17 @@ pub const CIMD_TTL: i64 = 3600;
 pub const MAX_CLIENTS: usize = 2000;
 /// Most redirect addresses one client may carry.
 pub const MAX_REDIRECTS: usize = 20;
-/// Most requests waiting for the person, and from one address.
+/// Most requests waiting for the person. A new one beyond it does not turn
+/// away: the oldest request of the address with the most waiting gives way.
 pub const MAX_PENDING: usize = 20;
-/// Most requests one address may have waiting.
+/// Most requests one address may have waiting; its own oldest gives way to
+/// a new one.
 pub const MAX_PENDING_PER_ADDRESS: usize = 5;
+/// The most a redirect address may be, and all of one client's together.
+pub const MAX_REDIRECT_BYTES: usize = 512;
+pub const MAX_REDIRECTS_TOTAL: usize = 4096;
+/// The longest a name an assistant gave itself is shown.
+pub const MAX_NAME_SHOWN: usize = 40;
 /// Most codes, access tokens and refresh tokens held.
 pub const MAX_CODES: usize = 2000;
 /// Most access tokens held.
@@ -169,14 +176,19 @@ const AUTHORIZE_PER_ADDRESS: u32 = 60;
 /// Client metadata fetches in a minute, together and from one address.
 const FETCH_PER_MINUTE: u32 = 30;
 const FETCH_PER_ADDRESS: u32 = 6;
-/// Token requests a client may make in a minute.
+/// Token requests a client may make in a minute, and one address.
 const TOKEN_PER_CLIENT: u32 = 120;
+const TOKEN_PER_ADDRESS: u32 = 300;
 /// Calls an approval may make in a minute.
 pub const CALLS_PER_MINUTE: u32 = 600;
-/// The limiter's own table is bounded too.
-const MAX_LIMITS: usize = 10_000;
+/// The limiter's table of addresses is bounded too: past it the entries
+/// that began longest ago go. (A connection's own limits are never evicted:
+/// they are few by construction, one per approval, key and known client.)
+const MAX_ADDRESS_LIMITS: usize = 10_000;
 /// How long a used code is remembered, to end the family a replay shows.
 const USED_CODE_KEPT: i64 = 600;
+/// How many made-over tokens are remembered for a late revoke.
+const MAX_SWAPPED: usize = 1000;
 /// The persisted file, in the root's `auth/`.
 pub const FILE: &str = "remote.json";
 
@@ -218,6 +230,11 @@ pub struct ClientRec {
     pub last_seen: i64,
     /// Whether a sign-in was ever begun with it.
     pub used: bool,
+    /// Whether the person ever said yes to a sign-in of it: only such a
+    /// client (and a typed one) is kept on disk, and only such a client is
+    /// ever sent an error as a redirect.
+    #[serde(default)]
+    pub approved: bool,
     /// When its document was fetched (documents only).
     #[serde(default)]
     pub fetched: i64,
@@ -229,8 +246,6 @@ pub struct ClientRec {
 pub struct Approval {
     pub id: String,
     pub book: String,
-    /// What identifies the product across registrations.
-    pub product: String,
     /// What the window and the list call it.
     pub label: String,
     /// The principals' token that carries the permissions.
@@ -279,6 +294,15 @@ struct Code {
     exp: i64,
 }
 
+/// What a mint made: the access token and the refresh token (given once),
+/// the refresh token's hash as kept, and the one it retired.
+struct Minted {
+    access: String,
+    refresh: String,
+    new_hash: String,
+    undo: Option<String>,
+}
+
 struct AccessRec {
     approval: String,
     family: String,
@@ -292,6 +316,8 @@ enum Settled {
     /// The person said yes: the code the browser is sent back with.
     Allowed(String),
     Refused,
+    /// Made way for a newer request when too many were waiting.
+    Crowded,
 }
 
 struct Pending {
@@ -300,14 +326,20 @@ struct Pending {
     /// What only the browser's page holds.
     wait: String,
     client: String,
+    /// What it calls itself, cleaned and short; may be empty.
     client_name: String,
-    product: Option<String>,
+    /// Whether the redirect host is one of the known vendors'.
+    known_host: bool,
+    /// The short code the person matches between the page and the card.
+    code: String,
     redirect: String,
     state: Option<String>,
     challenge: String,
     book: String,
     issuer: String,
     from: String,
+    /// The address as the limits count it (a /64 for IPv6).
+    from_key: String,
     wants_post: bool,
     created: i64,
     exp: i64,
@@ -325,9 +357,17 @@ struct Inner {
     used_codes: HashMap<String, (String, i64)>,
     access: HashMap<String, AccessRec>,
     pending: Vec<Pending>,
+    /// A connection's own limits, and the few door-wide ones: never evicted.
     limits: HashMap<String, (i64, u32)>,
+    /// Per-address limits (start, count, window): evicted oldest first.
+    address_limits: HashMap<String, (i64, u32, i64)>,
+    /// A token that was made over (posting raised or lowered) and the one
+    /// that replaced it, for a revoke that names the old.
+    swapped: HashMap<String, String>,
     failed_docs: HashMap<String, i64>,
     unsigned: u64,
+    /// Calls refused as another company's or for rate, counted, not written.
+    refused: u64,
     last_sweep: i64,
 }
 
@@ -397,12 +437,30 @@ fn random(prefix: &str, n: usize) -> Result<String, OauthError> {
     ))
 }
 
-/// A name, cleaned for showing and for storing: no control characters,
-/// single spaces, at most `max` characters.
+/// Characters that draw nothing or turn text around (zero-width and joining
+/// characters, direction marks and overrides, invisible operators, the soft
+/// hyphen, variation selectors, tag characters): a name can't hide or
+/// reorder anything with them.
+fn is_invisible(c: char) -> bool {
+    matches!(c,
+        '\u{00AD}' | '\u{034F}' | '\u{061C}' | '\u{115F}' | '\u{1160}'
+        | '\u{17B4}' | '\u{17B5}' | '\u{180B}'..='\u{180F}'
+        | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}'
+        | '\u{2060}'..='\u{206F}' | '\u{3164}' | '\u{FE00}'..='\u{FE0F}'
+        | '\u{FEFF}' | '\u{FFA0}' | '\u{FFF9}'..='\u{FFFB}'
+        | '\u{1BCA0}'..='\u{1BCA3}' | '\u{1D173}'..='\u{1D17A}'
+        | '\u{E0000}'..='\u{E007F}' | '\u{E0100}'..='\u{E01EF}')
+}
+
+/// A name, cleaned for showing and for storing: no control, invisible or
+/// direction-changing characters, single spaces, at most `max` characters.
 pub(super) fn clean(text: &str, max: usize) -> String {
     let mut out = String::new();
     for word in text.split_whitespace() {
-        let word: String = word.chars().filter(|c| !c.is_control()).collect();
+        let word: String = word
+            .chars()
+            .filter(|c| !c.is_control() && !is_invisible(*c))
+            .collect();
         if word.is_empty() {
             continue;
         }
@@ -419,9 +477,9 @@ pub(super) fn clean(text: &str, max: usize) -> String {
 
 /// A redirect address, parsed if it may be one: https, or http on the
 /// loopback, or a native app's own scheme; never a fragment or userinfo,
-/// never a script or file scheme.
+/// never a script or file scheme, never more than MAX_REDIRECT_BYTES.
 pub(super) fn valid_redirect(text: &str) -> Option<reqwest::Url> {
-    if text.len() > 2048 || text.chars().any(char::is_control) {
+    if text.len() > MAX_REDIRECT_BYTES || text.chars().any(char::is_control) {
         return None;
     }
     let url = reqwest::Url::parse(text).ok()?;
@@ -444,6 +502,13 @@ pub(super) fn valid_redirect(text: &str) -> Option<reqwest::Url> {
     }
 }
 
+/// Whether all of one client's redirect addresses together are no more
+/// than the table keeps (a registration is held in memory, and in the file
+/// once the person has allowed it).
+pub(super) fn redirects_fit(redirects: &[String]) -> bool {
+    redirects.iter().map(String::len).sum::<usize>() <= MAX_REDIRECTS_TOTAL
+}
+
 /// What a redirect address shows the person: its host, or its scheme.
 pub(super) fn redirect_host(url: &str) -> String {
     reqwest::Url::parse(url)
@@ -455,62 +520,104 @@ pub(super) fn redirect_host(url: &str) -> String {
         .unwrap_or_else(|| "?".to_string())
 }
 
-/// The products whose own redirect hosts we recognise (D-81: Claude and
-/// ChatGPT). The name comes from where the browser is sent back, which a
-/// client cannot fake, never from what it calls itself.
-const KNOWN: &[(&str, &[&str])] = &[
-    ("Claude on the web", &["claude.ai", "claude.com"]),
-    (
-        "ChatGPT on the web",
-        &["chatgpt.com", "openai.com", "platform.openai.com"],
-    ),
+/// The hosts of the vendors whose web assistants most people use (D-81:
+/// Claude and ChatGPT). Only the *warning* depends on it: a request sent
+/// back to one of them is not warned about, and is never called a known
+/// product, because the host is public and says nothing of who asks.
+const VENDOR_HOSTS: &[&str] = &[
+    "claude.ai",
+    "claude.com",
+    "chatgpt.com",
+    "openai.com",
+    "platform.openai.com",
 ];
 
-/// The product whose hosts every redirect address is on, if one.
-pub(super) fn known_product(redirects: &[String]) -> Option<&'static str> {
-    KNOWN.iter().find_map(|(label, hosts)| {
-        let all = !redirects.is_empty()
-            && redirects.iter().all(|r| {
-                reqwest::Url::parse(r).ok().is_some_and(|u| {
-                    u.scheme() == "https"
-                        && u.host_str()
-                            .is_some_and(|h| hosts.contains(&h.to_ascii_lowercase().as_str()))
-                })
-            });
-        all.then_some(*label)
+/// Whether this redirect address is on one of the vendors' hosts.
+pub(super) fn is_vendor_host(redirect: &str) -> bool {
+    reqwest::Url::parse(redirect).ok().is_some_and(|u| {
+        u.scheme() == "https"
+            && u.host_str()
+                .is_some_and(|h| VENDOR_HOSTS.contains(&h.to_ascii_lowercase().as_str()))
     })
 }
 
-/// What identifies a product across registrations (rule 6).
-fn product_key(client: &ClientRec) -> String {
-    match (client.kind, known_product(&client.redirects)) {
-        (_, Some(label)) => format!("known:{label}"),
-        (Kind::Document | Kind::Typed, None) => format!("{:?}:{}", client.kind, client.id),
-        (Kind::Registered, None) => {
-            let mut redirects = client.redirects.clone();
-            redirects.sort();
-            format!(
-                "registered:{}|{}",
-                client.name.to_lowercase(),
-                redirects.join(" ")
-            )
+/// What an assistant calls itself, as shown: cleaned and short; empty if
+/// it gave none.
+fn shown_name(client: &ClientRec) -> String {
+    clean(&client.name, MAX_NAME_SHOWN)
+}
+
+/// What the window and the list call a connection: where it was sent back
+/// to first, then its own word for itself, never a name of a product made
+/// up from the host.
+fn label_of(client: &ClientRec, redirect: &str) -> String {
+    let host = redirect_host(redirect);
+    let name = shown_name(client);
+    if name.is_empty() {
+        format!("An assistant sent back to {host}")
+    } else {
+        format!("{name} (sent back to {host})")
+    }
+}
+
+/// A caller: its address as shown, and as the limits count it.
+#[derive(Clone, Debug)]
+pub(super) struct Caller {
+    pub shown: String,
+    pub key: String,
+}
+
+impl Caller {
+    pub(super) fn new(ip: IpAddr) -> Self {
+        Self {
+            shown: canonical(ip).to_string(),
+            key: address_key(ip),
         }
     }
 }
 
-/// What the window calls a client: the product we recognise, else what it
-/// calls itself.
-fn label_of(client: &ClientRec) -> String {
-    known_product(&client.redirects)
-        .map(str::to_string)
-        .unwrap_or_else(|| {
-            let n = clean(&client.name, 60);
-            if n.is_empty() {
-                "An assistant".to_string()
-            } else {
-                n
-            }
-        })
+/// An address with an IPv4-mapped form made the IPv4 address it is.
+fn canonical(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(IpAddr::V6(v6), IpAddr::V4),
+        v4 => v4,
+    }
+}
+
+/// What the per-address limits count by: an IPv4 address; an IPv6 caller's
+/// /64 (one household or one host holds a whole one, and an attacker holds
+/// billions of them, so a single address would be no limit at all); an
+/// IPv4-mapped IPv6 address is the IPv4 one.
+pub(super) fn address_key(ip: IpAddr) -> String {
+    match canonical(ip) {
+        IpAddr::V4(v4) => v4.to_string(),
+        IpAddr::V6(v6) => {
+            let s = v6.segments();
+            format!("{:x}:{:x}:{:x}:{:x}::/64", s[0], s[1], s[2], s[3])
+        }
+    }
+}
+
+/// A short code for the person to match between the browser's page and the
+/// window's card: six digits, in two groups, never the same as another
+/// waiting request's.
+fn match_code(inner: &Inner) -> Result<String, OauthError> {
+    for _ in 0..50 {
+        let mut b = [0u8; 4];
+        getrandom::getrandom(&mut b)
+            .map_err(|_| OauthError::new(500, "server_error", "the system gave no randomness"))?;
+        let n = u32::from_be_bytes(b);
+        // Without bias: a number past the last whole million is thrown away.
+        if n >= 4_294_000_000 {
+            continue;
+        }
+        let n = n % 1_000_000;
+        let code = format!("{:03} {:03}", n / 1000, n % 1000);
+        if !inner.pending.iter().any(|p| p.code == code) {
+            return Ok(code);
+        }
+    }
+    Err(OauthError::new(503, "temporarily_unavailable", "busy"))
 }
 
 /// A principals' token name from a label: lowercase letters, digits and
@@ -656,7 +763,14 @@ impl Remote {
     fn snapshot(&self, inner: &Inner) -> (u64, String) {
         let saved = Saved {
             version: 1,
-            clients: inner.clients.values().cloned().collect(),
+            // A registration nobody ever allowed lives in memory only: a
+            // stranger's registrations cost the disk nothing.
+            clients: inner
+                .clients
+                .values()
+                .filter(|c| c.approved || c.kind == Kind::Typed)
+                .cloned()
+                .collect(),
             approvals: inner.approvals.values().cloned().collect(),
             refresh: inner.refresh.values().cloned().collect(),
             keys: inner.keys.values().cloned().collect(),
@@ -693,6 +807,11 @@ impl Remote {
             let mut file = options
                 .open(&tmp)
                 .map_err(|_| "the record of web sign-ins can't be written".to_string())?;
+            // Windows has no mode: the same owner-only helper the token
+            // files use, before anything is written into the file.
+            #[cfg(windows)]
+            ledger_store::winsec::set_owner_only(&tmp)
+                .map_err(|_| "the record of web sign-ins can't be made private".to_string())?;
             file.write_all(text.as_bytes())
                 .and_then(|()| file.sync_all())
                 .map_err(|_| "the record of web sign-ins can't be written".to_string())?;
@@ -713,19 +832,53 @@ impl Remote {
 
     // ---- limits and sweeps ------------------------------------------------
 
-    /// A fixed-window counter: whether `key` may do one more thing in
-    /// `window` seconds, `max` at most. The table is bounded (INVARIANT 8).
+    /// A fixed-window counter for a connection's own or a door-wide limit:
+    /// whether `key` may do one more thing in `window` seconds, `max` at
+    /// most. These keys are few by construction (one per approval, key or
+    /// known client, and a handful door-wide), so the table is never
+    /// evicted from: only what has expired is dropped.
     fn allow(&self, inner: &mut Inner, key: String, max: u32, window: i64) -> bool {
         let now = self.now();
-        if inner.limits.len() >= MAX_LIMITS && !inner.limits.contains_key(&key) {
+        if inner.limits.len() >= MAX_ADDRESS_LIMITS && !inner.limits.contains_key(&key) {
             inner.limits.retain(|_, (start, _)| now - *start < 3600);
-            if inner.limits.len() >= MAX_LIMITS {
-                inner.limits.clear();
-            }
         }
         let slot = inner.limits.entry(key).or_insert((now, 0));
         if now - slot.0 >= window {
             *slot = (now, 0);
+        }
+        if slot.1 >= max {
+            return false;
+        }
+        slot.1 += 1;
+        true
+    }
+
+    /// The same for a caller's address (INVARIANT 8): the table of these is
+    /// bounded, and when it is full it is the per-address entries that
+    /// began longest ago that go, never a connection's own limit.
+    fn allow_address(&self, inner: &mut Inner, key: String, max: u32, window: i64) -> bool {
+        let now = self.now();
+        if inner.address_limits.len() >= MAX_ADDRESS_LIMITS
+            && !inner.address_limits.contains_key(&key)
+        {
+            inner
+                .address_limits
+                .retain(|_, (start, _, w)| now - *start < *w);
+            if inner.address_limits.len() >= MAX_ADDRESS_LIMITS {
+                let mut by_age: Vec<(i64, String)> = inner
+                    .address_limits
+                    .iter()
+                    .map(|(k, (start, _, _))| (*start, k.clone()))
+                    .collect();
+                by_age.sort();
+                for (_, k) in by_age.into_iter().take(MAX_ADDRESS_LIMITS / 10) {
+                    inner.address_limits.remove(&k);
+                }
+            }
+        }
+        let slot = inner.address_limits.entry(key).or_insert((now, 0, window));
+        if now - slot.0 >= window {
+            *slot = (now, 0, window);
         }
         if slot.1 >= max {
             return false;
@@ -741,6 +894,19 @@ impl Remote {
         !self.allow(&mut inner, key, max, window)
     }
 
+    /// Count a call refused as another company's or for rate: counted, not
+    /// written to the books' record (a token holder could fill the disk).
+    pub(super) fn count_refused(&self) {
+        let mut inner = self.inner();
+        inner.refused = inner.refused.saturating_add(1);
+    }
+
+    /// Calls refused as another company's or for rate, since the server began.
+    #[cfg(test)]
+    pub(super) fn refused(&self) -> u64 {
+        self.inner().refused
+    }
+
     /// Drop what has expired (INVARIANT 8). At most every few seconds.
     fn sweep(&self, inner: &mut Inner) {
         let now = self.now();
@@ -754,6 +920,9 @@ impl Remote {
         inner.refresh.retain(|_, r| r.exp > now);
         inner.failed_docs.retain(|_, until| *until > now);
         inner.limits.retain(|_, (start, _)| now - *start < 3600);
+        inner
+            .address_limits
+            .retain(|_, (start, _, w)| now - *start < (*w).max(3600));
         // A sign-in nobody decided is over (the page finds out on its
         // next look); one decided and collected is gone.
         for p in &mut inner.pending {
@@ -836,20 +1005,23 @@ impl Remote {
         }
     }
 
-    /// Dynamic registration (RFC 7591): the answer's JSON, or why not.
+    /// Dynamic registration (RFC 7591): the answer's JSON, or why not. The
+    /// registration is held in memory only: it reaches the disk if and when
+    /// the person allows a sign-in of it (D-90, and no stranger writes the
+    /// file).
     pub(super) async fn register(
         self: &Arc<Self>,
         books: &Arc<Books>,
         meta: &serde_json::Value,
-        from: &str,
+        from: &Caller,
     ) -> Result<serde_json::Value, OauthError> {
         self.ready(books)?;
         {
             let mut inner = self.inner();
             self.sweep(&mut inner);
-            let ok = self.allow(
+            let ok = self.allow_address(
                 &mut inner,
-                format!("register:{from}"),
+                format!("register:{}", from.key),
                 REGISTER_PER_ADDRESS,
                 3600,
             ) && self.allow(&mut inner, "register".into(), REGISTER_TOTAL, 3600);
@@ -892,6 +1064,13 @@ impl Remote {
                 redirects.push(text.to_string());
             }
         }
+        if !redirects_fit(&redirects) {
+            return Err(OauthError::new(
+                400,
+                "invalid_redirect_uri",
+                "the redirect addresses together are too long",
+            ));
+        }
         let method = obj
             .get("token_endpoint_auth_method")
             .and_then(|v| v.as_str())
@@ -926,15 +1105,10 @@ impl Remote {
                     created: now,
                     last_seen: now,
                     used: false,
+                    approved: false,
                     fetched: 0,
                 },
             );
-        }
-        // A registration that can't be kept is not given: the client would
-        // hold an id this server forgets.
-        if let Err(e) = self.save_async().await {
-            self.inner().clients.remove(&id);
-            return Err(OauthError::new(500, "server_error", e));
         }
         let mut out = serde_json::json!({
             "client_id": id,
@@ -959,51 +1133,70 @@ impl Remote {
     }
 
     /// The client `id` names: registered, typed, or (an https address) a
-    /// metadata document, fetched and kept.
+    /// metadata document, fetched and kept. `may_fetch` is false on the
+    /// token endpoint, which never reaches out to the internet: a document
+    /// is only ever fetched when a sign-in begins. A document we hold that
+    /// is past its time is used as it is when the fetch budget is spent or
+    /// the fetch fails: a vendor's host being slow doesn't lock the person
+    /// out.
     pub(super) async fn resolve_client(
         self: &Arc<Self>,
         books: &Arc<Books>,
         id: &str,
-        from: &str,
+        from: &Caller,
+        may_fetch: bool,
     ) -> Result<ClientRec, OauthError> {
         self.ready(books)?;
         let now = self.now();
-        {
+        let stale = {
             let mut inner = self.inner();
             self.sweep(&mut inner);
-            if let Some(c) = inner.clients.get(id) {
-                let fresh = c.kind != Kind::Document || now - c.fetched < CIMD_TTL;
-                if fresh {
+            match inner.clients.get(id) {
+                Some(c) if c.kind != Kind::Document || now - c.fetched < CIMD_TTL => {
                     return Ok(c.clone());
                 }
+                Some(c) => Some(c.clone()),
+                None => None,
             }
-        }
-        if !id.starts_with("https://") {
-            return Err(OauthError::new(
+        };
+        let unknown = || {
+            OauthError::new(
                 401,
                 "invalid_client",
                 "that client_id isn't known here",
-            ));
+            )
+        };
+        if !id.starts_with("https://") || !may_fetch {
+            return stale.ok_or_else(unknown);
         }
         // A document: fetched outside the lock, within limits (the door
         // must not be a way to make us fetch the internet).
         {
             let mut inner = self.inner();
             if inner.failed_docs.get(id).is_some_and(|until| *until > now) {
-                return Err(OauthError::new(
-                    401,
-                    "invalid_client",
-                    "that client's metadata document couldn't be used a moment ago",
-                ));
+                return stale.ok_or_else(|| {
+                    OauthError::new(
+                        401,
+                        "invalid_client",
+                        "that client's metadata document couldn't be used a moment ago",
+                    )
+                });
             }
             if !self.allow(&mut inner, "fetch".into(), FETCH_PER_MINUTE, 60)
-                || !self.allow(&mut inner, format!("fetch:{from}"), FETCH_PER_ADDRESS, 60)
+                || !self.allow_address(
+                    &mut inner,
+                    format!("fetch:{}", from.key),
+                    FETCH_PER_ADDRESS,
+                    60,
+                )
             {
-                return Err(OauthError::new(
-                    429,
-                    "temporarily_unavailable",
-                    "too many new assistants just now: try again in a minute",
-                ));
+                return stale.ok_or_else(|| {
+                    OauthError::new(
+                        429,
+                        "temporarily_unavailable",
+                        "too many new assistants just now: try again in a minute",
+                    )
+                });
             }
         }
         let docs = self.docs.read().unwrap_or_else(|e| e.into_inner()).clone();
@@ -1025,6 +1218,7 @@ impl Remote {
                     created: old.as_ref().map_or(now, |o| o.created),
                     last_seen: now,
                     used: old.as_ref().is_some_and(|o| o.used),
+                    approved: old.as_ref().is_some_and(|o| o.approved),
                     fetched: now,
                 };
                 inner.clients.insert(id.to_string(), rec.clone());
@@ -1067,6 +1261,9 @@ impl Remote {
                 return Err("one of the addresses can't be used to send an assistant back".into());
             }
         }
+        if !redirects_fit(redirect_uris) {
+            return Err("the addresses together are too long".into());
+        }
         let id = random("wbc_", 12).map_err(|e| e.description)?;
         let secret = random("", 32).map_err(|e| e.description)?;
         {
@@ -1093,6 +1290,8 @@ impl Remote {
                     created: now,
                     last_seen: now,
                     used: false,
+                    // The owner made it: nothing here is a stranger's.
+                    approved: true,
                     fetched: 0,
                 },
             );
@@ -1111,20 +1310,77 @@ impl Remote {
         (BookId::parse(book).is_ok()).then(|| book.to_string())
     }
 
+    /// Make room for one more waiting request from `key`, without turning
+    /// the new one away (a few addresses must not be able to fill the
+    /// person's window): an address at its own limit gives up its oldest
+    /// waiting request; a full table takes the oldest waiting request of
+    /// the address with the most waiting. Those given up are told so.
+    fn make_pending_room(&self, inner: &mut Inner, key: &str) {
+        let waiting = |p: &Pending| matches!(p.settled, Settled::Waiting);
+        loop {
+            let mine = inner
+                .pending
+                .iter()
+                .position(|p| waiting(p) && p.from_key == key);
+            let mine_count = inner
+                .pending
+                .iter()
+                .filter(|p| waiting(p) && p.from_key == key)
+                .count();
+            if mine_count >= MAX_PENDING_PER_ADDRESS {
+                if let Some(at) = mine {
+                    inner.pending[at].settled = Settled::Crowded;
+                }
+                continue;
+            }
+            let total = inner.pending.iter().filter(|p| waiting(p)).count();
+            if total < MAX_PENDING {
+                break;
+            }
+            // The address with the most waiting; of equals, the one whose
+            // oldest request is the oldest.
+            let mut counts: Vec<(String, usize, usize)> = Vec::new();
+            for (at, p) in inner.pending.iter().enumerate().filter(|(_, p)| waiting(p)) {
+                match counts.iter_mut().find(|(k, _, _)| *k == p.from_key) {
+                    Some(slot) => slot.1 += 1,
+                    None => counts.push((p.from_key.clone(), 1, at)),
+                }
+            }
+            let Some((_, _, at)) = counts
+                .into_iter()
+                .max_by_key(|(_, n, first)| (*n, std::cmp::Reverse(*first)))
+            else {
+                break;
+            };
+            inner.pending[at].settled = Settled::Crowded;
+        }
+        // What was given up and is waiting to be read is bounded too.
+        let keep = MAX_PENDING * 4;
+        while inner.pending.len() > keep {
+            match inner.pending.iter().position(|p| !waiting(p)) {
+                Some(at) => {
+                    inner.pending.remove(at);
+                }
+                None => break,
+            }
+        }
+    }
+
     /// A sign-in begins (`GET /authorize`). Either an answer to send the
-    /// browser, or the request is parked.
+    /// browser, or the request is parked: always parked, for the person to
+    /// decide in the window (D-90).
     pub(super) async fn authorize(
         self: &Arc<Self>,
         books: &Arc<Books>,
         door: &Door,
         q: &BTreeMap<String, String>,
-        from: &str,
+        from: &Caller,
     ) -> Authorize {
         {
             let mut inner = self.inner();
-            if !self.allow(
+            if !self.allow_address(
                 &mut inner,
-                format!("authorize:{from}"),
+                format!("authorize:{}", from.key),
                 AUTHORIZE_PER_ADDRESS,
                 600,
             ) {
@@ -1146,7 +1402,7 @@ impl Remote {
         let Some(client_id) = q.get("client_id").filter(|s| !s.is_empty()) else {
             return no_client();
         };
-        let Ok(client) = self.resolve_client(books, client_id, from).await else {
+        let Ok(client) = self.resolve_client(books, client_id, from, true).await else {
             return no_client();
         };
         // The redirect address: exactly one the client gave. Until it is
@@ -1166,14 +1422,28 @@ impl Remote {
             }
         };
         let state = q.get("state").cloned();
+        // A client nobody ever approved is anyone's: its error is a page, not
+        // a redirect to whatever address it registered (no open redirect
+        // through registration). One the person has approved before is
+        // sent its errors, as the specification has it.
         let fail = |code: &str, why: &str| {
-            Authorize::Redirect(error_redirect(
-                &redirect,
-                state.as_deref(),
-                code,
-                why,
-                &door.issuer,
-            ))
+            if client.approved {
+                Authorize::Redirect(error_redirect(
+                    &redirect,
+                    state.as_deref(),
+                    code,
+                    why,
+                    &door.issuer,
+                ))
+            } else {
+                Authorize::Page(
+                    400,
+                    pages::problem(
+                        "This assistant can't sign in",
+                        "Its request wasn't one Wanderbooks can take. Start again from the assistant.",
+                    ),
+                )
+            }
         };
         if state.as_ref().is_some_and(|s| s.len() > 512) {
             return fail("invalid_request", "state is too long");
@@ -1221,80 +1491,22 @@ impl Remote {
         let wants_post = q
             .get("scope")
             .is_some_and(|s| s.split_whitespace().any(|w| w == "books:post"));
-        let product = product_key(&client);
-        let label = label_of(&client);
+        let name = shown_name(&client);
+        let host = redirect_host(&redirect);
         let now = self.now();
-        // An approval the person already gave this product for this
-        // company stands, however many times the product registers again
-        // (rule 6): its principals' token must still be live.
-        let existing = {
-            let inner = self.inner();
-            inner
-                .approvals
-                .values()
-                .find(|a| a.book == book && a.product == product)
-                .cloned()
-        };
-        if let Some(approval) = existing
-            && now - approval.last_used < REFRESH_TTL
-            && super::token_is_live(
-                books,
-                &approval.book,
-                &approval.token_name,
-                &approval.token_id,
-            )
-        {
-            let code = {
-                let mut inner = self.inner();
-                if let Some(c) = inner.clients.get_mut(&client.id) {
-                    c.used = true;
-                    c.last_seen = now;
-                }
-                self.new_code(
-                    &mut inner,
-                    &client.id,
-                    &approval,
-                    &door.issuer,
-                    &redirect,
-                    &challenge,
-                    None,
-                )
-            };
-            return match code {
-                Ok(code) => Authorize::Redirect(success_redirect(
-                    &redirect,
-                    state.as_deref(),
-                    &code,
-                    &door.issuer,
-                )),
-                Err(_) => fail("server_error", "no code could be made"),
-            };
-        }
-        // Parked, for the person to decide in the app's window (rule 5).
-        let parked = {
+        // Every sign-in is asked in the window, always (D-90): an approval
+        // is never reused, however well the product is known, because who
+        // the product is is public and whose account it is is not known.
+        let (wait, code) = {
             let mut inner = self.inner();
             self.sweep(&mut inner);
-            let total = inner
-                .pending
-                .iter()
-                .filter(|p| matches!(p.settled, Settled::Waiting))
-                .count();
-            let mine = inner
-                .pending
-                .iter()
-                .filter(|p| matches!(p.settled, Settled::Waiting) && p.from == from)
-                .count();
-            if total >= MAX_PENDING || mine >= MAX_PENDING_PER_ADDRESS {
-                return Authorize::Page(
-                    429,
-                    pages::problem(
-                        "Wanderbooks is busy",
-                        "Too many assistants are waiting to be allowed. Try again in a few minutes.",
-                    ),
-                );
-            }
             let (Ok(id), Ok(wait)) = (random("p_", 9), random("w_", 24)) else {
                 return fail("server_error", "no id could be made");
+            };
+            self.make_pending_room(&mut inner, &from.key);
+            let code = match match_code(&inner) {
+                Ok(c) => c,
+                Err(_) => return fail("temporarily_unavailable", "busy"),
             };
             if let Some(c) = inner.clients.get_mut(&client.id) {
                 c.used = true;
@@ -1304,28 +1516,30 @@ impl Remote {
                 id,
                 wait: wait.clone(),
                 client: client.id.clone(),
-                client_name: label.clone(),
-                product: known_product(&client.redirects).map(str::to_string),
+                client_name: name.clone(),
+                known_host: is_vendor_host(&redirect),
+                code: code.clone(),
                 redirect: redirect.clone(),
                 state: state.clone(),
                 challenge,
                 book: book.clone(),
                 issuer: door.issuer.clone(),
-                from: from.to_string(),
+                from: from.shown.clone(),
+                from_key: from.key.clone(),
                 wants_post,
                 created: now,
                 exp: now + PENDING_TTL,
                 settled: Settled::Waiting,
             });
-            wait
+            (wait, code)
         };
         let company = super::company_name(books, &book);
-        Authorize::Page(200, pages::waiting(&label, &company, &parked))
+        Authorize::Page(200, pages::waiting(&host, &name, &company, &code, &wait))
     }
 
     /// The page's next look (`GET /authorize/wait/{wait}`): still waiting,
     /// or sent back with a code, or sent back refused. Read once.
-    pub(super) fn wait(&self, wait: &str) -> Authorize {
+    pub(super) fn wait(&self, books: &Books, wait: &str) -> Authorize {
         let now = self.now();
         let mut inner = self.inner();
         self.sweep(&mut inner);
@@ -1338,18 +1552,34 @@ impl Remote {
         if matches!(inner.pending[at].settled, Settled::Waiting) && inner.pending[at].exp <= now {
             inner.pending[at].settled = Settled::Refused;
         }
-        let settled = match &inner.pending[at].settled {
-            Settled::Waiting => None,
-            Settled::Allowed(code) => Some(Some(code.clone())),
-            Settled::Refused => Some(None),
+        enum Seen {
+            Waiting,
+            Allowed(String),
+            Refused,
+            Crowded,
+        }
+        let seen = match &inner.pending[at].settled {
+            Settled::Waiting => Seen::Waiting,
+            Settled::Allowed(code) => Seen::Allowed(code.clone()),
+            Settled::Refused => Seen::Refused,
+            Settled::Crowded => Seen::Crowded,
         };
-        match settled {
-            None => {
+        match seen {
+            Seen::Waiting => {
                 let p = &inner.pending[at];
-                let company = p.book.clone();
-                Authorize::Page(200, pages::waiting(&p.client_name, &company, wait))
+                let company = super::company_name(books, &p.book);
+                Authorize::Page(
+                    200,
+                    pages::waiting(
+                        &redirect_host(&p.redirect),
+                        &p.client_name,
+                        &company,
+                        &p.code,
+                        wait,
+                    ),
+                )
             }
-            Some(Some(code)) => {
+            Seen::Allowed(code) => {
                 let p = inner.pending.remove(at);
                 Authorize::Redirect(success_redirect(
                     &p.redirect,
@@ -1358,17 +1588,23 @@ impl Remote {
                     &p.issuer,
                 ))
             }
-            Some(None) => {
+            Seen::Refused | Seen::Crowded => {
+                let crowded = matches!(seen, Seen::Crowded);
                 let p = inner.pending.remove(at);
-                let why = if p.exp <= now {
-                    "nobody allowed it in time"
+                let (error, why) = if crowded {
+                    (
+                        "temporarily_unavailable",
+                        "too many assistants were waiting: try again",
+                    )
+                } else if p.exp <= now {
+                    ("access_denied", "nobody allowed it in time")
                 } else {
-                    "the owner didn't allow it"
+                    ("access_denied", "the owner didn't allow it")
                 };
                 Authorize::Redirect(error_redirect(
                     &p.redirect,
                     p.state.as_deref(),
-                    "access_denied",
+                    error,
                     why,
                     &p.issuer,
                 ))
@@ -1429,7 +1665,8 @@ impl Remote {
                 id: p.id.clone(),
                 book: p.book.clone(),
                 client_name: p.client_name.clone(),
-                product: p.product.clone(),
+                known_host: p.known_host,
+                code: p.code.clone(),
                 redirect: p.redirect.clone(),
                 redirect_host: redirect_host(&p.redirect),
                 from: p.from.clone(),
@@ -1480,23 +1717,16 @@ impl Remote {
             .get(&client_id)
             .cloned()
             .ok_or("that assistant's registration ran out: ask it to start again")?;
-        let product = product_key(&client);
-        let existing = self
-            .inner()
-            .approvals
-            .values()
-            .find(|a| a.book == book && a.product == product)
-            .cloned();
-        let approval = match existing {
-            Some(a) if super::token_is_live(books, &a.book, &a.token_name, &a.token_id) => {
-                if post && !self.may_post(books, &a) {
-                    self.set_post(books, &a.id, true)?
-                } else {
-                    a
-                }
-            }
-            old => self.make_approval(books, &book, &client, &product, post, old)?,
-        };
+        // Every Allow is a new approval, with exactly the permissions
+        // ticked now and nothing carried over from an older one (D-90): an
+        // older connection of the same product stays as it is, to be
+        // revoked or kept on its own.
+        let approval = self.make_approval(books, &book, &client, &redirect, post)?;
+        if let Some(c) = self.inner().clients.get_mut(&client_id) {
+            // Now a client the person has approved: kept on disk with its
+            // approval, and sent its errors as redirects.
+            c.approved = true;
+        }
         {
             let mut inner = self.inner();
             let code = self
@@ -1525,30 +1755,25 @@ impl Remote {
         ))
     }
 
-    fn may_post(&self, books: &Books, a: &Approval) -> bool {
-        super::live_token(books, &a.book, &a.token_name, &a.token_id)
-            .is_some_and(|t| t.scopes.contains(&Scope::Post))
-    }
-
-    /// A new approval, and the principals' token that carries it.
+    /// A new approval, and the principals' token that carries it: always
+    /// a new id and a new token, never the old one made over.
     fn make_approval(
         &self,
         books: &Books,
         book: &str,
         client: &ClientRec,
-        product: &str,
+        redirect: &str,
         post: bool,
-        old: Option<Approval>,
     ) -> Result<Approval, String> {
         let book_id = BookId::parse(book).map_err(|e| e.to_string())?;
         {
             let inner = self.inner();
-            if old.is_none() && inner.approvals.len() >= MAX_APPROVALS {
+            if inner.approvals.len() >= MAX_APPROVALS {
                 return Err("there are too many connections: revoke some first".into());
             }
         }
-        let label = label_of(client);
-        let base = token_slug(&label);
+        let label = label_of(client, redirect);
+        let base = token_slug(&redirect_host(redirect));
         let taken: BTreeSet<String> = super::token_names(books, book);
         let name = (1..)
             .map(|n| {
@@ -1563,12 +1788,8 @@ impl Remote {
         let token = super::make_token(books, &book_id, &name, scopes_for(post), false)?;
         let now = self.now();
         let approval = Approval {
-            id: old
-                .as_ref()
-                .map(|o| o.id.clone())
-                .unwrap_or(random("apr_", 9).map_err(|e| e.description)?),
+            id: random("apr_", 9).map_err(|e| e.description)?,
             book: book.to_string(),
-            product: product.to_string(),
             label,
             token_name: name,
             token_id: token.id,
@@ -1582,7 +1803,13 @@ impl Remote {
     }
 
     /// Raise or lower what an approval may do (rule 10): the token that
-    /// carries it is replaced by one with the new scopes, in one record.
+    /// carries it is replaced by one with the new scopes, and the approval
+    /// names the new one, as one step. The door's lock is held across it, so
+    /// no call lands between the two (every call is let in under that lock);
+    /// and the check that the connection is live is made in the same hold of
+    /// the principals as the replacement, so a revoke that came first stays
+    /// a revoke, and one that comes after reaches the new token (see
+    /// [`Remote::successor_of`]).
     pub(super) fn set_post(
         &self,
         books: &Books,
@@ -1590,34 +1817,77 @@ impl Remote {
         post: bool,
     ) -> Result<Approval, String> {
         self.load(books)?;
-        let mut approval = self
-            .inner()
-            .approvals
-            .get(approval_id)
-            .cloned()
-            .ok_or("there is no such connection")?;
-        if !super::token_is_live(
-            books,
-            &approval.book,
-            &approval.token_name,
-            &approval.token_id,
-        ) {
-            return Err("that connection was revoked".into());
-        }
-        let book_id = BookId::parse(&approval.book).map_err(|e| e.to_string())?;
-        let token = super::make_token(
-            books,
-            &book_id,
-            &approval.token_name,
-            scopes_for(post),
-            true,
-        )?;
-        approval.token_id = token.id;
-        self.inner()
-            .approvals
-            .insert(approval.id.clone(), approval.clone());
+        let approval = {
+            let mut inner = self.inner();
+            let mut approval = inner
+                .approvals
+                .get(approval_id)
+                .cloned()
+                .ok_or("there is no such connection")?;
+            let book_id = BookId::parse(&approval.book).map_err(|e| e.to_string())?;
+            let token = super::replace_token_if_live(
+                books,
+                &book_id,
+                &approval.token_name,
+                &approval.token_id,
+                scopes_for(post),
+            )?;
+            if inner.swapped.len() >= MAX_SWAPPED {
+                inner.swapped.clear();
+            }
+            inner
+                .swapped
+                .insert(approval.token_id.clone(), token.id.clone());
+            approval.token_id = token.id;
+            inner.approvals.insert(approval.id.clone(), approval.clone());
+            approval
+        };
         self.save()?;
         Ok(approval)
+    }
+
+    /// The token that took the place of `old_id` when an approval's
+    /// permissions were raised or lowered, if one did: a revoke that named
+    /// the old one a moment too late is for this one (it wins).
+    pub(super) fn successor_of(&self, old_id: &str) -> Option<String> {
+        let inner = self.inner();
+        // A connection raised and lowered several times: follow the chain
+        // to the token that stands now.
+        let mut at = inner.swapped.get(old_id)?;
+        for _ in 0..64 {
+            match inner.swapped.get(at) {
+                Some(next) => at = next,
+                None => break,
+            }
+        }
+        Some(at.clone())
+    }
+
+    /// The principals' token `token_id` is gone (revoked, or made over):
+    /// what it carried goes with it at once, not when a list is next read
+    /// (D-90): the approval, its refresh tokens, its access tokens, its
+    /// codes, and a key if it was one.
+    pub(super) fn token_gone(&self, token_id: &str) {
+        {
+            let mut inner = self.inner();
+            let gone: Vec<String> = inner
+                .approvals
+                .values()
+                .filter(|a| a.token_id == token_id)
+                .map(|a| a.id.clone())
+                .collect();
+            let had_key = inner.keys.remove(token_id).is_some();
+            if gone.is_empty() && !had_key {
+                return;
+            }
+            for id in &gone {
+                inner.approvals.remove(id);
+            }
+            inner.refresh.retain(|_, r| !gone.contains(&r.approval));
+            inner.access.retain(|_, r| !gone.contains(&r.approval));
+            inner.codes.retain(|_, c| !gone.contains(&c.approval));
+        }
+        let _ = self.save();
     }
 
     fn approval_info(&self, books: &Books, approval: &Approval) -> Option<ApprovalInfo> {
@@ -1684,8 +1954,15 @@ impl Remote {
         if !super::book_is_open(books, book) {
             return Err(format!("there are no open books called {book}"));
         }
-        if self.inner().keys.len() >= MAX_KEYS {
-            return Err("there are too many keys; revoke some first".into());
+        // A key that was revoked frees its place: only the keys whose
+        // token still stands are counted.
+        {
+            let live = super::live_token_ids(books);
+            let mut inner = self.inner();
+            inner.keys.retain(|id, _| live.contains(id));
+            if inner.keys.len() >= MAX_KEYS {
+                return Err("there are too many keys; revoke some first".into());
+            }
         }
         let name = format!("key-{}", token_slug(name).trim_start_matches("web-"));
         let (token, text) = super::make_token_with_text(books, &book_id, &name, scopes_for(post))?;
@@ -1704,14 +1981,15 @@ impl Remote {
     // ---- the token endpoint ------------------------------------------------
 
     /// A token request (`POST /token`): `form` is its parameters, `basic`
-    /// the client credentials of an Authorization header, if any.
+    /// the client credentials of an Authorization header, if any. Nothing
+    /// is ever fetched from the internet here.
     pub(super) async fn token(
         self: &Arc<Self>,
         books: &Arc<Books>,
         door: &Door,
         form: &BTreeMap<String, String>,
         basic: Option<(String, String)>,
-        from: &str,
+        from: &Caller,
     ) -> Result<serde_json::Value, OauthError> {
         let (client_id, secret) = match basic {
             Some((id, s)) => (Some(id), Some(s)),
@@ -1722,6 +2000,36 @@ impl Remote {
         };
         let Some(client_id) = client_id.filter(|s| !s.is_empty()) else {
             return Err(OauthError::new(401, "invalid_client", "no client_id"));
+        };
+        // The address's limit first, by what the stranger can't choose; the
+        // client's own after it is known, so a made-up client id fills no
+        // table.
+        {
+            let mut inner = self.inner();
+            if !self.allow_address(
+                &mut inner,
+                format!("token:{}", from.key),
+                TOKEN_PER_ADDRESS,
+                60,
+            ) {
+                return Err(OauthError::new(
+                    429,
+                    "temporarily_unavailable",
+                    "too many token requests: slow down",
+                ));
+            }
+        }
+        let grant = form.get("grant_type").map(String::as_str).unwrap_or("");
+        let client = match self.resolve_client(books, &client_id, from, false).await {
+            Ok(c) => c,
+            Err(e) if grant == "refresh_token" && e.error == "invalid_client" => {
+                return Err(OauthError::new(
+                    400,
+                    "invalid_grant",
+                    "that refresh token isn't one this server knows",
+                ));
+            }
+            Err(e) => return Err(e),
         };
         {
             let mut inner = self.inner();
@@ -1738,18 +2046,6 @@ impl Remote {
                 ));
             }
         }
-        let grant = form.get("grant_type").map(String::as_str).unwrap_or("");
-        let client = match self.resolve_client(books, &client_id, from).await {
-            Ok(c) => c,
-            Err(e) if grant == "refresh_token" && e.error == "invalid_client" => {
-                return Err(OauthError::new(
-                    400,
-                    "invalid_grant",
-                    "that refresh token isn't one this server knows",
-                ));
-            }
-            Err(e) => return Err(e),
-        };
         // A client with a secret proves it, in constant time, before
         // anything is consumed.
         if let Some(want) = &client.secret_sha256 {
@@ -1881,53 +2177,163 @@ impl Remote {
         let bad = |d: &str| OauthError::new(400, "invalid_grant", d);
         let given = form.get("refresh_token").cloned().unwrap_or_default();
         let key = sha_hex(&given);
-        let _now = self.now();
-        let (found, reused) = {
+        // The check that the refresh token is good and unused, and its
+        // marking as used, are one hold of the lock (with the minting of
+        // what replaces it): two refreshes at once can't both succeed. A
+        // second use of it is a reuse, and ends the whole family.
+        let outcome = {
             let mut inner = self.inner();
             self.sweep(&mut inner);
-            let found = inner.refresh.get(&key).cloned();
-            let reused = found.as_ref().is_some_and(|r| r.used);
-            if let Some(rec) = found.as_ref().filter(|r| r.used) {
-                // Used twice: the family is over (RFC 9700 4.14).
-                let family = rec.family.clone();
-                inner.refresh.retain(|_, r| r.family != family);
-                inner.access.retain(|_, a| a.family != family);
+            match inner.refresh.get(&key).cloned() {
+                None => Err((bad("that refresh token is invalid, used, or has expired"), false)),
+                Some(rec) if rec.used => {
+                    // Used twice: the family is over (RFC 9700 4.14).
+                    inner.refresh.retain(|_, r| r.family != rec.family);
+                    inner.access.retain(|_, a| a.family != rec.family);
+                    Err((bad("that refresh token was already used: sign in again"), true))
+                }
+                Some(rec) if rec.client != client.id => {
+                    Err((bad("that refresh token belongs to another assistant"), false))
+                }
+                Some(rec) if rec.issuer != door.issuer => {
+                    Err((bad("that refresh token was made for another address"), false))
+                }
+                Some(rec) => match inner.approvals.get(&rec.approval).cloned() {
+                    None => Err((bad("that connection no longer exists"), false)),
+                    Some(approval)
+                        if !super::token_is_live(
+                            books,
+                            &approval.book,
+                            &approval.token_name,
+                            &approval.token_id,
+                        ) =>
+                    {
+                        Err((bad("that connection was revoked"), false))
+                    }
+                    Some(approval) => self
+                        .mint(
+                            &mut inner,
+                            door,
+                            client,
+                            &approval,
+                            &rec.family,
+                            Some(key.clone()),
+                        )
+                        .map(|minted| (approval, minted))
+                        .map_err(|e| (e, false)),
+                },
             }
-            (found, reused)
         };
-        let Some(rec) = found else {
-            return Err(bad("that refresh token is invalid, used, or has expired"));
-        };
-        if reused {
-            let _ = self.save_async().await;
-            return Err(bad("that refresh token was already used: sign in again"));
+        match outcome {
+            Ok((approval, minted)) => self.finish(books, &approval, minted).await,
+            Err((e, ended_family)) => {
+                if ended_family {
+                    let _ = self.save_async().await;
+                }
+                Err(e)
+            }
         }
-        if rec.client != client.id {
-            return Err(bad("that refresh token belongs to another assistant"));
-        }
-        if rec.issuer != door.issuer {
-            return Err(bad("that refresh token was made for another address"));
-        }
-        let approval = self
-            .inner()
-            .approvals
-            .get(&rec.approval)
-            .cloned()
-            .ok_or_else(|| bad("that connection no longer exists"))?;
-        if !super::token_is_live(
-            books,
-            &approval.book,
-            &approval.token_name,
-            &approval.token_id,
-        ) {
-            return Err(bad("that connection was revoked"));
-        }
-        self.issue(books, door, client, &approval, &rec.family, Some(key))
-            .await
     }
 
     /// Mint an access token and a refresh token under `approval`, and (a
-    /// refresh) retire the refresh token it came from.
+    /// refresh) retire the refresh token it came from, all with the lock
+    /// held by the caller.
+    #[allow(clippy::too_many_arguments)]
+    fn mint(
+        &self,
+        inner: &mut Inner,
+        door: &Door,
+        client: &ClientRec,
+        approval: &Approval,
+        family: &str,
+        retire: Option<String>,
+    ) -> Result<Minted, OauthError> {
+        let access = random("wba_", 32)?;
+        let refresh = random("wbr_", 32)?;
+        let now = self.now();
+        if inner.access.len() >= MAX_ACCESS {
+            inner.access.retain(|_, a| a.exp > now);
+            if inner.access.len() >= MAX_ACCESS {
+                return Err(OauthError::new(503, "temporarily_unavailable", "busy"));
+            }
+        }
+        // The family's count of one approval is bounded: the one used
+        // longest ago goes.
+        let mut families: Vec<(String, i64)> = Vec::new();
+        for r in inner.refresh.values().filter(|r| r.approval == approval.id) {
+            match families.iter_mut().find(|(f, _)| *f == r.family) {
+                Some(slot) => slot.1 = slot.1.max(r.created),
+                None => families.push((r.family.clone(), r.created)),
+            }
+        }
+        if !families.iter().any(|(f, _)| f == family) && families.len() >= MAX_FAMILIES {
+            families.sort_by_key(|(_, at)| *at);
+            let drop_family = families[0].0.clone();
+            inner.refresh.retain(|_, r| r.family != drop_family);
+        }
+        if inner.refresh.len() >= MAX_REFRESH {
+            inner.refresh.retain(|_, r| r.exp > now);
+            if inner.refresh.len() >= MAX_REFRESH {
+                return Err(OauthError::new(503, "temporarily_unavailable", "busy"));
+            }
+        }
+        let new_hash = sha_hex(&refresh);
+        inner.refresh.insert(
+            new_hash.clone(),
+            RefreshRec {
+                hash: new_hash.clone(),
+                family: family.to_string(),
+                approval: approval.id.clone(),
+                client: client.id.clone(),
+                issuer: door.issuer.clone(),
+                exp: now + REFRESH_TTL,
+                used: false,
+                created: now,
+            },
+        );
+        if let Some(old) = &retire
+            && let Some(r) = inner.refresh.get_mut(old)
+        {
+            r.used = true;
+            // A used token is kept to see a replay, only as long as it
+            // would have lived, and no longer than a week.
+            r.exp = r.exp.min(now + 7 * 24 * 3600);
+        }
+        // The families keep at most two used tokens each.
+        let mut used: Vec<(String, i64)> = inner
+            .refresh
+            .values()
+            .filter(|r| r.family == family && r.used)
+            .map(|r| (r.hash.clone(), r.created))
+            .collect();
+        if used.len() > 2 {
+            used.sort_by_key(|(_, at)| *at);
+            for (h, _) in &used[..used.len() - 2] {
+                inner.refresh.remove(h);
+            }
+        }
+        inner.access.insert(
+            sha_hex(&access),
+            AccessRec {
+                approval: approval.id.clone(),
+                family: family.to_string(),
+                book: approval.book.clone(),
+                issuer: door.issuer.clone(),
+                exp: now + ACCESS_TTL,
+            },
+        );
+        if let Some(a) = inner.approvals.get_mut(&approval.id) {
+            a.last_used = now;
+        }
+        Ok(Minted {
+            access,
+            refresh,
+            new_hash,
+            undo: retire,
+        })
+    }
+
+    /// [`Remote::mint`] under a hold of its own, then [`Remote::finish`].
     async fn issue(
         self: &Arc<Self>,
         books: &Arc<Books>,
@@ -1937,89 +2343,28 @@ impl Remote {
         family: &str,
         retire: Option<String>,
     ) -> Result<serde_json::Value, OauthError> {
-        let access = random("wba_", 32)?;
-        let refresh = random("wbr_", 32)?;
-        let now = self.now();
-        let (new_hash, undo) = {
+        let minted = {
             let mut inner = self.inner();
-            if inner.access.len() >= MAX_ACCESS {
-                inner.access.retain(|_, a| a.exp > now);
-                if inner.access.len() >= MAX_ACCESS {
-                    return Err(OauthError::new(503, "temporarily_unavailable", "busy"));
-                }
-            }
-            // The family's count of one approval is bounded: the one used
-            // longest ago goes.
-            let mut families: Vec<(String, i64)> = Vec::new();
-            for r in inner.refresh.values().filter(|r| r.approval == approval.id) {
-                match families.iter_mut().find(|(f, _)| *f == r.family) {
-                    Some(slot) => slot.1 = slot.1.max(r.created),
-                    None => families.push((r.family.clone(), r.created)),
-                }
-            }
-            if !families.iter().any(|(f, _)| f == family) && families.len() >= MAX_FAMILIES {
-                families.sort_by_key(|(_, at)| *at);
-                let drop_family = families[0].0.clone();
-                inner.refresh.retain(|_, r| r.family != drop_family);
-            }
-            if inner.refresh.len() >= MAX_REFRESH {
-                inner.refresh.retain(|_, r| r.exp > now);
-                if inner.refresh.len() >= MAX_REFRESH {
-                    return Err(OauthError::new(503, "temporarily_unavailable", "busy"));
-                }
-            }
-            let new_hash = sha_hex(&refresh);
-            inner.refresh.insert(
-                new_hash.clone(),
-                RefreshRec {
-                    hash: new_hash.clone(),
-                    family: family.to_string(),
-                    approval: approval.id.clone(),
-                    client: client.id.clone(),
-                    issuer: door.issuer.clone(),
-                    exp: now + REFRESH_TTL,
-                    used: false,
-                    created: now,
-                },
-            );
-            if let Some(old) = &retire
-                && let Some(r) = inner.refresh.get_mut(old)
-            {
-                r.used = true;
-                // A used token is kept to see a replay, only as long as it
-                // would have lived, and no longer than a week.
-                r.exp = r.exp.min(now + 7 * 24 * 3600);
-            }
-            // The families keep at most two used tokens each.
-            let mut used: Vec<(String, i64)> = inner
-                .refresh
-                .values()
-                .filter(|r| r.family == family && r.used)
-                .map(|r| (r.hash.clone(), r.created))
-                .collect();
-            if used.len() > 2 {
-                used.sort_by_key(|(_, at)| *at);
-                for (h, _) in &used[..used.len() - 2] {
-                    inner.refresh.remove(h);
-                }
-            }
-            inner.access.insert(
-                sha_hex(&access),
-                AccessRec {
-                    approval: approval.id.clone(),
-                    family: family.to_string(),
-                    book: approval.book.clone(),
-                    issuer: door.issuer.clone(),
-                    exp: now + ACCESS_TTL,
-                },
-            );
-            if let Some(a) = inner.approvals.get_mut(&approval.id) {
-                a.last_used = now;
-            }
-            (new_hash, retire.clone())
+            self.mint(&mut inner, door, client, approval, family, retire)?
         };
-        // Kept before it is given (a refresh token this server forgot
-        // would sign the person out): if it can't be kept, nothing was made.
+        self.finish(books, approval, minted).await
+    }
+
+    /// Keep what was minted before it is given (a refresh token this server
+    /// forgot would sign the person out): if it can't be kept, nothing was
+    /// made. Then the answer.
+    async fn finish(
+        self: &Arc<Self>,
+        books: &Arc<Books>,
+        approval: &Approval,
+        minted: Minted,
+    ) -> Result<serde_json::Value, OauthError> {
+        let Minted {
+            access,
+            refresh,
+            new_hash,
+            undo,
+        } = minted;
         if let Err(e) = self.save_async().await {
             let mut inner = self.inner();
             inner.refresh.remove(&new_hash);

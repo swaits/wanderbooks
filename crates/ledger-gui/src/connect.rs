@@ -51,9 +51,16 @@
 //!      Allow and Don't allow; it appears over any page of the company
 //!      (`State::web_prompt`) and on this page (`State::web_section`).
 //!      Nothing on the web page can approve: only these buttons do, through
-//!      the owner. What the assistant calls itself is shown in quotes and
-//!      is never what names the product. Posting is off unless the person
-//!      ticks it, per assistant, and can be turned on or off later.
+//!      the owner. What is known is said in neutral words, where it will be
+//!      sent back to first ("An assistant that will be sent back to
+//!      claude.ai"), never as a known or trusted product on the strength of
+//!      that address: a host is public, and says nothing of who asks. Each
+//!      card shows its own short code, the one its browser page shows, and
+//!      says to allow only on a match; at most MOST_CARDS cards are drawn
+//!      at once, the newest, and the rest are counted. What the assistant
+//!      calls itself is shown in quotes, after the address. Posting is off
+//!      unless the person ticks it, per assistant, and can be turned on or
+//!      off later; every Allow is a new approval with only what is ticked.
 //! ```
 
 use crate::connections::{Connection, Link, Status, describe, program_name};
@@ -461,12 +468,14 @@ impl State {
         ui.add_space(24.0);
         section(ui, "Assistants on the web");
         let mut want: Want = None;
-        for request in &status.web_pending {
+        let (shown, more) = newest_waiting(&status.web_pending);
+        for request in shown {
             if let Some(w) = self.pending_card(ui, status, request, owner) {
                 want = Some(w);
             }
             ui.add_space(6.0);
         }
+        say_more_waiting(ui, more);
         for a in &status.web_approvals {
             Frame::new()
                 .fill(p.surface)
@@ -537,26 +546,40 @@ impl State {
             .inner_margin(Margin::symmetric(14, 12))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
+                // What is known is said in neutral words: where it will be
+                // sent back to first, never a product's name made from it.
                 ui.label(
                     RichText::new(format!(
-                        "{} wants to connect to {}. Allow?",
-                        request.client_name, status.company
+                        "An assistant that will be sent back to {} wants to connect to {}. Allow?",
+                        request.redirect_host, status.company
                     ))
                     .font(theme::semibold(15.0)),
                 );
-                ui.add_space(4.0);
-                if request.recognised {
+                if !request.client_name.is_empty() {
                     ui.label(
-                        RichText::new(
-                            "Only allow it if you just asked this assistant to connect.",
-                        )
+                        RichText::new(format!(
+                            "It calls itself \u{201c}{}\u{201d}. That is only its own word for itself.",
+                            request.client_name
+                        ))
                         .font(theme::regular(13.0))
                         .color(p.muted),
                     );
-                } else {
+                }
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(format!("Code {}", request.code)).font(theme::semibold(22.0)),
+                );
+                ui.label(
+                    RichText::new(
+                        "Allow only if the page in your browser shows this same code. If it shows another code, or you didn't just ask an assistant to connect, choose Don't allow.",
+                    )
+                    .font(theme::regular(13.0))
+                    .color(p.muted),
+                );
+                if !request.known_host {
                     ui.label(
                         RichText::new(
-                            "Wanderbooks doesn't recognise this assistant: it only gave this name for itself. Don't allow it unless you just set it up yourself.",
+                            "Wanderbooks doesn't know this address. Don't allow it unless you just set this assistant up yourself.",
                         )
                         .font(theme::regular(13.0))
                         .color(p.warning),
@@ -622,9 +645,9 @@ impl State {
         let owner = owner.clone()?;
         let id = request.id.clone();
         let what = if approve {
-            format!("Allow {}", request.client_name)
+            format!("Allow the assistant sent back to {}", request.redirect_host)
         } else {
-            format!("Don't allow {}", request.client_name)
+            format!("Don't allow the assistant sent back to {}", request.redirect_host)
         };
         Some((
             what,
@@ -655,12 +678,14 @@ impl State {
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0))
             .show(ui.ctx(), |win| {
-                for request in &status.web_pending {
+                let (shown, more) = newest_waiting(&status.web_pending);
+                for request in shown {
                     if let Some(w) = self.pending_card(win, status, request, owner) {
                         want = Some(w);
                     }
                     win.add_space(6.0);
                 }
+                say_more_waiting(win, more);
             });
         if let Some((what, keep, work)) = want {
             self.start(ui, jobs, what, &keep, work);
@@ -855,6 +880,36 @@ impl State {
             );
         }
     }
+}
+
+/// The most requests drawn at once: a few addresses must not be able to
+/// bury the one the person is waiting for under a screenful.
+pub const MOST_CARDS: usize = 3;
+
+/// The newest requests (the one just asked for is the one the person is
+/// looking for), and how many more are waiting.
+fn newest_waiting(all: &[crate::owner::WebRequest]) -> (Vec<&crate::owner::WebRequest>, usize) {
+    let mut sorted: Vec<&crate::owner::WebRequest> = all.iter().collect();
+    // Most time left is the newest.
+    sorted.sort_by(|a, b| b.expires_in_secs.cmp(&a.expires_in_secs));
+    let more = sorted.len().saturating_sub(MOST_CARDS);
+    sorted.truncate(MOST_CARDS);
+    (sorted, more)
+}
+
+fn say_more_waiting(ui: &mut Ui, more: usize) {
+    if more == 0 {
+        return;
+    }
+    let p = pal(ui.ctx());
+    ui.label(
+        RichText::new(format!(
+            "{more} more {} waiting. Answer these first; the next ones then show.",
+            if more == 1 { "is" } else { "are" }
+        ))
+        .font(theme::regular(12.5))
+        .color(p.muted),
+    );
 }
 
 fn section(ui: &mut Ui, title: &str) {

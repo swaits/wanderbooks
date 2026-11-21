@@ -31,7 +31,7 @@
 //!      address is.
 //! ```
 
-use super::{MAX_REDIRECTS, clean, valid_redirect};
+use super::{MAX_REDIRECTS, clean, redirects_fit, valid_redirect};
 use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::pin::Pin;
@@ -89,8 +89,12 @@ fn v6_public(a: Ipv6Addr) -> bool {
         // Documentation 2001:db8::/32, discard 100::/64.
         || (s[0] == 0x2001 && s[1] == 0x0db8)
         || (s[0] == 0x0100 && s[1] == 0 && s[2] == 0 && s[3] == 0)
-        // IPv4-compatible and NAT64 forms of a private address.
-        || (s[0] == 0x0064 && s[1] == 0xff9b))
+        // The forms that carry an IPv4 address inside: NAT64 (64:ff9b::/96),
+        // IPv4-compatible (::/96) and 6to4 (2002::/16). None is a place a
+        // document is served from, and each can name a private address.
+        || (s[0] == 0x0064 && s[1] == 0xff9b)
+        || s[..6].iter().all(|x| *x == 0)
+        || s[0] == 0x2002)
 }
 
 /// Whether `ip` is a public address (INVARIANT 1).
@@ -129,7 +133,11 @@ impl ClientDocs for WebDocs {
             if addrs.is_empty() || addrs.iter().any(|a| !is_public(a.ip())) {
                 return Err("the client's host isn't a public address".into());
             }
+            // No proxy from the environment: a proxy would be handed the
+            // name, not the address that was checked (and the pin below
+            // would be moot). The addresses checked are the ones used.
             let client = reqwest::Client::builder()
+                .no_proxy()
                 .redirect(reqwest::redirect::Policy::none())
                 .timeout(FETCH_TIME)
                 .https_only(true)
@@ -194,6 +202,9 @@ pub fn parse(url: &str, bytes: &[u8]) -> Result<(String, Vec<String>), String> {
             redirects.push(text.to_string());
         }
     }
+    if !redirects_fit(&redirects) {
+        return Err("the document's redirect addresses together are too long".into());
+    }
     let host = reqwest::Url::parse(url)
         .ok()
         .and_then(|u| u.host_str().map(str::to_string))
@@ -232,6 +243,12 @@ mod tests {
             "2001:db8::1",
             "::ffff:10.0.0.1",
             "::ffff:127.0.0.1",
+            "::10.0.0.1",
+            "::127.0.0.1",
+            "::8.8.8.8",
+            "2002:c0a8:101::1",
+            "2002:0808:0808::1",
+            "64:ff9b::a00:1",
         ] {
             assert!(!is_public(bad.parse().unwrap()), "{bad}");
         }

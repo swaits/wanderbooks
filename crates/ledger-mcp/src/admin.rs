@@ -406,11 +406,15 @@ pub struct PendingInfo {
     pub id: String,
     /// The company it asks to reach.
     pub book: String,
-    /// The product we recognise by where it is sent back to ("Claude on
-    /// the web"), else what it calls itself.
+    /// What it calls itself: its own word, cleaned and short, possibly
+    /// empty. Never a product's name made up from where it is sent back to.
     pub client_name: String,
-    /// The product recognised from its redirect host, if it is one.
-    pub product: Option<String>,
+    /// Whether the address it is sent back to is one of the vendors' known
+    /// hosts: only the warning depends on it (a host that isn't gets one).
+    pub known_host: bool,
+    /// The short code the person matches with the one the assistant's
+    /// browser page shows, to tell this request from any other waiting.
+    pub code: String,
     /// The address it will be sent back to, in full.
     pub redirect: String,
     /// That address's host.

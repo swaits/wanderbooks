@@ -1344,6 +1344,7 @@ impl Books {
                 });
                 if let (Response::TokenCreated { .. }, Some(old)) = (&answer, &replaced) {
                     self.forget_sessions_of(old);
+                    self.remote.token_gone(old);
                 }
                 answer
             }
@@ -1435,12 +1436,25 @@ impl Books {
                     Ok(id) => id,
                     Err(e) => return refused(e),
                 };
-                let answer = self.with_principals(|p| {
+                let mut answer = self.with_principals(|p| {
                     p.revoke_if(&book, &name, id.as_deref())
                         .map(|t| Response::TokenRevoked(admin::TokenInfo::from(&t)))
                 });
+                // A web connection's permissions were just changed and the
+                // revoke named the token that was replaced: it is for the
+                // one that replaced it (a revoke during the swap wins).
+                if matches!(answer, Response::Refused(_))
+                    && let Some(newer) = id.as_deref().and_then(|old| self.remote.successor_of(old))
+                {
+                    answer = self.with_principals(|p| {
+                        p.revoke_if(&book, &name, Some(&newer))
+                            .map(|t| Response::TokenRevoked(admin::TokenInfo::from(&t)))
+                    });
+                }
                 if let Response::TokenRevoked(t) = &answer {
                     self.forget_sessions_of(&t.id);
+                    // What a web connection or key under it held ends now.
+                    self.remote.token_gone(&t.id);
                 }
                 answer
             }
@@ -2588,6 +2602,15 @@ fn live_token(books: &Books, book: &str, name: &str, id: &str) -> Option<Token> 
         .cloned()
 }
 
+/// The ids of every live token.
+fn live_token_ids(books: &Books) -> std::collections::BTreeSet<String> {
+    let guard = books.principals.read().unwrap_or_else(|e| e.into_inner());
+    guard
+        .as_ref()
+        .map(|p| p.tokens().iter().map(|t| t.id.clone()).collect())
+        .unwrap_or_default()
+}
+
 fn token_is_live(books: &Books, book: &str, name: &str, id: &str) -> bool {
     live_token(books, book, name, id).is_some()
 }
@@ -2621,6 +2644,37 @@ fn create_token(
     let principals = guard.as_mut().map_err(|why| why.clone())?;
     match principals.create(book, name, scopes, replace) {
         Ok((token, text)) => Ok((token, text.expose().to_string())),
+        Err(e) => {
+            if matches!(e, ledger_store::auth::AuthError::Log(_)) {
+                *guard = books.load_principals();
+            }
+            Err(books.hide(e.to_string()))
+        }
+    }
+}
+
+/// Make `book`'s token called `name` over with `scopes`, but only if the
+/// one live under that name is `old_id`: the check and the replacement are
+/// one hold of the principals, so a revoke that came first is not undone
+/// (the remote door's raising or lowering of posting).
+fn replace_token_if_live(
+    books: &Books,
+    book: &BookId,
+    name: &str,
+    old_id: &str,
+    scopes: std::collections::BTreeSet<Scope>,
+) -> Result<Token, String> {
+    let mut guard = books.principals.write().unwrap_or_else(|e| e.into_inner());
+    let principals = guard.as_mut().map_err(|why| why.clone())?;
+    let live = principals
+        .tokens()
+        .iter()
+        .any(|t| t.book == book.as_str() && t.name == name && t.id == old_id);
+    if !live {
+        return Err("that connection was revoked".into());
+    }
+    match principals.create(book, name, scopes, true) {
+        Ok((token, _)) => Ok(token),
         Err(e) => {
             if matches!(e, ledger_store::auth::AuthError::Log(_)) {
                 *guard = books.load_principals();
@@ -2801,6 +2855,39 @@ async fn door(
             .into());
         }
     };
+    // The remote door counts a connection's calls before anything else is
+    // asked of them, and counts, never writes, a call refused for rate or
+    // for another company's books: a token holder can't fill the disk with
+    // refusals (remote/mod.rs INVARIANT 3, 8).
+    if let Via::Remote(_) = via {
+        if books
+            .remote
+            .limited(books.remote.call_key(&token), remote::CALLS_PER_MINUTE, 60)
+        {
+            books.remote.count_refused();
+            let mut refused = (
+                StatusCode::TOO_MANY_REQUESTS,
+                [(REFUSED_HEADER, "rate_limited")],
+                "this connection is making too many calls: wait a minute",
+            )
+                .into_response();
+            refused.headers_mut().insert(
+                axum::http::header::RETRY_AFTER,
+                axum::http::HeaderValue::from_static("60"),
+            );
+            return Err(refused.into());
+        }
+        if token.book != book {
+            books.remote.count_refused();
+            return Err((
+                StatusCode::FORBIDDEN,
+                [(REFUSED_HEADER, "wrong_books")],
+                format!("this token is for the books {}, not {book}", token.book),
+            )
+                .into_response()
+                .into());
+        }
+    }
     if token.book != book {
         return Err(refused_at_door(
             &held,
@@ -3281,26 +3368,6 @@ async fn mcp_via(
     // not heard, so a call is the same call however it arrives.
     if remote_from.is_some() {
         request.headers_mut().remove(SESSION_HEADER);
-        if books
-            .remote
-            .limited(books.remote.call_key(&token), remote::CALLS_PER_MINUTE, 60)
-        {
-            let mut refused = refused_at_door(
-                &held,
-                inside,
-                who,
-                &asked_of(&method),
-                "rate_limited",
-                StatusCode::TOO_MANY_REQUESTS,
-                "this connection is making too many calls: wait a minute".into(),
-            )
-            .await;
-            refused.headers_mut().insert(
-                axum::http::header::RETRY_AFTER,
-                axum::http::HeaderValue::from_static("60"),
-            );
-            return refused;
-        }
     }
     let session = request
         .headers()

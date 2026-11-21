@@ -12,7 +12,9 @@
 //!      name) is HTML-escaped; the page has no script, no form, no link
 //!      and no button that approves: it says to look at Wanderbooks and
 //!      looks again by itself (a refresh), until the person decides.
-//!   2. The page's only address is the relative one of the waiting
+//!   2. The page shows the request's own short code, for the person to match
+//!      with the window's card; it never says a request is a known product.
+//!   3. The page's only address is the relative one of the waiting
 //!      request; nothing is built from the request's Host.
 //! ```
 
@@ -46,19 +48,30 @@ fn shell(title: &str, refresh: Option<&str>, body: &str) -> String {
     )
 }
 
-/// The page while the person has not decided: look at the app.
-pub fn waiting(client: &str, company: &str, wait: &str) -> String {
+/// The page while the person has not decided: look at the app, and match
+/// the code. What is known is said in neutral words: where the assistant
+/// will be sent back to first, then what it calls itself (its own word,
+/// escaped, never a name of a product made from the address).
+pub fn waiting(host: &str, name: &str, company: &str, code: &str, wait: &str) -> String {
+    let calls = if name.is_empty() {
+        String::new()
+    } else {
+        format!(" It calls itself \u{201c}{}\u{201d}.", esc(name))
+    };
     shell(
         "Look at Wanderbooks",
         Some(&format!("/authorize/wait/{wait}")),
         &format!(
             "<h1>Look at Wanderbooks</h1>\
-             <p><strong>{}</strong> is asking to connect to <strong>{}</strong>.</p>\
-             <p>Open the Wanderbooks window on your computer and choose <strong>Allow</strong> \
-             or <strong>Don't allow</strong>. This page continues by itself when you do.</p>\
-             <p>If you didn't ask an assistant to connect, choose Don't allow, or just close this page.</p>",
-            esc(client),
-            esc(company)
+             <p>An assistant that will be sent back to <strong>{}</strong> is asking to connect to <strong>{}</strong>.{calls}</p>\
+             <p>Your code is <strong style=\"font-size:1.6rem;letter-spacing:.1em\">{}</strong></p>\
+             <p>Open the Wanderbooks window on your computer. Choose <strong>Allow</strong> \
+             only if it shows this same code. This page continues by itself when you do.</p>\
+             <p>If the code is different, or you didn't just ask an assistant to connect, \
+             choose <strong>Don't allow</strong>, or just close this page.</p>",
+            esc(host),
+            esc(company),
+            esc(code)
         ),
     )
 }
@@ -78,10 +91,18 @@ mod tests {
 
     #[test]
     fn a_strangers_words_never_become_markup() {
-        let page = waiting("<script>alert(1)</script>", "\"><img src=x>", "w_abc");
+        let page = waiting(
+            "<script>alert(1)</script>",
+            "\"><img src=x>",
+            "<b>co</b>",
+            "123 456",
+            "w_abc",
+        );
         assert!(!page.contains("<script>alert"));
         assert!(!page.contains("<img src=x>"));
         assert!(page.contains("&lt;script&gt;"));
+        assert!(page.contains("123 456"));
+        assert!(page.contains("&lt;b&gt;co"));
         assert!(!page.contains("<form"));
         assert!(page.contains("url=/authorize/wait/w_abc"));
     }

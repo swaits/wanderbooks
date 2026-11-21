@@ -805,18 +805,12 @@ fn tin_bearing_files_are_refused_when_given_back_to_be_filed() {
             );
         }
     }
-    // (Each upload begun is a call, with its closing line: those only.)
-    let calls_only = |j: Vec<u8>| -> Vec<String> {
-        String::from_utf8(j)
-            .unwrap()
-            .lines()
-            .filter(|l| !l.contains(r#""type":"call.closed""#))
-            .map(str::to_string)
-            .collect()
-    };
+    // Raw bytes, frame lines included: an upload slot writes no line, and a
+    // refusal is decided before anything is written, so no frame (begun or
+    // closed, with its error text) stands for any of these calls.
     assert_eq!(
-        calls_only(books.journal()),
-        calls_only(journal),
+        books.journal_raw(),
+        journal,
         "a refusal stored something"
     );
     // Without TINs, the 1099 worksheet is an ordinary file: it may be

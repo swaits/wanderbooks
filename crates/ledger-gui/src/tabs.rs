@@ -176,8 +176,10 @@ impl TabBar {
                 // when they don't fit, the "+" stays at the right edge
                 // and the tabs scroll.
                 let widths: Vec<f32> = tabs.iter().map(|t| tab_width(ui, t)).collect();
-                let total: f32 =
-                    widths.iter().sum::<f32>() + widths.len().saturating_sub(1) as f32 * TAB_GAP;
+                // A fold, not `sum`: the kernel-only check refuses an
+                // `Iterator::sum` of any type, and these are widths.
+                let total: f32 = widths.iter().fold(0.0, |w, t| w + t)
+                    + widths.len().saturating_sub(1) as f32 * TAB_GAP;
                 let room = (ui.available_width() - PLUS_W - PLUS_GAP).max(0.0);
                 let strip_w = total.min(room);
                 let strip = egui::Rect::from_min_size(bar.min, vec2(strip_w, bar.height()));

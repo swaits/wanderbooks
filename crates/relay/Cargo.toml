@@ -1,0 +1,40 @@
+[package]
+name = "relay"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "The relay for wanderbooks.link: routes an assistant's TLS connection, by server name, down the line an app holds open, and is the domain's DNS server. It forwards encrypted bytes and holds no certificate for any app."
+
+[lib]
+name = "relay"
+path = "src/lib.rs"
+
+[[bin]]
+name = "relay"
+path = "src/main.rs"
+
+[dependencies]
+futures = "0.3"
+hickory-proto = { version = "0.26", default-features = false, features = ["std"] }
+ring = "0.17"
+rusqlite = { version = "0.41", features = ["bundled"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "sync", "net", "signal", "time"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+tokio-util = { version = "0.7", features = ["compat"] }
+toml = "1"
+yamux = "0.14"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
+proptest = "1"
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
+tempfile = "3"
+
+[lints]
+workspace = true

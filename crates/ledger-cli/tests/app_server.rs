@@ -41,6 +41,9 @@
 //!      company whose closing backup was incomplete and a server that
 //!      exited badly; the format upgrade reaches the server; a company
 //!      that is not open is told.
+//!   9. The roster, from the real server, lists a key and the bridge
+//!      session opened with it; ending the key takes both off the roster,
+//!      refuses the session's next call and deletes the token file's copy.
 //! ```
 
 mod common;
@@ -713,4 +716,77 @@ fn the_format_upgrade_goes_to_the_windows_own_server() {
     let refused = host.upgrade_format("nope", "x").unwrap_err();
     assert!(refused.starts_with("not upgraded: "), "{refused}");
     assert_eq!(host.stop(Duration::from_secs(60)), Ok(None));
+}
+
+/// What the window's Connect page reads and does, through the real server
+/// (not a fake): a bridge session opened with a key is on the roster, and
+/// revoking the key takes it off, refuses its next call and forgets its
+/// token file (plan/p15-app-and-relay.md 3.3; app_server.rs INVARIANT 12).
+#[test]
+fn the_roster_lists_a_connected_key_and_revoking_it_ends_its_use() {
+    let home = Home::new("app-roster");
+    let run = home.run();
+    let server = start(&home, &[]);
+    server.wait_ready(Duration::from_secs(60)).unwrap();
+    home.create(BOOK, "USD");
+    assert_eq!(server.open_book(BOOK), Ok(None));
+    let token = home.token_with(BOOK, "agent", &["read", "write", "post", "admin"]);
+    let account = ledger_host::tokens::Account::new(&home.root(), BOOK, "agent");
+    let keeper = ledger_host::tokens::keeper(&run);
+    keeper.set(&account, &token).unwrap();
+
+    // A bridge session opens with the key and makes a call.
+    let mut bridge = Bridge::start(&home);
+    let init = bridge.initialize();
+    assert!(init.get("error").is_none(), "{init}");
+    let answered = bridge.start_call();
+    assert!(
+        answered.get("error").is_none() && answered.get("result").is_some(),
+        "{answered}"
+    );
+
+    // The roster, as the window asks for it, lists the key and its session.
+    let roster = server.roster(Duration::from_secs(30)).unwrap();
+    assert!(
+        roster
+            .tokens
+            .iter()
+            .any(|t| t.book == BOOK && t.name == "agent"),
+        "{roster:?}"
+    );
+    let sessions_on_key = |r: &ledger_host::app_server::Roster| {
+        r.sessions
+            .iter()
+            .filter(|b| b.book == BOOK)
+            .flat_map(|b| &b.sessions)
+            .filter(|s| s.token == "agent")
+            .count()
+    };
+    assert_eq!(sessions_on_key(&roster), 1, "{roster:?}");
+    assert_eq!(keeper.get(&account).unwrap().as_deref(), Some(&*token));
+
+    // Revoked: said in words, and no longer usable.
+    let said = server.revoke_token(BOOK, "agent").unwrap();
+    assert!(said.contains("access"), "{said}");
+    // (a) the roster no longer lists the key, nor a session on it,
+    let after = server.roster(Duration::from_secs(30)).unwrap();
+    assert!(
+        !after
+            .tokens
+            .iter()
+            .any(|t| t.book == BOOK && t.name == "agent"),
+        "{after:?}"
+    );
+    assert_eq!(sessions_on_key(&after), 0, "{after:?}");
+    // (b) the next call with that key is refused,
+    let refused = bridge.start_call();
+    assert!(
+        refused.get("error").is_some() || refused["result"]["isError"] == json!(true),
+        "{refused}"
+    );
+    // (c) and the token file's copy is gone.
+    assert_eq!(keeper.get(&account).unwrap(), None);
+    // Asking again for a key that is gone says so, and breaks nothing.
+    assert!(server.revoke_token(BOOK, "agent").is_err());
+    assert_eq!(server.stop(Duration::from_secs(60)), Stopped::Closed);
 }

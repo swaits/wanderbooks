@@ -1103,7 +1103,8 @@ fn a_call_whose_answer_was_never_read_is_on_record_as_having_run() {
     let mut raw = raw::Raw::connect(&home, A);
     let body = json!({"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": {
         "name": "books.draft_entry",
-        "arguments": {"date": "2026-03-01", "description": "unread"}}})
+        "arguments": {"date": "2026-03-01", "description": "unread",
+                      "request_key": common::fresh_request_key()}}})
     .to_string();
     raw.start(
         "POST",
@@ -1541,7 +1542,8 @@ fn a_stalled_mcp_body_cannot_hold_a_close_and_nothing_of_it_is_journaled() {
     let mut raw = raw::Raw::connect(&home, A);
     let body = json!({"jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": {
         "name": "books.draft_entry",
-        "arguments": {"date": "2026-03-01", "description": "never finished"}}})
+        "arguments": {"date": "2026-03-01", "description": "never finished",
+                      "request_key": common::fresh_request_key()}}})
     .to_string();
     raw.start_inside(
         "POST",
@@ -1665,7 +1667,8 @@ fn a_running_call_is_never_cut_when_the_grace_runs_out() {
     );
     let mut raw = raw::Raw::connect(&home, A);
     let body = json!({"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {
-        "name": "books.attach_receipt", "arguments": {"upload_id": up}}})
+        "name": "books.attach_receipt",
+        "arguments": {"upload_id": up, "request_key": common::fresh_request_key()}}})
     .to_string();
     raw.start(
         "POST",
@@ -2191,7 +2194,8 @@ fn the_servers_own_close_cuts_stalled_requests_and_exits_zero_in_time() {
     let mut raw_call = raw::Raw::connect(&home, B);
     let body = json!({"jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": {
         "name": "books.draft_entry",
-        "arguments": {"date": "2026-03-01", "description": "never finished"}}})
+        "arguments": {"date": "2026-03-01", "description": "never finished",
+                      "request_key": common::fresh_request_key()}}})
     .to_string();
     raw_call.start_inside(
         "POST",
@@ -2653,9 +2657,11 @@ fn a_close_that_stops_git_in_a_commit_or_a_push_leaves_no_lock_and_the_next_back
 #[cfg(unix)]
 fn call_unanswered(home: &Home, w: &Wire, id: u64, tool: &str, args: Value) -> raw::Raw {
     let mut raw = raw::Raw::connect(home, A);
-    let body = json!({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {
-        "name": tool, "arguments": args}})
-    .to_string();
+    let body = common::with_request_key(
+        &json!({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {
+            "name": tool, "arguments": args}})
+        .to_string(),
+    );
     raw.start(
         "POST",
         "mcp",

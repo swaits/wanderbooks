@@ -89,7 +89,7 @@ impl ledger_package::PackageBooks for View<'_> {
     }
 
     fn journal_seq(&self) -> u64 {
-        self.0.journal.len() as u64
+        self.0.head_seq
     }
 
     fn journal(&self) -> Result<Vec<JournalLine>, StoreError> {

@@ -60,6 +60,8 @@ pub const NOT_FIGURES: &[&str] = &[
     "store.created",
     "journal.format_set",
     "journal.tail_repaired",
+    "call.begun",
+    "call.closed",
     "attachment.linked",
     "attachment.unlinked",
     "attachment.withdrawn",

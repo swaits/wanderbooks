@@ -994,8 +994,12 @@ fn p3_features_wait_for_the_upgrade_and_are_declared_once() {
         .collect();
     let current = ledger_store::format::current();
     assert_eq!(kinds[0].0, FORMAT_SET);
+    // The upgrade of older books also gives them their id (calls.rs).
+    let mut declared = kinds[0].1.clone();
+    let books_id = declared.as_object_mut().unwrap().remove("books_id");
+    assert_eq!(books_id.and_then(|v| v.as_str().map(str::len)), Some(32));
     assert_eq!(
-        kinds[0].1,
+        declared,
         json!({"format": current.format, "features": current.features})
     );
     assert_eq!(kinds[1].0, "account.renamed");
@@ -1122,8 +1126,12 @@ fn a_daily_schedule_waits_for_its_feature_and_an_older_reader_stops_there() {
     assert_eq!(journal[n - 1]["payload"]["convention"], "daily");
     assert_eq!(journal[n - 2]["type"], FORMAT_SET);
     let current = ledger_store::format::current();
+    // The upgrade of older books also gives them their id (calls.rs).
+    let mut declared = journal[n - 2]["payload"].clone();
+    let books_id = declared.as_object_mut().unwrap().remove("books_id");
+    assert_eq!(books_id.and_then(|v| v.as_str().map(str::len)), Some(32));
     assert_eq!(
-        journal[n - 2]["payload"],
+        declared,
         json!({"format": current.format, "features": current.features})
     );
     store.run_schedules(day(2026, 5, 31)).unwrap();

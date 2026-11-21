@@ -71,7 +71,13 @@ fn books_toml(dir: &Path, company: &str, books_extra: &str) -> PathBuf {
 
 impl Mcp {
     fn start(dir: &TestDir, toml: &Path) -> Self {
-        let wire = dir.start(Some(&std::fs::read_to_string(toml).unwrap()));
+        Self::start_settings(dir, Some(&std::fs::read_to_string(toml).unwrap()))
+    }
+
+    /// [`Mcp::start`] with these settings, or none (books that take no
+    /// write, D-89, can't be given any).
+    fn start_settings(dir: &TestDir, settings: Option<&str>) -> Self {
+        let wire = dir.start(settings);
         let mut mcp = Self {
             books_dir: None,
             wire,
@@ -101,7 +107,14 @@ impl Mcp {
         mcp
     }
 
+    /// The journal, without the frames of tool calls (D-88): the events.
     fn journal(&self) -> Vec<u8> {
+        common::without_call_lines(&self.journal_raw())
+    }
+
+    /// The journal, byte for byte: what a check that a refusal or a
+    /// preview "journaled nothing" compares, so a stray frame line is seen.
+    fn journal_raw(&self) -> Vec<u8> {
         std::fs::read(self.data.join("journal.jsonl")).unwrap_or_default()
     }
 
@@ -145,7 +158,7 @@ impl Mcp {
     /// Call a tool; a refusal must leave the journal unchanged, a success
     /// must match the outputSchema.
     fn tool(&mut self, name: &str, args: Value) -> Out {
-        let before = self.journal();
+        let before = self.journal_raw();
         let resp = common::tools_call(|m, p| self.rpc(m, p), name, args.clone());
         let out = if let Some(err) = resp.get("error") {
             Out::RpcErr(err.clone())
@@ -175,7 +188,7 @@ impl Mcp {
         };
         if out.refused() {
             assert!(
-                self.journal() == before,
+                self.journal_raw() == before,
                 "refused {name} {args} changed the journal ({out:?})"
             );
         }
@@ -202,10 +215,10 @@ impl Mcp {
 
     /// `ok`, and the journal must not change (read-only tools).
     fn read_only(&mut self, name: &str, args: Value) -> Value {
-        let before = self.journal();
+        let before = self.journal_raw();
         let v = self.ok(name, args);
         assert!(
-            self.journal() == before,
+            self.journal_raw() == before,
             "read-only {name} changed the journal"
         );
         v
@@ -300,6 +313,12 @@ fn books_in(name: &str, p2: bool) -> Mcp {
         .unwrap();
     }
     let toml = books_toml(&dir, "Spec Co", "financing_accounts = [\"2100\"]\n");
+    if p2 {
+        // Books that take no write (D-89): no settings, no chart.
+        let mut m = Mcp::start_settings(&dir, None);
+        m.books_dir = Some(dir);
+        return m;
+    }
     let mut m = Mcp::start(&dir, &toml);
     m.accounts(CHART);
     m.books_dir = Some(dir);
@@ -321,6 +340,7 @@ impl Mcp {
             .unwrap()
             .expect("P2's books wait for the upgrade");
         let mut m = Mcp::start(&dir, &dir.join("wanderbooks.toml"));
+        m.accounts(CHART);
         m.books_dir = Some(dir);
         m
     }
@@ -623,18 +643,17 @@ fn set_w9_asks_for_the_w9_flags_feature_before_its_first_line() {
     let w9 = json!({"party": "Harbor Design LLC", "received_on": "2026-03-02",
                     "entity_type": "LLC (partnership)", "tin_last4": "4321", "kept_at": "CPA portal"});
     let mut m = books_in("set-w9-feature", true);
+    let why = m.refuse("books.set_w9", w9.clone());
+    assert!(why.starts_with("format_upgrade_pending:"), "{why}");
+    assert!(why.contains("nothing can be written"), "{why}");
+    assert_eq!(m.count("party.w9_set"), 0, "nothing half done");
+    let mut m = m.upgraded();
     m.add_party("Harbor Design LLC", &["contractor"]);
     m.ok("books.add_vendor", json!({"name": "Harbor Design LLC"}));
-    let why = m.refuse("books.set_w9", w9.clone());
-    assert!(
-        why.starts_with("format_upgrade_pending:") && why.contains("vendor_1099_decisions"),
-        "{why}"
-    );
-    assert_eq!(m.count("party.w9_set"), 0, "nothing half done");
     let mut fresh = books("set-w9-feature-new");
     fresh.add_party("Harbor Design LLC", &["contractor"]);
     fresh.ok("books.add_vendor", json!({"name": "Harbor Design LLC"}));
-    for mut m in [m.upgraded(), fresh] {
+    for mut m in [m, fresh] {
         let before = m.journal_types().len();
         m.ok("books.set_w9", w9.clone());
         let added = m.journal_types()[before..].to_vec();

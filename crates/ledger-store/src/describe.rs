@@ -43,6 +43,9 @@ pub struct Described {
     pub subjects: Vec<String>,
     /// The entry it belongs to, if it is about one.
     pub entry_id: Option<u64>,
+    /// Whether the line counts (calls.rs): a line of a call that failed or
+    /// never finished is listed, and its summary says it did not count.
+    pub standing: crate::calls::Standing,
 }
 
 /// Which lines to list (INVARIANT 3).
@@ -204,6 +207,15 @@ pub fn describe(line: &JournalLine) -> String {
     if let Some(d) = p.get("date").and_then(Value::as_str) {
         parts.push(d.to_string());
     }
+    // A call's frame: which tool, and how it ended; never the key, the
+    // arguments or the answer.
+    if ty.starts_with("call.") {
+        for k in ["tool", "outcome"] {
+            if let Some(t) = p.get(k).and_then(Value::as_str) {
+                parts.push(quote(t));
+            }
+        }
+    }
     // Settings: which keys, never their values.
     if ty == "settings.set"
         && let Some(changes) = p.get("changes").and_then(Value::as_array)
@@ -236,12 +248,29 @@ pub fn describe_line(line: &JournalLine) -> Described {
         summary: describe(line),
         subjects,
         entry_id,
+        standing: crate::calls::Standing::Counts,
     }
 }
 
 /// The lines `filter` asks for, described, in journal order (INVARIANT 3),
-/// and whether more match after the last one returned.
+/// and whether more match after the last one returned. Every line counts
+/// (use [`history_standing`] where some may not).
 pub fn history(lines: &[JournalLine], filter: &HistoryFilter) -> (Vec<Described>, bool) {
+    history_standing(
+        lines,
+        &vec![crate::calls::Standing::Counts; lines.len()],
+        filter,
+    )
+}
+
+/// [`history`] with each line's standing (calls.rs INVARIANT 7): a line
+/// of a call that failed, never finished or is still running is listed,
+/// as history is, and its summary says in words that it does not count.
+pub fn history_standing(
+    lines: &[JournalLine],
+    standing: &[crate::calls::Standing],
+    filter: &HistoryFilter,
+) -> (Vec<Described>, bool) {
     let wanted = |l: &JournalLine| {
         l.seq > filter.after_seq
             && (filter.types.is_empty()
@@ -259,12 +288,17 @@ pub fn history(lines: &[JournalLine], filter: &HistoryFilter) -> (Vec<Described>
     };
     let mut out = Vec::new();
     let mut more = false;
-    for l in lines.iter().filter(|l| wanted(l)) {
+    for (l, st) in lines.iter().zip(standing).filter(|(l, _)| wanted(l)) {
         if out.len() == filter.limit {
             more = true;
             break;
         }
-        out.push(describe_line(l));
+        let mut d = describe_line(l);
+        d.standing = *st;
+        if let Some(note) = st.note() {
+            d.summary = format!("{} ({note})", d.summary);
+        }
+        out.push(d);
     }
     (out, more)
 }
@@ -290,7 +324,8 @@ impl crate::Store {
         let (lines, _format) = crate::journal::read_journal_and_format(
             &self.data_dir().join(crate::store::JOURNAL_FILE),
         )?;
-        let (described, more) = history(&lines, filter);
+        let standing = crate::calls::standings(&lines)?;
+        let (described, more) = history_standing(&lines, &standing, filter);
         let tail_repairs = self
             .tail_repairs()?
             .into_iter()

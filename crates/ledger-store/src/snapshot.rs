@@ -74,6 +74,10 @@ pub struct Snapshot {
     head: String,
     /// The journal format in force (the format gate's record).
     format: JournalFormat,
+    /// Which lines count (calls.rs): the lines of a call wait here until
+    /// its closing line is read, and a call that failed or never closed
+    /// is never applied.
+    gate: crate::calls::CallGate,
 }
 
 impl Snapshot {
@@ -95,6 +99,7 @@ impl Snapshot {
             offset: 0,
             head: GENESIS_PREV.to_string(),
             format: JournalFormat::default(),
+            gate: crate::calls::CallGate::default(),
         };
         snap.read_new()?;
         Ok(snap)
@@ -209,10 +214,17 @@ impl Snapshot {
                 self.ledger = Ledger::new(self.base_currency);
             }
             self.format.admit(&line)?;
-            replay_line_into_ledger(&mut self.ledger, &line, self.base_currency)?;
-            apply_line_to_sqlite(&self.conn, &line)?;
-            self.head = hash;
+            // Only what the call gate releases is applied (calls.rs): a
+            // call's lines wait for its closing line.
+            let index = self.lines.len();
+            let released = self.gate.push(index, &line)?;
             self.lines.push(line);
+            for i in released {
+                let line = &self.lines[i];
+                replay_line_into_ledger(&mut self.ledger, line, self.base_currency)?;
+                apply_line_to_sqlite(&self.conn, line)?;
+            }
+            self.head = hash;
             self.offset += len;
         }
         Ok(added)
@@ -234,15 +246,37 @@ impl Snapshot {
         &self.format
     }
 
+    /// The books' id, if they have one ([`crate::calls::books_id_of`]).
+    pub fn books_id(&self) -> Option<String> {
+        crate::calls::books_id_of(&self.lines)
+    }
+
     /// The data directory.
     pub fn data_dir(&self) -> &Path {
         &self.data_dir
     }
 
     /// Every journal line read so far, in order: the complete history,
-    /// with timestamps and hashes.
+    /// with timestamps and hashes, the lines of calls that failed or never
+    /// finished among them. For showing history only: a reader that
+    /// derives a fact reads [`Snapshot::committed_journal`] (calls.rs
+    /// INVARIANT 7), and labels each line here with
+    /// [`Snapshot::journal_standings`].
     pub fn journal(&self) -> &[JournalLine] {
         &self.lines
+    }
+
+    /// The standing of each line of [`Snapshot::journal`], in the same
+    /// order (calls.rs [`crate::calls::standings`]).
+    pub fn journal_standings(&self) -> Result<Vec<crate::calls::Standing>, StoreError> {
+        crate::calls::standings(&self.lines)
+    }
+
+    /// The committed journal: the lines that are facts of the books, the
+    /// frame lines left out ([`crate::calls::committed`]). What every
+    /// reader that derives facts from the journal reads.
+    pub fn committed_journal(&self) -> Result<Vec<JournalLine>, StoreError> {
+        crate::calls::committed(&self.lines)
     }
 
     /// Sequence number of the last journal line read.

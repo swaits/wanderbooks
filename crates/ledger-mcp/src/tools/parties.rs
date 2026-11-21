@@ -921,11 +921,15 @@ impl BooksServer {
                         self.wrote_tins(&store, &w.bytes)?;
                     }
                     let tin_hash = match &tin {
-                        Some(t) => Some(vault.put_tin(id, t).map_err(|e| e.to_string())?),
+                        Some(t) => {
+                            Some(super::calls::put_tin(&vault, id, t).map_err(|e| e.to_string())?)
+                        }
                         None => None,
                     };
                     let w9_hash = match &w9_file {
-                        Some(w) => Some(vault.put_w9(id, w).map_err(|e| e.to_string())?),
+                        Some(w) => {
+                            Some(super::calls::put_w9(&vault, id, w).map_err(|e| e.to_string())?)
+                        }
                         None => None,
                     };
                     // The W-9 is in the vault: its upload is used up.
@@ -1047,7 +1051,7 @@ impl BooksServer {
                 .map_err(|e| e.to_string())?;
         }
         let vault = self.open_vault(&store, true)?;
-        let hash = vault.put_tin(id, &tin).map_err(|e| e.to_string())?;
+        let hash = super::calls::put_tin(&vault, id, &tin).map_err(|e| e.to_string())?;
         store
             .set_party_tin(
                 id,
@@ -1238,7 +1242,7 @@ impl BooksServer {
         if !p.confirmed.unwrap_or(false) {
             return Ok(Json(out));
         }
-        ledger_vault::purge_records(&vault_dir, id).map_err(|e| e.to_string())?;
+        super::calls::purge_records(&vault_dir, id).map_err(|e| e.to_string())?;
         if let Some(f) = new_facts {
             store.set_party_w9(id, Some(f)).map_err(|e| e.to_string())?;
             out.journaled = true;

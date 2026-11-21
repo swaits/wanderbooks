@@ -25,6 +25,15 @@
 //!   5. `record_hash` is the SHA-256 of a record's bytes on disk, so the
 //!      journal can prove a record existed without holding it.
 //!   6. Purging deletes the record's file; nothing else keeps a copy.
+//!   7. A write made for a call that may yet fail is staged, never final:
+//!      `stage_tin`, `stage_w9` and `stage_purge` write a file of another
+//!      name (`.staged-TAG`, `.purging-TAG`) that no reader opens, and
+//!      `settle` makes the call's staged files final, or drops them,
+//!      once it is known whether the call committed. A record is
+//!      therefore never replaced, and never destroyed, by a call that did
+//!      not commit; a crash between the commit and the settle is finished
+//!      by the next `settle`, which the caller asks of every tag left in
+//!      `pending_tags`.
 //! SCENARIOS:
 //!   1. IF the key file is missing: `open` creates one (mode 0600) only when
 //!      asked to (`create_key`), else the vault is locked (Error::NoKey).
@@ -268,6 +277,16 @@ impl Vault {
     }
 
     fn seal(&self, party: u64, kind: Kind, plain: &[u8]) -> Result<String, Error> {
+        self.seal_to(&self.path(party, kind), party, kind, plain)
+    }
+
+    fn seal_to(
+        &self,
+        target: &Path,
+        party: u64,
+        kind: Kind,
+        plain: &[u8],
+    ) -> Result<String, Error> {
         let mut nonce = [0u8; NONCE_LEN];
         getrandom::getrandom(&mut nonce).map_err(|e| Error::Io(std::io::Error::other(e)))?;
         let aad = Self::aad(party, kind);
@@ -286,7 +305,7 @@ impl Vault {
         out.extend_from_slice(&nonce);
         out.extend_from_slice(&ct);
         std::fs::create_dir_all(&self.dir)?;
-        write_private(&self.path(party, kind), &out)?;
+        write_private(target, &out)?;
         Ok(hex::encode(Sha256::digest(&out)))
     }
 
@@ -321,6 +340,30 @@ impl Vault {
     pub fn put_tin(&self, party: u64, tin: &Tin) -> Result<String, Error> {
         let plain = Zeroizing::new(serde_json::to_vec(tin).expect("serializes"));
         self.seal(party, Kind::Tin, &plain)
+    }
+
+    /// [`Vault::put_tin`] staged for the call `tag` (INVARIANT 7): the
+    /// record is written, and its hash returned, but under a name no
+    /// reader opens until [`settle`] makes it final.
+    pub fn stage_tin(&self, party: u64, tin: &Tin, tag: &str) -> Result<String, Error> {
+        let plain = Zeroizing::new(serde_json::to_vec(tin).expect("serializes"));
+        self.seal_to(
+            &staged_path(&self.dir, party, Kind::Tin, tag)?,
+            party,
+            Kind::Tin,
+            &plain,
+        )
+    }
+
+    /// [`Vault::put_w9`] staged for the call `tag` (INVARIANT 7).
+    pub fn stage_w9(&self, party: u64, file: &W9File, tag: &str) -> Result<String, Error> {
+        let plain = Zeroizing::new(serde_json::to_vec(file).expect("serializes"));
+        self.seal_to(
+            &staged_path(&self.dir, party, Kind::W9, tag)?,
+            party,
+            Kind::W9,
+            &plain,
+        )
     }
 
     /// A party's TIN, if the vault holds one.
@@ -367,6 +410,125 @@ impl Vault {
 
 fn record_path(dir: &Path, party: u64, kind: Kind) -> PathBuf {
     dir.join(format!("{}-{party}.bin", kind.name()))
+}
+
+/// A call's tag: 16 lowercase hex digits (the name of the call in file
+/// names, never a path).
+fn checked_tag(tag: &str) -> Result<&str, Error> {
+    if tag.len() == 16 && tag.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+        Ok(tag)
+    } else {
+        Err(Error::Io(std::io::Error::other("not a call tag")))
+    }
+}
+
+fn staged_path(dir: &Path, party: u64, kind: Kind, tag: &str) -> Result<PathBuf, Error> {
+    Ok(dir.join(format!(
+        "{}-{party}.staged-{}",
+        kind.name(),
+        checked_tag(tag)?
+    )))
+}
+
+fn purging_path(dir: &Path, party: u64, kind: Kind, tag: &str) -> Result<PathBuf, Error> {
+    Ok(dir.join(format!(
+        "{}-{party}.purging-{}",
+        kind.name(),
+        checked_tag(tag)?
+    )))
+}
+
+/// Stage the purge of what the vault in `dir` holds for a party, for the
+/// call `tag` (INVARIANT 7): each record is set aside under a name no
+/// reader opens, and is deleted only when [`settle`] says the call
+/// committed (and put back when it didn't). Needs no key. Returns whether
+/// anything was there.
+pub fn stage_purge(dir: &Path, party: u64, tag: &str) -> Result<bool, Error> {
+    let mut any = false;
+    for kind in [Kind::Tin, Kind::W9] {
+        let aside = purging_path(dir, party, kind, tag)?;
+        match std::fs::rename(record_path(dir, party, kind), aside) {
+            Ok(()) => any = true,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(Error::Io(e)),
+        }
+    }
+    Ok(any)
+}
+
+/// What a call's staged files came to.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Settled {
+    /// Staged records made final.
+    pub promoted: usize,
+    /// Staged records dropped (the call did not commit).
+    pub dropped: usize,
+    /// Purged records deleted (the call committed).
+    pub purged: usize,
+    /// Records put back (the call that set them aside did not commit).
+    pub restored: usize,
+}
+
+/// The tags of every call that left a staged or set-aside file in the
+/// vault in `dir` (INVARIANT 7): the calls whose outcome `settle` is
+/// still to apply, after a crash.
+pub fn pending_tags(dir: &Path) -> Result<Vec<String>, Error> {
+    let mut tags = std::collections::BTreeSet::new();
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(Error::Io(e)),
+    };
+    for entry in entries {
+        let name = entry?.file_name().to_string_lossy().into_owned();
+        for marker in [".staged-", ".purging-"] {
+            if let Some((_, tag)) = name.split_once(marker)
+                && checked_tag(tag).is_ok()
+            {
+                tags.insert(tag.to_string());
+            }
+        }
+    }
+    Ok(tags.into_iter().collect())
+}
+
+/// Apply the outcome of the call `tag` to its staged files (INVARIANT 7):
+/// if it `committed`, staged records become the party's records and
+/// set-aside ones are deleted; if not, staged ones are deleted and
+/// set-aside ones are put back. Safe to repeat; needs no key.
+pub fn settle(dir: &Path, tag: &str, committed: bool) -> Result<Settled, Error> {
+    checked_tag(tag)?;
+    let mut done = Settled::default();
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e.collect::<Result<Vec<_>, _>>()?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(done),
+        Err(e) => return Err(Error::Io(e)),
+    };
+    for entry in entries {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let path = entry.path();
+        // `tin-12.staged-TAG`: the record's own name is what's before the
+        // marker, plus `.bin`.
+        if let Some(stem) = name.strip_suffix(&format!(".staged-{tag}")) {
+            if committed {
+                std::fs::rename(&path, dir.join(format!("{stem}.bin")))?;
+                done.promoted += 1;
+            } else {
+                std::fs::remove_file(&path)?;
+                done.dropped += 1;
+            }
+        } else if let Some(stem) = name.strip_suffix(&format!(".purging-{tag}")) {
+            let own = dir.join(format!("{stem}.bin"));
+            if committed || own.exists() {
+                std::fs::remove_file(&path)?;
+                done.purged += 1;
+            } else {
+                std::fs::rename(&path, own)?;
+                done.restored += 1;
+            }
+        }
+    }
+    Ok(done)
 }
 
 /// What the vault in `dir` holds for a party, `(TIN, W-9 file)`, without

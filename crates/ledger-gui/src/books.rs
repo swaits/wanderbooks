@@ -274,7 +274,20 @@ pub struct Books {
     pub settings: BooksSettings,
     pub data_dir: PathBuf,
     pub attachments: Vec<Attachment>,
+    /// The committed journal: the lines that are facts of the books (those
+    /// outside any call and those of calls that closed `ok`), the frame
+    /// lines left out. Every fact the viewer derives from the journal
+    /// (an entry's events and origin, an asset's trail, a party's events)
+    /// comes from here, never from [`Books::history`]: ids are handed out
+    /// again after a failed call, so a dead line would be pinned on
+    /// whatever takes the id next (ledger_store::calls).
     pub journal: Vec<JournalLine>,
+    /// Every line of the journal, in order (seq = index + 1), and each
+    /// line's standing: for the journal page, which shows history and
+    /// says of a line that did not count that it did not.
+    pub history: Vec<(JournalLine, ledger_store::calls::Standing)>,
+    /// The seq of the journal's last line.
+    pub head_seq: u64,
     pub head: String,
     pub today: NaiveDate,
     pub loaded_at: chrono::DateTime<chrono::Utc>,
@@ -605,7 +618,14 @@ impl Books {
     ) -> Result<Books, String> {
         let ledger = snap.ledger().clone();
         let attachments = snap.attachments(None).map_err(|e| e.to_string())?;
-        let journal = snap.journal().to_vec();
+        let journal = snap.committed_journal().map_err(|e| e.to_string())?;
+        let history: Vec<_> = snap
+            .journal()
+            .iter()
+            .cloned()
+            .zip(snap.journal_standings().map_err(|e| e.to_string())?)
+            .collect();
+        let head_seq = snap.journal_seq();
         // The server's own rule, so the viewer flags exactly what the
         // server would refuse: the books' settings.
         let policy = ledger_config::codec::receipt_policy(ledger.settings());
@@ -676,7 +696,7 @@ impl Books {
         let statements = snap.statements(None).map_err(|e| e.to_string())?;
         let reconciliations = snap.reconciliations(None).map_err(|e| e.to_string())?;
         let extractions = snap.extractions().map_err(|e| e.to_string())?;
-        let fresh_from_seq = prev_seq.unwrap_or(journal.len() as u64);
+        let fresh_from_seq = prev_seq.unwrap_or(head_seq);
         let mut fresh = HashSet::new();
         let closings = ledger.closing_entry_ids();
         let mut entries = Vec::new();
@@ -817,6 +837,8 @@ impl Books {
             data_dir: snap.data_dir().to_path_buf(),
             attachments,
             journal,
+            history,
+            head_seq,
             head: snap.head_hash().to_string(),
             today,
             loaded_at: chrono::Utc::now(),
@@ -864,7 +886,7 @@ impl Books {
     }
 
     pub fn seq(&self) -> u64 {
-        self.journal.len() as u64
+        self.head_seq
     }
 
     pub fn entry(&self, id: EntryId) -> Option<&EntryInfo> {

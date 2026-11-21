@@ -787,7 +787,7 @@ fn tin_bearing_files_are_refused_when_given_back_to_be_filed() {
     let handed_over = [w9_back, mcp.handed(&ws["csv"]), mcp.handed(&pkg["file"])];
     // Given back, each is refused by its bytes, by every way a file is
     // filed.
-    let journal = books.journal();
+    let journal = books.journal_raw();
     for (n, bytes) in handed_over.iter().enumerate() {
         // One upload, refused by each tool and so left for the next.
         let up = mcp.upload(bytes, "receipt.pdf", "application/pdf", "receipt");
@@ -805,7 +805,20 @@ fn tin_bearing_files_are_refused_when_given_back_to_be_filed() {
             );
         }
     }
-    assert_eq!(books.journal(), journal, "a refusal stored something");
+    // (Each upload begun is a call, with its closing line: those only.)
+    let calls_only = |j: Vec<u8>| -> Vec<String> {
+        String::from_utf8(j)
+            .unwrap()
+            .lines()
+            .filter(|l| !l.contains(r#""type":"call.closed""#))
+            .map(str::to_string)
+            .collect()
+    };
+    assert_eq!(
+        calls_only(books.journal()),
+        calls_only(journal),
+        "a refusal stored something"
+    );
     // Without TINs, the 1099 worksheet is an ordinary file: it may be
     // filed like any other.
     let plain = mcp.call("books.vendor_1099", json!({"year": 2026, "csv": true}));
@@ -1765,7 +1778,8 @@ fn close_period_shows_each_members_running_split() {
 fn old_books_name_each_closes_rule_and_true_up_at_the_next_close() {
     // Books P1 kept, which P2 moved to its journal format (format 2, none
     // of the features since), left in a data root, with their members set
-    // as an agent sets them: books waiting for their format upgrade.
+    // as an agent sets them once they are upgraded: books waiting for
+    // their format upgrade, which (D-89) take no write until then.
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../ledger-store/tests/fixtures/old-books/x_member_closes");
     let books = Books::placed("members-old", &fixture);
@@ -1775,13 +1789,6 @@ fn old_books_name_each_closes_rule_and_true_up_at_the_next_close() {
         .declare_journal_format(2, &[])
         .unwrap();
     books.start();
-    books.settle(
-        "[company]\ntax_form = \"1065\"\n\n\
-         [[company.members]]\nname = \"Ann\"\nshare = \"50%\"\ncapital_account = \"3000\"\n\
-         distribution_account = \"3100\"\n\n\
-         [[company.members]]\nname = \"Bo\"\nshare = \"50%\"\ncapital_account = \"3001\"\n\n\
-         [books]\nreceipt_threshold = \"10000\"\n",
-    );
     let mut mcp = Mcp::spawn(&books);
     init(&mut mcp);
     let rules = |mcp: &mut Mcp| -> Vec<Value> {
@@ -1805,6 +1812,32 @@ fn old_books_name_each_closes_rule_and_true_up_at_the_next_close() {
     let mut want: Vec<Value> = old.iter().map(|r| json!(r)).collect();
     want.extend([Value::Null, json!("members_run"), json!("members_run")]);
     assert_eq!(rules(&mut mcp), want);
+    // Read as ever; no write is taken (D-89), whatever it is.
+    let refused = mcp.call_err(
+        "books.draft_entry",
+        json!({"date": "2026-12-10", "description": "two cents"}),
+    );
+    assert!(refused.starts_with("format_upgrade_pending:"), "{refused}");
+    // The owner's go-ahead, as the app gives it (ledger-gui owner.rs, after
+    // the passphrase and a verified backup): the server stopped, the books
+    // moved to this version's format, and served again.
+    drop(mcp);
+    books.stop();
+    ledger_store::Store::open(&books.dir())
+        .unwrap()
+        .upgrade_format()
+        .unwrap()
+        .expect("old books wait for the upgrade");
+    books.start();
+    books.settle(
+        "[company]\ntax_form = \"1065\"\n\n\
+         [[company.members]]\nname = \"Ann\"\nshare = \"50%\"\ncapital_account = \"3000\"\n\
+         distribution_account = \"3100\"\n\n\
+         [[company.members]]\nname = \"Bo\"\nshare = \"50%\"\ncapital_account = \"3001\"\n\n\
+         [books]\nreceipt_threshold = \"10000\"\n",
+    );
+    let mut mcp = Mcp::spawn(&books);
+    init(&mut mcp);
 
     let e = mcp.call(
         "books.draft_entry",
@@ -1844,29 +1877,6 @@ fn old_books_name_each_closes_rule_and_true_up_at_the_next_close() {
         preview["lines"],
         json!(["Debit 4000 0.02", "Credit 3001 0.02"])
     );
-    // Books an older version wrote: the close counted from its regime's
-    // start waits for the owner's go-ahead (D-39), which no tool gives.
-    let refused = mcp.call_err(
-        "books.close_period",
-        json!({"period_id": dec["period_id"], "confirmed": true}),
-    );
-    assert!(
-        refused.starts_with("format_upgrade_pending:") && refused.contains("members_cumulative"),
-        "{refused}"
-    );
-    // The owner's go-ahead, as the app gives it (ledger-gui owner.rs, after
-    // the passphrase and a verified backup): the server stopped, the books
-    // moved to this version's format, and served again.
-    drop(mcp);
-    books.stop();
-    ledger_store::Store::open(&books.dir())
-        .unwrap()
-        .upgrade_format()
-        .unwrap()
-        .expect("old books wait for the upgrade");
-    books.start();
-    let mut mcp = Mcp::spawn(&books);
-    init(&mut mcp);
     let closed = mcp.call(
         "books.close_period",
         json!({"period_id": dec["period_id"], "confirmed": true}),
@@ -2988,9 +2998,11 @@ fn rename_account_end_to_end_defect_15() {
         );
         assert!(err.contains(says), "{name:?}: {err}");
     }
+    // (The first verify is a call too: its own closing line is the one
+    // line the second counts more; the refusals wrote none.)
     assert_eq!(
         mcp.call("books.verify", json!({"blobs": false}))["events"],
-        json!(events),
+        json!(events + 1),
         "refusals write nothing"
     );
     let out = mcp.call(
@@ -3009,8 +3021,10 @@ fn rename_account_end_to_end_defect_15() {
     let after = mcp.call("books.verify", json!({"blobs": false}));
     assert_eq!(after["status"], "ok");
     // New books declare account_renamed (with the rest of this version's
-    // format) as they are created: the rename journals only itself.
-    assert_eq!(after["events"], json!(events + 1), "the rename");
+    // format) as they are created: the rename journals only itself, in
+    // its frame (begun, the rename, closed), after the two verifies'
+    // closing lines.
+    assert_eq!(after["events"], json!(events + 1 + 1 + 3), "the rename");
     let chart = mcp.call("books.chart", json!({}));
     let acct = chart["accounts"]
         .as_array()
@@ -3300,7 +3314,7 @@ fn files_pass_only_by_handle_in_and_out() {
     );
     mcp.call("books.import_chart_csv", json!({"upload_id": chart}));
     // In: an inline file is refused as unknown, storing nothing.
-    let journal = books.journal();
+    let journal = books.journal_raw();
     for (name, args) in [
         (
             "books.attach_receipt",
@@ -3320,7 +3334,11 @@ fn files_pass_only_by_handle_in_and_out() {
             "{name}: {resp}"
         );
     }
-    assert_eq!(books.journal(), journal, "an inline file stored something");
+    assert_eq!(
+        books.journal_raw(),
+        journal,
+        "an inline file stored something"
+    );
     // A posted entry with its receipt, and an asset with its tag.
     let receipt = b"%PDF-1.4 a receipt for the laptop";
     let e = mcp.call(

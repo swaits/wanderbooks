@@ -434,8 +434,18 @@ impl Wire {
     }
 
     /// Send `text` as one message's body, as it is (a test's own bytes,
-    /// malformed ones included).
+    /// malformed ones included), except that a tool call that carries no
+    /// `request_key` is given a fresh one (D-88: every write needs one; a
+    /// read ignores it), so a test of what a tool does needn't make one up.
+    /// [`Self::send_exactly`] sends the bytes untouched.
     pub fn send_line(&mut self, text: &str) {
+        let text = with_request_key(text);
+        self.send_exactly(&text);
+    }
+
+    /// [`Self::send_line`] without the request key: these bytes only
+    /// (the tests of what a call without a key is told).
+    pub fn send_exactly(&mut self, text: &str) {
         let parsed: Option<Value> = serde_json::from_str(text).ok();
         let method = parsed
             .as_ref()
@@ -761,8 +771,15 @@ impl Books {
         self.home.book_dir(&self.id)
     }
 
-    /// The books' journal, as it is on disk.
+    /// The books' journal as it is on disk, without the frames of tool
+    /// calls (`call.begun`, `call.closed`: D-88): what the books hold, so
+    /// a test that a call "journaled nothing" says so of the events.
     pub fn journal(&self) -> Vec<u8> {
+        without_call_lines(&self.journal_raw())
+    }
+
+    /// The books' journal, byte for byte.
+    pub fn journal_raw(&self) -> Vec<u8> {
         std::fs::read(self.dir().join("journal.jsonl")).unwrap_or_default()
     }
 
@@ -1113,6 +1130,48 @@ pub async fn connect_at(run: &Path, book: &str, token: Option<String>) -> Result
         .map_err(|e| e.to_string())
 }
 
+/// A journal's bytes without its call frames (`call.begun`, `call.closed`).
+pub fn without_call_lines(journal: &[u8]) -> Vec<u8> {
+    journal
+        .split_inclusive(|&b| b == b'\n')
+        .filter(|l| {
+            let l = String::from_utf8_lossy(l);
+            !l.contains(r#""type":"call.begun""#) && !l.contains(r#""type":"call.closed""#)
+        })
+        .flatten()
+        .copied()
+        .collect()
+}
+
+/// A request key no other call in this process has used.
+pub fn fresh_request_key() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    format!(
+        "test-key-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::SeqCst)
+    )
+}
+
+/// `message`, a JSON-RPC message as text: if it is a `tools/call` whose
+/// arguments are an object with no `request_key`, with a fresh one added
+/// (the key the books ask of every write, D-88); anything else as it is.
+pub fn with_request_key(message: &str) -> String {
+    let Ok(mut v) = serde_json::from_str::<Value>(message) else {
+        return message.to_string();
+    };
+    let keyed = v.get("method") == Some(&json!("tools/call"))
+        && v.pointer("/params/arguments")
+            .and_then(Value::as_object)
+            .is_some_and(|a| !a.contains_key("request_key"));
+    if !keyed {
+        return message.to_string();
+    }
+    v["params"]["arguments"]["request_key"] = json!(fresh_request_key());
+    v.to_string()
+}
+
 /// Call a tool: Ok(structured result) or Err(the error text).
 /// Call a tool the way an agent confirms (plan P4, D-50): a call with
 /// `confirmed: true` and no `preview` is made first without `confirmed`,
@@ -1131,7 +1190,9 @@ pub async fn call(c: &Client, tool: &str, mut args: Value) -> Result<Value, Stri
 
 async fn call_once(c: &Client, tool: &str, args: Value) -> Result<Value, String> {
     use rmcp::model::CallToolRequestParams;
-    let args = args.as_object().cloned().unwrap_or_default();
+    let mut args = args.as_object().cloned().unwrap_or_default();
+    args.entry("request_key")
+        .or_insert_with(|| json!(fresh_request_key()));
     // A client whose server went away may wait forever: a call that
     // takes this long counts as refused.
     let r = tokio::time::timeout(

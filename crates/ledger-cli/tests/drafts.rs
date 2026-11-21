@@ -349,13 +349,13 @@ fn a_package_the_build_refuses_journals_no_decision_even_with_a_reason() {
     draft(&mut w, "2026-03-10", "Open", "40.00");
     let mut args = json!({"as_of": "2026-03-31", "cash_accounts": ["1000"]});
     args["allow_open_drafts"] = json!({"reason": "the CPA wants it before the receipt comes"});
-    let before = books.journal().len();
+    let before = books.journal_raw().len();
     for _ in 0..2 {
         let why = answer_of(&w.call("books.export_cpa_package", args.clone()))
             .expect_err("the build refuses an unknown capital account");
         assert!(why.contains("unknown capital account 3999"), "{why}");
         assert_eq!(
-            books.journal().len(),
+            books.journal_raw().len(),
             before,
             "a decision was journaled for a package that was refused"
         );
@@ -397,7 +397,7 @@ fn stale_preview_refused() {
         json!({"entry_id": id, "account": "1000", "side": "credit", "amount": "1.00"}),
     ))
     .unwrap();
-    let before = books.journal();
+    let before = books.journal_raw();
     let r = w.call_raw(
         "books.post_entry",
         json!({"entry_id": id, "confirmed": true, "preview": digest}),
@@ -405,7 +405,11 @@ fn stale_preview_refused() {
     let err = refusal(&r);
     assert_eq!(err["code"], "stale_preview");
     assert_eq!(err["remedy_tool"], "books.post_entry");
-    assert_eq!(books.journal(), before, "a stale confirm writes nothing");
+    assert_eq!(
+        books.journal_raw(),
+        before,
+        "a stale confirm writes nothing"
+    );
     // An operation's preview moves with the journal's head: a post by
     // another session in between forces a re-preview.
     let other = draft(&mut w, "2026-03-02", "Other", "5.00");

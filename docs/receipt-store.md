@@ -196,6 +196,30 @@ a backup is then proven where it lands, by a drill (docs/mcp-interface.md,
   `method` ({model?, reasoning_effort?, adversarial?, verifier_agents?}) is
   that client's own word. Whether a claim counts is never journaled: it is
   derived against `policy.attestation_bar` when asked.
+- **A tool call is a frame, not a record** (plan P15 2a, D-88, feature
+  `call_transactions`): a call that writes lines is framed by
+  `call.begun {tool, token, key, args}` before its first line and
+  `call.closed {tool, token, key, args, outcome, first_seq, last_seq,
+  answer | answer_sha256 + answer_bytes | error}` after its last. `args`
+  is an HMAC-SHA256 of the call's arguments under the books' own secret
+  (`keys/calls.key`), never a plain hash (a tax id would be guessable). The
+  lines between count only when `outcome` is `ok` (then `answer` is the
+  text of the answer given, kept so a repeat of `key` returns it, when at
+  most 4096 bytes; above that `answer_sha256` and `answer_bytes` stand in
+  its place); `failed` and `unfinished` (written by the open that finds a
+  call that never closed) say the lines in the frame never count, in any
+  replay. A call that wrote no line has no frame and no closing line (its
+  key and answer are kept in memory for the life of the server only). A
+  line outside a frame applies as ever, so every journal written before
+  the feature replays as it was. **Every reader that derives a fact reads
+  the committed journal** (`calls::committed`: the lines outside a frame and
+  those of `ok` frames), because ids are handed out again after a failed
+  call and a raw reader would pin the dead lines on whatever takes the id
+  next; a reader that shows history shows every line and says of the dead
+  ones that they did not count (`calls::standings`). `store.created` carries
+  `books_id` (the books' own unique id) in books made since the feature;
+  older books are given one in the `journal.format_set` of their upgrade.
+  Neither frame line moves the audit's figure head.
 - The store is policy-free: it records attachments faithfully. Whether a
   posting *requires* a receipt is decided by the MCP layer's receipt policy
   (`docs/mcp-interface.md`), which reads the `attachments` table.

@@ -77,7 +77,13 @@ fn books_toml(dir: &Path, company: &str, books_extra: &str) -> PathBuf {
 
 impl Mcp {
     fn start(dir: &TestDir, toml: &Path) -> Self {
-        let wire = dir.start(Some(&std::fs::read_to_string(toml).unwrap()));
+        Self::start_settings(dir, Some(&std::fs::read_to_string(toml).unwrap()))
+    }
+
+    /// [`Mcp::start`] with these settings, or none (books that take no
+    /// write, D-89, can't be given any).
+    fn start_settings(dir: &TestDir, settings: Option<&str>) -> Self {
+        let wire = dir.start(settings);
         let mut mcp = Self {
             books_dir: None,
             wire,
@@ -107,7 +113,14 @@ impl Mcp {
         mcp
     }
 
+    /// The journal, without the frames of tool calls (D-88): the events.
     fn journal(&self) -> Vec<u8> {
+        common::without_call_lines(&self.journal_raw())
+    }
+
+    /// The journal, byte for byte: what a check that a refusal or a
+    /// preview "journaled nothing" compares, so a stray frame line is seen.
+    fn journal_raw(&self) -> Vec<u8> {
         std::fs::read(self.data.join("journal.jsonl")).unwrap_or_default()
     }
 
@@ -151,7 +164,7 @@ impl Mcp {
     /// Call a tool; a refusal must leave the journal unchanged, a success
     /// must match the outputSchema.
     fn tool(&mut self, name: &str, args: Value) -> Out {
-        let before = self.journal();
+        let before = self.journal_raw();
         let resp = common::tools_call(|m, p| self.rpc(m, p), name, args.clone());
         let out = if let Some(err) = resp.get("error") {
             Out::RpcErr(err.clone())
@@ -181,7 +194,7 @@ impl Mcp {
         };
         if out.refused() {
             assert!(
-                self.journal() == before,
+                self.journal_raw() == before,
                 "refused {name} {args} changed the journal ({out:?})"
             );
         }
@@ -208,10 +221,10 @@ impl Mcp {
 
     /// `ok`, and the journal must not change (read-only tools).
     fn read_only(&mut self, name: &str, args: Value) -> Value {
-        let before = self.journal();
+        let before = self.journal_raw();
         let v = self.ok(name, args);
         assert!(
-            self.journal() == before,
+            self.journal_raw() == before,
             "read-only {name} changed the journal"
         );
         v
@@ -253,6 +266,7 @@ fn books(name: &str) -> Mcp {
 /// for their format upgrade.
 fn books_in(name: &str, p2: bool) -> Mcp {
     let dir = test_dir(name);
+    let toml = books_toml(&dir, "Spec Co", "");
     if p2 {
         ledger_store::Store::create_in_format(
             &dir.books_data(),
@@ -263,8 +277,11 @@ fn books_in(name: &str, p2: bool) -> Mcp {
             },
         )
         .unwrap();
+        // Books that take no write (D-89): no settings, no chart.
+        let mut m = Mcp::start_settings(&dir, None);
+        m.books_dir = Some(dir);
+        return m;
     }
-    let toml = books_toml(&dir, "Spec Co", "");
     let mut m = Mcp::start(&dir, &toml);
     m.accounts(CHART);
     m.books_dir = Some(dir);
@@ -503,7 +520,7 @@ fn update_project_with_nothing_new_journals_nothing() {
         "books.add_project",
         json!({"name": "Harbor", "kind": "client"}),
     );
-    let before = m.journal();
+    let before = m.journal_raw();
     m.ok(
         "books.update_project",
         json!({"project": "Harbor", "kind": "client"}),
@@ -512,7 +529,7 @@ fn update_project_with_nothing_new_journals_nothing() {
         "books.update_project",
         json!({"project": "harbor", "name": "Harbor"}),
     );
-    assert_eq!(m.journal(), before);
+    assert_eq!(m.journal_raw(), before);
 }
 
 // ------------------------------------------------- figures
@@ -914,17 +931,16 @@ fn show_project_sends_its_target() {
     );
 }
 
+/// Books an older version wrote take no write at all (D-89): not a
+/// project, not a link to one, nothing, and the refusal journals nothing.
+/// (The feature `projects` itself waiting is the store's:
+/// `ledger-store` `tests/projects.rs`.)
 #[test]
 fn project_writes_wait_for_the_format_upgrade() {
     let mut m = books_in("upgrade", true);
-    // A name alone: a plain class, accepted.
-    m.ok("books.add_project", json!({"name": "Harbor"}));
-    let a = match m.doc(b"%PDF c", json!([])) {
-        Out::Ok(v) => v["attachment_id"].as_u64().unwrap(),
-        o => panic!("{o:?}"),
-    };
-    let head = m.journal();
+    let head = m.journal_raw();
     for (tool, args) in [
+        ("books.add_project", json!({"name": "Harbor"})),
         (
             "books.add_project",
             json!({"name": "Dock", "kind": "client"}),
@@ -935,7 +951,7 @@ fn project_writes_wait_for_the_format_upgrade() {
         ),
         (
             "books.link_attachment",
-            json!({"attachment_id": a, "subject": {"kind": "project", "id": "Harbor"}}),
+            json!({"attachment_id": 1, "subject": {"kind": "project", "id": "Harbor"}}),
         ),
         (
             "books.record_decision",
@@ -944,16 +960,10 @@ fn project_writes_wait_for_the_format_upgrade() {
         ),
     ] {
         let why = m.refuse(tool, args);
-        assert!(
-            why.starts_with("format_upgrade_pending:") && why.contains("projects"),
-            "{tool}: {why}"
-        );
+        assert!(why.starts_with("format_upgrade_pending:"), "{tool}: {why}");
+        assert!(why.contains("nothing can be written"), "{tool}: {why}");
     }
-    // Filing with a link to a project is refused before the file is filed.
-    let out = m.doc(b"%PDF d", json!([{"kind": "project", "id": "Harbor"}]));
-    assert!(out.refused());
-    assert!(out.err_text().contains("projects"), "{out:?}");
-    assert_eq!(m.journal(), head, "nothing journaled");
+    assert_eq!(m.journal_raw(), head, "nothing journaled");
 }
 
 #[test]
@@ -1474,7 +1484,7 @@ fn books_without_the_feature_refuse_a_tagged_document() {
     );
     let cedar = m.ok("books.add_customer", json!({"name": "Cedar"}))["id"].clone();
     let v = m.ok("books.add_vendor", json!({"name": "Dana"}))["id"].clone();
-    let head = m.journal();
+    let head = m.journal_raw();
     for (tool, key, party) in [
         ("books.create_invoice", "customer", &cedar),
         ("books.create_bill", "vendor", &v),
@@ -1490,7 +1500,7 @@ fn books_without_the_feature_refuse_a_tagged_document() {
             "{tool}: {why}"
         );
     }
-    assert_eq!(m.journal(), head, "nothing journaled");
+    assert_eq!(m.journal_raw(), head, "nothing journaled");
     m.ok(
         "books.create_invoice",
         json!({"customer": (cedar).to_string(), "date": "2026-03-02", "due_date": "2026-04-01", "lines": [

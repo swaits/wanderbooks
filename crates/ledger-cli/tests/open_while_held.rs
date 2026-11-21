@@ -372,6 +372,8 @@ impl Agent {
     }
 
     fn send(&mut self, message: Value) {
+        // A tool call carries the request key every write needs (D-88).
+        let message = common::with_request_key(&message.to_string());
         let stdin = self.run.child.stdin.as_mut().unwrap();
         writeln!(stdin, "{message}").unwrap();
         stdin.flush().unwrap();
@@ -1383,7 +1385,8 @@ fn a_call_cancelled_at_once_is_never_made() {
             json!({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {
                 "name": "books.add_account",
                 "arguments": {"code": format!("{}", 1000 + k), "name": format!("A{k}"),
-                              "account_type": "asset"}}}),
+                              "account_type": "asset",
+                              "request_key": common::fresh_request_key()}}}),
             json!({"jsonrpc": "2.0", "method": "notifications/cancelled",
                    "params": {"requestId": id}})
         )

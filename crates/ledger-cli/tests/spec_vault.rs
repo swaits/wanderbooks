@@ -115,7 +115,14 @@ impl Mcp {
         mcp
     }
 
+    /// The journal, without the frames of tool calls (D-88): the events.
     fn journal(&self) -> Vec<u8> {
+        common::without_call_lines(&self.journal_raw())
+    }
+
+    /// The journal, byte for byte: what a check that a refusal or a
+    /// preview "journaled nothing" compares, so a stray frame line is seen.
+    fn journal_raw(&self) -> Vec<u8> {
         std::fs::read(self.data.join("journal.jsonl")).unwrap_or_default()
     }
 
@@ -161,7 +168,7 @@ impl Mcp {
     /// Call a tool; a refusal must leave the journal unchanged, a success
     /// must match the outputSchema.
     fn tool(&mut self, name: &str, args: Value) -> Out {
-        let before = self.journal();
+        let before = self.journal_raw();
         let resp = common::tools_call(|m, p| self.rpc(m, p), name, args.clone());
         let out = if let Some(err) = resp.get("error") {
             Out::RpcErr(err.clone())
@@ -191,7 +198,7 @@ impl Mcp {
         };
         if out.refused() {
             assert!(
-                self.journal() == before,
+                self.journal_raw() == before,
                 "refused {name} {args} changed the journal ({out:?})"
             );
         }
@@ -218,10 +225,10 @@ impl Mcp {
 
     /// `ok`, and the journal must not change (read-only tools).
     fn read_only(&mut self, name: &str, args: Value) -> Value {
-        let before = self.journal();
+        let before = self.journal_raw();
         let v = self.ok(name, args);
         assert!(
-            self.journal() == before,
+            self.journal_raw() == before,
             "read-only {name} changed the journal"
         );
         v
@@ -1021,7 +1028,7 @@ fn purge_deletes_the_vault_records_and_journals_why() {
         json!({"party": "Nobody", "reason": "x", "confirmed": true}),
     );
     // A preview changes nothing.
-    let journal = m.journal();
+    let journal = m.journal_raw();
     let p = m.ok(
         "books.purge_tin",
         json!({"party": "Acme Design", "reason": "retention over"}),
@@ -1030,7 +1037,7 @@ fn purge_deletes_the_vault_records_and_journals_why() {
     assert_eq!(p["tin_in_vault"], true);
     assert_eq!(p["w9_file_in_vault"], true);
     assert_eq!(p["tin_last4"], "2846");
-    assert!(m.journal() == journal);
+    assert!(m.journal_raw() == journal);
     assert!(m.vault().join(format!("tin-{acme}.bin")).exists());
     // Without the key, confirmed: gone, and journaled.
     std::fs::remove_file(m.key()).unwrap();
@@ -2097,6 +2104,8 @@ fn idempotent_tools_change_nothing_when_repeated() {
         m.ok(name, args.clone());
         let (journal, vault) = (m.journal(), vault_bytes(&m));
         m.ok(name, args.clone());
+        // The events, not the frames: a repeat with a new key is a call of
+        // its own, and its frame is no change of the books.
         let changed = m.journal() != journal || vault_bytes(&m) != vault;
         *repeats_change.entry(name).or_default() |= changed;
     }

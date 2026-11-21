@@ -123,11 +123,11 @@ fn journal_history_traces_what_the_books_did() {
     assert_eq!(next["lines"][0]["seq"].as_u64().unwrap(), after + 1);
 
     // A bad subject is refused with the shapes; the journal is unchanged.
-    let before = books.journal();
+    let before = books.journal_raw();
     let err =
         answer_of(&w.call("books.journal_history", json!({"subject": "nonsense"}))).unwrap_err();
     assert!(err.contains("entry:12"), "{err}");
-    assert_eq!(books.journal(), before);
+    assert_eq!(books.journal_raw(), before);
     // It is a read: no head in the envelope.
     assert!(all.get("head").is_none(), "{all}");
 }
@@ -471,11 +471,18 @@ fn a_mutating_call_answers_with_the_head_and_a_refusal_names_its_remedy() {
     .unwrap();
     let head = added["head"]["seq"].as_u64().unwrap();
     let start = answer_of(&w.call("books.start", json!({}))).unwrap();
+    // The head a write call answers is where its own lines end; its closing
+    // line (which holds this very answer) follows at once, and is the
+    // journal's head from then on (WB-format-8).
     assert_eq!(
         start["head"]["seq"],
-        json!(head),
-        "the head the call answered is the journal's"
+        json!(head + 1),
+        "the journal ends one line past the head the call answered: its closing line"
     );
+    let journal = String::from_utf8(books.journal_raw()).unwrap();
+    let last: serde_json::Value = serde_json::from_str(journal.lines().last().unwrap()).unwrap();
+    assert_eq!(last["type"], "call.closed");
+    assert_eq!(last["payload"]["last_seq"], json!(head));
     assert!(!added["next_steps"].as_array().unwrap().is_empty());
     // A confirm with no preview is refused as stale_preview, naming the
     // tool that previews.

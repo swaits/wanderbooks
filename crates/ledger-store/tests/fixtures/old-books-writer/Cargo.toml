@@ -17,6 +17,12 @@
 #   cargo run --bin p5_before -- OUT  (p5_before: run against b97234ac, the
 #                                      revision before P5: a revised
 #                                      convention, two decisions, two open items)
+#   cargo run --bin p15_t1_before -- OUT (p15_t1_before: run against 7058fbd2,
+#                                      the revision before P15 T1: a
+#                                      receipted opening, a reversal, an
+#                                      invoice with a part payment, a bill,
+#                                      an open draft, a closed January; no
+#                                      call frames, no request keys)
 #   cargo run --bin expect -- OUT     (expected.json beside each journal)
 # and copy each journal.jsonl, blobs/ and expected.json into old-books/.
 # x_member_closes was written later, the same way, by main 00226a4c

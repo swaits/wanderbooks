@@ -157,13 +157,17 @@ fn audit_is_deterministic() {
     );
     let run = first["run"].clone();
     assert_eq!(run["at_current_head"], true);
-    let journal = books.journal();
+    let journal = books.journal_raw();
     let again = audit(&mut w, "full", "2026-03-31");
     assert_eq!(again["status"], "already_run");
     assert_eq!(again["run"]["id"], run["id"]);
     assert_eq!(again["run"]["findings_sha256"], run["findings_sha256"]);
     assert_eq!(again["findings"], first["findings"]);
-    assert_eq!(books.journal(), journal, "asking again journals nothing");
+    assert_eq!(
+        books.journal_raw(),
+        journal,
+        "asking again journals nothing"
+    );
     // The workpaper is the same twice, JSON and PDF.
     let id = run["id"].clone();
     let one = answer_of(&w.call("books.workpaper", json!({"id": id}))).unwrap();
@@ -406,7 +410,7 @@ fn audits_wait_for_the_upgrade() {
     ))
     .unwrap();
     assert_eq!(preview["status"], "preview");
-    let journal = books.journal();
+    let journal = books.journal_raw();
     for (tool, args) in [
         (
             "books.audit",
@@ -425,7 +429,7 @@ fn audits_wait_for_the_upgrade() {
         let e = answer_of(&w.call(tool, args)).unwrap_err();
         assert!(e.starts_with("format_upgrade_pending"), "{tool}: {e}");
     }
-    assert_eq!(books.journal(), journal, "a refusal journals nothing");
+    assert_eq!(books.journal_raw(), journal, "a refusal journals nothing");
     // The package is held up only by what it always was: an open draft.
     let args = json!({"as_of": "2026-01-31", "cash_accounts": ["1000"],
                       "include_receipts": false, "include_tins": false});

@@ -8,7 +8,8 @@ file wins. The evidence is `docs/delegation-log.md`, one line per task.
 | Task type | Provider | Model | Effort |
 |---|---|---|---|
 | scout (find, summarize, rename, boilerplate, small edits) | `claudeAgent` | `claude-haiku-5-5` | effort medium |
-| run/verify (run suites, reproduce, collect logs, check a build) | `muse` | `muse-ember-1.0` | reasoningEffort high |
+| run/verify, long (a suite, a build: more than about ten minutes) | `claudeAgent` | `claude-haiku-5-5` | effort medium |
+| run/verify, short (a test by name, a quick reproduction) | `muse` | `muse-ember-1.0` | reasoningEffort high |
 | implement, refactor (well specified, clear acceptance) | `opencode` | `opencode-go/deepseek-v4.1-flash` | variant high |
 | debug, hard implement (several modules, subtle, or tier 2 failed once) | `claudeAgent` | `claude-sonnet-5-5` | effort high |
 | review (a risky design, or a large change before merge) | `muse` | `muse-wonder-full-1.0` | reasoningEffort high |
@@ -33,3 +34,7 @@ work to the review tier without asking.
   5 logged samples yet, so nothing has moved.
 - 2026-11-20: run/verify moves to Muse Ember through Muse Code, which now
   lists it. No sample yet.
+- 2026-11-20 (later): run/verify splits by length. Ember ran five tasks: two short
+  ones and one hour-long single command came back exact; twice it ended its turn
+  with "I'll continue" while a long command ran, and the command died with the
+  turn. Long runs go to Haiku, which held a ten-step run to the end.

@@ -4460,6 +4460,103 @@ test above kills its removal); `Dock::closed_with` (a new tab's dock opens
 closed); `route_from_key` and the period codes in `CompanyView::restore`
 (a start after the end is never restored).
 
+## P15 A3a, the review's faults: threads, kept state, the dock (2026-11-20)
+
+An independent review of the tab work confirmed the viewer writes nothing
+and no figure crosses tabs, and found six faults. Each is fixed and each
+fix has a test that was seen to fail with the fix switched off (the
+mutation column says what was switched off).
+
+1. **Jobs outlived their tab** (`jobs.rs`, `menu.rs`, `owner.rs`,
+   `dock.rs`, `receipts.rs`, `data.rs`). Every thread a tab starts is one
+   of a per-view registry that the view's drop tells to stop and that says,
+   on a condition, when the last has ended.
+2. **Kept state was filed under the id alone** (`app.rs`, `company.rs`).
+   It is filed under the data root's hash and the id, with the books'
+   identity (the SHA-256 of the journal's first line).
+3. **A named start erased the remembered tabs** (`app.rs`).
+4. **The dock's height** is the app's one layout, said and tested; every
+   other id egui keys by a raw name was found and ruled on.
+5. **Prompt release on close** (`data.rs`, `receipts.rs`).
+6. **The sidebar tests' window sizes**: see below.
+
+`crates/ledger-gui/tests/tabs.rs` (sections 14 to 17), `format_upgrade.rs`,
+`exports.rs`, `live.rs` and unit tests in `jobs.rs` and `receipts.rs`:
+
+- `closing_a_tab_releases_its_lock_its_threads_and_its_agent` (changed): the
+  tab's registry counts the loader, the receipts' and thumbnails' workers
+  and the dock's agent; after the close the test waits on the registry
+  (`Watch::wait_ended`, its limit a failure guard, 120 s, never what the
+  test relies on) and then asserts the viewer lock is free, the loader's
+  thread has ended and the agent's process is gone. It no longer polls.
+- `a_restore_under_way_holds_its_tab_and_the_window_open`,
+  `an_upgrade_under_way_holds_its_tab_and_the_window_open`
+  (`format_upgrade.rs`): the owner's call is held in the test; while it
+  runs the tab's close control is disabled to assistive technology, a
+  click and `App::close` leave the tab, the window's close request is
+  cancelled and the dialog names the company and what runs and offers only
+  to wait; with nothing running the same request goes through; when the
+  call ends the dialog goes and the result is in the tab.
+- `a_backup_only_reads_so_its_tab_closes_and_its_thread_ends`: a read-only
+  owner job holds nothing, its tab closes, its thread ends when the
+  owner's call does.
+- `an_export_is_stopped_when_its_tab_closes` (the job is told) and
+  `a_stopped_export_leaves_no_file_whenever_it_is_told` (`exports.rs`: a
+  signal given after 0, 1, 2 and 3 looks, each leaving no file, the fifth
+  look none, which saves).
+- `a_tab_closed_while_its_agent_is_starting_leaves_no_child_and_no_thread`
+  and `a_tab_closed_with_its_agent_running_ends_the_child_even_if_it_ignores_the_hangup`
+  (Unix): the start is one of the tab's threads and its answer, arriving
+  after the close, starts nothing; an agent that ignores the hang-up is
+  killed after `AGENT_GRACE` and reaped, and the registry says so.
+- `another_data_root_with_a_company_of_the_same_id_inherits_nothing`,
+  `books_made_again_under_an_id_start_fresh_and_a_restart_of_the_same_books_does_not`,
+  `books_outside_any_data_root_are_kept_under_their_folder`,
+  `preferences_written_before_the_keys_had_a_root_are_read_and_not_used`:
+  the kept-state keys. (A set of books' identity says when it was made to
+  the second, so a test that makes other books under an id waits for the
+  clock's next second first.)
+- `a_start_with_a_named_company_never_writes_the_list_of_open_companies`.
+- `the_docks_height_and_layout_are_the_apps_one_for_every_tab`,
+  `no_panel_but_the_apps_own_is_keyed_by_an_id_every_tab_shares`,
+  `the_color_scheme_is_the_windows_one_for_every_tab`: what the tabs share
+  on purpose, and that nothing else is.
+- `live.rs`: `a_loader_whose_books_cant_be_read_tries_no_more_once_it_is_dropped`
+  (counts `Snapshot::load` tries), `a_dropped_loader_lets_go_of_its_presence_at_once`
+  (no waiting for the thread).
+- `receipts.rs`: `a_thumbnail_is_not_written_for_a_tab_that_has_closed`.
+- `jobs.rs`: the registry itself (a count lives until the thread ends,
+  also on a panic; a kept job is what a tab is held for).
+
+**Each fix was switched off to see its test fail** (a temporary
+`WB_MUT=<name>` switch at each fix, removed again): the held owner jobs (two
+switches: the hold, and the cancel of the window's close; the tab's off
+control and `App::close`'s guard each), the stop signal, the thumbnail
+write, the export's checks, the dock start's registration, the kill of an
+agent that ignores its hang-up, the dock's raw panel id (scoped, the test
+fails), the viewer presence's release in `Loader::drop`, the loader's gone
+check and wake before a retry, the books' identity check, the root in the
+key, the named start's write of the list, the panel ids of the sidebar,
+and the receipts' workers' registration: each of the tests above that
+covers it failed, and passed with the fix in. Not switchable and so not
+shown to fail: `preferences_written_before_the_keys_had_a_root_are_read_and_not_used`
+(it passes before and after: no migration is the rule) and
+`books_outside_any_data_root_are_kept_under_their_folder`, whose second
+folder is also told apart by its books' identity.
+
+**The sidebar tests' window sizes were not restored.** With the `+ BAR_H`
+taken off the four `sidenav.rs` sites the sidebar has 36 points less than
+the owner's 519 gave it before the bar, and three of the four fail at the
+original size: `at_1479x519_every_link_shows_unscrolled` (the links scroll;
+the window must be 534 high for them not to, 15 points short),
+`the_rail_at_519_shows_every_link_unscrolled` (the rail must be 530, 11
+short) and the grid test at 520 px (`no_link_is_ever_under_the_footer_at_scale_1`:
+the same 15 points); `a_tall_sidebar_is_unchanged` fails its shapes hash,
+which the shorter sidebar changes, as expected. The tests were left as they
+are, the minimum window height (`lib.rs`) and the goldens untouched, and
+the 15 (sidebar) and 11 (rail) points are the owner's to decide: take them
+from the sidebar's rows or keep the bar's 36 points in the window sizes.
+
 ## P12: the checklists
 
 The **For P12** paragraphs above (kept where they were written, with their

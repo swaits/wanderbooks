@@ -142,8 +142,9 @@ window, so the smallest window the viewer allows is the 400 points below
 the bar plus the bar. A tab is the company's badge and name, as wide as
 that between a least and a greatest width; the "+" follows the last tab
 and stays at the right edge, the tabs scrolling, when they overflow. The
-app remembers each company's name when its books load (`company.<id>.name`
-in its kept state), for a tab's title before the books load and for the
+app remembers each company's name when its books load (`company.<root>.<id>.name`
+in its kept state, `<root>` being a hash of the data root's canonical path),
+for a tab's title before the books load and for the
 "+" list, which never reads a journal for a name. A view owns
 everything that is one company's: its loader thread (its watcher and its
 viewer presence on the books), the books it last loaded, where it is
@@ -152,13 +153,40 @@ its palette, its dock (and so the agent process in it) and its handle to
 the `Owner`. Nothing is shared between views: every egui id a view makes is
 scoped by its own id (the app draws a view inside `push_id`), so egui's
 memory (scroll offsets, remembered widths) never carries from one tab into
-another; closing a tab drops its view and with it all of that. A view that
+another (a panel's id is not scoped by `push_id`, so the view's panels are
+given ids made from its own; what the tabs share on purpose is the app's and
+says so: the assistant dock's panel, whose height is one layout in every
+tab, the tab bar, and the color scheme's palette); closing a tab drops its
+view and with it all of that.
+
+Every thread a view starts is counted in one registry of the view
+(`jobs.rs`): its loader, its receipts' workers, an export, an owner's job,
+the dock's start and the thread that reaps the dock's agent. Dropping the
+view tells them all to stop, and the registry says when the last has ended
+(`CompanyView::jobs_watch`). What each does on being told: the loader ends
+(and the viewer's presence on the books is let go in the drop itself, not
+when a refresh in flight is over), the receipts' workers end and write no
+thumbnail, an export stops at its phase boundaries and saves nothing, a
+read-only owner job (a backup, the check of a backup to restore) is not
+begun or has its answer dropped, the dock's agent is hung up on and, if it
+has not gone within two seconds, killed and reaped. One kind of job is never
+abandoned: an owner's job that changes something (restore, the format
+upgrade, new books, connect, close the books, update). While one runs, its
+tab's close control is off and says what is running, and the window's close
+is cancelled with a dialog that offers only to wait (`app.rs` INVARIANT 7;
+`owner.rs` INVARIANT 6). A view that
 is not in front still reads its loader every frame (so showing it later is
 current at once) and takes the agent's `books.show` for its own page only.
 `wanderbooks gui BOOK` opens that company as the only tab; with none named,
 the companies that were open when the window last closed come back, in
 their order, the same one in front, each with its page and its report's
-period (`app.rs` INVARIANT 4). The `Owner` the program installs
+period (`app.rs` INVARIANT 4). What is kept is filed under the data root
+(a hash of its canonical path) and the company's id, with the books'
+identity (the SHA-256 of the journal's first line) once they load: another
+root's company of the same id, or the same id made again as other books,
+inherits nothing, and a stored state whose identity is not the loaded
+books' is discarded. A start that names a company never writes the list of
+open companies, so one such start doesn't replace a set of tabs. The `Owner` the program installs
 (`owner::set_owner`) is the program's, one per process; each view takes a
 handle to it when it is made and a test can give a view another.
 

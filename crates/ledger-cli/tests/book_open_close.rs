@@ -377,6 +377,41 @@ fn agent(
     }
 }
 
+/// What the server's git commands did, from the file it was told to write
+/// them to (`WANDERBOOKS_GIT_TIMINGS`): the slowest ten by how long the
+/// command ran plus how long its pipes took to close, then every line of the
+/// last hundred. Each line: when (ms since the server's first git), the
+/// command, its exit, how many git commands were running as it began,
+/// `spawn` (how long starting it took, including waiting its turn),
+/// `ran` (start to exit), `pipes` (exit until what it wrote was in hand),
+/// and for each of stdout and stderr how that wait ended (`eof`: the pipe
+/// closed; `held-open`: another process still held it, nothing was left in
+/// it; `limit`: 10 s passed) and how many bytes.
+fn say_git_timings(file: &std::path::Path) {
+    let text = std::fs::read_to_string(file).unwrap_or_default();
+    let lines: Vec<&str> = text.lines().collect();
+    let ms = |line: &str, key: &str| -> u64 {
+        line.split_whitespace()
+            .find_map(|w| w.strip_prefix(key))
+            .and_then(|v| v.trim_end_matches("ms").parse().ok())
+            .unwrap_or(0)
+    };
+    let mut slow: Vec<&&str> = lines.iter().collect();
+    slow.sort_by_key(|l| std::cmp::Reverse(ms(l, "ran=") + ms(l, "pipes=") + ms(l, "spawn=")));
+    eprintln!(
+        "git commands of the server: {} lines in {}; the slowest:",
+        lines.len(),
+        file.display()
+    );
+    for l in slow.iter().take(10) {
+        eprintln!("  {l}");
+    }
+    eprintln!("the last {}:", lines.len().min(100));
+    for l in &lines[lines.len().saturating_sub(100)..] {
+        eprintln!("  {l}");
+    }
+}
+
 /// Many agents call two books (journaled drafts and reads) while one book
 /// is closed and opened again, over and over. Afterwards both journals are
 /// replayed and checked: every acknowledged draft is in its book's journal
@@ -393,8 +428,14 @@ fn closing_and_opening_a_book_over_and_over_loses_and_duplicates_nothing() {
     // Every timer of the server runs every few milliseconds, and the
     // hammered book has a backup target, which backs it up and drills it
     // as it is written: the writers a close must stop are all at work.
-    let server = Server::start_with(
+    // Every git command the server runs is written here as it ends (how
+    // long it ran, how long its pipes took to close after it ended): the
+    // portable jobs run this on machines nobody can look at, and a close
+    // that is slow there is told with these lines, not guessed at.
+    let timings = home.dir.path().join("git-timings.log");
+    let server = Server::start_full(
         &home,
+        &[("WANDERBOOKS_GIT_TIMINGS", timings.as_path())],
         &[
             "--timers",
             "10",
@@ -491,6 +532,9 @@ fn closing_and_opening_a_book_over_and_over_loses_and_duplicates_nothing() {
         let closed = close_book(&home, A);
         let took = began.elapsed();
         eprintln!("cycle {cycle}: the close took {took:?}");
+        if closed != CloseOutcome::Closed || took > Duration::from_secs(10) {
+            say_git_timings(&timings);
+        }
         assert_eq!(
             closed,
             CloseOutcome::Closed,
@@ -3621,6 +3665,24 @@ fn a_lock_a_kill_leaves_in_the_backup_folder_is_reported_and_never_removed_by_th
         other => panic!("a backup that left a lock was answered as {other:?}"),
     };
     let lock_text = lock.display().to_string();
+    // Every lock git left in the folder, the HEAD lock beside the branch's
+    // own (git locks HEAD as well when it moves the branch HEAD names; a
+    // newer git goes on past a stale one, an older one refuses the push
+    // with "cannot lock ref 'HEAD'", as on macOS): each is named in the
+    // words, and the owner removes those, as the words say, and no other.
+    let left: Vec<PathBuf> = locks_under(&target)
+        .into_iter()
+        .filter(|l| l != "refs/heads/another.lock")
+        .map(|l| target.join(l))
+        .collect();
+    assert!(left.contains(&lock), "{left:?}");
+    for file in &left {
+        assert!(
+            why.contains(&file.display().to_string()),
+            "{} isn't named in: {why}",
+            file.display()
+        );
+    }
     assert!(why.contains(&lock_text), "{why}");
     assert!(
         why.contains("nothing else is using the backup folder"),

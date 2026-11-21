@@ -4039,6 +4039,7 @@ dependencies = [
  "time",
  "tokio",
  "tokio-rustls",
+ "windows-sys 0.61.2",
  "zeroize",
  "zip",
 ]

@@ -214,7 +214,7 @@ const WARN_AGE: std::time::Duration = std::time::Duration::from_secs(60);
 const FIRST_CONNECT_KEY: &str = "first_connect_done";
 
 /// What a window is called when no company is in front.
-const TITLE: &str = "wanderbooks";
+const TITLE: &str = "Wanderbooks";
 
 impl App {
     /// The live app over one company's books directory.

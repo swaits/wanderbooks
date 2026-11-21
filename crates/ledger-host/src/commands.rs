@@ -1967,11 +1967,20 @@ pub fn connect_agent(common: &Common, agent: &str, book: &str) -> Result<Vec<Str
     // Each call within a minute: an agent's command that hangs is said,
     // never waited on for good.
     let run_cli = |args: Vec<std::ffi::OsString>| -> Result<std::process::Output, String> {
-        let mut child = std::process::Command::new(&program)
+        let mut command = std::process::Command::new(&program);
+        command
             .args(args)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        // The window has no console (WB-pkg-2): this one is not to open
+        // a console of its own for a moment (CREATE_NO_WINDOW).
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x0800_0000);
+        }
+        let mut child = command
             .spawn()
             .map_err(|e| format!("{label} couldn't be run: {}", e.kind()))?;
         let deadline = std::time::Instant::now() + CONNECT_WAIT;

@@ -141,10 +141,17 @@ pub fn open(path: &Path) {
     #[cfg(target_os = "macos")]
     let cmd = std::process::Command::new("open").arg(path).spawn();
     #[cfg(target_os = "windows")]
-    let cmd = std::process::Command::new("cmd")
-        .args(["/C", "start", ""])
-        .arg(path)
-        .spawn();
+    let cmd = {
+        // The window has no console (WB-pkg-2): a console program it
+        // starts would open one for a moment, so it is told not to
+        // (CREATE_NO_WINDOW).
+        use std::os::windows::process::CommandExt;
+        std::process::Command::new("cmd")
+            .args(["/C", "start", ""])
+            .arg(path)
+            .creation_flags(0x0800_0000)
+            .spawn()
+    };
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let cmd = std::process::Command::new("xdg-open").arg(path).spawn();
     let _ = cmd;

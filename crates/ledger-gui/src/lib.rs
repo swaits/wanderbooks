@@ -140,7 +140,7 @@ pub fn run(
     };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("wanderbooks")
+            .with_title("Wanderbooks")
             .with_app_id("wanderbooks")
             .with_inner_size([1440.0, 920.0])
             // Small on purpose: tiling window managers hand out small slots

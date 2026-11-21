@@ -9,6 +9,13 @@
 //! From nothing to the first post: `wanderbooks setup`, `wanderbooks books
 //! create ID`, `wanderbooks connect claude --book ID` (then talk to the
 //! agent).
+//!
+//! On Windows the executable is built for the GUI subsystem, so starting
+//! it from the Start Menu opens no console window; `console` gives a
+//! command run in a terminal its words back (WB-pkg-2).
+#![cfg_attr(all(windows, feature = "gui"), windows_subsystem = "windows")]
+
+mod console;
 
 use std::env;
 use std::io::Write;
@@ -700,6 +707,11 @@ fn main() {
         eprintln!("error: an argument isn't UTF-8 text");
         std::process::exit(2);
     };
+    // A command run in a terminal prints there; the app (no words) opens
+    // no console at all (console.rs).
+    if !words.is_empty() {
+        console::attach_parent_console();
+    }
     // A bare launch is the viewer.
     if is_bare_launch(&words, std::io::IsTerminal::is_terminal(&std::io::stdin())) {
         std::process::exit(run_gui(Vec::new()));

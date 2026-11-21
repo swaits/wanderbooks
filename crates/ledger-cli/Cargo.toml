@@ -24,6 +24,11 @@ ledger-mcp = { path = "../ledger-mcp" }
 ledger-store = { path = "../ledger-store" }
 ledger-gui = { path = "../ledger-gui", optional = true }
 
+# The parent's console for a command run in a terminal (console.rs): the
+# raw bindings, already in the lockfile through ledger-store.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console"] }
+
 [dev-dependencies]
 base64 = "0.22"
 chrono = "0.4"

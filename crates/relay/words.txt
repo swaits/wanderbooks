@@ -6,7 +6,6 @@ accountant
 accredit
 accrual
 accrue
-accrued
 accumulate
 accurate
 acquire
@@ -67,7 +66,6 @@ attain
 attest
 auction
 audit
-audited
 auditor
 authorize
 avail
@@ -75,7 +73,6 @@ average
 award
 baht
 balance
-balanced
 balboa
 ballast
 banker
@@ -107,10 +104,8 @@ blueprint
 boardroom
 bolivar
 bond
-bonded
 bonus
 book
-booked
 bookkeeper
 bookkeeping
 booth
@@ -124,7 +119,6 @@ brokerage
 bronze
 brook
 budget
-budgeted
 buffer
 bulk
 bullion
@@ -155,7 +149,6 @@ cashier
 catalog
 cedar
 cedi
-cell
 cent
 centime
 certificate
@@ -164,7 +157,6 @@ chamber
 charity
 chart
 charter
-chartered
 check
 checkbook
 checklist
@@ -176,7 +168,6 @@ circuit
 citrus
 claim
 clear
-clearing
 clerk
 client
 clientele
@@ -254,7 +245,6 @@ crop
 crossfoot
 crown
 cumulative
-currant
 currency
 current
 curve
@@ -324,7 +314,6 @@ docket
 document
 dollar
 domain
-dong
 donor
 dossier
 draft
@@ -393,7 +382,6 @@ excel
 excess
 exchange
 execute
-executor
 exemption
 exercise
 exhibit
@@ -440,7 +428,6 @@ flux
 folder
 folio
 foot
-footing
 footnote
 footprint
 forecast
@@ -462,7 +449,7 @@ freight
 frequency
 front
 frugal
-fulfil
+fulfill
 full
 fund
 fundamental
@@ -518,7 +505,6 @@ hinge
 hire
 historic
 hold
-holding
 home
 honest
 honor
@@ -644,7 +630,6 @@ liable
 liberty
 library
 license
-licensed
 lighthouse
 lime
 limit
@@ -655,7 +640,6 @@ linkage
 liquid
 lira
 list
-listing
 literal
 live
 loading
@@ -698,7 +682,6 @@ marketable
 mart
 master
 match
-matched
 material
 mature
 maximum
@@ -783,7 +766,6 @@ omit
 onboard
 ongoing
 open
-opening
 operate
 operator
 opinion
@@ -862,7 +844,6 @@ personal
 peso
 petty
 phase
-pier
 pilot
 pine
 pinnacle
@@ -925,7 +906,6 @@ priority
 private
 privilege
 prize
-probate
 procedure
 proceed
 process
@@ -1079,7 +1059,6 @@ rial
 ribbon
 rice
 ridge
-riel
 rigor
 ring
 ringgit
@@ -1123,7 +1102,6 @@ scribe
 scroll
 scrutiny
 seal
-sealed
 search
 season
 secure
@@ -1153,7 +1131,6 @@ shift
 shilling
 ship
 shipment
-shipping
 shoal
 shop
 sign
@@ -1176,12 +1153,10 @@ smooth
 snapshot
 social
 society
-sol
 sole
 solid
 solution
 solvent
-som
 sound
 source
 sovereign
@@ -1288,7 +1263,6 @@ tenure
 term
 terrace
 territory
-testament
 thaler
 thorough
 thread
@@ -1351,7 +1325,6 @@ unanimous
 undertake
 underwrite
 unearned
-unified
 uniform
 unify
 union

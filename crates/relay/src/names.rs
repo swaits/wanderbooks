@@ -133,8 +133,10 @@ impl fmt::Debug for Name {
 }
 
 /// The shortest and longest secret label the relay will route. The app
-/// makes the label; the relay checks only its shape.
-pub const SECRET_LEN: std::ops::RangeInclusive<usize> = 16..=63;
+/// makes the label, from at least 128 random bits (25 or more random
+/// base 36 characters: 25 of them are 129.2 bits); the relay checks only
+/// its shape, and refuses a label too short to hold that much.
+pub const SECRET_LEN: std::ops::RangeInclusive<usize> = 25..=63;
 
 /// What a host name (a TLS server name or a DNS name) is.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -243,7 +245,77 @@ mod tests {
         ] {
             assert!(list.binary_search(&bad).is_err(), "{bad} is on the list");
         }
+        // Words with a reading a customer would not want in an address, and
+        // words of death and estates (an assistant's name should not be
+        // "executor" or "testament" of anything).
+        for bad in ["dong", "probate", "testament", "executor"] {
+            assert!(list.binary_search(&bad).is_err(), "{bad} is on the list");
+        }
         assert!(name_bits() > 40.0, "{} bits", name_bits());
+    }
+
+    /// Four words must be at least 40 bits of choice (1 024 words is the
+    /// floor), so a name is hard to guess and rare to collide. Removing
+    /// words for being confusable must be made up with finance and
+    /// accounting words before this goes red.
+    #[test]
+    fn four_words_are_at_least_40_bits() {
+        assert!(words().len() >= 1024, "{} words", words().len());
+        assert!(name_bits() >= 40.0, "{} bits", name_bits());
+    }
+
+    /// A name read aloud must be unambiguous: no word is the inflection of
+    /// another on the list (the base form stays), and no two words sound
+    /// alike.
+    #[test]
+    fn no_word_is_an_inflection_or_a_homophone_of_another() {
+        let list = words();
+        let has = |w: &str| list.binary_search(&w).is_ok();
+        for w in list {
+            for suffix in ["s", "es", "d", "ed", "ing", "ies", "ied"] {
+                assert!(!has(&format!("{w}{suffix}")), "{w} and {w}{suffix}");
+            }
+            if let Some(stem) = w.strip_suffix('e') {
+                assert!(!has(&format!("{stem}ing")), "{w} and {stem}ing");
+            }
+            if let Some(stem) = w.strip_suffix('y') {
+                for suffix in ["ied", "ies"] {
+                    assert!(!has(&format!("{stem}{suffix}")), "{w} and {stem}{suffix}");
+                }
+            }
+            if let Some(last) = w.chars().last() {
+                for suffix in ["ed", "ing"] {
+                    assert!(
+                        !has(&format!("{w}{last}{suffix}")),
+                        "{w} and {w}{last}{suffix}"
+                    );
+                }
+            }
+        }
+        // Words that sound alike: at most one of each group is listed.
+        for group in [
+            ["peer", "pier", "", ""],
+            ["sell", "cell", "", ""],
+            ["current", "currant", "", ""],
+            ["real", "riel", "reel", ""],
+            ["sum", "som", "some", ""],
+            ["sole", "sol", "soul", ""],
+            ["site", "sight", "cite", ""],
+            ["cache", "cash", "", ""],
+            ["fair", "fare", "", ""],
+            ["steel", "steal", "", ""],
+            ["suite", "sweet", "", ""],
+            ["route", "root", "", ""],
+            ["counsel", "council", "", ""],
+            ["principal", "principle", "", ""],
+            ["profit", "prophet", "", ""],
+            ["stake", "steak", "", ""],
+        ] {
+            let listed: Vec<_> = group.iter().filter(|w| !w.is_empty() && has(w)).collect();
+            assert!(listed.len() <= 1, "alike-sounding words listed: {listed:?}");
+        }
+        assert!(!has("fulfil"), "it is fulfill");
+        assert!(has("fulfill"));
     }
 
     #[test]
@@ -294,6 +366,30 @@ mod tests {
         ] {
             assert_eq!(zone.classify(other), HostKind::Other, "{other}");
         }
+    }
+
+    /// The secret label is at least 128 bits when the app makes it (25 or
+    /// more random base 36 characters); a label too short to hold that is
+    /// not routed, whatever it spells.
+    #[test]
+    fn a_secret_label_under_25_characters_is_not_routed() {
+        let zone = Zone::new("wanderbooks.link", "relay.wanderbooks.link");
+        let name = Name::parse("ledger-accrual-tally-mint").unwrap();
+        let on = |secret: &str| {
+            zone.classify(&format!(
+                "{secret}.ledger-accrual-tally-mint.wanderbooks.link"
+            ))
+        };
+        assert_eq!(on("aaaaaaaaaaaaaaaa"), HostKind::Other, "16 characters");
+        assert_eq!(on(&"a".repeat(24)), HostKind::Other, "24 characters");
+        assert_eq!(on(&"a".repeat(25)), HostKind::App(name), "25 characters");
+        assert_eq!(on(&"a".repeat(63)), HostKind::App(name), "63 characters");
+        assert_eq!(on(&"a".repeat(64)), HostKind::Other, "64 characters");
+        assert!(
+            25.0 * 36f64.log2() >= 128.0,
+            "25 base 36 characters are 128 bits"
+        );
+        assert!(24.0 * 36f64.log2() < 128.0);
     }
 
     #[test]

@@ -323,6 +323,23 @@ fn cpa_package_refuses_without_a_counted_audit_unless_a_reason_is_given() {
         before["decisions"].as_array().unwrap().len() + 1
     );
     assert!(after.to_string().contains("without a counted audit"));
+    // A refusal that comes after the reason (an open draft, with no reason of
+    // its own) journals nothing: no decision stands for a package that was
+    // never made.
+    let open = post(&mut w, "2026-03-25", "Still open", "3.00");
+    let held_off = export(
+        &mut w,
+        json!({"without_audit_reason": "the CPA asked for it early"}),
+    );
+    let err: Value = serde_json::from_str(&answer_of(&held_off).unwrap_err()).unwrap();
+    assert_eq!(err["code"], "open_drafts", "{err}");
+    let still = answer_of(&w.call("books.decisions", json!({}))).unwrap();
+    assert_eq!(
+        still["decisions"].as_array().unwrap().len(),
+        after["decisions"].as_array().unwrap().len(),
+        "a decision was journaled for a package that was refused"
+    );
+    confirm_post(&mut w, open);
     // An audit alone does not open it; nor one attested below the bar.
     answer_of(&w.call(
         "books.create_period",

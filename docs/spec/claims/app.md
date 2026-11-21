@@ -235,3 +235,17 @@ and its test that a list with nothing running says which books wait for an upgra
 `a_command_racing_the_apps_start_joins_the_app`,
 `two_commands_at_once_with_nothing_running_both_do_their_work`,
 `a_bridge_that_held_a_host_follows_the_app_that_takes_its_place`).
+
+**WB-app-6 A first run opens the Connect page once.** After a person makes or
+opens their first company, and the window's server says no assistant was ever
+connected (no key, no session, no web approval, none waiting, for any
+company), the window opens the Connect page by itself, once, with the tools on
+this computer first and the web below. It is remembered for the installation
+and never happens again, whatever is connected or revoked later; an
+installation that has an assistant never sees it. It is asked only after the
+server has answered, never from a guess, and not in a window that has no
+server.
+*Enforced:* `ledger_gui::app::App::first_connect`.
+*Checked:* `ledger-gui` `tests/web_connect.rs`
+(`the_connect_page_opens_by_itself_once_for_a_first_run`,
+`the_connect_page_does_not_open_when_it_was_shown_or_an_assistant_exists`).

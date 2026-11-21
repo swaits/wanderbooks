@@ -470,7 +470,34 @@ From the review of unit B2 (the relay service):
 - The 100,000-line soak has not been run; 20,000 is the largest.
 - Unit B3's duties: ping at least every 60 s (a line silent for 180 s is
   dropped); a secret label of 25 or more random base36 characters; a
-  yamux stream limit at least the relay's.
+  yamux stream limit at least the relay's. Done in `crates/ledger-link`
+  (ping every 30 s, a 32-character label, 64 streams).
+
+From unit B3 (the app's side of the relay), left out on purpose:
+
+- Certificate transparency watching is not built. Section 5 says the app
+  watches the public certificate logs for its own name and warns of a
+  certificate it did not ask for; it names no log service, API or timing,
+  and the unit's brief left it for later if the plan left it open. It needs
+  a log monitor choice (crt.sh and the like are third-party services the
+  app would call with the app's name), so it waits for the owner's word.
+- The steps for ChatGPT, Gemini, Grok and muse.ai are not written: the plan
+  has none it stands behind (section 7: OpenAI's two pages disagree), so
+  the page says "we haven't tested this yet". The steps for Claude on the
+  web are the ones in `plan/served.md` (Settings, Connectors, Add custom
+  connector, paste, sign in); nobody has tried them on the live product.
+- "Other assistant": a key made on the spot for products that take only a
+  key (section 3.3 and `remote_make_key`) is not reached from the page yet.
+- The line has no way to learn that the books server's door is gone while
+  the window is still open (the server exited): callers are turned away,
+  and the window's own notice says the server is down.
+- ACME against a real authority, and a real relay, are untried: the tests
+  run the real `instant-acme` client against an authority written in the
+  test, and the link against the relay crate in-process.
+- Several companies share one address; a new address ends the sign-ins of
+  all of them (one issuer), and the approvals listed under "Who can reach
+  these books" for the old address stay listed until revoked.
+- A first run for the window with no server asks nothing and opens nothing.
 
 From the review of unit A2 (the app starts and stops the server), left
 for unit A5 or later:

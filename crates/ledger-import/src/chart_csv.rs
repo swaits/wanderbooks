@@ -126,6 +126,11 @@ pub fn parse_chart_csv(text: &str) -> Result<Vec<ChartRow>, ChartCsvError> {
         for (n, value) in fields.iter().enumerate() {
             let looks = if n == 1 {
                 ledger_core::parties::has_full_tin(value)
+            } else if n == 0 || n == 3 {
+                // An account code (and its parent's) is a reference: a
+                // bare nine digits is a code, only the printed shapes
+                // read as a tax id (WB-partner-15).
+                ledger_core::settings::holds_printed_tin_in_reference(value)
             } else {
                 ledger_core::settings::holds_printed_tin(value)
             };
@@ -175,6 +180,30 @@ mod tests {
         assert_eq!(rows[0].parent_code, None);
         assert_eq!(rows[1].parent_code, Some("1000".to_string()));
         assert_eq!(rows[2].account_type, "revenue");
+    }
+
+    /// An account code is a reference: a bare nine digits is a code, a
+    /// printed SSN or EIN is refused, naming its row and column.
+    #[test]
+    fn a_code_may_be_nine_digits_but_not_a_printed_tax_id() {
+        let ok =
+            "code,name,type,parent_code\n123456789,Cash,asset,\n123456790,Bank,asset,123456789\n";
+        assert_eq!(parse_chart_csv(ok).unwrap().len(), 2);
+        for csv in [
+            "code,name,type,parent_code\n000-00-0000,Cash,asset,\n",
+            "code,name,type,parent_code\n1000,Cash,asset,\n1001,Bank,asset,00-0000000\n",
+        ] {
+            assert!(
+                matches!(parse_chart_csv(csv), Err(ChartCsvError::LooksLikeTin(_))),
+                "{csv}"
+            );
+        }
+        // A name is a party-style field: any run of nine digits.
+        let name = "code,name,type,parent_code\n1000,Acct 123456789,asset,\n";
+        assert!(matches!(
+            parse_chart_csv(name),
+            Err(ChartCsvError::LooksLikeTin(_))
+        ));
     }
 
     #[test]

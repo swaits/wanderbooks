@@ -91,6 +91,12 @@ pub(crate) enum Why {
 pub(crate) enum Class {
     /// Free text: refused when it looks like a tax id.
     Free,
+    /// An identifier by nature (an asset tag, a serial number, an invoice or
+    /// bill number, a payment reference, an account code, a file name, a
+    /// label, where a paper is kept): refused only in a tax id's printed
+    /// shapes (an SSN's 3-2-4, an EIN's 2-7); a bare run of nine digits is
+    /// a legitimate number there (WB-partner-15).
+    Reference,
     /// A party's own field (or a name that becomes one): refused at any
     /// run of nine digits.
     Strict,
@@ -99,6 +105,7 @@ pub(crate) enum Class {
 }
 
 const FREE: Class = Class::Free;
+const REFERENCE: Class = Class::Reference;
 const STRICT: Class = Class::Strict;
 const VAULT: Class = Class::Exempt(Why::Vault);
 const LOOKUP: Class = Class::Exempt(Why::Lookup);
@@ -119,7 +126,7 @@ pub(crate) const TABLE: &[(&str, &[(&str, Class)])] = &[
         "books.add_account",
         &[
             ("account_type", ENUM),
-            ("code", FREE),
+            ("code", REFERENCE),
             ("deductible_percent", AMOUNT),
             ("name", STRICT),
             ("tax_category", ENUM),
@@ -132,7 +139,7 @@ pub(crate) const TABLE: &[(&str, &[(&str, Class)])] = &[
         &[
             ("account", LOOKUP),
             ("kind", ENUM),
-            ("label", FREE),
+            ("label", REFERENCE),
             ("last4", DIGITS),
             ("owner_party", LOOKUP),
         ],
@@ -190,7 +197,7 @@ pub(crate) const TABLE: &[(&str, &[(&str, Class)])] = &[
         "books.attach_receipt",
         &[
             ("description", FREE),
-            ("file_name", FREE),
+            ("file_name", REFERENCE),
             ("link_to[].id", LOOKUP),
             ("link_to[].kind", ENUM),
             ("mime_type", FREE),
@@ -223,7 +230,7 @@ pub(crate) const TABLE: &[(&str, &[(&str, Class)])] = &[
     (
         "books.begin_upload",
         &[
-            ("file_name", FREE),
+            ("file_name", REFERENCE),
             ("mime_type", FREE),
             ("purpose", ENUM),
             ("sha256", ID),
@@ -260,7 +267,7 @@ pub(crate) const TABLE: &[(&str, &[(&str, Class)])] = &[
             ("terms", FREE),
             ("upload_id", ID),
             ("vendor", LOOKUP),
-            ("vendor_ref", FREE),
+            ("vendor_ref", REFERENCE),
         ],
     ),
     (
@@ -275,7 +282,7 @@ pub(crate) const TABLE: &[(&str, &[(&str, Class)])] = &[
             ("bill_to.phone", STRICT),
             ("bill_to.shipping_address", STRICT),
             ("customer", LOOKUP),
-            ("customer_ref", FREE),
+            ("customer_ref", REFERENCE),
             ("date", DATE),
             ("due_date", DATE),
             ("lines[].account", LOOKUP),
@@ -362,7 +369,7 @@ pub(crate) const TABLE: &[(&str, &[(&str, Class)])] = &[
         &[
             ("category", ENUM),
             ("description", FREE),
-            ("file_name", FREE),
+            ("file_name", REFERENCE),
             ("link_to[].id", LOOKUP),
             ("link_to[].kind", ENUM),
             ("mime_type", FREE),
@@ -386,8 +393,8 @@ pub(crate) const TABLE: &[(&str, &[(&str, Class)])] = &[
         &[
             ("asset", LOOKUP),
             ("description", FREE),
-            ("serial", FREE),
-            ("tag", FREE),
+            ("serial", REFERENCE),
+            ("tag", REFERENCE),
         ],
     ),
     (
@@ -403,7 +410,7 @@ pub(crate) const TABLE: &[(&str, &[(&str, Class)])] = &[
             ("note", FREE),
             ("on", DATE),
             ("recipients[]", STRICT),
-            ("reference", FREE),
+            ("reference", REFERENCE),
             ("via", FREE),
         ],
     ),
@@ -422,7 +429,7 @@ pub(crate) const TABLE: &[(&str, &[(&str, Class)])] = &[
             ("instrument", LOOKUP),
             ("paid_from", LOOKUP),
             ("preview", ID),
-            ("reference", FREE),
+            ("reference", REFERENCE),
         ],
     ),
     (
@@ -461,7 +468,7 @@ pub(crate) const TABLE: &[(&str, &[(&str, Class)])] = &[
             ("instrument", LOOKUP),
             ("paid_from", LOOKUP),
             ("preview", ID),
-            ("reference", FREE),
+            ("reference", REFERENCE),
         ],
     ),
     (
@@ -534,8 +541,8 @@ pub(crate) const TABLE: &[(&str, &[(&str, Class)])] = &[
             ("purchase_date", DATE),
             ("salvage_value", AMOUNT),
             ("sec704c_method", ENUM),
-            ("serial", FREE),
-            ("tag", FREE),
+            ("serial", REFERENCE),
+            ("tag", REFERENCE),
             ("tax_basis_rule", ENUM),
         ],
     ),
@@ -549,7 +556,7 @@ pub(crate) const TABLE: &[(&str, &[(&str, Class)])] = &[
     ),
     (
         "books.renumber_account",
-        &[("account", LOOKUP), ("code", FREE)],
+        &[("account", LOOKUP), ("code", REFERENCE)],
     ),
     (
         "books.resolve_item",
@@ -695,7 +702,7 @@ pub(crate) const TABLE: &[(&str, &[(&str, Class)])] = &[
     (
         "books.set_w4",
         &[
-            ("kept_at", FREE),
+            ("kept_at", REFERENCE),
             ("party", LOOKUP),
             ("received_on", DATE),
             ("state", FREE),
@@ -707,13 +714,13 @@ pub(crate) const TABLE: &[(&str, &[(&str, Class)])] = &[
             ("entity_type", FREE),
             ("exempt_payee_code", FREE),
             ("fatca_code", FREE),
-            ("kept_at", FREE),
+            ("kept_at", REFERENCE),
             ("party", LOOKUP),
             ("received_on", DATE),
             ("tin", VAULT),
             ("tin_last4", DIGITS),
             ("tin_type", ENUM),
-            ("w9_file_name", FREE),
+            ("w9_file_name", REFERENCE),
             ("w9_upload_id", ID),
         ],
     ),
@@ -805,6 +812,7 @@ fn class_of(tool: &str, path: &str) -> Class {
 fn looks_like_a_tax_id(class: Class, text: &str) -> bool {
     match class {
         Class::Free => ledger_core::settings::holds_printed_tin(text),
+        Class::Reference => ledger_core::settings::holds_printed_tin_in_reference(text),
         Class::Strict => ledger_core::parties::has_full_tin(text),
         Class::Exempt(_) => false,
     }
@@ -825,11 +833,15 @@ pub(crate) fn refusal(tool: &str, args: Option<&Map<String, Value>>) -> Option<S
     found
 }
 
-/// Where a value sits: its path as the table spells it, and as the caller
-/// wrote it (with the index, the key).
+/// Where a value sits: its path as the table spells it, and as a refusal
+/// names it: the table's own words with the index of an array's item, never
+/// a key the caller chose (a key the table does not know is "an
+/// unrecognised field"), so a refusal never echoes the caller's text.
 struct Path {
     table: String,
     shown: String,
+    /// Under a key the table does not have: no name for it is quoted.
+    unknown: bool,
 }
 
 impl Path {
@@ -837,6 +849,7 @@ impl Path {
         Path {
             table: String::new(),
             shown: String::new(),
+            unknown: false,
         }
     }
 
@@ -850,13 +863,37 @@ impl Path {
                 format!("{base}.{add}")
             }
         };
+        let rows = classes().get(tool);
         let map = dot(&self.table, "*");
-        let is_map = classes()
-            .get(tool)
-            .is_some_and(|r| r.contains_key(map.as_str()));
+        let is_map = rows.is_some_and(|r| r.contains_key(map.as_str()));
+        let table = if is_map { map } else { dot(&self.table, key) };
+        // Known when the table has this path or a row below it.
+        let known = rows.is_some_and(|r| {
+            r.keys().any(|row| {
+                *row == table
+                    || row
+                        .strip_prefix(table.as_str())
+                        .is_some_and(|rest| rest.starts_with('.') || rest.starts_with("[]"))
+            })
+        });
         Path {
-            table: if is_map { map } else { dot(&self.table, key) },
-            shown: dot(&self.shown, key),
+            shown: if is_map {
+                dot(&self.shown, "*")
+            } else {
+                dot(&self.shown, if known { key } else { "?" })
+            },
+            unknown: self.unknown || !known,
+            table,
+        }
+    }
+
+    /// How a refusal names the string here: "the lines[1].description of
+    /// books.create_invoice", or "an unrecognised field of books.x".
+    fn named(&self, tool: &str) -> String {
+        if self.unknown {
+            format!("an unrecognised field of {tool}")
+        } else {
+            format!("the {} of {tool}", self.shown)
         }
     }
 }
@@ -869,10 +906,7 @@ fn walk(tool: &str, v: &Value, at: &Path, found: &mut Option<String>) {
     match v {
         Value::String(s) => {
             if looks_like_a_tax_id(class_of(tool, &at.table), s) {
-                *found = Some(ledger_core::settings::tin_refusal(&format!(
-                    "the {} of {tool}",
-                    at.shown
-                )));
+                *found = Some(ledger_core::settings::tin_refusal(&at.named(tool)));
             }
         }
         Value::Array(items) => {
@@ -880,6 +914,7 @@ fn walk(tool: &str, v: &Value, at: &Path, found: &mut Option<String>) {
                 let child = Path {
                     table: format!("{}[]", at.table),
                     shown: format!("{}[{i}]", at.shown),
+                    unknown: at.unknown,
                 };
                 walk(tool, item, &child, found);
             }
@@ -897,8 +932,8 @@ fn walk(tool: &str, v: &Value, at: &Path, found: &mut Option<String>) {
                 // A map's key is text too.
                 if keyed && looks_like_a_tax_id(class_of(tool, &keys), k) {
                     *found = Some(ledger_core::settings::tin_refusal(&format!(
-                        "a key of the {} of {tool}",
-                        at.shown
+                        "a key of {}",
+                        at.named(tool)
                     )));
                     return;
                 }
@@ -1085,9 +1120,10 @@ mod tests {
             ("books.draft_entry", "description"),
             ("books.reverse_entry", "description"),
             ("books.create_invoice", "memo"),
-            ("books.create_invoice", "customer_ref"),
             ("books.create_invoice", "lines[].description"),
-            ("books.create_bill", "vendor_ref"),
+            ("books.create_bill", "duplicate_reason"),
+            ("books.pay_bill", "applications[].discount_reason"),
+            ("books.receive_payment", "applications[].discount_reason"),
             ("books.attach_receipt", "description"),
             ("books.record_decision", "decision_md"),
             ("books.set_convention", "body_md"),
@@ -1108,6 +1144,29 @@ mod tests {
             ("books.mark_sent", "recipients[]"),
         ] {
             assert_eq!(class(tool, path), Class::Strict, "{tool} {path}");
+        }
+        // Identifiers by nature: a bare nine digits is a number there.
+        for (tool, path) in [
+            ("books.add_account", "code"),
+            ("books.renumber_account", "code"),
+            ("books.add_instrument", "label"),
+            ("books.attach_receipt", "file_name"),
+            ("books.file_document", "file_name"),
+            ("books.begin_upload", "file_name"),
+            ("books.set_w9", "w9_file_name"),
+            ("books.set_w9", "kept_at"),
+            ("books.set_w4", "kept_at"),
+            ("books.create_bill", "vendor_ref"),
+            ("books.create_invoice", "customer_ref"),
+            ("books.pay_bill", "reference"),
+            ("books.receive_payment", "reference"),
+            ("books.mark_sent", "reference"),
+            ("books.register_asset", "tag"),
+            ("books.register_asset", "serial"),
+            ("books.label_asset", "tag"),
+            ("books.label_asset", "serial"),
+        ] {
+            assert_eq!(class(tool, path), Class::Reference, "{tool} {path}");
         }
         let vault: Vec<_> = TABLE
             .iter()
@@ -1203,6 +1262,97 @@ mod tests {
                 Some(&args(json!({"kept_at": "folder 000-00-0000"})))
             )
             .is_some()
+        );
+    }
+
+    /// A reference field (a tag, a serial, an invoice or payment reference,
+    /// a code, a file name) takes a bare nine digits and refuses the printed
+    /// shapes; a free text field refuses both (WB-partner-15).
+    #[test]
+    fn a_reference_takes_nine_digits_and_refuses_a_printed_tax_id() {
+        for (tool, field) in [
+            ("books.register_asset", "serial"),
+            ("books.label_asset", "tag"),
+            ("books.create_bill", "vendor_ref"),
+            ("books.create_invoice", "customer_ref"),
+            ("books.pay_bill", "reference"),
+            ("books.receive_payment", "reference"),
+            ("books.mark_sent", "reference"),
+            ("books.add_account", "code"),
+            ("books.attach_receipt", "file_name"),
+            ("books.add_instrument", "label"),
+            ("books.set_w9", "kept_at"),
+        ] {
+            let call = |v: &str| refusal(tool, Some(&args(json!({ field: v }))));
+            assert_eq!(call("123456789"), None, "{tool} {field}");
+            assert_eq!(call("SN 000000000.pdf"), None, "{tool} {field}");
+            for shaped in ["000-00-0000", "ein 00-0000000", "000 00 0000"] {
+                let why = call(shaped).unwrap_or_else(|| panic!("{tool} {field} {shaped}"));
+                assert!(
+                    why.starts_with(&format!(
+                        "the {field} of {tool} looks like it holds a tax id"
+                    )),
+                    "{why}"
+                );
+            }
+        }
+        // The same run in free text is refused.
+        assert!(
+            refusal(
+                "books.create_invoice",
+                Some(&args(json!({"memo": "123456789"})))
+            )
+            .is_some()
+        );
+        assert!(
+            refusal(
+                "books.pay_bill",
+                Some(&args(
+                    json!({"applications": [{"discount_reason": "123456789"}]})
+                ))
+            )
+            .is_some()
+        );
+    }
+
+    /// A refusal names the table's own field, never a key the caller chose
+    /// (an object's key is the caller's to pick, and could be the number).
+    #[test]
+    fn a_refusal_never_quotes_a_key_the_caller_chose() {
+        let key = "key-from-the-caller";
+        // An unknown field, an unknown key deep under a known one, and one
+        // under a field the table takes as a map.
+        for (tool, a) in [
+            ("books.add_class", json!({key: "000-00-0000"})),
+            ("books.add_class", json!({key: {"deeper": ["00-0000000"]}})),
+            (
+                "books.create_invoice",
+                json!({"bill_to": {key: "000-00-0000"}}),
+            ),
+            (
+                "books.create_invoice",
+                json!({"lines": [{"description": "ok"}, {key: "00-0000000"}]}),
+            ),
+            ("books.no_such_tool", json!({key: "000-00-0000"})),
+        ] {
+            let why = refusal(tool, Some(&args(a.clone()))).unwrap_or_else(|| panic!("{a}"));
+            assert!(!why.contains(key), "{tool}: {why}");
+            assert!(
+                why.starts_with(&format!(
+                    "an unrecognised field of {tool} looks like it holds a tax id"
+                )),
+                "{why}"
+            );
+        }
+        // A known field is named as the table names it, with an item's index.
+        let why = refusal(
+            "books.create_invoice",
+            Some(&args(json!({"lines": [{"description": "00-0000000"}]}))),
+        )
+        .unwrap();
+        assert!(
+            why.starts_with("the lines[0].description of books.create_invoice"),
+            "{why}"
         );
     }
 

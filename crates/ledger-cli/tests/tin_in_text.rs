@@ -112,6 +112,85 @@ fn a_reference_is_no_tax_id() {
     assert!(out["entry_id"].is_u64(), "{out}");
 }
 
+/// A reference field (an account code, an instrument's label) keeps a bare
+/// nine digits and refuses a printed tax id; free text refuses both.
+#[test]
+fn a_reference_field_keeps_nine_digits_and_refuses_a_printed_tax_id() {
+    let books = Books::new("tin-reference-field");
+    let mut w = books.session("test");
+    setup(&mut w);
+    let ok = answer_of(&w.call(
+        "books.add_account",
+        json!({"code": "123456789", "name": "Nine", "account_type": "asset"}),
+    ))
+    .unwrap();
+    assert!(ok["account_id"].is_u64(), "{ok}");
+    answer_of(&w.call(
+        "books.add_instrument",
+        json!({"label": "Card 000000000", "kind": "business_card", "account": "1000"}),
+    ))
+    .unwrap();
+    let before = books.journal_raw();
+    for (tool, args, field) in [
+        (
+            "books.add_account",
+            json!({"code": SSN, "name": "Odd", "account_type": "asset"}),
+            "the code of books.add_account",
+        ),
+        (
+            "books.add_instrument",
+            json!({"label": format!("Card {EIN}"), "kind": "business_card", "account": "1000"}),
+            "the label of books.add_instrument",
+        ),
+        (
+            "books.add_class",
+            json!({"name": "123456789"}),
+            "the name of books.add_class",
+        ),
+    ] {
+        let why = answer_of(&w.call(tool, args)).unwrap_err();
+        assert!(
+            why.starts_with(&format!("{field} looks like it holds a tax id")),
+            "{tool}: {why}"
+        );
+        assert_eq!(books.journal_raw(), before, "{tool}: nothing was written");
+    }
+}
+
+/// A rule keyed on a bank's nine-digit reference matches the bank's own
+/// words, and the description that is kept is the masked one.
+#[test]
+fn a_bank_rule_keyed_on_a_nine_digit_reference_still_matches() {
+    let books = Books::new("tin-bank-rule");
+    let mut w = books.session("test");
+    setup(&mut w);
+    answer_of(&w.call(
+        "books.add_account",
+        json!({"code": "6100", "name": "Payroll costs", "account_type": "expense"}),
+    ))
+    .unwrap();
+    let csv = "Date,Description,Amount\n2026-01-02,ACH 000000000 PAYROLL,-12.50\n2026-01-03,CHECK 1234567890,-3.25\n";
+    let up = w.upload(csv.as_bytes(), "bank.csv", "text/csv", "import");
+    let out = answer_of(&w.call(
+        "books.import_bank_csv",
+        json!({"upload_id": up, "bank_account_code": "1000", "default_offset_code": "6000",
+               "rules": {"000000000": "6100"}}),
+    ))
+    .unwrap();
+    let imported = out["imported"].as_array().unwrap();
+    assert_eq!(imported[0]["offset_account"], "6100", "{out}");
+    assert_eq!(imported[1]["offset_account"], "6000", "{out}");
+    assert_eq!(
+        imported[0]["description"],
+        "ACH \u{2022}\u{2022}\u{2022}\u{2022}\u{2022}0000 PAYROLL"
+    );
+    let journal = String::from_utf8(books.journal_raw()).unwrap();
+    assert!(
+        !journal.contains("ACH 000000000"),
+        "the journal holds the masked description only"
+    );
+}
+
 /// A bank file is kept whole with a nine-digit reference masked to its last
 /// four digits; the answer says how many and where; the journal never holds
 /// the number.

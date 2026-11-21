@@ -738,6 +738,7 @@ impl BooksServer {
         let ledger_import::MaskedBankImport {
             transactions: txns,
             masked,
+            as_written,
         } = ledger_import::parse_bank_csv_masked(&csv, order).map_err(|e| e.to_string())?;
         let mut store = self.lock()?;
         let bank = store
@@ -794,8 +795,10 @@ impl BooksServer {
         // can't become a draft (a date in a closed period, say) refuses the
         // file instead of leaving the ones before it behind.
         let mut scratch = store.ledger().clone();
-        for txn in &txns {
-            let (offset_id, _) = offset_for(&txn.description);
+        for (txn, written) in txns.iter().zip(&as_written) {
+            // A rule reads the bank's own words, a nine-digit reference
+            // in them included; what is kept is the masked text.
+            let (offset_id, _) = offset_for(written);
             let amount = Money::new(txn.amount.abs(), base);
             let (bank_side, offset_side) = if txn.amount > Decimal::ZERO {
                 (Side::Debit, Side::Credit)
@@ -812,8 +815,8 @@ impl BooksServer {
         // Rehearsed whole: the upload is used up as the writing begins.
         files::filed(claim);
         let mut imported = Vec::new();
-        for txn in txns {
-            let (offset_id, offset_code) = offset_for(&txn.description);
+        for (txn, written) in txns.into_iter().zip(&as_written) {
+            let (offset_id, offset_code) = offset_for(written);
             let amount = Money::new(txn.amount.abs(), store.ledger().base_currency());
             let entry_id = store
                 .create_entry(txn.date, &format!("Bank import — {}", txn.description))

@@ -104,6 +104,11 @@ pub struct MaskedBankImport {
     pub transactions: Vec<BankTransaction>,
     /// Which cells were masked, in file order.
     pub masked: Vec<MaskedCell>,
+    /// Each transaction's description exactly as the bank wrote it, in the
+    /// same order as `transactions`: for matching a categorizing rule
+    /// against (a rule keyed on a reference of nine digits still matches),
+    /// never to be kept or shown.
+    pub as_written: Vec<String>,
 }
 
 /// [`parse_bank_csv_with`] for a file that is to be kept: a description a
@@ -134,9 +139,11 @@ pub fn parse_bank_csv_masked(
     order: Option<DateOrder>,
 ) -> Result<MaskedBankImport, BankCsvError> {
     let mut masked = Vec::new();
+    let mut as_written = Vec::new();
     let transactions = parse_rows(text, order)?
         .into_iter()
         .map(|(line, mut txn)| {
+            as_written.push(txn.description.clone());
             let numbers = ledger_core::settings::count_printed_tins(&txn.description);
             if numbers > 0 {
                 txn.description =
@@ -153,6 +160,7 @@ pub fn parse_bank_csv_masked(
     Ok(MaskedBankImport {
         transactions,
         masked,
+        as_written,
     })
 }
 
@@ -400,6 +408,22 @@ mod tests {
         // A file with none masks none.
         let clean = parse_bank_csv_masked("2026-01-02,Rent,-1.00\n", None).unwrap();
         assert!(clean.masked.is_empty());
+        assert_eq!(clean.as_written, ["Rent"]);
+    }
+
+    /// `as_written` is each description as the bank wrote it, in order,
+    /// for matching a rule against: a rule keyed on a nine-digit reference
+    /// still finds it, while the kept description is masked.
+    #[test]
+    fn the_bank_s_own_words_are_kept_for_matching_rules() {
+        let csv = "2026-01-02,ACH 000000000 payroll,-1.00\n2026-01-03,Rent,-2.00\n";
+        let got = parse_bank_csv_masked(csv, None).unwrap();
+        assert_eq!(got.as_written, ["ACH 000000000 payroll", "Rent"]);
+        assert_eq!(
+            got.transactions[0].description,
+            "ACH \u{2022}\u{2022}\u{2022}\u{2022}\u{2022}0000 payroll"
+        );
+        assert_eq!(got.transactions.len(), got.as_written.len());
     }
 
     #[test]

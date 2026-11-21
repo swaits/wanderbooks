@@ -474,7 +474,7 @@ impl BooksServer {
             "due_date, or terms, or the customer's default terms, or invoicing.default_terms",
         )?;
         if let Some(r) = &p.customer_ref {
-            ledger_core::parties::check_note("the customer reference", r)?;
+            ledger_core::parties::check_reference_note("the customer reference", r)?;
         }
         if let Some(m) = &p.memo {
             ledger_core::parties::check_note("the memo", m)?;

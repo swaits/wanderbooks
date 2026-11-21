@@ -62,3 +62,8 @@ Columns: date | type (scout, run/verify, implement, refactor, debug, review) | p
 - 2026-11-21 | impl-multi 3 | sonnet (high) | P15 B2: the relay service | accepted after one review and one fix round
 - 2026-11-21 | review 3 | opus (medium) | B2 security review | accepted: 2 high (denial of service), 5 medium; no takeover or read path found
 - 2026-11-21 | impl-multi 2 | sonnet (high) | B2 fix round (12 items) | accepted on its tests; item 7 partly (yamux window fixed)
+- 2026-11-21 | impl-multi 2 | sonnet (high) | P15 A4: connection states, Ask your assistant, the Connect page | accepted after the lead's look at the screenshots, one review, two fix rounds
+- 2026-11-21 | edit 2 | sonnet (medium) | A4 design fix round (wording, one card, popover, menu, real-server revoke test) | accepted on targeted tests
+- 2026-11-21 | review 2 | sonnet (medium) | A4 keys and revoke | accepted: 4 medium
+- 2026-11-21 | impl 2 | sonnet (medium) | A4 keys fix round (never replace, scopes, revoke by id, quoting) | accepted on targeted tests
+- 2026-11-21 | review 3 | opus (medium) | T1 review | accepted: 1 high (ungated readers), 3 medium

@@ -424,6 +424,9 @@ pub struct State {
     new_address_asked: bool,
     /// The address was just copied (the time, for the word "Copied").
     copied_at: Option<f64>,
+    /// The folder the Claude desktop extension was written in, once it
+    /// was (set by the job that made it).
+    extension_folder: Arc<std::sync::Mutex<Option<String>>>,
 }
 
 /// The two lines an assistant set up by hand needs.
@@ -807,6 +810,7 @@ impl State {
                     want = Some(w);
                 }
             }
+            self.desktop_row(ui, status, book, &owner, busy, &mut want);
             another_row(ui, status, book, &owner, &commands, busy, &mut want);
             if let Some((what, keep, work)) = want {
                 self.start(ui, jobs, what, &keep, work);
@@ -840,6 +844,83 @@ impl State {
             ui.add_space(24.0);
             self.connections(ui, status, book, &owner, jobs);
         });
+    }
+
+    /// The "Claude desktop app" row (WB-pkg-5): one button that writes the
+    /// one-click extension, and the steps that follow, in plain words.
+    fn desktop_row(
+        &mut self,
+        ui: &mut Ui,
+        status: &Status,
+        book: &str,
+        owner: &Option<Arc<dyn Owner>>,
+        busy: bool,
+        want: &mut Want,
+    ) {
+        let p = pal(ui.ctx());
+        let made = self
+            .extension_folder
+            .lock()
+            .map(|f| f.clone())
+            .unwrap_or_default();
+        Frame::new()
+            .fill(p.surface)
+            .stroke(Stroke::new(1.0, p.border))
+            .corner_radius(CornerRadius::same(8))
+            .inner_margin(Margin::symmetric(12, 10))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Claude desktop app").font(theme::semibold(14.5)));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if let Some(owner) = owner
+                            && ui
+                                .add_enabled(!busy, egui::Button::new("Make the Claude extension"))
+                                .on_hover_text(
+                                    "Writes one file you open in the Claude desktop app to add these books",
+                                )
+                                .clicked()
+                        {
+                            let (o, b, company) =
+                                (owner.clone(), book.to_string(), status.company.clone());
+                            let folder = self.extension_folder.clone();
+                            *want = Some((
+                                "Claude desktop extension".to_string(),
+                                "Making the Claude desktop extension".to_string(),
+                                Box::new(move || {
+                                    o.claude_desktop_extension(&b, &company).map(|made| {
+                                        if let Ok(mut f) = folder.lock() {
+                                            *f = Some(made.folder.clone());
+                                        }
+                                        format!(
+                                            "made {}. Next: open the Claude desktop app, go to Settings, then Extensions, then Advanced settings, choose Install Extension, and pick that file (or just open the file). Keep Wanderbooks open while you use Claude.",
+                                            made.file
+                                        )
+                                    })
+                                }),
+                            ));
+                        }
+                    });
+                });
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(
+                        "Adds these books to the Claude app on this computer with one file, so you type nothing.",
+                    )
+                    .font(theme::regular(13.0))
+                    .color(p.muted),
+                );
+                if let Some(folder) = made {
+                    ui.add_space(4.0);
+                    if ui
+                        .button(format!("{} Show the file", icon::FOLDER_OPEN))
+                        .clicked()
+                    {
+                        crate::export::open(std::path::Path::new(&folder));
+                    }
+                }
+            });
+        ui.add_space(6.0);
     }
 
     /// "Connections": every key to these books, who is connected on it,

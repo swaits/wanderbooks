@@ -1,7 +1,9 @@
 [Desktop Entry]
-Categories=Office;Finance;
+Type=Application
+Name=Wanderbooks
 Comment=Double-entry bookkeeping your agent keeps and you can read.
 Exec=wanderbooks
-Name=Wanderbooks
+Icon=wanderbooks
 Terminal=false
-Type=Application
+Categories=Office;Finance;
+StartupWMClass=wanderbooks

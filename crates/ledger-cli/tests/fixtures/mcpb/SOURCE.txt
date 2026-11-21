@@ -1,0 +1,10 @@
+mcpb-manifest-v0.3.schema.json is Anthropic's published JSON Schema for the
+manifest.json of an MCP Bundle (.mcpb, formerly the Desktop Extension .dxt),
+manifest_version 0.3, copied verbatim on 2026-11-21 from
+https://github.com/anthropics/mcpb (schemas/mcpb-manifest-v0.3.schema.json,
+main branch). The specification's prose is MANIFEST.md in the same
+repository; the install steps are Claude's help article "Getting started
+with Local MCP servers on Claude Desktop" (support.claude.com).
+The repository's licence: Apache-2.0 for new contributions, MIT for older
+ones (its LICENSE file); both fit this project's MIT OR Apache-2.0. It is
+a test fixture only and is not shipped.

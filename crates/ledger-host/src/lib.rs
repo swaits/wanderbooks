@@ -20,15 +20,35 @@ pub mod app_server;
 pub mod bridge;
 pub mod channel;
 pub mod commands;
+pub mod extension;
 pub mod host;
 pub mod knobs;
 pub mod lease;
+pub mod newer;
 pub mod opener;
 mod start;
 pub mod tokens;
 #[cfg(unix)]
 pub mod update;
 pub mod web;
+
+/// The version of the program being run, set by its `main` (this crate's
+/// own is the fallback: the packages rewrite only the program's, whose
+/// `Cargo.toml` is the one source of the version, WB-pkg-6).
+static PROGRAM_VERSION: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+
+/// Say which version this program is.
+pub fn set_program_version(version: &'static str) {
+    let _ = PROGRAM_VERSION.set(version);
+}
+
+/// This program's version.
+pub fn program_version() -> &'static str {
+    PROGRAM_VERSION
+        .get()
+        .copied()
+        .unwrap_or(env!("CARGO_PKG_VERSION"))
+}
 
 /// How a mode stops when it can't go on: the reason is already printed,
 /// and the number is the process's exit code.

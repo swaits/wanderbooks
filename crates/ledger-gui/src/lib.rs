@@ -138,14 +138,21 @@ pub fn run(
             },
         },
     };
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("Wanderbooks")
+        .with_app_id("wanderbooks")
+        .with_inner_size([1440.0, 920.0])
+        // Small on purpose: tiling window managers hand out small slots
+        // regardless, and every screen lays itself out to fit.
+        .with_min_inner_size([360.0, 400.0]);
+    // The window's own icon (the taskbar on Windows, X11): the packages'
+    // icon. macOS takes its icon from the app bundle, Wayland from the
+    // desktop entry; a failure to decode leaves the system's default.
+    if let Some(icon) = window_icon() {
+        viewport = viewport.with_icon(std::sync::Arc::new(icon));
+    }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("wanderbooks")
-            .with_app_id("wanderbooks")
-            .with_inner_size([1440.0, 920.0])
-            // Small on purpose: tiling window managers hand out small slots
-            // regardless, and every screen lays itself out to fit.
-            .with_min_inner_size([360.0, 400.0]),
+        viewport,
         // The platform's place for app settings, never the books' folder
         // (prefs.rs).
         persistence_path: prefs::prepare(),
@@ -199,5 +206,24 @@ mod exit_tests {
     fn an_exit_says_its_code() {
         assert_eq!(Exit(2).to_string(), "exit code 2");
         assert_eq!(Exit(1).to_string(), "exit code 1");
+    }
+}
+
+/// The icon every package carries (`deploy/packaging/icons`), as the window's
+/// own (WB-pkg-6).
+fn window_icon() -> Option<egui::IconData> {
+    eframe::icon_data::from_png_bytes(include_bytes!(
+        "../../../deploy/packaging/icons/512x512.png"
+    ))
+    .ok()
+}
+
+#[cfg(test)]
+mod window_icon_tests {
+    #[test]
+    fn the_windows_icon_is_the_packages_icon() {
+        let icon = super::window_icon().expect("the icon decodes");
+        assert_eq!((icon.width, icon.height), (512, 512));
+        assert_eq!(icon.rgba.len(), 512 * 512 * 4);
     }
 }

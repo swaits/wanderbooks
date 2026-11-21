@@ -158,7 +158,7 @@ impl Welcome {
             ui.vertical_centered(|ui| {
                 ui.set_max_width(640.0);
                 ui.add_space(36.0);
-                ui.label(RichText::new("Welcome to wanderbooks").font(crate::theme::bold(28.0)));
+                ui.label(RichText::new("Welcome to Wanderbooks").font(crate::theme::bold(28.0)));
                 ui.label(
                     RichText::new(
                         "Your company's books, kept by an assistant and checked by you. A few short steps; nothing here needs a terminal.",

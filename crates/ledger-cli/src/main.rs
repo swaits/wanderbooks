@@ -9,6 +9,13 @@
 //! From nothing to the first post: `wanderbooks setup`, `wanderbooks books
 //! create ID`, `wanderbooks connect claude --book ID` (then talk to the
 //! agent).
+//!
+//! On Windows the executable is built for the GUI subsystem, so starting
+//! it from the Start Menu opens no console window; `console` gives a
+//! command run in a terminal its words back (WB-pkg-2).
+#![cfg_attr(all(windows, feature = "gui"), windows_subsystem = "windows")]
+
+mod console;
 
 use std::env;
 use std::io::Write;
@@ -275,6 +282,18 @@ impl ledger_gui::owner::Owner for ViewerOwner {
         )
     }
 
+    fn claude_desktop_extension(
+        &self,
+        book: &str,
+        company: &str,
+    ) -> Result<ledger_gui::owner::ExtensionMade, String> {
+        let made = ledger_host::extension::claude_desktop_extension(&self.common, book, company)?;
+        Ok(ledger_gui::owner::ExtensionMade {
+            file: made.path.display().to_string(),
+            folder: made.folder.display().to_string(),
+        })
+    }
+
     fn new_books(&self, id: &str, currency: &str) -> Result<String, String> {
         ledger_host::commands::new_books_and_home(&self.common, id, currency)
     }
@@ -386,6 +405,15 @@ impl ledger_gui::owner::Owner for ViewerOwner {
             ledger_gui::owner::UpdateWaiting {
                 version: u.version,
                 staged_at: u.staged_at,
+            }
+        })
+    }
+
+    fn newer_version(&self) -> Option<ledger_gui::owner::NewerVersion> {
+        ledger_host::commands::newer_version(&self.common).map(|(version, page)| {
+            ledger_gui::owner::NewerVersion {
+                version,
+                page: page.to_string(),
             }
         })
     }
@@ -683,8 +711,7 @@ fn is_bare_launch(words: &[String], stdin_is_terminal: bool) -> bool {
 }
 
 fn main() {
-    #[cfg(unix)]
-    ledger_host::update::set_program_version(env!("CARGO_PKG_VERSION"));
+    ledger_host::set_program_version(env!("CARGO_PKG_VERSION"));
     // A file's path may be any name the system takes: the file commands
     // get the words as given. Everything else is text.
     let given: Vec<std::ffi::OsString> = env::args_os().skip(1).collect();
@@ -700,6 +727,11 @@ fn main() {
         eprintln!("error: an argument isn't UTF-8 text");
         std::process::exit(2);
     };
+    // A command run in a terminal prints there; the app (no words) opens
+    // no console at all (console.rs).
+    if !words.is_empty() {
+        console::attach_parent_console();
+    }
     // A bare launch is the viewer.
     if is_bare_launch(&words, std::io::IsTerminal::is_terminal(&std::io::stdin())) {
         std::process::exit(run_gui(Vec::new()));

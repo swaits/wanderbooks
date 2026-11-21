@@ -1,5 +1,34 @@
 # STATUS — 2026-11-10: the evaluation batch: no money arithmetic outside the kernel in any crate, exact Decimal sums, four gates the build did not have
 
+## 2026-11-21: P15 unit C1, the installed app (branch `t3/p15-c1-desktop-packages`)
+
+Written on Linux; **nothing of it has run on Windows or macOS**, and no
+package has been installed anywhere. The `release` workflow's first run is the
+evidence. What is there (`docs/packaging.md`, "P15 unit C1"; `docs/install.md`;
+claims `WB-pkg-1` to `WB-pkg-8` in `docs/spec/claims/packaging.md`):
+
+- **Windows**: a per-user NSIS installer (no administrator prompt), one
+  program, a Start Menu entry named Wanderbooks, a Settings > Apps
+  uninstaller that cannot reach the books. The program is built for the GUI
+  subsystem, so no console window; a terminal still gets a command's words.
+- **macOS**: a universal `.app` in a `.dmg` (hardened runtime, an empty
+  entitlements file with the reasons, a Documents-folder purpose string);
+  signing and notarization run only with the owner's Apple secrets.
+- **Linux**: the tools are unchanged; the desktop entries carry the icon and
+  the window's app id, every package carries the licences, and the packages
+  depend on git.
+- **The Claude desktop extension**: the Connect page's last row writes a
+  `.mcpb` (Anthropic's MCP Bundle, manifest 0.3) per company.
+- **Update**: the window says when a newer version exists and where to get it
+  (a daily look at one small file; only a version number is read); the update
+  is the newer package installed over the old.
+- **Release**: a draft only, tests on each system, SHA-256 sums, licences;
+  the apt/dnf publish moved to a by-hand workflow.
+- **Owner's, open**: signing identities and their secrets; whether to bundle
+  git on Windows and macOS (a GPL-2.0 consequence, `docs/packaging.md`);
+  the first run of the release workflow on GitHub and the first install on a
+  clean Windows and macOS machine.
+
 ## 2026-11-10: the evaluation batch (plan/2026-11-09_TRIAGE.md)
 
 A full evaluation of the project on 2026-11-09 found nothing wrong in the

@@ -357,12 +357,20 @@ pub fn platform_data_dir(home: &Path) -> PathBuf {
     {
         return local;
     }
-    if cfg!(target_os = "macos") {
-        home.join("Library").join("Application Support")
-    } else if cfg!(windows) {
-        home.join("AppData").join("Local")
-    } else {
-        home.join(".local").join("share")
+    data_dir_for(std::env::consts::OS, home)
+}
+
+/// The data folder under `home` on the system called `os` (a
+/// `std::env::consts::OS` name), as each system's conventions put an
+/// installed app's own data (P15 C1, WB-pkg-8): `Library/Application
+/// Support` on macOS, `AppData\Local` (not the roaming folder: the books
+/// are big, hold locks and belong to this machine) on Windows, the XDG
+/// default `.local/share` anywhere else. An uninstall never touches it.
+pub fn data_dir_for(os: &str, home: &Path) -> PathBuf {
+    match os {
+        "macos" => home.join("Library").join("Application Support"),
+        "windows" => home.join("AppData").join("Local"),
+        _ => home.join(".local").join("share"),
     }
 }
 

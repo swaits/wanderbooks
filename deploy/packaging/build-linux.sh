@@ -37,6 +37,7 @@ sed "s/^version = \".*\"/version = \"$version\"/
      s#\"target/release\"#\"$PWD/$stage\"#
      s#\"deploy/packaging/#\"$PWD/deploy/packaging/#
      s#\"LICENSE-MIT\"#\"$PWD/LICENSE-MIT\"#
+     s#^\"LICENSE-APACHE\"#\"$PWD/LICENSE-APACHE\"#
      s#^\"THIRD-PARTY-NOTICES.txt\"#\"$PWD/THIRD-PARTY-NOTICES.txt\"#" \
     deploy/packaging/packager.toml >"$config"
 # The AppImage tools are themselves AppImages; run them without FUSE.
@@ -46,6 +47,9 @@ assets='assets = [
   { source = "'$PWD/$stage'/wanderbooks", dest = "/usr/bin/wanderbooks", mode = "0755" },
   { source = "deploy/packaging/install-method-rpm", dest = "/usr/share/wanderbooks/install-method", mode = "0644" },
   { source = "deploy/packaging/wanderbooks-static.desktop", dest = "/usr/share/applications/wanderbooks.desktop", mode = "0644" },
+  { source = "deploy/packaging/icons/512x512.png", dest = "/usr/share/icons/hicolor/512x512/apps/wanderbooks.png", mode = "0644" },
+  { source = "LICENSE-MIT", dest = "/usr/share/doc/wanderbooks/LICENSE-MIT", mode = "0644" },
+  { source = "LICENSE-APACHE", dest = "/usr/share/doc/wanderbooks/LICENSE-APACHE", mode = "0644" },
   { source = "THIRD-PARTY-NOTICES.txt", dest = "/usr/share/doc/wanderbooks/THIRD-PARTY-NOTICES.txt", mode = "0644" },
 ]'
 cargo generate-rpm -p crates/ledger-cli --set-metadata "version=\"$version\"" --set-metadata "$assets" -o "$out/"

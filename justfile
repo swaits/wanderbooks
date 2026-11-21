@@ -591,10 +591,23 @@ package-linux version="" formats="deb,appimage,pacman":
     cargo build --release -p ledger-cli
     deploy/packaging/build-linux.sh {{version}} {{formats}}
 
-# Build the unsigned macOS .dmg (on a Mac; CI does it on a tag or dispatch)
+# The macOS app and its universal .dmg (on a Mac; CI does it on a tag or
+# dispatch). Signs and notarizes only with WB_SIGN_IDENTITY and WB_NOTARY_*
+# in the environment (deploy/packaging/macos/build-macos.sh says which).
+# Build the universal macOS .dmg
 package-macos version="":
+    rustup target add aarch64-apple-darwin x86_64-apple-darwin
+    cargo build --release -p ledger-cli --target aarch64-apple-darwin
+    cargo build --release -p ledger-cli --target x86_64-apple-darwin
+    deploy/packaging/macos/build-macos.sh {{version}}
+
+# The per-user Windows installer (in Git Bash on Windows, with NSIS: choco
+# install nsis; CI does it on a tag or dispatch). Unsigned unless the
+# release workflow signs it.
+# Build the Windows installer
+package-windows version="":
     cargo build --release -p ledger-cli
-    deploy/packaging/build-macos.sh {{version}}
+    deploy/packaging/windows/build-windows.sh {{version}}
 
 # A release folder on this machine signed with a throwaway key; then
 # `wanderbooks update --feed file://DIR/manifest.json --trusted-key DIR/release.pub`

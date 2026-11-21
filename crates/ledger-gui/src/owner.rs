@@ -412,6 +412,16 @@ pub trait Owner: Send + Sync {
     fn command_line(&self, _words: &[&str]) -> Result<String, String> {
         Err("not here".into())
     }
+    /// The Claude desktop extension for the company `book` (shown as
+    /// `company`): the one-click package written where a person can open it,
+    /// the key made first if there was none. Blocks.
+    fn claude_desktop_extension(
+        &self,
+        _book: &str,
+        _company: &str,
+    ) -> Result<ExtensionMade, String> {
+        Err("not here".into())
+    }
     /// The key an assistant needs to reach the company `book` exists (made
     /// now if it did not), able to read, draft and post but not to see the
     /// access record: `Ok(true)` when it was made now. It never replaces a
@@ -464,6 +474,11 @@ pub trait Owner: Send + Sync {
     fn check_for_updates(&self) -> Result<Vec<String>, String> {
         Err("not here".into())
     }
+    /// A newer version exists, and where to get it (WB-pkg-3): what the
+    /// program's daily look found. Cheap: called every few seconds.
+    fn newer_version(&self) -> Option<NewerVersion> {
+        None
+    }
     /// Accept the waiting update: the books' host installs it and restarts
     /// onto it when no call is running, the books staying open.
     fn apply_update(&self) -> Result<Vec<String>, String> {
@@ -474,6 +489,25 @@ pub trait Owner: Send + Sync {
     fn agent_start(&self, _agent: Agent, _book: &str) -> Result<AgentStart, String> {
         Err("not here".into())
     }
+}
+
+/// A newer version of the program that the person may get and install over
+/// this one (WB-pkg-3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NewerVersion {
+    /// Its version.
+    pub version: String,
+    /// The page to get it from: the program's own, never a feed's.
+    pub page: String,
+}
+
+/// The Claude desktop extension the Connect page made (WB-pkg-5).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExtensionMade {
+    /// The package file, in full.
+    pub file: String,
+    /// The folder it is in.
+    pub folder: String,
 }
 
 /// The owner the program gave the viewer, for every company's view that
@@ -623,6 +657,8 @@ pub struct OwnerMenu {
     /// The update waiting, as last read, and when (re-read every few
     /// seconds and after any job).
     update: Option<(std::time::Instant, Option<UpdateWaiting>)>,
+    /// A newer version the person may get, as last read, and when.
+    newer: Option<(std::time::Instant, Option<NewerVersion>)>,
     /// The tab's threads: every job is one of them (INVARIANT 6).
     jobs: crate::jobs::Spawner,
 }
@@ -668,6 +704,23 @@ impl OwnerMenu {
         self.update.as_ref().and_then(|(_, u)| u.clone())
     }
 
+    /// A newer version to get, if any (read now and then, not every frame).
+    fn newer_version(
+        &mut self,
+        ctx: &egui::Context,
+        owner: &Arc<dyn Owner>,
+    ) -> Option<NewerVersion> {
+        if self
+            .newer
+            .as_ref()
+            .is_none_or(|(at, _)| at.elapsed() > UPDATE_LOOK)
+        {
+            self.newer = Some((std::time::Instant::now(), owner.newer_version()));
+        }
+        ctx.request_repaint_after(UPDATE_LOOK);
+        self.newer.as_ref().and_then(|(_, n)| n.clone())
+    }
+
     /// The standing notices above the page: an update waiting for the
     /// owner's accept, and a format upgrade the books wait for, whose
     /// go-ahead is asked for once each open (INVARIANT 5).
@@ -689,7 +742,7 @@ impl OwnerMenu {
                     ui.horizontal_wrapped(|ui| {
                         ui.label(
                             RichText::new(format!(
-                                "{} Version {} of wanderbooks is ready.",
+                                "{} Version {} of Wanderbooks is ready.",
                                 icon::ARROW_FAT_UP,
                                 update.version
                             ))
@@ -719,11 +772,47 @@ impl OwnerMenu {
                     ui.ctx(),
                     (
                         "Update".into(),
-                        Effect::Changes("Updating wanderbooks"),
+                        Effect::Changes("Updating Wanderbooks"),
                         work,
                     ),
                 );
             }
+        }
+        // No update of the program's own is waiting: is a newer version
+        // out for the person to get and install over this one?
+        else if let Some(newer) = self.newer_version(ui.ctx(), &owner) {
+            let p = crate::theme::pal(ui.ctx());
+            egui::Frame::new()
+                .fill(p.warning_soft)
+                .inner_margin(egui::Margin::symmetric(20, 10))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(
+                            RichText::new(format!(
+                                "{} Version {} of Wanderbooks is available.",
+                                icon::ARROW_FAT_UP,
+                                newer.version
+                            ))
+                            .font(crate::theme::semibold(13.0))
+                            .color(p.warning),
+                        );
+                        ui.label(
+                            RichText::new(
+                                "Download it and install it over this one. Your books, keys and connections stay as they are.",
+                            )
+                            .font(crate::theme::regular(13.0))
+                            .color(p.text),
+                        );
+                        if ui
+                            .button("Open the download page")
+                            .on_hover_text(newer.page.clone())
+                            .clicked()
+                        {
+                            ui.ctx().open_url(egui::OpenUrl::new_tab(newer.page.clone()));
+                        }
+                    });
+                });
         }
         let Some(upgrade) = books.format_upgrade.clone() else {
             return;
@@ -752,7 +841,7 @@ impl OwnerMenu {
                     );
                     ui.label(
                         RichText::new(
-                            "An older version of wanderbooks wrote them. They work on their old format until you agree; what needs the new one is refused.",
+                            "An older version of Wanderbooks wrote them. They work on their old format until you agree; what needs the new one is refused.",
                         )
                         .font(crate::theme::regular(13.0))
                         .color(p.text),
@@ -867,7 +956,7 @@ impl OwnerMenu {
                     ui.separator();
                     if ui
                         .button(format!("{} Check for updates", icon::ARROWS_CLOCKWISE))
-                        .on_hover_text("Look for a newer version of wanderbooks now")
+                        .on_hover_text("Look for a newer version of Wanderbooks now")
                         .clicked()
                     {
                         let o = owner.clone();
@@ -886,7 +975,7 @@ impl OwnerMenu {
                         let o = owner.clone();
                         start = Some((
                             "Update".into(),
-                            Effect::Changes("Updating wanderbooks"),
+                            Effect::Changes("Updating Wanderbooks"),
                             Box::new(move || o.apply_update()),
                         ));
                     }
@@ -1148,7 +1237,7 @@ fn upgrade_dialog(
         ui.heading("Upgrade these books' format?");
         ui.add_space(4.0);
         ui.label(format!(
-            "An older version of wanderbooks wrote these books, in journal format {}. The upgrade adds {}.",
+            "An older version of Wanderbooks wrote these books, in journal format {}. The upgrade adds {}.",
             form.upgrade.from.format,
             form.upgrade.adds().join(", ")
         ));

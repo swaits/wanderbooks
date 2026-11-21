@@ -90,22 +90,7 @@ const STAGED: &str = "staged";
 const FEED_FILE: &str = "feed";
 const CHECKED: &str = "checked";
 
-/// The version of the program being run, set by its `main` (this crate's
-/// own is the fallback: the packages rewrite only the program's).
-static PROGRAM_VERSION: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
-
-/// Say which version this program is.
-pub fn set_program_version(version: &'static str) {
-    let _ = PROGRAM_VERSION.set(version);
-}
-
-/// This program's version.
-pub fn program_version() -> &'static str {
-    PROGRAM_VERSION
-        .get()
-        .copied()
-        .unwrap_or(env!("CARGO_PKG_VERSION"))
-}
+pub use crate::{program_version, set_program_version};
 
 const MAX_MANIFEST: usize = 1 << 20;
 const MAX_PROGRAM: u64 = 1 << 30;
@@ -151,6 +136,17 @@ pub fn install_kind(exe: &Path, appimage: Option<&Path>) -> Install {
     if let Some(image) = appimage.filter(|p| p.is_file()) {
         return Install::SelfUpdating(image.to_path_buf());
     }
+    // A macOS app is signed whole: one file replaced inside it breaks the
+    // signature, so it is only ever replaced whole, by the person (the
+    // newer .dmg), never by this program (WB-pkg-3).
+    if exe
+        .ancestors()
+        .skip(1)
+        .take(3)
+        .any(|dir| dir.extension().is_some_and(|e| e == "app") && dir.join("Contents").is_dir())
+    {
+        return Install::PackageManaged("app".to_string());
+    }
     if let Some(prefix) = exe.parent().and_then(Path::parent)
         && let Ok(text) = std::fs::read_to_string(prefix.join("share/wanderbooks/install-method"))
     {
@@ -168,25 +164,20 @@ pub fn this_install() -> Result<Install, String> {
 }
 
 fn refuse_package_managed(manager: &str, what: &str) -> Failure {
+    if manager == "app" {
+        return format!(
+            "this is the macOS app, which is replaced whole and never one file at a time: get the newer Wanderbooks at {} and drag it over this one",
+            crate::newer::DOWNLOAD_PAGE
+        )
+        .into();
+    }
     format!(
         "this install is managed by {manager}, which also {what} it: use the package manager (our apt and dnf repositories keep every release, and the AUR keeps old PKGBUILDs)"
     )
     .into()
 }
 
-/// `1.2.3` as numbers; anything else (a pre-release, a `v`) is no version
-/// of ours.
-pub fn parse_version(text: &str) -> Option<(u64, u64, u64)> {
-    let mut parts = text.split('.');
-    let mut next = || -> Option<u64> {
-        let p = parts.next()?;
-        (!p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
-            .then(|| p.parse().ok())
-            .flatten()
-    };
-    let v = (next()?, next()?, next()?);
-    parts.next().is_none().then_some(v)
-}
+pub use crate::newer::parse_version;
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
@@ -979,6 +970,31 @@ mod tests {
             install_kind(&exe, Some(&image)),
             Install::SelfUpdating(image)
         );
+    }
+
+    /// WB-pkg-3: a macOS app is signed whole, so this program never
+    /// replaces a file inside one; the person replaces the whole app.
+    #[test]
+    fn a_macos_app_is_never_updated_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let macos = dir.path().join("Wanderbooks.app/Contents/MacOS");
+        std::fs::create_dir_all(&macos).unwrap();
+        let exe = macos.join("wanderbooks");
+        std::fs::write(&exe, b"x").unwrap();
+        assert_eq!(
+            install_kind(&exe, None),
+            Install::PackageManaged("app".into())
+        );
+        let said = refuse_package_managed("app", "updates").to_string();
+        assert!(said.contains("replaced whole"), "{said}");
+        assert!(said.contains(crate::newer::DOWNLOAD_PAGE), "{said}");
+        // A folder that only happens to be called .app, with no bundle in
+        // it, is not one.
+        let plain = dir.path().join("tools.app/bin");
+        std::fs::create_dir_all(&plain).unwrap();
+        let exe = plain.join("wanderbooks");
+        std::fs::write(&exe, b"x").unwrap();
+        assert_eq!(install_kind(&exe, None), Install::SelfUpdating(exe));
     }
 
     #[test]

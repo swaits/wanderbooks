@@ -336,7 +336,7 @@ fn each_tab_shows_its_own_company_and_figures() {
     loaded(&mut h);
     assert_eq!(titles(&h), ["Alpha Co", "Beta Co"]);
     assert_eq!(h.state().active(), Some(0));
-    assert_eq!(h.state().window_title(), "Alpha Co · wanderbooks");
+    assert_eq!(h.state().window_title(), "Alpha Co · Wanderbooks");
 
     // Alpha: cash 10,000.00 less 1,234.56 rent is 8,765.44.
     assert!(shows(&h, "8,765.44"), "alpha's cash: {:?}", texts(&h));
@@ -354,7 +354,7 @@ fn each_tab_shows_its_own_company_and_figures() {
     // Beta: cash 25,000.00 less 777.77 is 24,222.23.
     show_tab(&mut h, "Beta Co");
     assert_eq!(h.state().active(), Some(1));
-    assert_eq!(h.state().window_title(), "Beta Co · wanderbooks");
+    assert_eq!(h.state().window_title(), "Beta Co · Wanderbooks");
     assert!(
         matches!(h.state().route(), Route::Overview),
         "a tab opens on its overview, not on the page the other was on"
@@ -768,7 +768,7 @@ fn start_up_restores_the_open_tabs_their_order_and_the_one_in_front() {
     assert_eq!(titles(&h), ["Gamma Co", "Alpha Co", "Beta Co"]);
     assert_eq!(h.state().active(), Some(1), "the same one in front");
     assert!(h.state().views().iter().all(|v| v.error().is_none()));
-    assert_eq!(h.state().window_title(), "Alpha Co · wanderbooks");
+    assert_eq!(h.state().window_title(), "Alpha Co · Wanderbooks");
 
     // No record: the data root's first, alone.
     let h2 = start_with_prefs(&w, &[]);
@@ -894,15 +894,15 @@ fn closing_the_front_tab_shows_a_neighbour_and_the_last_leaves_an_empty_window()
     show_tab(&mut h, "Beta Co");
     close_tab(&mut h, "Beta Co");
     assert_eq!(titles(&h), ["Alpha Co", "Gamma Co"]);
-    assert_eq!(h.state().window_title(), "Gamma Co · wanderbooks");
+    assert_eq!(h.state().window_title(), "Gamma Co · Wanderbooks");
     // A tab behind the front one closing leaves the front one in front.
     close_tab(&mut h, "Alpha Co");
     assert_eq!(titles(&h), ["Gamma Co"]);
-    assert_eq!(h.state().window_title(), "Gamma Co · wanderbooks");
+    assert_eq!(h.state().window_title(), "Gamma Co · Wanderbooks");
     // The last one.
     close_tab(&mut h, "Gamma Co");
     assert!(h.state().views().is_empty());
-    assert_eq!(h.state().window_title(), "wanderbooks");
+    assert_eq!(h.state().window_title(), "Wanderbooks");
     assert!(shows(&h, "No company is open"), "{:?}", texts(&h));
     assert!(
         shows(&h, "Open a company with the + at the top of the window."),
@@ -1737,7 +1737,7 @@ fn the_status_card_shows_the_company_in_front_and_follows_the_tab() {
             "alpha's hue left the card"
         );
         // The window's title still names the company.
-        assert_eq!(h.state().window_title(), "Beta Co · wanderbooks");
+        assert_eq!(h.state().window_title(), "Beta Co · Wanderbooks");
     }
 }
 

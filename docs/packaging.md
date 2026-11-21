@@ -16,8 +16,8 @@ not a tool, so there is nothing for a recipe to call.
 | `.rpm` | `cargo-generate-rpm` (table in `crates/ledger-cli/Cargo.toml`) | same paths, marker `rpm`; 36 MB | dnf repository (`repo-indexes.sh dnf`) | unsigned until step 5 (`--signing-key` takes the PGP key then) |
 | AUR `PKGBUILD` | `cargo packager` makes the tarball (`pacman` format) and a PKGBUILD for it; ours is `deploy/packaging/aur/PKGBUILD`, which repacks the release's tarball (package `wanderbooks-bin`) | same paths, marker `aur`; built with `makepkg` | pacman (the AUR keeps old PKGBUILDs) | n/a (pacman trusts the AUR's checksums) |
 | AppImage | `cargo packager` (`appimage`); 44 MB | one file the owner puts anywhere and runs; needs no admin password | `wanderbooks update` (`$APPIMAGE` is the file replaced) against the manifest; minisign | minisign by the release key (step 5) |
-| `.dmg` | `cargo packager` (`dmg`), `deploy/packaging/build-macos.sh`; **built in CI, unsigned; the trial on a Mac is the owner's** | `Wanderbooks.app` dragged to Applications; no admin password (the trial will say) | `wanderbooks update` (it replaces the program inside the `.app`: see the note below) | **unsigned**; Developer ID and notarization are step 5 |
-| NSIS `.exe` | `cargo packager` (`nsis`) | **not built**: native Windows is unit P11c (D-62) | `wanderbooks update` | the Windows identity (step 5) |
+| `.dmg` | `deploy/packaging/macos/build-macos.sh` (P15 C1; it replaced the cargo-packager `dmg` config, unrun) | `Wanderbooks.app` dragged to Applications; one universal program at `Contents/MacOS/wanderbooks`; no admin password | the newer app dragged over the old (the program tells the person one exists) | hardened runtime; Developer ID and notarization when the owner's secrets are in the release workflow, else ad hoc |
+| Windows `.exe` | `deploy/packaging/windows/build-windows.sh` with NSIS (P15 C1; not cargo-packager's `nsis`) | `%LOCALAPPDATA%\Programs\Wanderbooks\wanderbooks.exe`, Start Menu entry, Settings > Apps uninstaller; per user, no admin | the newer installer run over the old one (the program tells the person one exists) | Authenticode when the owner's certificate secrets are in the release workflow, else unsigned |
 
 `just package-linux` builds the first four (`deploy/packaging/build-linux.sh`,
 about a minute after the release build, itself 8 to 12 minutes on a
@@ -130,7 +130,7 @@ package manager. Not tested: Ubuntu, openSUSE, a package-manager
 *downgrade* (the repositories keep every release by construction), and the
 `.rpm` and `.deb` under their real signatures (step 5).
 
-## The macOS bundle (step 6, built in CI, unsigned)
+## The macOS bundle (step 6; REPLACED by P15 unit C1, see "P15 unit C1" below)
 
 `deploy/packaging/packager-macos.toml` (cargo-packager: the `dmg` format,
 which makes the `.app` first; the icon is the 512 px PNG, made into an
@@ -260,3 +260,90 @@ not a `cfg` gap. Today Unix-only, found by grep (2026-10-29):
   file with read, write and delete sharing, so a rename never meets an
   open handle of ours.
 - The `portable` job runs Windows as a gate (`experimental: false`), since the port landed (P11c).
+
+
+## P15 unit C1: the installed app on the new shape (2026-11-21)
+
+Written on Linux. **Nothing here has been run on Windows or macOS**: the
+`release` workflow's first run on GitHub is the evidence, and it is built to
+fail loudly at each step. What Linux checked: `crates/ledger-cli/tests/packaging.rs`
+reads the installer script, the plist, the entitlements, the desktop entries and
+the workflow; builds the macOS bundle with a stand-in program; compiles the
+installer with `makensis` when it is installed; and a real `.deb` and `.rpm`
+were built with a stand-in program and their file lists read (program, desktop
+entry, icon, licences).
+
+| | Windows | macOS | Linux |
+|---|---|---|---|
+| Package | NSIS installer, per user | `.app` in a `.dmg`, one universal program | `.deb`, `.rpm`, pacman tarball, AppImage (unchanged tools) |
+| Program path (the bridge's) | `%LOCALAPPDATA%\Programs\Wanderbooks\wanderbooks.exe` | `/Applications/Wanderbooks.app/Contents/MacOS/wanderbooks` | `/usr/bin/wanderbooks`; the AppImage's own file |
+| Books | `%LOCALAPPDATA%\wanderbooks` | `~/Library/Application Support/wanderbooks` | `~/.local/share/wanderbooks` (unchanged) |
+| Removal leaves the books | the uninstaller names no data folder | dragging to Trash runs nothing | no package script runs |
+| No console window | built for the GUI subsystem; attaches to a terminal for commands | n/a | n/a |
+| Without git | says how to get Git for Windows | says `xcode-select --install`; the system's stub is not taken for git | says the package manager's command |
+
+**Why NSIS written by hand, not cargo-packager's.** The installer's rules
+(per user, one program, an uninstaller that can never reach the books) are
+short and exact; a script of our own states them in a file a test can read, and
+needs only `makensis` (free, zlib-licensed, `choco install nsis`). cargo-packager's
+NSIS template downloads helper plugins at build time and ships an uninstaller
+option that removes application data. **Why the macOS bundle is assembled by a
+script:** signing order (inside out, hardened runtime, then the disk image, then
+notarization) and the entitlements are exact, and the secrets contract is ours.
+cargo-packager stays for Linux.
+
+**Updating** is installing the newer package over the old one; the program says
+when one exists (`ledger_host::newer`: a version number from `latest.json`,
+once a day, a fixed download address) and never installs anything. The earlier
+staged self-update (`update`, `update.lock`, the daily staged download) still
+exists for an AppImage or a program put somewhere by hand and needs a release
+key that does not exist yet; on the desktop the detached host it restarted
+through is gone (P15 A5). A macOS `.app` is never updated one file at a time.
+
+**Signing.** Windows (secrets `WINDOWS_CERTIFICATE_PFX_BASE64`,
+`WINDOWS_CERTIFICATE_PASSWORD`): `sign-windows.ps1` signs the program, then the
+installer. macOS (`APPLE_CERTIFICATE_P12_BASE64`, `APPLE_CERTIFICATE_PASSWORD`,
+`APPLE_SIGNING_IDENTITY`; to notarize `APPLE_ID`, `APPLE_TEAM_ID`,
+`APPLE_APP_SPECIFIC_PASSWORD`): `import-certificate.sh` puts the certificate in
+a temporary keychain, `build-macos.sh` signs with the hardened runtime,
+notarizes and staples. With none, each step prints a notice and the package is
+unsigned (macOS: ad hoc, so it runs, but Gatekeeper refuses a download).
+
+**The Claude desktop extension** (`ledger_host::extension`): an MCP Bundle
+(`.mcpb`, the renamed `.dxt`; manifest version 0.3), one per company, made by the
+Connect page's button; it runs the installed program as `mcp --book <id>`.
+
+**Left out, on purpose:** an auto-installer; a Windows executable icon resource
+(the shortcut and the uninstaller entry carry the icon, and the running window
+sets its own from the 512 px PNG; Explorer shows the `.exe` with the default
+icon);
+`wanderbooks.cmd`/PATH setup so a terminal waits for a command on Windows (a
+GUI-subsystem program returns the prompt at once); a macOS refusal for a program
+run from a mounted disk image (a path under `/Volumes` may be a real install on
+another disk); bundling git on Windows and macOS (the owner's decision, below); the signed `manifest.json` of the earlier self-update
+(needs the release key, Q-4).
+
+### Bundling git (an owner decision, not made here)
+
+Backups run the system's git. **Linux:** the packages now depend on git, so the
+package manager fetches it (nothing is bundled). **Windows and macOS:** the app
+detects a missing git and says how to get it (WB-pkg-4); nothing is bundled.
+
+What bundling would mean. Git is GPL-2.0-only free software. Shipping an
+unmodified git as a separate file that our program starts as its own process
+(never linked) is what the GPL calls aggregation: our MIT OR Apache-2.0 code is
+unaffected, and AGENTS.md's clean-room rule (never copy GnuCash's code) is not
+touched, since nothing of git is copied into ours; `deny.toml` governs Rust
+crates only and does not see it. It still requires, for each release that
+carries git: git's GPL text and copyright notices beside it (Git for Windows'
+MinGit adds the notices of the components it carries: OpenSSL/curl, the MSYS2
+runtime); the corresponding source of exactly that git, or a written offer for it
+valid three years (GPLv2 section 3), most simply the git version's source
+archive attached to the same release; no term of ours that forbids the
+recipient what the GPL permits; and a note of any change if git were modified.
+`THIRD-PARTY-NOTICES.txt` (cargo-about) covers Rust crates only, so it would
+need an addition. On Windows the candidate is MinGit from Git for Windows
+(about 40 MB, unpacked beside the program; `Git::find` would look there first);
+on macOS Apple's command line tools' git is Apple's and cannot be bundled, so
+it would be a build of our own (Homebrew's, or from source), universal, signed
+inside the app, with the same obligations.

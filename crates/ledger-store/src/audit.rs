@@ -149,57 +149,72 @@ fn found(code: &'static str, subject: Subject, message: String) -> Finding {
     }
 }
 
+/// How the audit reads one journal field for a tax id.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum TextClass {
+    /// Free words: nine digits standing alone, an SSN's 3-2-4 or an EIN's
+    /// 2-7 are found.
+    Free,
+    /// A reference (a tag, a serial, an invoice number, a file name, an
+    /// account code): only the grouped shapes are found, a bare nine digits
+    /// being a legitimate number there (WB-partner-15).
+    Reference,
+}
+
 /// The journal fields that hold words someone wrote (never an id, a digest
-/// or an amount): what [`Store::integrity_findings`] reads for a tax id.
-const TEXT_KEYS: &[&str] = &[
-    "description",
-    "memo",
-    "note",
-    "notes",
-    "reason",
-    "name",
-    "label",
-    "title",
-    "citation",
-    "decided_by",
-    "detail",
-    "detail_md",
-    "resolution",
-    "decision_md",
-    "body_md",
-    "subject",
-    "reference",
-    "customer_ref",
-    "vendor_ref",
-    "duplicate_reason",
-    "no_party_reason",
-    "payee",
-    "source",
-    "reimbursable_to",
-    "file_name",
-    "serial",
-    "tag",
-    "employee_name",
-    "display_name",
-    "address",
-    "contact",
-    "kept_at",
-    "approver",
+/// or an amount) and how each is read: what [`Store::integrity_findings`]
+/// reads for a tax id.
+const TEXT_KEYS: &[(&str, TextClass)] = &[
+    ("description", TextClass::Free),
+    ("memo", TextClass::Free),
+    ("note", TextClass::Free),
+    ("notes", TextClass::Free),
+    ("reason", TextClass::Free),
+    ("name", TextClass::Free),
+    ("label", TextClass::Reference),
+    ("title", TextClass::Free),
+    ("citation", TextClass::Free),
+    ("decided_by", TextClass::Free),
+    ("detail", TextClass::Free),
+    ("detail_md", TextClass::Free),
+    ("resolution", TextClass::Free),
+    ("decision_md", TextClass::Free),
+    ("body_md", TextClass::Free),
+    ("subject", TextClass::Free),
+    ("reference", TextClass::Reference),
+    ("customer_ref", TextClass::Reference),
+    ("vendor_ref", TextClass::Reference),
+    ("duplicate_reason", TextClass::Free),
+    ("no_party_reason", TextClass::Free),
+    ("payee", TextClass::Free),
+    ("source", TextClass::Free),
+    ("reimbursable_to", TextClass::Free),
+    ("file_name", TextClass::Reference),
+    ("serial", TextClass::Reference),
+    ("tag", TextClass::Reference),
+    ("code", TextClass::Reference),
+    ("employee_name", TextClass::Free),
+    ("display_name", TextClass::Free),
+    ("address", TextClass::Free),
+    ("contact", TextClass::Free),
+    ("kept_at", TextClass::Reference),
+    ("approver", TextClass::Free),
 ];
 
-/// Every text field of `v` named by [`TEXT_KEYS`], as (its key, its text),
-/// at any depth; a list of texts under such a key counts each.
-fn text_fields_in(v: &Value, out: &mut Vec<(String, String)>) {
+/// Every text field of `v` named by [`TEXT_KEYS`], as (its key, how it is
+/// read, its text), at any depth; a list of texts under such a key counts
+/// each.
+fn text_fields_in(v: &Value, out: &mut Vec<(String, TextClass, String)>) {
     match v {
         Value::Object(m) => {
             for (k, x) in m {
-                if TEXT_KEYS.contains(&k.as_str()) {
+                if let Some((_, class)) = TEXT_KEYS.iter().find(|(key, _)| *key == k.as_str()) {
                     match x {
-                        Value::String(s) => out.push((k.clone(), s.clone())),
+                        Value::String(s) => out.push((k.clone(), *class, s.clone())),
                         Value::Array(a) => out.extend(
                             a.iter()
                                 .filter_map(Value::as_str)
-                                .map(|s| (k.clone(), s.to_string())),
+                                .map(|s| (k.clone(), *class, s.to_string())),
                         ),
                         _ => {}
                     }
@@ -545,8 +560,14 @@ impl Store {
             };
             let mut fields = Vec::new();
             text_fields_in(&v, &mut fields);
-            for (field, text) in fields {
-                if ledger_core::settings::holds_printed_tin(&text) {
+            for (field, class, text) in fields {
+                let looks = match class {
+                    TextClass::Free => ledger_core::settings::holds_printed_tin(&text),
+                    TextClass::Reference => {
+                        ledger_core::settings::holds_printed_tin_in_reference(&text)
+                    }
+                };
+                if looks {
                     out.push(found(
                         "tax_id_in_journal",
                         Subject::Named(format!("journal line {seq}")),

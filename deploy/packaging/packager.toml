@@ -34,6 +34,11 @@ depends = ["libc6", "libgcc-s1"]
 "LICENSE-MIT" = "usr/share/doc/wanderbooks/LICENSE-MIT"
 "LICENSE-APACHE" = "usr/share/doc/wanderbooks/LICENSE-APACHE"
 
+[appimage.files]
+"THIRD-PARTY-NOTICES.txt" = "usr/share/doc/wanderbooks/THIRD-PARTY-NOTICES.txt"
+"LICENSE-MIT" = "usr/share/doc/wanderbooks/LICENSE-MIT"
+"LICENSE-APACHE" = "usr/share/doc/wanderbooks/LICENSE-APACHE"
+
 [pacman]
 depends = ["gcc-libs", "glibc"]
 

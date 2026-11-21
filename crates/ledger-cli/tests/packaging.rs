@@ -517,8 +517,8 @@ fn every_package_carries_the_licences_and_the_icon() {
         );
         assert_eq!(
             deb_pacman.matches(&format!("\"{file}\" = ")).count(),
-            2,
-            "both the deb and the pacman package carry {file}"
+            3,
+            "the deb, the AppImage and the pacman package each carry {file}"
         );
         assert!(
             rpm.contains(&format!("source = \"{file}\"")),

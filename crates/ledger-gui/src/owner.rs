@@ -203,6 +203,54 @@ pub struct TokenRow {
     pub created: String,
 }
 
+/// A web assistant waiting for the person to allow it (plan P15 D-83): who
+/// is asking, as the server saw it. What it calls itself is its own word,
+/// cleaned and never trusted; where it is sent back to and the address it
+/// asked from are what the server saw.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WebRequest {
+    /// What an answer names.
+    pub id: String,
+    /// The company it asks to reach.
+    pub book: String,
+    /// What it calls itself: its own word, cleaned and short, possibly
+    /// empty. Never a product's name made from where it is sent back to.
+    pub client_name: String,
+    /// Whether the address it is sent back to is one of the vendors' known
+    /// hosts. Only the warning depends on it; nothing is shown as known or
+    /// trusted for it.
+    pub known_host: bool,
+    /// The short code to match with the one its browser page shows.
+    pub code: String,
+    /// The address it is sent back to, in full.
+    pub redirect: String,
+    /// That address's host.
+    pub redirect_host: String,
+    /// The caller's address, as the relay said it.
+    pub from: String,
+    /// It asked to post entries too.
+    pub wants_post: bool,
+    /// Seconds until it is turned away unanswered.
+    pub expires_in_secs: u64,
+}
+
+/// A web connection the person allowed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WebApproval {
+    /// Its id.
+    pub id: String,
+    /// The company.
+    pub book: String,
+    /// What it is called.
+    pub label: String,
+    /// The key that carries it: what "Who can reach these books" revokes.
+    pub token_id: String,
+    /// It may post entries (else read and draft).
+    pub may_post: bool,
+    /// When it last did anything (unix seconds).
+    pub last_used: Option<i64>,
+}
+
 /// Who is connected and who may connect, across the open companies.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Roster {
@@ -210,6 +258,10 @@ pub struct Roster {
     pub assistants: Vec<Assistant>,
     /// Every live token.
     pub tokens: Vec<TokenRow>,
+    /// Web assistants waiting for the person.
+    pub web_pending: Vec<WebRequest>,
+    /// Web connections the person allowed.
+    pub web_approvals: Vec<WebApproval>,
 }
 
 /// The owner's actions, done by the program the viewer runs in (ledger-cli
@@ -270,6 +322,16 @@ pub trait Owner: Send + Sync {
     /// was done, in words; a key already replaced or revoked is an `Err`
     /// that says so. Blocks.
     fn serve_revoke(&self, _book: &str, _name: &str, _id: &str) -> Result<String, String> {
+        Err("not here".into())
+    }
+    /// The person's answer to a web assistant waiting to be allowed:
+    /// `approve` it or refuse it; `post` lets it post entries too, not
+    /// only read and draft. `Ok` says what was done, in words. Blocks.
+    fn web_decide(&self, _id: &str, _approve: bool, _post: bool) -> Result<String, String> {
+        Err("not here".into())
+    }
+    /// Let a web connection post entries, or take that away. Blocks.
+    fn web_set_post(&self, _approval: &str, _post: bool) -> Result<String, String> {
         Err("not here".into())
     }
     /// This program run with `words`, as a line to type in a terminal (the

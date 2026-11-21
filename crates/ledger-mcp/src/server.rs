@@ -2124,6 +2124,16 @@ impl ServerHandler for BooksServer {
         // Every tool that can change the books takes a request key
         // (calls.rs INVARIANT 1).
         tools.iter_mut().for_each(calls::add_key_to_schema);
+        // The company and the entry point in the tools a model reaches for
+        // first (handbook.rs INVARIANT 7).
+        let lead = handbook::first_tools_lead(&self.settings());
+        for tool in tools
+            .iter_mut()
+            .filter(|t| handbook::FIRST_TOOLS.contains(&&*t.name))
+        {
+            let rest = tool.description.take().unwrap_or_default();
+            tool.description = Some(format!("{lead}{rest}").into());
+        }
         // A token is shown what it can call (scopes.rs); the list then
         // differs by caller, so it may be cached only for this one.
         let scopes = crate::access::caller(&context)

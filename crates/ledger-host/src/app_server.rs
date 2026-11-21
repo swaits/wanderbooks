@@ -154,6 +154,16 @@ pub struct Roster {
     pub tokens: Vec<admin::TokenInfo>,
 }
 
+/// The web assistants waiting to be allowed, and the web connections that
+/// are (plan P15 B1): what the window's "Allow?" shows.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WebRoster {
+    /// Assistants waiting for the person.
+    pub pending: Vec<admin::PendingInfo>,
+    /// Connections the person allowed.
+    pub approvals: Vec<admin::ApprovalInfo>,
+}
+
 /// The books server, a child process of this one.
 pub struct AppServer {
     run: PathBuf,
@@ -417,6 +427,69 @@ impl AppServer {
             other => return Err(format!("the books server answered oddly: {other:?}")),
         };
         Ok(Roster { sessions, tokens })
+    }
+
+    /// The web assistants waiting for the person, and the web connections
+    /// allowed: two quick requests, an `Err` while the server is starting or
+    /// gone. A server whose remote door was never turned on answers both
+    /// with nothing.
+    pub fn web_roster(&self, wait: Duration) -> Result<WebRoster, String> {
+        if !self.is_ready() {
+            return Err(match self.exited() {
+                Some(why) => why,
+                None => "the books server is still starting".into(),
+            });
+        }
+        let pending = match self.ask(Request::RemotePending, Some(wait))? {
+            Response::RemotePending(p) => p,
+            Response::Refused(why) => return Err(why),
+            other => return Err(format!("the books server answered oddly: {other:?}")),
+        };
+        let approvals = match self.ask(Request::RemoteApprovals { book: None }, Some(wait))? {
+            Response::RemoteApprovals(a) => a,
+            Response::Refused(why) => return Err(why),
+            other => return Err(format!("the books server answered oddly: {other:?}")),
+        };
+        Ok(WebRoster { pending, approvals })
+    }
+
+    /// The person's answer to one waiting assistant: `Ok` says what was
+    /// done, in words. `post` lets it post entries too, not only read and
+    /// draft.
+    pub fn web_decide(&self, id: &str, approve: bool, post: bool) -> Result<String, String> {
+        self.wait_ready(READY_WAIT)?;
+        match self.ask(
+            Request::RemoteDecide {
+                id: id.into(),
+                approve,
+                post,
+            },
+            Some(Duration::from_secs(30)),
+        )? {
+            Response::RemoteDecided { said, .. } => Ok(said),
+            Response::Refused(why) => Err(why),
+            other => Err(format!("the books server answered oddly: {other:?}")),
+        }
+    }
+
+    /// Raise a web connection to posting, or lower it.
+    pub fn web_set_post(&self, approval: &str, post: bool) -> Result<String, String> {
+        self.wait_ready(READY_WAIT)?;
+        match self.ask(
+            Request::RemoteSetPost {
+                approval: approval.into(),
+                post,
+            },
+            Some(Duration::from_secs(30)),
+        )? {
+            Response::RemoteApprovals(_) => Ok(if post {
+                "It can post entries now.".into()
+            } else {
+                "It can read and draft, but not post.".into()
+            }),
+            Response::Refused(why) => Err(why),
+            other => Err(format!("the books server answered oddly: {other:?}")),
+        }
     }
 
     /// End the key `id`, named `name`, of the company `book`, as
@@ -721,6 +794,21 @@ impl AppHost {
     /// End the key `id` (INVARIANT 12).
     pub fn revoke_token(&self, book: &str, name: &str, id: &str) -> Result<String, String> {
         self.running()?.revoke_token(book, name, id)
+    }
+
+    /// The web assistants waiting, and the web connections allowed.
+    pub fn web_roster(&self, wait: Duration) -> Result<WebRoster, String> {
+        self.running()?.web_roster(wait)
+    }
+
+    /// The person's answer to a waiting assistant.
+    pub fn web_decide(&self, id: &str, approve: bool, post: bool) -> Result<String, String> {
+        self.running()?.web_decide(id, approve, post)
+    }
+
+    /// Raise a web connection to posting, or lower it.
+    pub fn web_set_post(&self, approval: &str, post: bool) -> Result<String, String> {
+        self.running()?.web_set_post(approval, post)
     }
 
     /// The format upgrade of the company `id` (INVARIANT 10).

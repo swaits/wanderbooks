@@ -42,7 +42,9 @@ use ledger_core::{AccountType, Currency};
 use ledger_gui::connections::Link;
 use ledger_gui::data::Source;
 use ledger_gui::nav::Route;
-use ledger_gui::owner::{Agent, Assistant, LastCall, Owner, RestorePlan, Roster, TokenRow};
+use ledger_gui::owner::{
+    Agent, Assistant, LastCall, Owner, RestorePlan, Roster, TokenRow, WebApproval, WebRequest,
+};
 use ledger_gui::{App, Start};
 use ledger_store::root::{BookId, Root};
 use std::collections::HashMap;
@@ -196,6 +198,44 @@ impl Owner for Fake {
         }
         Ok(format!("Ended {name:?}'s access to {book}."))
     }
+    fn web_decide(&self, id: &str, approve: bool, post: bool) -> Result<String, String> {
+        self.note(format!("web_decide {id} {approve} {post}"));
+        // As the server does: it is no longer waiting, and an allowed one
+        // is a connection.
+        if let Some(Ok(r)) = self.roster.lock().unwrap().as_mut() {
+            let gone: Vec<_> = r
+                .web_pending
+                .iter()
+                .filter(|p| p.id == id)
+                .cloned()
+                .collect();
+            r.web_pending.retain(|p| p.id != id);
+            if approve {
+                for p in gone {
+                    r.web_approvals.push(WebApproval {
+                        id: format!("apr_{id}"),
+                        book: p.book,
+                        label: p.client_name,
+                        token_id: "tok_1".into(),
+                        may_post: post,
+                        last_used: None,
+                    });
+                }
+            }
+        }
+        Ok("done".into())
+    }
+    fn web_set_post(&self, approval: &str, post: bool) -> Result<String, String> {
+        self.note(format!("web_set_post {approval} {post}"));
+        if let Some(Ok(r)) = self.roster.lock().unwrap().as_mut() {
+            for a in &mut r.web_approvals {
+                if a.id == approval {
+                    a.may_post = post;
+                }
+            }
+        }
+        Ok("done".into())
+    }
     fn command_line(&self, words: &[&str]) -> Result<String, String> {
         Ok(format!("/opt/wanderbooks {}", words.join(" ")))
     }
@@ -257,7 +297,11 @@ fn token(book: &str, name: &str) -> TokenRow {
 }
 
 fn roster(assistants: Vec<Assistant>, tokens: Vec<TokenRow>) -> Result<Roster, String> {
-    Ok(Roster { assistants, tokens })
+    Ok(Roster {
+        assistants,
+        tokens,
+        ..Roster::default()
+    })
 }
 
 /// The app over `ids` as tabs (the first in front), served by `owner`.
@@ -1032,4 +1076,232 @@ fn pictures() {
         tall.run_steps(4);
         save(&mut tall, &format!("9-connect-another-{mode}"));
     }
+}
+
+// ---- 7: a web assistant asks to connect (plan P15 D-83, unit B1) --------------
+
+fn asking(id: &str, name: &str, known_host: bool) -> WebRequest {
+    WebRequest {
+        id: id.into(),
+        book: "alpha".into(),
+        client_name: name.into(),
+        known_host,
+        code: format!("482 {}", 100 + id.len()),
+        redirect: "https://claude.ai/api/mcp/auth_callback".into(),
+        redirect_host: "claude.ai".into(),
+        from: "203.0.113.9".into(),
+        wants_post: false,
+        expires_in_secs: 240,
+    }
+}
+
+fn with_pending(owner: &Fake, pending: Vec<WebRequest>, approvals: Vec<WebApproval>) {
+    owner.answer(Ok(Roster {
+        web_pending: pending,
+        web_approvals: approvals,
+        ..Roster::default()
+    }));
+}
+
+#[test]
+fn a_web_assistant_asking_is_put_to_the_person_over_any_page_in_plain_words() {
+    let w = World::new(&[("alpha", "Wanderland Labs")]);
+    let owner = Fake::new();
+    with_pending(&owner, vec![asking("p_1", "Claude", true)], vec![]);
+    let mut h = start(&w, &["alpha"], &owner);
+    refresh(&mut h);
+    // On the company's own page, not the Connect page.
+    assert_ne!(h.state().route(), &Route::Connect);
+    // Where it is sent back to first, in neutral words: a host says nothing
+    // of who asks, so nothing is called a known product, and the one
+    // address of a vendor is not warned about, nor praised.
+    assert!(
+        h.query_by_label_contains(
+            "An assistant that will be sent back to claude.ai wants to connect to Wanderland Labs. Allow?"
+        )
+        .is_some()
+    );
+    assert!(h.query_by_label_contains("Claude on the web").is_none());
+    assert!(
+        h.query_by_label_contains("doesn't know this address")
+            .is_none()
+    );
+    // What it calls itself, after the address, as its own word.
+    assert!(h.query_by_label_contains("It calls itself").is_some());
+    // The code to match with the one the browser's page shows.
+    assert!(h.query_by_label_contains("Code 482 103").is_some());
+    assert!(
+        h.query_by_label_contains("Allow only if the page in your browser shows this same code")
+            .is_some()
+    );
+    // Who, where it goes, from where: in words, nothing about OAuth.
+    assert!(
+        h.query_all_by_label_contains("The request came from the internet address 203.0.113.9")
+            .next()
+            .is_some()
+    );
+    assert!(
+        h.query_by_label_contains("can't post entries unless you tick")
+            .is_some()
+    );
+    for word in ["OAuth", "token", "MCP"] {
+        assert!(
+            h.query_by_label_contains(word).is_none(),
+            "{word} is not a word for the person"
+        );
+    }
+    // Nothing is decided by looking at it.
+    assert!(!owner.said().iter().any(|s| s.starts_with("web_decide")));
+    h.get_by_role_and_label(Role::Button, "Allow").click();
+    h.run_steps(2);
+    wait_for("the answer was given", || {
+        owner
+            .said()
+            .contains(&"web_decide p_1 true false".to_string())
+    });
+    // Posting stayed off. The question goes away once the server stops
+    // listing it.
+    refresh(&mut h);
+    assert!(h.query_by_label_contains("wants to connect").is_none());
+    drop(h);
+}
+
+#[test]
+fn refusing_and_allowing_with_posting_are_their_own_answers() {
+    let w = World::new(&[("alpha", "Wanderland Labs")]);
+    let owner = Fake::new();
+    with_pending(
+        &owner,
+        vec![asking("p_7", "Someone's assistant", false)],
+        vec![],
+    );
+    let mut h = start(&w, &["alpha"], &owner);
+    refresh(&mut h);
+    // An address that isn't a known vendor's keeps its warning.
+    assert!(
+        h.query_by_label_contains("doesn't know this address")
+            .is_some()
+    );
+    h.get_by_role_and_label(Role::Button, "Don't allow").click();
+    h.run_steps(2);
+    wait_for("the refusal was given", || {
+        owner
+            .said()
+            .contains(&"web_decide p_7 false false".to_string())
+    });
+    refresh(&mut h);
+    assert!(h.query_by_label_contains("wants to connect").is_none());
+    // Another asks; this time posting is ticked, then allowed.
+    with_pending(&owner, vec![asking("p_8", "Claude", true)], vec![]);
+    refresh(&mut h);
+    h.get_by_label("Also let it post entries").click();
+    h.run_steps(2);
+    h.get_by_role_and_label(Role::Button, "Allow").click();
+    h.run_steps(2);
+    wait_for("the answer with posting was given", || {
+        owner
+            .said()
+            .contains(&"web_decide p_8 true true".to_string())
+    });
+    drop(h);
+}
+
+#[test]
+fn waiting_requests_each_show_their_own_code_and_only_a_few_are_drawn() {
+    let w = World::new(&[("alpha", "Wanderland Labs")]);
+    let owner = Fake::new();
+    let mut all = Vec::new();
+    for (i, id) in ["p_a", "p_b", "p_c", "p_d", "p_e"].iter().enumerate() {
+        let mut r = asking(id, "Claude", true);
+        // Never merged: each has its own code.
+        r.code = format!("{}{}{} 6{}{}", i, i, i, i, i);
+        // The later the id, the newer it is (more time left).
+        r.expires_in_secs = 100 + 10 * i as u64;
+        all.push(r);
+    }
+    with_pending(&owner, all, vec![]);
+    let mut h = start(&w, &["alpha"], &owner);
+    refresh(&mut h);
+    // The newest three, each with its own code; the rest are counted.
+    for shown in ["444 644", "333 633", "222 622"] {
+        assert!(
+            h.query_by_label_contains(&format!("Code {shown}"))
+                .is_some(),
+            "{shown}"
+        );
+    }
+    for hidden in ["111 611", "000 600"] {
+        assert!(
+            h.query_by_label_contains(&format!("Code {hidden}"))
+                .is_none(),
+            "{hidden}"
+        );
+    }
+    // Three cards (their titles end in the question); the window has its own title.
+    assert_eq!(h.query_all_by_label_contains("Allow?").count(), 3);
+    assert!(h.query_by_label_contains("2 more are waiting").is_some());
+    drop(h);
+}
+
+#[test]
+fn a_request_that_ran_out_goes_away_and_posting_is_turned_on_and_off_on_the_connect_page() {
+    let w = World::new(&[("alpha", "Wanderland Labs")]);
+    let owner = Fake::new();
+    with_pending(&owner, vec![asking("p_2", "Claude", true)], vec![]);
+    let mut h = start(&w, &["alpha"], &owner);
+    refresh(&mut h);
+    assert!(
+        h.query_all_by_label_contains("wants to connect")
+            .next()
+            .is_some()
+    );
+    // The server turned it away unanswered: it is not listed any more, and
+    // the window never keeps what the server has dropped.
+    with_pending(&owner, vec![], vec![]);
+    refresh(&mut h);
+    assert!(h.query_by_label_contains("wants to connect").is_none());
+    // A connection that was allowed shows on the Connect page, with what
+    // it may do, and the person raises and lowers it.
+    with_pending(
+        &owner,
+        vec![],
+        vec![WebApproval {
+            id: "apr_1".into(),
+            book: "alpha".into(),
+            label: "Claude on the web".into(),
+            token_id: "tok_1".into(),
+            may_post: false,
+            last_used: None,
+        }],
+    );
+    refresh(&mut h);
+    h.state_mut().view_mut(0).unwrap().goto(Route::Connect);
+    h.run_steps(3);
+    assert!(h.query_by_label_contains("Assistants on the web").is_some());
+    assert!(
+        h.query_by_label_contains("Can read and draft entries. It can't post them.")
+            .is_some()
+    );
+    h.get_by_role_and_label(Role::Button, "Let it post entries")
+        .click();
+    h.run_steps(2);
+    wait_for("posting was turned on", || {
+        owner
+            .said()
+            .contains(&"web_set_post apr_1 true".to_string())
+    });
+    refresh(&mut h);
+    assert!(
+        h.query_by_label_contains("Can read, draft and post entries.")
+            .is_some()
+    );
+    h.get_by_role_and_label(Role::Button, "Stop letting it post")
+        .click();
+    h.run_steps(2);
+    wait_for("posting was turned off", || {
+        owner
+            .said()
+            .contains(&"web_set_post apr_1 false".to_string())
+    });
+    drop(h);
 }

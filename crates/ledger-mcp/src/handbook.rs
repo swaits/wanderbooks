@@ -32,9 +32,43 @@
 //!      for books that declared the journal feature
 //!      `document_line_projects`; for the rest, that they wait for their
 //!      format upgrade (BS-format-1, BS-statement-5 statement 6).
+//!   7. The company's name and the entry point also stand in the
+//!      description of the tools a model reaches for first
+//!      ([`FIRST_TOOLS`], decorated in `list_tools` by
+//!      [`first_tools_lead`]), for local and remote callers alike: some
+//!      products keep only the first 512 characters of the instructions
+//!      (ChatGPT), and one is reported to drop them (claude.ai, 2026-03,
+//!      unverified since), while a tool's description always arrives
+//!      (plan/p15-app-and-relay.md 3.4, WB-assist-5).
 //! ```
 
 use crate::settings::Settings;
+
+/// The tools a model reaches for first: each one's description begins with
+/// [`first_tools_lead`] (INVARIANT 7).
+pub const FIRST_TOOLS: &[&str] = &[
+    "books.start",
+    "books.handbook",
+    "books.chart",
+    "books.show",
+    "books.digest",
+    "books.search_entries",
+    "books.draft_entry",
+    "books.post_entry",
+];
+
+/// What begins the description of every tool in [`FIRST_TOOLS`]: the
+/// company, and the entry point, so they reach a model whatever the
+/// product does with the server's instructions.
+pub fn first_tools_lead(settings: &Settings) -> String {
+    let unnamed = ledger_config::Company::default().name;
+    let name = if settings.company.name.trim() == unnamed {
+        shown_name("")
+    } else {
+        shown_name(&settings.company.name)
+    };
+    format!("For the books of {name}: call books.start first in every session. ")
+}
 
 /// The most characters the connect text may have.
 pub const CONNECT_MAX: usize = 1400;

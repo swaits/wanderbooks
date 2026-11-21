@@ -204,6 +204,71 @@ pub enum Request {
     },
     /// Who is connected to each open book (INVARIANT 9).
     Sessions,
+    /// Turn the remote door on (plan P15 B1): listen on 127.0.0.1 (a free
+    /// port when `port` is none) and sign web assistants in as the one
+    /// public address `public_url` (`https://name`, no path). The same
+    /// address is a no-op; another restarts the door.
+    RemoteStart {
+        /// The one public address, which is the issuer.
+        public_url: String,
+        /// The loopback port to listen on.
+        #[serde(default)]
+        port: Option<u16>,
+    },
+    /// Turn the remote door off.
+    RemoteStop,
+    /// Offer a company to web assistants, or stop offering it.
+    RemoteAllow {
+        /// The books.
+        book: String,
+        /// Offered or not.
+        allowed: bool,
+    },
+    /// Whether the door is on, where, as which address, for which books.
+    RemoteStatus,
+    /// The assistants waiting to be allowed.
+    RemotePending,
+    /// The person's answer to one waiting assistant (INVARIANT 10).
+    RemoteDecide {
+        /// The waiting request, by the id `RemotePending` gave.
+        id: String,
+        /// Allow it, or refuse it.
+        approve: bool,
+        /// Let it post entries too (not only read and draft).
+        #[serde(default)]
+        post: bool,
+    },
+    /// The web connections that are allowed, for a company or all.
+    RemoteApprovals {
+        /// The books, or all.
+        #[serde(default)]
+        book: Option<String>,
+    },
+    /// Raise a web connection to posting, or lower it.
+    RemoteSetPost {
+        /// The connection's id.
+        approval: String,
+        /// May post entries.
+        post: bool,
+    },
+    /// A key for an assistant that takes only a key: shown once.
+    RemoteMakeKey {
+        /// The books.
+        book: String,
+        /// What to call it.
+        name: String,
+        /// May post entries.
+        #[serde(default)]
+        post: bool,
+    },
+    /// A client id and secret to type into an assistant that asks for
+    /// them: shown once.
+    RemoteMakeClient {
+        /// What to call it.
+        name: String,
+        /// The addresses it will be sent back to (exactly these).
+        redirect_uris: Vec<String>,
+    },
     /// End a token.
     TokenRevoke {
         /// Its books.
@@ -319,6 +384,78 @@ impl From<&ledger_store::auth::Token> for TokenInfo {
             created: t.created.clone(),
         }
     }
+}
+
+/// The remote door, as it stands (INVARIANT 10).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteInfo {
+    /// Where it listens on this computer (127.0.0.1:port), if it is on.
+    pub listening: Option<String>,
+    /// The one public address it signs assistants in as, if it is on.
+    pub public_url: Option<String>,
+    /// The books it offers.
+    pub allowed: Vec<String>,
+    /// This start's secret, for the app only (the admin socket is the
+    /// owner's): the 64 characters it writes at the very front of every
+    /// connection it makes to the door, before the PROXY header
+    /// (remote/proxy.rs INVARIANT 5). Never shown in a log.
+    #[serde(default)]
+    pub proxy_secret: Option<TokenText>,
+}
+
+/// An assistant waiting for the person to allow it (INVARIANT 10): what
+/// the window shows. What the assistant calls itself is asserted, cleaned
+/// and never trusted; the address and the redirect are what the server saw.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingInfo {
+    /// The id the answer names.
+    pub id: String,
+    /// The company it asks to reach.
+    pub book: String,
+    /// What it calls itself: its own word, cleaned and short, possibly
+    /// empty. Never a product's name made up from where it is sent back to.
+    pub client_name: String,
+    /// Whether the address it is sent back to is one of the vendors' known
+    /// hosts: only the warning depends on it (a host that isn't gets one).
+    pub known_host: bool,
+    /// The short code the person matches with the one the assistant's
+    /// browser page shows, to tell this request from any other waiting.
+    pub code: String,
+    /// The address it will be sent back to, in full.
+    pub redirect: String,
+    /// That address's host.
+    pub redirect_host: String,
+    /// The caller's address, as the relay said it (never a header the
+    /// caller sent).
+    pub from: String,
+    /// It asked to post entries too.
+    pub wants_post: bool,
+    /// Seconds since it asked.
+    pub age_secs: u64,
+    /// Seconds until it is turned away unanswered.
+    pub expires_in_secs: u64,
+}
+
+/// A web connection the person allowed.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApprovalInfo {
+    /// Its id.
+    pub id: String,
+    /// The company.
+    pub book: String,
+    /// What it is called.
+    pub label: String,
+    /// The principals' token that carries it (what "Who can reach these
+    /// books" lists and revokes).
+    pub token_id: String,
+    /// That token's name.
+    pub token_name: String,
+    /// It may post entries.
+    pub may_post: bool,
+    /// When it was allowed (unix seconds).
+    pub created: i64,
+    /// When it last did anything (unix seconds), if it has.
+    pub last_used: Option<i64>,
 }
 
 /// One book, as listed.
@@ -630,6 +767,30 @@ pub enum Response {
     },
     /// Who is connected, for each open book (INVARIANT 9).
     Sessions(Vec<BookSessions>),
+    /// The remote door's state (INVARIANT 10).
+    Remote(RemoteInfo),
+    /// The assistants waiting to be allowed.
+    RemotePending(Vec<PendingInfo>),
+    /// What the person's answer did.
+    RemoteDecided {
+        /// In words.
+        said: String,
+        /// The connection that was made or kept, when allowed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        approval: Option<ApprovalInfo>,
+    },
+    /// The web connections that are allowed.
+    RemoteApprovals(Vec<ApprovalInfo>),
+    /// A key or a client id made: the secret, shown this once (as a
+    /// token's text is: INVARIANT 6).
+    RemoteSecret {
+        /// The key's token id, or the client id.
+        id: String,
+        /// The key, or the client's secret.
+        secret: TokenText,
+        /// In words.
+        said: String,
+    },
     /// An attachment's text read and journaled (plan P6 step 2).
     Extracted {
         /// The attachment.
@@ -680,7 +841,22 @@ pub fn call_within(
     let not_sent = |why: String| CallError::NotSent(why);
     // A list changes nothing: its only question is whether it answered.
     let look = match request {
-        Request::List | Request::TokenList | Request::TokenCheck { .. } | Request::Sessions => None,
+        Request::List
+        | Request::TokenList
+        | Request::TokenCheck { .. }
+        | Request::Sessions
+        | Request::RemoteStatus
+        | Request::RemotePending
+        | Request::RemoteApprovals { .. } => None,
+        Request::RemoteStart { .. }
+        | Request::RemoteStop
+        | Request::RemoteAllow { .. }
+        | Request::RemoteDecide { .. }
+        | Request::RemoteSetPost { .. }
+        | Request::RemoteMakeKey { .. }
+        | Request::RemoteMakeClient { .. } => {
+            Some("ask the state of web assistants again to see whether it was done")
+        }
         Request::OpenBook { .. } | Request::CloseBook { .. } => {
             Some("`wanderbooks books list` says whether the books are open")
         }

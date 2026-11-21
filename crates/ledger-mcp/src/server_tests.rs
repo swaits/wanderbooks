@@ -1137,7 +1137,9 @@ fn context(
             sha256: String::new(),
         };
         let (mut parts, ()) = axum::http::Request::new(()).into_parts();
-        parts.extensions.insert(crate::access::Caller { token });
+        parts
+            .extensions
+            .insert(crate::access::Caller { token, from: None });
         cx.extensions.insert(parts);
     }
     cx
@@ -1548,6 +1550,59 @@ fn a_tool_list_is_cached_only_for_its_caller() {
                 "{version:?}"
             );
         }
+    });
+}
+
+/// Plan P15 3.4 (handbook.rs INVARIANT 7): the company's name and "call
+/// books.start first" are in the first 512 characters of the server's
+/// instructions AND in the description of books.start and the tools a model
+/// reaches for first, so a product that drops or cuts the instructions
+/// still delivers them. The same list is served to local and remote callers.
+#[test]
+fn the_company_and_the_entry_point_are_in_the_first_tools_too() {
+    rt().block_on(async {
+        let s = session("first-tools").await;
+        let books = unit_dir("first-tools");
+        let server = served(store(&books));
+        let info = server.get_info();
+        let instructions = info.instructions.unwrap();
+        let lead: String = instructions.chars().take(handbook::CONNECT_LEAD).collect();
+        assert!(lead.contains("books.start"), "{lead}");
+        assert!(lead.contains("the double-entry books of"), "{lead}");
+        let list = server
+            .list_tools(None, context(&s.peer, Some(ALL)))
+            .await
+            .unwrap();
+        let name = {
+            let settings = server.settings();
+            handbook::first_tools_lead(&settings)
+        };
+        assert!(name.contains("books.start") && name.starts_with("For the books of "));
+        // The 700-character bound of a description (plan I-12) holds for
+        // the tool's own text; the lead is the most this adds to it.
+        assert!(name.chars().count() <= 160, "{name}");
+        for first in handbook::FIRST_TOOLS {
+            let tool = list
+                .tools
+                .iter()
+                .find(|t| t.name == *first)
+                .unwrap_or_else(|| panic!("{first} is not served"));
+            let description = tool.description.as_deref().unwrap_or_default();
+            assert!(description.starts_with(&name), "{first}: {description}");
+        }
+        // The others are left as they were.
+        let chart = list
+            .tools
+            .iter()
+            .find(|t| t.name == "books.trial_balance")
+            .unwrap();
+        assert!(
+            !chart
+                .description
+                .as_deref()
+                .unwrap_or_default()
+                .starts_with("For the books of")
+        );
     });
 }
 

@@ -430,6 +430,19 @@ left out of its last round on purpose:
 - The scenario test for "closing A never delays B" shows B's jobs finish
   unstopped, not that they were undelayed.
 
+From the review of unit A2 (the app starts and stops the server), left
+for unit A5 or later:
+
+- `commands::close_books` (the "Close the books" menu item) still asks a
+  host lease socket, which the app does not have.
+- `wanderbooks books …` commands still start a detached host when the
+  app is closed; the `run/app-hosted` marker is permanent.
+- A command arriving while the app's server is still opening large
+  companies finds no admin socket yet and gets a connection error.
+- On Windows the app's child has no job-object breakaway, so a launcher
+  job with kill-on-close would kill the server mid-backup.
+- A terminal Ctrl+C reaches the child directly on Unix; untested.
+
 From the review of unit A3a (tabs): the identity used to tell two sets of
 books apart is the hash of the journal's first line, which carries only a
 currency and a time to the second; D-88's unit should give every set of

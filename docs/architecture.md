@@ -36,7 +36,7 @@ the specification in `bookspec/` (which never depends on the engine).
 | `ledger-import` | formats: QuickBooks CSV in; IIF, XLSX, Typst PDFs (statements, the invoice, labels, the audit workpaper) out | `ledger-core`, `ledger-reader` |
 | `ledger-package` | the shared read-only view over `Store` or `Snapshot` (`PackageBooks`): the CPA package, the 1099 worksheet, the invoice document, Needs attention | `ledger-core`, `ledger-store`, `ledger-config`, `ledger-import`, `ledger-vault` |
 | `ledger-mcp` | the books server: the MCP tools (122), resources, the handbook, scopes, the door and the access log, backups' scheduling | all of the above |
-| `ledger-host` | the host and its leases, the agent bridge (`wanderbooks mcp`), tokens in 0600 files under the data root (D-63), the owner's commands, uploads and downloads, `update` and `rollback` (P11a), books homes and how to start an agent in one (P11b) | `ledger-store`, `ledger-mcp`, `ledger-config` |
+| `ledger-host` | the app's books server as the window's child (`app_server`, P15), the headless host and its leases (`serve` alone starts one), the agent bridge (`wanderbooks mcp`, a line to whatever runs), tokens in 0600 files under the data root (D-63), the owner's commands, uploads and downloads, `update` and `rollback` (P11a), books homes and how to start an agent in one (P11b) | `ledger-store`, `ledger-mcp`, `ledger-config` |
 | `ledger-gui` | the viewer: read-only, live, egui, one window with a tab per open company (P15); the Books menu hands work to the server; the agent dock and the first-run page (P11b) | `ledger-core`, `ledger-store`, `ledger-config`, `ledger-import`, `ledger-package`, `ledger-vault`, `ledger-host` |
 | `ledger-cli` | `wanderbooks`, the one executable: every mode (`serve`, `server`, `host`, `mcp`, `gui`, `setup`, `books`, `token`, `connect`, `doctor`, `licenses`, …) and the over-the-wire test suites | everything |
 | `bookspec/checker`, `bookspec/runner` | the example schema and parser, the rule catalogue, the `Engine` trait; the per-rule runner | nothing of ours (the adapter in `ledger-core`'s tests depends on them) |
@@ -432,6 +432,32 @@ inward from the adapter. `just check` runs the bookspec workspace's
 format, clippy and tests beside the wanderbooks workspace's, so an example
 cannot rot (P13 step 1).
 
+## How an assistant, or a command, reaches the books (P15, D-77, D-84)
+
+The desktop app is the host. It starts the books server as its own child
+(`ledger-host`'s `app_server.rs`) and closes it by closing its input. No
+other program on the desktop starts a detached host: a company is reachable
+by an assistant exactly while the app has it open.
+
+- `wanderbooks mcp --book X` (the bridge) is a line to `run/mcp.sock`. With
+  the app closed it answers the assistant in words that Wanderbooks isn't
+  running and how to start it (the app, or `wanderbooks serve` on a computer
+  with no screen); it is never a host and holds no lease unless a headless
+  host holds the root.
+- The owner's commands (`books`, `token`, `connect`, `doctor`, `close`) find
+  what holds the root. With the app (or a `serve` host) running they ask its
+  server. With nothing running, a command that only reads or manages the
+  books' files runs a server of its own for the length of the work and
+  closes it, under the same `run/server.lock` and `run/books.lock`; one that
+  needs a company held open says "Start Wanderbooks first". WB-app-5 has the
+  table, command by command.
+- `wanderbooks serve` keeps the host, its leases, the 10 s close delay, the
+  scrubbed start, the restart onto a replaced program and the daily update
+  look, for the headless build (P9a); it is the only program that starts one.
+- Nothing marks a root as the app's; whose the books are is read from the
+  locks and the admin socket. The `run/app-hosted` file an earlier build
+  wrote is ignored and removed.
+
 ## Self-host: the same server, another account (P9a, D-51)
 
 The books can live on a machine the owner controls (plan 3.8). It is the
@@ -510,15 +536,17 @@ downgrading is theirs). Anything else (an AppImage, whose file is named by
   looks at the feed at most once a day (`update_check` knob; the look is
   noted in `updates/checked`), and only downloads and verifies a newer
   release into `<root>/updates/staged/`. It never swaps. The staged program
-  is applied by an opener just before it starts a host (no host runs, so no
-  call is cut off), after a second check against the key, or by
+  is applied by `wanderbooks serve` just before it starts its host (no host
+  runs, so no call is cut off), after a second check against the key, or by
   `wanderbooks update`, the owner's say-so, which reuses the staged copy. A
   local release is named in `<root>/updates/feed` (a `file://` address, then
   the key file), the same rule as `--trusted-key`;
 - **the owner accepts one in the app**: the viewer reads the staged
   `meta.json` (`Owner::update_waiting`) and shows a notice with "Update
   now", and Books has "Check for updates" (`Owner::check_for_updates`) and
-  "Update to X"; accepting is the host's lease intent `apply_update`, which
+  "Update to X"; accepting is the headless host's lease intent `apply_update`
+  (with no host, the program installs the staged copy itself; the desktop app's
+  own update is an ordinary app update, settled by the packaging unit), which
   installs the staged copy as `update` does and lets the host's own
   replaced-program watch restart onto it once no call runs. `books.start`
   carries the same notice to an agent as `update_waiting`, with a next step

@@ -447,6 +447,35 @@ impl JournalFormat {
     }
 }
 
+/// The format a book's journal declares, read without opening the book:
+/// no lock is taken and nothing is written, and the hash chain is not
+/// verified (this is what the journal says, for a program that only lists
+/// the books while none is open: `wanderbooks books list`). It is the
+/// last `journal.format_set` line, or format 1 for books that never
+/// declared one; a line that can't be read is an `Err`, and so is a
+/// format this version doesn't read.
+pub fn declared_format(book_dir: &std::path::Path) -> Result<JournalFormat, StoreError> {
+    use std::io::BufRead;
+    let file = std::fs::File::open(book_dir.join(crate::store::JOURNAL_FILE))?;
+    let mut format = JournalFormat::default();
+    for raw in std::io::BufReader::new(file).split(b'\n') {
+        let raw = raw?;
+        // Only the declaration lines are read in full.
+        if !raw
+            .windows(FORMAT_SET.len())
+            .any(|window| window == FORMAT_SET.as_bytes())
+        {
+            continue;
+        }
+        if let Ok(line) = JournalLine::parse(&raw)
+            && line.line_type == FORMAT_SET
+        {
+            format = declared(&line)?;
+        }
+    }
+    Ok(format)
+}
+
 /// The journal format this version writes: the newest format it reads,
 /// with every feature it knows, sorted. New books declare it as they are
 /// created ([`crate::Store::create`]), and books in an older format move
@@ -711,6 +740,31 @@ pub(crate) fn settle(refusal: StoreError, hash: &str, next: Option<&[u8]>) -> St
 
 #[cfg(test)]
 mod tests {
+    /// `declared_format` reads what a journal declares with no store open:
+    /// new books declare this version's, a journal that never declared one
+    /// is format 1 (and waits for an upgrade), and the file is untouched.
+    #[test]
+    fn a_format_is_read_from_the_journal_without_opening_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let book = dir.path().join("acme");
+        drop(crate::Store::create(&book, ledger_core::Currency::USD).unwrap());
+        let journal = book.join(crate::store::JOURNAL_FILE);
+        let before = std::fs::read(&journal).unwrap();
+        let declared = super::declared_format(&book).unwrap();
+        assert_eq!(declared, super::current());
+        assert!(declared.upgrade().is_none());
+        assert_eq!(std::fs::read(&journal).unwrap(), before, "nothing written");
+        // Books written before the gate declared nothing: format 1.
+        let old = dir.path().join("old");
+        std::fs::create_dir(&old).unwrap();
+        std::fs::write(old.join(crate::store::JOURNAL_FILE), b"").unwrap();
+        let declared = super::declared_format(&old).unwrap();
+        assert_eq!(declared, super::JournalFormat::default());
+        assert!(declared.upgrade().is_some());
+        // No journal at all is an error, not format 1.
+        assert!(super::declared_format(&dir.path().join("nope")).is_err());
+    }
+
     use super::*;
     use crate::store::{Store, apply_line_to_sqlite, replay_line_into_ledger};
     use ledger_core::{Currency, Ledger};

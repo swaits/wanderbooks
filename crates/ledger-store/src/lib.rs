@@ -49,7 +49,7 @@ pub mod winsec;
 
 pub use blob::BlobStore;
 pub use error::StoreError;
-pub use format::{FormatUpgrade, JournalFormat, SUPPORTED_JOURNAL_FORMAT};
+pub use format::{FormatUpgrade, JournalFormat, SUPPORTED_JOURNAL_FORMAT, declared_format};
 pub use journal::{GENESIS_PREV, JournalLine, JournalWriter};
 pub use snapshot::{DiskCheck, Snapshot};
 pub use store::audit;

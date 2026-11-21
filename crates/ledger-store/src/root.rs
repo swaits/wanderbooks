@@ -809,14 +809,18 @@ impl Root {
         let (books, _) = self.private_subdir(BOOKS_DIR, false)?;
         let mut ids = Vec::new();
         for entry in std::fs::read_dir(books)? {
-            let entry = entry?;
+            // A folder that vanishes while the list is made (a book put
+            // aside or removed meanwhile) is not one of the books.
+            let Ok(entry) = entry else { continue };
             let Some(name) = entry.file_name().to_str().map(str::to_string) else {
                 continue;
             };
             let Ok(id) = BookId::parse(&name) else {
                 continue;
             };
-            if entry.file_type()?.is_dir() && entry.path().join(JOURNAL_FILE).is_file() {
+            if entry.file_type().is_ok_and(|t| t.is_dir())
+                && entry.path().join(JOURNAL_FILE).is_file()
+            {
                 ids.push(id);
             }
         }

@@ -829,13 +829,13 @@ pub fn books(
     common.ask_upgrades = !matches!(words.as_slice(), ["upgrade", ..]);
     let answer = match words.as_slice() {
         ["list"] => match listed_while_closed(&common) {
-            Ok(Some(ids)) => {
-                if ids.is_empty() {
+            Ok(Some(listed)) => {
+                if listed.is_empty() {
                     println!("No books yet: `wanderbooks books create ID` starts some.");
                 }
-                for id in ids {
+                for (id, upgrade) in listed {
                     println!(
-                        "{id}  not open: Wanderbooks isn't running (start it, or run `wanderbooks serve`, to open it)"
+                        "{id}  not open: Wanderbooks isn't running (start it, or run `wanderbooks serve`, to open it){upgrade}"
                     );
                 }
                 return Ok(());
@@ -1032,8 +1032,13 @@ pub fn books(
 /// The books of the root by name, read from the folder and no more, when
 /// nothing runs: no host and no server holds the root, so there is no open
 /// or closed to tell, and nothing is changed or read of the books, which
-/// is why it takes no lock (WB-app-5). `None` when something runs: ask it.
-fn listed_while_closed(common: &Common) -> Result<Option<Vec<String>>, String> {
+/// is why it takes no lock (WB-app-5), with what each waits for in words:
+/// a format upgrade is read from what the journal declares
+/// (`ledger_store::declared_format`: no lock, nothing written, the chain
+/// not verified, so it says what the books declare and no more), and a
+/// journal that can't be read says so and is not skipped. `None` when
+/// something runs: ask it.
+fn listed_while_closed(common: &Common) -> Result<Option<Vec<(String, String)>>, String> {
     let found =
         ledger_store::root::Root::find(common.root.as_deref()).map_err(|e| e.to_string())?;
     let run = found.run_dir().map_err(|e| e.to_string())?;
@@ -1041,7 +1046,27 @@ fn listed_while_closed(common: &Common) -> Result<Option<Vec<String>>, String> {
         return Ok(None);
     }
     let ids = found.list_books().map_err(|e| e.to_string())?;
-    Ok(Some(ids.iter().map(|id| id.to_string()).collect()))
+    Ok(Some(
+        ids.iter()
+            .filter_map(|id| {
+                let waits = match ledger_store::declared_format(&found.book_dir(id)) {
+                    Ok(declared) if declared.upgrade().is_some() => {
+                        format!("; waiting for a format upgrade (`wanderbooks books upgrade {id}`)")
+                    }
+                    Ok(_) => String::new(),
+                    // A book that vanished since the list is not one of the
+                    // books; one that can't be read says why.
+                    Err(ledger_store::StoreError::Io(e))
+                        if e.kind() == std::io::ErrorKind::NotFound =>
+                    {
+                        return None;
+                    }
+                    Err(e) => format!("; its format isn't known: {e}"),
+                };
+                Some((id.to_string(), waits))
+            })
+            .collect(),
+    ))
 }
 
 fn book_line(b: &admin::BookStatus) -> String {

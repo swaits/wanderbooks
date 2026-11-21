@@ -35,6 +35,7 @@
 //!       on the record, and a repeated request key answers what the first
 //!       call answered and writes nothing.
 //! SOURCE: WB-format-8, WB-format-9, WB-format-10, WB-format-11, WB-format-12;
+//!         bookspec law 47 (lean/Bookspec/Calls.lean: invariants 1, 2 and 5);
 //!         plan/p15-app-and-relay.md 2a (D-88, D-89).
 //! INVARIANTS:
 //!   1. Replay applies a call's lines only at its `ok` closing line, in

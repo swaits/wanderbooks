@@ -51,6 +51,11 @@ and the documents (tagged lines, control accounts, sends).
   keeps, so every law about balances, statements and periods holds across
   them with nothing to prove. Some keep a register with rules of its own
   (the note says which); see "Registers" below.
+- **A tool call is a `Steps` run, not a step.** A call that writes is a
+  run of legal steps (a `Steps` run), so no `Step` constructor was added
+  for it: bookspec's law 47 (`Calls.call_preserves_inv`, `Calls.replay_inv`)
+  proves a replay of the counted steps of the journal's frames is
+  reachable and keeps the invariant. See `docs/verification.md` law 47.
 - **Several steps in one command** run inside `Ledger::atomically`: all
   of them happen or none does.
 

@@ -596,3 +596,109 @@ fn a_call_that_rebuilds_the_projection_still_commits() {
     let s = Store::open(tmp.path()).unwrap();
     s.verify().unwrap();
 }
+
+/// The closing line is on disk but the projection can't be brought up to
+/// it: the call committed, and is not reported as if it hadn't. The store
+/// says so in words, takes no more writes, and the next open rebuilds the
+/// projection from the journal with the call's effects in it (SCENARIO 4).
+#[test]
+fn a_closing_line_on_disk_but_sqlite_failing_is_a_call_that_counts() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut s = books(tmp.path());
+    // From the closing line on, the projection refuses every write: the
+    // call writes a begin line, a draft and two lines (four), then closes.
+    let closing_seq = lines_of(tmp.path()).last().unwrap().seq + 5;
+    let db_file = tmp.path().join(s.database_file());
+    let db = rusqlite::Connection::open(&db_file).unwrap();
+    db.execute_batch(&format!(
+        "CREATE TRIGGER wb_test_refuses BEFORE UPDATE ON meta \
+         WHEN NEW.key = 'last_applied_seq' AND CAST(NEW.value AS INTEGER) >= {closing_seq} \
+         BEGIN SELECT RAISE(ABORT, 'a test refuses this write'); END;"
+    ))
+    .unwrap();
+    drop(db);
+    s.begin_call(id("key-commit-0001")).unwrap();
+    draft(&mut s, "Counts");
+    assert_eq!(lines_of(tmp.path()).last().unwrap().seq + 1, closing_seq);
+    let err = s
+        .close_call(CallEnd::Done(r#"{"entry_id":1}"#))
+        .unwrap_err();
+    let StoreError::CallCommitted(why) = &err else {
+        panic!("expected CallCommitted, got {err:?}");
+    };
+    assert!(why.contains("counts"), "{why}");
+    assert!(!why.contains("none of it counts"), "{why}");
+    // The record says ok, and the key is kept: a repeat is the first answer.
+    let last = lines_of(tmp.path()).into_iter().last().unwrap();
+    assert_eq!(closed_of(&last).unwrap().outcome, CallOutcome::Ok);
+    assert_eq!(
+        answer_of(&kept(&s, "token-1", "key-commit-0001").unwrap()),
+        r#"{"entry_id":1}"#
+    );
+    // No more writes until the books are opened again.
+    assert!(matches!(
+        s.begin_call(id("key-commit-0002")),
+        Err(StoreError::CallRefused(_))
+    ));
+    drop(s);
+    rusqlite::Connection::open(&db_file)
+        .unwrap()
+        .execute_batch("DROP TRIGGER wb_test_refuses")
+        .unwrap();
+    let s = Store::open(tmp.path()).unwrap();
+    assert_eq!(
+        s.ledger().get_entry(1).map(|e| e.description()),
+        Some("Counts")
+    );
+    assert_eq!(
+        answer_of(&kept(&s, "token-1", "key-commit-0001").unwrap()),
+        r#"{"entry_id":1}"#
+    );
+    s.verify().unwrap();
+}
+
+/// The projection refuses a call's begin line itself: the line is on disk,
+/// so the frame is open and the call must close it (`failed`). Left open,
+/// the next call would begin inside it and the journal would be corrupt.
+#[test]
+fn a_call_whose_begin_line_the_projection_refuses_still_closes_its_frame() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut s = books(tmp.path());
+    let begin_seq = lines_of(tmp.path()).last().unwrap().seq + 1;
+    let db_file = tmp.path().join(s.database_file());
+    let db = rusqlite::Connection::open(&db_file).unwrap();
+    db.execute_batch(&format!(
+        "CREATE TRIGGER wb_test_refuses BEFORE UPDATE ON meta \
+         WHEN NEW.key = 'last_applied_seq' AND CAST(NEW.value AS INTEGER) = {begin_seq} \
+         BEGIN SELECT RAISE(ABORT, 'a test refuses this write'); END;"
+    ))
+    .unwrap();
+    drop(db);
+    s.begin_call(id("key-begin-0001")).unwrap();
+    assert!(s.create_entry(d(2026, 1, 5), "Never").is_err());
+    s.close_call(CallEnd::Failed("the projection refused it"))
+        .ok();
+    drop(s);
+    rusqlite::Connection::open(&db_file)
+        .unwrap()
+        .execute_batch("DROP TRIGGER wb_test_refuses")
+        .unwrap();
+    let all = lines_of(tmp.path());
+    assert_eq!(
+        all.last().unwrap().line_type,
+        "call.closed",
+        "{:?}",
+        types_of(tmp.path())
+    );
+    assert_eq!(
+        closed_of(all.last().unwrap()).unwrap().outcome,
+        CallOutcome::Failed
+    );
+    // The books open, and the next call begins on a closed frame.
+    let mut s = Store::open(tmp.path()).unwrap();
+    s.begin_call(id("key-begin-0002")).unwrap();
+    draft(&mut s, "Fine");
+    s.close_call(CallEnd::Done("{}")).unwrap();
+    drop(s);
+    Store::open(tmp.path()).unwrap().verify().unwrap();
+}

@@ -325,11 +325,11 @@ fn consolidation_never_removes_an_entrys_only_evidence() {
     let (_root, fixture) = legacy_duplicates("dupes-only", true);
     let books = Books::placed("p6-dupes-only", &fixture);
     let mut w = books.session("evidence");
-    let before = books.journal();
+    let before = books.journal_raw();
     let r = w.call("books.consolidate_duplicates", json!({"confirmed": true}));
     let why = answer_of(&r).unwrap_err();
     assert!(why.contains("receipt_required"), "{why}");
-    assert_eq!(books.journal(), before, "a refusal journals nothing");
+    assert_eq!(books.journal_raw(), before, "a refusal journals nothing");
 }
 
 /// Plan P6 step 4: the kept file takes every subject the duplicates had;
@@ -351,8 +351,8 @@ fn consolidation_links_the_kept_file_to_every_subject() {
     assert_eq!(preview["status"], "preview");
     assert_eq!(preview["groups"][0]["keep"], 1);
     assert_eq!(preview["groups"][0]["withdraw"], json!([2]));
-    let before = books.journal();
-    assert_eq!(before, books.journal(), "a preview journals nothing");
+    let before = books.journal_raw();
+    assert_eq!(before, books.journal_raw(), "a preview journals nothing");
     let r = w.call("books.consolidate_duplicates", json!({"confirmed": true}));
     let out = answer_of(&r).unwrap();
     assert_eq!(out["status"], "consolidated", "{out}");
@@ -413,7 +413,7 @@ fn the_backfill_reads_an_old_fixtures_files_once() {
     // Attachment 1 is a PDF (one page with text), 2 a text file, 3 a
     // Markdown document.
     for id in 1..=2 {
-        let before = books.journal();
+        let before = books.journal_raw();
         let r = w.call("books.get_receipt", json!({"attachment_id": id}));
         let out = answer_of(&r).unwrap();
         assert_eq!(out["text_status"], "not_extracted", "{out}");
@@ -425,7 +425,11 @@ fn the_backfill_reads_an_old_fixtures_files_once() {
             ledger_mcp::admin::Response::Extracted { status, .. } => assert_eq!(status, "ok"),
             other => panic!("{other:?}"),
         }
-        assert_ne!(books.journal(), before, "the backfill journals a record");
+        assert_ne!(
+            books.journal_raw(),
+            before,
+            "the backfill journals a record"
+        );
     }
     // The PDF's text is readable now, and its pages render.
     let r = w.call("books.get_receipt", json!({"attachment_id": 1}));
@@ -446,18 +450,18 @@ fn the_backfill_reads_an_old_fixtures_files_once() {
         common::clean_env(&mut extract, books.home.dir.path());
         extract.output().unwrap()
     };
-    let before = books.journal();
+    let before = books.journal_raw();
     let out = run();
     assert!(out.status.success(), "{out:?}");
     assert!(
         String::from_utf8_lossy(&out.stdout).contains("Read attachment 3"),
         "{out:?}"
     );
-    assert_ne!(books.journal(), before, "the command journals a record");
-    let after = books.journal();
+    assert_ne!(books.journal_raw(), before, "the command journals a record");
+    let after = books.journal_raw();
     let out = run();
     assert!(out.status.success(), "{out:?}");
-    assert_eq!(books.journal(), after, "an extract journals once");
+    assert_eq!(books.journal_raw(), after, "an extract journals once");
     books.start();
     let mut w = books.session("evidence");
     let r = w.call("books.verify", json!({}));

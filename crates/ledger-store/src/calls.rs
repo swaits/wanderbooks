@@ -612,6 +612,19 @@ pub fn committed(lines: &[JournalLine]) -> Result<Vec<JournalLine>, StoreError> 
         .collect())
 }
 
+/// A call's tag: 16 lowercase hex digits naming it in file names outside
+/// the journal (a staged vault record), derived from its token and key,
+/// so a later open can ask the journal whether that call committed
+/// ([`Store::call_committed`]).
+pub fn call_tag(token: &str, key: &str) -> String {
+    let mut h = Sha256::new();
+    h.update(b"wanderbooks-call\0");
+    h.update(token.as_bytes());
+    h.update(b"\0");
+    h.update(key.as_bytes());
+    hex::encode(&h.finalize()[..8])
+}
+
 /// HMAC-SHA256 (RFC 2104) of `msg` under `key`, hex.
 pub(crate) fn hmac_sha256_hex(key: &[u8], msg: &[u8]) -> String {
     const BLOCK: usize = 64;
@@ -773,6 +786,15 @@ impl Store {
         }))
     }
 
+    /// Whether the call with this tag ([`call_tag`]) committed with lines
+    /// on the journal: its closing line says `ok`.
+    pub fn call_committed(&self, tag: &str) -> bool {
+        self.keys
+            .by
+            .keys()
+            .any(|(token, key)| call_tag(token, key) == tag)
+    }
+
     /// The table's sizes: calls with lines, and the session's calls that
     /// wrote none with the bytes of their answers.
     pub fn call_table(&self) -> (usize, (usize, usize)) {
@@ -834,10 +856,14 @@ impl Store {
             return Ok(());
         }
         let line = self.journal.append(BEGUN, begun_payload(&call.id))?;
-        apply_line_to_sqlite(&self.conn, &line)?;
+        // The frame is open from the moment its line is on disk, whatever
+        // the projection says next: a call that fails here must close it
+        // (`failed`), or the next call would begin inside it (a corrupt
+        // journal).
         if let Some(call) = &mut self.call {
             call.begun = Some(line.seq);
         }
+        apply_line_to_sqlite(&self.conn, &line)?;
         Ok(())
     }
 

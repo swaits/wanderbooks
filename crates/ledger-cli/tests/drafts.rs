@@ -397,7 +397,7 @@ fn stale_preview_refused() {
         json!({"entry_id": id, "account": "1000", "side": "credit", "amount": "1.00"}),
     ))
     .unwrap();
-    let before = books.journal();
+    let before = books.journal_raw();
     let r = w.call_raw(
         "books.post_entry",
         json!({"entry_id": id, "confirmed": true, "preview": digest}),
@@ -405,7 +405,11 @@ fn stale_preview_refused() {
     let err = refusal(&r);
     assert_eq!(err["code"], "stale_preview");
     assert_eq!(err["remedy_tool"], "books.post_entry");
-    assert_eq!(books.journal(), before, "a stale confirm writes nothing");
+    assert_eq!(
+        books.journal_raw(),
+        before,
+        "a stale confirm writes nothing"
+    );
     // An operation's preview moves with the journal's head: a post by
     // another session in between forces a re-preview.
     let other = draft(&mut w, "2026-03-02", "Other", "5.00");

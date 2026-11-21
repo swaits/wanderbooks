@@ -787,7 +787,7 @@ fn tin_bearing_files_are_refused_when_given_back_to_be_filed() {
     let handed_over = [w9_back, mcp.handed(&ws["csv"]), mcp.handed(&pkg["file"])];
     // Given back, each is refused by its bytes, by every way a file is
     // filed.
-    let journal = books.journal();
+    let journal = books.journal_raw();
     for (n, bytes) in handed_over.iter().enumerate() {
         // One upload, refused by each tool and so left for the next.
         let up = mcp.upload(bytes, "receipt.pdf", "application/pdf", "receipt");
@@ -3314,7 +3314,7 @@ fn files_pass_only_by_handle_in_and_out() {
     );
     mcp.call("books.import_chart_csv", json!({"upload_id": chart}));
     // In: an inline file is refused as unknown, storing nothing.
-    let journal = books.journal();
+    let journal = books.journal_raw();
     for (name, args) in [
         (
             "books.attach_receipt",
@@ -3334,7 +3334,11 @@ fn files_pass_only_by_handle_in_and_out() {
             "{name}: {resp}"
         );
     }
-    assert_eq!(books.journal(), journal, "an inline file stored something");
+    assert_eq!(
+        books.journal_raw(),
+        journal,
+        "an inline file stored something"
+    );
     // A posted entry with its receipt, and an asset with its tag.
     let receipt = b"%PDF-1.4 a receipt for the laptop";
     let e = mcp.call(

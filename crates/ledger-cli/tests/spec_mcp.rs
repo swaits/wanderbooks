@@ -224,11 +224,15 @@ impl Mcp {
         mcp
     }
 
-    /// The journal, without the frames of tool calls (D-88).
+    /// The journal, without the frames of tool calls (D-88): the events.
     fn journal(&self) -> Vec<u8> {
-        common::without_call_lines(
-            &std::fs::read(self.data.join("journal.jsonl")).unwrap_or_default(),
-        )
+        common::without_call_lines(&self.journal_raw())
+    }
+
+    /// The journal, byte for byte: what a check that a refusal or a
+    /// preview "journaled nothing" compares, so a stray frame line is seen.
+    fn journal_raw(&self) -> Vec<u8> {
+        std::fs::read(self.data.join("journal.jsonl")).unwrap_or_default()
     }
 
     /// What a read-only tool must leave as it was: every file of the books
@@ -288,7 +292,7 @@ impl Mcp {
 
     /// Call a tool and check invariants 1, 2, 3 and 7 on the outcome.
     fn tool(&mut self, name: &str, args: Value) -> Out {
-        let before = self.journal();
+        let before = self.journal_raw();
         let files = self.read_only(name).then(|| self.data_files());
         let resp = common::tools_call(|m, p| self.rpc(m, p), name, args.clone());
         let out = if let Some(err) = resp.get("error") {
@@ -308,13 +312,13 @@ impl Mcp {
         };
         if out.refused() {
             assert!(
-                self.journal() == before,
+                self.journal_raw() == before,
                 "invariant 2: refused {name} {args} changed the journal ({out:?})"
             );
         }
         if let Some(files) = files {
             assert!(
-                self.journal() == before,
+                self.journal_raw() == before,
                 "readOnlyHint: {name} {args} changed the journal"
             );
             assert_eq!(
@@ -1953,16 +1957,16 @@ fn inv4_post_and_reverse_preview_without_confirmed() {
         json!({"entry_id": e, "confirmed": false}),
         json!({"entry_id": e, "confirmed": null}),
     ] {
-        let before = m.journal();
+        let before = m.journal_raw();
         let p = m.ok("books.post_entry", args.clone());
         assert_eq!(p["status"], "preview", "{args}: {p}");
-        assert!(m.journal() == before, "post_entry preview {args} wrote");
+        assert!(m.journal_raw() == before, "post_entry preview {args} wrote");
         assert_eq!(m.entry_status(e), "draft");
     }
-    let before = m.journal();
+    let before = m.journal_raw();
     let posted = m.post(e).ok("confirmed post");
     assert_eq!(posted["status"], "posted");
-    assert!(m.journal() != before, "confirmed post wrote nothing");
+    assert!(m.journal_raw() != before, "confirmed post wrote nothing");
     assert_eq!(m.entry_status(e), "posted");
 
     let rev = json!({"entry_id": e, "date": "2026-04-02", "description": "undo"});
@@ -1971,17 +1975,20 @@ fn inv4_post_and_reverse_preview_without_confirmed() {
         args.as_object_mut()
             .unwrap()
             .extend(extra.as_object().unwrap().clone());
-        let before = m.journal();
+        let before = m.journal_raw();
         let p = m.ok("books.reverse_entry", args.clone());
         assert_eq!(p["status"], "preview", "{args}: {p}");
-        assert!(m.journal() == before, "reverse_entry preview {args} wrote");
+        assert!(
+            m.journal_raw() == before,
+            "reverse_entry preview {args} wrote"
+        );
     }
     let mut args = rev;
     args["confirmed"] = json!(true);
-    let before = m.journal();
+    let before = m.journal_raw();
     let r = m.ok("books.reverse_entry", args);
     assert_eq!(r["status"], "posted", "{r}");
-    assert!(m.journal() != before);
+    assert!(m.journal_raw() != before);
     let tb = m.ok("books.trial_balance", json!({"as_of": "2026-12-31"}));
     assert_eq!(tb["balanced"], true);
 }
@@ -2002,7 +2009,7 @@ fn a_reversal_dated_before_its_entry_is_refused_in_preview_and_post() {
     );
     m.attach(Some(e), b"rent receipt");
     m.post(e).ok("post");
-    let before = m.journal();
+    let before = m.journal_raw();
     for confirmed in [None, Some(false), Some(true)] {
         let mut args = json!({"entry_id": e, "date": "2026-05-09", "description": "early"});
         if let Some(c) = confirmed {
@@ -2014,7 +2021,7 @@ fn a_reversal_dated_before_its_entry_is_refused_in_preview_and_post() {
             "{why}"
         );
     }
-    assert!(m.journal() == before, "a refused reversal wrote");
+    assert!(m.journal_raw() == before, "a refused reversal wrote");
     let p = m.ok(
         "books.reverse_entry",
         json!({"entry_id": e, "date": "2026-05-10", "description": "same day"}),
@@ -2147,7 +2154,7 @@ fn inv5_bad_threshold_refused_when_set() {
     let dir = test_dir("inv5-set");
     let toml = books_toml(&dir, "25.00", "");
     let mut m = Mcp::start(&dir, &toml);
-    let before = m.journal();
+    let before = m.journal_raw();
     assert!(!before.is_empty(), "the books keep a journal");
     for bad in ["-1", "abc", "-0.01", "", "1,000", "ten"] {
         m.refuse(
@@ -2156,7 +2163,11 @@ fn inv5_bad_threshold_refused_when_set() {
                    "decided_by": "Test Owner"}),
         );
     }
-    assert_eq!(m.journal(), before, "a refused threshold journals nothing");
+    assert_eq!(
+        m.journal_raw(),
+        before,
+        "a refused threshold journals nothing"
+    );
     let rule = m.ok("books.settings", json!({}))["receipt_rule"].clone();
     assert!(rule.as_str().unwrap().contains("25.00"), "{rule}");
 }

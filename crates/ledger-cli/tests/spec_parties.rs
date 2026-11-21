@@ -107,11 +107,15 @@ impl Mcp {
         mcp
     }
 
-    /// The journal, without the frames of tool calls (D-88).
+    /// The journal, without the frames of tool calls (D-88): the events.
     fn journal(&self) -> Vec<u8> {
-        common::without_call_lines(
-            &std::fs::read(self.data.join("journal.jsonl")).unwrap_or_default(),
-        )
+        common::without_call_lines(&self.journal_raw())
+    }
+
+    /// The journal, byte for byte: what a check that a refusal or a
+    /// preview "journaled nothing" compares, so a stray frame line is seen.
+    fn journal_raw(&self) -> Vec<u8> {
+        std::fs::read(self.data.join("journal.jsonl")).unwrap_or_default()
     }
 
     /// The journal's line types, in order.
@@ -154,7 +158,7 @@ impl Mcp {
     /// Call a tool; a refusal must leave the journal unchanged, a success
     /// must match the outputSchema.
     fn tool(&mut self, name: &str, args: Value) -> Out {
-        let before = self.journal();
+        let before = self.journal_raw();
         let resp = common::tools_call(|m, p| self.rpc(m, p), name, args.clone());
         let out = if let Some(err) = resp.get("error") {
             Out::RpcErr(err.clone())
@@ -184,7 +188,7 @@ impl Mcp {
         };
         if out.refused() {
             assert!(
-                self.journal() == before,
+                self.journal_raw() == before,
                 "refused {name} {args} changed the journal ({out:?})"
             );
         }
@@ -211,10 +215,10 @@ impl Mcp {
 
     /// `ok`, and the journal must not change (read-only tools).
     fn read_only(&mut self, name: &str, args: Value) -> Value {
-        let before = self.journal();
+        let before = self.journal_raw();
         let v = self.ok(name, args);
         assert!(
-            self.journal() == before,
+            self.journal_raw() == before,
             "read-only {name} changed the journal"
         );
         v
@@ -1227,13 +1231,13 @@ fn require_refuses_until_tagged_or_marked_none() {
         json!({}),
         &[("6999", "debit", "5.00"), ("1000", "credit", "5.00")],
     );
-    let before = m.journal();
+    let before = m.journal_raw();
     let e = m.refuse(
         "books.post_entry",
         json!({"entry_id": id, "confirmed": true}),
     );
     assert!(e.contains("party_required"), "{e}");
-    assert_eq!(m.journal(), before, "refusal journals nothing");
+    assert_eq!(m.journal_raw(), before, "refusal journals nothing");
     m.ok(
         "books.set_entry_party",
         json!({"entry_id": id, "party": bank.to_string()}),
@@ -1611,10 +1615,10 @@ fn under_require_engine_postings_name_their_counterparty() {
     let sale = json!({"asset_id": sold, "date": "2026-06-30", "proceeds": "500.00",
                       "proceeds_account": "1000", "gain_loss_account": "7100",
                       "confirmed": true});
-    let before = m.journal();
+    let before = m.journal_raw();
     let e = m.refuse("books.dispose_asset", sale.clone());
     assert!(e.contains("party_required"), "{e}");
-    assert!(m.journal() == before, "refused, nothing journaled");
+    assert!(m.journal_raw() == before, "refused, nothing journaled");
     let mut with_buyer = sale;
     with_buyer["buyer"] = json!("Buyer Co");
     let d = m.ok("books.dispose_asset", with_buyer);

@@ -6,7 +6,7 @@
 //! GOAL: a write whose answer is lost and which is then retried happens
 //!       once; a call half done is never left looking done; a failed
 //!       write is on the record.
-//! SOURCE: WB-format-8, WB-format-9, WB-format-10, WB-format-11;
+//! SOURCE: WB-format-8, WB-format-9, WB-format-10, WB-format-11, WB-format-12;
 //!         plan/p15-app-and-relay.md 2a.
 //! INVARIANTS:
 //!   1. Every tool that can change anything (no readOnlyHint, but for
@@ -19,16 +19,30 @@
 //!   2. A write call runs alone among writes: they take turns, so a
 //!      call's lines are one run in the journal, and a repeat that
 //!      arrives while its original still runs waits for it, then gets its
-//!      answer.
+//!      answer. Nothing else touches the books while a call that has
+//!      written a line is open: a read that arrives between the tool's
+//!      return and its closing line waits for the close
+//!      (`BooksServer::lock`), so no read ever shows what a call did
+//!      before the call committed. A call that has written no line has
+//!      nothing to show, and leaves reads free (a backup can take long).
 //!   3. A repeat of a (token, key) whose call committed, with the same
 //!      tool and arguments, returns that call's answer as it was given and
 //!      writes nothing; with other arguments (or another tool) it is
-//!      refused as a misuse of the key. The access log records a repeat
-//!      as `repeat`.
-//!   4. A call that answered ok commits with a closing line holding its
-//!      answer; one that answered with an error, was stopped by a close or
-//!      failed by any other means rolls back, is journaled as `failed`
-//!      when it had written lines, and leaves its key unused.
+//!      refused as a misuse of the key. "The same arguments" is a keyed
+//!      digest of them, tax ids included (ledger_store::calls::args_mac),
+//!      so two requests that differ only in a tax id are two requests. A
+//!      call whose answer was too long to keep is repeated in words: it
+//!      was done, its lines are named, nothing is done again. The access
+//!      log records a repeat as `repeat`.
+//!   4. A call that answered ok and wrote lines commits with a closing
+//!      line holding its answer; one that answered with an error, was
+//!      stopped by a close or failed by any other means rolls back, is
+//!      journaled as `failed` when it had written lines, and leaves its
+//!      key unused. A call that wrote no line leaves no line at all: its
+//!      key and answer are kept in memory for the life of the server.
+//!      Nothing a tool writes outside the journal (the tax-id vault)
+//!      is final before the call commits: it is staged, and settled
+//!      after the closing line (`vault_stage`).
 //!   5. Books that haven't declared call_transactions take no write: every
 //!      write call is refused with the upgrade remedy, before it runs.
 //!      Reads are never refused for it.
@@ -180,11 +194,136 @@ fn refusal(text: String) -> CallToolResponse {
     ]))
 }
 
+thread_local! {
+    /// The tag of the call open on this thread (`ledger_store::calls::
+    /// call_tag`): what its staged vault records are named by.
+    static CALL_TAG: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+    /// Whether this thread runs the call that is open: the only request
+    /// that may touch the books until its closing line (INVARIANT 2).
+    static OWNS_CALL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether the request on this thread is the one whose call is open.
+pub(crate) fn owns_call() -> bool {
+    OWNS_CALL.with(std::cell::Cell::get)
+}
+
+/// The tag of the call open on this thread, if one is: a tool that
+/// writes outside the journal (the tax-id vault) stages its write under
+/// it, and the write is made final or dropped when the call closes
+/// (INVARIANT 4). None outside a call: the write is final at once.
+pub(crate) fn vault_tag() -> Option<String> {
+    CALL_TAG.with(|t| t.borrow().clone())
+}
+
+/// Store a party's TIN for the call open on this thread: staged until the
+/// call commits (INVARIANT 4); final at once outside a call.
+pub(crate) fn put_tin(
+    vault: &ledger_vault::Vault,
+    party: u64,
+    tin: &ledger_vault::Tin,
+) -> Result<String, ledger_vault::Error> {
+    match vault_tag() {
+        Some(tag) => vault.stage_tin(party, tin, &tag),
+        None => vault.put_tin(party, tin),
+    }
+}
+
+/// Store a party's W-9 file for the call open on this thread, as
+/// [`put_tin`].
+pub(crate) fn put_w9(
+    vault: &ledger_vault::Vault,
+    party: u64,
+    file: &ledger_vault::W9File,
+) -> Result<String, ledger_vault::Error> {
+    match vault_tag() {
+        Some(tag) => vault.stage_w9(party, file, &tag),
+        None => vault.put_w9(party, file),
+    }
+}
+
+/// Purge what the vault in `dir` holds for a party for the call open on
+/// this thread: set aside until the call commits, put back if it fails
+/// (INVARIANT 4); deleted at once outside a call.
+pub(crate) fn purge_records(
+    dir: &std::path::Path,
+    party: u64,
+) -> Result<bool, ledger_vault::Error> {
+    match vault_tag() {
+        Some(tag) => ledger_vault::stage_purge(dir, party, &tag),
+        None => ledger_vault::purge_records(dir, party),
+    }
+}
+
+/// Apply the outcome of the call `tag` to the vault records it staged
+/// (`ledger_vault::settle`).
+fn settle_vault(store: &ledger_store::Store, tag: &str, committed: bool) -> Result<(), String> {
+    let dir = store.data_dir().join(ledger_store::root::VAULT_DIR);
+    ledger_vault::settle(&dir, tag, committed)
+        .map(|_| ())
+        .map_err(|e| format!("the TIN vault's staged records could not be settled: {e}"))
+}
+
+/// At start: the staged vault records a crash left, each settled by what
+/// the journal says of its call (INVARIANT 4): final if the call
+/// committed, dropped (or a purge undone) if not. Said on stderr, never
+/// failing the open.
+pub(crate) fn recover_vault(store: &ledger_store::Store) {
+    let dir = store.data_dir().join(ledger_store::root::VAULT_DIR);
+    let Ok(tags) = ledger_vault::pending_tags(&dir) else {
+        return;
+    };
+    for tag in tags {
+        let committed = store.call_committed(&tag);
+        match ledger_vault::settle(&dir, &tag, committed) {
+            Ok(done) => eprintln!(
+                "wanderbooks: a call left tax-id vault records unsettled; its call {} (made final {}, dropped {}, purged {}, put back {})",
+                if committed {
+                    "committed"
+                } else {
+                    "did not commit"
+                },
+                done.promoted,
+                done.dropped,
+                done.purged,
+                done.restored
+            ),
+            Err(e) => {
+                eprintln!("wanderbooks: tax-id vault records of a call could not be settled: {e}")
+            }
+        }
+    }
+}
+
+/// What a repeat of a call whose answer was too long to keep is told.
+fn done_in_words(tool: &str, replay: &ledger_store::calls::Replay) -> String {
+    use ledger_store::calls::Replay;
+    match replay {
+        Replay::Answer(_) => String::new(),
+        Replay::Summary {
+            first_seq,
+            last_seq,
+            closed_seq,
+            answer_sha256,
+            answer_bytes,
+        } => format!(
+            "this request_key was already used for this very call: {tool} was done, and nothing more was changed. Its answer ({answer_bytes} bytes, SHA-256 {answer_sha256}) was too long for the books to keep, so it can't be given again. What it did is journal lines {first_seq} to {last_seq}, closed by line {closed_seq}: books.journal_history with after_seq {} lists them",
+            first_seq.saturating_sub(1)
+        ),
+    }
+}
+
 /// Open a call (INVARIANTS 3, 5): refuse it if the books take no calls;
 /// answer it from the books if its key already committed; otherwise open
 /// it. Takes the store's lock for the moment it needs; the caller holds
-/// the write turn (`SharedStore::write_turn`).
-pub(crate) fn begin(server: &BooksServer, id: CallId) -> Result<Begun, String> {
+/// the write turn (`SharedStore::write_turn`). `arguments` are the call's,
+/// the request key already taken out: their keyed digest is what a repeat
+/// is compared by.
+pub(crate) fn begin(
+    server: &BooksServer,
+    mut id: CallId,
+    arguments: Option<&Map<String, Value>>,
+) -> Result<Begun, String> {
     let mut store = server.lock()?;
     if let Err(e) = store.ensure_takes_calls() {
         return Ok(Begun::Answer(
@@ -192,21 +331,34 @@ pub(crate) fn begin(server: &BooksServer, id: CallId) -> Result<Begun, String> {
             UPGRADE_PENDING,
         ));
     }
-    if let Some(kept) = store.recorded_call(&id.token, &id.key) {
+    let args = Value::Object(arguments.cloned().unwrap_or_default());
+    id.args = store.args_mac(&args).map_err(|e| e.to_string())?;
+    if let Some(kept) = store
+        .recorded_call(&id.token, &id.key)
+        .map_err(|e| e.to_string())?
+    {
         if kept.tool == id.tool && kept.args == id.args {
-            return match serde_json::from_str::<CallToolResult>(&kept.answer) {
-                Ok(answer) => Ok(Begun::Answer(
-                    Box::new(CallToolResponse::Complete(answer)),
+            return match kept.replay {
+                ledger_store::calls::Replay::Answer(text) => {
+                    match serde_json::from_str::<CallToolResult>(&text) {
+                        Ok(answer) => Ok(Begun::Answer(
+                            Box::new(CallToolResponse::Complete(answer)),
+                            REPEAT,
+                        )),
+                        Err(e) => Err(format!(
+                            "the answer kept for this request_key can't be read back: {e}"
+                        )),
+                    }
+                }
+                summary => Ok(Begun::Answer(
+                    Box::new(refusal(done_in_words(&id.tool, &summary))),
                     REPEAT,
-                )),
-                Err(e) => Err(format!(
-                    "the answer kept for this request_key can't be read back: {e}"
                 )),
             };
         }
         return Ok(Begun::Answer(
             Box::new(refusal(format!(
-                "this request_key was already used for {} with other arguments, so the call was not run and nothing was changed. A key names one action: send this one again with a key of its own",
+                "this request_key was already used for {} with other arguments (or the books' record of the first can't be matched), so the call was not run and nothing was changed. A key names one action: send this one again with a key of its own",
                 if kept.tool == id.tool {
                     "the same tool".to_string()
                 } else {
@@ -216,7 +368,10 @@ pub(crate) fn begin(server: &BooksServer, id: CallId) -> Result<Begun, String> {
             KEY_REUSED,
         ));
     }
+    let tag = ledger_store::calls::call_tag(&id.token, &id.key);
     store.begin_call(id).map_err(|e| e.to_string())?;
+    OWNS_CALL.with(|o| o.set(true));
+    CALL_TAG.with(|t| *t.borrow_mut() = Some(tag));
     Ok(Begun::Run)
 }
 
@@ -241,16 +396,27 @@ pub(crate) fn answered_ok(
         && matches!(out, Ok(CallToolResponse::Complete(r)) if r.is_error != Some(true))
 }
 
+/// Why a call could not be closed.
+pub(crate) enum CloseError {
+    /// Its closing line could not be written: none of it counts.
+    NotClosed(String),
+    /// Its closing line is on disk, so it counts, but the books' working
+    /// copy could not be brought up to it.
+    Committed(String),
+}
+
 /// Close the open call with how it came out (INVARIANTS 4, 6). An error
-/// here means the call could not be closed: the books server stops, and
-/// the caller is told so.
+/// here means the books server stops, and the caller is told which of the
+/// two it is.
 pub(crate) fn close(
     server: &BooksServer,
     out: &Result<CallToolResponse, rmcp::ErrorData>,
     ok: bool,
-) -> Result<(), String> {
+) -> Result<(), CloseError> {
     use ledger_core::parties::{has_full_tin, redact_full_tins};
-    let mut store = server.lock()?;
+    // The call ends on this thread whatever comes of its closing line.
+    let _ends = EndsCall(server);
+    let mut store = server.lock().map_err(CloseError::NotClosed)?;
     if !store.in_call() {
         return Ok(());
     }
@@ -263,12 +429,14 @@ pub(crate) fn close(
     };
     let ended = if ok {
         let Ok(CallToolResponse::Complete(r)) = out else {
-            return Err("a call that committed has no answer".into());
+            return Err(CloseError::NotClosed(
+                "a call that committed has no answer".into(),
+            ));
         };
         // Kept as given: no tool's answer holds a full TIN (the three that
         // can are no transaction), and a digest of the books' head can hold
         // nine digits in a row, which masking would spoil on a repeat.
-        let text = serde_json::to_string(r).map_err(|e| e.to_string())?;
+        let text = serde_json::to_string(r).map_err(|e| CloseError::NotClosed(e.to_string()))?;
         store.close_call(CallEnd::Done(&text))
     } else {
         let why = match out {
@@ -283,8 +451,43 @@ pub(crate) fn close(
         };
         store.close_call(CallEnd::Failed(&masked(why)))
     };
-    ended.map_err(|e| e.to_string())
+    // What the call staged outside the journal follows how it ended: final
+    // if it committed (it answered ok, or its closing line is on disk),
+    // dropped if it failed. A call whose closing line could not be written
+    // is settled at the next start, by what the journal then says.
+    let tag = CALL_TAG.with(|t| t.borrow_mut().take());
+    let committed = match &ended {
+        Ok(()) => Some(ok),
+        Err(ledger_store::StoreError::CallCommitted(_)) => Some(true),
+        Err(_) => None,
+    };
+    let settled = match (tag, committed) {
+        (Some(tag), Some(committed)) => settle_vault(&store, &tag, committed),
+        _ => Ok(()),
+    };
+    match (ended, settled) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Ok(()), Err(why)) => Err(CloseError::Committed(why)),
+        (Err(ledger_store::StoreError::CallCommitted(why)), _) => Err(CloseError::Committed(why)),
+        (Err(other), _) => Err(CloseError::NotClosed(other.to_string())),
+    }
 }
+
+/// Ends the open call's claim on this thread, and wakes every request
+/// that waited for it (`BooksServer::lock`).
+struct EndsCall<'a>(&'a BooksServer);
+
+impl Drop for EndsCall<'_> {
+    fn drop(&mut self) {
+        OWNS_CALL.with(|o| o.set(false));
+        CALL_TAG.with(|t| *t.borrow_mut() = None);
+        self.0.store.call_ended();
+    }
+}
+
+/// What a call is told when its closing line is saved but the books'
+/// working copy could not be brought up to it.
+pub(crate) const COMMITTED_NOT_APPLIED: &str = "this call was completed and counts: its closing line is saved in the books. The books server could not bring its working copy up to date, so it stopped taking requests to protect the books, and rebuilds the copy from the journal when it starts again. Ask the human to restart it. Do not do the work again: sending this call again with the same request_key answers what it answered and changes nothing";
 
 /// What a call is told when its closing line could not be written.
 pub(crate) const NOT_CLOSED: &str = "this call could not be completed: its closing line could not be written, so none of it counts, and the books server stopped taking requests to protect the books. Ask the human to restart it, then send the call again with the same request_key";

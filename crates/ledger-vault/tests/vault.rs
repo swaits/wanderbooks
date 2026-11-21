@@ -237,3 +237,143 @@ fn purge_and_holdings_need_no_key() {
         (false, false)
     );
 }
+
+const TAG: &str = "0123456789abcdef";
+const OTHER: &str = "fedcba9876543210";
+
+fn tin_a() -> Tin {
+    Tin::new("123-45-6789", TinType::Ssn).unwrap()
+}
+
+fn tin_b() -> Tin {
+    Tin::new("765-43-2109", TinType::Ssn).unwrap()
+}
+
+/// INVARIANT 7: a staged record is not the party's record: a reader sees
+/// the old one (or none) until `settle` says the call committed.
+#[test]
+fn a_staged_record_is_read_by_no_one_until_its_call_commits() {
+    let d = dir("stage-commit");
+    let v = vault(&d);
+    let old_hash = v.put_tin(7, &tin_a()).unwrap();
+    let new_hash = v.stage_tin(7, &tin_b(), TAG).unwrap();
+    assert_ne!(old_hash, new_hash);
+    // Nothing changed for a reader.
+    assert_eq!(v.tin(7).unwrap().unwrap().last4(), "6789");
+    assert_eq!(
+        v.record_hash(7).unwrap().as_deref(),
+        Some(old_hash.as_str())
+    );
+    assert_eq!(
+        ledger_vault::pending_tags(&d.join("vault")).unwrap(),
+        [TAG.to_string()]
+    );
+    let done = ledger_vault::settle(&d.join("vault"), TAG, true).unwrap();
+    assert_eq!(done.promoted, 1);
+    assert_eq!(v.tin(7).unwrap().unwrap().last4(), "2109");
+    assert_eq!(
+        v.record_hash(7).unwrap().as_deref(),
+        Some(new_hash.as_str())
+    );
+    assert!(
+        ledger_vault::pending_tags(&d.join("vault"))
+            .unwrap()
+            .is_empty()
+    );
+    // Settling again changes nothing.
+    assert_eq!(
+        ledger_vault::settle(&d.join("vault"), TAG, true).unwrap(),
+        Default::default()
+    );
+}
+
+/// INVARIANT 7: a call that did not commit leaves the old record whole,
+/// and nothing of the new one.
+#[test]
+fn a_call_that_did_not_commit_leaves_the_old_record_whole() {
+    let d = dir("stage-drop");
+    let v = vault(&d);
+    let old_hash = v.put_tin(7, &tin_a()).unwrap();
+    v.stage_tin(7, &tin_b(), TAG).unwrap();
+    // Another call's staged file is not this call's to settle.
+    v.stage_tin(8, &tin_b(), OTHER).unwrap();
+    let done = ledger_vault::settle(&d.join("vault"), TAG, false).unwrap();
+    assert_eq!(done.dropped, 1);
+    assert_eq!(v.tin(7).unwrap().unwrap().last4(), "6789");
+    assert_eq!(
+        v.record_hash(7).unwrap().as_deref(),
+        Some(old_hash.as_str())
+    );
+    assert_eq!(
+        ledger_vault::pending_tags(&d.join("vault")).unwrap(),
+        [OTHER.to_string()]
+    );
+    assert!(v.tin(8).unwrap().is_none());
+}
+
+/// INVARIANT 7: a purge is destroyed only when its call commits; if it
+/// doesn't, every record is put back, byte for byte.
+#[test]
+fn a_purge_is_final_only_when_its_call_commits() {
+    let d = dir("stage-purge");
+    let v = vault(&d);
+    let hash = v.put_tin(7, &tin_a()).unwrap();
+    v.put_w9(
+        7,
+        &W9File {
+            file_name: "w9.pdf".into(),
+            mime_type: "application/pdf".into(),
+            bytes: b"%PDF fake".to_vec(),
+        },
+    )
+    .unwrap();
+    assert!(ledger_vault::stage_purge(&d.join("vault"), 7, TAG).unwrap());
+    // Out of sight at once ...
+    assert_eq!(
+        ledger_vault::records_held(&d.join("vault"), 7).unwrap(),
+        (false, false)
+    );
+    // ... and back if the call didn't commit.
+    let undone = ledger_vault::settle(&d.join("vault"), TAG, false).unwrap();
+    assert_eq!(undone.restored, 2);
+    assert_eq!(v.record_hash(7).unwrap().as_deref(), Some(hash.as_str()));
+    assert!(v.w9(7).unwrap().is_some());
+    // Committed: gone for good.
+    ledger_vault::stage_purge(&d.join("vault"), 7, TAG).unwrap();
+    let gone = ledger_vault::settle(&d.join("vault"), TAG, true).unwrap();
+    assert_eq!(gone.purged, 2);
+    assert_eq!(
+        ledger_vault::records_held(&d.join("vault"), 7).unwrap(),
+        (false, false)
+    );
+    assert!(
+        ledger_vault::pending_tags(&d.join("vault"))
+            .unwrap()
+            .is_empty()
+    );
+}
+
+/// A tag names a call in a file name: anything else is refused, so it can't
+/// name a path.
+#[test]
+fn a_tag_that_is_not_sixteen_hex_digits_is_refused() {
+    let d = dir("stage-tag");
+    let v = vault(&d);
+    for bad in [
+        "",
+        "../x",
+        "0123456789ABCDEF",
+        "0123456789abcde",
+        "0123456789abcdefg",
+    ] {
+        assert!(v.stage_tin(7, &tin_a(), bad).is_err(), "{bad}");
+        assert!(
+            ledger_vault::stage_purge(&d.join("vault"), 7, bad).is_err(),
+            "{bad}"
+        );
+        assert!(
+            ledger_vault::settle(&d.join("vault"), bad, true).is_err(),
+            "{bad}"
+        );
+    }
+}

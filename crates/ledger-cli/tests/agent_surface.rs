@@ -123,11 +123,11 @@ fn journal_history_traces_what_the_books_did() {
     assert_eq!(next["lines"][0]["seq"].as_u64().unwrap(), after + 1);
 
     // A bad subject is refused with the shapes; the journal is unchanged.
-    let before = books.journal();
+    let before = books.journal_raw();
     let err =
         answer_of(&w.call("books.journal_history", json!({"subject": "nonsense"}))).unwrap_err();
     assert!(err.contains("entry:12"), "{err}");
-    assert_eq!(books.journal(), before);
+    assert_eq!(books.journal_raw(), before);
     // It is a read: no head in the envelope.
     assert!(all.get("head").is_none(), "{all}");
 }

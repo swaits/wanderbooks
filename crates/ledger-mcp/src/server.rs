@@ -227,6 +227,9 @@ pub struct SharedStore {
     /// for the owner's format upgrade, so a call's lines are one run in
     /// the journal.
     writes: tokio::sync::Mutex<()>,
+    /// Woken when a call's closing line is done (calls.rs INVARIANT 2):
+    /// the requests that waited for the open call to close.
+    call_over: (std::sync::Mutex<()>, std::sync::Condvar),
     /// The books' base currency, fixed at their creation: read without
     /// the lock (the connect text names it).
     currency: Currency,
@@ -250,6 +253,24 @@ impl SharedStore {
     /// held across a call's awaits, so its guard is `Send`.
     pub(crate) fn write_turn(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.writes.blocking_lock()
+    }
+
+    /// Wake every request that waits for the open call to close.
+    pub(crate) fn call_ended(&self) {
+        self.call_over.1.notify_all();
+    }
+
+    /// Wait (a moment, then look again) for the open call to close.
+    fn wait_for_call(&self) {
+        let held = self
+            .call_over
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _ = self
+            .call_over
+            .1
+            .wait_timeout(held, std::time::Duration::from_millis(25));
     }
 
     /// Run `f` on the store under its lock, writing: the owner's format
@@ -324,6 +345,9 @@ impl SharedStore {
 
     /// Share an open store.
     pub fn new(store: Store) -> Arc<Self> {
+        // Tax-id vault records a crash left staged are settled by what the
+        // journal says of their call (calls.rs INVARIANT 4).
+        calls::recover_vault(&store);
         Arc::new(Self {
             currency: store.base_currency(),
             store: tokio::sync::Mutex::new(Some(store)),
@@ -333,6 +357,7 @@ impl SharedStore {
             running: std::sync::atomic::AtomicUsize::new(0),
             ended: tokio::sync::Notify::new(),
             writes: tokio::sync::Mutex::new(()),
+            call_over: (std::sync::Mutex::new(()), std::sync::Condvar::new()),
         })
     }
 
@@ -1029,12 +1054,28 @@ impl BooksServer {
         if self.store.stopped() {
             return Err(STOPPED.to_string());
         }
-        let guard = self.store.store.blocking_lock();
-        // A request that panicked while this one waited stopped it; books
-        // let go hold no store.
-        if self.store.stopped() {
-            return Err(STOPPED.to_string());
-        }
+        // Nothing but the request whose call is open touches the books
+        // until the call's closing line is written (calls.rs INVARIANT 2):
+        // a read never sees what a call did before the call committed.
+        let guard = loop {
+            let guard = self.store.store.blocking_lock();
+            // A request that panicked while this one waited stopped it;
+            // books let go hold no store.
+            if self.store.stopped() {
+                return Err(STOPPED.to_string());
+            }
+            // Only a call that has written a line has effects to hide: one
+            // that has written none (a backup, an upload begun) leaves
+            // reads free.
+            let open = guard
+                .as_ref()
+                .is_some_and(|s| s.in_call() && s.call_has_lines());
+            if !open || calls::owns_call() {
+                break guard;
+            }
+            drop(guard);
+            self.store.wait_for_call();
+        };
         let Some(store) = guard.as_ref() else {
             return Err(STOPPED.to_string());
         };
@@ -1946,12 +1987,14 @@ impl ServerHandler for BooksServer {
                                 .unwrap_or_default(),
                             tool: tool_name.clone(),
                             key: calls::key_text(k),
-                            args: digest.clone().unwrap_or_default(),
+                            // Filled by `calls::begin`: the keyed digest.
+                            args: String::new(),
                         });
                 let _turn = call_id.as_ref().map(|_| server.store.write_turn());
                 let early = match &call_id {
                     None => None,
-                    Some(id) => match calls::begin(&server, id.clone()) {
+                    Some(id) => match calls::begin(&server, id.clone(), request.arguments.as_ref())
+                    {
                         Ok(calls::Begun::Run) => None,
                         Ok(calls::Begun::Answer(answer, code)) => Some((answer, code)),
                         Err(why) => Some((Box::new(tool_error(why)), access::STOPPED)),
@@ -2008,10 +2051,20 @@ impl ServerHandler for BooksServer {
                 let mut wrote = wrote;
                 if call_id.is_some() {
                     let ok = calls::answered_ok(&out, stopped);
-                    if let Err(why) = calls::close(&server, &out, ok) {
-                        eprintln!("wanderbooks: a call could not be closed: {why}");
-                        server.store.stop();
-                        out = Ok(tool_error(calls::NOT_CLOSED.to_string()));
+                    match calls::close(&server, &out, ok) {
+                        Ok(()) => {}
+                        Err(calls::CloseError::NotClosed(why)) => {
+                            eprintln!("wanderbooks: a call could not be closed: {why}");
+                            server.store.stop();
+                            out = Ok(tool_error(calls::NOT_CLOSED.to_string()));
+                        }
+                        Err(calls::CloseError::Committed(why)) => {
+                            eprintln!(
+                                "wanderbooks: a call committed, but the books' working copy could not follow: {why}"
+                            );
+                            server.store.stop();
+                            out = Ok(tool_error(calls::COMMITTED_NOT_APPLIED.to_string()));
+                        }
                     }
                     // The closing line is this call's last write.
                     wrote = WROTE

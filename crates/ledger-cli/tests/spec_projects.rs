@@ -113,11 +113,15 @@ impl Mcp {
         mcp
     }
 
-    /// The journal, without the frames of tool calls (D-88).
+    /// The journal, without the frames of tool calls (D-88): the events.
     fn journal(&self) -> Vec<u8> {
-        common::without_call_lines(
-            &std::fs::read(self.data.join("journal.jsonl")).unwrap_or_default(),
-        )
+        common::without_call_lines(&self.journal_raw())
+    }
+
+    /// The journal, byte for byte: what a check that a refusal or a
+    /// preview "journaled nothing" compares, so a stray frame line is seen.
+    fn journal_raw(&self) -> Vec<u8> {
+        std::fs::read(self.data.join("journal.jsonl")).unwrap_or_default()
     }
 
     /// The journal's line types, in order.
@@ -160,7 +164,7 @@ impl Mcp {
     /// Call a tool; a refusal must leave the journal unchanged, a success
     /// must match the outputSchema.
     fn tool(&mut self, name: &str, args: Value) -> Out {
-        let before = self.journal();
+        let before = self.journal_raw();
         let resp = common::tools_call(|m, p| self.rpc(m, p), name, args.clone());
         let out = if let Some(err) = resp.get("error") {
             Out::RpcErr(err.clone())
@@ -190,7 +194,7 @@ impl Mcp {
         };
         if out.refused() {
             assert!(
-                self.journal() == before,
+                self.journal_raw() == before,
                 "refused {name} {args} changed the journal ({out:?})"
             );
         }
@@ -217,10 +221,10 @@ impl Mcp {
 
     /// `ok`, and the journal must not change (read-only tools).
     fn read_only(&mut self, name: &str, args: Value) -> Value {
-        let before = self.journal();
+        let before = self.journal_raw();
         let v = self.ok(name, args);
         assert!(
-            self.journal() == before,
+            self.journal_raw() == before,
             "read-only {name} changed the journal"
         );
         v
@@ -516,7 +520,7 @@ fn update_project_with_nothing_new_journals_nothing() {
         "books.add_project",
         json!({"name": "Harbor", "kind": "client"}),
     );
-    let before = m.journal();
+    let before = m.journal_raw();
     m.ok(
         "books.update_project",
         json!({"project": "Harbor", "kind": "client"}),
@@ -525,7 +529,7 @@ fn update_project_with_nothing_new_journals_nothing() {
         "books.update_project",
         json!({"project": "harbor", "name": "Harbor"}),
     );
-    assert_eq!(m.journal(), before);
+    assert_eq!(m.journal_raw(), before);
 }
 
 // ------------------------------------------------- figures
@@ -934,7 +938,7 @@ fn show_project_sends_its_target() {
 #[test]
 fn project_writes_wait_for_the_format_upgrade() {
     let mut m = books_in("upgrade", true);
-    let head = m.journal();
+    let head = m.journal_raw();
     for (tool, args) in [
         ("books.add_project", json!({"name": "Harbor"})),
         (
@@ -959,7 +963,7 @@ fn project_writes_wait_for_the_format_upgrade() {
         assert!(why.starts_with("format_upgrade_pending:"), "{tool}: {why}");
         assert!(why.contains("nothing can be written"), "{tool}: {why}");
     }
-    assert_eq!(m.journal(), head, "nothing journaled");
+    assert_eq!(m.journal_raw(), head, "nothing journaled");
 }
 
 #[test]
@@ -1480,7 +1484,7 @@ fn books_without_the_feature_refuse_a_tagged_document() {
     );
     let cedar = m.ok("books.add_customer", json!({"name": "Cedar"}))["id"].clone();
     let v = m.ok("books.add_vendor", json!({"name": "Dana"}))["id"].clone();
-    let head = m.journal();
+    let head = m.journal_raw();
     for (tool, key, party) in [
         ("books.create_invoice", "customer", &cedar),
         ("books.create_bill", "vendor", &v),
@@ -1496,7 +1500,7 @@ fn books_without_the_feature_refuse_a_tagged_document() {
             "{tool}: {why}"
         );
     }
-    assert_eq!(m.journal(), head, "nothing journaled");
+    assert_eq!(m.journal_raw(), head, "nothing journaled");
     m.ok(
         "books.create_invoice",
         json!({"customer": (cedar).to_string(), "date": "2026-03-02", "due_date": "2026-04-01", "lines": [

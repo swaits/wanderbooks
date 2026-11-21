@@ -123,7 +123,7 @@ fn an_invoice_from_issue_to_paid() {
 
     // The preview: nothing written, a DRAFT copy handed over, the number
     // and due date the confirm will take.
-    let before = books.journal();
+    let before = books.journal_raw();
     let preview = m.call("books.create_invoice", issue.clone());
     assert!(
         preview["preview"].is_string(),
@@ -155,7 +155,7 @@ fn an_invoice_from_issue_to_paid() {
     let draft = m.handed(&preview["pdf"]);
     assert!(draft.starts_with(b"%PDF"), "a PDF, not bytes inline");
     assert!(draft.len() > 1_000, "the DRAFT copy is a page: {preview}");
-    assert_eq!(books.journal(), before, "a preview journals nothing");
+    assert_eq!(books.journal_raw(), before, "a preview journals nothing");
     assert!(books.journal().len() == before.len());
 
     // The confirm: the same number, the issued copy filed with the invoice.
@@ -239,7 +239,7 @@ fn a_bill_with_its_vendor_invoice_and_terms() {
                    "account": "6500"}],
     });
 
-    let before = books.journal();
+    let before = books.journal_raw();
     let mut preview = bill.clone();
     preview["upload_id"] = json!(file);
     let p = m.call("books.create_bill", preview.clone());
@@ -248,7 +248,7 @@ fn a_bill_with_its_vendor_invoice_and_terms() {
     assert_eq!(p["terms"], "2/10 net 30", "{p}");
     assert_eq!(p["discount_by"], "2026-02-11", "{p}");
     assert_eq!(p["max_discount"], "20.00", "2% of 1,000.00");
-    assert_eq!(books.journal(), before, "a preview journals nothing");
+    assert_eq!(books.journal_raw(), before, "a preview journals nothing");
 
     let mut confirm = preview;
     confirm["confirmed"] = json!(true);
@@ -321,13 +321,13 @@ fn duplicate_vendor_invoice_refused() {
     m.call("books.create_bill", bill(&first_file, "2026-02-01"));
     // The same number (however written) is the same vendor invoice.
     let second_file = m.upload(b"second copy", "ch-1-again.pdf", "receipt");
-    let before = books.journal();
+    let before = books.journal_raw();
     let refused = m
         .try_call("books.create_bill", bill(&second_file, "2026-02-02"))
         .unwrap_err();
     assert!(refused.contains("CH-4471"), "{refused}");
     assert!(refused.contains("duplicate_reason"), "{refused}");
-    assert_eq!(books.journal(), before, "a refusal journals nothing");
+    assert_eq!(books.journal_raw(), before, "a refusal journals nothing");
     // The upload was given back, not used up (an upload is spent only by
     // the call that files it).
     let mut with_reason = bill(&second_file, "2026-02-02");
@@ -377,14 +377,14 @@ fn a_line_account_must_be_allowed() {
                "lines": [{"description": "Work", "amount": "100.00", "account": account}],
                "confirmed": true})
     };
-    let before = books.journal();
+    let before = books.journal_raw();
     // An invoice line may not post to the receivable control or a role
     // account.
     let why = m
         .try_call("books.create_invoice", invoice("1200"))
         .unwrap_err();
     assert!(why.contains("1200"), "{why}");
-    assert_eq!(books.journal(), before, "a refusal journals nothing");
+    assert_eq!(books.journal_raw(), before, "a refusal journals nothing");
     // Nor to an expense account.
     let why = m
         .try_call("books.create_invoice", invoice("6999"))
@@ -547,7 +547,7 @@ fn custom_terms_are_due_on_the_date_they_give() {
     assert_eq!(bill["due_date"], "2026-11-20", "{bill}");
 
     // Dated after the agreed day: refused.
-    let before = books.journal();
+    let before = books.journal_raw();
     let late = m
         .try_call(
             "books.create_invoice",
@@ -555,7 +555,7 @@ fn custom_terms_are_due_on_the_date_they_give() {
         )
         .unwrap_err();
     assert!(late.contains("due"), "{late}");
-    assert_eq!(books.journal(), before, "a refusal writes nothing");
+    assert_eq!(books.journal_raw(), before, "a refusal writes nothing");
 }
 
 /// A customer given by id and by name is the same record (the old
@@ -589,7 +589,7 @@ fn a_customer_by_id_and_by_name_is_one_record() {
     // ambiguous, and is refused rather than guessed.
     m.customer("Zeta");
     m.customer("2");
-    let before = books.journal();
+    let before = books.journal_raw();
     let why = m
         .try_call(
             "books.create_invoice",
@@ -598,7 +598,7 @@ fn a_customer_by_id_and_by_name_is_one_record() {
         )
         .unwrap_err();
     assert!(why.contains("ambiguous"), "{why}");
-    assert_eq!(books.journal(), before, "a refusal journals nothing");
+    assert_eq!(books.journal_raw(), before, "a refusal journals nothing");
     // Nothing at all names no customer.
     let why = m
         .try_call(

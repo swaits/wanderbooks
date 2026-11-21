@@ -24,6 +24,7 @@ pub mod extension;
 pub mod host;
 pub mod knobs;
 pub mod lease;
+pub mod newer;
 pub mod opener;
 mod start;
 pub mod tokens;

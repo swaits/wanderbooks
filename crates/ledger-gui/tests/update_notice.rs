@@ -21,6 +21,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 struct Fake {
     asked: Mutex<Vec<String>>,
     staged: Mutex<bool>,
+    newer: Mutex<bool>,
 }
 
 impl Fake {
@@ -55,6 +56,12 @@ impl Owner for Fake {
         (*self.staged.lock().unwrap()).then(|| UpdateWaiting {
             version: "9.1.0".into(),
             staged_at: "2026-10-30T08:00:00Z".into(),
+        })
+    }
+    fn newer_version(&self) -> Option<ledger_gui::owner::NewerVersion> {
+        (*self.newer.lock().unwrap()).then(|| ledger_gui::owner::NewerVersion {
+            version: "9.2.0".into(),
+            page: "https://example.test/releases/latest".into(),
         })
     }
     fn check_for_updates(&self) -> Result<Vec<String>, String> {
@@ -159,7 +166,7 @@ fn the_menu_checks_for_updates_and_a_waiting_update_shows_a_notice_that_accepts(
     // owner, and the notice goes once it is installed.
     for _ in 0..60 {
         h.run_steps(2);
-        if h.query_by_label_contains("Version 9.1.0 of wanderbooks is ready")
+        if h.query_by_label_contains("Version 9.1.0 of Wanderbooks is ready")
             .is_some()
         {
             break;
@@ -167,7 +174,7 @@ fn the_menu_checks_for_updates_and_a_waiting_update_shows_a_notice_that_accepts(
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
     assert!(
-        h.query_by_label_contains("Version 9.1.0 of wanderbooks is ready")
+        h.query_by_label_contains("Version 9.1.0 of Wanderbooks is ready")
             .is_some(),
         "no notice"
     );
@@ -193,4 +200,52 @@ fn books_outside_a_data_root_have_no_update_notice() {
     let h = harness(b);
     assert!(h.query_by_label_contains("is ready.").is_none());
     *f.staged.lock().unwrap() = false;
+}
+
+/// WB-pkg-3: with no update of the program's own waiting, a newer version
+/// the daily look found is told in a standing notice that says where to
+/// get it and that books, keys and connections stay; an update that is
+/// waiting is the only notice shown (one at a time).
+#[test]
+fn a_newer_version_is_told_with_where_to_get_it() {
+    let _alone = alone();
+    let f = fake();
+    *f.newer.lock().unwrap() = true;
+    let (_dir, _book, b) = books(true);
+    let mut h = harness(b);
+    for _ in 0..60 {
+        h.run_steps(2);
+        if h.query_by_label_contains("Version 9.2.0 of Wanderbooks is available")
+            .is_some()
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(
+        h.query_by_label_contains("Version 9.2.0 of Wanderbooks is available")
+            .is_some(),
+        "no notice"
+    );
+    assert!(
+        h.query_by_label_contains("Your books, keys and connections stay as they are")
+            .is_some()
+    );
+    assert!(h.query_by_label("Open the download page").is_some());
+    // One notice at a time: a staged update wins.
+    *f.staged.lock().unwrap() = true;
+    for _ in 0..60 {
+        h.run_steps(2);
+        if h.query_by_label_contains("is ready.").is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(h.query_by_label_contains("is ready.").is_some());
+    assert!(
+        h.query_by_label_contains("Version 9.2.0 of Wanderbooks is available")
+            .is_none()
+    );
+    *f.staged.lock().unwrap() = false;
+    *f.newer.lock().unwrap() = false;
 }

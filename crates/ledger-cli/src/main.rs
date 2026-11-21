@@ -409,6 +409,15 @@ impl ledger_gui::owner::Owner for ViewerOwner {
         })
     }
 
+    fn newer_version(&self) -> Option<ledger_gui::owner::NewerVersion> {
+        ledger_host::commands::newer_version(&self.common).map(|(version, page)| {
+            ledger_gui::owner::NewerVersion {
+                version,
+                page: page.to_string(),
+            }
+        })
+    }
+
     fn check_for_updates(&self) -> Result<Vec<String>, String> {
         ledger_host::commands::check_for_updates(&self.common).map(|l| vec![l])
     }

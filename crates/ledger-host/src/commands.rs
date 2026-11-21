@@ -1525,39 +1525,45 @@ pub fn update_waiting(_common: &Common) -> Option<UpdateWaiting> {
     None
 }
 
-/// "Check for updates": look at the feed now, whatever the daily look
-/// last did, and stage a newer release if there is one (it never swaps
-/// the program: accepting is [`apply_update`]). What came of it.
-#[cfg(unix)]
+/// "Check for updates": say whether a newer version exists and where to
+/// get it (the note of [`crate::newer`], looked at now whatever the last
+/// look was). Where a program may replace itself (an AppImage, a program
+/// put somewhere by hand, with a release key) a newer release is also
+/// downloaded and checked, for [`apply_update`] (it never swaps the
+/// program: accepting is). What came of it.
 pub fn check_for_updates(common: &Common) -> Result<String, String> {
     let found =
         ledger_store::root::Root::find(common.root.as_deref()).map_err(|e| e.to_string())?;
-    let mine = crate::update::program_version();
-    if let crate::update::Install::PackageManaged(manager) = crate::update::this_install()? {
-        return Err(format!(
-            "this install is updated by {manager}, not here: use the package manager"
-        ));
+    let mine = crate::program_version();
+    #[cfg(unix)]
+    if let Ok(crate::update::Install::SelfUpdating(_)) = crate::update::this_install() {
+        match crate::update::stage_if_due(&found, mine, Duration::ZERO) {
+            Ok(Some(version)) => {
+                return Ok(format!(
+                    "Version {version} is downloaded and checked. Accept it to start using it."
+                ));
+            }
+            Ok(None) => {
+                if let Some(u) = update_waiting(common) {
+                    return Ok(format!(
+                        "Version {} is downloaded and checked. Accept it to start using it.",
+                        u.version
+                    ));
+                }
+            }
+            // No release key or local feed: the look below still tells.
+            Err(_) => {}
+        }
     }
-    match crate::update::stage_if_due(&found, mine, Duration::ZERO) {
-        Ok(Some(version)) => Ok(format!(
-            "Version {version} is downloaded and checked. Accept it to start using it."
-        )),
-        Ok(None) => Ok(match update_waiting(common) {
-            Some(u) => format!(
-                "Version {} is downloaded and checked. Accept it to start using it.",
-                u.version
-            ),
-            None => format!("You have the newest version ({mine})."),
-        }),
-        Err(why) => Err(why.to_string()),
-    }
+    crate::newer::check_now(found.path(), mine)
 }
 
-/// Checking for updates isn't built for this platform: say so, and
-/// change nothing.
-#[cfg(not(unix))]
-pub fn check_for_updates(_common: &Common) -> Result<String, String> {
-    Err(NO_SELF_UPDATE.into())
+/// The newer version the window may tell the person of, with where to get
+/// it: what the last (daily) look found, a look begun when one is due.
+pub fn newer_version(common: &Common) -> Option<(String, &'static str)> {
+    let found = ledger_store::root::Root::find(common.root.as_deref()).ok()?;
+    let version = crate::newer::found_and_refresh(found.path(), crate::program_version())?;
+    Some((version, crate::newer::DOWNLOAD_PAGE))
 }
 
 /// Accept the staged update: the books' host installs it and restarts

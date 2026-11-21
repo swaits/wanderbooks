@@ -10,7 +10,16 @@
 //!         address); the PROXY protocol specification version 2;
 //!         plan/p15-app-and-relay.md 4, rule 8.
 //! INVARIANTS:
-//!   1. Every connection to the remote door starts with exactly the header
+//!   5. Every connection starts with this start's secret, then the header:
+//!      the first SECRET_LEN bytes are the 64 lowercase hex characters the
+//!      server gave the app over the admin socket when the door started
+//!      (`proxy_secret` of the remote status), compared in constant time. A
+//!      connection that begins with anything else is dropped before a byte
+//!      of anything is read, so only the app's relay line can state a
+//!      caller's address: another process on this computer that finds the
+//!      port cannot say a caller is anyone, nor use up what an address is
+//!      limited to by saying it is another.
+//!   1. Every connection to the remote door, after the secret, starts with exactly the header
 //!      the relay writes: the 12-byte signature, version 2 with the PROXY
 //!      command, then TCP over IPv4 (length 12) or IPv6 (length 36) and
 //!      the addresses. A connection that starts with anything else, that
@@ -45,6 +54,18 @@ pub const SIGNATURE: [u8; 12] = [
     0x0D, 0x0A, 0x0D, 0x0A, 0x00, 0x0D, 0x0A, 0x51, 0x55, 0x49, 0x54, 0x0A,
 ];
 
+/// The length of the secret every connection begins with: 64 lowercase
+/// hexadecimal characters, the text of 32 random bytes.
+pub const SECRET_LEN: usize = 64;
+
+/// A secret for one start of the door: 32 random bytes as 64 lowercase hex
+/// characters.
+pub fn new_secret() -> Result<String, String> {
+    let mut bytes = [0u8; SECRET_LEN / 2];
+    getrandom::getrandom(&mut bytes).map_err(|_| "the system gave no randomness".to_string())?;
+    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+}
+
 /// How long a connection has to send its header.
 pub const HEADER_WAIT: Duration = Duration::from_secs(5);
 
@@ -58,6 +79,28 @@ pub enum Refused {
     NotAHeader,
     /// The stream ended, or failed, inside it.
     Cut,
+    /// It did not begin with this start's secret.
+    BadSecret,
+}
+
+/// Read this start's secret from the front of `stream` and compare it in
+/// constant time (INVARIANT 5).
+pub async fn read_secret<R: AsyncRead + Unpin>(
+    stream: &mut R,
+    secret: &str,
+) -> Result<(), Refused> {
+    use subtle::ConstantTimeEq;
+    let mut given = [0u8; SECRET_LEN];
+    stream
+        .read_exact(&mut given)
+        .await
+        .map_err(|_| Refused::Cut)?;
+    let same: bool = given.as_slice().ct_eq(secret.as_bytes()).into();
+    if secret.len() == SECRET_LEN && same {
+        Ok(())
+    } else {
+        Err(Refused::BadSecret)
+    }
 }
 
 /// Read the header from the front of `stream`, giving the caller's
@@ -96,8 +139,8 @@ pub async fn read_header<R: AsyncRead + Unpin>(stream: &mut R) -> Result<SocketA
 }
 
 /// The header for a caller `source` that reached `destination`, in the
-/// form the relay writes (what the app writes to this door, B3; and the
-/// tests).
+/// form the relay writes (what the app writes to this door, B3, after the
+/// secret; and the tests).
 #[allow(dead_code)] // the app writes it to this door (unit B3); the tests do now
 pub fn encode(source: SocketAddr, destination: SocketAddr) -> Vec<u8> {
     let mut out = Vec::with_capacity(52);
@@ -171,6 +214,7 @@ impl AsyncWrite for Proxied {
 pub async fn accept_loop(
     listener: TcpListener,
     stop: tokio_util::sync::CancellationToken,
+    secret: String,
     mut handle: impl FnMut(Proxied, SocketAddr) + Send + 'static,
 ) {
     let places = std::sync::Arc::new(Semaphore::new(MAX_CONNECTIONS));
@@ -195,8 +239,13 @@ pub async fn accept_loop(
                     continue;
                 };
                 let tx = tx.clone();
+                let secret = secret.clone();
                 tokio::spawn(async move {
-                    let read = tokio::time::timeout(HEADER_WAIT, read_header(&mut io)).await;
+                    let read = tokio::time::timeout(HEADER_WAIT, async {
+                        read_secret(&mut io, &secret).await?;
+                        read_header(&mut io).await
+                    })
+                    .await;
                     if let Ok(Ok(caller)) = read {
                         let _ = tx.send((Proxied { io, _place: place }, caller)).await;
                     }
@@ -239,6 +288,36 @@ mod tests {
         let bytes = encode(addr("[::ffff:203.0.113.9]:5"), addr("[2001:db8::1]:443"));
         let mut slice = &bytes[..];
         assert_eq!(read_header(&mut slice).await, Ok(addr("203.0.113.9:5")));
+    }
+
+    #[tokio::test]
+    async fn a_connection_must_begin_with_this_starts_secret() {
+        let secret = new_secret().unwrap();
+        assert_eq!(secret.len(), SECRET_LEN);
+        assert!(
+            secret
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        );
+        assert_ne!(secret, new_secret().unwrap());
+        let mut good = secret.clone().into_bytes();
+        good.extend(b"rest");
+        let mut slice = &good[..];
+        assert_eq!(read_secret(&mut slice, &secret).await, Ok(()));
+        assert_eq!(slice, b"rest");
+        // Another secret, one byte off, no secret, and a short one.
+        let mut off = secret.clone().into_bytes();
+        off[63] = if off[63] == b'0' { b'1' } else { b'0' };
+        for (what, bytes) in [("off by one", off), ("other text", vec![b'x'; SECRET_LEN])] {
+            let mut slice = &bytes[..];
+            assert_eq!(
+                read_secret(&mut slice, &secret).await,
+                Err(Refused::BadSecret),
+                "{what}"
+            );
+        }
+        let mut short = &b"abc"[..];
+        assert_eq!(read_secret(&mut short, &secret).await, Err(Refused::Cut));
     }
 
     #[tokio::test]

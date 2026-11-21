@@ -14,9 +14,11 @@
 //!      fragment, is fetched; the host's addresses are all looked up
 //!      first, and every one must be a public address (none loopback,
 //!      private, link-local, shared, documentation, multicast or
-//!      unspecified, and no IPv4-mapped form of one): a name that points
+//!      unspecified, and no form that carries an IPv4 address inside:
+//!      mapped, compatible (::/96), NAT64, 6to4 (2002::/16)): a name that points
 //!      into the owner's network is refused, and the connection is made to
-//!      the address that was checked, not to a second lookup.
+//!      the address that was checked, not to a second lookup, and over no
+//!      proxy from the environment.
 //!   2. No redirect is followed; the answer must be 200, at most
 //!      MAX_DOCUMENT bytes, within FETCH_TIME.
 //!   3. The document's `client_id` must be exactly the address it was

@@ -647,7 +647,10 @@ impl State {
         let what = if approve {
             format!("Allow the assistant sent back to {}", request.redirect_host)
         } else {
-            format!("Don't allow the assistant sent back to {}", request.redirect_host)
+            format!(
+                "Don't allow the assistant sent back to {}",
+                request.redirect_host
+            )
         };
         Some((
             what,
@@ -891,7 +894,7 @@ pub const MOST_CARDS: usize = 3;
 fn newest_waiting(all: &[crate::owner::WebRequest]) -> (Vec<&crate::owner::WebRequest>, usize) {
     let mut sorted: Vec<&crate::owner::WebRequest> = all.iter().collect();
     // Most time left is the newest.
-    sorted.sort_by(|a, b| b.expires_in_secs.cmp(&a.expires_in_secs));
+    sorted.sort_by_key(|r| std::cmp::Reverse(r.expires_in_secs));
     let more = sorted.len().saturating_sub(MOST_CARDS);
     sorted.truncate(MOST_CARDS);
     (sorted, more)

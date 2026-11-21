@@ -395,6 +395,12 @@ pub struct RemoteInfo {
     pub public_url: Option<String>,
     /// The books it offers.
     pub allowed: Vec<String>,
+    /// This start's secret, for the app only (the admin socket is the
+    /// owner's): the 64 characters it writes at the very front of every
+    /// connection it makes to the door, before the PROXY header
+    /// (remote/proxy.rs INVARIANT 5). Never shown in a log.
+    #[serde(default)]
+    pub proxy_secret: Option<TokenText>,
 }
 
 /// An assistant waiting for the person to allow it (INVARIANT 10): what

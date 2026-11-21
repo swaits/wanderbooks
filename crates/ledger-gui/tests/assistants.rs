@@ -1107,11 +1107,7 @@ fn with_pending(owner: &Fake, pending: Vec<WebRequest>, approvals: Vec<WebApprov
 fn a_web_assistant_asking_is_put_to_the_person_over_any_page_in_plain_words() {
     let w = World::new(&[("alpha", "Wanderland Labs")]);
     let owner = Fake::new();
-    with_pending(
-        &owner,
-        vec![asking("p_1", "Claude", true)],
-        vec![],
-    );
+    with_pending(&owner, vec![asking("p_1", "Claude", true)], vec![]);
     let mut h = start(&w, &["alpha"], &owner);
     refresh(&mut h);
     // On the company's own page, not the Connect page.
@@ -1126,7 +1122,10 @@ fn a_web_assistant_asking_is_put_to_the_person_over_any_page_in_plain_words() {
         .is_some()
     );
     assert!(h.query_by_label_contains("Claude on the web").is_none());
-    assert!(h.query_by_label_contains("doesn't know this address").is_none());
+    assert!(
+        h.query_by_label_contains("doesn't know this address")
+            .is_none()
+    );
     // What it calls itself, after the address, as its own word.
     assert!(h.query_by_label_contains("It calls itself").is_some());
     // The code to match with the one the browser's page shows.
@@ -1179,7 +1178,10 @@ fn refusing_and_allowing_with_posting_are_their_own_answers() {
     let mut h = start(&w, &["alpha"], &owner);
     refresh(&mut h);
     // An address that isn't a known vendor's keeps its warning.
-    assert!(h.query_by_label_contains("doesn't know this address").is_some());
+    assert!(
+        h.query_by_label_contains("doesn't know this address")
+            .is_some()
+    );
     h.get_by_role_and_label(Role::Button, "Don't allow").click();
     h.run_steps(2);
     wait_for("the refusal was given", || {
@@ -1190,11 +1192,7 @@ fn refusing_and_allowing_with_posting_are_their_own_answers() {
     refresh(&mut h);
     assert!(h.query_by_label_contains("wants to connect").is_none());
     // Another asks; this time posting is ticked, then allowed.
-    with_pending(
-        &owner,
-        vec![asking("p_8", "Claude", true)],
-        vec![],
-    );
+    with_pending(&owner, vec![asking("p_8", "Claude", true)], vec![]);
     refresh(&mut h);
     h.get_by_label("Also let it post entries").click();
     h.run_steps(2);
@@ -1227,20 +1225,20 @@ fn waiting_requests_each_show_their_own_code_and_only_a_few_are_drawn() {
     // The newest three, each with its own code; the rest are counted.
     for shown in ["444 644", "333 633", "222 622"] {
         assert!(
-            h.query_by_label_contains(&format!("Code {shown}")).is_some(),
+            h.query_by_label_contains(&format!("Code {shown}"))
+                .is_some(),
             "{shown}"
         );
     }
     for hidden in ["111 611", "000 600"] {
         assert!(
-            h.query_by_label_contains(&format!("Code {hidden}")).is_none(),
+            h.query_by_label_contains(&format!("Code {hidden}"))
+                .is_none(),
             "{hidden}"
         );
     }
-    assert_eq!(
-        h.query_all_by_label_contains("wants to connect").count(),
-        3
-    );
+    // Three cards (their titles end in the question); the window has its own title.
+    assert_eq!(h.query_all_by_label_contains("Allow?").count(), 3);
     assert!(h.query_by_label_contains("2 more are waiting").is_some());
     drop(h);
 }
@@ -1249,11 +1247,7 @@ fn waiting_requests_each_show_their_own_code_and_only_a_few_are_drawn() {
 fn a_request_that_ran_out_goes_away_and_posting_is_turned_on_and_off_on_the_connect_page() {
     let w = World::new(&[("alpha", "Wanderland Labs")]);
     let owner = Fake::new();
-    with_pending(
-        &owner,
-        vec![asking("p_2", "Claude", true)],
-        vec![],
-    );
+    with_pending(&owner, vec![asking("p_2", "Claude", true)], vec![]);
     let mut h = start(&w, &["alpha"], &owner);
     refresh(&mut h);
     assert!(

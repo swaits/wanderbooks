@@ -21,6 +21,8 @@ const CALLER: &str = "203.0.113.9";
 struct H {
     books: Arc<Books>,
     addr: SocketAddr,
+    /// This start's secret, as the app is given it.
+    secret: String,
     clock: Arc<AtomicI64>,
     _home: Arc<tempfile::TempDir>,
 }
@@ -65,6 +67,7 @@ async fn harness() -> H {
     let mut h = H {
         books,
         addr: "127.0.0.1:1".parse().unwrap(),
+        secret: String::new(),
         clock,
         _home: Arc::new(home),
     };
@@ -83,7 +86,10 @@ impl H {
         )
         .await
         {
-            Response::Remote(info) => self.addr = info.listening.unwrap().parse().unwrap(),
+            Response::Remote(info) => {
+                self.addr = info.listening.unwrap().parse().unwrap();
+                self.secret = info.proxy_secret.unwrap().0;
+            }
             other => panic!("{other:?}"),
         }
         for book in ["acme", "beta"] {
@@ -207,10 +213,11 @@ async fn http_from(
     extra: &[(&str, &str)],
     body: &str,
 ) -> Resp {
-    let mut bytes = proxy::encode(
+    let mut bytes = h.secret.clone().into_bytes();
+    bytes.extend(proxy::encode(
         format!("{from}:40000").parse().unwrap(),
         "198.51.100.1:443".parse().unwrap(),
-    );
+    ));
     bytes.extend(request_bytes(&h.host(), method, path, extra, body));
     parse(&raw(h.addr, &bytes).await)
 }
@@ -705,7 +712,11 @@ async fn the_default_is_read_and_draft_and_the_person_raises_it_to_post() {
     };
     assert_eq!(approvals.len(), 1);
     assert!(!approvals[0].may_post);
-    assert!(approvals[0].label.contains("claude.ai"), "{}", approvals[0].label);
+    assert!(
+        approvals[0].label.contains("claude.ai"),
+        "{}",
+        approvals[0].label
+    );
     // The same connection is a row of "Who can reach these books".
     let listed = match admin(&h.books, Request::TokenList).await {
         Response::Tokens(t) => t,
@@ -884,15 +895,7 @@ async fn a_stranger_who_knows_the_product_gets_no_code_without_an_allow() {
         decide(&h, &waiting[0].id, false, false).await,
         Response::RemoteDecided { approval: None, .. }
     ));
-    let back = http_from(
-        &h,
-        "198.51.100.200",
-        "GET",
-        &wait_path(&asked),
-        &[],
-        "",
-    )
-    .await;
+    let back = http_from(&h, "198.51.100.200", "GET", &wait_path(&asked), &[], "").await;
     let params = location_params(&back);
     assert_eq!(params["error"], "access_denied");
     assert!(!params.contains_key("code"));
@@ -924,7 +927,13 @@ async fn an_allow_is_a_new_approval_with_exactly_the_permissions_ticked() {
     assert_eq!(listed.len(), 2, "{listed:?}");
     let new = listed.iter().find(|a| a.id != first_approval).unwrap();
     assert!(!new.may_post, "nothing carried over from the first");
-    assert!(listed.iter().find(|a| a.id == first_approval).unwrap().may_post);
+    assert!(
+        listed
+            .iter()
+            .find(|a| a.id == first_approval)
+            .unwrap()
+            .may_post
+    );
     assert_ne!(new.token_id, first_token);
     let post = call(
         3,
@@ -932,7 +941,11 @@ async fn an_allow_is_a_new_approval_with_exactly_the_permissions_ticked() {
         json!({"entry_id": 1, "confirmed": true, "request_key": "post-key-0002"}),
     );
     let refused = mcp(&h, Some(&second_access), "acme", post.clone()).await;
-    assert!(tool_text(&refused).contains("books:post"), "{}", refused.body);
+    assert!(
+        tool_text(&refused).contains("books:post"),
+        "{}",
+        refused.body
+    );
     let allowed = mcp(&h, Some(&first_access), "acme", post).await;
     assert!(!tool_text(&allowed).contains("needs books:post"));
     // And the other way: not ticked first, ticked second.
@@ -994,7 +1007,9 @@ async fn revoke_then_allow_again_does_not_bring_the_old_tokens_back() {
     // The new one works.
     let new_access = fresh.json()["access_token"].as_str().unwrap().to_string();
     assert_eq!(
-        mcp(&h, Some(&new_access), "acme", initialize()).await.status,
+        mcp(&h, Some(&new_access), "acme", initialize())
+            .await
+            .status,
         200
     );
 }
@@ -1277,10 +1292,11 @@ async fn an_expired_token_and_a_token_for_another_issuer_are_refused() {
     h.start("https://other-name-tally-mint-ledger.wanderbooks.link")
         .await;
     let host = "other-name-tally-mint-ledger.wanderbooks.link";
-    let mut bytes = proxy::encode(
+    let mut bytes = h.secret.clone().into_bytes();
+    bytes.extend(proxy::encode(
         "203.0.113.9:1".parse().unwrap(),
         "198.51.100.1:443".parse().unwrap(),
-    );
+    ));
     bytes.extend(request_bytes(
         host,
         "POST",
@@ -1294,10 +1310,11 @@ async fn an_expired_token_and_a_token_for_another_issuer_are_refused() {
     ));
     let r = parse(&raw(h.addr, &bytes).await);
     assert_eq!(r.status, 401, "{}", r.body);
-    let mut bytes = proxy::encode(
+    let mut bytes = h.secret.clone().into_bytes();
+    bytes.extend(proxy::encode(
         "203.0.113.9:1".parse().unwrap(),
         "198.51.100.1:443".parse().unwrap(),
-    );
+    ));
     let refresh_body = form(&[
         ("grant_type", "refresh_token"),
         ("client_id", &client),
@@ -1446,10 +1463,11 @@ async fn the_recorded_address_is_the_relays_and_a_forged_one_changes_nothing() {
     assert_eq!(last.access.subject, "books.start");
     // A header a caller writes inside its own bytes is not a header: the
     // door has read the real one, and this is HTTP text.
-    let mut bytes = proxy::encode(
+    let mut bytes = h.secret.clone().into_bytes();
+    bytes.extend(proxy::encode(
         "198.51.100.77:1".parse().unwrap(),
         "198.51.100.1:443".parse().unwrap(),
-    );
+    ));
     bytes.extend(proxy::encode(
         "10.9.9.9:1".parse().unwrap(),
         "198.51.100.1:443".parse().unwrap(),
@@ -1485,8 +1503,7 @@ async fn the_recorded_address_is_the_relays_and_a_forged_one_changes_nothing() {
         .map(|(records, _)| records.len())
         .unwrap_or(0);
     assert_eq!(
-        written,
-        0,
+        written, 0,
         "a refusal for another company is counted, never written"
     );
 }
@@ -1704,7 +1721,10 @@ async fn waiting_requests_give_way_and_never_fill_the_window_against_a_real_one(
     let list = h.books.remote.pending_list();
     let codes: BTreeSet<&String> = list.iter().map(|p| &p.code).collect();
     assert_eq!(codes.len(), list.len());
-    assert!(list.iter().all(|p| p.code.len() == 7 && p.code.chars().nth(3) == Some(' ')));
+    assert!(
+        list.iter()
+            .all(|p| p.code.len() == 7 && p.code.chars().nth(3) == Some(' '))
+    );
     // They expire unanswered.
     h.advance(PENDING_TTL + 1);
     assert!(pending(&h).await.is_empty());
@@ -1767,6 +1787,474 @@ async fn limits_count_an_ipv6_64_as_one_caller_and_a_mapped_address_as_its_ipv4(
     )
     .await;
     assert_eq!(other.status, 201);
+}
+
+// ---- one use of a refresh token ----------------------------------------------------
+
+/// Two refreshes of one token at once: exactly one succeeds, and the other
+/// is a reuse that ends the whole family (what the winner was given goes
+/// too). Many rounds, many at once, so a check and a mark that were apart
+/// would show.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_refreshes_at_once_never_both_succeed() {
+    let h = harness().await;
+    let c = register(&h, "Claude", &[CLAUDE_CB]).await;
+    let id = c["client_id"].as_str().unwrap().to_string();
+    for round in 0..12u32 {
+        let (code, verifier) = sign_in(&h, &id, CLAUDE_CB, "acme", 400 + round, false).await;
+        let first = exchange(&h, &id, &code, &verifier, CLAUDE_CB).await.json();
+        let token = first["refresh_token"].as_str().unwrap().to_string();
+        let mut tasks = Vec::new();
+        for _ in 0..8 {
+            let (h, id, token) = (h.clone(), id.clone(), token.clone());
+            tasks.push(tokio::spawn(async move { refresh(&h, &id, &token).await }));
+        }
+        let mut won = Vec::new();
+        for t in tasks {
+            let r = t.await.unwrap();
+            if r.status == 200 {
+                won.push(r.json());
+            } else {
+                assert_eq!(r.status, 400, "{}", r.body);
+                assert_eq!(r.json()["error"], "invalid_grant");
+            }
+        }
+        assert_eq!(won.len(), 1, "round {round}: {} succeeded", won.len());
+        // The reuse ended the family: what the winner was given is dead.
+        let given = won[0]["refresh_token"].as_str().unwrap();
+        assert_eq!(refresh(&h, &id, given).await.status, 400, "round {round}");
+    }
+}
+
+// ---- what is fetched, and when --------------------------------------------------------
+
+struct Counting {
+    fetched: std::sync::atomic::AtomicUsize,
+    redirect: &'static str,
+}
+
+impl ClientDocs for Counting {
+    fn fetch<'a>(
+        &'a self,
+        url: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, String>> + Send + 'a>>
+    {
+        self.fetched.fetch_add(1, Ordering::SeqCst);
+        let doc = json!({"client_id": url, "client_name": "Doc",
+                         "redirect_uris": [self.redirect]})
+        .to_string()
+        .into_bytes();
+        Box::pin(async move { Ok(doc) })
+    }
+}
+
+/// The token endpoint never reaches out to the internet: a client id it
+/// does not hold is unknown there, whatever address it is.
+#[tokio::test(flavor = "multi_thread")]
+async fn nothing_is_ever_fetched_from_the_token_endpoint() {
+    let h = harness().await;
+    let docs = Arc::new(Counting {
+        fetched: 0.into(),
+        redirect: "https://assistant.example/cb",
+    });
+    h.books.remote.set_docs(docs.clone());
+    for grant in ["authorization_code", "refresh_token"] {
+        let r = http(
+            &h,
+            "POST",
+            "/token",
+            &[("Content-Type", "application/x-www-form-urlencoded")],
+            &form(&[
+                ("grant_type", grant),
+                ("client_id", "https://assistant.example/client.json"),
+                ("code", "x"),
+                ("code_verifier", "x"),
+                ("refresh_token", "x"),
+            ]),
+        )
+        .await;
+        assert!(
+            r.status == 401 || r.status == 400,
+            "{} {}",
+            r.status,
+            r.body
+        );
+    }
+    assert_eq!(docs.fetched.load(Ordering::SeqCst), 0);
+    // At sign-in it is fetched (once), and then the token endpoint uses
+    // what it holds, even when the hold has gone stale: no fetch there.
+    let id = "https://assistant.example/client.json";
+    let cb = "https://assistant.example/cb";
+    let (code, verifier) = sign_in(&h, id, cb, "acme", 500, false).await;
+    assert_eq!(docs.fetched.load(Ordering::SeqCst), 1);
+    let t = exchange(&h, id, &code, &verifier, cb).await;
+    assert_eq!(t.status, 200, "{}", t.body);
+    let first = t.json()["refresh_token"].as_str().unwrap().to_string();
+    h.advance(CIMD_TTL + 5);
+    let t = refresh(&h, id, &first).await;
+    assert_eq!(t.status, 200, "{}", t.body);
+    assert_eq!(docs.fetched.load(Ordering::SeqCst), 1);
+}
+
+/// A document we hold that is past its time is used as it stands when the
+/// fetch budget is spent (a person is not locked out by a limit).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stale_client_document_is_used_when_the_fetch_budget_is_spent() {
+    let h = harness().await;
+    let docs = Arc::new(Counting {
+        fetched: 0.into(),
+        redirect: "https://assistant.example/cb",
+    });
+    h.books.remote.set_docs(docs.clone());
+    let id = "https://assistant.example/client.json";
+    let cb = "https://assistant.example/cb";
+    let (code, verifier) = sign_in(&h, id, cb, "acme", 510, false).await;
+    assert_eq!(exchange(&h, id, &code, &verifier, cb).await.status, 200);
+    h.advance(CIMD_TTL + 5);
+    // The address spends its budget on other documents.
+    for n in 0..FETCH_PER_ADDRESS {
+        let other = format!("https://other{n}.example/client.json");
+        let _ = ask(&h, CALLER, &other, cb, 520 + n).await;
+    }
+    let before = docs.fetched.load(Ordering::SeqCst);
+    let page = ask(&h, CALLER, id, cb, 540).await;
+    assert_eq!(page.status, 200, "{}", page.body);
+    assert_eq!(docs.fetched.load(Ordering::SeqCst), before, "no fetch");
+}
+
+// ---- the file, and what a registration costs --------------------------------------------
+
+/// A registration nobody has allowed lives in memory only: the file is not
+/// written for it. It is, once the person allows a sign-in of that client.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_registration_nobody_allowed_never_reaches_the_disk() {
+    let h = harness().await;
+    let dir = h.books.root.auth_dir().unwrap();
+    let file = dir.join(FILE);
+    let before = std::fs::metadata(&file)
+        .ok()
+        .and_then(|m| m.modified().ok());
+    let mut ids = Vec::new();
+    for i in 0..5 {
+        let c = register(&h, &format!("Stranger {i}"), &["https://x.example/cb"]).await;
+        ids.push(c["client_id"].as_str().unwrap().to_string());
+    }
+    let after = std::fs::metadata(&file)
+        .ok()
+        .and_then(|m| m.modified().ok());
+    assert_eq!(before, after, "registering wrote the file");
+    if let Ok(text) = std::fs::read_to_string(&file) {
+        assert!(!text.contains(&ids[0]));
+    }
+    // Asking to sign in (parked, not yet allowed) writes nothing either.
+    let _ = ask(&h, CALLER, &ids[0], "https://x.example/cb", 600).await;
+    assert_eq!(
+        before,
+        std::fs::metadata(&file)
+            .ok()
+            .and_then(|m| m.modified().ok())
+    );
+    // The person allows it: now it is kept, with its approval.
+    let waiting = pending(&h).await;
+    assert!(matches!(
+        decide(&h, &waiting[0].id, true, false).await,
+        Response::RemoteDecided { .. }
+    ));
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(text.contains(&ids[0]));
+    assert!(!text.contains(&ids[1]));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_redirect_is_at_most_512_bytes_and_a_clients_together_a_few_kib() {
+    let h = harness().await;
+    let long = format!("https://x.example/{}", "a".repeat(MAX_REDIRECT_BYTES));
+    assert!(long.len() > MAX_REDIRECT_BYTES);
+    let ok = format!("https://x.example/{}", "a".repeat(MAX_REDIRECT_BYTES - 20));
+    assert!(ok.len() <= MAX_REDIRECT_BYTES);
+    let r = http(
+        &h,
+        "POST",
+        "/register",
+        &[("Content-Type", "application/json")],
+        &json!({"redirect_uris": [long]}).to_string(),
+    )
+    .await;
+    assert_eq!(r.status, 400, "{}", r.body);
+    // Twenty of the longest allowed is over the client's total.
+    let many: Vec<String> = (0..MAX_REDIRECTS)
+        .map(|i| {
+            format!(
+                "https://x.example/{i:02}{}",
+                "a".repeat(MAX_REDIRECT_BYTES - 30)
+            )
+        })
+        .collect();
+    assert!(many.iter().all(|u| valid_redirect(u).is_some()));
+    assert!(many.iter().map(String::len).sum::<usize>() > MAX_REDIRECTS_TOTAL);
+    let r = http(
+        &h,
+        "POST",
+        "/register",
+        &[("Content-Type", "application/json")],
+        &json!({"redirect_uris": many}).to_string(),
+    )
+    .await;
+    assert_eq!(r.status, 400, "{}", r.body);
+    let r = http(
+        &h,
+        "POST",
+        "/register",
+        &[("Content-Type", "application/json")],
+        &json!({"redirect_uris": [ok]}).to_string(),
+    )
+    .await;
+    assert_eq!(r.status, 201, "{}", r.body);
+}
+
+// ---- what the window shows -----------------------------------------------------------------
+
+/// A name an assistant gives itself carries no invisible or
+/// direction-changing character into the window, and is cut short.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_name_is_shown_without_invisible_or_direction_changing_characters_and_short() {
+    assert_eq!(
+        clean("Cla\u{202e}ude\u{200b} \u{2066}Web\u{2069}\u{feff}", 100),
+        "Claude Web"
+    );
+    assert_eq!(clean("a\u{200f}\u{061c}b\u{e0041}c", 100), "abc");
+    let h = harness().await;
+    let long = "N".repeat(200);
+    let c = register(
+        &h,
+        &format!("Anthropic\u{202e}\u{200b} {long}"),
+        &["https://assist.example/cb"],
+    )
+    .await;
+    let id = c["client_id"].as_str().unwrap();
+    let page = ask(&h, CALLER, id, "https://assist.example/cb", 700).await;
+    assert_eq!(page.status, 200);
+    let p = &pending(&h).await[0];
+    assert!(
+        p.client_name.chars().count() <= MAX_NAME_SHOWN,
+        "{}",
+        p.client_name
+    );
+    assert!(p.client_name.starts_with("Anthropic N"));
+    assert!(!p.client_name.contains('\u{202e}') && !p.client_name.contains('\u{200b}'));
+    // The host is what comes first in the label of the connection made.
+    assert!(!p.known_host);
+    assert_eq!(p.redirect_host, "assist.example");
+}
+
+// ---- keys, limits, refusals counted ------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_revoked_key_frees_its_place() {
+    let h = harness().await;
+    let mut last = None;
+    for i in 0..MAX_KEYS {
+        match admin(
+            &h.books,
+            Request::RemoteMakeKey {
+                book: "acme".into(),
+                name: format!("key {i}"),
+                post: false,
+            },
+        )
+        .await
+        {
+            Response::RemoteSecret { id, .. } => last = Some(id),
+            other => panic!("{i}: {other:?}"),
+        }
+    }
+    let full = admin(
+        &h.books,
+        Request::RemoteMakeKey {
+            book: "acme".into(),
+            name: "one more".into(),
+            post: false,
+        },
+    )
+    .await;
+    assert!(matches!(full, Response::Refused(_)), "{full:?}");
+    let tokens = match admin(&h.books, Request::TokenList).await {
+        Response::Tokens(t) => t,
+        other => panic!("{other:?}"),
+    };
+    let gone = tokens
+        .iter()
+        .find(|t| Some(&t.id) == last.as_ref())
+        .unwrap();
+    assert!(matches!(
+        admin(
+            &h.books,
+            Request::TokenRevoke {
+                book: "acme".into(),
+                name: gone.name.clone(),
+                id: Some(gone.id.clone())
+            }
+        )
+        .await,
+        Response::TokenRevoked(_)
+    ));
+    let again = admin(
+        &h.books,
+        Request::RemoteMakeKey {
+            book: "acme".into(),
+            name: "one more".into(),
+            post: false,
+        },
+    )
+    .await;
+    assert!(matches!(again, Response::RemoteSecret { .. }), "{again:?}");
+}
+
+/// When the table of per-address limits is full, it is per-address entries
+/// that go; a connection's own call limit is never evicted (that would
+/// hand a caller a fresh allowance by filling the table).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_full_limiter_table_evicts_addresses_never_a_connections_own_limit() {
+    let h = harness().await;
+    let remote = &h.books.remote;
+    // A connection that has used all its calls this minute.
+    for _ in 0..CALLS_PER_MINUTE {
+        assert!(!remote.limited("call:tok_mine".into(), CALLS_PER_MINUTE, 60));
+    }
+    assert!(remote.limited("call:tok_mine".into(), CALLS_PER_MINUTE, 60));
+    // Strangers fill the table of addresses, and then some.
+    {
+        let mut inner = remote.inner();
+        for i in 0..MAX_ADDRESS_LIMITS + 500 {
+            h.advance(0);
+            remote.allow_address(
+                &mut inner,
+                format!("register:10.{}.{}.{}", i / 65536, (i / 256) % 256, i % 256),
+                5,
+                3600,
+            );
+        }
+        assert!(inner.address_limits.len() <= MAX_ADDRESS_LIMITS);
+        assert!(inner.limits.contains_key("call:tok_mine"));
+    }
+    // Still limited: it was not given a fresh allowance.
+    assert!(remote.limited("call:tok_mine".into(), CALLS_PER_MINUTE, 60));
+}
+
+/// A call refused for rate or for another company's books is counted and
+/// not written to the record; and the call limit is asked first.
+#[tokio::test(flavor = "multi_thread")]
+async fn refused_calls_are_counted_not_written_and_the_limit_comes_before_the_company() {
+    let h = harness().await;
+    let (_, access, _) = claude(&h, "acme").await;
+    let token_id = approvals_of(&h, "acme").await[0].token_id.clone();
+    let dir = h.books.root.book_dir(&BookId::parse("acme").unwrap());
+    let written = || {
+        ledger_store::access::read(&dir)
+            .map(|(r, _)| r.len())
+            .unwrap_or(0)
+    };
+    assert_eq!(
+        mcp(&h, Some(&access), "acme", initialize()).await.status,
+        200
+    );
+    let before_records = written();
+    let before = h.books.remote.refused();
+    for _ in 0..CALLS_PER_MINUTE {
+        h.books
+            .remote
+            .limited(format!("call:{token_id}"), CALLS_PER_MINUTE, 60);
+    }
+    let limited = mcp(&h, Some(&access), "acme", initialize()).await;
+    assert_eq!(limited.status, 429, "{}", limited.body);
+    assert_eq!(limited.header("retry-after"), Some("60"));
+    // Another company's path from the same token: the limit answers first.
+    let other = mcp(&h, Some(&access), "beta", initialize()).await;
+    assert_eq!(other.status, 429, "{}", other.body);
+    assert_eq!(h.books.remote.refused(), before + 2);
+    assert_eq!(written(), before_records, "refusals were written");
+    // After the minute, the company check answers (403), still counted.
+    h.advance(61);
+    let wrong = mcp(&h, Some(&access), "beta", initialize()).await;
+    assert_eq!(wrong.status, 403, "{}", wrong.body);
+    assert_eq!(h.books.remote.refused(), before + 3);
+}
+
+// ---- the front of the door ---------------------------------------------------------------------------
+
+/// Only a connection that begins with this start's secret is read at all:
+/// a process on this computer that finds the port and writes a PROXY
+/// header of its own gets nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_connection_without_the_secret_is_dropped_before_anything_is_read() {
+    let h = harness().await;
+    let request = request_bytes(
+        &h.host(),
+        "GET",
+        "/.well-known/oauth-authorization-server",
+        &[],
+        "",
+    );
+    let header = proxy::encode(
+        "198.51.100.5:1".parse().unwrap(),
+        "198.51.100.1:443".parse().unwrap(),
+    );
+    // No secret: the PROXY header first, as the relay's line was before.
+    let mut bytes = header.clone();
+    bytes.extend(&request);
+    assert!(raw(h.addr, &bytes).await.is_empty());
+    // A wrong one, of the right length.
+    let mut wrong = vec![b'0'; proxy::SECRET_LEN];
+    wrong[0] = if h.secret.as_bytes()[0] == b'0' {
+        b'1'
+    } else {
+        b'0'
+    };
+    let mut bytes = wrong;
+    bytes.extend(&header);
+    bytes.extend(&request);
+    assert!(raw(h.addr, &bytes).await.is_empty());
+    // The right one: answered.
+    let mut bytes = h.secret.clone().into_bytes();
+    bytes.extend(&header);
+    bytes.extend(&request);
+    assert_eq!(parse(&raw(h.addr, &bytes).await).status, 200);
+    // The secret is never in what the admin side prints.
+    let info = match admin(&h.books, Request::RemoteStatus).await {
+        Response::Remote(i) => i,
+        other => panic!("{other:?}"),
+    };
+    assert!(!format!("{info:?}").contains(&h.secret));
+    assert_eq!(info.proxy_secret.unwrap().0, h.secret);
+}
+
+/// Under HTTP/2 there is no `Host` header: the host is the request
+/// address's authority, and the same check is made on it.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_host_is_read_from_the_authority_when_there_is_no_host_header() {
+    let h = harness().await;
+    let none = axum::http::HeaderMap::new();
+    let good: axum::http::Uri = format!("https://{}/token", h.host()).parse().unwrap();
+    assert!(super::http::front(&h.books, &none, &good).is_ok());
+    let loud: axum::http::Uri = format!("https://{}:443/token", h.host().to_uppercase())
+        .parse()
+        .unwrap();
+    assert!(super::http::front(&h.books, &none, &loud).is_ok());
+    let wrong: axum::http::Uri = "https://elsewhere.example/token".parse().unwrap();
+    assert_eq!(
+        super::http::front(&h.books, &none, &wrong)
+            .err()
+            .unwrap()
+            .status(),
+        421
+    );
+    // No host anywhere is no host.
+    let bare: axum::http::Uri = "/token".parse().unwrap();
+    assert!(super::http::front(&h.books, &none, &bare).is_err());
+    // A Host header, when there is one, is what counts.
+    let mut host = axum::http::HeaderMap::new();
+    host.insert("host", h.host().parse().unwrap());
+    assert!(super::http::front(&h.books, &host, &bare).is_ok());
 }
 
 // ---- the doors ------------------------------------------------------------------------
@@ -1838,10 +2326,11 @@ async fn the_metadata_is_the_pinned_address_at_every_place_products_look() {
     }
     // Nothing is built from the request: another Host is not answered, and
     // a company not offered has no document.
-    let mut bytes = proxy::encode(
+    let mut bytes = h.secret.clone().into_bytes();
+    bytes.extend(proxy::encode(
         "203.0.113.9:1".parse().unwrap(),
         "198.51.100.1:443".parse().unwrap(),
-    );
+    ));
     bytes.extend(request_bytes(
         "evil.example",
         "GET",
@@ -2045,10 +2534,11 @@ async fn a_key_made_for_a_product_that_takes_only_a_key_opens_the_door_with_the_
 #[tokio::test(flavor = "multi_thread")]
 async fn a_host_with_the_default_port_is_the_same_host() {
     let h = harness().await;
-    let mut bytes = proxy::encode(
+    let mut bytes = h.secret.clone().into_bytes();
+    bytes.extend(proxy::encode(
         "203.0.113.9:1".parse().unwrap(),
         "198.51.100.1:443".parse().unwrap(),
-    );
+    ));
     bytes.extend(request_bytes(
         &format!("{}:443", h.host()),
         "GET",

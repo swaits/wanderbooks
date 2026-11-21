@@ -23,8 +23,10 @@
 //!   1. Off unless asked: the door listens on 127.0.0.1 only after an
 //!      admin request (`RemoteStart`) and stops on `RemoteStop` or when the
 //!      server closes. It serves a company only while that company is
-//!      allowed (`RemoteAllow`) AND open. Every connection begins with the
-//!      relay's PROXY header (proxy.rs); the address in it is the caller's,
+//!      allowed (`RemoteAllow`) AND open. Every connection begins with this
+//!      start's secret and then the relay's PROXY header (proxy.rs): only
+//!      the app, which is given the secret over the admin socket, can say a
+//!      caller's address. The address in the header is the caller's,
 //!      is what the access record and the limits use, and is never taken
 //!      from an HTTP header. Nothing on this door is ever treated as local:
 //!      every request needs a token, and the local socket's same-user check
@@ -46,33 +48,42 @@
 //!      carry up to MAX_REDIRECTS. PKCE with S256 is required; the
 //!      `resource` must be the one company's address; a code is single-use
 //!      and lives CODE_TTL; the consent ends in a 302.
-//!   5. No approval without the person. `/authorize` never approves: it
-//!      parks the request (PENDING_TTL), and only an admin request, which
-//!      the owner-only admin socket carries, turns a parked request into a
-//!      code. A parked request is named by two unrelated random ids: the
-//!      one the window shows, and the one only the browser's page holds.
-//!      Neither a stranger's guess nor a replay approves anything: the
-//!      second id only reads the outcome, once.
-//!   6. An approval is the owner's decision about a product, a company and
-//!      a set of permissions, and survives a product registering again: it
-//!      is one token of the books' principals (so "Who can reach these
-//!      books" lists it, and revoking it by id ends every access and
-//!      refresh token made under it), plus a record here naming the
-//!      product. Access tokens live ACCESS_TTL; refresh tokens REFRESH_TTL
-//!      since last use, rotated at every use, and a refresh token used
-//!      twice ends its whole family.
+//!   5. No approval without the person, and every sign-in is asked (D-90).
+//!      `/authorize` never approves and always parks the request
+//!      (PENDING_TTL), whatever the product and whatever was approved
+//!      before: the redirect host is public, so it says nothing of whose
+//!      account asks. Only an admin request, which the owner-only admin
+//!      socket carries, turns a parked request into a code. A parked
+//!      request is named by two unrelated random ids: the one the window
+//!      shows, and the one only the browser's page holds; and carries a
+//!      short code shown on the page and on the card, for the person to
+//!      match. Neither a stranger's guess nor a replay approves anything:
+//!      the second id only reads the outcome, once. The window is told
+//!      what is known in neutral words: where it is sent back to, and its
+//!      own cleaned word for itself; never "a known product".
+//!   6. An approval is the owner's decision about one sign-in, a company and
+//!      a set of permissions, never reused: it is one token of the books'
+//!      principals (so "Who can reach these books" lists it, and revoking
+//!      it by id ends every access and refresh token made under it, at
+//!      that moment), plus a record here. Every Allow makes a new one with
+//!      exactly the permissions ticked. Access tokens live ACCESS_TTL;
+//!      refresh tokens REFRESH_TTL since last use, rotated at every use
+//!      (checked and marked in one hold of the lock), and a refresh token
+//!      used twice ends its whole family.
 //!   7. Secrets are never stored: codes, access tokens, refresh tokens and
 //!      client secrets are kept as SHA-256 only, and compared by hash (or
 //!      in constant time where a hash is compared to a hash).
 //!   8. Every table is bounded (MAX_* below) and expires: registered
-//!      clients unused for CLIENT_IDLE, pending requests, codes, access
-//!      tokens, refresh tokens. A stranger registering clients, or asking
-//!      to sign in, can fill none of them; a failure to sign in is never
-//!      ground for banning an address (vendors share addresses), only the
-//!      state a request creates is bounded, and an approval's own calls
-//!      are limited.
+//!      clients unused for CLIENT_IDLE (held in memory until the person
+//!      allows one), pending requests (which give way to newer ones rather
+//!      than turn them away), codes, access tokens, refresh tokens. A
+//!      stranger registering clients, or asking to sign in, can fill none
+//!      of them, nor the file; a failure to sign in is never ground for
+//!      banning an address (vendors share addresses), only the state a
+//!      request creates is bounded, and an approval's own calls are
+//!      limited. Addresses are counted per IPv4 address or IPv6 /64.
 //!   9. No company mixing: a token for company A, presented at company
-//!      B's path, is refused (403, recorded as the token's own refusal); a
+//!      B's path, is refused (403, counted, not written); a
 //!      code and a refresh token carry their company and never issue a
 //!      token for another.
 //!  10. Remote permissions: an approval grants read and draft; posting is
@@ -379,6 +390,9 @@ pub(super) struct Door {
     pub host: String,
     pub listening: SocketAddr,
     pub stop: CancellationToken,
+    /// This start's secret: the app begins every connection with it
+    /// (proxy.rs INVARIANT 5).
+    pub secret: String,
 }
 
 /// Why a token is refused at the door.
@@ -967,7 +981,8 @@ impl Remote {
         let door = self.door();
         RemoteInfo {
             listening: door.as_ref().map(|d| d.listening.to_string()),
-            public_url: door.map(|d| d.issuer.clone()),
+            public_url: door.as_ref().map(|d| d.issuer.clone()),
+            proxy_secret: door.map(|d| crate::admin::TokenText(d.secret.clone())),
             allowed: self
                 .allowed
                 .read()
@@ -1159,13 +1174,7 @@ impl Remote {
                 None => None,
             }
         };
-        let unknown = || {
-            OauthError::new(
-                401,
-                "invalid_client",
-                "that client_id isn't known here",
-            )
-        };
+        let unknown = || OauthError::new(401, "invalid_client", "that client_id isn't known here");
         if !id.starts_with("https://") || !may_fetch {
             return stale.ok_or_else(unknown);
         }
@@ -1839,7 +1848,9 @@ impl Remote {
                 .swapped
                 .insert(approval.token_id.clone(), token.id.clone());
             approval.token_id = token.id;
-            inner.approvals.insert(approval.id.clone(), approval.clone());
+            inner
+                .approvals
+                .insert(approval.id.clone(), approval.clone());
             approval
         };
         self.save()?;
@@ -2185,19 +2196,27 @@ impl Remote {
             let mut inner = self.inner();
             self.sweep(&mut inner);
             match inner.refresh.get(&key).cloned() {
-                None => Err((bad("that refresh token is invalid, used, or has expired"), false)),
+                None => Err((
+                    bad("that refresh token is invalid, used, or has expired"),
+                    false,
+                )),
                 Some(rec) if rec.used => {
                     // Used twice: the family is over (RFC 9700 4.14).
                     inner.refresh.retain(|_, r| r.family != rec.family);
                     inner.access.retain(|_, a| a.family != rec.family);
-                    Err((bad("that refresh token was already used: sign in again"), true))
+                    Err((
+                        bad("that refresh token was already used: sign in again"),
+                        true,
+                    ))
                 }
-                Some(rec) if rec.client != client.id => {
-                    Err((bad("that refresh token belongs to another assistant"), false))
-                }
-                Some(rec) if rec.issuer != door.issuer => {
-                    Err((bad("that refresh token was made for another address"), false))
-                }
+                Some(rec) if rec.client != client.id => Err((
+                    bad("that refresh token belongs to another assistant"),
+                    false,
+                )),
+                Some(rec) if rec.issuer != door.issuer => Err((
+                    bad("that refresh token was made for another address"),
+                    false,
+                )),
                 Some(rec) => match inner.approvals.get(&rec.approval).cloned() {
                     None => Err((bad("that connection no longer exists"), false)),
                     Some(approval)

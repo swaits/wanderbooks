@@ -10,7 +10,8 @@
 //!         401 and its challenge); plan/p15-app-and-relay.md 4 rules 1, 4, 5.
 //! INVARIANTS:
 //!   1. A request is answered only while the door is on, and only if its
-//!      Host is the public address's host (421 otherwise); a request that
+//!      Host (under HTTP/2, its authority) is the public address's host
+//!      (421 otherwise); a request that
 //!      has an Origin must have the public address's (403).
 //!   2. Every address in a metadata document is built from the public
 //!      address the app gave and from nothing in the request.
@@ -114,20 +115,29 @@ pub(in crate::local) fn start_door(
     let listener = tokio::net::TcpListener::from_std(listener)
         .map_err(|e| format!("the door can't listen ({})", e.kind()))?;
     let stop = books.sessions.child_token();
+    // The secret of this start: only the app, which is told it over the
+    // admin socket, can say a caller's address (proxy.rs INVARIANT 5).
+    let secret = proxy::new_secret()?;
     let door = Arc::new(Door {
         issuer: issuer.clone(),
         host: host_header_form(&issuer),
         listening,
         stop: stop.clone(),
+        secret: secret.clone(),
     });
     remote.set_door(Some(door));
     let app = remote_router(books.clone());
     let accept_stop = stop.clone();
-    handle.spawn(proxy::accept_loop(listener, stop, move |io, caller| {
-        let app = app.clone().layer(Extension(Peer(caller)));
-        let stop = accept_stop.clone();
-        tokio::spawn(serve_connection(io, app, stop));
-    }));
+    handle.spawn(proxy::accept_loop(
+        listener,
+        stop,
+        secret,
+        move |io, caller| {
+            let app = app.clone().layer(Extension(Peer(caller)));
+            let stop = accept_stop.clone();
+            tokio::spawn(serve_connection(io, app, stop));
+        },
+    ));
     Ok(remote.info())
 }
 
@@ -288,8 +298,13 @@ fn answer(a: Authorize) -> Response {
 }
 
 /// The door is on, and this request is for its one public host
-/// (INVARIANT 1).
-fn front(books: &Books, headers: &HeaderMap) -> Result<Arc<Door>, Box<Response>> {
+/// (INVARIANT 1). The host is the `Host` header's; under HTTP/2 there is
+/// none, and it is the request address's authority (`:authority`).
+pub(super) fn front(
+    books: &Books,
+    headers: &HeaderMap,
+    uri: &axum::http::Uri,
+) -> Result<Arc<Door>, Box<Response>> {
     let Some(door) = books.remote.door() else {
         return Err(Box::new(no_store(
             (StatusCode::SERVICE_UNAVAILABLE, "web assistants are off").into_response(),
@@ -300,6 +315,7 @@ fn front(books: &Books, headers: &HeaderMap) -> Result<Arc<Door>, Box<Response>>
     let host = headers
         .get(header::HOST)
         .and_then(|h| h.to_str().ok())
+        .or_else(|| uri.authority().map(|a| a.as_str()))
         .map(str::to_ascii_lowercase)
         .map(|h| {
             let plain = door.issuer.starts_with("https://");
@@ -314,8 +330,12 @@ fn front(books: &Books, headers: &HeaderMap) -> Result<Arc<Door>, Box<Response>>
     Ok(door)
 }
 
-async fn preflight(State(books): State<Arc<Books>>, headers: HeaderMap) -> Response {
-    if let Err(r) = front(&books, &headers) {
+async fn preflight(
+    State(books): State<Arc<Books>>,
+    uri: axum::http::Uri,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(r) = front(&books, &headers, &uri) {
         return *r;
     }
     cors(StatusCode::NO_CONTENT.into_response())
@@ -334,10 +354,11 @@ fn parse_pairs(text: &str) -> BTreeMap<String, String> {
 async fn register(
     State(books): State<Arc<Books>>,
     Extension(peer): Extension<Peer>,
+    uri: axum::http::Uri,
     headers: HeaderMap,
     body: axum::body::Body,
 ) -> Response {
-    if let Err(r) = front(&books, &headers) {
+    if let Err(r) = front(&books, &headers, &uri) {
         return *r;
     }
     let Ok(bytes) = axum::body::to_bytes(body, MAX_FORM).await else {
@@ -367,10 +388,11 @@ async fn register(
 async fn authorize(
     State(books): State<Arc<Books>>,
     Extension(peer): Extension<Peer>,
+    uri: axum::http::Uri,
     headers: HeaderMap,
     Query(q): Query<BTreeMap<String, String>>,
 ) -> Response {
-    let door = match front(&books, &headers) {
+    let door = match front(&books, &headers, &uri) {
         Ok(d) => d,
         Err(r) => return *r,
     };
@@ -384,10 +406,11 @@ async fn authorize(
 
 async fn wait(
     State(books): State<Arc<Books>>,
+    uri: axum::http::Uri,
     headers: HeaderMap,
     Path(wait): Path<String>,
 ) -> Response {
-    if let Err(r) = front(&books, &headers) {
+    if let Err(r) = front(&books, &headers, &uri) {
         return *r;
     }
     answer(books.remote.wait(&books, &wait))
@@ -396,10 +419,11 @@ async fn wait(
 async fn token(
     State(books): State<Arc<Books>>,
     Extension(peer): Extension<Peer>,
+    uri: axum::http::Uri,
     headers: HeaderMap,
     body: axum::body::Body,
 ) -> Response {
-    let door = match front(&books, &headers) {
+    let door = match front(&books, &headers, &uri) {
         Ok(d) => d,
         Err(r) => return *r,
     };
@@ -504,7 +528,7 @@ async fn fallback(
     uri: axum::http::Uri,
     headers: HeaderMap,
 ) -> Response {
-    let door = match front(&books, &headers) {
+    let door = match front(&books, &headers, &uri) {
         Ok(d) => d,
         Err(r) => return *r,
     };
@@ -561,7 +585,7 @@ async fn remote_mcp(
     Path(book): Path<String>,
     request: axum::extract::Request,
 ) -> Response {
-    let door = match front(&books, request.headers()) {
+    let door = match front(&books, request.headers(), request.uri()) {
         Ok(d) => d,
         Err(r) => return *r,
     };

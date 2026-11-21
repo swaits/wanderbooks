@@ -25,6 +25,7 @@ pub mod blob;
 pub mod cancel;
 pub mod chain;
 pub mod describe;
+mod drain;
 pub mod error;
 pub mod exports;
 pub mod form1099;

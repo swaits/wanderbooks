@@ -30,13 +30,24 @@ use std::fs::{File, TryLockError};
 use std::process::{Child, Command};
 use std::sync::RwLock;
 
-/// Held (shared) by every [`spawn`] while it runs, and taken (exclusively,
-/// for an instant) by every dropped [`WriterLock`].
+/// Held (shared on Unix, exclusive on Windows) by every [`spawn`] while it
+/// runs, and taken (exclusively, for an instant) by every dropped
+/// [`WriterLock`].
 static SPAWNING: RwLock<()> = RwLock::new(());
 
 /// Start `command`: returns once the child has exec'd (or failed to), so
 /// from then on it holds no copy of any descriptor of this process.
+///
+/// On Windows one spawn runs at a time (INVARIANT 5): the standard library
+/// makes the child's end of each pipe inheritable when it makes the pipe,
+/// and starts the child with every inheritable handle of the process, so a
+/// process started by another thread in that moment holds a copy of it too.
+/// A pipe whose other end is so held has no end-of-file when its own child
+/// ends, until the process that took the copy ends.
 pub fn spawn(command: &mut Command) -> std::io::Result<Child> {
+    #[cfg(windows)]
+    let _spawning = SPAWNING.write().unwrap_or_else(|e| e.into_inner());
+    #[cfg(not(windows))]
     let _spawning = SPAWNING.read().unwrap_or_else(|e| e.into_inner());
     command.spawn()
 }

@@ -722,7 +722,7 @@ pub fn decimal(s: &str) -> Option<Decimal> {
 ///       looks like a tax id and nothing else.
 /// SOURCE: BS-partner-2 (no full TIN in the books); wanderbooks' CHOICE on
 ///         it (the owner, 2026-11-21: shapes on free text, strict on party
-///         fields, masking on bank imports), docs/spec/claims/partner.md.
+///         fields, masking on bank imports), WB-partner-15.
 /// INVARIANTS:
 ///   1. Nine digits standing alone, an SSN's 3-2-4 and an EIN's 2-7 are
 ///      found, with any dash, dot or space (Unicode forms too) between

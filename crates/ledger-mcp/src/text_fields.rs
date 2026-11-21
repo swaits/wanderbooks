@@ -11,7 +11,7 @@
 //! SOURCE: BS-partner-2; WB-format-10 (a refused call writes nothing);
 //!         wanderbooks' CHOICE on BS-partner-2 (the owner, 2026-11-21:
 //!         shapes on free text, strict on party fields, masking on bank
-//!         imports), docs/spec/claims/partner.md.
+//!         imports), WB-partner-15.
 //! INVARIANTS:
 //!   1. Every string a write tool's schema has (a field, an array's
 //!      items, a map's values and keys, any untyped value) is in TABLE

@@ -225,9 +225,7 @@ mod tests {
         // A blank line counts as a line of the file.
         assert!(why("1000,Cash,asset,\n\n1010,Bad 000000000,asset,\n").contains("row 4"));
         // What is no tax id goes through.
-        let ok = parse_chart_csv(&format!(
-            "{header}1234567890,Loan 2026,liability,\n"
-        ));
+        let ok = parse_chart_csv(&format!("{header}1234567890,Loan 2026,liability,\n"));
         assert_eq!(ok.unwrap().len(), 1);
     }
 

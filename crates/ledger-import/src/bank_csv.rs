@@ -117,7 +117,7 @@ pub struct MaskedBankImport {
 ///
 /// ```text
 /// GOAL: a bank file is journaled whole, and no full tax id is.
-/// SOURCE: BS-partner-2; docs/spec/claims/partner.md (the CHOICE: masking
+/// SOURCE: BS-partner-2; WB-partner-15 (the CHOICE: masking
 ///         on bank imports).
 /// INVARIANTS:
 ///   1. No kept description holds a number the detector finds.

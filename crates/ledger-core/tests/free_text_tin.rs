@@ -564,7 +564,10 @@ mod engine {
         let r =
             f.l.replay_reverse_entry(e, day(2), &format!("undo {TIN}"))
                 .unwrap();
-        assert_eq!(f.l.get_entry(r).unwrap().description(), format!("undo {TIN}"));
+        assert_eq!(
+            f.l.get_entry(r).unwrap().description(),
+            format!("undo {TIN}")
+        );
         let ann = ledger_core::Annotation {
             attachment_id: 1,
             fields: ledger_core::AnnotationFields {

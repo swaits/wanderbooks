@@ -709,7 +709,7 @@ impl BooksServer {
     #[tool(
         name = "books.import_bank_csv",
         title = "Import a bank CSV as drafts",
-        description = "Import a bank or card CSV (Date, Description, Amount; or Date, Description, money out, money in) as one DRAFT entry per transaction, all or none: the bank account on one side, a categorized offset on the other. Give the CSV as upload_id (books.begin_upload purpose import; a file never passes through you). Ambiguous slash dates need date_order. Review with books.digest, then post. Also file the export (books.file_document category import_source) and pass source_attachment_id. Details in books.handbook section files-in-out.",
+        description = "Import a bank or card CSV (Date, Description, Amount; or Date, Description, money out, money in) as one DRAFT entry per transaction, all or none: the bank account on one side, a categorized offset on the other. Give the CSV as upload_id (books.begin_upload purpose import; a file never passes through you). Ambiguous slash dates need date_order. A description holding a number that reads as a tax id is kept masked to its last four digits (masked_count, masked). Review with books.digest, then post. Also file the export (books.file_document category import_source) and pass source_attachment_id. Details in books.handbook section files-in-out.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,

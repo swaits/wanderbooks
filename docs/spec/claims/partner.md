@@ -116,6 +116,15 @@ is its TIN facts', else its W-9 facts'.
 
 **Pick (BS-partner-8):** `outside-the-books`, the owner, 2026-10-15.
 
+**CHOICE (the owner, 2026-11-21):** how text is read for a tax id depends
+on what the text is: free text (a memo, a note, a reason, a description, a
+reference, a class or project name) is refused only when it *looks like* a
+tax id (nine digits standing alone, an SSN's 3-2-4 or an EIN's 2-7, with any
+dash, dot or space between); a party's own fields keep the strict reading
+(any run of nine digits); a bank file's descriptions are kept with such a
+number masked to its last four digits. WB-partner-15 states it, with the
+downsides the owner accepted.
+
 
 **Enforced:** `crate::parties` (has_full_tin, check_text, W9Facts::check,
 W4Facts::check), `Ledger::add_party`, `update_party`, `set_party_role`,
@@ -302,6 +311,70 @@ directory read W-9 facts only, so a member's read as missing).
 **Enforced:** `Party::tin_last4`; `ledger-mcp`
 `books.export_cpa_package`, `books.party`. **Checked:** `ledger-core`
 `tests/spec_parties.rs`; `ledger-cli` `tests/spec_vault.rs`.
+
+**WB-partner-15** Free text meets a tax id's shapes, not every run of nine
+digits (CHOICE, the owner, 2026-11-21). The refusal of BS-partner-2 reads
+text two ways, on purpose:
+
+- *Free text* (entry and reversal descriptions, memos, notes, reasons,
+  references, line descriptions, class, project, period, asset and schedule
+  texts, a receipt's description, file name and annotations, a decision's
+  or an item's words) is refused when it holds nine digits standing alone,
+  or an SSN's 3-2-4 or an EIN's 2-7 grouping joined by a hyphen or any other
+  dash, a dot or a space, in any Unicode form (`settings::holds_printed_tin`).
+  An invoice number (`2026-11-0042`), a phone number, an order number, a
+  reference of ten digits or more, an amount and a date pass.
+- *A party's own fields* (a party's name and details, a customer's or
+  vendor's name, the customer's printed details on an invoice, a recipient,
+  an account name) keep the strict reading of WB-partner-4: any run of nine
+  digits (`has_full_tin`).
+- *A bank file's description* is not typed by a person and often carries a
+  nine-digit reference, so a bank import is not refused for one: a number
+  that reads as a tax id is kept masked to its last four digits
+  (`•••-••-1234`, `settings::mask_printed_tins`), and the import's answer
+  says how many values were masked and on which lines (`masked_count`,
+  `masked`, `masked_note`). A *chart* file is typed by a person: a cell that
+  looks like a tax id refuses the file, naming its row and column.
+
+The downsides the owner accepted: a nine-digit bank reference or routing
+number typed into a memo is refused (write its last four), and a tax id
+typed with unusual spacing could slip into a memo, since the reading
+catches an accident, not a deliberate evasion. The vault, the party fields
+and the file check of WB-partner-7 stand around it.
+
+The reading is made in two places that agree. Every `Ledger` command that
+takes free text refuses it (`LedgerError::FreeTextHoldsTin`), so a caller
+other than the tools cannot journal one, and a journal line an earlier
+version took still replays whatever it holds (BS-entry-4), so no books are
+refused for opening. And the tools check every string of every write tool
+once, before any call runs or writes anything (WB-format-10), from one
+table that classes each string as free text, a party field, or exempt for a
+named reason (the vault's input, a lookup key, an id, an amount, a date, a
+fixed vocabulary, the last four digits, a bank pattern, a link, a value
+the engine reads); a test fails when a write tool has a string the table
+does not class. The refusal names the field, says it looks like a tax id and
+that tax ids are stored with `books.set_tin` or a W-9 (`books.set_w9`), and
+never repeats the number.
+
+Books that already hold such a line are never rewritten and always open;
+`books.audit` names the journal line and the field in a `tax_id_in_journal`
+warning, and never the number.
+
+**Enforced:** `settings::holds_printed_tin`, `settings::mask_printed_tins`,
+`settings::check_free_text`, `parties::check_note`, `Ledger::try_create_entry`,
+`Ledger::reverse_entry`, `Ledger::create_invoice_with`,
+`Ledger::create_bill_with`, `Ledger::register_asset`,
+`Ledger::create_period`, `Ledger::annotate_attachment`,
+`Ledger::check_no_party_reason`; `ledger-mcp` `text_fields`,
+`books.import_bank_csv`, `books.import_chart_csv`; `ledger-import`
+`parse_bank_csv_masked`, `parse_chart_csv`; `ledger-store`
+`integrity_findings`. **Checked:** `ledger-core` `tests/free_text_tin.rs`
+(every grouping with every separator is found, nine digits alone, the
+allow-list passes, each command refuses, a replay never does);
+`ledger-mcp` the unit tests in `text_fields.rs` (every string a write tool
+takes is classed) and `a_call_with_a_tax_id_in_free_text_is_refused_unrun_and_writes_nothing`;
+`ledger-import` the unit tests in `bank_csv.rs` and `chart_csv.rs`;
+`ledger-store` `tests/audit.rs`.
 
 ## B-35 A party's part of an entry, and a party's totals
 

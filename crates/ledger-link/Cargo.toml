@@ -27,6 +27,7 @@ base64 = "0.22"
 ring = "0.17"
 x509-parser = "0.18"
 zeroize = "1"
+http = "1"
 webpki-root-certs = "1"
 
 # Owner-only DACLs for the key and certificate files (the helper the token
@@ -39,7 +40,6 @@ tempfile = "3"
 rcgen = { version = "0.14", default-features = false, features = ["ring", "pem", "x509-parser"] }
 hickory-proto = { version = "0.26", default-features = false, features = ["std"] }
 tokio = { version = "1", features = ["test-util"] }
-http = "1"
 http-body-util = "0.1"
 bytes = "1"
 async-trait = "0.1"

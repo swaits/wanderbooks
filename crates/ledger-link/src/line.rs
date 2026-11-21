@@ -14,8 +14,13 @@
 //! INVARIANTS:
 //!   1. A dial that fails waits a growing, jittered time (full jitter, at
 //!      most `backoff_max`, at least `backoff_min` after a failure) and
-//!      starts again; a line that held resets it. A nudge (the network
-//!      changed) resets it and dials now.
+//!      starts again. A line that held for `line_stable` (60 s) resets the
+//!      backoff and is redialled after a wait spread over `redial_spread`
+//!      (0 to 30 s, jittered), so a relay that restarts is not met by
+//!      every app in the same second; a line that ended sooner (a relay
+//!      that accepts and then drops) does not reset it and waits as a
+//!      failed dial does. A nudge (the network changed) resets it and
+//!      dials now.
 //!   2. The line is pinged at most every `ping_every` (30 s, under the
 //!      relay's 60 s duty and 180 s silence limit); a ping that is not
 //!      answered in `ping_timeout` ends the line and a new one is made.
@@ -28,7 +33,9 @@
 //!      (callers, control streams and slack).
 //! SCENARIOS:
 //!   1. The backoff grows from its minimum to its maximum and no further,
-//!      never exceeds the maximum with jitter, and resets.
+//!      never exceeds the maximum with jitter, and resets; a line that
+//!      ended young does not reset it, one that held does, and its
+//!      redial is spread over `redial_spread`.
 //!   2. A wall-clock jump with no monotonic jump is a wake; a small one is
 //!      not.
 //!   3. Errors read as the right trouble: a refused connection is the
@@ -82,6 +89,12 @@ pub struct Timing {
     /// A wall-clock step this much longer than the monotonic one is a
     /// sleep.
     pub wake_gap: Duration,
+    /// A line must have held this long for the backoff to start again from
+    /// its minimum.
+    pub line_stable: Duration,
+    /// A line that held and then ended is redialled after a wait spread
+    /// over this long.
+    pub redial_spread: Duration,
 }
 
 impl Default for Timing {
@@ -99,6 +112,8 @@ impl Default for Timing {
             order_timeout: Duration::from_secs(300),
             ari_recheck: Duration::from_secs(6 * 3600),
             wake_gap: Duration::from_secs(30),
+            line_stable: Duration::from_secs(60),
+            redial_spread: Duration::from_secs(30),
         }
     }
 }
@@ -156,6 +171,52 @@ impl Backoff {
         self.failures = self.failures.saturating_add(1);
         let floor = self.min.min(ceiling);
         floor + jitter(ceiling - floor)
+    }
+}
+
+/// When to dial again, after a dial that failed or a line that ended
+/// (INVARIANT 1).
+#[derive(Debug)]
+pub struct Redial {
+    backoff: Backoff,
+    stable: Duration,
+    spread: Duration,
+}
+
+impl Redial {
+    /// The waits `t` sets.
+    pub fn new(t: &Timing) -> Self {
+        Redial {
+            backoff: Backoff::new(t.backoff_min, t.backoff_max),
+            stable: t.line_stable,
+            spread: t.redial_spread,
+        }
+    }
+
+    /// A dial failed: the next wait.
+    pub fn failed(&mut self) -> Duration {
+        self.backoff.wait()
+    }
+
+    /// A line that was up for `held` has ended: the wait before the next
+    /// dial. Only a line that held `line_stable` starts the backoff over.
+    pub fn ended(&mut self, held: Duration) -> Duration {
+        if held >= self.stable {
+            self.backoff.reset();
+            jitter(self.spread)
+        } else {
+            self.backoff.wait()
+        }
+    }
+
+    /// The network changed: start over.
+    pub fn reset(&mut self) {
+        self.backoff.reset();
+    }
+
+    /// The ceiling of the next failed wait (tests).
+    pub fn ceiling(&self) -> Duration {
+        self.backoff.ceiling()
     }
 }
 
@@ -301,6 +362,45 @@ mod tests {
             })
             .collect();
         assert!(spread.len() > 5);
+    }
+
+    #[test]
+    fn a_line_that_ends_young_keeps_the_backoff_and_one_that_held_is_spread() {
+        let t = Timing::default();
+        let mut r = Redial::new(&t);
+        // A relay that accepts and then drops, again and again: the waits
+        // grow to the ceiling and stay there, never the old 1 to 2 s.
+        let mut last = Duration::ZERO;
+        for _ in 0..12 {
+            let c = r.ceiling();
+            let w = r.ended(Duration::from_secs(2));
+            assert!(
+                w >= t.backoff_min && w <= c.max(t.backoff_min),
+                "{w:?} {c:?}"
+            );
+            last = last.max(c);
+        }
+        assert_eq!(last, t.backoff_max);
+        assert_eq!(r.ceiling(), t.backoff_max);
+        // A line that held 60 s resets it, and the redial is spread over 0
+        // to 30 s: many apps do not come back in the same second.
+        let waits: Vec<Duration> = (0..200)
+            .map(|_| {
+                let mut r = Redial::new(&t);
+                r.ended(Duration::from_secs(61))
+            })
+            .collect();
+        assert!(waits.iter().all(|w| *w <= t.redial_spread));
+        assert!(waits.iter().any(|w| *w > Duration::from_secs(20)));
+        assert!(waits.iter().any(|w| *w < Duration::from_secs(10)));
+        r.ended(Duration::from_secs(61));
+        assert_eq!(r.ceiling(), t.backoff_min, "held: the backoff starts over");
+        // A line that held 59 s does not.
+        let mut r = Redial::new(&t);
+        r.failed();
+        r.failed();
+        r.ended(Duration::from_secs(59));
+        assert!(r.ceiling() > t.backoff_min * 4);
     }
 
     #[test]

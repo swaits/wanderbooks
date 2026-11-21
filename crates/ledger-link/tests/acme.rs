@@ -34,6 +34,8 @@ struct Server {
     orders: Vec<Order>,
     ari_gets: u32,
     refuse_orders: bool,
+    /// What a refusal says in its detail (else a short one).
+    detail: Option<String>,
     certs: HashMap<usize, String>,
 }
 
@@ -81,6 +83,12 @@ fn json(status: u16, extra: Vec<(&'static str, String)>, v: serde_json::Value) -
 }
 
 impl FakeAcme {
+    fn roots(&self) -> rustls::RootCertStore {
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(self.ca.der().clone()).unwrap();
+        roots
+    }
+
     async fn handle(&self, method: &str, path: &str, body: &[u8]) -> Reply {
         let nonce = {
             let mut s = self.state.lock().unwrap();
@@ -124,7 +132,7 @@ impl FakeAcme {
                     return with_nonce(json(
                         429,
                         vec![],
-                        serde_json::json!({"type":"urn:ietf:params:acme:error:rateLimited","detail":"too many certificates already issued"}),
+                        serde_json::json!({"type":"urn:ietf:params:acme:error:rateLimited","detail":s.detail.clone().unwrap_or_else(|| "too many certificates already issued".into())}),
                     ));
                 }
                 let thumb = s.accounts[protected["kid"].as_str().unwrap()].clone();
@@ -348,9 +356,11 @@ async fn rig(window: (i64, i64)) -> Rig {
     });
     let dir = tempfile::tempdir().unwrap();
     let a2 = acme.clone();
-    let issuer = AcmeIssuer::new(dir.path()).with_http(Arc::new(move || {
-        Some(Box::new(Http(a2.clone())) as Box<dyn HttpClient>)
-    }));
+    let issuer = AcmeIssuer::new(dir.path())
+        .with_directory_hosts_for_tests(&["acme.test"])
+        .with_http(Arc::new(move || {
+            Some(Box::new(Http(a2.clone())) as Box<dyn HttpClient>)
+        }));
     let (key, _) = relay::proto::AppKey::generate();
     let name = n("ledger-accrual-tally-mint");
     let line = env.connect(name, &key, true).await.unwrap();
@@ -403,7 +413,15 @@ async fn an_order_goes_through_account_proof_finalize_and_download() {
     assert!(issued.key_pem.contains("PRIVATE KEY"));
     // The certificate and key go together (the store checks it).
     assert!(
-        certs::StoredCert::new("ledger-accrual-tally-mint", "fake", &issued, &ident, None).is_ok()
+        certs::StoredCert::new(
+            "ledger-accrual-tally-mint",
+            "fake",
+            &issued,
+            &ident,
+            None,
+            &certs::CertTrust::for_tests(r.acme.roots())
+        )
+        .is_ok()
     );
 
     // The account is kept in a private file, with no contact in it.
@@ -550,4 +568,127 @@ async fn a_refusal_comes_back_in_the_authoritys_words() {
         .err()
         .unwrap();
     assert!(err.contains("too many certificates"), "{err}");
+}
+
+fn order_for(r: &Rig, authority: &Authority) -> OrderRequest<'static> {
+    // The proof is never reached by the tests that use this: they stop at
+    // the directory.
+    struct Never;
+    impl DnsProof for Never {
+        fn publish<'a>(&'a self, _: &'a str) -> BoxFuture<'a, Result<(), String>> {
+            Box::pin(async { Err("not reached".into()) })
+        }
+        fn clear(&self) -> BoxFuture<'_, ()> {
+            Box::pin(async {})
+        }
+    }
+    static NEVER: Never = Never;
+    OrderRequest {
+        authority: Box::leak(Box::new(authority.clone())),
+        identifier: format!("*.{}.{DOMAIN}", r.name),
+        replaces: None,
+        dns: &NEVER,
+    }
+}
+
+/// WB-link-4 (INVARIANT 6): the relay's list can name any directory, and
+/// the app contacts only a host compiled into it: no request is made for
+/// any other, however it is spelled.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_directory_on_a_host_the_app_does_not_know_is_refused_before_any_request() {
+    let r = rig((60, 120)).await;
+    let reached = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (a2, seen) = (r.acme.clone(), reached.clone());
+    // The default list: no host of a test in it.
+    let issuer = AcmeIssuer::new(r.dir.path()).with_http(Arc::new(move || {
+        seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Some(Box::new(Http(a2.clone())) as Box<dyn HttpClient>)
+    }));
+    for directory in [
+        "https://acme.test/dir",
+        "https://evil.example/directory",
+        "http://acme-v02.api.letsencrypt.org/directory",
+        "https://acme-v02.api.letsencrypt.org@evil.example/directory",
+        "https://acme-v02.api.letsencrypt.org:8443/directory",
+        "https://acme-v02.api.letsencrypt.org.evil.example/directory",
+        "https://evil.example\\@acme-v02.api.letsencrypt.org/directory",
+        "https://127.0.0.1:9/directory",
+        "not an address",
+    ] {
+        let mut a = authority(false);
+        a.directory = directory.into();
+        let err = issuer.issue(order_for(&r, &a)).await.err().unwrap();
+        assert!(err.contains("does not use it"), "{directory}: {err}");
+    }
+    assert_eq!(
+        reached.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "not one request was made"
+    );
+    assert!(r.acme.state.lock().unwrap().new_accounts.is_empty());
+}
+
+/// WB-link-4 (INVARIANT 6): an account kept for a directory that is not on
+/// the list is not used; a new one is made at the authority named.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_kept_account_for_an_unlisted_directory_is_not_used() {
+    let r = rig((60, 120)).await;
+    let order = |r: &Rig| OrderRequest {
+        authority: Box::leak(Box::new(authority(false))),
+        identifier: format!("*.{}.{DOMAIN}", r.name),
+        replaces: None,
+        dns: Box::leak(Box::new(Proof(r.line.handle()))),
+    };
+    r.issuer.issue(order(&r)).await.unwrap();
+    assert_eq!(r.acme.state.lock().unwrap().new_accounts.len(), 1);
+    // The same account file, as if the relay had once had it made at another
+    // host.
+    let file = r.dir.path().join("acme/fake.json");
+    let mut kept: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    assert_eq!(kept["directory"], format!("{BASE}/dir"));
+    kept["directory"] = "https://evil.example/dir".into();
+    std::fs::write(&file, serde_json::to_vec(&kept).unwrap()).unwrap();
+    r.issuer.issue(order(&r)).await.unwrap();
+    assert_eq!(
+        r.acme.state.lock().unwrap().new_accounts.len(),
+        2,
+        "the account kept for another host was left alone and a new one made"
+    );
+}
+
+/// WB-link-5: what an authority says is a short, plain, quoted detail in
+/// the app's own words, never its text as it came.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn what_the_authority_says_is_short_plain_and_quoted() {
+    let r = rig((60, 120)).await;
+    r.acme.state.lock().unwrap().refuse_orders = true;
+    r.acme.state.lock().unwrap().detail = Some(format!(
+        "pay now\u{7}\n\u{202e}{}",
+        "give us your password ".repeat(500)
+    ));
+    let proof = Proof(r.line.handle());
+    let err = r
+        .issuer
+        .issue(OrderRequest {
+            authority: &authority(false),
+            identifier: format!("*.{}.{DOMAIN}", r.name),
+            replaces: None,
+            dns: &proof,
+        })
+        .await
+        .err()
+        .unwrap();
+    assert!(
+        err.chars().count() < 260,
+        "{} characters",
+        err.chars().count()
+    );
+    assert!(
+        !err.chars().any(|c| c.is_control() || c == '\u{202e}'),
+        "{err:?}"
+    );
+    assert!(err.contains("too many certificates"), "{err}");
+    assert!(err.contains("It said \u{201c}pay now give us"), "{err}");
+    assert!(err.contains("\u{2026}\u{201d}"), "{err}");
 }

@@ -40,7 +40,7 @@ use common::{BOOK, Home, clean_env};
 use futures::future::BoxFuture;
 use ledger_host::app_server::AppServer;
 use ledger_host::web::{Admin, WebAssistants};
-use ledger_link::{Dial, Issued, Issuer, LinkConfig, OrderRequest, Step, Timing};
+use ledger_link::{CertTrust, Dial, Issued, Issuer, LinkConfig, OrderRequest, Step, Timing};
 use ledger_mcp::admin::{Request, Response};
 use rcgen::{CertificateParams, CertifiedIssuer, IsCa, KeyPair, KeyUsagePurpose};
 use relay::proto::Authority;
@@ -152,6 +152,7 @@ fn start_server(home: &Home) -> AppServer {
 
 fn web_for(home: &Home, env: &relay_common::Env, ca: &Arc<Authority_>) -> WebAssistants {
     let (relay_tls, router, issuer) = (env.line_tls(), env.router(), ca.clone());
+    let roots = ca.roots();
     WebAssistants::with_maker(
         Some(home.root()),
         Box::new(move |dir| {
@@ -162,6 +163,7 @@ fn web_for(home: &Home, env: &relay_common::Env, ca: &Arc<Authority_>) -> WebAss
                 dial: Dial::Addr(router),
                 relay_tls: relay_tls.clone(),
                 issuer: issuer.clone(),
+                trust: CertTrust::for_tests(roots.clone()),
                 timing: Timing {
                     ping_every: Duration::from_millis(500),
                     backoff_min: Duration::from_millis(50),

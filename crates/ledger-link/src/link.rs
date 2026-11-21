@@ -45,14 +45,15 @@
 //! ```
 
 use crate::certs::{
-    CertStore, DnsProof, Issuer, OrderRequest, Resolver, StoredCert, now, server_config,
+    CertStore, CertTrust, DnsProof, Issuer, OrderRequest, Resolver, StoredCert, now, server_config,
 };
 use crate::identity::{Identity, IdentityError};
 use crate::line::{
-    Backoff, Dial, Failure, MAX_STREAMS, Timing, WakeDetector, failure_of, jitter,
+    Backoff, Dial, Failure, MAX_STREAMS, Redial, Timing, WakeDetector, failure_of, jitter,
     trouble_of_refusal,
 };
 use crate::status::{LinkStatus, Trouble};
+use crate::text::{clean, detail};
 use futures::future::BoxFuture;
 use relay::client::{self, Incoming, Line, LineHandle, LineOptions};
 use relay::proto::{Refusal, Request};
@@ -87,6 +88,8 @@ pub struct LinkConfig {
     pub relay_tls: Arc<rustls::ClientConfig>,
     /// The certificate authority client.
     pub issuer: Arc<dyn Issuer>,
+    /// Which certificate authorities' certificates are believed.
+    pub trust: CertTrust,
     /// Every wait.
     pub timing: Timing,
 }
@@ -156,6 +159,9 @@ pub(crate) struct Inner {
     run: tokio::sync::Mutex<Option<Run>>,
     nudge: Notify,
     served: AtomicU64,
+    /// The address kept for this installation, read once and held (the
+    /// window asks every frame): `None` until read.
+    kept: Mutex<Option<Option<String>>>,
 }
 
 struct LineProof(LineHandle);
@@ -165,7 +171,12 @@ impl DnsProof for LineProof {
         Box::pin(async move {
             match self.0.publish_txt(value).await {
                 Ok(r) if r.ok => Ok(()),
-                Ok(r) => Err(r.error.unwrap_or_else(|| "refused".into())),
+                // The relay's words are a stranger's: short and plain
+                // before they go anywhere (text.rs).
+                Ok(r) => Err(clean(
+                    &r.error.unwrap_or_else(|| "refused".into()),
+                    crate::text::DETAIL_CHARS,
+                )),
                 Err(_) => Err("the line to the relay failed".into()),
             }
         })
@@ -190,6 +201,11 @@ fn pick_in(start: i64, end: i64) -> i64 {
 impl Inner {
     fn set(&self, f: impl FnOnce(&mut LinkStatus)) {
         self.status.send_modify(f);
+    }
+
+    /// The address kept, as it now stands.
+    fn keep(&self, address: Option<String>) {
+        *self.kept.lock().unwrap_or_else(|e| e.into_inner()) = Some(address);
     }
 
     fn identity_do<T>(&self, f: impl FnOnce(&mut Identity) -> T) -> Option<T> {
@@ -228,6 +244,7 @@ impl Inner {
         let host = id.host(&self.cfg.domain);
         let address = id.address(&self.cfg.domain);
         let claimed = id.claimed();
+        self.keep(Some(address.clone()));
         *self.identity.lock().unwrap_or_else(|e| e.into_inner()) = Some(id);
         self.resolver.set_host(&host);
         self.set(|s| {
@@ -265,7 +282,7 @@ impl Inner {
             }
         }
         self.line.send_replace(None);
-        self.resolver.set_key(None);
+        self.resolver.set_cert(None);
         let served = self.served.load(Ordering::Relaxed);
         self.set(|s| {
             *s = LinkStatus {
@@ -292,6 +309,7 @@ impl Inner {
         let made = tokio::task::spawn_blocking(move || -> Result<String, IdentityError> {
             if lost {
                 let id = Identity::reset(&dir)?;
+                // The name is being abandoned: nothing for it is kept.
                 CertStore::new(&dir).forget();
                 Ok(id.address(&domain))
             } else {
@@ -302,6 +320,7 @@ impl Inner {
         })
         .await
         .map_err(|_| LinkError::Gone)??;
+        self.keep(Some(made.clone()));
         if was_on {
             self.begin(&mut run).await?;
         } else {
@@ -378,7 +397,7 @@ impl Inner {
 
     async fn line_loop(self: &Arc<Self>, stop: CancellationToken) {
         let t = self.cfg.timing;
-        let mut backoff = Backoff::new(t.backoff_min, t.backoff_max);
+        let mut redial = Redial::new(&t);
         let mut name_tries = 0u32;
         loop {
             if stop.is_cancelled() {
@@ -390,35 +409,49 @@ impl Inner {
             };
             match dialled {
                 Ok(Ok(line)) => {
-                    backoff.reset();
                     name_tries = 0;
                     self.line_is_up();
+                    let up = tokio::time::Instant::now();
                     let ended = self.hold(line, &stop).await;
                     self.line_is_down();
                     if stop.is_cancelled() {
                         return;
                     }
                     // A line that ended on its own (the relay restarted, the
-                    // network went, the computer slept) is dialled again at
-                    // once, with a little jitter so a relay coming back
-                    // is not hit by every app in the same instant.
-                    if ended != Ended::Woke {
-                        let wait = t.backoff_min + jitter(t.backoff_min);
-                        tokio::select! {
-                            () = stop.cancelled() => return,
-                            () = tokio::time::sleep(wait) => {}
+                    // network went) is dialled again after a wait spread
+                    // over `redial_spread`, so a relay coming back is not
+                    // hit by every app in the same second; one that held
+                    // less than `line_stable` waits as a failed dial does,
+                    // so a relay that accepts and drops is not redialled
+                    // at a steady rate for ever (INVARIANT 1). A sleep or a
+                    // network change dials at once: that is one machine
+                    // that moved, not a crowd.
+                    let wait = match ended {
+                        Ended::Woke | Ended::Nudged => {
+                            redial.reset();
+                            Duration::ZERO
                         }
+                        _ => redial.ended(up.elapsed()),
+                    };
+                    tokio::select! {
+                        () = stop.cancelled() => return,
+                        () = tokio::time::sleep(wait) => {}
                     }
                     continue;
                 }
                 Ok(Err(Refusal::Taken)) if !self.identity_do(|i| i.claimed()).unwrap_or(true) => {
-                    // Somebody else has this name: another, at once.
+                    // Somebody else has this name: another, at once. Nothing
+                    // else has used the name yet: the certificate waits for
+                    // the line, and the door is not started until the name
+                    // is claimed (`Link::wait_settled`).
                     name_tries += 1;
                     if name_tries <= 8 {
                         let _ = self.identity_do(|i| i.retry_name());
-                        if let Some(host) = self.identity_do(|i| i.host(&self.cfg.domain)) {
+                        if let Some((host, address)) = self.identity_do(|i| {
+                            (i.host(&self.cfg.domain), i.address(&self.cfg.domain))
+                        }) {
                             self.resolver.set_host(&host);
-                            let address = format!("https://{host}");
+                            self.keep(Some(address.clone()));
                             self.set(|s| s.address = Some(address));
                         }
                         continue;
@@ -432,7 +465,7 @@ impl Inner {
                 }
                 Err(trouble) => self.set(|s| s.trouble = Some(trouble)),
             }
-            let mut wait = backoff.wait();
+            let mut wait = redial.failed();
             // A relay that said "wait" is not asked again at once.
             if matches!(
                 self.status.borrow().trouble,
@@ -443,7 +476,7 @@ impl Inner {
             tokio::select! {
                 () = stop.cancelled() => return,
                 () = tokio::time::sleep(wait) => {}
-                () = self.nudge.notified() => backoff.reset(),
+                () = self.nudge.notified() => redial.reset(),
             }
         }
     }
@@ -495,6 +528,7 @@ impl Inner {
                 () = self.nudge.notified() => break Ended::Nudged,
                 _ = &mut failed => break Ended::PingFailed,
                 _ = tick.tick() => {
+                    self.expire_if_due();
                     if wake.woke() {
                         break Ended::Woke;
                     }
@@ -557,17 +591,31 @@ impl Inner {
     // ---- the certificate -------------------------------------------------
 
     fn install(&self, c: &StoredCert) {
-        self.resolver.set_key(c.certified());
-        let (end, renew) = (c.not_after, c.renew_at);
-        let _ = renew;
+        self.resolver
+            .set_cert(c.certified().map(|k| (k, c.not_after)));
+        let end = c.not_after;
         self.set(|s| {
             s.cert_expires = Some(end);
         });
     }
 
     fn uninstall(&self) {
-        self.resolver.set_key(None);
+        self.resolver.set_cert(None);
         self.set(|s| s.cert_expires = None);
+    }
+
+    /// A certificate that has ended is not in place, whatever is waiting
+    /// to renew it (INVARIANT 9 of certs.rs): the resolver already refuses
+    /// it; this makes the state say so.
+    fn expire_if_due(&self) {
+        let ended = self
+            .status
+            .borrow()
+            .cert_expires
+            .is_some_and(|end| now() >= end);
+        if ended {
+            self.uninstall();
+        }
     }
 
     async fn wait_for_line(&self, stop: &CancellationToken) -> Option<LineHandle> {
@@ -583,22 +631,37 @@ impl Inner {
         }
     }
 
+    /// `wait`, cut short at `ends` (unix seconds) if that comes first: a
+    /// sleep never runs past the end of the certificate in use.
+    fn until(wait: Duration, ends: Option<i64>) -> Duration {
+        match ends {
+            Some(end) => wait.min(Duration::from_secs(
+                u64::try_from(end.saturating_sub(now())).unwrap_or(0),
+            )),
+            None => wait,
+        }
+    }
+
     async fn cert_loop(self: &Arc<Self>, stop: CancellationToken) {
         let t = self.cfg.timing;
-        let Some((name, host)) =
-            self.identity_do(|i| (i.name().to_string(), i.host(&self.cfg.domain)))
-        else {
-            return;
-        };
-        let identifier = format!("*.{name}.{}", self.cfg.domain);
-        let _ = host;
         let store = CertStore::new(&self.cfg.dir);
         let mut backoff = Backoff::new(t.cert_retry_min, t.cert_retry_max);
+        // Nothing about a certificate is done until the line is up: the
+        // relay has then accepted the name, so the name is settled and the
+        // certificate is for it, never for one the first claim gave up
+        // (a "taken" answer picks another).
+        let Some(_line) = self.wait_for_line(&stop).await else {
+            return;
+        };
         loop {
             if stop.is_cancelled() {
                 return;
             }
-            let stored = store.load(&name);
+            let Some(name) = self.identity_do(|i| i.name().to_string()) else {
+                return;
+            };
+            let identifier = format!("*.{name}.{}", self.cfg.domain);
+            let stored = store.load(&name, &identifier, &self.cfg.trust);
             let tnow = now();
             match &stored {
                 Some(c) if c.valid_at(tnow) => self.install(c),
@@ -611,7 +674,10 @@ impl Inner {
                 // Wait for the renewal time; now and then ask the authority
                 // whether it wants the certificate renewed sooner.
                 let secs = u64::try_from(c.renew_at - tnow).unwrap_or(0);
-                let wait = Duration::from_secs(secs).min(t.ari_recheck);
+                let wait = Self::until(
+                    Duration::from_secs(secs).min(t.ari_recheck),
+                    Some(c.not_after),
+                );
                 tokio::select! {
                     () = stop.cancelled() => return,
                     () = tokio::time::sleep(wait) => {}
@@ -651,14 +717,17 @@ impl Inner {
                         .map(|c| c.not_after);
                     let words = match ends {
                         Some(_) => format!(
-                            "The certificate could not be renewed yet: {why}. It keeps trying; the one in use still works."
+                            "The certificate could not be renewed yet. It keeps trying; the one in use still works. {why}"
                         ),
                         None => format!(
-                            "Wanderbooks could not get a certificate yet: {why}. It keeps trying."
+                            "Wanderbooks could not get a certificate yet. It keeps trying. {why}"
                         ),
                     };
                     self.set(|s| s.cert_trouble = Some(words));
-                    let wait = backoff.wait();
+                    // Never asleep past the end of the certificate in use:
+                    // at its end it stops being served and the state says
+                    // so.
+                    let wait = Self::until(backoff.wait(), ends);
                     tokio::select! {
                         () = stop.cancelled() => return,
                         () = tokio::time::sleep(wait) => {}
@@ -702,21 +771,28 @@ impl Inner {
             .line
             .borrow()
             .clone()
-            .ok_or("the line to the relay is down")?;
+            .ok_or("The line to the relay is down.")?;
         let list = line
             .authorities()
             .await
-            .map_err(|_| "the relay would not say which certificate authorities to use")?;
+            .map_err(|_| "The relay would not say which certificate authorities to use.")?;
         if list.is_empty() {
-            return Err("the relay named no certificate authority".into());
+            return Err("The relay named no certificate authority.".into());
         }
         let usable: Vec<_> = list.iter().filter(|a| a.usable).collect();
         if usable.is_empty() {
-            return Err("no certificate authority is ready for this installation yet".into());
+            return Err("No certificate authority is ready for this installation yet.".into());
         }
         let proof = LineProof(line);
         let mut problems: Vec<String> = Vec::new();
         for a in usable {
+            // What the relay and the authority say is a stranger's: the
+            // words here are the app's, and theirs is a short quoted detail
+            // (text.rs).
+            let which = match detail(&a.id) {
+                d if d.is_empty() => "an authority".to_string(),
+                d => format!("authority {d}"),
+            };
             let replaces = previous
                 .filter(|p| p.authority == a.id && p.valid_at(now()))
                 .and_then(StoredCert::der);
@@ -735,16 +811,51 @@ impl Inner {
                 Ok(issued) => {
                     let window = self.cfg.issuer.renewal_window(a, &issued.chain_pem).await;
                     let renew_at = window.map(|(s, e)| pick_in(s, e));
-                    match StoredCert::new(name, &a.id, &issued, identifier, renew_at) {
+                    match StoredCert::new(
+                        name,
+                        &a.id,
+                        &issued,
+                        identifier,
+                        renew_at,
+                        &self.cfg.trust,
+                    ) {
                         Ok(c) => return Ok(c),
-                        Err(why) => problems.push(format!("{}: {why}", a.id)),
+                        Err(why) => problems.push(format!("{which}: {why}")),
                     }
                 }
-                Err(why) => problems.push(format!("{}: {why}", a.id)),
+                // An issuer's own words are kept short whatever they are.
+                Err(why) => problems.push(format!("{which}: {}", clean(&why, PROBLEM_CHARS))),
             }
         }
-        Err(problems.join("; "))
+        Err(problems_in_words(&problems))
     }
+}
+
+/// The most characters of one authority's failure kept in the window's
+/// words.
+const PROBLEM_CHARS: usize = 300;
+
+/// The most authorities' failures spelled out; the rest are counted.
+const PROBLEMS_SHOWN: usize = 3;
+
+/// The failures of the authorities tried, as one bounded text.
+fn problems_in_words(problems: &[String]) -> String {
+    let mut out: Vec<String> = problems
+        .iter()
+        .take(PROBLEMS_SHOWN)
+        .map(|p| {
+            let p = clean(p, PROBLEM_CHARS);
+            if p.ends_with(['.', '?', '!']) {
+                p
+            } else {
+                format!("{p}.")
+            }
+        })
+        .collect();
+    if problems.len() > PROBLEMS_SHOWN {
+        out.push(format!("And {} more.", problems.len() - PROBLEMS_SHOWN));
+    }
+    out.join(" ")
 }
 
 /// Why a held line ended.
@@ -781,6 +892,7 @@ impl Link {
             run: tokio::sync::Mutex::new(None),
             nudge: Notify::new(),
             served: AtomicU64::new(0),
+            kept: Mutex::new(None),
         })
     }
 
@@ -833,12 +945,51 @@ impl Link {
 
     /// The address kept for this installation, whether or not the link is
     /// on (it is the same when turned on again). `None` before the first
-    /// time it was turned on.
+    /// time it was turned on. Read from the folder once and held: the
+    /// window asks every frame, and the key beside it is not read again
+    /// for that (it is read where it signs, in `dial`).
     pub fn kept_address(&self) -> Option<String> {
-        Identity::load(&self.inner.cfg.dir)
-            .ok()
-            .flatten()
-            .map(|i| i.address(&self.inner.cfg.domain))
+        let mut kept = self.inner.kept.lock().unwrap_or_else(|e| e.into_inner());
+        kept.get_or_insert_with(|| {
+            Identity::load(&self.inner.cfg.dir)
+                .ok()
+                .flatten()
+                .map(|i| i.address(&self.inner.cfg.domain))
+        })
+        .clone()
+    }
+
+    /// Wait until the relay has accepted this installation's name, so the
+    /// address is settled, or say why not: the door is started as this
+    /// address, and a first claim that finds the name taken picks another
+    /// (INVARIANT 5 of web.rs).
+    pub fn wait_settled(&self, within: Duration) -> Result<(), String> {
+        let mut rx = self.inner.status.subscribe();
+        self.block(async move {
+            // Copied out at once: the borrow of the watch is not held.
+            let seen = match timeout(
+                within,
+                rx.wait_for(|s| s.claimed || s.trouble.as_ref().is_some_and(|t| !t.mends_itself())),
+            )
+            .await
+            {
+                Ok(Ok(r)) => Some(r.clone()),
+                Ok(Err(_)) => return Err("The link is shutting down.".to_string()),
+                Err(_) => None,
+            };
+            let s = match seen {
+                Some(s) => s,
+                None => rx.borrow().clone(),
+            };
+            if s.claimed {
+                Ok(())
+            } else {
+                Err(s.problem().unwrap_or_else(|| {
+                    "Wanderbooks has not been given its address by the relay yet.".into()
+                }))
+            }
+        })
+        .unwrap_or_else(|| Err("The link is shutting down.".into()))
     }
 
     /// Where the books server's remote door listens, or none.
@@ -889,5 +1040,41 @@ impl Drop for Link {
         if let Some(rt) = self.owned.lock().unwrap_or_else(|e| e.into_inner()).take() {
             rt.shutdown_background();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_wait_never_runs_past_the_end_of_the_certificate_in_use() {
+        let hours = Duration::from_secs(6 * 3600);
+        let t = now();
+        // Nothing in use: the wait is as long as asked.
+        assert_eq!(Inner::until(hours, None), hours);
+        // One that ends in a minute: the wait ends with it.
+        let w = Inner::until(hours, Some(t + 60));
+        assert!(
+            w <= Duration::from_secs(60) && w >= Duration::from_secs(58),
+            "{w:?}"
+        );
+        // One that has ended already: no wait at all.
+        assert_eq!(Inner::until(hours, Some(t - 5)), Duration::ZERO);
+        // A short wait stays short.
+        assert_eq!(
+            Inner::until(Duration::from_secs(5), Some(t + 3600)),
+            Duration::from_secs(5)
+        );
+    }
+
+    #[test]
+    fn authorities_that_all_fail_are_told_in_bounded_words() {
+        let many: Vec<String> = (0..20)
+            .map(|i| format!("authority {i}: {}", "x".repeat(2000)))
+            .collect();
+        let said = problems_in_words(&many);
+        assert!(said.chars().count() < 1000, "{}", said.chars().count());
+        assert!(said.ends_with("And 17 more."), "{said}");
     }
 }

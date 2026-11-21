@@ -11,7 +11,7 @@ use futures::future::BoxFuture;
 use hickory_proto::op::{Message, Query};
 use hickory_proto::rr::{Name as DnsName, RData, RecordType};
 use ledger_link::certs::{Issued, Issuer, OrderRequest};
-use ledger_link::{Dial, DoorTarget, Link, LinkConfig, LinkStatus, Timing};
+use ledger_link::{CertTrust, Dial, DoorTarget, Link, LinkConfig, LinkStatus, Timing};
 use rcgen::{BasicConstraints, CertificateParams, CertifiedIssuer, IsCa, KeyPair, KeyUsagePurpose};
 use relay::proto::{Authority, Caller};
 use rustls::RootCertStore;
@@ -42,6 +42,8 @@ pub struct FakeState {
     pub fail: std::collections::HashSet<String>,
     /// Seconds the certificate lasts from now.
     pub lifetime: i64,
+    /// What a refusal says, when it is not the fixed words.
+    pub say: Option<String>,
     /// The renewal window the authority suggests, as seconds from now.
     pub window: Option<(i64, i64)>,
 }
@@ -96,6 +98,7 @@ impl Fake {
                 orders: vec![],
                 fail: Default::default(),
                 lifetime: 3600,
+                say: None,
                 window: None,
             }),
         })
@@ -124,7 +127,7 @@ fn proof_value() -> String {
 impl Issuer for Fake {
     fn issue<'a>(&'a self, req: OrderRequest<'a>) -> BoxFuture<'a, Result<Issued, String>> {
         Box::pin(async move {
-            let (fails, lifetime) = {
+            let (fails, lifetime, say) = {
                 let mut st = self.state.lock().unwrap();
                 st.orders.push(Order {
                     authority: req.authority.id.clone(),
@@ -132,10 +135,14 @@ impl Issuer for Fake {
                     replaces: req.replaces.is_some(),
                     had_binding: req.authority.binding.is_some(),
                 });
-                (st.fail.contains(&req.authority.id), st.lifetime)
+                (
+                    st.fail.contains(&req.authority.id),
+                    st.lifetime,
+                    st.say.clone(),
+                )
             };
             if fails {
-                return Err("the fake authority says no".into());
+                return Err(say.unwrap_or_else(|| "the fake authority says no".into()));
             }
             // The proof goes to the relay, and the authority reads it from
             // the relay's own DNS, as a real one does.
@@ -369,6 +376,8 @@ pub fn fast() -> Timing {
         order_timeout: Duration::from_secs(10),
         ari_recheck: Duration::from_secs(1),
         wake_gap: Duration::from_secs(30),
+        line_stable: Duration::from_millis(300),
+        redial_spread: Duration::from_millis(200),
     }
 }
 
@@ -402,6 +411,7 @@ pub fn config(w: &World) -> LinkConfig {
         dial: Dial::Addr(w.tap.addr),
         relay_tls: w.env.line_tls(),
         issuer: w.fake.clone(),
+        trust: CertTrust::for_tests(w.fake.roots()),
         timing: fast(),
     }
 }
@@ -429,6 +439,7 @@ pub async fn world_with(
         dial: Dial::Addr(tap.addr),
         relay_tls: env.line_tls(),
         issuer: fake.clone(),
+        trust: CertTrust::for_tests(fake.roots()),
         timing: fast(),
     };
     timing(&mut cfg.timing);
@@ -446,6 +457,19 @@ pub async fn world_with(
 }
 
 impl World {
+    /// The link made again with `change` applied to its setup (the same
+    /// folder, relay and authority).
+    pub fn remake(&mut self, change: impl FnOnce(&mut LinkConfig)) {
+        let mut cfg = config(self);
+        change(&mut cfg);
+        let old = std::mem::replace(
+            &mut self.link,
+            Link::start_on(tokio::runtime::Handle::current(), cfg),
+        );
+        drop(old);
+        self.link.set_door(Some(self.door.target.clone()));
+    }
+
     /// A second link on the same folder (the app was restarted).
     pub fn restart(&mut self, timing: impl FnOnce(&mut Timing)) {
         let mut cfg = config(self);

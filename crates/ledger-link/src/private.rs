@@ -14,10 +14,14 @@
 //!      `ledger_store::winsec::set_owner_only`, the helper the token
 //!      files use), and its folder 0700 or owner-only.
 //!   2. A write is a temporary file, synced, then renamed over the old
-//!      one: a reader sees the old file or the new one, never a part.
+//!      one, and the folder is synced after the rename (Unix; Windows has
+//!      no such call and the rename is made durable by the file system):
+//!      a reader sees the old file or the new one, never a part, and a
+//!      crash right after cannot lose the rename.
 //! SCENARIOS:
 //!   1. A file written here reads back, has mode 0600, and its folder
-//!      0700, on Unix.
+//!      0700, on Unix; on Windows the file and its folder are owner-only
+//!      (`ledger_store::winsec::is_private`).
 //! ```
 
 use std::io::{self, Write};
@@ -54,12 +58,30 @@ pub fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
         file.write_all(bytes)?;
         file.sync_all()?;
         drop(file);
-        std::fs::rename(&tmp, path)
+        std::fs::rename(&tmp, path)?;
+        sync_folder(path)
     })();
     if result.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
     result
+}
+
+/// Make the rename durable: the folder that holds the file is synced
+/// (INVARIANT 2). Windows cannot open a folder to sync it; there the
+/// rename is the file system's own.
+fn sync_folder(path: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        let dir = match path.parent() {
+            Some(p) if !p.as_os_str().is_empty() => p,
+            _ => Path::new("."),
+        };
+        std::fs::File::open(dir)?.sync_all()?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -84,5 +106,22 @@ mod tests {
         }
         // No temporary file is left behind.
         assert_eq!(std::fs::read_dir(&sub).unwrap().count(), 1);
+    }
+
+    /// Windows: the file and its folder are owner-only, as the token files
+    /// are (the helper is `ledger_store::winsec`). Compiled for Windows
+    /// only; it runs on the Windows jobs of the full test run.
+    #[cfg(windows)]
+    #[test]
+    fn a_private_file_and_its_folder_are_owner_only_on_windows() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("link");
+        make_dir(&sub).unwrap();
+        let f = sub.join("k");
+        write(&f, b"one").unwrap();
+        write(&f, b"two").unwrap();
+        assert_eq!(std::fs::read(&f).unwrap(), b"two");
+        assert!(ledger_store::winsec::is_private(&sub).unwrap());
+        assert!(ledger_store::winsec::is_private(&f).unwrap());
     }
 }

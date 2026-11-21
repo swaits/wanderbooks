@@ -39,9 +39,10 @@ pub mod line;
 pub mod link;
 pub mod private;
 pub mod status;
+pub mod text;
 
 pub use acme::AcmeIssuer;
-pub use certs::{DnsProof, Issued, Issuer, OrderRequest};
+pub use certs::{CertTrust, DnsProof, Issued, Issuer, OrderRequest};
 pub use line::{Dial, Timing};
 pub use link::{DoorTarget, Link, LinkConfig, LinkError};
 pub use status::{LinkStatus, Step, Trouble};

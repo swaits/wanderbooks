@@ -6,7 +6,7 @@
 
 mod support;
 
-use ledger_link::{Dial, Step, Trouble};
+use ledger_link::{CertTrust, Dial, Step, Trouble};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use support::*;
@@ -591,4 +591,197 @@ async fn a_stalled_handshake_is_dropped_and_no_door_means_no_service() {
     assert!(r.is_err() || r.unwrap().is_empty());
     w.link.set_door(Some(w.door.target.clone()));
     assert!(w.assistant(&host).await.unwrap().ends_with(BODY));
+}
+
+/// WB-link-4 (INVARIANTS 7 and 8 of certs.rs): the relay names the
+/// authorities, so a certificate from one it made up is refused (the
+/// program trusts the public roots, not the relay's list): nothing is
+/// stored or served, the state says so, and a lifetime over the cap is
+/// refused too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_certificate_from_an_authority_the_relay_made_up_is_never_stored_or_served() {
+    let mut w = world(LIST, |_| {}).await;
+    // The real program's trust: the public roots. The fake authority is
+    // not one of them.
+    w.remake(|cfg| cfg.trust = CertTrust::public().unwrap());
+    w.link.turn_on().unwrap();
+    let s = until(&w.link, "the refusal is said", |s| {
+        s.cert_trouble
+            .as_deref()
+            .is_some_and(|t| t.contains("public certificate authority"))
+    })
+    .await;
+    assert_ne!(s.step(), Step::Connected);
+    assert!(s.cert_expires.is_none());
+    assert!(!w.dir.path().join("link/cert.json").exists());
+    assert!(w.fake.orders() >= 1);
+    // Nobody is served a certificate from it.
+    assert!(w.assistant(&w.host()).await.is_err());
+    w.link.turn_off();
+
+    // A certificate from an authority the program does trust, but that
+    // lives over 100 days, is refused as well.
+    w.remake(|_| {});
+    w.fake.state.lock().unwrap().lifetime = 101 * 86_400;
+    w.link.turn_on().unwrap();
+    let s = until(&w.link, "the lifetime is refused", |s| {
+        s.cert_trouble
+            .as_deref()
+            .is_some_and(|t| t.contains("100 days"))
+    })
+    .await;
+    assert!(s.cert_expires.is_none());
+    assert!(!w.dir.path().join("link/cert.json").exists());
+}
+
+/// WB-link-4 (INVARIANT 7): a certificate kept on disk that the program
+/// would not trust is discarded and ordered again, and "a new address"
+/// does not bring it back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stored_certificate_from_a_made_up_authority_is_discarded_and_ordered_again() {
+    let mut w = world(LIST, |_| {}).await;
+    w.link.turn_on().unwrap();
+    until(&w.link, "connected", |s| s.step() == Step::Connected).await;
+    assert_eq!(w.fake.orders(), 1);
+    w.link.turn_off();
+    // The file is there, from the authority the test trusts; a program that
+    // trusts only the public roots reads it as no certificate at all.
+    assert!(w.dir.path().join("link/cert.json").exists());
+    w.remake(|cfg| cfg.trust = CertTrust::public().unwrap());
+    w.link.turn_on().unwrap();
+    until(&w.link, "it orders again", |s| {
+        s.cert_trouble
+            .as_deref()
+            .is_some_and(|t| t.contains("public certificate authority"))
+    })
+    .await;
+    assert!(w.fake.orders() >= 2, "the stored one was not believed");
+    assert!(w.link.status().cert_expires.is_none());
+    // A new address carries on the same way: nothing is loaded from the
+    // file that fails.
+    w.link.new_address().unwrap();
+    until(&w.link, "the refusal again", |s| {
+        s.cert_trouble.is_some() && s.line_up
+    })
+    .await;
+    assert!(w.link.status().cert_expires.is_none());
+    assert!(w.assistant(&w.host()).await.is_err());
+}
+
+/// WB-link-3: a first claim that finds the name taken picks another, and
+/// the address, the certificate and the door all follow the one that was
+/// claimed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_name_taken_on_the_first_claim_settles_before_the_certificate_and_the_address() {
+    let w = world(LIST, |_| {}).await;
+    // The identity is made, and somebody else (another key) takes its name
+    // first.
+    let dir = w.dir.path().join("link");
+    let id = ledger_link::identity::Identity::load_or_create(&dir).unwrap();
+    let taken = id.name();
+    let (other, _) = relay::proto::AppKey::generate();
+    let _held = w.env.connect(taken, &other, true).await.unwrap();
+
+    w.link.turn_on().unwrap();
+    w.link.wait_settled(Duration::from_secs(20)).unwrap();
+    let settled = w.link.status();
+    assert!(settled.claimed);
+    let address = settled.address.clone().unwrap();
+    let host = address.trim_start_matches("https://").to_owned();
+    let name = host.split_once('.').unwrap().1.to_owned();
+    assert_ne!(name, format!("{taken}.{DOMAIN}"), "another name was picked");
+
+    until(&w.link, "connected", |s| s.step() == Step::Connected).await;
+    // Every certificate order was for the name that was claimed.
+    {
+        let st = w.fake.state.lock().unwrap();
+        assert!(!st.orders.is_empty());
+        for o in &st.orders {
+            assert_eq!(o.identifier, format!("*.{name}"));
+        }
+    }
+    assert_eq!(w.link.status().address.as_deref(), Some(address.as_str()));
+    assert_eq!(w.link.kept_address().as_deref(), Some(address.as_str()));
+    assert!(w.assistant(&host).await.unwrap().ends_with(BODY));
+}
+
+/// WB-link-4 (INVARIANT 9 of certs.rs): a certificate is not served after
+/// its end, even when it cannot be renewed, and the state says it is gone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_expired_certificate_is_not_served_and_the_state_says_so() {
+    // Renewals that fail are tried again only after an hour: nothing but
+    // the end of the certificate wakes the app.
+    let w = world(LIST, |t| {
+        t.cert_retry_min = Duration::from_secs(3600);
+        t.cert_retry_max = Duration::from_secs(3600);
+        t.ari_recheck = Duration::from_secs(3600);
+    })
+    .await;
+    w.fake.state.lock().unwrap().lifetime = 3;
+    w.link.turn_on().unwrap();
+    until(&w.link, "connected", |s| s.step() == Step::Connected).await;
+    let host = w.host();
+    {
+        let mut st = w.fake.state.lock().unwrap();
+        st.fail.insert("first".into());
+        st.fail.insert("second".into());
+    }
+    // Served while it lasts ...
+    let early = w.link.status().cert_expires.unwrap();
+    // ... and, once it has ended, neither served nor said to be in place.
+    until(&w.link, "the certificate has ended", |s| {
+        s.cert_expires.is_none()
+    })
+    .await;
+    assert!(ledger_link::certs::now() >= early);
+    assert_ne!(w.link.status().step(), Step::Connected);
+    assert!(w.assistant(&host).await.is_err());
+}
+
+/// WB-link-5 (text.rs): what a certificate authority says to the app does
+/// not reach the window unbounded.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_authority_that_shouts_is_shown_short_and_plain() {
+    let w = world(LIST, |_| {}).await;
+    {
+        let mut st = w.fake.state.lock().unwrap();
+        st.fail.insert("first".into());
+        st.fail.insert("second".into());
+        st.say = Some(format!("send money\u{7}\n\u{202e}{}", "now ".repeat(5000)));
+    }
+    w.link.turn_on().unwrap();
+    let s = until(&w.link, "the trouble is said", |s| s.cert_trouble.is_some()).await;
+    let words = s.problem().unwrap();
+    assert!(
+        words.chars().count() < 1200,
+        "{} characters",
+        words.chars().count()
+    );
+    assert!(
+        !words.chars().any(|c| c.is_control() || c == '\u{202e}'),
+        "{words:?}"
+    );
+    assert!(words.contains("send money"));
+    assert!(words.starts_with("Wanderbooks could not get a certificate yet."));
+}
+
+/// The window asks for the kept address every frame: it is read from the
+/// folder once, not each time (the key lives in the same file).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_kept_address_is_read_once_not_every_frame() {
+    let w = world(LIST, |_| {}).await;
+    assert!(w.link.kept_address().is_none(), "before the first start");
+    w.link.turn_on().unwrap();
+    until(&w.link, "claimed", |s| s.claimed).await;
+    let first = w.link.kept_address().unwrap();
+    w.link.turn_off();
+    // With the file gone, the answer is still the one held: nothing reads
+    // the folder again.
+    for f in std::fs::read_dir(w.dir.path().join("link")).unwrap() {
+        let f = f.unwrap().path();
+        if f.is_file() {
+            std::fs::remove_file(f).unwrap();
+        }
+    }
+    assert_eq!(w.link.kept_address().as_deref(), Some(first.as_str()));
 }

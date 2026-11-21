@@ -1801,6 +1801,7 @@ impl Store {
         // Every refusal before the journal: a journaled reversal the engine
         // then refuses could never be replayed, and the books would not open.
         self.check_reverse_entry(entry, date)?;
+        LedgerError::free_text("the reversal's description", description)?;
         let new_id = self.ledger.next_entry_id();
         let flipped: Vec<Value> = orig.lines().iter().map(flip_line_json).collect();
         // Reversals journal a single entry.reversed line (no separate

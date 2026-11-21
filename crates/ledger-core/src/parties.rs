@@ -717,6 +717,22 @@ pub fn check_text(field: &str, text: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Check a free text field: no tax id's shape (a nine-digit number standing
+/// alone, an SSN's 3-2-4, an EIN's 2-7: [`crate::settings::check_free_text`]),
+/// at most 500 characters, no control characters except newline. For a
+/// memo, a note, a reason or a reference; a party's own fields keep the
+/// strict [`check_text`] (BS-partner-2; the owner's choice, 2026-11-21).
+pub fn check_note(field: &str, text: &str) -> Result<(), String> {
+    crate::settings::check_free_text(field, text)?;
+    if text.chars().count() > 500 {
+        return Err(format!("{field} is at most 500 characters"));
+    }
+    if text.chars().any(|c| c.is_control() && c != '\n') {
+        return Err(format!("{field} can't contain control characters"));
+    }
+    Ok(())
+}
+
 /// Check an email address: one line of party text ([`check_text`], which
 /// refuses a full TIN) in a plain address shape, one `@` and no spaces. Not
 /// an RFC grammar test: the books only print it, they never send (A-4).

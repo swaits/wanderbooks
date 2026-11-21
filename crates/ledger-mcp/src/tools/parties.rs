@@ -1550,7 +1550,7 @@ impl BooksServer {
                         if r.trim().is_empty() {
                             return Err("say why the entry has no counterparty".into());
                         }
-                        ledger_core::parties::check_text("reason", r)?;
+                        ledger_core::parties::check_note("the reason", r)?;
                         store
                             .set_entry_party(p.entry_id, None)
                             .map_err(|e| e.to_string())?;

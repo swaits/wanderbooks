@@ -1024,6 +1024,7 @@ impl Ledger {
         if code.trim().is_empty() {
             return Err(LedgerError::EmptyAccountCode);
         }
+        LedgerError::free_text("the account code", code)?;
         let name = name.trim();
         if name.is_empty() {
             return Err(LedgerError::EmptyAccountName);
@@ -1226,14 +1227,8 @@ impl Ledger {
     /// allowed but no other control character, and no full TIN (
     /// BS-partner-2). Returns it trimmed.
     pub fn check_rename_reason(reason: &str) -> Result<String, LedgerError> {
-        let r = crate::settings::long_text("reason", reason, crate::settings::MAX_LONG_TEXT)
-            .map_err(LedgerError::InvalidRenameReason)?;
-        if crate::parties::has_full_tin(&r) {
-            return Err(LedgerError::InvalidRenameReason(
-                "reason holds nine digits in a row, which read as a full SSN or EIN: write only the last four".into(),
-            ));
-        }
-        Ok(r)
+        crate::settings::long_text("reason", reason, crate::settings::MAX_LONG_TEXT)
+            .map_err(LedgerError::InvalidRenameReason)
     }
 
     /// Whether `policy.require_tax_category` lets an account be created
@@ -1300,6 +1295,7 @@ impl Ledger {
         if code.trim().is_empty() {
             return Err(LedgerError::EmptyAccountCode);
         }
+        LedgerError::free_text("the account code", code)?;
         if self.chart.find_by_code(code).is_some() {
             return Err(LedgerError::DuplicateAccountCode(code.to_string()));
         }
@@ -1575,6 +1571,9 @@ impl Ledger {
     ///      - NEVER create a draft there
     ///      BECAUSE a closed period takes no new entries.
     ///   2. Otherwise: SHOULD return a fresh id, one past the last.
+    ///   3. IF the description looks like it holds a tax id (nine digits
+    ///      standing alone, an SSN's 3-2-4 or an EIN's 2-7: BS-partner-2):
+    ///      SHOULD refuse (FreeTextHoldsTin).
     /// ```
     pub fn try_create_entry(
         &mut self,
@@ -1582,6 +1581,7 @@ impl Ledger {
         description: &str,
     ) -> Result<EntryId, LedgerError> {
         crate::calendar::check(date)?;
+        LedgerError::free_text("the entry description", description)?;
         if let Some(pid) = self.closed_period_containing(date) {
             return Err(LedgerError::ClosedPeriod(pid, date.to_string()));
         }
@@ -2086,7 +2086,7 @@ impl Ledger {
         state: crate::DraftState,
     ) -> Result<(), LedgerError> {
         if let crate::DraftState::AwaitingEvidence { note } = &state {
-            crate::parties::check_text("the note", note).map_err(LedgerError::InvalidDraft)?;
+            crate::parties::check_note("the note", note).map_err(LedgerError::InvalidDraft)?;
         }
         self.draft_mut(entry)?.set_draft_state(state);
         Ok(())
@@ -2135,7 +2135,7 @@ impl Ledger {
                 "a discarded draft needs a reason".to_string(),
             ));
         }
-        crate::parties::check_text("the reason", reason).map_err(LedgerError::InvalidDraft)?;
+        crate::parties::check_note("the reason", reason).map_err(LedgerError::InvalidDraft)?;
         self.replay_discard_draft(entry)
     }
 
@@ -2505,6 +2505,7 @@ impl Ledger {
         description: &str,
     ) -> Result<EntryId, LedgerError> {
         self.check_reversal(entry, date)?;
+        LedgerError::free_text("the reversal's description", description)?;
         let original = self
             .entries
             .get(&entry)
@@ -2605,6 +2606,11 @@ impl Ledger {
     fn check_new_asset(&self, new: &NewAsset, strict: bool) -> Result<(), LedgerError> {
         if new.description.trim().is_empty() {
             return Err(LedgerError::EmptyAssetDescription);
+        }
+        // New work only: a journaled description replays as written
+        // (BS-entry-4).
+        if strict {
+            LedgerError::free_text("the asset description", &new.description)?;
         }
         if new.cost.amount <= Decimal::ZERO {
             return Err(LedgerError::InvalidAssetCost(new.cost.amount));
@@ -2767,6 +2773,7 @@ impl Ledger {
             tag: tag.to_string(),
             why,
         })?;
+        LedgerError::free_text("the asset tag", tag)?;
         match self.asset_tags.get(&assets::tag_key(tag)) {
             Some(&holder) if Some(holder) != id => Err(LedgerError::AssetTagTaken {
                 tag: tag.to_string(),
@@ -2803,6 +2810,7 @@ impl Ledger {
         }
         if let Some(s) = serial {
             assets::check_serial(s).map_err(LedgerError::InvalidSerial)?;
+            LedgerError::free_text("the serial number", s)?;
         }
         Ok(())
     }
@@ -3012,6 +3020,7 @@ impl Ledger {
         if description.trim().is_empty() {
             return Err(LedgerError::EmptyAssetDescription);
         }
+        LedgerError::free_text("the asset description", description)?;
         Ok(())
     }
 
@@ -3581,6 +3590,7 @@ impl Ledger {
         end: NaiveDate,
     ) -> Result<PeriodId, LedgerError> {
         periods::validate_period_range(start, end)?;
+        LedgerError::free_text("the period name", name)?;
         let nested = |a: (NaiveDate, NaiveDate), b: (NaiveDate, NaiveDate)| {
             (a.0 >= b.0 && a.1 <= b.1) || (b.0 >= a.0 && b.1 <= a.1)
         };
@@ -5596,7 +5606,7 @@ impl Ledger {
                 "say why the entry has no counterparty".into(),
             ));
         }
-        crate::parties::check_text("reason", reason).map_err(LedgerError::InvalidParty)
+        crate::parties::check_note("the reason", reason).map_err(LedgerError::InvalidParty)
     }
 
     /// Why an entry has no counterparty, when it was marked so.
@@ -5892,6 +5902,12 @@ impl Ledger {
         }
         arap::validate_lines(&lines)?;
         arap::validate_due_date(date, due_date)?;
+        arap::check_document_text(
+            fields.customer_ref.as_deref(),
+            fields.memo.as_deref(),
+            None,
+        )?;
+        arap::check_snapshots(fields.bill_to.as_ref(), fields.seller.as_ref())?;
         if let Some(number) = &fields.number
             && self
                 .invoices
@@ -6029,6 +6045,11 @@ impl Ledger {
         if let Some(received_on) = fields.received_on {
             crate::calendar::check(received_on)?;
         }
+        arap::check_document_text(
+            fields.vendor_ref.as_deref(),
+            fields.memo.as_deref(),
+            fields.duplicate_reason.as_deref(),
+        )?;
         if let Some(vendor_ref) = fields.vendor_ref.as_deref() {
             self.check_vendor_ref(vendor_id, vendor_ref, fields.duplicate_reason.as_deref())?;
         }
@@ -6203,11 +6224,11 @@ impl Ledger {
             crate::parties::check_text("a recipient", to).map_err(LedgerError::InvalidSend)?;
         }
         if let Some(reference) = &sent.reference {
-            crate::parties::check_text("the reference", reference)
+            crate::parties::check_note("the reference", reference)
                 .map_err(LedgerError::InvalidSend)?;
         }
         if let Some(note) = &sent.note {
-            crate::parties::check_text("the note", note).map_err(LedgerError::InvalidSend)?;
+            crate::parties::check_note("the note", note).map_err(LedgerError::InvalidSend)?;
         }
         self.invoices
             .get_mut(&invoice)
@@ -7262,6 +7283,7 @@ impl Ledger {
                 arap::MAX_REFERENCE_CHARS
             )));
         }
+        LedgerError::free_text("the reason", reason)?;
         if amount <= Decimal::ZERO {
             return Err(LedgerError::InvalidWriteOff(format!(
                 "a write-off's amount must be above zero, got {amount}"
@@ -7373,6 +7395,7 @@ impl Ledger {
                 arap::MAX_REFERENCE_CHARS
             )));
         }
+        LedgerError::free_text("the reason", reason)?;
         let (_, _, origin, _) = self.doc_header(doc)?;
         let chain = self.reversal_chain(origin);
         let target = *chain.last().unwrap_or(&origin);

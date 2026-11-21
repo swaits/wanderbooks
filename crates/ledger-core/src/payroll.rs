@@ -109,6 +109,7 @@ pub fn validate_payroll_lines(lines: &[PayrollLine]) -> Result<(), LedgerError> 
         return Err(LedgerError::EmptyPayroll);
     }
     for line in lines {
+        LedgerError::free_text("the employee name", &line.employee_name)?;
         for amount in [
             line.gross_pay,
             line.federal_withholding,

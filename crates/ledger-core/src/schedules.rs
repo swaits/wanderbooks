@@ -508,6 +508,7 @@ pub fn validate_schedule_under(
     chart: &ChartOfAccounts,
 ) -> Result<(), LedgerError> {
     validate_schedule_shape(new, chart)?;
+    LedgerError::free_text("the schedule's description", &new.description)?;
     crate::calendar::check(new.start)?;
     let past_the_calendar = || {
         Err(LedgerError::InvalidSchedule(format!(
@@ -773,6 +774,7 @@ pub fn validate_recurring(new: &NewRecurring, chart: &ChartOfAccounts) -> Result
         return Err(LedgerError::AmountOutOfRange);
     }
     validate_recurring_journaled(new, chart)?;
+    LedgerError::free_text("the recurring entry's description", &new.description)?;
     crate::calendar::check(new.start)?;
     if let Some(end) = new.end {
         crate::calendar::check(end)?;

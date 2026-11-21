@@ -474,10 +474,10 @@ impl BooksServer {
             "due_date, or terms, or the customer's default terms, or invoicing.default_terms",
         )?;
         if let Some(r) = &p.customer_ref {
-            ledger_core::parties::check_text("the customer reference", r)?;
+            ledger_core::parties::check_note("the customer reference", r)?;
         }
         if let Some(m) = &p.memo {
-            ledger_core::parties::check_text("the memo", m)?;
+            ledger_core::parties::check_note("the memo", m)?;
         }
         let settings = self.settings();
         let fields = arap::InvoiceFields {
@@ -616,10 +616,10 @@ impl BooksServer {
             );
         }
         if let Some(m) = &p.memo {
-            ledger_core::parties::check_text("the memo", m)?;
+            ledger_core::parties::check_note("the memo", m)?;
         }
         if let Some(r) = &p.duplicate_reason {
-            ledger_core::parties::check_text("the duplicate reason", r)?;
+            ledger_core::parties::check_note("the duplicate reason", r)?;
         }
         // The file is taken before anything is written: an upload is used
         // up only by the call that files it (files.rs INVARIANT 1).

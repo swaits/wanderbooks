@@ -367,6 +367,13 @@ pub enum LedgerError {
     )]
     AccountNameHoldsTin,
 
+    /// Free text (a memo, a note, a reason, a description, a tag) that
+    /// looks like it holds a tax id: nine digits standing alone, or an
+    /// SSN's 3-2-4 or an EIN's 2-7 grouping (BS-partner-2). The words name
+    /// the field and where a tax id goes, never the number.
+    #[error("{0}")]
+    FreeTextHoldsTin(String),
+
     /// A new account name (a new account's, or a rename's) that isn't one
     /// line of text within the bound ([`crate::account::MAX_ACCOUNT_NAME`]
     /// characters): every report, export and the IIF print it on one line.
@@ -991,6 +998,16 @@ pub enum LedgerError {
         "approval rules cover the entry this would post at once ({0}): draft it instead (books.draft_entry), have it approved (books.approve_entry), then post it"
     )]
     ApprovalNeedsDraft(String),
+}
+
+impl LedgerError {
+    /// Free text a command may keep: it must not look like a tax id
+    /// ([`crate::settings::check_free_text`]; never refused in a replay).
+    /// `field` is how the refusal names it ("the memo", "the entry
+    /// description").
+    pub fn free_text(field: &str, text: &str) -> Result<(), LedgerError> {
+        crate::settings::check_free_text(field, text).map_err(LedgerError::FreeTextHoldsTin)
+    }
 }
 
 /// The refusal [`LedgerError::TaxCategoryRequired`] gives: what to pass,

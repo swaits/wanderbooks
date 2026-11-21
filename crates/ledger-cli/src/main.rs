@@ -70,20 +70,62 @@ fn gui_args(args: Vec<String>) -> Vec<String> {
 /// The viewer's owner (ledger-gui owner.rs): its Books menu, done as the
 /// command line does it (the books server, the agents' own commands).
 #[cfg(feature = "gui")]
-struct ViewerOwner(ledger_host::commands::Common);
+struct ViewerOwner {
+    common: ledger_host::commands::Common,
+    /// The books server this window runs, a child process of it (plan P15
+    /// 3.1): started with the window, closed with it. All of what is done
+    /// with it is `AppHost`'s, which the tests drive.
+    server: ledger_host::app_server::AppHost,
+}
+
+#[cfg(feature = "gui")]
+impl ViewerOwner {
+    fn new(common: ledger_host::commands::Common) -> Self {
+        let server = ledger_host::app_server::AppHost::new(common.root.clone());
+        Self { common, server }
+    }
+}
 
 #[cfg(feature = "gui")]
 impl ledger_gui::owner::Owner for ViewerOwner {
+    fn serves(&self) -> bool {
+        true
+    }
+
+    fn serve_start(&self, open: &[String]) -> Result<(), String> {
+        self.server.start(open)
+    }
+
+    fn serve_open(&self, book: &str) -> Result<Option<String>, String> {
+        self.server.open_book(book)
+    }
+
+    fn serve_close(&self, book: &str) -> Result<Option<String>, String> {
+        self.server.close_book(book)
+    }
+
+    fn serve_not_open(&self, wanted: &[String]) -> Vec<(String, String)> {
+        self.server.not_open(wanted)
+    }
+
+    fn serve_stop(&self) -> Result<Option<String>, String> {
+        self.server.stop(ledger_host::app_server::STOP_WAIT)
+    }
+
+    fn serve_exited(&self) -> Option<String> {
+        self.server.exited()
+    }
+
     fn close_books(&self) -> Result<String, String> {
-        ledger_host::commands::close_books(&self.0)
+        ledger_host::commands::close_books(&self.common)
     }
 
     fn new_books(&self, id: &str, currency: &str) -> Result<String, String> {
-        ledger_host::commands::new_books_and_home(&self.0, id, currency)
+        ledger_host::commands::new_books_and_home(&self.common, id, currency)
     }
 
     fn back_up_now(&self, book: &str) -> Result<Vec<String>, String> {
-        ledger_host::commands::back_up_now(&self.0, book, false)
+        ledger_host::commands::back_up_now(&self.common, book, false)
     }
 
     fn plan_restore(
@@ -92,7 +134,7 @@ impl ledger_gui::owner::Owner for ViewerOwner {
         id: Option<String>,
         replace: bool,
     ) -> Result<ledger_gui::owner::RestorePlan, String> {
-        let p = ledger_host::commands::plan_restore(&self.0, source, id, replace, false)?;
+        let p = ledger_host::commands::plan_restore(&self.common, source, id, replace, false)?;
         Ok(ledger_gui::owner::RestorePlan {
             source: p.source,
             id: p.id,
@@ -104,7 +146,7 @@ impl ledger_gui::owner::Owner for ViewerOwner {
 
     fn restore(&self, plan: &ledger_gui::owner::RestorePlan) -> Result<Vec<String>, String> {
         ledger_host::commands::carry_out_restore(
-            &self.0,
+            &self.common,
             &ledger_host::commands::RestorePlan {
                 source: plan.source.clone(),
                 id: plan.id.clone(),
@@ -121,11 +163,11 @@ impl ledger_gui::owner::Owner for ViewerOwner {
             ledger_gui::owner::Agent::Claude => "claude",
             ledger_gui::owner::Agent::Codex => "codex",
         };
-        ledger_host::commands::connect_and_home(&self.0, agent, book)
+        ledger_host::commands::connect_and_home(&self.common, agent, book)
     }
 
     fn first_run(&self) -> ledger_gui::owner::FirstRun {
-        let s = ledger_host::commands::first_run_state(&self.0);
+        let s = ledger_host::commands::first_run_state(&self.common);
         ledger_gui::owner::FirstRun {
             root: s.root,
             books: s.books,
@@ -134,16 +176,16 @@ impl ledger_gui::owner::Owner for ViewerOwner {
     }
 
     fn set_up(&self) -> Result<Vec<String>, String> {
-        ledger_host::commands::set_up_root(&self.0)
+        ledger_host::commands::set_up_root(&self.common)
     }
 
     fn set_passphrase(&self, new: &str) -> Result<(), String> {
-        ledger_host::commands::set_first_passphrase(&self.0, new)
+        ledger_host::commands::set_first_passphrase(&self.common, new)
     }
 
-    fn hold(&self, book: &str) {
-        ledger_host::commands::hold_for_viewer(&self.0, Some(book.to_string()));
-    }
+    /// Nothing: the window's server holds the books for as long as the
+    /// window runs, a company at a time (`serve_open`), and no host does.
+    fn hold(&self, _book: &str) {}
 
     fn agent_start(
         &self,
@@ -177,23 +219,28 @@ impl ledger_gui::owner::Owner for ViewerOwner {
         })
     }
 
+    /// Handed to the window's own server as an admin request: there is
+    /// no host here, and so no lease socket to ask (app_server.rs
+    /// INVARIANT 10).
     fn upgrade_format(&self, book: &str, passphrase: &str) -> Result<Vec<String>, String> {
-        ledger_host::commands::upgrade_format(&self.0, book, passphrase)
+        self.server.upgrade_format(book, passphrase)
     }
 
     fn update_waiting(&self) -> Option<ledger_gui::owner::UpdateWaiting> {
-        ledger_host::commands::update_waiting(&self.0).map(|u| ledger_gui::owner::UpdateWaiting {
-            version: u.version,
-            staged_at: u.staged_at,
+        ledger_host::commands::update_waiting(&self.common).map(|u| {
+            ledger_gui::owner::UpdateWaiting {
+                version: u.version,
+                staged_at: u.staged_at,
+            }
         })
     }
 
     fn check_for_updates(&self) -> Result<Vec<String>, String> {
-        ledger_host::commands::check_for_updates(&self.0).map(|l| vec![l])
+        ledger_host::commands::check_for_updates(&self.common).map(|l| vec![l])
     }
 
     fn apply_update(&self) -> Result<Vec<String>, String> {
-        ledger_host::commands::apply_update(&self.0).map(|l| vec![l])
+        ledger_host::commands::apply_update(&self.common).map(|l| vec![l])
     }
 }
 
@@ -222,7 +269,6 @@ fn run_gui(args: Vec<String>) -> i32 {
             }
         }
         let root = value("--root").map(PathBuf::from);
-        let book = value("--book");
         if known {
             // The viewer asks about a format upgrade in its own window, makes
             // the first books when there are none, and starts the agent in
@@ -231,10 +277,10 @@ fn run_gui(args: Vec<String>) -> i32 {
                 root: root.clone(),
                 ..Default::default()
             };
-            ledger_gui::owner::set_owner(std::sync::Arc::new(ViewerOwner(common.clone())));
-            if ledger_gui::book_in_root(root.as_deref(), book.as_deref()).is_ok() {
-                ledger_host::commands::hold_for_viewer(&common, book);
-            }
+            // The window runs the books server itself, as a child process
+            // (plan P15 3.1), once it knows which companies it opens: no
+            // host is started for it.
+            ledger_gui::owner::set_owner(std::sync::Arc::new(ViewerOwner::new(common)));
         }
     }
     match ledger_gui::run("wanderbooks gui", args) {

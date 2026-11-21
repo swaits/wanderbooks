@@ -6,7 +6,9 @@
 //!       no call the agent made can ever run twice.
 //! SOURCE: plan/served.md 3.9 ("The bridge and slow starts", "Closing",
 //!         "Restarting"), 3.1 (the bridge never reads the books; it has
-//!         no data-dir flag); the plan's tests bridge_opens_closed_books,
+//!         no data-dir flag); plan/p15-app-and-relay.md 3.1 (the bridge
+//!         is a thin line to the running app and says in words when it
+//!         can't be), D-44, D-77, WB-app-3; the plan's tests bridge_opens_closed_books,
 //!         bridge_survives_server_restart, bridge_initializes_during_cold_start,
 //!         no_local_agent_tcp, close_now_ends_every_lease (in
 //!         ledger-cli's open_while_held.rs, under names of their own);
@@ -52,6 +54,19 @@
 //!      refusal, which says how the human makes one; but when the token
 //!      file is there and couldn't be read, with that instead: the token
 //!      is not said to be missing. The token is never written to the agent or to stderr.
+//!  12. For a root the desktop app serves (app_server.rs INVARIANT 7) with
+//!      no host running, the bridge is a thin line to the app's server
+//!      and nothing more: it holds no lease and starts no host (a
+//!      detached host is not how the desktop runs). With the app not
+//!      running, every call is answered "Wanderbooks isn't running:
+//!      start Wanderbooks and open BOOK." (`not_running_words`); with
+//!      the app running but BOOK not open in it, "Company BOOK isn't
+//!      open: open it in Wanderbooks." (`not_open_words`, for the
+//!      server's `closed` refusal at the door). Neither is final: the
+//!      call after the app starts, or the company opens, goes through,
+//!      in a session that was already running. A root no app has served,
+//!      and any root a host holds, behave as in 1 to 11 (`wanderbooks
+//!      serve`, the headless host).
 //! ```
 
 use crate::knobs::{FLAG, Knobs};
@@ -82,6 +97,17 @@ const NO_SESSION: &str = "Not Found: Session not found";
 
 /// What a call cut off after it was sent is answered with (INVARIANT 4).
 const MAYBE_RAN: &str = "the connection to the books server broke while this call was running, so it may or may not have been done: check before trying it again (books.digest shows the latest changes)";
+
+/// What the agent is told when the app is not running (INVARIANT 12).
+fn not_running_words(book: &str) -> String {
+    format!("Wanderbooks isn't running: start Wanderbooks and open {book}.")
+}
+
+/// What the agent is told when the app runs but the company is not open
+/// in it (INVARIANT 12).
+fn not_open_words(book: &str) -> String {
+    format!("Company {book} isn't open: open it in Wanderbooks.")
+}
 
 /// What the agent is told once the owner closed the books (INVARIANT 6).
 const CLOSED_BY_OWNER: &str = "the owner closed the books (Close the books, or `wanderbooks close`): nothing more can be done in this session. Start a new agent session to open them again.";
@@ -164,6 +190,9 @@ struct Bridge {
     pending: Mutex<std::collections::HashMap<String, Pending>>,
     /// The server's channel, for its owner check (INVARIANT 9).
     endpoint: ledger_mcp::ipc::Endpoint,
+    /// Whether this is the line to the desktop app's server, with no host
+    /// and no lease (INVARIANT 12).
+    app: bool,
 }
 
 /// Who has the server's socket, when it isn't plainly this account.
@@ -516,6 +545,7 @@ impl Bridge {
         if refused.as_deref() == Some(REFUSED_CLOSING.as_bytes()) {
             return Sent::NotRun(NotRun::Closing);
         }
+        let closed = refused.as_deref() == Some(b"closed".as_slice());
         let refused = refused.is_some();
         let is_stream = response
             .headers()
@@ -524,11 +554,15 @@ impl Bridge {
             .is_some_and(|t| t.starts_with("text/event-stream"));
         let body = match response.text().await {
             Ok(b) => b,
-            Err(_) if refused => return Sent::Refused("the books server refused the call".into()),
+            Err(_) if refused => {
+                return Sent::Refused(
+                    self.refusal_words(closed, "the books server refused the call"),
+                );
+            }
             Err(_) => return Sent::MaybeRan,
         };
         if refused {
-            return Sent::Refused(body.trim().chars().take(500).collect());
+            return Sent::Refused(self.refusal_words(closed, &body));
         }
         let answered = |messages: Vec<Value>| {
             // The server's "closing: not run" (INVARIANT 4).
@@ -612,6 +646,10 @@ impl Bridge {
             .and_then(|v| v.to_str().ok())
             .map(str::to_string);
         let status = response.status();
+        let closed = response
+            .headers()
+            .get(ledger_mcp::local::REFUSED_HEADER)
+            .is_some_and(|v| v.as_bytes() == b"closed");
         let is_stream = response
             .headers()
             .get("content-type")
@@ -624,7 +662,7 @@ impl Bridge {
             // initialize the server won't take): the server's words. Not
             // asked again until the next call.
             404 | 503 if !body.starts_with(CLOSING) => {
-                return Err(Some(body.trim().chars().take(500).collect()));
+                return Err(Some(self.refusal_words(closed, &body)));
             }
             400..=499 => return Err(Some(body.trim().chars().take(500).collect())),
             _ => return Err(None),
@@ -883,6 +921,9 @@ impl Bridge {
             // Not "opening now": closed by the owner, or can't open.
             Some(Link::Closed) => return self.answer(&id, error(&id, CLOSED_BY_OWNER)),
             Some(Link::Failed(why)) => return self.answer(&id, error(&id, why)),
+            // The desktop app can't be reached, or the company isn't open
+            // in it: said now, not "opening" (INVARIANT 12).
+            Some(Link::Refused(why)) if self.app => return self.answer(&id, error(&id, why)),
             _ => None,
         };
         let result = result.unwrap_or_else(|| {
@@ -1006,6 +1047,78 @@ impl Bridge {
                         return;
                     }
                 }
+            }
+        }
+    }
+
+    /// The words for a refusal at the server's door: for the desktop app's
+    /// `closed` refusal, the bridge's own (INVARIANT 12); else the
+    /// server's.
+    fn refusal_words(&self, closed: bool, body: &str) -> String {
+        if self.app && closed {
+            not_open_words(&self.book)
+        } else {
+            body.trim().chars().take(500).collect()
+        }
+    }
+
+    /// The line to the desktop app's server (INVARIANT 12): no lease, no
+    /// host. Whenever a session is wanted it looks for the app's socket:
+    /// none answering is `Refused` with the words for it, which every
+    /// call is answered with and which the next call looks at again; the
+    /// company not open is the server's own refusal, in the bridge's
+    /// words.
+    async fn keep_in_app(self: Arc<Self>, run_dir: PathBuf) {
+        let root = run_dir.parent().unwrap_or(&run_dir).to_path_buf();
+        let account = crate::tokens::Account::new(&root, &self.book, &self.token_name);
+        let _ = self.token_file.set((account, run_dir));
+        let mut epoch = 0u64;
+        loop {
+            if matches!(&*self.link.borrow(), Link::Opening) {
+                match self.socket_is_ours() {
+                    Err(Owner::Other(why)) => {
+                        self.link.send_replace(Link::Failed(why));
+                        return;
+                    }
+                    Err(Owner::Unreachable) => {
+                        self.link
+                            .send_replace(Link::Refused(not_running_words(&self.book)));
+                    }
+                    Ok(()) => match self.open_session(epoch + 1).await {
+                        Ok(up) => {
+                            epoch = up.epoch;
+                            self.after_new_session(&up).await;
+                            self.link.send_replace(Link::Ready(Arc::new(up)));
+                        }
+                        Err(Some(why)) => {
+                            self.link.send_replace(Link::Refused(why));
+                        }
+                        // Not answering yet (opening, or on its way out):
+                        // look again soon, answering nothing meanwhile.
+                        Err(None) => {
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                            continue;
+                        }
+                    },
+                }
+            }
+            // Until a session is wanted again: the agent initialized, or
+            // a session is found gone, or a call asks again.
+            self.renew.notified().await;
+            let stale = match &*self.link.borrow() {
+                Link::Ready(up) => {
+                    up.init.is_none()
+                        && self
+                            .agent_init
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .is_some()
+                }
+                Link::Refused(_) => true,
+                _ => false,
+            };
+            if stale {
+                self.link.send_replace(Link::Opening);
             }
         }
     }
@@ -1269,6 +1382,13 @@ async fn skip_line<R: tokio::io::AsyncBufRead + Unpin>(input: &mut R) -> bool {
     }
 }
 
+/// Whether the bridge is the line to the desktop app's server for the
+/// root whose `run/` folder this is (INVARIANT 12): an app has served the
+/// root, and no host holds it.
+fn serves_the_app(run: &std::path::Path) -> bool {
+    crate::app_server::app_hosted(run) && !crate::opener::host_lock_held(run)
+}
+
 fn usage(prog: &str) {
     // (`--root DIR` too, for tests: the bridge never needs a folder.)
     eprintln!("usage: {prog} --book ID [--token NAME]");
@@ -1314,6 +1434,10 @@ pub fn run(
         .map_err(|e| e.to_string())?
         .to_string();
     let opener = Opener::new(root.as_deref(), knobs, Kind::Bridge, Some(book.clone()))?;
+    // The desktop app's root with no host on it: the line to the app's
+    // server, no lease (INVARIANT 12). Settled once, here.
+    let app = serves_the_app(opener.run_dir());
+    let run_dir = opener.run_dir().to_path_buf();
     // Kept for the whole session: the client reaches the channel by it.
     let endpoint = ledger_mcp::ipc::Endpoint::new(opener.run_dir(), ledger_mcp::local::MCP_SOCKET)
         .map_err(|e| format!("can't reach the books server: {e}"))?;
@@ -1346,8 +1470,13 @@ pub fn run(
             next_id: std::sync::atomic::AtomicU64::new(1),
             pending: Mutex::new(std::collections::HashMap::new()),
             endpoint,
+            app,
         });
-        let keeper = tokio::spawn(bridge.clone().keep(opener));
+        let keeper = if app {
+            tokio::spawn(bridge.clone().keep_in_app(run_dir))
+        } else {
+            tokio::spawn(bridge.clone().keep(opener))
+        };
         let writer = tokio::spawn(async move {
             let mut out = tokio::io::stdout();
             while let Some(message) = outbox.recv().await {
@@ -1662,6 +1791,20 @@ mod against_a_server {
     }
 
     fn bridge_at(socket: &Path, knobs: Knobs) -> (Arc<Bridge>, mpsc::UnboundedReceiver<Value>) {
+        bridge_for(socket, knobs, false)
+    }
+
+    /// A bridge that is the line to the desktop app's server (INVARIANT
+    /// 12).
+    fn app_bridge_at(socket: &Path, knobs: Knobs) -> (Arc<Bridge>, mpsc::UnboundedReceiver<Value>) {
+        bridge_for(socket, knobs, true)
+    }
+
+    fn bridge_for(
+        socket: &Path,
+        knobs: Knobs,
+        app: bool,
+    ) -> (Arc<Bridge>, mpsc::UnboundedReceiver<Value>) {
         let endpoint = ledger_mcp::ipc::Endpoint::new(
             socket.parent().unwrap(),
             socket.file_name().and_then(|n| n.to_str()).unwrap(),
@@ -1691,6 +1834,7 @@ mod against_a_server {
             next_id: std::sync::atomic::AtomicU64::new(1),
             pending: Mutex::new(std::collections::HashMap::new()),
             endpoint,
+            app,
         });
         (bridge, rx)
     }
@@ -2455,5 +2599,114 @@ mod against_a_server {
         assert!(!skip_line(&mut r).await, "the input ended first");
         let mut r = tokio::io::BufReader::new(&b""[..]);
         assert!(!skip_line(&mut r).await);
+    }
+
+    #[test]
+    fn the_two_messages_are_plain_and_name_the_company() {
+        assert_eq!(
+            not_running_words("acme"),
+            "Wanderbooks isn't running: start Wanderbooks and open acme."
+        );
+        assert_eq!(
+            not_open_words("acme"),
+            "Company acme isn't open: open it in Wanderbooks."
+        );
+    }
+
+    #[test]
+    fn a_root_is_the_apps_only_when_marked_and_no_host_holds_it() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!serves_the_app(dir.path()), "no app has served it");
+        std::fs::write(dir.path().join(crate::app_server::APP_MARKER), b"").unwrap();
+        assert!(serves_the_app(dir.path()));
+        // A host holding the root is the headless path, marked or not.
+        let lock = std::fs::File::create(dir.path().join(crate::lease::HOST_LOCK)).unwrap();
+        lock.lock().unwrap();
+        assert!(!serves_the_app(dir.path()));
+    }
+
+    const CLOSED_WORDS: &str = "The books \"acme\" aren't open: open them in Wanderbooks.";
+
+    fn closed_reply() -> Reply {
+        Reply {
+            status: 503,
+            headers: vec![(ledger_mcp::local::REFUSED_HEADER, "closed".into())],
+            body: CLOSED_WORDS.into(),
+            cut: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn with_the_app_not_running_every_call_is_answered_in_words() {
+        let dir = tempfile::tempdir().unwrap();
+        // Nothing listens here.
+        let (b, mut rx) = app_bridge_at(&dir.path().join("mcp.sock"), knobs(3000, 3000));
+        let keeper = tokio::spawn(b.clone().keep_in_app(dir.path().to_path_buf()));
+        let init = json!({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2025-06-18", "capabilities": {}}});
+        b.waiting(&json!(1));
+        b.clone().request(init).await;
+        assert_eq!(
+            told(&mut rx, 3000).await.unwrap()["error"]["message"],
+            not_running_words("acme")
+        );
+        let call: Value = serde_json::from_str(CALL).unwrap();
+        b.waiting(&json!(7));
+        b.clone()
+            .request_on(call.clone(), json!(7), "tools/call")
+            .await;
+        assert_eq!(
+            told(&mut rx, 3000).await.unwrap()["error"]["message"],
+            not_running_words("acme")
+        );
+        // Asked again, the same: the answer is not final, it is looked at
+        // afresh at each call (the app may have started since).
+        b.waiting(&json!(8));
+        b.clone().request_on(call, json!(8), "tools/call").await;
+        assert_eq!(
+            told(&mut rx, 3000).await.unwrap()["error"]["message"],
+            not_running_words("acme")
+        );
+        keeper.abort();
+    }
+
+    #[tokio::test]
+    async fn with_the_app_running_a_company_that_is_not_open_is_said_in_words() {
+        let server = Server::start();
+        let (b, mut rx) = app_bridge_at(&server.socket, knobs(3000, 3000));
+        let dir = tempfile::tempdir().unwrap();
+        let keeper = tokio::spawn(b.clone().keep_in_app(dir.path().to_path_buf()));
+        let call: Value = serde_json::from_str(CALL).unwrap();
+        // A call with no session first (a client without the handshake).
+        server.script([closed_reply()]);
+        b.waiting(&json!(7));
+        b.clone().request_on(call, json!(7), "tools/call").await;
+        assert_eq!(
+            told(&mut rx, 3000).await.unwrap()["error"]["message"],
+            not_open_words("acme")
+        );
+        // The agent's initialize: refused at the door, said as it is.
+        server.script([closed_reply(), closed_reply()]);
+        let init = json!({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2025-06-18", "capabilities": {}}});
+        b.waiting(&json!(1));
+        b.clone().request(init).await;
+        assert_eq!(
+            told(&mut rx, 3000).await.unwrap()["error"]["message"],
+            not_open_words("acme")
+        );
+        keeper.abort();
+    }
+
+    #[tokio::test]
+    async fn a_host_bridge_passes_the_servers_words_on_as_they_are() {
+        let server = Server::start();
+        let (b, _rx) = bridge_at(&server.socket, knobs(1000, 1000));
+        let message: Value = serde_json::from_str(CALL).unwrap();
+        server.script([closed_reply()]);
+        assert_eq!(
+            what(&b.send(&message, &up(1)).await),
+            format!("refused {CLOSED_WORDS}")
+        );
     }
 }

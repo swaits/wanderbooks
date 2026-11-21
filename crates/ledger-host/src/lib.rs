@@ -11,6 +11,7 @@
 //! viewer's Books menu does). Agents' tokens are kept in files under the data root
 //! ([`tokens`]).
 
+pub mod app_server;
 pub mod bridge;
 pub mod channel;
 pub mod commands;

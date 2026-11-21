@@ -1129,12 +1129,20 @@ pub fn new_books(common: &Common, id: &str, currency: &str) -> Result<String, St
     }
 }
 
+/// What closing the books says while the app has them open: the app's
+/// tabs and its window close them.
+const APP_HAS_THEM: &str = "Wanderbooks (the app) has these books open: close a company's tab to close that company, or close the window to close them all";
+
 /// "Close the books": everything holding them lets go (the lease
 /// socket's close intent). What came of it.
 pub fn close_books(common: &Common) -> Result<String, String> {
     let found =
         ledger_store::root::Root::find(common.root.as_deref()).map_err(|e| e.to_string())?;
     let run = found.run_dir().map_err(|e| e.to_string())?;
+    // The app's own server: no host to ask (it isn't "closed": it is open).
+    if crate::app_server::the_apps_server_runs(&run) {
+        return Err(APP_HAS_THEM.into());
+    }
     match crate::opener::ask_once_within(&run, Ask::Intent(Intent::Close), HOST_WAIT)? {
         None => Ok("The books are closed.".into()),
         Some(HostMsg::Done { detail }) => Ok(detail

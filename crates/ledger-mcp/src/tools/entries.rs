@@ -847,7 +847,9 @@ impl BooksServer {
                 .map_err(|e| e.to_string())?;
         }
         let count = imported.len();
-        let masked_count: usize = masked.iter().map(|m| m.numbers).sum();
+        let masked_count: usize = masked
+            .iter()
+            .fold(0, |n: usize, m| n.saturating_add(m.numbers));
         let masked_note = (masked_count > 0).then(|| {
             let lines: Vec<String> = masked.iter().map(|m| m.line.to_string()).collect();
             format!(

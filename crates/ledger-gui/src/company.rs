@@ -1698,6 +1698,8 @@ struct CardHead {
 
 /// The status card's badge, and the rail's.
 const CARD_BADGE: f32 = 16.0;
+/// The card's vertical padding (its sides' is 10): the footer is short.
+const CARD_PAD_Y: i8 = 8;
 const RAIL_BADGE: f32 = 24.0;
 
 impl CardHead {
@@ -1706,113 +1708,139 @@ impl CardHead {
         theme::paint_badge(ui.painter(), rect, radius, self.initial, self.hue, font);
     }
 
-    /// The card's heading row: the badge, small, and the name, cut with
-    /// an ellipsis to the room the live mark leaves, and at the right
-    /// that mark: the dot and "Live" (or "Snapshot"), pulsing for two
-    /// seconds after an update. `after` is what the folded card, which
-    /// has no line of its own, adds after the word: its event and the
-    /// seal; the fullest that leaves the name [`NAME_MIN`] is drawn, and
-    /// what was drawn comes back with the name's response.
-    fn row(&self, ui: &mut Ui, since_update: f64, live: bool, after: Option<&After>) -> Drawn {
+    /// The card's heading row, one line: the badge, small, and the name,
+    /// cut with an ellipsis to the room the live mark leaves; at the
+    /// card's right edge that mark, the dot and "Live" (or "Snapshot"),
+    /// pulsing for two seconds after an update. The name elides before
+    /// the mark is ever clipped. The mark's accessible label is "Live ·
+    /// event N". `tip` is the row's hover text (none: the caller's own
+    /// covers the row).
+    fn row(&self, ui: &mut Ui, d: &CardView, tip: Option<String>) {
         let p = pal(ui.ctx());
-        let status = if live { "Live" } else { "Snapshot" };
+        let status = d.status();
         let font = theme::semibold(12.0);
-        let small = theme::regular(11.5);
-        let gap = ui.spacing().item_spacing.x;
-        let w = |ui: &Ui, text: &str, font: &egui::FontId| {
-            ui.fonts_mut(|f| {
-                f.layout_no_wrap(text.to_string(), font.clone(), p.text)
-                    .size()
-                    .x
-            })
-        };
-        let word = w(ui, status, &font);
-        let avail = ui.available_width() - CARD_BADGE - 2.0 * gap;
-        // The fullest mark that leaves the name its least room.
-        let (event, seal) = match after {
-            None => (None, None),
-            Some(a) => {
-                let tail = |ev: bool, seal: bool| {
-                    let mut x = 0.0;
-                    if ev {
-                        x += MARK_GAP + w(ui, &a.event, &small);
-                    }
-                    if let (true, Some(sl)) = (seal, a.seal) {
-                        x += MARK_GAP + w(ui, sl, &small);
-                    }
-                    x
-                };
-                let (ev, seal) = [(true, true), (true, false), (false, true), (false, false)]
-                    .into_iter()
-                    .find(|&(ev, sl)| avail - 8.0 - MARK_GAP - word - tail(ev, sl) >= NAME_MIN)
-                    .unwrap_or((false, false));
-                (ev.then_some(a.event.as_str()), a.seal.filter(|_| seal))
-            }
-        };
-        let mark_w = 8.0
-            + MARK_GAP
-            + word
-            + event.map_or(0.0, |e| MARK_GAP + w(ui, e, &small))
-            + seal.map_or(0.0, |s| MARK_GAP + w(ui, s, &small));
-        let room = (avail - mark_w).max(0.0);
-        let name = ui
-            .horizontal(|ui| {
+        let word = ui.fonts_mut(|f| {
+            f.layout_no_wrap(status.to_string(), font.clone(), p.text)
+                .size()
+                .x
+        });
+        let gap = MARK_GAP;
+        let dot = 8.0;
+        let mark = dot + gap + word;
+        let room = (ui.available_width() - CARD_BADGE - 2.0 * gap - mark - 1.0).max(0.0);
+        // As tall as its badge, not as a button: the card is short.
+        let row = ui.scope(|ui| {
+            ui.spacing_mut().interact_size.y = CARD_BADGE;
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = gap;
                 let (r, _) = ui.allocate_exact_size(vec2(CARD_BADGE, CARD_BADGE), Sense::hover());
                 self.paint(ui, r, 4);
-                let name = ui
-                    .allocate_ui_with_layout(
-                        vec2(room, CARD_BADGE),
-                        Layout::left_to_right(Align::Center),
-                        |ui| {
-                            ui.add(
-                                egui::Label::new(
-                                    RichText::new(&self.title).font(theme::semibold(12.5)),
-                                )
-                                .truncate(),
+                // The name's room is all kept, so the mark is at the right.
+                ui.allocate_ui_with_layout(
+                    vec2(room, CARD_BADGE),
+                    Layout::left_to_right(Align::Center),
+                    |ui| {
+                        ui.set_min_width(room);
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(&self.title).font(theme::semibold(12.5)),
                             )
-                        },
-                    )
-                    .inner;
-                ui.spacing_mut().item_spacing.x = MARK_GAP;
-                let (r, _) = ui.allocate_exact_size(vec2(8.0, 8.0), Sense::hover());
-                let pulse = (since_update < 2.0) as u8 as f32;
-                let color = if live { p.positive } else { p.faint };
+                            .truncate(),
+                        );
+                    },
+                );
+                let (r, _) = ui.allocate_exact_size(vec2(dot, dot), Sense::hover());
+                let pulse = (d.since_update < 2.0) as u8 as f32;
+                let color = if d.live { p.positive } else { p.faint };
                 ui.painter().circle_filled(r.center(), 4.0 + pulse, color);
-                ui.label(RichText::new(status).font(font));
-                for t in event.into_iter().chain(seal) {
-                    ui.label(RichText::new(t).font(small.clone()).color(p.muted));
-                }
-                name
+                let label = format!("{status} · event {}", d.seq);
+                ui.add(egui::Label::new(RichText::new(status).font(font)).truncate())
+                    .widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::WidgetType::Label, true, label.clone())
+                    });
             })
-            .inner;
-        Drawn {
-            name,
-            event: event.is_some(),
+        });
+        if let Some(tip) = tip {
+            ui.interact(row.response.rect, ui.id().with("card_head"), Sense::hover())
+                .on_hover_text(tip);
         }
     }
 }
 
-/// The folded card's words after "Live" in its heading.
-struct After {
-    event: String,
-    seal: Option<&'static str>,
-}
-
-/// What [`CardHead::row`] drew after the live word.
-struct Drawn {
-    name: egui::Response,
-    event: bool,
-}
-
-/// The least room the card's heading leaves the name before the folded
-/// card's event, then its seal, are left to the tooltip.
-const NAME_MIN: f32 = 10.0;
-/// The space between the live mark's parts.
+/// The least space between the heading's parts.
 const MARK_GAP: f32 = 4.0;
 
-/// The status card: whether the books are live, their newest event, and
-/// the integrity checks. Folded (a short window), one line, the checks
-/// in its tooltip.
+/// What the status card shows of its books: the newest event, the
+/// journal's head and folder (the copy menu's), and the integrity
+/// checks; and how it is drawn: live or a snapshot, how long since the
+/// last update.
+struct CardView {
+    seq: u64,
+    head: String,
+    data_dir: String,
+    checks: Vec<(bool, String, String)>,
+    since_update: f64,
+    live: bool,
+}
+
+impl CardView {
+    fn new(b: &Books, since_update: f64, live: bool) -> Self {
+        CardView {
+            seq: b.seq(),
+            head: b.head.clone(),
+            data_dir: b.data_dir.display().to_string(),
+            checks: checks(b),
+            since_update,
+            live,
+        }
+    }
+
+    fn status(&self) -> &'static str {
+        if self.live { "Live" } else { "Snapshot" }
+    }
+
+    /// The hover text of the heading: the company, "Live · event N",
+    /// then each check, one fact a line.
+    fn tip(&self, head: &CardHead) -> String {
+        let mut tip = format!("{}\n{} · event {}", head.title, self.status(), self.seq);
+        for (ok, text, _) in &self.checks {
+            tip.push_str(&format!("\n{} {text}", check_glyph(*ok)));
+        }
+        tip
+    }
+
+    fn copy_menu(&self, ui: &mut Ui) {
+        crate::widgets::copy_item(ui, "Copy journal head", &self.head);
+        crate::widgets::copy_item(ui, "Copy data folder", &self.data_dir);
+    }
+}
+
+fn check_glyph(ok: bool) -> &'static str {
+    if ok {
+        icon::SEAL_CHECK
+    } else {
+        icon::WARNING_CIRCLE
+    }
+}
+
+/// A check's line: its glyph and name, small, one line, elided.
+fn check_line(ui: &mut Ui, ok: bool, text: &str) -> egui::Response {
+    let p = pal(ui.ctx());
+    ui.add(
+        egui::Label::new(
+            RichText::new(format!("{} {text}", check_glyph(ok)))
+                .font(theme::regular(11.5))
+                .color(if ok { p.muted } else { p.negative }),
+        )
+        .truncate(),
+    )
+}
+
+/// The status card: the company and whether its books are live in the
+/// heading, and the integrity checks. Every text is one line and elides;
+/// the event is on the heading's hover and its live mark's label, not on
+/// a row. Folded (a short window), the heading alone (and a failed
+/// check's line), the checks on hover.
 fn live_status(
     ui: &mut Ui,
     b: &Books,
@@ -1821,88 +1849,55 @@ fn live_status(
     folded: bool,
     head: &CardHead,
 ) {
+    status_card(ui, &CardView::new(b, since_update, live), folded, head);
+}
+
+fn status_card(ui: &mut Ui, d: &CardView, folded: bool, head: &CardHead) {
     if folded {
-        return folded_status(ui, b, since_update, live, head);
+        return folded_status(ui, d, head);
     }
     let p = pal(ui.ctx());
     Frame::new()
         .fill(p.surface)
         .stroke(Stroke::new(1.0, p.border))
         .corner_radius(CornerRadius::same(8))
-        .inner_margin(Margin::same(10))
+        .inner_margin(Margin::symmetric(10, CARD_PAD_Y))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            // The event ends the card's last line, the journal chain's.
-            for (i, (ok, text, tip)) in checks(b).into_iter().enumerate() {
-                let text = if i == 0 {
-                    format!("{text} · event {}", b.seq())
-                } else {
-                    text
-                };
-                let (glyph, color) = if ok {
-                    (icon::SEAL_CHECK, p.muted)
-                } else {
-                    (icon::WARNING_CIRCLE, p.negative)
-                };
-                let r = ui
-                    .label(
-                        RichText::new(format!("{glyph} {text}"))
-                            .font(theme::regular(11.5))
-                            .color(color),
-                    )
-                    .on_hover_text(tip);
+            for (i, (ok, text, tip)) in d.checks.iter().enumerate() {
+                let r = check_line(ui, *ok, text).on_hover_text(tip);
                 if i == 0 {
-                    r.context_menu(|ui| {
-                        crate::widgets::copy_item(ui, "Copy journal head", &b.head);
-                        crate::widgets::copy_item(
-                            ui,
-                            "Copy data folder",
-                            &b.data_dir.display().to_string(),
-                        );
-                    });
+                    r.context_menu(|ui| d.copy_menu(ui));
                 }
             }
             // The footer is laid out bottom up, so what is added last is
             // the card's top: the heading, over what the card always said.
-            head.row(ui, since_update, live, None)
-                .name
-                .on_hover_text(&head.title);
+            head.row(ui, d, Some(d.tip(head)));
         });
 }
 
-/// The status card folded. Every check passing, it is its heading alone:
-/// the badge, the name, and at the right "● Live · event 559 ✓", the
-/// event and the seal given up (to the tooltip) only for the name's
-/// least room. A check failed, a line under the heading names it, the
-/// event at its end ([`summaries`]). The three checks are on hover and
-/// the card's copy menu on a right click. A failed check's name outranks
-/// the event (review, 2026-10-22: cut to "⊘ Datab…" it hid what failed).
-fn folded_status(ui: &mut Ui, b: &Books, since_update: f64, live: bool, head: &CardHead) {
+/// The status card folded. Its heading alone: the badge, the name, and at
+/// the right "● Live". A check failed, a line under the heading names it
+/// ([`summaries`], the fullest that fits, so it is never cut to
+/// "Datab…": review, 2026-10-22). The card is one target: hovered it
+/// shows the name, "Live · event N" and the three checks, and a right
+/// click copies the journal head or the data folder.
+fn folded_status(ui: &mut Ui, d: &CardView, head: &CardHead) {
     let p = pal(ui.ctx());
-    let checks = checks(b);
-    let failed: Vec<&str> = checks
+    let failed: Vec<&str> = d
+        .checks
         .iter()
         .filter(|c| !c.0)
         .map(|c| c.1.as_str())
         .collect();
-    let status = if live { "Live" } else { "Snapshot" };
-    let event = format!("· event {}", b.seq());
     // The card's inner width: the panel's less the frame's margins.
     let room = ui.available_width() - 2.0 * 10.0 - 2.0;
-    let gap = 5.0;
-    let width = |s: &Summary| {
-        let w = |text: &str| {
-            ui.fonts_mut(|f| {
-                f.layout_no_wrap(text.to_string(), theme::regular(12.0), p.text)
-                    .size()
-                    .x
-            })
-        };
-        let mut x = w(s.verdict());
-        if s.event {
-            x += gap + w(&event);
-        }
-        x
+    let width = |s: &str| {
+        ui.fonts_mut(|f| {
+            f.layout_no_wrap(s.to_string(), theme::regular(12.0), p.text)
+                .size()
+                .x
+        })
     };
     let all = summaries(&failed);
     let line = (!failed.is_empty()).then(|| {
@@ -1910,48 +1905,26 @@ fn folded_status(ui: &mut Ui, b: &Books, since_update: f64, live: bool, head: &C
             .find(|s| width(s) <= room)
             .unwrap_or_else(|| all.last().expect("a summary"))
     });
-    let mut event_shown = false;
     let card = Frame::new()
         .fill(p.surface)
         .stroke(Stroke::new(1.0, p.border))
         .corner_radius(CornerRadius::same(8))
-        .inner_margin(Margin::same(10))
+        .inner_margin(Margin::symmetric(10, CARD_PAD_Y))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             if let Some(line) = line {
-                // As tall as the card's other lines (a label's row), not a
-                // button's.
-                ui.scope(|ui| {
-                    ui.spacing_mut().interact_size.y = 0.0;
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = gap;
-                        ui.label(
-                            RichText::new(line.verdict())
-                                .font(theme::regular(12.0))
-                                .color(p.negative),
-                        );
-                        if line.event {
-                            ui.label(
-                                RichText::new(&event)
-                                    .font(theme::regular(12.0))
-                                    .color(p.muted),
-                            );
-                        }
-                    });
-                });
-                event_shown = line.event;
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(line)
+                            .font(theme::regular(12.0))
+                            .color(p.negative),
+                    )
+                    .truncate(),
+                );
             }
             // Bottom up, so last is the top: the heading. Its hover is the
-            // card's (below): the card is one target, whose tooltip begins
-            // with the name.
-            // The heading carries the event when the line does not (and
-            // the seal when there is no line: the line's words say it).
-            let after = After {
-                event: event.clone(),
-                seal: line.is_none().then_some(icon::SEAL_CHECK),
-            };
-            let drawn = head.row(ui, since_update, live, (!event_shown).then_some(&after));
-            event_shown |= drawn.event;
+            // card's (below): the card is one target.
+            head.row(ui, d, None);
         });
     let resp = ui.interact(
         card.response.rect,
@@ -1960,53 +1933,32 @@ fn folded_status(ui: &mut Ui, b: &Books, since_update: f64, live: bool, head: &C
     );
     resp.on_hover_ui(|ui| {
         ui.label(RichText::new(&head.title).font(theme::semibold(12.0)));
-        if !event_shown {
-            ui.label(
-                RichText::new(format!("{status} {event}"))
-                    .font(theme::regular(11.5))
-                    .color(p.muted),
-            );
-        }
-        for (ok, text, _) in &checks {
-            let (glyph, color) = if *ok {
-                (icon::SEAL_CHECK, p.muted)
-            } else {
-                (icon::WARNING_CIRCLE, p.negative)
-            };
-            ui.label(
-                RichText::new(format!("{glyph} {text}"))
-                    .font(theme::regular(11.5))
-                    .color(color),
-            );
+        ui.label(
+            RichText::new(format!("{} · event {}", d.status(), d.seq))
+                .font(theme::regular(11.5))
+                .color(p.muted),
+        );
+        for (ok, text, _) in &d.checks {
+            check_line_hover(ui, *ok, text);
         }
     })
-    .context_menu(|ui| {
-        crate::widgets::copy_item(ui, "Copy journal head", &b.head);
-        crate::widgets::copy_item(ui, "Copy data folder", &b.data_dir.display().to_string());
-    });
+    .context_menu(|ui| d.copy_menu(ui));
 }
 
-/// One way to say the folded card's failure line: whether it carries the
-/// event, and its verdict.
-#[derive(Clone, Debug, PartialEq)]
-struct Summary {
-    event: bool,
-    verdict: String,
+/// A check's line in a tooltip (which has room to say it whole).
+fn check_line_hover(ui: &mut Ui, ok: bool, text: &str) {
+    let p = pal(ui.ctx());
+    ui.label(
+        RichText::new(format!("{} {text}", check_glyph(ok)))
+            .font(theme::regular(11.5))
+            .color(if ok { p.muted } else { p.negative }),
+    );
 }
 
-impl Summary {
-    fn verdict(&self) -> &str {
-        &self.verdict
-    }
-}
-
-/// The folded card's failure lines, fullest first, given the checks that
-/// `failed`. A failure is named before anything else is kept: the event
-/// goes first, and only then is the name shortened to a count. Whatever
-/// the line leaves out its tooltip says. "Live" is never left out: it is
-/// the heading's.
-fn summaries(failed: &[&str]) -> Vec<Summary> {
-    let s = |event, verdict: String| Summary { event, verdict };
+/// The folded card's failure line, fullest first, given the checks that
+/// `failed`: the names, then a count, then the shortest. A failure is
+/// named before anything is shortened; "Live" is the heading's.
+fn summaries(failed: &[&str]) -> Vec<String> {
     let named = format!("{} {}", icon::WARNING_CIRCLE, failed.join(", "));
     let counted = match failed.len() {
         1 => format!("{} check failed", icon::WARNING_CIRCLE),
@@ -2016,12 +1968,7 @@ fn summaries(failed: &[&str]) -> Vec<Summary> {
         1 => format!("{} failed", icon::WARNING_CIRCLE),
         n => format!("{} {n} failed", icon::WARNING_CIRCLE),
     };
-    vec![
-        s(true, named.clone()),
-        s(false, named),
-        s(false, counted),
-        s(false, short),
-    ]
+    vec![named, counted, short]
 }
 
 /// The integrity checks the sidebar shows: (ok, label, explanation).
@@ -2136,27 +2083,163 @@ mod tests {
     #[test]
     fn a_folded_card_names_a_failure_before_keeping_anything_else() {
         let lines = summaries(&["Database differs"]);
-        // Every line says it failed; the name goes only after the event
-        // has.
-        assert!(
-            lines
-                .iter()
-                .all(|l| l.verdict.contains(icon::WARNING_CIRCLE))
-        );
+        // Every line says it failed; the name goes only after the full
+        // names have.
+        assert!(lines.iter().all(|l| l.contains(icon::WARNING_CIRCLE)));
         let named = lines
             .iter()
-            .take_while(|l| l.verdict.contains("Database differs"))
+            .take_while(|l| l.contains("Database differs"))
             .count();
-        assert_eq!(named, 2);
-        assert!(lines[0].event && !lines[named - 1].event);
-        assert!(lines[named..].iter().all(|l| l.verdict.contains("failed")));
-        assert!(
-            summaries(&["a", "b"])
-                .last()
-                .unwrap()
-                .verdict
-                .contains("2 failed")
-        );
+        assert_eq!(named, 1);
+        assert!(lines[named..].iter().all(|l| l.contains("failed")));
+        // The event is the heading's hover, never on the line.
+        assert!(lines.iter().all(|l| !l.contains("event")));
+        assert!(summaries(&["a", "b"]).last().unwrap().contains("2 failed"));
+    }
+
+    /// The card at the sidebar's width (it is not resizable: 224 less the
+    /// panel's margins), with a very long company name and an event of
+    /// 1,234,567: every text a single line, so the card is exactly its
+    /// rows and its padding, in every state.
+    #[test]
+    fn the_status_card_never_wraps_in_any_state() {
+        use egui_kittest::Harness;
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let check = |ok: bool, t: &str| (ok, t.to_string(), String::new());
+        let passing = [
+            vec![
+                check(true, "Journal chain verified"),
+                check(true, "Database matches journal"),
+                check(true, "12345 files verified"),
+            ],
+            vec![
+                check(true, "Journal chain verified"),
+                check(true, "Database catching up"),
+                check(true, "12345 files verified"),
+            ],
+            vec![
+                check(true, "Journal chain verified"),
+                check(true, "Viewer catching up"),
+                check(true, "12345 files verified"),
+            ],
+            vec![
+                check(true, "Journal chain verified"),
+                check(true, "Read-only copy"),
+                check(true, "12345 files verified"),
+            ],
+        ];
+        let failing = [
+            vec![
+                check(true, "Journal chain verified"),
+                check(false, "Database differs"),
+                check(true, "12345 files verified"),
+            ],
+            vec![
+                check(true, "Journal chain verified"),
+                check(false, "Database unreadable"),
+                check(false, "12345 files damaged"),
+            ],
+        ];
+        let long = "Wanderland Labs, the Very Long Named Limited Liability Company of Somewhere";
+        for width in [224.0, 200.0] {
+            for folded in [false, true] {
+                for live in [true, false] {
+                    for checks in passing.iter().chain(failing.iter()) {
+                        let tag = format!("{width} folded {folded} live {live} {checks:?}");
+                        let got = Rc::new(RefCell::new(None));
+                        let out = got.clone();
+                        let ready = std::cell::Cell::new(false);
+                        let view = CardView {
+                            seq: 1_234_567,
+                            head: "abc".into(),
+                            data_dir: "/x".into(),
+                            checks: checks.clone(),
+                            since_update: 9.0,
+                            live,
+                        };
+                        let mut h =
+                            Harness::builder()
+                                .with_size(vec2(width, 400.0))
+                                .build_ui(move |ui| {
+                                    // The fonts are bound a frame after they are
+                                    // installed.
+                                    if !ready.replace(true) {
+                                        crate::theme::install_fonts(ui.ctx());
+                                        return;
+                                    }
+                                    let head = CardHead {
+                                        initial: 'W',
+                                        title: long.to_string(),
+                                        hue: egui::Color32::from_rgb(90, 120, 200),
+                                    };
+                                    let inner = ui.available_width() - 24.0;
+                                    ui.add_space(12.0);
+                                    let mut rect = None;
+                                    ui.allocate_ui_with_layout(
+                                        vec2(inner, 300.0),
+                                        Layout::bottom_up(Align::Min),
+                                        |ui| {
+                                            let before = ui.cursor();
+                                            status_card(ui, &view, folded, &head);
+                                            rect = Some((before, ui.min_rect()));
+                                        },
+                                    );
+                                    let y = ui.spacing().interact_size.y;
+                                    let row = ui.fonts_mut(|f| f.row_height(&theme::regular(11.5)));
+                                    let row12 =
+                                        ui.fonts_mut(|f| f.row_height(&theme::regular(12.0)));
+                                    let gap = ui.spacing().item_spacing.y;
+                                    *out.borrow_mut() = Some((rect, y, row, row12, gap));
+                                });
+                        h.run_steps(3);
+                        let (_, interact, row, row12, gap) = got.borrow().unwrap();
+                        // Every text the card painted is one row, and none
+                        // runs past the sidebar's inner width.
+                        let mut texts = 0;
+                        let mut lines = Vec::new();
+                        fn walk(s: &egui::Shape, out: &mut Vec<(f32, usize, f32)>) {
+                            match s {
+                                egui::Shape::Text(t) => out.push((
+                                    t.galley.size().y,
+                                    t.galley.rows.len(),
+                                    t.pos.x + t.galley.size().x,
+                                )),
+                                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                                _ => {}
+                            }
+                        }
+                        for cs in &h.output().shapes {
+                            walk(&cs.shape, &mut lines);
+                        }
+                        for (height, rows, right) in &lines {
+                            texts += 1;
+                            assert_eq!(*rows, 1, "{tag}: a text wrapped");
+                            assert!(*height <= row12 + 1.0, "{tag}: a text {height} high");
+                            assert!(*right <= width - 12.0 + 0.5, "{tag}: a text runs out");
+                        }
+                        assert!(texts >= 3, "{tag}: the card painted {texts} texts");
+                        // The card: its rows and its padding (10 and the
+                        // stroke's 1 on each side).
+                        let heading = CARD_BADGE;
+                        let failed = checks.iter().any(|c| !c.0);
+                        let body = if folded {
+                            if failed { row12 + gap } else { 0.0 }
+                        } else {
+                            checks.len() as f32 * (row + gap)
+                        };
+                        let want = body + heading + 2.0 * CARD_PAD_Y as f32 + 2.0;
+                        let (rect, ..) = got.borrow().unwrap();
+                        let (_, used) = rect.unwrap();
+                        let have = used.height();
+                        assert!(
+                            (have - want).abs() < 1.0,
+                            "{tag}: the card is {have} high, its rows and padding {want} (heading {heading}, row {row}, gap {gap}, interact {interact}, used {used:?})"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

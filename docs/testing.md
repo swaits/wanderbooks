@@ -4539,16 +4539,28 @@ shown to fail: `preferences_written_before_the_keys_had_a_root_are_read_and_not_
 folder is also told apart by its books' identity.
 
 **The sidebar tests' window sizes are restored.** The status card gave back
-the bar's height by one row: its heading carries the live dot and word
-("Live", "Snapshot") and the old last row is gone, the event moving to the
-end of the journal chain line (folded: after the live word in the heading,
-or at the end of the failure line). The four `sidenav.rs` tests are at their
+the bar's height: its heading carries the live dot and word ("Live",
+"Snapshot") at the card's right edge, the heading row is its badge's 16 high
+(not a button's) and the card's vertical padding is 8. The event is not
+printed in the card: it is the heading's hover ("name", "Live · event N",
+the checks) and the live word's accessible label. The three check lines are
+as they were before, with no event. The four `sidenav.rs` tests are at their
 original sizes (1479x519, the rail at 519, the grid at 520 px, the tall
-sidebar at 1440x920) with every assertion unchanged, and the minimum window
-height is 400 again. The failing-check folded line is a label's row high,
-like the card's other lines, not a button's; nothing else was tightened.
-`the_folded_card_shows_its_checks_on_hover` and the two card tests in
-`tabs.rs` assert where the live word and the event sit in each state.
+sidebar at 1440x920) with every assertion unchanged; at 1479x519 the links
+have 6 px to spare in the common footers and 2 px in the failing-check ones
+(where the rows tighten). The minimum window height is 400.
+`the_status_card_never_wraps_in_any_state` (in `company.rs`) lays the card
+out in each state (live, snapshot, each check passing, warning and failing,
+folded and not) with a very long name and event 1,234,567 at the sidebar's
+width (224, fixed, not resizable) and 200, and asserts every text is one row,
+none runs out of the card, and the card's height is its rows plus its
+padding. In `tabs.rs` the status-card test now asserts the live word sits at
+the right of the name's row, no card text contains "event", and the
+live word's label is "Live · event N" (it asserted the visible
+"· event N" on the journal chain line); the rail test also asserts the name
+leads the hover. In `sidenav.rs`, `the_folded_card_shows_its_checks_on_hover`
+and the `"event "` locators still find the event, now through the live
+word's label, unchanged.
 
 ## P12: the checklists
 

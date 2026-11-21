@@ -1536,9 +1536,9 @@ fn the_status_card_shows_the_company_in_front_and_follows_the_tab() {
                 .collect::<Vec<_>>()
         };
         assert_eq!(card_names(&h), ["Alpha Co"], "dark {dark}");
-        // The heading carries the live word, at the name's row; the event
-        // ends the journal chain line, the card's last, and no row of its
-        // own is left.
+        // The heading carries the live word, at the name's row and the
+        // card's right edge; no text of the card says the event (it is the
+        // heading's hover and its live mark's label).
         let card_texts = |h: &Harness<'_, App>| -> Vec<(egui::Pos2, String)> {
             placed(h)
                 .into_iter()
@@ -1556,14 +1556,34 @@ fn the_status_card_shows_the_company_in_front_and_follows_the_tab() {
             "the live word is in the heading"
         );
         assert!(
-            texts_now
-                .iter()
-                .any(|(_, t)| t.contains("Journal chain verified") && t.contains("· event ")),
-            "the event ends the journal chain line"
+            live.0.x > 150.0,
+            "the live word is at the card's right edge: {:?}",
+            live.0
         );
         assert!(
-            !texts_now.iter().any(|(_, t)| t.starts_with("· event")),
-            "no row of its own for the event"
+            texts_now
+                .iter()
+                .any(|(_, t)| t.ends_with("Journal chain verified")),
+            "the journal chain line is as it was, with no event"
+        );
+        assert!(
+            !texts_now.iter().any(|(_, t)| t.contains("event")),
+            "no text of the card says the event"
+        );
+        // The event is the live mark's accessible label.
+        assert_eq!(
+            h.query_all_by_label_contains("event ")
+                .filter(|n| n.rect().left() < 224.0)
+                .count(),
+            1,
+            "one element carries the event"
+        );
+        assert!(
+            h.query_all_by_label_contains("Live · event ")
+                .chain(h.query_all_by_label_contains("Snapshot · event "))
+                .count()
+                == 1,
+            "the live mark's label is \"Live · event N\""
         );
         assert_eq!(
             card_badge(&h, "alpha").len(),
@@ -1620,6 +1640,10 @@ fn the_rail_shows_the_badge_alone_with_the_name_on_hover() {
     h.run_steps(30);
     assert!(shows(&h, "Alpha Co"), "the name is on hover");
     assert!(shows(&h, "· event "), "the event is on hover");
+    assert!(
+        shows(&h, "Alpha Co\n") || shows(&h, "Alpha Co"),
+        "the name leads the hover"
+    );
     assert!(
         shows(&h, "Live") || shows(&h, "Snapshot"),
         "the state is on hover"

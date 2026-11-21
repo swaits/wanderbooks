@@ -131,14 +131,17 @@ where the assistant's connection state is drawn later), and the Overview
 opens with its summary sentence, not a heading with the name. The company
 is named once more, at the opposite corner: the status card at the foot of
 the sidebar begins with a heading row: the badge (small) and the name, cut
-with an ellipsis and whole on hover, and at the right the live dot and
-"Live" (or "Snapshot"). The journal chain line, the card's last, ends with
-"· event N"; there is no row of its own for the state. Folded (a short
-window) the card is the heading alone, "● Live · event N" (and the seal
-when the name keeps room), or, when a check failed, the heading over one
-line naming it. The rail shows the badge with the live dot on its corner
-(a warning there when a check failed), the name, state, event and checks on
-hover. Each company has one badge
+with an ellipsis, and at the card's right edge the live dot and "Live" (or
+"Snapshot"); the name elides before the live word is ever clipped. The
+heading's hover reads, a fact a line: the company's full name, "Live ·
+event N", then the checks; the live word's accessible label is "Live ·
+event N". The event is printed nowhere else in the card, and no text in it
+wraps: every line is one row and elides (`the_status_card_never_wraps_in_any_state`).
+The journal chain line is just "Journal chain verified". Folded (a short
+window) the card is the heading alone, or, when a check failed, the heading
+over one line naming it. The rail shows the badge with the live dot on its
+corner (a warning there when a check failed), the name, state, event and
+checks on hover. Each company has one badge
 hue of eight (`theme::BADGE_HUES`, light and dark), chosen by a stable
 hash of the id of its books (`theme::hue_index`, FNV-1a modulo eight: a
 function of the id alone, so a company keeps its colour on every machine

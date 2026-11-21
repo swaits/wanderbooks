@@ -82,5 +82,8 @@ assets = [
   { source = "target/release/wanderbooks", dest = "/usr/bin/wanderbooks", mode = "0755" },
   { source = "deploy/packaging/install-method-rpm", dest = "/usr/share/wanderbooks/install-method", mode = "0644" },
   { source = "deploy/packaging/wanderbooks-static.desktop", dest = "/usr/share/applications/wanderbooks.desktop", mode = "0644" },
+  { source = "deploy/packaging/icons/512x512.png", dest = "/usr/share/icons/hicolor/512x512/apps/wanderbooks.png", mode = "0644" },
+  { source = "LICENSE-MIT", dest = "/usr/share/doc/wanderbooks/LICENSE-MIT", mode = "0644" },
+  { source = "LICENSE-APACHE", dest = "/usr/share/doc/wanderbooks/LICENSE-APACHE", mode = "0644" },
   { source = "THIRD-PARTY-NOTICES.txt", dest = "/usr/share/doc/wanderbooks/THIRD-PARTY-NOTICES.txt", mode = "0644" },
 ]

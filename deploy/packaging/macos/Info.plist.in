@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The Info.plist of Wanderbooks.app (plan P15 unit C1; WB-pkg-1, WB-pkg-6).
+     build-macos.sh replaces @VERSION@ with the program's version
+     (deploy/packaging/version.sh) and @BUNDLE_ID@ with the bundle
+     identifier. -->
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key>
+  <string>Wanderbooks</string>
+  <key>CFBundleDisplayName</key>
+  <string>Wanderbooks</string>
+  <key>CFBundleIdentifier</key>
+  <string>@BUNDLE_ID@</string>
+  <key>CFBundleExecutable</key>
+  <string>wanderbooks</string>
+  <key>CFBundleIconFile</key>
+  <string>wanderbooks</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleShortVersionString</key>
+  <string>@VERSION@</string>
+  <key>CFBundleVersion</key>
+  <string>@VERSION@</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>11.0</string>
+  <key>LSApplicationCategoryType</key>
+  <string>public.app-category.finance</string>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+  <!-- One Wanderbooks at a time: it holds the books open. -->
+  <key>LSMultipleInstancesProhibited</key>
+  <true/>
+  <!-- The discrete GPU is not woken for a ledger. -->
+  <key>NSSupportsAutomaticGraphicsSwitching</key>
+  <true/>
+  <key>NSHumanReadableCopyright</key>
+  <string>MIT OR Apache-2.0</string>
+  <!-- macOS asks the person once before an app reads their Documents folder,
+       and shows this sentence. Wanderbooks makes a folder there for each
+       company's assistant (Documents/Wanderbooks) and for the Claude
+       extension; it never reads anything else of theirs there. -->
+  <key>NSDocumentsFolderUsageDescription</key>
+  <string>Wanderbooks keeps a small folder in Documents for each company, where an assistant such as Claude Code works, and the extension file for the Claude app.</string>
+</dict>
+</plist>

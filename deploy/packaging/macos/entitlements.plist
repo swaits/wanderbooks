@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The hardened-runtime entitlements of Wanderbooks.app (plan P15 unit C1).
+
+     The app is signed with the hardened runtime (codesign --options
+     runtime), which Apple's notarization requires. It is NOT sandboxed
+     (the App Sandbox would forbid what the product is: it starts a copy of
+     itself as the books server, runs the system's git for backups, and
+     reads and writes the person's data folder and the folders they pick
+     for backups). Outside the sandbox, none of that needs an entitlement:
+
+       * starting itself as a child process and git as another: none;
+       * outgoing network connections (the relay, the update look, a git
+         remote): none (com.apple.security.network.client is a SANDBOX
+         entitlement);
+       * reading and writing its data folder, Application Support/wanderbooks:
+         none (the Documents folder is a privacy prompt, answered by
+         NSDocumentsFolderUsageDescription in Info.plist, not an entitlement);
+       * the window's graphics (Metal through wgpu): none;
+       * no JIT, no unsigned executable memory, no DYLD variables, no
+         library validation exception: the program loads only system
+         frameworks and its own code.
+
+     So the set below is empty on purpose. If the first notarized build
+     fails to start, the log names the entitlement it needs; add exactly
+     that one here, with the reason, and not a broader exception. -->
+<plist version="1.0">
+<dict/>
+</plist>

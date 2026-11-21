@@ -130,6 +130,13 @@ pub struct Access {
     /// What the agent said about itself, on a `books.start` that said.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<Agent>,
+    /// The address a request came from, when it came through the remote
+    /// door: the real caller's, as the relay's PROXY header gave it
+    /// (plan P15 section 4, rule 8): an IP address, kept as it is; text that
+    /// is not one is masked and cut like any asserted text. None for a
+    /// request on the local socket.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
 }
 
 /// Mask any full TIN in a client's text, then cut it to
@@ -217,6 +224,16 @@ impl AccessLog {
             }
         }
         access.request_id = access.request_id.as_deref().map(asserted);
+        // An address is text the server made from a socket, not a client's:
+        // kept as it is when it is one (the masking of TIN-like digit runs
+        // would turn it to dots), masked like any asserted text if not.
+        access.from = access
+            .from
+            .as_deref()
+            .map(|f| match f.parse::<std::net::IpAddr>() {
+                Ok(ip) => ip.to_string(),
+                Err(_) => asserted(f),
+            });
         access.subject = asserted(&access.subject);
         let Value::Object(fields) = serde_json::to_value(&access).expect("a record serializes")
         else {
@@ -298,6 +315,7 @@ mod tests {
             result: Outcome::Ok,
             head_after: None,
             agent: None,
+            from: None,
         }
     }
 

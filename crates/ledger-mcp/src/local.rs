@@ -400,6 +400,9 @@ use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
+mod remote;
+use remote::Via;
+
 /// What a restore or adoption that a close stopped after its point of no
 /// return says of the books it put in place (INVARIANT 10).
 const STOPPED_AFTER_PLACED: &str = "they are in place, but were not opened: the books server is closing. Open them when it runs again";
@@ -497,6 +500,12 @@ enum Book {
     Open {
         /// Its MCP service (boxed: the other variant is a line of text).
         service: Box<Service>,
+        /// The same book's service for the remote door: stateless, plain
+        /// JSON, no session kept (remote/mod.rs INVARIANT 10).
+        remote_service: Box<Service>,
+        /// What serves it, for what the remote door reads of it (the
+        /// company's name).
+        served: Box<crate::server::Served>,
         /// Its store, closed when the server closes (INVARIANT 6).
         store: Arc<SharedStore>,
         /// Its access log, where requests refused at the door are
@@ -850,6 +859,8 @@ struct Books {
     isolation: Isolation,
     /// The periods and bounds (tests shorten them).
     timers: Timers,
+    /// What the remote door holds: web assistants' sign-in (remote/).
+    remote: Arc<remote::Remote>,
 }
 
 /// What the changes to ONE book share (`Books::lives`): the lock they are
@@ -912,6 +923,7 @@ impl Books {
             server_stop: Arc::default(),
             isolation,
             timers: Timers::default(),
+            remote: Arc::new(remote::Remote::new()),
         }
     }
 
@@ -1175,6 +1187,21 @@ impl Books {
             Arc::new(sessions()),
             config,
         );
+        // The remote door's service: the same server made the same way, but
+        // with no session kept, plain JSON replies, and the Host checked by
+        // the door itself against the one public address (remote/http.rs).
+        let remote_parts = served.clone();
+        let remote_service = StreamableHttpService::new(
+            move || Ok(BooksServer::new(&remote_parts)),
+            Arc::new(sessions()),
+            StreamableHttpServerConfig::default()
+                .with_legacy_session_mode(false)
+                .with_json_response(true)
+                .with_max_request_body_bytes(MAX_BODY)
+                .disable_allowed_hosts()
+                .with_cancellation_token(ended.clone()),
+        );
+        let kept_served = served.clone();
         let Served {
             store: shared,
             access,
@@ -1218,6 +1245,8 @@ impl Books {
             ended,
             board,
             service: Box::new(service),
+            remote_service: Box::new(remote_service),
+            served: Box::new(kept_served),
             store: shared,
             access,
             uploads,
@@ -1240,7 +1269,7 @@ impl Books {
     }
 
     /// Answer an admin request (blocking: it runs on its own thread).
-    fn admin(&self, request: Request) -> Response {
+    fn admin(self: &Arc<Self>, request: Request) -> Response {
         let refused = |e: RootError| Response::Refused(self.hide(e.to_string()));
         match request {
             Request::List => Response::Books(
@@ -1318,6 +1347,75 @@ impl Books {
                 }
                 answer
             }
+            Request::RemoteStart { public_url, port } => {
+                // The door listens from this blocking task's runtime
+                // (remote/http.rs `start_door`).
+                match remote::start_door(self, &public_url, port) {
+                    Ok(info) => Response::Remote(info),
+                    Err(why) => Response::Refused(self.hide(why)),
+                }
+            }
+            Request::RemoteStop => {
+                remote::stop_door(self);
+                Response::Remote(self.remote.info())
+            }
+            Request::RemoteAllow { book, allowed } => {
+                let id = match BookId::parse(&book) {
+                    Ok(id) => id,
+                    Err(e) => return refused(e),
+                };
+                if !self.held().contains_key(id.as_str()) {
+                    return Response::Refused(format!(
+                        "there are no books called {id}: `wanderbooks books list` lists them"
+                    ));
+                }
+                self.remote.set_allowed(id.as_str(), allowed);
+                Response::Remote(self.remote.info())
+            }
+            Request::RemoteStatus => Response::Remote(self.remote.info()),
+            Request::RemotePending => Response::RemotePending(self.remote.pending_list()),
+            Request::RemoteDecide { id, approve, post } => {
+                match self.remote.decide(self, &id, approve, post) {
+                    Ok((said, approval)) => Response::RemoteDecided { said, approval },
+                    Err(why) => Response::Refused(self.hide(why)),
+                }
+            }
+            Request::RemoteApprovals { book } => {
+                Response::RemoteApprovals(self.remote.approvals(self, book.as_deref()))
+            }
+            Request::RemoteSetPost { approval, post } => {
+                match self.remote.set_post(self, &approval, post) {
+                    Ok(a) => Response::RemoteApprovals(
+                        self.remote
+                            .approvals(self, Some(&a.book))
+                            .into_iter()
+                            .filter(|i| i.id == a.id)
+                            .collect(),
+                    ),
+                    Err(why) => Response::Refused(self.hide(why)),
+                }
+            }
+            Request::RemoteMakeKey { book, name, post } => {
+                match self.remote.make_key(self, &book, &name, post) {
+                    Ok((token, text)) => Response::RemoteSecret {
+                        id: token.id,
+                        secret: admin::TokenText(text),
+                        said: format!("Key {} made: shown once", token.name),
+                    },
+                    Err(why) => Response::Refused(self.hide(why)),
+                }
+            }
+            Request::RemoteMakeClient {
+                name,
+                redirect_uris,
+            } => match self.remote.make_client(self, &name, &redirect_uris) {
+                Ok((id, secret)) => Response::RemoteSecret {
+                    id,
+                    secret: admin::TokenText(secret),
+                    said: "Client id and secret made: the secret is shown once".into(),
+                },
+                Err(why) => Response::Refused(self.hide(why)),
+            },
             Request::TokenList => self.with_principals(|p| {
                 Ok(Response::Tokens(
                     p.tokens().iter().map(admin::TokenInfo::from).collect(),
@@ -2335,6 +2433,9 @@ const MAX_SESSIONS: usize = 100_000;
 struct Asked {
     action: &'static str,
     subject: String,
+    /// Where the request came from, when it came through the remote door
+    /// (the relay's PROXY header): recorded with a refusal too.
+    from: Option<String>,
 }
 
 impl Asked {
@@ -2342,7 +2443,14 @@ impl Asked {
         Self {
             action: "connect",
             subject: method.as_str().to_string(),
+            from: None,
         }
+    }
+
+    /// This request, from the address the relay says (remote door only).
+    fn from(mut self, address: std::net::SocketAddr) -> Self {
+        self.from = Some(address.ip().to_string());
+        self
     }
 }
 
@@ -2365,7 +2473,12 @@ async fn refused_at_door(
     why: String,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
-    if let Book::Open { access, store, .. } = book {
+    // A request from the remote door with no token that matched is never
+    // written down: anyone on the internet could fill the record.
+    let stranger = asked.from.is_some() && principal.id.is_empty();
+    if let Book::Open { access, store, .. } = book
+        && !stranger
+    {
         let access = access.clone();
         let record = Access {
             principal,
@@ -2378,6 +2491,7 @@ async fn refused_at_door(
             result: Outcome::Refused(code.into()),
             head_after: None,
             agent: None,
+            from: asked.from.clone(),
         };
         let written = tokio::task::spawn_blocking(move || {
             let _inside = inside;
@@ -2434,6 +2548,110 @@ fn close_connection(response: &mut axum::response::Response) {
     );
 }
 
+/// Whether the books `id` are open and served.
+fn book_is_open(books: &Books, id: &str) -> bool {
+    matches!(books.held().get(id), Some(Book::Open { .. }))
+}
+
+/// A company's name as a person is told it: the books' own setting, or
+/// their id when none is set.
+fn company_name(books: &Books, id: &str) -> String {
+    let named = match books.held().get(id) {
+        Some(Book::Open { served, .. }) => Some(
+            served
+                .settings
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .current()
+                .company
+                .name
+                .clone(),
+        ),
+        _ => None,
+    };
+    let unnamed = ledger_config::Company::default().name;
+    match named {
+        Some(n) if !n.trim().is_empty() && n.trim() != unnamed => remote::clean(&n, 60),
+        _ => id.to_string(),
+    }
+}
+
+/// The live token of `book` called `name` whose id is `id`.
+fn live_token(books: &Books, book: &str, name: &str, id: &str) -> Option<Token> {
+    let guard = books.principals.read().unwrap_or_else(|e| e.into_inner());
+    guard
+        .as_ref()
+        .ok()?
+        .tokens()
+        .iter()
+        .find(|t| t.book == book && t.name == name && t.id == id)
+        .cloned()
+}
+
+fn token_is_live(books: &Books, book: &str, name: &str, id: &str) -> bool {
+    live_token(books, book, name, id).is_some()
+}
+
+/// The names of the live tokens of `book`.
+fn token_names(books: &Books, book: &str) -> std::collections::BTreeSet<String> {
+    let guard = books.principals.read().unwrap_or_else(|e| e.into_inner());
+    guard
+        .as_ref()
+        .map(|p| {
+            p.tokens()
+                .iter()
+                .filter(|t| t.book == book)
+                .map(|t| t.name.clone())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Make a token for `book` in the principals, whose text is returned once
+/// (auth.rs INVARIANT 1); a log that failed to write is read again, as
+/// `with_principals` does.
+fn create_token(
+    books: &Books,
+    book: &BookId,
+    name: &str,
+    scopes: std::collections::BTreeSet<Scope>,
+    replace: bool,
+) -> Result<(Token, String), String> {
+    let mut guard = books.principals.write().unwrap_or_else(|e| e.into_inner());
+    let principals = guard.as_mut().map_err(|why| why.clone())?;
+    match principals.create(book, name, scopes, replace) {
+        Ok((token, text)) => Ok((token, text.expose().to_string())),
+        Err(e) => {
+            if matches!(e, ledger_store::auth::AuthError::Log(_)) {
+                *guard = books.load_principals();
+            }
+            Err(books.hide(e.to_string()))
+        }
+    }
+}
+
+/// A token whose text nobody is given: the principal a web connection is
+/// carried by (its access tokens are the remote door's own).
+fn make_token(
+    books: &Books,
+    book: &BookId,
+    name: &str,
+    scopes: std::collections::BTreeSet<Scope>,
+    replace: bool,
+) -> Result<Token, String> {
+    create_token(books, book, name, scopes, replace).map(|(t, _)| t)
+}
+
+/// A token and its text, to be shown once.
+fn make_token_with_text(
+    books: &Books,
+    book: &BookId,
+    name: &str,
+    scopes: std::collections::BTreeSet<Scope>,
+) -> Result<(Token, String), String> {
+    create_token(books, book, name, scopes, false)
+}
+
 /// The door to `book` (INVARIANT 8): the books held open, the server not
 /// closing, and a live token for those books; else the answer refusing
 /// the request (recorded in the books' access log, where there is one).
@@ -2445,6 +2663,7 @@ async fn door(
     book: &str,
     asked: &Asked,
     headers: &axum::http::HeaderMap,
+    via: Via,
 ) -> Result<(Book, Token, Inside), Box<axum::response::Response>> {
     use axum::http::StatusCode;
     use axum::response::IntoResponse;
@@ -2516,7 +2735,17 @@ async fn door(
     let Some(inside) = inside else {
         unreachable!("an open book was entered above")
     };
-    let token = books.bearer(headers);
+    // The token, from where this way in keeps them: a static token for the
+    // local socket, a token the remote door made for the remote one
+    // (remote/mod.rs INVARIANT 3, 6). `Err` is the code, the words, and
+    // whether a token was presented that isn't good.
+    let token = match via {
+        Via::Local => books.bearer(headers).map_err(|(c, w)| (c, w, false)),
+        Via::Remote(_) => books
+            .remote
+            .authenticate(books, headers)
+            .map_err(|d| (d.code, d.why, d.invalid_token)),
+    };
     let principal = |t: &Token| Principal {
         id: t.id.clone(),
         kind: "agent".into(),
@@ -2540,7 +2769,25 @@ async fn door(
     }
     let token = match token {
         Ok(t) => t,
-        Err((code, why)) => {
+        Err((code, why, invalid)) => {
+            // On the remote door a stranger's request with no good token
+            // is counted, never written to the books' record (a stranger
+            // could fill the disk): it is a 401 with the way to sign in.
+            if matches!(via, Via::Remote(_)) {
+                books.remote.count_unsigned();
+                return Err(Box::new(match books.remote.door() {
+                    Some(door) => remote::unauthorized(
+                        &door,
+                        book,
+                        &remote::Denied {
+                            code,
+                            why,
+                            invalid_token: invalid,
+                        },
+                    ),
+                    None => axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response(),
+                }));
+            }
             return Err(refused_at_door(
                 &held,
                 inside,
@@ -2589,25 +2836,27 @@ async fn upload(
     let asked = Asked {
         action: "upload",
         subject: id.clone(),
+        from: None,
     };
-    let (held, token, inside) = match door(&books, &book, &asked, request.headers()).await {
-        Ok(passed) => passed,
-        Err(refused) => {
-            // What was sent is read and dropped (up to the most an upload
-            // can be: only this account reaches the socket), so the client
-            // gets the refusal, not a connection cut mid-send.
-            use futures_util::StreamExt;
-            let mut rest = request.into_body().into_data_stream();
-            let mut read = 0u64;
-            while let Some(Ok(chunk)) = rest.next().await {
-                read += chunk.len() as u64;
-                if read > ledger_store::uploads::MAX_UPLOAD {
-                    break;
+    let (held, token, inside) =
+        match door(&books, &book, &asked, request.headers(), Via::Local).await {
+            Ok(passed) => passed,
+            Err(refused) => {
+                // What was sent is read and dropped (up to the most an upload
+                // can be: only this account reaches the socket), so the client
+                // gets the refusal, not a connection cut mid-send.
+                use futures_util::StreamExt;
+                let mut rest = request.into_body().into_data_stream();
+                let mut read = 0u64;
+                while let Some(Ok(chunk)) = rest.next().await {
+                    read += chunk.len() as u64;
+                    if read > ledger_store::uploads::MAX_UPLOAD {
+                        break;
+                    }
                 }
+                return *refused;
             }
-            return *refused;
-        }
-    };
+        };
     let Book::Open {
         access,
         uploads,
@@ -2695,6 +2944,7 @@ async fn upload(
             result: outcome.clone(),
             head_after: None,
             agent: None,
+            from: None,
         };
         let recorded = access.record(&record).is_ok();
         if !recorded && received.is_ok() {
@@ -2783,11 +3033,13 @@ async fn fetch(
     let asked = Asked {
         action,
         subject: subject.clone(),
+        from: None,
     };
-    let (held, token, inside) = match door(&books, &book, &asked, request.headers()).await {
-        Ok(passed) => passed,
-        Err(refused) => return *refused,
-    };
+    let (held, token, inside) =
+        match door(&books, &book, &asked, request.headers(), Via::Local).await {
+            Ok(passed) => passed,
+            Err(refused) => return *refused,
+        };
     let Book::Open {
         access,
         store,
@@ -2877,6 +3129,7 @@ async fn fetch(
             },
             head_after: None,
             agent: None,
+            from: None,
         };
         let recorded = access.record(&record).is_ok();
         (found, recorded)
@@ -2961,10 +3214,31 @@ fn disposition(name: &str) -> String {
 async fn mcp(
     axum::extract::State(books): axum::extract::State<Arc<Books>>,
     axum::extract::Path(book): axum::extract::Path<String>,
+    request: axum::extract::Request,
+) -> axum::response::Response {
+    mcp_via(books, book, request, Via::Local).await
+}
+
+/// [`mcp`] for either way in: the local socket's, or the remote door's
+/// (remote/http.rs), which is the same door and the same tools with the
+/// remote way's differences: its token is one the remote door made, it
+/// keeps no session, and its caller's address is the relay's.
+async fn mcp_via(
+    books: Arc<Books>,
+    book: String,
     mut request: axum::extract::Request,
+    via: Via,
 ) -> axum::response::Response {
     use axum::http::StatusCode;
     use tower::ServiceExt;
+    let remote_from = match via {
+        Via::Remote(addr) => Some(addr),
+        Via::Local => None,
+    };
+    let asked_of = |method: &axum::http::Method| match remote_from {
+        Some(addr) => Asked::connect(method).from(addr),
+        None => Asked::connect(method),
+    };
     // Counted before the closing check, so closing never misses it.
     let counted = (request.method() != axum::http::Method::GET).then(|| InFlight::new(&books));
     books
@@ -2975,14 +3249,24 @@ async fn mcp(
     // a close of the book waits for it, and its tools are counted by the
     // store (SharedStore INVARIANT 3).
     let (held, token, inside) =
-        match door(&books, &book, &Asked::connect(&method), request.headers()).await {
+        match door(&books, &book, &asked_of(&method), request.headers(), via).await {
             Ok(passed) => passed,
             Err(refused) => return *refused,
         };
-    let Book::Open { service, board, .. } = &held else {
+    let Book::Open {
+        service,
+        remote_service,
+        board,
+        ..
+    } = &held
+    else {
         unreachable!("the door lets only open books through")
     };
-    let (service, board) = ((**service).clone(), board.clone());
+    let service = match via {
+        Via::Local => (**service).clone(),
+        Via::Remote(_) => (**remote_service).clone(),
+    };
+    let board = board.clone();
     let principal = |t: &Token| Principal {
         id: t.id.clone(),
         kind: "agent".into(),
@@ -2993,6 +3277,31 @@ async fn mcp(
     let (rewatched, arrival) = inside.arriving(request);
     request = rewatched;
     let who = principal(&token);
+    // The remote door keeps no session: whatever session a caller names is
+    // not heard, so a call is the same call however it arrives.
+    if remote_from.is_some() {
+        request.headers_mut().remove(SESSION_HEADER);
+        if books
+            .remote
+            .limited(books.remote.call_key(&token), remote::CALLS_PER_MINUTE, 60)
+        {
+            let mut refused = refused_at_door(
+                &held,
+                inside,
+                who,
+                &asked_of(&method),
+                "rate_limited",
+                StatusCode::TOO_MANY_REQUESTS,
+                "this connection is making too many calls: wait a minute".into(),
+            )
+            .await;
+            refused.headers_mut().insert(
+                axum::http::header::RETRY_AFTER,
+                axum::http::HeaderValue::from_static("60"),
+            );
+            return refused;
+        }
+    }
     let session = request
         .headers()
         .get(SESSION_HEADER)
@@ -3027,14 +3336,14 @@ async fn mcp(
         opens
     };
     if arrival.was_cut() {
-        return cut_by_the_close(&held, inside, who, &Asked::connect(&method)).await;
+        return cut_by_the_close(&held, inside, who, &asked_of(&method)).await;
     }
     if full {
         return refused_at_door(
             &held,
             inside,
             principal(&token),
-            &Asked::connect(&method),
+            &asked_of(&method),
             "too_many_sessions",
             StatusCode::SERVICE_UNAVAILABLE,
             "the books server has too many sessions open: end some, then try again".into(),
@@ -3046,7 +3355,7 @@ async fn mcp(
             &held,
             inside,
             principal(&token),
-            &Asked::connect(&method),
+            &asked_of(&method),
             "session_token",
             StatusCode::FORBIDDEN,
             "this session was opened with another token".into(),
@@ -3054,9 +3363,10 @@ async fn mcp(
         .await;
     }
     let (token_id, token_name) = (token.id.clone(), token.name.clone());
-    request
-        .extensions_mut()
-        .insert(crate::access::Caller { token });
+    request.extensions_mut().insert(crate::access::Caller {
+        token,
+        from: remote_from.map(|a| a.ip().to_string()),
+    });
     let response = match service.oneshot(request).await {
         Ok(response) => response,
         Err(never) => match never {},
@@ -3067,7 +3377,7 @@ async fn mcp(
     // no call ran, nothing is in the journal.
     if arrival.was_cut() {
         drop(response);
-        return cut_by_the_close(&held, inside, who, &Asked::connect(&method)).await;
+        return cut_by_the_close(&held, inside, who, &asked_of(&method)).await;
     }
     // A session the answer opened is bound to the token that opened it;
     // one ended, or found gone, is forgotten.
@@ -3077,6 +3387,7 @@ async fn mcp(
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         if session.is_none()
+            && remote_from.is_none()
             && let Some(sid) = response
                 .headers()
                 .get(SESSION_HEADER)
@@ -3665,6 +3976,8 @@ async fn serve(
         () = stops.hurry.cancelled() => {}
     }
     shut.cancel();
+    // The remote door goes with the server (remote/mod.rs INVARIANT 1).
+    remote::stop_door(&books);
     match tokio::time::timeout(HTTP_GRACE, &mut http).await {
         Ok(Ok(Ok(()))) => {}
         Ok(Ok(Err(e))) => eprintln!("wanderbooks server: {e}"),
@@ -4125,7 +4438,7 @@ mod tests {
     }
 
     /// Make the books `id` through the admin request.
-    fn create(books: &Books, id: &str) {
+    fn create(books: &Arc<Books>, id: &str) {
         match books.admin(Request::Create {
             id: id.into(),
             currency: "USD".into(),
@@ -4137,7 +4450,7 @@ mod tests {
 
     /// A token for `book` named `name` with every scope (made, or made
     /// again): its id and its text.
-    fn token(books: &Books, book: &str, name: &str) -> (String, String) {
+    fn token(books: &Arc<Books>, book: &str, name: &str) -> (String, String) {
         match books.admin(Request::TokenCreate {
             book: book.into(),
             name: name.into(),
@@ -4278,7 +4591,7 @@ mod tests {
         let refused = |books: Arc<Books>, book: &'static str| {
             let (asked, headers) = (&asked, &headers);
             async move {
-                match door(&books, book, asked, headers).await {
+                match door(&books, book, asked, headers, Via::Local).await {
                     Ok(_) => panic!("{book}: let through"),
                     Err(r) => answer(*r).await,
                 }
@@ -4655,7 +4968,7 @@ mod tests {
     }
 
     /// The books `id` as listed.
-    fn listed(books: &Books, id: &str) -> admin::BookStatus {
+    fn listed(books: &Arc<Books>, id: &str) -> admin::BookStatus {
         match books.admin(Request::List) {
             Response::Books(list) => list.into_iter().find(|b| b.id == id).unwrap(),
             other => panic!("{other:?}"),
@@ -4969,7 +5282,7 @@ mod tests {
         bearer: &str,
     ) -> Option<(u16, Option<String>, String)> {
         let asked = Asked::connect(&axum::http::Method::POST);
-        match door(books, book, &asked, &bearing(bearer)).await {
+        match door(books, book, &asked, &bearing(bearer), Via::Local).await {
             Ok(_) => None,
             Err(r) => Some(answer(*r).await),
         }
@@ -5562,6 +5875,7 @@ mod tests {
             result: Outcome::Refused("closing".into()),
             head_after: None,
             agent: None,
+            from: None,
         };
         assert!(access.record(&late).is_err());
         uploads.sweep(now);

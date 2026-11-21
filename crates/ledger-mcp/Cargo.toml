@@ -20,6 +20,15 @@ ledger-vault = { path = "../ledger-vault" }
 # the viewer.
 ledger-package = { path = "../ledger-package" }
 base64 = "0.22"
+# The remote door's sign-in (local/remote/): a client's metadata document is
+# fetched with it (cimd.rs), its secrets compared in constant time, its
+# codes and tokens drawn from the system's randomness, and its connections
+# served by hyper directly so a header-read timeout can be set. All were in
+# the tree already (ledger-host, ledger-store, axum).
+reqwest = "0.13"
+subtle = "2"
+getrandom = { version = "0.2", features = ["std"] }
+hyper-util = { version = "0.1", features = ["server-auto", "service", "tokio", "http1", "http2"] }
 # A download's Repr-Digest (local.rs).
 sha2 = "0.10"
 rust_decimal = "1"

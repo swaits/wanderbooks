@@ -42,6 +42,10 @@ use std::sync::Arc;
 pub struct Caller {
     /// The token.
     pub token: Token,
+    /// The address the request came from, when it came through the remote
+    /// door (the relay's PROXY header, never a header the caller sent);
+    /// None on the local socket.
+    pub from: Option<String>,
 }
 
 impl Caller {
@@ -220,6 +224,7 @@ impl Call {
             result,
             head_after,
             agent: self.agent.clone(),
+            from: self.caller.as_ref().and_then(|c| c.from.clone()),
         };
         match self.log.record(&access) {
             Ok(_) => {

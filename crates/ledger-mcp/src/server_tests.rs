@@ -1702,3 +1702,59 @@ fn the_envelope_keeps_what_a_tool_said_and_carries_a_refusal_guard() {
     assert_eq!(g["code"], "approval_required");
     assert_eq!(g["remedy_tool"], "books.approve_entry");
 }
+
+/// text_fields.rs INVARIANT 5 (WB-format-10): a call with a string that
+/// looks like a tax id is refused before it runs, in words that name the
+/// field and never repeat the number; the books are as they were and the
+/// access record says why. A reference that is no tax id goes on to the tool.
+#[test]
+fn a_call_with_a_tax_id_in_free_text_is_refused_unrun_and_writes_nothing() {
+    rt().block_on(async {
+        let s = session("tin-text").await;
+        let (server, books) = logged("tin-text");
+        let key = "key-0123456789";
+        let add = |name: &str| {
+            tool_call(
+                "books.add_class",
+                serde_json::json!({"name": name, "request_key": key}),
+            )
+        };
+        let (refusal, text) = answer(
+            server
+                .call_tool(add("Rondo 000-00-0000"), context(&s.peer, Some(ALL)))
+                .await,
+        )
+        .unwrap();
+        assert!(refusal, "{text}");
+        assert!(
+            text.starts_with("the name of books.add_class looks like it holds a tax id"),
+            "{text}"
+        );
+        assert!(text.contains("books.set_tin") && text.contains("W-9"), "{text}");
+        assert!(!text.contains("000"), "never the number: {text}");
+        // A preview is refused too: its text would be shown to a person.
+        let draft = tool_call(
+            "books.draft_entry",
+            serde_json::json!({"date": "2026-11-21", "description": "pay 00-0000000", "request_key": key}),
+        );
+        let (refusal, text) =
+            answer(server.call_tool(draft, context(&s.peer, Some(ALL))).await).unwrap();
+        assert!(refusal && text.contains("the description of books.draft_entry"), "{text}");
+        // Nothing was made: no class, no entry.
+        let projects = tool_call("books.projects", serde_json::json!({}));
+        let (refusal, text) =
+            answer(server.call_tool(projects, context(&s.peer, Some(ALL))).await).unwrap();
+        assert!(!refusal && !text.contains("Rondo"), "{text}");
+        // A reference that is no tax id is not refused for being one.
+        let (_, text) = answer(
+            server
+                .call_tool(add("Rondo 2026-11-0042"), context(&s.peer, Some(ALL)))
+                .await,
+        )
+        .unwrap();
+        assert!(!text.contains("looks like it holds a tax id"), "{text}");
+        let log = records(&books);
+        assert_eq!(log[0], ("books.add_class".into(), refused("tin_in_text"), true));
+        assert_eq!(log[1], ("books.draft_entry".into(), refused("tin_in_text"), true));
+    });
+}

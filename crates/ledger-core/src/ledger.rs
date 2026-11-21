@@ -8755,7 +8755,7 @@ impl Ledger {
         &mut self,
         annotation: crate::evidence::Annotation,
     ) -> Result<(), LedgerError> {
-        self.annotate_attachment(annotation)
+        crate::parties::replaying(|| self.annotate_attachment(annotation))
     }
 
     /// The entries `entry` records settling (`entry.settles`, plan P6).

@@ -74,6 +74,19 @@ impl AnnotationFields {
         self.category = trim(self.category);
         self.source = trim(self.source);
         self.reimbursable_to = trim(self.reimbursable_to);
+        // Who, what and where in words: no tax id among them (BS-partner-2;
+        // not in a replay, which keeps the journal as written).
+        for (field, text) in [
+            ("the payee", &self.payee),
+            ("the payment method", &self.instrument),
+            ("the category", &self.category),
+            ("the source", &self.source),
+            ("who is to be reimbursed", &self.reimbursable_to),
+        ] {
+            if let Some(t) = text {
+                LedgerError::free_text(field, t)?;
+            }
+        }
         if self.receipt_number == Some(0) {
             return Err(LedgerError::InvalidEvidence(
                 "a receipt number is positive".into(),
@@ -111,6 +124,9 @@ impl Annotation {
             .note
             .map(|n| n.trim().to_string())
             .filter(|n| !n.is_empty());
+        if let Some(n) = &self.note {
+            LedgerError::free_text("the note", n)?;
+        }
         if self.fields.is_empty() && self.note.is_none() {
             return Err(LedgerError::InvalidEvidence(
                 "an annotation records at least one field or a note".into(),

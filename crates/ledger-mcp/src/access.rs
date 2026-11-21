@@ -133,6 +133,9 @@ pub(crate) const STOPPED: &str = "stopped";
 pub(crate) const STOPPED_BY_CLOSE: &str = "stopped_by_close";
 /// A file's bytes or text came as an argument (D-46).
 pub(crate) const INLINE_FILE: &str = "inline_file";
+/// A call refused unrun because a string in it looks like a tax id
+/// (text_fields.rs).
+pub(crate) const TIN_IN_TEXT: &str = "tin_in_text";
 
 /// What a refused call is told when its record couldn't be kept, or a
 /// call that ran is told instead of its answer (INVARIANT 3).

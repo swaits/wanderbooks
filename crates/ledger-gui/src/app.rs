@@ -535,12 +535,20 @@ impl App {
         self.notices.extend(self.serving.take_notices());
         let starting = self.serving.is_starting();
         let down = self.serving.is_down();
+        // The refusal by a host is over once the start is on its way again
+        // (the host was closed): its words go, whether or not they were
+        // dismissed.
+        if !down {
+            self.notices.retain(|n| n != crate::serving::HOST_HOLDS);
+        }
         if self.notices.is_empty() && !starting && !down {
             return;
         }
         let p = pal(ui.ctx());
         let mut dismiss = None;
         let mut retry = false;
+        let mut close_host = false;
+        let host_blocks = self.serving.host_blocks();
         egui::Panel::top("server_notices")
             .resizable(false)
             .frame(
@@ -563,6 +571,9 @@ impl App {
                 for (i, words) in self.notices.iter().enumerate() {
                     ui.horizontal_wrapped(|ui| {
                         ui.label(RichText::new(words).color(p.text));
+                        if host_blocks && ui.button("Close it").clicked() {
+                            close_host = true;
+                        }
                         if down && ui.button("Try again").clicked() {
                             retry = true;
                         }
@@ -577,6 +588,9 @@ impl App {
             });
         if retry {
             self.serving.retry();
+        }
+        if close_host {
+            self.serving.close_host();
         }
         if let Some(i) = dismiss {
             self.notices.remove(i);

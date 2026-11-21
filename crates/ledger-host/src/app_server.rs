@@ -41,11 +41,19 @@
 //!      request, waiting for the server to be ready first; a close that
 //!      says its last backup was not whole is returned as a notice, never
 //!      as a plain success.
-//!   7. Starting writes `run/app-hosted`, a file with nothing in it: the
-//!      root is this app's from then on, and the agents' bridge says
-//!      "Wanderbooks isn't running" for it, instead of starting a host
-//!      (bridge.rs INVARIANT 12). The marker is never removed: a root the
-//!      app has served is the app's for good.
+//!   7. Nothing marks a root as the app's. What holds a root is read from
+//!      what runs: no host holds `run/host.lock`, a server holds
+//!      `run/server.lock`, and the server says what started it and
+//!      whether it is closing (`run/server.info`, ledger-mcp local.rs
+//!      INVARIANT 16; [`crate::opener::what_holds`]). Only a server the
+//!      app started, not closing, with its admin socket answering, is the
+//!      app's ([`the_apps_server_runs`]). An earlier build wrote a
+//!      permanent file `run/app-hosted`; it means nothing now and is
+//!      removed at the next start of the app's server ([`RETIRED_MARKER`]).
+//!      With the app closed, the agents' bridge says "Wanderbooks isn't
+//!      running" (bridge.rs INVARIANT 12) whether or not the root was ever
+//!      the app's, and no program starts a host: only `wanderbooks serve`
+//!      does.
 //!   8. A server the window started is either managed by the window or
 //!      stopped, never neither ([`AppHost`]): one that is alive and not
 //!      yet ready is waited for, not given up on; a start that fails, or
@@ -70,11 +78,25 @@
 //!      request `wanderbooks token revoke` makes, and its copy in the
 //!      token file goes with it ([`AppHost::revoke_token`]). Neither ever
 //!      holds a token's text.
+//! 13. A command's own server ([`AppServer::start_for_command`]) is the
+//!      same server, started as `--started-by command`, and clean: the
+//!      host's environment only (start.rs `clean_environment`), the root
+//!      as an absolute path, `/` as its folder (the root's `run/` on
+//!      Windows), and every server closes the descriptors above 2 at its
+//!      start whoever started it, so one that outlives its command holds
+//!      none of the invoker's pipes. The app's own child keeps its
+//!      environment: it is the window's child, closes with the window and
+//!      needs the person's session (ssh agent, git configuration) for its
+//!      backups. A command's server that does not get ready because
+//!      another program holds the books (one that started after the
+//!      command's look) has lost: [`AppServer::wait_ready_unless_beaten`]
+//!      says so, and the command stops it and joins what runs.
 //! ```
 
-use crate::host::{SERVER_LOG, children_executable, open_log, private_options};
+use crate::host::{SERVER_LOG, children_executable, open_log};
 use crate::opener::{host_lock_held, server_lock_held};
 use ledger_mcp::admin::{self, CloseOutcome, OpenOutcome, Request, Response};
+pub use ledger_mcp::local::StartedBy;
 use ledger_store::root::Root;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
@@ -82,9 +104,10 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-/// The file in `run/` that says the root is the desktop app's
-/// (INVARIANT 7).
-pub const APP_MARKER: &str = "app-hosted";
+/// The file an earlier build left in `run/` to say the root was the
+/// desktop app's. Nothing reads it any more (INVARIANT 7); it is removed
+/// when the app's server starts.
+pub const RETIRED_MARKER: &str = "app-hosted";
 
 /// How long a server may take to say it is ready: it opens and verifies
 /// every company it was told to, and a large one rebuilding a drifted
@@ -95,6 +118,19 @@ pub const READY_WAIT: Duration = Duration::from_secs(300);
 /// last backup of a company is allowed 60 s (local.rs `BACKUP_AT_CLOSE`),
 /// and running calls finish first.
 pub const STOP_WAIT: Duration = Duration::from_secs(90);
+
+/// How long another program holding the books, while this server has not
+/// taken them, is seen before this one is taken to have lost the race.
+const BEATEN_AFTER: Duration = Duration::from_millis(300);
+
+/// What [`AppServer::wait_ready_unless_beaten`] came to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Waited {
+    /// The server is ready.
+    Ready,
+    /// Another program took the books first.
+    Beaten,
+}
 
 /// What a refused start says (INVARIANT 1).
 pub const ANOTHER_HAS_THEM: &str = "Another program has these books open: another Wanderbooks window, `wanderbooks serve`, or a books server that is still finishing its last backup. Close it (`wanderbooks close` closes the books) or wait a moment, then start Wanderbooks again.";
@@ -128,6 +164,50 @@ impl Shared {
             _ => *phase = to,
         }
         self.changed.notify_all();
+    }
+}
+
+/// Windows: no console window of its own (CREATE_NO_WINDOW), so the
+/// window's own Ctrl+C never reaches the server: it closes by its input
+/// alone.
+#[cfg(windows)]
+const NO_WINDOW: u32 = 0x0800_0000;
+/// Windows: leave the job the window runs in (CREATE_BREAKAWAY_FROM_JOB).
+/// A launcher that puts the window in a job that kills everything in it
+/// when the window dies would otherwise kill the server too, in the
+/// middle of a backup, where the window's death is meant to reach it as
+/// the end of its input and nothing more (INVARIANT 3). The server does
+/// not outlive the window by it: it closes when its input does.
+#[cfg(windows)]
+const BREAKAWAY: u32 = 0x0100_0000;
+
+/// Spawn the server with its input and output piped and its errors to
+/// `log`. Windows: breaking away from the window's job, and without that
+/// if the job does not let a process leave it.
+fn spawn_child(command: &mut Command, log: &std::fs::File) -> Result<std::process::Child, String> {
+    let again = |e: std::io::Error| format!("can't start the books server: {e}");
+    let go = |command: &mut Command| -> Result<std::process::Child, std::io::Error> {
+        command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(log.try_clone()?)
+            .spawn()
+    };
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(NO_WINDOW | BREAKAWAY);
+        match go(command) {
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                command.creation_flags(NO_WINDOW);
+                go(command).map_err(again)
+            }
+            other => other.map_err(again),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        go(command).map_err(again)
     }
 }
 
@@ -173,16 +253,11 @@ pub struct AppServer {
     pid: u32,
 }
 
-/// Whether the root whose `run/` folder this is belongs to the desktop
-/// app (INVARIANT 7).
-pub fn app_hosted(run: &Path) -> bool {
-    run.join(APP_MARKER).is_file()
-}
-
-/// Whether a books server runs for the app now: the root is the app's,
-/// no host holds it, and a server does.
+/// Whether a server runs for the app (or any program that is not a host)
+/// now: no host holds the root, a server does, and its admin socket
+/// answers (INVARIANT 7).
 pub fn the_apps_server_runs(run: &Path) -> bool {
-    app_hosted(run) && !host_lock_held(run) && server_lock_held(run)
+    crate::opener::what_holds(run) == Ok(crate::opener::Holder::App)
 }
 
 impl AppServer {
@@ -194,6 +269,38 @@ impl AppServer {
         Self::start_in(&children_executable(), root, open, |_| {})
     }
 
+    /// The server of a command that does its own work with nothing else
+    /// running (commands.rs `reach`): the same server, started clean as a
+    /// host starts it (INVARIANT 13), saying it is a command's.
+    pub fn start_for_command(
+        root: Option<&Path>,
+        open: &[String],
+        knobs: &crate::knobs::Knobs,
+    ) -> Result<Self, String> {
+        let d = crate::knobs::Knobs::default();
+        Self::start_as(
+            &children_executable(),
+            root,
+            open,
+            StartedBy::Command,
+            |command| {
+                // The timings a test shortened, as the host passes them on.
+                for (flag, now, default) in [
+                    ("--backup-quiet", knobs.backup_quiet, d.backup_quiet),
+                    ("--drill-first", knobs.drill_first, d.drill_first),
+                    ("--start-delay", knobs.server_delay, d.server_delay),
+                ] {
+                    if now != default {
+                        command.arg(flag).arg(now.as_millis().to_string());
+                    }
+                }
+                if knobs.timer_hold {
+                    command.arg("--timer-hold");
+                }
+            },
+        )
+    }
+
     /// [`AppServer::start`] from the program `exe`, `configure` having the
     /// last word on its command (tests give it an environment of its own).
     pub fn start_in(
@@ -202,17 +309,26 @@ impl AppServer {
         open: &[String],
         configure: impl FnOnce(&mut Command),
     ) -> Result<Self, String> {
+        Self::start_as(exe, root, open, StartedBy::App, configure)
+    }
+
+    /// [`AppServer::start_in`] for a server started `by` the app or a
+    /// command, which it says of itself (`--started-by`, INVARIANT 13).
+    /// A command's is started clean (INVARIANT 13).
+    pub fn start_as(
+        exe: &Path,
+        root: Option<&Path>,
+        open: &[String],
+        by: StartedBy,
+        configure: impl FnOnce(&mut Command),
+    ) -> Result<Self, String> {
         let found = Root::find(root).map_err(|e| e.to_string())?;
         let run = found.run_dir().map_err(|e| e.to_string())?;
         if host_lock_held(&run) || server_lock_held(&run) {
             return Err(ANOTHER_HAS_THEM.into());
         }
-        private_options()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(run.join(APP_MARKER))
-            .map_err(|e| format!("can't mark these books as the app's: {}", e.kind()))?;
+        // The mark an earlier build left means nothing now (INVARIANT 7).
+        let _ = std::fs::remove_file(run.join(RETIRED_MARKER));
         let log = open_log(&run.join(SERVER_LOG))
             .map_err(|e| format!("can't open the server's log: {}", e.kind()))?;
         let mut command = Command::new(exe);
@@ -220,27 +336,33 @@ impl AppServer {
         {
             use std::os::unix::process::CommandExt;
             command.arg0("wanderbooks");
+            // A group of its own: a Ctrl+C at the terminal the window was
+            // started from goes to the terminal's foreground group, the
+            // window's, and never to the server, which would close the
+            // books under an open window. The server closes by its input
+            // alone (INVARIANT 3), and a window that dies closes that.
+            command.process_group(0);
         }
         command.arg("server");
-        if let Some(root) = root {
+        command.arg("--started-by").arg(by.flag());
+        if by == StartedBy::Command {
+            // Nothing of the invoker's reaches a server that may outlive
+            // the command (INVARIANT 13): the host's environment, and a
+            // folder of its own to stand in (the root's absolute path
+            // goes on, as the host's does). Its descriptors are closed by
+            // the server itself at its start.
+            command.arg("--root").arg(found.path());
+            crate::start::clean_environment(&mut command)?;
+            #[cfg(unix)]
+            command.current_dir("/");
+            #[cfg(windows)]
+            command.current_dir(&run);
+        } else if let Some(root) = root {
             command.arg("--root").arg(root);
         }
         command.arg("--open").arg(open_argument(open));
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            // CREATE_NO_WINDOW: a console of its own that nobody sees, so
-            // the window's own Ctrl+C never reaches it (it closes by its
-            // input alone).
-            command.creation_flags(0x0800_0000);
-        }
         configure(&mut command);
-        let mut child = command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(log)
-            .spawn()
-            .map_err(|e| format!("can't start the books server: {e}"))?;
+        let mut child = spawn_child(&mut command, &log)?;
         let stdin = child.stdin.take();
         let stdout = child.stdout.take();
         let pid = child.id();
@@ -340,6 +462,50 @@ impl AppServer {
         }
     }
 
+    /// Wait for the server to be ready, up to `within`, but not for
+    /// another program that took the books first: if, while this server
+    /// is not ready, a host or another server holds them (a command racing
+    /// the app's start, or `serve`'s), this one has lost the race and the
+    /// caller is to join what runs (commands.rs `reach`). Seen for as long
+    /// as [`BEATEN_AFTER`], so the moment between this server taking the
+    /// lock and saying so is not taken for losing.
+    pub fn wait_ready_unless_beaten(&self, within: Duration) -> Result<Waited, String> {
+        let deadline = Instant::now() + within;
+        let mut beaten_since: Option<Instant> = None;
+        loop {
+            let slice = Duration::from_millis(50).min(
+                deadline
+                    .checked_duration_since(Instant::now())
+                    .unwrap_or_default(),
+            );
+            match self.wait_ready(slice) {
+                Ok(()) => return Ok(Waited::Ready),
+                Err(why) if self.exited().is_some() => return Err(why),
+                Err(why) => {
+                    if Instant::now() >= deadline {
+                        return Err(why);
+                    }
+                }
+            }
+            if self.another_holds() {
+                let since = *beaten_since.get_or_insert_with(Instant::now);
+                if since.elapsed() >= BEATEN_AFTER {
+                    return Ok(Waited::Beaten);
+                }
+            } else {
+                beaten_since = None;
+            }
+        }
+    }
+
+    /// Whether a host, or a server that is not this one, holds the books.
+    fn another_holds(&self) -> bool {
+        host_lock_held(&self.run)
+            || (server_lock_held(&self.run)
+                && ledger_mcp::local::read_server_info(&self.run)
+                    .is_none_or(|info| info.pid != self.pid))
+    }
+
     /// Whether the server has said it is ready (and is still there).
     pub fn is_ready(&self) -> bool {
         matches!(&*self.shared.phase(), Phase::Ready)
@@ -358,6 +524,13 @@ impl AppServer {
                 Err(why) => return Err(why),
             }
         }
+    }
+
+    /// One admin request, once the server is ready (a command's own
+    /// server: commands.rs `Reached`): its answer, or why not in words.
+    pub fn call(&self, request: Request, wait: Option<Duration>) -> Result<Response, String> {
+        self.wait_ready(READY_WAIT)?;
+        self.ask(request, wait)
     }
 
     /// Open the company `id` in the server, so assistants can reach it
@@ -979,12 +1152,10 @@ mod tests {
     }
 
     #[test]
-    fn a_root_is_the_apps_only_once_marked() {
+    fn a_root_is_read_from_what_runs_and_not_from_a_file() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(!app_hosted(dir.path()));
-        std::fs::write(dir.path().join(APP_MARKER), b"").unwrap();
-        assert!(app_hosted(dir.path()));
-        // No server runs there: not the app's server.
+        // A mark an earlier build left is nothing: no server runs there.
+        std::fs::write(dir.path().join(RETIRED_MARKER), b"").unwrap();
         assert!(!the_apps_server_runs(dir.path()));
     }
 }

@@ -311,6 +311,16 @@
 //!      request that arrives once the server is closing and finds a book's
 //!      door shut is refused as closing (503, `closing`), not recorded:
 //!      the door is shut (INVARIANT 11), as in a close of one book.
+//!  16. A server says what it is, beside its lock (`run/server.info`),
+//!      when it is started with `--started-by`: who started it (the app,
+//!      a `serve` host, or a command that runs one for the length of its
+//!      work), its process id, and whether it has begun to close. The
+//!      file is written whole and moved into place as soon as the lock is
+//!      the server's, rewritten with `closing` the moment it is told to
+//!      close, and removed just before the lock is let go; it is read only
+//!      while the lock is held, which is when it is the lock holder's. A
+//!      program that finds a server holding the books reads it before it
+//!      decides what that server is.
 //! SCENARIOS:
 //!   1. Two books open; one is closed while agents call both: the other
 //!      answers throughout, the closed one's calls are refused unrun
@@ -417,6 +427,90 @@ pub const ADMIN_SOCKET: &str = "admin.sock";
 pub const SERVER_LOCK: &str = "server.lock";
 /// What the server prints on stdout when it is ready (INVARIANT 5).
 pub const READY: &str = "ready";
+/// What a server says of itself, beside its lock: who started it, and
+/// whether it has begun to close (INVARIANT 16).
+pub const SERVER_INFO: &str = "server.info";
+
+/// Who started a server (INVARIANT 16): the program a caller finds holding
+/// the books decides what to do from it, and so the words it says are the
+/// true ones.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StartedBy {
+    /// The desktop app: the books server is its child, for as long as its
+    /// window runs.
+    App,
+    /// A `wanderbooks serve` host: the host holds `run/host.lock` as long
+    /// as it lives, so a server of its starting that is found with no host
+    /// is an orphan, closing.
+    Host,
+    /// A command that runs a server of its own for the length of its work.
+    Command,
+}
+
+impl StartedBy {
+    /// The flag value (`--started-by`).
+    pub fn flag(self) -> &'static str {
+        match self {
+            StartedBy::App => "app",
+            StartedBy::Host => "host",
+            StartedBy::Command => "command",
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "app" => Ok(StartedBy::App),
+            "host" => Ok(StartedBy::Host),
+            "command" => Ok(StartedBy::Command),
+            other => Err(format!(
+                "--started-by takes app, host or command, not {other}"
+            )),
+        }
+    }
+}
+
+/// What a server says of itself in `run/server.info` (INVARIANT 16).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ServerInfo {
+    /// Who started it.
+    pub by: StartedBy,
+    /// Its process id.
+    pub pid: u32,
+    /// It has begun to close: running calls finish, the last backups are
+    /// made. It still answers its admin socket until it is gone.
+    pub closing: bool,
+}
+
+/// What the server holding `run/server.lock` says of itself: `None` when
+/// there is no such file, or it is not (yet) readable: a server of an
+/// earlier build says nothing, and a starting one says it just after it
+/// takes the lock. Only meaningful while that lock is held.
+pub fn read_server_info(run: &Path) -> Option<ServerInfo> {
+    let text = std::fs::read_to_string(run.join(SERVER_INFO)).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+/// Say what this server is (INVARIANT 16): written whole beside the lock
+/// and moved into place, so a reader sees one version or the other.
+fn write_server_info(run: &Path, info: &ServerInfo) -> std::io::Result<()> {
+    let text = serde_json::to_string(info).map_err(std::io::Error::other)?;
+    let temp = run.join(format!("{SERVER_INFO}.{}.tmp", info.pid));
+    std::fs::write(&temp, text)?;
+    std::fs::rename(&temp, run.join(SERVER_INFO)).inspect_err(|_| {
+        let _ = std::fs::remove_file(&temp);
+    })
+}
+
+/// Removes `run/server.info` when the server is done with it, before the
+/// lock goes (INVARIANT 16).
+struct InfoGuard(PathBuf);
+
+impl Drop for InfoGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
 
 /// How large an MCP request may be (plan 3.2): files come only through
 /// uploads (`/b/{book}/u/{upload}`), never in a request (D-46).
@@ -3598,6 +3692,9 @@ fn print_usage(prog: &str) {
     eprintln!("  --http [ADDR]: also serve the MCP door on loopback only (default");
     eprintln!("    127.0.0.1:7411), for a TLS proxy or a tunnel in front of it. Off unless");
     eprintln!("    given; any other address is refused.");
+    eprintln!("  --start-delay MS: wait this long before taking the lock (tests).");
+    eprintln!("  --started-by app | host | command: who started it, said in run/server.info");
+    eprintln!("    so a program that finds it holding the books knows what it is.");
     eprintln!("  --open all | none | ID[,ID...]: which books are open at the start (default");
     eprintln!("    all). A book left closed opens when asked (`wanderbooks books open ID`).");
 }
@@ -3615,6 +3712,8 @@ pub fn run(
     let mut isolation = Isolation::SameUser;
     let mut tunnel: Option<std::net::SocketAddr> = None;
     let mut open_at_start = OpenAtStart::All;
+    let mut started_by: Option<StartedBy> = None;
+    let mut start_delay = Duration::ZERO;
     let mut args = args.into_iter().peekable();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -3643,6 +3742,26 @@ pub fn run(
             "--open" => {
                 open_at_start =
                     OpenAtStart::parse(&args.next().ok_or("--open needs all, none, or ids")?)?;
+            }
+            // Who started this server (INVARIANT 16): the app, a `serve`
+            // host or a command. Without it a server says nothing of
+            // itself, as every earlier build's did not.
+            "--started-by" => {
+                started_by = Some(StartedBy::parse(
+                    &args
+                        .next()
+                        .ok_or("--started-by needs app, host or command")?,
+                )?);
+            }
+            // How long this server waits before it first tries to take the
+            // lock (tests of a program that starts or finds the books in
+            // that time: a slow start).
+            "--start-delay" => {
+                let ms: u64 = args
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .ok_or("--start-delay needs milliseconds")?;
+                start_delay = Duration::from_millis(ms);
             }
             // How long the books stay unwritten before a backup (tests).
             "--backup-quiet" => {
@@ -3737,6 +3856,11 @@ pub fn run(
         let _in_runtime = rt.enter();
         watch_for_close(&stops)?;
     }
+    // The test knob `--start-delay`: a slow start, told to close or not.
+    let delayed = std::time::Instant::now();
+    while delayed.elapsed() < start_delay && !stops.close.is_cancelled() {
+        std::thread::sleep(Duration::from_millis(10));
+    }
     // INVARIANT 1: a server still finishing (its host gone) has the lock;
     // this one waits for it, touching nothing, until told to close.
     let mut said = false;
@@ -3772,6 +3896,28 @@ pub fn run(
         ledger_store::winsec::set_owner_only(&lock_path)
             .map_err(|e| format!("can't make the server lock private: {}", e.kind()))?;
     }
+    // INVARIANT 16: what this server is, said as soon as the lock is its
+    // and until just before it lets the lock go; `closing` from the moment
+    // it is told to close.
+    let info_guard = match started_by {
+        Some(by) => {
+            let mut info = ServerInfo {
+                by,
+                pid: std::process::id(),
+                closing: stops.close.is_cancelled(),
+            };
+            write_server_info(&run, &info)
+                .map_err(|e| format!("can't say what this server is: {}", e.kind()))?;
+            let (close, there) = (stops.close.clone(), run.clone());
+            rt.spawn(async move {
+                close.cancelled().await;
+                info.closing = true;
+                let _ = write_server_info(&there, &info);
+            });
+            Some(InfoGuard(run.join(SERVER_INFO)))
+        }
+        None => None,
+    };
     let books = Arc::new(
         Books::new(root.clone(), backup_quiet, drill_first, isolation).with_timers(timers),
     );
@@ -3820,6 +3966,7 @@ pub fn run(
     for name in [MCP_SOCKET, ADMIN_SOCKET] {
         let _ = std::fs::remove_file(run.join(name));
     }
+    drop(info_guard);
     drop(lock);
     served
 }

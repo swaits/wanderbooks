@@ -54,19 +54,32 @@
 //!      refusal, which says how the human makes one; but when the token
 //!      file is there and couldn't be read, with that instead: the token
 //!      is not said to be missing. The token is never written to the agent or to stderr.
-//!  12. For a root the desktop app serves (app_server.rs INVARIANT 7) with
-//!      no host running, the bridge is a thin line to the app's server
-//!      and nothing more: it holds no lease and starts no host (a
-//!      detached host is not how the desktop runs). With the app not
-//!      running, every call is answered "Wanderbooks isn't running:
-//!      start Wanderbooks and open BOOK." (`not_running_words`); with
-//!      the app running but BOOK not open in it, "Company BOOK isn't
-//!      open: open it in Wanderbooks." (`not_open_words`, for the
-//!      server's `closed` refusal at the door). Neither is final: the
-//!      call after the app starts, or the company opens, goes through,
-//!      in a session that was already running. A root no app has served,
-//!      and any root a host holds, behave as in 1 to 11 (`wanderbooks
-//!      serve`, the headless host).
+//!  12. With no host running (every root but a headless `wanderbooks
+//!      serve`'s), the bridge is a thin line to whatever server runs and
+//!      nothing more: it holds no lease and starts no host (a detached
+//!      host is not how the desktop runs; only `wanderbooks serve` starts
+//!      one). With nothing running, every call is answered "Wanderbooks
+//!      isn't running: start Wanderbooks and open BOOK (on a computer
+//!      with no screen, run `wanderbooks serve`), then try again."
+//!      (`not_running_words`); with a server holding the books and no
+//!      socket yet (the app opening large companies), "Wanderbooks is
+//!      still opening its companies…: try again shortly."
+//!      (`opening_words`); with the app running but BOOK not open in it, "Company BOOK isn't open: open it in Wanderbooks."
+//!      (`not_open_words`, for the server's `closed` refusal at the
+//!      door). Neither is final: the call after the app starts, or the
+//!      company opens, goes through, in a session that was already
+//!      running. A root a host holds (`wanderbooks serve`, the headless
+//!      host) behaves as in 1 to 11: the bridge holds a lease on it; and
+//!      when that host goes and nothing takes its place, the bridge
+//!      becomes the line above, in words, instead of starting another;
+//!      and when the app takes its place (its lease would be one with no
+//!      host behind it, which never ends: `Lease::is_hostless`) it
+//!      becomes the line above too, and says the same words when the app
+//!      is closed. What holds the books is read before a session is
+//!      tried (opener.rs INVARIANT 6a): a command's server, for the
+//!      length of its work, is told as "A wanderbooks command has the
+//!      books for a moment" (`command_words`), and a server that is
+//!      closing as the opening words, not as the app.
 //! ```
 
 use crate::knobs::{FLAG, Knobs};
@@ -100,7 +113,27 @@ const MAYBE_RAN: &str = "the connection to the books server broke while this cal
 
 /// What the agent is told when the app is not running (INVARIANT 12).
 fn not_running_words(book: &str) -> String {
-    format!("Wanderbooks isn't running: start Wanderbooks and open {book}.")
+    format!(
+        "Wanderbooks isn't running: start Wanderbooks and open {book} (on a computer with no screen, run `wanderbooks serve`), then try again."
+    )
+}
+
+/// What the agent is told when a server holds the books and is not
+/// answering yet: the app opening its companies (a large one takes a
+/// while), or finishing a last backup (INVARIANT 12).
+fn opening_words(book: &str) -> String {
+    format!(
+        "Wanderbooks is still opening its companies, or finishing the last backup of the last session: {book} can be reached in a moment. Try again shortly."
+    )
+}
+
+/// What the agent is told when a command of the owner's has the books for
+/// a moment (a server of its own, for the length of its work): the app is
+/// not running, and it is not that either.
+fn command_words(book: &str) -> String {
+    format!(
+        "A wanderbooks command has the books for a moment: {book} can be reached in a moment. Try again shortly."
+    )
 }
 
 /// What the agent is told when the app runs but the company is not open
@@ -191,8 +224,9 @@ struct Bridge {
     /// The server's channel, for its owner check (INVARIANT 9).
     endpoint: ledger_mcp::ipc::Endpoint,
     /// Whether this is the line to the desktop app's server, with no host
-    /// and no lease (INVARIANT 12).
-    app: bool,
+    /// and no lease (INVARIANT 12). It turns true when a host the bridge
+    /// held is gone and nothing took its place.
+    app: std::sync::atomic::AtomicBool,
 }
 
 /// Who has the server's socket, when it isn't plainly this account.
@@ -923,7 +957,7 @@ impl Bridge {
             Some(Link::Failed(why)) => return self.answer(&id, error(&id, why)),
             // The desktop app can't be reached, or the company isn't open
             // in it: said now, not "opening" (INVARIANT 12).
-            Some(Link::Refused(why)) if self.app => return self.answer(&id, error(&id, why)),
+            Some(Link::Refused(why)) if self.is_app() => return self.answer(&id, error(&id, why)),
             _ => None,
         };
         let result = result.unwrap_or_else(|| {
@@ -955,7 +989,7 @@ impl Bridge {
         let run_dir = opener.run_dir().to_path_buf();
         let root = run_dir.parent().unwrap_or(&run_dir).to_path_buf();
         let account = crate::tokens::Account::new(&root, &self.book, &self.token_name);
-        let _ = self.token_file.set((account, run_dir));
+        let _ = self.token_file.set((account, run_dir.clone()));
         let mut epoch = 0u64;
         loop {
             let mut lease = match opener.hold().await {
@@ -965,11 +999,31 @@ impl Bridge {
                     self.link.send_replace(Link::Closed);
                     return;
                 }
+                // The host this bridge held is gone (`wanderbooks serve`
+                // ended) and nothing runs: the bridge becomes the line to
+                // whatever runs next, and says so in words until then
+                // (INVARIANT 12).
+                Err(crate::opener::HoldError::NotRunning) => {
+                    self.app.store(true, std::sync::atomic::Ordering::SeqCst);
+                    self.link.send_replace(Link::Opening);
+                    return self.keep_in_app(run_dir).await;
+                }
                 Err(crate::opener::HoldError::Failed(why)) => {
                     self.link.send_replace(Link::Failed(why));
                     return;
                 }
             };
+            // The host this bridge held went, and the app started in its
+            // place: its lease is on a server with no host, which never
+            // ends, so it would never see the app go. The bridge becomes
+            // the line to whatever runs, as a fresh one is, and says the
+            // same words when the app closes (INVARIANT 12).
+            if lease.is_hostless() {
+                drop(lease);
+                self.app.store(true, std::sync::atomic::Ordering::SeqCst);
+                self.link.send_replace(Link::Opening);
+                return self.keep_in_app(run_dir).await;
+            }
             // Until this lease ends: whenever the server is ready and no
             // session is up, open one. The lease is always heard, even
             // while a session is being opened or a try waits (INVARIANT 1).
@@ -1051,11 +1105,16 @@ impl Bridge {
         }
     }
 
+    /// Whether this is the line to the app's (or any host-less) server.
+    fn is_app(&self) -> bool {
+        self.app.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     /// The words for a refusal at the server's door: for the desktop app's
     /// `closed` refusal, the bridge's own (INVARIANT 12); else the
     /// server's.
     fn refusal_words(&self, closed: bool, body: &str) -> String {
-        if self.app && closed {
+        if self.is_app() && closed {
             not_open_words(&self.book)
         } else {
             body.trim().chars().take(500).collect()
@@ -1071,18 +1130,38 @@ impl Bridge {
     async fn keep_in_app(self: Arc<Self>, run_dir: PathBuf) {
         let root = run_dir.parent().unwrap_or(&run_dir).to_path_buf();
         let account = crate::tokens::Account::new(&root, &self.book, &self.token_name);
-        let _ = self.token_file.set((account, run_dir));
+        let _ = self.token_file.set((account, run_dir.clone()));
         let mut epoch = 0u64;
         loop {
             if matches!(&*self.link.borrow(), Link::Opening) {
-                match self.socket_is_ours() {
+                // What holds the books is read before a session is tried
+                // (opener.rs INVARIANT 6a): a command's server, or one
+                // that is closing, is not the app, whatever its socket
+                // answers.
+                let held =
+                    crate::opener::what_holds(&run_dir).unwrap_or(crate::opener::Holder::Nothing);
+                let owner_check = match held {
+                    crate::opener::Holder::Command | crate::opener::Holder::Closing => {
+                        Err(Owner::Unreachable)
+                    }
+                    _ => self.socket_is_ours(),
+                };
+                match owner_check {
                     Err(Owner::Other(why)) => {
                         self.link.send_replace(Link::Failed(why));
                         return;
                     }
                     Err(Owner::Unreachable) => {
-                        self.link
-                            .send_replace(Link::Refused(not_running_words(&self.book)));
+                        // A server holding the books with no socket yet is
+                        // opening (or finishing), not absent.
+                        let words = match held {
+                            crate::opener::Holder::Command => command_words(&self.book),
+                            _ if crate::opener::server_lock_held(&run_dir) => {
+                                opening_words(&self.book)
+                            }
+                            _ => not_running_words(&self.book),
+                        };
+                        self.link.send_replace(Link::Refused(words));
                     }
                     Ok(()) => match self.open_session(epoch + 1).await {
                         Ok(up) => {
@@ -1382,11 +1461,11 @@ async fn skip_line<R: tokio::io::AsyncBufRead + Unpin>(input: &mut R) -> bool {
     }
 }
 
-/// Whether the bridge is the line to the desktop app's server for the
-/// root whose `run/` folder this is (INVARIANT 12): an app has served the
-/// root, and no host holds it.
+/// Whether the bridge is the line to the app's server for the root whose
+/// `run/` folder this is (INVARIANT 12): no host holds it. The server
+/// answering, or not running at all, is looked at call by call.
 fn serves_the_app(run: &std::path::Path) -> bool {
-    crate::app_server::app_hosted(run) && !crate::opener::host_lock_held(run)
+    !crate::opener::host_lock_held(run)
 }
 
 fn usage(prog: &str) {
@@ -1470,7 +1549,7 @@ pub fn run(
             next_id: std::sync::atomic::AtomicU64::new(1),
             pending: Mutex::new(std::collections::HashMap::new()),
             endpoint,
-            app,
+            app: std::sync::atomic::AtomicBool::new(app),
         });
         let keeper = if app {
             tokio::spawn(bridge.clone().keep_in_app(run_dir))
@@ -1834,7 +1913,7 @@ mod against_a_server {
             next_id: std::sync::atomic::AtomicU64::new(1),
             pending: Mutex::new(std::collections::HashMap::new()),
             endpoint,
-            app,
+            app: std::sync::atomic::AtomicBool::new(app),
         });
         (bridge, rx)
     }
@@ -2605,7 +2684,7 @@ mod against_a_server {
     fn the_two_messages_are_plain_and_name_the_company() {
         assert_eq!(
             not_running_words("acme"),
-            "Wanderbooks isn't running: start Wanderbooks and open acme."
+            "Wanderbooks isn't running: start Wanderbooks and open acme (on a computer with no screen, run `wanderbooks serve`), then try again."
         );
         assert_eq!(
             not_open_words("acme"),
@@ -2614,12 +2693,13 @@ mod against_a_server {
     }
 
     #[test]
-    fn a_root_is_the_apps_only_when_marked_and_no_host_holds_it() {
+    fn a_root_is_the_line_to_the_app_when_no_host_holds_it() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(!serves_the_app(dir.path()), "no app has served it");
-        std::fs::write(dir.path().join(crate::app_server::APP_MARKER), b"").unwrap();
+        assert!(serves_the_app(dir.path()), "no host holds it");
+        // A mark an earlier build left changes nothing.
+        std::fs::write(dir.path().join(crate::app_server::RETIRED_MARKER), b"").unwrap();
         assert!(serves_the_app(dir.path()));
-        // A host holding the root is the headless path, marked or not.
+        // A host holding the root is the headless path.
         let lock = std::fs::File::create(dir.path().join(crate::lease::HOST_LOCK)).unwrap();
         lock.lock().unwrap();
         assert!(!serves_the_app(dir.path()));
@@ -2667,6 +2747,26 @@ mod against_a_server {
             told(&mut rx, 3000).await.unwrap()["error"]["message"],
             not_running_words("acme")
         );
+        keeper.abort();
+    }
+
+    #[tokio::test]
+    async fn with_a_server_still_opening_the_answer_says_so_and_not_that_nothing_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        // A server holds the books and has bound no socket yet.
+        let lock = std::fs::File::create(dir.path().join(ledger_mcp::local::SERVER_LOCK)).unwrap();
+        lock.lock().unwrap();
+        let (b, mut rx) = app_bridge_at(&dir.path().join("mcp.sock"), knobs(3000, 3000));
+        let keeper = tokio::spawn(b.clone().keep_in_app(dir.path().to_path_buf()));
+        let call: Value = serde_json::from_str(CALL).unwrap();
+        b.waiting(&json!(7));
+        b.clone().request_on(call, json!(7), "tools/call").await;
+        let said = told(&mut rx, 3000).await.unwrap()["error"]["message"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(said, opening_words("acme"));
+        assert!(!said.contains("isn't running"));
         keeper.abort();
     }
 

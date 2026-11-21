@@ -1,19 +1,21 @@
 //! Holding the books: how every holder takes its lease (plan 3.9).
 //!
 //! ```text
-//! GOAL: a holder gets its lease on the one host, starting one when none
-//!       answers, even when several holders start at once; across a
+//! GOAL: a holder gets its lease on the one host (the headless `serve`'s,
+//!       started by `serve` alone, even when several start at once) or on
+//!       the desktop app's own server; across a
 //!       restart it simply holds again; a host that keeps failing is
 //!       given up on, plainly, instead of retried forever.
 //! SOURCE: plan/served.md 3.9 ("One host, even in a race", "Closing":
 //!         backoff 1, 2, 4 … 60 s, at most five tries; "Restarting":
-//!         openers wait on update.lock); tests host_respawns,
-//!         respawn_backs_off.
+//!         openers wait on update.lock); plan/p15-app-and-relay.md 3.1
+//!         (only `serve` keeps a host; the app is the host otherwise),
+//!         WB-app-3, WB-app-5; tests host_respawns, respawn_backs_off.
 //! INVARIANTS:
 //!   1. Before each try the holder waits while a restart holds
 //!      run/update.lock.
-//!   2. No host answering: it starts one (cleanly, start.rs) and keeps
-//!      trying;
+//!   2. No host answering: `serve` starts one (cleanly, start.rs) and keeps
+//!      trying (7);
 //!      a host that is closing or restarting turns it away and it tries
 //!      again until a host takes the lease.
 //!   3. A start that brings no lease within START_WAIT (or whose host
@@ -28,12 +30,32 @@
 //!   5. A holder that has held before, turned away because the owner
 //!      closed the books, stays closed (HoldError::ClosedByOwner); a new
 //!      holder waits for a new host.
-//!   6. A root the desktop app has served (app_server.rs INVARIANT 7)
-//!      with the app's own server running and no host: a command's or
-//!      the viewer's hold is a lease on that server with no host behind
-//!      it (ready at once, never ended: the app decides when the books
-//!      close), no host is started beside it, and `wanderbooks serve`
-//!      is told the app has the books.
+//!   6. No host answering, a books server holding the books (`run/
+//!      server.lock`), and its admin socket answering: the desktop app's
+//!      own server (P15 3.1). A holder other than `wanderbooks serve`
+//!      takes a lease on it with no host behind it (ready at once, never
+//!      ended: the app decides when the books close), and no host is
+//!      started beside it; `wanderbooks serve` is told the app has the
+//!      books. The server's lock held and no admin socket yet is a server
+//!      still opening its companies (or finishing its last backup): the
+//!      holder waits for it, in words, for as long as its own wait lasts.
+//!   6a. What holds the books is known, not guessed: a server says what
+//!      started it and whether it is closing (`run/server.info`, ledger-mcp
+//!      local.rs INVARIANT 16) and [`what_holds`] reads it. Only a server
+//!      the app started, not closing, is "the app". A server a command
+//!      started, a closing server (the app's, or the orphan of a host
+//!      that was killed), is waited for: the holder says so, in words, and
+//!      goes on once it is gone, for as long as its own wait lasts
+//!      (`open_wait`, 120 s; a bridge waits as long as the session does),
+//!      then says in words what it is still waiting for. A server that
+//!      says nothing (an earlier build's) is taken for the app's, as it
+//!      was before.
+//!   7. No host, no server: only `wanderbooks serve` starts a host (the
+//!      headless path, plan 3.1). Every other holder is turned away with
+//!      [`HoldError::NotRunning`], and says, in words, to start
+//!      Wanderbooks; a command that can do its work without the books
+//!      being held open runs its own server for the length of the work
+//!      instead (commands.rs).
 //! ```
 
 use crate::knobs::Knobs;
@@ -51,6 +73,9 @@ const START_WAIT: Duration = Duration::from_secs(45);
 const LOCK_WAIT: Duration = Duration::from_secs(2);
 /// How long the host has to answer a hello.
 const ANSWER_WAIT: Duration = Duration::from_secs(10);
+/// How long `hold` looks again while it waits for a server that is
+/// closing or a command's (INVARIANT 6a).
+const WAIT_LOOK: Duration = Duration::from_millis(100);
 /// Tries after a failure before giving up (INVARIANT 3).
 pub const MAX_TRIES: u32 = 5;
 /// How long the books must stay open for earlier failures to be
@@ -69,14 +94,22 @@ pub enum HoldError {
     /// The owner closed the books, and this holder had held them
     /// (INVARIANT 5).
     ClosedByOwner,
+    /// Nothing holds the books (no host, no server), and this holder
+    /// starts none (INVARIANT 7).
+    NotRunning,
     /// Anything else, in plain words.
     Failed(String),
 }
+
+/// What a person is told when nothing is running and the work needs the
+/// books held open (INVARIANT 7).
+pub const START_WANDERBOOKS: &str = "Start Wanderbooks first: nothing has the books open. Open the Wanderbooks app, or, on a computer with no screen, run `wanderbooks serve` and leave it running.";
 
 impl std::fmt::Display for HoldError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             HoldError::ClosedByOwner => write!(f, "the owner closed the books"),
+            HoldError::NotRunning => f.write_str(START_WANDERBOOKS),
             HoldError::Failed(why) => f.write_str(why),
         }
     }
@@ -109,6 +142,10 @@ pub struct Opener {
     /// Flags the server this opener starts is started with (P9a):
     /// `--isolation` and `--http`. Empty for every ordinary holder.
     server_flags: Vec<String>,
+    /// Until when a wait for another program's server lasts (INVARIANT
+    /// 6a); the caller's own deadline, else `open_wait` from the first
+    /// wait. A bridge has none.
+    deadline: Option<Instant>,
 }
 
 /// A held lease: the books stay open while it lives.
@@ -129,6 +166,13 @@ struct HostLink {
 }
 
 impl Lease {
+    /// Whether this lease is on the app's server with no host behind it
+    /// (INVARIANT 6): it never ends, so a holder that has one follows
+    /// what runs by looking, as a bridge with no host does.
+    pub fn is_hostless(&self) -> bool {
+        self.link.is_none()
+    }
+
     /// The host's next word: `Ready`, or `Ending` with why; `None` when
     /// the host is gone without a word.
     pub async fn next(&mut self) -> Option<HostMsg> {
@@ -174,7 +218,19 @@ impl Opener {
             opened_at: None,
             has_held: false,
             server_flags: Vec::new(),
+            deadline: None,
         })
+    }
+
+    /// Wait for another program's server (a command's, or one closing) no
+    /// longer than until `deadline` (INVARIANT 6a).
+    pub fn wait_until(&mut self, deadline: Instant) {
+        self.deadline = Some(deadline);
+    }
+
+    /// The deadline set by [`Opener::wait_until`], if any.
+    pub fn deadline(&self) -> Option<Instant> {
+        self.deadline
     }
 
     /// Start the server this opener brings up with these flags (P9a:
@@ -220,31 +276,59 @@ impl Opener {
         Ok(())
     }
 
-    /// Start counting failures over (a holder that waited a while after
-    /// giving up tries again); what it has held is kept (INVARIANT 5).
-    pub fn forget_failures(&mut self) {
-        self.failures = 0;
-    }
-
-    /// Take a lease, starting a host if none answers (INVARIANTS 1-4).
+    /// Take a lease: on a host, on the app's server, or (`serve` alone) on
+    /// a host started for it (INVARIANTS 1-7).
     pub async fn hold(&mut self) -> Result<Lease, HoldError> {
         let mut started: Option<Instant> = None;
+        let mut said_waiting = false;
+        let mut waited_from: Option<Instant> = None;
         loop {
-            // The app has the books: its own server serves them, and no
-            // host is started beside it (INVARIANT 6).
-            if crate::app_server::the_apps_server_runs(&self.run) {
-                if self.kind == Kind::Serve {
-                    return Err(HoldError::Failed(
-                        "Wanderbooks (the app) has these books open: close it first, or use it"
-                            .into(),
-                    ));
+            // What holds the books is read, not guessed (INVARIANT 6a).
+            match what_holds(&self.run)? {
+                // The app has the books: its own server serves them, and
+                // no host is started beside it (INVARIANT 6).
+                Holder::App => {
+                    if self.kind == Kind::Serve {
+                        return Err(HoldError::Failed(
+                            "Wanderbooks (the app) has these books open: close it first, or use it"
+                                .into(),
+                        ));
+                    }
+                    self.has_held = true;
+                    return Ok(Lease {
+                        id: 0,
+                        link: None,
+                        told_ready: false,
+                    });
                 }
-                self.has_held = true;
-                return Ok(Lease {
-                    id: 0,
-                    link: None,
-                    told_ready: false,
-                });
+                // Opening its companies, or finishing its last backup:
+                // wait for it, and say so once.
+                Holder::Opening => {
+                    if !std::mem::replace(&mut said_waiting, true) && self.kind != Kind::Bridge {
+                        eprintln!(
+                            "Wanderbooks is still opening (or closing) the books: waiting for it…"
+                        );
+                    }
+                    tokio::time::sleep(WAIT_LOOK).await;
+                    continue;
+                }
+                // A command's server, or one closing: it ends soon, and
+                // the books are free; wait for it, bounded (INVARIANT 6a).
+                held @ (Holder::Command | Holder::Closing) => {
+                    let from = *waited_from.get_or_insert_with(Instant::now);
+                    if self.kind != Kind::Bridge {
+                        let until = self.deadline.unwrap_or_else(|| from + self.knobs.open_wait);
+                        if Instant::now() >= until {
+                            return Err(HoldError::Failed(held.still_waiting_words()));
+                        }
+                    }
+                    if !std::mem::replace(&mut said_waiting, true) && self.kind != Kind::Bridge {
+                        eprintln!("{}", held.waiting_words());
+                    }
+                    tokio::time::sleep(WAIT_LOOK).await;
+                    continue;
+                }
+                Holder::Host | Holder::Nothing => {}
             }
             wait_for_restart(&self.run).await;
             let endpoint = ledger_mcp::ipc::Endpoint::new(&self.run, lease::LEASE_SOCKET)
@@ -280,6 +364,11 @@ impl Opener {
                     // for it rather than start another.
                     let held = host_lock_held(&self.run);
                     match started {
+                        // Nothing runs, and only `serve` starts a host
+                        // (INVARIANT 7).
+                        None if !held && self.kind != Kind::Serve => {
+                            return Err(HoldError::NotRunning);
+                        }
                         // A start that fails (a spawn error) is a
                         // failure like any other (INVARIANT 3).
                         None if !held => match self.start().await {
@@ -420,6 +509,94 @@ pub fn host_lock_held(run: &Path) -> bool {
     }
 }
 
+/// What holds the books now, read from the locks, the server's own word
+/// about itself and its admin socket (INVARIANT 6a).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Holder {
+    /// Nothing: no host, no server.
+    Nothing,
+    /// A host holds `run/host.lock` (`wanderbooks serve`'s, or an earlier
+    /// build's): leases go to it.
+    Host,
+    /// The app's server, not closing, answering: no host behind it.
+    App,
+    /// A server the app started (or an earlier build's, which says
+    /// nothing of itself) that is not answering yet: opening its
+    /// companies, or finishing its last backup.
+    Opening,
+    /// A server a command started, for the length of its work.
+    Command,
+    /// A server that has begun to close (the app's, or the orphan of a
+    /// host that went): finishing its last backups.
+    Closing,
+}
+
+impl Holder {
+    /// What is said while waiting for this to finish (INVARIANT 6a).
+    pub fn waiting_words(self) -> &'static str {
+        match self {
+            Holder::Command => {
+                "Another wanderbooks command has the books open for a moment: waiting for it to finish…"
+            }
+            _ => {
+                "Wanderbooks is closing the books (a last backup is being made): waiting for it to finish…"
+            }
+        }
+    }
+
+    /// What is said when the wait ran out (INVARIANT 6a).
+    pub fn still_waiting_words(self) -> String {
+        match self {
+            Holder::Command => "Another wanderbooks command still has the books open after waiting for it: try again in a moment (`wanderbooks doctor` says what has them).".into(),
+            _ => "Wanderbooks is still closing the books after waiting for it (a last backup is still being made): try again in a moment.".into(),
+        }
+    }
+}
+
+/// What holds the books of the root whose `run/` folder this is
+/// (INVARIANT 6a). `Err` in words when the server's socket is another
+/// account's.
+pub fn what_holds(run: &Path) -> Result<Holder, String> {
+    use ledger_mcp::local::StartedBy;
+    if host_lock_held(run) {
+        return Ok(Holder::Host);
+    }
+    if !server_lock_held(run) {
+        return Ok(Holder::Nothing);
+    }
+    let info = ledger_mcp::local::read_server_info(run);
+    Ok(match info {
+        Some(i) if i.closing => Holder::Closing,
+        Some(i) if i.by == StartedBy::Command => Holder::Command,
+        // No host holds the books, so a server a host started is the
+        // orphan of one that went: it is closing, as its input ended.
+        Some(i) if i.by == StartedBy::Host => Holder::Closing,
+        // The app's, or one that says nothing (an earlier build's, or a
+        // newer one's, a moment before it writes its word).
+        Some(_) | None => {
+            if admin_answers(run)? {
+                Holder::App
+            } else {
+                Holder::Opening
+            }
+        }
+    })
+}
+
+/// Whether the admin socket answers: the books server is up and ready
+/// (it binds its sockets only once every company has been tried). A
+/// socket of another account is an error.
+pub fn admin_answers(run: &Path) -> Result<bool, String> {
+    let endpoint = ledger_mcp::ipc::Endpoint::new(run, ledger_mcp::local::ADMIN_SOCKET)
+        .map_err(|e| format!("can't reach the books server: {e}"))?;
+    match ledger_mcp::ipc::connect_std(&endpoint) {
+        Ok(stream) if ledger_mcp::ipc::peer_is_us(&stream) => Ok(true),
+        Ok(_) => Err("the books server's socket belongs to another account: not used".into()),
+        Err(e) if no_host(&e) => Ok(false),
+        Err(e) => Err(format!("can't reach the books server: {}", e.kind())),
+    }
+}
+
 /// Wait while a restart holds run/update.lock (INVARIANT 1).
 async fn wait_for_restart(run: &Path) {
     // Looked at, not waited on in a thread: a holder that gives up while
@@ -518,6 +695,7 @@ mod tests {
             opened_at: None,
             has_held: false,
             server_flags: Vec::new(),
+            deadline: None,
         };
         for _ in 0..MAX_TRIES {
             o.failed().await.unwrap();

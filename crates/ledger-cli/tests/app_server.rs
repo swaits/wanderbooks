@@ -28,7 +28,7 @@
 //!      leaves it alone: nothing is signalled.
 //!   6. A tab's company is opened and closed in the server by request; a
 //!      company closed is not reachable, one opened is.
-//!   7. The bridge, for a root the app has served and with no host:
+//!   7. The bridge, with no host (and no mark of any kind on the root):
 //!      "Wanderbooks isn't running" with the app not running, "Company X
 //!      isn't open" with it running and the company not, and neither once
 //!      both are so, in a session that was already running; it starts no
@@ -49,9 +49,7 @@
 mod common;
 
 use common::{BOOK, Home, Server, clean_env};
-use ledger_host::app_server::{
-    ANOTHER_HAS_THEM, APP_MARKER, AppHost, AppServer, Stopped, app_hosted,
-};
+use ledger_host::app_server::{ANOTHER_HAS_THEM, AppHost, AppServer, RETIRED_MARKER, Stopped};
 use ledger_host::opener::{host_lock_held, server_lock_held};
 use ledger_mcp::admin::{Request, Response};
 use serde_json::{Value, json};
@@ -98,7 +96,10 @@ fn the_server_is_a_child_that_closes_when_its_input_does() {
     let run = home.run();
     let server = start(&home, &[]);
     server.wait_ready(Duration::from_secs(60)).unwrap();
-    assert!(app_hosted(&run), "the root is the app's from now on");
+    assert!(
+        !run.join(RETIRED_MARKER).exists(),
+        "nothing marks the root as the app's"
+    );
     assert!(server_lock_held(&run), "it holds the server lock");
     assert!(!host_lock_held(&run), "no host was started beside it");
     assert!(
@@ -121,6 +122,240 @@ fn the_server_is_a_child_that_closes_when_its_input_does() {
         !run.join("admin.sock").exists() && !run.join("mcp.sock").exists(),
         "its sockets are removed"
     );
+}
+
+/// A mark an earlier build left (`run/app-hosted`) means nothing now: the
+/// root works as one without it, and the next start of the app's server
+/// removes it (app_server.rs INVARIANT 7).
+#[test]
+fn a_mark_an_earlier_build_left_is_ignored_and_removed() {
+    let home = Home::new("app-old-mark");
+    let run = home.run();
+    std::fs::write(run.join(RETIRED_MARKER), b"").unwrap();
+    // Nothing runs: the bridge says so in words, mark or none.
+    let mut bridge = Bridge::start(&home);
+    assert!(error_of(&bridge.initialize()).starts_with("Wanderbooks isn't running"));
+    let server = start(&home, &[]);
+    server.wait_ready(Duration::from_secs(60)).unwrap();
+    assert!(
+        !run.join(RETIRED_MARKER).exists(),
+        "the old mark is removed"
+    );
+    assert!(matches!(home.admin(Request::List), Response::Books(_)));
+    assert_eq!(server.stop(Duration::from_secs(60)), Stopped::Closed);
+}
+
+/// The server is in a process group of its own, so a Ctrl+C at the
+/// terminal the window was started from (sent to the terminal's
+/// foreground group, the window's) never reaches it: it closes by its
+/// input alone (app_server.rs INVARIANT 3). The window here is a process
+/// of its own in a group of its own, that ignores the signal as a window
+/// that handles Ctrl+C does; the group is sent SIGINT, as a terminal does.
+#[cfg(unix)]
+#[test]
+fn a_terminal_ctrl_c_reaches_the_window_and_never_the_server() {
+    let home = Home::new("app-ctrl-c");
+    let run = home.run();
+    let mut window = {
+        use std::os::unix::process::CommandExt;
+        Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "a_window_that_is_about_to_die", "--nocapture"])
+            .env("WB_APP_DYING_HOME", home.dir.path())
+            .env("WB_APP_IGNORE_SIGINT", "1")
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap()
+    };
+    struct Reap(Child);
+    impl Drop for Reap {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let mut lines = BufReader::new(window.stdout.take().unwrap()).lines();
+    let mut server_pid = None;
+    loop {
+        let line = lines.next().expect("the window said ready").unwrap();
+        if let Some(pid) = line.strip_prefix(CHILD_PID) {
+            server_pid = pid.trim().parse::<i32>().ok();
+        }
+        if line == READY {
+            break;
+        }
+    }
+    let mut window = Reap(window);
+    let server_pid = server_pid.expect("the window gave the server's pid");
+    let window_group = window.0.id() as i32;
+    // SAFETY: getpgid only reads a process-group id.
+    let (its, ours) = unsafe { (libc::getpgid(server_pid), libc::getpgrp()) };
+    assert_ne!(its, window_group, "the server is in the window's group");
+    assert_ne!(its, ours);
+    // The terminal's Ctrl+C: SIGINT to the window's whole group.
+    // SAFETY: the group of a process this test started and leads.
+    assert_eq!(unsafe { libc::killpg(window_group, libc::SIGINT) }, 0);
+    // The window is still there, and so is the server, with its books
+    // open and answering: nothing closed them.
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(window.0.try_wait().unwrap().is_none(), "the window died");
+    assert!(server_lock_held(&run), "the server closed on Ctrl+C");
+    assert!(matches!(home.admin(Request::List), Response::Books(_)));
+    // The window going is what closes it.
+    window.0.kill().unwrap();
+    window.0.wait().unwrap();
+    until("the server let go of the books", || !server_lock_held(&run));
+}
+
+/// A command run (as a subprocess, as a person's terminal does) while the
+/// app's server runs goes to it: no host, no second server, and what it
+/// says is the app's (WB-app-5). It never closes the app's books.
+#[test]
+fn a_command_with_the_app_running_goes_to_its_server_and_leaves_it_running() {
+    let home = Home::new("app-command");
+    let run = home.run();
+    let server = start(&home, &[]);
+    server.wait_ready(Duration::from_secs(60)).unwrap();
+    home.create(BOOK, "USD");
+    let command = |args: &[&str]| {
+        let mut c = Command::new(exe());
+        c.args(args)
+            .arg("--root")
+            .arg(home.root())
+            .stdin(Stdio::null());
+        clean_env(&mut c, home.dir.path());
+        c.output().unwrap()
+    };
+    let said = |o: &std::process::Output| String::from_utf8_lossy(&o.stdout).into_owned();
+    let listed = command(&["books", "list"]);
+    assert!(listed.status.success(), "{listed:?}");
+    assert!(
+        said(&listed).contains(&format!("{BOOK}  open")),
+        "{listed:?}"
+    );
+    // A company is opened and closed in the app's server by the command.
+    let closed = command(&["books", "close", BOOK]);
+    assert!(closed.status.success(), "{closed:?}");
+    assert!(!open_in_server(&home, BOOK));
+    let opened = command(&["books", "open", BOOK]);
+    assert!(opened.status.success(), "{opened:?}");
+    assert!(open_in_server(&home, BOOK));
+    // `close` and `doctor` say whose the books are, in words.
+    let said_close = command(&["close"]);
+    assert!(
+        said(&said_close).contains("Wanderbooks (the app) has these books open"),
+        "{said_close:?}"
+    );
+    let doctor = command(&["doctor"]);
+    assert!(
+        said(&doctor).contains("Wanderbooks (the app) has them")
+            && said(&doctor).contains(&format!("{BOOK}  open")),
+        "{doctor:?}"
+    );
+    // Through all of it: no host, one server, still the app's.
+    assert!(!host_lock_held(&run));
+    assert!(!run.join("lease.sock").exists());
+    assert_eq!(server.exited(), None);
+    assert!(server_lock_held(&run));
+    assert_eq!(server.stop(Duration::from_secs(60)), Stopped::Closed);
+}
+
+/// With nothing running, a command that manages the books' files runs a
+/// server of its own and leaves nothing behind; one that needs an open
+/// company says to start Wanderbooks (WB-app-5).
+#[test]
+fn with_nothing_running_a_command_runs_its_own_server_or_says_to_start_wanderbooks() {
+    let home = Home::new("app-own");
+    let run = home.run();
+    let command = |args: &[&str]| {
+        let mut c = Command::new(exe());
+        c.args(args)
+            .arg("--root")
+            .arg(home.root())
+            .stdin(Stdio::null());
+        clean_env(&mut c, home.dir.path());
+        c.output().unwrap()
+    };
+    let created = command(&["books", "create", BOOK]);
+    assert!(created.status.success(), "{created:?}");
+    assert!(!server_lock_held(&run), "the command's server was left");
+    assert!(!host_lock_held(&run));
+    // The folder is read for a list: nothing is open.
+    let listed = command(&["books", "list"]);
+    assert!(
+        String::from_utf8_lossy(&listed.stdout)
+            .contains(&format!("{BOOK}  not open: Wanderbooks isn't running")),
+        "{listed:?}"
+    );
+    // Work on a company opens it in the command's own server, then closes.
+    let token = command(&["token", "create", "--book", BOOK]);
+    assert!(token.status.success(), "{token:?}");
+    let backed = command(&["books", "back-up", BOOK]);
+    // The command's own server did the work, and said the true thing: no
+    // backup is set up in these books (a backup that is made is
+    // `books_are_backed_up_now_from_the_command_line`, open_while_held.rs).
+    assert_eq!(backed.status.code(), Some(1), "{backed:?}");
+    assert!(
+        String::from_utf8_lossy(&backed.stderr).contains("No backups are set up"),
+        "{backed:?}"
+    );
+    assert!(!server_lock_held(&run), "the command's server was left");
+    // Opening a company means nothing with no server: said in words.
+    let open = command(&["books", "open", BOOK]);
+    assert_eq!(open.status.code(), Some(1), "{open:?}");
+    let err = String::from_utf8_lossy(&open.stderr);
+    assert!(
+        err.contains("Start Wanderbooks first") && err.contains("wanderbooks serve"),
+        "{err}"
+    );
+    assert!(!server_lock_held(&run));
+}
+
+/// A command arriving while a server holds the books and has no admin
+/// socket yet (the app opening large companies, or finishing a backup)
+/// waits, says so in words, and then says plainly that it is still
+/// opening: it neither fails with a connection error nor starts a second
+/// server beside it (WB-app-5). Here the server is stood in for by its
+/// lock.
+#[test]
+fn a_command_waits_in_words_for_a_server_that_is_still_opening() {
+    let home = Home::new("app-opening");
+    let run = home.run();
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(run.join("server.lock"))
+        .unwrap();
+    lock.lock().unwrap();
+    let mut c = Command::new(exe());
+    c.args(["token", "list", "--root"])
+        .arg(home.root())
+        .args(["--test-knobs", "open_wait=1500"])
+        .stdin(Stdio::null());
+    clean_env(&mut c, home.dir.path());
+    let started = Instant::now();
+    let out = c.output().unwrap();
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    let (said, err) = (
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(
+        err.contains("Wanderbooks is still opening (or closing) the books: waiting for it"),
+        "{said} {err}"
+    );
+    assert!(
+        err.contains("didn't open in time") && err.contains("try again in a moment"),
+        "{err}"
+    );
+    assert!(!err.contains("can't reach"), "a connection error: {err}");
+    assert!(started.elapsed() < Duration::from_secs(10));
+    // No server of its own was started beside the one holding the lock.
+    assert!(!host_lock_held(&run));
+    drop(lock);
 }
 
 #[test]
@@ -162,7 +397,10 @@ fn a_start_is_refused_when_another_program_has_the_books() {
     let other = Server::start_with(&home, &["--open", "none"]);
     let refused = try_start().err().expect("refused");
     assert_eq!(refused, ANOTHER_HAS_THEM);
-    assert!(!run.join(APP_MARKER).exists(), "a refusal touches nothing");
+    assert!(
+        !run.join(RETIRED_MARKER).exists(),
+        "a refusal touches nothing"
+    );
     other.close();
     until("the other let go", || !server_lock_held(&run));
     // A host holds them.
@@ -174,7 +412,7 @@ fn a_start_is_refused_when_another_program_has_the_books() {
         .unwrap();
     lock.lock().unwrap();
     assert_eq!(try_start().err().expect("refused"), ANOTHER_HAS_THEM);
-    assert!(!run.join(APP_MARKER).exists());
+    assert!(!run.join(RETIRED_MARKER).exists());
     drop(lock);
     // Held by nobody: it starts.
     let server = try_start().expect("started");
@@ -195,6 +433,12 @@ fn a_window_that_is_about_to_die() {
         return;
     };
     let home = std::path::PathBuf::from(home);
+    #[cfg(unix)]
+    if std::env::var_os("WB_APP_IGNORE_SIGINT").is_some() {
+        // A window that survives its terminal's Ctrl+C (it handles it).
+        // SAFETY: setting a signal's disposition to ignore.
+        unsafe { libc::signal(libc::SIGINT, libc::SIG_IGN) };
+    }
     let root = ledger_store::root::default_root(&home);
     let dir = home.clone();
     let server = AppServer::start_in(exe(), Some(&root), &[], move |c: &mut Command| {
@@ -399,10 +643,12 @@ fn error_of(answer: &Value) -> String {
 fn the_bridge_says_the_app_isnt_running_then_works_once_it_is() {
     let home = Home::new("app-bridge");
     let run = home.run();
-    // The app has served this root (it wrote its mark), and isn't running.
-    std::fs::write(run.join(APP_MARKER), b"").unwrap();
+    // The app isn't running, and no host is: a root that was never the
+    // app's, so nothing marks it.
     let mut bridge = Bridge::start(&home);
-    let not_running = format!("Wanderbooks isn't running: start Wanderbooks and open {BOOK}.");
+    let not_running = format!(
+        "Wanderbooks isn't running: start Wanderbooks and open {BOOK} (on a computer with no screen, run `wanderbooks serve`), then try again."
+    );
     assert_eq!(error_of(&bridge.initialize()), not_running);
     assert_eq!(error_of(&bridge.start_call()), not_running);
     // No host was started for it.

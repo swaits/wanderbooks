@@ -7,17 +7,35 @@
 //!
 //! ```text
 //! GOAL: from a terminal, or the viewer's menu, the owner holds the books
-//!       open, closes them, makes, adopts, backs up and restores books and
-//!       connects agents, without ever naming or touching the books'
-//!       private folder.
+//!       open (`serve`), closes them, makes, adopts, backs up and restores
+//!       books and connects agents, without ever naming or touching the
+//!       books' private folder, and without any command leaving a host or a
+//!       server running that nothing manages.
 //! SOURCE: plan/served.md 3.9 (a terminal running `wanderbooks serve`, and
-//!         any command that needs the server, holds a lease; "Close the
-//!         books" ends every lease), 3.1 (the CLI talks to admin.sock and
-//!         never reads the books), 5.5 (adopt; preview and confirmation at
-//!         the terminal).
+//!         any command that needs a host, holds a lease), 3.1 (the CLI
+//!         talks to admin.sock and never reads the books), 5.5 (adopt;
+//!         preview and confirmation at the terminal);
+//!         plan/p15-app-and-relay.md 3.1 (the app is the host; only `serve`
+//!         keeps a detached host), WB-app-5.
 //! INVARIANTS:
-//!   1. A command that needs the server holds a lease while it runs, and
-//!      lets go when it ends.
+//!   1. A command that needs the server finds what holds the books: a
+//!      host (it holds a lease while it runs, and lets go when it ends),
+//!      the app's server (no lease: the app decides when the books
+//!      close), or nothing. With nothing running it starts no host: a
+//!      command that only reads, or manages the books' files, runs a
+//!      server of its own for the length of the work and closes it
+//!      (waiting for its last backup); one that needs a company held open
+//!      says "Start Wanderbooks first" ([`Direct`], [`reach`]; WB-app-5).
+//!      A server of its own takes the locks the app's server takes, so
+//!      two programs never hold one set of books. What it finds is read,
+//!      not guessed (opener.rs INVARIANT 6a): only a server the app
+//!      started is the app's; another command's server, or a closing one,
+//!      is waited for, in words, inside one `open_wait`. A program that
+//!      takes the books between its look and its own server's start (the
+//!      app, `serve`, another command) is joined: its server lets go of
+//!      the start and it looks again. Its own server is started clean (a
+//!      host's environment, `/` for its folder), and closes the invoker's
+//!      descriptors at its start.
 //!   2. Nothing printed names the data root.
 //!   3. Adoption and restoring are previewed first and go ahead only on a
 //!      yes at the terminal, or --yes; a vault beside the books must be
@@ -31,8 +49,7 @@
 //!      makes the books' agent token only when there is no token file for
 //!      it, replacing the server's (no one could be using it: the bridge
 //!      reads its token from this file).
-//!   5. The viewer's hold lets go only when the owner closes the books;
-//!      books that stop, or won't open, are tried again.
+//!   5. (Retired with the viewer's lease: the app is the host.)
 //!   6. Books waiting for a format upgrade (plan 3.9, D-39): the owner's
 //!      commands that open the books (`serve`, `books`, `token`,
 //!      `connect`) ask for the go-ahead once each time they run, at a
@@ -40,12 +57,13 @@
 //!      the foreground: the question, then the owner passphrase, which only
 //!      the server checks); elsewhere they only say so, on stderr. Only a passphrase typed
 //!      at a terminal (or in the viewer) is sent, through the lease
-//!      socket's consent_format_upgrade; declining changes nothing.
+//!      socket's consent_format_upgrade (a host), or as the admin request
+//!      `UpgradeFormat` (no host); declining changes nothing.
 //! ```
 
 use crate::knobs::{FLAG, Knobs};
 use crate::lease::{Ask, HostMsg, Intent, Kind, Reason};
-use crate::opener::{HoldError, Lease, Opener};
+use crate::opener::{HoldError, Holder, Lease, Opener};
 use ledger_mcp::admin::{self, Request, Response};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -106,12 +124,20 @@ fn exit(code: i32) -> Box<dyn std::error::Error> {
 
 /// Hold the books and wait until they are open (INVARIANT 1).
 async fn open(opener: &mut Opener) -> Result<Lease, HoldError> {
-    let deadline = tokio::time::Instant::now() + opener.knobs().open_wait;
+    // One bounded wait for the whole command: the deadline a caller set
+    // (`reach`), else `open_wait` from now. The opener's own waits for
+    // another program's server (WB-app-5) end at it with their own words;
+    // the timeout here is a moment later, for what has none.
+    let deadline = opener
+        .deadline()
+        .unwrap_or_else(|| tokio::time::Instant::now() + opener.knobs().open_wait);
+    opener.wait_until(deadline);
+    let grace = Duration::from_millis(500);
     let too_long = || -> HoldError {
-        "the books didn't open in time: run `wanderbooks doctor` to see why".into()
+        "the books didn't open in time (Wanderbooks may still be opening a large company: try again in a moment): run `wanderbooks doctor` to see why".into()
     };
     loop {
-        let mut lease = tokio::time::timeout_at(deadline, opener.hold())
+        let mut lease = tokio::time::timeout_at(deadline + grace, opener.hold())
             .await
             .map_err(|_| too_long())??;
         loop {
@@ -145,6 +171,180 @@ async fn open(opener: &mut Opener) -> Result<Lease, HoldError> {
     }
 }
 
+/// Whether a command can do its work with no program holding the books
+/// open, and what its own server then has open.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Direct {
+    /// It needs the books held open by Wanderbooks (the app, or `serve`):
+    /// with none running it says so ([`START_WANDERBOOKS`]).
+    No,
+    /// It manages the books' files, or reads: with nothing running it runs
+    /// a books server of its own for as long as the work takes (the same
+    /// server, taking the same locks, started the way the app starts its
+    /// own), with these companies open, and lets go of it when it is done.
+    With(Vec<String>),
+}
+
+/// What a request needs (the table in docs/spec/claims/app.md, WB-app-5).
+fn direct_for(request: &Request) -> Direct {
+    match request {
+        // Opening and closing a company in a running server mean nothing
+        // with none running, and the sessions are of a running server's.
+        Request::OpenBook { .. } | Request::CloseBook { .. } | Request::Sessions => Direct::No,
+        // Work on one company, which the server opens (so the owner is
+        // told of a format upgrade it waits for, INVARIANT 6).
+        Request::BackUpNow { id, .. }
+        | Request::UpgradeFormat { id, .. }
+        | Request::Extract { id, .. } => Direct::With(vec![id.clone()]),
+        Request::TokenCreate { book, .. }
+        | Request::TokenCheck { book, .. }
+        | Request::TokenRevoke { book, .. } => Direct::With(vec![book.clone()]),
+        // The rest read the list, or make and move files.
+        _ => Direct::With(Vec::new()),
+    }
+}
+
+/// How long a command waits for its own server to close when it is done:
+/// the same as the window's (a last backup of what it opened).
+const OWN_STOP_WAIT: Duration = crate::app_server::STOP_WAIT;
+
+/// What a command holds while it works: a lease on a host or on the app's
+/// server (no host behind it), or its own server, which it closes when it
+/// is done.
+struct Reached {
+    run_dir: PathBuf,
+    /// Held while the work runs (None for the app's server).
+    lease: Option<Lease>,
+    /// The command's own server, when nothing else ran.
+    own: Option<std::sync::Arc<crate::app_server::AppServer>>,
+}
+
+/// What a command says when the books were closed under it.
+fn closed_just_now() -> String {
+    "the books were closed just now (Close the books): nothing was done".to_string()
+}
+
+/// A hold that failed, in words.
+fn hold_words(e: HoldError) -> String {
+    match e {
+        HoldError::ClosedByOwner => closed_just_now(),
+        HoldError::NotRunning => crate::opener::START_WANDERBOOKS.to_string(),
+        HoldError::Failed(why) => why,
+    }
+}
+
+impl Reached {
+    /// The admin socket of what is held.
+    fn admin_socket(&self) -> PathBuf {
+        self.run_dir.join(ledger_mcp::local::ADMIN_SOCKET)
+    }
+
+    /// One admin request, off the async threads.
+    async fn ask(&self, request: Request, wait: Option<Duration>) -> Result<Response, String> {
+        let socket = self.admin_socket();
+        tokio::task::spawn_blocking(move || admin::call_within(&socket, request, wait))
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())
+    }
+
+    /// Let go: the lease ends, and a server of the command's own is
+    /// closed (its last backups made), waited for, and said so when it is
+    /// still at it.
+    async fn release(self) {
+        drop(self.lease);
+        if let Some(own) = self.own {
+            let stopped = tokio::task::spawn_blocking(move || own.stop(OWN_STOP_WAIT)).await;
+            match stopped {
+                Ok(crate::app_server::Stopped::Closed) | Err(_) => {}
+                Ok(crate::app_server::Stopped::Failed(why)) => {
+                    eprintln!("warning: {why}: `wanderbooks doctor` has its last words");
+                }
+                Ok(crate::app_server::Stopped::StillClosing) => {
+                    eprintln!("note: {}", crate::app_server::STILL_CLOSING);
+                }
+            }
+        }
+    }
+}
+
+/// Hold the books for a command, or, with nothing running and the work
+/// one `direct` allows, run a server of its own (WB-app-5).
+///
+/// Whatever is found is joined: a host, the app's server, and, once its
+/// work is done, a command's server or a closing one is waited for. A
+/// program that takes the books between the look and the command's own
+/// server taking them (the app starting, `serve`, another command) is
+/// joined too: the command's server has not got them, it lets go of its
+/// start and looks again. One wait covers all of it, `open_wait`, said in
+/// words (`Opener::hold` says what it waits for).
+async fn reach(opener: &mut Opener, common: &Common, direct: &Direct) -> Result<Reached, String> {
+    let run_dir = opener.run_dir().to_path_buf();
+    let deadline = tokio::time::Instant::now() + opener.knobs().open_wait;
+    opener.wait_until(deadline);
+    let mut said = false;
+    loop {
+        match open(opener).await {
+            Ok(lease) => {
+                return Ok(Reached {
+                    run_dir,
+                    lease: Some(lease),
+                    own: None,
+                });
+            }
+            Err(HoldError::NotRunning) => {}
+            Err(e) => return Err(hold_words(e)),
+        }
+        let Direct::With(books) = direct else {
+            return Err(crate::opener::START_WANDERBOOKS.to_string());
+        };
+        let (root, books, knobs) = (common.root.clone(), books.clone(), common.knobs);
+        let started = tokio::task::spawn_blocking(move || {
+            let server = match crate::app_server::AppServer::start_for_command(
+                root.as_deref(),
+                &books,
+                &knobs,
+            ) {
+                Ok(server) => server,
+                // Another program took the books since the look.
+                Err(why) if why == crate::app_server::ANOTHER_HAS_THEM => {
+                    return Ok(None);
+                }
+                Err(why) => return Err(why),
+            };
+            match server.wait_ready_unless_beaten(crate::app_server::READY_WAIT)? {
+                crate::app_server::Waited::Ready => Ok(Some(server)),
+                // Another program took them first: this one's start is let
+                // go of (it has not opened anything), and what runs is
+                // looked at again.
+                crate::app_server::Waited::Beaten => {
+                    server.stop(Duration::from_secs(10));
+                    Ok(None)
+                }
+            }
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        if let Some(own) = started {
+            return Ok(Reached {
+                run_dir,
+                lease: None,
+                own: Some(std::sync::Arc::new(own)),
+            });
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(format!(
+                "Other programs kept the books for {} s while this command waited: try again in a moment (`wanderbooks doctor` says what has them).",
+                opener.knobs().open_wait.as_secs()
+            ));
+        }
+        if !std::mem::replace(&mut said, true) {
+            eprintln!("Another program started the books just now: waiting for it…");
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 /// Ask the server's admin socket, holding the books open meanwhile.
 fn with_server(common: &Common, request: Request) -> Result<Response, String> {
     with_server_in(common, request).map(|(answer, _)| answer)
@@ -153,34 +353,37 @@ fn with_server(common: &Common, request: Request) -> Result<Response, String> {
 /// [`with_server`], with the root's `run/` folder too (where the
 /// token files live).
 fn with_server_in(common: &Common, request: Request) -> Result<(Response, PathBuf), String> {
+    let direct = direct_for(&request);
+    with_server_as(common, request, direct)
+}
+
+/// [`with_server_in`] with what a command with nothing running may do
+/// ([`Direct`]) said by the caller: a list that must show what an open
+/// company waits for, for one.
+fn with_server_as(
+    common: &Common,
+    request: Request,
+    direct: Direct,
+) -> Result<(Response, PathBuf), String> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(|e| e.to_string())?;
     let outcome = rt.block_on(async {
         let mut opener = Opener::new(common.root.as_deref(), common.knobs, Kind::Cli, None)?;
-        let lease = open(&mut opener).await.map_err(|e| match e {
-            HoldError::ClosedByOwner => {
-                "the books were closed just now (Close the books): nothing was done".to_string()
-            }
-            HoldError::Failed(why) => why,
-        })?;
-        let run_dir = opener.run_dir().to_path_buf();
+        let reached = reach(&mut opener, common, &direct).await?;
+        let run_dir = reached.run_dir.clone();
         // The books are open: asked about a format upgrade first
-        // (INVARIANT 6).
+        // (INVARIANT 6). (A server of the command's own has only the
+        // company the command names open.)
         if common.ask_upgrades && !ASKED_UPGRADES.swap(true, std::sync::atomic::Ordering::SeqCst) {
             let run = run_dir.clone();
             let _ = tokio::task::spawn_blocking(move || offer_upgrades(&run)).await;
         }
-        let socket = run_dir.join(ledger_mcp::local::ADMIN_SOCKET);
         // A list is quick; a create or an adoption takes what it takes.
         let wait = matches!(request, Request::List | Request::TokenList).then_some(LIST_WAIT);
-        let answer =
-            tokio::task::spawn_blocking(move || admin::call_within(&socket, request, wait))
-                .await
-                .map_err(|e| e.to_string())?
-                .map_err(|e| e.to_string());
-        drop(lease);
+        let answer = reached.ask(request, wait).await;
+        reached.release().await;
         answer.map(|a| (a, run_dir))
     });
     // Past its deadline, the command ends: nothing pending holds it.
@@ -217,12 +420,29 @@ fn past(deadline: std::time::Instant, now: std::time::Instant) -> bool {
     now > deadline
 }
 
+/// What is said of a server that is not the app's, in the words of its
+/// own state (`close`, `doctor`): never "the app" for what is not.
+fn held_words(holder: Holder) -> &'static str {
+    match holder {
+        Holder::Command => {
+            "A wanderbooks command has the books open for a moment: they close when its work is done."
+        }
+        Holder::Closing => "The books are closing: a books server is finishing its last backups.",
+        Holder::Opening => {
+            "Wanderbooks is opening the books (or finishing the last backup of the last session): its server isn't answering yet."
+        }
+        Holder::Host | Holder::App | Holder::Nothing => {
+            "The books are held: `wanderbooks doctor` says by what."
+        }
+    }
+}
+
 /// What `doctor` says of books no host holds.
 fn no_host(server_lock_held: bool) -> &'static str {
     if server_lock_held {
         "The books are closing: a books server is finishing its last call."
     } else {
-        "The books are closed."
+        "The books are closed: Wanderbooks isn't running. Open the Wanderbooks app, or, on a computer with no screen, run `wanderbooks serve`."
     }
 }
 
@@ -327,8 +547,8 @@ pub fn serve(
                     println!("The books were closed (Close the books).");
                     return Ok(());
                 }
-                Err(HoldError::Failed(why)) => {
-                    eprintln!("error: {why}");
+                Err(e @ (HoldError::Failed(_) | HoldError::NotRunning)) => {
+                    eprintln!("error: {}", hold_words(e));
                     return Err(exit(1));
                 }
             };
@@ -427,8 +647,18 @@ pub fn close(
             exit(1)
         })?;
     match asked {
+        // No host: what holds the books is read (WB-app-5), so what is
+        // said of it is true.
         None => {
-            println!("The books are already closed.");
+            match crate::opener::what_holds(&run) {
+                Ok(Holder::App) => println!("{APP_HAS_THEM}."),
+                Ok(Holder::Nothing) => println!("The books are already closed."),
+                Ok(other) => println!("{}", held_words(other)),
+                Err(why) => {
+                    eprintln!("error: {why}");
+                    return Err(exit(1));
+                }
+            }
             Ok(())
         }
         Some(HostMsg::Done { .. }) => {
@@ -462,6 +692,54 @@ pub fn close(
             Err(exit(1))
         }
     }
+}
+
+/// Ask the host that holds the books (an earlier build's detached host,
+/// or `wanderbooks serve`'s) to close them, and wait until they are
+/// closed: what `wanderbooks close` does, for the app, whose person may
+/// have no command line (the lease protocol to such a host is the same
+/// as ever). `Ok` says what came of it, in words; `Err` says why not.
+/// Blocks, at most `CLOSE_WAIT` and a few seconds.
+pub fn close_the_host(root: Option<&Path>) -> Result<String, String> {
+    let found = ledger_store::root::Root::find(root).map_err(|e| e.to_string())?;
+    let run = found.run_dir().map_err(|e| e.to_string())?;
+    let asked = crate::opener::ask_once_within(&run, Ask::Intent(Intent::Close), HOST_WAIT)?;
+    match asked {
+        None => Ok("No program has the books open now.".into()),
+        Some(HostMsg::Done { .. }) => {
+            let deadline = std::time::Instant::now() + CLOSE_WAIT;
+            loop {
+                let asked = crate::opener::ask_once_within(&run, Ask::Leases, HOST_WAIT);
+                match closing(&asked, || crate::opener::server_lock_held(&run)) {
+                    Closing::Closed => return Ok("The other program let go of the books.".into()),
+                    Closing::Reopened => {
+                        return Err(
+                            "something opened the books again as the other program let go".into(),
+                        );
+                    }
+                    Closing::Going => {}
+                }
+                if past(deadline, std::time::Instant::now()) {
+                    return Err(
+                        "the other program is still closing the books (a request is finishing)"
+                            .into(),
+                    );
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+        Some(HostMsg::Refused(why)) => Err(why),
+        Some(other) => Err(format!("the books' host answered oddly: {other:?}")),
+    }
+}
+
+/// Whether a host holds the books of the root now (an earlier build's, or
+/// `wanderbooks serve`'s): the one case the app's refused start can offer
+/// to close for the person ([`close_the_host`]).
+pub fn a_host_holds(root: Option<&Path>) -> bool {
+    ledger_store::root::Root::find(root)
+        .and_then(|found| found.run_dir())
+        .is_ok_and(|run| crate::opener::host_lock_held(&run))
 }
 
 fn books_usage(prog: &str) {
@@ -558,7 +836,21 @@ pub fn books(
     // (INVARIANT 6), unless it is the upgrade itself.
     common.ask_upgrades = !matches!(words.as_slice(), ["upgrade", ..]);
     let answer = match words.as_slice() {
-        ["list"] => with_server(&common, Request::List),
+        ["list"] => match listed_while_closed(&common) {
+            Ok(Some(listed)) => {
+                if listed.is_empty() {
+                    println!("No books yet: `wanderbooks books create ID` starts some.");
+                }
+                for (id, upgrade) in listed {
+                    println!(
+                        "{id}  not open: Wanderbooks isn't running (start it, or run `wanderbooks serve`, to open it){upgrade}"
+                    );
+                }
+                return Ok(());
+            }
+            Ok(None) => with_server(&common, Request::List),
+            Err(why) => Err(why),
+        },
         ["create", new] => with_server(
             &common,
             Request::Create {
@@ -745,6 +1037,46 @@ pub fn books(
 }
 
 /// One book, as `books list` and `doctor` show it.
+/// The books of the root by name, read from the folder and no more, when
+/// nothing runs: no host and no server holds the root, so there is no open
+/// or closed to tell, and nothing is changed or read of the books, which
+/// is why it takes no lock (WB-app-5), with what each waits for in words:
+/// a format upgrade is read from what the journal declares
+/// (`ledger_store::declared_format`: no lock, nothing written, the chain
+/// not verified, so it says what the books declare and no more), and a
+/// journal that can't be read says so and is not skipped. `None` when
+/// something runs: ask it.
+fn listed_while_closed(common: &Common) -> Result<Option<Vec<(String, String)>>, String> {
+    let found =
+        ledger_store::root::Root::find(common.root.as_deref()).map_err(|e| e.to_string())?;
+    let run = found.run_dir().map_err(|e| e.to_string())?;
+    if crate::opener::host_lock_held(&run) || crate::opener::server_lock_held(&run) {
+        return Ok(None);
+    }
+    let ids = found.list_books().map_err(|e| e.to_string())?;
+    Ok(Some(
+        ids.iter()
+            .filter_map(|id| {
+                let waits = match ledger_store::declared_format(&found.book_dir(id)) {
+                    Ok(declared) if declared.upgrade().is_some() => {
+                        format!("; waiting for a format upgrade (`wanderbooks books upgrade {id}`)")
+                    }
+                    Ok(_) => String::new(),
+                    // A book that vanished since the list is not one of the
+                    // books; one that can't be read says why.
+                    Err(ledger_store::StoreError::Io(e))
+                        if e.kind() == std::io::ErrorKind::NotFound =>
+                    {
+                        return None;
+                    }
+                    Err(e) => format!("; its format isn't known: {e}"),
+                };
+                Some((id.to_string(), waits))
+            })
+            .collect(),
+    ))
+}
+
 fn book_line(b: &admin::BookStatus) -> String {
     if b.closed {
         return format!(
@@ -915,13 +1247,36 @@ fn consent_now(run: &Path, book: &str, passphrase: &str) -> Result<Vec<String>, 
         // Refused: nothing was done (the server says so too).
         Some(HostMsg::Refused(why)) => Err(format!("not upgraded: {why}")),
         Some(HostMsg::Uncertain(why)) => Err(why),
-        // Sent, and the host gone without an answer (closed, or killed):
-        // its server may have done it all the same.
-        None => Err(
-            "the books' host gave no answer, so it may or may not have been done: `wanderbooks books list` says whether the books still wait for it"
+        // No host: the app's server, or one of the command's own, takes
+        // it as an admin request (WB-app-2).
+        None => upgrade_by_admin(run, book, passphrase),
+        Some(other) => Err(format!("the books' host answered oddly: {other:?}")),
+    }
+}
+
+/// The format upgrade as an admin request to the server that runs with no
+/// host (the app's, or a command's own): what it said, a line each; or
+/// why not, which says whether it may have been done all the same.
+fn upgrade_by_admin(run: &Path, book: &str, passphrase: &str) -> Result<Vec<String>, String> {
+    let request = Request::UpgradeFormat {
+        id: book.to_string(),
+        passphrase: admin::Passphrase(passphrase.to_string()),
+    };
+    match admin::call_within(
+        &run.join(ledger_mcp::local::ADMIN_SOCKET),
+        request,
+        Some(UPGRADE_WAIT),
+    ) {
+        Ok(Response::FormatUpgraded(u)) => Ok(upgraded_lines(&u)),
+        Ok(Response::Refused(why)) => Err(format!("not upgraded: {why}")),
+        Ok(_) => Err(
+            "the books server answered oddly, so it may or may not have been done: `wanderbooks books list` says whether the books still wait for it"
                 .into(),
         ),
-        Some(other) => Err(format!("the books' host answered oddly: {other:?}")),
+        Err(admin::CallError::NotSent(why)) => Err(format!("not upgraded: {why}")),
+        Err(admin::CallError::Unknown(why)) => Err(format!(
+            "{why}, so it may or may not have been done: `wanderbooks books list` says whether the books still wait for it"
+        )),
     }
 }
 
@@ -947,18 +1302,16 @@ pub fn upgrade_format(
         let not_sent = |why: String| format!("not upgraded: {why}");
         let mut opener =
             Opener::new(common.root.as_deref(), common.knobs, Kind::Cli, None).map_err(not_sent)?;
-        let lease = open(&mut opener).await.map_err(|e| match e {
-            HoldError::ClosedByOwner => {
-                "not upgraded: the books were closed just now (Close the books): nothing was done"
-                    .to_string()
-            }
-            HoldError::Failed(why) => not_sent(why),
-        })?;
-        let run = opener.run_dir().to_path_buf();
+        // With nothing running, a server of its own with this company
+        // open does it.
+        let reached = reach(&mut opener, common, &Direct::With(vec![book.clone()]))
+            .await
+            .map_err(not_sent)?;
+        let run = reached.run_dir.clone();
         let asked = tokio::task::spawn_blocking(move || consent_now(&run, &book, &passphrase))
             .await
             .map_err(|e| e.to_string())?;
-        drop(lease);
+        reached.release().await;
         asked
     });
     rt.shutdown_timeout(Duration::from_secs(1));
@@ -1057,9 +1410,14 @@ fn upgrade(common: &Common, book: &str) -> Result<(), Box<dyn std::error::Error>
         Ok(id) => id.to_string(),
         Err(e) => return fail(e.to_string()),
     };
-    let listed = match with_server(common, Request::List) {
+    // With nothing running, the list is of a server of its own with this
+    // company open, so what it waits for shows.
+    let listed = match with_server_as(common, Request::List, Direct::With(vec![book.clone()]))
+        .map(|(answer, _)| answer)
+    {
         Ok(Response::Books(books)) => books,
-        Ok(Response::Refused(why)) | Err(why) => return fail(why),
+        Ok(Response::Refused(why)) => return fail(why),
+        Err(why) => return fail(why),
         Ok(other) => return fail(format!("the books server answered oddly: {other:?}")),
     };
     let Some(status) = listed.into_iter().find(|b| b.id == book) else {
@@ -1129,36 +1487,9 @@ pub fn new_books(common: &Common, id: &str, currency: &str) -> Result<String, St
     }
 }
 
-/// What closing the books says while the app has them open: the app's
-/// tabs and its window close them.
+/// What `wanderbooks close` says while the app has the books open: the
+/// app's tabs and its window close them (the app has no host to ask).
 const APP_HAS_THEM: &str = "Wanderbooks (the app) has these books open: close a company's tab to close that company, or close the window to close them all";
-
-/// "Close the books": everything holding them lets go (the lease
-/// socket's close intent). What came of it.
-pub fn close_books(common: &Common) -> Result<String, String> {
-    let found =
-        ledger_store::root::Root::find(common.root.as_deref()).map_err(|e| e.to_string())?;
-    let run = found.run_dir().map_err(|e| e.to_string())?;
-    // The app's own server: no host to ask (it isn't "closed": it is open).
-    if crate::app_server::the_apps_server_runs(&run) {
-        return Err(APP_HAS_THEM.into());
-    }
-    match crate::opener::ask_once_within(&run, Ask::Intent(Intent::Close), HOST_WAIT)? {
-        None => Ok("The books are closed.".into()),
-        Some(HostMsg::Done { detail }) => Ok(detail
-            .map(|d| {
-                let mut c = d.chars();
-                c.next()
-                    .map(|first| format!("{}{}.", first.to_uppercase(), c.as_str()))
-                    .unwrap_or_default()
-            })
-            .filter(|d| !d.is_empty())
-            .unwrap_or_else(|| "The books are closing.".into())),
-        Some(HostMsg::Refused(why)) => Err(why),
-        Some(HostMsg::Uncertain(why)) => Err(why),
-        Some(other) => Err(format!("the books' host answered oddly: {other:?}")),
-    }
-}
 
 /// An update the host has downloaded and checked, waiting for the owner
 /// (the viewer's notice; P11a step 4).
@@ -1275,61 +1606,6 @@ const NO_SELF_UPDATE: &str = "self-update isn't available on this platform";
 
 /// The longest an agent's own command may take to add the books.
 const CONNECT_WAIT: Duration = Duration::from_secs(60);
-
-/// How long the viewer's hold waits before trying again after books that
-/// wouldn't open.
-const VIEWER_RETRY: Duration = Duration::from_secs(30);
-
-/// Hold the books `book` open while the viewer runs (a lease of kind
-/// app), on a thread of its own: the window never waits for it. It lets
-/// go only when the owner closes the books (and when the viewer ends,
-/// with the process); books that stop, or won't open, are tried again.
-pub fn hold_for_viewer(common: &Common, book: Option<String>) -> std::thread::JoinHandle<()> {
-    let common = common.clone();
-    std::thread::spawn(move || {
-        let Ok(rt) = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-        else {
-            return;
-        };
-        rt.block_on(async {
-            let Ok(mut opener) = Opener::new(common.root.as_deref(), common.knobs, Kind::App, book)
-            else {
-                return;
-            };
-            loop {
-                // The same opener each time round (it knows it held the
-                // books, so it never reopens books the owner closed); its
-                // failures counted afresh.
-                opener.forget_failures();
-                loop {
-                    let mut lease = match open(&mut opener).await {
-                        Ok(lease) => lease,
-                        Err(HoldError::ClosedByOwner) => return,
-                        Err(HoldError::Failed(_)) => break,
-                    };
-                    match lease.next().await {
-                        Some(HostMsg::Ending {
-                            reason: Reason::ClosedByOwner,
-                            ..
-                        }) => return,
-                        Some(HostMsg::Ending {
-                            reason: Reason::Restarting | Reason::Closing,
-                            ..
-                        }) => {}
-                        _ => {
-                            if opener.failed().await.is_err() {
-                                break;
-                            }
-                        }
-                    }
-                }
-                tokio::time::sleep(VIEWER_RETRY).await;
-            }
-        });
-    })
-}
 
 /// What a backup made now came to, a line each.
 pub fn backed_up_lines(head_seq: u64, targets: &[admin::BackedUpTarget]) -> Vec<String> {
@@ -2775,6 +3051,52 @@ fn log_tail(run: &Path, name: &str, root: &Path, n: usize) -> Vec<String> {
         .collect()
 }
 
+/// `doctor`'s look at a running server through its admin socket: each
+/// book and why one didn't open, the agents' tokens, who is connected.
+fn admin_report(run: &Path) {
+    // Each book, and why one didn't open.
+    let socket = run.join(ledger_mcp::local::ADMIN_SOCKET);
+    // A quick look: a wedged server doesn't hang the doctor.
+    let listed = admin::call_within(&socket, Request::List, Some(DOCTOR_WAIT));
+    if let Err(why) = &listed {
+        println!("  The books server doesn't answer: {why}");
+    }
+    if let Ok(admin::Response::Books(books)) = listed {
+        for b in books {
+            println!("  {}", book_line(&b));
+            if let Some(line) = database_line(&b) {
+                println!("    {line}");
+            }
+        }
+        // Agents' tokens: how many each book has.
+        match admin::call_within(&socket, Request::TokenList, Some(DOCTOR_WAIT)) {
+            Ok(admin::Response::Tokens(tokens)) if tokens.is_empty() => {
+                println!("Agents' tokens: none yet (`wanderbooks token create --book ID`).")
+            }
+            Ok(admin::Response::Tokens(tokens)) => {
+                println!("Agents' tokens:");
+                for t in tokens {
+                    println!("  {}  {}  {}", t.book, t.name, t.scopes.join(","));
+                }
+            }
+            Ok(admin::Response::Refused(why)) => println!("Agents' tokens: {why}"),
+            Ok(_) | Err(_) => {}
+        }
+        // Who is connected to each open book, and what it is doing.
+        match admin::call_within(&socket, Request::Sessions, Some(DOCTOR_WAIT)) {
+            Ok(admin::Response::Sessions(open)) => {
+                for line in session_lines(&open) {
+                    println!("{line}");
+                }
+            }
+            Ok(admin::Response::Refused(why)) => {
+                println!("Assistants connected: {why}")
+            }
+            Ok(_) | Err(_) => {}
+        }
+    }
+}
+
 /// `wanderbooks doctor`: whether the books are open, who holds them, and
 /// what the host and the server last said. It names no folder.
 pub fn doctor(
@@ -2824,51 +3146,21 @@ pub fn doctor(
     }
     let run = root.run_dir().map_err(|e| e.to_string())?;
     match crate::opener::ask_once_within(&run, Ask::Leases, DOCTOR_WAIT) {
-        Ok(None) => println!("{}", no_host(crate::opener::server_lock_held(&run))),
+        // No host: the app's server (or another that runs without one),
+        // one still opening or finishing, or nothing (WB-app-3).
+        Ok(None) => match crate::opener::what_holds(&run) {
+            Ok(Holder::App) => {
+                println!("The books are open: Wanderbooks (the app) has them.");
+                admin_report(&run);
+            }
+            Ok(Holder::Nothing) => println!("{}", no_host(false)),
+            Ok(other) => println!("{}", held_words(other)),
+            Err(why) => println!("The books server can't be asked: {why}"),
+        },
         Ok(Some(HostMsg::Leases { ready, leases })) => {
             if ready {
                 println!("The books are open.");
-                // Each book, and why one didn't open.
-                let socket = run.join(ledger_mcp::local::ADMIN_SOCKET);
-                // A quick look: a wedged server doesn't hang the doctor.
-                let listed = admin::call_within(&socket, Request::List, Some(DOCTOR_WAIT));
-                if let Err(why) = &listed {
-                    println!("  The books server doesn't answer: {why}");
-                }
-                if let Ok(admin::Response::Books(books)) = listed {
-                    for b in books {
-                        println!("  {}", book_line(&b));
-                        if let Some(line) = database_line(&b) {
-                            println!("    {line}");
-                        }
-                    }
-                    // Agents' tokens: how many each book has.
-                    match admin::call_within(&socket, Request::TokenList, Some(DOCTOR_WAIT)) {
-                        Ok(admin::Response::Tokens(tokens)) if tokens.is_empty() => println!(
-                            "Agents' tokens: none yet (`wanderbooks token create --book ID`)."
-                        ),
-                        Ok(admin::Response::Tokens(tokens)) => {
-                            println!("Agents' tokens:");
-                            for t in tokens {
-                                println!("  {}  {}  {}", t.book, t.name, t.scopes.join(","));
-                            }
-                        }
-                        Ok(admin::Response::Refused(why)) => println!("Agents' tokens: {why}"),
-                        Ok(_) | Err(_) => {}
-                    }
-                    // Who is connected to each open book, and what it is doing.
-                    match admin::call_within(&socket, Request::Sessions, Some(DOCTOR_WAIT)) {
-                        Ok(admin::Response::Sessions(open)) => {
-                            for line in session_lines(&open) {
-                                println!("{line}");
-                            }
-                        }
-                        Ok(admin::Response::Refused(why)) => {
-                            println!("Assistants connected: {why}")
-                        }
-                        Ok(_) | Err(_) => {}
-                    }
-                }
+                admin_report(&run);
             } else {
                 println!("The books are opening (the books server isn't ready yet).");
             }
@@ -3240,12 +3532,8 @@ fn on_the_socket(
             Kind::Cli,
             None,
         )?;
-        let lease = open(&mut opener).await.map_err(|e| match e {
-            HoldError::ClosedByOwner => {
-                "the books were closed just now (Close the books): nothing was done".to_string()
-            }
-            HoldError::Failed(why) => why,
-        })?;
+        // A call to an open book: with nothing running there is none.
+        let reached = reach(&mut opener, common, &Direct::No).await?;
         let run_dir = opener.run_dir().to_path_buf();
         let root = run_dir.parent().unwrap_or(&run_dir).to_path_buf();
         let account = crate::tokens::Account::new(&root, book, token_name);
@@ -3277,7 +3565,7 @@ fn on_the_socket(
             .await
             .map_err(|e| format!("the books server's answer was cut off: {e}"))?
             .to_vec();
-        drop(lease);
+        reached.release().await;
         Ok::<_, String>((status, headers, body))
     });
     rt.shutdown_timeout(Duration::from_secs(1));
@@ -3782,7 +4070,8 @@ mod tests {
     #[test]
     fn doctor_tells_closing_from_closed() {
         assert!(no_host(true).contains("closing"));
-        assert_eq!(no_host(false), "The books are closed.");
+        assert!(no_host(false).starts_with("The books are closed: Wanderbooks isn't running."));
+        assert!(no_host(false).contains("wanderbooks serve"));
     }
 
     fn adopted() -> admin::Adopted {

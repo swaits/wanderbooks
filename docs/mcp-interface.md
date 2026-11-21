@@ -187,8 +187,8 @@ features) is refused before anything is journaled, its error beginning
 go-ahead, with the owner passphrase, in the app or with `wanderbooks
 books upgrade ID` at a terminal, and that no tool can. No tool consents:
 none is offered, and the server takes the go-ahead only on its admin
-socket, from the host's lease intent `consent_format_upgrade` (the app's
-dialog, `books upgrade`), with the passphrase it checks. Before the
+socket, as an admin request from the app's dialog or `books upgrade` (or the
+headless host's lease intent `consent_format_upgrade`), with the passphrase it checks. Before the
 upgrade the server commits the books to their own backup repository and
 proves the copy holds them exactly (journal, stored files, vault, keys);
 then one `journal.format_set` declares the whole format, and the same
@@ -264,9 +264,12 @@ as it is made.
 Books are served one way (plan D-44): by the books server, which agents
 reach through the bridge.
 
-- **Served books** (`wanderbooks server`, started by the host; an agent
-  connects with `wanderbooks mcp --book ID`, the bridge: stdio to the
-  agent, the server's socket upstream): every book
+- **Served books** (`wanderbooks server`, started by the desktop app as its
+  child, or by the host `wanderbooks serve` keeps on a headless machine; an
+  agent connects with `wanderbooks mcp --book ID`, the bridge: stdio to the
+  agent, the server's socket upstream; with nothing running it answers in
+  words that Wanderbooks isn't running and to start the app or `wanderbooks
+  serve`: WB-app-3): every book
   in the data root that is open (all of them at the start, unless
   `wanderbooks server --open none|ID[,ID…]` says otherwise; one is opened
   or closed while the server runs, "Opening and closing one book" below),

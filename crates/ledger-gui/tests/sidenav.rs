@@ -36,9 +36,6 @@ use std::sync::{Arc, OnceLock};
 struct Quiet;
 
 impl Owner for Quiet {
-    fn close_books(&self) -> Result<String, String> {
-        Err("not here".into())
-    }
     fn new_books(&self, _: &str, _: &str) -> Result<String, String> {
         Err("not here".into())
     }

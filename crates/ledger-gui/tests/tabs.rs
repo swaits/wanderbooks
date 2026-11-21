@@ -578,9 +578,6 @@ struct Agentic {
 }
 
 impl Owner for Agentic {
-    fn close_books(&self) -> Result<String, String> {
-        Err("not here".into())
-    }
     fn new_books(&self, _: &str, _: &str) -> Result<String, String> {
         Err("not here".into())
     }
@@ -2095,10 +2092,6 @@ impl Gated {
 }
 
 impl Owner for Gated {
-    fn close_books(&self) -> Result<String, String> {
-        self.block();
-        Ok("The books are closing.".into())
-    }
     fn new_books(&self, _: &str, _: &str) -> Result<String, String> {
         Err("not here".into())
     }

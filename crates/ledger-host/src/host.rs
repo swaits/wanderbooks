@@ -94,11 +94,13 @@ pub(crate) fn private_options() -> std::fs::OpenOptions {
 /// Windows passes no descriptor to a child unless asked to, so there is
 /// nothing to close (INVARIANT 2).
 #[cfg(not(unix))]
-fn close_stray_descriptors() {}
+pub fn close_stray_descriptors() {}
 
-/// Close every descriptor above 2 (INVARIANT 2).
+/// Close every descriptor above 2 (INVARIANT 2). The host does it at its
+/// start, and so does every books server (`wanderbooks server`), whoever
+/// started it: it holds none of its starter's pipes or sockets.
 #[cfg(unix)]
-fn close_stray_descriptors() {
+pub fn close_stray_descriptors() {
     #[cfg(target_os = "linux")]
     {
         // SAFETY: close_range only closes descriptors; nothing is open
@@ -765,6 +767,11 @@ impl Host {
         #[cfg(unix)]
         command.arg0("wanderbooks");
         command.arg("server");
+        // Said in its `run/server.info`: this host's, so that one found
+        // with no host is known to be an orphan finishing (opener.rs).
+        command
+            .arg("--started-by")
+            .arg(ledger_mcp::local::StartedBy::Host.flag());
         if self.explicit_root {
             command.arg("--root").arg(self.root.path());
         }

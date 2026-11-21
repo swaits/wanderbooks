@@ -28,6 +28,11 @@ const KNOBS: &str =
 struct Home {
     dir: tempfile::TempDir,
     exe: PathBuf,
+    /// The `wanderbooks serve` that holds this home's books for the
+    /// agents of the test ([`Home::keep_host`]): since P15 only `serve`
+    /// starts a host, so an agent's bridge finds it running or finds
+    /// nothing.
+    serving: std::sync::Mutex<Option<Running>>,
 }
 
 /// Wait until a program just copied can be run. A child another test
@@ -70,6 +75,16 @@ impl Home {
         Self {
             dir,
             exe: PathBuf::from(env!("CARGO_BIN_EXE_wanderbooks")),
+            serving: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// Run `wanderbooks serve` for this home and keep it running until the
+    /// home goes: the one thing that starts a host (WB-app-5). Once only.
+    fn keep_host(&self) {
+        let mut serving = self.serving.lock().unwrap();
+        if serving.is_none() {
+            *serving = Some(serve(self));
         }
     }
 
@@ -315,6 +330,7 @@ struct Agent {
 
 impl Agent {
     fn start(home: &Home, book: &str) -> Self {
+        home.keep_host();
         let mut c = home.cmd("mcp");
         c.args(["--book", book]);
         let mut a = Self::from(c);
@@ -474,6 +490,21 @@ fn post_one(a: &mut Agent, n: u64) -> Result<u64, String> {
     Ok(id)
 }
 
+/// A `serve` whose server is slow to open (the knobs' `server_delay`),
+/// waited for only until its host holds the root: a bridge started then is
+/// held by it and waits for the books, as a bridge once did for a host it
+/// started itself (P15: only `serve` starts a host).
+fn slow_serve(home: &Home, knobs: &str) -> Running {
+    let mut c = home.cmd("serve");
+    c.args(["--test-knobs", knobs]);
+    let r = Running::start(c);
+    assert!(
+        wait_for(20, || ledger_host::opener::host_lock_held(&home.run_dir())),
+        "the host never started"
+    );
+    r
+}
+
 fn serve(home: &Home) -> Running {
     let r = Running::start(home.cmd("serve"));
     // The first time, it says how to let go.
@@ -481,49 +512,85 @@ fn serve(home: &Home) -> Running {
     r
 }
 
+/// P15 (WB-app-5): a command with nothing running runs a server of its own
+/// and leaves nothing behind: no host, no server, no socket. The host `serve`
+/// holds still closes `close_after` after its last holder lets go, whoever
+/// that is.
 #[test]
-fn a_command_opens_the_books_and_they_close_after_the_last_holder() {
+fn a_command_leaves_nothing_running_and_serve_closes_after_its_last_holder() {
     let home = Home::new("last");
     assert!(home.host().is_none());
     home.create("acme");
-    // The command let go; the books stay open for the close delay, then
-    // close.
-    assert!(home.host().is_some(), "closed at once");
-    assert!(home.wait_closed(10), "never closed");
+    // The commands (a create, a token) ran a server of their own and let go
+    // of it: nothing of the root is left.
+    assert!(home.host().is_none(), "a command started a host");
+    assert!(home.pids("server").is_empty(), "a server was left running");
     for sock in ["lease.sock", "mcp.sock", "admin.sock"] {
         assert!(!home.run_dir().join(sock).exists(), "{sock} left behind");
     }
-    // A lease arriving within the delay cancels the close.
-    home.create("beta");
-    std::thread::sleep(Duration::from_millis(200));
-    let host = home.host().unwrap();
-    home.create("gamma");
-    std::thread::sleep(Duration::from_millis(1000));
-    assert_eq!(
-        home.host(),
-        Some(host),
-        "closed though a lease came in time"
+    assert!(!ledger_host::opener::server_lock_held(&home.run_dir()));
+    // An agent session with nothing running starts no host either.
+    let mut a = Agent::from({
+        let mut c = home.cmd("mcp");
+        c.args(["--book", "acme"]);
+        c
+    });
+    let init = a.initialize();
+    assert!(
+        init["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.starts_with("Wanderbooks isn't running")),
+        "{init}"
     );
-    assert!(home.wait_closed(10));
-    // An agent session killed outright: closed after the delay, too.
-    let mut a = Agent::start(&home, "acme");
-    a.initialize();
-    a.call("books.start", json!({})).unwrap();
-    a.run.child.kill().unwrap();
-    a.run.child.wait().unwrap();
-    std::thread::sleep(Duration::from_millis(300));
-    assert!(home.host().is_some(), "closed before the delay");
-    assert!(home.wait_closed(10), "never closed after the bridge died");
+    assert!(home.host().is_none(), "a bridge started a host");
+    drop(a);
     // A holder that is killed: closed after the delay, not before.
     let mut held = serve(&home);
     let leases = home.lease_line("{\"proto\":1,\"leases\":null}\n");
     assert!(leases.contains("\"serve\""), "{leases}");
     assert!(leases.contains(&held.child.id().to_string()), "{leases}");
+    // A command while serve holds the books shares its host: a lease that
+    // comes in time cancels nothing, and no second host starts.
+    home.create("beta");
+    assert_eq!(home.pids("host").len(), 1, "one host");
+    let host = home.host().expect("serve's host");
     held.child.kill().unwrap();
     held.child.wait().unwrap();
     std::thread::sleep(Duration::from_millis(300));
     assert!(home.host().is_some(), "closed before the delay");
+    // A lease arriving within the delay cancels the close: the same host,
+    // still there well past the delay the last lease's end began.
+    let mut again = serve(&home);
+    std::thread::sleep(Duration::from_millis(3000));
+    assert_eq!(
+        home.host(),
+        Some(host),
+        "closed though a lease came in time"
+    );
+    again.child.kill().unwrap();
+    again.child.wait().unwrap();
     assert!(home.wait_closed(10), "never closed after the holder died");
+    // The last holder is an agent's bridge: serve lets go (Ctrl-C), the
+    // host stays for the bridge past the close delay, and closes after the
+    // bridge is killed, not before.
+    let mut held = serve(&home);
+    let mut bridge = Running::start({
+        let mut c = home.cmd("mcp");
+        c.args(["--book", "acme"]);
+        c
+    });
+    assert!(wait_for(30, || home
+        .lease_line("{\"proto\":1,\"leases\":null}\n")
+        .contains("\"bridge\"")));
+    held.signal(libc::SIGINT);
+    assert!(held.wait(10).is_some_and(|s| s.success()));
+    std::thread::sleep(Duration::from_millis(3500));
+    assert!(home.host().is_some(), "closed under a bridge that holds");
+    bridge.child.kill().unwrap();
+    bridge.child.wait().unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(home.host().is_some(), "closed before the delay");
+    assert!(home.wait_closed(10), "never closed after the bridge died");
     // Ctrl-C at the terminal: serve lets go, and the books close.
     let mut held = serve(&home);
     held.signal(libc::SIGINT);
@@ -535,13 +602,21 @@ fn a_command_opens_the_books_and_they_close_after_the_last_holder() {
 }
 
 #[test]
-fn openers_share_one_host_and_one_server() {
+fn serve_and_the_bridges_share_one_host_and_one_server() {
     let home = Home::new("share");
     home.create("acme");
     assert!(home.wait_closed(10));
-    // All at once, from closed.
-    let mut holders = vec![
+    // Two `serve`s at once, from closed (the only programs that start a
+    // host): one host, one server, and both hold it.
+    let held = vec![
         Running::start(home.cmd("serve")),
+        Running::start(home.cmd("serve")),
+    ];
+    for h in &held {
+        h.expect("The books are open", 30);
+    }
+    // Two bridges and a command, all at once, on the host they started.
+    let holders = vec![
         Running::start({
             let mut c = home.cmd("mcp");
             c.args(["--book", "acme"]);
@@ -558,7 +633,6 @@ fn openers_share_one_host_and_one_server() {
         c.arg("list").stdin(Stdio::null());
         move || c.output().unwrap()
     });
-    holders[0].expect("The books are open", 30);
     let out = list.join().unwrap();
     assert!(
         String::from_utf8_lossy(&out.stdout).contains("acme  open"),
@@ -576,15 +650,17 @@ fn openers_share_one_host_and_one_server() {
             == 2),
         "the bridges' leases"
     );
-    holders.clear();
+    drop(holders);
+    drop(held);
     assert!(home.wait_closed(15));
 }
 
 #[test]
-fn the_bridge_opens_closed_books_and_holds_them_for_the_session() {
+fn the_bridge_reaches_the_books_serve_holds_and_holds_them_for_the_session() {
     let home = Home::new("bridge");
     home.create("acme");
     assert!(home.wait_closed(10));
+    // Held by `serve` (Agent::start): the bridge starts no host itself.
     let mut a = Agent::start(&home, "acme");
     let init = a.initialize();
     // Ready in time: the server's own answer, its connect text.
@@ -605,7 +681,7 @@ fn the_bridge_opens_closed_books_and_holds_them_for_the_session() {
     assert!(a.call("books.get_entry", json!({"entry_id": 999})).is_err());
     let unknown = a.request("no/such/method", json!({}), 20);
     assert!(unknown.get("error").is_some(), "{unknown}");
-    // Held while the session lasts, even past the close delay.
+    // Held (by serve, and by the bridge's own lease) past the close delay.
     std::thread::sleep(Duration::from_millis(1500));
     assert!(home.host().is_some());
     // The bridge never uses TCP (no_local_agent_tcp), and TCP is off.
@@ -615,7 +691,16 @@ fn the_bridge_opens_closed_books_and_holds_them_for_the_session() {
         assert!(tcp_sockets(pid).is_empty(), "pid {pid} has TCP sockets");
     }
     assert!(a.end().is_some_and(|s| s.success()));
-    assert!(home.wait_closed(10));
+    // The session's end leaves the host to `serve`, which still holds.
+    assert!(home.host().is_some(), "serve's host went with a session");
+    // And with `serve` let go too, nothing holds the books: the host closes
+    // after its delay, past the last lease (a bridge as the last holder is
+    // `a_command_leaves_nothing_running_and_serve_closes_after_its_last_holder`).
+    drop(home.serving.lock().unwrap().take());
+    assert!(
+        home.wait_closed(15),
+        "the books stayed open after the last lease ended"
+    );
     // Unknown books: a plain error, no folder named.
     let mut a = Agent::start(&home, "nobody");
     a.initialize();
@@ -656,6 +741,10 @@ fn the_bridge_answers_initialize_itself_during_a_slow_start() {
     let home = Home::new("cold");
     home.create("acme");
     assert!(home.wait_closed(10));
+    let _slow = slow_serve(
+        &home,
+        "close_after=1500,backoff=50,server_delay=3000,init_wait=300,queue_wait=30000",
+    );
     let mut c = home.cmd("mcp");
     c.args([
         "--book",
@@ -725,6 +814,10 @@ fn the_bridge_gives_up_on_books_that_never_open() {
     let home = Home::new("never");
     home.create("acme");
     assert!(home.wait_closed(10));
+    let _slow = slow_serve(
+        &home,
+        "close_after=800,backoff=50,server_delay=20000,init_wait=200,queue_wait=1000",
+    );
     let mut c = home.cmd("mcp");
     c.args([
         "--book",
@@ -833,17 +926,16 @@ fn closing_during_a_burst_of_posts_through_the_bridge_loses_nothing() {
 }
 
 #[test]
-fn the_host_starts_clean_from_a_hostile_bridge() {
+fn the_host_serve_starts_is_clean_from_a_hostile_serve() {
     let home = Home::new("clean");
     home.create("acme");
     assert!(home.wait_closed(10));
-    // A pipe the bridge inherits; the host must not.
+    // A pipe `serve` inherits; the host it starts must not (start.rs).
     let (read_end, write_end) = std::io::pipe().unwrap();
     use std::os::fd::AsRawFd;
     let leaked = write_end.as_raw_fd();
-    let mut c = home.cmd("mcp");
-    c.args(["--book", "acme"])
-        .env("XDG_DATA_HOME", "/tmp/wb-evil-data")
+    let mut c = home.cmd("serve");
+    c.env("XDG_DATA_HOME", "/tmp/wb-evil-data")
         .env("LD_PRELOAD", "/nonexistent/wb-evil.so")
         .env("WB_EVIL", "1")
         .env("XDG_RUNTIME_DIR", "/tmp")
@@ -861,9 +953,8 @@ fn the_host_starts_clean_from_a_hostile_bridge() {
             });
         }
     }
-    let mut a = Agent::from(c);
-    a.initialize();
-    a.call("books.start", json!({})).unwrap();
+    let held = Running::start(c);
+    held.expect("The books are open", 30);
     let host = home.host().expect("a host");
     let environ = std::fs::read(format!("/proc/{host}/environ")).unwrap();
     let vars: Vec<String> = environ
@@ -915,7 +1006,7 @@ fn the_host_starts_clean_from_a_hostile_bridge() {
         let after = stat.rsplit_once(") ").unwrap().1.to_string();
         after.split_whitespace().nth(3).unwrap().to_string()
     };
-    assert_ne!(session(host), session(a.run.child.id()));
+    assert_ne!(session(host), session(held.child.id()));
     assert_eq!(
         session(host),
         host.to_string(),
@@ -1121,6 +1212,10 @@ fn a_restart_is_not_a_close() {
     assert!(a.call("books.get_entry", json!({"entry_id": 1})).is_ok());
 }
 
+/// (What a command holds while it works with nothing running, its own
+/// server's `server.lock` and `books.lock`, and the refusal of a second
+/// program, is
+/// `a_commands_own_server_holds_the_books_while_it_works_and_others_are_refused`.)
 #[test]
 fn books_commands_hold_the_books_while_they_run() {
     let home = Home::new("cmds");
@@ -1129,6 +1224,9 @@ fn books_commands_hold_the_books_while_they_run() {
         String::from_utf8_lossy(&out.stdout).contains("No books yet"),
         "{out:?}"
     );
+    // Held open by `serve`, so what the commands make is open (a command
+    // with nothing running makes it and lets go: WB-app-5).
+    home.keep_host();
     home.create("acme");
     let out = home.books(&["create", "acme"]);
     assert_eq!(out.status.code(), Some(1));
@@ -1363,6 +1461,10 @@ fn a_call_cancelled_at_once_is_never_made() {
     let home = Home::new("cancel");
     home.create("acme");
     assert!(home.wait_closed(10));
+    let _slow = slow_serve(
+        &home,
+        "close_after=1500,backoff=50,server_delay=1500,init_wait=200,queue_wait=30000",
+    );
     let mut c = home.cmd("mcp");
     c.args([
         "--book",
@@ -1411,7 +1513,11 @@ fn doctor_says_whether_the_books_are_open_and_what_holds_them() {
     assert!(home.wait_closed(10));
     let text = |o: std::process::Output| String::from_utf8_lossy(&o.stdout).into_owned();
     let closed = text(home.cmd("doctor").output().unwrap());
-    assert!(closed.contains("The books are closed."), "{closed}");
+    assert!(
+        closed.contains("The books are closed: Wanderbooks isn't running.")
+            && closed.contains("wanderbooks serve"),
+        "{closed}"
+    );
     assert!(closed.contains("same_user (advisory)"), "{closed}");
     let _held = serve(&home);
     let open = text(home.cmd("doctor").output().unwrap());
@@ -1434,6 +1540,10 @@ fn a_signalled_bridge_goes_at_once() {
     let home = Home::new("sigbridge");
     home.create("acme");
     assert!(home.wait_closed(10));
+    let _slow = slow_serve(
+        &home,
+        "close_after=1500,backoff=50,server_delay=20000,init_wait=200,queue_wait=30000",
+    );
     let mut c = home.cmd("mcp");
     c.args([
         "--book",
@@ -1502,20 +1612,25 @@ fn the_host_starts_without_a_scope_when_systemd_run_fails() {
     std::fs::create_dir(&runtime).unwrap();
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700)).unwrap();
+    // `serve` is what starts a host (WB-app-5), so it is what is driven:
+    // with no scope to be made, the host starts directly and is held.
     let started = Instant::now();
-    let out = home
-        .cmd("books")
-        .args(["create", "acme"])
-        .env("XDG_RUNTIME_DIR", &runtime)
-        .stdin(Stdio::null())
-        .output()
-        .unwrap();
-    assert!(out.status.success(), "{out:?}");
+    let mut serving = Running::start({
+        let mut c = home.cmd("serve");
+        c.env("XDG_RUNTIME_DIR", &runtime);
+        c
+    });
+    serving.expect("The books are open", 30);
     assert!(
         started.elapsed() < Duration::from_secs(10),
         "{:?}",
         started.elapsed()
     );
+    assert!(home.host().is_some(), "no host was started without a scope");
+    // Let go: serve ends, the host closes after its delay.
+    serving.signal(libc::SIGINT);
+    assert!(serving.wait(10).is_some_and(|s| s.success()));
+    assert!(home.wait_closed(15));
 }
 
 /// Review round 5, findings 2 and 3: a malformed byte is answered and the
@@ -1661,7 +1776,7 @@ fn a_command_ends_at_its_deadline_during_a_restart() {
     lock.lock().unwrap();
     let started = Instant::now();
     let out = home
-        .cmd("books")
+        .cmd("token")
         .args(["list", "--test-knobs", "open_wait=1000,close_after=2500"])
         .stdin(Stdio::null())
         .output()
@@ -1872,6 +1987,10 @@ fn books_made_mid_session_and_bad_requests() {
     let home2 = Home::new("dupid");
     home2.create("acme");
     assert!(home2.wait_closed(10));
+    let _slow = slow_serve(
+        &home2,
+        "close_after=2500,backoff=50,server_delay=2000,init_wait=200,queue_wait=30000",
+    );
     let mut c = home2.cmd("mcp");
     c.args([
         "--book",
@@ -2107,6 +2226,7 @@ fn a_bridge_started_without_stderr_keeps_its_descriptors_apart() {
     use std::os::unix::process::CommandExt;
     let home = Home::new("nostderr");
     home.create("acme");
+    home.keep_host();
     let mut c = home.cmd("mcp");
     c.args(["--book", "acme"]);
     // SAFETY: close is async-signal-safe.
@@ -2412,6 +2532,7 @@ fn the_commands_given_run_as_the_agents_own_token() {
         .output()
         .unwrap();
     assert!(out.status.success(), "{out:?}");
+    home.keep_host();
     let mut c = home.cmd("mcp");
     c.args(["--book", "acme", "--token", "bookkeeper"]);
     let mut a = Agent::from(c);
@@ -2711,6 +2832,7 @@ fn an_agent_is_connected_and_reaches_the_books_by_what_it_was_given() {
     assert!(!said.contains("wb_"), "a token's text was shown");
     // The command it was given reaches the books (with the token kept).
     let given: Vec<&str> = add.split(" -- ").nth(1).unwrap().split(' ').collect();
+    home.keep_host();
     let mut c = Command::new(given[0]);
     c.args(&given[1..])
         .env_clear()
@@ -2808,28 +2930,20 @@ fn books_are_backed_up_now_from_the_command_line() {
 }
 
 /// The viewer's owner (ledger-cli's `ViewerOwner`, over these ledger-host
-/// functions): its hold is a lease of kind app; new books are made by the
-/// server; "Close the books" ends every lease, the viewer's hold with it.
-/// (A `serve` holds the books first: run in this test's process, a hold
-/// that had to start the host would start this test's own program.)
+/// functions): new books are made by the server that runs (here a `serve`
+/// host's; under the app, the app's). The viewer's hold and "Close the
+/// books" are gone: the app is the host (WB-app-5).
 #[test]
-fn the_viewers_hold_new_books_and_close_the_books() {
-    use ledger_host::commands::{Common, close_books, hold_for_viewer, new_books};
+fn the_viewers_new_books_are_made_by_the_server() {
+    use ledger_host::commands::{Common, new_books};
     let home = Home::new("viewer-owner");
     home.create("acme");
-    let serving = serve(&home);
+    let _serving = serve(&home);
     let common = Common {
         root: Some(home.root()),
         knobs: ledger_host::knobs::Knobs::parse(KNOBS).unwrap(),
         ..Default::default()
     };
-    let hold = hold_for_viewer(&common, Some("acme".into()));
-    assert!(
-        wait_for(20, || home
-            .lease_line("{\"proto\":1,\"leases\":null}\n")
-            .contains("\"app\"")),
-        "the viewer's lease never showed"
-    );
     assert_eq!(
         new_books(&common, "beta", "USD").unwrap(),
         "Made new books \"beta\" (USD)."
@@ -2844,18 +2958,6 @@ fn the_viewers_hold_new_books_and_close_the_books() {
         String::from_utf8_lossy(&out.stdout).contains("beta  open"),
         "{out:?}"
     );
-    let said = close_books(&common).unwrap();
-    assert!(said.starts_with("The books are closing"), "{said}");
-    // The viewer's hold lets go, for good (closed by the owner).
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = tx.send(hold.join().is_ok());
-    });
-    assert_eq!(rx.recv_timeout(Duration::from_secs(30)), Ok(true));
-    serving.expect("closed", 30);
-    assert!(home.wait_closed(30));
-    // Closed: said so.
-    assert_eq!(close_books(&common).unwrap(), "The books are closed.");
 }
 
 #[test]
@@ -3020,4 +3122,636 @@ fn shell_join(words: &[String]) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+// What holds the books is known and not guessed (opener.rs INVARIANT 6a,
+// ledger-mcp local.rs INVARIANT 16; WB-app-5): a server says what started
+// it and whether it is closing, and a holder or a command that finds a
+// command's server or a closing one waits for it, in words, and goes on.
+
+/// A real books server, started by hand (`wanderbooks server`, its admin
+/// socket answering), whose word about itself the test chooses: what a
+/// killed host's server still finishing (`host`, closing), another
+/// command's server (`command`) or the app's closing server (`app`,
+/// closing) say in `run/server.info`.
+struct StandIn {
+    child: Child,
+    run: PathBuf,
+}
+
+impl StandIn {
+    fn start(home: &Home, says: (&str, bool)) -> Self {
+        let child = Command::new(&home.exe)
+            .args(["server", "--open", "none", "--root"])
+            .arg(home.root())
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", home.dir.path())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let run = home.run_dir();
+        assert!(
+            wait_for(30, || ledger_host::opener::admin_answers(&run) == Ok(true)),
+            "the stand-in server never answered"
+        );
+        std::fs::write(
+            run.join("server.info"),
+            json!({"by": says.0, "pid": child.id(), "closing": says.1}).to_string(),
+        )
+        .unwrap();
+        Self { child, run }
+    }
+
+    /// The server ends (its input closes), and takes its word with it.
+    fn finish(mut self) {
+        drop(self.child.stdin.take());
+        self.child.wait().unwrap();
+        let _ = std::fs::remove_file(self.run.join("server.info"));
+    }
+}
+
+impl Drop for StandIn {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// A program run with its output in a file, so a test reads what it has
+/// said so far while it is still running.
+struct Logged {
+    child: Child,
+    log: PathBuf,
+}
+
+impl Logged {
+    fn start(mut c: Command, log: PathBuf) -> Self {
+        let file = std::fs::File::create(&log).unwrap();
+        let child = c
+            .stdin(Stdio::piped())
+            .stdout(file.try_clone().unwrap())
+            .stderr(file)
+            .spawn()
+            .unwrap();
+        Self { child, log }
+    }
+
+    fn said(&self) -> String {
+        std::fs::read_to_string(&self.log).unwrap_or_default()
+    }
+
+    fn says(&self, text: &str, secs: u64) -> bool {
+        wait_for(secs, || self.said().contains(text))
+    }
+
+    fn running(&mut self) -> bool {
+        self.child.try_wait().unwrap().is_none()
+    }
+
+    fn done(&mut self, secs: u64) -> Option<std::process::ExitStatus> {
+        let deadline = Instant::now() + Duration::from_secs(secs);
+        while Instant::now() < deadline {
+            if let Some(status) = self.child.try_wait().unwrap() {
+                return Some(status);
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        None
+    }
+}
+
+impl Drop for Logged {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// What a holder or command says while it waits for a command's server,
+/// and for a server that is closing.
+const WAITS_FOR_COMMAND: &str = "command has the books open for a moment: waiting for it";
+const WAITS_FOR_CLOSE: &str = "is closing the books (a last backup is being made): waiting";
+
+/// A `serve` started while a killed host's server is still finishing (its
+/// admin socket still answering, no host holding the root) was told "the
+/// app has these books open" and exited. It waits, in words, for the
+/// server to be gone, and then holds the books.
+#[test]
+fn serve_waits_in_words_for_a_server_that_is_closing_and_then_holds_the_books() {
+    let home = Home::new("serve-closing");
+    home.create("acme");
+    let orphan = StandIn::start(&home, ("host", true));
+    let mut serving = Logged::start(home.cmd("serve"), home.dir.path().join("serve.log"));
+    assert!(serving.says(WAITS_FOR_CLOSE, 20), "{}", serving.said());
+    assert!(serving.running(), "serve gave up: {}", serving.said());
+    assert!(!serving.said().contains("has these books open"));
+    assert!(home.host().is_none(), "a host started beside a closing one");
+    orphan.finish();
+    assert!(
+        serving.says("The books are open", 40),
+        "serve never took the books: {}",
+        serving.said()
+    );
+    assert!(home.host().is_some());
+}
+
+/// A command, `close` and `doctor` that find the app's server closing say
+/// so, and a command goes on once it is gone; none says "the app has them".
+#[test]
+fn a_command_and_the_words_of_close_and_doctor_know_a_server_is_closing() {
+    let home = Home::new("cmd-closing");
+    home.create("acme");
+    let closing = StandIn::start(&home, ("app", true));
+    let doctor = home.cmd("doctor").stdin(Stdio::null()).output().unwrap();
+    let said = String::from_utf8_lossy(&doctor.stdout).into_owned();
+    assert!(
+        said.contains("The books are closing") && !said.contains("(the app)"),
+        "{said}"
+    );
+    let close = home.cmd("close").stdin(Stdio::null()).output().unwrap();
+    let said = String::from_utf8_lossy(&close.stdout).into_owned();
+    assert!(
+        said.contains("The books are closing") && !said.contains("the app"),
+        "{said}"
+    );
+    let mut list = Logged::start(
+        {
+            let mut c = home.cmd("token");
+            c.arg("list");
+            c
+        },
+        home.dir.path().join("token.log"),
+    );
+    assert!(list.says(WAITS_FOR_CLOSE, 20), "{}", list.said());
+    assert!(list.running(), "{}", list.said());
+    closing.finish();
+    assert!(
+        list.done(40).is_some_and(|s| s.success()),
+        "{}",
+        list.said()
+    );
+    assert!(!list.said().contains("has these books open"));
+}
+
+/// A command that finds another command's server is not the app's: it
+/// waits for that server to finish, in words, bounded by `open_wait`, and
+/// does its own work after. It neither attaches to it (a company that the
+/// other has not open was "not open: open it in Wanderbooks") nor closes
+/// it under the other.
+#[test]
+fn a_command_waits_for_another_commands_server_and_does_not_attach_to_it() {
+    let home = Home::new("cmd-cmd");
+    home.create("acme");
+    let other = StandIn::start(&home, ("command", false));
+    // Out of patience: the wait ends at its bound, in words, and the
+    // other's server is untouched.
+    let short = home
+        .cmd("books")
+        .args([
+            "back-up",
+            "acme",
+            "--test-knobs",
+            &format!("{KNOBS},open_wait=1500"),
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&short.stderr).into_owned();
+    assert_eq!(short.status.code(), Some(1), "{err}");
+    assert!(
+        err.contains(WAITS_FOR_COMMAND) && err.contains("still has the books open"),
+        "{err}"
+    );
+    assert!(!err.contains("isn't open"), "attached to it: {err}");
+    assert!(ledger_host::opener::server_lock_held(&home.run_dir()));
+    // Patient: it waits, and goes on when the other is done.
+    let mut list = Logged::start(
+        {
+            let mut c = home.cmd("token");
+            c.arg("list");
+            c
+        },
+        home.dir.path().join("token.log"),
+    );
+    assert!(list.says(WAITS_FOR_COMMAND, 20), "{}", list.said());
+    assert!(list.running(), "{}", list.said());
+    other.finish();
+    assert!(
+        list.done(40).is_some_and(|s| s.success()),
+        "{}",
+        list.said()
+    );
+    assert!(!ledger_host::opener::server_lock_held(&home.run_dir()));
+}
+
+/// A second `wanderbooks serve` started while a command's server is up
+/// was told "the app has these books open". It waits for the command, in
+/// words, and holds the books after.
+#[test]
+fn a_serve_waits_for_a_commands_server_and_then_holds_the_books() {
+    let home = Home::new("serve-cmd");
+    home.create("acme");
+    let other = StandIn::start(&home, ("command", false));
+    let mut serving = Logged::start(home.cmd("serve"), home.dir.path().join("serve.log"));
+    assert!(serving.says(WAITS_FOR_COMMAND, 20), "{}", serving.said());
+    assert!(serving.running(), "{}", serving.said());
+    assert!(!serving.said().contains("(the app)"));
+    other.finish();
+    assert!(serving.says("The books are open", 40), "{}", serving.said());
+}
+
+/// The server says what started it and when it closes, in
+/// `run/server.info`, and removes it as it lets go (local.rs INVARIANT 16).
+#[test]
+fn a_server_says_what_started_it_and_when_it_closes() {
+    let home = Home::new("info");
+    let run = home.run_dir();
+    let mut server = Command::new(&home.exe)
+        .args([
+            "server",
+            "--open",
+            "none",
+            "--started-by",
+            "command",
+            "--root",
+        ])
+        .arg(home.root())
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let pid = server.id();
+    assert!(wait_for(30, || {
+        ledger_mcp::local::read_server_info(&run).is_some()
+            && ledger_host::opener::admin_answers(&run) == Ok(true)
+    }));
+    let info = ledger_mcp::local::read_server_info(&run).unwrap();
+    assert_eq!(
+        (info.by, info.pid, info.closing),
+        (ledger_mcp::local::StartedBy::Command, pid, false)
+    );
+    assert_eq!(
+        ledger_host::opener::what_holds(&run),
+        Ok(ledger_host::opener::Holder::Command)
+    );
+    // Told to close: it says so while it is still closing (its door stays
+    // open for a moment after the last request), and then it is gone, and
+    // its word with it.
+    drop(server.stdin.take());
+    assert!(
+        wait_for(20, || {
+            ledger_mcp::local::read_server_info(&run).is_some_and(|i| i.closing)
+        }),
+        "it never said it was closing"
+    );
+    server.wait().unwrap();
+    assert!(!run.join("server.info").exists(), "its word was left");
+}
+
+/// While a command works, its own server holds the books' locks, says it
+/// is a command's, and every other program is turned away or waits: the
+/// app's start is refused, and `serve` waits (WB-app-5).
+#[test]
+fn a_commands_own_server_holds_the_books_while_it_works_and_others_are_refused() {
+    use ledger_host::app_server::{ANOTHER_HAS_THEM, AppServer};
+    let home = Home::new("cmd-holds");
+    let run = home.run_dir();
+    std::fs::write(run.join("timer-hold"), "create:start").unwrap();
+    let mut create = Logged::start(
+        {
+            let mut c = home.cmd("books");
+            c.args([
+                "create",
+                "zed",
+                "--test-knobs",
+                &format!("{KNOBS},timer_hold=1"),
+            ]);
+            c
+        },
+        home.dir.path().join("create.log"),
+    );
+    assert!(
+        wait_for(30, || {
+            std::fs::read_to_string(run.join("timer-held"))
+                .is_ok_and(|held| held.lines().any(|l| l == "create:start"))
+        }),
+        "the command's server never reached its work: {}",
+        create.said()
+    );
+    // It holds the books, and says whose they are.
+    assert!(ledger_host::opener::server_lock_held(&run));
+    assert!(!ledger_host::opener::host_lock_held(&run));
+    let info = ledger_mcp::local::read_server_info(&run).expect("it says what it is");
+    assert_eq!(info.by, ledger_mcp::local::StartedBy::Command);
+    assert!(!info.closing);
+    assert!(home.pids("server").contains(&info.pid));
+    let books_lock = std::fs::OpenOptions::new()
+        .write(true)
+        .open(run.join("books.lock"))
+        .expect("the books lock exists");
+    assert!(
+        matches!(
+            books_lock.try_lock(),
+            Err(std::fs::TryLockError::WouldBlock)
+        ),
+        "the books' lock is not held while the command works"
+    );
+    // The app's start is refused, and nothing is touched by it.
+    let dir = home.dir.path().to_path_buf();
+    let refused = AppServer::start_in(&home.exe, Some(&home.root()), &[], move |c| {
+        common::clean_env(c, &dir);
+    })
+    .err()
+    .expect("a start beside a command's server");
+    assert_eq!(refused, ANOTHER_HAS_THEM);
+    // `serve` waits for it, in words, and does not start a host beside it.
+    let serving = Logged::start(home.cmd("serve"), home.dir.path().join("serve.log"));
+    assert!(serving.says(WAITS_FOR_COMMAND, 20), "{}", serving.said());
+    assert!(home.host().is_none());
+    // The work goes on when it is let go, and succeeds.
+    std::fs::remove_file(run.join("timer-hold")).unwrap();
+    assert!(
+        create.done(40).is_some_and(|s| s.success()),
+        "{}",
+        create.said()
+    );
+    assert!(home.root().join("books/zed").is_dir());
+    assert!(serving.says("The books are open", 40), "{}", serving.said());
+}
+
+/// A command whose server is slow to take the books, while the app starts
+/// in between its look and its server's start, joins the app: it neither
+/// fails with advice to close what is not its to close, nor waits silently
+/// for the full time for a server that has lost; one bounded wait, in
+/// words. The app's server is left as it was.
+#[test]
+fn a_command_racing_the_apps_start_joins_the_app() {
+    use ledger_host::app_server::AppServer;
+    let home = Home::new("cmd-race");
+    home.create("acme");
+    let run = home.run_dir();
+    let mut list = Logged::start(
+        {
+            let mut c = home.cmd("token");
+            c.args([
+                "list",
+                "--test-knobs",
+                &format!("{KNOBS},server_delay=4000"),
+            ]);
+            c
+        },
+        home.dir.path().join("token.log"),
+    );
+    // Its own server is started (and delaying its take of the lock).
+    assert!(
+        wait_for(30, || !home.pids("server").is_empty()),
+        "the command never started its server: {}",
+        list.said()
+    );
+    // The app starts now, and gets the books first.
+    let dir = home.dir.path().to_path_buf();
+    let app = AppServer::start_in(&home.exe, Some(&home.root()), &[], move |c| {
+        common::clean_env(c, &dir);
+    })
+    .unwrap();
+    app.wait_ready(Duration::from_secs(60)).unwrap();
+    let began = Instant::now();
+    assert!(
+        list.done(60).is_some_and(|s| s.success()),
+        "{}",
+        list.said()
+    );
+    assert!(
+        list.said()
+            .contains("Another program started the books just now"),
+        "{}",
+        list.said()
+    );
+    assert!(!list.said().contains("Close it"), "{}", list.said());
+    assert!(
+        began.elapsed() < Duration::from_secs(30),
+        "it waited for its own server: {:?}",
+        began.elapsed()
+    );
+    // The app's server is the one left, and still the app's.
+    assert_eq!(app.exited(), None);
+    assert!(ledger_host::opener::server_lock_held(&run));
+    assert!(wait_for(20, || home.pids("server").len() == 1));
+    assert_eq!(
+        ledger_mcp::local::read_server_info(&run).map(|i| i.by),
+        Some(ledger_mcp::local::StartedBy::App)
+    );
+    assert_eq!(
+        app.stop(Duration::from_secs(60)),
+        ledger_host::app_server::Stopped::Closed
+    );
+}
+
+/// Two commands at once with nothing running: each is done, neither is
+/// told to close anything, neither loses its work, and nothing is left.
+#[test]
+fn two_commands_at_once_with_nothing_running_both_do_their_work() {
+    let home = Home::new("two-cmds");
+    let make = |id: &str| {
+        Logged::start(
+            {
+                let mut c = home.cmd("books");
+                c.args(["create", id]);
+                c
+            },
+            home.dir.path().join(format!("{id}.log")),
+        )
+    };
+    let (mut a, mut b) = (make("alpha"), make("beta"));
+    for (who, run) in [("alpha", &mut a), ("beta", &mut b)] {
+        assert!(
+            run.done(60).is_some_and(|s| s.success()),
+            "{who}: {}",
+            run.said()
+        );
+        assert!(!run.said().contains("Close it"), "{who}: {}", run.said());
+        assert!(
+            !run.said().contains("has these books open"),
+            "{who}: {}",
+            run.said()
+        );
+    }
+    let listed = home.books(&["list"]);
+    let text = String::from_utf8_lossy(&listed.stdout).into_owned();
+    for id in ["alpha", "beta"] {
+        assert!(text.contains(&format!("{id}  not open")), "{text}");
+    }
+    assert!(!ledger_host::opener::server_lock_held(&home.run_dir()));
+    assert!(home.host().is_none());
+}
+
+/// A bridge that began under a `serve` host, when that host is gone and
+/// the app has started in its place, follows what runs as a bridge that
+/// began without a host does: when the app is closed, the assistant is
+/// told "Wanderbooks isn't running", and not left to a timeout.
+#[test]
+fn a_bridge_that_held_a_host_follows_the_app_that_takes_its_place() {
+    use ledger_host::app_server::AppServer;
+    let home = Home::new("bridge-app");
+    home.create("acme");
+    home.keep_host();
+    let mut bridge = Command::new(&home.exe);
+    bridge
+        .args(["mcp", "--book", "acme", "--root"])
+        .arg(home.root())
+        .args(["--test-knobs", &format!("{KNOBS},backoff=3000")])
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", home.dir.path());
+    let mut a = Agent::from(bridge);
+    a.initialize();
+    assert!(a.call("books.start", json!({})).is_ok());
+    // `serve` and its host go (killed: nothing closes in order), and the
+    // app takes the books while the bridge waits to try again.
+    drop(home.serving.lock().unwrap().take());
+    for pid in home.pids("host") {
+        // SAFETY: a host of this test's own root.
+        unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+    }
+    assert!(wait_for(30, || {
+        !ledger_host::opener::host_lock_held(&home.run_dir())
+            && !ledger_host::opener::server_lock_held(&home.run_dir())
+    }));
+    let dir = home.dir.path().to_path_buf();
+    let app = AppServer::start_in(
+        &home.exe,
+        Some(&home.root()),
+        &["acme".to_string()],
+        move |c| common::clean_env(c, &dir),
+    )
+    .unwrap();
+    app.wait_ready(Duration::from_secs(60)).unwrap();
+    // The bridge reaches the app's company.
+    assert!(
+        wait_for(30, || a.call("books.start", json!({})).is_ok()),
+        "the bridge never reached the app"
+    );
+    // The app closes: the next call says what is so.
+    assert_eq!(
+        app.stop(Duration::from_secs(60)),
+        ledger_host::app_server::Stopped::Closed
+    );
+    let said = a.call("books.start", json!({})).unwrap_err();
+    assert!(said.starts_with("Wanderbooks isn't running"), "{said}");
+}
+
+/// A command's own server is started clean, as a host is (start.rs
+/// INVARIANT 1, local.rs run): it may outlive its command (still closing
+/// after 90 s), so it holds nothing of the invoker's: not its environment,
+/// not a pipe it handed down, not its folder.
+#[test]
+fn a_commands_own_server_holds_none_of_the_invokers_environment_or_pipes() {
+    use std::os::unix::process::CommandExt;
+    let home = Home::new("cmd-clean");
+    let run = home.run_dir();
+    std::fs::write(run.join("timer-hold"), "create:start").unwrap();
+    // A pipe the invoker holds and hands down on descriptor 9 (left open
+    // across exec, as a careless launcher leaves one).
+    let mut fds = [0i32; 2];
+    // SAFETY: pipe fills two descriptors.
+    assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+    let link = |fd: i32| {
+        std::fs::read_link(format!("/proc/self/fd/{fd}"))
+            .unwrap()
+            .to_string_lossy()
+            .into_owned()
+    };
+    let (pipe_read, pipe_write) = (link(fds[0]), link(fds[1]));
+    let mut c = home.cmd("books");
+    c.args([
+        "create",
+        "zed",
+        "--test-knobs",
+        &format!("{KNOBS},timer_hold=1"),
+    ])
+    .env("WB_HOSTILE", "secret");
+    let (read_end, write_end) = (fds[0], fds[1]);
+    // SAFETY: dup2 and close are async-signal-safe and touch only the
+    // child's own descriptors.
+    unsafe {
+        c.pre_exec(move || {
+            if libc::dup2(write_end, 9) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            libc::close(read_end);
+            libc::close(write_end);
+            Ok(())
+        });
+    }
+    let mut create = Logged::start(c, home.dir.path().join("create.log"));
+    assert!(
+        wait_for(30, || {
+            std::fs::read_to_string(run.join("timer-held"))
+                .is_ok_and(|held| held.lines().any(|l| l == "create:start"))
+        }),
+        "the command's server never reached its work: {}",
+        create.said()
+    );
+    let info = ledger_mcp::local::read_server_info(&run).expect("it says what it is");
+    let proc = PathBuf::from(format!("/proc/{}", info.pid));
+    let environ = std::fs::read(proc.join("environ")).unwrap();
+    let environ = String::from_utf8_lossy(&environ);
+    assert!(!environ.contains("WB_HOSTILE"), "{environ:?}");
+    assert!(environ.contains("PATH=/usr/local/bin:/usr/bin:/bin"));
+    for entry in std::fs::read_dir(proc.join("fd")).unwrap().flatten() {
+        let target = std::fs::read_link(entry.path())
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        assert!(
+            target != pipe_read && target != pipe_write,
+            "the invoker's pipe is held by the server: fd {:?} -> {target}",
+            entry.file_name()
+        );
+    }
+    assert_eq!(
+        std::fs::read_link(proc.join("cwd")).unwrap(),
+        Path::new("/")
+    );
+    // The invoker's own pipe is still its own (the command holds it).
+    assert!(Path::new("/proc/self/fd").join(fds[0].to_string()).exists());
+    std::fs::remove_file(run.join("timer-hold")).unwrap();
+    assert!(
+        create.done(40).is_some_and(|s| s.success()),
+        "{}",
+        create.said()
+    );
+    // SAFETY: closing the test's own descriptors.
+    unsafe {
+        libc::close(fds[0]);
+        libc::close(fds[1]);
+    }
+}
+
+/// The app's notice can ask the host that holds the books to close them,
+/// with the lease protocol an older host speaks too: what `wanderbooks
+/// close` does, for a person with no command line (commands.rs
+/// `close_the_host`).
+#[test]
+fn the_app_can_ask_a_host_that_holds_the_books_to_close_them() {
+    let home = Home::new("close-host");
+    home.create("acme");
+    let root = home.root();
+    assert!(!ledger_host::commands::a_host_holds(Some(&root)));
+    assert_eq!(
+        ledger_host::commands::close_the_host(Some(&root)).as_deref(),
+        Ok("No program has the books open now.")
+    );
+    home.keep_host();
+    assert!(ledger_host::commands::a_host_holds(Some(&root)));
+    let said = ledger_host::commands::close_the_host(Some(&root)).unwrap();
+    assert_eq!(said, "The other program let go of the books.");
+    assert!(home.wait_closed(20), "the host was left");
+    assert!(!ledger_host::commands::a_host_holds(Some(&root)));
 }

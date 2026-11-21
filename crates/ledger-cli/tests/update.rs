@@ -83,6 +83,9 @@ struct Home {
     /// from an image's mount, and `APPIMAGE` names this other file, the
     /// one an update replaces.
     image: Option<PathBuf>,
+    /// The `wanderbooks serve` that holds the books for the test's agents
+    /// ([`Home::keep_host`]): since P15 only `serve` starts a host.
+    serving: std::sync::Mutex<Option<std::process::Child>>,
 }
 
 impl Home {
@@ -106,6 +109,7 @@ impl Home {
             dir,
             exe,
             image: None,
+            serving: std::sync::Mutex::new(None),
         };
         home.runnable();
         home
@@ -145,6 +149,32 @@ impl Home {
                 }
             }
         }
+    }
+
+    /// Hold the books with a `wanderbooks serve` (started again when the
+    /// last one has ended, as a `close` ends it): the one program that
+    /// starts a host (WB-app-5). It starts, as a host does, applying a
+    /// staged update first, and the bridges of the test then lease it.
+    fn keep_host(&self) {
+        let mut serving = self.serving.lock().unwrap();
+        if let Some(child) = serving.as_mut()
+            && child.try_wait().unwrap().is_none()
+        {
+            return;
+        }
+        let child = self
+            .cmd("serve")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        *serving = Some(child);
+        let sock = self.root().join("run/mcp.sock");
+        assert!(
+            wait_for(60, || sock.exists()),
+            "the books never opened under serve"
+        );
     }
 
     /// The environment of the pretend AppImage, if this is one.
@@ -618,6 +648,7 @@ struct Agent {
 
 impl Agent {
     fn start(home: &Home, book: &str) -> Self {
+        home.keep_host();
         let mut c = home.cmd("mcp");
         c.args(["--book", book]);
         let mut child = c
@@ -651,6 +682,8 @@ impl Agent {
     }
 
     fn send(&mut self, message: Value) {
+        // A tool call carries the request key every write needs (D-88).
+        let message = common::with_request_key(&message.to_string());
         let stdin = self.child.stdin.as_mut().unwrap();
         writeln!(stdin, "{message}").unwrap();
         stdin.flush().unwrap();

@@ -96,6 +96,14 @@ impl ledger_gui::owner::Owner for ViewerOwner {
         self.server.start(open)
     }
 
+    fn serve_host_holds(&self) -> bool {
+        ledger_host::commands::a_host_holds(self.common.root.as_deref())
+    }
+
+    fn serve_close_host(&self) -> Result<String, String> {
+        ledger_host::commands::close_the_host(self.common.root.as_deref())
+    }
+
     fn serve_open(&self, book: &str) -> Result<Option<String>, String> {
         self.server.open_book(book)
     }
@@ -215,10 +223,6 @@ impl ledger_gui::owner::Owner for ViewerOwner {
             book,
             &[Scope::Read, Scope::Write, Scope::Post],
         )
-    }
-
-    fn close_books(&self) -> Result<String, String> {
-        ledger_host::commands::close_books(&self.common)
     }
 
     fn new_books(&self, id: &str, currency: &str) -> Result<String, String> {
@@ -524,6 +528,10 @@ fn owner_passphrase(root: &ledger_store::root::Root) -> i32 {
 /// `wanderbooks server`: the books server for the data root, on its
 /// local sockets (plan 3.9). The host starts it.
 fn run_server(args: Vec<String>) -> i32 {
+    // Whoever started the server, it holds none of that program's pipes or
+    // sockets: a server still closing after its starter has gone must not
+    // keep them open.
+    ledger_host::host::close_stray_descriptors();
     match ledger_mcp::local::run("wanderbooks server", args) {
         Ok(()) => 0,
         Err(e) => match e.downcast_ref::<ledger_mcp::Exit>() {

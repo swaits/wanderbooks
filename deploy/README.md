@@ -203,6 +203,15 @@ door with the token. Logs:
 journalctl -u wanderbooks-server -f
 ```
 
+`serve` is the one program that starts a host: on this machine there is no
+app, so an assistant's bridge (`wanderbooks mcp`) reaches the books only
+while `serve` runs, and otherwise says in words that Wanderbooks isn't
+running and to run `wanderbooks serve`. The owner's commands (`wanderbooks
+books …`, `token …`) work with `serve` stopped, running a server of their
+own for the length of the work, except those that need a company open
+(`books open`/`close`, `upload`, `download`), which say to start
+Wanderbooks first.
+
 The server runs no jobs in the background: `serve` holds the books open
 until systemd stops it. On a stop it finishes the call in progress, makes
 a last backup and closes (3.9), so `TimeoutStopSec=600` is generous rather

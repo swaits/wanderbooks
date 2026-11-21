@@ -36,6 +36,11 @@ pub struct Knobs {
     /// How long between the host's looks for a newer release (plan
     /// P11a step 4: a day).
     pub update_check: Duration,
+    /// A command's own server holds the jobs it runs inside their phases
+    /// while `run/timer-hold` names them (the server's `--timer-hold`;
+    /// tests of what a command holds while it works). Given as
+    /// `timer_hold=1`.
+    pub timer_hold: bool,
 }
 
 impl Default for Knobs {
@@ -51,6 +56,7 @@ impl Default for Knobs {
             backup_quiet: Duration::from_secs(30),
             drill_first: Duration::from_secs(60),
             update_check: Duration::from_secs(24 * 60 * 60),
+            timer_hold: false,
         }
     }
 }
@@ -81,6 +87,7 @@ impl Knobs {
                 "backup_quiet" => k.backup_quiet = d,
                 "drill_first" => k.drill_first = d,
                 "update_check" => k.update_check = d,
+                "timer_hold" => k.timer_hold = ms != 0,
                 other => return Err(format!("{FLAG}: there is no knob {other:?}")),
             }
         }
@@ -107,6 +114,9 @@ impl Knobs {
             if now != default {
                 parts.push(format!("{name}={}", now.as_millis()));
             }
+        }
+        if self.timer_hold {
+            parts.push("timer_hold=1".to_string());
         }
         (!parts.is_empty()).then(|| parts.join(","))
     }

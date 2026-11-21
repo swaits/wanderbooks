@@ -258,6 +258,24 @@ fn host_env(
     env
 }
 
+/// Give `command` the environment a host has (INVARIANT 1) and nothing of
+/// this process's: the books server a command runs for itself is started
+/// so, as the host's own is, since it may outlive the command that
+/// started it (commands.rs `reach`).
+pub(crate) fn clean_environment(command: &mut Command) -> Result<(), String> {
+    let home = ledger_store::root::account_home().map_err(|e| e.to_string())?;
+    command.env_clear();
+    #[cfg(unix)]
+    command.envs(host_env(
+        &home,
+        std::env::var_os("SSH_AUTH_SOCK").as_deref(),
+        this_appimage().as_ref(),
+    ));
+    #[cfg(windows)]
+    command.envs(host_env(&home));
+    Ok(())
+}
+
 #[cfg(unix)]
 /// Whether this process sits in a unit under this account's user manager
 /// (an app's scope or service, as uwsm makes for every app), whose stop

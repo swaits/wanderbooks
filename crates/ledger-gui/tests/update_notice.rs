@@ -33,9 +33,6 @@ impl Fake {
 }
 
 impl Owner for Fake {
-    fn close_books(&self) -> Result<String, String> {
-        Err("not in these tests".into())
-    }
     fn new_books(&self, _: &str, _: &str) -> Result<String, String> {
         Err("not in these tests".into())
     }

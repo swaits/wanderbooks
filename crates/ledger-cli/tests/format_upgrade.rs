@@ -1039,3 +1039,25 @@ fn shell_join(words: &[String]) -> String {
         .collect::<Vec<_>>()
         .join(" ")
 }
+
+/// With nothing running, `books list` reads the folder and says which
+/// companies wait for a format upgrade, from what their journals declare
+/// (no lock, nothing written): it used to say so only through a server.
+#[test]
+fn a_list_with_nothing_running_says_which_books_wait_for_an_upgrade() {
+    let home = Home::new("list-upgrade");
+    let dir = old_books(&home, "acme");
+    let before = journal(&dir);
+    let out = home.books(&["list"]);
+    let said = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(out.status.success(), "{out:?}");
+    assert!(
+        said.contains("acme  not open: Wanderbooks isn't running")
+            && said.contains("waiting for a format upgrade (`wanderbooks books upgrade acme`)"),
+        "{said}"
+    );
+    // Reading it changed nothing and left nothing running.
+    assert_eq!(journal(&dir), before);
+    assert!(!ledger_host::opener::server_lock_held(&home.run_dir()));
+    assert!(!ledger_host::opener::host_lock_held(&home.run_dir()));
+}

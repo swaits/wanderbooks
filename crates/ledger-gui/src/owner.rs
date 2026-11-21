@@ -1,14 +1,16 @@
 //! The viewer's Books menu (plan P2 "Viewer menu", D-19, D-32): the
 //! owner's own actions on the books, handed to the books server (back up
-//! now, restore, new books, close the books, the format upgrade) or to the
+//! now, restore, new books, the format upgrade) or to the
 //! owner's agent (connect). The viewer itself still never writes the
 //! books.
 //!
 //! ```text
-//! GOAL: the owner backs up, restores, starts new books, closes the books
-//!       and connects an agent from the viewer, without a terminal.
+//! GOAL: the owner backs up, restores, starts new books and connects an
+//!       agent from the viewer, without a terminal. (There is no "Close the
+//!       books": the app is the host, and a company's tab, or the window,
+//!       closes it: WB-app-2, WB-app-4.)
 //! SOURCE: plan P2 ("Viewer menu (D-19)": "Back up now", "Restore…",
-//!         "New books…", "Close the books" and "Connect an assistant…"; the
+//!         "New books…" and "Connect an assistant…"; the
 //!         page it opens carries the two connect buttons; "Nothing in the viewer writes a book"); D-32
 //!         (no confinement: the viewer asks the server itself, as the
 //!         command line does); plan 3.9 and D-39 (the format upgrade: the
@@ -279,6 +281,19 @@ pub trait Owner: Send + Sync {
     fn serve_start(&self, _open: &[String]) -> Result<(), String> {
         Ok(())
     }
+    /// Whether another program's host holds the books now (an earlier
+    /// build's, or `wanderbooks serve`'s): asked when the start was
+    /// refused, to offer the person a button that closes it
+    /// (`serve_close_host`) beside the line that says what to type.
+    fn serve_host_holds(&self) -> bool {
+        false
+    }
+    /// Ask that host to close the books and wait until it has (what
+    /// `wanderbooks close` does, for a person with no command line on
+    /// their path): `Ok` says what came of it, `Err` why not. Blocks.
+    fn serve_close_host(&self) -> Result<String, String> {
+        Err("not here".into())
+    }
     /// Open the company `book` in the server (a tab opened): `Ok(None)`
     /// when it is open now. Blocks.
     fn serve_open(&self, _book: &str) -> Result<Option<String>, String> {
@@ -348,8 +363,6 @@ pub trait Owner: Send + Sync {
     fn make_key(&self, _book: &str) -> Result<bool, String> {
         Err("not here".into())
     }
-    /// Close the books: everything holding them lets go.
-    fn close_books(&self) -> Result<String, String>;
     /// New, empty books `id` in `currency`.
     fn new_books(&self, id: &str, currency: &str) -> Result<String, String>;
     /// Back the books `book` up now.
@@ -472,8 +485,6 @@ enum Dialog {
     NewBooks { id: String, currency: String },
     /// "Restore…": the backup, then its preview.
     Restore(Box<RestoreForm>),
-    /// "Close the books": asked first.
-    Close,
     /// The format upgrade: the go-ahead, with the owner passphrase.
     Upgrade(Box<UpgradeForm>),
 }
@@ -822,14 +833,6 @@ impl OwnerMenu {
                             Box::new(move || o.apply_update()),
                         ));
                     }
-                    ui.separator();
-                    if ui
-                        .button(format!("{} Close the books", icon::POWER))
-                        .on_hover_text("Close the books now: assistants' sessions and every other holder let go")
-                        .clicked()
-                    {
-                        self.dialog = Dialog::Close;
-                    }
                 })
             })
             .inner;
@@ -915,26 +918,6 @@ impl OwnerMenu {
                         &mut close,
                     );
                 }
-            }
-            Dialog::Close => {
-                egui::Modal::new(self.scope.unwrap_or(egui::Id::NULL).with("owner-close")).show(ctx, |ui| {
-                    ui.heading("Close the books?");
-                    ui.label("Assistants' sessions and everything else holding them let go. They open again when something holds them.");
-                    ui.horizontal(|ui| {
-                        if ui.button("Close the books").clicked() {
-                            let o = owner.clone();
-                            run = Some((
-                                "Close the books".into(),
-                                Effect::Changes("Closing the books"),
-                                Box::new(move || o.close_books().map(|l| vec![l])),
-                            ));
-                            close = true;
-                        }
-                        if ui.button("Cancel").clicked() {
-                            close = true;
-                        }
-                    });
-                });
             }
             Dialog::NewBooks { id, currency } => {
                 egui::Modal::new(self.scope.unwrap_or(egui::Id::NULL).with("owner-new-books"))

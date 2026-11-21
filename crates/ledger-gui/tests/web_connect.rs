@@ -320,7 +320,7 @@ fn copied(h: &Harness<'_, App>) -> Vec<String> {
         .collect()
 }
 
-/// WB-assist-6 INVARIANT 1: off by default, nothing but the switch and
+/// WB-assist-6: off by default, nothing but the switch and
 /// words; and no switch at all when the window cannot offer them.
 #[test]
 fn the_switch_is_off_by_default_and_an_owner_without_web_assistants_has_none() {
@@ -348,7 +348,7 @@ fn the_switch_is_off_by_default_and_an_owner_without_web_assistants_has_none() {
     );
 }
 
-/// WB-assist-6 INVARIANTS 2, 3: turned on, the progress in plain words,
+/// WB-assist-6: turned on, the progress in plain words,
 /// then the address with Copy, the three steps for Claude, and for ChatGPT
 /// and the rest the plain "we haven't tested this yet".
 #[test]
@@ -460,7 +460,7 @@ fn the_progress_steps_are_in_order() {
     );
 }
 
-/// WB-assist-6 INVARIANT 4: the relay cannot be reached (nothing is lost,
+/// WB-assist-6: the relay cannot be reached (nothing is lost,
 /// the window and the local assistants work), the clock is wrong (it needs
 /// the person), the certificate is waited for.
 #[test]

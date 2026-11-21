@@ -591,7 +591,7 @@ fn order_for(r: &Rig, authority: &Authority) -> OrderRequest<'static> {
     }
 }
 
-/// WB-link-4 (INVARIANT 6): the relay's list can name any directory, and
+/// WB-link-4 (invariant 6): the relay's list can name any directory, and
 /// the app contacts only a host compiled into it: no request is made for
 /// any other, however it is spelled.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -628,7 +628,7 @@ async fn a_directory_on_a_host_the_app_does_not_know_is_refused_before_any_reque
     assert!(r.acme.state.lock().unwrap().new_accounts.is_empty());
 }
 
-/// WB-link-4 (INVARIANT 6): an account kept for a directory that is not on
+/// WB-link-4 (invariant 6): an account kept for a directory that is not on
 /// the list is not used; a new one is made at the authority named.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_kept_account_for_an_unlisted_directory_is_not_used() {

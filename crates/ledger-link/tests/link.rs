@@ -593,7 +593,7 @@ async fn a_stalled_handshake_is_dropped_and_no_door_means_no_service() {
     assert!(w.assistant(&host).await.unwrap().ends_with(BODY));
 }
 
-/// WB-link-4 (INVARIANTS 7 and 8 of certs.rs): the relay names the
+/// WB-link-4 (invariants 7 and 8 of certs.rs): the relay names the
 /// authorities, so a certificate from one it made up is refused (the
 /// program trusts the public roots, not the relay's list): nothing is
 /// stored or served, the state says so, and a lifetime over the cap is
@@ -634,7 +634,7 @@ async fn a_certificate_from_an_authority_the_relay_made_up_is_never_stored_or_se
     assert!(!w.dir.path().join("link/cert.json").exists());
 }
 
-/// WB-link-4 (INVARIANT 7): a certificate kept on disk that the program
+/// WB-link-4 (invariant 7): a certificate kept on disk that the program
 /// would not trust is discarded and ordered again, and "a new address"
 /// does not bring it back.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -705,7 +705,7 @@ async fn a_name_taken_on_the_first_claim_settles_before_the_certificate_and_the_
     assert!(w.assistant(&host).await.unwrap().ends_with(BODY));
 }
 
-/// WB-link-4 (INVARIANT 9 of certs.rs): a certificate is not served after
+/// WB-link-4 (invariant 9 of certs.rs): a certificate is not served after
 /// its end, even when it cannot be renewed, and the state says it is gone.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_expired_certificate_is_not_served_and_the_state_says_so() {

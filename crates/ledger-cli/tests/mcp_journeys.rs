@@ -808,11 +808,7 @@ fn tin_bearing_files_are_refused_when_given_back_to_be_filed() {
     // Raw bytes, frame lines included: an upload slot writes no line, and a
     // refusal is decided before anything is written, so no frame (begun or
     // closed, with its error text) stands for any of these calls.
-    assert_eq!(
-        books.journal_raw(),
-        journal,
-        "a refusal stored something"
-    );
+    assert_eq!(books.journal_raw(), journal, "a refusal stored something");
     // Without TINs, the 1099 worksheet is an ordinary file: it may be
     // filed like any other.
     let plain = mcp.call("books.vendor_1099", json!({"year": 2026, "csv": true}));

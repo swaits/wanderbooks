@@ -2699,10 +2699,10 @@ fn the_docks_height_and_layout_are_the_apps_one_for_every_tab() {
         h.state_mut().view_mut(i).unwrap().dock_mut().open = true;
     }
     h.run_steps(4);
-    let top = |h: &Harness<'_, App>| h.get_by_label_contains(" Agent").rect().top();
+    let top = |h: &Harness<'_, App>| h.get_by_label_contains(" Assistant").rect().top();
     let before = top(&h);
     // Resized in alpha: dragged up by a hundred points.
-    let x = h.get_by_label_contains(" Agent").rect().left() + 300.0;
+    let x = h.get_by_label_contains(" Assistant").rect().left() + 300.0;
     let panel_top = egui::containers::panel::PanelState::load(&h.ctx, egui::Id::new("dock-open"))
         .expect("the dock's panel")
         .outer_rect

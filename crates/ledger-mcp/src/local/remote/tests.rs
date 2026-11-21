@@ -1685,7 +1685,10 @@ async fn refresh_tokens_survive_a_restart_and_only_their_hashes_are_kept() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
     // A server that starts again reads it: the same refresh token works.
     let again = Arc::new(Remote::new());
@@ -1706,4 +1709,70 @@ async fn refresh_tokens_survive_a_restart_and_only_their_hashes_are_kept() {
     // The old access token is not carried over (memory only), and the one
     // the restart made is not the old one.
     assert_ne!(out["access_token"].as_str().unwrap(), access);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_key_made_for_a_product_that_takes_only_a_key_opens_the_door_with_the_same_permissions() {
+    let h = harness().await;
+    let (id, key) = match admin(
+        &h.books,
+        Request::RemoteMakeKey {
+            book: "acme".into(),
+            name: "Some Assistant".into(),
+            post: false,
+        },
+    )
+    .await
+    {
+        Response::RemoteSecret { id, secret, .. } => (id, secret.0),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(mcp(&h, Some(&key), "acme", initialize()).await.status, 200);
+    // It is one of "Who can reach these books", with read and draft only.
+    let listed = match admin(&h.books, Request::TokenList).await {
+        Response::Tokens(t) => t,
+        other => panic!("{other:?}"),
+    };
+    let row = listed.iter().find(|t| t.id == id).unwrap();
+    assert_eq!(row.name, "key-some-assistant");
+    assert_eq!(
+        row.scopes,
+        vec!["books:read".to_string(), "books:write".to_string()]
+    );
+    let post = call(
+        3,
+        "books.post_entry",
+        json!({"entry_id": 1, "confirmed": true, "request_key": "post-key-0002"}),
+    );
+    assert!(tool_text(&mcp(&h, Some(&key), "acme", post).await).contains("books:post"));
+    // Another company is not reached with it.
+    assert_eq!(mcp(&h, Some(&key), "beta", initialize()).await.status, 403);
+    // Revoked, it ends.
+    admin(
+        &h.books,
+        Request::TokenRevoke {
+            book: "acme".into(),
+            name: row.name.clone(),
+            id: Some(id),
+        },
+    )
+    .await;
+    assert_eq!(mcp(&h, Some(&key), "acme", initialize()).await.status, 401);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_host_with_the_default_port_is_the_same_host() {
+    let h = harness().await;
+    let mut bytes = proxy::encode(
+        "203.0.113.9:1".parse().unwrap(),
+        "198.51.100.1:443".parse().unwrap(),
+    );
+    bytes.extend(request_bytes(
+        &format!("{}:443", h.host()),
+        "GET",
+        "/.well-known/oauth-authorization-server",
+        &[],
+        "",
+    ));
+    assert_eq!(parse(&raw(h.addr, &bytes).await).status, 200);
 }

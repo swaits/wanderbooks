@@ -295,10 +295,17 @@ fn front(books: &Books, headers: &HeaderMap) -> Result<Arc<Door>, Box<Response>>
             (StatusCode::SERVICE_UNAVAILABLE, "web assistants are off").into_response(),
         )));
     };
+    // The host as the public address spells it: lowercase, and the scheme's
+    // own port (443) left off whether or not the caller wrote it.
     let host = headers
         .get(header::HOST)
         .and_then(|h| h.to_str().ok())
-        .map(str::to_ascii_lowercase);
+        .map(str::to_ascii_lowercase)
+        .map(|h| {
+            let plain = door.issuer.starts_with("https://");
+            let default = if plain { ":443" } else { ":80" };
+            h.strip_suffix(default).map(str::to_string).unwrap_or(h)
+        });
     if host.as_deref() != Some(door.host.as_str()) {
         return Err(Box::new(no_store(
             (StatusCode::MISDIRECTED_REQUEST, "not this address").into_response(),

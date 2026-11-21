@@ -157,6 +157,40 @@ pub struct UpdateWaiting {
 /// over the books server and the agents' own commands). Each blocks: the
 /// menu calls it off the UI thread.
 pub trait Owner: Send + Sync {
+    /// Whether this program hosts the books' server for the window (plan
+    /// P15 3.1: the app starts it, as a child process, and closes it): when
+    /// it does not, the window asks nothing of a server (`serve_*`).
+    fn serves(&self) -> bool {
+        false
+    }
+    /// Start the books server with the companies `open` (their ids) open,
+    /// and return when it is ready, or why it is not. Blocks.
+    fn serve_start(&self, _open: &[String]) -> Result<(), String> {
+        Ok(())
+    }
+    /// Open the company `book` in the server (a tab opened): `Ok(None)`
+    /// when it is open now. Blocks.
+    fn serve_open(&self, _book: &str) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+    /// Close the company `book` in the server (a tab closed): `Ok(None)`
+    /// when it is closed, `Ok(Some(words))` when it is closed but its last
+    /// backup wasn't whole, `Err` when it could not be asked or refused.
+    /// Blocks (a backup is made first).
+    fn serve_close(&self, _book: &str) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+    /// Close the server (the window closed): its input is closed and the
+    /// exit waited for, for a bounded time. `Ok(Some(words))` when it is
+    /// still finishing by itself after that. Blocks.
+    fn serve_stop(&self) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+    /// Why the server is gone, if it has exited on its own. Cheap: asked
+    /// on every frame.
+    fn serve_exited(&self) -> Option<String> {
+        None
+    }
     /// Close the books: everything holding them lets go.
     fn close_books(&self) -> Result<String, String>;
     /// New, empty books `id` in `currency`.
@@ -235,8 +269,13 @@ pub fn current() -> Option<Arc<dyn Owner>> {
 /// The id of books of the data root (their folder's name), or None for
 /// books outside one, the demo's (INVARIANT 4).
 pub fn book_id(books: &Books) -> Option<String> {
-    ledger_store::root::inside_a_root(&books.data_dir)
-        .then(|| books.data_dir.file_name()?.to_str().map(str::to_string))
+    book_id_of_dir(&books.data_dir)
+}
+
+/// [`book_id`] of the books in `dir`.
+pub fn book_id_of_dir(dir: &std::path::Path) -> Option<String> {
+    ledger_store::root::inside_a_root(dir)
+        .then(|| dir.file_name()?.to_str().map(str::to_string))
         .flatten()
 }
 

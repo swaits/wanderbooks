@@ -7,7 +7,8 @@
 //!       (the color scheme, the dock's preferences) is kept once.
 //! SOURCE: plan/p15-app-and-relay.md 3.2 (tabs: `App` holds the per-app
 //!         state and a `CompanyView` per tab); D-78 (one top-level tab per
-//!         open company).
+//!         open company); 3.1 (a tab is a company open in the books
+//!         server the app runs); WB-app-2, WB-app-4.
 //! INVARIANTS:
 //!   1. One view per open company, no company twice: opening one that is
 //!      open shows its tab instead, and start-up opens each company of the
@@ -52,12 +53,25 @@
 //!      (an export, a backup) is stopped with its tab, with no question.
 //!   6. The viewer stays read-only: a tab not in front reads what a tab
 //!      in front reads, and writes nothing either.
+//!   8. A tab is a company open in the books server the program runs for
+//!      the window, when it runs one (serving.rs, WB-app-2): the
+//!      companies restored at the start are opened with the server, a
+//!      company opened later when its tab opens, and closed when its tab
+//!      closes. What fails, and a server that stops on its own, is a
+//!      notice under the tab bar, in words, until dismissed. Where the
+//!      session list and the connection states will go (A4) is
+//!      `Self::connection_slot`.
+//!   9. Asked to close, a window with a server stays up, saying it is
+//!      closing the books, until the server has exited or its bounded
+//!      close has run out (and then says what is left); a close is never
+//!      begun while a job that changes the books runs (7) (WB-app-4).
 //! ```
 
 use crate::company::CompanyView;
 use crate::data::Source;
 use crate::nav::Route;
 use crate::scheme_menu::SchemeMenu;
+use crate::serving::Serving;
 use crate::tabs::{Listed, Tab, TabAction, TabBar};
 use crate::theme::{self, pal};
 use egui::{Frame, RichText, Ui};
@@ -138,6 +152,14 @@ pub struct App {
     /// Whether the list of open companies is written when the app saves
     /// (INVARIANT 3: not after a start that named a company).
     writes_open_list: bool,
+    /// The window asked to close and the server's close is being waited
+    /// for: the window closes when it is done (INVARIANT 9).
+    closing_window: bool,
+    /// The books server the program runs for the window, if it runs one:
+    /// a tab is a company open in it (INVARIANT 8).
+    serving: Serving,
+    /// What the server work has said that the person has not dismissed.
+    notices: Vec<String>,
 }
 
 /// What a window is called when no company is in front.
@@ -162,6 +184,18 @@ impl App {
         get: &dyn Fn(&str) -> Option<String>,
         start: Start,
     ) -> Self {
+        Self::start_with_owner(ctx, get, start, crate::owner::current())
+    }
+
+    /// [`Self::start_with`], with the program's owner given (tests give
+    /// one that hosts a server of its own): the server it hosts starts
+    /// with the companies this start opens (INVARIANT 8).
+    pub fn start_with_owner(
+        ctx: &egui::Context,
+        get: &dyn Fn(&str) -> Option<String>,
+        start: Start,
+        owner: Option<std::sync::Arc<dyn crate::owner::Owner>>,
+    ) -> Self {
         let mut app = Self::without_books(ctx, get);
         match start {
             Start::Only(source) => {
@@ -171,6 +205,9 @@ impl App {
                     .map(std::path::Path::to_path_buf);
                 app.remember_all(get);
                 app.remember_scope(get, &kept_scope_of(&source.data_dir));
+                // A company of a data root is served; the demo's is not.
+                let id = crate::owner::book_id_of_dir(&source.data_dir);
+                app.serving = Serving::start(owner, id.into_iter().collect());
                 app.open(ctx, source);
             }
             Start::Restore { root, fallback } => {
@@ -181,7 +218,10 @@ impl App {
                 let wanted: Vec<String> = get(&open_key(&root))
                     .map(|v| v.split(',').map(str::to_string).collect())
                     .unwrap_or_default();
+                // The companies this start opens, in order (INVARIANT 3):
+                // the server starts with exactly these open.
                 let mut opened = Vec::new();
+                let mut sources = Vec::new();
                 for id in wanted {
                     // Gone, or listed twice: skipped, with no word.
                     if !there.contains(&id) || opened.contains(&id) {
@@ -193,12 +233,15 @@ impl App {
                     let Ok(r) = ledger_store::root::Root::find(Some(&root)) else {
                         break;
                     };
-                    let source = Source {
+                    sources.push(Source {
                         data_dir: r.book_dir(&book),
                         today: app.today,
-                    };
-                    app.open(ctx, source);
+                    });
                     opened.push(id);
+                }
+                app.serving = Serving::start(owner, opened.clone());
+                for source in sources {
+                    app.open(ctx, source);
                 }
                 if app.views.is_empty() {
                     app.open(ctx, fallback);
@@ -287,6 +330,9 @@ impl App {
             first_run_source: (None, None),
             close_dialog: false,
             writes_open_list: true,
+            closing_window: false,
+            serving: Serving::off(),
+            notices: Vec::new(),
         }
     }
 
@@ -374,6 +420,88 @@ impl App {
         });
     }
 
+    /// Asked to close, a window with a server stays up, saying it is
+    /// closing the books, until the server has exited or its bounded
+    /// close has run out (INVARIANT 9). A job that changes the books holds
+    /// the window first (`guard_close`), and no close begins meanwhile.
+    fn guard_server_close(&mut self, ctx: &egui::Context) {
+        if !self.serving.is_on() || !self.holding().is_empty() {
+            return;
+        }
+        let asked = ctx.input(|i| i.viewport().close_requested());
+        if asked && !self.serving.is_closed() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.serving.begin_stop();
+            self.closing_window = true;
+        }
+        if !self.closing_window {
+            return;
+        }
+        if self.serving.is_closed() {
+            self.closing_window = false;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
+        }
+        egui::Modal::new(egui::Id::new("wanderbooks-closing-books")).show(ctx, |ui| {
+            ui.set_max_width(460.0);
+            ui.heading("Closing your books");
+            ui.add_space(4.0);
+            ui.label(
+                "Finishing what is running and making each company's last backup. \
+                 This can take a minute; the window closes by itself.",
+            );
+            ui.add_space(6.0);
+            ui.spinner();
+        });
+        ctx.request_repaint_after(std::time::Duration::from_millis(100));
+    }
+
+    /// The notices from the server work, shown under the tab bar until
+    /// dismissed (INVARIANT 8).
+    fn show_notices(&mut self, ui: &mut Ui) {
+        self.notices.extend(self.serving.take_notices());
+        if self.notices.is_empty() {
+            return;
+        }
+        let p = pal(ui.ctx());
+        let mut dismiss = None;
+        egui::Panel::top("server_notices")
+            .resizable(false)
+            .frame(
+                Frame::new()
+                    .fill(p.warning_soft)
+                    .inner_margin(egui::Margin::symmetric(12, 6)),
+            )
+            .show(ui, |ui| {
+                for (i, words) in self.notices.iter().enumerate() {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new(words).color(p.text));
+                        if ui.button("Dismiss").clicked() {
+                            dismiss = Some(i);
+                        }
+                    });
+                }
+            });
+        if let Some(i) = dismiss {
+            self.notices.remove(i);
+        }
+    }
+
+    /// What the server work has said that has not been dismissed (tests).
+    pub fn notices(&mut self) -> &[String] {
+        self.notices.extend(self.serving.take_notices());
+        &self.notices
+    }
+
+    /// The server work of the window (tests).
+    pub fn serving(&self) -> &Serving {
+        &self.serving
+    }
+
+    /// Where the connection states and the list of who is connected will
+    /// be shown (plan 3.3, unit A4); nothing is drawn yet.
+    fn connection_slot(&mut self, _ui: &mut Ui) {}
+
     /// The window's title now.
     pub fn window_title(&self) -> String {
         match self.active_view() {
@@ -417,7 +545,13 @@ impl App {
             return i;
         }
         let view = CompanyView::open(ctx, source).with_dock(self.new_dock());
-        self.add_view(view)
+        let at = self.add_view(view);
+        // A tab is a company open in the server (INVARIANT 8): one this
+        // start opened is open in it already.
+        if let Some(id) = self.views[at].book_id() {
+            self.serving.open(&id);
+        }
+        at
     }
 
     /// Close tab `i`: its view is dropped (INVARIANT 2). The tab after it,
@@ -437,6 +571,10 @@ impl App {
             view.keep(&mut |k, v| {
                 self.kept.insert(stored(&scope, k), v);
             });
+        }
+        // The company is closed in the server with its tab (INVARIANT 8).
+        if let Some(id) = view.book_id() {
+            self.serving.close(&id);
         }
         drop(view);
         if i < self.active || self.active >= self.views.len() {
@@ -496,6 +634,11 @@ impl App {
         match crate::book_in_root(root.as_deref(), Some(id)) {
             Ok(data_dir) => {
                 self.today = today;
+                // The first company of a first run: the server starts with
+                // it (INVARIANT 8), if the program runs one.
+                if !self.serving.is_on() {
+                    self.serving = Serving::start(crate::owner::current(), vec![id.to_string()]);
+                }
                 self.open(ctx, Source { data_dir, today });
                 self.welcome = None;
             }
@@ -758,6 +901,7 @@ impl eframe::App for App {
             v.pump(&ctx, i == self.active);
         }
         self.guard_close(&ctx);
+        self.guard_server_close(&ctx);
         self.check_identities();
         self.learn_names();
         let tabs: Vec<Tab> = self
@@ -781,6 +925,8 @@ impl eframe::App for App {
         // The bar goes across the whole window, above everything of the
         // company in front: a tab is the top level (D-78).
         let action = self.tabs.show(ui, &tabs, shown, &others);
+        self.show_notices(ui);
+        self.connection_slot(ui);
         let active = self.active;
         match self.views.get_mut(active) {
             Some(v) => v.ui(ui, &mut self.schemes),

@@ -23,6 +23,7 @@ mod prefs;
 mod receipts;
 mod scheme_menu;
 mod schemes;
+pub mod serving;
 pub mod tabs;
 #[cfg(test)]
 mod test_support;

@@ -996,8 +996,15 @@ impl BooksServer {
             }
             .to_tool_error());
         }
-        for aid in &attachment_ids {
+        for (n, aid) in attachment_ids.iter().enumerate() {
             store.check_linkable(*aid).map_err(|e| e.to_string())?;
+            // Linked once each: a second link of one file to the new entry
+            // would be refused after the disposal was written.
+            if attachment_ids[..n].contains(aid) {
+                return Err(format!(
+                    "receipt_attachment_ids names attachment {aid} twice: name each file once"
+                ));
+            }
         }
         if buyer.is_none()
             && !proceeds.amount.is_zero()

@@ -747,6 +747,62 @@ fn filing_links_in_the_same_call_all_or_nothing() {
     assert_eq!(m.count("document.filed"), 1);
 }
 
+/// Bytes already filed are one file (P6 step 4): filing them again links the
+/// existing attachment to the new subjects. A link the file already has is
+/// refused, and the refusal is decided before the first link is written:
+/// the journal is byte for byte what it was (D-88: a failed transaction is
+/// on the record for a call that failed part way, never for one that could
+/// have been refused up front).
+#[test]
+fn filing_bytes_already_linked_is_refused_before_any_link_is_written() {
+    let mut m = books("dedup-links");
+    let e = m.draft("2026-01-05", json!({}), &[]);
+    let other = m.draft("2026-01-06", json!({}), &[]);
+    m.add_party("Acme Design", &["contractor"]);
+    // Two uploads of each file begun before either is filed (a file whose
+    // bytes are stored already is not given a second upload).
+    let r = m.upload(b"same receipt", "r.pdf", "application/pdf", "receipt");
+    let r2 = m.upload(b"same receipt", "r.pdf", "application/pdf", "receipt");
+    let c = m.upload(b"same contract", "c.pdf", "application/pdf", "document");
+    let c2 = m.upload(b"same contract", "c.pdf", "application/pdf", "document");
+    // A receipt on `e`, linked to the party; a document linked to the company.
+    m.ok(
+        "books.attach_receipt",
+        json!({"entry_id": e, "upload_id": r, "link_to": [{"kind": "party", "id": "Acme Design"}]}),
+    );
+    m.ok(
+        "books.file_document",
+        json!({"category": "contract", "upload_id": c, "link_to": [{"kind": "company"}]}),
+    );
+    let before = m.journal_raw();
+    // The same bytes, again: `other` would be linked first, then the party
+    // (already linked) refused.
+    let why = m.refuse(
+        "books.attach_receipt",
+        json!({"entry_id": e, "upload_id": r2,
+               "link_to": [{"kind": "entry", "id": other}, {"kind": "party", "id": "Acme Design"}]}),
+    );
+    assert!(why.contains("already linked"), "{why}");
+    // The same, filed on another entry first: that link and then the party.
+    let why = m.refuse(
+        "books.attach_receipt",
+        json!({"entry_id": other, "upload_id": r2,
+               "link_to": [{"kind": "party", "id": "Acme Design"}]}),
+    );
+    assert!(why.contains("already linked"), "{why}");
+    let why = m.refuse(
+        "books.file_document",
+        json!({"category": "contract", "upload_id": c2,
+               "link_to": [{"kind": "entry", "id": e}, {"kind": "company"}]}),
+    );
+    assert!(why.contains("already linked"), "{why}");
+    assert!(
+        m.journal_raw() == before,
+        "a refusal wrote to the journal: {:?}",
+        m.journal_types()
+    );
+}
+
 #[test]
 fn documents_file_under_the_attachment_kinds() {
     let mut m = books("categories");

@@ -344,8 +344,18 @@ it does when an access record cannot be written. A call whose closing line
 the store heals from the journal where it can, and where it cannot says so
 (`StoreError::CallCommitted`: the call was completed and counts, do not do
 it again), stops taking writes, and is rebuilt at the next open.
+A call that is refused for a reason that could have been known up front
+(a bad argument, a rule that says no) writes nothing: its refusal is decided
+before its first line, so the journal is byte for byte what it was and no
+failed call stands for it. A failed call on the record is for a call that
+failed part way (a fault, a crash), never for one that could have been
+refused first. A tool that has several writes to make checks every one of
+them before the first (`Store::check_filing_links`,
+`Ledger::check_no_party_reason`, the duplicate receipt ids of
+`books.dispose_asset`); a test's books holding a failed call fail the test
+unless it injected the fault on purpose (`common::expect_failed_calls`).
 *Enforced:* `Store::close_call`, `StoreError::CallCommitted`, ledger-mcp `calls::answered_ok`, `calls::close`, `calls::recover_vault`, `calls::put_tin`, `calls::purge_records`, `calls::settle_vault`, `ledger_vault::stage_tin`, `ledger_vault::stage_w9`, `ledger_vault::stage_purge`, `ledger_vault::settle`, `ledger_vault::pending_tags`.
-*Checked:* `ledger-store` `tests/calls.rs` (`a_failed_call_is_on_the_record_and_builds_nothing`, `a_call_that_wrote_nothing_leaves_no_line_and_is_remembered_for_the_session`, `a_closing_line_on_disk_but_sqlite_failing_is_a_call_that_counts`); `ledger-vault` `tests/vault.rs` (`a_staged_record_is_read_by_no_one_until_its_call_commits`, `a_call_that_did_not_commit_leaves_the_old_record_whole`, `a_purge_is_final_only_when_its_call_commits`); `ledger-cli` `tests/call_transactions.rs` (`a_failed_write_leaves_the_books_and_its_key_as_they_were`, `a_call_that_wrote_lines_and_then_failed_leaves_the_books_and_its_key_as_they_were`, `a_crash_with_the_ok_close_on_disk_but_sqlite_not_committed_leaves_the_call_done_once`, `a_set_tin_that_fails_leaves_the_vault_as_it_was`, `a_crash_between_the_commit_and_the_vault_settling_is_finished_at_the_next_start`).
+*Checked:* `ledger-store` `tests/calls.rs` (`a_failed_call_is_on_the_record_and_builds_nothing`, `a_call_that_wrote_nothing_leaves_no_line_and_is_remembered_for_the_session`, `a_closing_line_on_disk_but_sqlite_failing_is_a_call_that_counts`); `ledger-vault` `tests/vault.rs` (`a_staged_record_is_read_by_no_one_until_its_call_commits`, `a_call_that_did_not_commit_leaves_the_old_record_whole`, `a_purge_is_final_only_when_its_call_commits`); `ledger-cli` `tests/hostile_args.rs` (`a_refused_call_leaves_the_journal_byte_for_byte_as_it_was`), `tests/spec_attachments.rs` (`filing_bytes_already_linked_is_refused_before_any_link_is_written`), `tests/spec_parties.rs` (`a_no_party_reason_that_carries_a_tax_id_is_refused_before_the_draft_is_written`), `tests/spec_kept.rs` (`a_template_draft_with_a_tax_id_in_its_reason_is_refused_before_it_is_written`), `tests/spec_assets.rs` (`disposing_with_a_receipt_named_twice_is_refused_before_anything_is_written`), `ledger-cli` `tests/call_transactions.rs` (`a_failed_write_leaves_the_books_and_its_key_as_they_were`, `a_call_that_wrote_lines_and_then_failed_leaves_the_books_and_its_key_as_they_were`, `a_crash_with_the_ok_close_on_disk_but_sqlite_not_committed_leaves_the_call_done_once`, `a_set_tin_that_fails_leaves_the_vault_as_it_was`, `a_crash_between_the_commit_and_the_vault_settling_is_finished_at_the_next_start`).
 *Proved:* Lean `Calls.replay_drop_frame`, `Calls.keyTable_failed_absent`, `Calls.keyTable_submit_failed` (bookspec law 47, `docs/verification.md` law 47): a failed call counts for nothing and leaves its key out of the table.
 
 **WB-format-11 Books that have not declared `call_transactions` take no

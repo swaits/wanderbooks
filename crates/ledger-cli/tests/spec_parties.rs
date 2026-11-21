@@ -1215,6 +1215,23 @@ fn suggest_names_likely_parties_and_refuses_nothing() {
     assert_eq!(s[0]["party_id"], apple);
 }
 
+/// A reason that names a full tax id is refused (BS-partner-2), and the
+/// refusal is decided before the draft's first line is written: the journal
+/// is byte for byte what it was, with no draft, no failed call and no
+/// error text in it (D-88).
+#[test]
+fn a_no_party_reason_that_carries_a_tax_id_is_refused_before_the_draft_is_written() {
+    let mut m = books("no-party-tin");
+    let before = m.journal_raw();
+    let e = m.refuse(
+        "books.draft_entry",
+        json!({"date": "2026-03-01", "description": "transfer",
+               "no_party_reason": "own account, tax id 987-65-4321"}),
+    );
+    assert!(!e.contains("987-65-4321"), "{e}");
+    assert_eq!(m.journal_raw(), before, "a refusal wrote to the journal");
+}
+
 /// Oracle: "require": posting is refused (party_required) and journals
 /// nothing until the entry names a party or is marked as having none;
 /// no_party_reason is refused alongside a party.

@@ -5583,6 +5583,14 @@ impl Ledger {
                 format!("entry {entry}'s reversal chain entry {e} names a party; clear it first")
             }));
         }
+        Self::check_no_party_reason(reason)
+    }
+
+    /// What a no-party reason must be, whatever entry it is for: said in
+    /// words, and carrying no full tax id (BS-partner-2). A caller that
+    /// makes an entry and marks it asks this first, so a refusal for the
+    /// reason is decided before the entry's first line is written.
+    pub fn check_no_party_reason(reason: &str) -> Result<(), LedgerError> {
         if reason.trim().is_empty() {
             return Err(LedgerError::InvalidParty(
                 "say why the entry has no counterparty".into(),

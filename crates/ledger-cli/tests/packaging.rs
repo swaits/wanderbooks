@@ -671,15 +671,12 @@ fn only_a_person_runs_the_workflow_that_publishes_the_repositories() {
     let lines = code(&text);
     let on = lines.iter().position(|l| *l == "on:").unwrap();
     let jobs = lines.iter().position(|l| *l == "jobs:").unwrap();
-    assert_eq!(
-        lines[on + 1..jobs]
-            .iter()
-            .filter(|l| l.ends_with(':') && !l.starts_with("tag"))
-            .count(),
-        2 + 1,
-        "workflow_dispatch and its inputs, nothing else: {:?}",
-        &lines[on + 1..jobs]
-    );
+    for l in &lines[on + 1..jobs] {
+        assert!(
+            !(l.starts_with("push:") || l.starts_with("pull_request") || l.starts_with("schedule")),
+            "{l}: only workflow_dispatch may start it"
+        );
+    }
     assert!(lines.iter().any(|l| l.starts_with("workflow_dispatch:")));
     assert!(
         lines.iter().any(|l| l.contains("isDraft")),

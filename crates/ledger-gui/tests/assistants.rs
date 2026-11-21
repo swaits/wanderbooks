@@ -888,6 +888,34 @@ fn describe(shape: &egui::epaint::Shape) -> String {
     }
 }
 
+/// `text` with every decimal number cut to two places: the last digits of
+/// a `sin` or a `cos` differ between one platform's maths library and
+/// another's, and a hundredth of a point is not a picture that changed.
+fn rounded(text: &str) -> String {
+    let is_num = |c: char| c.is_ascii_digit() || matches!(c, '.' | '-' | 'e' | 'E' | '+');
+    let (mut out, mut word) = (String::new(), String::new());
+    let flush = |out: &mut String, word: &mut String| {
+        match word.parse::<f64>() {
+            Ok(v) if word.contains('.') => {
+                let r = format!("{v:.2}");
+                out.push_str(if r == "-0.00" { "0.00" } else { &r });
+            }
+            _ => out.push_str(word),
+        }
+        word.clear();
+    };
+    for c in text.chars() {
+        if is_num(c) {
+            word.push(c);
+        } else {
+            flush(&mut out, &mut word);
+            out.push(c);
+        }
+    }
+    flush(&mut out, &mut word);
+    out
+}
+
 /// A hash of every shape the window paints where it can be seen.
 fn shapes_of(h: &Harness<'_, App>) -> u64 {
     let screen = h.ctx.content_rect();
@@ -898,7 +926,7 @@ fn shapes_of(h: &Harness<'_, App>) -> u64 {
         .iter()
         .filter(|s| s.clip_rect.intersects(screen))
     {
-        let line = format!("{:?} {}", s.clip_rect, describe(&s.shape));
+        let line = rounded(&format!("{:?} {}", s.clip_rect, describe(&s.shape)));
         for b in line.bytes() {
             hash ^= b as u64;
             hash = hash.wrapping_mul(0x100_0000_01b3);
@@ -953,16 +981,23 @@ fn three_states(dark: bool, front: usize, size: egui::Vec2) -> (World, Harness<'
     ]);
     let (root, fallback) = (w.root.clone(), w.source("alpha"));
     let for_app: Arc<dyn Owner> = owner.clone();
-    let mut h = Harness::builder().with_size(size).build_eframe(move |cc| {
-        let mut app = App::start_with_owner(
-            &cc.egui_ctx,
-            &|k| kept.get(k).cloned(),
-            Start::Restore { root, fallback },
-            Some(for_app),
-        );
-        app.set_now(now());
-        app
-    });
+    // The clock stands still (a step takes no time): the turning arc, the
+    // spinners and every "a moment ago" are drawn from the frame time, and
+    // how many frames this window runs before a picture (`until` waits for
+    // threads, so it differs from machine to machine) must not move them.
+    let mut h = Harness::builder()
+        .with_size(size)
+        .with_step_dt(0.0)
+        .build_eframe(move |cc| {
+            let mut app = App::start_with_owner(
+                &cc.egui_ctx,
+                &|k| kept.get(k).cloned(),
+                Start::Restore { root, fallback },
+                Some(for_app),
+            );
+            app.set_now(now());
+            app
+        });
     let o: Arc<dyn Owner> = owner;
     for i in 0..3 {
         h.state_mut().view_mut(i).unwrap().set_owner(o.clone());
@@ -984,6 +1019,14 @@ fn the_state_marks_the_top_bar_and_the_pages_look_as_blessed() {
         // alpha in front: working; the tabs show all three marks.
         let (_w, mut h) = three_states(dark, 0, size);
         picture(&h, &format!("assist_working_{mode}"));
+        // The arc must not depend on when the picture is taken.
+        let before = shapes_of(&h);
+        h.run_steps(7);
+        assert_eq!(
+            shapes_of(&h),
+            before,
+            "the working picture moved with the frame count ({mode})"
+        );
         h.state_mut().activate(1);
         h.run_steps(4);
         picture(&h, &format!("assist_none_{mode}"));

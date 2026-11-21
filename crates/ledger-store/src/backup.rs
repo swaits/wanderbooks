@@ -510,7 +510,7 @@ impl Git {
             use std::os::unix::process::CommandExt;
             c.process_group(0);
         }
-        let mut child = c.spawn().map_err(|e| match e.kind() {
+        let mut child = crate::lock::spawn(&mut c).map_err(|e| match e.kind() {
             std::io::ErrorKind::NotFound => BackupError::NoGit,
             kind => BackupError::Io(kind),
         })?;

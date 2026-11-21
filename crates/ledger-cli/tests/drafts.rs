@@ -349,13 +349,13 @@ fn a_package_the_build_refuses_journals_no_decision_even_with_a_reason() {
     draft(&mut w, "2026-03-10", "Open", "40.00");
     let mut args = json!({"as_of": "2026-03-31", "cash_accounts": ["1000"]});
     args["allow_open_drafts"] = json!({"reason": "the CPA wants it before the receipt comes"});
-    let before = books.journal().len();
+    let before = books.journal_raw().len();
     for _ in 0..2 {
         let why = answer_of(&w.call("books.export_cpa_package", args.clone()))
             .expect_err("the build refuses an unknown capital account");
         assert!(why.contains("unknown capital account 3999"), "{why}");
         assert_eq!(
-            books.journal().len(),
+            books.journal_raw().len(),
             before,
             "a decision was journaled for a package that was refused"
         );

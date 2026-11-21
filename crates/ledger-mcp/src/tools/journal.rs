@@ -90,7 +90,7 @@ impl BooksServer {
     #[tool(
         name = "books.journal_history",
         title = "Journal history",
-        description = "The journal in words, in order: each line's seq, time, type and a sentence saying what it did, to what, and the entry it belongs to. Filter by after_seq, types (an exact type like entry.posted, or a group like entry.) and subject (entry:12, invoice:3, bill:3, account:10, party:5, asset:2). The way to trace a figure back to what produced it, and the only way to see what the journal holds. Read-only; at most 200 lines a call.",
+        description = "The journal in words, in order: each line's seq, time, type and a sentence saying what it did, to what, and the entry it belongs to. Filter by after_seq, types (an exact type like entry.posted, or a group like entry.) and subject (entry:12, invoice:3, bill:3, account:10, party:5, asset:2). The way to trace a figure back to what produced it, and the only way to see what the journal holds. A line of a call that failed or never finished is listed and says it did not count. Read-only; at most 200 lines a call.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(super) async fn journal_history(

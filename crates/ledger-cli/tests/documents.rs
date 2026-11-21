@@ -156,7 +156,7 @@ fn an_invoice_from_issue_to_paid() {
     assert!(draft.starts_with(b"%PDF"), "a PDF, not bytes inline");
     assert!(draft.len() > 1_000, "the DRAFT copy is a page: {preview}");
     assert_eq!(books.journal_raw(), before, "a preview journals nothing");
-    assert!(books.journal().len() == before.len());
+    assert!(books.journal_raw().len() == before.len());
 
     // The confirm: the same number, the issued copy filed with the invoice.
     let mut confirmed = issue.clone();

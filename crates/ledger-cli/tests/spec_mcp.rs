@@ -224,11 +224,6 @@ impl Mcp {
         mcp
     }
 
-    /// The journal, without the frames of tool calls (D-88): the events.
-    fn journal(&self) -> Vec<u8> {
-        common::without_call_lines(&self.journal_raw())
-    }
-
     /// The journal, byte for byte: what a check that a refusal or a
     /// preview "journaled nothing" compares, so a stray frame line is seen.
     fn journal_raw(&self) -> Vec<u8> {

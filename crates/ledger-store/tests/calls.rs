@@ -773,7 +773,9 @@ fn books_the_version_before_call_transactions_wrote_open_and_report_the_same_fig
     assert_eq!(after, expected["snapshot"]["Ok"]);
     s.begin_call(id("key-old-books-2")).unwrap();
     // January is closed in these books: the first framed call is a March one.
-    let e = s.create_entry(d(2026, 3, 1), "A first framed call").unwrap();
+    let e = s
+        .create_entry(d(2026, 3, 1), "A first framed call")
+        .unwrap();
     let bank = s.ledger().chart().find_by_code("1000").unwrap().id;
     let capital = s.ledger().chart().find_by_code("3000").unwrap().id;
     s.add_line(e, bank, Side::Debit, money(10)).unwrap();

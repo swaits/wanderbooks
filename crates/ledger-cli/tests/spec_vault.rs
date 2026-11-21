@@ -2104,7 +2104,9 @@ fn idempotent_tools_change_nothing_when_repeated() {
         m.ok(name, args.clone());
         let (journal, vault) = (m.journal(), vault_bytes(&m));
         m.ok(name, args.clone());
-        let changed = m.journal_raw() != journal || vault_bytes(&m) != vault;
+        // The events, not the frames: a repeat with a new key is a call of
+        // its own, and its frame is no change of the books.
+        let changed = m.journal() != journal || vault_bytes(&m) != vault;
         *repeats_change.entry(name).or_default() |= changed;
     }
     let wrong: Vec<String> = repeats_change

@@ -997,11 +997,11 @@ fn books_p2_served_cut_over_whole() {
     }
     let verified = a.call("books.verify", json!({})).unwrap();
     assert_eq!(verified["status"], "ok", "{verified}");
-    // It counts the lines there were when it ran: the call's own closing
-    // line comes after its answer.
+    // It counts the lines there were when it ran, all of them: a call that
+    // wrote nothing leaves no closing line of its own.
     let events = verified["events"].as_u64().unwrap();
     let on_disk = journal(&dir).iter().filter(|b| **b == b'\n').count() as u64;
-    assert!(events > 470 && events < on_disk, "{events} of {on_disk}");
+    assert!(events > 470 && events == on_disk, "{events} of {on_disk}");
     assert_eq!(verified["database"], ledger_store::db_file());
     assert_eq!(verified["other_databases"], json!(["wanderbooks.db"]));
     assert_eq!(

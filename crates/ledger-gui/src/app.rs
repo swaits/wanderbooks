@@ -65,6 +65,11 @@
 //!      closing the books, until the server has exited or its bounded
 //!      close has run out (and then says what is left); a close is never
 //!      begun while a job that changes the books runs (7) (WB-app-4).
+//!      When the close says something was not whole (a company's last
+//!      backup, a server that exited badly), the window stays up showing
+//!      it, with a "Close anyway" button; closing again is not that.
+//!      A server still starting is said under the tab bar, and one whose
+//!      start failed has a "Try again" button there (WB-app-2).
 //! ```
 
 use crate::company::CompanyView;
@@ -429,7 +434,10 @@ impl App {
             return;
         }
         let asked = ctx.input(|i| i.viewport().close_requested());
-        if asked && !self.serving.is_closed() {
+        // What the close said was not whole is read before the window goes
+        // (INVARIANT 9): asking again is not reading it.
+        let report = self.serving.close_report();
+        if asked && (!self.serving.is_closed() || !report.is_empty()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.serving.begin_stop();
             self.closing_window = true;
@@ -438,8 +446,30 @@ impl App {
             return;
         }
         if self.serving.is_closed() {
-            self.closing_window = false;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            if report.is_empty() {
+                self.closing_window = false;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                return;
+            }
+            let mut close_anyway = false;
+            egui::Modal::new(egui::Id::new("wanderbooks-closed-with-problems")).show(ctx, |ui| {
+                ui.set_max_width(520.0);
+                ui.heading("Your books did not close cleanly");
+                ui.add_space(4.0);
+                for line in &report {
+                    ui.label(line);
+                    ui.add_space(2.0);
+                }
+                ui.add_space(6.0);
+                if ui.button("Close anyway").clicked() {
+                    close_anyway = true;
+                }
+            });
+            if close_anyway {
+                self.serving.acknowledge_close();
+                self.closing_window = false;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
             return;
         }
         egui::Modal::new(egui::Id::new("wanderbooks-closing-books")).show(ctx, |ui| {
@@ -460,11 +490,14 @@ impl App {
     /// dismissed (INVARIANT 8).
     fn show_notices(&mut self, ui: &mut Ui) {
         self.notices.extend(self.serving.take_notices());
-        if self.notices.is_empty() {
+        let starting = self.serving.is_starting();
+        let down = self.serving.is_down();
+        if self.notices.is_empty() && !starting && !down {
             return;
         }
         let p = pal(ui.ctx());
         let mut dismiss = None;
+        let mut retry = false;
         egui::Panel::top("server_notices")
             .resizable(false)
             .frame(
@@ -473,17 +506,41 @@ impl App {
                     .inner_margin(egui::Margin::symmetric(12, 6)),
             )
             .show(ui, |ui| {
+                if starting {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spinner();
+                        ui.label(
+                            RichText::new(
+                                "Starting the books server for your assistants: another program may still be finishing with the books.",
+                            )
+                            .color(p.text),
+                        );
+                    });
+                }
                 for (i, words) in self.notices.iter().enumerate() {
                     ui.horizontal_wrapped(|ui| {
                         ui.label(RichText::new(words).color(p.text));
+                        if down && ui.button("Try again").clicked() {
+                            retry = true;
+                        }
                         if ui.button("Dismiss").clicked() {
                             dismiss = Some(i);
                         }
                     });
                 }
+                if down && self.notices.is_empty() && ui.button("Try again").clicked() {
+                    retry = true;
+                }
             });
+        if retry {
+            self.serving.retry();
+        }
         if let Some(i) = dismiss {
             self.notices.remove(i);
+        }
+        if starting {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(500));
         }
     }
 

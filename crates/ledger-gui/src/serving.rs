@@ -19,17 +19,25 @@
 //!      company's request waits for another company's, so closing one
 //!      company's tab, which makes its last backup, delays no other.
 //!   3. No request is made before the server has started, and none after
-//!      a start that failed (the person was told why, once).
+//!      a start that failed (the person was told why, once). A start that
+//!      failed is tried again, with the companies wanted then, when the
+//!      next tab opens or the person asks (`retry`); the owner has
+//!      stopped the server that failed, so no second one runs beside it.
+//!      A server still starting is waited for, in view (`is_starting`).
 //!   4. A company the window opened at the start is not opened again; a
-//!      company whose open failed is asked for again the next time its
-//!      tab opens.
+//!      company whose open failed, at the start (the server's list says
+//!      it isn't open: `serve_not_open`) or later, is a notice, and is
+//!      asked for again the next time its tab opens.
 //!   5. A failed request, a close whose last backup wasn't whole, and a
 //!      server that has exited on its own are each a notice, in words,
 //!      once; the window shows them until they are dismissed.
 //!   6. The server is closed once: by `begin_stop` (the window asked to
 //!      close, with the wait in view), else when this is dropped. Neither
 //!      returns before the owner's bounded close has, and neither kills
-//!      anything.
+//!      anything. What the close says was not whole (a company's last
+//!      backup, a server that exited badly) is the close's report: the
+//!      window stays up showing it until the person closes anyway
+//!      (`close_report`, `acknowledge_close`).
 //!   7. Without an owner that hosts a server (the viewer on its own, the
 //!      demo, tests) it does nothing at all.
 //! ```
@@ -70,6 +78,10 @@ struct State {
     lanes: HashMap<String, Sender<Cmd>>,
     /// The server's exit has been said.
     exit_said: bool,
+    /// What the server's close said was not whole, a line each.
+    report: Vec<String>,
+    /// The person has seen the report and chose to close anyway.
+    report_seen: bool,
 }
 
 struct Inner {
@@ -117,17 +129,18 @@ impl Inner {
             }
             *closing = Closing::Running;
         }
-        match self.owner.serve_stop() {
-            Ok(None) => {}
-            Ok(Some(words)) => {
-                // The window may be gone before anyone reads a notice.
-                eprintln!("wanderbooks: {words}");
-                self.note(words);
-            }
-            Err(why) => self.note(format!(
+        let said: Vec<String> = match self.owner.serve_stop() {
+            Ok(None) => Vec::new(),
+            Ok(Some(words)) => words.lines().map(str::to_string).collect(),
+            Err(why) => vec![format!(
                 "The books server could not be closed cleanly: {why}"
-            )),
+            )],
+        };
+        for line in &said {
+            // The window may be gone before anyone reads the report.
+            eprintln!("wanderbooks: {line}");
         }
+        lock(&self.state).report = said;
         *lock(&self.closing) = Closing::Done;
         self.closing_changed.notify_all();
     }
@@ -161,21 +174,7 @@ impl Serving {
                 ..State::default()
             }),
         });
-        let starting = inner.clone();
-        let spawned = std::thread::Builder::new()
-            .name("serving-start".into())
-            .spawn(move || {
-                let came = match starting.owner.serve_start(&open) {
-                    Ok(()) => Gate::Up,
-                    Err(why) => {
-                        starting.note(format!("Assistants can't reach your companies: {why}"));
-                        Gate::Down
-                    }
-                };
-                *lock(&starting.gate) = came;
-                starting.gate_changed.notify_all();
-            });
-        if spawned.is_err() {
+        if !Self::spawn_start(&inner) {
             inner.note(
                 "Assistants can't reach your companies: the books server could not be started."
                     .into(),
@@ -183,6 +182,86 @@ impl Serving {
             *lock(&inner.gate) = Gate::Down;
         }
         Self { inner: Some(inner) }
+    }
+
+    /// Start the server, on a thread of its own, with the companies
+    /// wanted now (INVARIANTS 1, 3, 4): false when no thread could be made.
+    fn spawn_start(inner: &Arc<Inner>) -> bool {
+        let open: Vec<String> = lock(&inner.state).wanted.iter().cloned().collect();
+        let starting = inner.clone();
+        std::thread::Builder::new()
+            .name("serving-start".into())
+            .spawn(move || {
+                let came = match starting.owner.serve_start(&open) {
+                    Ok(()) => {
+                        // The server says ready once each company was
+                        // tried: the ones that did not open are said, and
+                        // asked for again with their tab (INVARIANT 4).
+                        for (id, words) in starting.owner.serve_not_open(&open) {
+                            lock(&starting.state).wanted.remove(&id);
+                            starting.note(words);
+                        }
+                        Gate::Up
+                    }
+                    Err(why) => {
+                        // A window asked to close meanwhile has no use for
+                        // the word.
+                        if *lock(&starting.closing) == Closing::Not {
+                            starting.note(format!("Assistants can't reach your companies: {why}"));
+                        }
+                        Gate::Down
+                    }
+                };
+                *lock(&starting.gate) = came;
+                starting.gate_changed.notify_all();
+            })
+            .is_ok()
+    }
+
+    /// Try a start that failed again, with the companies wanted now
+    /// (INVARIANT 3): true when one has begun.
+    pub fn retry(&self) -> bool {
+        let Some(inner) = &self.inner else {
+            return false;
+        };
+        Self::restart(inner)
+    }
+
+    fn restart(inner: &Arc<Inner>) -> bool {
+        if *lock(&inner.closing) != Closing::Not {
+            return false;
+        }
+        {
+            let mut gate = lock(&inner.gate);
+            if *gate != Gate::Down {
+                return false;
+            }
+            *gate = Gate::Starting;
+        }
+        if Self::spawn_start(inner) {
+            return true;
+        }
+        inner.note(
+            "Assistants can't reach your companies: the books server could not be started.".into(),
+        );
+        *lock(&inner.gate) = Gate::Down;
+        false
+    }
+
+    /// Whether the server is still starting (INVARIANT 3): its tabs wait
+    /// for it, and the window says so.
+    pub fn is_starting(&self) -> bool {
+        self.inner
+            .as_ref()
+            .is_some_and(|i| *lock(&i.gate) == Gate::Starting)
+    }
+
+    /// Whether the start failed and a `retry` would try again.
+    pub fn is_down(&self) -> bool {
+        self.inner
+            .as_ref()
+            .is_some_and(|i| *lock(&i.gate) == Gate::Down)
+            && !self.is_closing()
     }
 
     /// Whether a server is being hosted for this window.
@@ -195,7 +274,14 @@ impl Serving {
     pub fn open(&self, id: &str) {
         let Some(inner) = &self.inner else { return };
         let fresh = lock(&inner.state).wanted.insert(id.to_string());
+        // After a failed start the next tab is the next try (INVARIANT 3):
+        // the start opens every company wanted, this one included.
+        // A company already wanted is the window's own start-up opening
+        // the tabs it restored, which the start has in its list.
         if fresh {
+            if Self::restart(inner) {
+                return;
+            }
             Self::send(inner, id, Cmd::Open);
         }
     }
@@ -291,6 +377,31 @@ impl Serving {
             ));
         }
         std::mem::take(&mut state.notices)
+    }
+
+    /// What the server's close said was not whole, a line each, until the
+    /// person has closed anyway (INVARIANT 6); nothing before the close
+    /// is done, or when it was whole.
+    pub fn close_report(&self) -> Vec<String> {
+        let Some(inner) = &self.inner else {
+            return Vec::new();
+        };
+        if *lock(&inner.closing) != Closing::Done {
+            return Vec::new();
+        }
+        let state = lock(&inner.state);
+        if state.report_seen {
+            Vec::new()
+        } else {
+            state.report.clone()
+        }
+    }
+
+    /// The person has read the close's report and closes anyway.
+    pub fn acknowledge_close(&self) {
+        if let Some(inner) = &self.inner {
+            lock(&inner.state).report_seen = true;
+        }
     }
 
     /// The window was asked to close: close the server on a thread of its

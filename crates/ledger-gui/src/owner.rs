@@ -180,9 +180,17 @@ pub trait Owner: Send + Sync {
     fn serve_close(&self, _book: &str) -> Result<Option<String>, String> {
         Ok(None)
     }
-    /// Close the server (the window closed): its input is closed and the
-    /// exit waited for, for a bounded time. `Ok(Some(words))` when it is
-    /// still finishing by itself after that. Blocks.
+    /// Of the companies `wanted` (asked to be open at the start), those
+    /// the server does not have open now, each with why in words: asked
+    /// once the server is ready. Blocks.
+    fn serve_not_open(&self, _wanted: &[String]) -> Vec<(String, String)> {
+        Vec::new()
+    }
+    /// Close the server (the window closed): each open company is closed
+    /// first, then the server's input, and the exit is waited for, for a
+    /// bounded time. `Ok(Some(words))` says what was not whole, a line
+    /// each: a company whose last backup was incomplete, a server that
+    /// exited badly, one still finishing by itself after the wait. Blocks.
     fn serve_stop(&self) -> Result<Option<String>, String> {
         Ok(None)
     }

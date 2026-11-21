@@ -73,26 +73,16 @@ fn gui_args(args: Vec<String>) -> Vec<String> {
 struct ViewerOwner {
     common: ledger_host::commands::Common,
     /// The books server this window runs, a child process of it (plan P15
-    /// 3.1): started with the window, closed with it.
-    server: std::sync::Mutex<Option<std::sync::Arc<ledger_host::app_server::AppServer>>>,
+    /// 3.1): started with the window, closed with it. All of what is done
+    /// with it is `AppHost`'s, which the tests drive.
+    server: ledger_host::app_server::AppHost,
 }
 
 #[cfg(feature = "gui")]
 impl ViewerOwner {
     fn new(common: ledger_host::commands::Common) -> Self {
-        Self {
-            common,
-            server: std::sync::Mutex::new(None),
-        }
-    }
-
-    /// The running server, or why there is none.
-    fn running(&self) -> Result<std::sync::Arc<ledger_host::app_server::AppServer>, String> {
-        self.server
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
-            .ok_or_else(|| "the books server isn't running".to_string())
+        let server = ledger_host::app_server::AppHost::new(common.root.clone());
+        Self { common, server }
     }
 }
 
@@ -103,41 +93,27 @@ impl ledger_gui::owner::Owner for ViewerOwner {
     }
 
     fn serve_start(&self, open: &[String]) -> Result<(), String> {
-        use ledger_host::app_server::{AppServer, READY_WAIT};
-        // Started before it is waited for, and kept at once: a window
-        // closed meanwhile closes this one too.
-        let server = std::sync::Arc::new(AppServer::start(self.common.root.as_deref(), open)?);
-        *self.server.lock().unwrap_or_else(|e| e.into_inner()) = Some(server.clone());
-        server.wait_ready(READY_WAIT)
+        self.server.start(open)
     }
 
     fn serve_open(&self, book: &str) -> Result<Option<String>, String> {
-        self.running()?.open_book(book)
+        self.server.open_book(book)
     }
 
     fn serve_close(&self, book: &str) -> Result<Option<String>, String> {
-        self.running()?.close_book(book)
+        self.server.close_book(book)
+    }
+
+    fn serve_not_open(&self, wanted: &[String]) -> Vec<(String, String)> {
+        self.server.not_open(wanted)
     }
 
     fn serve_stop(&self) -> Result<Option<String>, String> {
-        use ledger_host::app_server::{STOP_WAIT, Stopped};
-        let Some(server) = self.server.lock().unwrap_or_else(|e| e.into_inner()).take() else {
-            return Ok(None);
-        };
-        Ok(match server.stop(STOP_WAIT) {
-            Stopped::Closed => None,
-            Stopped::StillClosing => Some(
-                "The books are still closing in the background (most likely a last backup): Wanderbooks finishes it on its own. Start it again once it has.".into(),
-            ),
-        })
+        self.server.stop(ledger_host::app_server::STOP_WAIT)
     }
 
     fn serve_exited(&self) -> Option<String> {
-        self.server
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_ref()?
-            .exited()
+        self.server.exited()
     }
 
     fn close_books(&self) -> Result<String, String> {
@@ -243,8 +219,11 @@ impl ledger_gui::owner::Owner for ViewerOwner {
         })
     }
 
+    /// Handed to the window's own server as an admin request: there is
+    /// no host here, and so no lease socket to ask (app_server.rs
+    /// INVARIANT 10).
     fn upgrade_format(&self, book: &str, passphrase: &str) -> Result<Vec<String>, String> {
-        ledger_host::commands::upgrade_format(&self.common, book, passphrase)
+        self.server.upgrade_format(book, passphrase)
     }
 
     fn update_waiting(&self) -> Option<ledger_gui::owner::UpdateWaiting> {

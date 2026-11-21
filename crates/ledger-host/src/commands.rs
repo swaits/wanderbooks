@@ -1402,42 +1402,43 @@ pub fn connect(
     }
 }
 
-/// The command an assistant runs to reach the books `book`: this program's
-/// own executable and `mcp --book <book>`, with `--root` when the data root
-/// was named and the knobs this run was given. The one place it is made:
-/// `connect_agent` registers it, and the window's Connect page shows it to
-/// be typed into an assistant that has no `connect` of its own.
-pub fn bridge_serve_args(common: &Common, book: &str) -> Result<Vec<std::ffi::OsString>, String> {
-    let book = ledger_store::root::BookId::parse(book)
-        .map_err(|e| e.to_string())?
-        .to_string();
+/// This program's own executable followed by `words`, then `--root` when
+/// the data root was named and the knobs this run was given: what an
+/// assistant, or a person at a terminal, runs to reach these books. The one
+/// place it is made.
+fn program_args(common: &Common, words: &[&str]) -> Result<Vec<std::ffi::OsString>, String> {
     // A translocated macOS app's path (P11a step 6) is not a place to point
     // an agent: the copy goes away with the app.
     let exe = crate::start::this_executable()?;
     if let Some(why) = crate::start::translocation_refusal(&exe) {
         return Err(why.to_string());
     }
-    let mut serve: Vec<std::ffi::OsString> = vec![
-        exe.into_os_string(),
-        "mcp".into(),
-        "--book".into(),
-        book.into(),
-    ];
+    let mut args: Vec<std::ffi::OsString> = vec![exe.into_os_string()];
+    args.extend(words.iter().map(std::ffi::OsString::from));
     if common.root.is_some() {
         let found =
             ledger_store::root::Root::find(common.root.as_deref()).map_err(|e| e.to_string())?;
-        serve.push("--root".into());
-        serve.push(found.path().as_os_str().to_os_string());
+        args.push("--root".into());
+        args.push(found.path().as_os_str().to_os_string());
     }
-    serve.extend(common.knobs.args().into_iter().map(Into::into));
-    Ok(serve)
+    args.extend(common.knobs.args().into_iter().map(Into::into));
+    Ok(args)
 }
 
-/// [`bridge_serve_args`] as text, for an assistant that is set up by hand:
-/// a part with a space in it is quoted for a terminal.
-pub fn bridge_command_line(common: &Common, book: &str) -> Result<String, String> {
-    let args = bridge_serve_args(common, book)?;
-    Ok(args
+/// The command an assistant runs to reach the books `book`: this program
+/// and `mcp --book <book>`. `connect_agent` registers it, and the window's
+/// Connect page shows it for an assistant that has no `connect` of its own.
+pub fn bridge_serve_args(common: &Common, book: &str) -> Result<Vec<std::ffi::OsString>, String> {
+    let book = ledger_store::root::BookId::parse(book)
+        .map_err(|e| e.to_string())?
+        .to_string();
+    program_args(common, &["mcp", "--book", &book])
+}
+
+/// This program run with `words`, as a line to type in a terminal: a part
+/// with a space in it is quoted.
+pub fn command_line(common: &Common, words: &[&str]) -> Result<String, String> {
+    Ok(program_args(common, words)?
         .iter()
         .map(|a| {
             let a = a.to_string_lossy();
@@ -1449,6 +1450,28 @@ pub fn bridge_command_line(common: &Common, book: &str) -> Result<String, String
         })
         .collect::<Vec<_>>()
         .join(" "))
+}
+
+/// The default token of the books `book` exists and its copy is in the token
+/// file (made now if it is not): what `connect` does first. `Ok(true)` when
+/// it was made now.
+pub fn ensure_key(common: &Common, book: &str) -> Result<bool, String> {
+    let book = ledger_store::root::BookId::parse(book)
+        .map_err(|e| e.to_string())?
+        .to_string();
+    let found =
+        ledger_store::root::Root::find(common.root.as_deref()).map_err(|e| e.to_string())?;
+    let run = found.run_dir().map_err(|e| e.to_string())?;
+    let account = crate::tokens::Account::new(found.path(), &book, crate::tokens::DEFAULT_NAME);
+    if crate::tokens::keeper(&run).get(&account)?.is_some() {
+        return Ok(false);
+    }
+    let scopes = ledger_store::auth::Scope::ALL
+        .iter()
+        .map(|s| s.as_str().to_string())
+        .collect();
+    make_token(common, &book, crate::tokens::DEFAULT_NAME, scopes, true)?;
+    Ok(true)
 }
 
 /// A revoked token's copy in the token file goes with it (what `token
@@ -1483,16 +1506,7 @@ pub fn connect_agent(common: &Common, agent: &str, book: &str) -> Result<Vec<Str
     let serve = bridge_serve_args(common, &book)?;
     let mut lines = Vec::new();
     // The token: kept in its file, or made now.
-    let found =
-        ledger_store::root::Root::find(common.root.as_deref()).map_err(|e| e.to_string())?;
-    let run = found.run_dir().map_err(|e| e.to_string())?;
-    let account = crate::tokens::Account::new(found.path(), &book, crate::tokens::DEFAULT_NAME);
-    if crate::tokens::keeper(&run).get(&account)?.is_none() {
-        let scopes = ledger_store::auth::Scope::ALL
-            .iter()
-            .map(|s| s.as_str().to_string())
-            .collect();
-        make_token(common, &book, crate::tokens::DEFAULT_NAME, scopes, true)?;
+    if ensure_key(common, &book)? {
         lines.push(format!(
             "Made the agent token of the books {book}, kept in a token file in the data root."
         ));

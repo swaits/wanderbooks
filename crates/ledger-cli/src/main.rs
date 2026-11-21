@@ -155,8 +155,12 @@ impl ledger_gui::owner::Owner for ViewerOwner {
         self.server.revoke_token(book, name)
     }
 
-    fn bridge_command(&self, book: &str) -> Result<String, String> {
-        ledger_host::commands::bridge_command_line(&self.common, book)
+    fn command_line(&self, words: &[&str]) -> Result<String, String> {
+        ledger_host::commands::command_line(&self.common, words)
+    }
+
+    fn make_key(&self, book: &str) -> Result<bool, String> {
+        ledger_host::commands::ensure_key(&self.common, book)
     }
 
     fn close_books(&self) -> Result<String, String> {

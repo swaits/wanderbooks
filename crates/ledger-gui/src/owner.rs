@@ -267,10 +267,16 @@ pub trait Owner: Send + Sync {
     fn serve_revoke(&self, _book: &str, _name: &str) -> Result<String, String> {
         Err("not here".into())
     }
-    /// The command an assistant runs to reach the company `book`, as text
-    /// to type (the program and `mcp --book ID`, quoted for a terminal):
-    /// what the Connect page shows for an assistant it has no button for.
-    fn bridge_command(&self, _book: &str) -> Result<String, String> {
+    /// This program run with `words`, as a line to type in a terminal (the
+    /// program's own path, the words, the data root if one was named): what
+    /// the Connect page shows for an assistant it has no button for.
+    fn command_line(&self, _words: &[&str]) -> Result<String, String> {
+        Err("not here".into())
+    }
+    /// The key an assistant needs to reach the company `book` exists (made
+    /// now if it did not): `Ok(true)` when it was made now. What `connect`
+    /// does first, for an assistant set up by hand. Blocks.
+    fn make_key(&self, _book: &str) -> Result<bool, String> {
         Err("not here".into())
     }
     /// Close the books: everything holding them lets go.

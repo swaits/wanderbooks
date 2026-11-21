@@ -430,6 +430,24 @@ left out of its last round on purpose:
 - The scenario test for "closing A never delays B" shows B's jobs finish
   unstopped, not that they were undelayed.
 
+From the review of unit B2 (the relay service):
+
+- The relay never serves a shared account-binding secret: a binding
+  comes only from a per-app source, which is not built. Where section 5
+  above speaks of a binding in the authority list, this is what stands.
+  An authority that needs one is served as not usable until then.
+- An attacker with many networks can still spend the weekly certificate
+  budget (charged at a name's first publish) or fill the hello pool. A
+  raised Let's Encrypt limit and a second authority are the answer.
+- yamux 0.14 fixes the stream window at 256 KiB, so a hostile app can
+  make its line hold up to 3.5 MiB; the stream count was cut to 8
+  callers per app to bound it. Measured idle cost: 15.4 KiB per line.
+- The relay's own certificate is loaded from files, with no renewal.
+- The 100,000-line soak has not been run; 20,000 is the largest.
+- Unit B3's duties: ping at least every 60 s (a line silent for 180 s is
+  dropped); a secret label of 25 or more random base36 characters; a
+  yamux stream limit at least the relay's.
+
 From the review of unit A2 (the app starts and stops the server), left
 for unit A5 or later:
 

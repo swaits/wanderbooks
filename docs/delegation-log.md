@@ -59,3 +59,6 @@ Columns: date | type (scout, run/verify, implement, refactor, debug, review) | p
 - 2026-11-21 | review 3 | muse-wonder-full | A2 review | not run: Muse quota exhausted until 2026-11-23; sent to sonnet
 - 2026-11-21 | review 3 | sonnet (high) | A2 review | accepted: 4 medium, 7 low; no double writer found
 - 2026-11-21 | impl-multi 2 | sonnet (high) | A2 fix round (6 findings + wiring test) | accepted on targeted tests
+- 2026-11-21 | impl-multi 3 | sonnet (high) | P15 B2: the relay service | accepted after one review and one fix round
+- 2026-11-21 | review 3 | opus (medium) | B2 security review | accepted: 2 high (denial of service), 5 medium; no takeover or read path found
+- 2026-11-21 | impl-multi 2 | sonnet (high) | B2 fix round (12 items) | accepted on its tests; item 7 partly (yamux window fixed)

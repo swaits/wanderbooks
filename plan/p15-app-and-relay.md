@@ -402,6 +402,29 @@ our hands. Every unit follows `AGENTS.md`: spec blocks cite a rule
 (`WB-…` product rules for all of this), tests come with the code, the
 gate runs once per batch.
 
+## 6a. Follow-ups, written down so they are not lost
+
+From the reviews of unit A1 (the server opens and closes one book),
+left out of its last round on purpose:
+
+- A crash between a restore's two renames leaves the book only in
+  `legacy/`; the next start lists it as absent and neither repairs nor
+  reports it (`ledger-store/src/root.rs`, the placement).
+- After a normal git exit its process group is signalled by an id whose
+  leader was already reaped (`ledger-store/src/backup.rs`); unreachable
+  in practice on Linux, wrong in principle.
+- The adopt's source-lock same-file check and the archive's lock removal
+  lose their swap guard off Unix.
+- `books.import_bank_csv` journals its rows one by one and cannot be
+  stopped by a close; D-88's unit makes an import one transaction.
+- The scenario test for "closing A never delays B" shows B's jobs finish
+  unstopped, not that they were undelayed.
+
+From the review of unit A3a (tabs): the identity used to tell two sets of
+books apart is the hash of the journal's first line, which carries only a
+currency and a time to the second; D-88's unit should give every set of
+books a unique id at creation.
+
 ## 7. What is not known
 
 - **muse.ai.** No report of a self-hosted server working with it;

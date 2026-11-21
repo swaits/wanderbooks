@@ -1264,10 +1264,17 @@ fn a_close_is_not_answered_while_its_backup_still_runs() {
 fn a_close_whose_backup_fails_says_so_and_leaves_nothing_running() {
     let home = Home::new("close-failing-backup");
     let shim = shim_git(&home);
+    // The timers look once an hour, so none runs a backup of its own: the
+    // first look is at the server's start, before any book is made here. A
+    // timer's backup that a close hurried could have its git miss the
+    // terminate grace under heavy load, be killed, and leave a lock in the
+    // target's folder, which the close's own backup would then truthfully
+    // fail against (`ClosedBackupIncomplete`): the plain `Closed` asserted
+    // below is of the close's backup alone.
     let server = server_with_shim(
         &home,
         &shim,
-        &["--backup-quiet", "3600000", "--timers", "20"],
+        &["--backup-quiet", "3600000", "--timers", "3600000"],
     );
     home.create(A, "USD");
     let unplugged = home.dir.path().join("elsewhere").join("unplugged");
@@ -1315,9 +1322,8 @@ fn a_close_whose_backup_fails_says_so_and_leaves_nothing_running() {
     // The same book, backed up fine, is answered plainly.
     assert_eq!(open_book(&home, A), OpenOutcome::Opened);
     std::fs::create_dir(&unplugged).unwrap();
-    // The backup the opening makes (it may still be under way, and would be
-    // stopped by the close) is waited for: a backup asked for takes its turn
-    // after it.
+    // A backup asked for, to see the target works now (no timer makes one
+    // here: above).
     match home.admin(Request::BackUpNow {
         id: A.into(),
         new_disk: false,

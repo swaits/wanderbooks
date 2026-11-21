@@ -34,7 +34,7 @@
 //!   5. Nothing here holds a token's text: the server never sends one.
 //! ```
 
-use crate::owner::{Assistant, LastCall, Owner, Roster, TokenRow};
+use crate::owner::{Assistant, LastCall, Owner, Roster, TokenRow, WebApproval, WebRequest};
 use chrono::{DateTime, Utc};
 use egui_phosphor::regular as icon;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -94,6 +94,10 @@ pub struct Status {
     pub assistants: Vec<Assistant>,
     /// The tokens of this company: who may connect.
     pub tokens: Vec<TokenRow>,
+    /// Web assistants waiting for the person to allow them.
+    pub web_pending: Vec<WebRequest>,
+    /// The web connections the person allowed.
+    pub web_approvals: Vec<WebApproval>,
     /// "Now", for "10 seconds ago" (fixed in tests and screenshots).
     pub now: DateTime<Utc>,
 }
@@ -108,6 +112,8 @@ impl Status {
             link: Link::Unknown,
             assistants: Vec::new(),
             tokens: Vec::new(),
+            web_pending: Vec::new(),
+            web_approvals: Vec::new(),
             now: Utc::now(),
         }
     }
@@ -560,6 +566,16 @@ impl Connections {
             .tokens
             .into_iter()
             .filter(|t| t.book == book)
+            .collect();
+        status.web_pending = roster
+            .web_pending
+            .into_iter()
+            .filter(|r| r.book == book)
+            .collect();
+        status.web_approvals = roster
+            .web_approvals
+            .into_iter()
+            .filter(|a| a.book == book)
             .collect();
         status.link = if status.assistants.is_empty() {
             Link::None

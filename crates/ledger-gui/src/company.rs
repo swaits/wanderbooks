@@ -574,6 +574,13 @@ impl CompanyView {
                 if crate::connect::take_go(ui.ctx()) {
                     self.nav.go(Route::Connect);
                 }
+                // A web assistant asking to connect is asked about over
+                // whatever page this is (the Connect page has its own card).
+                if route != Route::Connect {
+                    let spawner = self.jobs.spawner();
+                    self.connect
+                        .web_prompt(ui, &self.assist, &self.owner.clone(), &spawner);
+                }
                 if let Some(to) = self.palette.show(ui.ctx(), &books) {
                     self.nav.go(to);
                 }

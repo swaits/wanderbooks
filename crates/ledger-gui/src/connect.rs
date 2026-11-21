@@ -44,8 +44,16 @@
 //!      off the UI thread; what is shown while it is not known is "not
 //!      known", never a guess.
 //!   7. The web half of the page (the switch, the address, the steps for
-//!      Claude and ChatGPT) is unit B3's: `State::web_section` is its
-//!      place, and it draws nothing until then.
+//!      Claude and ChatGPT) is unit B3's. Unit B1's part of it is here: a
+//!      web assistant that asks to connect is shown to the person, in
+//!      words, as a card that says who is asking, where it is sent back
+//!      to, the address it asked from and what it will be able to do, with
+//!      Allow and Don't allow; it appears over any page of the company
+//!      (`State::web_prompt`) and on this page (`State::web_section`).
+//!      Nothing on the web page can approve: only these buttons do, through
+//!      the owner. What the assistant calls itself is shown in quotes and
+//!      is never what names the product. Posting is off unless the person
+//!      ticks it, per assistant, and can be turned on or off later.
 //! ```
 
 use crate::connections::{Connection, Link, Status, describe, program_name};
@@ -400,6 +408,9 @@ pub struct State {
     confirm: Option<String>,
     /// A revoke ended: the state is read again.
     refresh: bool,
+    /// The waiting web assistants the person has ticked "let it post
+    /// entries too" for.
+    post_asked: std::collections::BTreeSet<String>,
 }
 
 /// The two lines an assistant set up by hand needs.
@@ -433,10 +444,228 @@ impl State {
         self.confirm.as_deref()
     }
 
-    /// The web half of the page: "Allow web assistants", the address with
-    /// Copy, and the steps for Claude and ChatGPT. Unit B3 draws it here;
-    /// nothing until then (INVARIANT 7).
-    fn web_section(&mut self, _ui: &mut Ui, _status: &Status) {}
+    /// What the person is asked of a web assistant, and what they may do
+    /// about the web connections already allowed (INVARIANT 7). Unit B3
+    /// draws the switch, the address and the steps above this.
+    fn web_section(
+        &mut self,
+        ui: &mut Ui,
+        status: &Status,
+        owner: &Option<Arc<dyn Owner>>,
+        jobs: &crate::jobs::Spawner,
+    ) {
+        if status.web_pending.is_empty() && status.web_approvals.is_empty() {
+            return;
+        }
+        let p = pal(ui.ctx());
+        ui.add_space(24.0);
+        section(ui, "Assistants on the web");
+        let mut want: Want = None;
+        for request in &status.web_pending {
+            if let Some(w) = self.pending_card(ui, status, request, owner) {
+                want = Some(w);
+            }
+            ui.add_space(6.0);
+        }
+        for a in &status.web_approvals {
+            Frame::new()
+                .fill(p.surface)
+                .stroke(Stroke::new(1.0, p.border))
+                .corner_radius(CornerRadius::same(8))
+                .inner_margin(Margin::symmetric(12, 10))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal(|ui| {
+                        ui.vertical(|ui| {
+                            ui.label(RichText::new(&a.label).font(theme::semibold(13.5)));
+                            ui.label(
+                                RichText::new(if a.may_post {
+                                    "Can read, draft and post entries."
+                                } else {
+                                    "Can read and draft entries. It can't post them."
+                                })
+                                .font(theme::regular(12.5))
+                                .color(p.muted),
+                            );
+                        });
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if owner.is_none() || self.job.is_some() {
+                                return;
+                            }
+                            let (label, to) = if a.may_post {
+                                ("Stop letting it post", false)
+                            } else {
+                                ("Let it post entries", true)
+                            };
+                            if ui.button(label).clicked() {
+                                let (o, id) = (owner.clone(), a.id.clone());
+                                if let Some(o) = o {
+                                    want = Some((
+                                        format!("Posting for {}", a.label),
+                                        "Changing what an assistant may do".to_string(),
+                                        Box::new(move || o.web_set_post(&id, to)),
+                                    ));
+                                }
+                            }
+                        });
+                    });
+                });
+            ui.add_space(6.0);
+        }
+        if let Some((what, keep, work)) = want {
+            self.start(ui, jobs, what, &keep, work);
+        }
+    }
+
+    /// One assistant asking to connect: who, from where, what it will be
+    /// able to do, and Allow and Don't allow. The answer to ask for, if
+    /// the person gave one.
+    fn pending_card(
+        &mut self,
+        ui: &mut Ui,
+        status: &Status,
+        request: &crate::owner::WebRequest,
+        owner: &Option<Arc<dyn Owner>>,
+    ) -> Want {
+        let can_answer = owner.is_some();
+        let p = pal(ui.ctx());
+        let mut answer: Option<(bool, bool)> = None;
+        Frame::new()
+            .fill(p.surface)
+            .stroke(Stroke::new(1.5, p.accent))
+            .corner_radius(CornerRadius::same(8))
+            .inner_margin(Margin::symmetric(14, 12))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(
+                    RichText::new(format!(
+                        "{} wants to connect to {}. Allow?",
+                        request.client_name, status.company
+                    ))
+                    .font(theme::semibold(15.0)),
+                );
+                ui.add_space(4.0);
+                if request.recognised {
+                    ui.label(
+                        RichText::new(
+                            "Only allow it if you just asked this assistant to connect.",
+                        )
+                        .font(theme::regular(13.0))
+                        .color(p.muted),
+                    );
+                } else {
+                    ui.label(
+                        RichText::new(
+                            "Wanderbooks doesn't recognise this assistant: it only gave this name for itself. Don't allow it unless you just set it up yourself.",
+                        )
+                        .font(theme::regular(13.0))
+                        .color(p.warning),
+                    );
+                }
+                ui.label(
+                    RichText::new(format!(
+                        "After you answer, it is sent back to {}. The request came from the internet address {}.",
+                        request.redirect_host, request.from
+                    ))
+                    .font(theme::regular(12.5))
+                    .color(p.muted),
+                );
+                ui.label(
+                    RichText::new(
+                        "If you allow it, it can read these books and draft entries. It can't post entries unless you tick the box below.",
+                    )
+                    .font(theme::regular(12.5))
+                    .color(p.muted),
+                );
+                let mut post = self.post_asked.contains(&request.id);
+                if ui
+                    .checkbox(
+                        &mut post,
+                        if request.wants_post {
+                            "Also let it post entries (it asked to)"
+                        } else {
+                            "Also let it post entries"
+                        },
+                    )
+                    .changed()
+                {
+                    if post {
+                        self.post_asked.insert(request.id.clone());
+                    } else {
+                        self.post_asked.remove(&request.id);
+                    }
+                }
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    let enabled = can_answer && self.job.is_none();
+                    if ui.add_enabled(enabled, egui::Button::new("Allow")).clicked() {
+                        answer = Some((true, post));
+                    }
+                    if ui
+                        .add_enabled(enabled, egui::Button::new("Don't allow"))
+                        .clicked()
+                    {
+                        answer = Some((false, false));
+                    }
+                    ui.label(
+                        RichText::new(format!(
+                            "Waiting {} more minute(s)",
+                            request.expires_in_secs.div_ceil(60)
+                        ))
+                        .font(theme::regular(12.0))
+                        .color(p.muted),
+                    );
+                });
+            });
+        let (approve, post) = answer?;
+        self.post_asked.remove(&request.id);
+        let owner = owner.clone()?;
+        let id = request.id.clone();
+        let what = if approve {
+            format!("Allow {}", request.client_name)
+        } else {
+            format!("Don't allow {}", request.client_name)
+        };
+        Some((
+            what,
+            "Answering an assistant".to_string(),
+            Box::new(move || owner.web_decide(&id, approve, post)),
+        ))
+    }
+
+    /// The question over any page of the company: a web assistant asking
+    /// to connect is not something to find by looking for it (INVARIANT 7).
+    /// Not drawn on the Connect page, which has the same card.
+    pub fn web_prompt(
+        &mut self,
+        ui: &Ui,
+        status: &Status,
+        owner: &Option<Arc<dyn Owner>>,
+        jobs: &crate::jobs::Spawner,
+    ) {
+        self.collect();
+        if status.web_pending.is_empty() {
+            return;
+        }
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(500));
+        let mut want: Want = None;
+        egui::Window::new("An assistant wants to connect")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0))
+            .show(ui.ctx(), |win| {
+                for request in &status.web_pending {
+                    if let Some(w) = self.pending_card(win, status, request, owner) {
+                        want = Some(w);
+                    }
+                    win.add_space(6.0);
+                }
+            });
+        if let Some((what, keep, work)) = want {
+            self.start(ui, jobs, what, &keep, work);
+        }
+    }
 
     fn collect(&mut self) {
         if let Some((what, rx)) = &self.job
@@ -444,7 +673,11 @@ impl State {
         {
             // Whatever came of it (a key already gone, a file left behind),
             // the list is read again.
-            if what.starts_with("Revoke") {
+            if what.starts_with("Revoke")
+                || what.starts_with("Allow")
+                || what.starts_with("Don't allow")
+                || what.starts_with("Posting")
+            {
                 self.refresh = true;
             }
             self.done = Some((what.clone(), result));
@@ -558,7 +791,7 @@ impl State {
                     ),
                 };
             }
-            self.web_section(ui, status);
+            self.web_section(ui, status, &owner, jobs);
             ui.add_space(24.0);
             self.connections(ui, status, book, &owner, jobs);
         });

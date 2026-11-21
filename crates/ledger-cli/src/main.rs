@@ -149,7 +149,53 @@ impl ledger_gui::owner::Owner for ViewerOwner {
                 created: t.created,
             })
             .collect();
-        Ok(Roster { assistants, tokens })
+        // The web assistants waiting, and those allowed: nothing when the
+        // remote door was never turned on.
+        let web = self
+            .server
+            .web_roster(std::time::Duration::from_secs(3))
+            .unwrap_or_default();
+        let web_pending = web
+            .pending
+            .into_iter()
+            .map(|p| ledger_gui::owner::WebRequest {
+                id: p.id,
+                book: p.book,
+                client_name: p.client_name,
+                recognised: p.product.is_some(),
+                redirect: p.redirect,
+                redirect_host: p.redirect_host,
+                from: p.from,
+                wants_post: p.wants_post,
+                expires_in_secs: p.expires_in_secs,
+            })
+            .collect();
+        let web_approvals = web
+            .approvals
+            .into_iter()
+            .map(|a| ledger_gui::owner::WebApproval {
+                id: a.id,
+                book: a.book,
+                label: a.label,
+                token_id: a.token_id,
+                may_post: a.may_post,
+                last_used: a.last_used,
+            })
+            .collect();
+        Ok(Roster {
+            assistants,
+            tokens,
+            web_pending,
+            web_approvals,
+        })
+    }
+
+    fn web_decide(&self, id: &str, approve: bool, post: bool) -> Result<String, String> {
+        self.server.web_decide(id, approve, post)
+    }
+
+    fn web_set_post(&self, approval: &str, post: bool) -> Result<String, String> {
+        self.server.web_set_post(approval, post)
     }
 
     fn serve_revoke(&self, book: &str, name: &str, id: &str) -> Result<String, String> {

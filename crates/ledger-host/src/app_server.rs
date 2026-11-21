@@ -41,11 +41,16 @@
 //!      request, waiting for the server to be ready first; a close that
 //!      says its last backup was not whole is returned as a notice, never
 //!      as a plain success.
-//!   7. Starting writes `run/app-hosted`, a file with nothing in it: the
-//!      root is this app's from then on, and the agents' bridge says
-//!      "Wanderbooks isn't running" for it, instead of starting a host
-//!      (bridge.rs INVARIANT 12). The marker is never removed: a root the
-//!      app has served is the app's for good.
+//!   7. Nothing marks a root as the app's. Whether the app (or another
+//!      server) has a root is read from what is running: no host holds
+//!      `run/host.lock`, a server holds `run/server.lock`, and its admin
+//!      socket answers ([`the_apps_server_runs`]). An earlier build wrote
+//!      a permanent file `run/app-hosted`; it means nothing now and is
+//!      removed at the next start of the app's server ([`RETIRED_MARKER`]).
+//!      With the app closed, the agents' bridge says "Wanderbooks isn't
+//!      running" (bridge.rs INVARIANT 12) whether or not the root was ever
+//!      the app's, and no program starts a host: only `wanderbooks serve`
+//!      does.
 //!   8. A server the window started is either managed by the window or
 //!      stopped, never neither ([`AppHost`]): one that is alive and not
 //!      yet ready is waited for, not given up on; a start that fails, or
@@ -72,7 +77,7 @@
 //!      holds a token's text.
 //! ```
 
-use crate::host::{SERVER_LOG, children_executable, open_log, private_options};
+use crate::host::{SERVER_LOG, children_executable, open_log};
 use crate::opener::{host_lock_held, server_lock_held};
 use ledger_mcp::admin::{self, CloseOutcome, OpenOutcome, Request, Response};
 use ledger_store::root::Root;
@@ -82,9 +87,10 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-/// The file in `run/` that says the root is the desktop app's
-/// (INVARIANT 7).
-pub const APP_MARKER: &str = "app-hosted";
+/// The file an earlier build left in `run/` to say the root was the
+/// desktop app's. Nothing reads it any more (INVARIANT 7); it is removed
+/// when the app's server starts.
+pub const RETIRED_MARKER: &str = "app-hosted";
 
 /// How long a server may take to say it is ready: it opens and verifies
 /// every company it was told to, and a large one rebuilding a drifted
@@ -131,6 +137,50 @@ impl Shared {
     }
 }
 
+/// Windows: no console window of its own (CREATE_NO_WINDOW), so the
+/// window's own Ctrl+C never reaches the server: it closes by its input
+/// alone.
+#[cfg(windows)]
+const NO_WINDOW: u32 = 0x0800_0000;
+/// Windows: leave the job the window runs in (CREATE_BREAKAWAY_FROM_JOB).
+/// A launcher that puts the window in a job that kills everything in it
+/// when the window dies would otherwise kill the server too, in the
+/// middle of a backup, where the window's death is meant to reach it as
+/// the end of its input and nothing more (INVARIANT 3). The server does
+/// not outlive the window by it: it closes when its input does.
+#[cfg(windows)]
+const BREAKAWAY: u32 = 0x0100_0000;
+
+/// Spawn the server with its input and output piped and its errors to
+/// `log`. Windows: breaking away from the window's job, and without that
+/// if the job does not let a process leave it.
+fn spawn_child(command: &mut Command, log: &std::fs::File) -> Result<std::process::Child, String> {
+    let again = |e: std::io::Error| format!("can't start the books server: {e}");
+    let go = |command: &mut Command| -> Result<std::process::Child, std::io::Error> {
+        command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(log.try_clone()?)
+            .spawn()
+    };
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(NO_WINDOW | BREAKAWAY);
+        match go(command) {
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                command.creation_flags(NO_WINDOW);
+                go(command).map_err(again)
+            }
+            other => other.map_err(again),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        go(command).map_err(again)
+    }
+}
+
 /// What [`AppServer::stop`] came to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Stopped {
@@ -163,16 +213,11 @@ pub struct AppServer {
     pid: u32,
 }
 
-/// Whether the root whose `run/` folder this is belongs to the desktop
-/// app (INVARIANT 7).
-pub fn app_hosted(run: &Path) -> bool {
-    run.join(APP_MARKER).is_file()
-}
-
-/// Whether a books server runs for the app now: the root is the app's,
-/// no host holds it, and a server does.
+/// Whether a server runs for the app (or any program that is not a host)
+/// now: no host holds the root, a server does, and its admin socket
+/// answers (INVARIANT 7).
 pub fn the_apps_server_runs(run: &Path) -> bool {
-    app_hosted(run) && !host_lock_held(run) && server_lock_held(run)
+    !host_lock_held(run) && server_lock_held(run) && crate::opener::admin_answers(run) == Ok(true)
 }
 
 impl AppServer {
@@ -197,12 +242,8 @@ impl AppServer {
         if host_lock_held(&run) || server_lock_held(&run) {
             return Err(ANOTHER_HAS_THEM.into());
         }
-        private_options()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(run.join(APP_MARKER))
-            .map_err(|e| format!("can't mark these books as the app's: {}", e.kind()))?;
+        // The mark an earlier build left means nothing now (INVARIANT 7).
+        let _ = std::fs::remove_file(run.join(RETIRED_MARKER));
         let log = open_log(&run.join(SERVER_LOG))
             .map_err(|e| format!("can't open the server's log: {}", e.kind()))?;
         let mut command = Command::new(exe);
@@ -210,27 +251,20 @@ impl AppServer {
         {
             use std::os::unix::process::CommandExt;
             command.arg0("wanderbooks");
+            // A group of its own: a Ctrl+C at the terminal the window was
+            // started from goes to the terminal's foreground group, the
+            // window's, and never to the server, which would close the
+            // books under an open window. The server closes by its input
+            // alone (INVARIANT 3), and a window that dies closes that.
+            command.process_group(0);
         }
         command.arg("server");
         if let Some(root) = root {
             command.arg("--root").arg(root);
         }
         command.arg("--open").arg(open_argument(open));
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            // CREATE_NO_WINDOW: a console of its own that nobody sees, so
-            // the window's own Ctrl+C never reaches it (it closes by its
-            // input alone).
-            command.creation_flags(0x0800_0000);
-        }
         configure(&mut command);
-        let mut child = command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(log)
-            .spawn()
-            .map_err(|e| format!("can't start the books server: {e}"))?;
+        let mut child = spawn_child(&mut command, &log)?;
         let stdin = child.stdin.take();
         let stdout = child.stdout.take();
         let pid = child.id();
@@ -348,6 +382,13 @@ impl AppServer {
                 Err(why) => return Err(why),
             }
         }
+    }
+
+    /// One admin request, once the server is ready (a command's own
+    /// server: commands.rs `Reached`): its answer, or why not in words.
+    pub fn call(&self, request: Request, wait: Option<Duration>) -> Result<Response, String> {
+        self.wait_ready(READY_WAIT)?;
+        self.ask(request, wait)
     }
 
     /// Open the company `id` in the server, so assistants can reach it
@@ -891,12 +932,10 @@ mod tests {
     }
 
     #[test]
-    fn a_root_is_the_apps_only_once_marked() {
+    fn a_root_is_read_from_what_runs_and_not_from_a_file() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(!app_hosted(dir.path()));
-        std::fs::write(dir.path().join(APP_MARKER), b"").unwrap();
-        assert!(app_hosted(dir.path()));
-        // No server runs there: not the app's server.
+        // A mark an earlier build left is nothing: no server runs there.
+        std::fs::write(dir.path().join(RETIRED_MARKER), b"").unwrap();
         assert!(!the_apps_server_runs(dir.path()));
     }
 }

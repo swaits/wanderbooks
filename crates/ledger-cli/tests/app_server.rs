@@ -28,7 +28,7 @@
 //!      leaves it alone: nothing is signalled.
 //!   6. A tab's company is opened and closed in the server by request; a
 //!      company closed is not reachable, one opened is.
-//!   7. The bridge, for a root the app has served and with no host:
+//!   7. The bridge, with no host (and no mark of any kind on the root):
 //!      "Wanderbooks isn't running" with the app not running, "Company X
 //!      isn't open" with it running and the company not, and neither once
 //!      both are so, in a session that was already running; it starts no
@@ -49,9 +49,7 @@
 mod common;
 
 use common::{BOOK, Home, Server, clean_env};
-use ledger_host::app_server::{
-    ANOTHER_HAS_THEM, APP_MARKER, AppHost, AppServer, Stopped, app_hosted,
-};
+use ledger_host::app_server::{ANOTHER_HAS_THEM, AppHost, AppServer, RETIRED_MARKER, Stopped};
 use ledger_host::opener::{host_lock_held, server_lock_held};
 use ledger_mcp::admin::{Request, Response};
 use serde_json::{Value, json};
@@ -98,7 +96,10 @@ fn the_server_is_a_child_that_closes_when_its_input_does() {
     let run = home.run();
     let server = start(&home, &[]);
     server.wait_ready(Duration::from_secs(60)).unwrap();
-    assert!(app_hosted(&run), "the root is the app's from now on");
+    assert!(
+        !run.join(RETIRED_MARKER).exists(),
+        "nothing marks the root as the app's"
+    );
     assert!(server_lock_held(&run), "it holds the server lock");
     assert!(!host_lock_held(&run), "no host was started beside it");
     assert!(
@@ -121,6 +122,49 @@ fn the_server_is_a_child_that_closes_when_its_input_does() {
         !run.join("admin.sock").exists() && !run.join("mcp.sock").exists(),
         "its sockets are removed"
     );
+}
+
+/// A mark an earlier build left (`run/app-hosted`) means nothing now: the
+/// root works as one without it, and the next start of the app's server
+/// removes it (app_server.rs INVARIANT 7).
+#[test]
+fn a_mark_an_earlier_build_left_is_ignored_and_removed() {
+    let home = Home::new("app-old-mark");
+    let run = home.run();
+    std::fs::write(run.join(RETIRED_MARKER), b"").unwrap();
+    // Nothing runs: the bridge says so in words, mark or none.
+    let mut bridge = Bridge::start(&home);
+    assert!(error_of(&bridge.initialize()).starts_with("Wanderbooks isn't running"));
+    let server = start(&home, &[]);
+    server.wait_ready(Duration::from_secs(60)).unwrap();
+    assert!(
+        !run.join(RETIRED_MARKER).exists(),
+        "the old mark is removed"
+    );
+    assert!(matches!(home.admin(Request::List), Response::Books(_)));
+    assert_eq!(server.stop(Duration::from_secs(60)), Stopped::Closed);
+}
+
+/// The server is in a process group of its own, so a Ctrl+C at the
+/// terminal the window was started from (sent to the terminal's
+/// foreground group, the window's) never reaches it: it closes by its
+/// input alone (app_server.rs INVARIANT 3).
+#[cfg(unix)]
+#[test]
+fn the_server_has_a_process_group_of_its_own_so_a_terminal_ctrl_c_misses_it() {
+    let home = Home::new("app-group");
+    let server = start(&home, &[]);
+    server.wait_ready(Duration::from_secs(60)).unwrap();
+    let pid = server.pid() as libc::pid_t;
+    // SAFETY: getpgid and getpgrp only read process-group ids.
+    let (its, ours) = unsafe { (libc::getpgid(pid), libc::getpgrp()) };
+    assert_eq!(its, pid, "it leads a group of its own");
+    assert_ne!(its, ours, "it is not in the window's group");
+    // The group the terminal signals is the window's: a SIGINT sent to
+    // every process of that group but ours cannot be shown here, so the
+    // property is what makes it hold: nothing of the server is in it.
+    assert_eq!(server.exited(), None);
+    assert_eq!(server.stop(Duration::from_secs(60)), Stopped::Closed);
 }
 
 #[test]
@@ -162,7 +206,10 @@ fn a_start_is_refused_when_another_program_has_the_books() {
     let other = Server::start_with(&home, &["--open", "none"]);
     let refused = try_start().err().expect("refused");
     assert_eq!(refused, ANOTHER_HAS_THEM);
-    assert!(!run.join(APP_MARKER).exists(), "a refusal touches nothing");
+    assert!(
+        !run.join(RETIRED_MARKER).exists(),
+        "a refusal touches nothing"
+    );
     other.close();
     until("the other let go", || !server_lock_held(&run));
     // A host holds them.
@@ -174,7 +221,7 @@ fn a_start_is_refused_when_another_program_has_the_books() {
         .unwrap();
     lock.lock().unwrap();
     assert_eq!(try_start().err().expect("refused"), ANOTHER_HAS_THEM);
-    assert!(!run.join(APP_MARKER).exists());
+    assert!(!run.join(RETIRED_MARKER).exists());
     drop(lock);
     // Held by nobody: it starts.
     let server = try_start().expect("started");
@@ -399,10 +446,12 @@ fn error_of(answer: &Value) -> String {
 fn the_bridge_says_the_app_isnt_running_then_works_once_it_is() {
     let home = Home::new("app-bridge");
     let run = home.run();
-    // The app has served this root (it wrote its mark), and isn't running.
-    std::fs::write(run.join(APP_MARKER), b"").unwrap();
+    // The app isn't running, and no host is: a root that was never the
+    // app's, so nothing marks it.
     let mut bridge = Bridge::start(&home);
-    let not_running = format!("Wanderbooks isn't running: start Wanderbooks and open {BOOK}.");
+    let not_running = format!(
+        "Wanderbooks isn't running: start Wanderbooks and open {BOOK} (on a computer with no screen, run `wanderbooks serve`), then try again."
+    );
     assert_eq!(error_of(&bridge.initialize()), not_running);
     assert_eq!(error_of(&bridge.start_call()), not_running);
     // No host was started for it.

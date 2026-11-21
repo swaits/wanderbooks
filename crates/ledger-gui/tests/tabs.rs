@@ -225,12 +225,13 @@ impl eframe::Storage for Prefs {
 }
 
 fn prefs(pairs: &[(&str, &str)]) -> Prefs {
-    Prefs(
-        pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect(),
-    )
+    // The Connect page opens by itself once, in a window whose server says
+    // no assistant was ever connected (WB-app-6); these tests are about
+    // tabs, so that has happened already.
+    let mut kept: std::collections::BTreeMap<String, String> =
+        [("first_connect_done".to_string(), "1".to_string())].into();
+    kept.extend(pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+    Prefs(kept.into_iter().collect())
 }
 
 /// The app as it starts from `kept`, over `world`'s data root, its first

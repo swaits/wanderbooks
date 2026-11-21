@@ -253,6 +253,44 @@ pub struct WebApproval {
     pub last_used: Option<i64>,
 }
 
+/// How far web assistants have got for a company (plan P15 B3): the steps
+/// the page tells in words.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WebStep {
+    /// Off.
+    Off,
+    /// Getting an address.
+    GettingAddress,
+    /// Making the line to the relay.
+    Connecting,
+    /// The line is up; the certificate is being got.
+    GettingCertificate,
+    /// A web assistant can reach the company now.
+    Connected,
+}
+
+/// What the Connect page shows of one company's web assistants. Read from
+/// memory by the owner, every frame, never a wait.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WebConnect {
+    /// The switch.
+    pub on: bool,
+    /// How far it has got.
+    pub step: WebStep,
+    /// The address for the whole installation, while on.
+    pub address: Option<String>,
+    /// The address an assistant is given for this company.
+    pub connector: Option<String>,
+    /// A line of progress, in words.
+    pub words: String,
+    /// What is wrong, in words.
+    pub problem: Option<String>,
+    /// The problem needs the person (it will not mend itself).
+    pub needs_person: bool,
+    /// An address is kept for when web assistants are turned on again.
+    pub kept: bool,
+}
+
 /// Who is connected and who may connect, across the open companies.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Roster {
@@ -347,6 +385,25 @@ pub trait Owner: Send + Sync {
     }
     /// Let a web connection post entries, or take that away. Blocks.
     fn web_set_post(&self, _approval: &str, _post: bool) -> Result<String, String> {
+        Err("not here".into())
+    }
+    /// The company's web assistants as they stand: `None` when this window
+    /// has no way to offer them (the switch is not drawn). Reads memory;
+    /// never waits.
+    fn web_state(&self, _book: &str) -> Option<WebConnect> {
+        None
+    }
+    /// Turn web assistants on for the company: `Ok` says what happens next
+    /// in words. Blocks (a request or two of the server).
+    fn web_turn_on(&self, _book: &str) -> Result<String, String> {
+        Err("not here".into())
+    }
+    /// Turn them off for the company. Blocks.
+    fn web_turn_off(&self, _book: &str) -> Result<String, String> {
+        Err("not here".into())
+    }
+    /// A new address for web assistants: the old one stops working. Blocks.
+    fn web_new_address(&self, _book: &str) -> Result<String, String> {
         Err("not here".into())
     }
     /// This program run with `words`, as a line to type in a terminal (the

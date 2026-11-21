@@ -188,6 +188,10 @@ pub struct App {
     assistants_ok: bool,
     /// "Now" for "10 seconds ago", fixed (tests, screenshots) or not.
     fixed_now: Option<chrono::DateTime<chrono::Utc>>,
+    /// The Connect page has been opened by itself once, or an assistant has
+    /// been connected: kept per installation, and never again after that
+    /// (WB-app-6).
+    first_connect_done: bool,
 }
 
 /// The warning about assistants that is up (INVARIANT 10).
@@ -205,6 +209,9 @@ enum Warn {
 /// the warning before a close: longer than for the state, so a server slow
 /// for a moment does not make an assistant that was connected seem gone.
 const WARN_AGE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The kept preference that says the Connect page has opened by itself.
+const FIRST_CONNECT_KEY: &str = "first_connect_done";
 
 /// What a window is called when no company is in front.
 const TITLE: &str = "wanderbooks";
@@ -334,7 +341,48 @@ impl App {
         let schemes = SchemeMenu::restored(get, ctx.global_style().visuals.dark_mode);
         let mut app = Self::bare(ctx, schemes);
         app.dock_prefs = (get("dock_open"), get("dock_agent"));
+        app.first_connect_done = get(FIRST_CONNECT_KEY).is_some();
         app
+    }
+
+    /// The first time a company is open and no assistant has ever been
+    /// connected, the Connect page opens by itself, once (WB-app-6): a
+    /// person who installs, starts the app and makes or opens their first
+    /// company sees the way to connect an assistant without looking for it.
+    /// "Never connected" is the server's own answer for the whole
+    /// installation: no key, no session, no web approval. It is asked after
+    /// the answer is known (never from a guess), it is remembered per
+    /// installation, and it is not asked again once an assistant exists.
+    fn first_connect(&mut self, statuses: &[Status]) {
+        if self.first_connect_done {
+            return;
+        }
+        let Some(roster) = self.connections.roster() else {
+            return; // not known yet: not a guess
+        };
+        let any = !roster.tokens.is_empty()
+            || !roster.assistants.is_empty()
+            || !roster.web_approvals.is_empty()
+            || !roster.web_pending.is_empty();
+        if any {
+            self.first_connect_done = true;
+            return;
+        }
+        let ready = statuses
+            .get(self.active)
+            .is_some_and(|s| s.serves && !s.down && s.link != Link::Unknown);
+        if !ready {
+            return;
+        }
+        if let Some(v) = self.views.get_mut(self.active) {
+            v.open_connect();
+            self.first_connect_done = true;
+        }
+    }
+
+    /// Whether the Connect page has opened by itself already (tests).
+    pub fn first_connect_done(&self) -> bool {
+        self.first_connect_done
     }
 
     /// The first-run page, if it is up (tests).
@@ -381,6 +429,7 @@ impl App {
             warn: Warn::Off,
             assistants_ok: false,
             fixed_now: None,
+            first_connect_done: false,
         }
     }
 
@@ -1233,6 +1282,7 @@ impl eframe::App for App {
         for (v, s) in self.views.iter_mut().zip(&statuses) {
             v.set_assist(s.clone());
         }
+        self.first_connect(&statuses);
         let tabs: Vec<Tab> = self
             .views
             .iter()
@@ -1280,6 +1330,9 @@ impl eframe::App for App {
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         self.schemes.keep(&mut |k, v| storage.set_string(k, v));
+        if self.first_connect_done {
+            storage.set_string(FIRST_CONNECT_KEY, "1".to_string());
+        }
         // The dock, as the front tab has it, else as it was kept.
         match self.active_view() {
             Some(v) => v.dock_ref().keep(&mut |k, v| storage.set_string(k, v)),

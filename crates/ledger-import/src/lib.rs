@@ -30,7 +30,10 @@ pub mod workpaper;
 pub mod xlsx;
 
 pub use asset_register::{asset_register_pdf, asset_register_xlsx};
-pub use bank_csv::{BankCsvError, BankTransaction, DateOrder, parse_bank_csv, parse_bank_csv_with};
+pub use bank_csv::{
+    BankCsvError, BankTransaction, DateOrder, MaskedBankImport, MaskedCell, parse_bank_csv,
+    parse_bank_csv_masked, parse_bank_csv_with,
+};
 pub use chart_csv::{ChartRow, parse_chart_csv};
 pub use extract::{ExtractError, page_count, page_png, pdf_lines, pdf_text, text_of, xlsx_text};
 pub use format::round_display;

@@ -732,7 +732,13 @@ impl BooksServer {
             }
         };
         let (csv, claim) = self.csv_given(&p.upload_id)?;
-        let txns = ledger_import::parse_bank_csv_with(&csv, order).map_err(|e| e.to_string())?;
+        // A description a bank wrote is not typed by a person: a number in
+        // it that reads as a tax id is kept masked to its last four digits
+        // and named in the answer, never a reason to refuse the file.
+        let ledger_import::MaskedBankImport {
+            transactions: txns,
+            masked,
+        } = ledger_import::parse_bank_csv_masked(&csv, order).map_err(|e| e.to_string())?;
         let mut store = self.lock()?;
         let bank = store
             .ledger()
@@ -838,11 +844,32 @@ impl BooksServer {
                 .map_err(|e| e.to_string())?;
         }
         let count = imported.len();
+        let masked_count: usize = masked.iter().map(|m| m.numbers).sum();
+        let masked_note = (masked_count > 0).then(|| {
+            let lines: Vec<String> = masked.iter().map(|m| m.line.to_string()).collect();
+            format!(
+                "{masked_count} value{} in the Description column read as a tax id (nine digits standing alone, or an SSN's or an EIN's shape) and {} kept masked to the last four digits, on line{} {}. A bank's description is not typed by a person and often carries a nine-digit reference, so the file was not refused; a tax id is stored only with books.set_tin or a W-9 (books.set_w9)",
+                if masked_count == 1 { "" } else { "s" },
+                if masked_count == 1 { "was" } else { "were" },
+                if lines.len() == 1 { "" } else { "s" },
+                lines.join(", ")
+            )
+        });
         Ok(Json(ImportBankCsvOut {
             imported,
             count,
             source_attachment_id: p.source_attachment_id,
             source_linked: link_source,
+            masked_count,
+            masked: masked
+                .into_iter()
+                .map(|m| MaskedCellOut {
+                    row: m.line,
+                    column: m.column.to_string(),
+                    numbers: m.numbers,
+                })
+                .collect(),
+            masked_note,
         }))
     }
 }

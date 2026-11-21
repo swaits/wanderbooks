@@ -120,6 +120,11 @@ pub const CODES: &[ledger_core::audit::CodeRow] = &[
         predicate: "two filed attachments, neither withdrawn, hold the same bytes",
     },
     ledger_core::audit::CodeRow {
+        code: "tax_id_in_journal",
+        severity: Severity::Warning,
+        predicate: "a journal line's text field holds a number that looks like a tax id (nine digits standing alone, an SSN's 3-2-4 or an EIN's 2-7)",
+    },
+    ledger_core::audit::CodeRow {
         code: "backup_stale",
         severity: Severity::Warning,
         predicate: "a backup target has not reached the books' head within a day",
@@ -141,6 +146,69 @@ fn found(code: &'static str, subject: Subject, message: String) -> Finding {
         severity,
         subject,
         message,
+    }
+}
+
+/// The journal fields that hold words someone wrote (never an id, a digest
+/// or an amount): what [`Store::integrity_findings`] reads for a tax id.
+const TEXT_KEYS: &[&str] = &[
+    "description",
+    "memo",
+    "note",
+    "notes",
+    "reason",
+    "name",
+    "label",
+    "title",
+    "citation",
+    "decided_by",
+    "detail",
+    "detail_md",
+    "resolution",
+    "decision_md",
+    "body_md",
+    "subject",
+    "reference",
+    "customer_ref",
+    "vendor_ref",
+    "duplicate_reason",
+    "no_party_reason",
+    "payee",
+    "source",
+    "reimbursable_to",
+    "file_name",
+    "serial",
+    "tag",
+    "employee_name",
+    "display_name",
+    "address",
+    "contact",
+    "kept_at",
+    "approver",
+];
+
+/// Every text field of `v` named by [`TEXT_KEYS`], as (its key, its text),
+/// at any depth; a list of texts under such a key counts each.
+fn text_fields_in(v: &Value, out: &mut Vec<(String, String)>) {
+    match v {
+        Value::Object(m) => {
+            for (k, x) in m {
+                if TEXT_KEYS.contains(&k.as_str()) {
+                    match x {
+                        Value::String(s) => out.push((k.clone(), s.clone())),
+                        Value::Array(a) => out.extend(
+                            a.iter()
+                                .filter_map(Value::as_str)
+                                .map(|s| (k.clone(), s.to_string())),
+                        ),
+                        _ => {}
+                    }
+                }
+                text_fields_in(x, out);
+            }
+        }
+        Value::Array(a) => a.iter().for_each(|x| text_fields_in(x, out)),
+        _ => {}
     }
 }
 
@@ -435,6 +503,45 @@ impl Store {
                 Subject::Named(sha.chars().take(12).collect()),
                 format!("attachments {ids} hold the same bytes ({sha})"),
             ));
+        }
+        out.extend(self.tax_id_findings());
+        out
+    }
+
+    /// The journal lines whose text fields hold what looks like a tax id
+    /// (BS-partner-2): a line an earlier version took, or one a caller
+    /// other than the tools wrote. The books open and replay as they are
+    /// and the journal is never rewritten; the audit says where each one
+    /// is, by line and field, and never what the number is.
+    fn tax_id_findings(&self) -> Vec<Finding> {
+        let rows: Vec<(u64, String, String)> = self
+            .conn
+            .prepare("SELECT seq, type, payload FROM events ORDER BY seq")
+            .and_then(|mut s| {
+                s.query_map([], |r| {
+                    Ok((r.get::<_, i64>(0)? as u64, r.get(1)?, r.get(2)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()
+            })
+            .unwrap_or_default();
+        let mut out = Vec::new();
+        for (seq, kind, payload) in rows {
+            let Ok(v) = serde_json::from_str::<Value>(&payload) else {
+                continue;
+            };
+            let mut fields = Vec::new();
+            text_fields_in(&v, &mut fields);
+            for (field, text) in fields {
+                if ledger_core::settings::holds_printed_tin(&text) {
+                    out.push(found(
+                        "tax_id_in_journal",
+                        Subject::Named(format!("journal line {seq}")),
+                        format!(
+                            "journal line {seq} ({kind}) holds, in its `{field}`, a number that looks like a tax id. The journal is never rewritten and the books open as they are: correct what it describes going forward (reverse the entry and enter it again without the number), and keep the tax id only in the vault (books.set_tin or a W-9, books.set_w9)"
+                        ),
+                    ));
+                }
+            }
         }
         out
     }

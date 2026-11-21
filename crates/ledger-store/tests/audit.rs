@@ -362,6 +362,43 @@ fn integrity_detects_each_seeded_defect() {
                 drop(w);
                 Store::open(&dir).unwrap().integrity_findings()
             }
+            "tax_id_in_journal" => {
+                // A line an earlier version took: its description holds an
+                // SSN's shape. The books open on it all the same, and the
+                // audit says where it is, never what.
+                let next = s.ledger().next_entry_id();
+                drop(s);
+                let mut w = JournalWriter::open(&dir.join(JOURNAL_FILE)).unwrap();
+                w.append(
+                    "entry.created",
+                    json!({"id": next, "date": "2026-03-01", "description": "paid 000-00-0000 in cash"}),
+                )
+                .unwrap();
+                drop(w);
+                let s = Store::open(&dir).expect("books holding such a line still open");
+                s.verify().expect("and still verify");
+                let found = s.integrity_findings();
+                let f = found
+                    .iter()
+                    .find(|f| f.code == "tax_id_in_journal")
+                    .expect("found");
+                assert!(f.message.contains("`description`"), "{}", f.message);
+                assert!(
+                    f.message.contains(&format!(
+                        "journal line {}",
+                        f.subject.describe().rsplit(' ').next().unwrap()
+                    )),
+                    "{}",
+                    f.message
+                );
+                assert!(
+                    !f.message.contains("0000"),
+                    "never the number: {}",
+                    f.message
+                );
+                assert!(f.message.contains("books.set_tin"), "{}", f.message);
+                found
+            }
             "access_log_damaged" => {
                 std::fs::write(
                     dir.join("access.jsonl"),

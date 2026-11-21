@@ -84,6 +84,78 @@ pub enum BankCsvError {
     Csv(String),
 }
 
+/// A bank's description cell that held a number reading as a tax id (a
+/// nine-digit reference, say), kept masked to its last four digits.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MaskedCell {
+    /// The file's line the transaction is on (the first line is 1).
+    pub line: u64,
+    /// The column: always "Description".
+    pub column: &'static str,
+    /// How many numbers in the cell were masked.
+    pub numbers: usize,
+}
+
+/// A parsed bank CSV whose descriptions are safe to keep.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MaskedBankImport {
+    /// The transactions in file order, a description that held a number
+    /// reading as a tax id masked to its last four digits.
+    pub transactions: Vec<BankTransaction>,
+    /// Which cells were masked, in file order.
+    pub masked: Vec<MaskedCell>,
+}
+
+/// [`parse_bank_csv_with`] for a file that is to be kept: a description a
+/// bank wrote is not typed by a person and commonly carries a nine-digit
+/// reference, so the file is not refused for one. A number in it that
+/// reads as a tax id (`ledger_core::settings::holds_printed_tin`: nine
+/// digits standing alone, an SSN's 3-2-4, an EIN's 2-7) is masked to its
+/// last four digits (`•••-••-1234`) in the description, and the cell is
+/// named in [`MaskedBankImport::masked`] (BS-partner-2; the owner's choice,
+/// 2026-11-21).
+///
+/// ```text
+/// GOAL: a bank file is journaled whole, and no full tax id is.
+/// SOURCE: BS-partner-2; docs/spec/claims/partner.md (the CHOICE: masking
+///         on bank imports).
+/// INVARIANTS:
+///   1. No kept description holds a number the detector finds.
+///   2. Every cell that was masked is named with its line; every other
+///      cell is as the bank wrote it, and the transactions are
+///      parse_bank_csv_with's, amounts and dates unchanged.
+/// SCENARIOS:
+///   1. IF a description says `ACH 000-00-0000 payroll`: SHOULD keep
+///      `ACH •••-••-0000 payroll` and name its line.
+///   2. IF it says `CHECK 1234567890`: SHOULD keep it as written.
+/// ```
+pub fn parse_bank_csv_masked(
+    text: &str,
+    order: Option<DateOrder>,
+) -> Result<MaskedBankImport, BankCsvError> {
+    let mut masked = Vec::new();
+    let transactions = parse_rows(text, order)?
+        .into_iter()
+        .map(|(line, mut txn)| {
+            let numbers = ledger_core::settings::count_printed_tins(&txn.description);
+            if numbers > 0 {
+                txn.description =
+                    ledger_core::settings::mask_printed_tins(&txn.description).into_owned();
+                masked.push(MaskedCell {
+                    line,
+                    column: "Description",
+                    numbers,
+                });
+            }
+            txn
+        })
+        .collect();
+    Ok(MaskedBankImport {
+        transactions,
+        masked,
+    })
+}
+
 /// Parse a QBO bank CSV, reading slash dates in the order the file itself
 /// settles. Returns transactions in file order.
 pub fn parse_bank_csv(text: &str) -> Result<Vec<BankTransaction>, BankCsvError> {
@@ -96,11 +168,22 @@ pub fn parse_bank_csv_with(
     text: &str,
     order: Option<DateOrder>,
 ) -> Result<Vec<BankTransaction>, BankCsvError> {
+    Ok(parse_rows(text, order)?
+        .into_iter()
+        .map(|(_, txn)| txn)
+        .collect())
+}
+
+/// The transactions with the file line each came from.
+fn parse_rows(
+    text: &str,
+    order: Option<DateOrder>,
+) -> Result<Vec<(u64, BankTransaction)>, BankCsvError> {
     let mut reader = csv::ReaderBuilder::new()
         .has_headers(false)
         .trim(csv::Trim::All)
         .from_reader(text.as_bytes());
-    let mut rows: Vec<(String, String, Decimal)> = Vec::new();
+    let mut rows: Vec<(u64, String, String, Decimal)> = Vec::new();
     let mut seen_row = false;
     for (idx, record) in reader.records().enumerate() {
         let record = record.map_err(|e| BankCsvError::Csv(e.to_string()))?;
@@ -134,16 +217,20 @@ pub fn parse_bank_csv_with(
         if amount.is_zero() {
             continue; // zero-amount rows carry no money
         }
-        rows.push((fields[0].to_string(), fields[1].to_string(), amount));
+        let line = record.position().map_or(idx as u64 + 1, |p| p.line());
+        rows.push((line, fields[0].to_string(), fields[1].to_string(), amount));
     }
-    let order = date_order(rows.iter().map(|r| r.0.as_str()), order)?;
+    let order = date_order(rows.iter().map(|r| r.1.as_str()), order)?;
     rows.into_iter()
-        .map(|(date, description, amount)| {
-            Ok(BankTransaction {
-                date: parse_date(&date, order)?,
-                description,
-                amount,
-            })
+        .map(|(line, date, description, amount)| {
+            Ok((
+                line,
+                BankTransaction {
+                    date: parse_date(&date, order)?,
+                    description,
+                    amount,
+                },
+            ))
         })
         .collect()
 }

@@ -49,6 +49,10 @@ pub enum ChartCsvError {
         /// "code" or "name".
         field: &'static str,
     },
+    /// A cell that looks like it holds a tax id: the words name the row
+    /// and column and never the number (BS-partner-2).
+    #[error("{0}")]
+    LooksLikeTin(String),
     /// Malformed CSV.
     #[error("csv error: {0}")]
     Csv(String),
@@ -70,6 +74,10 @@ pub enum ChartCsvError {
 ///      (BadType), and a non-blank code and name (Blank, with its row).
 ///   3. A blank parent or tax category is None; blank lines are skipped;
 ///      an empty file is no rows.
+///   4. A cell that looks like a tax id (a name with any run of nine
+///      digits, any other cell with an SSN's or EIN's shape or nine
+///      digits alone) refuses the file, naming its row (the file's line)
+///      and column and never the number (LooksLikeTin; BS-partner-2).
 /// ```
 pub fn parse_chart_csv(text: &str) -> Result<Vec<ChartRow>, ChartCsvError> {
     let mut reader = csv::ReaderBuilder::new()
@@ -107,6 +115,27 @@ pub fn parse_chart_csv(text: &str) -> Result<Vec<ChartRow>, ChartCsvError> {
                     row: idx + 1,
                     field,
                 });
+            }
+        }
+        // A chart is typed by a person, so a number that reads as a tax id
+        // in any cell is refused, naming the row and the column; the name
+        // is read as strictly as an account name is (any run of nine
+        // digits).
+        let line = record.position().map_or(idx as u64 + 1, |p| p.line());
+        let columns = ["code", "name", "type", "parent_code", "tax_category"];
+        for (n, value) in fields.iter().enumerate() {
+            let looks = if n == 1 {
+                ledger_core::parties::has_full_tin(value)
+            } else {
+                ledger_core::settings::holds_printed_tin(value)
+            };
+            if looks {
+                return Err(ChartCsvError::LooksLikeTin(
+                    ledger_core::settings::tin_refusal(&format!(
+                        "the {} cell of row {line}",
+                        columns[n]
+                    )),
+                ));
             }
         }
         let account_type = fields[2].to_lowercase();

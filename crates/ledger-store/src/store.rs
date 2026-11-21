@@ -4755,6 +4755,10 @@ impl Store {
         bytes: &[u8],
         description: Option<&str>,
     ) -> Result<(u64, String, bool), StoreError> {
+        LedgerError::free_text("the file name", file_name)?;
+        if let Some(d) = description {
+            LedgerError::free_text("the description", d)?;
+        }
         self.attach(AttachRequest {
             line_type: "receipt.attached",
             category: "receipts",
@@ -4795,6 +4799,10 @@ impl Store {
         bytes: &[u8],
         description: Option<&str>,
     ) -> Result<(u64, String, bool), StoreError> {
+        LedgerError::free_text("the file name", file_name)?;
+        if let Some(d) = description {
+            LedgerError::free_text("the description", d)?;
+        }
         self.attach(AttachRequest {
             line_type: "document.filed",
             category,
@@ -5692,6 +5700,7 @@ impl Store {
         if reason.is_empty() {
             return Err(StoreError::ReasonRequired);
         }
+        LedgerError::free_text("the reason", reason)?;
         let (entry_id, withdrawn) = self.attachment_state(attachment_id)?;
         if withdrawn {
             return Err(StoreError::AttachmentWithdrawn(attachment_id));
@@ -5760,6 +5769,7 @@ impl Store {
         if reason.is_empty() {
             return Err(StoreError::ReasonRequired);
         }
+        LedgerError::free_text("the reason", reason)?;
         self.check_linkable(attachment_id)?;
         if let Some(sub) = self.attachment_links(attachment_id)?.first() {
             return Err(StoreError::AlreadyLinked(attachment_id, sub.describe()));
@@ -5936,6 +5946,7 @@ impl Store {
         if reason.is_empty() {
             return Err(StoreError::ReasonRequired);
         }
+        LedgerError::free_text("the reason", reason)?;
         self.attachment_state(attachment_id)?;
         let linked = self
             .conn
@@ -6065,6 +6076,7 @@ impl Store {
         if reason.is_empty() {
             return Err(StoreError::ReasonRequired);
         }
+        LedgerError::free_text("the reason", reason)?;
         if self.statement(attachment_id)?.is_none() {
             return Err(StoreError::InvalidStatement(format!(
                 "attachment {attachment_id} records no statement"
@@ -6215,6 +6227,7 @@ impl Store {
         if reason.is_empty() {
             return Err(StoreError::ReasonRequired);
         }
+        LedgerError::free_text("the reason", reason)?;
         let r = self
             .reconciliations(None)?
             .into_iter()

@@ -548,7 +548,7 @@ fn format_upgrade_waits_for_consent() {
     );
     assert!(!shown.contains(wrong), "the passphrase was shown: {shown}");
     assert!(
-        !dir.join("archive.git").exists(),
+        !dir.join(ledger_store::backup::LOCAL_DIR).exists(),
         "no backup before consent"
     );
     assert_eq!(format_lines(&dir), 0);

@@ -425,14 +425,14 @@ pub static KEYS: &[Key] = &[
         toml: ("backup", "git_remote"),
         kind: Kind::Repository,
         sensitivity: Sensitivity::Public,
-        doc: "A private repository the books back themselves up to (plan D-30): its address as its host shows it for cloning, over ssh or https (such as https://host/owner/books), or a path on this computer. Unset: none.",
+        doc: "No longer used (D-91). Older books name a private repository here for the kind of backup that is no longer made: they open and work as ever, nothing is read from or sent to it, and the backup status says so. Choose backup.folder instead. Unset: none.",
     },
     Key {
         name: "backup.folder",
         toml: ("backup", "folder"),
         kind: Kind::Folder,
         sensitivity: Sensitivity::Public,
-        doc: "A folder the books back themselves up to as well (D-30): an absolute path, an external disk or a synced folder; the backup is a repository in it named for the book. Unset: none.",
+        doc: "The folder the books back themselves up to (D-91): an absolute path, another disk or a folder a sync service keeps (Dropbox, iCloud, OneDrive, Google Drive); the backup is a folder in it named for the books, made of files that are only ever added. Unset: none.",
     },
     // P4b S4.2: invoicing, bills and the company's contact details.
     Key {

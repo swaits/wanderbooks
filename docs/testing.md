@@ -4889,7 +4889,7 @@ count.
 - [P3 format upgrade] `format.rs` (`current`, `upgrade_to`, `adds`,
   `require_format`, `require_feature`), `store.rs` (`create_in_format`,
   `ensure_format`, `ensure_feature`, `upgrade_format`), `root.rs` (adoption's
-  upgrade and its verify), `backup.rs` (`prove_archive`, `held_files`).
+  upgrade and its verify), `backup/read.rs` (`prove_local`).
 - [P3 asset basis] `asset_basis_from_journal` (newer vs corrupt); the
   projection loader's two key sets.
 - [P3 projects] `project_set_of` (newer vs corrupt); `Store::add_project`'s

@@ -286,3 +286,92 @@ fn the_audit_reads_a_reference_as_a_reference() {
         "{fields:?}"
     );
 }
+
+/// The audit reads a telephone or fax number as a phone: ordinary numbers
+/// (ten digits, dashes, a country code, an extension) are no finding, and
+/// an SSN's or an EIN's printed shape in one is (WB-partner-15).
+#[test]
+fn the_audit_reads_a_phone_as_a_phone() {
+    use ledger_core::arap::{InvoiceFields, PartySnapshot};
+    let dir = tempdir().unwrap();
+    let mut store = Store::create(dir.path(), Currency::USD).unwrap();
+    let a = accounts(&mut store);
+    let customer = store.add_customer("Acme").unwrap();
+    let phones = [
+        "2065550142",
+        "206-555-0142",
+        "(206) 555-0142",
+        "+1 206 555 0142",
+        "+44 20 7946 0958",
+        "206-555-0142 x1234",
+        "612345678",
+    ];
+    for phone in phones {
+        store
+            .create_invoice_with(
+                customer,
+                date(2026, 3, 1),
+                date(2026, 3, 31),
+                vec![ledger_core::arap::DocumentLine {
+                    description: "work".into(),
+                    amount: Decimal::from(100),
+                    class_id: None,
+                    account: None,
+                    quantity: None,
+                    unit_price: None,
+                }],
+                InvoiceFields {
+                    bill_to: Some(PartySnapshot {
+                        name: "Acme".into(),
+                        address: Some("1 Main St, Seattle WA 98101-1234".into()),
+                        email: None,
+                        phone: Some(phone.into()),
+                        contact: None,
+                        billing_address: None,
+                        shipping_address: None,
+                        billing_email: None,
+                    }),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+    }
+    let findings = |store: &Store| -> Vec<String> {
+        store
+            .integrity_findings()
+            .into_iter()
+            .filter(|f| f.code == "tax_id_in_journal")
+            .map(|f| f.message)
+            .collect()
+    };
+    assert!(findings(&store).is_empty(), "{:?}", findings(&store));
+    // A line an earlier version wrote with an SSN or an EIN in a phone or
+    // fax is a finding, naming the field and never the number.
+    let asset = store
+        .register_asset(ledger_core::NewAsset {
+            description: "Van".into(),
+            in_service_date: date(2026, 1, 15),
+            cost: usd("1200"),
+            salvage_value: usd("0"),
+            useful_life_months: 12,
+            cost_account: a.cost,
+            accum_depr_account: a.accum,
+            expense_account: a.expense,
+        })
+        .unwrap();
+    drop(store);
+    let mut w = JournalWriter::open(&dir.path().join(JOURNAL_FILE)).unwrap();
+    w.append(
+        "asset.tagged",
+        json!({"asset_id": asset, "tag": "T1", "previous_tag": null,
+               "phone": "000-00-0000", "fax": "00-0000000"}),
+    )
+    .unwrap();
+    drop(w);
+    let store = Store::open(dir.path()).unwrap();
+    let found = findings(&store);
+    assert_eq!(found.len(), 2, "{found:?}");
+    assert!(found.iter().any(|m| m.contains("`phone`")), "{found:?}");
+    assert!(found.iter().any(|m| m.contains("`fax`")), "{found:?}");
+    assert!(found.iter().all(|m| !m.contains("0000")), "{found:?}");
+}

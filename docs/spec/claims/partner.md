@@ -129,7 +129,19 @@ or send reference, an account code, a file name, an instrument's label,
 where a W-9 or W-4 is kept), refuses only the printed 3-2-4 and 2-7 shapes
 and allows a bare nine digits, which is how a serial number or a check
 number is written. WB-partner-15 states it, with the downsides the owner
-accepted.
+accepted. And on 2026-11-21, after the strict reading refused every phone
+number in a party's or an invoice's bill-to (a phone is ten digits or more),
+the lead decided, within the same choice, that a *phone field* (a telephone
+or fax number) is read as a reference is, by its own name
+(`settings::holds_printed_tin_in_phone`): only the printed 3-2-4 and 2-7
+shapes are refused. Why not strict: a phone number is not a tax id's shape
+by length, and nothing about its digits proves anything; why not a new
+reading: a national number of nine digits is ordinary (Spain, France), so
+the reference reading, which allows a bare nine digits, is the right one. A
+postal *address* keeps the strict reading but for a ZIP+4 (`98101-1234`, nine
+digits), which is a postal code (`parties::has_full_tin_in_address`). The
+downside: a national phone number written 3-2-4 or 2-7 (`912 34 5678`) reads
+as a tax id and is refused; write it another way.
 
 
 **Enforced:** `crate::parties` (has_full_tin, check_text, W9Facts::check,
@@ -347,10 +359,28 @@ text two ways, on purpose:
   entry's description, which is free text, shows a payment's reference with
   such a run masked (`PaymentDetails::description`), and the audit reads
   each journal field as its class.
+- *A phone field* (a party's `phone`, the bill-to's `phone`, the company's
+  own as the seller's) is refused only in the printed SSN and EIN shapes
+  (`settings::holds_printed_tin_in_phone`, the reference reading by its
+  own name, `parties::check_phone`): `2065550142`, `206-555-0142`,
+  `(206) 555-0142`, `+1 206 555 0142`, `+44 20 7946 0958` and an extension
+  pass. The tools' table has a class for it, and a test fails when a string
+  named for a phone or a fax is in any other.
+- *A postal address* (a party's `address`, `billing_address` and
+  `shipping_address`, the bill-to's) is a party's own field read strictly,
+  except that a ZIP+4 is no tax id (`parties::has_full_tin_in_address`,
+  `parties::check_address`).
+- *A registration number* (`company.state_entity_number`, which may be nine
+  digits: a Washington UBI) is a reference. No VAT or other foreign
+  registration-number field exists in a party or an invoice; `company.duns`
+  is a nine-digit number by its kind.
 - *A party's own fields* (a party's name and details, a customer's or
   vendor's name, the customer's printed details on an invoice, a recipient,
   an account name) keep the strict reading of WB-partner-4: any run of nine
-  digits (`has_full_tin`).
+  digits (`has_full_tin`), but for the phone and the address above. Their
+  downsides: an email with nine digits in it (`123456789@example.com`), a
+  note or website with a nine-digit number, and a street number or a PO box
+  next to a postal code are refused.
 - *A bank file's description* is not typed by a person and often carries a
   nine-digit reference, so a bank import is not refused for one: a number
   that reads as a tax id is kept masked to its last four digits
@@ -383,7 +413,7 @@ other than the tools cannot journal one, and a journal line an earlier
 version took still replays whatever it holds (BS-entry-4), so no books are
 refused for opening. And the tools check every string of every write tool
 once, before any call runs or writes anything (WB-format-10), from one
-table that classes each string as free text, a reference, a party field, or
+table that classes each string as free text, a reference, a phone, an address, a party field, or
 exempt for a named reason (the vault's input, a lookup key, an id, an amount, a date, a
 fixed vocabulary, the last four digits, a bank pattern, a link, a value
 the engine reads); a test fails when a write tool has a string the table
@@ -398,7 +428,9 @@ warning, and never the number.
 **Enforced:** `settings::holds_printed_tin`, `settings::mask_printed_tins`,
 `settings::holds_printed_tin_in_reference`,
 `settings::mask_printed_tins_in_reference`, `settings::check_free_text`,
-`settings::check_reference_text`, `parties::check_note`,
+`settings::check_reference_text`, `settings::holds_printed_tin_in_phone`,
+`settings::check_phone_text`, `parties::check_phone`, `parties::check_address`,
+`parties::has_full_tin_in_address`, `parties::check_note`,
 `parties::check_reference_note`, `PaymentDetails::check`,
 `PaymentDetails::description`, `Ledger::try_create_entry`,
 `Ledger::reverse_entry`, `Ledger::create_invoice_with`,
@@ -410,7 +442,10 @@ warning, and never the number.
 `parse_bank_csv_masked`, `parse_chart_csv`; `ledger-store`
 `integrity_findings`, `Store::attach_receipt`, `Store::file_document`,
 `Store::unlink_receipt`, `Store::withdraw_attachment`, `Store::review_entry`.
-**Checked:** `ledger-core` `tests/free_text_tin.rs`
+**Checked:** `ledger-core` `tests/phone_text.rs` (phone formats of every country pass,
+an SSN's and an EIN's shapes are refused in a phone field, a ZIP+4 passes, a
+party and an invoice keep them, a state entity number may be nine digits);
+`ledger-core` `tests/free_text_tin.rs`
 (every grouping with every separator is found, a dot between all of an
 SSN's groups only, a date and its reference or a decimal never, a line break
 or a zero-width character does not hide one, nine digits alone, a reference
@@ -424,9 +459,10 @@ takes is classed) and `a_call_with_a_tax_id_in_free_text_is_refused_unrun_and_wr
 an earlier version took opens and is named by the audit) and
 `tests/free_text_old_books.rs` (an old asset still depreciates and is
 disposed of, the lines hold the masked form, the audit reads a reference as
-one); `ledger-cli`
+one and a phone as a phone); `ledger-cli`
 `tests/tin_in_text.rs` (through the real server: a refusal writes nothing,
-a reference is kept, a bank file is masked, a chart file is refused).
+a reference is kept, a phone is kept, a bank file is masked, a chart file is
+refused).
 
 ## B-35 A party's part of an entry, and a party's totals
 

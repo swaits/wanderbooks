@@ -159,6 +159,9 @@ enum TextClass {
     /// account code): only the grouped shapes are found, a bare nine digits
     /// being a legitimate number there (WB-partner-15).
     Reference,
+    /// A telephone or fax number: read as a reference is (only the grouped
+    /// shapes), by its own name so that a phone is never read as words.
+    Phone,
 }
 
 /// The journal fields that hold words someone wrote (never an id, a digest
@@ -197,6 +200,8 @@ const TEXT_KEYS: &[(&str, TextClass)] = &[
     ("display_name", TextClass::Free),
     ("address", TextClass::Free),
     ("contact", TextClass::Free),
+    ("phone", TextClass::Phone),
+    ("fax", TextClass::Phone),
     ("kept_at", TextClass::Reference),
     ("approver", TextClass::Free),
 ];
@@ -566,6 +571,7 @@ impl Store {
                     TextClass::Reference => {
                         ledger_core::settings::holds_printed_tin_in_reference(&text)
                     }
+                    TextClass::Phone => ledger_core::settings::holds_printed_tin_in_phone(&text),
                 };
                 if looks {
                     out.push(found(

@@ -1285,35 +1285,64 @@ pub fn check_document_text(
 }
 
 /// The party details a new invoice prints: the customer's (a party's
-/// fields: strict, no run of nine digits, [`crate::parties::check_text`])
-/// and the seller's (the company's own, free text: no tax id's shape).
+/// fields: strict, no run of nine digits, [`crate::parties::check_text`];
+/// an address allows a ZIP+4, [`crate::parties::check_address`]; a phone
+/// is refused only in a tax id's printed shapes,
+/// [`crate::parties::check_phone`]) and the seller's (the company's own,
+/// free text: no tax id's shape; its phone as any phone).
 pub fn check_snapshots(
     bill_to: Option<&PartySnapshot>,
     seller: Option<&PartySnapshot>,
 ) -> Result<(), LedgerError> {
-    let fields = |s: &'_ PartySnapshot| -> [(&'static str, Option<String>); 8] {
+    /// How a field of a snapshot is read.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Kind {
+        Plain,
+        Address,
+        Phone,
+    }
+    let fields = |s: &'_ PartySnapshot| -> [(&'static str, Kind, Option<String>); 8] {
         [
-            ("the bill-to name", Some(s.name.clone())),
-            ("the bill-to address", s.address.clone()),
-            ("the bill-to email", s.email.clone()),
-            ("the bill-to phone", s.phone.clone()),
-            ("the bill-to contact", s.contact.clone()),
-            ("the billing address", s.billing_address.clone()),
-            ("the shipping address", s.shipping_address.clone()),
-            ("the billing email", s.billing_email.clone()),
+            ("the bill-to name", Kind::Plain, Some(s.name.clone())),
+            ("the bill-to address", Kind::Address, s.address.clone()),
+            ("the bill-to email", Kind::Plain, s.email.clone()),
+            ("the bill-to phone", Kind::Phone, s.phone.clone()),
+            ("the bill-to contact", Kind::Plain, s.contact.clone()),
+            (
+                "the billing address",
+                Kind::Address,
+                s.billing_address.clone(),
+            ),
+            (
+                "the shipping address",
+                Kind::Address,
+                s.shipping_address.clone(),
+            ),
+            ("the billing email", Kind::Plain, s.billing_email.clone()),
         ]
     };
     if let Some(s) = bill_to {
-        for (field, text) in fields(s) {
+        for (field, kind, text) in fields(s) {
             if let Some(t) = text {
-                crate::parties::check_text(field, &t).map_err(LedgerError::InvalidParty)?;
+                match kind {
+                    Kind::Plain => crate::parties::check_text(field, &t),
+                    Kind::Address => crate::parties::check_address(field, &t),
+                    Kind::Phone => crate::parties::check_phone(field, &t),
+                }
+                .map_err(LedgerError::InvalidParty)?;
             }
         }
     }
     if let Some(s) = seller {
-        for (field, text) in fields(s) {
+        for (field, kind, text) in fields(s) {
             if let Some(t) = text {
-                LedgerError::free_text(&field.replace("bill-to", "seller"), &t)?;
+                let field = field.replace("bill-to", "seller");
+                if kind == Kind::Phone {
+                    crate::settings::check_phone_text(&field, &t)
+                        .map_err(LedgerError::FreeTextHoldsTin)?;
+                } else {
+                    LedgerError::free_text(&field, &t)?;
+                }
             }
         }
     }

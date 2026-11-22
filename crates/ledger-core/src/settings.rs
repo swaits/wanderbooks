@@ -759,6 +759,19 @@ pub fn holds_printed_tin_in_reference(text: &str) -> bool {
     !printed_tin_spans(text, Reading::Reference).1.is_empty()
 }
 
+/// [`holds_printed_tin`] for a telephone or fax number: only the printed
+/// SSN (3-2-4) and EIN (2-7) forms count. A phone number is ten digits or
+/// more (a country code and an area code), and a national number of nine
+/// is ordinary in many countries, so a run of nine or more digits proves
+/// nothing there; `206-555-0142`, `(206) 555-0142`, `+1 206 555 0142`,
+/// `+44 20 7946 0958` and an extension are all kept (WB-partner-15). It
+/// reads as a reference does; it has its own name so that the fields that
+/// hold a phone (a party's, a bill-to's, the tools' table, the audit's
+/// keys) say so, and one change here moves them all.
+pub fn holds_printed_tin_in_phone(text: &str) -> bool {
+    holds_printed_tin_in_reference(text)
+}
+
 /// [`holds_printed_tin`] for a web address: the printed SSN (3-2-4) and
 /// EIN (2-7) forms count as there, but a bare run of nine digits joined
 /// to a letter or to the URL punctuation `/ = ? & #` does not: it is an
@@ -1007,6 +1020,16 @@ pub fn check_free_text(field: &str, text: &str) -> Result<(), String> {
 /// Never refuses during a replay (BS-entry-4).
 pub fn check_reference_text(field: &str, text: &str) -> Result<(), String> {
     if !crate::parties::is_replaying() && holds_printed_tin_in_reference(text) {
+        return Err(tin_refusal(field));
+    }
+    Ok(())
+}
+
+/// A telephone or fax number that may be kept: not a tax id's printed
+/// shapes ([`holds_printed_tin_in_phone`]). Returns why not, in
+/// [`tin_refusal`]'s words. Never refuses during a replay (BS-entry-4).
+pub fn check_phone_text(field: &str, text: &str) -> Result<(), String> {
+    if !crate::parties::is_replaying() && holds_printed_tin_in_phone(text) {
         return Err(tin_refusal(field));
     }
     Ok(())
@@ -1287,7 +1310,14 @@ pub fn check(key: &Key, v: &Value) -> Result<Value, String> {
     let name = key.name;
     match key.kind {
         Kind::Text => {
-            let text = line_text(name, want_str(name, v)?, MAX_TEXT)?;
+            // The state's entity number is a registration number (a
+            // Washington UBI is nine digits): a reference, refused only in
+            // a tax id's printed shapes (WB-partner-15).
+            let text = if name == "company.state_entity_number" {
+                reference_line_text(name, want_str(name, v)?, MAX_TEXT)?
+            } else {
+                line_text(name, want_str(name, v)?, MAX_TEXT)?
+            };
             // One key's own bound: an invoice number's prefix is short and
             // visible (a space or a control character would break the
             // number's reading, and the file's).

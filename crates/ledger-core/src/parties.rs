@@ -717,6 +717,50 @@ pub fn check_text(field: &str, text: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// [`has_full_tin`] for a postal address: the same strict reading, except
+/// that a ZIP+4 (five digits, a hyphen, four digits, standing alone:
+/// `98101-1234`) is a postal code, not a tax id, though it is nine digits.
+pub fn has_full_tin_in_address(text: &str) -> bool {
+    let chars: Vec<char> = text.chars().collect();
+    let runs = if REPLAYING.with(std::cell::Cell::get) {
+        journaled_tin_runs(&chars)
+    } else {
+        full_tin_runs(&chars)
+    };
+    runs.iter().any(|&(first, last)| {
+        let run = &chars[first..=last];
+        let zip_plus_4 = run.len() == 10
+            && run[5] == '-'
+            && run
+                .iter()
+                .enumerate()
+                .all(|(i, c)| i == 5 || c.is_ascii_digit());
+        !zip_plus_4
+    })
+}
+
+/// [`check_text`] for a postal address: a ZIP+4 is allowed
+/// ([`has_full_tin_in_address`]); every other run of nine digits is refused.
+pub fn check_address(field: &str, text: &str) -> Result<(), String> {
+    if has_full_tin_in_address(text) {
+        return Err(format!(
+            "{field} looks like it holds a full taxpayer identification number; \
+             the books keep only its last four digits (the full number belongs in the vault)"
+        ));
+    }
+    // The length and control-character bounds are the other text's.
+    check_note_form(field, text)
+}
+
+/// Check a telephone or fax number: not a tax id's printed shapes (an SSN's
+/// 3-2-4, an EIN's 2-7: [`crate::settings::check_phone_text`]); every other
+/// number is a phone's, whatever its digits or grouping. At most 500
+/// characters, no control characters except newline.
+pub fn check_phone(field: &str, text: &str) -> Result<(), String> {
+    crate::settings::check_phone_text(field, text)?;
+    check_note_form(field, text)
+}
+
 /// Check a free text field: no tax id's shape (a nine-digit number standing
 /// alone, an SSN's 3-2-4, an EIN's 2-7: [`crate::settings::check_free_text`]),
 /// at most 500 characters, no control characters except newline. For a

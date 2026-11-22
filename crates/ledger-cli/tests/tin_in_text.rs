@@ -277,3 +277,88 @@ fn a_chart_file_with_a_tax_id_is_refused_naming_its_row_and_column() {
     let chart = answer_of(&w.call("books.chart", json!({}))).unwrap();
     assert!(!chart.to_string().contains("Payroll"), "{chart}");
 }
+
+/// A telephone or fax number is kept, whatever its digits, and refused only
+/// where it reads as an SSN or an EIN; a ZIP+4 is kept in an address; every
+/// other field of a party is still read strictly (WB-partner-15).
+#[test]
+fn a_phone_is_kept_and_a_printed_tax_id_in_one_is_refused() {
+    let books = Books::new("tin-phone-field");
+    let mut w = books.session("test");
+    setup(&mut w);
+    answer_of(&w.call("books.add_customer", json!({"name": "Harbor Coffee"}))).unwrap();
+    let party = answer_of(&w.call("books.party", json!({"party": "Harbor Coffee"}))).unwrap()
+        ["party"]["party_id"]
+        .to_string();
+    let party = party.trim_matches('"').to_string();
+    for phone in [
+        "2065550142",
+        "206-555-0142",
+        "(206) 555-0142",
+        "+1 206 555 0142",
+        "+44 20 7946 0958",
+        "206-555-0142 x1234",
+        "612345678",
+    ] {
+        let out = answer_of(&w.call(
+            "books.update_party",
+            json!({"party": party, "phone": phone, "contact": "Ana Reyes",
+                   "billing_address": "400 Pine St\nSeattle, WA 98101-1234"}),
+        ))
+        .unwrap_or_else(|e| panic!("{phone}: {e}"));
+        assert_eq!(out["phone"], json!(phone), "{out}");
+        let invoice = answer_of(&w.call(
+            "books.create_invoice",
+            json!({"customer": "Harbor Coffee", "date": "2026-03-01", "terms": "Net 30",
+                   "lines": [{"description": "Work", "amount": "10.00"}],
+                   "bill_to": {"phone": phone, "shipping_address": "9 Dock Rd, Seattle WA 98101-1234"},
+                   "confirmed": true}),
+        ))
+        .unwrap_or_else(|e| panic!("{phone}: {e}"));
+        assert!(
+            invoice["invoice_id"].is_u64() || invoice["total"].is_string(),
+            "{invoice}"
+        );
+    }
+    let before = books.journal_raw();
+    for (tool, args, field) in [
+        (
+            "books.update_party",
+            json!({"party": party, "phone": SSN}),
+            "the phone of books.update_party",
+        ),
+        (
+            "books.update_party",
+            json!({"party": party, "phone": format!("fax {EIN}")}),
+            "the phone of books.update_party",
+        ),
+        (
+            "books.create_invoice",
+            json!({"customer": "Harbor Coffee", "date": "2026-03-01", "terms": "Net 30",
+                   "lines": [{"description": "Work", "amount": "10.00"}],
+                   "bill_to": {"phone": SSN}, "confirmed": true}),
+            "the bill_to.phone of books.create_invoice",
+        ),
+    ] {
+        let why = answer_of(&w.call(tool, args)).unwrap_err();
+        assert!(why.contains(field), "{tool}: {why}");
+        assert!(!why.contains("0000"), "never the number: {why}");
+        assert_eq!(
+            books.journal_raw(),
+            before,
+            "{tool}: a refusal writes nothing"
+        );
+    }
+    // The rest of a party is strict: nine digits in a contact, a note or an address.
+    for (key, value) in [
+        ("contact", "Ana 123456789"),
+        ("notes", "tax id 123456789"),
+        ("address", "1 Main St 123456789"),
+    ] {
+        let why = answer_of(&w.call("books.update_party", json!({"party": party, key: value})))
+            .unwrap_err();
+        assert!(why.contains(key), "{key}: {why}");
+        assert!(!why.contains("123456789"), "never the number: {why}");
+    }
+    assert_eq!(books.journal_raw(), before, "a refusal writes nothing");
+}

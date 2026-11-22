@@ -279,18 +279,20 @@ fn customer_snapshot(
         }
     }
     ledger_core::parties::check_text("the bill-to name", &snapshot.name)?;
-    if let Some(a) = &snapshot.address {
-        ledger_core::parties::check_text("the bill-to address", a)?;
-    }
     for (field, value) in [
-        ("the bill-to contact", &snapshot.contact),
-        ("the bill-to phone", &snapshot.phone),
+        ("the bill-to address", &snapshot.address),
         ("the billing address", &snapshot.billing_address),
         ("the shipping address", &snapshot.shipping_address),
     ] {
         if let Some(v) = value {
-            ledger_core::parties::check_text(field, v)?;
+            ledger_core::parties::check_address(field, v)?;
         }
+    }
+    if let Some(v) = &snapshot.contact {
+        ledger_core::parties::check_text("the bill-to contact", v)?;
+    }
+    if let Some(v) = &snapshot.phone {
+        ledger_core::parties::check_phone("the bill-to phone", v)?;
     }
     for (field, value) in [
         ("the bill-to email", &snapshot.email),

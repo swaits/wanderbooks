@@ -760,7 +760,7 @@ What the books keep of a call, and what a repeat is told:
 **No tax id in a tool's text** (BS-partner-2, WB-partner-15). Before a write
 tool runs (a preview included), every string in its arguments is checked once,
 from one table of every string each write tool takes (`text_fields.rs`; 423
-strings in 78 tools; 109 free text, 18 reference, 27 party field, 2 for the
+strings in 78 tools; 109 free text, 18 reference, 2 phone, 6 address, 19 party field, 2 for the
 vault, the rest exempt): *free text* (memos, notes, reasons, descriptions,
 names of classes, projects and periods, a receipt's description and
 annotations, a discount's reason, a decision's or an item's words) is refused
@@ -773,15 +773,20 @@ of `pay_bill`, `receive_payment` and `mark_sent`, an account's `code`, a
 `file_name`, an instrument's `label`, where a W-9 or W-4 is `kept_at`), is
 refused only for the printed 3-2-4 and 2-7 shapes and may hold a bare nine
 digits, a serial or a check number (the owner's choice of 2026-11-21 as the
-lead decided it within it); a *party's own field*
-(a party's or a customer's or vendor's name, the bill-to details, a
-recipient, an account name) when it holds any run of nine digits; a string
+lead decided it within it); a *phone* (a party's `phone`, the bill-to's
+`phone`) is read the same way, so `2065550142`, `206-555-0142`,
+`(206) 555-0142`, `+1 206 555 0142` and `+44 20 7946 0958` pass and an SSN's
+or an EIN's printed shape does not; an *address* (a party's `address`,
+`billing_address` and `shipping_address`, the bill-to's) is a party field
+except that a ZIP+4 (`98101-1234`) is kept; a *party's own field*
+(a party's or a customer's or vendor's name, the bill-to's name, contact and
+email, a recipient, an account name) when it holds any run of nine digits; a string
 that is a lookup key, an id, an amount, a date, a word from a fixed
 vocabulary, the last four digits, a bank pattern or a link is exempt, and
 `set_tin` and `set_w9` take their `tin` (the vault's input) unread. A
 setting's value or a convention's structured body is read by the engine's own
-checks (`company.ein` and the `ach` and `wire` routing lines are the only
-exceptions). An invoice number, a phone number, a reference of ten digits or
+checks (`company.ein`, `company.state_entity_number`, which may be nine digits,
+and the `ach` and `wire` routing lines are the only exceptions). An invoice number, a phone number, a reference of ten digits or
 more, an amount, a decimal (`47.6062095`) and a date, even followed by a
 reference (`2026-11-21 0001234`), are no tax id. The refusal is in words, names
 the table's own field ("the name of books.add_class looks like it holds a tax
@@ -1631,7 +1636,8 @@ statement 8).
 
 **Rules the engine enforces** (each refusal changes nothing, the journal
 byte for byte): no party field holds a full TIN (a run of nine digits,
-single spaces or hyphens allowed between them; free text such as a memo or a
+single spaces or hyphens allowed between them; but a phone or fax number is
+read by a tax id's printed shapes only, and an address keeps a ZIP+4; free text such as a memo or a
 note is read by a tax id's shapes only: "No tax id in a tool's text"); a W-9's TIN is its last
 four digits only; W-9 facts need a 1099 role (contractor or landlord), W-4
 facts the employee role; names are unique among parties not archived;

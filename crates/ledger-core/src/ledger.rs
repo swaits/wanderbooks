@@ -5070,6 +5070,16 @@ impl Ledger {
             Some(t) => crate::parties::check_text(f, t).map_err(LedgerError::InvalidParty),
             None => Ok(()),
         };
+        // A postal address allows a ZIP+4; a phone or fax number is refused
+        // only in a tax id's printed shapes (WB-partner-15).
+        let address = |f: &str, v: &Option<String>| match v {
+            Some(t) => crate::parties::check_address(f, t).map_err(LedgerError::InvalidParty),
+            None => Ok(()),
+        };
+        let phone = |f: &str, v: &Option<String>| match v {
+            Some(t) => crate::parties::check_phone(f, t).map_err(LedgerError::InvalidParty),
+            None => Ok(()),
+        };
         match field {
             Name(n) => {
                 if n.trim().is_empty() {
@@ -5087,7 +5097,7 @@ impl Ledger {
             }
             DisplayName(v) => text("display_name", v)?,
             Website(v) => text("website", v)?,
-            Address(v) => text("address", v)?,
+            Address(v) => address("address", v)?,
             Notes(v) => text("notes", v)?,
             Archived(false) => {
                 if let Some(other) = self.party_by_name(&p.name)
@@ -5105,12 +5115,13 @@ impl Ledger {
                     crate::parties::check_email("email", e).map_err(LedgerError::InvalidParty)?;
                 }
             }
-            // The D-55 contact block: two addresses and a phone like any
-            // other text (no full TIN), the billing email an address.
-            Phone(v) => text("phone", v)?,
+            // The D-55 contact block: two addresses (a ZIP+4 allowed) and a
+            // phone (refused only in a tax id's printed shapes), the billing
+            // email an address.
+            Phone(v) => phone("phone", v)?,
             Contact(v) => text("contact", v)?,
-            BillingAddress(v) => text("billing_address", v)?,
-            ShippingAddress(v) => text("shipping_address", v)?,
+            BillingAddress(v) => address("billing_address", v)?,
+            ShippingAddress(v) => address("shipping_address", v)?,
             BillingEmail(v) => {
                 if let Some(e) = v {
                     crate::parties::check_email("billing_email", e)

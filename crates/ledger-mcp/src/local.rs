@@ -1658,7 +1658,9 @@ impl Books {
             } => match self.backups_of(&id) {
                 Ok(backups) => {
                     let rt = tokio::runtime::Handle::current();
-                    let pass = passphrase.as_ref().map(|p| p.0.clone());
+                    let pass = passphrase
+                        .as_ref()
+                        .map(|p| zeroize::Zeroizing::new(p.0.clone()));
                     match rt.block_on(backups.set_up(folder, pass, remove_passphrase)) {
                         Ok(lines) => Response::Said { lines },
                         Err(why) => Response::Refused(self.hide(why)),

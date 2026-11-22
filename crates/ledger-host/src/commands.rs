@@ -1285,6 +1285,19 @@ pub fn backup_status(common: &Common, book: &str) -> Result<Vec<String>, String>
     backup_standing(common, book).map(|s| backup_words(&s))
 }
 
+/// A time the server recorded (UTC, RFC 3339) as a person reads it: their own
+/// clock, day, month and year, hour and minute.
+fn when(utc: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(utc).map_or_else(
+        |_| utc.to_string(),
+        |t| {
+            t.with_timezone(&chrono::Local)
+                .format("%B %-d, %Y at %H:%M")
+                .to_string()
+        },
+    )
+}
+
 /// The words for a backup standing, as an ordinary person reads them.
 pub fn backup_words(s: &admin::BackupStanding) -> Vec<String> {
     let mut lines = Vec::new();
@@ -1299,7 +1312,8 @@ pub fn backup_words(s: &admin::BackupStanding) -> Vec<String> {
             }
             match (&s.last_ok_at, s.through_seq) {
                 (Some(at), Some(seq)) => lines.push(format!(
-                    "Last backed up {at}, through event {seq} of {}.{}",
+                    "Last backed up {}, through event {seq} of {}.{}",
+                    when(at),
                     s.head_seq,
                     if s.through_seq == Some(s.head_seq) {
                         " Up to date."
@@ -4341,6 +4355,89 @@ mod tests {
             source_lock_created: false,
             format_upgraded: false,
             problem: None,
+        }
+    }
+
+    /// The words a person is told of each state of their backups: none set up,
+    /// a disk not connected, a failure, up to date and protected, behind, a
+    /// failed weekly check. No word of how it is made, and never git.
+    #[test]
+    fn the_backups_are_described_in_words_for_each_state() {
+        let base = admin::BackupStanding {
+            head_seq: 12,
+            folder: None,
+            sealed: false,
+            last_ok_at: None,
+            through_seq: None,
+            stale: false,
+            last_error: None,
+            last_drill_at: None,
+            drill_error: None,
+            disconnected: false,
+            note: None,
+        };
+        let say = |s: &admin::BackupStanding| backup_words(s).join(" | ");
+        assert_eq!(say(&base), "Not backed up: no backup folder is chosen yet.");
+        let with_folder = admin::BackupStanding {
+            folder: Some("/media/disk/Backups".into()),
+            ..base.clone()
+        };
+        let said = say(&with_folder);
+        assert!(
+            said.contains("Backing up to /media/disk/Backups."),
+            "{said}"
+        );
+        assert!(
+            said.contains("No backup has been made there yet."),
+            "{said}"
+        );
+        assert!(said.contains("Not protected by a passphrase."), "{said}");
+        let away = admin::BackupStanding {
+            disconnected: true,
+            last_error: Some("the backup folder isn't there (is its disk connected?)".into()),
+            ..with_folder.clone()
+        };
+        let said = say(&away);
+        assert!(
+            said.contains("The disk with the backup is not connected"),
+            "{said}"
+        );
+        let failing = admin::BackupStanding {
+            last_error: Some("another set of books is in the folder".into()),
+            ..with_folder.clone()
+        };
+        assert!(say(&failing).contains("The last backup didn't work: another set of books"));
+        let fresh = admin::BackupStanding {
+            last_ok_at: Some("2026-11-21T10:00:00.000Z".into()),
+            through_seq: Some(12),
+            last_drill_at: Some("2026-11-21T10:05:00.000Z".into()),
+            sealed: true,
+            ..with_folder.clone()
+        };
+        let said = say(&fresh);
+        assert!(
+            said.contains("through event 12 of 12. Up to date."),
+            "{said}"
+        );
+        assert!(said.contains("Proven restorable"), "{said}");
+        assert!(
+            said.contains("Protected by a passphrase. A forgotten passphrase cannot be recovered."),
+            "{said}"
+        );
+        let behind = admin::BackupStanding {
+            through_seq: Some(9),
+            stale: true,
+            drill_error: Some("a piece is damaged".into()),
+            ..fresh.clone()
+        };
+        let said = say(&behind);
+        assert!(said.contains("More than a day behind."), "{said}");
+        assert!(
+            said.contains("The weekly check that the backup can be restored failed"),
+            "{said}"
+        );
+        for s in [&base, &with_folder, &away, &failing, &fresh, &behind] {
+            assert!(!say(s).to_lowercase().contains("git"));
         }
     }
 

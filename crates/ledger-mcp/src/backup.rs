@@ -969,7 +969,7 @@ impl Backups {
     pub async fn set_up(
         &self,
         folder: Option<String>,
-        passphrase: Option<String>,
+        passphrase: Option<zeroize::Zeroizing<String>>,
         remove_passphrase: bool,
     ) -> Result<Vec<String>, String> {
         let _one = self.running.lock().await;

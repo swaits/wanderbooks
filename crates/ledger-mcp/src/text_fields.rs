@@ -25,7 +25,12 @@
 //!      between). STRICT text (a party's fields, a name that becomes
 //!      one, an account name, a recipient) is refused at any run of nine
 //!      digits (`ledger_core::parties::has_full_tin`), as the engine
-//!      refuses it.
+//!      refuses it. A PHONE (a party's or a bill-to's telephone or fax) is
+//!      refused only in a tax id's printed shapes, an SSN's 3-2-4 and an
+//!      EIN's 2-7 (`ledger_core::settings::holds_printed_tin_in_phone`):
+//!      a phone number is ten digits or more, so a run of digits proves
+//!      nothing there. An ADDRESS is read as STRICT, except that a ZIP+4
+//!      is no tax id (`ledger_core::parties::has_full_tin_in_address`).
 //!   3. EXEMPT strings are exempt for a reason the class names: the vault's
 //!      own input, a lookup key for a record the books already hold, an
 //!      id or digest, an amount, a date, a word from a fixed vocabulary,
@@ -100,6 +105,13 @@ pub(crate) enum Class {
     /// A party's own field (or a name that becomes one): refused at any
     /// run of nine digits.
     Strict,
+    /// A telephone or fax number: refused only in a tax id's printed shapes
+    /// (an SSN's 3-2-4, an EIN's 2-7), as a reference is; every other number
+    /// is a phone's (`ledger_core::settings::holds_printed_tin_in_phone`).
+    Phone,
+    /// A party's postal address: strict, except that a ZIP+4 (`98101-1234`,
+    /// nine digits) is a postal code (`ledger_core::parties::has_full_tin_in_address`).
+    Address,
     /// Not checked, for the reason named.
     Exempt(Why),
 }
@@ -107,6 +119,8 @@ pub(crate) enum Class {
 const FREE: Class = Class::Free;
 const REFERENCE: Class = Class::Reference;
 const STRICT: Class = Class::Strict;
+const PHONE: Class = Class::Phone;
+const ADDRESS: Class = Class::Address;
 const VAULT: Class = Class::Exempt(Why::Vault);
 const LOOKUP: Class = Class::Exempt(Why::Lookup);
 const ID: Class = Class::Exempt(Why::Id);
@@ -273,14 +287,14 @@ pub(crate) const TABLE: &[(&str, &[(&str, Class)])] = &[
     (
         "books.create_invoice",
         &[
-            ("bill_to.address", STRICT),
-            ("bill_to.billing_address", STRICT),
+            ("bill_to.address", ADDRESS),
+            ("bill_to.billing_address", ADDRESS),
             ("bill_to.billing_email", STRICT),
             ("bill_to.contact", STRICT),
             ("bill_to.email", STRICT),
             ("bill_to.name", STRICT),
-            ("bill_to.phone", STRICT),
-            ("bill_to.shipping_address", STRICT),
+            ("bill_to.phone", PHONE),
+            ("bill_to.shipping_address", ADDRESS),
             ("customer", LOOKUP),
             ("customer_ref", REFERENCE),
             ("date", DATE),
@@ -736,8 +750,8 @@ pub(crate) const TABLE: &[(&str, &[(&str, Class)])] = &[
     (
         "books.update_party",
         &[
-            ("address", STRICT),
-            ("billing_address", STRICT),
+            ("address", ADDRESS),
+            ("billing_address", ADDRESS),
             ("billing_email", STRICT),
             ("contact", STRICT),
             ("creditor_of[]", LOOKUP),
@@ -748,8 +762,8 @@ pub(crate) const TABLE: &[(&str, &[(&str, Class)])] = &[
             ("name", STRICT),
             ("notes", STRICT),
             ("party", LOOKUP),
-            ("phone", STRICT),
-            ("shipping_address", STRICT),
+            ("phone", PHONE),
+            ("shipping_address", ADDRESS),
             ("website", STRICT),
         ],
     ),
@@ -814,6 +828,8 @@ fn looks_like_a_tax_id(class: Class, text: &str) -> bool {
         Class::Free => ledger_core::settings::holds_printed_tin(text),
         Class::Reference => ledger_core::settings::holds_printed_tin_in_reference(text),
         Class::Strict => ledger_core::parties::has_full_tin(text),
+        Class::Phone => ledger_core::settings::holds_printed_tin_in_phone(text),
+        Class::Address => ledger_core::parties::has_full_tin_in_address(text),
         Class::Exempt(_) => false,
     }
 }
@@ -1139,11 +1155,37 @@ mod tests {
             ("books.add_vendor", "name"),
             ("books.add_party", "name"),
             ("books.update_party", "notes"),
-            ("books.create_invoice", "bill_to.address"),
+            ("books.create_invoice", "bill_to.contact"),
+            ("books.update_party", "contact"),
             ("books.add_account", "name"),
             ("books.mark_sent", "recipients[]"),
         ] {
             assert_eq!(class(tool, path), Class::Strict, "{tool} {path}");
+        }
+        for (tool, path) in [
+            ("books.create_invoice", "bill_to.address"),
+            ("books.create_invoice", "bill_to.billing_address"),
+            ("books.create_invoice", "bill_to.shipping_address"),
+            ("books.update_party", "address"),
+            ("books.update_party", "billing_address"),
+            ("books.update_party", "shipping_address"),
+        ] {
+            assert_eq!(class(tool, path), Class::Address, "{tool} {path}");
+        }
+        for (tool, path) in [
+            ("books.create_invoice", "bill_to.phone"),
+            ("books.update_party", "phone"),
+        ] {
+            assert_eq!(class(tool, path), Class::Phone, "{tool} {path}");
+        }
+        // Any string named for a phone or a fax is a PHONE, wherever it is.
+        for (tool, rows) in TABLE {
+            for (path, c) in *rows {
+                let last = path.rsplit('.').next().unwrap_or(path);
+                if last.contains("phone") || last.contains("fax") {
+                    assert_eq!(*c, Class::Phone, "{tool} {path}");
+                }
+            }
         }
         // Identifiers by nature: a bare nine digits is a number there.
         for (tool, path) in [

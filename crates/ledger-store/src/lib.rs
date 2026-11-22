@@ -21,17 +21,14 @@
 pub mod access;
 pub mod auth;
 pub mod backup;
-pub mod backups;
 pub mod blob;
 pub mod cancel;
 pub mod chain;
 pub mod describe;
-mod drain;
 pub mod error;
 pub mod exports;
 pub mod form1099;
 pub mod format;
-pub mod git_locks;
 pub mod journal;
 pub mod lock;
 pub mod meta;

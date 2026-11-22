@@ -48,11 +48,13 @@ impl Owner for Fake {
         source: &str,
         id: Option<String>,
         replace: bool,
+        passphrase: Option<ledger_gui::owner::Secret>,
     ) -> Result<RestorePlan, String> {
         std::thread::sleep(std::time::Duration::from_millis(300));
         self.said(format!("plan {source} {id:?} {replace}"));
         Ok(RestorePlan {
             source: source.to_string(),
+            passphrase,
             id: id.unwrap_or_else(|| "acme".into()),
             replace,
             head: (7, "ab".repeat(32)),
@@ -220,7 +222,7 @@ fn the_books_menu_hands_each_action_to_the_owner_and_writes_nothing() {
     h.get_all_by_role(egui::accesskit::Role::TextInput)
         .nth(page_fields)
         .unwrap()
-        .type_text("/media/disk/acme.git");
+        .type_text("/media/disk/backups");
     h.run_steps(2);
     assert!(
         h.query_by_label("Restore it").is_none(),
@@ -230,7 +232,7 @@ fn the_books_menu_hands_each_action_to_the_owner_and_writes_nothing() {
     settle(&mut h, &f, start + 3);
     assert_eq!(
         f.asked.lock().unwrap()[start + 2],
-        "plan /media/disk/acme.git None false"
+        "plan /media/disk/backups None false"
     );
     assert!(
         h.query_by_label_contains("is whole: through event 7")
@@ -240,7 +242,7 @@ fn the_books_menu_hands_each_action_to_the_owner_and_writes_nothing() {
     settle(&mut h, &f, start + 4);
     assert_eq!(
         f.asked.lock().unwrap()[start + 3],
-        "restore /media/disk/acme.git acme 7"
+        "restore /media/disk/backups acme 7"
     );
 
     // There is no "Close the books": a company's tab, or the window, closes
@@ -307,7 +309,7 @@ fn nothing_is_changed_while_it_is_at_work() {
     h.get_all_by_role(egui::accesskit::Role::TextInput)
         .nth(page_fields)
         .unwrap()
-        .type_text("/media/disk/acme.git");
+        .type_text("/media/disk/backups");
     h.run_steps(2);
     h.get_by_label("Check it").click();
     h.run_steps(2);
@@ -390,7 +392,7 @@ fn screenshots() {
     h.get_all_by_role(egui::accesskit::Role::TextInput)
         .nth(page_fields)
         .unwrap()
-        .type_text("/media/disk/acme.git");
+        .type_text("/media/disk/backups");
     shot(&mut h, "restore-ask");
     h.get_by_label("Check it").click();
     let n = f.asked.lock().unwrap().len();

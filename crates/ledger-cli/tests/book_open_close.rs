@@ -377,41 +377,6 @@ fn agent(
     }
 }
 
-/// What the server's git commands did, from the file it was told to write
-/// them to (`WANDERBOOKS_GIT_TIMINGS`): the slowest ten by how long the
-/// command ran plus how long its pipes took to close, then every line of the
-/// last hundred. Each line: when (ms since the server's first git), the
-/// command, its exit, how many git commands were running as it began,
-/// `spawn` (how long starting it took, including waiting its turn),
-/// `ran` (start to exit), `pipes` (exit until what it wrote was in hand),
-/// and for each of stdout and stderr how that wait ended (`eof`: the pipe
-/// closed; `held-open`: another process still held it, nothing was left in
-/// it; `limit`: 10 s passed) and how many bytes.
-fn say_git_timings(file: &std::path::Path) {
-    let text = std::fs::read_to_string(file).unwrap_or_default();
-    let lines: Vec<&str> = text.lines().collect();
-    let ms = |line: &str, key: &str| -> u64 {
-        line.split_whitespace()
-            .find_map(|w| w.strip_prefix(key))
-            .and_then(|v| v.trim_end_matches("ms").parse().ok())
-            .unwrap_or(0)
-    };
-    let mut slow: Vec<&&str> = lines.iter().collect();
-    slow.sort_by_key(|l| std::cmp::Reverse(ms(l, "ran=") + ms(l, "pipes=") + ms(l, "spawn=")));
-    eprintln!(
-        "git commands of the server: {} lines in {}; the slowest:",
-        lines.len(),
-        file.display()
-    );
-    for l in slow.iter().take(10) {
-        eprintln!("  {l}");
-    }
-    eprintln!("the last {}:", lines.len().min(100));
-    for l in &lines[lines.len().saturating_sub(100)..] {
-        eprintln!("  {l}");
-    }
-}
-
 /// Many agents call two books (journaled drafts and reads) while one book
 /// is closed and opened again, over and over. Afterwards both journals are
 /// replayed and checked: every acknowledged draft is in its book's journal
@@ -428,14 +393,9 @@ fn closing_and_opening_a_book_over_and_over_loses_and_duplicates_nothing() {
     // Every timer of the server runs every few milliseconds, and the
     // hammered book has a backup target, which backs it up and drills it
     // as it is written: the writers a close must stop are all at work.
-    // Every git command the server runs is written here as it ends (how
-    // long it ran, how long its pipes took to close after it ended): the
-    // portable jobs run this on machines nobody can look at, and a close
-    // that is slow there is told with these lines, not guessed at.
-    let timings = home.dir.path().join("git-timings.log");
     let server = Server::start_full(
         &home,
-        &[("WANDERBOOKS_GIT_TIMINGS", timings.as_path())],
+        &[],
         &[
             "--timers",
             "10",
@@ -532,9 +492,6 @@ fn closing_and_opening_a_book_over_and_over_loses_and_duplicates_nothing() {
         let closed = close_book(&home, A);
         let took = began.elapsed();
         eprintln!("cycle {cycle}: the close took {took:?}");
-        if closed != CloseOutcome::Closed || took > Duration::from_secs(10) {
-            say_git_timings(&timings);
-        }
         assert_eq!(
             closed,
             CloseOutcome::Closed,
@@ -1181,73 +1138,43 @@ fn a_call_whose_answer_was_never_read_is_on_record_as_having_run() {
     assert!(server.close().success());
 }
 
-/// A stand-in `git` for the server's PATH: it runs the real one, unless
-/// the test has said otherwise with a file beside it: `stall` (it waits,
-/// recording itself in `stalled`, until the file is gone, then in
-/// `resumed`), which is how a backup is made slow.
-#[cfg(unix)]
-fn shim_git(home: &Home) -> PathBuf {
-    use std::os::unix::fs::PermissionsExt;
-    let dir = home.dir.path().join("shim");
-    std::fs::create_dir_all(&dir).unwrap();
-    let real = ["/usr/bin/git", "/bin/git", "/usr/local/bin/git"]
-        .into_iter()
-        .find(|p| std::path::Path::new(p).is_file())
-        .expect("git is installed");
-    let exe = dir.join("git");
-    std::fs::write(
-        &exe,
-        format!(
-            "#!/bin/sh\ndir=\"$(dirname \"$0\")\"\necho \"$$ $*\" >> \"$dir/calls\"\nif [ -e \"$dir/stall\" ]; then\n  echo $$ >> \"$dir/stalled\"\n  while [ -e \"$dir/stall\" ]; do sleep 0.05; done\n  echo $$ >> \"$dir/resumed\"\nfi\nexec {real} \"$@\"\n"
-        ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
-    dir
+/// The test knob that holds a backup at each phase, as a slow disk would:
+/// while this file is in the book's `ops/` (and the server was given
+/// `--slow-steps`), a backup waits until the stop it runs under is asked
+/// for. Each wait is a line of [`reached`].
+fn stall_file(home: &Home, id: &str) -> PathBuf {
+    home.book_dir(id).join("ops").join("slow-backup")
 }
 
-/// Whether process `pid` is still there.
-#[cfg(unix)]
-fn alive(pid: u32) -> bool {
-    // `ps` on Linux and macOS alike (there is no /proc on macOS, where a
-    // test of "is it gone" would pass whatever the server had done): its
-    // state is empty for a process that isn't there, and starts with Z for
-    // one that has ended and is not yet reaped.
-    let out = std::process::Command::new("ps")
-        .args(["-o", "stat=", "-p", &pid.to_string()])
-        .output()
-        .expect("ps runs");
-    let state = String::from_utf8_lossy(&out.stdout);
-    let state = state.trim();
-    !state.is_empty() && !state.starts_with('Z')
+/// How many times a backup of `id` has reached a phase and waited.
+fn reached(home: &Home, id: &str) -> usize {
+    std::fs::read_to_string(home.book_dir(id).join("ops").join("slow-backup-reached"))
+        .unwrap_or_default()
+        .lines()
+        .count()
 }
 
-/// The server, with the stand-in git first on its PATH.
-#[cfg(unix)]
-fn server_with_shim(home: &Home, shim: &std::path::Path, args: &[&str]) -> Server {
-    let path = std::env::join_paths([
-        shim,
-        std::path::Path::new("/usr/bin"),
-        std::path::Path::new("/bin"),
-    ])
-    .unwrap();
-    let path: PathBuf = path.into();
-    Server::start_full(home, &[("PATH", path.as_path())], args)
+/// The folder a backup of `id` to `disk` lives in, proven whole: its head.
+fn proven_head(home: &Home, disk: &std::path::Path, tag: &str) -> (u64, String) {
+    use ledger_store::backup::{Ctx, find, verify_found};
+    let scratch = home.dir.path().join(format!("scratch-{tag}"));
+    let found = find(disk, None, &Ctx::new()).unwrap_or_else(|e| panic!("{tag}: {e}"));
+    verify_found(&found, &scratch, false, &Ctx::new())
+        .unwrap_or_else(|e| panic!("{tag}: {e}"))
+        .head
 }
 
-/// A book with a backup target whose backup is slow: the close is not
-/// answered while the backup's work runs. Its bound lapses, git is
-/// stopped (with all it started), the close waits for that to be done,
-/// and says the backup wasn't whole. Nothing of the backup runs after the
-/// answer, though the stall is lifted: a git left running would go on.
-#[cfg(unix)]
+/// A book with a backup folder whose backup is slow: the close is not
+/// answered while the backup's work runs. Its bound lapses, the copy is
+/// stopped at its next piece, the close waits for that to be done, and
+/// says the backup wasn't whole. The folder still proves whole at the
+/// backup before, and nothing of the backup runs after the answer, though
+/// the stall is lifted: a copy left running would go on.
 #[test]
 fn a_close_is_not_answered_while_its_backup_still_runs() {
     let home = Home::new("close-slow-backup");
-    let shim = shim_git(&home);
-    let server = server_with_shim(
+    let server = Server::start_with(
         &home,
-        &shim,
         &[
             "--close-backup",
             "1200",
@@ -1255,6 +1182,8 @@ fn a_close_is_not_answered_while_its_backup_still_runs() {
             "3600000",
             "--timers",
             "20",
+            "--slow-steps",
+            "600000",
         ],
     );
     home.create(A, "USD");
@@ -1263,10 +1192,19 @@ fn a_close_is_not_answered_while_its_backup_still_runs() {
     let mut w = Wire::new(&home, A);
     w.initialize("owner");
     set_backup_folder(&mut w, &disk);
+    draft(&mut w, "kept");
+    match home.admin(Request::BackUpNow {
+        id: A.into(),
+        new_disk: false,
+    }) {
+        Response::BackedUp { targets, .. } => assert!(targets[0].problem.is_none(), "{targets:?}"),
+        other => panic!("{other:?}"),
+    }
+    let kept = proven_head(&home, &disk, "before");
     draft(&mut w, "moves the head past the last backup");
     w.end();
-    // From here every git waits.
-    std::fs::write(shim.join("stall"), b"").unwrap();
+    // From here every backup waits.
+    std::fs::write(stall_file(&home, A), b"").unwrap();
     let started = std::time::Instant::now();
     let outcome = close_book(&home, A);
     let took = started.elapsed();
@@ -1282,36 +1220,24 @@ fn a_close_is_not_answered_while_its_backup_still_runs() {
         }
         other => panic!("a stopped backup was answered as {other:?}"),
     }
-    // Answered: the git that was stalled is gone, with what it started.
-    let stalled: Vec<u32> = std::fs::read_to_string(shim.join("stalled"))
-        .unwrap_or_default()
-        .lines()
-        .filter_map(|l| l.trim().parse().ok())
-        .collect();
-    assert!(!stalled.is_empty(), "the backup never reached git");
-    for pid in &stalled {
-        assert!(
-            !alive(*pid),
-            "git {pid} still runs after the close was answered"
-        );
-    }
+    assert!(reached(&home, A) > 0, "the backup never reached a phase");
+    // The folder proves whole at the backup before.
+    assert_eq!(proven_head(&home, &disk, "after"), kept);
     let at_close = tree_of(&home.book_dir(A));
+    let in_folder = tree_of(&disk);
     // The stall is lifted: anything that had survived would go on now.
-    std::fs::remove_file(shim.join("stall")).unwrap();
+    std::fs::remove_file(stall_file(&home, A)).unwrap();
     stands_still(
         &home,
         A,
         Duration::from_millis(500),
         "after the close was answered",
     );
-    assert!(
-        !shim.join("resumed").exists(),
-        "a git went on after the close was answered"
-    );
     assert_eq!(
         moved(&at_close, &tree_of(&home.book_dir(A))),
         Vec::<String>::new()
     );
+    assert_eq!(moved(&in_folder, &tree_of(&disk)), Vec::<String>::new());
     // Opened again, the book's backup record is a whole chain, and it
     // backs up (nothing of the old backups is in its way).
     assert_eq!(open_book(&home, A), OpenOutcome::Opened);
@@ -1331,23 +1257,12 @@ fn a_close_is_not_answered_while_its_backup_still_runs() {
 /// A backup that fails (its disk isn't there) closes the book all the same,
 /// quickly, and says so: never a plain "closed" for a backup that wasn't
 /// made; and nothing runs after.
-#[cfg(unix)]
 #[test]
 fn a_close_whose_backup_fails_says_so_and_leaves_nothing_running() {
     let home = Home::new("close-failing-backup");
-    let shim = shim_git(&home);
     // The timers look once an hour, so none runs a backup of its own: the
-    // first look is at the server's start, before any book is made here. A
-    // timer's backup that a close hurried could have its git miss the
-    // terminate grace under heavy load, be killed, and leave a lock in the
-    // target's folder, which the close's own backup would then truthfully
-    // fail against (`ClosedBackupIncomplete`): the plain `Closed` asserted
-    // below is of the close's backup alone.
-    let server = server_with_shim(
-        &home,
-        &shim,
-        &["--backup-quiet", "3600000", "--timers", "3600000"],
-    );
+    // first look is at the server's start, before any book is made here.
+    let server = Server::start_with(&home, &["--backup-quiet", "3600000", "--timers", "3600000"]);
     home.create(A, "USD");
     let unplugged = home.dir.path().join("elsewhere").join("unplugged");
     std::fs::create_dir_all(unplugged.parent().unwrap()).unwrap();
@@ -1369,10 +1284,6 @@ fn a_close_whose_backup_fails_says_so_and_leaves_nothing_running() {
     }
     assert_eq!(listed(&home, A), (false, true, None));
     let at_close = tree_of(&home.book_dir(A));
-    let calls = std::fs::read_to_string(shim.join("calls"))
-        .unwrap_or_default()
-        .lines()
-        .count();
     stands_still(
         &home,
         A,
@@ -1382,14 +1293,6 @@ fn a_close_whose_backup_fails_says_so_and_leaves_nothing_running() {
     assert_eq!(
         moved(&at_close, &tree_of(&home.book_dir(A))),
         Vec::<String>::new()
-    );
-    assert_eq!(
-        std::fs::read_to_string(shim.join("calls"))
-            .unwrap_or_default()
-            .lines()
-            .count(),
-        calls,
-        "git was run after the close was answered"
     );
     // The same book, backed up fine, is answered plainly.
     assert_eq!(open_book(&home, A), OpenOutcome::Opened);
@@ -1788,7 +1691,7 @@ fn a_running_call_is_never_cut_when_the_grace_runs_out() {
     assert!(server.close().success());
 }
 
-/// A backup of `id`, taken now to its folder target; the repository.
+/// A backup of `id`, taken now to its folder; the folder of its set.
 #[cfg(unix)]
 fn backed_up_to_folder(home: &Home, w: &mut Wire, id: &str) -> PathBuf {
     let disk = home.dir.path().join("disk");
@@ -1802,7 +1705,7 @@ fn backed_up_to_folder(home: &Home, w: &mut Wire, id: &str) -> PathBuf {
         Response::BackedUp { targets, .. } => assert!(targets[0].problem.is_none(), "{targets:?}"),
         other => panic!("{other:?}"),
     }
-    disk.join(format!("{id}.git"))
+    disk.join(id)
 }
 
 /// A restore over an open book lets go of it as a close does: what is
@@ -1840,6 +1743,7 @@ fn a_restore_over_an_open_book_waits_for_what_is_inside_it() {
         replace: true,
         confirmed: false,
         expect_head: None,
+        passphrase: None,
     }) {
         Response::RestorePreview(p) => p,
         other => panic!("{other:?}"),
@@ -1855,6 +1759,7 @@ fn a_restore_over_an_open_book_waits_for_what_is_inside_it() {
                     replace: true,
                     confirmed: true,
                     expect_head: Some(preview.head),
+                    passphrase: None,
                 },
             )
             .unwrap()
@@ -1961,6 +1866,7 @@ fn a_restore_over_an_open_book_is_not_held_by_a_stalled_upload() {
         replace: true,
         confirmed: false,
         expect_head: None,
+        passphrase: None,
     }) {
         Response::RestorePreview(p) => p,
         other => panic!("{other:?}"),
@@ -1972,6 +1878,7 @@ fn a_restore_over_an_open_book_is_not_held_by_a_stalled_upload() {
         replace: true,
         confirmed: true,
         expect_head: Some(preview.head),
+        passphrase: None,
     }) {
         Response::Restored(r) => r,
         other => panic!("{other:?}"),
@@ -2458,7 +2365,7 @@ fn a_close_stops_a_slow_drill_instead_of_waiting_for_it() {
         "the last backup waited behind the drill"
     );
     // The stated bound, as a sum of its parts: the grace, the answers'
-    // grace, the last backup's bound, and the stop of a step (git's kill
+    // grace, the last backup's bound, and the stop of a step (the copy's stop
     // and its group's end, 2 s; its pipes, 10 s; the lock settling, 1.5 s).
     let bound = Duration::from_millis(2 * grace + last_backup) + Duration::from_millis(13_500);
     assert!(took < bound, "{took:?} past the stated bound {bound:?}");
@@ -2486,229 +2393,6 @@ fn a_close_stops_a_slow_drill_instead_of_waiting_for_it() {
     .expect("the backup record is a whole chain");
 }
 
-/// A stand-in `git` that is the real one with a hooks folder of its own
-/// (every `core.hooksPath=/dev/null` it is given, in its arguments and in
-/// the `--receive-pack` command of a push to a folder, names it instead),
-/// where a `reference-transaction` hook waits, while `slow-commit` (for the
-/// book's archive) or `slow-push` (for any other repository) exists in the
-/// shim folder, at the point where git holds its ref locks. `hooked` has a
-/// line per hook that waited. A real git, killed inside real work. While
-/// `deaf` exists in the shim folder when a git begins, that git (and all it
-/// starts) has SIGTERM blocked, a mask every child inherits: the signal stays
-/// pending and only the kill ends it (a stopped process is not enough:
-/// macOS acts on a SIGTERM sent to one, where Linux holds it).
-#[cfg(unix)]
-fn slow_real_git(home: &Home) -> PathBuf {
-    use std::os::unix::fs::PermissionsExt;
-    let dir = home.dir.path().join("slow-shim");
-    let hooks = dir.join("hooks");
-    std::fs::create_dir_all(&hooks).unwrap();
-    let real = ["/usr/bin/git", "/bin/git", "/usr/local/bin/git"]
-        .into_iter()
-        .find(|p| std::path::Path::new(p).is_file())
-        .expect("git is installed");
-    let hook = hooks.join("reference-transaction");
-    std::fs::write(
-        &hook,
-        "#!/bin/sh\ncat >/dev/null\n[ \"$1\" = prepared ] || exit 0\nd=\"$(dirname \"$0\")/..\"\ncase \"$GIT_DIR $PWD\" in *archive.git*) f=slow-commit ;; *) f=slow-push ;; esac\nif [ -e \"$d/$f\" ]; then\n  echo $$ >> \"$d/hooked\"\n  while [ -e \"$d/$f\" ]; do sleep 0.05; done\nfi\nexit 0\n",
-    )
-    .unwrap();
-    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let exe = dir.join("git");
-    std::fs::write(
-        &exe,
-        format!(
-            "#!/bin/sh\nn=$#\nwhile [ $n -gt 0 ]; do\n  a=\"$1\"; shift\n  case \"$a\" in\n    *core.hooksPath=/dev/null*) a=$(printf '%s' \"$a\" | sed 's|core.hooksPath=/dev/null|core.hooksPath={}|g') ;;\n  esac\n  set -- \"$@\" \"$a\"\n  n=$((n-1))\ndone\nif [ -e '{dir}/deaf' ]; then exec perl -MPOSIX -e 'sigprocmask(SIG_BLOCK, POSIX::SigSet->new(SIGTERM)) or die; exec @ARGV or die' {real} \"$@\"; fi\nexec {real} \"$@\"\n",
-            hooks.display(),
-            dir = dir.display(),
-        ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
-    dir
-}
-
-/// Every `*.lock` file under a bare repository.
-#[cfg(unix)]
-fn locks_under(repo: &std::path::Path) -> Vec<String> {
-    tree_of(repo)
-        .into_keys()
-        .filter(|k| k.ends_with(".lock"))
-        .collect()
-}
-
-#[cfg(unix)]
-fn fsck_of(repo: &std::path::Path) {
-    let out = std::process::Command::new("git")
-        .arg(format!("--git-dir={}", repo.display()))
-        .args(["fsck", "--strict"])
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "{} isn't whole: {}",
-        repo.display(),
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
-
-/// A close that stops real git inside a commit, and inside a push to a
-/// folder, leaves no lock for anyone to remove: git is sent SIGTERM and
-/// removes its own locks, so there is nothing for the server to clean up
-/// (the backup's record holds no `lock_removed` or `lock_left`), the book
-/// opened again at once backs up with no step by hand, and both
-/// repositories pass `git fsck` (ledger_store::backup INVARIANT 5).
-#[cfg(unix)]
-#[test]
-fn a_close_that_stops_git_in_a_commit_or_a_push_leaves_no_lock_and_the_next_backup_succeeds() {
-    let home = Home::new("close-git-locks");
-    let shim = slow_real_git(&home);
-    // The close's bound lapses with git held inside its ref update, and
-    // what the test proves needs git to have got there first: the bound is
-    // long enough for the slowest machine to run every git before the
-    // update (a push, on a macOS runner, comes after a dozen of them and
-    // took longer than 1.5 s), as in the test of a lock a kill leaves. The
-    // hook holds git until the bound ends it, so each close takes the bound.
-    let server = server_with_shim(
-        &home,
-        &shim,
-        &[
-            "--close-backup",
-            "8000",
-            "--backup-quiet",
-            "3600000",
-            "--timers",
-            "20",
-        ],
-    );
-    home.create(A, "USD");
-    let disk = home.dir.path().join("disk");
-    std::fs::create_dir_all(&disk).unwrap();
-    let mut w = Wire::new(&home, A);
-    w.initialize("owner");
-    set_backup_folder(&mut w, &disk);
-    draft(&mut w, "to be backed up inside a commit");
-    w.end();
-    let archive = home.book_dir(A).join("archive.git");
-    let target = disk.join(format!("{A}.git"));
-    let record = || {
-        std::fs::read_to_string(home.book_dir(A).join("ops").join("backup.jsonl"))
-            .unwrap_or_default()
-    };
-    // 0. Inside the making of the archive itself (`git init`): a lock in
-    // a repository that isn't one yet stops every later `init`.
-    std::fs::write(shim.join("slow-commit"), b"").unwrap();
-    let outcome = close_book(&home, A);
-    assert!(
-        matches!(outcome, CloseOutcome::ClosedBackupIncomplete(_)),
-        "{outcome:?}"
-    );
-    assert!(
-        shim.join("hooked").exists(),
-        "git never reached its ref update before the close's bound ran out: {outcome:?}"
-    );
-    assert_eq!(locks_under(&archive), Vec::<String>::new());
-    assert!(
-        !record().contains("lock_removed") && !record().contains("lock_left"),
-        "git removed its own locks: nothing was cleaned up here: {}",
-        record()
-    );
-    std::fs::remove_file(shim.join("slow-commit")).unwrap();
-    std::fs::remove_file(shim.join("hooked")).unwrap();
-    assert_eq!(open_book(&home, A), OpenOutcome::Opened);
-    let mut w = Wire::new(&home, A);
-    w.initialize("owner");
-    draft(&mut w, "to be backed up inside a commit");
-    w.end();
-    match home.admin(Request::BackUpNow {
-        id: A.into(),
-        new_disk: false,
-    }) {
-        Response::BackedUp { targets, .. } => {
-            assert!(targets.iter().all(|t| t.problem.is_none()), "{targets:?}");
-        }
-        other => panic!("{other:?}"),
-    }
-    let mut w = Wire::new(&home, A);
-    w.initialize("owner");
-    draft(&mut w, "to be committed inside a commit");
-    w.end();
-    // 1. Inside the commit's ref update.
-    std::fs::write(shim.join("slow-commit"), b"").unwrap();
-    let outcome = close_book(&home, A);
-    assert!(
-        matches!(outcome, CloseOutcome::ClosedBackupIncomplete(_)),
-        "{outcome:?}"
-    );
-    assert!(
-        shim.join("hooked").exists(),
-        "git never reached its ref update before the close's bound ran out: {outcome:?}"
-    );
-    assert_eq!(locks_under(&archive), Vec::<String>::new());
-    assert!(
-        !record().contains("lock_removed") && !record().contains("lock_left"),
-        "git removed its own locks: nothing was cleaned up here: {}",
-        record()
-    );
-    std::fs::remove_file(shim.join("slow-commit")).unwrap();
-    std::fs::remove_file(shim.join("hooked")).unwrap();
-    assert_eq!(open_book(&home, A), OpenOutcome::Opened);
-    let status = home.admin(Request::BackUpNow {
-        id: A.into(),
-        new_disk: false,
-    });
-    match &status {
-        Response::BackedUp { targets, .. } => {
-            assert!(targets.iter().all(|t| t.problem.is_none()), "{status:?}");
-        }
-        other => panic!("{other:?}"),
-    }
-    fsck_of(&archive);
-    fsck_of(&target);
-    // 2. Inside the push's ref update at the folder.
-    let mut w = Wire::new(&home, A);
-    w.initialize("owner");
-    draft(&mut w, "to be pushed inside a push");
-    w.end();
-    std::fs::write(shim.join("slow-push"), b"").unwrap();
-    let outcome = close_book(&home, A);
-    assert!(
-        matches!(outcome, CloseOutcome::ClosedBackupIncomplete(_)),
-        "{outcome:?}"
-    );
-    assert!(
-        shim.join("hooked").exists(),
-        "git never reached its ref update before the close's bound ran out: {outcome:?}"
-    );
-    assert_eq!(locks_under(&target), Vec::<String>::new());
-    assert_eq!(locks_under(&archive), Vec::<String>::new());
-    assert!(
-        !record().contains("lock_removed") && !record().contains("lock_left"),
-        "git removed its own locks: nothing was cleaned up here: {}",
-        record()
-    );
-    std::fs::remove_file(shim.join("slow-push")).unwrap();
-    assert_eq!(open_book(&home, A), OpenOutcome::Opened);
-    let status = home.admin(Request::BackUpNow {
-        id: A.into(),
-        new_disk: false,
-    });
-    match &status {
-        Response::BackedUp { targets, .. } => {
-            assert!(targets.iter().all(|t| t.problem.is_none()), "{status:?}");
-        }
-        other => panic!("{other:?}"),
-    }
-    fsck_of(&archive);
-    fsck_of(&target);
-    ledger_store::chain::read(
-        &home.book_dir(A).join("ops").join("backup.jsonl"),
-        "wanderbooks-backup-v1",
-    )
-    .expect("the backup record is a whole chain");
-    assert!(server.close().success());
-}
-
 /// A tool call sent on `w`'s session, its whole body written and its answer
 /// not yet read: the connection it went out on.
 #[cfg(unix)]
@@ -2734,24 +2418,6 @@ fn call_unanswered(home: &Home, w: &Wire, id: u64, tool: &str, args: Value) -> r
     raw
 }
 
-/// Hold every process of the group `pid` leads still (SIGSTOP), so that none
-/// goes on while the stop is being asked for. That git can't end on SIGTERM,
-/// holding its locks, is made on purpose by the shim's `deaf` file, not by
-/// this: macOS acts on a SIGTERM sent to a stopped process.
-#[cfg(unix)]
-fn freeze_group_of(pid: u32) {
-    let out = std::process::Command::new("ps")
-        .args(["-o", "pgid=", "-p", &pid.to_string()])
-        .output()
-        .unwrap();
-    let group: i32 = String::from_utf8_lossy(&out.stdout)
-        .trim()
-        .parse()
-        .expect("ps names the group");
-    // SAFETY: stopping the group of a git this test's server started.
-    assert_eq!(unsafe { libc::kill(-group, libc::SIGSTOP) }, 0);
-}
-
 /// The most a close may take in these tests where what it stops would
 /// otherwise run for ever (a stall that is never lifted): a guard against a
 /// hang, not a measure of speed. That the close ends at all, with the stall
@@ -2770,21 +2436,19 @@ fn backup_record_of(home: &Home, id: &str) -> Vec<serde_json::Map<String, Value>
     .records
 }
 
-/// A backup call that is running (git stalled) when a close begins is
-/// STOPPED by it, not waited for: the call is answered, while git is still
-/// stalled, that it was stopped because the books are closing; its access
-/// record says `refused: stopped_by_close`; the backup records `stopped`
-/// and no result of the run's own (nothing it was doing is recorded as
-/// done); git and all it started are gone; and the close's own last
-/// backup is made as always (local.rs INVARIANT 10).
-#[cfg(unix)]
+/// A backup call that is running (its copy stalled) when a close begins is
+/// STOPPED by it, not waited for: the call is answered, while the copy is
+/// still stalled, that it was stopped because the books are closing; its
+/// access record says `refused: stopped_by_close`; the backup records
+/// `stopped` and no result of the run's own (nothing it was doing is
+/// recorded as done); the folder still proves whole at the backup before;
+/// and the close's own last backup is made as always (local.rs INVARIANT
+/// 10).
 #[test]
 fn a_close_stops_a_running_backup_call_and_says_so() {
     let home = Home::new("close-stops-backup-call");
-    let shim = shim_git(&home);
-    let server = server_with_shim(
+    let server = Server::start_with(
         &home,
-        &shim,
         &[
             "--close-backup",
             "20000",
@@ -2792,6 +2456,8 @@ fn a_close_stops_a_running_backup_call_and_says_so() {
             "3600000",
             "--timers",
             "20",
+            "--slow-steps",
+            "600000",
         ],
     );
     home.create(A, "USD");
@@ -2800,18 +2466,27 @@ fn a_close_stops_a_running_backup_call_and_says_so() {
     let mut w = Wire::new(&home, A);
     w.initialize("owner");
     set_backup_folder(&mut w, &disk);
+    draft(&mut w, "kept");
+    match home.admin(Request::BackUpNow {
+        id: A.into(),
+        new_disk: false,
+    }) {
+        Response::BackedUp { targets, .. } => assert!(targets[0].problem.is_none(), "{targets:?}"),
+        other => panic!("{other:?}"),
+    }
+    let kept = proven_head(&home, &disk, "before");
     draft(&mut w, "moves the head");
-    std::fs::write(shim.join("stall"), b"").unwrap();
-    let mut call = call_unanswered(&home, &w, 4, "books.back_up_now", json!({}));
-    wait_for("the call reached git", Duration::from_secs(60), || {
-        shim.join("stalled").exists()
+    std::fs::write(stall_file(&home, A), b"").unwrap();
+    let mut call = call_unanswered(&home, &w, 5, "books.back_up_now", json!({}));
+    wait_for("the call reached a phase", Duration::from_secs(60), || {
+        reached(&home, A) > 0
     });
     let started = std::time::Instant::now();
     let closing = std::thread::spawn({
         let admin = home.run().join("admin.sock");
         move || ledger_mcp::admin::call(&admin, Request::CloseBook { id: A.into() }).unwrap()
     });
-    // Answered with git still stalled: stopped by the close, not let go.
+    // Answered with the copy still stalled: stopped by the close, not let go.
     let (status, said) = call.answer();
     assert_eq!(status, 200, "{said}");
     assert!(
@@ -2819,22 +2494,17 @@ fn a_close_stops_a_running_backup_call_and_says_so() {
             && said.contains("nothing it was doing is recorded as done"),
         "{said}"
     );
-    assert!(shim.join("stall").exists(), "the stall was lifted first");
+    assert!(stall_file(&home, A).exists(), "the stall was lifted first");
     // Lifted now, so the close's own last backup can run.
-    std::fs::remove_file(shim.join("stall")).unwrap();
+    std::fs::remove_file(stall_file(&home, A)).unwrap();
     match closing.join().unwrap() {
         Response::CloseBook { outcome, .. } => assert_eq!(outcome, CloseOutcome::Closed),
         other => panic!("{other:?}"),
     }
     assert!(started.elapsed() < NEVER_LONGER);
-    let stalled: Vec<u32> = std::fs::read_to_string(shim.join("stalled"))
-        .unwrap_or_default()
-        .lines()
-        .filter_map(|l| l.trim().parse().ok())
-        .collect();
-    for pid in &stalled {
-        assert!(!alive(*pid), "git {pid} still runs");
-    }
+    // The close's own backup made the last head whole; before it the stopped
+    // one had left the folder at `kept`, which it was proven to be above.
+    assert!(proven_head(&home, &disk, "after").0 >= kept.0);
     let records = access_of(&home, A);
     let mine = records
         .iter()
@@ -3130,6 +2800,7 @@ impl Jobs {
             replace: false,
             confirmed: false,
             expect_head: None,
+            passphrase: None,
         }) {
             Response::RestorePreview(p) => p.head,
             other => panic!("{other:?}"),
@@ -3172,6 +2843,7 @@ impl Jobs {
             replace,
             confirmed: true,
             expect_head: Some(self.restore_head.clone()),
+            passphrase: None,
         }
     }
 }
@@ -3424,7 +3096,7 @@ fn finished<T>(what: &str, thread: std::thread::JoinHandle<T>) -> T {
 /// phase, by the server's test knob; they make books one at a time, so the
 /// second and third wait for their turn, not yet held, until the one before
 /// is let go), and `acme` is closed and opened again while each is: its
-/// close is made slow (its backup's git stalls), and during it another book
+/// close is made slow (its backup's copy stalls), and during it another book
 /// (`cedar`) is opened and closed and answers at once, while the close of
 /// `acme` is still not answered. All three jobs finish correctly, none
 /// stopped, none told of any error.
@@ -3432,23 +3104,17 @@ fn finished<T>(what: &str, thread: std::thread::JoinHandle<T>) -> T {
 #[test]
 fn closing_and_opening_one_book_never_stops_waits_for_or_refuses_another_books_jobs() {
     let home = Home::new("close-spares-other-jobs");
-    let shim = shim_git(&home);
     let mut args = JOB_ARGS.to_vec();
-    args.extend(["--close-backup", "120000"]);
-    let server = server_with_shim(&home, &shim, &args);
+    args.extend(["--close-backup", "120000", "--slow-steps", "600000"]);
+    let server = Server::start_with(&home, &args);
     let jobs = Jobs::new(&home);
     home.create(B, "USD");
     let run = home.run();
-    let stalled = || {
-        std::fs::read_to_string(shim.join("stalled"))
-            .unwrap_or_default()
-            .lines()
-            .count()
-    };
+    let stalled = || reached(&home, A);
     // One close and reopening of `acme`, while the jobs are held.
     let cycle = |why: &str| {
         let before = stalled();
-        std::fs::write(shim.join("stall"), b"").unwrap();
+        std::fs::write(stall_file(&home, A), b"").unwrap();
         let closing = admin_in_thread(&home, Request::CloseBook { id: A.into() });
         wait_for(
             &format!("{why}: the close of {A} is in its backup"),
@@ -3487,7 +3153,7 @@ fn closing_and_opening_one_book_never_stops_waits_for_or_refuses_another_books_j
             "{why}"
         );
         assert!(!closing.is_finished(), "{why}: the close was answered");
-        std::fs::remove_file(shim.join("stall")).unwrap();
+        std::fs::remove_file(stall_file(&home, A)).unwrap();
         assert_eq!(
             finished(&format!("{why}: the close of {A}"), closing),
             Response::CloseBook {
@@ -3599,177 +3265,6 @@ fn job_server_again(home: &Home) -> Server {
     Server::start_with(home, &args)
 }
 
-/// A git that can't end on SIGTERM (its group frozen here, so the signal
-/// stays pending) is killed once the grace has run out, and the lock it
-/// leaves in a backup FOLDER is the owner's: the server never removes it. It
-/// is recorded with its whole path, the target's backup is marked failed with
-/// words naming the file and saying when it may be removed, the close says
-/// its last backup wasn't whole, and the status (`books.backup`) says the
-/// same after the book is opened again. The next backup, meeting the lock,
-/// fails by git's own words and leaves the file; once the owner removes it
-/// the backup goes on, and both repositories pass `git fsck`.
-#[cfg(unix)]
-#[test]
-fn a_lock_a_kill_leaves_in_the_backup_folder_is_reported_and_never_removed_by_the_server() {
-    let home = Home::new("close-lock-left");
-    let shim = slow_real_git(&home);
-    // A bound long enough that the test freezes git before the close's own
-    // bound runs out: the freeze is made on the condition that git is
-    // inside the push, not on a guess at how long that takes.
-    let server = server_with_shim(
-        &home,
-        &shim,
-        &[
-            "--close-backup",
-            "8000",
-            "--backup-quiet",
-            "3600000",
-            "--timers",
-            "20",
-        ],
-    );
-    home.create(A, "USD");
-    let disk = home.dir.path().join("disk");
-    std::fs::create_dir_all(&disk).unwrap();
-    let mut w = Wire::new(&home, A);
-    w.initialize("owner");
-    set_backup_folder(&mut w, &disk);
-    draft(&mut w, "the first backup");
-    match home.admin(Request::BackUpNow {
-        id: A.into(),
-        new_disk: false,
-    }) {
-        Response::BackedUp { targets, .. } => {
-            assert!(targets.iter().all(|t| t.problem.is_none()), "{targets:?}");
-        }
-        other => panic!("{other:?}"),
-    }
-    draft(&mut w, "to be pushed inside a push");
-    let target = disk.join(format!("{A}.git"));
-    let lock = target.join("refs").join("heads").join("main.lock");
-    // Another writer's lock, there before our push: never touched, never
-    // named.
-    let another = target.join("refs").join("heads").join("another.lock");
-    std::fs::write(&another, b"").unwrap();
-    std::fs::write(shim.join("deaf"), b"").unwrap();
-    std::fs::write(shim.join("slow-push"), b"").unwrap();
-    let closing = std::thread::spawn({
-        let admin = home.run().join("admin.sock");
-        move || ledger_mcp::admin::call(&admin, Request::CloseBook { id: A.into() }).unwrap()
-    });
-    wait_for("git is inside the push", Duration::from_secs(60), || {
-        shim.join("hooked").exists() && lock.exists()
-    });
-    let hooked: u32 = std::fs::read_to_string(shim.join("hooked"))
-        .unwrap()
-        .lines()
-        .next()
-        .unwrap()
-        .trim()
-        .parse()
-        .unwrap();
-    freeze_group_of(hooked);
-    let outcome = match closing.join().unwrap() {
-        Response::CloseBook { outcome, .. } => outcome,
-        other => panic!("{other:?}"),
-    };
-    let why = match outcome {
-        CloseOutcome::ClosedBackupIncomplete(why) => why,
-        other => panic!("a backup that left a lock was answered as {other:?}"),
-    };
-    let lock_text = lock.display().to_string();
-    // Every lock git left in the folder, the HEAD lock beside the branch's
-    // own (git locks HEAD as well when it moves the branch HEAD names; a
-    // newer git goes on past a stale one, an older one refuses the push
-    // with "cannot lock ref 'HEAD'", as on macOS): each is named in the
-    // words, and the owner removes those, as the words say, and no other.
-    let left: Vec<PathBuf> = locks_under(&target)
-        .into_iter()
-        .filter(|l| l != "refs/heads/another.lock")
-        .map(|l| target.join(l))
-        .collect();
-    assert!(left.contains(&lock), "{left:?}");
-    for file in &left {
-        assert!(
-            why.contains(&file.display().to_string()),
-            "{} isn't named in: {why}",
-            file.display()
-        );
-    }
-    assert!(why.contains(&lock_text), "{why}");
-    assert!(
-        why.contains("nothing else is using the backup folder"),
-        "{why}"
-    );
-    assert!(!why.contains("another.lock"), "{why}");
-    assert!(!why.contains(&home.root().display().to_string()), "{why}");
-    // Left where it was: the server deleted nothing in the owner's folder.
-    assert!(lock.exists(), "a file in the owner's folder was deleted");
-    assert!(another.exists());
-    let record = backup_record_of(&home, A);
-    assert!(
-        record
-            .iter()
-            .any(|r| r.get("kind") == Some(&json!("lock_left"))
-                && r.get("repo") == Some(&json!("folder"))
-                && r.get("path") == Some(&json!(lock_text))),
-        "{record:?}"
-    );
-    assert!(
-        !record
-            .iter()
-            .any(|r| r.get("kind") == Some(&json!("lock_removed"))
-                && r.get("repo") == Some(&json!("folder"))),
-        "{record:?}"
-    );
-    // Opened again, the status says it, in words that name the file.
-    std::fs::remove_file(shim.join("slow-push")).unwrap();
-    assert_eq!(open_book(&home, A), OpenOutcome::Opened);
-    let mut w = Wire::new(&home, A);
-    w.initialize("owner");
-    let status = w.call("books.backup", json!({}));
-    let shown = status["result"]["structuredContent"]["targets"][0]["last_error"]
-        .as_str()
-        .unwrap_or_else(|| panic!("the status names no failure: {status}"))
-        .to_string();
-    assert!(shown.contains(&lock_text), "{shown}");
-    assert!(
-        shown.contains("nothing else is using the backup folder"),
-        "{shown}"
-    );
-    // With the lock still there the next backup fails (git's own words) and
-    // the file stays; once the owner removes it, it goes on.
-    match home.admin(Request::BackUpNow {
-        id: A.into(),
-        new_disk: false,
-    }) {
-        Response::BackedUp { targets, .. } => {
-            assert!(targets.iter().any(|t| t.problem.is_some()), "{targets:?}");
-        }
-        other => panic!("{other:?}"),
-    }
-    assert!(
-        left.iter().all(|f| f.exists()),
-        "a later backup removed one of {left:?}"
-    );
-    for file in &left {
-        std::fs::remove_file(file).unwrap();
-    }
-    match home.admin(Request::BackUpNow {
-        id: A.into(),
-        new_disk: false,
-    }) {
-        Response::BackedUp { targets, .. } => {
-            assert!(targets.iter().all(|t| t.problem.is_none()), "{targets:?}");
-        }
-        other => panic!("{other:?}"),
-    }
-    assert!(another.exists());
-    fsck_of(&home.book_dir(A).join("archive.git"));
-    fsck_of(&target);
-    assert!(server.close().success());
-}
-
 /// Whether `thread` finished within `within`, never hanging the test.
 #[cfg(unix)]
 fn finishes_within<T>(thread: &std::thread::JoinHandle<T>, within: Duration) -> bool {
@@ -3801,6 +3296,7 @@ fn a_close_is_answered_while_a_restore_preview_of_its_book_is_still_running() {
         replace: false,
         confirmed: false,
         expect_head: None,
+        passphrase: None,
     };
     let previewing = job_held_in(&home, "restore:fetch", &preview, "restore:fetch");
     let closing = admin_in_thread(&home, Request::CloseBook { id: A.to_string() });

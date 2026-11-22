@@ -1,5 +1,5 @@
 //! Where a backup's files live, behind one seam: a folder on a disk
-//! ([`DirSet`]), or the one-file form ([`crate::backups::single`]).
+//! ([`DirSet`]), or the one-file form ([`crate::backup::single`]).
 //!
 //! The only operations a backup needs of a place are four: list a folder,
 //! ask how long a file is, read a file, and put a file there that was not

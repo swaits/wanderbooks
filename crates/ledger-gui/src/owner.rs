@@ -130,11 +130,30 @@ pub enum AgentStart {
     Missing(Installer),
 }
 
+/// A passphrase typed into the window: never shown by `Debug`, wiped from
+/// memory when dropped.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct Secret(pub String);
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Secret(…)")
+    }
+}
+
+impl Drop for Secret {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.0);
+    }
+}
+
 /// A restore previewed: what it would do, and what it is of (INVARIANT 3).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RestorePlan {
-    /// The backup, as the server is told it.
+    /// The backup, as the server is told it: a folder or a file.
     pub source: String,
+    /// Its passphrase when it has one: never shown, wiped when dropped.
+    pub passphrase: Option<Secret>,
     /// The books' id it comes back as.
     pub id: String,
     /// Whether it replaces the books of that id (kept in legacy/).
@@ -441,6 +460,7 @@ pub trait Owner: Send + Sync {
         source: &str,
         id: Option<String>,
         replace: bool,
+        passphrase: Option<Secret>,
     ) -> Result<RestorePlan, String>;
     /// Restore as `plan` previewed it.
     fn restore(&self, plan: &RestorePlan) -> Result<Vec<String>, String>;
@@ -632,11 +652,21 @@ struct RestoreForm {
     source: String,
     id: String,
     replace: bool,
+    /// The backup's passphrase, if it has one (wiped when the form is
+    /// dropped).
+    passphrase: String,
     /// A check under way, and what it was asked (a result for anything
     /// since edited is dropped).
     planning: Option<Checking>,
     plan: Option<RestorePlan>,
     problem: Option<String>,
+}
+
+impl Drop for RestoreForm {
+    /// What was typed and not handed over is wiped from memory.
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.passphrase);
+    }
 }
 
 /// The menu's state: a dialog, the job under way, and the last outcome.
@@ -1114,7 +1144,7 @@ impl OwnerMenu {
                 egui::Modal::new(self.scope.unwrap_or(egui::Id::NULL).with("owner-restore")).show(ctx, |ui| {
                     ui.set_max_width(520.0);
                     ui.heading("Restore books");
-                    ui.label("The backup: its repository's address, or its folder (the books' .git folder in your backup folder).");
+                    ui.label("The backup: your backup folder, the folder of one set of books in it, or a backup file (.wbbackup).");
                     // Not changed while it is being checked.
                     let open = form.planning.is_none();
                     let edited = ui
@@ -1122,9 +1152,21 @@ impl OwnerMenu {
                             open,
                             egui::TextEdit::singleline(&mut form.source)
                                 .desired_width(f32::INFINITY)
-                                .hint_text("/media/backup/acme.git, or git@host:you/books.git"),
+                                .hint_text("/media/backup, or /home/you/acme.wbbackup"),
                         )
                         .changed();
+                    ui.horizontal(|ui| {
+                        ui.label("Passphrase, if the backup has one");
+                        if ui
+                            .add_enabled(
+                                open,
+                                egui::TextEdit::singleline(&mut form.passphrase).password(true),
+                            )
+                            .changed()
+                        {
+                            form.plan = None;
+                        }
+                    });
                     ui.horizontal(|ui| {
                         ui.label("As the books");
                         let id_edited = ui
@@ -1164,6 +1206,8 @@ impl OwnerMenu {
                                 if ui.add_enabled(ready, egui::Button::new("Check it")).clicked() {
                                     let (tx, rx) = channel();
                                     let (o, s, r) = (owner.clone(), form.source.clone(), form.replace);
+                                    let pass = Some(Secret(form.passphrase.clone()))
+                                        .filter(|p| !p.0.is_empty());
                                     let id = Some(form.id.trim().to_string()).filter(|i| !i.is_empty());
                                     let ctx = ui.ctx().clone();
                                     // Only reads the backup: stopped with its tab.
@@ -1174,7 +1218,7 @@ impl OwnerMenu {
                                             if stop.requested() {
                                                 return;
                                             }
-                                            let _ = tx.send(o.plan_restore(&s, id, r));
+                                            let _ = tx.send(o.plan_restore(&s, id, r, pass));
                                             ctx.request_repaint();
                                         },
                                     );

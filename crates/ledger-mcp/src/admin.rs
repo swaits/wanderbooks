@@ -121,8 +121,8 @@ pub enum Request {
     Restore {
         /// The books' id.
         id: String,
-        /// The backup: a git repository's address, or its folder
-        /// (`<book>.git` in the backup folder).
+        /// The backup: a backup folder, the folder of one set of books in
+        /// it, or a backup file (`.wbbackup`), by its full path.
         source: String,
         /// Replace the books called `id`.
         #[serde(default)]
@@ -133,8 +133,12 @@ pub enum Request {
         /// The head the preview read: restored only if still so.
         #[serde(default)]
         expect_head: Option<(u64, String)>,
+        /// The backup's passphrase, when it is protected by one (D-92):
+        /// never shown, never kept.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        passphrase: Option<Passphrase>,
     },
-    /// Back books up now (plan 3.7): to every target their settings name.
+    /// Back books up now (plan 3.7): to the folder their settings name.
     BackUpNow {
         /// The books.
         id: String,
@@ -660,6 +664,12 @@ pub struct RestorePreview {
     /// The id of the books it holds, as they were backed up.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
+    /// Whether it is protected by a passphrase.
+    #[serde(default)]
+    pub sealed: bool,
+    /// Newer backups in it that were not whole and were passed over.
+    #[serde(default)]
+    pub passed_over: u64,
 }
 
 /// What a restore did.
@@ -687,7 +697,7 @@ pub struct Restored {
 /// How one backup target took a backup now.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BackedUpTarget {
-    /// "repository" or "folder".
+    /// "folder".
     pub target: String,
     /// Where (no path in the data root).
     pub at: String,
@@ -988,17 +998,18 @@ mod tests {
     #[test]
     fn a_restore_request_is_a_preview_unless_confirmed() {
         let r: Envelope = serde_json::from_value(
-            json!({"proto": 1, "op": "restore", "id": "acme", "source": "/backups/acme.git"}),
+            json!({"proto": 1, "op": "restore", "id": "acme", "source": "/backups/acme"}),
         )
         .unwrap();
         assert_eq!(
             r.request,
             Request::Restore {
                 id: "acme".into(),
-                source: "/backups/acme.git".into(),
+                source: "/backups/acme".into(),
                 replace: false,
                 confirmed: false,
                 expect_head: None,
+                passphrase: None,
             }
         );
     }
@@ -1075,6 +1086,8 @@ mod tests {
                 vault_files: 1,
                 exists: true,
                 origin: Some("acme".into()),
+                sealed: false,
+                passed_over: 0,
             }),
             Response::Restored(Restored {
                 id: "acme".into(),

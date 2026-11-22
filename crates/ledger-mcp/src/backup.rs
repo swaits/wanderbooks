@@ -1,114 +1,95 @@
-//! The server's backups of a book (plan 3.7, D-30, D-31): made a while
+//! The server's backups of a book (plan 3.7, D-30, D-91): made a while
 //! after the books are written (when the writing stops), when they open,
-//! before they close, and when asked; each pushed to the targets the
+//! before they close, and when asked; written to the backup folder the
 //! book's settings name; each recorded in the book's `ops/backup.jsonl`;
-//! each target's backup drilled weekly.
+//! the folder's backup proven weekly.
 //!
 //! ```text
-//! GOAL: every write reaches the owner's backups soon after it is made,
-//!       and the owner (and agent) can see that it did, or why not.
+//! GOAL: every write reaches the owner's backup soon after it is made, and
+//!       the owner (and agent) can see that it did, or why not.
 //! SOURCE: plan 3.7 (triggers, "ops/backup.jsonl", books.backup, Needs
-//!         attention for a target more than 24 h behind, drills), D-30 (a
-//!         git repository and a folder), D-31 (plain git), 3.9 and D-39
-//!         (a verified local backup with the keys before a format
-//!         upgrade).
+//!         attention for a backup more than 24 h behind, drills), D-91
+//!         (a plain folder, no git), D-92 (a passphrase), 3.9 and D-39 (a
+//!         proven local backup with the keys before a format upgrade),
+//!         WB-backup-1.
 //! INVARIANTS:
-//!   1. A backup is committed under the store's lock (ledger_store::backup
-//!      INVARIANT 1; its stored files staged before, outside it) and
-//!      pushed outside it: the books are never held while the network is
-//!      slow. One run or drill at a time.
-//!   2. Every commit, push and drill is a record of `ops/backup.jsonl` (a
+//!   1. A backup is taken under the store's lock as a cut of the books
+//!      (ledger_store::backup::Cut: the journal's length and head, the
+//!      vault and keys) and written outside it: the books are never held
+//!      while a disk or a network share is slow. One run or drill at a
+//!      time.
+//!   2. Every cut, write and drill is a record of `ops/backup.jsonl` (a
 //!      chain log, not the journal: a backup never moves the books' head),
-//!      each target's outcome a record of its own, keyed by the target
-//!      itself (a new folder or address starts with no standing).
-//!   3. A target is stale when it lacks the books' head and the first try
-//!      to back up what it lacks (the first commit or failure since its
-//!      last good push, or since its first try if it never had one, or
-//!      since the failed commits that kept it from any) is more than
-//!      STALE_AFTER old; its last error is its last push's, or a
-//!      later failed commit's.
+//!      the destination's outcome a record of its own, keyed by the
+//!      destination itself (its folder, and the passphrase's fingerprint: a
+//!      new folder, or a changed passphrase, starts with no standing).
+//!   3. A backup is stale when it lacks the books' head and the first try
+//!      to back up what it lacks (the first cut or failure since its last
+//!      good write, or since its first try if it never had one, or since the
+//!      failed cuts that kept it from any) is more than STALE_AFTER old; its
+//!      last error is its last write's, or a later failed cut's.
 //!   4. Nothing here names a path of the data root to an agent.
-//!   5. Every target that holds a backup is drilled (ledger_store::backup::
-//!      drill: cloned, proven whole, its journal the live one's beginning)
-//!      once DRILL_EVERY has passed since its last good drill, or
+//!   5. A backup that holds a backup is drilled (ledger_store::backup::
+//!      drill: its books built and proven whole, its journal the live one's
+//!      beginning) once DRILL_EVERY has passed since its last good drill, or
 //!      RETRY_AFTER since a failed one (at the server's next look for
 //!      drills); a failed drill is said in the standing until one passes.
-//!   6. A target whose push failed lately (RETRY_AFTER) is left out of a
-//!      backup after a write, and only that one; a folder target's
-//!      repository is made only while the target never took a backup of
-//!      these books (one gone since is a disk not connected), restored
-//!      books counting the backups of the books they were.
-//!   7. Books restored beside the books they were (under another id) never
-//!      push to the repository those books back up to (it would stop
-//!      theirs): it is paused for them, and said, until another is named.
-//!   8. A damaged backup record never keeps the books shut: it is set
+//!   6. A destination whose write failed lately (RETRY_AFTER) is left out of
+//!      a backup after a write; a destination's backup is begun only while
+//!      it never took one of these books (one gone since is a disk not
+//!      connected), restored books counting the backups of the books they
+//!      were.
+//!   7. A damaged backup record never keeps the books shut: it is set
 //!      aside and a new one begun.
-//!   9. A format upgrade (plan 3.9, D-39) is made only after the books are
-//!      committed to their archive and the archive proven to hold them
-//!      exactly as they are (journal, stored files, vault and keys), all
+//!   8. A format upgrade (plan 3.9, D-39) is made only after the books are
+//!      written to their local backup (`local-backup/` in the book's folder,
+//!      the same form) and that backup proven to hold them exactly as they
+//!      are (journal, vault and keys; every stored file re-hashed), all
 //!      under the store's lock, so nothing is written in between; a backup
 //!      that can't be made or proven upgrades nothing. Both are records.
-//!  10. These backups can be shut (`shut`), once, for good: git is stopped
-//!      (every command running, with all it started) and none starts; the
-//!      call waits for every step that was under way to END (each step's
-//!      count rides in its own blocking task, so it is not lost when the
-//!      future that began it is dropped, as a close's 60 s bound drops
-//!      one), and for the run or drill holding the books' turn; then the
-//!      backup record is closed under its own lock. After `shut` returns,
-//!      this holder (a timer's, a request's, any clone from before) runs
-//!      nothing, spawns no process, and writes nothing, whatever the books
-//!      are doing: not in this process's later opening of the same books,
-//!      whose own backups are another object with another record handle.
-//!  11. A close is not held by a step it doesn't wait for. When a close
+//!   9. These backups can be shut (`shut`), once, for good: the file copy in
+//!      progress stops at its next piece and none starts; the call waits for
+//!      every step that was under way to END (each step's count rides in its
+//!      own blocking task, so it is not lost when the future that began it
+//!      is dropped, as a close's 60 s bound drops one), and for the run or
+//!      drill holding the books' turn; then the backup record is closed
+//!      under its own lock. After `shut` returns, this holder (a timer's, a
+//!      request's, any clone from before) runs nothing, and writes nothing,
+//!      whatever the books are doing.
+//!  10. A close is not held by a step it doesn't wait for. When a close
 //!      begins (`hurry`, before its last backup), these stop at their next
 //!      look: a drill, a format upgrade that has not yet reached its final
 //!      look, and a backup a call or a timer asked for (`run_with` for any
-//!      `why` but `close`), looking between git commands and phases, once
-//!      per journal line, file or 64 KiB chunk (ledger_store::backup
-//!      INVARIANT 6), and between targets. A drill's scratch clone is
-//!      removed and nothing is said of its target (neither a pass nor a
-//!      failure: it is due again when the books next open). A run stopped
-//!      this way records `stopped` (what it was doing: `commit` or `push`)
-//!      and no result of its own for the step it didn't finish: a commit it
-//!      had made stands in the archive and is recorded as made, a target it
-//!      hadn't pushed to is said nothing of, and its caller is told it was
-//!      stopped because the books are closing (tools/backup.rs, which marks
-//!      the call's access record `stopped_by_close`). The one thing a stop is
-//!      a failure for is a lock git left in the owner's folder (INVARIANT 12).
-//!      An upgrade is reported not done, the books unchanged, and its backup
-//!      (a commit it made on the way) recorded, if the close's stop reaches
-//!      it before its final look, which is made once everything it needs is
-//!      proven and just before the `journal.format_set` line is appended: a
-//!      stop is honoured up to that look. One that arrives between it and the
-//!      append does not undo the upgrade: the line is appended, the database's
-//!      row is written and the upgrade is recorded as made (safe: the books
-//!      are in this version's format and proven backed up, and the close that
-//!      asked for the stop is waiting for the books lock). The last backup of
-//!      the close, and the stop `shut` makes of what is left of it, are not
-//!      hurried: only `shut` stops them. The close's whole bound is the sum
-//!      written in the books server's INVARIANT 10 (local.rs).
-//!  12. A lock file a stopped git left is dealt with by the step that
-//!      stopped it (ledger_store::backup INVARIANT 5) and recorded: a
-//!      record `lock_removed` (the archive's own, made by the git just
-//!      stopped) or `lock_left`, with `repo` (`archive`, `folder` or
-//!      `repository`), `lock` (a path in that repository), `why`, and for a
-//!      lock left in the owner's folder, `path`, its whole path. Git is sent
-//!      SIGTERM first and removes its own locks, so these records are the
-//!      rare case. A lock left in the owner's folder is never removed by
-//!      this program: it marks that target's backup failed, in a `push`
-//!      record whose error names the files and says to remove them only when
-//!      nothing else is using the backup folder; that error is the target's
-//!      `last_error` in `books.backup` and in the server's backup status, and
-//!      what a close that couldn't finish its last backup says. (A run whose
-//!      future was dropped at its bound has that record written by `shut`.)
-//!      The archive's locks found when the books open are dealt with the
-//!      same way (the store is open, and its lock is ours): only those older
-//!      than ten minutes are removed. A close is not answered before these
-//!      are recorded, the backup record being closed after them.
+//!      `why` but `close`), looking between pieces (ledger_store::backups
+//!      INVARIANT 8) and between destinations. A drill's scratch folder is
+//!      removed and nothing is said of its destination (it is due again
+//!      when the books next open). A run stopped this way records
+//!      `stopped` (what it was doing: `cut` or `write`) and no result of its
+//!      own for the step it didn't finish: what it had written stands, and
+//!      the destination proves whole at its previous manifest (the one in
+//!      place before the run); its caller is told it was stopped because
+//!      the books are closing (tools/backup.rs, which marks the call's
+//!      access record `stopped_by_close`). An upgrade is reported not done,
+//!      the books unchanged, if the close's stop reaches it before its final
+//!      look, which is made once everything it needs is proven and just
+//!      before the `journal.format_set` line is appended: a stop is
+//!      honoured up to that look. One that arrives between it and the append
+//!      does not undo the upgrade. The last backup of the close, and the
+//!      stop `shut` makes of what is left of it, are not hurried: only
+//!      `shut` stops them. The close's whole bound is the sum written in the
+//!      books server's INVARIANT 10 (local.rs).
+//!  11. The passphrase's key is read from the book's `local/` folder at each
+//!      run: with one there, every write is sealed; one that is there and
+//!      can't be read stops the write (never a plain one). The key never
+//!      reaches a record, an error or a status.
+//!  12. Old forms are left alone and said once: a private repository named
+//!      by the books' old setting is no longer used, and the old backup
+//!      history in the book's folder is neither read, written nor removed;
+//!      the status says so until a backup has been made in the new form.
 //! ```
 
 use crate::server::SharedStore;
-use ledger_store::backup::{self, BackupError, Git, LockNotes, Target};
+use ledger_store::backup::{self as backup, BackupError, BackupKey, Ctx, Cut, Destination};
 use ledger_store::chain::ChainLog;
 use serde::Serialize;
 use serde_json::{Map, Value, json};
@@ -116,10 +97,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-/// What a call is told when these backups were shut (INVARIANT 10).
+/// What a call is told when these backups were shut (INVARIANT 9).
 pub const SHUT: &str = "the books were closed: nothing was backed up";
 
-/// Blocking steps of the backups under way (INVARIANT 10).
+/// Blocking steps of the backups under way (INVARIANT 9).
 #[derive(Default)]
 struct Busy {
     steps: AtomicUsize,
@@ -138,13 +119,20 @@ impl Drop for Step {
     }
 }
 
+/// The test knob's file in a book's `ops/`: while it is there, a backup
+/// waits at each phase ([`Backups::slow_steps`]).
+pub const SLOW_BACKUP: &str = "slow-backup";
+/// The file beside it that gets a line each time a backup reaches a phase
+/// and waits.
+pub const SLOW_BACKUP_REACHED: &str = "slow-backup-reached";
+
 /// The book's backup record, in its `ops/`.
 pub const LOG_FILE: &str = "backup.jsonl";
 /// The record's genesis text.
 const GENESIS: &str = "wanderbooks-backup-v1";
-/// How long a target may lack the books' head before it is stale.
+/// How long a destination may lack the books' head before it is stale.
 pub const STALE_AFTER: chrono::Duration = chrono::Duration::hours(24);
-/// How often each target's backup is drilled (plan 3.7: weekly).
+/// How often each destination's backup is drilled (plan 3.7: weekly).
 pub const DRILL_EVERY: chrono::Duration = chrono::Duration::days(7);
 /// How long after a failed run (or drill) the next is tried.
 pub const RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(15 * 60);
@@ -162,20 +150,17 @@ pub struct Backups {
     log: Mutex<ChainLog>,
     /// One run at a time.
     running: tokio::sync::Mutex<()>,
-    /// Set by `shut` (INVARIANT 10): git stops, nothing starts.
+    /// Set by `shut` (INVARIANT 9): copying stops, nothing starts.
     shut: Arc<AtomicBool>,
     /// The blocking steps under way.
     busy: Arc<Busy>,
-    /// Set when a close begins, before its last backup (INVARIANT 11): the
+    /// Set when a close begins, before its last backup (INVARIANT 10): the
     /// steps a close doesn't wait for (a drill, a format upgrade not yet
     /// journaled, a backup a call or a timer asked for) stop, and `shut`
     /// sets it too. It is the book's store's flag (`SharedStore::hurry`), so
     /// the book's calls that can run long see it too. The close's own last
     /// backup is stopped by `shut` alone, so it can run.
     hurry: Arc<AtomicBool>,
-    /// The lock files a stopped git left, as they were dealt with
-    /// (ledger_store::backup INVARIANT 5), until they are recorded.
-    locks: LockNotes,
     /// A test knob (`--slow-steps`): how long a drill or a format upgrade
     /// waits, in milliseconds, at each phase, giving up when hurried.
     slow_ms: AtomicU64,
@@ -203,10 +188,10 @@ pub struct Upgraded {
 /// The backup a format upgrade made first: the books as they were.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpgradeBackup {
-    /// Whether it was committed now (false: the last backup already held
+    /// Whether it was written now (false: the local backup already held
     /// the books as they were).
     pub made: bool,
-    /// Its commit in the books' archive.
+    /// Its number in the local backup.
     pub commit: String,
     /// The head it holds: the books before the upgrade.
     pub head: (u64, String),
@@ -214,8 +199,8 @@ pub struct UpgradeBackup {
 
 /// Why a format upgrade wasn't made: nothing was upgraded.
 struct UpgradeFailed {
-    /// The backup committed on the way, if one was.
-    made: Option<backup::Made>,
+    /// The backup written on the way, if one was.
+    made: Option<backup::Written>,
     /// Why, in words.
     why: String,
 }
@@ -232,7 +217,7 @@ impl UpgradeFailed {
     }
 
     /// The backup `made` (now, or earlier) didn't prove whole.
-    fn proof(made: Option<backup::Made>, e: BackupError) -> Self {
+    fn proof(made: Option<backup::Written>, e: BackupError) -> Self {
         Self {
             made,
             why: format!(
@@ -242,7 +227,7 @@ impl UpgradeFailed {
     }
 
     /// Proven, and the books refused the upgrade.
-    fn store(made: Option<backup::Made>, e: ledger_store::StoreError) -> Self {
+    fn store(made: Option<backup::Written>, e: ledger_store::StoreError) -> Self {
         Self {
             made,
             why: format!("{e}: nothing was upgraded"),
@@ -258,14 +243,14 @@ impl UpgradeFailed {
     }
 }
 
-/// One target's standing (INVARIANT 3).
+/// One destination's standing (INVARIANT 3).
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct TargetStatus {
-    /// "repository" or "folder".
+    /// "folder".
     pub target: String,
-    /// Where (the repository's address, or "the backup folder").
+    /// Where (a name, never a path of the data root).
     pub at: String,
-    /// When it last took a push, if ever (UTC).
+    /// When it last took a backup (UTC), if ever.
     pub last_ok_at: Option<String>,
     /// The journal seq it holds, if any.
     pub through_seq: Option<u64>,
@@ -277,8 +262,10 @@ pub struct TargetStatus {
     pub last_drill_at: Option<String>,
     /// Why its last drill failed, if it did.
     pub drill_error: Option<String>,
-    /// Paused for books restored as a copy of others (INVARIANT 7).
-    pub paused: bool,
+    /// Protected by a passphrase.
+    pub sealed: bool,
+    /// Its disk isn't connected (its last try found no folder).
+    pub disconnected: bool,
 }
 
 /// The books' backup standing.
@@ -286,47 +273,70 @@ pub struct TargetStatus {
 pub struct Status {
     /// The books' head now.
     pub head_seq: u64,
-    /// Each target the settings name.
+    /// Each destination the settings name.
     pub targets: Vec<TargetStatus>,
-    /// None set up: what to do.
+    /// None set up, or an old form left alone: what to know and do.
     pub note: Option<String>,
 }
 
-/// A target the settings name.
+/// A destination the settings name.
 #[derive(Debug, Clone)]
 struct Named {
-    target: Target,
+    /// Where, and sealed or not; Err when its key can't be read.
+    dest: Result<Destination, String>,
     /// Where, as an agent is told it.
     at: String,
-    /// The target itself, as its records name it (INVARIANT 2): a digest
-    /// of where it is (never a path an agent is shown).
+    /// The destination itself, as its records name it (INVARIANT 2): a
+    /// digest of where it is and which passphrase (never a path an agent
+    /// is shown).
     key: String,
+    sealed: bool,
 }
 
-/// The targets the book's settings name (D-30).
-fn targets(store: &ledger_store::Store, book: &str) -> Vec<Named> {
+/// What a person is told when no backup folder is set.
+pub const NONE_SET: &str = "no backup is set up: choose a backup folder (a folder on another disk, or one that Dropbox, iCloud, OneDrive or Google Drive keeps in sync) with books.set_setting backup.folder, or in the window";
+
+/// What books that still name a private repository are told.
+pub const OLD_REMOTE: &str = "These books' settings still name a private repository for backups. That kind of backup is no longer made and the repository is left alone: choose a backup folder instead.";
+
+/// What books that still carry an old backup history are told.
+pub const OLD_ARCHIVE: &str = "An older backup folder from an earlier version is still in the books' folder. It is no longer written or read, and nothing was deleted: you may delete it yourself once the new backup is whole.";
+
+/// The destination the book's settings name (D-91).
+fn targets(store: &ledger_store::Store, book: &str, dir: &Path) -> Vec<Named> {
     use sha2::{Digest, Sha256};
-    let s = store.ledger().settings();
-    let mut out = Vec::new();
-    if let Some(url) = s.backup_git_remote() {
-        out.push((Target::Remote(url.to_string()), url.to_string()));
+    let Some(folder) = store.ledger().settings().backup_folder() else {
+        return Vec::new();
+    };
+    let loaded = BackupKey::load(dir);
+    let (key, sealed, fp) = match &loaded {
+        Ok(Some(k)) => (Ok(Some(k.clone())), true, k.fingerprint()),
+        Ok(None) => (Ok(None), false, String::new()),
+        Err(e) => (Err(e.to_string()), true, "unreadable".to_string()),
+    };
+    let digest: String = Sha256::digest(format!("{folder}\0{book}\0{fp}").as_bytes())[..8]
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    vec![Named {
+        dest: key.map(|key| Destination {
+            folder: PathBuf::from(folder),
+            key,
+        }),
+        at: "the backup folder".to_string(),
+        key: digest,
+        sealed,
+    }]
+}
+
+/// What an error of a write is, for the record: tells a disk not connected.
+fn error_kind(e: &BackupError) -> &'static str {
+    match e {
+        BackupError::NoFolder => "no_folder",
+        BackupError::NoBackupThere => "no_backup_there",
+        BackupError::Elsewhere | BackupError::Ahead(..) => "elsewhere",
+        _ => "other",
     }
-    if let Some(folder) = s.backup_folder() {
-        out.push((
-            Target::Folder(PathBuf::from(folder)),
-            "the backup folder".to_string(),
-        ));
-    }
-    out.into_iter()
-        .map(|(target, at)| Named {
-            key: Sha256::digest(target.source(book).as_bytes())[..8]
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect(),
-            target,
-            at,
-        })
-        .collect()
 }
 
 impl Backups {
@@ -337,8 +347,8 @@ impl Backups {
         let path = ledger_store::ops::ops_dir(dir).join(LOG_FILE);
         let (log, carried) = match ChainLog::open(&path, GENESIS) {
             Ok((log, _)) => (log, Vec::new()),
-            // INVARIANT 8: set aside, begun again, what it knew of whose
-            // backups the targets hold carried into the new one.
+            // INVARIANT 7: set aside, begun again, what it knew of whose
+            // backups the destinations hold carried into the new one.
             Err(ledger_store::chain::ChainError::Damaged { .. }) => {
                 let known = known_before_damage(&path);
                 let aside = path.with_extension(format!(
@@ -367,7 +377,6 @@ impl Backups {
             shut: Arc::default(),
             busy: Arc::default(),
             hurry,
-            locks: LockNotes::default(),
             slow_ms: AtomicU64::new(0),
             paused: Arc::default(),
             hold: Mutex::new(None),
@@ -375,20 +384,19 @@ impl Backups {
         for fields in carried {
             me.record(fields);
         }
-        // The store is open, so its lock is ours: no other wanderbooks
-        // process runs git on this archive, and none of this process's does
-        // yet. A lock in it older than ten minutes is a dead git's; a
-        // younger one is left (store INVARIANT 5a).
-        for note in backup::clear_archive_locks(dir) {
-            me.record_lock(&note);
+        // An old backup history in the book's folder is left alone, and
+        // noted once (INVARIANT 12).
+        if dir.join(OLD_ARCHIVE_DIR).exists() && !me.records().iter().any(|r| is(r, "old_archive"))
+        {
+            me.record(json!({"kind": "old_archive"}));
         }
-        // Books just restored: whose they were (INVARIANTS 6, 7).
+        // Books just restored: whose they were (INVARIANT 6).
         let marker = ledger_store::ops::ops_dir(dir).join(ledger_store::root::RESTORED_FROM);
         if let Ok(origin) = std::fs::read_to_string(&marker) {
             let origin = Some(origin.trim()).filter(|o| !o.is_empty());
             let named = me
                 .store
-                .try_with_store(|s| targets(s, book))
+                .try_with_store(|s| targets(s, book, dir))
                 .ok_or("its backups can't be read yet: the books are busy")?;
             me.restored(origin, &named);
             std::fs::remove_file(&marker)
@@ -401,7 +409,7 @@ impl Backups {
         let Value::Object(mut map) = fields else {
             return;
         };
-        // INVARIANT 4: a git or store message may quote a path in the root.
+        // INVARIANT 4: a store message may quote a path in the root.
         if let Some(Value::String(e)) = map.get_mut("error") {
             *e = hide(e, &self.dir);
         }
@@ -414,14 +422,14 @@ impl Backups {
         }
     }
 
-    /// Whether these backups were shut (INVARIANT 10).
+    /// Whether these backups were shut (INVARIANT 9).
     fn is_shut(&self) -> bool {
         self.shut.load(Ordering::SeqCst)
     }
 
     /// A step begins: counted before the shut flag is looked at, and
     /// `shut` sets the flag before it looks at the count, so a step either
-    /// sees them shut or is waited for, never neither (INVARIANT 10).
+    /// sees them shut or is waited for, never neither (INVARIANT 9).
     fn begin(&self) -> Result<Step, String> {
         self.busy.steps.fetch_add(1, Ordering::SeqCst);
         let step = Step(self.busy.clone());
@@ -431,40 +439,57 @@ impl Backups {
         Ok(step)
     }
 
-    /// git, stopped by `shut`: the close's own last backup (INVARIANT 10).
-    fn git(&self) -> Result<Git, BackupError> {
-        Ok(Git::find()?
-            .with_cancel(self.shut.clone())
-            .with_lock_notes(self.locks.clone()))
-    }
-
-    /// git for a backup a call or a timer asked for: stopped as soon as a
-    /// close begins (INVARIANT 11), so it can't hold the close.
-    fn git_for(&self, why: &str) -> Result<Git, BackupError> {
-        if why == "close" {
-            self.git()
+    /// The stop for the close's own last backup (INVARIANT 9), or, for a
+    /// backup a call or a timer asked for, the one a close begins
+    /// (INVARIANT 10), so it can't hold the close.
+    fn ctx_for(&self, why: &str) -> Ctx {
+        let flag = if why == "close" {
+            self.shut.clone()
         } else {
-            Ok(Git::find()?
-                .with_cancel(self.hurry.clone())
-                .with_lock_notes(self.locks.clone()))
+            self.hurry.clone()
+        };
+        let ctx = Ctx::new().with_stop(flag.clone());
+        // The test knob: a backup waits at each phase while
+        // `ops/slow-backup` is there (and `--slow-steps` was given), until
+        // the stop it runs under is asked for, as a slow disk would hold it.
+        if self.slow_ms.load(Ordering::SeqCst) == 0 {
+            return ctx;
         }
+        let marker = ledger_store::ops::ops_dir(&self.dir).join(SLOW_BACKUP);
+        let paused = self.paused.clone();
+        ctx.with_phase_watch(Arc::new(move |_phase: &str| {
+            if !marker.exists() {
+                return;
+            }
+            paused.fetch_add(1, Ordering::SeqCst);
+            // Said to the test: a backup has reached a phase and waits.
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(marker.with_file_name(SLOW_BACKUP_REACHED))
+            {
+                use std::io::Write;
+                let _ = f.write_all(b"x\n");
+            }
+            while marker.exists() && !flag.load(Ordering::SeqCst) {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }))
     }
 
-    /// git for a step a close hurries (a drill, a format upgrade): stopped
-    /// as soon as the close begins (INVARIANT 11).
-    fn hurried_git(&self) -> Result<Git, BackupError> {
-        let git = Git::find()?
-            .with_cancel(self.hurry.clone())
-            .with_lock_notes(self.locks.clone());
+    /// The stop for a step a close hurries (a drill, a format upgrade), with
+    /// the test knob's wait at each phase.
+    fn hurried_ctx(&self) -> Ctx {
+        let ctx = Ctx::new().with_stop(self.hurry.clone());
         let ms = self.slow_ms.load(Ordering::SeqCst);
         if ms == 0 {
-            return Ok(git);
+            return ctx;
         }
         let (hurry, paused) = (self.hurry.clone(), self.paused.clone());
-        Ok(git.with_phase_watch(Arc::new(move |phase: &str| {
-            // From the second phase on (the first is the clone, before
+        ctx.with_phase_watch(Arc::new(move |phase: &str| {
+            // From the second phase on (the first is the fetch, before
             // there is anything of the step's own to see).
-            if phase == "clone" {
+            if phase == "fetch" {
                 return;
             }
             paused.fetch_add(1, Ordering::SeqCst);
@@ -472,7 +497,7 @@ impl Backups {
             while std::time::Instant::now() < by && !hurry.load(Ordering::SeqCst) {
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
-        })))
+        }))
     }
 
     /// Make each phase of a drill or format upgrade wait `by` (a test
@@ -500,7 +525,7 @@ impl Backups {
         self.paused.load(Ordering::SeqCst)
     }
 
-    /// A close begins (INVARIANT 11): the steps it doesn't wait for stop at
+    /// A close begins (INVARIANT 10): the steps it doesn't wait for stop at
     /// their next look. The close's last backup, and what `shut` stops, are
     /// not affected until `shut`.
     pub fn hurry(&self) {
@@ -511,37 +536,14 @@ impl Backups {
         self.hurry.load(Ordering::SeqCst)
     }
 
-    /// A lock a stopped git left, as it was dealt with: a record of the
-    /// backup (INVARIANT 12).
-    fn record_lock(&self, note: &backup::LockNote) {
-        let mut fields = json!({
-            "kind": if note.removed { "lock_removed" } else { "lock_left" },
-            "repo": note.repo, "lock": note.lock, "why": note.why,
-        });
-        // A lock left in the owner's folder is named by its whole path.
-        if let (Some(path), Value::Object(map)) = (&note.path, &mut fields) {
-            map.insert("path".into(), json!(path));
-        }
-        self.record(fields);
-    }
-
-    /// Record the locks dealt with since the last look; the notes.
-    fn note_locks(&self) -> Vec<backup::LockNote> {
-        let notes = self.locks.take();
-        for note in &notes {
-            self.record_lock(note);
-        }
-        notes
-    }
-
-    /// Shut these backups for good (INVARIANT 10): git stopped, every step
-    /// ended, the record closed. Call it after the last backup the books
-    /// will have, and before the books' store is let go.
-    pub async fn shut(&self) -> Vec<String> {
+    /// Shut these backups for good (INVARIANT 9): copying stopped, every
+    /// step ended, the record closed. Call it after the last backup the
+    /// books will have, and before the books' store is let go.
+    pub async fn shut(&self) {
         self.shut.store(true, Ordering::SeqCst);
         self.hurry.store(true, Ordering::SeqCst);
-        // The run or drill holding the books' turn ends (its git was just
-        // stopped), and none begins after.
+        // The run or drill holding the books' turn ends (its copying was
+        // just stopped), and none begins after.
         let _turn = self.running.lock().await;
         loop {
             let ended = self.busy.ended.notified();
@@ -550,36 +552,7 @@ impl Backups {
             }
             ended.await;
         }
-        let notes = self.note_locks();
-        // A run whose future was dropped at its bound (a close's last
-        // backup) never recorded its push: a lock its stopped git left in the
-        // owner's folder is that target's failure all the same, named, in the
-        // standing the owner reads (ledger_store::backup INVARIANT 5b). Locks
-        // a run took in hand itself were recorded by it, and aren't here.
-        let left: Vec<&backup::LockNote> = notes
-            .iter()
-            .filter(|n| !n.removed && n.path.is_some())
-            .collect();
-        let mut said = Vec::new();
-        if !left.is_empty() {
-            for n in self.named().await {
-                let paths: Vec<&str> = left
-                    .iter()
-                    .filter(|l| l.repo == n.target.kind())
-                    .filter_map(|l| l.path.as_deref())
-                    .collect();
-                if !paths.is_empty() {
-                    let error = BackupError::LockLeft(paths.join(", ")).to_string();
-                    self.record(
-                        json!({"kind": "push", "why": "close", "target": n.target.kind(),
-                        "at": n.at, "key": n.key, "ok": false, "error": error}),
-                    );
-                    said.push(error);
-                }
-            }
-        }
         self.log.lock().unwrap_or_else(|e| e.into_inner()).close();
-        said
     }
 
     fn records(&self) -> Vec<Map<String, Value>> {
@@ -591,10 +564,10 @@ impl Backups {
         .unwrap_or_default()
     }
 
-    /// The targets the settings name now.
+    /// The destination the settings name now.
     async fn named(&self) -> Vec<Named> {
-        let (store, book) = (self.store.clone(), self.book.clone());
-        tokio::task::spawn_blocking(move || store.with_store(|s| targets(s, &book)).ok())
+        let (store, book, dir) = (self.store.clone(), self.book.clone(), self.dir.clone());
+        tokio::task::spawn_blocking(move || store.with_store(|s| targets(s, &book, &dir)).ok())
             .await
             .ok()
             .flatten()
@@ -602,22 +575,15 @@ impl Backups {
     }
 
     /// Note that these books were just restored from a backup of the books
-    /// `origin` (INVARIANTS 6, 7), `named` the targets they name: the same
-    /// books (their targets took their backups), or others' (the
-    /// repository those back up to is paused for these).
+    /// `origin` (INVARIANT 6), `named` the destinations they name: the same
+    /// books (their destination took their backups), or others'.
     fn restored(&self, origin: Option<&str>, named: &[Named]) {
         let same = origin == Some(self.book.as_str());
-        let keys = |remote: bool| -> Vec<String> {
-            named
-                .iter()
-                .filter(|n| !remote || matches!(n.target, Target::Remote(_)))
-                .map(|n| n.key.clone())
-                .collect()
-        };
+        let keys: Vec<String> = named.iter().map(|n| n.key.clone()).collect();
         if same {
-            self.record(json!({"kind": "restored", "origin": origin, "held": keys(false)}));
+            self.record(json!({"kind": "restored", "origin": origin, "held": keys}));
         } else {
-            self.record(json!({"kind": "restored", "origin": origin, "paused": keys(true)}));
+            self.record(json!({"kind": "restored", "origin": origin}));
         }
     }
 
@@ -636,12 +602,12 @@ impl Backups {
         self.run_with(why, false).await
     }
 
-    /// [`Self::run`]; with `new_disk`, a folder target that took these
+    /// [`Self::run`]; with `new_disk`, a destination that took these
     /// books' backups and holds none now is begun again there (the owner
     /// says it is a new disk).
     pub async fn run_with(&self, why: &str, new_disk: bool) -> Result<Status, String> {
         let _one = self.running.lock().await;
-        // Books let go of (closed, or replaced by a restore) push nothing
+        // Books let go of (closed, or replaced by a restore) write nothing
         // more, and leave no record of a run that never began.
         if self.is_shut() {
             return Err(SHUT.to_string());
@@ -650,156 +616,127 @@ impl Backups {
             return Err(crate::server::STOPPED.to_string());
         }
         // A run a call or a timer asked for is stopped by a close
-        // (INVARIANT 11); the close's own last backup is not.
+        // (INVARIANT 10); the close's own last backup is not.
         let stoppable = why != "close";
         if stoppable && self.hurried() {
-            return Err(self.stopped_words(None));
+            return Err(self.stopped_words());
         }
         if self.named().await.is_empty() {
             return Ok(self.status().await);
         }
         let step = self.begin()?;
         let (store, dir, book) = (self.store.clone(), self.dir.clone(), self.book.clone());
-        let git = self.git_for(why);
-        let made = tokio::task::spawn_blocking(move || {
+        let cut = tokio::task::spawn_blocking(move || {
             let _step = step;
-            let git = git?;
-            // The stored files first, outside the lock: they never change.
-            // Only a head start (a file being written can trip it): the
-            // commit stages them all again.
-            let _ = backup::stage_blobs(&git, &dir);
-            // The commit, under it.
+            // The cut, under the lock.
             store
                 .with_store(|s| -> Result<_, BackupError> {
-                    let made = backup::commit(&git, &dir, &book, s.head())?;
-                    Ok((made, targets(s, &book), s.head()))
+                    Ok((Cut::take(&book, &dir, s.head())?, targets(s, &book, &dir)))
                 })
                 .map_err(BackupError::Damaged)
                 .and_then(|r| r)
         })
         .await
         .unwrap_or(Err(BackupError::Damaged("the backup stopped".into())));
-        let _ = self.note_locks();
-        let (made, named, head) = match made {
+        let (cut, named) = match cut {
             Ok(m) => m,
-            // Stopped by a close: neither a success nor a failure of the
-            // backup, so nothing is said of any target (INVARIANT 11); what
-            // was committed before it stands in the archive, and the close
-            // makes its own last backup.
-            Err(BackupError::Cancelled(_)) if stoppable => {
-                self.record(json!({"kind": "stopped", "why": why, "during": "commit"}));
-                return Err(self.stopped_words(None));
-            }
             Err(e) => {
-                let lock_left = matches!(e, BackupError::LockLeft(_));
                 let e = hide(&e.to_string(), &self.dir);
                 self.record(json!({"kind": "commit", "why": why, "ok": false, "error": e}));
-                return Err(if stoppable && self.hurried() && lock_left {
-                    self.stopped_words(Some(&e))
-                } else {
-                    e
-                });
+                return Err(e);
             }
         };
-        if let Some(m) = &made {
-            self.record(
-                json!({"kind": "commit", "why": why, "ok": true, "commit": m.commit,
-                "head": {"seq": m.head.0, "hash": m.head.1}}),
-            );
-        }
-        // Each target, outside the lock; after a write, one that failed
-        // lately waits out RETRY_AFTER (the others don't wait for it).
+        let head = cut.head().clone();
+        // The destination, outside the lock; after a write, one that
+        // failed lately waits out RETRY_AFTER.
         let records = self.records();
         let now = chrono::Utc::now();
         for n in named {
-            if paused(&n.key, &records) || (why == "write" && failed_lately(&n.key, &records, now))
-            {
+            if why == "write" && failed_lately(&n.key, &records, now) {
                 continue;
             }
             if stoppable && self.hurried() {
-                self.record(json!({"kind": "stopped", "why": why, "during": "push"}));
-                return Err(self.stopped_words(None));
+                self.record(json!({"kind": "stopped", "why": why, "during": "write"}));
+                return Err(self.stopped_words());
             }
-            // Its repository is made only where it never took a backup.
+            let dest = match &n.dest {
+                Ok(d) => d.clone(),
+                Err(e) => {
+                    self.record(
+                        json!({"kind": "push", "why": why, "target": "folder", "at": n.at,
+                        "key": n.key, "ok": false, "error": e, "error_kind": "other"}),
+                    );
+                    continue;
+                }
+            };
+            // Its folder is begun only where it never took a backup.
             let may_create = new_disk || !held_before(&n.key, &records);
             let step = self.begin()?;
-            let git = self.git_for(why);
-            let (dir, book, t) = (self.dir.clone(), self.book.clone(), n.target.clone());
-            let pushed = tokio::task::spawn_blocking(move || {
+            let ctx = self.ctx_for(why);
+            let cut = cut.clone();
+            let written = tokio::task::spawn_blocking(move || {
                 let _step = step;
-                backup::push(&git?, &dir, &book, &t, may_create)
+                backup::write_destination(&dest, &cut, may_create, &ctx)
             })
             .await
-            .unwrap_or(Err(BackupError::Damaged("the push stopped".into())));
-            let _ = self.note_locks();
-            match pushed {
-                Ok(commit) => self.record(
-                    json!({"kind": "push", "why": why, "target": n.target.kind(),
-                    "at": n.at, "key": n.key, "ok": true, "commit": commit,
+            .unwrap_or(Err(BackupError::Damaged("the backup stopped".into())));
+            match written {
+                Ok(w) => self.record(
+                    json!({"kind": "push", "why": why, "target": "folder", "at": n.at,
+                    "key": n.key, "ok": true, "number": w.number, "new": w.new,
                     "head": {"seq": head.0, "hash": head.1}}),
                 ),
-                // Stopped by a close: not a failure of the target, and not
-                // a success: said once, of the run (INVARIANT 11).
+                // Stopped by a close: not a failure of the destination, and
+                // not a success: said once, of the run (INVARIANT 10).
                 Err(BackupError::Cancelled(_)) if stoppable => {
-                    self.record(json!({"kind": "stopped", "why": why, "during": "push",
-                        "target": n.target.kind(), "key": n.key}));
-                    return Err(self.stopped_words(None));
+                    self.record(json!({"kind": "stopped", "why": why, "during": "write",
+                        "key": n.key}));
+                    return Err(self.stopped_words());
                 }
-                Err(e) => {
-                    let lock_left = matches!(e, BackupError::LockLeft(_));
-                    self.record(
-                        json!({"kind": "push", "why": why, "target": n.target.kind(),
-                        "at": n.at, "key": n.key, "ok": false, "error": e.to_string()}),
-                    );
-                    // A stop that left a lock is a failure the owner must
-                    // hear of, and the call is told both.
-                    if stoppable && self.hurried() && lock_left {
-                        return Err(self.stopped_words(Some(&hide(&e.to_string(), &self.dir))));
-                    }
-                }
+                Err(e) => self.record(
+                    json!({"kind": "push", "why": why, "target": "folder", "at": n.at,
+                    "key": n.key, "ok": false, "error": e.to_string(),
+                    "error_kind": error_kind(&e)}),
+                ),
             }
         }
         Ok(self.status().await)
     }
 
     /// What a run a close stopped answers: that it was stopped because the
-    /// books are closing (the call's access record says so), and, if it left
-    /// a lock in the owner's folder, that too.
-    fn stopped_words(&self, also: Option<&str>) -> String {
-        match also {
-            None => crate::server::STOPPED_BY_CLOSE_WORDS.to_string(),
-            Some(more) => format!("{} Also: {more}", crate::server::STOPPED_BY_CLOSE_WORDS),
-        }
+    /// books are closing (the call's access record says so).
+    fn stopped_words(&self) -> String {
+        crate::server::STOPPED_BY_CLOSE_WORDS.to_string()
     }
 
     /// The format upgrade, after a verified local backup with the keys
-    /// (plan/served.md 3.9, D-39; INVARIANT 9). The caller has the owner's
+    /// (plan/served.md 3.9, D-39; INVARIANT 8). The caller has the owner's
     /// go-ahead (the passphrase, checked by the server).
     ///
     /// Under the store's lock, so nothing is written between the backup
-    /// and the upgrade: the books committed to their archive (made
-    /// whatever targets the settings name, or none), the archive cloned
-    /// and proven to hold the books exactly as they are, journal, stored
-    /// files, vault and keys ([`backup::prove_archive`]); only then this
-    /// version's journal format declared (ledger_store
-    /// `Store::upgrade_format`). Books already in it: nothing is done.
-    /// Both the backup and the upgrade are records of `ops/backup.jsonl`;
-    /// the targets take them at the next backup, the books having moved.
+    /// and the upgrade: the books written to their local backup (whatever
+    /// destination the settings name, or none), that backup proven to hold
+    /// the books exactly as they are, journal, stored files, vault and keys
+    /// ([`backup::prove_local`]); only then this version's journal format
+    /// declared (ledger_store `Store::upgrade_format`). Books already in it:
+    /// nothing is done. Both the backup and the upgrade are records of
+    /// `ops/backup.jsonl`; the destination takes them at the next backup,
+    /// the books having moved.
     pub async fn upgrade_format(&self) -> Result<Upgraded, String> {
         let _one = self.running.lock().await;
         // Books let go of, between the request's start and now, upgrade
         // nothing and leave no record (a failure written through this
         // handle would land in the book's record after it was opened
-        // again): INVARIANT 10.
+        // again): INVARIANT 9.
         let step = self.begin()?;
         let (store, dir, book) = (self.store.clone(), self.dir.clone(), self.book.clone());
-        let git_for_upgrade = self.hurried_git();
+        let ctx = self.hurried_ctx();
         let cancel = self.hurry.clone();
         let done = tokio::task::spawn_blocking(move || {
             let _step = step;
             // Books that wait for nothing are left as they are: not even
-            // their archive is made or staged (asked again under the lock
-            // below; only an upgrade moves the format, one at a time).
+            // their local backup is made (asked again under the lock below;
+            // only an upgrade moves the format, one at a time).
             match store.with_store(|s| (s.journal_format().upgrade().is_none(), s.head())) {
                 Ok((true, head)) => {
                     return Ok(Upgraded {
@@ -811,11 +748,6 @@ impl Backups {
                 Ok((false, _)) => {}
                 Err(why) => return Err(UpgradeFailed::stopped(why)),
             }
-            // Stored files staged ahead, outside the lock (as a backup's).
-            let git = git_for_upgrade;
-            if let Ok(git) = &git {
-                let _ = backup::stage_blobs(git, &dir);
-            }
             store
                 .with_store_mut(|s| -> Result<Upgraded, UpgradeFailed> {
                     let head = s.head();
@@ -826,28 +758,21 @@ impl Backups {
                             head,
                         });
                     };
-                    let git = git.map_err(UpgradeFailed::backup)?;
-                    let made = backup::commit(&git, &dir, &book, head.clone())
-                        .map_err(UpgradeFailed::backup)?;
+                    let cut =
+                        Cut::take(&book, &dir, head.clone()).map_err(UpgradeFailed::backup)?;
+                    let made =
+                        backup::write_local(&dir, &cut, &ctx).map_err(UpgradeFailed::backup)?;
                     let scratch = ledger_store::ops::ops_dir(&dir).join("upgrade-check");
                     let _ = std::fs::remove_dir_all(&scratch);
-                    let proven = backup::prove_archive(&git, &dir, &head, &scratch)
-                        .and_then(|p| match &made {
-                            // The commit proven is the one just made.
-                            Some(m) if m.commit != p.commit => Err(BackupError::Damaged(
-                                "the backup it proved isn't the one it made".into(),
-                            )),
-                            _ => Ok(p),
-                        })
-                        .map_err(|e| UpgradeFailed::proof(made.clone(), e))?;
-                    let commit = proven.commit;
-                    // The last look for a close (INVARIANT 11): once the
+                    backup::prove_local(&dir, &book, &head, &scratch, &ctx)
+                        .map_err(|e| UpgradeFailed::proof(Some(made.clone()), e))?;
+                    // The last look for a close (INVARIANT 10): once the
                     // `journal.format_set` line is appended the upgrade
                     // finishes, which is quick; before it, it is stopped,
                     // the books unchanged.
                     if cancel.load(Ordering::SeqCst) {
                         return Err(UpgradeFailed {
-                            made: made.clone(),
+                            made: Some(made.clone()),
                             why: "the books are closing: nothing was upgraded".into(),
                         });
                     }
@@ -865,13 +790,13 @@ impl Backups {
                             );
                             Some(waiting)
                         }
-                        Err(e) => return Err(UpgradeFailed::store(made.clone(), e)),
+                        Err(e) => return Err(UpgradeFailed::store(Some(made.clone()), e)),
                     };
                     Ok(Upgraded {
                         upgrade,
                         backup: Some(UpgradeBackup {
-                            made: made.is_some(),
-                            commit,
+                            made: made.new,
+                            commit: format!("local backup {}", made.number),
                             head,
                         }),
                         head: s.head(),
@@ -882,7 +807,6 @@ impl Backups {
         })
         .await
         .unwrap_or_else(|_| Err(UpgradeFailed::stopped("the upgrade stopped".into())));
-        let _ = self.note_locks();
         match done {
             Ok(u) => {
                 if let (Some(b), Some(up)) = (&u.backup, &u.upgrade) {
@@ -904,7 +828,8 @@ impl Backups {
                 if let Some(m) = &failed.made {
                     self.record(
                         json!({"kind": "commit", "why": "format_upgrade", "ok": true,
-                        "commit": m.commit, "head": {"seq": m.head.0, "hash": m.head.1}}),
+                        "commit": format!("local backup {}", m.number),
+                        "head": {"seq": m.head.0, "hash": m.head.1}}),
                     );
                 }
                 let why = hide(&failed.why, &self.dir);
@@ -916,8 +841,8 @@ impl Backups {
 
     /// Whether a drill is due (INVARIANT 5).
     pub async fn drill_due(&self) -> bool {
-        // Through the store first: books let go name no target, and their
-        // record isn't read for a timer.
+        // Through the store first: books let go name no destination, and
+        // their record isn't read for a timer.
         let named = self.named().await;
         if named.is_empty() || self.is_shut() {
             return false;
@@ -927,7 +852,8 @@ impl Backups {
         named.iter().any(|n| drill_due(&n.key, &records, now))
     }
 
-    /// Drill each target whose drill is due (INVARIANT 5), each recorded.
+    /// Drill each destination whose drill is due (INVARIANT 5), each
+    /// recorded.
     pub async fn drill(&self) {
         let _one = self.running.lock().await;
         if self.is_shut() || self.store.is_stopped() {
@@ -936,43 +862,44 @@ impl Backups {
         let records = self.records();
         let now = chrono::Utc::now();
         for n in self.named().await {
-            if paused(&n.key, &records) || !drill_due(&n.key, &records, now) {
+            if !drill_due(&n.key, &records, now) {
                 continue;
             }
             if self.hurried() {
                 return;
             }
+            let Ok(dest) = n.dest.clone() else {
+                continue;
+            };
             let Ok(step) = self.begin() else {
                 return;
             };
-            let git = self.hurried_git();
-            let (dir, book, t) = (self.dir.clone(), self.book.clone(), n.target.clone());
+            let ctx = self.hurried_ctx();
+            let (dir, book) = (self.dir.clone(), self.book.clone());
             let drilled = tokio::task::spawn_blocking(move || {
                 let _step = step;
-                let scratch = ledger_store::ops::ops_dir(&dir).join(format!("drill-{}", t.kind()));
+                let scratch = ledger_store::ops::ops_dir(&dir).join("drill-folder");
                 let _ = std::fs::remove_dir_all(&scratch);
-                let git = git?;
                 backup::drill(
-                    &git,
-                    &t,
+                    &dest,
                     &book,
                     &dir.join(ledger_store::JOURNAL_FILE),
                     &scratch,
+                    &ctx,
                 )
             })
             .await
             .unwrap_or(Err(BackupError::Damaged("the drill stopped".into())));
-            let _ = self.note_locks();
             match drilled {
-                // Stopped by a close (INVARIANT 11): neither a pass nor a
-                // failure, so nothing is said of the target; the drill is
-                // due again when the books next open.
+                // Stopped by a close (INVARIANT 10): neither a pass nor a
+                // failure, so nothing is said of the destination; the drill
+                // is due again when the books next open.
                 Err(BackupError::Cancelled(_)) => {}
                 Ok(head) => {
-                    self.record(json!({"kind": "drill", "target": n.target.kind(),
+                    self.record(json!({"kind": "drill", "target": "folder",
                     "at": n.at, "key": n.key, "ok": true, "head": {"seq": head.0, "hash": head.1}}))
                 }
-                Err(e) => self.record(json!({"kind": "drill", "target": n.target.kind(),
+                Err(e) => self.record(json!({"kind": "drill", "target": "folder",
                     "at": n.at, "key": n.key, "ok": false, "error": e.to_string()})),
             }
         }
@@ -986,7 +913,7 @@ impl Backups {
             .await
             .ok()
             .flatten()
-            .unwrap_or_else(|| standing_of(&[], &[], 0, chrono::Utc::now()))
+            .unwrap_or_else(|| standing_of(&[], &[], 0, chrono::Utc::now(), None))
     }
 
     /// The standing, read from `store` (held by the caller: books.start).
@@ -995,16 +922,21 @@ impl Backups {
     }
 }
 
+/// The old backup history's folder in a book's folder: left alone.
+const OLD_ARCHIVE_DIR: &str = "archive.git";
+
 fn standing(store: &ledger_store::Store, book: &str, dir: &Path) -> Status {
     let records =
         ledger_store::chain::read(&ledger_store::ops::ops_dir(dir).join(LOG_FILE), GENESIS)
             .map(|r| r.records)
             .unwrap_or_default();
+    let old_remote = store.ledger().settings().backup_git_remote().is_some();
     standing_of(
-        &targets(store, book),
+        &targets(store, book, dir),
         &records,
         store.head().0,
         chrono::Utc::now(),
+        Some(old_remote),
     )
 }
 
@@ -1013,22 +945,38 @@ fn standing_of(
     records: &[Map<String, Value>],
     head_seq: u64,
     now: chrono::DateTime<chrono::Utc>,
+    old_remote: Option<bool>,
 ) -> Status {
+    let targets: Vec<TargetStatus> = named
+        .iter()
+        .map(|n| status_of("folder", &n.at, &n.key, n.sealed, records, head_seq, now))
+        .collect();
+    // The old forms, said until a backup has been made in the new one
+    // (INVARIANT 12).
+    let mut notes: Vec<&str> = Vec::new();
+    if named.is_empty() {
+        notes.push(NONE_SET);
+    }
+    if old_remote == Some(true) {
+        notes.push(OLD_REMOTE);
+    }
+    let new_form_made = records.iter().any(|r| is(r, "push") && ok(r));
+    let old_archive_at = records.iter().rposition(|r| is(r, "old_archive"));
+    if old_archive_at.is_some_and(|i| !records[i..].iter().any(|r| is(r, "push") && ok(r)))
+        && !new_form_made
+    {
+        notes.push(OLD_ARCHIVE);
+    }
     Status {
         head_seq,
-        note: named.is_empty().then(|| {
-            "no backups are set up: set backup.git_remote (a private repository) and backup.folder (a folder on another disk) with books.set_setting".to_string()
-        }),
-        targets: named
-            .iter()
-            .map(|n| status_of(n.target.kind(), &n.at, &n.key, records, head_seq, now))
-            .collect(),
+        note: (!notes.is_empty()).then(|| notes.join(" ")),
+        targets,
     }
 }
 
 impl Status {
-    /// Whether the human should hear of it: none set up, or one stale,
-    /// failing, or failing its drill.
+    /// Whether the human should hear of it: none set up, an old form to
+    /// act on, or one stale, failing, or failing its drill.
     pub fn needs_attention(&self) -> bool {
         self.note.is_some()
             || self
@@ -1112,17 +1060,6 @@ fn text_field(r: &Map<String, Value>, field: &str) -> Option<String> {
     r.get(field).and_then(Value::as_str).map(str::to_string)
 }
 
-/// Whether the target `key` is paused for books restored beside others
-/// (INVARIANT 7).
-fn paused(key: &str, records: &[Map<String, Value>]) -> bool {
-    records.iter().any(|r| {
-        is(r, "restored")
-            && r.get("paused")
-                .and_then(Value::as_array)
-                .is_some_and(|keys| keys.iter().any(|k| k.as_str() == Some(key)))
-    })
-}
-
 /// Whether the target `key` took a backup of these books (INVARIANT 6).
 fn held_before(key: &str, records: &[Map<String, Value>]) -> bool {
     records.iter().any(|r| {
@@ -1133,10 +1070,6 @@ fn held_before(key: &str, records: &[Map<String, Value>]) -> bool {
                     .is_some_and(|keys| keys.iter().any(|k| k.as_str() == Some(key))))
     })
 }
-
-/// What books restored beside others are told of the repository paused
-/// for them.
-pub const PAUSED: &str = "not backed up here: these books were restored as a copy of the books this repository keeps, and backing up here would stop theirs; name a repository of their own (backup.git_remote)";
 
 /// Whether the target `key`'s last push failed less than RETRY_AFTER ago.
 fn failed_lately(
@@ -1182,6 +1115,7 @@ fn status_of(
     kind: &str,
     at: &str,
     key: &str,
+    sealed: bool,
     records: &[Map<String, Value>],
     head_seq: u64,
     now: chrono::DateTime<chrono::Utc>,
@@ -1221,21 +1155,23 @@ fn status_of(
         .filter(|r| !ok(r))
         .and_then(|r| text(r, "error"));
     let drill = records.iter().rfind(|r| is(r, "drill") && of(r, key));
-    let paused = paused(key, records);
+    let disconnected = records
+        .iter()
+        .rfind(|r| is(r, "push") && of(r, key))
+        .is_some_and(|r| {
+            !ok(r) && r.get("error_kind").and_then(Value::as_str) == Some("no_folder")
+        });
     TargetStatus {
         target: kind.to_string(),
         at: at.to_string(),
         last_ok_at: last_ok.and_then(|i| text(&records[i], "ts")),
         through_seq,
-        stale: behind && old && head_seq > 0 && !paused,
-        last_error: if paused {
-            Some(PAUSED.to_string())
-        } else {
-            last_error
-        },
+        stale: behind && old && head_seq > 0,
+        last_error,
         last_drill_at: drill.and_then(|r| text(r, "ts")),
         drill_error: drill.filter(|r| !ok(r)).and_then(|r| text(r, "error")),
-        paused,
+        sealed,
+        disconnected,
     }
 }
 
@@ -1248,11 +1184,11 @@ mod tests {
         let dir = Path::new("/home/u/.local/share/wanderbooks/books/acme");
         assert_eq!(
             hide(
-                "fatal: '/home/u/.local/share/wanderbooks/books/acme/archive.git' and /home/u/.local/share/wanderbooks/run",
+                "cannot write '/home/u/.local/share/wanderbooks/books/acme/journal.jsonl' and /home/u/.local/share/wanderbooks/run",
                 dir
             ),
             format!(
-                "fatal: 'the book's folder/archive.git' and {}/run",
+                "cannot write 'the book's folder/journal.jsonl' and {}/run",
                 ledger_store::root::THE_ROOT
             )
         );
@@ -1288,7 +1224,7 @@ mod tests {
         let now = chrono::Utc::now();
         let r = |kind, ok, seq, ago| rec(now, kind, "k", ok, seq, ago);
         let st = |records: &[Map<String, Value>], head| {
-            status_of("folder", "f", "k", records, head, now)
+            status_of("folder", "f", "k", false, records, head, now)
         };
         let day = chrono::Duration::hours(24);
         let hour = chrono::Duration::hours(1);
@@ -1376,16 +1312,16 @@ mod tests {
         let now = chrono::Utc::now();
         let day = chrono::Duration::hours(24);
         let hour = chrono::Duration::hours(1);
-        // git missing (say) from the first run on: never a push of its own.
+        // The books unreadable (say) from the first run on: never a write of its own.
         let failing = [
             rec(now, "commit", "", false, 0, day + hour),
             rec(now, "commit", "", false, 0, hour),
         ];
-        let t = status_of("folder", "f", "k", &failing, 3, now);
+        let t = status_of("folder", "f", "k", false, &failing, 3, now);
         assert_eq!(t.last_error.as_deref(), Some("commit failed"));
         assert!(t.stale, "{t:?}");
         // Failing an hour only: said, not yet stale.
-        let t = status_of("folder", "f", "k", &failing[1..], 3, now);
+        let t = status_of("folder", "f", "k", false, &failing[1..], 3, now);
         assert_eq!(
             (t.last_error.as_deref(), t.stale),
             (Some("commit failed"), false)
@@ -1397,7 +1333,7 @@ mod tests {
         ]
         .concat();
         assert_eq!(
-            status_of("folder", "f", "k", &mended, 3, now).last_error,
+            status_of("folder", "f", "k", false, &mended, 3, now).last_error,
             None
         );
     }
@@ -1416,15 +1352,9 @@ mod tests {
         let same = [restored("held", &["k"])];
         assert!(held_before("k", &same));
         assert!(!held_before("new", &same));
-        assert!(!paused("k", &same));
-        // Others' (restored beside them): their repository is paused, said.
-        let beside = [restored("paused", &["r"])];
-        assert!(paused("r", &beside));
-        assert!(!paused("k", &beside));
+        // Others' (restored under another id): no backup of theirs is held.
+        let beside = [restored("origin", &["other"])];
         assert!(!held_before("r", &beside));
-        let t = status_of("repository", "x", "r", &beside, 9, now);
-        assert_eq!(t.last_error.as_deref(), Some(PAUSED));
-        assert!(!t.stale && t.paused);
         // A push of its own counts as held, too.
         assert!(held_before(
             "k",
@@ -1448,7 +1378,7 @@ mod tests {
             rec(now, "commit", "", true, 3, day * 2),
             rec(now, "push", "k", false, 0, hour),
         ];
-        let t = status_of("folder", "f", "k", &records, 3, now);
+        let t = status_of("folder", "f", "k", false, &records, 3, now);
         assert!(!t.stale, "{t:?}");
         assert_eq!(t.last_error.as_deref(), Some("push failed"));
         // Holding the head: never stale; one behind since long: stale.
@@ -1456,8 +1386,8 @@ mod tests {
             rec(now, "push", "k", true, 3, day * 3),
             rec(now, "push", "k", false, 0, day * 2),
         ];
-        assert!(!status_of("folder", "f", "k", &held, 3, now).stale);
-        assert!(status_of("folder", "f", "k", &held, 4, now).stale);
+        assert!(!status_of("folder", "f", "k", false, &held, 3, now).stale);
+        assert!(status_of("folder", "f", "k", false, &held, 4, now).stale);
     }
 
     #[test]
@@ -1515,6 +1445,7 @@ mod tests {
             "folder",
             "f",
             "k",
+            false,
             &[pushed.clone(), r("drill", false, hour)],
             3,
             now,
@@ -1525,6 +1456,7 @@ mod tests {
             "folder",
             "f",
             "k",
+            false,
             &[pushed, r("drill", false, hour), r("drill", true, hour)],
             3,
             now,
@@ -1543,7 +1475,8 @@ mod tests {
             last_error: None,
             last_drill_at: None,
             drill_error: None,
-            paused: false,
+            sealed: false,
+            disconnected: false,
         };
         let status = |t: TargetStatus| Status {
             head_seq: 3,

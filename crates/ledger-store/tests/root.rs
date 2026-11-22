@@ -1338,34 +1338,39 @@ fn books_that_changed_since_the_preview_are_not_adopted() {
     assert_eq!(report.source_head, now);
 }
 
-/// A backup of `store`'s books (in `dir`) in a folder target under
-/// `home`: its address.
-fn backed_up(home: &Path, dir: &Path, store: &Store) -> Option<String> {
-    use ledger_store::backup::{self, Git, Target};
-    let git = Git::find().ok()?;
-    backup::commit(&git, dir, "acme", store.head()).unwrap();
+/// A backup of `store`'s books (in `dir`) in a folder under `home`: the
+/// folder.
+fn backed_up(home: &Path, dir: &Path, store: &Store) -> std::path::PathBuf {
+    use ledger_store::backup::{Ctx, Cut, Destination, write_destination};
     let folder = home.join("disk");
     std::fs::create_dir_all(&folder).unwrap();
-    let target = Target::Folder(folder);
-    backup::push(&git, dir, "acme", &target, true).unwrap();
-    Some(target.source("acme"))
+    let cut = Cut::take("acme", dir, store.head()).unwrap();
+    write_destination(
+        &Destination {
+            folder: folder.clone(),
+            key: None,
+        },
+        &cut,
+        true,
+        &Ctx::new(),
+    )
+    .unwrap();
+    folder
 }
 
 #[test]
 fn a_restore_never_moves_books_something_holds() {
-    use ledger_store::backup::Git;
     let home = tmp("restore-held");
     let (root, _) = Root::setup(home.path(), None, None).unwrap();
     let acme = id("acme");
     let held = root.create_book(&acme, Currency::USD).unwrap();
     let dir = root.book_dir(&acme);
-    let source = backed_up(home.path(), &dir, &held).expect("git is installed");
-    let git = Git::find().unwrap();
-    let preview = root.restore_preview(&git, &source, &acme).unwrap();
+    let source = backed_up(home.path(), &dir, &held);
+    let preview = root.restore_preview(&source, None, &acme).unwrap();
     assert!(preview.exists);
     // Open (its writer lock held): refused, nothing moved.
     let e = root
-        .restore(&git, &source, &acme, &preview.head, true)
+        .restore(&source, None, &acme, &preview.head, true)
         .unwrap_err();
     assert!(e.to_string().contains("are open"), "{e}");
     assert!(dir.join(JOURNAL_FILE).is_file());
@@ -1378,17 +1383,17 @@ fn a_restore_never_moves_books_something_holds() {
     );
     // Not over books without --replace; nothing to replace that isn't.
     let e = root
-        .restore(&git, &source, &acme, &preview.head, false)
+        .restore(&source, None, &acme, &preview.head, false)
         .unwrap_err();
     assert!(matches!(e, RootError::Exists(_)), "{e}");
     let e = root
-        .restore(&git, &source, &id("nobody"), &preview.head, true)
+        .restore(&source, None, &id("nobody"), &preview.head, true)
         .unwrap_err();
     assert!(e.to_string().contains("no books called"), "{e}");
     // Let go: replaced, the old kept whole.
     drop(held);
     let r = root
-        .restore(&git, &source, &acme, &preview.head, true)
+        .restore(&source, None, &acme, &preview.head, true)
         .unwrap();
     let kept = root.path().join("legacy").join(r.replaced.unwrap());
     assert!(kept.join(JOURNAL_FILE).is_file());
@@ -1831,17 +1836,16 @@ fn a_job_stopped_at_any_phase_before_its_point_of_no_return_leaves_the_root_as_i
     // restore, over books that exist: they stay as they are.
     let dir = root.book_dir(&id("adopted"));
     let store = Store::open(&dir).unwrap();
-    let source = backed_up(home.path(), &dir, &store).expect("git is installed");
+    let source = backed_up(home.path(), &dir, &store);
     drop(store);
-    let git = ledger_store::backup::Git::find().unwrap();
-    let preview = root.restore_preview(&git, &source, &id("adopted")).unwrap();
+    let preview = root.restore_preview(&source, None, &id("adopted")).unwrap();
     let phases = ["start", "fetch", "copy", "file", "open", "verify", "place"];
     for phase in phases {
         let before = root_files(&root);
         let (stop, seen) = stopping_at(phase);
         let e = refused(root.restore_stoppable(
-            &git,
             &source,
+            None,
             &id("adopted"),
             &preview.head,
             true,
@@ -1858,7 +1862,7 @@ fn a_job_stopped_at_any_phase_before_its_point_of_no_return_leaves_the_root_as_i
     // The preview too: stopped, nothing left of its clone.
     let before = root_files(&root);
     let (stop, _) = stopping_at("fetch");
-    let e = refused(root.restore_preview_stoppable(&git, &source, &id("adopted"), &stop));
+    let e = refused(root.restore_preview_stoppable(&source, None, &id("adopted"), &stop));
     assert!(matches!(e, RootError::Stopped(_)), "{e:?}");
     assert_eq!(root_files(&root), before);
     // Never stopped, a restore asks `place` last and goes through.
@@ -1868,7 +1872,7 @@ fn a_job_stopped_at_any_phase_before_its_point_of_no_return_leaves_the_root_as_i
         std::sync::Arc::new(move |p: &str| seen.lock().unwrap().push(p.to_string()))
     });
     let r = root
-        .restore_stoppable(&git, &source, &id("adopted"), &preview.head, true, &stop)
+        .restore_stoppable(&source, None, &id("adopted"), &preview.head, true, &stop)
         .unwrap();
     assert!(r.replaced.is_some());
     assert_eq!(

@@ -2493,14 +2493,17 @@ fn make_token(
     Ok(info)
 }
 
-/// The id a backup is restored as when none is given: its repository's
-/// name (`acme.git` → `acme`).
+/// The id a backup is restored as when none is given and the backup does
+/// not say whose it is: the name of its folder or file (`acme` or
+/// `acme.wbbackup` → `acme`).
 fn restore_id(source: &str) -> Option<String> {
     let last = source
-        .trim_end_matches('/')
-        .rsplit(['/', ':'])
-        .next()?
-        .trim_end_matches(".git");
+        .trim_end_matches(['/', '\\'])
+        .rsplit(['/', '\\'])
+        .next()?;
+    let last = last
+        .strip_suffix(&format!(".{}", ledger_store::backup::FILE_EXTENSION))
+        .unwrap_or(last);
     ledger_store::root::BookId::parse(last)
         .ok()
         .map(|id| id.to_string())
@@ -2524,6 +2527,9 @@ fn confirmed(question: &str, yes: bool) -> Result<bool, String> {
     Ok(matches!(answer.trim(), "y" | "Y" | "yes" | "Yes"))
 }
 
+/// What the server says of a backup that needs its passphrase.
+const NEEDS_PASSPHRASE: &str = "needs the passphrase it was made with";
+
 /// `wanderbooks books restore` (INVARIANT 3).
 fn restore(
     common: &Common,
@@ -2536,7 +2542,20 @@ fn restore(
         eprintln!("error: {why}");
         Err(exit(1))
     };
-    let plan = match plan_restore(common, source, id, replace, true) {
+    let mut plan = plan_restore(common, source, id.clone(), replace, true, None);
+    // A backup protected by a passphrase (D-92): asked for at a terminal,
+    // unechoed, once; never taken from the command line, where a shell
+    // would keep it.
+    if matches!(&plan, Err(why) if why.contains(NEEDS_PASSPHRASE)) {
+        match rpassword::prompt_password("This backup is protected by a passphrase. Passphrase: ") {
+            Ok(typed) if !typed.is_empty() => {
+                let typed = ledger_mcp::admin::Passphrase(typed);
+                plan = plan_restore(common, source, id, replace, true, Some(typed));
+            }
+            _ => return fail("the backup needs its passphrase: nothing was restored".into()),
+        }
+    }
+    let plan = match plan {
         Ok(plan) => plan,
         Err(why) => return fail(why),
     };
@@ -2566,8 +2585,11 @@ fn restore(
 /// what it would do, a line each (INVARIANT 3: shown before it is done).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RestorePlan {
-    /// The backup, as the server is told it (a folder by its full path).
+    /// The backup, as the server is told it (a folder or a file by its
+    /// full path).
     pub source: String,
+    /// Its passphrase, if it has one (never shown, wiped when dropped).
+    pub passphrase: Option<ledger_mcp::admin::Passphrase>,
     /// The books' id it comes back as.
     pub id: String,
     /// Whether it replaces the books of that id (kept in legacy/).
@@ -2590,15 +2612,16 @@ pub fn plan_restore(
     id: Option<String>,
     replace: bool,
     flags: bool,
+    passphrase: Option<ledger_mcp::admin::Passphrase>,
 ) -> Result<RestorePlan, String> {
-    // A folder is named to the server by its full path (the server's
-    // working folder isn't this one); anything else is an address.
-    let source = match Path::new(source) {
+    // A folder or a file is named to the server by its full path (the
+    // server's working folder isn't this one).
+    let source = match Path::new(source.trim()) {
         p if p.exists() => std::path::absolute(p)
             .unwrap_or_else(|_| p.to_path_buf())
             .display()
             .to_string(),
-        _ => source.trim().to_string(),
+        _ => return Err(format!("there is no backup at {}", source.trim())),
     };
     // One preview (under the id given, or any: it only reports), then the
     // id.
@@ -2614,6 +2637,7 @@ pub fn plan_restore(
             replace,
             confirmed: false,
             expect_head: None,
+            passphrase: passphrase.clone(),
         },
     )? {
         Response::RestorePreview(p) => p,
@@ -2662,6 +2686,18 @@ pub fn plan_restore(
         preview.blobs,
         preview.vault_files
     )];
+    if preview.passed_over > 0 {
+        lines.push(format!(
+            "{} newer backup(s) in it were damaged and passed over: this is the newest that is whole.",
+            preview.passed_over
+        ));
+    }
+    if preview.sealed {
+        lines.push(
+            "It is protected by a passphrase: the restored books keep backing up protected by it, from this computer."
+                .into(),
+        );
+    }
     if let Some(origin) = &preview.origin {
         lines.push(format!("It is a backup of the books \"{origin}\"."));
     }
@@ -2672,19 +2708,16 @@ pub fn plan_restore(
     } else {
         format!("It comes back as new books \"{id}\", beside any others.")
     });
-    match preview.origin.as_deref() {
-        Some(o) if o == id => {}
-        Some(o) => lines.push(format!(
-            "Under a name other than its books' (\"{o}\"), they won't back up to the private repository those books back up to (that would stop theirs): if these are those books, restore them as \"{o}\"{}; else name a repository of their own.",
-            flag(&format!("--id {o}"))
-        )),
-        None => lines.push(
-            "It doesn't say whose books it holds: they won't back up to the private repository their settings name until one of their own is named."
-                .into(),
-        ),
+    if let Some(o) = preview.origin.as_deref()
+        && o != id
+    {
+        lines.push(format!(
+            "They were backed up as \"{o}\"; they come back as \"{id}\" and back up to their own folder in the backup folder."
+        ));
     }
     Ok(RestorePlan {
         source,
+        passphrase,
         id,
         replace,
         head: preview.head,
@@ -2702,6 +2735,7 @@ pub fn carry_out_restore(common: &Common, plan: &RestorePlan) -> Result<Vec<Stri
         replace: plan.replace,
         confirmed: true,
         expect_head: Some(plan.head.clone()),
+        passphrase: plan.passphrase.clone(),
     };
     match with_server(common, request)? {
         Response::Restored(r) => {
@@ -4109,15 +4143,14 @@ mod tests {
     }
 
     #[test]
-    fn a_backup_is_restored_under_its_repository_name() {
+    fn a_backup_is_restored_under_its_folders_or_files_name() {
         for (source, want) in [
-            ("/media/disk/backups/acme.git", Some("acme")),
-            ("/media/disk/backups/acme.git/", Some("acme")),
-            ("git@host:owner/acme-books.git", Some("acme-books")),
-            ("ssh://host/owner/acme", Some("acme")),
-            ("https://host/owner/acme.git", Some("acme")),
-            ("acme.git", Some("acme")),
-            ("/media/disk/Backups/Acme.git", None),
+            ("/media/disk/backups/acme", Some("acme")),
+            ("/media/disk/backups/acme/", Some("acme")),
+            ("/media/disk/acme-books.wbbackup", Some("acme-books")),
+            (r"C:\Backups\acme.wbbackup", Some("acme")),
+            ("acme", Some("acme")),
+            ("/media/disk/Backups/Acme", None),
             ("/", None),
             ("", None),
         ] {

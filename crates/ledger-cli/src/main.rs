@@ -307,10 +307,17 @@ impl ledger_gui::owner::Owner for ViewerOwner {
         source: &str,
         id: Option<String>,
         replace: bool,
+        passphrase: Option<ledger_gui::owner::Secret>,
     ) -> Result<ledger_gui::owner::RestorePlan, String> {
-        let p = ledger_host::commands::plan_restore(&self.common, source, id, replace, false)?;
+        let pass = passphrase.map(|p| ledger_mcp::admin::Passphrase(p.0.clone()));
+        let p =
+            ledger_host::commands::plan_restore(&self.common, source, id, replace, false, pass)?;
         Ok(ledger_gui::owner::RestorePlan {
             source: p.source,
+            passphrase: p
+                .passphrase
+                .as_ref()
+                .map(|p| ledger_gui::owner::Secret(p.0.clone())),
             id: p.id,
             replace: p.replace,
             head: p.head,
@@ -323,6 +330,10 @@ impl ledger_gui::owner::Owner for ViewerOwner {
             &self.common,
             &ledger_host::commands::RestorePlan {
                 source: plan.source.clone(),
+                passphrase: plan
+                    .passphrase
+                    .as_ref()
+                    .map(|p| ledger_mcp::admin::Passphrase(p.0.clone())),
                 id: plan.id.clone(),
                 replace: plan.replace,
                 head: plan.head.clone(),

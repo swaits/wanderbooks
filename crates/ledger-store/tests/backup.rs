@@ -7,7 +7,7 @@
 
 use ledger_core::{AccountType, Currency, Money, Side};
 use ledger_store::Store;
-use ledger_store::backups::{
+use ledger_store::backup::{
     BackupError, BackupKey, Ctx, Cut, Destination, find, save_file, verify_found, write_destination,
 };
 use std::collections::BTreeMap;
@@ -104,7 +104,7 @@ fn prove(
     pass: Option<&str>,
     root: &Path,
     name: &str,
-) -> Result<ledger_store::backups::Verified, BackupError> {
+) -> Result<ledger_store::backup::Verified, BackupError> {
     let found = find(source, pass, &Ctx::new())?;
     verify_found(&found, &root.join(name), true, &Ctx::new())
 }

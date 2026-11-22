@@ -137,6 +137,13 @@ impl BackupKey {
         self.kdf.salt == other.kdf.salt && bool::from(self.master.ct_eq(&*other.master))
     }
 
+    /// A short, public name for this key: what the salt it was derived
+    /// with hashes to. Said in a record to tell one passphrase's backups
+    /// from another's; it opens nothing.
+    pub fn fingerprint(&self) -> String {
+        sha_hex(self.kdf.salt.as_bytes())[..12].to_string()
+    }
+
     /// Keep it, privately, in the book's folder (INVARIANT: owner-only).
     pub fn store(&self, book_dir: &Path) -> Result<(), BackupError> {
         let dir = crate::root::private_book_folder(book_dir, LOCAL_DIR)

@@ -1,11 +1,11 @@
-//! `books.backup` and `books.back_up_now` (plan 3.7, D-30): the books'
+//! `books.backup` and `books.back_up_now` (plan 3.7, D-91): the books'
 //! backups as they stand, and one made now.
 //!
 //! ```text
 //! GOAL: the agent can tell the human whether the books are backed up,
 //!       and back them up now when asked.
 //! SOURCE: plan 3.7 ("books.backup {status|run} reports it": two tools,
-//!         one read-only), D-30.
+//!         one read-only), D-91.
 //! INVARIANTS:
 //!   1. A status reads the backup record only; a run makes and pushes a
 //!      backup (backup.rs) and answers the status after it.
@@ -29,7 +29,7 @@ pub struct BackUpNowParams {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct TargetOut {
-    /// "repository" (the private repository) or "folder".
+    /// "folder".
     pub target: String,
     /// Where it is.
     pub at: String,
@@ -42,12 +42,14 @@ pub struct TargetOut {
     /// Why its last backup failed, if it did.
     pub last_error: Option<String>,
     /// When its backup was last proven restorable (UTC), if ever: each
-    /// is cloned and checked weekly.
+    /// is rebuilt and checked weekly.
     pub last_drill_at: Option<String>,
     /// Why that check failed, if it did: tell the human.
     pub drill_error: Option<String>,
-    /// Not backed up there: these books were restored as a copy of others.
-    pub paused: bool,
+    /// Protected by a passphrase.
+    pub sealed: bool,
+    /// Its disk isn't connected: tell the human to connect it.
+    pub disconnected: bool,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -77,7 +79,8 @@ impl From<crate::backup::Status> for BackupOut {
                     last_error: t.last_error,
                     last_drill_at: t.last_drill_at,
                     drill_error: t.drill_error,
-                    paused: t.paused,
+                    sealed: t.sealed,
+                    disconnected: t.disconnected,
                 })
                 .collect(),
         }
@@ -89,7 +92,7 @@ impl BooksServer {
     #[tool(
         name = "books.backup",
         title = "Backups",
-        description = "Whether the books are backed up: each backup target the settings name (backup.git_remote, a private repository; backup.folder, a folder on another disk), when it last took the books, through which journal seq, and why it failed if it did. stale: it lacks the latest, and the first try to back that up was more than a day ago: tell the human. The books back themselves up a little after each change, when they open and before they close; books.back_up_now makes one now.",
+        description = "Whether the books are backed up: the backup folder the settings name (backup.folder: a folder on another disk, or one a sync service keeps), when it last took the books, through which journal seq, when it was last proven restorable, and why it failed if it did. stale: it lacks the latest, and the first try to back that up was more than a day ago: tell the human. disconnected: its disk isn't there. The books back themselves up a little after each change, when they open and before they close; books.back_up_now makes one now.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn backup(&self, _params: Parameters<BackupParams>) -> Result<Json<BackupOut>, String> {
@@ -99,7 +102,7 @@ impl BooksServer {
     #[tool(
         name = "books.back_up_now",
         title = "Back up now",
-        description = "Back the books up now to every target the settings name, and answer how each went (as books.backup). new_disk: true only when the human says the backup folder's disk is new: the books' backup is then begun there again. Needs books:admin.",
+        description = "Back the books up now to the backup folder the settings name, and answer how it went (as books.backup). new_disk: true only when the human says the backup folder's disk is new: the books' backup is then begun there again. Needs books:admin.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,

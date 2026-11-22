@@ -382,7 +382,10 @@ impl Agent {
             .unwrap();
         let _ = std::fs::remove_file(&path);
         if !out.status.success() {
-            return Err(String::from_utf8_lossy(&out.stderr).to_string());
+            return Err(format!(
+                "{UPLOAD_COMMAND}{}",
+                String::from_utf8_lossy(&out.stderr)
+            ));
         }
         Ok(begun["upload_id"].as_str().unwrap().to_string())
     }
@@ -463,6 +466,12 @@ fn chart(a: &mut Agent) {
         .unwrap();
     }
 }
+
+/// What a stop is prefixed with when it is the `wanderbooks upload`
+/// command that met it (not `books.begin_upload`, a call through the
+/// bridge): a command of its own that holds no lease, so it can't know who
+/// closed the books.
+const UPLOAD_COMMAND: &str = "the upload command: ";
 
 fn post_one(a: &mut Agent, n: u64) -> Result<u64, String> {
     let e = a.call(
@@ -905,9 +914,23 @@ fn closing_during_a_burst_of_posts_through_the_bridge_loses_nothing() {
         }
         let (mut posted, why) = poster.join().unwrap();
         assert!(!posted.is_empty(), "{how}: nothing posted");
-        // Told the owner closed them: never "closing, not run", which the
-        // bridge sends again, and never "may have run".
-        assert!(why.contains("closed the books"), "{how}: stopped by {why}");
+        // The step the close met decides the words. A call through the
+        // bridge is told the owner closed them: never "closing, not run",
+        // which the bridge sends again, and never "may have run". The
+        // upload step is a command of its own (it holds no lease, so it
+        // can't know who closed the books): with nothing running it says
+        // so, or that the books closed under it, and did nothing. Which
+        // step the close lands in is up to the timing, and either is a
+        // clean stop: what the rest of the test proves is that nothing
+        // posted is lost and nothing is posted twice.
+        match why.strip_prefix(UPLOAD_COMMAND) {
+            Some(words) => assert!(
+                words.contains("Start Wanderbooks first: nothing has the books open")
+                    || words.contains("the books were closed just now"),
+                "{how}: the upload command stopped by {words}"
+            ),
+            None => assert!(why.contains("closed the books"), "{how}: stopped by {why}"),
+        }
         assert!(
             !why.contains("may or may not"),
             "{how}: a call was cut off: {why}"

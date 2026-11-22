@@ -575,6 +575,7 @@ fn prove_books(
         .collect();
     drop(store);
     ctx.phase("vault");
+    ctx.check("reading its vault")?;
     if !tins.is_empty() {
         let held: BTreeSet<&str> = m.vault.iter().map(|n| n.piece.sha256.as_str()).collect();
         if let Some(missing) = tins.iter().find(|h| !held.contains(h.as_str())) {

@@ -727,3 +727,224 @@ fn the_text_read_from_a_stored_file_is_a_stored_file_too() {
     );
     assert_eq!(v.head, s.head());
 }
+
+// --- what the removed tests of the old form protected ------------------------
+
+#[test]
+fn a_purged_vault_leaves_the_next_backup_and_not_the_earlier_ones() {
+    let dir = tempfile::tempdir().unwrap();
+    let b = dir.path().join("book");
+    let s = book(&b);
+    std::fs::create_dir_all(b.join("vault")).unwrap();
+    std::fs::write(b.join("vault").join("tin-1.bin"), b"sealed record").unwrap();
+    std::fs::create_dir_all(b.join("keys")).unwrap();
+    std::fs::write(b.join("keys").join("legacy.key"), "ab".repeat(32)).unwrap();
+    let disk = dir.path().join("disk");
+    std::fs::create_dir(&disk).unwrap();
+    write_destination(&plain(&disk), &cut(&b, &s), true, &Ctx::new()).unwrap();
+    // The vault is purged to nothing: the next backup holds none, the
+    // earlier one still does (nothing in a destination is deleted).
+    std::fs::remove_file(b.join("vault").join("tin-1.bin")).unwrap();
+    std::fs::remove_dir(b.join("vault")).unwrap();
+    let w = write_destination(&plain(&disk), &cut(&b, &s), true, &Ctx::new()).unwrap();
+    assert!(w.new && w.number == 2, "{w:?}");
+    let now = prove(&disk, None, dir.path(), "now").unwrap();
+    assert!(!now.tree.join("vault").exists());
+    assert_eq!(
+        std::fs::read_to_string(now.tree.join("keys").join("legacy.key")).unwrap(),
+        "ab".repeat(32)
+    );
+    let then = dir.path().join("then");
+    copy_tree(&disk, &then);
+    std::fs::remove_file(then.join("acme/manifests/000002.json")).unwrap();
+    let old = prove(&then, None, dir.path(), "old").unwrap();
+    assert_eq!(
+        std::fs::read(old.tree.join("vault").join("tin-1.bin")).unwrap(),
+        b"sealed record"
+    );
+}
+
+#[test]
+fn a_scratch_file_left_by_a_dead_program_never_stops_the_next_backup() {
+    let dir = tempfile::tempdir().unwrap();
+    let b = dir.path().join("book");
+    let mut s = book(&b);
+    let disk = dir.path().join("disk");
+    std::fs::create_dir(&disk).unwrap();
+    write_destination(&plain(&disk), &cut(&b, &s), true, &Ctx::new()).unwrap();
+    // What a program that died leaves: a scratch file, a short manifest at
+    // the next number (its number is spent), a piece cut short.
+    let set = disk.join("acme");
+    std::fs::write(set.join("manifests").join(".wb-tmp-9-abcdef"), b"half").unwrap();
+    std::fs::write(
+        set.join("manifests").join("000002.json"),
+        b"{\"format\":\"wan",
+    )
+    .unwrap();
+    more(&mut s, 1);
+    let w = write_destination(&plain(&disk), &cut(&b, &s), true, &Ctx::new()).unwrap();
+    assert!(w.new && w.number == 3, "{w:?}");
+    let v = prove(&disk, None, dir.path(), "v").unwrap();
+    assert_eq!(v.head, s.head());
+}
+
+#[test]
+fn a_stored_file_that_does_not_match_its_name_is_refused_and_nothing_is_written() {
+    let dir = tempfile::tempdir().unwrap();
+    let b = dir.path().join("book");
+    let s = book(&b);
+    let sha = ledger_store::journal::sha256_hex(b"%PDF-1.4 r");
+    let blob = b.join("blobs").join(&sha[0..2]).join(&sha[2..4]).join(&sha);
+    std::fs::write(&blob, b"changed under its name").unwrap();
+    let disk = dir.path().join("disk");
+    std::fs::create_dir(&disk).unwrap();
+    let err = write_destination(&plain(&disk), &cut(&b, &s), true, &Ctx::new()).unwrap_err();
+    assert!(matches!(err, BackupError::Damaged(_)), "{err:?}");
+    // No manifest: nothing there is a backup.
+    assert!(
+        !tree(&disk)
+            .keys()
+            .any(|n| n.contains("manifests/") && n.ends_with(".json"))
+    );
+}
+
+#[test]
+fn a_drill_proves_this_books_history_only() {
+    use ledger_store::backup::drill;
+    let dir = tempfile::tempdir().unwrap();
+    let (b1, b2) = (dir.path().join("one"), dir.path().join("two"));
+    let (mut s1, s2) = (book(&b1), book(&b2));
+    let disk = dir.path().join("disk");
+    std::fs::create_dir(&disk).unwrap();
+    write_destination(&plain(&disk), &cut(&b1, &s1), true, &Ctx::new()).unwrap();
+    let head = s1.head();
+    // The books move on: the backup is the beginning of their journal.
+    more(&mut s1, 1);
+    let got = drill(
+        &plain(&disk),
+        "acme",
+        &b1.join("journal.jsonl"),
+        &dir.path().join("d1"),
+        &Ctx::new(),
+    )
+    .unwrap();
+    assert_eq!(got, head);
+    assert!(!dir.path().join("d1").exists(), "the scratch is removed");
+    // Another book's history under the same name: not this book's.
+    let err = drill(
+        &plain(&disk),
+        "acme",
+        &b2.join("journal.jsonl"),
+        &dir.path().join("d2"),
+        &Ctx::new(),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, BackupError::Damaged(_)),
+        "{err:?} {:?}",
+        s2.head()
+    );
+    assert!(!dir.path().join("d2").exists());
+}
+
+#[test]
+fn the_local_backup_proves_to_hold_the_book_as_it_is_keys_and_all() {
+    use ledger_store::backup::{prove_local, write_local};
+    let dir = tempfile::tempdir().unwrap();
+    let b = dir.path().join("book");
+    let mut s = book(&b);
+    std::fs::create_dir_all(b.join("keys")).unwrap();
+    std::fs::write(b.join("keys").join("legacy.key"), "ab".repeat(32)).unwrap();
+    let scratch = dir.path().join("check");
+    let c = cut(&b, &s);
+    write_local(&b, &c, &Ctx::new()).unwrap();
+    assert_eq!(
+        prove_local(&b, "acme", &s.head(), &scratch, &Ctx::new()).unwrap(),
+        1
+    );
+    assert!(!scratch.exists(), "the scratch folder is removed");
+    // A changed key, a changed vault record, an extra one, books that moved
+    // on, each refused.
+    std::fs::write(b.join("keys").join("legacy.key"), "cd".repeat(32)).unwrap();
+    assert!(prove_local(&b, "acme", &s.head(), &scratch, &Ctx::new()).is_err());
+    std::fs::write(b.join("keys").join("legacy.key"), "ab".repeat(32)).unwrap();
+    std::fs::create_dir_all(b.join("vault")).unwrap();
+    std::fs::write(b.join("vault").join("tin-2.bin"), b"extra").unwrap();
+    assert!(prove_local(&b, "acme", &s.head(), &scratch, &Ctx::new()).is_err());
+    std::fs::remove_file(b.join("vault").join("tin-2.bin")).unwrap();
+    more(&mut s, 1);
+    assert!(prove_local(&b, "acme", &s.head(), &scratch, &Ctx::new()).is_err());
+    // Written again, it proves the books as they are now.
+    write_local(&b, &cut(&b, &s), &Ctx::new()).unwrap();
+    prove_local(&b, "acme", &s.head(), &scratch, &Ctx::new()).unwrap();
+    assert!(!scratch.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_link_in_a_backup_is_never_followed() {
+    let dir = tempfile::tempdir().unwrap();
+    let b = dir.path().join("book");
+    let s = book(&b);
+    let disk = dir.path().join("disk");
+    std::fs::create_dir(&disk).unwrap();
+    write_destination(&plain(&disk), &cut(&b, &s), true, &Ctx::new()).unwrap();
+    // The journal's piece replaced by a link to a file elsewhere with the
+    // same bytes: it is no piece of the backup.
+    let set = disk.join("acme");
+    let piece = std::fs::read_dir(set.join("journal"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let elsewhere = dir.path().join("elsewhere");
+    std::fs::copy(&piece, &elsewhere).unwrap();
+    std::fs::remove_file(&piece).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, &piece).unwrap();
+    assert!(prove(&disk, None, dir.path(), "v").is_err());
+}
+
+#[test]
+fn a_drill_stops_inside_the_phase_it_is_told_to_stop_in() {
+    use ledger_store::backup::drill;
+    let dir = tempfile::tempdir().unwrap();
+    let b = dir.path().join("book");
+    let s = book(&b);
+    let disk = dir.path().join("disk");
+    std::fs::create_dir(&disk).unwrap();
+    write_destination(&plain(&disk), &cut(&b, &s), true, &Ctx::new()).unwrap();
+    // The phases a drill goes through; a stop asked as each begins ends the
+    // drill there (the observer sees no later phase), scratch removed.
+    let phases = ["fetch", "replay", "verify", "blobs", "vault", "prefix"];
+    for stop_at in phases {
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let ctx = {
+            let (stop, seen) = (stop.clone(), seen.clone());
+            Ctx::new()
+                .with_stop(stop.clone())
+                .with_phase_watch(Arc::new(move |p: &str| {
+                    seen.lock().unwrap().push(p.to_string());
+                    if p == stop_at {
+                        stop.store(true, Ordering::SeqCst);
+                    }
+                }))
+        };
+        let scratch = dir.path().join(format!("d-{stop_at}"));
+        let got = drill(
+            &plain(&disk),
+            "acme",
+            &b.join("journal.jsonl"),
+            &scratch,
+            &ctx,
+        );
+        assert!(
+            matches!(got, Err(BackupError::Cancelled(_))),
+            "{stop_at}: {got:?}"
+        );
+        let seen = seen.lock().unwrap().clone();
+        assert_eq!(seen.last().map(String::as_str), Some(stop_at), "{seen:?}");
+        assert!(!scratch.exists(), "{stop_at}: scratch left");
+    }
+}

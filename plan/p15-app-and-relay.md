@@ -523,6 +523,24 @@ From unit B3 (the app's side of the relay), left out on purpose:
   these books" for the old address stay listed until revoked.
 - A first run for the window with no server asks nothing and opens nothing.
 
+From the review of the backups unit (section 9):
+
+- A backup's cut can fall inside an open call (a begin line with no
+  closing line yet); the restored books then close that call as
+  unfinished when they open. Correct, but the cut should wait for the
+  call, as a read does. One unexplained test failure pointed here.
+- The plain form keeps one file per backup in `journal/` and
+  `manifests/`; a FAT32 disk's cap of 65,534 entries in a folder is
+  reached after about 65,000 backups. Not sharded.
+- A books' id that is a reserved name on Windows (`con`, `nul`, …) is
+  still accepted; the books' own folder cannot be made there.
+- Nothing has been run on Windows, macOS, exFAT or a real syncing
+  service; the stand-in-file detection for online-only files is tested
+  for its logic only.
+- Six write tools were never read for writing before refusing: payroll
+  runs, invoice write-offs, schedule runs, period closes, depreciation
+  runs, reconciling.
+
 From the review of unit A2 (the app starts and stops the server), left
 for unit A5 or later:
 

@@ -64,7 +64,6 @@
 
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
-use std::time::SystemTime;
 
 use serde::Deserialize;
 
@@ -72,6 +71,9 @@ use crate::names::Name;
 use crate::proto::{Authority, Binding};
 
 const MAX_AUTHORITIES: usize = 16;
+/// A list file larger than this is refused unread: sixteen entries need a
+/// few kilobytes.
+const MAX_FILE_BYTES: u64 = 64 * 1024;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -127,7 +129,9 @@ struct Listed {
 pub struct AuthorityList {
     current: RwLock<Arc<Vec<Listed>>>,
     source: Option<PathBuf>,
-    seen: std::sync::Mutex<Option<SystemTime>>,
+    /// The text of the file as last read, good or bad: a change is a
+    /// difference in content, never in a file time (see [`AuthorityList::reload`]).
+    seen: std::sync::Mutex<Option<String>>,
     bindings: Option<Arc<dyn BindingSource>>,
 }
 
@@ -199,6 +203,15 @@ fn parse(text: &str) -> Result<Vec<Listed>, ListError> {
     Ok(out)
 }
 
+fn read_file(path: &std::path::Path) -> Result<String, ListError> {
+    if std::fs::metadata(path)?.len() > MAX_FILE_BYTES {
+        return Err(ListError::Invalid(format!(
+            "the file is larger than {MAX_FILE_BYTES} bytes"
+        )));
+    }
+    Ok(std::fs::read_to_string(path)?)
+}
+
 impl AuthorityList {
     /// A list from TOML text.
     pub fn from_toml(text: &str) -> Result<Self, ListError> {
@@ -212,13 +225,12 @@ impl AuthorityList {
 
     /// A list read from a file, and read again by [`AuthorityList::reload`].
     pub fn from_file(path: PathBuf) -> Result<Self, ListError> {
-        let text = std::fs::read_to_string(&path)?;
+        let text = read_file(&path)?;
         let list = parse(&text)?;
-        let seen = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
         Ok(AuthorityList {
             current: RwLock::new(Arc::new(list)),
             source: Some(path),
-            seen: std::sync::Mutex::new(seen),
+            seen: std::sync::Mutex::new(Some(text)),
             bindings: None,
         })
     }
@@ -240,21 +252,30 @@ impl AuthorityList {
         self
     }
 
-    /// Read the file again if it changed. A bad file changes nothing.
-    /// Returns whether the list was replaced.
+    /// Read the file again and replace the list if its content changed. A
+    /// bad file changes nothing. Returns whether the list was replaced.
+    ///
+    /// A change is found by comparing the text with the text last read,
+    /// never by file time: a file time is as coarse as the operating
+    /// system's clock tick (on Windows, about 15 ms), so a second edit
+    /// within one tick keeps the same time and a time check would skip it.
+    /// The file is small (at most 64 KiB) and the relay's housekeeping
+    /// calls this every 30 seconds, so reading it each time costs nothing.
     pub fn reload(&self) -> Result<bool, ListError> {
         let Some(path) = &self.source else {
             return Ok(false);
         };
-        let modified = std::fs::metadata(path).and_then(|m| m.modified()).ok();
+        let text = read_file(path)?;
         {
             let mut seen = self.seen.lock().unwrap_or_else(|p| p.into_inner());
-            if *seen == modified && modified.is_some() {
+            if seen.as_deref() == Some(text.as_str()) {
                 return Ok(false);
             }
-            *seen = modified;
+            // Remembered before it is parsed, so a file that stays bad is
+            // refused once, not on every check; the next edit is read again.
+            *seen = Some(text.clone());
         }
-        let list = parse(&std::fs::read_to_string(path)?)?;
+        let list = parse(&text)?;
         *self.current.write().unwrap_or_else(|p| p.into_inner()) = Arc::new(list);
         Ok(true)
     }
@@ -404,21 +425,53 @@ needs_binding = true
         assert_eq!(l.caa_issuers(), ["letsencrypt.org", "sectigo.com"]);
         let flipped = "[[authority]]\nid='zerossl'\ndirectory='https://acme.zerossl.com/v2/DV90'\ncaa_domain='sectigo.com'\nneeds_binding=true\n[[authority]]\nid='letsencrypt'\ndirectory='https://acme-v02.api.letsencrypt.org/directory'\ncaa_domain='letsencrypt.org'\n";
         std::fs::write(&path, flipped).unwrap();
-        // Same-second edits may not move the mtime: force it to look new.
-        *l.seen.lock().unwrap() = None;
         assert!(l.reload().unwrap());
         assert_eq!(l.for_app(&name())[0].id, "zerossl");
         assert_eq!(l.caa_issuers(), ["sectigo.com", "letsencrypt.org"]);
         std::fs::write(&path, "not toml {{{").unwrap();
-        *l.seen.lock().unwrap() = None;
         assert!(l.reload().is_err());
         assert_eq!(l.for_app(&name())[0].id, "zerossl", "the good list stands");
         // A file that gains a binding secret is a bad file too.
         let secret = format!("{flipped}binding_kid='k'\nbinding_hmac_key='a2V5'\n");
         std::fs::write(&path, secret).unwrap();
-        *l.seen.lock().unwrap() = None;
         assert!(l.reload().is_err());
         assert_eq!(l.for_app(&name())[0].id, "zerossl", "the good list stands");
+    }
+
+    #[test]
+    fn a_second_edit_of_the_same_length_at_once_is_not_missed() {
+        // Nothing here moves a file time or waits: two edits in one clock
+        // tick keep the same time, and the same length, and still change
+        // the list.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("authorities.toml");
+        let with = |ca: &str| {
+            format!("[[authority]]\nid='a'\ndirectory='https://x/d'\ncaa_domain='{ca}.example'\n")
+        };
+        std::fs::write(&path, with("one")).unwrap();
+        let l = AuthorityList::from_file(path.clone()).unwrap();
+        assert!(!l.reload().unwrap(), "unchanged: nothing replaced");
+        for (n, ca) in ["two", "tre", "for", "one"].into_iter().enumerate() {
+            std::fs::write(&path, with(ca)).unwrap();
+            assert!(l.reload().unwrap(), "edit {n} ({ca}) was missed");
+            assert_eq!(l.caa_issuers(), [format!("{ca}.example")]);
+            assert!(!l.reload().unwrap(), "edit {n} read twice");
+        }
+        // A bad file is refused once and the good list stands; fixing it back
+        // to what the list already is changes nothing served but is read.
+        std::fs::write(&path, "garbage {{{").unwrap();
+        assert!(l.reload().is_err());
+        assert!(
+            !l.reload().unwrap(),
+            "the same bad file is not refused twice"
+        );
+        assert_eq!(l.caa_issuers(), ["one.example"]);
+        std::fs::write(&path, with("one")).unwrap();
+        assert!(l.reload().unwrap());
+        // A file too large to be a list is refused unread.
+        std::fs::write(&path, " ".repeat(70 * 1024)).unwrap();
+        assert!(l.reload().is_err());
+        assert_eq!(l.caa_issuers(), ["one.example"]);
     }
 
     #[test]

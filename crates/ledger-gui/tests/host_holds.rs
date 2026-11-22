@@ -80,7 +80,13 @@ impl Owner for Held {
     fn back_up_now(&self, _: &str) -> Result<Vec<String>, String> {
         Err("not here".into())
     }
-    fn plan_restore(&self, _: &str, _: Option<String>, _: bool) -> Result<RestorePlan, String> {
+    fn plan_restore(
+        &self,
+        _: &str,
+        _: Option<String>,
+        _: bool,
+        _: Option<ledger_gui::owner::Secret>,
+    ) -> Result<RestorePlan, String> {
         Err("not here".into())
     }
     fn restore(&self, _: &RestorePlan) -> Result<Vec<String>, String> {

@@ -408,15 +408,21 @@ fn format_lines(dir: &Path) -> usize {
         .count()
 }
 
-/// git, on the books' own backup repository: what it said.
-fn archive_git(dir: &Path, args: &[&str]) -> String {
-    let out = Command::new("git")
-        .arg(format!("--git-dir={}", dir.join("archive.git").display()))
-        .args(args)
-        .output()
-        .unwrap();
-    assert!(out.status.success(), "{out:?}");
-    String::from_utf8(out.stdout).unwrap()
+/// The books' own local backup, proven whole and built in a scratch folder:
+/// the books as they were backed up.
+fn local_backup(dir: &Path) -> PathBuf {
+    use ledger_store::backup::{Ctx, find, verify_found};
+    let scratch = dir.join("scratch-local-backup");
+    let _ = std::fs::remove_dir_all(&scratch);
+    let found = find(
+        &dir.join(ledger_store::backup::LOCAL_DIR),
+        None,
+        &Ctx::new(),
+    )
+    .expect("a local backup is there");
+    verify_found(&found, &scratch, &Ctx::new())
+        .expect("it proves whole")
+        .tree
 }
 
 fn a_setting() -> Value {
@@ -542,7 +548,7 @@ fn format_upgrade_waits_for_consent() {
     );
     assert!(!shown.contains(wrong), "the passphrase was shown: {shown}");
     assert!(
-        !dir.join("archive.git").exists(),
+        !dir.join(ledger_store::backup::LOCAL_DIR).exists(),
         "no backup before consent"
     );
     assert_eq!(format_lines(&dir), 0);
@@ -585,17 +591,14 @@ fn format_upgrade_waits_for_consent() {
     let after = journal(&dir);
     assert!(after.starts_with(&before));
     assert_eq!(format_lines(&dir), 1, "the format moved once");
-    let backup = archive_git(&dir, &["rev-parse", "HEAD"]);
+    let backup = local_backup(&dir);
     assert_eq!(
-        archive_git(&dir, &["show", &format!("{}:journal.jsonl", backup.trim())]).as_bytes(),
+        std::fs::read(backup.join("journal.jsonl")).unwrap(),
         before.as_slice(),
         "the backup holds the books as they were"
     );
     assert_eq!(
-        archive_git(
-            &dir,
-            &["show", &format!("{}:keys/legacy.key", backup.trim())]
-        ),
+        std::fs::read_to_string(backup.join("keys").join("legacy.key")).unwrap(),
         "ab".repeat(32),
         "and their key"
     );
@@ -801,19 +804,18 @@ fn books_p2_served_cut_over_whole() {
         2,
         "P2's declaration, then the upgrade's"
     );
-    let backup = archive_git(&dir, &["rev-parse", "HEAD"]);
+    let backup = local_backup(&dir);
     assert_eq!(
-        archive_git(&dir, &["show", &format!("{}:journal.jsonl", backup.trim())]).as_bytes(),
+        std::fs::read(backup.join("journal.jsonl")).unwrap(),
         waiting.as_slice(),
         "the backup holds the books as they were"
     );
     for kept in ["keys/legacy.key", "vault/tin-1.bin", "vault/tin-3.bin"] {
-        let out = Command::new("git")
-            .arg(format!("--git-dir={}", dir.join("archive.git").display()))
-            .args(["show", &format!("{}:{kept}", backup.trim())])
-            .output()
-            .unwrap();
-        assert_eq!(out.stdout, std::fs::read(dir.join(kept)).unwrap(), "{kept}");
+        assert_eq!(
+            std::fs::read(backup.join(kept)).unwrap(),
+            std::fs::read(dir.join(kept)).unwrap(),
+            "{kept}"
+        );
     }
     assert_eq!(figures(&mut a), before, "the upgrade moves no figure");
 

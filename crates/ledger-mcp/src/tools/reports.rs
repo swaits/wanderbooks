@@ -1124,7 +1124,7 @@ impl BooksServer {
     /// ```text
     /// GOAL: everything the CPA needs for the return in one zip, the K-1s'
     ///       and 1099s' TINs included, without a full TIN ever landing in
-    ///       the books (a git repository) or the conversation.
+    ///       the books or the conversation.
     /// SOURCE: docs/mcp-interface.md; BS-partner-2; DECISION (owner,
     ///         2026-10-15): "it needs to be in the damn CPA package."
     /// INVARIANTS:

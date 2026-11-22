@@ -14,6 +14,7 @@ serde_json = "1"
 serde = "1"
 rust_decimal = "1"
 chrono = "0.4"
+tempfile = "3"
 
 [dependencies.ledger-core]
 path = "../crates/ledger-core"
@@ -57,6 +58,13 @@ bench = false
 [[bin]]
 name = "fuzz_core_serde"
 path = "fuzz_targets/fuzz_core_serde.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_backup_read"
+path = "fuzz_targets/fuzz_backup_read.rs"
 test = false
 doc = false
 bench = false

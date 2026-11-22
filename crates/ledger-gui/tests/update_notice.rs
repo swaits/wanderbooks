@@ -40,7 +40,13 @@ impl Owner for Fake {
     fn back_up_now(&self, _: &str) -> Result<Vec<String>, String> {
         Err("not in these tests".into())
     }
-    fn plan_restore(&self, _: &str, _: Option<String>, _: bool) -> Result<RestorePlan, String> {
+    fn plan_restore(
+        &self,
+        _: &str,
+        _: Option<String>,
+        _: bool,
+        _: Option<ledger_gui::owner::Secret>,
+    ) -> Result<RestorePlan, String> {
         Err("not in these tests".into())
     }
     fn restore(&self, _: &RestorePlan) -> Result<Vec<String>, String> {

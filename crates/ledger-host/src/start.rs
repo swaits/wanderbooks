@@ -12,7 +12,7 @@
 //!      and DBUS_SESSION_BUS_ADDRESS only when they point at this
 //!      account's own private runtime folder, and SSH_AUTH_SOCK only when
 //!      it names a socket this account owns (the owner's ssh agent, so the
-//!      server's backups reach a private git repository, D-30). Nothing
+//!      server's backups reach a folder on the network, D-91). Nothing
 //!      else passes (a scope's own identifiers, such as INVOCATION_ID, are
 //!      systemd's). Two more: APPIMAGE and APPDIR, only when they are
 //!      this program's own (INVARIANT 6), so the host knows its own
@@ -441,9 +441,9 @@ fn scope_made(child: &mut std::process::Child, log: &std::fs::File, from: u64) -
 
 /// The host's environment on Windows (INVARIANT 1's counterpart): the
 /// system's own variables, the account's profile, and a PATH fixed to the
-/// system folders and Git for Windows (the backups run `git`). Nothing
-/// else of the opener's passes. (CHOICE, P11c: no authority states a
-/// Windows list; this is the least a Windows program and `git` need.)
+/// system folders. Nothing else of the opener's passes. (CHOICE, P11c: no
+/// authority states a Windows list; this is the least a Windows program
+/// needs.)
 #[cfg(windows)]
 fn host_env(home: &Path) -> Vec<(String, std::ffi::OsString)> {
     let var = |name: &str| std::env::var_os(name);
@@ -452,12 +452,8 @@ fn host_env(home: &Path) -> Vec<(String, std::ffi::OsString)> {
         .map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from);
     let program_files: PathBuf =
         var("ProgramFiles").map_or_else(|| PathBuf::from(r"C:\Program Files"), PathBuf::from);
-    let path = std::env::join_paths([
-        system_root.join("System32"),
-        system_root.clone(),
-        program_files.join("Git").join("cmd"),
-    ])
-    .unwrap_or_default();
+    let path = std::env::join_paths([system_root.join("System32"), system_root.clone()])
+        .unwrap_or_default();
     let mut env: Vec<(String, std::ffi::OsString)> = vec![
         ("PATH".into(), path),
         ("SystemRoot".into(), system_root.clone().into_os_string()),

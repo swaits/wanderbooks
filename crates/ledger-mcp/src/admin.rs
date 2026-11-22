@@ -121,8 +121,8 @@ pub enum Request {
     Restore {
         /// The books' id.
         id: String,
-        /// The backup: a git repository's address, or its folder
-        /// (`<book>.git` in the backup folder).
+        /// The backup: a backup folder, the folder of one set of books in
+        /// it, or a backup file (`.wbbackup`), by its full path.
         source: String,
         /// Replace the books called `id`.
         #[serde(default)]
@@ -133,8 +133,12 @@ pub enum Request {
         /// The head the preview read: restored only if still so.
         #[serde(default)]
         expect_head: Option<(u64, String)>,
+        /// The backup's passphrase, when it is protected by one (D-92):
+        /// never shown, never kept.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        passphrase: Option<Passphrase>,
     },
-    /// Back books up now (plan 3.7): to every target their settings name.
+    /// Back books up now (plan 3.7): to the folder their settings name.
     BackUpNow {
         /// The books.
         id: String,
@@ -142,6 +146,43 @@ pub enum Request {
         /// there again.
         #[serde(default)]
         new_disk: bool,
+    },
+    /// Begin a new backup set beside the old one in the backup folder, and
+    /// back the books up to it (the books are behind the folder's: as
+    /// after a restore from an older backup): only at the person's
+    /// request; the old set is never touched.
+    BackUpNewSet {
+        /// The books.
+        id: String,
+    },
+    /// Set up a book's backups (D-91, D-92): the folder, and the
+    /// passphrase.
+    BackupSetup {
+        /// The books.
+        id: String,
+        /// The backup folder, by its whole path: set as the books'
+        /// `backup.folder`, the owner the one who decided.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        folder: Option<String>,
+        /// Protect the backups with this passphrase (never shown, never
+        /// kept: the key it makes is kept on this computer).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        passphrase: Option<Passphrase>,
+        /// Take the passphrase off.
+        #[serde(default)]
+        remove_passphrase: bool,
+    },
+    /// How a book's backups stand.
+    BackupStatus {
+        /// The books.
+        id: String,
+    },
+    /// Save a backup of a book as one file.
+    BackupSave {
+        /// The books.
+        id: String,
+        /// The file, by its whole path (.wbbackup is added if missing).
+        path: String,
     },
     /// Make a token for an agent (plan 3.3).
     TokenCreate {
@@ -509,7 +550,7 @@ pub enum CloseOutcome {
     /// sessions ended, and another process could open it.
     Closed,
     /// It was open and is closed as `Closed` says, but its last backup
-    /// wasn't whole (a target that couldn't be reached, git that failed, or
+    /// wasn't whole (a folder that couldn't be reached, a copy that failed, or
     /// a backup stopped after its time): why, in words. The books on disk
     /// are whole; what they hold since the last good backup is not backed
     /// up.
@@ -660,6 +701,19 @@ pub struct RestorePreview {
     /// The id of the books it holds, as they were backed up.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
+    /// Whether it is protected by a passphrase.
+    #[serde(default)]
+    pub sealed: bool,
+    /// Newer backups in it that were not whole or were damaged and were
+    /// passed over: not zero means this is not the newest backup there is.
+    #[serde(default)]
+    pub passed_over: u64,
+    /// When this backup was made (UTC), as its manifest says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub written: Option<String>,
+    /// When the newest backup there is was made (UTC), if it can be read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub newest_written: Option<String>,
 }
 
 /// What a restore did.
@@ -687,7 +741,7 @@ pub struct Restored {
 /// How one backup target took a backup now.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BackedUpTarget {
-    /// "repository" or "folder".
+    /// "folder".
     pub target: String,
     /// Where (no path in the data root).
     pub at: String,
@@ -697,6 +751,51 @@ pub struct BackedUpTarget {
     /// Why it holds no backup of the latest, if it doesn't.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub problem: Option<String>,
+}
+
+/// How a book's backups stand, for the window and the command line.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackupStanding {
+    /// The books' head seq now.
+    pub head_seq: u64,
+    /// The backup folder chosen, if one is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
+    /// Protected by a passphrase.
+    pub sealed: bool,
+    /// When it last took the books (UTC), if ever.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_ok_at: Option<String>,
+    /// The journal seq it holds, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub through_seq: Option<u64>,
+    /// More than a day behind.
+    pub stale: bool,
+    /// Why its last backup failed, if it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    /// When it was last proven restorable (UTC), if ever.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_drill_at: Option<String>,
+    /// Why that check failed, if it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drill_error: Option<String>,
+    /// Its disk isn't connected.
+    pub disconnected: bool,
+    /// What to know or do: none set up, an older kind no longer used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    /// What kind of trouble the last backup or check had (`ahead`,
+    /// `elsewhere`, `key_missing`, `not_downloaded`, `newest_damaged`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_kind: Option<String>,
+    /// Files in the backup folder found damaged and written again; each is
+    /// left where it is.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub damaged_files: Vec<String>,
+    /// What to tell a person of a folder a sync service keeps (or may).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync: Option<String>,
 }
 
 /// The server's answer.
@@ -729,6 +828,13 @@ pub enum Response {
         /// Each target.
         targets: Vec<BackedUpTarget>,
     },
+    /// What was done, in words (a backup set up or saved).
+    Said {
+        /// A line each.
+        lines: Vec<String>,
+    },
+    /// How a book's backups stand.
+    BackupStatus(BackupStanding),
     /// A token made: its text, shown this once (INVARIANT 6).
     TokenCreated {
         /// The token.
@@ -847,7 +953,11 @@ pub fn call_within(
         | Request::Sessions
         | Request::RemoteStatus
         | Request::RemotePending
+        | Request::BackupStatus { .. }
         | Request::RemoteApprovals { .. } => None,
+        Request::BackupSetup { .. } | Request::BackupSave { .. } => {
+            Some("`wanderbooks books backup-status BOOK` says how the backups stand")
+        }
         Request::RemoteStart { .. }
         | Request::RemoteStop
         | Request::RemoteAllow { .. }
@@ -863,7 +973,7 @@ pub fn call_within(
         Request::Create { .. } | Request::Adopt { .. } | Request::Restore { .. } => {
             Some("`wanderbooks books list` shows the books there are")
         }
-        Request::BackUpNow { .. } => {
+        Request::BackUpNow { .. } | Request::BackUpNewSet { .. } => {
             Some("`wanderbooks books back-up` again backs up whatever it didn't")
         }
         Request::TokenCreate { .. } | Request::TokenRevoke { .. } => {
@@ -988,17 +1098,18 @@ mod tests {
     #[test]
     fn a_restore_request_is_a_preview_unless_confirmed() {
         let r: Envelope = serde_json::from_value(
-            json!({"proto": 1, "op": "restore", "id": "acme", "source": "/backups/acme.git"}),
+            json!({"proto": 1, "op": "restore", "id": "acme", "source": "/backups/acme"}),
         )
         .unwrap();
         assert_eq!(
             r.request,
             Request::Restore {
                 id: "acme".into(),
-                source: "/backups/acme.git".into(),
+                source: "/backups/acme".into(),
                 replace: false,
                 confirmed: false,
                 expect_head: None,
+                passphrase: None,
             }
         );
     }
@@ -1075,6 +1186,10 @@ mod tests {
                 vault_files: 1,
                 exists: true,
                 origin: Some("acme".into()),
+                sealed: false,
+                passed_over: 0,
+                written: None,
+                newest_written: None,
             }),
             Response::Restored(Restored {
                 id: "acme".into(),

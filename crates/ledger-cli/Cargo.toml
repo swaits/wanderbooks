@@ -75,8 +75,6 @@ workspace = true
 # program: `just package-linux`. Paths are relative to the workspace root.
 [package.metadata.generate-rpm]
 name = "wanderbooks"
-# Backups run the system's git (WB-pkg-4): dnf fetches it.
-requires = { git = "*" }
 summary = "Double-entry bookkeeping your agent keeps and you can read"
 license = "MIT OR Apache-2.0"
 url = "https://wanderbooks.ai"

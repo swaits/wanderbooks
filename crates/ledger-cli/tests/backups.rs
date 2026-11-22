@@ -1,12 +1,13 @@
-//! The server's backups (plan 3.7, D-30, D-31): every book served from the
-//! data root backs itself up to the targets its settings name, a while
-//! after it is written, when it opens, before it closes, and when asked.
-//! Oracles: the INVARIANTS of ledger-mcp backup.rs and ledger-store
-//! backup.rs, and plan 3.7's named tests.
+//! The server's backups (plan 3.7, D-91): every book served from the data
+//! root backs itself up to the folder its settings name, a while after it
+//! is written, when it opens, before it closes, and when asked. Oracles:
+//! the INVARIANTS of ledger-mcp backup.rs and ledger-store backup, and
+//! plan 3.7's named tests.
 #![cfg(unix)]
+#![allow(dead_code)]
 
 use ledger_mcp::admin::{self, Request, Response};
-use ledger_store::backup::{self, Git};
+use ledger_store::backup::{Ctx, find, verify_found};
 use ledger_store::root::{BookId, Root};
 use rmcp::ServiceExt;
 use rmcp::model::{CallToolRequestParams, ClientConfig};
@@ -83,18 +84,6 @@ impl Home {
     fn outside(&self, name: &str) -> PathBuf {
         let p = self.dir.path().join("elsewhere").join(name);
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-        p
-    }
-
-    /// A bare repository standing for the private git remote.
-    fn remote(&self) -> PathBuf {
-        let p = self.outside("remote.git");
-        let out = Command::new("git")
-            .args(["init", "-q", "--bare", "-b", "main"])
-            .arg(&p)
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "{out:?}");
         p
     }
 }
@@ -281,19 +270,13 @@ async fn head(c: &Client) -> u64 {
         .unwrap()
 }
 
-/// Name the backup targets in the book's settings.
-async fn set_targets(c: &Client, remote: Option<&Path>, folder: Option<&Path>) {
-    let mut changes = Vec::new();
-    if let Some(r) = remote {
-        changes.push(json!({"key": "backup.git_remote", "value": r.display().to_string()}));
-    }
-    if let Some(f) = folder {
-        changes.push(json!({"key": "backup.folder", "value": f.display().to_string()}));
-    }
+/// Name the backup folder in the book's settings.
+async fn set_folder(c: &Client, folder: &Path) {
     call(
         c,
         "books.set_setting",
-        json!({"changes": changes, "decided_by": "Test Owner", "note": "Backups."}),
+        json!({"changes": [{"key": "backup.folder", "value": folder.display().to_string()}],
+               "decided_by": "Test Owner", "note": "Backups."}),
     )
     .await
     .unwrap();
@@ -377,16 +360,14 @@ async fn backed_up(c: &Client, within: Duration) -> Value {
     }
 }
 
-/// Prove the backup at `source` whole; its head.
+/// Prove the backup at `source` (a destination folder, a set's folder, or a
+/// file) whole; its head.
 fn proven(home: &Home, source: &Path, tag: &str) -> (u64, String) {
     let scratch = home.outside(&format!("scratch-{tag}"));
-    let v = backup::verify(
-        &Git::find().unwrap(),
-        &source.display().to_string(),
-        &scratch,
-    )
-    .unwrap_or_else(|e| panic!("{tag}: {e}"));
-    v.head
+    let found = find(source, None, &Ctx::new()).unwrap_or_else(|e| panic!("{tag}: {e}"));
+    verify_found(&found, &scratch, &Ctx::new())
+        .unwrap_or_else(|e| panic!("{tag}: {e}"))
+        .head
 }
 
 fn live_head(home: &Home, book: &str) -> (u64, String) {
@@ -394,63 +375,61 @@ fn live_head(home: &Home, book: &str) -> (u64, String) {
     (s.journal_seq(), s.head_hash().to_string())
 }
 
+const ALL: [&str; 4] = ["read", "write", "post", "admin"];
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_book_backs_itself_up_to_both_targets_soon_after_a_write() {
-    let home = Home::new("both");
+async fn a_book_backs_itself_up_to_its_folder_soon_after_a_write() {
+    let home = Home::new("folder");
     let server = Server::start(&home, Duration::from_millis(300));
     home.create("acme");
-    let c = connect(
-        &home,
-        "acme",
-        home.token("acme", &["read", "write", "post", "admin"]),
-    )
-    .await;
+    let c = connect(&home, "acme", home.token("acme", &ALL)).await;
     // None set up: said, and nothing is stale.
     let s = call(&c, "books.backup", json!({})).await.unwrap();
     assert_eq!(s["targets"], json!([]));
-    assert!(
-        s["note"].as_str().unwrap().contains("backup.git_remote"),
-        "{s}"
-    );
-    // books.start says so too.
+    assert!(s["note"].as_str().unwrap().contains("backup.folder"), "{s}");
     let steps = |v: Value| v["next_steps"].to_string();
     let start = steps(call(&c, "books.start", json!({})).await.unwrap());
     assert!(start.contains("No backups are set up"), "{start}");
-    let (remote, folder) = (home.remote(), home.outside("disk"));
+    let folder = home.outside("disk");
     std::fs::create_dir_all(&folder).unwrap();
-    set_targets(&c, Some(&remote), Some(&folder)).await;
+    set_folder(&c, &folder).await;
     post_one(&c, 7).await;
     let s = backed_up(&c, Duration::from_secs(30)).await;
     assert_eq!(s["note"], Value::Null);
     let targets = s["targets"].as_array().unwrap();
-    assert_eq!(targets.len(), 2, "{s}");
-    for t in targets {
-        assert_eq!(t["stale"], false, "{t}");
-        assert_eq!(t["last_error"], Value::Null, "{t}");
-        assert!(t["last_ok_at"].is_string(), "{t}");
-    }
+    assert_eq!(targets.len(), 1, "{s}");
+    assert_eq!(targets[0]["stale"], false, "{s}");
+    assert_eq!(targets[0]["sealed"], false, "{s}");
+    assert_eq!(targets[0]["last_error"], Value::Null, "{s}");
+    assert!(targets[0]["last_ok_at"].is_string(), "{s}");
     let start = steps(call(&c, "books.start", json!({})).await.unwrap());
     assert!(!start.contains("books.backup"), "{start}");
-    // backup_does_not_advance_head: the books' head is what was written.
+    // The books' head is what was written, and the folder holds them whole
+    // at it: a folder for the books, plain files, nothing about git.
     let live = live_head(&home, "acme");
     assert_eq!(s["head_seq"].as_u64(), Some(live.0));
-    // Each target holds the books whole, at their head.
-    assert_eq!(proven(&home, &remote, "remote"), live);
-    assert_eq!(proven(&home, &folder.join("acme.git"), "folder"), live);
-    // Its journal is the live journal's beginning (a drill's check).
-    let tree = home.outside("scratch-folder");
+    assert_eq!(proven(&home, &folder, "folder"), live);
     assert!(
-        backup::is_prefix(
-            &home.book_dir("acme").join(ledger_store::JOURNAL_FILE),
-            &tree.join(ledger_store::JOURNAL_FILE)
-        )
-        .unwrap()
+        folder
+            .join("wanderbooks-acme")
+            .join("READ-ME.txt")
+            .is_file()
     );
-    // Nothing an agent is shown names the data root.
+    // Its journal is the live journal's beginning (a drill's check).
+    let scratch = home.outside("scratch-prefix");
+    let found = find(&folder, None, &Ctx::new()).unwrap();
+    let v = verify_found(&found, &scratch, &Ctx::new()).unwrap();
+    assert!(
+        std::fs::read(home.book_dir("acme").join(ledger_store::JOURNAL_FILE))
+            .unwrap()
+            .starts_with(&std::fs::read(v.tree.join(ledger_store::JOURNAL_FILE)).unwrap())
+    );
+    // Nothing an agent is shown names the data root, or git.
     assert!(
         !s.to_string().contains(&home.root().display().to_string()),
         "{s}"
     );
+    assert!(!s.to_string().to_lowercase().contains("git"), "{s}");
     drop(c);
     assert!(server.close().success());
 }
@@ -464,31 +443,18 @@ async fn closing_backs_the_books_up_and_opening_catches_up() {
     let server = Server::start(&home, Duration::from_secs(3600));
     home.create("acme");
     settle().await;
-    let c = connect(
-        &home,
-        "acme",
-        home.token("acme", &["read", "write", "post", "admin"]),
-    )
-    .await;
-    set_targets(&c, None, Some(&folder)).await;
+    let c = connect(&home, "acme", home.token("acme", &ALL)).await;
+    set_folder(&c, &folder).await;
     post_one(&c, 3).await;
     drop(c);
     assert!(server.close().success());
-    let live = live_head(&home, "acme");
-    assert_eq!(proven(&home, &folder.join("acme.git"), "closed"), live);
-
-    // archive_catches_up_at_start: a backup target named while the server
-    // was down (here: the folder was missing then made) is caught up when
-    // the books open.
+    assert_eq!(proven(&home, &folder, "closed"), live_head(&home, "acme"));
+    // A folder named while the server was down, then made, is caught up
+    // when the books open.
     let late = home.outside("late");
     let server = Server::start(&home, Duration::from_secs(3600));
-    let c = connect(
-        &home,
-        "acme",
-        home.token("acme", &["read", "write", "post", "admin"]),
-    )
-    .await;
-    set_targets(&c, None, Some(&late)).await;
+    let c = connect(&home, "acme", home.token("acme", &ALL)).await;
+    set_folder(&c, &late).await;
     // The folder doesn't exist: said plainly, the books unharmed.
     let s = call(&c, "books.back_up_now", json!({})).await.unwrap();
     let err = s["targets"][0]["last_error"]
@@ -496,27 +462,19 @@ async fn closing_backs_the_books_up_and_opening_catches_up() {
         .unwrap_or_default()
         .to_string();
     assert!(err.contains("folder"), "{s}");
+    assert_eq!(s["targets"][0]["disconnected"], true, "{s}");
     let start = call(&c, "books.start", json!({})).await.unwrap()["next_steps"].to_string();
     assert!(start.contains("behind or failing"), "{start}");
     assert!(!err.contains(&home.root().display().to_string()), "{err}");
     drop(c);
     assert!(server.close().success());
-    // The disk is connected while the books are closed: the books catch
-    // up when they open.
     std::fs::create_dir_all(&late).unwrap();
     let server = Server::start(&home, Duration::from_secs(3600));
-    let c = connect(
-        &home,
-        "acme",
-        home.token("acme", &["read", "write", "post", "admin"]),
-    )
-    .await;
+    let c = connect(&home, "acme", home.token("acme", &ALL)).await;
     let s = backed_up(&c, Duration::from_secs(30)).await;
     assert_eq!(s["targets"][0]["last_error"], Value::Null, "{s}");
-    assert_eq!(
-        proven(&home, &late.join("acme.git"), "late"),
-        live_head(&home, "acme")
-    );
+    assert_eq!(s["targets"][0]["disconnected"], false, "{s}");
+    assert_eq!(proven(&home, &late, "late"), live_head(&home, "acme"));
     drop(c);
     assert!(server.close().success());
 }
@@ -528,13 +486,8 @@ async fn backing_up_now_needs_admin_and_never_moves_the_head() {
     std::fs::create_dir_all(&folder).unwrap();
     let server = Server::start(&home, Duration::from_secs(3600));
     home.create("acme");
-    let admin = connect(
-        &home,
-        "acme",
-        home.token("acme", &["read", "write", "post", "admin"]),
-    )
-    .await;
-    set_targets(&admin, None, Some(&folder)).await;
+    let admin = connect(&home, "acme", home.token("acme", &ALL)).await;
+    set_folder(&admin, &folder).await;
     post_one(&admin, 2).await;
     let before = head(&admin).await;
     // A reader sees the standing but can't back up.
@@ -544,74 +497,81 @@ async fn backing_up_now_needs_admin_and_never_moves_the_head() {
         .await
         .unwrap_err();
     assert!(refused.contains("admin"), "{refused}");
-    // Twice: the second has nothing new to commit, and still answers.
+    // Twice: the second has nothing new to write, and still answers.
     for _ in 0..2 {
         let s = call(&admin, "books.back_up_now", json!({})).await.unwrap();
         assert_eq!(s["targets"][0]["through_seq"].as_u64(), Some(before), "{s}");
         assert_eq!(s["targets"][0]["last_error"], Value::Null, "{s}");
     }
     assert_eq!(head(&admin).await, before);
-    assert_eq!(
-        proven(&home, &folder.join("acme.git"), "now"),
-        live_head(&home, "acme")
-    );
+    assert_eq!(proven(&home, &folder, "now"), live_head(&home, "acme"));
     drop((admin, reader));
     assert!(server.close().success());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_backup_that_moved_on_is_never_overwritten() {
-    let home = Home::new("diverged");
-    let remote = home.remote();
-    let server = Server::start(&home, Duration::from_secs(3600));
-    home.create("acme");
-    home.create("other");
-    // Another book's history in the remote first.
-    let other = connect(
-        &home,
-        "other",
-        home.token("other", &["read", "write", "post", "admin"]),
-    )
-    .await;
-    set_targets(&other, Some(&remote), None).await;
-    post_one(&other, 9).await;
-    let s = call(&other, "books.back_up_now", json!({})).await.unwrap();
+async fn a_backup_of_another_history_is_never_written_over() {
+    // Two computers whose books have one id and different histories, one
+    // folder: the second's backup is refused, the folder unchanged.
+    let (a, b) = (Home::new("div-a"), Home::new("div-b"));
+    let folder = a.outside("disk");
+    std::fs::create_dir_all(&folder).unwrap();
+    let (sa, sb) = (
+        Server::start(&a, Duration::from_secs(3600)),
+        Server::start(&b, Duration::from_secs(3600)),
+    );
+    a.create("acme");
+    b.create("acme");
+    let ca = connect(&a, "acme", a.token("acme", &ALL)).await;
+    set_folder(&ca, &folder).await;
+    post_one(&ca, 9).await;
+    let s = call(&ca, "books.back_up_now", json!({})).await.unwrap();
     assert_eq!(s["targets"][0]["last_error"], Value::Null, "{s}");
-    let theirs = proven(&home, &remote, "theirs");
-    // This book's push is refused, the remote unchanged.
-    let acme = connect(
-        &home,
-        "acme",
-        home.token("acme", &["read", "write", "post", "admin"]),
-    )
-    .await;
-    set_targets(&acme, Some(&remote), None).await;
-    post_one(&acme, 1).await;
-    let s = call(&acme, "books.back_up_now", json!({})).await.unwrap();
-    assert!(s["targets"][0]["last_error"].is_string(), "{s}");
+    let theirs = proven(&a, &folder, "theirs");
+    let cb = connect(&b, "acme", b.token("acme", &ALL)).await;
+    set_folder(&cb, &folder).await;
+    post_one(&cb, 1).await;
+    let s = call(&cb, "books.back_up_now", json!({})).await.unwrap();
+    assert!(
+        s["targets"][0]["last_error"]
+            .as_str()
+            .unwrap()
+            .contains("different history"),
+        "{s}"
+    );
     assert_eq!(s["targets"][0]["through_seq"], Value::Null, "{s}");
-    assert_eq!(proven(&home, &remote, "after"), theirs);
-    drop((other, acme));
-    assert!(server.close().success());
+    assert_eq!(proven(&a, &folder, "after"), theirs);
+    drop((ca, cb));
+    assert!(sa.close().success());
+    assert!(sb.close().success());
 }
 
 /// Restore `source` as `id`: the preview, then (if it was one) the
 /// restore confirmed against its head. Ok(what was restored) or Err(why).
 fn restore(home: &Home, id: &str, source: &Path, replace: bool) -> Result<admin::Restored, String> {
+    restore_with(home, id, source, replace, None)
+}
+
+fn restore_with(
+    home: &Home,
+    id: &str,
+    source: &Path,
+    replace: bool,
+    passphrase: Option<&str>,
+) -> Result<admin::Restored, String> {
     let request = |expect_head: Option<(u64, String)>| Request::Restore {
         id: id.into(),
         source: source.display().to_string(),
         replace,
         confirmed: expect_head.is_some(),
         expect_head,
+        passphrase: passphrase.map(|p| admin::Passphrase(p.to_string())),
     };
     let preview = match home.admin(request(None)) {
         Response::RestorePreview(p) => p,
         Response::Refused(why) => return Err(why),
         other => panic!("{other:?}"),
     };
-    // (Whether books of that id exist is said; the restore itself refuses
-    // over them, or replacing none.)
     match home.admin(request(Some(preview.head.clone()))) {
         Response::Restored(r) => {
             assert_eq!(r.head, preview.head);
@@ -639,254 +599,59 @@ async fn figures(c: &Client) -> Value {
     })
 }
 
-/// A git command in `dir` with an identity, for making damaged backups.
-fn git(dir: &Path, args: &[&str]) {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args([
-            "-c",
-            "user.name=t",
-            "-c",
-            "user.email=t@t.invalid",
-            "-c",
-            "commit.gpgsign=false",
-        ])
-        .args(args)
-        .output()
-        .unwrap();
-    assert!(out.status.success(), "{args:?}: {out:?}");
-}
-
-/// A backup of acme (two entries, a receipt each) in the folder target.
+/// A backup of acme (two entries, a receipt each) in the folder.
 async fn backed_up_acme(home: &Home) -> (PathBuf, Value) {
     settle().await;
     let folder = home.outside("disk");
     std::fs::create_dir_all(&folder).unwrap();
-    let c = connect(
-        home,
-        "acme",
-        home.token("acme", &["read", "write", "post", "admin"]),
-    )
-    .await;
-    set_targets(&c, None, Some(&folder)).await;
+    let c = connect(home, "acme", home.token("acme", &ALL)).await;
+    set_folder(&c, &folder).await;
     post_one(&c, 4).await;
     post_one(&c, 5).await;
     let s = call(&c, "books.back_up_now", json!({})).await.unwrap();
     assert_eq!(s["targets"][0]["last_error"], Value::Null, "{s}");
-    (folder.join("acme.git"), figures(&c).await)
+    (folder, figures(&c).await)
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn restore_beside_existing_books_and_on_a_clean_install() {
-    let home = Home::new("beside");
-    let server = Server::start(&home, Duration::from_secs(3600));
-    home.create("acme");
-    let (backup, want) = backed_up_acme(&home).await;
-    // Beside: its own books, the same figures and head.
-    let r = restore(&home, "acme-copy", &backup, false).unwrap();
-    assert_eq!(r.replaced, None);
-    assert_eq!(r.head, live_head(&home, "acme"));
-    let copy = connect(
-        &home,
-        "acme-copy",
-        home.token("acme-copy", &["read", "admin"]),
-    )
-    .await;
-    assert_eq!(figures(&copy).await, want);
-    // Its own backups carry on from the restored history: to the folder
-    // under its own name.
-    let s = call(&copy, "books.back_up_now", json!({})).await.unwrap();
-    assert_eq!(s["targets"][0]["last_error"], Value::Null, "{s}");
-    let folder = backup.parent().unwrap();
-    assert_eq!(
-        proven(&home, &folder.join("acme-copy.git"), "copy"),
-        live_head(&home, "acme-copy")
-    );
-    drop(copy);
-    assert!(server.close().success());
-
-    // restore_on_clean_install: another computer's root, nothing in it.
-    let other = Home::new("clean");
-    let server = Server::start(&other, Duration::from_secs(3600));
-    assert_eq!(books_held(&other), Vec::<String>::new());
-    let r = restore(&other, "acme", &backup, false).unwrap();
-    assert_eq!(r.head, live_head(&home, "acme"));
-    let c = connect(&other, "acme", other.token("acme", &["read"])).await;
-    assert_eq!(figures(&c).await, want);
-    drop(c);
-    assert!(server.close().success());
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn restore_never_overwrites_and_replacing_keeps_the_old_books() {
-    let home = Home::new("replace");
-    let server = Server::start(&home, Duration::from_secs(3600));
-    home.create("acme");
-    let (backup, want) = backed_up_acme(&home).await;
-    let at_backup = live_head(&home, "acme");
-    // The books move on past the backup.
-    let c = connect(
-        &home,
-        "acme",
-        home.token("acme", &["read", "write", "post", "admin"]),
-    )
-    .await;
-    post_one(&c, 6).await;
-    let moved_on = live_head(&home, "acme");
-    assert!(moved_on.0 > at_backup.0);
-    // Not over them.
-    let refused = restore(&home, "acme", &backup, false).unwrap_err();
-    assert!(refused.contains("already books called"), "{refused}");
-    assert_eq!(live_head(&home, "acme"), moved_on);
-    // Replacing books that aren't there is refused too.
-    let refused = restore(&home, "nobody", &backup, true).unwrap_err();
-    assert!(refused.contains("no books called"), "{refused}");
-    // Replacing: the old books kept whole in legacy/, the backup in place.
-    let r = restore(&home, "acme", &backup, true).unwrap();
-    // The restored books are new to the server: backed up as books just
-    // opened, unasked.
-    let fresh = connect(&home, "acme", home.token("acme", &["read"])).await;
-    let deadline = Instant::now() + Duration::from_secs(30);
-    loop {
-        let s = call(&fresh, "books.backup", json!({})).await.unwrap();
-        if s["targets"][0]["last_ok_at"].is_string() {
-            break;
+/// The files under `dir` whose path (below it) starts with `prefix`.
+fn files_below(dir: &Path, prefix: &str) -> Vec<PathBuf> {
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        for e in std::fs::read_dir(dir).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else {
+                out.push(p);
+            }
         }
-        assert!(
-            Instant::now() < deadline,
-            "the restored books weren't backed up: {s}"
-        );
-        tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    drop(fresh);
-    let kept = home.root().join("legacy").join(r.replaced.clone().unwrap());
-    let old = ledger_store::Snapshot::load(&kept).unwrap();
-    assert_eq!((old.journal_seq(), old.head_hash().to_string()), moved_on);
-    assert_eq!(live_head(&home, "acme"), at_backup);
-    // The session of before never reaches the old books: refused, or
-    // (its client opening a new session) the restored ones.
-    if let Ok(start) = call(&c, "books.start", json!({})).await {
-        assert_eq!(start["head"]["seq"].as_u64(), Some(at_backup.0), "{start}");
-    }
-    let c = connect(
-        &home,
-        "acme",
-        home.token("acme", &["read", "write", "post", "admin"]),
-    )
-    .await;
-    assert_eq!(figures(&c).await, want);
-    // And it is written to and backed up as before (the backup's history
-    // carries on: a fast-forward).
-    post_one(&c, 7).await;
-    let s = call(&c, "books.back_up_now", json!({})).await.unwrap();
-    assert_eq!(s["targets"][0]["last_error"], Value::Null, "{s}");
-    assert_eq!(proven(&home, &backup, "after"), live_head(&home, "acme"));
-    drop(c);
-    assert!(server.close().success());
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn restore_refuses_a_damaged_backup_and_writes_nothing() {
-    let home = Home::new("damaged");
-    let server = Server::start(&home, Duration::from_secs(3600));
-    home.create("acme");
-    let (backup, _) = backed_up_acme(&home).await;
-    let before = books_held(&home);
-    let books = home.root().join("books");
-    let names = || {
-        let mut v: Vec<String> = std::fs::read_dir(&books)
+    let mut all = Vec::new();
+    walk(dir, &mut all);
+    all.retain(|p| {
+        p.strip_prefix(dir)
             .unwrap()
-            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-            .collect();
-        v.sort();
-        v
-    };
-    let listed = names();
-    // Each damage in a backup of its own, made from the good one.
-    type Spoil<'a> = (&'a str, &'a dyn Fn(&Path));
-    let damage: [Spoil; 4] = [
-        ("flipped", &|w: &Path| {
-            let j = w.join(ledger_store::JOURNAL_FILE);
-            let text = std::fs::read_to_string(&j).unwrap();
-            std::fs::write(&j, text.replacen("entry 4", "entry 9", 1)).unwrap();
-            git(w, &["commit", "-qam", &git_subject(w)]);
-        }),
-        ("no-blob", &|w: &Path| {
-            git(w, &["rm", "-rq", "blobs"]);
-            git(w, &["commit", "-qm", &git_subject(w)]);
-        }),
-        ("cut", &|w: &Path| {
-            let j = w.join(ledger_store::JOURNAL_FILE);
-            let mut bytes = std::fs::read(&j).unwrap();
-            bytes.truncate(bytes.len() - 10);
-            std::fs::write(&j, bytes).unwrap();
-            git(w, &["commit", "-qam", &git_subject(w)]);
-        }),
-        ("head", &|w: &Path| {
-            git(
-                w,
-                &["commit", "-q", "--allow-empty", "-m", "seq 99 head 00"],
-            );
-        }),
-    ];
-    for (tag, spoil) in damage {
-        let work = home.outside(&format!("work-{tag}"));
-        let out = Command::new("git")
-            .args(["clone", "-q"])
-            .arg(&backup)
-            .arg(&work)
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "{out:?}");
-        spoil(&work);
-        let bad = home.outside(&format!("bad-{tag}.git"));
-        let out = Command::new("git")
-            .args(["clone", "-q", "--bare"])
-            .arg(&work)
-            .arg(&bad)
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "{out:?}");
-        let why = restore(&home, "acme-bad", &bad, false).unwrap_err();
-        assert!(
-            why.contains("can't be restored") || why.contains("can't be trusted"),
-            "{tag}: {why}"
-        );
-        assert!(
-            !why.contains(&home.root().display().to_string()),
-            "{tag}: {why}"
-        );
-        assert!(!why.contains(&bad.display().to_string()), "{tag}: {why}");
-        assert_eq!(books_held(&home), before, "{tag}");
-        assert_eq!(names(), listed, "{tag}");
-    }
-    // An address that isn't a backup: said, nothing written.
-    let why = restore(&home, "acme-bad", &home.outside("nothing-here"), false).unwrap_err();
-    assert!(!why.contains("nothing-here"), "{why}");
-    assert_eq!(names(), listed);
-    assert!(server.close().success());
+            .to_string_lossy()
+            .replace('\\', "/")
+            .starts_with(prefix)
+    });
+    all.sort();
+    all
 }
 
-/// The subject a backup commit of `w`'s journal would have.
-fn git_subject(w: &Path) -> String {
-    let s = ledger_store::Snapshot::load(w);
-    match s {
-        Ok(s) => format!("seq {} head {}", s.journal_seq(), s.head_hash()),
-        // A journal that no longer loads: the subject it had.
-        Err(_) => {
-            let out = Command::new("git")
-                .arg("-C")
-                .arg(w)
-                .args(["log", "-1", "--format=%s"])
-                .output()
-                .unwrap();
-            String::from_utf8_lossy(&out.stdout).trim().to_string()
+fn copy_dir(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for e in std::fs::read_dir(from).unwrap() {
+        let e = e.unwrap();
+        let target = to.join(e.file_name());
+        if e.path().is_dir() {
+            copy_dir(&e.path(), &target);
+        } else {
+            std::fs::copy(e.path(), target).unwrap();
         }
     }
 }
 
-/// Wait until every target's backup has been drilled.
+/// Wait until the folder's backup has been drilled.
 async fn drilled(c: &Client) -> Value {
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
@@ -905,9 +670,8 @@ async fn opening_the_books_drills_a_backup_never_drilled() {
     let home = Home::new("drill");
     let server = Server::start(&home, Duration::from_secs(3600));
     home.create("acme");
-    let (backup, _) = backed_up_acme(&home).await;
+    let (folder, _) = backed_up_acme(&home).await;
     assert!(server.close().success());
-    // Opening the books drills a backup never drilled.
     let server = Server::start_with(
         &home,
         Duration::from_secs(3600),
@@ -918,8 +682,7 @@ async fn opening_the_books_drills_a_backup_never_drilled() {
     assert_eq!(s["targets"][0]["drill_error"], Value::Null, "{s}");
     let start = call(&c, "books.start", json!({})).await.unwrap()["next_steps"].to_string();
     assert!(!start.contains("books.backup"), "{start}");
-    // Its backup was proven where it is: the record names the head.
-    assert!(proven(&home, &backup, "drilled").0 > 0);
+    assert!(proven(&home, &folder, "drilled").0 > 0);
     drop(c);
     assert!(server.close().success());
 }
@@ -929,24 +692,16 @@ async fn restore_drill_failure_is_flagged() {
     let home = Home::new("drill-bad");
     let server = Server::start(&home, Duration::from_secs(3600));
     home.create("acme");
-    let (backup, _) = backed_up_acme(&home).await;
+    let (folder, _) = backed_up_acme(&home).await;
     assert!(server.close().success());
     // The backup is changed behind the books' back.
-    let work = home.outside("tamper");
-    let out = Command::new("git")
-        .args(["clone", "-q"])
-        .arg(&backup)
-        .arg(&work)
-        .output()
-        .unwrap();
-    assert!(out.status.success(), "{out:?}");
-    let j = work.join(ledger_store::JOURNAL_FILE);
-    let text = std::fs::read_to_string(&j).unwrap();
-    std::fs::write(&j, text.replacen("entry 4", "entry 9", 1)).unwrap();
-    git(&work, &["commit", "-qam", "seq 0 head x"]);
-    git(&work, &["push", "-q", "origin", "HEAD:main"]);
-    // Opening the books: nothing is pushed over it, and its first drill
-    // fails, said in books.backup and books.start.
+    let j = &files_below(&folder.join("wanderbooks-acme"), "journal/")[0];
+    let mut b = std::fs::read(j).unwrap();
+    let mid = b.len() / 2;
+    b[mid] ^= 1;
+    std::fs::write(j, b).unwrap();
+    // Opening the books: its first drill fails, said in books.backup and
+    // books.start.
     let server = Server::start_with(
         &home,
         Duration::from_secs(3600),
@@ -955,7 +710,6 @@ async fn restore_drill_failure_is_flagged() {
     let c = connect(&home, "acme", home.token("acme", &["read", "admin"])).await;
     let s = drilled(&c).await;
     assert!(s["targets"][0]["drill_error"].is_string(), "{s}");
-    assert!(s["targets"][0]["last_error"].is_string(), "{s}");
     let start = call(&c, "books.start", json!({})).await.unwrap()["next_steps"].to_string();
     assert!(start.contains("behind or failing"), "{start}");
     drop(c);
@@ -968,12 +722,7 @@ async fn a_write_waits_for_the_quiet_before_it_is_backed_up() {
     let server = Server::start(&home, Duration::from_secs(3600));
     home.create("acme");
     backed_up_acme(&home).await;
-    let c = connect(
-        &home,
-        "acme",
-        home.token("acme", &["read", "write", "post", "admin"]),
-    )
-    .await;
+    let c = connect(&home, "acme", home.token("acme", &ALL)).await;
     post_one(&c, 8).await;
     // Several looks of the loop later, still not: the writing hasn't
     // stopped for long enough.
@@ -989,227 +738,6 @@ async fn a_write_waits_for_the_quiet_before_it_is_backed_up() {
     assert!(server.close().success());
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_restore_is_of_the_backup_previewed_only() {
-    let home = Home::new("previewed");
-    let server = Server::start(&home, Duration::from_secs(3600));
-    home.create("acme");
-    let (backup, _) = backed_up_acme(&home).await;
-    let request = |expect_head: Option<(u64, String)>, confirmed| Request::Restore {
-        id: "copy".into(),
-        source: backup.display().to_string(),
-        replace: false,
-        confirmed,
-        expect_head,
-    };
-    // A preview leaves nothing behind in the books' folder, and clears
-    // what a restore that never finished left.
-    let books = home.root().join("books");
-    std::fs::create_dir(books.join(".restore-junk")).unwrap();
-    let previewed = match home.admin(request(None, false)) {
-        Response::RestorePreview(p) => p.head,
-        other => panic!("{other:?}"),
-    };
-    let dotted: Vec<_> = std::fs::read_dir(&books)
-        .unwrap()
-        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-        .filter(|n| n.starts_with('.'))
-        .collect();
-    assert!(dotted.is_empty(), "{dotted:?}");
-    // Confirmed with no head: refused.
-    match home.admin(request(None, true)) {
-        Response::Refused(why) => assert!(why.contains("preview first"), "{why}"),
-        other => panic!("{other:?}"),
-    }
-    // The backup moves on after the preview: refused, nothing written.
-    let c = connect(
-        &home,
-        "acme",
-        home.token("acme", &["read", "write", "post", "admin"]),
-    )
-    .await;
-    post_one(&c, 9).await;
-    call(&c, "books.back_up_now", json!({})).await.unwrap();
-    match home.admin(request(Some(previewed), true)) {
-        Response::Refused(why) => assert!(why.contains("isn't the one previewed"), "{why}"),
-        other => panic!("{other:?}"),
-    }
-    assert_eq!(books_held(&home), vec!["acme".to_string()]);
-    assert!(!home.root().join("books").join("copy").exists());
-    drop(c);
-    assert!(server.close().success());
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_restore_brings_the_vault_and_its_key() {
-    let home = Home::new("vault");
-    let server = Server::start(&home, Duration::from_secs(3600));
-    home.create("acme");
-    let c = connect(
-        &home,
-        "acme",
-        home.token("acme", &["read", "write", "post", "admin"]),
-    )
-    .await;
-    call(
-        &c,
-        "books.add_party",
-        json!({"name": "Mo", "roles": ["member"]}),
-    )
-    .await
-    .unwrap();
-    call(
-        &c,
-        "books.set_tin",
-        json!({"party": "Mo", "tin": "12-3456789", "tin_type": "ein"}),
-    )
-    .await
-    .unwrap();
-    let (backup, want) = backed_up_acme(&home).await;
-    drop(c);
-    assert!(server.close().success());
-    let other = Home::new("vault-clean");
-    let server = Server::start(&other, Duration::from_secs(3600));
-    let request = |expect_head: Option<(u64, String)>| Request::Restore {
-        id: "acme".into(),
-        source: backup.display().to_string(),
-        replace: false,
-        confirmed: expect_head.is_some(),
-        expect_head,
-    };
-    let preview = match other.admin(request(None)) {
-        Response::RestorePreview(p) => p,
-        other => panic!("{other:?}"),
-    };
-    assert_eq!(preview.vault_files, 1);
-    let r = match other.admin(request(Some(preview.head))) {
-        Response::Restored(r) => r,
-        other => panic!("{other:?}"),
-    };
-    assert_eq!(r.vault_files, 1);
-    // The record and its key, byte for byte.
-    let files = |h: &Home, sub: &str| {
-        let mut v: Vec<(String, Vec<u8>)> = std::fs::read_dir(h.book_dir("acme").join(sub))
-            .unwrap()
-            .map(|e| {
-                let e = e.unwrap();
-                (
-                    e.file_name().to_string_lossy().into_owned(),
-                    std::fs::read(e.path()).unwrap(),
-                )
-            })
-            .collect();
-        v.sort();
-        v
-    };
-    for sub in ["vault", "keys"] {
-        assert!(!files(&home, sub).is_empty(), "{sub}");
-        assert_eq!(files(&other, sub), files(&home, sub), "{sub}");
-    }
-    let c = connect(&other, "acme", other.token("acme", &["read"])).await;
-    assert_eq!(figures(&c).await, want);
-    let party = call(&c, "books.party", json!({"party": "Mo"}))
-        .await
-        .unwrap();
-    assert_eq!(party["party"]["tin"]["in_vault"], true, "{party}");
-    drop(c);
-    assert!(server.close().success());
-
-    // A backup without the vault's key, or without a TIN record the books
-    // name, is not whole.
-    let third = Home::new("vault-short");
-    let server = Server::start(&third, Duration::from_secs(3600));
-    for (gone, said) in [("keys", "key"), ("vault", "TIN record")] {
-        let work = home.outside(&format!("no-{gone}"));
-        let out = Command::new("git")
-            .args(["clone", "-q"])
-            .arg(&backup)
-            .arg(&work)
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "{out:?}");
-        git(&work, &["rm", "-rq", gone]);
-        git(&work, &["commit", "-qm", &git_subject(&work)]);
-        let bad = home.outside(&format!("no-{gone}.git"));
-        let out = Command::new("git")
-            .args(["clone", "-q", "--bare"])
-            .arg(&work)
-            .arg(&bad)
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "{out:?}");
-        let why = restore(&third, "acme", &bad, false).unwrap_err();
-        assert!(why.contains(said), "{gone}: {why}");
-        assert_eq!(books_held(&third), Vec::<String>::new());
-    }
-    assert!(server.close().success());
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_replacing_restore_that_fails_leaves_the_books_open() {
-    let home = Home::new("replace-bad");
-    let server = Server::start(&home, Duration::from_secs(3600));
-    home.create("acme");
-    let (backup, want) = backed_up_acme(&home).await;
-    let before = live_head(&home, "acme");
-    // A backup whose head isn't the one it records.
-    let work = home.outside("work");
-    let out = Command::new("git")
-        .args(["clone", "-q"])
-        .arg(&backup)
-        .arg(&work)
-        .output()
-        .unwrap();
-    assert!(out.status.success(), "{out:?}");
-    git(
-        &work,
-        &["commit", "-q", "--allow-empty", "-m", "seq 99 head 00"],
-    );
-    let bad = home.outside("bad.git");
-    let out = Command::new("git")
-        .args(["clone", "-q", "--bare"])
-        .arg(&work)
-        .arg(&bad)
-        .output()
-        .unwrap();
-    assert!(out.status.success(), "{out:?}");
-    // Its preview is refused; so is a confirm (sent without one), which
-    // lets the books go first, then fails: they are open again, as they
-    // were, nothing moved to legacy.
-    assert!(restore(&home, "acme", &bad, true).is_err());
-    let why = match home.admin(Request::Restore {
-        id: "acme".into(),
-        source: bad.display().to_string(),
-        replace: true,
-        confirmed: true,
-        expect_head: Some(before.clone()),
-    }) {
-        Response::Refused(why) => why,
-        other => panic!("{other:?}"),
-    };
-    assert!(why.contains("can't be"), "{why}");
-    match home.admin(Request::List) {
-        Response::Books(b) => {
-            assert_eq!(b.len(), 1);
-            assert!(b[0].open, "{b:?}");
-        }
-        other => panic!("{other:?}"),
-    }
-    assert_eq!(live_head(&home, "acme"), before);
-    let legacy = home.root().join("legacy");
-    assert!(!legacy.exists() || std::fs::read_dir(&legacy).unwrap().count() == 0);
-    let c = connect(
-        &home,
-        "acme",
-        home.token("acme", &["read", "write", "post", "admin"]),
-    )
-    .await;
-    assert_eq!(figures(&c).await, want);
-    post_one(&c, 3).await;
-    drop(c);
-    assert!(server.close().success());
-}
-
 /// The book's backup record (the test's own data root).
 fn records(home: &Home, book: &str) -> Vec<Value> {
     std::fs::read_to_string(home.book_dir(book).join("ops").join("backup.jsonl"))
@@ -1220,163 +748,11 @@ fn records(home: &Home, book: &str) -> Vec<Value> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn books_restored_beside_their_original_leave_its_repository_alone() {
-    let home = Home::new("beside-remote");
-    let server = Server::start(&home, Duration::from_secs(3600));
-    home.create("acme");
-    settle().await;
-    let (remote, folder) = (home.remote(), home.outside("disk"));
-    std::fs::create_dir_all(&folder).unwrap();
-    let c = connect(
-        &home,
-        "acme",
-        home.token("acme", &["read", "write", "post", "admin"]),
-    )
-    .await;
-    set_targets(&c, Some(&remote), Some(&folder)).await;
-    post_one(&c, 1).await;
-    let s = call(&c, "books.back_up_now", json!({})).await.unwrap();
-    assert!(
-        s["targets"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|t| t["last_error"].is_null()),
-        "{s}"
-    );
-    // A copy beside them, from their repository.
-    let r = restore(&home, "copy", &remote, false).unwrap();
-    assert_eq!(r.origin.as_deref(), Some("acme"));
-    let copy = connect(
-        &home,
-        "copy",
-        home.token("copy", &["read", "write", "post", "admin"]),
-    )
-    .await;
-    post_one(&copy, 2).await;
-    let s = call(&copy, "books.back_up_now", json!({})).await.unwrap();
-    let by = |kind: &str| {
-        s["targets"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|t| t["target"] == kind)
-            .unwrap()
-            .clone()
-    };
-    // Its own folder repository; the shared one paused, and said.
-    assert_eq!(by("folder")["last_error"], Value::Null, "{s}");
-    assert!(
-        by("repository")["last_error"]
-            .as_str()
-            .unwrap()
-            .contains("restored as a copy"),
-        "{s}"
-    );
-    let start = call(&copy, "books.start", json!({})).await.unwrap()["next_steps"].to_string();
-    assert!(start.contains("behind or failing"), "{start}");
-    // The original carries on backing up there.
-    post_one(&c, 3).await;
-    let s = call(&c, "books.back_up_now", json!({})).await.unwrap();
-    assert!(
-        s["targets"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|t| t["last_error"].is_null()),
-        "{s}"
-    );
-    assert_eq!(proven(&home, &remote, "orig"), live_head(&home, "acme"));
-    // Naming a repository of its own ends the pause.
-    let own = home.outside("own.git");
-    let out = Command::new("git")
-        .args(["init", "-q", "--bare", "-b", "main"])
-        .arg(&own)
-        .output()
-        .unwrap();
-    assert!(out.status.success(), "{out:?}");
-    set_targets(&copy, Some(&own), None).await;
-    let s = call(&copy, "books.back_up_now", json!({})).await.unwrap();
-    assert!(
-        s["targets"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|t| t["last_error"].is_null()),
-        "{s}"
-    );
-    drop((c, copy));
-    assert!(server.close().success());
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn restored_books_never_make_their_backup_folder_again() {
-    let home = Home::new("restore-mount");
-    let server = Server::start(&home, Duration::from_secs(3600));
-    home.create("acme");
-    settle().await;
-    let (remote, folder) = (home.remote(), home.outside("disk"));
-    std::fs::create_dir_all(&folder).unwrap();
-    let c = connect(
-        &home,
-        "acme",
-        home.token("acme", &["read", "write", "post", "admin"]),
-    )
-    .await;
-    set_targets(&c, Some(&remote), Some(&folder)).await;
-    post_one(&c, 1).await;
-    call(&c, "books.back_up_now", json!({})).await.unwrap();
-    drop(c);
-    assert!(server.close().success());
-    // On another computer, its backup disk not mounted (the mount point
-    // there, empty): restored from the repository.
-    std::fs::rename(folder.join("acme.git"), home.outside("unmounted.git")).unwrap();
-    let other = Home::new("restore-mount-new");
-    let server = Server::start(&other, Duration::from_secs(3600));
-    restore(&other, "acme", &remote, false).unwrap();
-    let c = connect(&other, "acme", other.token("acme", &["read", "admin"])).await;
-    let s = call(&c, "books.back_up_now", json!({})).await.unwrap();
-    let by = |kind: &str| {
-        s["targets"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|t| t["target"] == kind)
-            .unwrap()
-            .clone()
-    };
-    assert!(
-        by("folder")["last_error"]
-            .as_str()
-            .unwrap()
-            .contains("holds no backup"),
-        "{s}"
-    );
-    assert!(!folder.join("acme.git").exists(), "made on the wrong disk");
-    assert_eq!(by("repository")["last_error"], Value::Null, "{s}");
-    // The human says it's a new disk: begun there again.
-    let s = call(&c, "books.back_up_now", json!({"new_disk": true}))
-        .await
-        .unwrap();
-    assert!(
-        s["targets"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|t| t["last_error"].is_null()),
-        "{s}"
-    );
-    assert!(folder.join("acme.git").join("HEAD").is_file());
-    drop(c);
-    assert!(server.close().success());
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_damaged_backup_record_never_keeps_the_books_shut() {
     let home = Home::new("damaged-record");
     let server = Server::start(&home, Duration::from_secs(3600));
     home.create("acme");
-    backed_up_acme(&home).await;
+    let (folder, _) = backed_up_acme(&home).await;
     assert!(server.close().success());
     let log = home.book_dir("acme").join("ops").join("backup.jsonl");
     let text = std::fs::read_to_string(&log).unwrap();
@@ -1395,12 +771,11 @@ async fn a_damaged_backup_record_never_keeps_the_books_shut() {
     let c = connect(&home, "acme", home.token("acme", &["read", "admin"])).await;
     let s = call(&c, "books.back_up_now", json!({})).await.unwrap();
     assert_eq!(s["targets"][0]["last_error"], Value::Null, "{s}");
-    // What it knew of whose backups the folder holds was kept: gone, the
-    // folder's backup is a disk not connected, never made again.
     drop(c);
     assert!(server.close().success());
-    let folder = home.outside("disk");
-    std::fs::rename(folder.join("acme.git"), home.outside("away.git")).unwrap();
+    // What it knew of whose backups the folder holds was kept: gone, the
+    // folder's backup is a disk not connected, never made again.
+    std::fs::rename(folder.join("wanderbooks-acme"), home.outside("away")).unwrap();
     let server = Server::start(&home, Duration::from_secs(3600));
     let c = connect(&home, "acme", home.token("acme", &["read", "admin"])).await;
     let s = call(&c, "books.back_up_now", json!({})).await.unwrap();
@@ -1411,57 +786,169 @@ async fn a_damaged_backup_record_never_keeps_the_books_shut() {
             .contains("holds no backup"),
         "{s}"
     );
-    assert!(!folder.join("acme.git").exists());
+    assert!(!folder.join("wanderbooks-acme").exists());
     drop(c);
     assert!(server.close().success());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_failing_target_waits_while_the_others_carry_on() {
-    let home = Home::new("one-failing");
+async fn a_failing_destination_is_not_tried_again_after_each_write() {
+    let home = Home::new("failing");
     let server = Server::start(&home, Duration::from_millis(300));
     home.create("acme");
     settle().await;
-    let remote = home.remote();
     let unplugged = home.outside("unplugged");
-    let c = connect(
-        &home,
-        "acme",
-        home.token("acme", &["read", "write", "post", "admin"]),
-    )
-    .await;
-    set_targets(&c, Some(&remote), Some(&unplugged)).await;
+    let c = connect(&home, "acme", home.token("acme", &ALL)).await;
+    set_folder(&c, &unplugged).await;
     let s = call(&c, "books.back_up_now", json!({})).await.unwrap();
-    let folder_fails = |home: &Home| {
+    let pushes = |home: &Home| {
         records(home, "acme")
             .iter()
-            .filter(|r| r["kind"] == "push" && r["target"] == "folder")
+            .filter(|r| r["kind"] == "push")
             .count()
     };
-    let before = folder_fails(&home);
+    let before = pushes(&home);
     assert!(before >= 1, "{s}");
-    // Writes: backed up to the repository soon after each, the folder not
-    // tried again (it failed lately).
+    // Writes: the folder isn't tried again while it failed lately.
     for n in 0..3 {
         post_one(&c, 10 + n).await;
-        let deadline = Instant::now() + Duration::from_secs(30);
-        loop {
-            let s = call(&c, "books.backup", json!({})).await.unwrap();
-            let remote_t = s["targets"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|t| t["target"] == "repository")
-                .unwrap()
-                .clone();
-            if remote_t["through_seq"] == s["head_seq"] {
-                break;
-            }
-            assert!(Instant::now() < deadline, "not backed up: {s}");
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
+        tokio::time::sleep(Duration::from_millis(1500)).await;
     }
-    assert_eq!(folder_fails(&home), before);
+    assert_eq!(pushes(&home), before);
     drop(c);
     assert!(server.close().success());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn old_settings_and_an_old_backup_history_are_left_alone_and_said() {
+    // Books that name a private repository, and carry an old backup
+    // history in their folder: they open and work; the status says plainly
+    // what is no longer used; nothing of the old is read, moved or deleted.
+    let home = Home::new("old-forms");
+    let server = Server::start(&home, Duration::from_secs(3600));
+    home.create("acme");
+    settle().await;
+    let c = connect(&home, "acme", home.token("acme", &ALL)).await;
+    call(
+        &c,
+        "books.set_setting",
+        json!({"changes": [{"key": "backup.git_remote", "value": "https://example.invalid/books"}],
+               "decided_by": "Test Owner", "note": "Old."}),
+    )
+    .await
+    .unwrap();
+    let old = home.book_dir("acme").join("archive.git");
+    drop(c);
+    assert!(server.close().success());
+    std::fs::create_dir_all(old.join("objects")).unwrap();
+    std::fs::write(old.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+    let before = std::fs::read(old.join("HEAD")).unwrap();
+    let server = Server::start(&home, Duration::from_secs(3600));
+    let c = connect(&home, "acme", home.token("acme", &ALL)).await;
+    let s = call(&c, "books.backup", json!({})).await.unwrap();
+    let note = s["note"].as_str().unwrap().to_string();
+    assert!(note.contains("private repository"), "{note}");
+    assert!(note.contains("no longer"), "{note}");
+    assert!(note.contains("older backup folder"), "{note}");
+    assert!(!note.to_lowercase().contains("git"), "{note}");
+    // The books work, and back up to a folder when one is named; the old
+    // is untouched.
+    let folder = home.outside("disk");
+    std::fs::create_dir_all(&folder).unwrap();
+    set_folder(&c, &folder).await;
+    post_one(&c, 1).await;
+    let s = call(&c, "books.back_up_now", json!({})).await.unwrap();
+    assert_eq!(s["targets"][0]["last_error"], Value::Null, "{s}");
+    assert_eq!(std::fs::read(old.join("HEAD")).unwrap(), before);
+    assert!(folder.join("wanderbooks-acme").join("manifests").is_dir());
+    drop(c);
+    assert!(server.close().success());
+}
+
+/// docs/backups.md, "A backup made with an older version": a person who
+/// still has a backup made with git clones it themselves (git is their own
+/// tool now) and adopts the plain folder. What a clone leaves is a working
+/// tree: the books' files as the older version committed them, beside a
+/// `.git` folder. This builds that working tree from the books' files and
+/// adopts it with its vault and key as the docs say. It needs no git on
+/// the machine, so it never skips: the adoption is of a folder, and a
+/// folder is all there is to it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_clone_of_an_old_git_backup_is_adopted_as_a_plain_folder() {
+    let home = Home::new("old-backup");
+    let server = Server::start(&home, Duration::from_secs(3600));
+    home.create("acme");
+    let c = connect(&home, "acme", home.token("acme", &ALL)).await;
+    call(
+        &c,
+        "books.add_party",
+        json!({"name": "Mo", "roles": ["member"]}),
+    )
+    .await
+    .unwrap();
+    call(
+        &c,
+        "books.set_tin",
+        json!({"party": "Mo", "tin": "12-3456789", "tin_type": "ein"}),
+    )
+    .await
+    .unwrap();
+    let (folder, want) = backed_up_acme(&home).await;
+    drop(c);
+    assert!(server.close().success());
+    // The working tree of a clone of the old backup: the books' files, and
+    // the repository's own folder beside them (a few of the files git
+    // keeps there, which adoption must leave out).
+    let book = home.book_dir("acme");
+    let clone = home.outside("acme-old");
+    std::fs::create_dir_all(&clone).unwrap();
+    for part in ["journal.jsonl", "blobs", "vault", "keys", "access.jsonl"] {
+        let from = book.join(part);
+        if from.is_dir() {
+            copy_dir(&from, &clone.join(part));
+        } else if from.is_file() {
+            std::fs::copy(&from, clone.join(part)).unwrap();
+        }
+    }
+    std::fs::create_dir_all(clone.join(".git/refs/heads")).unwrap();
+    std::fs::write(clone.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+    std::fs::write(
+        clone.join(".git/config"),
+        "[core]\n\trepositoryformatversion = 0\n",
+    )
+    .unwrap();
+    assert!(clone.join("journal.jsonl").is_file() && clone.join("vault").is_dir());
+    let other = Home::new("old-backup-new");
+    let server = Server::start(&other, Duration::from_secs(3600));
+    let request = |confirmed: bool, expect_head: Option<(u64, String)>| Request::Adopt {
+        id: "acme".into(),
+        source: clone.clone(),
+        settings_toml: None,
+        config_json: None,
+        vault_dir: Some(clone.join("vault")),
+        vault_key: Some(clone.join("keys").join("legacy.key")),
+        confirmed,
+        expect_head,
+        skip_unknown: false,
+    };
+    let preview = match other.admin(request(false, None)) {
+        Response::Preview(p) => p,
+        r => panic!("{r:?}"),
+    };
+    match other.admin(request(true, Some(preview.source_head))) {
+        Response::Adopted(a) => {
+            assert!(a.problem.is_none(), "{a:?}");
+            assert_eq!(a.head, live_head(&home, "acme"));
+        }
+        r => panic!("{r:?}"),
+    }
+    let c = connect(&other, "acme", other.token("acme", &["read"])).await;
+    assert_eq!(figures(&c).await, want);
+    let party = call(&c, "books.party", json!({"party": "Mo"}))
+        .await
+        .unwrap();
+    assert_eq!(party["party"]["tin"]["in_vault"], true, "{party}");
+    drop(c);
+    assert!(server.close().success());
+    let _ = folder;
 }

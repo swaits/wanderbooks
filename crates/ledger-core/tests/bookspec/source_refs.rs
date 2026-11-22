@@ -114,7 +114,7 @@ const CHECKED_FLOOR: usize = 300;
 /// Clauses passing only through the declared or external free-text
 /// branch. Edit this constant, on purpose, in the same commit that
 /// changes the count.
-const FREE_TEXT_COUNT: usize = 56;
+const FREE_TEXT_COUNT: usize = 54;
 
 fn strip_comment(line: &str) -> Option<String> {
     let t = line.trim_start();

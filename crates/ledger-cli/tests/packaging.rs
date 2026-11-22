@@ -684,26 +684,30 @@ fn only_a_person_runs_the_workflow_that_publishes_the_repositories() {
     );
 }
 
-/// WB-pkg-4: on Linux git is a dependency of every package, so the package
-/// manager fetches it; nothing carries a git of its own.
+/// WB-pkg-4: a backup is plain files the program writes itself, so no
+/// package depends on another program for it and none carries one.
 #[test]
-fn the_linux_packages_depend_on_git_and_none_carries_one() {
-    let packager = read("deploy/packaging/packager.toml");
-    assert_eq!(
-        packager.matches("\"git\"").count(),
-        2,
-        "the deb and the pacman package depend on git"
-    );
-    assert!(read("crates/ledger-cli/Cargo.toml").contains("requires = { git = \"*\" }"));
-    assert!(read("deploy/packaging/aur/PKGBUILD").contains("'git'"));
+fn no_package_depends_on_another_program_for_backups() {
+    let word = |text: &str| {
+        text.to_lowercase()
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .any(|w| w == "git")
+    };
     for file in [
+        "deploy/packaging/packager.toml",
+        "deploy/packaging/aur/PKGBUILD",
+        "crates/ledger-cli/Cargo.toml",
         "deploy/packaging/windows/wanderbooks.nsi",
         "deploy/packaging/macos/build-macos.sh",
     ] {
-        let text = read(file).to_lowercase();
-        assert!(
-            !text.contains("mingit") && !text.contains("git.exe"),
-            "{file} bundles a git"
-        );
+        let text = read(file);
+        // (Cargo.toml may name a git *dependency* of the build, never a
+        // package requirement.)
+        let checked: String = text
+            .lines()
+            .filter(|l| !l.contains("git ="))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!word(&checked), "{file} depends on, or bundles, a git");
     }
 }

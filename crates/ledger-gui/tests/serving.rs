@@ -179,7 +179,13 @@ impl Owner for Fake {
     fn back_up_now(&self, _: &str) -> Result<Vec<String>, String> {
         Err("not here".into())
     }
-    fn plan_restore(&self, _: &str, _: Option<String>, _: bool) -> Result<RestorePlan, String> {
+    fn plan_restore(
+        &self,
+        _: &str,
+        _: Option<String>,
+        _: bool,
+        _: Option<ledger_gui::owner::Secret>,
+    ) -> Result<RestorePlan, String> {
         Err("not here".into())
     }
     fn restore(&self, _: &RestorePlan) -> Result<Vec<String>, String> {
@@ -464,7 +470,13 @@ fn a_window_with_no_server_asks_nothing_of_any() {
         fn back_up_now(&self, _: &str) -> Result<Vec<String>, String> {
             Err("not here".into())
         }
-        fn plan_restore(&self, _: &str, _: Option<String>, _: bool) -> Result<RestorePlan, String> {
+        fn plan_restore(
+            &self,
+            _: &str,
+            _: Option<String>,
+            _: bool,
+            _: Option<ledger_gui::owner::Secret>,
+        ) -> Result<RestorePlan, String> {
             Err("not here".into())
         }
         fn restore(&self, _: &RestorePlan) -> Result<Vec<String>, String> {

@@ -99,7 +99,7 @@
 //!      and the book is let go (INVARIANT 13), its writer lock released, so
 //!      another process could open it; and only then is a close answered.
 //!      It is answered `closed`, or `closed_backup_incomplete` with why when
-//!      its last backup wasn't whole (a target that failed, git that
+//!      its last backup wasn't whole (a folder that failed, a copy that
 //!      failed, a backup stopped after its time): never a plain `closed`
 //!      for a backup that wasn't made. After that answer no call on that
 //!      book runs until it is opened again. Every other book keeps serving,
@@ -114,9 +114,8 @@
 //!      long I/O or loop over a book's whole journal or files are exactly
 //!      these, and each is stoppable:
 //!        - on the book: `books.back_up_now`, and a backup a timer asked for
-//!          (git is sent SIGTERM and killed only after TERM_GRACE: ledger_
-//!          store backup INVARIANT 5; between targets the flag is looked at
-//!          too); `books.verify` (once per journal line replayed and per
+//!          (its copy stops at the next piece, ledger_store backup
+//!          INVARIANT 8; between destinations the flag is looked at too); `books.verify` (once per journal line replayed and per
 //!          stored file hashed); `books.export_cpa_package` (before it
 //!          builds, and once per stored file it reads, unless it has
 //!          journaled a decision: below); a drill; and a
@@ -160,7 +159,7 @@
 //!          their point of no return, and never waits behind one. A
 //!          PREVIEW (of a restore, of an adoption) changes nothing, and
 //!          holds no book's turn at all: a close never waits for one,
-//!          however long its clone or its queue for `books.lock`; only the
+//!          however long its scratch build or its queue for `books.lock`; only the
 //!          server's close stops it. No close of any other book stops, fails,
 //!          refuses or delays an open, a close or a job of X, nor a job
 //!          queued for its turn at making books (`books.lock` in the root,
@@ -171,7 +170,7 @@
 //!          way waits for that book's turn, so for the close to end, and is
 //!          then asked as any other. Each is stopped, before its
 //!          point of no return, at its next look (a phase, a stored file, a
-//!          journal line, a git command): what it wrote is removed (a clone,
+//!          journal line, a piece of a copy): what it wrote is removed (a scratch,
 //!          a staging folder, and the lock file an adoption made in the
 //!          source folder), and the root is byte for byte as it was. The
 //!          point of no return of restore and adopt is the rename that puts
@@ -227,16 +226,14 @@
 //!           ANSWER_GRACE from the START of the close, inside (a): a
 //!           stalled client adds nothing);
 //!        c. T_stop: the longest between two looks of what is stopped, one
-//!           of: a git command's stop (SIGTERM and up to TERM_GRACE, 5 s;
-//!           then a kill and GROUP_GONE_WAIT, 2 s, and its pipes, 10 s at
-//!           most), one journal line, one stored file, one 64 KiB chunk, one
+//!           of: one journal line, one stored file, one 64 KiB chunk, one
 //!           phase of a job; and the removal of what a stopped job or drill
-//!           wrote (its scratch clone or staging folder: a local deletion of
+//!           wrote (its scratch folder or staging folder: a local deletion of
 //!           the job's own output, as long as that is large, waiting on no
 //!           one);
 //!        d. BACKUP_AT_CLOSE for the last backup;
 //!        e. T_stop again for what is left of that backup at its bound
-//!           (`Backups::shut`: git stopped, every step awaited);
+//!           (`Backups::shut`: copying stopped, every step awaited);
 //!        f. closing the logs and letting go of the store (instant).
 //!      A drill (or a format upgrade) that took the backups' turn never
 //!      costs the last backup its time.
@@ -252,7 +249,7 @@
 //!      book's sessions end with the book.
 //!  13. After a close of a book is answered, this process holds nothing
 //!      that can write to that book's folder (journal, access log, ops
-//!      logs, stored files, upload parts, the backup's git repository) or
+//!      logs, stored files, upload parts, the backup folder) or
 //!      read it on a caller's behalf, until the book is opened again; and
 //!      a handle from before a close can never write after a reopen. Every
 //!      path that touches a book is either counted by its gate (a request
@@ -261,11 +258,11 @@
 //!      sweep takes the place too), or checks, under the same lock as its
 //!      write, that the book is still open, and refuses if not: the
 //!      access log, the uploads, the exports and the backups (record,
-//!      git, drill, upgrade) are each closed under the lock their own
+//!      copy, drill, upgrade) are each closed under the lock their own
 //!      writes go in under, by the close, once the gate is empty; the
 //!      store is let go under its lock. A close waits for the backup's
 //!      work to END, not only for its future: a run past its bound is
-//!      stopped (git killed with all it started) and waited for, so the
+//!      stopped (its copy ended at the next piece) and waited for, so the
 //!      close is never answered while a backup runs. The timers (the
 //!      sweep, the look for a backup due, the look for a drill due) work
 //!      on handles that are closed with the book, and so can't act on a
@@ -339,7 +336,7 @@
 //!      answers closed; nothing is written to the book afterwards, and when
 //!      it is opened again its access log continues one whole chain.
 //!   6. A book with a slow backup is closed: not answered while the backup
-//!      runs; at its bound git is stopped and waited for, and the answer
+//!      runs; at its bound the copy is stopped and waited for, and the answer
 //!      says the last backup wasn't whole; nothing runs after.
 //!   7. A restore replaces an open book while an upload is half received:
 //!      the restore is not answered until the upload is, and no part file
@@ -353,23 +350,20 @@
 //!      call running past it, are not cut; an upload that keeps coming,
 //!      steadily, past the grace is cut.
 //!  10. A drill is slow (a large book): the book is closed, the drill is
-//!      stopped at its next look and its clone removed, the last backup is
+//!      stopped at its next look and its scratch folder removed, the last backup is
 //!      made, and the close is answered within INVARIANT 10's bound. A
 //!      format upgrade not yet journaled is stopped the same way, the books
 //!      unchanged.
-//!  11. A backup's git is stopped inside a commit or a push: it is sent
-//!      SIGTERM and removes its own locks (nothing is left, nothing is
-//!      recorded), the book opened again backs up at once. A git that can't
-//!      end on SIGTERM and has to be killed after TERM_GRACE leaves locks
-//!      that this process removes from the book's own archive only, and
-//!      leaves in the owner's backup folder, recorded with their whole path
-//!      and said in the close's answer and in the backup's status, until the
-//!      owner removes them.
+//!  11. A backup's copy is stopped between pieces by a close: it writes no
+//!      manifest, the folder proves whole at its previous one, nothing is
+//!      left to clean up and nothing is recorded as done, and the book
+//!      opened again backs up at once.
 //!  12. The server is closed (standard input ends) with an upload stalled
 //!      on one book and a call's body stalled on another: both are cut one
 //!      grace after the close began, the server exits 0 within its bound.
-//!  13. A backup asked for (`books.back_up_now`) is running, git stalled,
-//!      and the book is closed: the call is answered, git still stalled,
+//!  13. A backup asked for (`books.back_up_now`) is running, its copy
+//!      stalled, and the book is closed: the call is answered, the copy still
+//!      stalled,
 //!      that it was stopped because the books are closing; its record says
 //!      `refused: stopped_by_close`; the close is answered `closed`.
 //!  14. A restore of a large backup over `beta` is running (an admin job)
@@ -1585,7 +1579,8 @@ impl Books {
                 replace,
                 confirmed,
                 expect_head,
-            } => self.restore(id, source, replace, confirmed, expect_head),
+                passphrase,
+            } => self.restore(id, source, replace, confirmed, expect_head, passphrase),
             Request::UpgradeFormat { id, passphrase } => self.upgrade_format(id, &passphrase),
             Request::OpenBook { id } => self.open_one(id),
             Request::CloseBook { id } => self.close_one(id),
@@ -1619,42 +1614,60 @@ impl Books {
                     Err(why) => Response::Refused(self.hide(why)),
                 }
             }
-            Request::BackUpNow { id, new_disk } => {
-                let id = match BookId::parse(&id) {
-                    Ok(id) => id,
-                    Err(e) => return refused(e),
-                };
-                let backups = match self.held().get(id.as_str()) {
-                    Some(Book::Open { backups, .. }) => backups.clone(),
-                    Some(Book::Failed(why)) => {
-                        return Response::Refused(format!("those books didn't open: {why}"));
+            Request::BackUpNewSet { id } => self.back_up_response(&id, false, true),
+            Request::BackUpNow { id, new_disk } => self.back_up_response(&id, new_disk, false),
+            Request::BackupSetup {
+                id,
+                folder,
+                passphrase,
+                remove_passphrase,
+            } => match self.backups_of(&id) {
+                Ok(backups) => {
+                    let rt = tokio::runtime::Handle::current();
+                    let pass = passphrase
+                        .as_ref()
+                        .map(|p| zeroize::Zeroizing::new(p.0.clone()));
+                    match rt.block_on(backups.set_up(folder, pass, remove_passphrase)) {
+                        Ok(lines) => Response::Said { lines },
+                        Err(why) => Response::Refused(self.hide(why)),
                     }
-                    Some(Book::Closed) => return Response::Refused(self.not_open(&id)),
-                    None => {
-                        return Response::Refused(format!(
-                            "there are no books called {:?}",
-                            id.as_str()
-                        ));
-                    }
-                };
-                let rt = tokio::runtime::Handle::current();
-                match rt.block_on(backups.run_with("asked", new_disk)) {
-                    Ok(status) => Response::BackedUp {
-                        head_seq: status.head_seq,
-                        targets: status
-                            .targets
-                            .into_iter()
-                            .map(|t| admin::BackedUpTarget {
-                                target: t.target,
-                                at: t.at,
-                                through_seq: t.through_seq,
-                                problem: t.last_error,
-                            })
-                            .collect(),
-                    },
-                    Err(why) => Response::Refused(self.hide(why)),
                 }
-            }
+                Err(r) => *r,
+            },
+            Request::BackupStatus { id } => match self.backups_of(&id) {
+                Ok(backups) => {
+                    let rt = tokio::runtime::Handle::current();
+                    let s = rt.block_on(backups.window_standing());
+                    let t = s.status.targets.first();
+                    Response::BackupStatus(admin::BackupStanding {
+                        head_seq: s.status.head_seq,
+                        folder: s.folder,
+                        sealed: s.sealed,
+                        last_ok_at: t.and_then(|t| t.last_ok_at.clone()),
+                        through_seq: t.and_then(|t| t.through_seq),
+                        stale: t.is_some_and(|t| t.stale),
+                        last_error: t.and_then(|t| t.last_error.clone()),
+                        last_drill_at: t.and_then(|t| t.last_drill_at.clone()),
+                        drill_error: t.and_then(|t| t.drill_error.clone()),
+                        disconnected: t.is_some_and(|t| t.disconnected),
+                        note: s.status.note,
+                        error_kind: t.and_then(|t| t.error_kind.clone()),
+                        damaged_files: t.map(|t| t.damaged_files.clone()).unwrap_or_default(),
+                        sync: s.sync,
+                    })
+                }
+                Err(r) => *r,
+            },
+            Request::BackupSave { id, path } => match self.backups_of(&id) {
+                Ok(backups) => {
+                    let rt = tokio::runtime::Handle::current();
+                    match rt.block_on(backups.save_file(&path)) {
+                        Ok(lines) => Response::Said { lines },
+                        Err(why) => Response::Refused(self.hide(why)),
+                    }
+                }
+                Err(r) => *r,
+            },
             Request::Adopt {
                 id,
                 source,
@@ -2023,7 +2036,7 @@ impl Books {
     ///     the access log; the client may retry it: INVARIANT 10);
     ///  3. its MCP sessions end;
     ///  4. the last backup, for `backup_at_close` at most; the backups are
-    ///     then shut, which stops a run still going (git killed) and waits
+    ///     then shut, which stops a run still going (its copy stopped) and waits
     ///     for it to end, so the answer never comes while it runs;
     ///  5. the access log, uploads and exports close, each under the lock
     ///     its own writes go in under, so a late writer is refused;
@@ -2092,19 +2105,11 @@ impl Books {
         };
         // A run still going is stopped, and waited for: nothing of the
         // backups runs once this returns.
-        let left = backups.shut().await;
+        backups.shut().await;
         access.close();
         uploads.close();
         exports.close();
         store.let_go().await;
-        // A git stopped at its bound that left locks in the owner's folder:
-        // said with the file, as the standing says it (ledger_store backup
-        // INVARIANT 5b), not only that the backup took too long.
-        let problem = match (problem, left.is_empty()) {
-            (problem, true) => problem,
-            (None, false) => Some(left.join("; ")),
-            (Some(why), false) => Some(format!("{why}; {}", left.join("; "))),
-        };
         problem.map(|why| self.hide(why))
     }
 
@@ -2187,6 +2192,58 @@ impl Books {
         )
     }
 
+    /// The backups of the open book `id`, or the refusal to give a request
+    /// that needs them.
+    /// Back the books `id` up now (`new_disk`: their disk is new; `new_set`:
+    /// begin a new set beside the old one), what came of it.
+    fn back_up_response(&self, id: &str, new_disk: bool, new_set: bool) -> Response {
+        let id = match BookId::parse(id) {
+            Ok(id) => id,
+            Err(e) => return Response::Refused(e.to_string()),
+        };
+        let backups = match self.held().get(id.as_str()) {
+            Some(Book::Open { backups, .. }) => backups.clone(),
+            Some(Book::Failed(why)) => {
+                return Response::Refused(format!("those books didn't open: {why}"));
+            }
+            Some(Book::Closed) => return Response::Refused(self.not_open(&id)),
+            None => {
+                return Response::Refused(format!("there are no books called {:?}", id.as_str()));
+            }
+        };
+        let rt = tokio::runtime::Handle::current();
+        match rt.block_on(backups.run_with_set("asked", new_disk, new_set)) {
+            Ok(status) => Response::BackedUp {
+                head_seq: status.head_seq,
+                targets: status
+                    .targets
+                    .into_iter()
+                    .map(|t| admin::BackedUpTarget {
+                        target: t.target,
+                        at: t.at,
+                        through_seq: t.through_seq,
+                        problem: t.last_error,
+                    })
+                    .collect(),
+            },
+            Err(why) => Response::Refused(self.hide(why)),
+        }
+    }
+
+    fn backups_of(&self, id: &str) -> Result<Arc<crate::backup::Backups>, Box<Response>> {
+        let refused = |text: String| Box::new(Response::Refused(self.hide(text)));
+        let id = BookId::parse(id).map_err(|e| refused(e.to_string()))?;
+        match self.held().get(id.as_str()) {
+            Some(Book::Open { backups, .. }) => Ok(backups.clone()),
+            Some(Book::Failed(why)) => Err(refused(format!("those books didn't open: {why}"))),
+            Some(Book::Closed) => Err(refused(self.not_open(&id))),
+            None => Err(refused(format!(
+                "there are no books called {:?}",
+                id.as_str()
+            ))),
+        }
+    }
+
     /// What is said of a book that exists but isn't open, to an admin
     /// request that needs it open.
     fn not_open(&self, id: &BookId) -> String {
@@ -2203,8 +2260,9 @@ impl Books {
         replace: bool,
         confirmed: bool,
         expect_head: Option<(u64, String)>,
+        passphrase: Option<admin::Passphrase>,
     ) -> Response {
-        // admin INVARIANT 3: never the root, nor the address given.
+        // admin INVARIANT 3: never the root, nor the place given.
         let said = |text: String| {
             let text = if source.chars().count() > 1 {
                 text.replace(&source, "the backup given")
@@ -2217,26 +2275,25 @@ impl Books {
             Ok(id) => id,
             Err(e) => return said(e.to_string()),
         };
-        let git = match ledger_store::backup::Git::find() {
-            Ok(git) => git,
-            Err(e) => return said(e.to_string()),
-        };
+        let from = std::path::PathBuf::from(&source);
+        let pass = passphrase.as_ref().map(|p| p.0.as_str());
         // A preview only reports (whether books of that id exist among
         // what it says), so it changes nothing and takes no book's turn: a
         // close of this id never waits behind its clone and its queue for
         // the books lock (INVARIANT 10). Only the server's close stops it.
         if !confirmed {
             let stop = self.job("restore", &self.server_stop);
-            return match self
-                .root
-                .restore_preview_stoppable(&git, &source, &id, &stop)
-            {
+            return match self.root.restore_preview_stoppable(&from, pass, &id, &stop) {
                 Ok(p) => Response::RestorePreview(admin::RestorePreview {
                     head: p.head,
                     blobs: p.blobs,
                     vault_files: p.vault_files,
                     exists: p.exists,
                     origin: p.origin,
+                    sealed: p.sealed,
+                    passed_over: p.passed_over,
+                    written: p.written,
+                    newest_written: p.newest_written,
                 }),
                 Err(e) => said(e.to_string()),
             };
@@ -2291,7 +2348,7 @@ impl Books {
         }
         match self
             .root
-            .restore_stoppable(&git, &source, &id, &expect_head, replace, &stop)
+            .restore_stoppable(&from, pass, &id, &expect_head, replace, &stop)
         {
             Ok(r) => {
                 // Restored: kept whether or not it opens; its backups told
@@ -4319,24 +4376,19 @@ fn backup_due(
     after(s.target_failed_at).then_some("retry")
 }
 
-/// Whether a run's every target holds the books: a target paused for
-/// these books (restored as a copy of others) is no failure to try again.
+/// Whether a run's every target holds the books: none failed, so none is
+/// to be tried again.
 fn every_target_held(status: &crate::backup::Status) -> bool {
-    status
-        .targets
-        .iter()
-        .all(|t| t.paused || t.last_error.is_none())
+    status.targets.iter().all(|t| t.last_error.is_none())
 }
 
 /// Why the last backup at a close wasn't whole, if it wasn't: a target
-/// that failed, or lacks the books' head (a target paused for books
-/// restored as a copy of others is no failure). None when there is
-/// nothing to say, or no target.
+/// that failed, or lacks the books' head. None when there is nothing to
+/// say, or no target.
 fn backup_incomplete(status: &crate::backup::Status) -> Option<String> {
     let lacking: Vec<String> = status
         .targets
         .iter()
-        .filter(|t| !t.paused)
         .filter_map(|t| match (&t.last_error, t.through_seq) {
             (Some(why), _) => Some(format!("{} failed: {why}", t.at)),
             (None, through) if through != Some(status.head_seq) => {
@@ -4510,9 +4562,9 @@ mod tests {
         w.backed = Some(5);
         assert_eq!(backup_due(Some(&w), 5, at(9 + retry - 1), quiet), None);
         assert_eq!(backup_due(Some(&w), 5, at(9 + retry), quiet), Some("retry"));
-        // A paused target is no failure; another's error is.
-        let target = |paused: bool, error: Option<&str>| crate::backup::TargetStatus {
-            target: "repository".into(),
+        // A target's error is a failure to try again.
+        let target = |error: Option<&str>| crate::backup::TargetStatus {
+            target: "folder".into(),
             at: "x".into(),
             last_ok_at: None,
             through_seq: None,
@@ -4520,20 +4572,20 @@ mod tests {
             last_error: error.map(str::to_string),
             last_drill_at: None,
             drill_error: None,
-            paused,
+            sealed: false,
+            disconnected: false,
+            error_kind: None,
+            damaged_files: Vec::new(),
         };
         let status = |targets| crate::backup::Status {
             head_seq: 5,
             targets,
             note: None,
         };
-        assert!(every_target_held(&status(vec![
-            target(true, Some("paused")),
-            target(false, None)
-        ])));
+        assert!(every_target_held(&status(vec![target(None), target(None)])));
         assert!(!every_target_held(&status(vec![
-            target(false, Some("no")),
-            target(false, None)
+            target(Some("no")),
+            target(None)
         ])));
         assert!(every_target_held(&status(vec![])));
         w.ran(5, Some(true), at(9 + retry));
@@ -5193,19 +5245,15 @@ mod tests {
         .unwrap()
     }
 
-    /// git, on the books' own archive: what it said.
-    fn archive_git(dir: &Path, args: &[&str]) -> String {
-        let out = std::process::Command::new("git")
-            .arg(format!(
-                "--git-dir={}",
-                // A canonical path on Windows carries `\\?\`, which git refuses.
-                ledger_store::root::plain_path(&dir.join("archive.git")).display()
-            ))
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "{out:?}");
-        String::from_utf8(out.stdout).unwrap()
+    /// The books' own local backup, proven whole and built in a scratch
+    /// folder: the books as they were backed up.
+    fn local_backup(dir: &Path, tag: &str) -> ledger_store::backup::Verified {
+        let scratch = dir.join(format!("scratch-{tag}"));
+        let ctx = ledger_store::backup::Ctx::new();
+        let found =
+            ledger_store::backup::find(&dir.join(ledger_store::backup::LOCAL_DIR), None, &ctx)
+                .expect("a local backup is there");
+        ledger_store::backup::verify_found(&found, &scratch, &ctx).expect("it proves whole")
     }
 
     /// plan/served.md 3.9's `format_upgrade_waits_for_consent`, the
@@ -5258,7 +5306,7 @@ mod tests {
         }
         assert_eq!(journal(), before);
         assert!(
-            !dir.join("archive.git").exists(),
+            !dir.join(ledger_store::backup::LOCAL_DIR).exists(),
             "no backup before consent"
         );
         assert!(listed(&books, "acme").format_upgrade.is_some());
@@ -5296,20 +5344,15 @@ mod tests {
         );
         assert_eq!(done.head.0, backup.head.0 + 1);
         // The backup: the books as they were, keys and all, the latest
-        // commit of their archive.
+        // of their local backup.
+        assert_eq!(backup.commit, "local backup 1");
+        let kept = local_backup(&dir, "kept");
         assert_eq!(
-            archive_git(&dir, &["rev-parse", "HEAD"]).trim(),
-            backup.commit
-        );
-        assert_eq!(
-            archive_git(&dir, &["show", &format!("{}:journal.jsonl", backup.commit)]).as_bytes(),
+            std::fs::read(kept.tree.join(ledger_store::JOURNAL_FILE)).unwrap(),
             before.as_slice()
         );
         assert_eq!(
-            archive_git(
-                &dir,
-                &["show", &format!("{}:keys/legacy.key", backup.commit)]
-            ),
+            std::fs::read_to_string(kept.tree.join("keys").join("legacy.key")).unwrap(),
             "ab".repeat(32)
         );
         // Both on the backup record.
@@ -5333,7 +5376,7 @@ mod tests {
         }
         assert_eq!(journal(), after);
         // Books this version made wait for nothing, and asking for their
-        // upgrade changes nothing of them: not even a backup repository.
+        // upgrade changes nothing of them: not even a local backup.
         create(&books, "beta");
         assert_eq!(listed(&books, "beta").format_upgrade, None);
         let beta = books.root.book_dir(&BookId::parse("beta").unwrap());
@@ -5343,18 +5386,18 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
-        assert!(!beta.join("archive.git").exists(), "nothing was changed");
+        assert!(
+            !beta.join(ledger_store::backup::LOCAL_DIR).exists(),
+            "nothing was changed"
+        );
     }
 
-    /// The backup is trusted only once proven, and only the one just made:
-    /// an archive whose head names a branch other than the one a backup's
-    /// clone takes (a damaged archive) takes the new commit where no
-    /// clone finds it, so what is proven isn't what was made: nothing is
-    /// upgraded, and it is recorded. Once the archive is right, its latest
-    /// commit (which already holds the books) is proven and the upgrade
-    /// made.
+    /// The backup is trusted only once proven: a local backup that was
+    /// written and then damaged proves nothing whole, so nothing is
+    /// upgraded, and it is recorded. Once it is right, its latest (which
+    /// already holds the books) is proven and the upgrade made.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn no_upgrade_unless_the_backup_just_made_is_proven() {
+    async fn no_upgrade_unless_the_backup_is_proven() {
         let home = tempfile::tempdir().unwrap();
         let books = books_in(home.path());
         let dir = old_books(&books, "acme");
@@ -5366,17 +5409,27 @@ mod tests {
         };
         let (d, s) = (dir.clone(), store.clone());
         let first = tokio::task::spawn_blocking(move || {
-            let git = ledger_store::backup::Git::find().unwrap();
             let head = s.with_store(|s| s.head()).unwrap();
-            ledger_store::backup::commit(&git, &d, "acme", head).unwrap()
+            let cut = ledger_store::backup::Cut::take("acme", &d, head).unwrap();
+            ledger_store::backup::write_local(&d, &cut, &ledger_store::backup::Ctx::new()).unwrap()
         })
         .await
+        .unwrap();
+        // Its journal piece is damaged, one byte.
+        let piece = std::fs::read_dir(
+            dir.join(ledger_store::backup::LOCAL_DIR)
+                .join("wanderbooks-acme")
+                .join("journal"),
+        )
         .unwrap()
-        .expect("a first backup");
-        archive_git(&dir, &["symbolic-ref", "HEAD", "refs/heads/elsewhere"]);
-        // A second later: the commit made now, of the same files, isn't
-        // byte for byte the first (git dates commits to the second).
-        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+        let good = std::fs::read(&piece).unwrap();
+        let mut bad = good.clone();
+        bad[3] ^= 1;
+        std::fs::write(&piece, &bad).unwrap();
         let before = std::fs::read(dir.join(ledger_store::JOURNAL_FILE)).unwrap();
         match upgrade(&books, "acme", PASS).await {
             Response::Refused(why) => {
@@ -5394,18 +5447,13 @@ mod tests {
             std::fs::read_to_string(ledger_store::ops::ops_dir(&dir).join(crate::backup::LOG_FILE))
                 .unwrap()
         };
-        assert!(
-            record().contains(r#""why":"format_upgrade""#),
-            "the commit made: {}",
-            record()
-        );
         assert!(record().contains(r#""ok":false"#), "{}", record());
-        // The archive put right: its latest commit holds the books.
-        archive_git(&dir, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+        // The piece put right: the backup proves, and the upgrade is made.
+        std::fs::write(&piece, &good).unwrap();
         match upgrade(&books, "acme", PASS).await {
             Response::FormatUpgraded(u) => {
                 let b = u.backup.clone().expect("proven");
-                assert_eq!(b.commit, first.commit, "{u:?}");
+                assert_eq!(b.commit, format!("local backup {}", first.number), "{u:?}");
                 assert_eq!(b.head, first.head);
                 assert_eq!(u.head.0, first.head.0 + 1);
             }
@@ -5422,8 +5470,9 @@ mod tests {
         let books = books_in(home.path());
         let dir = old_books(&books, "acme");
         ledger_store::passphrase::set(&books.root.auth_dir().unwrap(), PASS, None).unwrap();
-        // A file no book keeps: the backup refuses it.
-        std::fs::write(dir.join(".gitattributes"), "* -text\n").unwrap();
+        // A file where the local backup's folder goes: the backup can't be
+        // made.
+        std::fs::write(dir.join(ledger_store::backup::LOCAL_DIR), "x").unwrap();
         let before = std::fs::read(dir.join(ledger_store::JOURNAL_FILE)).unwrap();
         match upgrade(&books, "acme", PASS).await {
             Response::Refused(why) => {

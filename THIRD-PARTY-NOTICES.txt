@@ -8020,6 +8020,7 @@ MIT License
 ================================================================================
 
 Used by:
+  pollster 0.4.0
   pollster 1.0.1
 
 Copyright (c) 2020-2021 Joshua Barretto
@@ -10054,6 +10055,36 @@ MIT License
 ================================================================================
 
 Used by:
+  rfd 0.17.2
+
+MIT License
+
+Copyright (c) 2020 Bilal Elmoussaoui
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+================================================================================
+MIT License
+================================================================================
+
+Used by:
   xcursor 0.3.11
 
 MIT License
@@ -10089,6 +10120,36 @@ Used by:
 MIT License
 
 Copyright (c) 2022 1Password
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+================================================================================
+MIT License
+================================================================================
+
+Used by:
+  rfd 0.17.2
+
+MIT License
+
+Copyright (c) 2022 Bartłomiej Maryńczak
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -10429,6 +10490,7 @@ Used by:
   brotli-decompressor 5.0.3
   chrono 0.4.45
   comemo-macros 0.5.1
+  dispatch2 0.3.1
   dispatch 0.2.0
   dpi 0.1.2
   ecolor 0.36.2
@@ -15973,6 +16035,7 @@ Their copyright notices are in their source repositories:
   block2 0.6.2                 https://github.com/madsmtm/objc2
   comemo-macros 0.5.1          https://github.com/typst/comemo
   dispatch 0.2.0               http://github.com/SSheldon/rust-dispatch
+  dispatch2 0.3.1              https://github.com/madsmtm/objc2
   ecolor 0.36.2                https://github.com/emilk/egui
   eframe 0.36.2                https://github.com/emilk/egui/tree/main/crates/eframe
   egui 0.36.2                  https://github.com/emilk/egui

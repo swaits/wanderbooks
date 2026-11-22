@@ -749,7 +749,12 @@ fn books_usage(prog: &str) {
         "       {prog} adopt DATA-DIR --id ID [--toml FILE] [--config-json FILE] [--vault DIR --vault-key FILE | --no-vault] [--skip-unknown] [--yes]"
     );
     eprintln!("       {prog} restore BACKUP [--id ID] [--replace] [--yes]");
-    eprintln!("       {prog} back-up ID [--new-disk]");
+    eprintln!("       {prog} back-up ID [--new-disk | --new-set]");
+    eprintln!("       {prog} backup-status ID");
+    eprintln!(
+        "       {prog} backup-setup ID [--folder FOLDER] [--passphrase | --remove-passphrase]"
+    );
+    eprintln!("       {prog} backup-save ID FILE");
     eprintln!("       {prog} upgrade ID");
     eprintln!("       {prog} extract BOOK ATTACHMENT");
     eprintln!("       {prog} open ID");
@@ -767,10 +772,10 @@ fn books_usage(prog: &str) {
     eprintln!("  create  start new, empty books (base currency USD unless given)");
     eprintln!("  adopt   copy existing books in, verified; the original is left as it was");
     eprintln!(
-        "  back-up back the books up now to every backup their settings name (--new-disk: the backup folder's disk is new)"
+        "  back-up back the books up now to every backup their settings name (--new-disk: the backup folder's disk is new; --new-set: the folder holds a longer history of these books, as after a restore from an older backup, so begin a new set beside it)"
     );
     eprintln!(
-        "  restore bring back a backup (a git repository's address, or BOOK.git in the backup folder), proven whole first: as new books, or replacing books (kept in legacy/)"
+        "  restore bring back a backup (your backup folder, the folder of one set of books in it, or a backup file), proven whole first: as new books, or replacing books (kept in legacy/)"
     );
     eprintln!(
         "  upgrade give the go-ahead, with the owner passphrase, for books an older wanderbooks wrote to move to this version's journal format (a verified backup with the vault and keys first)"
@@ -779,7 +784,7 @@ fn books_usage(prog: &str) {
         "  extract read one attachment's text (a PDF, XLSX or text file) and journal it, one at a time; books an older version filed are read this way after an upgrade"
     );
     eprintln!(
-        "  put-aside move the old copies of adopted books (their data folder, their vault and its key, and other paths given: settings file, git history) whole into the legacy folder, once the books hold everything they do, byte for byte; nothing is deleted"
+        "  put-aside move the old copies of adopted books (their data folder, their vault and its key, and other paths given: settings file, old history) whole into the legacy folder, once the books hold everything they do, byte for byte; nothing is deleted"
     );
 }
 
@@ -801,6 +806,10 @@ pub fn books(
     let mut yes = false;
     let mut replace = false;
     let mut new_disk = false;
+    let mut new_set = false;
+    let mut folder: Option<String> = None;
+    let mut ask_passphrase = false;
+    let mut remove_passphrase = false;
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         if common.take(&arg, &mut args)? {
@@ -808,6 +817,9 @@ pub fn books(
         }
         let mut value = |what: &str| args.next().ok_or_else(|| format!("{arg} needs {what}"));
         match arg.as_str() {
+            "--folder" => folder = Some(value("a folder")?),
+            "--passphrase" => ask_passphrase = true,
+            "--remove-passphrase" => remove_passphrase = true,
             "--currency" => currency = value("a currency code")?,
             "--id" => id = Some(value("an id")?),
             "--toml" => toml = Some(PathBuf::from(value("a file")?)),
@@ -818,6 +830,7 @@ pub fn books(
             "--skip-unknown" => skip_unknown = true,
             "--replace" => replace = true,
             "--new-disk" => new_disk = true,
+            "--new-set" => new_set = true,
             "--yes" => yes = true,
             "--help" | "-h" => {
                 books_usage(prog);
@@ -916,8 +929,63 @@ pub fn books(
                 id: (*book).to_string(),
             },
         ),
+        ["backup-status", book] => {
+            return match backup_status(&common, book) {
+                Ok(lines) => {
+                    for line in lines {
+                        println!("{line}");
+                    }
+                    Ok(())
+                }
+                Err(why) => {
+                    eprintln!("error: {why}");
+                    Err(exit(1))
+                }
+            };
+        }
+        ["backup-setup", book] => {
+            // A passphrase is typed by a person, at a terminal, twice and
+            // unechoed: never on the command line, where a shell keeps it.
+            let passphrase = if ask_passphrase {
+                match ask_backup_passphrase() {
+                    Ok(p) => Some(p),
+                    Err(why) => {
+                        eprintln!("error: {why}");
+                        return Err(exit(1));
+                    }
+                }
+            } else {
+                None
+            };
+            return match backup_setup(&common, book, folder, passphrase, remove_passphrase) {
+                Ok(lines) => {
+                    for line in lines {
+                        println!("{line}");
+                    }
+                    Ok(())
+                }
+                Err(why) => {
+                    eprintln!("error: {why}");
+                    Err(exit(1))
+                }
+            };
+        }
+        ["backup-save", book, file] => {
+            return match backup_save(&common, book, file) {
+                Ok(lines) => {
+                    for line in lines {
+                        println!("{line}");
+                    }
+                    Ok(())
+                }
+                Err(why) => {
+                    eprintln!("error: {why}");
+                    Err(exit(1))
+                }
+            };
+        }
         ["back-up", book] => {
-            return match back_up_now(&common, book, new_disk) {
+            return match back_up_now(&common, book, new_disk, new_set) {
                 Ok(lines) => {
                     for line in lines {
                         println!("{line}");
@@ -1159,14 +1227,23 @@ fn database_line(b: &admin::BookStatus) -> Option<String> {
 
 /// Back the books `book` up now (the server does it): what came of it, a
 /// line each; Err when it couldn't be done, or a target didn't take it.
-pub fn back_up_now(common: &Common, book: &str, new_disk: bool) -> Result<Vec<String>, String> {
-    match with_server(
-        common,
+pub fn back_up_now(
+    common: &Common,
+    book: &str,
+    new_disk: bool,
+    new_set: bool,
+) -> Result<Vec<String>, String> {
+    let request = if new_set {
+        Request::BackUpNewSet {
+            id: book.to_string(),
+        }
+    } else {
         Request::BackUpNow {
             id: book.to_string(),
             new_disk,
-        },
-    )? {
+        }
+    };
+    match with_server(common, request)? {
         Response::BackedUp { head_seq, targets } => {
             let lines = backed_up_lines(head_seq, &targets);
             if targets.is_empty() || targets.iter().any(|t| t.problem.is_some()) {
@@ -1175,6 +1252,198 @@ pub fn back_up_now(common: &Common, book: &str, new_disk: bool) -> Result<Vec<St
                 Ok(lines)
             }
         }
+        Response::Refused(why) => Err(why),
+        other => Err(format!("the books server answered oddly: {other:?}")),
+    }
+}
+
+/// Ask at the terminal for the passphrase that protects the backups: twice,
+/// unechoed, with the warning that a forgotten one cannot be recovered.
+fn ask_backup_passphrase() -> Result<String, String> {
+    if !at_a_terminal() {
+        return Err(
+            "the backup passphrase is typed by a person, at a terminal (or set up in the window)"
+                .into(),
+        );
+    }
+    println!(
+        "Backups protected by a passphrase are sealed: only this passphrase opens them. A forgotten passphrase cannot be recovered by anyone."
+    );
+    let first = rpassword::prompt_password("Backup passphrase: ").map_err(|e| e.to_string())?;
+    let again = rpassword::prompt_password("Again: ").map_err(|e| e.to_string())?;
+    if first != again {
+        return Err("the two passphrases differ: nothing was changed".into());
+    }
+    Ok(first)
+}
+
+/// How the books' backups stand, as the server says it.
+pub fn backup_standing(common: &Common, book: &str) -> Result<admin::BackupStanding, String> {
+    match with_server(
+        common,
+        Request::BackupStatus {
+            id: book.to_string(),
+        },
+    )? {
+        Response::BackupStatus(s) => Ok(s),
+        Response::Refused(why) => Err(why),
+        other => Err(format!("the books server answered oddly: {other:?}")),
+    }
+}
+
+/// How the books' backups stand, in words, a line each.
+pub fn backup_status(common: &Common, book: &str) -> Result<Vec<String>, String> {
+    backup_standing(common, book).map(|s| backup_words(&s))
+}
+
+/// A time the server recorded (UTC, RFC 3339) as a person reads it: their own
+/// clock, day, month and year, hour and minute.
+fn when(utc: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(utc).map_or_else(
+        |_| utc.to_string(),
+        |t| {
+            t.with_timezone(&chrono::Local)
+                .format("%B %-d, %Y at %H:%M")
+                .to_string()
+        },
+    )
+}
+
+/// What a restore says before anything else when it is not of the newest
+/// backup there is: both dates, and how many backups it passes over.
+pub fn older_backup_words(p: &admin::RestorePreview) -> String {
+    let day = |at: &Option<String>| at.as_deref().map(when);
+    let (this, newest) = (day(&p.written), day(&p.newest_written));
+    let dates = match (this, newest) {
+        (Some(a), Some(b)) => format!(
+            " This backup is from {a}; the newest in the folder is from {b} and is not whole."
+        ),
+        (Some(a), None) => format!(" This backup is from {a}."),
+        _ => String::new(),
+    };
+    format!(
+        "NOT THE NEWEST BACKUP: this restore passes over {} newer backup{} that did not prove whole, and brings back older books than the folder holds.{dates} Anything written after this backup is not in it.",
+        p.passed_over,
+        if p.passed_over == 1 { "" } else { "s" }
+    )
+}
+
+/// The words for a backup standing, as an ordinary person reads them.
+pub fn backup_words(s: &admin::BackupStanding) -> Vec<String> {
+    let mut lines = Vec::new();
+    match &s.folder {
+        None => lines.push("Not backed up: no backup folder is chosen yet.".to_string()),
+        Some(folder) => {
+            lines.push(format!("Backing up to {folder}."));
+            if s.disconnected {
+                lines.push("The disk with the backup is not connected: connect it, and the next backup goes there. If it is a new disk, say so when you back up now.".into());
+            } else if let Some(why) = &s.last_error {
+                lines.push(format!("The last backup didn't work: {why}"));
+                match s.error_kind.as_deref() {
+                    Some("ahead") => lines.push("This usually means the books were restored from an older backup. To carry on with these books, start a new backup set: the old one stays in the folder, untouched.".into()),
+                    Some("elsewhere") => lines.push("Nothing was written there. If these are the right books, choose another backup folder.".into()),
+                    Some("key_missing") => lines.push("Enter the backup passphrase again in the backup settings to carry on, or remove the passphrase there to back up without one.".into()),
+                    _ => {}
+                }
+            }
+            if !s.damaged_files.is_empty() {
+                lines.push(format!(
+                    "{} file(s) in the backup folder were found damaged and were written again; the damaged ones are left where they are (nothing in the folder is ever deleted), and you may delete them yourself: {}",
+                    s.damaged_files.len(),
+                    s.damaged_files.join(", ")
+                ));
+            }
+            match (&s.last_ok_at, s.through_seq) {
+                (Some(at), Some(seq)) => lines.push(format!(
+                    "Last backed up {}, through event {seq} of {}.{}",
+                    when(at),
+                    s.head_seq,
+                    if s.through_seq == Some(s.head_seq) {
+                        " Up to date."
+                    } else if s.stale {
+                        " More than a day behind."
+                    } else {
+                        " Behind, and catching up."
+                    }
+                )),
+                _ => lines.push("No backup has been made there yet.".into()),
+            }
+            match (&s.last_drill_at, &s.drill_error) {
+                (_, Some(why)) => {
+                    lines.push(format!(
+                        "The weekly check that the backup can be restored failed: {why}"
+                    ));
+                    if s.error_kind.as_deref() == Some("newest_damaged")
+                        || why.contains("newest backup")
+                    {
+                        lines.push("Back up again now: a restore from this folder would give older books until a backup after the damage is made.".into());
+                    }
+                }
+                (Some(at), None) => lines.push(format!("Proven restorable {at} (checked weekly).")),
+                (None, None) if s.through_seq.is_some() => {
+                    lines.push("Not yet proven restorable: it is checked weekly.".into())
+                }
+                _ => {}
+            }
+            lines.push(if s.sealed {
+                "Protected by a passphrase. A forgotten passphrase cannot be recovered.".into()
+            } else {
+                "Not protected by a passphrase.".into()
+            });
+            if let Some(sync) = &s.sync {
+                lines.push(sync.clone());
+            }
+        }
+    }
+    if let Some(note) = &s.note {
+        lines.push(note.clone());
+    }
+    lines
+}
+
+/// Set up the books' backups: the folder, and the passphrase (D-92).
+pub fn backup_setup(
+    common: &Common,
+    book: &str,
+    folder: Option<String>,
+    passphrase: Option<String>,
+    remove_passphrase: bool,
+) -> Result<Vec<String>, String> {
+    let folder = folder.map(|f| {
+        std::path::absolute(&f)
+            .unwrap_or_else(|_| PathBuf::from(&f))
+            .display()
+            .to_string()
+    });
+    match with_server(
+        common,
+        Request::BackupSetup {
+            id: book.to_string(),
+            folder,
+            passphrase: passphrase.map(ledger_mcp::admin::Passphrase),
+            remove_passphrase,
+        },
+    )? {
+        Response::Said { lines } => Ok(lines),
+        Response::Refused(why) => Err(why),
+        other => Err(format!("the books server answered oddly: {other:?}")),
+    }
+}
+
+/// Save a backup of the books as one file.
+pub fn backup_save(common: &Common, book: &str, file: &str) -> Result<Vec<String>, String> {
+    let file = std::path::absolute(file)
+        .unwrap_or_else(|_| PathBuf::from(file))
+        .display()
+        .to_string();
+    match with_server(
+        common,
+        Request::BackupSave {
+            id: book.to_string(),
+            path: file,
+        },
+    )? {
+        Response::Said { lines } => Ok(lines),
         Response::Refused(why) => Err(why),
         other => Err(format!("the books server answered oddly: {other:?}")),
     }
@@ -1617,7 +1886,7 @@ const CONNECT_WAIT: Duration = Duration::from_secs(60);
 pub fn backed_up_lines(head_seq: u64, targets: &[admin::BackedUpTarget]) -> Vec<String> {
     if targets.is_empty() {
         return vec![
-            "No backups are set up: ask your agent to set the private repository and the backup folder.".into(),
+            "No backups are set up: choose a backup folder, in the window or with `wanderbooks books backup-setup ID --folder FOLDER`.".into(),
         ];
     }
     targets
@@ -2493,14 +2762,17 @@ fn make_token(
     Ok(info)
 }
 
-/// The id a backup is restored as when none is given: its repository's
-/// name (`acme.git` → `acme`).
+/// The id a backup is restored as when none is given and the backup does
+/// not say whose it is: the name of its folder or file (`acme` or
+/// `acme.wbbackup` → `acme`).
 fn restore_id(source: &str) -> Option<String> {
     let last = source
-        .trim_end_matches('/')
-        .rsplit(['/', ':'])
-        .next()?
-        .trim_end_matches(".git");
+        .trim_end_matches(['/', '\\'])
+        .rsplit(['/', '\\'])
+        .next()?;
+    let last = last
+        .strip_suffix(&format!(".{}", ledger_store::backup::FILE_EXTENSION))
+        .unwrap_or(last);
     ledger_store::root::BookId::parse(last)
         .ok()
         .map(|id| id.to_string())
@@ -2524,6 +2796,9 @@ fn confirmed(question: &str, yes: bool) -> Result<bool, String> {
     Ok(matches!(answer.trim(), "y" | "Y" | "yes" | "Yes"))
 }
 
+/// What the server says of a backup that needs its passphrase.
+const NEEDS_PASSPHRASE: &str = "needs the passphrase it was made with";
+
 /// `wanderbooks books restore` (INVARIANT 3).
 fn restore(
     common: &Common,
@@ -2536,7 +2811,20 @@ fn restore(
         eprintln!("error: {why}");
         Err(exit(1))
     };
-    let plan = match plan_restore(common, source, id, replace, true) {
+    let mut plan = plan_restore(common, source, id.clone(), replace, true, None);
+    // A backup protected by a passphrase (D-92): asked for at a terminal,
+    // unechoed, once; never taken from the command line, where a shell
+    // would keep it.
+    if matches!(&plan, Err(why) if why.contains(NEEDS_PASSPHRASE)) {
+        match rpassword::prompt_password("This backup is protected by a passphrase. Passphrase: ") {
+            Ok(typed) if !typed.is_empty() => {
+                let typed = ledger_mcp::admin::Passphrase(typed);
+                plan = plan_restore(common, source, id, replace, true, Some(typed));
+            }
+            _ => return fail("the backup needs its passphrase: nothing was restored".into()),
+        }
+    }
+    let plan = match plan {
         Ok(plan) => plan,
         Err(why) => return fail(why),
     };
@@ -2566,8 +2854,11 @@ fn restore(
 /// what it would do, a line each (INVARIANT 3: shown before it is done).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RestorePlan {
-    /// The backup, as the server is told it (a folder by its full path).
+    /// The backup, as the server is told it (a folder or a file by its
+    /// full path).
     pub source: String,
+    /// Its passphrase, if it has one (never shown, wiped when dropped).
+    pub passphrase: Option<ledger_mcp::admin::Passphrase>,
     /// The books' id it comes back as.
     pub id: String,
     /// Whether it replaces the books of that id (kept in legacy/).
@@ -2590,15 +2881,16 @@ pub fn plan_restore(
     id: Option<String>,
     replace: bool,
     flags: bool,
+    passphrase: Option<ledger_mcp::admin::Passphrase>,
 ) -> Result<RestorePlan, String> {
-    // A folder is named to the server by its full path (the server's
-    // working folder isn't this one); anything else is an address.
-    let source = match Path::new(source) {
+    // A folder or a file is named to the server by its full path (the
+    // server's working folder isn't this one).
+    let source = match Path::new(source.trim()) {
         p if p.exists() => std::path::absolute(p)
             .unwrap_or_else(|_| p.to_path_buf())
             .display()
             .to_string(),
-        _ => source.trim().to_string(),
+        _ => return Err(format!("there is no backup at {}", source.trim())),
     };
     // One preview (under the id given, or any: it only reports), then the
     // id.
@@ -2614,6 +2906,7 @@ pub fn plan_restore(
             replace,
             confirmed: false,
             expect_head: None,
+            passphrase: passphrase.clone(),
         },
     )? {
         Response::RestorePreview(p) => p,
@@ -2662,6 +2955,17 @@ pub fn plan_restore(
         preview.blobs,
         preview.vault_files
     )];
+    if preview.passed_over > 0 {
+        // First, before anything else: books older than the newest backup
+        // there is are not what a person expects to get.
+        lines.insert(0, older_backup_words(&preview));
+    }
+    if preview.sealed {
+        lines.push(
+            "It is protected by a passphrase: the restored books keep backing up protected by it, from this computer."
+                .into(),
+        );
+    }
     if let Some(origin) = &preview.origin {
         lines.push(format!("It is a backup of the books \"{origin}\"."));
     }
@@ -2672,19 +2976,16 @@ pub fn plan_restore(
     } else {
         format!("It comes back as new books \"{id}\", beside any others.")
     });
-    match preview.origin.as_deref() {
-        Some(o) if o == id => {}
-        Some(o) => lines.push(format!(
-            "Under a name other than its books' (\"{o}\"), they won't back up to the private repository those books back up to (that would stop theirs): if these are those books, restore them as \"{o}\"{}; else name a repository of their own.",
-            flag(&format!("--id {o}"))
-        )),
-        None => lines.push(
-            "It doesn't say whose books it holds: they won't back up to the private repository their settings name until one of their own is named."
-                .into(),
-        ),
+    if let Some(o) = preview.origin.as_deref()
+        && o != id
+    {
+        lines.push(format!(
+            "They were backed up as \"{o}\"; they come back as \"{id}\" and back up to their own folder in the backup folder."
+        ));
     }
     Ok(RestorePlan {
         source,
+        passphrase,
         id,
         replace,
         head: preview.head,
@@ -2702,6 +3003,7 @@ pub fn carry_out_restore(common: &Common, plan: &RestorePlan) -> Result<Vec<Stri
         replace: plan.replace,
         confirmed: true,
         expect_head: Some(plan.head.clone()),
+        passphrase: plan.passphrase.clone(),
     };
     match with_server(common, request)? {
         Response::Restored(r) => {
@@ -4108,16 +4410,165 @@ mod tests {
         }
     }
 
+    /// The words a person is told of each state of their backups: none set up,
+    /// a disk not connected, a failure, up to date and protected, behind, a
+    /// failed weekly check. No word of how it is made, and never git.
     #[test]
-    fn a_backup_is_restored_under_its_repository_name() {
+    fn the_backups_are_described_in_words_for_each_state() {
+        let base = admin::BackupStanding {
+            head_seq: 12,
+            folder: None,
+            sealed: false,
+            last_ok_at: None,
+            through_seq: None,
+            stale: false,
+            last_error: None,
+            last_drill_at: None,
+            drill_error: None,
+            disconnected: false,
+            note: None,
+            error_kind: None,
+            damaged_files: Vec::new(),
+            sync: None,
+        };
+        let say = |s: &admin::BackupStanding| backup_words(s).join(" | ");
+        assert_eq!(say(&base), "Not backed up: no backup folder is chosen yet.");
+        // The new states, each in words: books ahead of the folder, a key
+        // lost, a newest backup that is damaged, files found damaged, a
+        // synced folder.
+        let there = admin::BackupStanding {
+            folder: Some("/media/disk".into()),
+            last_ok_at: Some("2026-11-21T10:00:00Z".into()),
+            through_seq: Some(5),
+            ..base.clone()
+        };
+        let ahead = admin::BackupStanding {
+            last_error: Some("the backup folder holds a longer history of these books".into()),
+            error_kind: Some("ahead".into()),
+            ..there.clone()
+        };
+        let said = say(&ahead);
+        assert!(said.contains("restored from an older backup"), "{said}");
+        assert!(said.contains("start a new backup set"), "{said}");
+        let lost = admin::BackupStanding {
+            last_error: Some("no longer has its key".into()),
+            error_kind: Some("key_missing".into()),
+            sealed: true,
+            ..there.clone()
+        };
+        assert!(say(&lost).contains("Enter the backup passphrase again"));
+        let drill = admin::BackupStanding {
+            drill_error: Some(
+                "the newest backup (number 3, from today) is damaged; an older one from last week is whole"
+                    .into(),
+            ),
+            error_kind: Some("newest_damaged".into()),
+            ..there.clone()
+        };
+        let said = say(&drill);
+        assert!(said.contains("weekly check"), "{said}");
+        assert!(said.contains("older books"), "{said}");
+        assert!(!said.contains("Proven restorable"), "{said}");
+        let damaged = admin::BackupStanding {
+            damaged_files: vec!["journal/000002-abc".into()],
+            sync: Some(ledger_mcp::backup::sync_words(Some("Dropbox"))),
+            ..there.clone()
+        };
+        let said = say(&damaged);
+        assert!(
+            said.contains("found damaged and were written again"),
+            "{said}"
+        );
+        assert!(said.contains("journal/000002-abc"), "{said}");
+        assert!(said.contains("kept in sync by Dropbox"), "{said}");
+        let preview = admin::RestorePreview {
+            head: (3, "ab".into()),
+            blobs: 0,
+            vault_files: 0,
+            exists: false,
+            origin: None,
+            sealed: false,
+            passed_over: 2,
+            written: Some("2026-11-14T10:00:00Z".into()),
+            newest_written: Some("2026-11-21T10:00:00Z".into()),
+        };
+        let said = older_backup_words(&preview);
+        assert!(said.starts_with("NOT THE NEWEST BACKUP"), "{said}");
+        assert!(said.contains("passes over 2 newer backups"), "{said}");
+        assert!(said.contains("This backup is from"), "{said}");
+        assert!(said.contains("the newest in the folder is from"), "{said}");
+        let with_folder = admin::BackupStanding {
+            folder: Some("/media/disk/Backups".into()),
+            ..base.clone()
+        };
+        let said = say(&with_folder);
+        assert!(
+            said.contains("Backing up to /media/disk/Backups."),
+            "{said}"
+        );
+        assert!(
+            said.contains("No backup has been made there yet."),
+            "{said}"
+        );
+        assert!(said.contains("Not protected by a passphrase."), "{said}");
+        let away = admin::BackupStanding {
+            disconnected: true,
+            last_error: Some("the backup folder isn't there (is its disk connected?)".into()),
+            ..with_folder.clone()
+        };
+        let said = say(&away);
+        assert!(
+            said.contains("The disk with the backup is not connected"),
+            "{said}"
+        );
+        let failing = admin::BackupStanding {
+            last_error: Some("another set of books is in the folder".into()),
+            ..with_folder.clone()
+        };
+        assert!(say(&failing).contains("The last backup didn't work: another set of books"));
+        let fresh = admin::BackupStanding {
+            last_ok_at: Some("2026-11-21T10:00:00.000Z".into()),
+            through_seq: Some(12),
+            last_drill_at: Some("2026-11-21T10:05:00.000Z".into()),
+            sealed: true,
+            ..with_folder.clone()
+        };
+        let said = say(&fresh);
+        assert!(
+            said.contains("through event 12 of 12. Up to date."),
+            "{said}"
+        );
+        assert!(said.contains("Proven restorable"), "{said}");
+        assert!(
+            said.contains("Protected by a passphrase. A forgotten passphrase cannot be recovered."),
+            "{said}"
+        );
+        let behind = admin::BackupStanding {
+            through_seq: Some(9),
+            stale: true,
+            drill_error: Some("a piece is damaged".into()),
+            ..fresh.clone()
+        };
+        let said = say(&behind);
+        assert!(said.contains("More than a day behind."), "{said}");
+        assert!(
+            said.contains("The weekly check that the backup can be restored failed"),
+            "{said}"
+        );
+        for s in [&base, &with_folder, &away, &failing, &fresh, &behind] {
+            assert!(!say(s).to_lowercase().contains("git"));
+        }
+    }
+
+    #[test]
+    fn a_backup_is_restored_under_its_folders_or_files_name() {
         for (source, want) in [
-            ("/media/disk/backups/acme.git", Some("acme")),
-            ("/media/disk/backups/acme.git/", Some("acme")),
-            ("git@host:owner/acme-books.git", Some("acme-books")),
-            ("ssh://host/owner/acme", Some("acme")),
-            ("https://host/owner/acme.git", Some("acme")),
-            ("acme.git", Some("acme")),
-            ("/media/disk/Backups/Acme.git", None),
+            ("/media/disk/backups/acme", Some("acme")),
+            ("/media/disk/backups/acme/", Some("acme")),
+            ("/media/disk/acme-books.wbbackup", Some("acme-books")),
+            (r"C:\Backups\acme.wbbackup", Some("acme")),
+            ("acme", Some("acme")),
+            ("/media/disk/Backups/Acme", None),
             ("/", None),
             ("", None),
         ] {

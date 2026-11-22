@@ -585,7 +585,13 @@ impl Owner for Agentic {
     fn back_up_now(&self, _: &str) -> Result<Vec<String>, String> {
         Err("not here".into())
     }
-    fn plan_restore(&self, _: &str, _: Option<String>, _: bool) -> Result<RestorePlan, String> {
+    fn plan_restore(
+        &self,
+        _: &str,
+        _: Option<String>,
+        _: bool,
+        _: Option<ledger_gui::owner::Secret>,
+    ) -> Result<RestorePlan, String> {
         Err("not here".into())
     }
     fn restore(&self, _: &RestorePlan) -> Result<Vec<String>, String> {
@@ -2105,9 +2111,11 @@ impl Owner for Gated {
         source: &str,
         id: Option<String>,
         replace: bool,
+        passphrase: Option<ledger_gui::owner::Secret>,
     ) -> Result<RestorePlan, String> {
         Ok(RestorePlan {
             source: source.to_string(),
+            passphrase,
             id: id.unwrap_or_else(|| "alpha".into()),
             replace,
             head: (7, "ab".repeat(32)),

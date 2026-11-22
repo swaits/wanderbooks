@@ -1038,11 +1038,11 @@ impl BooksServer {
         // failing.
         {
             let st = self.backups.standing(store);
-            if st.note.is_some() {
+            if st.targets.is_empty() {
                 next_steps.push(step(
                     "books.backup",
                     None,
-                    "No backups are set up: ask the human for a private repository and a folder on another disk, then set backup.git_remote and backup.folder (books.set_setting).",
+                    "No backups are set up: ask the human which folder to back up to (a folder on another disk, or one a sync service keeps), then set backup.folder (books.set_setting).",
                 ));
             } else if st.needs_attention() {
                 next_steps.push(step(

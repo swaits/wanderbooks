@@ -1,5 +1,24 @@
 # STATUS — 2026-11-10: the evaluation batch: no money arithmetic outside the kernel in any crate, exact Decimal sums, four gates the build did not have
 
+## 2026-11-21: backups without git (plan/p15-app-and-relay.md section 9, D-91, D-92)
+
+Written on Linux; **nothing of the window's part, and nothing on Windows or
+macOS, has run**. A backup is now a folder of plain files written once
+(`docs/backups.md`, claims `WB-backup-1` to `WB-backup-11` in
+`docs/spec/claims/backup.md`); git, its processes, locks and output handling
+are gone from the program, from the packages and from every word a person or an
+assistant reads. What is there: the form and its writer, reader, proof, drill and
+restore (`crates/ledger-store/src/backup/`); the passphrase (Argon2id at the owner
+passphrase's cost, XChaCha20-Poly1305 in chunks; the key in the book's `local/`
+folder); "Save a backup" as one `.wbbackup` file (a zip); the server's backups on
+the new form (`crates/ledger-mcp/src/backup.rs`); the proven local backup before
+a format upgrade (`local-backup/` in the book's folder); old settings and an old
+history left alone and said. Property tests, death-at-every-write tests and the
+removed git tests' table are in `docs/testing.md`. **Owner's, open:** the
+window's folder chooser, passphrase set-up and status words (see the report of
+the unit); a first run on Windows and macOS; segment consolidation is only a
+size rule (200 segments), never tried at scale.
+
 ## 2026-11-21: P15 unit C1, the installed app (branch `t3/p15-c1-desktop-packages`)
 
 Written on Linux; **nothing of it has run on Windows or macOS**, and no
@@ -15,8 +34,8 @@ claims `WB-pkg-1` to `WB-pkg-8` in `docs/spec/claims/packaging.md`):
   entitlements file with the reasons, a Documents-folder purpose string);
   signing and notarization run only with the owner's Apple secrets.
 - **Linux**: the tools are unchanged; the desktop entries carry the icon and
-  the window's app id, every package carries the licences, and the packages
-  depend on git.
+  the window's app id, every package carries the licences (the packages no longer
+  depend on git: backups are plain files, D-91).
 - **The Claude desktop extension**: the Connect page's last row writes a
   `.mcpb` (Anthropic's MCP Bundle, manifest 0.3) per company.
 - **Update**: the window says when a newer version exists and where to get it
@@ -24,9 +43,7 @@ claims `WB-pkg-1` to `WB-pkg-8` in `docs/spec/claims/packaging.md`):
   is the newer package installed over the old.
 - **Release**: a draft only, tests on each system, SHA-256 sums, licences;
   the apt/dnf publish moved to a by-hand workflow.
-- **Owner's, open**: signing identities and their secrets; whether to bundle
-  git on Windows and macOS (a GPL-2.0 consequence, `docs/packaging.md`);
-  the first run of the release workflow on GitHub and the first install on a
+- **Owner's, open**: signing identities and their secrets; the first run of the release workflow on GitHub and the first install on a
   clean Windows and macOS machine.
 
 ## 2026-11-10: the evaluation batch (plan/2026-11-09_TRIAGE.md)

@@ -887,7 +887,7 @@ impl Books {
 /// Every file under `dir`, by path relative to it, with the SHA-256 of its
 /// contents, leaving out what a call writes by design whatever the call:
 /// the access log (every call is recorded), the viewer's side channel
-/// (`ops/`), the books' own backup (`archive.git/`), the files handed over
+/// (`ops/`), the books' own local backup (`local-backup/`), the files handed over
 /// and on their way in (`exports/`, `uploads/`), and SQLite's -wal and
 /// -shm files (it moves pages between them on its own).
 pub fn book_files(dir: &Path) -> std::collections::BTreeMap<PathBuf, String> {
@@ -904,7 +904,7 @@ pub fn book_files(dir: &Path) -> std::collections::BTreeMap<PathBuf, String> {
                 .next()
                 .map(|c| c.as_os_str().to_string_lossy().into_owned())
                 .unwrap_or_default();
-            if ["ops", "archive.git", "exports", "uploads"].contains(&first.as_str())
+            if ["ops", "local-backup", "local", "exports", "uploads"].contains(&first.as_str())
                 || name == "access.jsonl"
                 || name.ends_with("-wal")
                 || name.ends_with("-shm")

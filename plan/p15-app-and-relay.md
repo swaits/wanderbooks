@@ -624,3 +624,71 @@ The form (the lead's design; the unit may refine it and must say where):
   touched. A person restoring from one clones it with git themselves and
   uses the existing adopt of a plain folder; the docs say how. A books'
   old `backup.git_remote` setting is reported as no longer used.
+
+**Built (2026-11-21): where the build refined this section.** The code is
+`crates/ledger-store/src/backup/` and `crates/ledger-mcp/src/backup.rs`; the
+rules are `docs/spec/claims/backup.md`; the words for a person are
+`docs/backups.md`.
+
+- The store's lock is held only to take a *cut* (the journal's length and head,
+  the vault, the keys): the files are read after it, which is safe because the
+  journal is append-only and a stored file never changes. Section 9 said "under
+  the store's lock exactly where the commit was taken"; the commit is gone and
+  so is the local copy it wrote, so no slow disk is ever under the lock. The
+  local copy exists only for the format upgrade (`local-backup/`).
+- A destination is tested for being "a point on the live journal" by the
+  byte-identity of the journal prefix its newest manifest names (a SHA-256 of
+  those bytes), which says more than the head at a sequence number.
+- Series of segments are consolidated into one segment when they reach 200, so
+  a manifest stays small however long the books have been backed up; the old
+  segments stay (nothing is deleted).
+- A passphrase is not a journal setting: the key is the book's local file, and a
+  sealed destination is a set of its own beside any plain one, so no journal
+  feature and no format upgrade is needed.
+- Sealed sets are folders named by a random id, so a sealed destination's names
+  say nothing of the books; restore finds the one a passphrase opens.
+
+**Second pass (2026-11-22): what a review of the built unit found, and what the
+fix round changed.** A backup that restores old or wrong books while reporting
+good is the worst defect this product can have, and the first build could.
+Changes to what this section says:
+
+- *A proof after every backup* (promised above, and now made). The manifest just
+  put is read back from the destination and proven before the backup is recorded
+  good: every journal and access segment re-hashed, the chain replayed to the
+  recorded head, the books opened, the vault and keys present, the index read, and
+  of the stored files those the backup added plus one sixteenth of the rest (every
+  stored file is re-read within 16 backups; the weekly drill re-reads all). The
+  proof is marked in the destination, a tiny file per proven manifest (`proofs/`),
+  so one cut short is proven by the next backup even when it has nothing new.
+- *A piece already there is not trusted.* A damaged piece found by the proof is
+  written again under a generation suffix (`.g1`) beside it, a new manifest names
+  it, and the reader takes any generation whose contents hash right: "nothing is
+  rewritten or deleted" holds, the damaged file stays and is listed in the status.
+- *The drill passes only on the newest manifest*, which must reach the last head
+  recorded good; proving an older one is a failure in words, never ok. A restore
+  that would use anything but the newest says so first, with both dates and how
+  many backups it passes over.
+- *No consolidation.* "Series of segments are consolidated into one at 200" above
+  is withdrawn: it wrote the whole journal, access log and index again every 200
+  backups into what may be a quota-limited synced folder. A manifest instead names
+  the one before it (by number and body hash) and what is new, a chain of at most
+  64 and then one that names everything; a reader proves the chain link by link and
+  never trusts an unproven one. 3,000 backups: 12 MB of manifests (765 MB if each
+  named everything), the newest 0.8 KB, found and read in 32 ms.
+- *Ahead is told from diverged.* The live journal is checked to be the beginning
+  of a longer destination before it is called ahead; ahead offers, at the person's
+  request, a new set beside the old (`.2`), which is never touched.
+- *A set's folder is `wanderbooks-` and the id* (legal on every system whatever
+  the id), sealed pieces are in folders of two digits, a failed link is never
+  taken to mean "make no links" unless the error says so (and then the move
+  refuses to replace), header settings are capped at four times ours and bound
+  into the sealed check, and the vault's scratch files are never backed up as
+  records.
+- *A lost key never makes backups plain*, and a folder a sync service keeps (or
+  may) is explained at set-up; a file not downloaded yet reads as such.
+
+Where the lead's design said "each manifest stands alone", it now stands alone
+only as far as its chain: a lost manifest makes unreadable the manifests chained
+on it (at most the rest of 64), never an earlier one.
+

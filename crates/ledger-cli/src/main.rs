@@ -299,7 +299,41 @@ impl ledger_gui::owner::Owner for ViewerOwner {
     }
 
     fn back_up_now(&self, book: &str) -> Result<Vec<String>, String> {
-        ledger_host::commands::back_up_now(&self.common, book, false)
+        ledger_host::commands::back_up_now(&self.common, book, false, false)
+    }
+
+    fn start_new_backup_set(&self, book: &str) -> Result<Vec<String>, String> {
+        ledger_host::commands::back_up_now(&self.common, book, false, true)
+    }
+
+    fn backup_state(&self, book: &str) -> Result<ledger_gui::owner::BackupState, String> {
+        let s = ledger_host::commands::backup_standing(&self.common, book)?;
+        Ok(ledger_gui::owner::BackupState {
+            lines: ledger_host::commands::backup_words(&s),
+            folder: s.folder.clone(),
+            sealed: s.sealed,
+            ahead: s.error_kind.as_deref() == Some("ahead"),
+        })
+    }
+
+    fn set_up_backups(
+        &self,
+        book: &str,
+        folder: Option<String>,
+        passphrase: Option<ledger_gui::owner::Secret>,
+        remove_passphrase: bool,
+    ) -> Result<Vec<String>, String> {
+        ledger_host::commands::backup_setup(
+            &self.common,
+            book,
+            folder,
+            passphrase.map(|p| p.0.clone()),
+            remove_passphrase,
+        )
+    }
+
+    fn save_backup(&self, book: &str, file: &str) -> Result<Vec<String>, String> {
+        ledger_host::commands::backup_save(&self.common, book, file)
     }
 
     fn plan_restore(
@@ -307,10 +341,17 @@ impl ledger_gui::owner::Owner for ViewerOwner {
         source: &str,
         id: Option<String>,
         replace: bool,
+        passphrase: Option<ledger_gui::owner::Secret>,
     ) -> Result<ledger_gui::owner::RestorePlan, String> {
-        let p = ledger_host::commands::plan_restore(&self.common, source, id, replace, false)?;
+        let pass = passphrase.map(|p| ledger_mcp::admin::Passphrase(p.0.clone()));
+        let p =
+            ledger_host::commands::plan_restore(&self.common, source, id, replace, false, pass)?;
         Ok(ledger_gui::owner::RestorePlan {
             source: p.source,
+            passphrase: p
+                .passphrase
+                .as_ref()
+                .map(|p| ledger_gui::owner::Secret(p.0.clone())),
             id: p.id,
             replace: p.replace,
             head: p.head,
@@ -323,6 +364,10 @@ impl ledger_gui::owner::Owner for ViewerOwner {
             &self.common,
             &ledger_host::commands::RestorePlan {
                 source: plan.source.clone(),
+                passphrase: plan
+                    .passphrase
+                    .as_ref()
+                    .map(|p| ledger_mcp::admin::Passphrase(p.0.clone())),
                 id: plan.id.clone(),
                 replace: plan.replace,
                 head: plan.head.clone(),

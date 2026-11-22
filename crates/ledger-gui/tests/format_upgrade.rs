@@ -91,6 +91,7 @@ impl Owner for Fake {
         _source: &str,
         _id: Option<String>,
         _replace: bool,
+        _passphrase: Option<ledger_gui::owner::Secret>,
     ) -> Result<RestorePlan, String> {
         Err("not in these tests".into())
     }

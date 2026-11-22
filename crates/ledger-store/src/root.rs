@@ -196,7 +196,7 @@ impl JobStop {
         self
     }
 
-    /// The flag: what git and the store's loops are handed to look at.
+    /// The flag: what a backup's copy and the store's loops are handed to look at.
     pub fn flag(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
         self.flag.clone()
     }
@@ -229,7 +229,7 @@ impl JobStop {
         }
     }
 
-    /// A stop that reached the store's own loops or git, said as a job's.
+    /// A stop that reached the store's own loops or a backup's copy, said as a job's.
     fn said(&self, e: RootError, undone: &str) -> RootError {
         match e {
             RootError::Store(_, StoreError::Cancelled) => RootError::Stopped(format!(
@@ -1146,6 +1146,15 @@ pub struct RestorePreview {
     pub exists: bool,
     /// The id of the books it holds, as they were backed up.
     pub origin: Option<String>,
+    /// Whether it is protected by a passphrase.
+    pub sealed: bool,
+    /// Newer backups in it that were not whole or were damaged and were
+    /// passed over: not zero means this is not the newest backup there is.
+    pub passed_over: u64,
+    /// When this backup was made (UTC).
+    pub written: Option<String>,
+    /// When the newest backup there is was made (UTC), if it can be read.
+    pub newest_written: Option<String>,
 }
 
 /// What [`Root::restore`] did.
@@ -1166,21 +1175,21 @@ pub struct RestoreReport {
 }
 
 impl Root {
-    /// Clone the backup at `source` (a git repository's address, or its
-    /// folder: `<book>.git` in a backup folder) into a scratch folder in `books/` and prove it
-    /// whole (backup.rs INVARIANT 3); the caller holds the books lock and
-    /// removes the folder.
+    /// Find the backup at `source` (a destination folder, one set's own
+    /// folder, or a backup file), prove it whole (backup INVARIANT 3), and
+    /// build its books in a scratch folder in `books/`, with every stored
+    /// file when `with_files`; the caller holds the books lock and removes
+    /// the folder.
     fn fetch_backup(
         &self,
-        git: &crate::backup::Git,
-        source: &str,
+        source: &Path,
+        passphrase: Option<&str>,
         books: &Path,
         id: &BookId,
         stop: &JobStop,
     ) -> Result<(PathBuf, crate::backup::Verified), RootError> {
         stop.at("fetch", "restored")?;
-        // git, and the verification's own phases and loops, look at the stop.
-        let git = git.clone().with_cancel(stop.flag());
+        let ctx = crate::backup::Ctx::new().with_stop(stop.flag());
         // Anything left from one that never finished goes first: none is
         // in progress (each holds the books lock).
         for entry in std::fs::read_dir(books)? {
@@ -1194,7 +1203,9 @@ impl Root {
             }
         }
         let scratch = books.join(format!("{RESTORE_PREFIX}{id}-{}", std::process::id()));
-        match crate::backup::verify(&git, source, &scratch) {
+        let proven = crate::backup::find(source, passphrase, &ctx)
+            .and_then(|found| crate::backup::verify_found(&found, &scratch, &ctx));
+        match proven {
             Ok(v) => Ok((scratch, v)),
             Err(e) => {
                 // What the verification wrote goes with it (a stop leaves the
@@ -1214,19 +1225,19 @@ impl Root {
     /// proven as [`Self::restore`] proves it, adding nothing to the root.
     pub fn restore_preview(
         &self,
-        git: &crate::backup::Git,
-        source: &str,
+        source: &Path,
+        passphrase: Option<&str>,
         id: &BookId,
     ) -> Result<RestorePreview, RootError> {
-        self.restore_preview_stoppable(git, source, id, &JobStop::never())
+        self.restore_preview_stoppable(source, passphrase, id, &JobStop::never())
     }
 
     /// [`Self::restore_preview`], stopped if `stop` asks: the clone is
     /// removed and nothing is left.
     pub fn restore_preview_stoppable(
         &self,
-        git: &crate::backup::Git,
-        source: &str,
+        source: &Path,
+        passphrase: Option<&str>,
         id: &BookId,
         stop: &JobStop,
     ) -> Result<RestorePreview, RootError> {
@@ -1234,7 +1245,7 @@ impl Root {
         (|| {
             let _lock = self.books_lock(stop, "restored")?;
             let (books, _) = self.private_subdir(BOOKS_DIR, false)?;
-            let (scratch, v) = self.fetch_backup(git, source, &books, id, stop)?;
+            let (scratch, v) = self.fetch_backup(source, passphrase, &books, id, stop)?;
             let vault = scratch.join(VAULT_DIR);
             let vault_files = if vault.is_dir() {
                 std::fs::read_dir(&vault)
@@ -1250,6 +1261,10 @@ impl Root {
                 vault_files,
                 exists: std::fs::symlink_metadata(books.join(id.as_str())).is_ok(),
                 origin: v.book,
+                sealed: v.key.is_some(),
+                passed_over: v.passed_over as u64,
+                written: Some(v.written.clone()),
+                newest_written: v.newest_written.clone(),
             })
         })()
         .map_err(|e| self.hide(e))
@@ -1264,13 +1279,20 @@ impl Root {
     /// first, kept whole; refused while anything holds them open.
     pub fn restore(
         &self,
-        git: &crate::backup::Git,
-        source: &str,
+        source: &Path,
+        passphrase: Option<&str>,
         id: &BookId,
         expect_head: &(u64, String),
         replace: bool,
     ) -> Result<RestoreReport, RootError> {
-        self.restore_stoppable(git, source, id, expect_head, replace, &JobStop::never())
+        self.restore_stoppable(
+            source,
+            passphrase,
+            id,
+            expect_head,
+            replace,
+            &JobStop::never(),
+        )
     }
 
     /// [`Self::restore`], stopped if `stop` asks at any phase before the
@@ -1280,14 +1302,14 @@ impl Root {
     /// finishes: two renames and two directory syncs.
     pub fn restore_stoppable(
         &self,
-        git: &crate::backup::Git,
-        source: &str,
+        source: &Path,
+        passphrase: Option<&str>,
         id: &BookId,
         expect_head: &(u64, String),
         replace: bool,
         stop: &JobStop,
     ) -> Result<RestoreReport, RootError> {
-        self.restore_inner(git, source, id, expect_head, replace, stop)
+        self.restore_inner(source, passphrase, id, expect_head, replace, stop)
             .map_err(|e| match e {
                 // The copy's checks are the adoption's: said as a restore.
                 RootError::Adopt(text) => {
@@ -1300,8 +1322,8 @@ impl Root {
 
     fn restore_inner(
         &self,
-        git: &crate::backup::Git,
-        source: &str,
+        source: &Path,
+        passphrase: Option<&str>,
         id: &BookId,
         expect_head: &(u64, String),
         replace: bool,
@@ -1337,7 +1359,7 @@ impl Root {
         };
         stop.at("start", "restored")?;
         let _scope = crate::cancel::scope(stop.flag());
-        let (scratch, v) = self.fetch_backup(git, source, &books, id, stop)?;
+        let (scratch, v) = self.fetch_backup(source, passphrase, &books, id, stop)?;
         let staging = books.join(format!("{RESTORE_PREFIX}{id}-{}-book", std::process::id()));
         let built = (|| -> Result<RestoreReport, RootError> {
             stop.at("copy", "restored")?;
@@ -1377,11 +1399,12 @@ impl Root {
                     &std::fs::read(&access)?,
                 )?;
             }
-            // Its backup history: the next backup carries on from it.
-            std::fs::rename(
-                scratch.join(".git"),
-                staging.join(crate::backup::ARCHIVE_DIR),
-            )?;
+            // A sealed backup keeps its key: the restored books carry on
+            // backing up sealed, to the same place, with no question asked.
+            if let Some(key) = &v.key {
+                key.store(&staging)
+                    .map_err(|e| RootError::Adopt(format!("that backup can't be restored: {e}")))?;
+            }
             // Whose books they were, placed with them.
             crate::ops::prepare(&staging)?;
             write_private_file(

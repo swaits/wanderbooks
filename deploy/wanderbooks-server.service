@@ -50,9 +50,8 @@ ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes
 # No network but loopback: the tunnel reaches 127.0.0.1:7411, and the
-# server reaches nothing out. A book whose backup target is a remote git
-# repository needs that host allowed here (`IPAddressAllow=` its address)
-# or its backups fail; see README.md.
+# server reaches nothing out. Backups go to a folder on this machine's
+# disks (see README.md), so they need no network.
 IPAddressDeny=any
 IPAddressAllow=localhost
 

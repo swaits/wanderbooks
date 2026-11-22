@@ -450,8 +450,6 @@ fn host_env(home: &Path) -> Vec<(String, std::ffi::OsString)> {
     let system_root: PathBuf = var("SystemRoot")
         .or_else(|| var("windir"))
         .map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from);
-    let program_files: PathBuf =
-        var("ProgramFiles").map_or_else(|| PathBuf::from(r"C:\Program Files"), PathBuf::from);
     let path = std::env::join_paths([system_root.join("System32"), system_root.clone()])
         .unwrap_or_default();
     let mut env: Vec<(String, std::ffi::OsString)> = vec![

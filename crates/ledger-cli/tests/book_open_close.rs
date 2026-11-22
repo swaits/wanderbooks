@@ -2452,6 +2452,7 @@ fn backup_record_of(home: &Home, id: &str) -> Vec<serde_json::Map<String, Value>
 /// recorded as done); the folder still proves whole at the backup before;
 /// and the close's own last backup is made as always (local.rs INVARIANT
 /// 10).
+#[cfg(unix)]
 #[test]
 fn a_close_stops_a_running_backup_call_and_says_so() {
     let home = Home::new("close-stops-backup-call");
